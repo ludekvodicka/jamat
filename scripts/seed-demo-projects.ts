@@ -9,7 +9,7 @@
 import { mkdirSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { getStatsPath, loadStats, saveStats } from '../core/menu-core/stats.js'
-import { DEMO_ROOT, DEMO_CATEGORIES, type Stack, type DemoProject } from './demo-manifest.js'
+import { DEMO_ROOT, DEMO_CONFIG_DIR, DEMO_CATEGORIES, type Stack, type DemoProject } from './demo-manifest.js'
 
 function write(path: string, content: string) {
   writeFileSync(path, content.replace(/\n+$/, '') + '\n')
@@ -222,13 +222,13 @@ function scaffold(stack: Stack, dir: string, p: DemoProject) {
 
 /**
  * Seed the menu launch-stats (usage-stats.json) so the project selector shows the
- * "N× | <relative date>" suffix on each demo project. Keys are `${label}:${folder}`,
- * which never collide with real projects (distinct demo folder names), so this MERGES
- * non-destructively into the shared file. Values are deterministic by index → stable
- * across reruns. Remove them anytime with `npm run demo:projects -- --clean-stats`.
+ * "N× | <relative date>" suffix on each demo project. Written into the demo profile's OWN
+ * config-dir (DEMO_CONFIG_DIR/usage-stats.json) — the file the demo Electron instance reads —
+ * so it never touches a real profile. Values are deterministic by index → stable across reruns.
+ * Remove them anytime with `npm run demo:projects -- --clean-stats`.
  */
 function seedMenuStats(clean: boolean) {
-  const file = getStatsPath()
+  const file = getStatsPath(DEMO_CONFIG_DIR)
   const stats = loadStats(file)
   const now = Date.now()
   let idx = 0

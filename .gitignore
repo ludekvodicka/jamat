@@ -43,6 +43,12 @@ app-agent/.env-production*
 # filesystem regardless of git.
 .claude/
 
+# Our internal Claude Code project instructions — SVN-first workflow, .private/ tooling, publish
+# flow, atomix conventions. Needed by OUR sessions (loaded from disk) + kept in INTERNAL SVN, but
+# NOT part of the public repo: it's internal dev guidance, not required to build/run the app, and
+# a public clone uses CONTRIBUTING.md instead. (Only the repo-root one; nested fixtures may exist.)
+/CLAUDE.md
+
 # First-run-generated per-user config (ensureConfig writes this on a fresh clone). It carries
 # the contributor's real paths — the public repo ships ONLY configs/config.example.json.
 /configs/config.json

@@ -28,6 +28,7 @@ import {
   resolveActiveSessionFile as resolveClaudeActiveSessionFile,
   readSessionModelInfo as readClaudeSessionModelInfo,
   readEffortLevel as readClaudeEffortLevel,
+  claudeConfigHome,
 } from './sessions.js'
 import {
   extractSessionTurns,
@@ -54,7 +55,7 @@ export class ClaudeAdapter implements AgentAdapter {
   // --- 1. Filesystem ---
 
   sessionsRoot(homeDir: string): string {
-    return join(homeDir, '.claude', 'projects')
+    return join(claudeConfigHome(homeDir), 'projects')
   }
 
   encodeProjectDir(projectDir: string): string {
@@ -193,7 +194,7 @@ export class ClaudeAdapter implements AgentAdapter {
     return [
       join(projectDir, '.claude', 'settings.local.json'),
       join(projectDir, '.claude', 'settings.json'),
-      join(homeDir, '.claude', 'settings.json'),
+      join(claudeConfigHome(homeDir), 'settings.json'),
     ]
   }
 }

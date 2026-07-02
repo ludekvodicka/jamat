@@ -1,38 +1,33 @@
 /**
- * Fabricates ccusage transcripts for the Demo sandbox and rebuilds the Usage Stats
- * dashboard data from them — fully isolated from real data via CLAUDE_CONFIG_DIR.
+ * Fabricates ccusage transcripts for the Demo sandbox and rebuilds the Usage Stats dashboard
+ * data from them — fully isolated from every real profile.
  *
- *   npm run demo:stats            seed fake transcripts + regenerate stats.json (demo)
- *   npm run demo:stats:restore    wipe the stats cache + regenerate from real ~/.claude
+ *   npm run demo:stats            seed fake transcripts + regenerate the demo stats.json
  *
  * How the isolation works:
  *   - Transcripts are written to Q:\Demo\.claude-demo\projects\<encoded>\*.jsonl.
- *   - The stats generator is spawned with CLAUDE_CONFIG_DIR pointed at that dir, so
- *     ccusage scans ONLY demo data — real ~/.claude is never read or written.
- *   - Output (stats.json) lands in the shared %APPDATA%\jamat\stats, which the
- *     dashboard reads. So the demo run temporarily REPLACES the real dashboard data; run
- *     `npm run demo:stats:restore` (or any normal `npm run stats`) to bring real data back.
+ *   - The stats generator runs with CLAUDE_CONFIG_DIR pointed at that dir (so ccusage scans ONLY
+ *     demo data) AND --config-dir DEMO_CONFIG_DIR (so stats.json is written into the demo profile's
+ *     own config-dir, .private/configs/demo/stats — the same place the demo Electron instance reads).
+ *   - Nothing here touches a real profile: real ~/.claude is never read, and the real profiles'
+ *     stats (in their own config-dirs) are never written. No backup/restore needed.
  *
- * The demo Electron launcher also exports CLAUDE_CONFIG_DIR, so the dashboard's own ↻
- * Refresh re-runs the generator against the same demo data and stays consistent.
+ * The demo launcher (.private/scripts/start-demo.bat) exports the same CLAUDE_CONFIG_DIR, so the
+ * dashboard's own ↻ Refresh re-runs the generator against the same demo data and stays consistent.
  */
-import { mkdirSync, writeFileSync, existsSync, rmSync, copyFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
-import { resolveUserDataDir } from '../core/userdata-path.js'
 import { pathToProjectDirName } from '../core/agents/claude/sessions.js'
-import { DEMO_ROOT, DEMO_CLAUDE_DIR, DEMO_CATEGORIES, DEMO_MODELS } from './demo-manifest.js'
+import { DEMO_ROOT, DEMO_CLAUDE_DIR, DEMO_CONFIG_DIR, DEMO_CATEGORIES, DEMO_MODELS } from './demo-manifest.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const DEMO_PROJECTS_DIR = join(DEMO_CLAUDE_DIR, 'projects')
-const STATS_DIR = join(resolveUserDataDir(), 'stats')
+const STATS_DIR = join(DEMO_CONFIG_DIR, 'stats')
 const CACHE_FILE = join(STATS_DIR, 'historical-cache.json')
 const STATS_JSON = join(STATS_DIR, 'stats.json')
-// Lossless backup of the real dashboard data, taken before the first demo seed so
-// `--restore` can put it back instantly without depending on a re-scan / pricing fetch.
-const STATS_BACKUP = join(STATS_DIR, 'stats.json.pre-demo')
 const GENERATOR = join(ROOT, 'app-stats', 'generate-stats.ts')
 
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -169,57 +164,30 @@ function seedTranscripts() {
   return { files, lines, projects: projects.length }
 }
 
-function runGenerator(demo: boolean): number {
+function runGenerator(): number {
   // Spawn the real generator so stats.json keeps the exact shape the dashboard expects.
-  const env = { ...process.env }
-  if (demo) env.CLAUDE_CONFIG_DIR = DEMO_CLAUDE_DIR
-  else delete env.CLAUDE_CONFIG_DIR
-  // Drop the same-day historical cache so the generator does a fresh scan of the
-  // selected data source instead of reusing whatever was cached earlier today.
+  // CLAUDE_CONFIG_DIR → ccusage scans ONLY demo transcripts; --config-dir → stats.json lands in
+  // the demo profile's own config-dir (the same place the demo Electron instance reads it).
+  const env = { ...process.env, CLAUDE_CONFIG_DIR: DEMO_CLAUDE_DIR }
+  // Drop the same-day historical cache so the generator does a fresh scan of the demo data
+  // instead of reusing whatever was cached earlier today.
   if (existsSync(CACHE_FILE)) rmSync(CACHE_FILE, { force: true })
 
-  const res = spawnSync(process.execPath, ['--import', 'tsx', GENERATOR], {
+  const res = spawnSync(process.execPath, ['--import', 'tsx', GENERATOR, '--config-dir', DEMO_CONFIG_DIR], {
     cwd: ROOT, env, stdio: 'inherit',
   })
   return res.status ?? 1
 }
 
 function main() {
-  const restore = process.argv.includes('--restore')
-
-  if (restore) {
-    // Prefer the lossless backup; fall back to a fresh real scan if it's gone.
-    if (existsSync(STATS_BACKUP)) {
-      mkdirSync(STATS_DIR, { recursive: true })
-      copyFileSync(STATS_BACKUP, STATS_JSON)
-      rmSync(STATS_BACKUP, { force: true })
-      if (existsSync(CACHE_FILE)) rmSync(CACHE_FILE, { force: true }) // force a real rebuild on next refresh
-      console.log(`✓ Restored real stats from backup → ${STATS_JSON}`)
-      process.exit(0)
-    }
-    console.log('No backup found. Regenerating real Usage Stats from ~/.claude...')
-    const code = runGenerator(false)
-    console.log(code === 0
-      ? `\n✓ Real stats restored → ${STATS_JSON}`
-      : `\n✗ Generator exited ${code} — run \`npm run stats\` manually.`)
-    process.exit(code)
-  }
-
-  // Back up the real dashboard data once, before the first demo overwrite.
-  if (existsSync(STATS_JSON) && !existsSync(STATS_BACKUP)) {
-    copyFileSync(STATS_JSON, STATS_BACKUP)
-    console.log(`(backed up real stats → ${STATS_BACKUP})`)
-  }
-
   console.log('Seeding demo transcripts into', DEMO_PROJECTS_DIR)
   const { files, lines, projects } = seedTranscripts()
   console.log(`  ${lines} usage records across ${files} sessions / ${projects} projects.`)
-  console.log('Regenerating stats.json from demo data (CLAUDE_CONFIG_DIR isolation)...\n')
-  const code = runGenerator(true)
+  console.log('Regenerating stats.json for the demo profile (isolated config-dir + CLAUDE_CONFIG_DIR)...\n')
+  const code = runGenerator()
   if (code === 0) {
     console.log(`\n✓ Demo dashboard data → ${STATS_JSON}`)
-    console.log('  The 📊 Usage Stats panel now shows demo numbers.')
-    console.log('  Restore real data anytime with: npm run demo:stats:restore')
+    console.log('  Launch the demo profile (.private\\scripts\\start-demo.bat) to see it.')
   } else {
     console.log(`\n✗ Generator exited ${code}. stats.json may be unchanged.`)
   }

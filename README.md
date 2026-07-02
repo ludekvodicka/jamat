@@ -12,6 +12,8 @@ AI agent operate another's tab.
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/ludekvodicka/jamat/actions/workflows/ci.yml/badge.svg)](https://github.com/ludekvodicka/jamat/actions)
 
+![Jamat overview](docs/images/01-overview.png)
+
 ---
 
 ## What it does
@@ -35,6 +37,25 @@ self-hosted, your keys — nothing is proxied.
 …plus cross-machine control, AI-operates-AI, phone access, and skill/MCP management — see
 **Highlights** below.
 
+## Not just for code — a workspace per topic
+
+You don't have to use Jamat for programming. Every "project" is just a **folder**, so you can give
+each thing in your life its own — *garden*, *pool*, *house renovation*, *taxes* — and Jamat turns
+each into an entry in the selector.
+
+Instead of one long, forgetful chat, you get a **persistent, topic-scoped conversation**:
+
+- **Pick a topic and continue where you left off** — the project & session selector opens the right
+  folder and resumes its conversation by name; the AI already has the whole history, no re-explaining.
+- **Drop in documents** — put PDFs, notes, quotes, or photos in the folder (renovation invoices, the
+  pool-pump manual); the agent reads them as part of that topic's context.
+- **It remembers** — each folder keeps its own session history and notes, so last month's discussion
+  is still there the next time you open it.
+- **Everything stays local** — the folders and their history live on your disk, on your own keys.
+
+Jamat is then as much a **filing cabinet of ongoing AI conversations** as a developer tool — one
+drawer per subject, each with full memory and its own documents.
+
 ## Highlights
 
 - **Every session in one window** — tiling, dockable, multi-window / multi-tab workspace with full
@@ -44,6 +65,8 @@ self-hosted, your keys — nothing is proxied.
 - **See exactly what changed** — diffs **by git/SVN history, by session, or by individual message**;
   file / changes / directory viewers; session search across all projects; commit helpers (never
   auto-commits).
+- **Jump from output to source** — right-click any file path mentioned in a session's output to open
+  it in a Jamat tab or in VS Code, or open the whole project in VS Code.
 - **Reach across machines** — over your LAN, take over a session running on another computer, or
   hand a task to a remote agent; the remote work shows up in a dedicated, highlighted tab.
 - **AI that operates AI** — one agent can drive another agent's tab (this machine or another),
@@ -53,6 +76,52 @@ self-hosted, your keys — nothing is proxied.
 - **Insight & extensibility** — discover and toggle Claude **skills, slash-commands, subagents, MCP
   servers, and plugins** from inside the app; rich Markdown + diagram rendering (Mermaid, Graphviz,
   Vega-Lite, Archify).
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Tab status](docs/images/02-tab-status.png)<br>**Per-tab status** — a colored dot per tab shows working / waiting-on-you / done, across every window. | ![Side panel](docs/images/03-side-panel.png)<br>**Notes & recent files** — one-click reusable prompts, plus the files this session changed. |
+| ![File view](docs/images/04-file-view.png)<br>**File view** — breadcrumb + Open folder / Copy / Diff / Edit / VS Code over highlighted source. | ![Settings](docs/images/05-settings.png)<br>**Settings** — projects, appearance, terminal, notifications, usage, remote… all from the UI. |
+| ![Diff view](docs/images/06-diff-view.png)<br>**Diff view** — compare against a git commit, an svn base, or a point in the Claude session. | ![Window groups](docs/images/07-window-groups.png)<br>**Colored window groups** — name & color windows to tell topic groups apart. |
+| ![Status bar](docs/images/08-status-bar.png)<br>**Status bar** — model, reasoning effort, context used, and hourly (S) / weekly (W) usage meters. | ![Remote connections](docs/images/09-remote-connections.png)<br>**Remote connections** — allow token-gated LAN control on this machine, then view & drive tabs on your other computers. |
+| ![File context menu](docs/images/10-file-context-menu.png)<br>**Open any mentioned file** — right-click a file path in a session's output to open it in a tab or VS Code, or open the whole project. | *Context-full nudge — screenshot coming.* |
+
+## AI that operates AI
+
+An agent in Jamat isn't trapped inside its own tab — through the built-in **`jamat` skill**, the
+agent can drive Jamat itself, with the same reach over the app's control surface that you have:
+
+- **Spin up a local helper** — an agent can open a **new tab on this machine**, start a fresh Claude
+  in it, delegate a sub-task there, and collect the result — parallelizing its own work.
+- **Hand a task to another computer** — with remote control enabled, an agent can send a task to a
+  Claude on a **peer machine** over your LAN and await its answer, so the box with the right code,
+  data, or hardware does the work.
+- **Open, drive, and close tabs** — locally or on a peer, so one orchestrating agent can fan work out
+  across tabs and machines.
+
+Because this is genuine remote-execution reach, it's locked down by default: remote control is
+**off until you opt in** and loopback-only, the LAN surface is **token-gated per machine**, the
+operation registry is **closed-by-default**, every remote action is **audit-logged**, and a peer's
+reply is always treated as **untrusted input**. See [Security](#security).
+
+## Documents that render, not just scroll
+
+Jamat's file viewer renders an enriched Markdown — **mdext** — so the reports your agents write
+actually look like reports: GFM tables and syntax-highlighted code, a collapsible frontmatter strip,
+typed callouts / status chips / collapsibles, and inline diagrams (**Mermaid, Graphviz, Vega-Lite,
+Archify**, plus hand-authored SVG) — all themed, all safe on untrusted input (raw HTML is stripped).
+
+It ships with a **skill that teaches the agent to author in this format**, so a plan, analysis, or
+status report comes out as a rich, diagram-bearing document instead of a wall of text. The pages
+below are [`docs/jamat-capabilities.md`](docs/jamat-capabilities.md) — itself an mdext document —
+rendered live inside Jamat:
+
+![Rich output: frontmatter strip, status chips, and a live tab-status diagram](docs/images/output-01-capabilities.png)
+
+![Rich output: an Archify architecture diagram, a config block, and the capability checklist](docs/images/output-02-diagrams.png)
+
+![Rich output: the capability checklist with a collapsible "architecture rules" block](docs/images/output-03-checklist.png)
 
 ## Architecture
 

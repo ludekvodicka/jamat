@@ -1,6 +1,6 @@
 {
   "name": "jamat",
-  "version": "2026.07.02.10.05",
+  "version": "2026.07.02.13.02",
   "type": "module",
   "license": "MIT",
   "author": "ludekvodicka",
@@ -37,7 +37,6 @@
     "stats:html": "node --import tsx app-stats/generate-html.ts",
     "demo:projects": "node --import tsx scripts/seed-demo-projects.ts",
     "demo:stats": "node --import tsx scripts/seed-demo-stats.ts",
-    "demo:stats:restore": "node --import tsx scripts/seed-demo-stats.ts --restore",
     "build:web": "node --import tsx scripts/build-web.ts",
     "verify:config": "node --import tsx core/config.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p app-electron/tsconfig.node.json && tsc --noEmit -p app-electron/tsconfig.web.json",

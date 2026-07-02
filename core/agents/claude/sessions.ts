@@ -22,8 +22,19 @@ import { modelLabel, contextWindowFor } from "../../menu-core/pure.js";
  * terminal's pty), which is the only reliable link when the session was
  * launched via `--continue` (no sessionId known up front).
  */
+/**
+ * Claude Code's config home — `$CLAUDE_CONFIG_DIR` when set (Claude Code honors it, so an isolated /
+ * demo profile pointed there writes its sessions/projects/settings under it), else `~/.claude`. Every
+ * session/model/title/effort read resolves through this so Jamat reads the SAME store Claude Code
+ * writes. When the env var is unset (normal use) this is exactly `join(homeDir, ".claude")` — no-op.
+ */
+export function claudeConfigHome(homeDir: string = homedir()): string {
+  const cc = process.env["CLAUDE_CONFIG_DIR"]?.trim();
+  return cc ? cc : join(homeDir, ".claude");
+}
+
 export function listActiveSessionPids(): { pid: number; sessionId: string }[] {
-  const sessDir = join(homedir(), ".claude", "sessions");
+  const sessDir = join(claudeConfigHome(), "sessions");
   const out: { pid: number; sessionId: string }[] = [];
   try {
     for (const f of readdirSync(sessDir)) {
@@ -56,7 +67,7 @@ let projectDirCache: Map<string, string> | null = null;
 
 function getProjectDirLookup(): Map<string, string> {
   if (projectDirCache) return projectDirCache;
-  const claudeProjectsDir = join(homedir(), ".claude", "projects");
+  const claudeProjectsDir = join(claudeConfigHome(), "projects");
   projectDirCache = new Map();
   try {
     for (const d of readdirSync(claudeProjectsDir)) {
@@ -475,7 +486,7 @@ export function readEffortLevel(projectDir: string, homeDir: string): string | n
   const candidates = [
     join(projectDir, ".claude", "settings.local.json"),
     join(projectDir, ".claude", "settings.json"),
-    join(homeDir, ".claude", "settings.json"),
+    join(claudeConfigHome(homeDir), "settings.json"),
   ];
   for (const path of candidates) {
     try {

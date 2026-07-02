@@ -37,8 +37,9 @@ interface Settings {
   showClipboardDebug: boolean
   /** Show the work-detection widget in the status bar (live "is Claude working?" verdict + which
    *  busy markers fire, from the rendered screen vs the raw PTY tail; turns red on a detection-vs-tab
-   *  mismatch). On by default while the detection is being tuned. Read live by App.tsx (re-applied on
-   *  Save via the `app-settings-changed` event); mounting it also enables `detectionDebug` publishing. */
+   *  mismatch). Off by default — a diagnostic surface kept for tuning the detection. Read live by
+   *  App.tsx (re-applied on Save via the `app-settings-changed` event); mounting it also enables
+   *  `detectionDebug` publishing. */
   showWorkDetectionDebug: boolean
   /** Show the renderer/geometry badge in the status bar (e.g. "DOM 135×68" — the active terminal's
    *  xterm renderer + cols×rows). On by default. Read live by App.tsx (same `app-settings-changed`). */
@@ -60,7 +61,7 @@ const DEFAULTS: Settings = {
   recentFilesCount: 15,
   recentFilesIntervalSeconds: 5,
   showClipboardDebug: false,
-  showWorkDetectionDebug: true,
+  showWorkDetectionDebug: false,
   showRendererBadge: true,
 }
 

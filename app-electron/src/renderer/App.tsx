@@ -74,6 +74,8 @@ export function App() {
   const { toggleSidebar, addPanel, activePanel, setAppConfig, usageData, setUsageData, setTheme } = useLayoutStore()
   // User-configurable context-fullness warning levels (Settings → Context warnings); undefined → defaults.
   const contextLevels = useLayoutStore(s => s.appConfig?.contextLevels)
+  // Active config profile name — the Demo/screenshot profile ("Demo") swaps the dev title suffix for " - Demo".
+  const configName = useLayoutStore(s => s.appConfig?.name)
   useTaskNotifications()
   useTabTreePush()
   useCompletedTabs()
@@ -91,7 +93,7 @@ export function App() {
   const [remoteSession, setRemoteSession] = useState<{ peerLabel: string } | null>(null)
   // Status-bar clipboard-debug widget (Settings → Debug). Off by default; re-read live on Save.
   const [showClipDebug, setShowClipDebug] = useState(() => loadSettings().showClipboardDebug)
-  // Status-bar work-detection widget (Settings → Debug). On by default while detection is tuned.
+  // Status-bar work-detection widget (Settings → Debug). Off by default; re-read live on Save.
   const [showWorkDebug, setShowWorkDebug] = useState(() => loadSettings().showWorkDetectionDebug)
   // Status-bar renderer/geometry badge ("DOM 135×68"). On by default (Settings → Debug).
   const [showRendererBadge, setShowRendererBadge] = useState(() => loadSettings().showRendererBadge)
@@ -114,9 +116,9 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    const debug = import.meta.env.DEV ? ' - Debug' : ''
-    document.title = (groupName ? `${groupName} — Jamat` : 'Jamat') + debug
-  }, [groupName])
+    const suffix = configName === 'Demo' ? ' - Demo' : import.meta.env.DEV ? ' - Debug' : ''
+    document.title = (groupName ? `${groupName} — Jamat` : 'Jamat') + suffix
+  }, [groupName, configName])
 
   useEffect(() => {
     if (!window.electronAPI?.onGroupColorChanged) return

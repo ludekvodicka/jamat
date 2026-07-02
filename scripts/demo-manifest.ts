@@ -4,13 +4,15 @@
  * and the Usage Stats dashboard WITHOUT exposing real projects.
  *
  * Consumed by:
- *   - scripts/seed-demo-projects.ts  → scaffolds Q:\Demo\<category>\<project> trees
- *   - scripts/seed-demo-stats.ts     → fabricates ccusage transcripts in Q:\Demo\.claude-demo
- *   - configs/config-demo.json       → the "Demo" profile points its categories here
+ *   - scripts/seed-demo-projects.ts       → scaffolds Q:\Demo\<category>\<project> trees
+ *   - scripts/seed-demo-stats.ts          → fabricates ccusage transcripts in Q:\Demo\.claude-demo
+ *   - .private/configs/demo/config.json   → the "Demo" profile points its categories here
  *
  * Nothing here touches real data. The token dashboard is isolated via CLAUDE_CONFIG_DIR
  * (ccusage honours it), so the real ~/.claude is never read or written by the demo.
  */
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 
 /** Top-level root for the demo project tree (sibling of your real project roots). */
 export const DEMO_ROOT = 'Q:\\Demo'
@@ -21,6 +23,15 @@ export const DEMO_ROOT = 'Q:\\Demo'
  * with real history. Lives inside DEMO_ROOT but is dot-prefixed → hidden from the selector.
  */
 export const DEMO_CLAUDE_DIR = 'Q:\\Demo\\.claude-demo'
+
+/**
+ * Portable config-dir the demo Electron instance launches with (JAMAT_CONFIG_DIR, via
+ * .private/scripts/start-demo.bat). All demo-profile state — the fabricated Usage Stats
+ * (stats/) and the per-project launch counts (usage-stats.json) — MUST land HERE, because a
+ * config-dir launch reads them from <config-dir>/…, not from %APPDATA%\jamat. Lives in .private/
+ * (SVN-only, never public), alongside the other per-user profiles.
+ */
+export const DEMO_CONFIG_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '.private', 'configs', 'demo')
 
 export type Stack = 'web' | 'backend' | 'ai'
 
