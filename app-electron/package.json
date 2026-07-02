@@ -39,8 +39,7 @@
       "icon": "../docs/images/logo/jamat.ico",
       "target": [
         "nsis"
-      ],
-      "signAndEditExecutable": false
+      ]
     },
     "mac": {
       "icon": "../docs/images/logo/jamat-1024.png",
