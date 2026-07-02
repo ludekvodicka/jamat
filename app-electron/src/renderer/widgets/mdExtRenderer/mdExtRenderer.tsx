@@ -30,6 +30,7 @@ export function MdExtRenderer({
   className,
   remote = false,
   allowRawHtml = false,
+  resolveImageSrc,
 }: MdExtRendererProps) {
   // The hatch is hard-disabled for untrusted remote content, regardless of the prop.
   const rawOn = allowRawHtml && !remote
@@ -64,7 +65,7 @@ export function MdExtRenderer({
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkDirective, remarkMdextDirectives]}
           rehypePlugins={rehypePlugins}
-          components={mdExtComponents({ remote, rawHtml: rawOn })}
+          components={mdExtComponents({ remote, rawHtml: rawOn, resolveImageSrc })}
         >
           {body}
         </ReactMarkdown>

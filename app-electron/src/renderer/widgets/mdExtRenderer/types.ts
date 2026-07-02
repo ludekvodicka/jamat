@@ -32,4 +32,13 @@ export interface MdExtRendererProps {
    * raw-HTML parser is never bundled into the host's hot path.
    */
   allowRawHtml?: boolean
+  /**
+   * Optional host resolver for image `src`s the browser can't load on its own. A LOCAL markdown
+   * viewer supplies this to turn a relative / on-disk `![](assets/x.png)` into a loadable URL —
+   * typically a `data:` URL the host has read off disk, resolved against the document's directory.
+   * Called synchronously per image; return a loadable URL to use it (**trusted** — bypasses the
+   * `file:`/`data:` block), or `undefined` to fall back to the normal sanitizer. **Not consulted in
+   * the `remote` tier** — a peer's files must never auto-load. Default: none (only `http(s)` renders).
+   */
+  resolveImageSrc?: (rawSrc: string) => string | undefined
 }

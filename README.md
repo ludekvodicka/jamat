@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/logo/jamat-banner.png" alt="Jamat — Just Another Multi-Agent Terminal" width="620">
+</p>
+
 # Jamat
 
 **Just Another Multi-Agent Terminal** — an open-source desktop control center for running many

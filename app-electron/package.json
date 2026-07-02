@@ -36,12 +36,14 @@
       "output": "dist"
     },
     "win": {
+      "icon": "../docs/images/logo/jamat.ico",
       "target": [
         "nsis"
       ],
       "signAndEditExecutable": false
     },
     "mac": {
+      "icon": "../docs/images/logo/jamat-1024.png",
       "target": [
         "dmg"
       ],
@@ -49,6 +51,7 @@
       "identity": null
     },
     "linux": {
+      "icon": "../docs/images/logo/jamat-512.png",
       "target": [
         "AppImage"
       ],
