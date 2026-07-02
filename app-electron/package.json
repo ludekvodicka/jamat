@@ -1,6 +1,6 @@
 {
   "name": "jamat",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "license": "MIT",
   "author": "ludekvodicka",
@@ -40,6 +40,10 @@
       "target": [
         "nsis"
       ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
     },
     "mac": {
       "icon": "../docs/images/logo/jamat-1024.png",

@@ -16,8 +16,11 @@ export function getMonorepoRoot(): string {
   return resolve(__dirname, '..', '..', '..')
 }
 
-/** The app version = root `package.json` `version` (the `YYYY.MM.DD.HH.mm` bump shown
- *  in the status bar). Falls back to 'dev' if unreadable. */
+/** The app version shown in the status bar / reported to peers. Source runs (dev or
+ *  repo-in-place via JAMAT_ROOT) = the root `package.json` `YYYY.MM.DD.HH.mm` bump — it
+ *  identifies the working-copy state. An INSTALLED build (GitHub release) = the public
+ *  semver baked in by electron-builder (`app.getVersion()`, e.g. `0.1.1`) — the date
+ *  version would just echo whenever the release was built. Falls back to 'dev'. */
 let cachedAppVersion: string | null = null
 export function getAppVersion(): string {
   // Memoize at first read (≈ process start) so this reports the RUNNING build's version, not
@@ -26,6 +29,10 @@ export function getAppVersion(): string {
   // (status bar / Remote Connections tab / `find`) is to confirm which build a peer is RUNNING.
   // A real restart re-loads this module, so the cache re-initialises to the new version.
   if (cachedAppVersion !== null) return cachedAppVersion
+  if (app.isPackaged && !process.env['JAMAT_ROOT']) {
+    cachedAppVersion = app.getVersion()
+    return cachedAppVersion
+  }
   let v = 'dev'
   try {
     const pkg = JSON.parse(readFileSync(join(getMonorepoRoot(), 'package.json'), 'utf-8'))
