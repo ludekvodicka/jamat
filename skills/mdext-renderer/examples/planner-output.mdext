@@ -1,0 +1,92 @@
+---
+title: Add rate limiting to the public API
+type: plan
+status: active
+owner: backend
+---
+
+# Add rate limiting to the public API
+
+::status{status=active owner=backend risk=medium tests=pending}
+
+## Goal
+
+Cap each API token to **100 requests / minute**, returning `429` with a `Retry-After` header when
+exceeded. Counts live in Redis so they are shared across instances.
+
+:::warning[Shared state]
+Counters live in Redis, not in-process — a node restart must **not** reset a token's window. Verify
+the `EXPIRE` is set on first `INCR`, or a wedged key caps a token forever.
+:::
+
+## System context
+
+System structure → an `archify` `architecture` diagram (the preferred engine for this job):
+
+```archify
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": { "title": "Rate-limited API", "subtitle": "middleware in front of the handler" },
+  "components": [
+    { "id": "client", "type": "external", "label": "API Client", "sublabel": "per-token", "pos": [40, 120], "size": [120, 60] },
+    { "id": "mw", "type": "security", "label": "Rate Limiter", "sublabel": "middleware", "pos": [260, 120], "size": [140, 64], "tag": "100 / min" },
+    { "id": "redis", "type": "database", "label": "Redis", "sublabel": "sliding window", "pos": [260, 280], "size": [140, 60] },
+    { "id": "handler", "type": "backend", "label": "API Handler", "sublabel": "business logic", "pos": [500, 120], "size": [140, 60] }
+  ],
+  "connections": [
+    { "from": "client", "to": "mw", "label": "request", "variant": "emphasis" },
+    { "from": "mw", "to": "redis", "label": "INCR / EXPIRE", "variant": "security", "fromSide": "bottom", "toSide": "top" },
+    { "from": "mw", "to": "handler", "label": "under limit" }
+  ]
+}
+```
+
+## Approach
+
+A middleware checks a sliding-window counter before the handler runs:
+
+```typescript
+export async function rateLimit(req: Req, res: Res, next: Next) {
+  const key = `rl:${req.token}:${currentMinute()}`
+  const hits = await redis.incr(key)
+  if (hits === 1) await redis.expire(key, 60)
+  if (hits > LIMIT) {
+    res.setHeader('Retry-After', secondsToNextMinute())
+    return res.status(429).json({ error: 'rate_limited' })
+  }
+  next()
+}
+```
+
+## Decision flow
+
+A small auto-laid-out decision → Mermaid is the right tool here (no need for Archify's explicit layout):
+
+```mermaid
+graph TD
+  A[request] --> B{hits > limit?}
+  B -->|no| C[handler]
+  B -->|yes| D[429 + Retry-After]
+```
+
+## Tasks
+
+- [x] Redis counter helper
+- [ ] Middleware + wiring
+- [ ] `429` + `Retry-After`
+- [ ] Load test at the boundary
+
+## Acceptance
+
+| Requirement | Check |
+|---|---|
+| 100 req/min per token | integration test bursts 120 → 20× `429` |
+| Shared across instances | two nodes, one token, combined cap holds |
+| `Retry-After` present | header equals seconds to next minute |
+
+:::details[Alternatives considered]
+- **In-memory counter** — rejected: not shared across instances.
+- **Token bucket** — deferred: smoother but more state; revisit if bursts hurt.
+- **Sliding-window log** — rejected: per-request memory cost too high at scale.
+:::

@@ -1,0 +1,23 @@
+# Generic self-host deploy for the Jamat remote relay (external users, no AtomixTools).
+# Copy to docker-compose.yml and `docker compose up -d`.  →  http://<host>:3500
+#
+# NOTE: named .example on purpose — AtomixTools `dd` prefers a real `docker-compose.yml` over
+# `.axapp.json`, so a committed compose would hijack our internal deploy. External users rename it.
+#
+# config-remote.json holds machine keys (RCE creds). `build: .` bakes whatever config-remote.json is
+# in the build context (do `cp config-remote.example.json config-remote.json` first); the read-only
+# mount below overrides it at runtime so you can update the registry without a rebuild. It is
+# git-ignored — it never reaches the public repo.
+services:
+  jamat-relay:
+    build: .
+    image: jamat-relay
+    container_name: jamat-relay
+    restart: unless-stopped
+    environment:
+      - PORT=3500
+      - REMOTE_CONFIG=/config/config-remote.json
+    ports:
+      - "3500:3500"
+    volumes:
+      - ./config-remote.json:/config/config-remote.json:ro

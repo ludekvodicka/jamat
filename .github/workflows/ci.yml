@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Basic CI: type-check + smoke tests on Windows (the current target platform).
+# A cross-platform build matrix (macOS / Linux) + electron-builder packaging is future work.
+jobs:
+  build:
+    name: typecheck + smoke tests
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install root dependencies
+        run: npm ci
+
+      # The desktop package's deps are needed only so the type-check can resolve React /
+      # Electron types. Skip postinstall native builds (node-pty) — CI does not launch the app.
+      - name: Install desktop dependencies (types only)
+        run: npm ci --ignore-scripts
+        working-directory: app-electron
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Smoke tests
+        run: npm test
+
+  # Secret scan — a post-push SAFETY NET for outside contributor PRs, NOT the primary defense.
+  # It runs AFTER a push lands, so it cannot prevent a leak (a pushed secret is already exposed
+  # and must be rotated). Real prevention is the pre-push export gate (.private/scripts/
+  # export-public.ts) plus the architecture (secrets live in git-ignored .private/). This job's
+  # job is to catch a secret a contributor commits and to block its PR from merging into main.
+  gitleaks:
+    name: secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so the scan covers every commit, not just the PR diff
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}  # only required for org-owned repos

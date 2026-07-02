@@ -1,0 +1,62 @@
+---
+title: SVG fence — hand-authored visuals
+status: reference
+---
+
+# Hand-authored SVG (` ```svg ` fence)
+
+You draw the visual directly; the widget sanitizes (`sanitizeSvg`) and injects it inline. These are
+copy-paste starting points — see `svg-style.md` for tokens + chart recipes. Dark, inline-themed; for
+light/dark use CSS classes → `--mdext-*` instead of inline hex.
+
+## Stat card
+
+```svg
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 116" width="260" height="116" font-family="'Inter','Segoe UI',system-ui">
+  <rect x="1" y="1" width="258" height="114" rx="12" fill="#0d1117" stroke="#2d333b"/>
+  <rect x="1" y="1" width="4" height="114" rx="2" fill="#56c0f5"/>
+  <text x="22" y="40" fill="#8b949e" font-size="10" font-family="ui-monospace,Menlo,monospace" letter-spacing="0.08em">ACTIVE USERS · 7D</text>
+  <text x="22" y="78" fill="#e6edf3" font-size="32" font-weight="700" font-family="ui-monospace,Menlo,monospace">12.4k</text>
+  <text x="22" y="98" fill="#4ade80" font-size="11" font-family="ui-monospace,Menlo,monospace">+8.2% vs prev</text>
+</svg>
+```
+
+## Bar chart
+
+```svg
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 200" width="420" height="200" font-family="'Inter','Segoe UI',system-ui">
+  <rect x="1" y="1" width="418" height="198" rx="12" fill="#0d1117" stroke="#2d333b"/>
+  <text x="20" y="32" fill="#e6edf3" font-size="14" font-weight="700">Deploys / month</text>
+  <g stroke="#1f2630"><line x1="48" y1="150" x2="400" y2="150"/><line x1="48" y1="110" x2="400" y2="110"/><line x1="48" y1="70" x2="400" y2="70"/></g>
+  <g fill="#56c0f5">
+    <rect x="64"  y="116" width="40" height="34" rx="3"/>
+    <rect x="136" y="96"  width="40" height="54" rx="3"/>
+    <rect x="208" y="104" width="40" height="46" rx="3"/>
+    <rect x="280" y="74"  width="40" height="76" rx="3"/>
+    <rect x="352" y="58"  width="40" height="92" rx="3"/>
+  </g>
+  <line x1="48" y1="150" x2="400" y2="150" stroke="#3a4350" stroke-width="1.5"/>
+  <g font-family="ui-monospace,Menlo,monospace" font-size="11" fill="#8b949e" text-anchor="middle">
+    <text x="84" y="170">Jan</text><text x="156" y="170">Feb</text><text x="228" y="170">Mar</text><text x="300" y="170">Apr</text><text x="372" y="170">May</text>
+  </g>
+</svg>
+```
+
+## Donut (via stroke-dasharray; C = 2·π·54 ≈ 339.3)
+
+```svg
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 180" width="340" height="180" font-family="'Inter','Segoe UI',system-ui">
+  <rect x="1" y="1" width="338" height="178" rx="12" fill="#0d1117" stroke="#2d333b"/>
+  <g transform="rotate(-90 90 90)" fill="none" stroke-width="22">
+    <circle cx="90" cy="90" r="54" stroke="#56c0f5" stroke-dasharray="169.6 339.3" stroke-dashoffset="0"/>
+    <circle cx="90" cy="90" r="54" stroke="#4ade80" stroke-dasharray="101.8 339.3" stroke-dashoffset="-169.6"/>
+    <circle cx="90" cy="90" r="54" stroke="#fbbf24" stroke-dasharray="67.9 339.3" stroke-dashoffset="-271.4"/>
+  </g>
+  <text x="90" y="94" fill="#e6edf3" font-size="18" font-weight="700" font-family="ui-monospace,Menlo,monospace" text-anchor="middle">1.2k</text>
+  <g font-family="'Inter','Segoe UI',system-ui">
+    <rect x="190" y="56" width="11" height="11" rx="3" fill="#56c0f5"/><text x="208" y="65" fill="#e6edf3" font-size="12">Web</text>
+    <rect x="190" y="84" width="11" height="11" rx="3" fill="#4ade80"/><text x="208" y="93" fill="#e6edf3" font-size="12">Mobile</text>
+    <rect x="190" y="112" width="11" height="11" rx="3" fill="#fbbf24"/><text x="208" y="121" fill="#e6edf3" font-size="12">API</text>
+  </g>
+</svg>
+```

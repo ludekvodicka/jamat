@@ -1,0 +1,56 @@
+{
+  "name": "jamat",
+  "version": "2026.07.02.10.05",
+  "type": "module",
+  "license": "MIT",
+  "author": "ludekvodicka",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ludekvodicka/jamat.git"
+  },
+  "homepage": "https://github.com/ludekvodicka/jamat#readme",
+  "bugs": {
+    "url": "https://github.com/ludekvodicka/jamat/issues"
+  },
+  "scripts": {
+    "cli": "node --import tsx app-cli/executor.ts",
+    "agent": "node --import tsx app-agent/agent-server.ts",
+    "wol": "node app-wol/server.mjs",
+    "jamat": "node --import tsx app-cli/jamat.ts",
+    "smoke:jamat": "node --import tsx scripts/smoke-jamat.ts",
+    "smoke:remote": "node --import tsx scripts/smoke-remote-control.ts",
+    "smoke:http": "node --import tsx scripts/smoke-http-common.ts",
+    "smoke:op": "node --import tsx scripts/smoke-op.ts",
+    "smoke:bridge-self": "node --import tsx scripts/smoke-bridge-self.ts",
+    "smoke:jamat-cli": "node --import tsx scripts/smoke-jamat-cli.ts",
+    "smoke:remote-parity": "node --import tsx scripts/smoke-remote-parity.ts",
+    "smoke:agent-gate": "node --import tsx scripts/smoke-agent-gate.ts",
+    "smoke:reachability": "node --import tsx scripts/smoke-reachability.ts",
+    "smoke:custom-menus": "node --import tsx scripts/smoke-custom-menus.ts",
+    "smoke:config": "node --import tsx scripts/smoke-config.ts",
+    "smoke:config-edit": "node --import tsx scripts/smoke-config-edit.ts",
+    "smoke:menu-tree": "node --import tsx scripts/smoke-menu-tree.ts",
+    "smoke:config-dir": "node --import tsx scripts/smoke-config-dir.ts",
+    "smoke:context-levels": "node --import tsx scripts/smoke-context-levels.ts",
+    "stats": "node --import tsx app-stats/generate-stats.ts && node --import tsx app-stats/generate-html.ts",
+    "stats:data": "node --import tsx app-stats/generate-stats.ts",
+    "stats:html": "node --import tsx app-stats/generate-html.ts",
+    "demo:projects": "node --import tsx scripts/seed-demo-projects.ts",
+    "demo:stats": "node --import tsx scripts/seed-demo-stats.ts",
+    "demo:stats:restore": "node --import tsx scripts/seed-demo-stats.ts --restore",
+    "build:web": "node --import tsx scripts/build-web.ts",
+    "verify:config": "node --import tsx core/config.ts",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p app-electron/tsconfig.node.json && tsc --noEmit -p app-electron/tsconfig.web.json",
+    "test": "npm run smoke:jamat && npm run smoke:remote && npm run smoke:http && npm run smoke:op && npm run smoke:bridge-self && npm run smoke:jamat-cli && npm run smoke:remote-parity && npm run smoke:agent-gate && npm run smoke:reachability && npm run smoke:custom-menus && npm run smoke:config && npm run smoke:config-edit && npm run smoke:menu-tree && npm run smoke:config-dir && npm run smoke:context-levels",
+    "bump": "node --import tsx scripts/bump-version.ts"
+  },
+  "dependencies": {
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2",
+    "esbuild": "^0.25.0",
+    "ccusage": "^18.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.2"
+  }
+}

@@ -1,0 +1,201 @@
+# Archify — the five diagram types
+
+A ` ```archify ` fence holds an archify JSON spec; `diagram_type` picks the renderer. The widget runs
+archify's deterministic layout → SVG → sanitize → inline, themed via CSS (light/dark). All coordinates
+are explicit; a layout problem (overlap, off-canvas, label collision) renders an error + source.
+
+## architecture — components, boundaries, connections
+
+```archify
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": { "title": "Sample Web App", "subtitle": "3-tier SaaS on AWS" },
+  "components": [
+    { "id": "users", "type": "external", "label": "Users", "sublabel": "Browser / Mobile", "pos": [40, 300], "size": [120, 60] },
+    { "id": "auth", "type": "security", "label": "Auth Provider", "sublabel": "OAuth 2.0", "pos": [40, 110], "size": [120, 64], "tag": "JWT + PKCE" },
+    { "id": "cdn", "type": "cloud", "label": "CloudFront", "sublabel": "CDN", "pos": [250, 300], "size": [130, 60] },
+    { "id": "lb", "type": "cloud", "label": "Load Balancer", "sublabel": "HTTPS :443", "pos": [460, 300], "size": [130, 60] },
+    { "id": "api", "type": "backend", "label": "API Server", "sublabel": "FastAPI :8000", "pos": [670, 300], "size": [130, 60] },
+    { "id": "cache", "type": "database", "label": "Redis", "sublabel": "cache :6379", "pos": [670, 150], "size": [130, 60] },
+    { "id": "db", "type": "database", "label": "PostgreSQL", "sublabel": "primary :5432", "pos": [880, 300], "size": [130, 60] },
+    { "id": "s3", "type": "cloud", "label": "S3", "sublabel": "static assets", "pos": [250, 440], "size": [130, 60], "tag": "OAI protected" },
+    { "id": "queue", "type": "messagebus", "label": "SQS", "sublabel": "job queue", "pos": [670, 440], "size": [130, 60] },
+    { "id": "worker", "type": "backend", "label": "Worker", "sublabel": "async jobs", "pos": [880, 440], "size": [130, 60] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "AWS Region: us-west-2", "wraps": ["cdn", "lb", "api", "cache", "db", "s3", "queue", "worker"] },
+    { "kind": "security-group", "label": "sg-api :443/:8000", "wraps": ["lb", "api"] }
+  ],
+  "connections": [
+    { "from": "users", "to": "cdn", "label": "HTTPS", "variant": "emphasis" },
+    { "from": "auth", "to": "api", "label": "verify JWT", "variant": "security", "fromSide": "right", "toSide": "top" },
+    { "from": "cdn", "to": "lb" },
+    { "from": "cdn", "to": "s3", "label": "static", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "labelDy": 58 },
+    { "from": "lb", "to": "api" },
+    { "from": "api", "to": "cache", "label": "read-through", "fromSide": "top", "toSide": "bottom", "labelDy": -68 },
+    { "from": "api", "to": "db", "label": "SQL" },
+    { "from": "api", "to": "queue", "label": "enqueue", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "labelDy": 58 },
+    { "from": "queue", "to": "worker" }
+  ]
+}
+```
+
+## workflow — swimlanes, anchored nodes, orthogonal edges
+
+```archify
+{
+  "schema_version": 1,
+  "diagram_type": "workflow",
+  "meta": { "title": "Agent Tool Call Workflow", "subtitle": "lanes, anchored nodes, orthogonal edges", "viewBox": [720, 780] },
+  "lanes": [
+    { "id": "ui", "label": "User Interface" },
+    { "id": "agent", "label": "Agent Runtime" },
+    { "id": "policy", "label": "Policy Boundary" },
+    { "id": "tools", "label": "Tool Execution" },
+    { "id": "trace", "label": "Observability" }
+  ],
+  "nodes": [
+    { "id": "user", "lane": "ui", "col": 0, "type": "external", "label": "User", "sublabel": "asks for work" },
+    { "id": "chat", "lane": "ui", "col": 1, "type": "frontend", "label": "Chat Surface", "sublabel": "thread + files" },
+    { "id": "final", "lane": "ui", "col": 5, "type": "backend", "label": "Final Reply", "sublabel": "answer + changes" },
+    { "id": "planner", "lane": "agent", "col": 2, "type": "backend", "label": "Agent Planner", "sublabel": "plan next step", "tag": "context aware" },
+    { "id": "router", "lane": "agent", "col": 3, "type": "backend", "label": "Tool Router", "sublabel": "choose capability" },
+    { "id": "approval", "lane": "policy", "col": 3, "type": "security", "label": "Approval Gate", "sublabel": "scope + consent", "tag": "block risky ops" },
+    { "id": "tool", "lane": "tools", "col": 4, "type": "messagebus", "label": "Tool Call", "sublabel": "shell / browser / MCP", "tag": "structured result" },
+    { "id": "external", "lane": "tools", "col": 5, "type": "cloud", "label": "External API", "sublabel": "network service" },
+    { "id": "store", "lane": "trace", "col": 1, "type": "database", "label": "Context Store", "sublabel": "repo + memory" },
+    { "id": "trace", "lane": "trace", "col": 4, "type": "database", "label": "Trace Log", "sublabel": "events + output" }
+  ],
+  "edges": [
+    { "from": "user", "to": "chat", "variant": "default" },
+    { "from": "chat", "to": "planner", "label": "plan", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "route": "drop", "labelSegment": 1 },
+    { "from": "planner", "to": "router", "variant": "default" },
+    { "from": "router", "to": "approval", "label": "needs approval?", "variant": "security", "fromSide": "bottom", "toSide": "top", "route": "drop", "labelSegment": 0, "labelDx": 34, "labelDy": 18 },
+    { "from": "approval", "to": "tool", "label": "approved", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "route": "drop", "labelSegment": 1, "labelDy": 14 },
+    { "from": "tool", "to": "external", "variant": "default" },
+    { "from": "external", "to": "trace", "label": "record result", "variant": "dashed", "fromSide": "bottom", "toSide": "bottom", "route": "bottom-channel", "labelSegment": 1 },
+    { "from": "trace", "to": "final", "label": "summarize outcome", "variant": "emphasis", "fromSide": "right", "toSide": "right", "route": "outside-right", "labelSegment": 1, "labelDx": -22 },
+    { "from": "planner", "to": "store", "label": "load context", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "route": "drop", "labelSegment": 1 },
+    { "from": "store", "to": "trace", "label": "write trace + memory", "variant": "dashed", "labelAt": [380, 622] }
+  ]
+}
+```
+
+## sequence — participants, lifelines, messages, activations
+
+```archify
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": { "title": "Cache Miss Request Sequence", "subtitle": "auth, cache fallback, persistence, async trace", "viewBox": [820, 760] },
+  "participants": [
+    { "id": "user", "type": "external", "label": "User", "sublabel": "browser session" },
+    { "id": "web", "type": "frontend", "label": "Web App", "sublabel": "React UI" },
+    { "id": "api", "type": "backend", "label": "API", "sublabel": "request handler" },
+    { "id": "auth", "type": "security", "label": "Auth", "sublabel": "JWT verify" },
+    { "id": "redis", "type": "database", "label": "Redis", "sublabel": "cache" },
+    { "id": "db", "type": "database", "label": "Postgres", "sublabel": "source of truth" },
+    { "id": "trace", "type": "messagebus", "label": "Trace", "sublabel": "async event" }
+  ],
+  "segments": [
+    { "from": 150, "to": 295, "label": "Request" },
+    { "from": 315, "to": 505, "label": "Fallback" },
+    { "from": 525, "to": 665, "label": "Response + trace" }
+  ],
+  "messages": [
+    { "from": "user", "to": "web", "y": 185, "label": "open page", "variant": "default" },
+    { "from": "web", "to": "api", "y": 228, "label": "GET /dashboard", "variant": "emphasis" },
+    { "from": "api", "to": "auth", "y": 270, "label": "verify JWT", "variant": "security" },
+    { "from": "auth", "to": "api", "y": 305, "label": "claims ok", "variant": "return" },
+    { "from": "api", "to": "redis", "y": 354, "label": "read cache", "variant": "default" },
+    { "from": "redis", "to": "api", "y": 391, "label": "miss", "variant": "return" },
+    { "from": "api", "to": "db", "y": 443, "label": "query profile + metrics", "variant": "emphasis" },
+    { "from": "db", "to": "api", "y": 489, "label": "rows", "variant": "return" },
+    { "from": "api", "to": "redis", "y": 536, "label": "set cache", "variant": "dashed" },
+    { "from": "api", "to": "trace", "y": 580, "label": "emit trace", "variant": "dashed" },
+    { "from": "api", "to": "web", "y": 625, "label": "200 JSON", "variant": "return" },
+    { "from": "web", "to": "user", "y": 662, "label": "render", "variant": "return" }
+  ],
+  "activations": [
+    { "participant": "web", "from": 220, "to": 668, "type": "frontend" },
+    { "participant": "api", "from": 228, "to": 632, "type": "backend" },
+    { "participant": "auth", "from": 265, "to": 310, "type": "security" },
+    { "participant": "redis", "from": 349, "to": 398, "type": "database" },
+    { "participant": "db", "from": 438, "to": 496, "type": "database" },
+    { "participant": "trace", "from": 575, "to": 630, "type": "messagebus" }
+  ]
+}
+```
+
+## dataflow — staged pipeline with classification
+
+```archify
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": { "title": "Product Analytics Data Flow", "subtitle": "events, consent, PII isolation, warehouse sync", "viewBox": [1080, 760] },
+  "stages": [
+    { "label": "Sources" }, { "label": "Ingest" }, { "label": "Process" }, { "label": "Store" }, { "label": "Consume" }
+  ],
+  "nodes": [
+    { "id": "web", "type": "frontend", "label": "Web App", "sublabel": "browser SDK", "stage": 0, "row": 0, "tag": "events" },
+    { "id": "mobile", "type": "frontend", "label": "Mobile", "sublabel": "iOS / Android", "stage": 0, "row": 2, "tag": "events" },
+    { "id": "edge", "type": "cloud", "label": "Edge API", "sublabel": "collector", "stage": 1, "row": 1, "tag": "TLS" },
+    { "id": "consent", "type": "security", "label": "Consent Gate", "sublabel": "policy filter", "stage": 2, "row": 0, "tag": "PII guard" },
+    { "id": "stream", "type": "messagebus", "label": "Event Stream", "sublabel": "Kafka topic", "stage": 2, "row": 2, "tag": "ordered" },
+    { "id": "pii", "type": "security", "label": "PII Vault", "sublabel": "encrypted", "stage": 3, "row": 0, "tag": "restricted" },
+    { "id": "warehouse", "type": "database", "label": "Warehouse", "sublabel": "analytics tables", "stage": 3, "row": 2, "tag": "curated" },
+    { "id": "features", "type": "database", "label": "Feature Store", "sublabel": "daily batch", "stage": 3, "row": 4, "tag": "derived" },
+    { "id": "dashboard", "type": "backend", "label": "Dashboards", "sublabel": "product metrics", "stage": 4, "row": 1, "tag": "SQL" },
+    { "id": "model", "type": "backend", "label": "ML Model", "sublabel": "ranking job", "stage": 4, "row": 4, "tag": "features" }
+  ],
+  "flows": [
+    { "from": "web", "to": "edge", "label": "clickstream", "classification": "user events", "variant": "emphasis", "fromSide": "right", "toSide": "left", "via": [[184, 157], [184, 271]], "labelAt": [204, 190] },
+    { "from": "mobile", "to": "edge", "label": "app events", "classification": "device events", "variant": "default", "fromSide": "right", "toSide": "left", "via": [[222, 385], [222, 271]], "labelAt": [220, 342] },
+    { "from": "edge", "to": "consent", "label": "identity + consent", "classification": "PII touch", "variant": "security", "fromSide": "top", "toSide": "left", "via": [[315, 112], [450, 112], [450, 157]], "labelAt": [382, 100] },
+    { "from": "edge", "to": "stream", "label": "accepted events", "classification": "append-only", "variant": "emphasis", "fromSide": "right", "toSide": "left", "via": [[420, 271], [420, 385]], "labelAt": [438, 324] },
+    { "from": "consent", "to": "pii", "label": "identity map", "classification": "encrypted PII", "variant": "security", "route": "straight", "labelAt": [638, 144] },
+    { "from": "stream", "to": "warehouse", "label": "normalized facts", "classification": "non-PII", "variant": "emphasis", "route": "straight", "labelAt": [638, 372] },
+    { "from": "warehouse", "to": "features", "label": "daily aggregates", "classification": "batch", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "route": "straight", "labelAt": [745, 496] },
+    { "from": "warehouse", "to": "dashboard", "label": "metrics SQL", "classification": "read-only", "variant": "default", "fromSide": "right", "toSide": "left", "via": [[852, 385], [852, 271]], "labelAt": [830, 326] },
+    { "from": "features", "to": "model", "label": "feature vectors", "classification": "derived", "variant": "dashed", "route": "straight", "labelAt": [852, 598] },
+    { "from": "pii", "to": "dashboard", "label": "restricted join", "classification": "approved only", "variant": "security", "fromSide": "right", "toSide": "top", "via": [[878, 157], [878, 212], [960, 212]], "labelAt": [880, 198] }
+  ]
+}
+```
+
+## lifecycle — state machine in bands
+
+```archify
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": { "title": "Agent Run Lifecycle", "subtitle": "planning, tool execution, approval, retries, terminal", "viewBox": [980, 660] },
+  "lanes": [
+    { "id": "main", "label": "Lifecycle phases" },
+    { "id": "waiting", "label": "Interruptions" },
+    { "id": "exceptions", "label": "Recovery loop" },
+    { "id": "terminal", "label": "Terminal exits" }
+  ],
+  "states": [
+    { "id": "queued", "type": "start", "label": "Queued", "sublabel": "request accepted", "lane": "main", "col": 0, "step": "01", "tag": "entry" },
+    { "id": "planning", "type": "active", "label": "Planning", "sublabel": "build task graph", "lane": "main", "col": 1, "step": "02", "tag": "model" },
+    { "id": "executing", "type": "active", "label": "Executing", "sublabel": "tool calls", "lane": "main", "col": 2, "step": "03", "tag": "work" },
+    { "id": "reviewing", "type": "decision", "label": "Reviewing", "sublabel": "quality gate", "lane": "main", "col": 3, "step": "04", "tag": "check" },
+    { "id": "completed", "type": "success", "label": "Completed", "sublabel": "final response", "lane": "main", "col": 4, "step": "05", "tag": "done" },
+    { "id": "approval", "type": "waiting", "label": "Needs Approval", "sublabel": "human gate", "lane": "waiting", "col": 0, "tag": "pause" },
+    { "id": "blocked", "type": "waiting", "label": "Blocked", "sublabel": "missing input", "lane": "waiting", "col": 1, "tag": "wait" },
+    { "id": "failed", "type": "failure", "label": "Failed", "sublabel": "recoverable error", "lane": "exceptions", "col": 0, "yOffset": 78, "tag": "retryable" },
+    { "id": "cancelled", "type": "failure", "label": "Cancelled", "sublabel": "user stopped", "lane": "terminal", "col": 0, "tag": "terminal" },
+    { "id": "expired", "type": "failure", "label": "Expired", "sublabel": "timeout", "lane": "terminal", "col": 1, "tag": "terminal" }
+  ],
+  "transitions": [
+    { "from": "executing", "to": "approval", "variant": "security", "fromSide": "bottom", "toSide": "top", "route": "straight" },
+    { "from": "reviewing", "to": "blocked", "variant": "default", "route": "drop" },
+    { "from": "executing", "to": "failed", "variant": "security", "fromSide": "left", "toSide": "top", "via": [[340, 342], [402, 342]] },
+    { "from": "blocked", "to": "expired", "variant": "security", "fromSide": "bottom", "toSide": "top", "route": "straight" },
+    { "from": "approval", "to": "cancelled", "variant": "security", "fromSide": "bottom", "toSide": "top", "route": "straight" }
+  ]
+}
+```

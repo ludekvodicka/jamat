@@ -1,0 +1,77 @@
+/**
+ * Shared manifest for the Demo sandbox — a fake project tree + a fake Claude config
+ * dir used to produce clean screenshots of the project selector, opened Claude tabs,
+ * and the Usage Stats dashboard WITHOUT exposing real projects.
+ *
+ * Consumed by:
+ *   - scripts/seed-demo-projects.ts  → scaffolds Q:\Demo\<category>\<project> trees
+ *   - scripts/seed-demo-stats.ts     → fabricates ccusage transcripts in Q:\Demo\.claude-demo
+ *   - configs/config-demo.json       → the "Demo" profile points its categories here
+ *
+ * Nothing here touches real data. The token dashboard is isolated via CLAUDE_CONFIG_DIR
+ * (ccusage honours it), so the real ~/.claude is never read or written by the demo.
+ */
+
+/** Top-level root for the demo project tree (sibling of your real project roots). */
+export const DEMO_ROOT = 'Q:\\Demo'
+
+/**
+ * Isolated Claude config dir for the demo. ccusage reads ONLY this when CLAUDE_CONFIG_DIR
+ * points here; Claude Code CLI also relocates its home here, so demo sessions never mix
+ * with real history. Lives inside DEMO_ROOT but is dot-prefixed → hidden from the selector.
+ */
+export const DEMO_CLAUDE_DIR = 'Q:\\Demo\\.claude-demo'
+
+export type Stack = 'web' | 'backend' | 'ai'
+
+export interface DemoProject {
+  name: string
+  desc: string
+}
+
+export interface DemoCategory {
+  /** Category label shown in the selector (also the on-disk folder name under DEMO_ROOT). */
+  label: string
+  stack: Stack
+  projects: DemoProject[]
+}
+
+export const DEMO_CATEGORIES: DemoCategory[] = [
+  {
+    label: 'ApplicationsWeb',
+    stack: 'web',
+    projects: [
+      { name: 'ShopFront', desc: 'Customer-facing storefront with cart and checkout.' },
+      { name: 'AdminDashboard', desc: 'Internal admin panel for orders, users and metrics.' },
+      { name: 'PortfolioSite', desc: 'Marketing and portfolio site with a CMS-driven blog.' },
+      { name: 'BlogPlatform', desc: 'Multi-author publishing platform with MDX articles.' },
+    ],
+  },
+  {
+    label: 'ApplicationsBackend',
+    stack: 'backend',
+    projects: [
+      { name: 'AuthService', desc: 'JWT auth, sessions and role-based access control.' },
+      { name: 'PaymentGateway', desc: 'Payment intents, webhooks and reconciliation.' },
+      { name: 'NotificationWorker', desc: 'Queue-driven email / push notification dispatcher.' },
+      { name: 'ApiGateway', desc: 'Edge router, rate limiting and request aggregation.' },
+    ],
+  },
+  {
+    label: 'ApplicationsAI',
+    stack: 'ai',
+    projects: [
+      { name: 'ChatAssistant', desc: 'Streaming chat assistant over a tool-calling loop.' },
+      { name: 'DocSummarizer', desc: 'Long-document chunking and map-reduce summaries.' },
+      { name: 'ImageTagger', desc: 'Vision pipeline that auto-tags an image library.' },
+      { name: 'RagPipeline', desc: 'Embeddings, vector search and grounded answers.' },
+    ],
+  },
+]
+
+/** Models attributed to the fabricated usage, with a rough request-share weight. */
+export const DEMO_MODELS: { model: string; weight: number }[] = [
+  { model: 'claude-opus-4-8', weight: 0.32 },
+  { model: 'claude-sonnet-4-6', weight: 0.53 },
+  { model: 'claude-haiku-4-5', weight: 0.15 },
+]

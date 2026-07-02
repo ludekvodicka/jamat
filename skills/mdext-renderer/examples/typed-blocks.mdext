@@ -1,0 +1,40 @@
+---
+title: Typed blocks
+status: reference
+---
+
+# Typed blocks
+
+These stay valid Markdown — a plain viewer shows the source; the widget renders the rich view.
+
+## Callouts
+
+Five types: `note`, `tip`, `warning`, `danger`, `important`. The body is full Markdown.
+
+:::note
+A neutral, informational aside.
+:::
+
+:::warning[Custom title]
+Use `:::type[Title]` to override the default (capitalized type) heading.
+:::
+
+:::danger
+Call out a destructive or irreversible action.
+:::
+
+## Status chips
+
+One `::status` line → a row of pills, colored by value (passing/done → green, pending/partial →
+amber, fail/high/blocked → red, anything else → neutral). Quote values with spaces or `%`.
+
+::status{build=passing tests=passing coverage="82%" risk=low}
+
+## Collapsible
+
+`:::details[Title]` hides long, optional content behind a click.
+
+:::details[Alternatives considered]
+- Option A — rejected: too slow.
+- Option B — chosen.
+:::

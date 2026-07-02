@@ -1,0 +1,50 @@
+node_modules/
+out/
+dist/
+
+# SVN admin dirs. This tree is also an SVN working copy (the mdExtRenderer widget is an
+# svn:external); its .svn/ metadata must never be tracked by git or shipped to the public repo.
+.svn/
+# Per-user secret overlay: configs/config-<user>.local.json holds claudeUsage
+# (Claude.ai orgId + sessionKey). Merged by core/config.ts; never committed.
+# Copy configs/config.example.json's note to create one.
+*.local.json
+.env
+.env.*
+*.pem
+*.key
+.claude-home/
+
+# Remote-server proxy config — holds per-PC machine keys (= RCE credentials).
+# Never commit it. Copy config-remote.example.json → config-remote.json and fill tokens.
+app-agent/config-remote.json
+
+# Our app-agent deploy descriptors (atomix-dd target: server, domain, container). Read
+# in place by atomix-dd, kept in INTERNAL SVN, but NEVER in the public git repo — a public
+# deployer brings their own host (docker-compose / their own .axapp.json).
+app-agent/.axapp.json
+app-agent/.env-production*
+
+# Our private stuff — per-user configs, launchers (jamat-*, start-agent-*, jamat-menu-*),
+# and owner scripts (full-restart, firewall). Kept in INTERNAL SVN so it syncs across our
+# PCs, but NEVER goes to the public git/GitHub repo. The public repo ships only
+# configs/config.example.json. (Secrets inside are also covered by *.local.json above.)
+.private/
+
+# AI workflow artifacts (plans, research, sessions, ideas, architecture notes). Kept in
+# INTERNAL SVN so they travel with the repo across our PCs, but NEVER pushed to the public
+# git/GitHub repo — they carry internal references (qmd/svntea/atomix) and our process
+# history. The public repo ships only docs/ (clean, public-facing documentation).
+.aidocs/
+
+# Internal Claude Code project commands (e.g. /commit-github → the internal publish flow that
+# calls .private/scripts/). Kept in INTERNAL SVN so it syncs across our PCs, but NEVER public —
+# it references .private/ tooling that a public clone doesn't have. Claude Code loads it from the
+# filesystem regardless of git.
+.claude/
+
+# First-run-generated per-user config (ensureConfig writes this on a fresh clone). It carries
+# the contributor's real paths — the public repo ships ONLY configs/config.example.json.
+/configs/config.json
+/configs/config-*.json
+!/configs/config.example.json

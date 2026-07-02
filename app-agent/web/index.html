@@ -1,0 +1,1026 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Jamat Menu Remote</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --bg2: #16213e;
+    --bg3: #0f3460;
+    --fg: #e0e0e0;
+    --fg2: #888;
+    --accent: #00d4ff;
+    --green: #4caf50;
+    --red: #f44336;
+    --orange: #ff9800;
+    --yellow: #ffc107;
+    --border: #2a2a4a;
+    --radius: 6px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
+    background: var(--bg);
+    color: var(--fg);
+    min-height: 100vh;
+    -webkit-tap-highlight-color: transparent;
+    font-size: 14px;
+  }
+
+  /* Connection screen */
+  .screen { display: none; }
+  .screen.active { display: block; }
+  #connection-screen.active {
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; min-height: 80vh; padding: 20px;
+  }
+  .status-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    display: inline-block; margin-right: 8px;
+  }
+  .status-dot.online { background: var(--green); }
+  .status-dot.offline { background: var(--red); }
+  .status-dot.waking { background: var(--orange); animation: pulse 1s infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+  .wake-btn {
+    background: var(--bg3); color: var(--accent); border: 2px solid var(--accent);
+    padding: 14px 28px; border-radius: var(--radius); font-size: 16px;
+    font-family: inherit; cursor: pointer; margin-top: 20px; min-width: 180px;
+  }
+  .wake-btn:active { background: var(--accent); color: var(--bg); }
+  .wake-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .wake-status { margin-top: 16px; color: var(--fg2); font-size: 13px; }
+
+  /* Main layout - TUI style */
+  .tui-container { padding: 8px 12px; }
+  .tui-row { padding: 3px 0; line-height: 1.6; }
+  .tui-label { color: var(--fg2); display: inline; }
+  .tui-hint { color: var(--fg2); font-size: 12px; margin-left: 8px; }
+
+  /* Category tabs - inline like TUI */
+  .cat-tabs { display: inline; }
+  .cat-tab {
+    display: inline-block; padding: 2px 8px; cursor: pointer;
+    color: var(--fg2); font-size: 14px; border: none; background: none;
+    font-family: inherit;
+  }
+  .cat-tab.active {
+    background: var(--fg); color: var(--bg); font-weight: bold;
+  }
+
+  /* Mode tabs - inline like TUI */
+  .mode-tabs { display: inline; }
+  .mode-tab {
+    display: inline-block; padding: 2px 8px; cursor: pointer;
+    color: var(--fg); font-size: 14px; border: none; background: none;
+    font-family: inherit;
+  }
+  .mode-tab.active {
+    background: var(--fg); color: var(--bg); font-weight: bold;
+  }
+
+  /* Search bar */
+  .search-row { padding: 4px 0; }
+  .search-input {
+    background: transparent; border: none; color: var(--green);
+    font-family: inherit; font-size: 14px; outline: none;
+    width: 200px; font-weight: bold;
+  }
+  .search-icon { color: var(--green); font-weight: bold; }
+
+  /* Project list */
+  .project-list { margin-top: 4px; }
+  .project-row {
+    display: flex; align-items: center; padding: 6px 0;
+    cursor: pointer; border-bottom: 1px solid transparent;
+    min-height: 32px;
+  }
+  .project-row:active { background: var(--bg2); }
+  .project-row.selected { color: var(--accent); }
+  .project-row.selected .project-name { font-weight: bold; }
+  .project-cursor {
+    width: 20px; flex-shrink: 0; color: var(--accent);
+    font-weight: bold;
+  }
+  .project-name { flex: 1; }
+  .project-iso { color: var(--accent); margin-left: 4px; font-size: 12px; }
+  .project-stats { color: var(--fg2); text-align: right; white-space: nowrap; margin-left: 8px; }
+  .project-row.selected .project-stats { color: var(--fg); }
+  .project-count { font-weight: bold; }
+
+  /* Action hint */
+  .action-hint {
+    padding: 8px 0; margin-top: 4px;
+    color: var(--yellow); font-size: 14px;
+  }
+
+  /* Bottom bar */
+  .bottom-bar {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: var(--bg2); border-top: 2px solid var(--accent);
+    padding: 12px 16px; color: var(--fg); font-size: 14px;
+    display: flex; gap: 16px; flex-wrap: wrap;
+    min-height: 44px; align-items: center;
+  }
+  .version-stamp {
+    position: fixed; bottom: 14px; right: 16px;
+    color: var(--fg2); font-size: 11px; white-space: nowrap;
+    pointer-events: none; z-index: 10;
+    z-index: 50;
+  }
+  .bar-item { cursor: pointer; white-space: nowrap; padding: 4px 8px; border-radius: 4px; }
+  .bar-item:active { background: var(--bg3); }
+  .bar-key { color: var(--accent); font-weight: bold; }
+  .bar-sep { color: var(--border); }
+
+  /* Session picker */
+  .session-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 0; margin-bottom: 4px;
+  }
+  .session-row {
+    display: flex; align-items: center; padding: 6px 0;
+    cursor: pointer; min-height: 32px;
+  }
+  .session-row:active { background: var(--bg2); }
+  .session-row.selected { color: var(--accent); }
+  .session-row.selected .session-name { font-weight: bold; }
+  .session-cursor { width: 20px; flex-shrink: 0; color: var(--accent); font-weight: bold; }
+  .session-name { flex: 1; }
+  .session-active { color: var(--green); margin-left: 6px; font-size: 12px; }
+  .session-date { color: var(--fg2); white-space: nowrap; margin-left: 8px; }
+  .session-row.selected .session-date { color: var(--fg); }
+
+  /* Preview panel */
+  .preview-panel {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 10px 12px;
+    margin-top: 8px; max-height: 40vh; overflow-y: auto;
+  }
+  .preview-msg { padding: 3px 0; color: var(--fg2); font-size: 13px; }
+  .preview-time { color: var(--accent); }
+
+  /* Modal */
+  .modal-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    z-index: 100; align-items: center; justify-content: center;
+  }
+  .modal-overlay.active { display: flex; }
+  .modal {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: var(--radius); width: 90%; max-width: 400px; padding: 16px;
+  }
+  .modal h3 { margin-bottom: 12px; }
+  .modal-input {
+    width: 100%; padding: 8px; margin-bottom: 10px;
+    border-radius: var(--radius); border: 1px solid var(--border);
+    background: var(--bg); color: var(--fg); font-family: inherit;
+    font-size: 14px; outline: none;
+  }
+  .modal-input:focus { border-color: var(--accent); }
+  .modal-btn {
+    display: block; width: 100%; padding: 10px; margin-bottom: 6px;
+    border-radius: var(--radius); font-size: 13px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--bg);
+    color: var(--fg); font-family: inherit; text-align: left; min-height: 40px;
+  }
+  .modal-btn:active { background: var(--bg3); }
+  .modal-btn.danger { border-color: var(--red); color: var(--red); }
+  .modal-btn.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+  .toggle-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; margin-bottom: 10px; }
+  .toggle {
+    width: 44px; height: 24px; border-radius: 12px; background: var(--border);
+    position: relative; cursor: pointer; border: none;
+  }
+  .toggle.on { background: var(--accent); }
+  .toggle::after {
+    content: ""; position: absolute; top: 2px; left: 2px;
+    width: 20px; height: 20px; border-radius: 50%;
+    background: white; transition: transform 0.2s;
+  }
+  .toggle.on::after { transform: translateX(20px); }
+
+  /* Toast */
+  .toast {
+    position: fixed; bottom: 50px; left: 50%; transform: translateX(-50%);
+    background: var(--bg3); color: var(--fg); padding: 8px 16px;
+    border-radius: var(--radius); font-size: 13px; z-index: 200;
+    opacity: 0; transition: opacity 0.3s; border: 1px solid var(--border);
+  }
+  .toast.show { opacity: 1; }
+
+  .empty-msg { color: var(--fg2); padding: 12px 0; }
+  .pad-bottom { padding-bottom: 70px; }
+
+  /* Virtual folder rows */
+  .virtual-row { cursor: pointer; }
+  .virtual-row .project-name { color: var(--fg2); }
+  .virtual-row.selected .project-name { color: var(--fg); font-weight: bold; }
+  .breadcrumb { color: var(--fg2); font-size: 13px; margin-left: 4px; }
+  .breadcrumb-back { color: var(--accent); cursor: pointer; }
+
+  /* Sort tabs */
+  .sort-tabs { display: inline; }
+  .sort-tab {
+    display: inline-block; padding: 2px 6px; cursor: pointer;
+    color: var(--fg2); font-size: 12px; border: none; background: none;
+    font-family: inherit; border-radius: 3px;
+  }
+  .sort-tab.active { background: var(--fg2); color: var(--bg); }
+
+  /* PC selector cards */
+  .pc-card {
+    background: var(--bg2); border: 2px solid var(--border); border-radius: 8px;
+    padding: 20px 28px; cursor: pointer; min-width: 180px; text-align: center;
+    transition: border-color 0.2s, background 0.2s;
+  }
+  .pc-card:hover { border-color: var(--accent); background: var(--bg3); }
+  .pc-card .pc-label { font-size: 16px; font-weight: bold; margin-top: 8px; }
+  .pc-card .pc-status { font-size: 13px; margin-top: 6px; }
+  .pc-card .pc-dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+  .pc-card .pc-dot.online { background: var(--green); }
+  .pc-card .pc-dot.offline { background: var(--red); }
+  .pc-card .pc-dot.checking { background: var(--orange); animation: pulse 1s infinite; }
+  .pc-card .pc-actions { margin-top: 12px; }
+  .pc-card .wake-btn-small {
+    background: none; color: var(--accent); border: 1px solid var(--accent);
+    padding: 4px 12px; border-radius: 4px; font-size: 12px; font-family: inherit;
+    cursor: pointer; margin-top: 4px;
+  }
+</style>
+</head>
+<body>
+
+<!-- PC Selector Screen -->
+<div id="pc-screen" class="screen active">
+  <div style="text-align:center;margin-bottom:20px;font-size:18px;color:var(--accent)">Select Computer</div>
+  <div id="pc-list" style="display:flex;gap:16px;justify-content:center;flex-wrap:wrap"></div>
+  <div id="pc-wake-status" class="wake-status" style="text-align:center;margin-top:16px"></div>
+</div>
+
+<!-- Main Screen -->
+<div id="main-screen" class="screen">
+  <div class="tui-container pad-bottom">
+    <!-- Folder: [tabs] -->
+    <div class="tui-row">
+      <span class="tui-label">Folder: </span>
+      <span class="cat-tabs" id="category-tabs"></span>
+      <span class="tui-hint">
+        <span class="status-dot online" id="main-dot" style="width:8px;height:8px;vertical-align:middle"></span>
+      </span>
+    </div>
+    <!-- Search -->
+    <div class="tui-row search-row">
+      <span class="search-icon">  / </span>
+      <input type="text" class="search-input" id="search-input" placeholder="Search" oninput="filterProjects()">
+    </div>
+    <!-- Project list -->
+    <div class="project-list" id="project-list"></div>
+    <!-- Action hint -->
+    <div class="action-hint" id="action-hint"></div>
+  </div>
+  <!-- Bottom bar -->
+  <div class="bottom-bar" id="bottom-bar"></div>
+</div>
+
+<!-- Session Screen -->
+<div id="session-screen" class="screen">
+  <div class="tui-container pad-bottom">
+    <div class="session-header">
+      <strong id="session-project-name">Sessions for: Project</strong>
+    </div>
+    <div id="session-list"></div>
+    <div id="preview-panel" class="preview-panel" style="display:none"></div>
+    <div class="action-hint" id="session-action-hint"></div>
+  </div>
+  <div class="bottom-bar" id="session-bottom-bar"></div>
+</div>
+
+<!-- Modal -->
+<div class="modal-overlay" id="manage-modal" onclick="closeModal(event)">
+  <div class="modal">
+    <h3 id="modal-title">Manage</h3>
+    <div id="modal-content"></div>
+    <button class="modal-btn" onclick="hideManageModal()" style="text-align:center; color:var(--fg2); margin-top:4px;">Cancel</button>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script src="shared.js"></script>
+<script>
+const APP_VERSION = "jamat v1.2 | 2026-05-16";
+
+// --- State ---
+let allPcs = [];
+let activePcId = null;
+let categories = [];
+let currentCatIdx = 0;
+let selectedIdx = -1;
+let selectedProject = null;
+let allProjects = [];
+let sessions = [];
+let selectedSessionIdx = -1;
+let launching = false;
+let currentVirtualFolder = null;
+let virtualFoldersEnabled = true;
+let sortMode = "usage";
+
+// --- API ---
+async function api(path, opts = {}) {
+  const prefix = activePcId ? `/api/pc/${activePcId}` : "/api";
+  try {
+    const res = await fetch(prefix + path, {
+      headers: { "Content-Type": "application/json" },
+      ...opts,
+    });
+    return await res.json();
+  } catch {
+    return { error: "Network error" };
+  }
+}
+async function globalApi(path, opts = {}) {
+  try {
+    const res = await fetch("/api" + path, {
+      headers: { "Content-Type": "application/json" },
+      ...opts,
+    });
+    return await res.json();
+  } catch {
+    return { error: "Network error" };
+  }
+}
+
+// --- Sort (uses shared.js: sortProjectEntries, matchesVirtualPrefix, stripVirtualPrefix, buildDisplayEntries) ---
+function sortProjects(projects) {
+  return sortProjectEntries(projects, sortMode);
+}
+
+function setSortMode(mode) {
+  sortMode = mode;
+  renderProjects();
+}
+
+function toggleVirtualFolders() {
+  virtualFoldersEnabled = !virtualFoldersEnabled;
+  if (!virtualFoldersEnabled) currentVirtualFolder = null;
+  renderProjects();
+}
+
+// --- PC Selector ---
+async function initConnection() {
+  showScreen("pc-screen");
+  const listData = await globalApi("/pcs");
+  if (listData.error) { document.getElementById("pc-wake-status").textContent = "Error: " + listData.error; return; }
+  allPcs = listData.pcs.map(pc => ({ ...pc, online: null }));
+  renderPcCards();
+  for (const pc of allPcs) {
+    globalApi(`/pc-status?pc=${pc.id}`).then(data => {
+      if (!data.error) pc.online = data.online;
+      else pc.online = false;
+      renderPcCards();
+    });
+  }
+}
+
+function renderPcCards() {
+  const el = document.getElementById("pc-list");
+  el.innerHTML = allPcs.map(pc => {
+    const checking = pc.online === null;
+    const dotClass = checking ? "checking" : (pc.online ? "online" : "offline");
+    const statusText = checking ? "Checking..." : (pc.online ? "Online" : "Sleeping");
+    const statusColor = checking ? "var(--orange)" : (pc.online ? "var(--green)" : "var(--fg2)");
+    const wakeBtn = (!checking && !pc.online) ? `<div class="pc-actions"><button class="wake-btn-small" onclick="event.stopPropagation();wakePc('${pc.id}')">Wake Up</button></div>` : "";
+    const onclick = checking ? "" : (pc.online ? `selectPc('${pc.id}')` : `wakePc('${pc.id}')`);
+    return `<div class="pc-card" onclick="${onclick}">
+      <span class="pc-dot ${dotClass}"></span>
+      <div class="pc-label">${esc(pc.label)}</div>
+      <div class="pc-status" style="color:${statusColor}">${statusText}</div>
+      ${wakeBtn}
+    </div>`;
+  }).join("");
+}
+
+function selectPc(pcId) {
+  activePcId = pcId;
+  showMainScreen();
+}
+
+async function wakePc(pcId) {
+  const status = document.getElementById("pc-wake-status");
+  status.textContent = "Sending Wake-on-LAN...";
+  await globalApi(`/wol?pc=${pcId}`, { method: "POST" });
+  status.textContent = "Magic packet sent. Waiting...";
+
+  // Update card to show "waking"
+  const pc = allPcs.find(p => p.id === pcId);
+  if (pc) {
+    const card = document.querySelector(`.pc-card:nth-child(${allPcs.indexOf(pc) + 1}) .pc-dot`);
+    if (card) { card.className = "pc-dot checking"; }
+    const statusEl = document.querySelector(`.pc-card:nth-child(${allPcs.indexOf(pc) + 1}) .pc-status`);
+    if (statusEl) { statusEl.textContent = "Waking..."; statusEl.style.color = "var(--orange)"; }
+  }
+
+  let attempts = 0;
+  const poll = setInterval(async () => {
+    attempts++;
+    status.textContent = `Waiting for ${pc?.label || pcId}... (${attempts * 2}s)`;
+    const check = await globalApi(`/pc-status?pc=${pcId}`);
+    if (check.online) {
+      clearInterval(poll);
+      status.textContent = `${pc?.label || pcId} is online!`;
+      if (pc) pc.online = true;
+      renderPcCards();
+      setTimeout(() => selectPc(pcId), 500);
+    } else if (attempts >= 30) {
+      clearInterval(poll);
+      status.textContent = "PC did not respond. Try again.";
+      renderPcCards();
+    }
+  }, 2000);
+}
+
+// --- Screens ---
+function showScreen(id) {
+  document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
+  document.getElementById(id).classList.add("active");
+}
+
+let heartbeatTimer = null;
+
+async function showMainScreen() {
+  showScreen("main-screen");
+  const data = await api("/projects");
+  if (data.error) { toast("Error: " + data.error); return; }
+  categories = data.categories;
+  renderCategoryTabs();
+  renderProjects();
+  updateActionHint();
+  startHeartbeat();
+}
+
+function backToPcSelector() {
+  if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+  activePcId = null;
+  categories = [];
+  selectedIdx = -1;
+  selectedProject = null;
+  initConnection();
+}
+
+function startHeartbeat() {
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  heartbeatTimer = setInterval(async () => {
+    const data = await globalApi(`/pc-status?pc=${activePcId}`);
+    const dot = document.getElementById("main-dot");
+    dot.className = "status-dot " + (data.online ? "online" : "offline");
+    if (!data.online) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+      toast("PC agent went offline");
+    }
+  }, 15000);
+}
+
+// --- Categories ---
+function renderCategoryTabs() {
+  const el = document.getElementById("category-tabs");
+  const pcLabel = allPcs.find(p => p.id === activePcId)?.label || activePcId;
+  let html = `<span class="breadcrumb-back" onclick="backToPcSelector()" style="margin-right:8px;font-size:13px" title="Back to PC selector">&#9664; ${esc(pcLabel)}</span>`;
+  html += categories.map((cat, i) =>
+    `<button class="cat-tab ${i === currentCatIdx ? 'active' : ''}" onclick="switchCategory(${i})">${cat.label}</button>`
+  ).join(" ");
+  if (currentVirtualFolder) {
+    html += `<span class="breadcrumb"> &#8250; <span class="breadcrumb-back" onclick="exitVirtualFolder()">${esc(currentVirtualFolder.title)}</span></span>`;
+  }
+  el.innerHTML = html;
+}
+
+function switchCategory(idx) {
+  currentCatIdx = idx;
+  currentVirtualFolder = null;
+  selectedIdx = -1;
+  selectedProject = null;
+  document.getElementById("search-input").value = "";
+  renderCategoryTabs();
+  renderProjects();
+  updateActionHint();
+}
+
+// --- Virtual folder navigation ---
+function enterVirtualFolder(prefix, title) {
+  currentVirtualFolder = { prefix, title };
+  selectedIdx = -1;
+  selectedProject = null;
+  document.getElementById("search-input").value = "";
+  renderCategoryTabs();
+  renderProjects();
+  updateActionHint();
+}
+
+function exitVirtualFolder() {
+  currentVirtualFolder = null;
+  selectedIdx = -1;
+  selectedProject = null;
+  document.getElementById("search-input").value = "";
+  renderCategoryTabs();
+  renderProjects();
+  updateActionHint();
+}
+
+// --- Projects ---
+let displayItems = [];
+
+function renderProjects() {
+  const cat = categories[currentCatIdx];
+  if (!cat) return;
+  allProjects = sortProjects(cat.projects);
+  filterProjects();
+}
+
+function filterProjects() {
+  const q = document.getElementById("search-input").value.toLowerCase();
+  const cat = categories[currentCatIdx];
+  const vFolders = cat.virtualFolders || [];
+  const vfEnabled = virtualFoldersEnabled;
+  const projectByName = Object.fromEntries(allProjects.map(p => [p.name, p]));
+
+  if (q) {
+    // Search mode: filter across all projects, skip virtual grouping
+    const prefix = currentVirtualFolder ? currentVirtualFolder.prefix : null;
+    const source = prefix
+      ? allProjects.filter(p => matchesVirtualPrefix(p.name, prefix))
+      : allProjects;
+    const filtered = source.filter(p => {
+      const stripped = prefix ? stripVirtualPrefix(p.name, prefix) : p.name;
+      return p.name.toLowerCase().includes(q) || stripped.toLowerCase().includes(q);
+    });
+    displayItems = filtered.map(p => ({
+      type: "project", ...p,
+      displayName: prefix ? stripVirtualPrefix(p.name, prefix) : p.name,
+    }));
+  } else {
+    // Use shared buildDisplayEntries for grouping/sorting
+    const folderNames = allProjects.map(p => p.name);
+    const prefix = currentVirtualFolder ? currentVirtualFolder.prefix : null;
+    const entries = buildDisplayEntries(folderNames, vFolders, prefix, vfEnabled);
+    displayItems = entries.map(e => {
+      if (e.kind === "virtual") {
+        return { type: "virtual", prefix: e.prefix, title: e.title, count: e.count };
+      }
+      const proj = projectByName[e.name];
+      return { type: "project", ...proj, displayName: e.displayName };
+    });
+  }
+
+  renderDisplayItems();
+  updateActionHint();
+}
+
+function renderDisplayItems() {
+  const el = document.getElementById("project-list");
+
+  if (displayItems.length === 0) {
+    el.innerHTML = '<div class="empty-msg">  No projects found</div>';
+    return;
+  }
+
+  el.innerHTML = displayItems.map((item, i) => {
+    if (item.type === "virtual") {
+      const isSel = i === selectedIdx;
+      const cursor = isSel ? "&#10095;" : "&nbsp;";
+      return `<div class="project-row virtual-row ${isSel ? 'selected' : ''}" onclick="selectItem(${i})">
+        <span class="project-cursor">${cursor}</span>
+        <span class="project-name">&#x1F4C1; ${esc(item.title)} (${item.count})</span>
+      </div>`;
+    }
+    const isSel = i === selectedIdx;
+    const cursor = isSel ? "&#10095;" : "&nbsp;";
+    const iso = item.isolated ? ' <span class="project-iso">&#x1F433;</span>' : "";
+    const stats = item.usageCount > 0
+      ? `<span class="project-count">${String(item.usageCount).padStart(3)}</span>&#215; | ${formatDate(item.lastUsed).padStart(8)}`
+      : "";
+    return `<div class="project-row ${isSel ? 'selected' : ''}" onclick="selectItem(${i})">
+      <span class="project-cursor">${cursor}</span>
+      <span class="project-name">${esc(item.displayName)}${iso}</span>
+      <span class="project-stats">${stats}</span>
+    </div>`;
+  }).join("");
+}
+
+function selectItem(idx) {
+  const item = displayItems[idx];
+  if (!item) return;
+
+  if (item.type === "virtual") {
+    if (selectedIdx === idx) {
+      enterVirtualFolder(item.prefix, item.title);
+    } else {
+      selectedIdx = idx;
+      selectedProject = null;
+      renderDisplayItems();
+      updateActionHint();
+    }
+    return;
+  }
+
+  if (selectedIdx === idx) {
+    executeAction();
+    return;
+  }
+  selectedIdx = idx;
+  selectedProject = item;
+  renderDisplayItems();
+  updateActionHint();
+}
+
+function executeAction() {
+  const item = displayItems[selectedIdx];
+  if (!item) return;
+  if (item.type === "virtual") {
+    enterVirtualFolder(item.prefix, item.title);
+    return;
+  }
+  if (!selectedProject) return;
+  openSessionPicker();
+}
+
+function updateActionHint() {
+  const hint = document.getElementById("action-hint");
+  const bar = document.getElementById("bottom-bar");
+
+  const dockerBtn = `<span class="bar-item" style="color:var(--fg2);cursor:default;opacity:0.5"><span class="bar-key" style="color:var(--fg2)">F2</span> Docker</span>`;
+  const vfToggle = (categories[currentCatIdx]?.virtualFolders || []).length > 0
+    ? `<button class="sort-tab ${virtualFoldersEnabled?'active':''}" onclick="toggleVirtualFolders()">${virtualFoldersEnabled?'Grp':'Flat'}</button>`
+    : "";
+  const sortBtns = `<span class="sort-tabs"><button class="sort-tab ${sortMode==='usage'?'active':''}" onclick="setSortMode('usage')">Usage</button><button class="sort-tab ${sortMode==='recent'?'active':''}" onclick="setSortMode('recent')">Recent</button><button class="sort-tab ${sortMode==='alpha'?'active':''}" onclick="setSortMode('alpha')">A-Z</button>${vfToggle}</span>`;
+  const backBtn = currentVirtualFolder
+    ? `<span class="bar-item" onclick="exitVirtualFolder()"><span class="bar-key">&#9664;</span> Back</span><span class="bar-sep">|</span>`
+    : "";
+
+  const item = displayItems[selectedIdx];
+  if (!item || item.type === "virtual") {
+    const vHint = item && item.type === "virtual"
+      ? `  &#8594; Open <span style="font-weight:bold">${esc(item.title)}</span>`
+      : "";
+    hint.innerHTML = vHint;
+    bar.innerHTML = `
+      ${backBtn}
+      <span class="bar-item" onclick="showManageModal()"><span class="bar-key">F1</span> Manage</span>
+      <span class="bar-sep">|</span>
+      ${dockerBtn}
+      <span class="bar-sep">|</span>
+      ${sortBtns}
+    `;
+    return;
+  }
+
+  const name = item.displayName;
+  hint.innerHTML = `  &#8594; Select session <span style="color:var(--fg);font-weight:bold">in ${esc(name)}</span>`;
+  bar.innerHTML = `
+    ${backBtn}
+    <span class="bar-item" onclick="showManageModal()"><span class="bar-key">F1</span> Manage</span>
+    <span class="bar-sep">|</span>
+    ${sortBtns}
+    <span class="bar-sep">|</span>
+    <span class="bar-item" onclick="executeAction()" style="color:var(--accent)"><span class="bar-key">&#9654;</span> Open Sessions</span>
+  `;
+}
+
+// --- Sessions ---
+async function openSessionPicker() {
+  if (!selectedProject) return;
+  const cat = categories[currentCatIdx];
+  showScreen("session-screen");
+  document.getElementById("session-project-name").textContent = "Sessions for: " + selectedProject.name;
+  document.getElementById("session-list").innerHTML = '<div class="empty-msg">Loading sessions...</div>';
+  document.getElementById("preview-panel").style.display = "none";
+  document.getElementById("session-action-hint").textContent = "";
+  updateSessionHint();
+
+  const data = await api(`/sessions?project=${encodeURIComponent(cat.label + "/" + selectedProject.name)}`);
+  sessions = data.sessions || [];
+  selectedSessionIdx = -1;
+  renderSessions();
+}
+
+function renderSessions() {
+  const el = document.getElementById("session-list");
+
+  // "+ New session" row (index -1 mapped to special handling)
+  const newSel = selectedSessionIdx === -2;
+  const newCursor = newSel ? "&#10095;" : "&nbsp;";
+  let html = `<div class="session-row ${newSel ? 'selected' : ''}" onclick="selectNewSession()" style="color:var(--green)">
+    <span class="session-cursor">${newCursor}</span>
+    <span class="session-name">+ New session</span>
+    <span class="session-date"></span>
+  </div>`;
+
+  if (sessions.length === 0) {
+    html += '<div class="empty-msg" style="margin-top:8px">  No existing sessions.</div>';
+  } else {
+    html += sessions.map((s, i) => {
+      const isSel = i === selectedSessionIdx;
+      const cursor = isSel ? "&#10095;" : "&nbsp;";
+      const rawName = s.slug || (s.firstUserMessage ? s.firstUserMessage.slice(0, 35) : s.sessionId.slice(0, 8));
+      const prefix = i === 0
+        ? (s.active ? '<span style="color:var(--accent)">● Running: </span>' : '<span style="color:var(--yellow)">★ Last: </span>')
+        : (s.active ? '<span style="color:var(--accent)">● Running: </span>' : '');
+      const date = formatDate(s.lastActivity);
+      return `<div class="session-row ${isSel ? 'selected' : ''}" onclick="selectSession(${i})">
+        <span class="session-cursor">${cursor}</span>
+        <span class="session-name">${prefix}${esc(rawName)}</span>
+        <span class="session-date">${date}</span>
+      </div>`;
+    }).join("");
+  }
+
+  el.innerHTML = html;
+  updateSessionHint();
+}
+
+function selectNewSession() {
+  if (selectedSessionIdx === -2) {
+    launchNewSession();
+    return;
+  }
+  selectedSessionIdx = -2;
+  renderSessions();
+}
+
+async function launchNewSession() {
+  if (!selectedProject || launching) return;
+  launching = true;
+  const cat = categories[currentCatIdx];
+  const data = await api("/launch", {
+    method: "POST",
+    body: JSON.stringify({ category: cat.label, project: selectedProject.name, mode: "cc" }),
+  });
+  launching = false;
+  if (data.error) { toast("Error: " + data.error); }
+  else { showSessionLaunchSuccess("New session started"); }
+}
+
+function showSessionLaunchSuccess(msg) {
+  const hint = document.getElementById("session-action-hint");
+  const bar = document.getElementById("session-bottom-bar");
+  hint.innerHTML = `  <span style="color:var(--green)">&#10003; ${esc(msg)} — Remote Control enabled</span>`;
+  bar.innerHTML = `
+    <span class="bar-item" onclick="window.open('https://claude.ai/code','_blank')" style="color:var(--accent)"><span class="bar-key">&#9654;</span> Open claude.ai/code</span>
+    <span class="bar-sep">|</span>
+    <span class="bar-item" onclick="backToProjects()"><span class="bar-key">Esc</span> Back to menu</span>
+  `;
+}
+
+function updateSessionHint() {
+  const hint = document.getElementById("session-action-hint");
+  const bar = document.getElementById("session-bottom-bar");
+
+  const backBtn = `<span class="bar-item" onclick="backToProjects()"><span class="bar-key">Esc</span> Back</span>`;
+
+  if (selectedSessionIdx === -2) {
+    hint.innerHTML = `  &#8594; <span style="color:var(--green);font-weight:bold">New session</span>`;
+    bar.innerHTML = `
+      ${backBtn}
+      <span class="bar-sep">|</span>
+      <span class="bar-item" onclick="launchNewSession()" style="color:var(--accent)"><span class="bar-key">&#9654;</span> Launch New</span>
+    `;
+    return;
+  }
+
+  if (selectedSessionIdx < 0 || !sessions[selectedSessionIdx]) {
+    hint.textContent = "";
+    bar.innerHTML = backBtn;
+    return;
+  }
+  const s = sessions[selectedSessionIdx];
+  const name = s.slug || s.sessionId.slice(0, 8);
+  const action = s.active ? "Fork" : "Resume";
+  hint.innerHTML = `  &#8594; ${action}: <span style="font-weight:bold">${esc(name)}</span>`;
+  bar.innerHTML = `
+    ${backBtn}
+    <span class="bar-sep">|</span>
+    <span class="bar-item" onclick="launchSession()" style="color:var(--accent)"><span class="bar-key">&#9654;</span> ${action}</span>
+  `;
+}
+
+async function selectSession(idx) {
+  if (selectedSessionIdx === idx) {
+    launchSession();
+    return;
+  }
+  selectedSessionIdx = idx;
+  renderSessions();
+
+  const s = sessions[idx];
+  const cat = categories[currentCatIdx];
+  const panel = document.getElementById("preview-panel");
+  panel.style.display = "block";
+  panel.innerHTML = '<div class="empty-msg">Loading preview...</div>';
+
+  const data = await api(`/session-preview?project=${encodeURIComponent(cat.label + "/" + selectedProject.name)}&sessionId=${s.sessionId}`);
+  const messages = data.messages || [];
+  if (messages.length === 0) {
+    panel.innerHTML = '<div class="empty-msg">No messages in preview</div>';
+  } else {
+    panel.innerHTML = messages.map(m => {
+      const match = m.match(/^\[(\d{2}:\d{2})\]\s*(.*)/);
+      if (match) {
+        return `<div class="preview-msg"><span class="preview-time">[${match[1]}]</span> ${esc(match[2])}</div>`;
+      }
+      return `<div class="preview-msg">${esc(m)}</div>`;
+    }).join("");
+  }
+}
+
+async function launchSession() {
+  if (selectedSessionIdx < 0 || launching) return;
+  launching = true;
+  const s = sessions[selectedSessionIdx];
+  const cat = categories[currentCatIdx];
+  const mode = s.active ? "resume-fork" : "resume";
+
+  const data = await api("/launch", {
+    method: "POST",
+    body: JSON.stringify({
+      category: cat.label,
+      project: selectedProject.name,
+      mode,
+      sessionId: s.sessionId,
+    }),
+  });
+
+  launching = false;
+  if (data.error) {
+    toast("Error: " + data.error);
+  } else {
+    showSessionLaunchSuccess(`Claude ${s.active ? "forked" : "resumed"}`);
+  }
+}
+
+function backToProjects() {
+  showScreen("main-screen");
+  sessions = [];
+  selectedSessionIdx = -1;
+}
+
+// --- Manage ---
+function showManageModal() {
+  const cat = categories[currentCatIdx];
+  const modal = document.getElementById("manage-modal");
+  const title = document.getElementById("modal-title");
+  const content = document.getElementById("modal-content");
+
+  const titleSuffix = currentVirtualFolder ? ` — ${currentVirtualFolder.title}` : "";
+  title.textContent = "Manage — " + cat.label + titleSuffix;
+  let html = "";
+  html += `<button class="modal-btn" onclick="showCreateProject()">Create New Project</button>`;
+  if (selectedProject) {
+    html += `<button class="modal-btn" onclick="archiveProject()">Archive "${esc(selectedProject.displayName || selectedProject.name)}"</button>`;
+  }
+  if (selectedProject) {
+    html += `<button class="modal-btn danger" onclick="deleteProject()">Delete "${esc(selectedProject.displayName || selectedProject.name)}"</button>`;
+  }
+  if (selectedProject) {
+    html += `<button class="modal-btn" onclick="clearStats()">Clear Stats for "${esc(selectedProject.displayName || selectedProject.name)}"</button>`;
+  }
+  if (selectedProject && (cat.virtualFolders || []).length > 0) {
+    html += `<button class="modal-btn" onclick="showMovePrefix()">Move to...</button>`;
+  }
+  if (!html) {
+    html = '<div class="empty-msg">Select a project first</div>';
+  }
+  content.innerHTML = html;
+  modal.classList.add("active");
+}
+
+function hideManageModal() {
+  document.getElementById("manage-modal").classList.remove("active");
+}
+
+function closeModal(event) {
+  if (event.target === document.getElementById("manage-modal")) hideManageModal();
+}
+
+function showCreateProject() {
+  const prefixHint = currentVirtualFolder
+    ? `<div style="color:var(--fg2);font-size:12px;margin-bottom:8px">Prefix "${currentVirtualFolder.prefix}" will be added automatically</div>`
+    : "";
+  document.getElementById("modal-title").textContent = "Create New Project";
+  document.getElementById("modal-content").innerHTML = `
+    ${prefixHint}
+    <input class="modal-input" id="new-project-name" placeholder="Project name" autofocus>
+    <div class="toggle-row">
+      <span>Docker isolation</span>
+      <button class="toggle" id="new-project-isolated" onclick="this.classList.toggle('on')"></button>
+    </div>
+    <button class="modal-btn primary" onclick="doCreateProject()">Create</button>
+  `;
+  setTimeout(() => document.getElementById("new-project-name").focus(), 100);
+}
+
+async function doCreateProject() {
+  let name = document.getElementById("new-project-name").value.trim();
+  if (!name) { toast("Enter a project name"); return; }
+  if (currentVirtualFolder && !matchesVirtualPrefix(name, currentVirtualFolder.prefix)) {
+    name = currentVirtualFolder.prefix + name[0].toUpperCase() + name.slice(1);
+  }
+  const isolated = document.getElementById("new-project-isolated").classList.contains("on");
+  const cat = categories[currentCatIdx];
+  const data = await api("/project/create", {
+    method: "POST",
+    body: JSON.stringify({ category: cat.label, name, isolated }),
+  });
+  if (data.error) { toast("Error: " + data.error); }
+  else { toast("Created: " + name); hideManageModal(); showMainScreen(); }
+}
+
+async function archiveProject() {
+  if (!selectedProject || !confirm(`Archive "${selectedProject.name}"?`)) return;
+  const cat = categories[currentCatIdx];
+  const data = await api("/project/archive", {
+    method: "POST",
+    body: JSON.stringify({ category: cat.label, project: selectedProject.name }),
+  });
+  if (data.error) { toast("Error: " + data.error); }
+  else { toast("Archived: " + selectedProject.name); selectedProject = null; selectedIdx = -1; hideManageModal(); showMainScreen(); }
+}
+
+async function deleteProject() {
+  if (!selectedProject || !confirm(`DELETE "${selectedProject.name}"? This cannot be undone!`)) return;
+  const cat = categories[currentCatIdx];
+  const data = await api("/project/delete", {
+    method: "POST",
+    body: JSON.stringify({ category: cat.label, project: selectedProject.name, confirm: true }),
+  });
+  if (data.error) { toast("Error: " + data.error); }
+  else { toast("Deleted: " + selectedProject.name); selectedProject = null; selectedIdx = -1; hideManageModal(); showMainScreen(); }
+}
+
+async function clearStats() {
+  if (!selectedProject) return;
+  const cat = categories[currentCatIdx];
+  const data = await api("/project/clear-stats", {
+    method: "POST",
+    body: JSON.stringify({ category: cat.label, project: selectedProject.name }),
+  });
+  if (data.error) { toast("Error: " + data.error); }
+  else { toast("Stats cleared for " + selectedProject.name); selectedProject = null; selectedIdx = -1; hideManageModal(); showMainScreen(); }
+}
+
+function showMovePrefix() {
+  if (!selectedProject) return;
+  const cat = categories[currentCatIdx];
+  const vFolders = cat.virtualFolders || [];
+  const targets = [{ prefix: "", title: "Root (no prefix)" }, ...vFolders.map(v => ({ prefix: v.prefix, title: v.title }))];
+  document.getElementById("modal-title").textContent = "Move: " + (selectedProject.displayName || selectedProject.name);
+  document.getElementById("modal-content").innerHTML = targets.map(t =>
+    `<button class="modal-btn" onclick="doMovePrefix('${esc(t.prefix)}')">${esc(t.title)}</button>`
+  ).join("");
+}
+
+async function doMovePrefix(targetPrefix) {
+  if (!selectedProject) return;
+  const cat = categories[currentCatIdx];
+  const data = await api("/project/move-prefix", {
+    method: "POST",
+    body: JSON.stringify({ category: cat.label, project: selectedProject.name, targetPrefix }),
+  });
+  if (data.error) { toast("Error: " + data.error); }
+  else {
+    const msg = data.newName !== data.oldName
+      ? `Moved: ${data.oldName} → ${data.newName}${data.claudeRenamed ? " (+ Claude memory)" : ""}`
+      : "Already in target group";
+    toast(msg);
+    selectedProject = null; selectedIdx = -1; hideManageModal(); showMainScreen();
+  }
+}
+
+// --- Helpers ---
+function formatDate(iso) {
+  if (!iso) return "";
+  return formatRelativeDate(iso);
+}
+
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function toast(msg) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  setTimeout(() => el.classList.remove("show"), 3000);
+}
+
+// --- Init ---
+initConnection();
+document.body.insertAdjacentHTML('beforeend', `<div class="version-stamp">${APP_VERSION}</div>`);
+</script>
+</body>
+</html>

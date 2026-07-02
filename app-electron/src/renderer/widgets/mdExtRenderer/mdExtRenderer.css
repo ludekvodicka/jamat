@@ -1,0 +1,529 @@
+/*
+ * mdExtRenderer styling — MUI-free, themed entirely via CSS custom properties so the same widget
+ * works in a MUI/Next host (which maps palette → --mdext-* vars) and a plain-React host (which sets
+ * the vars directly). `.mdext-dark` forces the dark token set; bare `.mdext` (theme="auto") follows
+ * prefers-color-scheme. Shiki dual-theme output is driven by its own --shiki-light/--shiki-dark vars.
+ */
+
+.mdext {
+  --mdext-fg: #24292f;
+  --mdext-muted: #57606a;
+  --mdext-border: #d0d7de;
+  --mdext-code-bg: #f6f8fa;
+  --mdext-code-fg: #24292f;
+  --mdext-link: #0969da;
+  --mdext-code-max: none;
+  --mdext-diagram-max: 1140px;
+  color: var(--mdext-fg);
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-wrap: break-word;
+}
+
+.mdext-dark {
+  --mdext-fg: #e6edf3;
+  --mdext-muted: #8b949e;
+  --mdext-border: #30363d;
+  --mdext-code-bg: #161b22;
+  --mdext-code-fg: #e6edf3;
+  --mdext-link: #4493f8;
+}
+
+@media (prefers-color-scheme: dark) {
+  .mdext:not(.mdext-light) {
+    --mdext-fg: #e6edf3;
+    --mdext-muted: #8b949e;
+    --mdext-border: #30363d;
+    --mdext-code-bg: #161b22;
+    --mdext-code-fg: #e6edf3;
+    --mdext-link: #4493f8;
+  }
+}
+
+/* ── GFM elements ───────────────────────────────────────────────────────────────────────── */
+.mdext a {
+  color: var(--mdext-link);
+  text-decoration: none;
+}
+.mdext a:hover {
+  text-decoration: underline;
+}
+.mdext h1,
+.mdext h2,
+.mdext h3,
+.mdext h4,
+.mdext h5,
+.mdext h6 {
+  margin: 1.2em 0 0.5em;
+  font-weight: 600;
+  line-height: 1.25;
+}
+.mdext h1 {
+  font-size: 1.6em;
+}
+.mdext h2 {
+  font-size: 1.35em;
+  border-bottom: 1px solid var(--mdext-border);
+  padding-bottom: 0.2em;
+}
+.mdext h3 {
+  font-size: 1.15em;
+}
+.mdext p {
+  margin: 0.6em 0;
+}
+.mdext ul,
+.mdext ol {
+  margin: 0.5em 0;
+  padding-left: 1.6em;
+}
+.mdext blockquote {
+  margin: 0.6em 0;
+  padding: 0 1em;
+  border-left: 3px solid var(--mdext-border);
+  color: var(--mdext-muted);
+}
+.mdext table {
+  border-collapse: collapse;
+  margin: 0.6em 0;
+  display: block;
+  overflow-x: auto;
+}
+.mdext th,
+.mdext td {
+  border: 1px solid var(--mdext-border);
+  padding: 4px 10px;
+}
+.mdext th {
+  background: var(--mdext-code-bg);
+}
+.mdext img {
+  max-width: 100%;
+  height: auto;
+}
+.mdext hr {
+  border: 0;
+  border-top: 1px solid var(--mdext-border);
+  margin: 1em 0;
+}
+.mdext > :first-child {
+  margin-top: 0;
+}
+.mdext > :last-child {
+  margin-bottom: 0;
+}
+
+/* ── inline code ────────────────────────────────────────────────────────────────────────── */
+.mdext code.mdext-inline {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  background: var(--mdext-code-bg);
+  padding: 0.15em 0.35em;
+  border-radius: 4px;
+}
+
+/* ── code blocks (Shiki + fallback) ─────────────────────────────────────────────────────── */
+.mdext .mdext-code {
+  position: relative;
+  margin: 0.75em 0;
+}
+.mdext .shiki {
+  margin: 0;
+  padding: 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+  max-height: var(--mdext-code-max);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.mdext .mdext-code-fallback {
+  background: var(--mdext-code-bg);
+  color: var(--mdext-code-fg);
+}
+.mdext .mdext-code-fallback code {
+  font-family: inherit;
+}
+
+/* Shiki dual-theme: light tokens by default, dark when forced or when auto + OS dark. */
+.mdext .mdext-code-shiki .shiki,
+.mdext .mdext-code-shiki .shiki span {
+  color: var(--shiki-light);
+}
+.mdext .mdext-code-shiki .shiki {
+  background-color: var(--shiki-light-bg);
+}
+.mdext-dark .mdext-code-shiki .shiki,
+.mdext-dark .mdext-code-shiki .shiki span {
+  color: var(--shiki-dark);
+}
+.mdext-dark .mdext-code-shiki .shiki {
+  background-color: var(--shiki-dark-bg);
+}
+@media (prefers-color-scheme: dark) {
+  .mdext:not(.mdext-light) .mdext-code-shiki .shiki,
+  .mdext:not(.mdext-light) .mdext-code-shiki .shiki span {
+    color: var(--shiki-dark);
+  }
+  .mdext:not(.mdext-light) .mdext-code-shiki .shiki {
+    background-color: var(--shiki-dark-bg);
+  }
+}
+
+/* copy button — appears on hover/focus */
+.mdext .mdext-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
+  font-size: 11px;
+  padding: 2px 8px;
+  background: var(--mdext-code-bg);
+  color: var(--mdext-fg);
+  border: 1px solid var(--mdext-border);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.mdext .mdext-code:hover .mdext-copy,
+.mdext .mdext-copy:focus {
+  opacity: 1;
+}
+
+/* ── frontmatter strip ──────────────────────────────────────────────────────────────────── */
+.mdext .mdext-frontmatter {
+  border: 1px solid var(--mdext-border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--mdext-muted);
+}
+.mdext .mdext-frontmatter summary {
+  cursor: pointer;
+  user-select: none;
+}
+.mdext .mdext-frontmatter-count {
+  opacity: 0.7;
+}
+.mdext .mdext-frontmatter-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 12px;
+  margin: 8px 0 2px;
+}
+.mdext .mdext-frontmatter-list dt {
+  font-weight: 600;
+  color: var(--mdext-fg);
+}
+.mdext .mdext-frontmatter-list dd {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* ── neutralized link / blocked image / diagram placeholder ─────────────────────────────── */
+.mdext .mdext-blocked-link {
+  color: var(--mdext-muted);
+  text-decoration: underline dotted;
+}
+.mdext .mdext-blocked-img {
+  color: var(--mdext-muted);
+  font-style: italic;
+  font-size: 0.9em;
+}
+/* ── diagrams (v1b) ─────────────────────────────────────────────────────────────────────── */
+.mdext .mdext-diagram-wrap {
+  position: relative;
+  margin: 0.75em 0;
+}
+.mdext .mdext-diagram {
+  overflow: auto;
+}
+.mdext .mdext-diagram svg {
+  /* Cap diagram size so a large viewBox doesn't dominate a wide viewer; scales down on narrow ones.
+     Host-overridable via --mdext-diagram-max. */
+  max-width: min(100%, var(--mdext-diagram-max, 1140px));
+  height: auto;
+}
+.mdext .mdext-loading {
+  min-height: 3rem; /* reserve space — no blank box / layout jump */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--mdext-muted);
+  font-size: 12px;
+  border: 1px dashed var(--mdext-border);
+  border-radius: 6px;
+}
+.mdext .mdext-loading::after {
+  content: 'rendering diagram…';
+}
+.mdext .mdext-diagram-error {
+  border: 1px solid var(--mdext-border);
+  border-radius: 6px;
+  padding: 8px;
+  margin: 0.75em 0;
+}
+.mdext .mdext-diagram-error-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--mdext-muted);
+  margin-bottom: 6px;
+}
+.mdext .mdext-diagram-source {
+  margin: 0;
+  padding: 8px;
+  background: var(--mdext-code-bg);
+  color: var(--mdext-code-fg);
+  border-radius: 4px;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.mdext .mdext-diagram-toggle {
+  font-size: 11px;
+  padding: 2px 8px;
+  background: var(--mdext-code-bg);
+  color: var(--mdext-fg);
+  border: 1px solid var(--mdext-border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.mdext .mdext-diagram-toggle-float {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.mdext .mdext-diagram-wrap:hover .mdext-diagram-toggle-float {
+  opacity: 1;
+}
+
+/*
+ * Typed blocks (plan v2 — callouts, status chips, collapsible). Colors use semi-transparent
+ * accents so a single token set reads correctly on both light and dark backgrounds. The callout
+ * icon comes from a per-type CSS var (no injected markup / no SVG to sanitize).
+ */
+.mdext .mdext-callout {
+  border-left: 4px solid var(--mdext-callout-accent, var(--mdext-border));
+  background: var(--mdext-callout-bg, rgba(127, 127, 127, 0.08));
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin: 12px 0;
+}
+.mdext .mdext-callout-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 4px;
+  font-weight: 600;
+  color: var(--mdext-callout-accent, var(--mdext-fg));
+}
+.mdext .mdext-callout-title::before {
+  content: var(--mdext-callout-icon, "\2022");
+}
+.mdext .mdext-callout > :last-child {
+  margin-bottom: 0;
+}
+.mdext .mdext-callout-note {
+  --mdext-callout-accent: #4493f8;
+  --mdext-callout-bg: rgba(68, 147, 248, 0.1);
+  --mdext-callout-icon: "\2139";
+}
+.mdext .mdext-callout-tip {
+  --mdext-callout-accent: #3aa675;
+  --mdext-callout-bg: rgba(58, 166, 117, 0.1);
+  --mdext-callout-icon: "\2714";
+}
+.mdext .mdext-callout-warning {
+  --mdext-callout-accent: #d9a441;
+  --mdext-callout-bg: rgba(217, 164, 65, 0.12);
+  --mdext-callout-icon: "\26A0";
+}
+.mdext .mdext-callout-danger {
+  --mdext-callout-accent: #d9534f;
+  --mdext-callout-bg: rgba(217, 83, 79, 0.12);
+  --mdext-callout-icon: "\26D4";
+}
+.mdext .mdext-callout-important {
+  --mdext-callout-accent: #a36bd4;
+  --mdext-callout-bg: rgba(163, 107, 212, 0.12);
+  --mdext-callout-icon: "\2605";
+}
+
+.mdext .mdext-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0;
+}
+.mdext .mdext-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 0.85em;
+  font-weight: 600;
+  line-height: 1.5;
+  border: 1px solid var(--mdext-chip-accent, var(--mdext-muted));
+  color: var(--mdext-chip-accent, var(--mdext-muted));
+  background: var(--mdext-chip-bg, transparent);
+}
+.mdext .mdext-chip-good {
+  --mdext-chip-accent: #3aa675;
+  --mdext-chip-bg: rgba(58, 166, 117, 0.12);
+}
+.mdext .mdext-chip-warn {
+  --mdext-chip-accent: #c98a1e;
+  --mdext-chip-bg: rgba(217, 164, 65, 0.14);
+}
+.mdext .mdext-chip-bad {
+  --mdext-chip-accent: #d9534f;
+  --mdext-chip-bg: rgba(217, 83, 79, 0.14);
+}
+.mdext .mdext-chip-neutral {
+  --mdext-chip-accent: var(--mdext-muted);
+  --mdext-chip-bg: rgba(127, 127, 127, 0.12);
+}
+
+.mdext .mdext-details {
+  border: 1px solid var(--mdext-border);
+  border-radius: 4px;
+  padding: 6px 12px;
+  margin: 12px 0;
+}
+.mdext .mdext-details > summary {
+  cursor: pointer;
+  font-weight: 600;
+  outline: none;
+}
+.mdext .mdext-details[open] > summary {
+  margin-bottom: 6px;
+}
+.mdext .mdext-details > :last-child {
+  margin-bottom: 0;
+}
+
+/* ── archify engine (vendored, MIT) — CSS class system ported from archify's template ─────────
+ * The archify SVG carries CSS classes (c-*/t-*/a-*/m-*); these rules colour them from --afy-* vars,
+ * scoped to the diagram so the names can't leak. Light is the default; .mdext-dark (and prefers-dark
+ * in auto mode) swap the palette — so one SVG is theme-reactive, mirroring the widget's own theming. */
+.mdext-diagram-archify {
+  --afy-grid: #e2e8f0;
+  --afy-text: #0f172a;
+  --afy-text-muted: #64748b;
+  --afy-text-dim: #94a3b8;
+  --afy-mask: #ffffff;
+  --afy-arrow: #94a3b8;
+  --afy-arrow-emphasis: #059669;
+  --afy-frontend-fill: rgba(34, 211, 238, 0.15);
+  --afy-frontend-stroke: #0891b2;
+  --afy-backend-fill: rgba(52, 211, 153, 0.18);
+  --afy-backend-stroke: #059669;
+  --afy-database-fill: rgba(167, 139, 250, 0.2);
+  --afy-database-stroke: #7c3aed;
+  --afy-cloud-fill: rgba(251, 191, 36, 0.18);
+  --afy-cloud-stroke: #d97706;
+  --afy-security-fill: rgba(251, 113, 133, 0.15);
+  --afy-security-stroke: #e11d48;
+  --afy-messagebus-fill: rgba(251, 146, 60, 0.15);
+  --afy-messagebus-stroke: #ea580c;
+  --afy-external-fill: rgba(148, 163, 184, 0.18);
+  --afy-external-stroke: #64748b;
+  --afy-lane-fill: rgba(248, 250, 252, 0.65);
+  --afy-lane-stroke: #cbd5e1;
+}
+.mdext-dark .mdext-diagram-archify {
+  --afy-grid: #1e293b;
+  --afy-text: #ffffff;
+  --afy-text-muted: #94a3b8;
+  --afy-text-dim: #475569;
+  --afy-mask: #0f172a;
+  --afy-arrow: #64748b;
+  --afy-arrow-emphasis: #34d399;
+  --afy-frontend-fill: rgba(8, 51, 68, 0.4);
+  --afy-frontend-stroke: #22d3ee;
+  --afy-backend-fill: rgba(6, 78, 59, 0.4);
+  --afy-backend-stroke: #34d399;
+  --afy-database-fill: rgba(76, 29, 149, 0.4);
+  --afy-database-stroke: #a78bfa;
+  --afy-cloud-fill: rgba(120, 53, 15, 0.3);
+  --afy-cloud-stroke: #fbbf24;
+  --afy-security-fill: rgba(136, 19, 55, 0.4);
+  --afy-security-stroke: #fb7185;
+  --afy-messagebus-fill: rgba(251, 146, 60, 0.3);
+  --afy-messagebus-stroke: #fb923c;
+  --afy-external-fill: rgba(30, 41, 59, 0.5);
+  --afy-external-stroke: #94a3b8;
+  --afy-lane-fill: rgba(15, 23, 42, 0.22);
+  --afy-lane-stroke: #334155;
+}
+@media (prefers-color-scheme: dark) {
+  .mdext:not(.mdext-light) .mdext-diagram-archify {
+    --afy-grid: #1e293b;
+    --afy-text: #ffffff;
+    --afy-text-muted: #94a3b8;
+    --afy-text-dim: #475569;
+    --afy-mask: #0f172a;
+    --afy-arrow: #64748b;
+    --afy-arrow-emphasis: #34d399;
+    --afy-frontend-fill: rgba(8, 51, 68, 0.4);
+    --afy-frontend-stroke: #22d3ee;
+    --afy-backend-fill: rgba(6, 78, 59, 0.4);
+    --afy-backend-stroke: #34d399;
+    --afy-database-fill: rgba(76, 29, 149, 0.4);
+    --afy-database-stroke: #a78bfa;
+    --afy-cloud-fill: rgba(120, 53, 15, 0.3);
+    --afy-cloud-stroke: #fbbf24;
+    --afy-security-fill: rgba(136, 19, 55, 0.4);
+    --afy-security-stroke: #fb7185;
+    --afy-messagebus-fill: rgba(251, 146, 60, 0.3);
+    --afy-messagebus-stroke: #fb923c;
+    --afy-external-fill: rgba(30, 41, 59, 0.5);
+    --afy-external-stroke: #94a3b8;
+    --afy-lane-fill: rgba(15, 23, 42, 0.22);
+    --afy-lane-stroke: #334155;
+  }
+}
+.mdext-diagram-archify svg {
+  width: 100%;
+  height: auto;
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace;
+}
+.mdext-diagram-archify .c-grid { stroke: var(--afy-grid); fill: none; }
+.mdext-diagram-archify .c-mask { fill: var(--afy-mask); stroke: none; }
+.mdext-diagram-archify .c-frontend { fill: var(--afy-frontend-fill); stroke: var(--afy-frontend-stroke); }
+.mdext-diagram-archify .c-backend { fill: var(--afy-backend-fill); stroke: var(--afy-backend-stroke); }
+.mdext-diagram-archify .c-database { fill: var(--afy-database-fill); stroke: var(--afy-database-stroke); }
+.mdext-diagram-archify .c-cloud { fill: var(--afy-cloud-fill); stroke: var(--afy-cloud-stroke); }
+.mdext-diagram-archify .c-security { fill: var(--afy-security-fill); stroke: var(--afy-security-stroke); }
+.mdext-diagram-archify .c-messagebus { fill: var(--afy-messagebus-fill); stroke: var(--afy-messagebus-stroke); }
+.mdext-diagram-archify .c-external { fill: var(--afy-external-fill); stroke: var(--afy-external-stroke); }
+.mdext-diagram-archify .t-primary { fill: var(--afy-text); }
+.mdext-diagram-archify .t-muted { fill: var(--afy-text-muted); }
+.mdext-diagram-archify .t-dim { fill: var(--afy-text-dim); }
+.mdext-diagram-archify .t-frontend { fill: var(--afy-frontend-stroke); }
+.mdext-diagram-archify .t-backend { fill: var(--afy-backend-stroke); }
+.mdext-diagram-archify .t-database { fill: var(--afy-database-stroke); }
+.mdext-diagram-archify .t-cloud { fill: var(--afy-cloud-stroke); }
+.mdext-diagram-archify .t-security { fill: var(--afy-security-stroke); }
+.mdext-diagram-archify .t-messagebus { fill: var(--afy-messagebus-stroke); }
+.mdext-diagram-archify .t-external { fill: var(--afy-external-stroke); }
+.mdext-diagram-archify .a-default { stroke: var(--afy-arrow); fill: none; }
+.mdext-diagram-archify .a-emphasis { stroke: var(--afy-arrow-emphasis); fill: none; }
+.mdext-diagram-archify .a-security { stroke: var(--afy-security-stroke); fill: none; stroke-dasharray: 5, 5; }
+.mdext-diagram-archify .a-dashed { stroke: var(--afy-database-stroke); fill: none; stroke-dasharray: 4, 4; }
+.mdext-diagram-archify .m-default { fill: var(--afy-arrow); }
+.mdext-diagram-archify .m-emphasis { fill: var(--afy-arrow-emphasis); }
+.mdext-diagram-archify .m-security { fill: var(--afy-security-stroke); }
+.mdext-diagram-archify .m-dashed { fill: var(--afy-database-stroke); }
+.mdext-diagram-archify .c-security-group { fill: transparent; stroke: var(--afy-security-stroke); stroke-dasharray: 4, 4; }
+.mdext-diagram-archify .c-region { fill: rgba(251, 191, 36, 0.05); stroke: var(--afy-cloud-stroke); stroke-dasharray: 8, 4; }
+.mdext-diagram-archify .c-lane { fill: var(--afy-lane-fill); stroke: var(--afy-lane-stroke); stroke-dasharray: 6, 6; }

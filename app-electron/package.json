@@ -1,0 +1,110 @@
+{
+  "name": "jamat",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "author": "ludekvodicka",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ludekvodicka/jamat.git"
+  },
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "compile": "electron-vite build && electron-builder --win --dir",
+    "dist": "electron-vite build && electron-builder --win",
+    "dist:win": "electron-vite build && electron-builder --win",
+    "dist:mac": "electron-vite build && electron-builder --mac",
+    "dist:linux": "electron-vite build && electron-builder --linux",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "build": {
+    "appId": "com.jamat.app",
+    "productName": "Jamat",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "ludekvodicka",
+        "repo": "jamat"
+      }
+    ],
+    "npmRebuild": false,
+    "forceCodeSigning": false,
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "signAndEditExecutable": false
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.developer-tools",
+      "identity": null
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Development"
+    },
+    "files": [
+      "out/**/*",
+      "node_modules/node-pty/**/*",
+      "node_modules/dockview/**/*",
+      "node_modules/dockview-core/**/*",
+      "node_modules/ws/**/*"
+    ],
+    "asar": false
+  },
+  "dependencies": {
+    "@viz-js/viz": "3.28.0",
+    "@xterm/addon-fit": "0.12.0-beta.287",
+    "@xterm/addon-search": "0.17.0-beta.287",
+    "@xterm/addon-webgl": "0.20.0-beta.286",
+    "@xterm/xterm": "6.1.0-beta.287",
+    "diff": "^9.0.0",
+    "dockview": "^4.3.1",
+    "dompurify": "3.4.10",
+    "electron-updater": "^6.8.9",
+    "marked": "^18.0.3",
+    "mermaid": "11.15.0",
+    "node-pty": "^1.2.0-beta.12",
+    "react-markdown": "9.1.0",
+    "rehype-raw": "7.0.0",
+    "rehype-sanitize": "6.0.0",
+    "remark-directive": "4.0.0",
+    "remark-gfm": "4.0.1",
+    "shiki": "1.29.2",
+    "vega": "6.2.0",
+    "vega-lite": "6.4.3",
+    "ws": "^8.21.0",
+    "yaml": "2.9.0",
+    "zustand": "^5.0.5"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.0.0",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^4.4.1",
+    "electron": "^35.0.0",
+    "electron-builder": "^26.8.1",
+    "electron-vite": "^3.1.0",
+    "jsdom": "^25.0.1",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "typescript": "^5.8.0",
+    "vite": "^6.3.0",
+    "vitest": "^2.1.9"
+  }
+}

@@ -1,0 +1,54 @@
+# Code highlighting showcase
+
+Each fenced block is tagged with a language, so the viewer highlights it (Shiki) and offers Copy.
+
+TypeScript:
+
+```typescript
+type Result<T> = { ok: true; value: T } | { ok: false; error: string }
+const parse = (s: string): Result<number> => {
+  const n = Number(s)
+  return Number.isNaN(n) ? { ok: false, error: `not a number: ${s}` } : { ok: true, value: n }
+}
+```
+
+Python:
+
+```python
+def fib(n: int) -> int:
+    a, b = 0, 1
+    for _ in range(n):
+        a, b = b, a + b
+    return a
+```
+
+Bash:
+
+```bash
+set -euo pipefail
+for f in *.log; do
+  gzip -k "$f" && echo "compressed $f"
+done
+```
+
+JSON:
+
+```json
+{ "name": "mdext", "themes": ["github-light", "github-dark"], "offline": true }
+```
+
+A diff:
+
+```diff
+- const x = marked.parse(content)
++ <MdExtRenderer source={content} theme="dark" />
+```
+
+A fence with **no language** stays a plain block (not inline), unhighlighted:
+
+```
+just some
+indented text
+```
+
+Inline `code` stays inline.

@@ -1,0 +1,37 @@
+{
+  "_README": [
+    "Template for a per-user app config: configs/config-<user>.json (read by app-cli, app-agent, app-electron).",
+    "Copy to config-<yourname>.json and edit `name` + `categories` for this machine.",
+    "Launch: JAMAT_CONFIG=config-<yourname>.json (electron) or --config configs/config-<yourname>.json (cli/agent).",
+    "",
+    "`categories[].path` = an absolute folder Jamat scans for projects; replace the examples with your own (Windows e.g. C:\\Code\\projects, macOS/Linux e.g. /home/you/code). `hiddenFolders` and `virtualFolders` are optional.",
+    "",
+    "SECRETS DO NOT GO HERE. The Claude.ai usage credentials live in a gitignored sibling file",
+    "configs/config-<yourname>.local.json = { \"claudeUsage\": { \"orgId\": \"...\", \"sessionKey\": \"sk-ant-...\" } }.",
+    "core/config.ts merges that overlay at load time as a sibling next to the config file (never git, never bundled into the exe).",
+    "Omit the .local.json entirely and the usage dashboard is simply empty — everything else still works.",
+    "",
+    "\"dockerIsolation\": false hides the start menu's Docker-isolation offer (the \"Isolated (Docker)?\" create prompt + the 🐳 marker) — set it on machines without Docker. Absent/true = offered (default).",
+    "",
+    "\"sessionDonePrompts\" are the one-click quick prompts in the bottom-right popup that appears (Electron) when a Claude session finishes a non-trivial turn on the active tab. Each {label,prompt} is typed into the session + Enter on click. Omit to use a small built-in default. The popup is toggled in app Settings → Notifications.",
+    "",
+    "\"customMenus\" add your own per-project actions to the start menu — press F3 on a (non-Docker-isolated) project to open them. Each node is either a GROUP { label, items:[...] } that opens a sub-menu, or a COMMAND { label, run:{ command, args, cwd } } that runs against the selected project. Placeholders {dir} (absolute project path) and {name} (folder name) are substituted in args/cwd. Groups nest freely. Example: [ { \"label\": \"Deploy\", \"items\": [ { \"label\": \"Build\", \"run\": { \"command\": \"npm\", \"args\": [\"run\", \"build\"], \"cwd\": \"{dir}\" } } ] } ]. Empty/absent = no custom actions (default).",
+    "",
+    "\"selfUpdate\" picks the update channel. \"provider\": \"github\" (default for a public install) auto-updates the PACKAGED app from this project's GitHub Releases (Windows + Linux; macOS needs a signed build). \"provider\": \"vcs\" instead pulls a source checkout via git/svn + relaunch — for running from source: { \"provider\": \"vcs\", \"vcs\": \"git\", \"repoPath\"?: \"...\" }. Add \"autoCheck\": false to silence the background check.",
+    "",
+    "(The :3500 remote-server proxy has its own deploy config — see app-agent/config-remote.example.json — it is NOT a per-user app config.)"
+  ],
+  "name": "Example",
+  "categories": [
+    { "label": "Projects", "path": "C:\\Code\\projects", "hiddenFolders": ["archive", "docs"], "virtualFolders": [{ "prefix": "temporary", "title": "Temporary projects" }] },
+    { "label": "Work", "path": "C:\\Code\\work", "hiddenFolders": ["docs"] }
+  ],
+  "defaultAgent": "claude",
+  "dockerIsolation": true,
+  "selfUpdate": { "provider": "github" },
+  "customMenus": [],
+  "sessionDonePrompts": [
+    { "label": "Continue", "prompt": "What should we do next?" },
+    { "label": "Summarize", "prompt": "Summarize what you just did." }
+  ]
+}

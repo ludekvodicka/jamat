@@ -1,0 +1,34 @@
+{
+  "_README": [
+    "Template for app-agent/config-remote.json — the :3500 remote-server proxy (LAN/mobile dashboard relay).",
+    "Copy this file to config-remote.json (same dir) and fill each PC's `token`.",
+    "`token` = that PC's machine key = the `token` field in its <userData>/jamat/remote-control.json",
+    "(reveal it in the app: Remote connections panel). The proxy injects it as 'Authorization: Bearer <token>'",
+    "when relaying /api/* to that PC's agent (:3501); without it the agent gate returns 401.",
+    "Also required on each PC: remote control must be ENABLED (enabled:true) for the agent gate to pass.",
+    "config-remote.json is gitignored on purpose (machine keys are RCE credentials) — never commit the real one."
+  ],
+  "pcs": [
+    {
+      "id": "pc1",
+      "label": "Desktop PC",
+      "mac": "AA:BB:CC:DD:EE:01",
+      "ip": "192.168.1.10",
+      "agentPort": 3501,
+      "broadcast": "192.168.1.255",
+      "token": ""
+    },
+    {
+      "id": "pc2",
+      "label": "Laptop",
+      "mac": "AA:BB:CC:DD:EE:02",
+      "ip": "192.168.1.11",
+      "agentPort": 3501,
+      "broadcast": "192.168.1.255",
+      "token": ""
+    }
+  ],
+  "server": {
+    "port": 3500
+  }
+}
