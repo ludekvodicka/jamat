@@ -26,6 +26,22 @@ const IMAGE_MIME: Record<string, string> = {
   svg: 'image/svg+xml',
 }
 
+/** Resolve a markdown image `src` against the viewed file's directory into an absolute local path
+ *  (or return it unchanged if already absolute). Collapses `./` and `../`, tolerates both slashes;
+ *  strips a trailing `?query`/`#hash`. Returns null for an empty src. */
+function resolveLocalImagePath(dir: string, src: string): string | null {
+  const clean = src.replace(/[?#].*$/, '').trim()
+  if (!clean) return null
+  if (/^[a-zA-Z]:[/\\]/.test(clean) || clean.startsWith('/') || clean.startsWith('\\')) return clean
+  const out: string[] = []
+  for (const p of `${dir}/${clean}`.split(/[/\\]+/)) {
+    if (p === '' || p === '.') continue
+    if (p === '..') { out.pop(); continue }
+    out.push(p)
+  }
+  return out.length ? out.join('/') : null
+}
+
 const CSV_ROW_CAP = 5000
 
 // Resolve a markdown link href against the directory of the file being viewed (renderer-side, no
@@ -351,6 +367,10 @@ export function FileViewerPanel({ api, params }: IDockviewPanelProps<FileViewerP
   // True when a remote file is binary (image/PDF): there is no remote binary-read op, so we show a
   // notice instead of attempting a (garbled) text read.
   const [remoteBinaryBlocked, setRemoteBinaryBlocked] = useState(false)
+  // Local markdown image srcs (raw src as written → data: URL read off disk), so relative
+  // `![](assets/x.svg)` renders — the browser can't load it on its own and the renderer's sanitizer
+  // blocks file:/data:. Populated by the effect below; passed to MdExtRenderer as resolveImageSrc.
+  const [imageSrcMap, setImageSrcMap] = useState<Map<string, string>>(new Map())
 
   const filePath = params.filePath ?? ''
   const fileName = filePath.replace(/^.*[/\\]/, '')
@@ -527,6 +547,47 @@ export function FileViewerPanel({ api, params }: IDockviewPanelProps<FileViewerP
       })
     }
   }, [filePath, fileName, showAsImage, isPdf, imageMime, remote, ds])
+
+  // Pre-resolve LOCAL markdown image srcs into data: URLs (read off disk, relative to this file's
+  // dir). The browser can't load a relative/on-disk `![](assets/x.svg)` on its own, and the
+  // renderer's sanitizer blocks file:/data:; so the host reads the bytes and hands the widget a
+  // trusted data: URL via resolveImageSrc. Remote (peer) files are never auto-loaded.
+  useEffect(() => {
+    if (!isMarkdown || remote || !content || !window.electronAPI?.readFileBinary) {
+      setImageSrcMap((prev) => (prev.size ? new Map() : prev))
+      return
+    }
+    let alive = true
+    const dir = filePath.replace(/[/\\][^/\\]*$/, '')
+    const srcs = new Set<string>()
+    const re = /!\[[^\]]*\]\(\s*<?([^)>\s]+)/g
+    let m: RegExpExecArray | null
+    while ((m = re.exec(content)) !== null) {
+      const s = m[1]
+      if (/^https?:/i.test(s) || s.startsWith('data:') || s.startsWith('//') || s.startsWith('#')) continue
+      srcs.add(s)
+    }
+    if (srcs.size === 0) {
+      setImageSrcMap((prev) => (prev.size ? new Map() : prev))
+      return
+    }
+    void Promise.all([...srcs].map(async (raw) => {
+      const abs = resolveLocalImagePath(dir, raw)
+      if (!abs) return null
+      const mime = IMAGE_MIME[abs.split('.').pop()?.toLowerCase() ?? '']
+      if (!mime) return null
+      const b64 = await window.electronAPI!.readFileBinary!(abs).catch(() => null)
+      return b64 == null ? null : ([raw, `data:${mime};base64,${b64}`] as const)
+    })).then((pairs) => {
+      if (!alive) return
+      const map = new Map<string, string>()
+      for (const p of pairs) if (p) map.set(p[0], p[1])
+      setImageSrcMap(map)
+    })
+    return () => { alive = false }
+  }, [isMarkdown, remote, content, filePath])
+
+  const resolveImageSrc = useCallback((raw: string) => imageSrcMap.get(raw), [imageSrcMap])
 
   // Read editMode through a ref so the file-watcher callback isn't torn
   // down on every edit-mode toggle, but still sees the latest value (a stale
@@ -962,7 +1023,7 @@ export function FileViewerPanel({ api, params }: IDockviewPanelProps<FileViewerP
               />
             )
           ) : isMarkdown && !rawMode ? (
-            <MdExtRenderer source={content ?? ''} theme="dark" remote={remote} className="file-viewer-markdown" />
+            <MdExtRenderer source={content ?? ''} theme="dark" remote={remote} resolveImageSrc={remote ? undefined : resolveImageSrc} className="file-viewer-markdown" />
           ) : lang ? (
             <pre className="file-viewer-content"><code ref={codeRef} className={`shiki-code language-${lang}`}>{content}</code></pre>
           ) : (

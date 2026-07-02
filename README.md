@@ -5,8 +5,9 @@
 reaching the sessions running on your other computers across the network — including letting one
 AI agent operate another's tab.
 
-> **Status:** Early WIP — **Windows + Claude Code today** (macOS/Linux and more agents soon). A
-> spare-time personal project, open-sourced in case it's useful. No company, no promises beyond "soon".
+> **Status:** A tool I've built over ~5 months and use every day myself — now open-sourced. It's still
+> an early **WIP**: until now it was internal-only, so expect rough edges. **Windows + Claude Code
+> today** (macOS/Linux and more agents soon). A spare-time project — no company, no promises beyond "soon".
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/ludekvodicka/jamat/actions/workflows/ci.yml/badge.svg)](https://github.com/ludekvodicka/jamat/actions)
