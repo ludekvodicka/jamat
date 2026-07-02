@@ -97,6 +97,15 @@ canvas, or labels collide. Author coordinates deliberately; widen `meta.viewBox`
 Routing hints (`fromSide`/`toSide`, `route`, `via`, `labelAt`/`labelDx`/`labelDy`/`labelSegment`) let
 you steer edges and place labels precisely.
 
+> **Connection labels overlap nodes if they're too long.** A label's box is sized from its text
+> length (≈ `4.8 px × chars`) and centered on the edge midpoint — a long label next to a large node
+> spills over it and fails validation (`Label "…" overlaps component "…"`). **Keep connection labels
+> short (≈ ≤ 12 chars)**; move the extra detail into surrounding prose. When a short label still
+> collides, nudge it off the node with `labelDy` (down/up) or `labelDx` (along the edge), or pin it in
+> clear space with `labelAt: [x, y]`. **Validate before shipping** — `npm run check:mdext` runs the
+> real archify renderer over every diagram in `docs/` headlessly and reports any overlap/off-canvas
+> failure *before* the file is opened in the viewer.
+
 ### `architecture` — components, boundaries, connections
 
 | Field | Shape |

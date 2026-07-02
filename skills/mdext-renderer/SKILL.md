@@ -197,7 +197,10 @@ authoring an unknown block never breaks the view.
 - Every multi-line code sample is in a fenced block **with a language tag**.
 - Each visual uses the right tool (hand-SVG for bespoke; a typed engine for data-heavy/deterministic).
 - A ` ```svg ` fence holds a valid `<svg>` that fits its `viewBox` and stays in the sanitize-safe set.
-- Archify specs are valid JSON, set `diagram_type`, and place nodes without overlaps / off-canvas.
+- Archify specs are valid JSON, set `diagram_type`, place nodes without overlaps / off-canvas, and
+  keep **connection labels short** (≈ ≤ 12 chars) or offset them (`labelDx`/`labelDy`/`labelAt`) so
+  they don't overlap a node. When authoring for this repo, run **`npm run check:mdext`** — it renders
+  every archify diagram in `docs/` headlessly and fails on any overlap/off-canvas before you ship.
 - No raw HTML used for layout (use Markdown / tables / typed blocks).
 - Metadata is in frontmatter, not a hand-drawn table at the top.
 - Links/images use `http(s)` / relative URLs only.

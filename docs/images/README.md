@@ -23,9 +23,7 @@ To embed one in the top-level `README.md`, reference it by relative path, e.g.
 | 12 | [`12-help.png`](12-help.png) | Help — all keyboard shortcuts & tab types |
 | 13 | [`13-usage-stats.png`](13-usage-stats.png) | Usage stats dashboard — tokens, spend, models |
 | 14 | [`14-context-nudge.png`](14-context-nudge.png) | Context-full nudge — one-click Compact now |
-| — | [`output-01-capabilities.png`](output-01-capabilities.png) | Rich mdext output — frontmatter, chips, status diagram |
-| — | [`output-02-diagrams.png`](output-02-diagrams.png) | Rich mdext output — architecture diagram + config + checklist |
-| — | [`output-03-checklist.png`](output-03-checklist.png) | Rich mdext output — checklist + collapsible |
+| — | [`output-architecture.png`](output-architecture.png) | Rich mdext output — an agent's Jamat architecture map |
 
 ---
 
@@ -161,13 +159,8 @@ never mid-turn.
 
 ## Output examples — mdext rendering
 
-These are [`docs/jamat-capabilities.md`](../jamat-capabilities.md) rendered live in Jamat's file
-viewer, showing the **mdext** format: frontmatter strip, status chips, typed callouts, tables, and
-inline diagrams (Archify / SVG). Grouped separately from the UI screenshots above — they showcase
-what agent-authored *output* looks like, not the app chrome.
+An example of agent-authored **output** (not app chrome): we asked an agent to map Jamat's
+architecture, and it produced [`docs/jamat-architecture.md`](../jamat-architecture.md) — a single
+mdext document rendered live in the file viewer, with an Archify system diagram and a component grid.
 
-![mdext output — frontmatter, chips, live status diagram](output-01-capabilities.png)
-
-![mdext output — architecture diagram, config, checklist](output-02-diagrams.png)
-
-![mdext output — checklist and collapsible details](output-03-checklist.png)
+![mdext output — an agent's Jamat architecture map, with an Archify diagram and component grid](output-architecture.png)

@@ -35,7 +35,7 @@ machines over a token-gated LAN bridge. The whole thing runs on your own keys â€
     { "from": "agent",    "to": "core",  "label": "import", "variant": "emphasis" },
     { "from": "stats",    "to": "core",  "label": "reads" },
     { "from": "core",     "to": "claude","label": "spawns" },
-    { "from": "core",     "to": "peer",  "label": "LAN bridge Â· via app-agent", "variant": "security" },
+    { "from": "core",     "to": "peer",  "label": "LAN bridge", "variant": "security", "labelDy": 10 },
     { "from": "wol",      "to": "peer",  "label": "wake", "variant": "dashed" }
   ]
 }
