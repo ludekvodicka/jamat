@@ -130,12 +130,14 @@ typed callouts / status chips / collapsibles, and inline diagrams (**Mermaid, Gr
 Archify**, plus hand-authored SVG) — all themed, all safe on untrusted input (raw HTML is stripped).
 
 It ships with a **skill that teaches the agent to author in this format**, so a plan, analysis, or
-status report comes out as a rich, diagram-bearing document instead of a wall of text. The page below
-is what Jamat rendered after asking an agent to **map Jamat's own architecture** — a single mdext
-document ([`docs/jamat-architecture.md`](docs/jamat-architecture.md)) with an Archify system diagram
-and a component grid, shown live in the file viewer:
+status report comes out as a rich, diagram-bearing document instead of a wall of text. Below is what
+Jamat rendered after asking an agent to **map Jamat's own architecture** — a single mdext document
+([`docs/jamat-architecture.md`](docs/jamat-architecture.md)) with an Archify system diagram, a package
+map, and a cross-machine sequence, shown live in the file viewer:
 
-![Jamat's architecture, mapped by an agent and rendered as an mdext document with an Archify diagram and a component grid](docs/images/output-architecture.png)
+![Jamat architecture, part 1: an Archify system-context diagram and the core/ component grid](docs/images/output-architecture.png)
+
+![Jamat architecture, part 2: the package map, the dependency rule, and a cross-machine sequence diagram](docs/images/output-architecture-2.png)
 
 ## Architecture
 

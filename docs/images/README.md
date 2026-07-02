@@ -23,7 +23,8 @@ To embed one in the top-level `README.md`, reference it by relative path, e.g.
 | 12 | [`12-help.png`](12-help.png) | Help — all keyboard shortcuts & tab types |
 | 13 | [`13-usage-stats.png`](13-usage-stats.png) | Usage stats dashboard — tokens, spend, models |
 | 14 | [`14-context-nudge.png`](14-context-nudge.png) | Context-full nudge — one-click Compact now |
-| — | [`output-architecture.png`](output-architecture.png) | Rich mdext output — an agent's Jamat architecture map |
+| — | [`output-architecture.png`](output-architecture.png) | Rich mdext output — an agent's Jamat architecture map (part 1) |
+| — | [`output-architecture-2.png`](output-architecture-2.png) | Rich mdext output — architecture map, part 2 (package map + sequence) |
 
 ---
 
@@ -161,6 +162,9 @@ never mid-turn.
 
 An example of agent-authored **output** (not app chrome): we asked an agent to map Jamat's
 architecture, and it produced [`docs/jamat-architecture.md`](../jamat-architecture.md) — a single
-mdext document rendered live in the file viewer, with an Archify system diagram and a component grid.
+mdext document rendered live in the file viewer, with an Archify system diagram, a package map, and a
+cross-machine sequence. Two views of that page:
 
-![mdext output — an agent's Jamat architecture map, with an Archify diagram and component grid](output-architecture.png)
+![mdext output — architecture map, part 1: Archify system diagram + core/ component grid](output-architecture.png)
+
+![mdext output — architecture map, part 2: package map, dependency rule, and cross-machine sequence](output-architecture-2.png)
