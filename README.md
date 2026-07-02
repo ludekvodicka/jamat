@@ -12,7 +12,7 @@ AI agent operate another's tab.
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/ludekvodicka/jamat/actions/workflows/ci.yml/badge.svg)](https://github.com/ludekvodicka/jamat/actions)
 
-![Jamat overview](docs/images/01-overview.png)
+![Jamat overview](docs/images/00-overview.gif)
 
 ---
 
@@ -85,7 +85,9 @@ drawer per subject, each with full memory and its own documents.
 | ![File view](docs/images/04-file-view.png)<br>**File view** — breadcrumb + Open folder / Copy / Diff / Edit / VS Code over highlighted source. | ![Settings](docs/images/05-settings.png)<br>**Settings** — projects, appearance, terminal, notifications, usage, remote… all from the UI. |
 | ![Diff view](docs/images/06-diff-view.png)<br>**Diff view** — compare against a git commit, an svn base, or a point in the Claude session. | ![Window groups](docs/images/07-window-groups.png)<br>**Colored window groups** — name & color windows to tell topic groups apart. |
 | ![Status bar](docs/images/08-status-bar.png)<br>**Status bar** — model, reasoning effort, context used, and hourly (S) / weekly (W) usage meters. | ![Remote connections](docs/images/09-remote-connections.png)<br>**Remote connections** — allow token-gated LAN control on this machine, then view & drive tabs on your other computers. |
-| ![File context menu](docs/images/10-file-context-menu.png)<br>**Open any mentioned file** — right-click a file path in a session's output to open it in a tab or VS Code, or open the whole project. | *Context-full nudge — screenshot coming.* |
+| ![File context menu](docs/images/10-file-context-menu.png)<br>**Open any mentioned file** — right-click a file path in a session's output to open it in a tab or VS Code, or open the whole project. | ![New tab picker](docs/images/11-new-tab-picker.png)<br>**New-tab picker** — Ctrl+Shift+T opens a grouped launcher (Agents / Shells / Tools / App). |
+| ![Help](docs/images/12-help.png)<br>**Help** — every keyboard shortcut and tab type on one page. | ![Usage stats](docs/images/13-usage-stats.png)<br>**Usage stats** — tokens, spend, model breakdown and daily consumption across your sessions. |
+| ![Context nudge](docs/images/14-context-nudge.png)<br>**Context-full nudge** — a one-click **Compact now** prompt when a session gets large, at thresholds you set. | |
 
 ## AI that operates AI
 

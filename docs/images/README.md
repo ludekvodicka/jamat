@@ -8,6 +8,7 @@ To embed one in the top-level `README.md`, reference it by relative path, e.g.
 
 | # | File | Shows |
 |---|------|-------|
+| 00 | [`00-overview.gif`](00-overview.gif) | Animated hero — the app in motion (README lead) |
 | 01 | [`01-overview.png`](01-overview.png) | Main overview — the whole app at a glance |
 | 02 | [`02-tab-status.png`](02-tab-status.png) | Per-tab status signaling (working / waiting / done) |
 | 03 | [`03-side-panel.png`](03-side-panel.png) | Side panel — prepared notes + recent files |
@@ -18,11 +19,22 @@ To embed one in the top-level `README.md`, reference it by relative path, e.g.
 | 08 | [`08-status-bar.png`](08-status-bar.png) | Status bar — model, context, hourly & weekly limits |
 | 09 | [`09-remote-connections.png`](09-remote-connections.png) | Remote connections — LAN control & peer machines |
 | 10 | [`10-file-context-menu.png`](10-file-context-menu.png) | Right-click a file mentioned in output to open it |
+| 11 | [`11-new-tab-picker.png`](11-new-tab-picker.png) | New-tab picker (Ctrl+Shift+T) — grouped launcher |
+| 12 | [`12-help.png`](12-help.png) | Help — all keyboard shortcuts & tab types |
+| 13 | [`13-usage-stats.png`](13-usage-stats.png) | Usage stats dashboard — tokens, spend, models |
+| 14 | [`14-context-nudge.png`](14-context-nudge.png) | Context-full nudge — one-click Compact now |
 | — | [`output-01-capabilities.png`](output-01-capabilities.png) | Rich mdext output — frontmatter, chips, status diagram |
 | — | [`output-02-diagrams.png`](output-02-diagrams.png) | Rich mdext output — architecture diagram + config + checklist |
 | — | [`output-03-checklist.png`](output-03-checklist.png) | Rich mdext output — checklist + collapsible |
 
 ---
+
+## 00 — Overview (animated hero)
+
+![Overview animation](00-overview.gif)
+
+The animated lead used at the top of the repo `README.md` — the app in motion. Static stills of the
+same views follow below.
 
 ## 01 — Overview
 
@@ -113,6 +125,37 @@ machine.
 Right-clicking a **file path mentioned in a session's output** offers to open it directly — in a
 Jamat tab or in VS Code — or to open the whole project in VS Code, plus paste actions. Turns any
 path the agent prints into a one-click jump to the file.
+
+## 11 — New-tab picker
+
+![New-tab picker](11-new-tab-picker.png)
+
+**Ctrl+Shift+T** opens the new-tab picker — a launcher grouped into **Agents** (Claude Code, Codex),
+**Shells** (CMD, PowerShell), **Tools** (Usage Stats, Ideas, Claude Abilities, Remote connections),
+and **App** (Error Log, Help, Settings), each with its shortcut.
+
+## 12 — Help
+
+![Help](12-help.png)
+
+The in-app **Help** page — every keyboard shortcut grouped by area (Tab Management, Layout, Panels &
+Windows, Terminal) plus the tab types, all on one scrollable page (**F1**).
+
+## 13 — Usage stats
+
+![Usage stats](13-usage-stats.png)
+
+The **Usage Stats** dashboard: all-time / today / 30-day tokens, session count and total spend; a
+tokens-over-time chart; a 26-week activity heatmap; per-model breakdown (input / output / cached /
+cost / share); and a daily-consumption table — across Overview / 24h / 5h / 1h tabs.
+
+## 14 — Context-full nudge
+
+![Context-full nudge](14-context-nudge.png)
+
+The compaction nudge: when a session grows past a threshold you set, a card offers **Compact now**
+(runs `/compact`) or **Postpone**. It only fires on an idle session (turn finished, prompt waiting),
+never mid-turn.
 
 ---
 

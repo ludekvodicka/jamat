@@ -16,6 +16,7 @@ const HELP_CONTENT = `
 | **Ctrl+Shift+Tab** | Switch to previous tab |
 | **Ctrl+Shift+PageUp** | Move tab left within its group |
 | **Ctrl+Shift+PageDown** | Move tab right within its group |
+| **F2** | Rename the active session / tab |
 
 ### Layout
 | Shortcut | Action |
@@ -49,9 +50,19 @@ const HELP_CONTENT = `
 | **Ctrl+F** | Search in terminal scrollback |
 | **Ctrl+V / Ctrl+Shift+V** | Paste from clipboard |
 | **Ctrl+C** | Copy selection / Send SIGINT when no selection |
+| **Ctrl+Shift+C** | Copy selection (native — keeps the selection) |
 | **Shift+Enter** | Newline without submit (in Claude Code) |
 | **Right-click** | Context menu (Copy, Open in VS Code, Open in Tab) |
 | **Shift+Right-click** | Paste from clipboard |
+
+### File Viewer
+| Shortcut | Action |
+|----------|--------|
+| **Ctrl+E** | Toggle edit mode (edit the open file — local files only) |
+| **Ctrl+S** | Save the file (while in edit mode) |
+| **Ctrl+F** | Find within the open file |
+| **Enter / Shift+Enter** | Jump to next / previous match (in the find bar) |
+| **Esc** | Close the find bar / exit edit mode |
 
 ## Tab Types
 

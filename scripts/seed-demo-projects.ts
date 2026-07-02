@@ -214,10 +214,76 @@ def test_run_returns_result():
 `)
 }
 
+function scaffoldHome(dir: string, p: DemoProject) {
+  mkdirSync(join(dir, 'documents'), { recursive: true })
+  write(join(dir, 'README.md'),
+`# ${p.name}
+
+${p.desc}
+
+A **topic folder**, not a code project — one place for everything about the ${p.name.toLowerCase()}:
+notes, quotes, measurements and documents. Open a Claude tab here and it has the whole history and
+every document as context.
+
+## What's here
+
+- \`notes.md\` — running notes and decisions
+- \`todo.md\` — open tasks
+- \`documents/\` — quotes, measurements and reference docs
+`)
+  write(join(dir, 'notes.md'),
+`# ${p.name} — notes
+
+${p.desc}
+
+## Log
+
+- Collected first quotes and rough measurements.
+- Comparing options before booking the work.
+
+## Decisions
+
+- _None final yet._
+`)
+  write(join(dir, 'todo.md'),
+`# ${p.name} — to do
+
+- [x] Write down what we want
+- [ ] Get three quotes
+- [ ] Compare options and pick one
+- [ ] Book the work
+- [ ] Final walkthrough and sign-off
+`)
+  write(join(dir, 'documents', 'quote-contractor-a.md'),
+`# Quote — Contractor A
+
+Project: ${p.name}
+Prepared: (demo)
+
+| Item | Estimate |
+|---|---|
+| Materials | — |
+| Labour | — |
+| **Total** | **—** |
+
+Placeholder quote for the demo profile.
+`)
+  write(join(dir, 'documents', 'measurements.md'),
+`# ${p.name} — measurements
+
+- Overall area: — m²
+- Access / constraints: —
+- Key dimensions: —
+
+_Fill in on site; demo placeholder._
+`)
+}
+
 function scaffold(stack: Stack, dir: string, p: DemoProject) {
   if (stack === 'web') return scaffoldWeb(dir, p)
   if (stack === 'backend') return scaffoldBackend(dir, p)
-  return scaffoldAi(dir, p)
+  if (stack === 'ai') return scaffoldAi(dir, p)
+  return scaffoldHome(dir, p)
 }
 
 /**

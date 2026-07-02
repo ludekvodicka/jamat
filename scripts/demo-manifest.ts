@@ -33,7 +33,7 @@ export const DEMO_CLAUDE_DIR = 'Q:\\Demo\\.claude-demo'
  */
 export const DEMO_CONFIG_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '.private', 'configs', 'demo')
 
-export type Stack = 'web' | 'backend' | 'ai'
+export type Stack = 'web' | 'backend' | 'ai' | 'home'
 
 export interface DemoProject {
   name: string
@@ -76,6 +76,17 @@ export const DEMO_CATEGORIES: DemoCategory[] = [
       { name: 'DocSummarizer', desc: 'Long-document chunking and map-reduce summaries.' },
       { name: 'ImageTagger', desc: 'Vision pipeline that auto-tags an image library.' },
       { name: 'RagPipeline', desc: 'Embeddings, vector search and grounded answers.' },
+    ],
+  },
+  {
+    label: 'House',
+    stack: 'home',
+    projects: [
+      { name: 'Pool', desc: 'Backyard pool build — quotes, permits, pump and maintenance notes.' },
+      { name: 'Garden', desc: 'Garden landscaping — beds, irrigation and a planting calendar.' },
+      { name: 'Electrics', desc: 'House rewiring — circuit inventory, electrician quotes and safety checks.' },
+      { name: 'Renovation', desc: 'Kitchen renovation — measurements, contractor bids and a task list.' },
+      { name: 'Heating', desc: 'Heat-pump install — quotes, sizing and running-cost notes.' },
     ],
   },
 ]
