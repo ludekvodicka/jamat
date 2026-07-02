@@ -67,6 +67,17 @@ ok('MIN_TOKEN_LEN is at least 32', MIN_TOKEN_LEN >= 32)
   ok('missing listenPort → default', data.listenPort === 47201)
   ok('missing peers → empty array', Array.isArray(data.peers) && data.peers.length === 0)
 }
+{
+  // Custom listen port (run a 2nd instance on one machine) is preserved; out-of-range is rejected.
+  const custom = normalizeRemoteControlData({ token: STRONG, listenPort: 50000 }, { defaultPort: 47200, genToken: gen })
+  ok('valid custom listenPort is preserved', custom.data.listenPort === 50000)
+  const tooHigh = normalizeRemoteControlData({ token: STRONG, listenPort: 70000 }, { defaultPort: 47200, genToken: gen })
+  ok('out-of-range listenPort → default', tooHigh.data.listenPort === 47200)
+  const privileged = normalizeRemoteControlData({ token: STRONG, listenPort: 80 }, { defaultPort: 47200, genToken: gen })
+  ok('privileged listenPort (<1024) → default', privileged.data.listenPort === 47200)
+  ok('save sanitization preserves a valid custom listenPort',
+    sanitizeForSave({ enabled: true, token: STRONG, listenPort: 50000, peers: [] }, gen).listenPort === 50000)
+}
 
 // ── peer validation + save sanitization ──
 const goodPeer = { id: 'x', name: 'n', host: 'h', controlPort: 47200, agentPort: 3501, token: 't' }

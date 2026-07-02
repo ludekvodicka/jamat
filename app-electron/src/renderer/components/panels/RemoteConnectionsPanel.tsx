@@ -6,7 +6,7 @@ import type {
   PeerReachability,
   OpenTabReq,
 } from '../../../../../core/types/remote-control'
-import { CONTROL_PORT_PACKAGED, DEFAULT_AGENT_PORT } from '../../../../../core/types/remote-control'
+import { CONTROL_PORT_PACKAGED, DEFAULT_AGENT_PORT, CONTROL_PORT_MIN, CONTROL_PORT_MAX, isValidControlPort } from '../../../../../core/types/remote-control'
 import { useLayoutStore } from '../../store/layout-store'
 import { openOrActivatePanel, openPeerFile as sharedOpenPeerFile, openPeerChanges as sharedOpenPeerChanges, openPeerNotes as sharedOpenPeerNotes } from '../../utils/terminal-helpers'
 
@@ -331,6 +331,24 @@ export function RemoteConnectionsPanel() {
             )
           })()}
         </label>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, marginBottom: 8 }}>
+          <span style={{ color: '#888' }}>Listen port:</span>
+          <input
+            style={{ ...input, width: 90 }}
+            type="number"
+            min={CONTROL_PORT_MIN}
+            max={CONTROL_PORT_MAX}
+            title="This machine's control-server port (default 47200; 47201 dev). Change it to run a second instance on the same machine — each instance needs its own port. Peers must use the new port as 'ctrl port'."
+            value={config.listenPort}
+            onChange={(e) => setConfig((c) => (c ? { ...c, listenPort: Number(e.target.value) } : c))}
+            onBlur={persist}
+          />
+          <span style={{ fontSize: 11, color: isValidControlPort(config.listenPort) ? '#666' : '#f85149' }}>
+            {isValidControlPort(config.listenPort)
+              ? 'default 47200 — change to run multiple instances on one machine'
+              : `must be ${CONTROL_PORT_MIN}–${CONTROL_PORT_MAX}`}
+          </span>
+        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
           <span style={{ color: '#888' }}>Token:</span>
           <code style={{ background: '#1e1e1e', padding: '2px 6px', borderRadius: 4, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tokenDisplay}</code>

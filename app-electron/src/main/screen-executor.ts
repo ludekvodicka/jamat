@@ -400,34 +400,24 @@ function readSelection(filePath: string): MenuSelection | null {
 function spawnMenu(terminalId: string, state: TerminalState): void {
   const configDir = getJamatPaths().configDir
   const menuArgs = ['--config', state.menuConfig, '--config-dir', configDir]
-  let command: string
-  let args: string[]
-  let cwd: string
-  const extraEnv: Record<string, string> = {}
-  if (app.isPackaged) {
-    // Installed build: run the pre-bundled menu via Electron-as-Node — no source tree, tsx or
-    // system Node needed. `out/menu/menu-tui.cjs` ships in resources/app (files: out/**, asar:false).
-    command = process.execPath
-    args = [join(app.getAppPath(), 'out', 'menu', 'menu-tui.cjs'), ...menuArgs]
-    cwd = homedir()
-    extraEnv['ELECTRON_RUN_AS_NODE'] = '1'
-  } else {
-    // Dev: run the TS source through tsx. On Windows this stays `cmd.exe /c node …` (byte-identical).
-    const wrapped = shellWrapArgv('node', ['--import', 'tsx', 'menu-tui.ts', ...menuArgs])
-    command = wrapped.file
-    args = wrapped.args
-    cwd = state.menuDir
-  }
+  // The menu TUI is hosted by system `node` in BOTH builds. Electron-as-Node can't host an
+  // interactive TTY inside a Windows ConPTY — the GUI-subsystem Jamat.exe gets no console stdio
+  // there, so the TUI renders nothing and exits immediately. Installed builds run the esbuild
+  // .cjs bundle (no tsx / source tree needed); dev runs the TS source via tsx. node is a
+  // documented prerequisite (README) and every Claude Code user already has it.
+  const nodeArgs = app.isPackaged
+    ? [join(app.getAppPath(), 'out', 'menu', 'menu-tui.cjs'), ...menuArgs]
+    : ['--import', 'tsx', 'menu-tui.ts', ...menuArgs]
+  const wrapped = shellWrapArgv('node', nodeArgs)
   createPty(terminalId, state.webContentsId, {
     cols: state.cols,
     rows: state.rows,
-    cwd,
-    command,
-    args,
+    cwd: app.isPackaged ? homedir() : state.menuDir,
+    command: wrapped.file,
+    args: wrapped.args,
     env: {
       JAMAT: '1',
       JAMAT_MENU_SELECTION_FILE: state.selectionFile,
-      ...extraEnv,
     },
     trusted: true,
     onExit: (info) => handleTerminalExit(terminalId, info)

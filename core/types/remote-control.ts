@@ -19,6 +19,14 @@
 export const CONTROL_PORT_PACKAGED = 47200
 export const CONTROL_PORT_DEV = 47201
 
+/** Editable range for a custom control listen port (change it to run a second instance on the
+ *  same machine). Floor at 1024 to stay out of the privileged range that needs elevation to bind. */
+export const CONTROL_PORT_MIN = 1024
+export const CONTROL_PORT_MAX = 65535
+export function isValidControlPort(p: unknown): p is number {
+  return Number.isInteger(p) && (p as number) >= CONTROL_PORT_MIN && (p as number) <= CONTROL_PORT_MAX
+}
+
 /** Default agent port (the always-on `app-agent`). */
 export const DEFAULT_AGENT_PORT = 3501
 

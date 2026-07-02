@@ -8,7 +8,7 @@
  */
 
 import type { RemoteControlData, RemotePeer } from './types/remote-control.js'
-import { MIN_TOKEN_LEN } from './types/remote-control.js'
+import { MIN_TOKEN_LEN, isValidControlPort } from './types/remote-control.js'
 
 export function isValidPeer(x: unknown): x is RemotePeer {
   if (!x || typeof x !== 'object') return false
@@ -50,7 +50,7 @@ export function normalizeRemoteControlData(raw: unknown, opts: NormalizeOpts): {
   const data: RemoteControlData = {
     enabled: o.enabled === true,
     token,
-    listenPort: Number.isInteger(o.listenPort) ? (o.listenPort as number) : opts.defaultPort,
+    listenPort: isValidControlPort(o.listenPort) ? o.listenPort : opts.defaultPort,
     peers: Array.isArray(o.peers) ? (o.peers as unknown[]).filter(isValidPeer) : [],
     // This machine's own short name (instance-id `<machine>` prefix). Kept verbatim if a non-empty
     // string; otherwise absent → the electron store seeds it from the hostname (core is host-agnostic).
@@ -67,7 +67,7 @@ export function sanitizeForSave(data: RemoteControlData, genToken: () => string)
   return {
     enabled: data.enabled === true,
     token: typeof data.token === 'string' && data.token.length >= MIN_TOKEN_LEN ? data.token : genToken(),
-    listenPort: Number.isInteger(data.listenPort) ? data.listenPort : 47200,
+    listenPort: isValidControlPort(data.listenPort) ? data.listenPort : 47200,
     peers: Array.isArray(data.peers) ? data.peers.filter(isValidPeer) : [],
     ...(typeof data.selfName === 'string' && data.selfName.trim() ? { selfName: data.selfName.trim() } : {}),
     ...(typeof data.bridgeScratchDir === 'string' ? { bridgeScratchDir: data.bridgeScratchDir } : {}),

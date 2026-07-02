@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
-// CJS so Electron-as-Node (ELECTRON_RUN_AS_NODE) runs it directly; everything inlined (core/ is
+// CJS so the installed app's system `node` runs it directly; everything inlined (core/ is
 // dependency-free), so the installed app needs no sources, tsx, or system Node to render the menu.
 await build({
   entryPoints: [resolve(ROOT, 'app-cli/menu-tui.ts')],
