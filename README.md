@@ -5,12 +5,13 @@
 reaching the sessions running on your other computers across the network — including letting one
 AI agent operate another's tab.
 
-> **Status:** Early and a work in progress. **Windows today** (macOS & Linux soon).
-> **Claude Code today** (Codex / GPT and other agents soon). Built as a personal project in spare
-> time, open-sourced because it might help you too. No company, no roadmap promises beyond "soon".
+> **Status:** Early WIP — **Windows + Claude Code today** (macOS/Linux and more agents soon). A
+> spare-time personal project, open-sourced in case it's useful. No company, no promises beyond "soon".
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/ludekvodicka/jamat/actions/workflows/ci.yml/badge.svg)](https://github.com/ludekvodicka/jamat/actions)
+[![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D6.svg)](#quick-start)
+[![Node](https://img.shields.io/badge/node-%E2%89%A520-339933.svg?logo=node.js&logoColor=white)](https://nodejs.org)
 
 ![Jamat overview](docs/images/00-overview.gif)
 
@@ -36,6 +37,20 @@ self-hosted, your keys — nothing is proxied.
 
 …plus cross-machine control, AI-operates-AI, phone access, and skill/MCP management — see
 **Highlights** below.
+
+## Why Jamat?
+
+Plain terminal tabs, a VS Code window, or a session multiplexer each solve part of this — Jamat is
+the combination, aimed specifically at *many* Claude Code agents:
+
+- **vs. terminal tabs / tmux** — tabs don't tell you which agent is *working* vs *waiting on you*, or
+  survive a reboot with the layout intact. Jamat does both, and adds diffs, usage stats and a session
+  picker on top.
+- **vs. an IDE** — an editor runs one integrated assistant in one window. Jamat is built for running
+  and *watching many* agents at once — and for the non-code "a folder per topic" workflow too.
+- **vs. single-machine session managers** (claude-squad, Crystal, Conductor) — those orchestrate
+  sessions on one box. Jamat reaches **across machines** on your LAN, and lets **one agent operate
+  another's tab**.
 
 ## Not just for code — a workspace per topic
 
@@ -81,13 +96,13 @@ drawer per subject, each with full memory and its own documents.
 
 | | |
 |---|---|
-| ![Tab status](docs/images/02-tab-status.png)<br>**Per-tab status** — a colored dot per tab shows working / waiting-on-you / done, across every window. | ![Side panel](docs/images/03-side-panel.png)<br>**Notes & recent files** — one-click reusable prompts, plus the files this session changed. |
-| ![File view](docs/images/04-file-view.png)<br>**File view** — breadcrumb + Open folder / Copy / Diff / Edit / VS Code over highlighted source. | ![Settings](docs/images/05-settings.png)<br>**Settings** — projects, appearance, terminal, notifications, usage, remote… all from the UI. |
-| ![Diff view](docs/images/06-diff-view.png)<br>**Diff view** — compare against a git commit, an svn base, or a point in the Claude session. | ![Window groups](docs/images/07-window-groups.png)<br>**Colored window groups** — name & color windows to tell topic groups apart. |
-| ![Status bar](docs/images/08-status-bar.png)<br>**Status bar** — model, reasoning effort, context used, and hourly (S) / weekly (W) usage meters. | ![Remote connections](docs/images/09-remote-connections.png)<br>**Remote connections** — allow token-gated LAN control on this machine, then view & drive tabs on your other computers. |
-| ![File context menu](docs/images/10-file-context-menu.png)<br>**Open any mentioned file** — right-click a file path in a session's output to open it in a tab or VS Code, or open the whole project. | ![New tab picker](docs/images/11-new-tab-picker.png)<br>**New-tab picker** — Ctrl+Shift+T opens a grouped launcher (Agents / Shells / Tools / App). |
-| ![Help](docs/images/12-help.png)<br>**Help** — every keyboard shortcut and tab type on one page. | ![Usage stats](docs/images/13-usage-stats.png)<br>**Usage stats** — tokens, spend, model breakdown and daily consumption across your sessions. |
-| ![Context nudge](docs/images/14-context-nudge.png)<br>**Context-full nudge** — a one-click **Compact now** prompt when a session gets large, at thresholds you set. | |
+| ![Overview](docs/images/01-overview.png)<br>**Overview** — the tiling workspace: project & session selector on the left, a live agent tab on the right. | ![Tab status](docs/images/02-tab-status.png)<br>**Per-tab status** — a colored dot per tab shows working / waiting-on-you / done, across every window. |
+| ![Side panel](docs/images/03-side-panel.png)<br>**Notes & recent files** — one-click reusable prompts, plus the files this session changed. | ![File view](docs/images/04-file-view.png)<br>**File view** — breadcrumb + Open folder / Copy / Diff / Edit / VS Code over highlighted source. |
+| ![Settings](docs/images/05-settings.png)<br>**Settings** — projects, appearance, terminal, notifications, usage, remote… all from the UI. | ![Diff view](docs/images/06-diff-view.png)<br>**Diff view** — compare against a git commit, an svn base, or a point in the Claude session. |
+| ![Window groups](docs/images/07-window-groups.png)<br>**Colored window groups** — name & color windows to tell topic groups apart. | ![Status bar](docs/images/08-status-bar.png)<br>**Status bar** — model, reasoning effort, context used, and hourly (S) / weekly (W) usage meters. |
+| ![Remote connections](docs/images/09-remote-connections.png)<br>**Remote connections** — allow token-gated LAN control on this machine, then view & drive tabs on your other computers. | ![File context menu](docs/images/10-file-context-menu.png)<br>**Open any mentioned file** — right-click a file path in a session's output to open it in a tab or VS Code, or open the whole project. |
+| ![New tab picker](docs/images/11-new-tab-picker.png)<br>**New-tab picker** — Ctrl+Shift+T opens a grouped launcher (Agents / Shells / Tools / App). | ![Help](docs/images/12-help.png)<br>**Help** — every keyboard shortcut and tab type on one page. |
+| ![Usage stats](docs/images/13-usage-stats.png)<br>**Usage stats** — tokens, spend, model breakdown and daily consumption across your sessions. | ![Context nudge](docs/images/14-context-nudge.png)<br>**Context-full nudge** — a one-click **Compact now** prompt when a session gets large, at thresholds you set. |
 
 ## AI that operates AI
 
@@ -149,6 +164,9 @@ Jamat is a TypeScript monorepo; several entry points share one core of business 
 installed and on your `PATH`.
 
 ```bash
+# 0. Clone the repo
+git clone https://github.com/ludekvodicka/jamat && cd jamat
+
 # 1. Install dependencies (two installs: root + the Electron app)
 npm install
 cd app-electron && npm install && cd ..
@@ -194,6 +212,21 @@ Honest "soon", no dates:
 - More agents via the pluggable adapter layer (Codex / GPT and others)
 - A native mobile app that remote-controls the desktop app directly
 
+## FAQ
+
+**Does it send my code anywhere?** No. Jamat runs Claude Code as a local subprocess on your own
+machine and your own keys — nothing is proxied through us. The only traffic is Claude Code's own
+calls to Anthropic, plus the optional LAN bridge between *your* machines (off by default).
+
+**Subscription or API key?** Either — Jamat drives the Claude Code CLI, so whatever you logged it in
+with (a Claude subscription or an Anthropic API key) is what it uses.
+
+**Why Windows only?** Built and used on Windows first; the code is largely cross-platform and
+macOS / Linux builds are on the roadmap — just not tested yet.
+
+**Do I need all the `app-*` parts?** No. The desktop app (`app-electron`) is all you need; `app-agent`
+(phone / LAN remote), `app-stats` and `app-wol` are optional add-ons.
+
 ## Contributing
 
 Issues and PRs are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) and our
@@ -204,6 +237,12 @@ Issues and PRs are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) and our
 Jamat is a personal project, built in spare time to scratch one developer's own itch: running a
 growing pile of Claude Code agents across several machines without losing the plot. It worked well
 enough day-to-day that it seemed worth sharing — so it's open source, self-hosted, and free.
+
+## Star & feedback
+
+If Jamat is useful to you, a ⭐ helps others find it. Ideas, questions and bug reports are very
+welcome — open a [Discussion](https://github.com/ludekvodicka/jamat/discussions) or an
+[Issue](https://github.com/ludekvodicka/jamat/issues).
 
 ## License
 
