@@ -34,8 +34,8 @@ import {
   registerPtyIpc,
   processPendingTab,
   setWindowStateManager,
-  getMonorepoRoot
 } from './ipc-windows'
+import { getMonorepoRoot } from './app-root'
 import { isFirstInstance, setAsFirstInstance, clearInstanceMarker, loadWindowState } from './window-state-manager'
 import { mountOpAdapter } from '../shared/typed-ipc'
 import { registerAllOps } from './op-registry'

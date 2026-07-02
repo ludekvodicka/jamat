@@ -1,8 +1,10 @@
 import * as pty from 'node-pty'
 import { EventEmitter } from 'node:events'
+import { homedir } from 'node:os'
 import { getWebContents, isAllowedShell } from './electron-utils'
 import { publishTo } from './streams'
 import { computeRingDelta } from '../../../core/ring-delta'
+import { defaultShell } from '../../../core/platform-shell.js'
 
 interface PtyEntry {
   process: pty.IPty
@@ -141,7 +143,7 @@ export function createPty(
   }
 
   const env = { ...process.env, ...(config.env ?? {}) } as Record<string, string>
-  const shell = config.command ?? 'powershell.exe'
+  const shell = config.command ?? defaultShell()
   const args = config.args ?? []
 
   if (!config.trusted && !isAllowedShell(shell)) {
@@ -152,7 +154,7 @@ export function createPty(
   const cols = Math.max(1, Math.min(config.cols, 500))
   const rows = Math.max(1, Math.min(config.rows, 200))
 
-  const cwd = config.cwd ?? process.env['USERPROFILE'] ?? 'C:\\'
+  const cwd = config.cwd ?? homedir()
   const proc = pty.spawn(shell, args, {
     name: 'xterm-256color',
     cols,

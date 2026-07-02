@@ -58,6 +58,13 @@ jobs:
         working-directory: app-electron
         run: npx electron-vite build
 
+      - name: Bundle menu TUI (esbuild)
+        run: node --import tsx scripts/build-menu.ts
+
+      - name: Smoke the menu bundle (usage exit)
+        shell: bash
+        run: node app-electron/out/menu/menu-tui.cjs && exit 1 || test $? -eq 1
+
       - name: Package installer (${{ matrix.platform }}, unsigned)
         working-directory: app-electron
         env:

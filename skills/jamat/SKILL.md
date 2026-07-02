@@ -145,6 +145,9 @@ machine — so you don't pass a peer or a `terminalId`. `found:false` means the 
   `jamat await <peer> <terminalId> --corr-id <id>` (the `corrId` from the original send).
 - **Three answer channels** (polled together): a **file** (`<scratch>/.jamat-tasks/<corrId>.answer.md`,
   robust), **terminal markers** (fallback), an **issue comment** (the tracked-issue scenario).
+- **Author a human-viewed answer in mdext.** When the delegated output is a report/answer a human
+  will open in Jamat's FileViewer, write it in **mdext** — see the `mdext-renderer` skill (GFM,
+  syntax-highlighted code, callouts, status chips, and inline diagrams render richly).
 - **Outcomes:** `answered`, `blocked`/`idle` (relay → `await`), `timeout` (relay tail, maybe `await`).
 
 ## Waking a remote machine — EXPLICIT USER COMMAND ONLY

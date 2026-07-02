@@ -38,9 +38,13 @@ let snoozeTimer: ReturnType<typeof setTimeout> | null = null
 export function startAutoUpdater(): void {
   if (started) return
   const su = getAppConfig()?.selfUpdate
-  if (su?.provider !== 'github') return // the VCS self-pull checker handles 'vcs'/default
+  // A packaged public build with no explicit selfUpdate config defaults to the GitHub channel
+  // (ensureConfig strips the seeded `selfUpdate`, so a fresh install carries none) — otherwise it
+  // would never auto-update. A repo-in-place launch (JAMAT_ROOT) keeps the VCS self-pull channel.
+  const provider = su?.provider ?? (app.isPackaged && !process.env['JAMAT_ROOT'] ? 'github' : undefined)
+  if (provider !== 'github') return // the VCS self-pull checker handles 'vcs'/default
   if (!app.isPackaged) { logInfo('auto-updater', 'skipped — unpacked dev build (no self-update)'); return }
-  if (su.autoCheck === false) { logInfo('auto-updater', 'disabled via selfUpdate.autoCheck=false'); return }
+  if (su?.autoCheck === false) { logInfo('auto-updater', 'disabled via selfUpdate.autoCheck=false'); return }
   started = true
 
   autoUpdater.autoDownload = true          // background bytes are harmless; only the RESTART disrupts
@@ -60,7 +64,7 @@ export function startAutoUpdater(): void {
     maybePromptInstall()
   })
 
-  const intervalMs = Math.max(1, su.checkIntervalMinutes ?? DEFAULT_INTERVAL_MIN) * 60 * 1000
+  const intervalMs = Math.max(1, su?.checkIntervalMinutes ?? DEFAULT_INTERVAL_MIN) * 60 * 1000
   setTimeout(() => { void check(false) }, INITIAL_DELAY_MS)
   setInterval(() => { void check(false) }, intervalMs)
   // Offer the restart the moment everything goes idle (a tab finished its turn), not just on a timer.
@@ -71,7 +75,8 @@ export function startAutoUpdater(): void {
 /** Manual "Update & Restart" menu action in GitHub mode: surface a pending install, else check now. */
 export async function checkForUpdatesManual(): Promise<void> {
   const su = getAppConfig()?.selfUpdate
-  if (su?.provider !== 'github') return
+  const provider = su?.provider ?? (app.isPackaged && !process.env['JAMAT_ROOT'] ? 'github' : undefined)
+  if (provider !== 'github') return
   if (!app.isPackaged) {
     await dialog.showMessageBox({
       type: 'info', title: 'Check for updates', noLink: true,

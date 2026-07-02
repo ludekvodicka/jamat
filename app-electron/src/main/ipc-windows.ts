@@ -1,5 +1,5 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, screen } from 'electron'
-import { join, resolve } from 'path'
+import { join } from 'path'
 import { existsSync, readFileSync, unlinkSync, statSync } from 'fs'
 import { tmpdir } from 'os'
 import { createPty, writeToPty, resizePty, destroyAll, gracefulDestroyAll } from './pty-manager'
@@ -16,6 +16,7 @@ import { publish, publishTo, publishToFocused } from './streams'
 import { saveWindowState, loadWindowState, type WindowBounds, type WindowStateEntry } from './window-state-manager'
 import { flushAppStateNow, getOnboardingComplete, isOnboardingDecided, setOnboardingComplete } from './app-state-store'
 import { getJamatPaths } from './jamat-paths'
+import { getMonorepoRoot, getAppVersion } from './app-root'
 import { loadConfig as loadCoreConfig, ensureConfig, validateConfigPatch, writeConfigPatch } from '../../../core/config.js'
 import type { AppConfig, ConfigPatch } from '../../../core/types.js'
 import type { PtyConfig } from '../shared/types'
@@ -36,36 +37,6 @@ let menuConfigPath: string = ''
 // Set by resolveConfigPath when a starter config is created on first run; consumed once by
 // loadScreenConfig to show the welcome dialog after the config loads.
 let firstRunConfigPath: string | null = null
-
-export function getMonorepoRoot(): string {
-  if (app.isPackaged) {
-    return process.env['JAMAT_ROOT'] ?? process.cwd()
-  }
-  // __dirname in dev = app-electron/out/main → 3 levels up = monorepo root
-  return resolve(__dirname, '..', '..', '..')
-}
-
-/** The app version = root `package.json` `version` (the `YYYY.MM.DD.HH.mm` bump shown
- *  in the status bar). Read fresh — it changes only on a rebuild, which restarts the
- *  process — and is cheap (a ~1 KB file). Falls back to 'dev' if unreadable. Reused by
- *  the `app:version` IPC handler AND the control-server (so a peer can report its version
- *  over `/control/health` + `windows`). */
-let cachedAppVersion: string | null = null
-export function getAppVersion(): string {
-  // Memoize at first read (≈ process start) so this reports the RUNNING build's version, not
-  // whatever is on disk NOW. After an `svn update` without a restart the on-disk package.json
-  // is newer than the code actually executing — and the whole point of surfacing the version
-  // (status bar / Remote Connections tab / `find`) is to confirm which build a peer is RUNNING.
-  // A real restart re-loads this module, so the cache re-initialises to the new version.
-  if (cachedAppVersion !== null) return cachedAppVersion
-  let v = 'dev'
-  try {
-    const pkg = JSON.parse(readFileSync(join(getMonorepoRoot(), 'package.json'), 'utf-8'))
-    if (typeof pkg.version === 'string') v = pkg.version
-  } catch { /* keep 'dev' */ }
-  cachedAppVersion = v
-  return v
-}
 
 function resolveConfigPath(): string | null {
   // The portable config-dir was resolved once in bootstrap-userdata (JAMAT_CONFIG_DIR / --config-dir
@@ -788,6 +759,10 @@ export function registerWindowIpc(): void {
     const htmlPath = join(getJamatPaths().statsDir, 'dashboard.html')
     const tsxBin = join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'tsx.cmd' : 'tsx')
 
+    // An installed build has no source tree (no node_modules/.bin/tsx, no app-stats/*) → the stats
+    // generator can't run. Report it instead of failing with a raw spawn error. (Bundled stats = follow-up.)
+    if (!existsSync(tsxBin)) return { ok: false, error: 'Usage stats needs a source checkout (not available in the installed build yet)' }
+
     // Serve cached HTML if fresh (< 5 minutes old) — unless the caller forces a rebuild (Reload button).
     if (!force) {
       try {
@@ -835,6 +810,9 @@ export function registerWindowIpc(): void {
     const configDir = getJamatPaths().configDir
     const jsonPath = join(getJamatPaths().statsDir, 'stats.json')
     const tsxBin = join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'tsx.cmd' : 'tsx')
+
+    // An installed build has no source tree → the stats generator can't run. Report it clearly.
+    if (!existsSync(tsxBin)) return { ok: false, error: 'Usage stats needs a source checkout (not available in the installed build yet)' }
 
     const readJson = () => {
       try {
@@ -892,8 +870,10 @@ export function registerWindowIpc(): void {
         dir = homedir() + (dir === '~' ? '' : dir.slice(1))
       }
       const { spawn } = require('child_process') as typeof import('child_process')
-      const escaped = dir.replace(/"/g, '')
-      const child = spawn('cmd.exe', ['/c', `code "${escaped}"`], { detached: true, stdio: 'ignore' })
+      // Spawn the shim directly (win: `code.cmd`, else `code`) with the dir passed atomically as an
+      // arg — no shell interpolation, so metacharacters in the path can't execute (see ipc-files.ts).
+      const bin = process.platform === 'win32' ? 'code.cmd' : 'code'
+      const child = spawn(bin, [dir], { detached: true, stdio: 'ignore', windowsHide: true })
       child.unref()
       child.on('error', () => {})
     }

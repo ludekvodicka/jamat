@@ -15,8 +15,12 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { USERDATA_DIR_NAME } from './paths.js'
 
-/** The Electron userData dir as seen from a plain Node process. `debug` selects the dev `-debug` split. */
+/** The Electron userData dir as seen from a plain Node process, per platform (mirrors what
+ *  `app.getPath('userData')` yields): win `%APPDATA%\<name>`, mac `~/Library/Application Support/<name>`,
+ *  linux `$XDG_CONFIG_HOME|~/.config/<name>`. `debug` selects the dev `-debug` split. */
 export function resolveUserDataDir(debug = false): string {
-  const roaming = process.env['APPDATA'] || join(homedir(), 'AppData', 'Roaming')
-  return join(roaming, USERDATA_DIR_NAME + (debug ? '-debug' : ''))
+  const name = USERDATA_DIR_NAME + (debug ? '-debug' : '')
+  if (process.platform === 'win32') return join(process.env['APPDATA'] || join(homedir(), 'AppData', 'Roaming'), name)
+  if (process.platform === 'darwin') return join(homedir(), 'Library', 'Application Support', name)
+  return join(process.env['XDG_CONFIG_HOME'] || join(homedir(), '.config'), name)
 }

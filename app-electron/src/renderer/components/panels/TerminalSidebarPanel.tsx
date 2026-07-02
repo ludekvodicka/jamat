@@ -96,6 +96,10 @@ const VCS_LABEL: Record<'git' | 'svn' | 'hg' | 'all', string> = {
 interface TerminalPanelParams {
   cwd?: string
   command?: string
+  /** Shell tab marker ('cmd' | 'powershell' | 'terminal'). Present ⇒ a plain shell, so it must NOT
+   *  fall into the screen-managed (Claude menu) path even when `command` is absent — on POSIX the
+   *  single "Terminal" tab carries no command and lets the main process pick the default shell. */
+  tabType?: string
   args?: string[]
   projectDir?: string
   cmd?: string
@@ -137,7 +141,7 @@ export function TerminalSidebarPanel({ api, params }: IDockviewPanelProps<Termin
           agent: params.agent,
         }
       : undefined
-  const screenManaged = !!appConfig && params.command === undefined && !restoreMeta
+  const screenManaged = !!appConfig && params.command === undefined && params.tabType === undefined && !restoreMeta
 
   // Lazy launch: only spawn this tab's agent once the tab is (or becomes) visible. On an
   // app restore, every window's saved layout mounts ALL its panels at once; without this,

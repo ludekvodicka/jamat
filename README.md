@@ -153,10 +153,10 @@ Jamat is a TypeScript monorepo; several entry points share one core of business 
 | `app-stats/`         | Usage / cost dashboard (ccusage → HTML).                                                                                                                                                                                   |
 | `app-wol/`           | A standalone Wake-on-LAN proxy for an always-on device.                                                                                                                                                                    |
 | `dockerized-claude/` | A Docker image (`Dockerfile` + `entrypoint.sh`) that runs Claude Code sandboxed in a container — non-root user, `--dangerously-skip-permissions`, privileges dropped via gosu.                                             |
-| `skills/`            | Claude Code skills that ship with the app — `jamat` (drive the bridge from an agent) and `mdext-renderer` (Markdown/diagram authoring guidance); surfaced into `~/.claude/skills` (run `bin/enable-jamat-skill.ps1` once). |
+| `skills/`            | The two Claude Code skills that ship with the app — `jamat` (drive the bridge from an agent) and `mdext-renderer` (Markdown/diagram authoring guidance). The desktop app junctions them into `~/.claude/skills` **automatically on every launch** — no manual setup; `bin/enable-jamat-skill.ps1` is a one-time fallback if you only run the CLI/agent. |
 | `scripts/`           | Build, version-bump, demo-seeding, and the `smoke-*.ts` test suite (run by `npm test`).                                                                                                                                    |
 | `configs/`           | The public `config.example.json` template — copy it to create your own per-user config.                                                                                                                                    |
-| `bin/`               | Cross-platform launchers — `start`, `start-dev`, `start-menu` (`.bat` + `.sh`) — plus the one-time `enable-jamat-skill.ps1` setup.                                                                                         |
+| `bin/`               | Cross-platform launchers — `start`, `start-dev`, `start-menu` (`.bat` + `.sh`) — plus `enable-jamat-skill.ps1`, a one-time fallback for linking the skills without the desktop app.                                          |
 
 ## Quick start
 

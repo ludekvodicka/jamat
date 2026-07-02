@@ -7,14 +7,18 @@
  *   MENU                → user quits    → CLOSED (no selection file)
  */
 import { readFileSync, unlinkSync, existsSync, statSync, watch, type FSWatcher } from 'fs'
-import { join, resolve } from 'path'
+import { join } from 'path'
 import { tmpdir, homedir } from 'os'
 import { exec } from 'child_process'
 import { app } from 'electron'
 import { getWebContents } from './electron-utils'
 import { createPty, destroyPty, getPtyPid } from './pty-manager'
+import { getMonorepoRoot } from './app-root'
+import { getJamatPaths } from './jamat-paths'
 import { logInfo } from './logger'
 import { publish, publishTo } from './streams'
+import { shellWrapArgv } from '../../../core/platform-shell.js'
+import { buildDockerRunArgs, syncDockerCredentials } from '../../../core/executor/docker-utils.js'
 import { buildLaunchCommand } from '../../../core/executor/agent-launcher.js'
 import { getAgent } from '../../../core/agents/index.js'
 import type { AgentAdapter } from '../../../core/agents/types.js'
@@ -85,7 +89,7 @@ function resetCrashCounter(terminalId: string): void {
 }
 
 function getDockerContextDir(): string {
-  return resolve(__dirname, '../../../..', 'dockerized-claude')
+  return join(getMonorepoRoot(), 'dockerized-claude')
 }
 
 function tryGetAgent(id: AgentId | undefined): AgentAdapter | null {
@@ -230,23 +234,23 @@ function applyTitle(terminalId: string, state: TerminalState): void {
 let resolveInFlight = false
 
 function withProcessParentMap(cb: (map: Map<number, number> | null) => void): void {
-  // CIM (not the removed `wmic`) — one CSV row per process: "<pid>,<ppid>".
-  exec(
-    'powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | ForEach-Object { \\"$($_.ProcessId),$($_.ParentProcessId)\\" }"',
-    { timeout: 5000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
-    (err, stdout) => {
-      if (err || !stdout) { logInfo('title-resolve', `process snapshot failed: ${err?.message ?? 'no stdout'}`); cb(null); return }
-      const map = new Map<number, number>()
-      for (const line of stdout.split(/\r?\n/)) {
-        const c = line.indexOf(',')
-        if (c < 0) continue
-        const pid = parseInt(line.slice(0, c), 10)
-        const ppid = parseInt(line.slice(c + 1), 10)
-        if (!Number.isNaN(pid) && !Number.isNaN(ppid)) map.set(pid, ppid)
-      }
-      cb(map)
-    },
-  )
+  // Win: CIM (not the removed `wmic`) — one CSV row per process "<pid>,<ppid>". POSIX: `ps` — one
+  // whitespace-separated row per process. The unified parser handles both (split on space OR comma).
+  const cmd = process.platform === 'win32'
+    ? 'powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | ForEach-Object { \\"$($_.ProcessId),$($_.ParentProcessId)\\" }"'
+    : 'ps -eo pid=,ppid='
+  exec(cmd, { timeout: 5000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
+    if (err || !stdout) { logInfo('title-resolve', `process snapshot failed: ${err?.message ?? 'no stdout'}`); cb(null); return }
+    const map = new Map<number, number>()
+    for (const line of stdout.split(/\r?\n/)) {
+      const parts = line.trim().split(/[\s,]+/)
+      if (parts.length < 2) continue
+      const pid = parseInt(parts[0], 10)
+      const ppid = parseInt(parts[1], 10)
+      if (!Number.isNaN(pid) && !Number.isNaN(ppid)) map.set(pid, ppid)
+    }
+    cb(map)
+  })
 }
 
 function isDescendant(pid: number, ancestor: number, parent: Map<number, number>): boolean {
@@ -394,15 +398,36 @@ function readSelection(filePath: string): MenuSelection | null {
 }
 
 function spawnMenu(terminalId: string, state: TerminalState): void {
+  const configDir = getJamatPaths().configDir
+  const menuArgs = ['--config', state.menuConfig, '--config-dir', configDir]
+  let command: string
+  let args: string[]
+  let cwd: string
+  const extraEnv: Record<string, string> = {}
+  if (app.isPackaged) {
+    // Installed build: run the pre-bundled menu via Electron-as-Node — no source tree, tsx or
+    // system Node needed. `out/menu/menu-tui.cjs` ships in resources/app (files: out/**, asar:false).
+    command = process.execPath
+    args = [join(app.getAppPath(), 'out', 'menu', 'menu-tui.cjs'), ...menuArgs]
+    cwd = homedir()
+    extraEnv['ELECTRON_RUN_AS_NODE'] = '1'
+  } else {
+    // Dev: run the TS source through tsx. On Windows this stays `cmd.exe /c node …` (byte-identical).
+    const wrapped = shellWrapArgv('node', ['--import', 'tsx', 'menu-tui.ts', ...menuArgs])
+    command = wrapped.file
+    args = wrapped.args
+    cwd = state.menuDir
+  }
   createPty(terminalId, state.webContentsId, {
     cols: state.cols,
     rows: state.rows,
-    cwd: state.menuDir,
-    command: 'cmd.exe',
-    args: ['/c', 'node', '--import', 'tsx', 'menu-tui.ts', '--config', state.menuConfig],
+    cwd,
+    command,
+    args,
     env: {
       JAMAT: '1',
-      JAMAT_MENU_SELECTION_FILE: state.selectionFile
+      JAMAT_MENU_SELECTION_FILE: state.selectionFile,
+      ...extraEnv,
     },
     trusted: true,
     onExit: (info) => handleTerminalExit(terminalId, info)
@@ -578,7 +603,7 @@ function startClaudeInTerminal(
       const msg = `Invalid cwd "${claude.cwd}" for ${sel.folderName}, falling back`
       console.error('[screen-executor]', msg)
       publish('error:log', 'screen-executor', msg)
-      cwd = process.env['USERPROFILE'] ?? 'C:\\'
+      cwd = homedir()
     }
   } catch {
     console.error('[screen-executor] Error checking cwd:', claude.cwd)
@@ -665,33 +690,31 @@ function startClaudeInTerminal(
 function handleAction(terminalId: string, state: TerminalState, sel: MenuSelection): void {
   const wc = getWebContents(state.webContentsId)
   const dockerCtx = getDockerContextDir()
-  const actionDir = sel.dir || process.env['USERPROFILE'] || 'C:\\'
+  const actionDir = sel.dir || homedir()
 
   switch (sel.action) {
     case 'docker-shell': {
-      const { buildDockerRunArgs } = require('../../../core/executor/docker-utils.js')
       const vols = buildDockerRunArgs(actionDir, dockerCtx)
+      const wrapped = shellWrapArgv('docker', ['run', '-it', '--rm', ...vols, 'jamat-isolated', 'bash'])
       createPty(`action-${Date.now()}`, state.webContentsId, {
         cols: state.cols, rows: state.rows, cwd: actionDir,
-        command: 'cmd.exe',
-        args: ['/c', 'docker', 'run', '-it', '--rm', ...vols, 'jamat-isolated', 'bash'],
+        command: wrapped.file, args: wrapped.args,
         trusted: true,
       })
       spawnMenu(terminalId, state)
       break
     }
     case 'docker-rebuild': {
+      const wrapped = shellWrapArgv('docker', ['build', '-t', 'jamat-isolated', dockerCtx])
       createPty(`action-${Date.now()}`, state.webContentsId, {
         cols: state.cols, rows: state.rows, cwd: actionDir,
-        command: 'cmd.exe',
-        args: ['/c', 'docker', 'build', '-t', 'jamat-isolated', dockerCtx],
+        command: wrapped.file, args: wrapped.args,
         trusted: true,
       })
       spawnMenu(terminalId, state)
       break
     }
     case 'docker-auth': {
-      const { syncDockerCredentials } = require('../../../core/executor/docker-utils.js')
       const result = syncDockerCredentials(actionDir)
       if (wc && !wc.isDestroyed()) {
         publishTo(wc, 'error:log', 'screen-executor', result.message)
@@ -702,16 +725,24 @@ function handleAction(terminalId: string, state: TerminalState, sel: MenuSelecti
     case 'custom-run': {
       const run = sel.run
       if (!run) { spawnMenu(terminalId, state); break }
+      const wrapped = shellWrapArgv(run.command, run.args ?? [])
       createPty(`action-${Date.now()}`, state.webContentsId, {
         cols: state.cols, rows: state.rows, cwd: run.cwd || actionDir,
-        command: 'cmd.exe',
-        args: ['/c', run.command, ...(run.args ?? [])],
+        command: wrapped.file, args: wrapped.args,
         trusted: true,
       })
       spawnMenu(terminalId, state)
       break
     }
     case 'launch-window': {
+      // wt.exe (Windows Terminal) is Windows-only — gate it there and degrade gracefully elsewhere.
+      if (process.platform !== 'win32') {
+        if (wc && !wc.isDestroyed()) {
+          publishTo(wc, 'error:log', 'screen-executor', 'Launch in a new Windows Terminal is only available on Windows.')
+        }
+        spawnMenu(terminalId, state)
+        break
+      }
       const { spawn } = require('child_process') as typeof import('child_process')
       const cmd = buildLaunchCommand({
         selection: sel, mode: 'pty', dockerContextDir: dockerCtx,
@@ -721,6 +752,7 @@ function handleAction(terminalId: string, state: TerminalState, sel: MenuSelecti
         'new-tab', '--title', title, '-d', sel.dir,
         cmd.command, ...cmd.args,
       ], { detached: true, stdio: 'ignore', env: { ...process.env, ...cmd.env } })
+      child.on('error', () => {})
       child.unref()
       spawnMenu(terminalId, state)
       break

@@ -12,11 +12,11 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "compile": "electron-vite build && electron-builder --win --dir",
-    "dist": "electron-vite build && electron-builder --win",
-    "dist:win": "electron-vite build && electron-builder --win",
-    "dist:mac": "electron-vite build && electron-builder --mac",
-    "dist:linux": "electron-vite build && electron-builder --linux",
+    "compile": "electron-vite build && node --import tsx ../scripts/build-menu.ts && electron-builder --win --dir",
+    "dist": "electron-vite build && node --import tsx ../scripts/build-menu.ts && electron-builder --win",
+    "dist:win": "electron-vite build && node --import tsx ../scripts/build-menu.ts && electron-builder --win",
+    "dist:mac": "electron-vite build && node --import tsx ../scripts/build-menu.ts && electron-builder --mac",
+    "dist:linux": "electron-vite build && node --import tsx ../scripts/build-menu.ts && electron-builder --linux",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -60,6 +60,12 @@
       "node_modules/dockview/**/*",
       "node_modules/dockview-core/**/*",
       "node_modules/ws/**/*"
+    ],
+    "extraResources": [
+      { "from": "../package.json", "to": "package.json" },
+      { "from": "../configs/config.example.json", "to": "configs/config.example.json" },
+      { "from": "../skills", "to": "skills" },
+      { "from": "../dockerized-claude", "to": "dockerized-claude" }
     ],
     "asar": false
   },

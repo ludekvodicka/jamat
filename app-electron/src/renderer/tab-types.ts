@@ -23,6 +23,18 @@ export function tabAgent(t: TabType): AgentId | undefined {
   return isAgentId(a) ? a : undefined
 }
 
+// Windows offers CMD + PowerShell; POSIX offers a single "Terminal" tab with NO command, so the
+// main process spawns the platform default shell ($SHELL / zsh / bash — see pty-manager). The
+// renderer is sandboxed (no `process`), so the platform comes from the preload bridge.
+const SHELL_TABS: TabType[] = window.electronAPI?.platform === 'win32'
+  ? [
+      { id: 'cmd', label: 'CMD', icon: '⬛', component: 'terminalPanel', defaultParams: { tabType: 'cmd', command: 'cmd.exe' }, section: 'Shells' },
+      { id: 'powershell', label: 'PowerShell', icon: '🔷', component: 'terminalPanel', defaultParams: { tabType: 'powershell', command: 'powershell.exe' }, section: 'Shells' },
+    ]
+  : [
+      { id: 'terminal', label: 'Terminal', icon: '⬛', component: 'terminalPanel', defaultParams: { tabType: 'terminal' }, section: 'Shells' },
+    ]
+
 // Order = picker order. Grouped into sections (Claude Code first). The picker
 // renders a heading whenever `section` changes, so keep same-section rows adjacent.
 // Note: Session Search + File Viewer are intentionally absent — both only make
@@ -33,8 +45,7 @@ export const TAB_TYPES: TabType[] = [
   { id: 'claude', label: 'Claude Code', icon: '🤖', component: 'terminalPanel', defaultParams: { agent: 'claude' }, shortcut: 'Ctrl+T', section: 'Agents' },
   { id: 'codex', label: 'Codex', icon: '🟢', component: 'terminalPanel', defaultParams: { agent: 'codex' }, section: 'Agents' },
   // Shells
-  { id: 'cmd', label: 'CMD', icon: '⬛', component: 'terminalPanel', defaultParams: { tabType: 'cmd', command: 'cmd.exe' }, section: 'Shells' },
-  { id: 'powershell', label: 'PowerShell', icon: '🔷', component: 'terminalPanel', defaultParams: { tabType: 'powershell', command: 'powershell.exe' }, section: 'Shells' },
+  ...SHELL_TABS,
   // Tools
   { id: 'browser', label: 'Browser', icon: '🌐', component: 'browserPanel', defaultParams: { tabType: 'browser', url: 'https://www.google.com' }, section: 'Tools' },
   { id: 'usage-stats', label: 'Usage Stats', icon: '📊', component: 'usageStatsNativePanel', defaultParams: {}, shortcut: 'Ctrl+U', section: 'Tools' },

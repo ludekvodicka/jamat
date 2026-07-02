@@ -90,6 +90,30 @@ clipPath`; presentation attributes; `stroke-dasharray`; `marker-end`. **Stripped
 2. **Inline presentation attributes (standalone sidecar).** For a self-contained `.svg` with no host
    CSS, set `fill`/`stroke` inline (bake one theme). This is what `svg-demos/*.svg` do.
 
+> **Only an INLINE ` ```svg ` fence (or a typed engine) can follow the viewer's theme.** An SVG pulled
+> in as an *external image* — `![](assets/x.svg)` — renders in an **isolated `<img>`**: host CSS
+> variables (`--mdext-*`) and `currentColor` **do not reach inside it** (they resolve to the fallback,
+> i.e. a baked theme), and its own `@media (prefers-color-scheme)` tracks the **OS**, not the viewer's
+> forced light/dark. So a sidecar `.svg` is *always* one baked theme — a light-baked one is a white
+> slab on a dark viewer. A figure that must adapt has to be an **inline ` ```svg ` fence**.
+>
+> In a **doc-authored** fence you have no host stylesheet to hang classes on. The robust, sanitizer-safe
+> way to theme the ink is **`fill="currentColor"`** — a plain attribute that resolves to the viewer's
+> theme text colour once the SVG is inline in the DOM. Build a monochrome-ink figure from it:
+>
+> - ink / text / marks → set `fill="currentColor"` once on the root `<svg>` (text inherits it)
+> - muted / axes → `currentColor` at reduced `opacity` (e.g. `opacity="0.6"`)
+> - hairlines / card outlines → `stroke="currentColor" stroke-opacity="0.2"`
+> - **series / status hues** (same in both themes) → keep the literal hex.
+>
+> (`var(--mdext-*)` via an inline `style="fill:var(--mdext-fg,#…)"` can also theme surfaces, but the SVG
+> sanitizer's CSS filter may drop it — prefer `currentColor`. A raw `fill="var(…)"` **attribute** never
+> works — `var()` is only valid in a CSS context, not a presentation attribute.)
+>
+> The `<img>` isolation is also why the app's viewer resolves local `![](x.svg)` at all only to *show*
+> the file — it can never theme it. Prefer emitting figures as inline ` ```svg ` (theme-reactive) over
+> sidecar files when they carry ink-on-surface content that must stay readable in dark.
+
 **Minimal worked example** (status card, dark, inline — sanitize-safe):
 
 ```svg

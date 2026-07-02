@@ -29,7 +29,8 @@ import {
   writeToPty, getTerminalSnapshot, getTerminalDeltaSince, hasBufferedTerminal, getTerminalCwd,
 } from '../pty-manager'
 import { getTerminalSessionId } from '../screen-executor'
-import { getAppConfig, getAppVersion } from '../ipc-windows'
+import { getAppConfig } from '../ipc-windows'
+import { getAppVersion } from '../app-root'
 import { publish, publishTo } from '../streams'
 import { recordRemoteActivity } from '../remote-activity'
 import type { OpenTabReq, ControlOpenTabPayload } from '../../../../core/types/remote-control.js'

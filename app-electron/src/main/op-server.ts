@@ -37,7 +37,7 @@ import { sendJson, readJsonBody, bearerToken, timingSafeMatch, hasBrowserOrigin,
 import { dispatch } from '../../../core/op/dispatch.js'
 import type { OpCtx, Via } from '../../../core/op/types.js'
 import { getRemoteControl } from './remote-control-store'
-import { getAppVersion } from './ipc-windows'
+import { getAppVersion } from './app-root'
 import {
   writeToPty, getTerminalSnapshot, subscribeTerminal, hasBufferedTerminal,
 } from './pty-manager'

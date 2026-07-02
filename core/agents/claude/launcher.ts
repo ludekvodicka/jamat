@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import type { MenuSelection, LaunchConfig, LaunchCommand } from '../../types.js'
 import { SESSION_ID_RE } from '../../types.js'
 import { buildDockerRunArgs } from '../../executor/docker-utils.js'
+import { shellWrap, shellWrapArgv } from '../../platform-shell.js'
 import { ensureClaudeProjectTrust } from './trust.js'
 
 const DEFAULT_SCROLL_SPEED = '5'
@@ -87,20 +88,26 @@ const terminalDocker: Builder = (sel, flags, dockerContextDir) => {
   return fallbackArgs ? { ...cmd, fallback: { ...cmd, args: [...base, 'claude', ...fallbackArgs] } } : cmd
 }
 
-const ptyNative: Builder = (sel, flags) => ({
-  command: 'cmd.exe',
-  args: ['/c', buildShellChain(sel, flags)],
-  cwd: sel.dir,
-  env: buildEnv(sel),
-})
+const ptyNative: Builder = (sel, flags) => {
+  // The chain carries `||`, so it must run inside a shell. Win: `cmd.exe /c <chain>` (unchanged);
+  // POSIX: a login shell `-l -c <chain>`.
+  const wrapped = shellWrap(buildShellChain(sel, flags))
+  return {
+    command: wrapped.file,
+    args: wrapped.args,
+    cwd: sel.dir,
+    env: buildEnv(sel),
+  }
+}
 
 const ptyDocker: Builder = (sel, flags, dockerContextDir) => {
   const volumes = buildDockerRunArgs(sel.dir, dockerContextDir!)
   const base = dockerBaseArgs(sel, volumes, ['-it', '--rm'])
   const claudeCmd = buildShellChain(sel, flags)
+  const wrapped = shellWrapArgv('docker', [...base, 'bash', '-c', claudeCmd])
   return {
-    command: 'cmd.exe',
-    args: ['/c', 'docker', ...base, 'bash', '-c', claudeCmd],
+    command: wrapped.file,
+    args: wrapped.args,
     cwd: sel.dir,
     env: buildEnv(sel),
   }

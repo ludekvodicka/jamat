@@ -309,6 +309,28 @@ function CsvTable({ text, delim }: { text: string; delim: string }) {
   )
 }
 
+/** Rendered HTML preview — an isolated Electron <webview> loading the file via file://, so scripts and
+ *  relative CSS/JS/images resolve exactly as in a browser (same mechanism as the usage-stats report).
+ *  Local files only; the webview runs out-of-process and popups are disabled. Re-mounts (reloads) when
+ *  the path changes or the Source⇄Preview toggle flips. */
+function HtmlPreview({ filePath }: { filePath: string }) {
+  const hostRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const host = hostRef.current
+    if (!host) return
+    const p = filePath.replace(/\\/g, '/')
+    const webview = document.createElement('webview') as any
+    webview.setAttribute('allowpopups', 'false')
+    webview.src = `${p.startsWith('/') ? 'file://' : 'file:///'}${p}`
+    webview.style.width = '100%'
+    webview.style.height = '100%'
+    webview.style.border = 'none'
+    host.appendChild(webview)
+    return () => webview.remove()
+  }, [filePath])
+  return <div ref={hostRef} style={{ flex: 1, minHeight: 0, display: 'flex' }} />
+}
+
 export function FileViewerPanel({ api, params }: IDockviewPanelProps<FileViewerParams>) {
   const [content, setContent] = useState<string | null>(null)
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null)
@@ -342,6 +364,8 @@ export function FileViewerPanel({ api, params }: IDockviewPanelProps<FileViewerP
   const [saveError, setSaveError] = useState<string | null>(null)
   const [closeConfirm, setCloseConfirm] = useState(false)
   const [svgShowSource, setSvgShowSource] = useState(false)
+  // HTML: Preview (rendered in a webview) vs Source (highlighted). Default Preview.
+  const [htmlShowSource, setHtmlShowSource] = useState(false)
   const [tableMode, setTableMode] = useState(true)
   const [diffMode, setDiffMode] = useState<DiffMode>(DIFF_MODE_OFF)
   const [diffOptions, setDiffOptions] = useState<DiffOption[]>([])
@@ -387,6 +411,10 @@ export function FileViewerPanel({ api, params }: IDockviewPanelProps<FileViewerP
   const isCsv = ext === 'csv'
   const isTsv = ext === 'tsv'
   const isTable = isCsv || isTsv
+  const isHtml = ext === 'html' || ext === 'htm'
+  // HTML preview renders in a webview (local files only — no peer webview). Source/diff/edit/remote
+  // fall back to the text path. Gated in the JSX below (which already excludes diff/edit by position).
+  const showAsHtml = isHtml && !htmlShowSource && !remote
   // SVG can be shown either as a rendered image or as XML source — other image
   // formats are always rendered. svgShowSource flips SVG into text mode.
   const showAsImage = !!imageMime && !(isSvg && svgShowSource)
@@ -867,6 +895,19 @@ export function FileViewerPanel({ api, params }: IDockviewPanelProps<FileViewerP
                   >Source</button>
                 </>
               )}
+              {isHtml && !remote && (
+                <>
+                  <button
+                    className={`notes-btn file-viewer-mode-btn${!htmlShowSource && !inDiffMode ? ' file-viewer-mode-btn-active' : ''}`}
+                    onClick={() => { setHtmlShowSource(false); setDiffMode(DIFF_MODE_OFF) }}
+                    title="Render the HTML in an isolated webview"
+                  >Preview</button>
+                  <button
+                    className={`notes-btn file-viewer-mode-btn${htmlShowSource && !inDiffMode ? ' file-viewer-mode-btn-active' : ''}`}
+                    onClick={() => { setHtmlShowSource(true); setDiffMode(DIFF_MODE_OFF) }}
+                  >Source</button>
+                </>
+              )}
               {isTable && (
                 <>
                   <button
@@ -1024,6 +1065,8 @@ export function FileViewerPanel({ api, params }: IDockviewPanelProps<FileViewerP
             )
           ) : isMarkdown && !rawMode ? (
             <MdExtRenderer source={content ?? ''} theme="dark" remote={remote} resolveImageSrc={remote ? undefined : resolveImageSrc} className="file-viewer-markdown" />
+          ) : showAsHtml ? (
+            <HtmlPreview filePath={filePath} />
           ) : lang ? (
             <pre className="file-viewer-content"><code ref={codeRef} className={`shiki-code language-${lang}`}>{content}</code></pre>
           ) : (

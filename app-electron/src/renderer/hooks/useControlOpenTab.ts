@@ -83,7 +83,10 @@ export function useControlOpenTab(): void {
           title = isAi ? 'AI task' : 'Claude (remote)'
         }
       } else {
-        const command = payload.tabType === 'cmd' ? 'cmd.exe' : 'powershell.exe'
+        // Win: honor the requested shell. POSIX has no cmd/powershell → leave command undefined so
+        // the main process spawns the default shell; keeping tabType routes it to the plain-shell
+        // path (not the Claude menu) — see TerminalSidebarPanel's screenManaged.
+        const command = api.platform === 'win32' ? (payload.tabType === 'cmd' ? 'cmd.exe' : 'powershell.exe') : undefined
         params = { tabType: payload.tabType, command, cwd: payload.cwd }
         title = `${payload.tabType === 'cmd' ? 'CMD' : 'PowerShell'} (remote)`
       }

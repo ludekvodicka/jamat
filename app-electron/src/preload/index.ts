@@ -24,6 +24,10 @@ type OpenTabMeta = Parameters<IpcEventMap['screen:open-tab']>[1]
  * IpcEventMap streams too (P5) + the menu:list/menu:invoke ops; `onMenuAction` subscribes raw like onX.
  */
 const api = {
+  // Host platform — the renderer can't read `process` (sandboxed), so it reads this to branch
+  // OS-specific UI (e.g. which shell tabs the picker offers). `typeof api` carries the type.
+  platform: process.platform,
+
   saveLayout: (windowId: string, json: string): Promise<void> => invokeChannel('layout:save', windowId, json),
   loadLayout: (windowId: string): Promise<string | null> => invokeChannel('layout:load', windowId),
 

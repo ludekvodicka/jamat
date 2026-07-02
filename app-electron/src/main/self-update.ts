@@ -28,7 +28,8 @@ import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { existsSync, statSync, readFileSync } from 'node:fs'
 
-import { getAppConfig, getMonorepoRoot, persistWindowState, getAppVersion } from './ipc-windows'
+import { getAppConfig, persistWindowState } from './ipc-windows'
+import { getMonorepoRoot, getAppVersion } from './app-root'
 import { getJamatPaths } from './jamat-paths'
 import { getWindowsTabs } from './tab-tree-cache'
 import { logError, logInfo } from './logger'
@@ -144,13 +145,24 @@ export async function relaunchApp(): Promise<boolean> {
   }
   const dev = !app.isPackaged
   const bat = path.join(getMonorepoRoot(), 'bin', dev ? 'start-dev.bat' : 'start.bat')
-  if (!existsSync(bat)) {
-    // Not committed to a restart (nothing spawned) → leave the guard down so a fixed
-    // re-trigger can still restart.
-    logError('self-update', `launcher not found: ${bat} (dev=${dev})`)
-    await fail('Restart failed — launcher not found.',
-      `Expected ${dev ? 'start-dev.bat' : 'start.bat'} in bin/.\nRestart the app manually.`)
-    return false
+  // No launcher script (an installed build has no bin/) OR a non-Windows host (the .bat + the
+  // PowerShell restart helper are Windows-only) → relaunch the process directly. `bin/start.bat`
+  // IS committed, so it exists in a POSIX checkout too — the win32 guard is what forces the direct
+  // path there. app.relaunch() is unusable in DEV (it re-spawns the electron binary, bypassing
+  // electron-vite's dev server → the renderer can't load), so a dev fallback still fails loudly.
+  if (!existsSync(bat) || process.platform !== 'win32') {
+    if (dev) {
+      logError('self-update', `launcher not usable (bat=${bat}, platform=${process.platform}, dev) — cannot relaunch`)
+      await fail('Restart failed — launcher not available.',
+        'Restart the app manually.')
+      return false
+    }
+    relaunching = true
+    logInfo('self-update', `full-restart via app.relaunch (packaged, no launcher / non-win32)`)
+    persistWindowState()
+    app.relaunch()
+    setTimeout(() => app.quit(), 200)
+    return true
   }
   relaunching = true // committed: we spawn the helper and quit below; the process dies, no reset needed
   logInfo('self-update', `full-restart via helper → ${bat} (dev=${dev})`)
@@ -183,15 +195,19 @@ export async function relaunchApp(): Promise<boolean> {
 
 export async function updateAndRestart(): Promise<void> {
   const cfg = getAppConfig()
-  if (!cfg?.selfUpdate) {
-    await info('Self-update is not configured.',
-      'Add this block to config-*.json:\n"selfUpdate": { "vcs": "svn" | "git", "repoPath"?: "..." }')
+
+  // GitHub Releases channel (packaged public builds) — route the manual action to electron-updater.
+  // A packaged install with no explicit selfUpdate config defaults to 'github' (ensureConfig strips
+  // the seeded block); a repo-in-place launch (JAMAT_ROOT) keeps the VCS self-pull channel.
+  const provider = cfg?.selfUpdate?.provider ?? (app.isPackaged && !process.env['JAMAT_ROOT'] ? 'github' : undefined)
+  if (provider === 'github') {
+    await import('./auto-updater').then((m) => m.checkForUpdatesManual())
     return
   }
 
-  // GitHub Releases channel (packaged public builds) — route the manual action to electron-updater.
-  if (cfg.selfUpdate.provider === 'github') {
-    await import('./auto-updater').then((m) => m.checkForUpdatesManual())
+  if (!cfg?.selfUpdate) {
+    await info('Self-update is not configured.',
+      'Add this block to config-*.json:\n"selfUpdate": { "vcs": "svn" | "git", "repoPath"?: "..." }')
     return
   }
 
