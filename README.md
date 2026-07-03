@@ -13,12 +13,31 @@ AI agent operate another's tab.
 > an early **WIP**: until now it was internal-only, so expect rough edges. **Windows + Claude Code
 > today** (macOS/Linux and more agents soon). A spare-time project — no company, no promises beyond "soon".
 
+[![Download](https://img.shields.io/github/v/release/ludekvodicka/jamat?label=download&color=success&sort=semver)](https://github.com/ludekvodicka/jamat/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/ludekvodicka/jamat/actions/workflows/ci.yml/badge.svg)](https://github.com/ludekvodicka/jamat/actions)
-[![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D6.svg)](#quick-start)
+[![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D6.svg)](#download)
 [![Node](https://img.shields.io/badge/node-%E2%89%A520-339933.svg?logo=node.js&logoColor=white)](https://nodejs.org)
 
 ![Jamat overview](docs/images/00-overview.gif)
+
+---
+
+## Download
+
+### **[⬇ Download the latest release](https://github.com/ludekvodicka/jamat/releases/latest)**
+
+Prebuilt installers — no repo clone, no build step.
+
+| Platform | File | Notes |
+| --- | --- | --- |
+| **Windows** | `Jamat Setup <version>.exe` | Supported. Unsigned, so SmartScreen warns once — click **More info → Run anyway**. |
+| **Linux** _(beta)_ | `Jamat-<version>.AppImage` | `chmod +x` then run; some distros need `libfuse2`. |
+| **macOS** _(beta, Apple Silicon)_ | `Jamat-<version>-arm64.dmg` | Gatekeeper: **right-click → Open** the first time (or `xattr -cr /Applications/Jamat.app`). |
+
+**Requires** [Node.js 20+](https://nodejs.org) and [Claude Code](https://www.anthropic.com/claude-code) on your `PATH` — Claude Code needs Node too, so you already have both. Windows and Linux builds **auto-update** from GitHub Releases; macOS updates manually until the app is signed.
+
+Want to hack on Jamat, or run the CLI / agent instead of the desktop app? [Build from source](#build-from-source).
 
 ---
 
@@ -162,7 +181,10 @@ Jamat is a TypeScript monorepo; several entry points share one core of business 
 | `configs/`           | The public `config.example.json` template — copy it to create your own per-user config.                                                                                                                                    |
 | `bin/`               | Cross-platform launchers — `start`, `start-dev`, `start-menu` (`.bat` + `.sh`) — plus `enable-jamat-skill.ps1`, a one-time fallback for linking the skills without the desktop app.                                          |
 
-## Quick start
+## Build from source
+
+**Most people should just [download an installer](#download).** Build from source only to hack on
+Jamat, or to run the CLI / agent entry points.
 
 **Prerequisites:** Node.js 20+, Windows, and [Claude Code](https://www.anthropic.com/claude-code)
 installed and on your `PATH`.
