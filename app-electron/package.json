@@ -65,7 +65,8 @@
       "node_modules/node-pty/**/*",
       "node_modules/dockview/**/*",
       "node_modules/dockview-core/**/*",
-      "node_modules/ws/**/*"
+      "node_modules/ws/**/*",
+      "node_modules/@resvg/**/*"
     ],
     "extraResources": [
       { "from": "../package.json", "to": "package.json" },
@@ -76,10 +77,12 @@
     "asar": true,
     "asarUnpack": [
       "out/menu/**",
-      "node_modules/node-pty/**"
+      "node_modules/node-pty/**",
+      "node_modules/@resvg/**"
     ]
   },
   "dependencies": {
+    "@resvg/resvg-js": "2.6.2",
     "@viz-js/viz": "3.28.0",
     "@xterm/addon-fit": "0.12.0-beta.287",
     "@xterm/addon-search": "0.17.0-beta.287",
