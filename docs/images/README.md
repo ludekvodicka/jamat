@@ -25,6 +25,15 @@ To embed one in the top-level `README.md`, reference it by relative path, e.g.
 | 14 | [`14-context-nudge.png`](14-context-nudge.png) | Context-full nudge — one-click Compact now |
 | — | [`output-architecture.png`](output-architecture.png) | Rich mdext output — an agent's Jamat architecture map (part 1) |
 | — | [`output-architecture-2.png`](output-architecture-2.png) | Rich mdext output — architecture map, part 2 (package map + sequence) |
+| — | [`remote-control.png`](remote-control.png) | Remote control surface — drive a peer's tabs, open a tab, read-only file view (human mode) |
+| — | [`remote-session.png`](remote-session.png) | A remote peer's Claude session mirrored live in a Jamat tab |
+| — | [`remote-ai-to-ai.png`](remote-ai-to-ai.png) | AI mode — a local Claude told to connect to a peer and run tests, driving the bridge itself |
+| — | [`project-selector.png`](project-selector.png) | Day-to-day inline — CLI project & session selector (folders, search, recent sessions) |
+| — | [`compact-statusbar.png`](compact-statusbar.png) | Day-to-day inline — status bar with the one-click Compact button |
+| — | [`predefined-messages.png`](predefined-messages.png) | Day-to-day inline — finished-agent notification with What's next? / Continue quick replies |
+| — | [`recent-files.png`](recent-files.png) | Highlights inline — recent-files panel with History / Changes entry into diffs |
+| — | [`open-from-output.png`](open-from-output.png) | Highlights inline — right-click menu to open a file path from a session's output |
+| — | [`remote-peer.png`](remote-peer.png) | Highlights inline — a remote peer online in the connections panel (ctrl/agent ports + token) |
 
 ---
 
@@ -168,3 +177,30 @@ cross-machine sequence. Two views of that page:
 ![mdext output — architecture map, part 1: Archify system diagram + core/ component grid](output-architecture.png)
 
 ![mdext output — architecture map, part 2: package map, dependency rule, and cross-machine sequence](output-architecture-2.png)
+
+---
+
+## Remote connections — human control & live session
+
+Two detail shots used in the README's **Remote connections** section (the gallery's `09-` is the
+Settings-pane summary; these show the full reach).
+
+![Remote control surface — a peer's windows & tabs, fork/open a session, read-only file view, and debug controls](remote-control.png)
+
+**Human mode** — the full control surface over a connected peer: **Windows & tabs** (click a terminal
+to open its live viewer; **fork** a Claude session into a new tab, history kept), **Debug / control**
+(Logs / Terminals / Restart), **Open a new tab** on the peer, and **View a file (read-only)**
+path-scoped to the peer's project roots. Project rows + hostname were blurred at capture.
+
+![A remote peer's Claude session mirrored live in a Jamat tab](remote-session.png)
+
+A peer's Claude session opened as its own **`WORK-PC: Claude (remote)`** tab, streaming live next to
+the connections panel. The work email + an internal path in the terminal's welcome banner were
+redacted for publication.
+
+![A local Claude, told to connect to a peer (WORK-PC) and run tests, driving Jamat's remote bridge itself](remote-ai-to-ai.png)
+
+**AI mode** — used in the README's **AI that operates AI** section. A local Claude was handed
+`connect to WORK-PC and run tests on AppJamat`; via the built-in **`jamat` skill** it drives the
+bridge itself — reaching the peer and starting the work, no human in the loop. Welcome-banner email +
+path redacted, same as above.

@@ -15,12 +15,14 @@ type Status = PeerReachability | 'probing'
 const STATUS_COLOR: Record<Status, string> = {
   'app-up': '#3fb950',
   'agent-only': '#d29922',
+  unauthorized: '#f85149',
   offline: '#6e7681',
   probing: '#444',
 }
 const STATUS_LABEL: Record<Status, string> = {
   'app-up': 'app online',
   'agent-only': 'agent only (app closed)',
+  unauthorized: 'invalid token',
   offline: 'offline',
   probing: 'probing…',
 }
@@ -52,6 +54,12 @@ export function RemoteConnectionsPanel() {
   const peers = config?.peers ?? []
   const selectedPeer = peers.find((p) => p.id === selectedPeerId) ?? null
   const selectedStatus = selectedPeer ? status[selectedPeer.id] : undefined
+  // The auto-probe interval reads peers through this ref (kept current every render) so a token /
+  // host / port edit is picked up on the NEXT tick. Without it, the interval's `run` closes over the
+  // pre-edit peers (its effect key omits the token), and a few seconds after a manual refresh a tick
+  // re-probes with the STALE token — reverting the status to what it was before the edit.
+  const peersRef = useRef(peers)
+  peersRef.current = peers
 
   useEffect(() => { window.electronAPI?.getRemoteConfig?.().then(setConfig) }, [])
   // Poll the runtime bind state so the status reflects an actual EADDRINUSE bind failure
@@ -101,10 +109,11 @@ export function RemoteConnectionsPanel() {
     }).catch(() => {})
   }, [])
 
-  // Probe every peer on a 5s interval.
+  // Probe every peer on a 5s interval. `run` reads `peersRef.current` (not the captured `peers`) so
+  // an edited token is used immediately — see the peersRef note above.
   useEffect(() => {
     if (peers.length === 0) return
-    const run = () => { for (const p of peers) probePeer(p) }
+    const run = () => { for (const p of peersRef.current) probePeer(p) }
     run()
     const t = setInterval(run, 5000)
     return () => clearInterval(t)
@@ -422,6 +431,15 @@ export function RemoteConnectionsPanel() {
                   <div style={{ color: '#888', fontSize: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span>Peer unreachable. Check host/port/firewall and that remote control is enabled there.</span>
                     <button style={{ ...btnGhost, flexShrink: 0 }} onClick={() => probePeer(p, true)}>↻ Re-check</button>
+                  </div>
+                )}
+                {st === 'unauthorized' && (
+                  <div style={{ color: '#f85149', fontSize: 12, lineHeight: 1.5 }}>
+                    <b>Invalid token.</b> The peer’s app is running but rejected this token. Reveal the peer’s
+                    token in <i>its</i> Remote connection settings and paste it into the <b>token</b> field above
+                    exactly (it’s the peer’s machine key, not yours). If the token is right, check the peer allows
+                    this host.
+                    <button style={{ ...btnGhost, flexShrink: 0, marginLeft: 8 }} onClick={() => probePeer(p, true)}>↻ Re-check</button>
                   </div>
                 )}
                 {incompat && (

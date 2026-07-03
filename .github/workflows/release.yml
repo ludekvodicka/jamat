@@ -94,8 +94,35 @@ jobs:
         with:
           path: artifacts
 
+      - name: Compute SHA256 checksums (trust anchor for the unsigned installers)
+        working-directory: artifacts
+        run: |
+          # Hash only the user-facing installers (skip blockmap / latest*.yml auto-update metadata),
+          # flattening per-platform subdirs to basenames so `sha256sum -c` works in a download folder.
+          find . -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.AppImage' \) | sort | while read -r f; do
+            printf '%s  %s\n' "$(sha256sum "$f" | cut -d' ' -f1)" "$(basename "$f")"
+          done > SHA256SUMS.txt
+          echo '----- SHA256SUMS.txt -----'; cat SHA256SUMS.txt
+
+      - name: Assemble release notes (checksums + verify hint)
+        run: |
+          {
+            echo '### Verify your download'
+            echo
+            echo 'The installers are **unsigned** (Windows SmartScreen warns once: **More info -> Run anyway**).'
+            echo 'Check the SHA256 of your file against the list below before running it.'
+            echo
+            echo '```'
+            cat artifacts/SHA256SUMS.txt
+            echo '```'
+            echo
+            echo 'Verify: `sha256sum -c SHA256SUMS.txt` (macOS `shasum -a 256 -c`, Windows `Get-FileHash <file> -Algorithm SHA256`).'
+          } > release-notes.md
+          cat release-notes.md
+
       - name: Create draft GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           draft: true
+          body_path: release-notes.md
           files: artifacts/**/*

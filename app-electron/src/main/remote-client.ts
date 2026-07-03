@@ -26,6 +26,7 @@ function httpJson(
   pathname: string,
   token?: string,
   body?: unknown,
+  timeoutMs: number = REQ_TIMEOUT,
 ): Promise<any> {
   return new Promise((resolve, reject) => {
     const data = body !== undefined ? JSON.stringify(body) : undefined
@@ -35,7 +36,7 @@ function httpJson(
         port,
         method,
         path: pathname,
-        timeout: REQ_TIMEOUT,
+        timeout: timeoutMs,
         headers: {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
           // Label this controller in the peer's Remote Activity Log (advisory, not auth).
@@ -50,7 +51,11 @@ function httpJson(
           let parsed: any = {}
           try { parsed = buf ? JSON.parse(buf) : {} } catch { /* leave {} */ }
           if ((res.statusCode ?? 0) >= 400) {
-            reject(new Error(parsed?.error ? String(parsed.error) : `HTTP ${res.statusCode}`))
+            // Attach the HTTP status so callers can tell an auth rejection (401/403 — the peer IS up)
+            // from an unreachable/transient failure. The message stays the peer's `error` when present.
+            const err = new Error(parsed?.error ? String(parsed.error) : `HTTP ${res.statusCode}`) as Error & { status?: number }
+            err.status = res.statusCode
+            reject(err)
           } else {
             resolve(parsed)
           }
@@ -64,16 +69,28 @@ function httpJson(
   })
 }
 
+const PROBE_HEALTH_TIMEOUT = 2500 // shorter than REQ_TIMEOUT: 2 attempts (~5s) fit the 5s probe loop
+
 async function probe(peer: RemotePeer): Promise<PeerProbeResult> {
-  // app-up = the control-server answers /control/health (token-gated).
-  try {
-    const ctrl = await httpJson(peer.host, peer.controlPort, 'GET', '/control/health', peer.token)
-    if (ctrl?.ok) {
-      // A legacy v1 app answers health but has no protocol field → undefined → incompatible.
-      const protocol = typeof ctrl.protocol === 'number' ? ctrl.protocol : undefined
-      return { reachability: 'app-up', hostname: ctrl.hostname, version: ctrl.version, app: ctrl.app, protocol, compatible: protocol === REMOTE_PROTOCOL }
+  // app-up = the control-server answers /control/health (token-gated). Try twice: a lone transient
+  // failure (timeout/reset) shouldn't demote an up peer to "app closed" and flap the status. A
+  // 401/403 is DEFINITIVE (the server answered, it just rejected our token) → report it as such and
+  // stop — no retry, no agent fallback.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const ctrl = await httpJson(peer.host, peer.controlPort, 'GET', '/control/health', peer.token, undefined, PROBE_HEALTH_TIMEOUT)
+      if (ctrl?.ok) {
+        // A legacy v1 app answers health but has no protocol field → undefined → incompatible.
+        const protocol = typeof ctrl.protocol === 'number' ? ctrl.protocol : undefined
+        return { reachability: 'app-up', hostname: ctrl.hostname, version: ctrl.version, app: ctrl.app, protocol, compatible: protocol === REMOTE_PROTOCOL }
+      }
+      break // 2xx but no `ok` — odd; treat as not-app-up, don't retry
+    } catch (e: any) {
+      const status = e?.status as number | undefined
+      if (status === 401 || status === 403) return { reachability: 'unauthorized', error: 'invalid token' }
+      // else transient (timeout / reset / connection refused) — retry once, then fall to the agent.
     }
-  } catch { /* fall through */ }
+  }
   // agent-only = the always-on agent answers its unauth /api/health.
   try {
     const agent = await httpJson(peer.host, peer.agentPort, 'GET', '/api/health')

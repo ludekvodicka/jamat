@@ -145,8 +145,13 @@ export interface RemoteWindowInfo {
   tabs: RemoteTabInfo[]
 }
 
-/** Reachability classification for a peer. */
-export type PeerReachability = 'offline' | 'agent-only' | 'app-up'
+/**
+ * Reachability classification for a peer. `unauthorized` = the control server IS up and answered,
+ * but rejected our credentials (a 401/403 — almost always a wrong `token`; edge case: the peer's
+ * host-allowlist). Distinct from `agent-only` ("app closed") so a bad token doesn't masquerade as a
+ * closed app.
+ */
+export type PeerReachability = 'offline' | 'agent-only' | 'app-up' | 'unauthorized'
 
 export interface PeerProbeResult {
   reachability: PeerReachability
