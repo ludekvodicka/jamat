@@ -1,6 +1,6 @@
 {
   "name": "jamat",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "license": "MIT",
   "author": "ludekvodicka",
@@ -73,7 +73,11 @@
       { "from": "../skills", "to": "skills" },
       { "from": "../dockerized-claude", "to": "dockerized-claude" }
     ],
-    "asar": false
+    "asar": true,
+    "asarUnpack": [
+      "out/menu/**",
+      "node_modules/node-pty/**"
+    ]
   },
   "dependencies": {
     "@viz-js/viz": "3.28.0",

@@ -405,8 +405,11 @@ function spawnMenu(terminalId: string, state: TerminalState): void {
   // there, so the TUI renders nothing and exits immediately. Installed builds run the esbuild
   // .cjs bundle (no tsx / source tree needed); dev runs the TS source via tsx. node is a
   // documented prerequisite (README) and every Claude Code user already has it.
+  // out/menu is asarUnpack'd (an external `node` can't read inside app.asar), so it lives in
+  // app.asar.unpacked beside the archive. The replace is a no-op if asar is off (path stays app/).
+  const menuRoot = app.getAppPath().replace(/app\.asar$/, 'app.asar.unpacked')
   const nodeArgs = app.isPackaged
-    ? [join(app.getAppPath(), 'out', 'menu', 'menu-tui.cjs'), ...menuArgs]
+    ? [join(menuRoot, 'out', 'menu', 'menu-tui.cjs'), ...menuArgs]
     : ['--import', 'tsx', 'menu-tui.ts', ...menuArgs]
   const wrapped = shellWrapArgv('node', nodeArgs)
   createPty(terminalId, state.webContentsId, {
