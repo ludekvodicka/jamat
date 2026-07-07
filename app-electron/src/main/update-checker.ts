@@ -119,7 +119,10 @@ async function showPrompt(): Promise<void> {
       message: `Jamat — a newer version is available (${target}).`,
       detail: `Currently running: ${getAppVersion()}\nNew version:    ${target}\n\nAll terminals are idle now — the update will pull changes and restart the app.`,
       buttons: ['Update now', 'Snooze 1h', 'Snooze 2h', 'Snooze 4h', 'Snooze 12h'],
-      defaultId: 0,
+      // Default = Snooze 1h (NOT "Update now"): the dialog can pop while the user is typing, and a
+      // stray Enter/Space activates the focused/default button — a default restart would then wipe the
+      // session mid-keystroke. Snooze is the safe accidental outcome; the user must click Update now.
+      defaultId: 1,
       cancelId: 1, // Esc / close ⇒ postpone 1h, never an accidental restart
       noLink: true,
     })

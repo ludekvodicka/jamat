@@ -6,7 +6,7 @@ import { SearchAddon } from '@xterm/addon-search'
 import { themes } from '../themes'
 import { useLayoutStore } from '../store/layout-store'
 import { loadSettings } from '../components/panels/SettingsPanel'
-import { bracketedPaste, getPathAtPosition } from '../utils/terminal-helpers'
+import { bracketedPaste, getPathAtPosition, stripQuoteGutter } from '../utils/terminal-helpers'
 import { copyText, readClipboard } from '../utils/clipboard'
 import { getRendererAgent } from '../../../../core/agents/renderer'
 import { normalizeTty, stripAnsiLower } from '../../../../core/agents/claude/patterns'
@@ -23,6 +23,16 @@ type RestoreMeta = ScreenOpenTabMeta
 // refits to the real container; a never-revealed (headless) tab keeps this size for life.
 const HIDDEN_COLS = 200
 const HIDDEN_ROWS = 50
+
+// Status-line detection windows (rendered screen bottom rows). The SHALLOW window holds only the
+// status-line region, so the ambiguous busy markers (spinner glyph ≈ markdown bullet; "esc to
+// interrupt" / token counts can occur in displayed content) are matched there and can't false-fire
+// on conversation text. The WIDE window is scanned ONLY for the high-specificity elapsed-timer
+// markers (`busyWide`) — those can't appear in prose — so the "✻ …thinking… (1h25m·)" line is still
+// caught when a tall input box + a rotating "Tip:" line push it above the shallow window (which had
+// made the tab flicker idle↔running and blinked the context nudge).
+const SCREEN_TAIL_ROWS = 8
+const SCREEN_TAIL_WIDE_ROWS = 16
 
 interface UseTerminalOptions {
   terminalId: string
@@ -62,6 +72,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   useEffect(() => {
     patternsRef.current = getRendererAgent(options.agent ?? DEFAULT_AGENT_ID).ttyPatterns
   }, [options.agent])
+
+  // Terminal phase, authoritative from the main process ('menu' = the CLI menu TUI owns the PTY;
+  // 'running' = a live agent session). Gates the F1/F2 app-shortcut steal in the key handler below:
+  // the menu binds F1/F2 itself (Search / Manage), so we must NOT hijack them while it's up. A
+  // screen-managed tab STARTS in the menu; direct-command / shell tabs never show it (default false).
+  const isMenuRef = useRef(!!options.screenManaged)
+  useEffect(() => {
+    if (!window.electronAPI?.onScreenPhase) return
+    return window.electronAPI.onScreenPhase((id, phase) => {
+      if (id === options.terminalId) isMenuRef.current = phase === 'menu'
+    })
+  }, [options.terminalId])
 
   useEffect(() => {
     const container = containerRef.current
@@ -179,6 +201,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (ev.type !== 'keydown') return true
       // App shortcuts — bubble to window/menu handler
       if (ev.key === 'F11') return false
+      // F1 (help) / F2 (rename session) are handled by the window keydown listener
+      // (useKeyboardShortcuts). Without this, xterm maps them to a PTY escape and cancels the event,
+      // so the app shortcut never fires while the terminal is focused. EXCEPTION: while the CLI menu
+      // owns this PTY it binds F1/F2 itself (Search / Manage) — pass them through (fall to `return
+      // true`) so they reach the menu instead of being stolen for the app.
+      if ((ev.key === 'F1' || ev.key === 'F2') && !isMenuRef.current) return false
       if (ev.key === 'Tab' && ev.ctrlKey) return false
       if (ev.altKey && (ev.key === 't' || ev.key === 'n' || ev.key === 'p' || ev.key === 'u' || ev.key === 'd')) return false
       if (ev.ctrlKey && ev.shiftKey && (ev.key === 'T' || ev.key === 'F' || ev.key === 'PageUp' || ev.key === 'PageDown')) return false
@@ -206,7 +234,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         const sel = term.getSelection()
         if (sel) {
           ev.preventDefault()
-          void copyText(sel)
+          void copyText(stripQuoteGutter(sel))
           term.clearSelection()
           return false
         }
@@ -236,7 +264,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       useLayoutStore.getState().setTerminalSelection(sel?.trim() ?? '')
       if (sel && sel !== lastCopiedSel) {
         lastCopiedSel = sel
-        void copyText(sel)
+        void copyText(stripQuoteGutter(sel))
       }
     })
 
@@ -256,10 +284,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0))
         const text = new TextDecoder().decode(bytes)
         if (text) {
-          void copyText(text)
+          const cleaned = stripQuoteGutter(text)
+          void copyText(cleaned)
           // Surface to the optional status-bar clipboard-debug widget so it can show Claude's OSC 52
           // copies landing (no-op when the widget is hidden — nothing is listening).
-          window.dispatchEvent(new CustomEvent('clipboard-osc52', { detail: { text } }))
+          window.dispatchEvent(new CustomEvent('clipboard-osc52', { detail: { text: cleaned } }))
         }
       } catch { /* malformed base64 — ignore */ }
       return true // handled — stop any default processing
@@ -342,12 +371,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // and the markers fall off → false idle. xterm reconstructs the full current screen regardless, so
     // the bottom rows reliably contain the whole status line. (baseY-relative so it reads the live
     // bottom even if the user scrolled up.)
-    const readScreenTail = (): string => {
+    const readScreenTail = (rows: number = SCREEN_TAIL_ROWS): string => {
       try {
         const buf = term.buffer.active
         const bottom = buf.baseY + term.rows
         const out: string[] = []
-        for (let y = Math.max(0, bottom - 8); y < bottom; y++) {
+        for (let y = Math.max(0, bottom - rows); y < bottom; y++) {
           const line = buf.getLine(y)
           if (line) out.push(line.translateToString(true))
         }
@@ -362,6 +391,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       const screen = readScreenTail()
       if (p.busy && (p.busy.test(normalizeTty(recent)) || p.busy.test(normalizeTty(screen)))) return true
       if (p.busySpaced && (p.busySpaced.test(stripAnsiLower(recent)) || p.busySpaced.test(stripAnsiLower(screen)))) return true
+      // Deep scan for the high-specificity elapsed-timer markers only (safe further up): catches the
+      // spinner status line during long "thinking" turns when it's pushed above the shallow window.
+      if (p.busyWide && p.busyWide.test(normalizeTty(readScreenTail(SCREEN_TAIL_WIDE_ROWS)))) return true
       return false
     }
 
@@ -377,9 +409,16 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const isBusyScreen = () => {
       const p = patternsRef.current
       const screen = readScreenTail()
-      if (!screen) return false
-      if (p.busy && p.busy.test(normalizeTty(screen))) return true
-      if (p.busySpaced && p.busySpaced.test(stripAnsiLower(screen))) return true
+      if (screen) {
+        if (p.busy && p.busy.test(normalizeTty(screen))) return true
+        if (p.busySpaced && p.busySpaced.test(stripAnsiLower(screen))) return true
+      }
+      // Deep scan for the elapsed-timer markers only — keeps a long "thinking" turn from arming the
+      // fast idle edge (and flipping the tab to idle) when the status line sits above the shallow window.
+      if (p.busyWide) {
+        const wide = readScreenTail(SCREEN_TAIL_WIDE_ROWS)
+        if (wide && p.busyWide.test(normalizeTty(wide))) return true
+      }
       return false
     }
 

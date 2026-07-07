@@ -38,7 +38,7 @@ export function publishToFocused<K extends keyof IpcEventMap>(channel: K, ...arg
 // 17 menu:* streams, ending the P1/P3 carve-out.)
 const STREAM_NAMES: readonly (keyof IpcEventMap)[] = [
   'pty:output', 'pty:exit', 'pty:crash',
-  'screen:title', 'screen:refit', 'screen:update-params', 'screen:open-tab',
+  'screen:title', 'screen:phase', 'screen:refit', 'screen:update-params', 'screen:open-tab',
   'file:changed', 'group:color-changed', 'error:log', 'usage:update', 'config:changed',
   'control:open-tab', 'control:close-tab',
   'remote:stream-frame', 'remote:session-active', 'remote:activity',

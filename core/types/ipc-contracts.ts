@@ -395,6 +395,10 @@ export interface IpcEventMap {
 
   // screen
   'screen:title': (id: string, title: string) => void
+  // Terminal lifecycle phase. 'menu' = the CLI menu TUI owns the PTY (it uses F1..F8 for its own
+  // actions — Search/Manage/…); 'running' = an agent session (Claude) is live. The renderer gates
+  // its F1/F2 app-shortcut steal on this so the menu keeps its function keys.
+  'screen:phase': (id: string, phase: 'menu' | 'running') => void
   'screen:refit': (id: string) => void
   'screen:update-params': (id: string, params: Record<string, unknown>) => void
   'screen:open-tab': (terminalId: string, meta: ScreenOpenTabMeta) => void

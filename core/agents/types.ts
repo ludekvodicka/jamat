@@ -59,6 +59,14 @@ export interface AgentTtyPatterns {
    */
   busySpaced?: RegExp
   /**
+   * Optional HIGH-SPECIFICITY busy subset, matched (collapsed, like `busy`) against a DEEPER screen
+   * tail than the other markers. Only markers that can't plausibly appear in prose/code belong here
+   * (Claude's elapsed-timer forms), so scanning further up the screen is safe. It catches the status
+   * line during long "thinking" turns when a tall input box + tip line push it above the shallow
+   * window; agents without such a marker omit it and keep the shallow-window-only behavior.
+   */
+  busyWide?: RegExp
+  /**
    * Optional interactive-menu marker (e.g. Claude's "❯ 1. …" AskUserQuestion /
    * plan-approval list). Match → the turn paused for the user to choose, so the tab
    * goes 'waiting' rather than idle. Also matched against the collapsed output.

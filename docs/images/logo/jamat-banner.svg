@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 220" width="680" height="220">
+  <rect x="1" y="1" width="678" height="218" rx="24" fill="#0e1319" stroke="#2d333b" stroke-width="2"/>
+  <g transform="translate(44,50)">
+    <rect x="1" y="1" width="118" height="118" rx="26" fill="#0d1117" stroke="#2d333b" stroke-width="2"/>
+    <path d="M 38 36 H 82" stroke="#56c0f5" stroke-width="12" stroke-linecap="round" fill="none"/>
+    <path d="M 70 36 V 72 Q 70 92 51 92 Q 37 92 35 78" stroke="#56c0f5" stroke-width="12" stroke-linecap="round" fill="none"/>
+    <rect x="80" y="82" width="16" height="12" rx="2" fill="#c06bff"/>
+  </g>
+  <text x="210" y="122" font-family="ui-monospace,Consolas,Menlo,monospace" font-size="76" font-weight="700" fill="#e6edf3" letter-spacing="1">jamat</text>
+  <rect x="430" y="70" width="22" height="58" rx="3" fill="#c06bff"/>
+  <text x="212" y="158" font-family="ui-monospace,Consolas,Menlo,monospace" font-size="18" fill="#8b949e">Just Another Multi-Agent Terminal</text>
+</svg>

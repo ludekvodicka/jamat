@@ -398,6 +398,12 @@ function readSelection(filePath: string): MenuSelection | null {
 }
 
 function spawnMenu(terminalId: string, state: TerminalState): void {
+  // The menu TUI owns the PTY now — tell the renderer so it stops stealing F1/F2 (the menu binds
+  // them to Search/Manage). Single choke point for EVERY menu entry: initial launch, Codex fallback,
+  // and post-session return. The matching 'running' is published when an agent launches.
+  const menuWc = getWebContents(state.webContentsId)
+  if (menuWc && !menuWc.isDestroyed()) publishTo(menuWc, 'screen:phase', terminalId, 'menu')
+
   const configDir = getJamatPaths().configDir
   const menuArgs = ['--config', state.menuConfig, '--config-dir', configDir]
   // The menu TUI is hosted by system `node` in BOTH builds. Electron-as-Node can't host an
@@ -642,6 +648,8 @@ function startClaudeInTerminal(
       const title = `${sel.folderName} - ${name}`
       newState.lastTitle = title
       publishTo(wc, 'screen:title', terminalId, title)
+      // An agent session now owns the PTY → F1/F2 revert to app shortcuts (Help / rename session).
+      publishTo(wc, 'screen:phase', terminalId, 'running')
       publishTo(wc, 'screen:refit', terminalId)
       // Arm the title watcher right away rather than waiting for the first poll
       // tick: immediately when the sessionId is known (resume), or as soon as the

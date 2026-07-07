@@ -120,6 +120,22 @@ export const CLAUDE_BUSY_PATTERN: RegExp = new RegExp(
   'i',
 )
 
+/**
+ * The HIGH-SPECIFICITY subset of the collapsed busy markers — the two elapsed-timer forms
+ * (`elapsedDot` "(1h25m33s·" and `elapsedEllipsis` "…(45s"). Both are anchored so tightly on the
+ * timer shape that they essentially never occur in prose or code, which makes them safe to scan
+ * against a DEEPER screen tail than the ambiguous markers (`spinnerGlyph` looks like a markdown
+ * bullet; `escToInterrupt` / `tokenCounter` can appear in displayed content). The classifier uses
+ * this to keep catching Claude's spinner status line during long "thinking with xhigh effort" turns,
+ * when a rotating "Tip:" line + the bordered input box push that line ABOVE the shallow status
+ * window — otherwise the tab flickered idle↔running and the context-fullness nudge blinked on/off.
+ * Built from the same `BUSY_SIGNALS_COLLAPSED` entries so it can't drift from them.
+ */
+export const CLAUDE_BUSY_WIDE_PATTERN: RegExp = new RegExp(
+  [BUSY_SIGNALS_COLLAPSED.elapsedDot, BUSY_SIGNALS_COLLAPSED.elapsedEllipsis].map((r) => r.source).join('|'),
+  'i',
+)
+
 /** Per-signal result: the exact text each marker matched, or null if it didn't fire. */
 export interface BusyReport {
   busy: boolean

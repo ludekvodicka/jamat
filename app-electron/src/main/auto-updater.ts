@@ -130,7 +130,10 @@ async function promptInstall(): Promise<void> {
       message: `Jamat ${target} is ready to install.`,
       detail: `Currently running: ${app.getVersion()}\nNew version:    ${target}\n\nAll terminals are idle — restart now to finish the update.`,
       buttons: ['Restart & install', 'Snooze 1h', 'Snooze 2h', 'Snooze 4h', 'Snooze 12h'],
-      defaultId: 0,
+      // Default = Snooze 1h (NOT "Restart & install"): the dialog can pop while the user is typing, and
+      // a stray Enter/Space activates the focused/default button — a default restart would then wipe the
+      // session mid-keystroke. Snooze is the safe accidental outcome; the user must click Restart.
+      defaultId: 1,
       cancelId: 1, // Esc / close ⇒ snooze 1h, never an accidental restart
       noLink: true,
     })

@@ -156,30 +156,40 @@ export function CustomTab({ api, containerApi, params }: IDockviewPanelHeaderPro
       setRenamePrompt(null)
       return
     }
-    // Pass an empty sessionId when we don't have one in params — the
-    // backend falls back to resolveActiveSessionFile(projectDir) to find
-    // the current Claude session.
-    const result = await window.electronAPI.renameSession(projectDir, sessionId ?? '', name)
-    if (result?.ok) {
-      // Match the main-process format ("folderName - name") so the optimistic
-      // title doesn't briefly differ from what the title poller re-sends.
-      api.setTitle(`${folderPrefix(params)}${name}`)
-      // Also pipe the agent's rename slash command (if any) to the
-      // running PTY so the live process refreshes its footer/status.
-      // The agent adapter knows whether its TUI has such a command
-      // (Claude has /rename; Codex has no documented equivalent →
-      // renameSlashCommand returns null → no pipe).
-      // No-op when the terminal is gone or the agent is mid-response
-      // (the byte will just buffer in stdin).
-      try {
-        const rawAgent = params?.agent
-        const agentId = isAgentId(rawAgent) ? rawAgent : DEFAULT_AGENT_ID
-        const slash = getRendererAgent(agentId).renameSlashCommand(name)
-        if (slash) window.electronAPI?.writeTerminal?.(api.id, slash)
-      } catch { /* writeTerminal is fire-and-forget; ignore */ }
-      setRenamePrompt(null)
+    // The agent's own rename command (Claude: `/rename <name>`; Codex: none → null). Piped to the
+    // running PTY it appends the SAME `custom-title` record Claude writes for a hand-typed /rename —
+    // so it refreshes Claude's footer AND persists the name (the title poller then surfaces it).
+    // No-op when the terminal is gone or the agent is mid-response (the byte just buffers in stdin).
+    const rawAgent = params?.agent
+    const agentId = isAgentId(rawAgent) ? rawAgent : DEFAULT_AGENT_ID
+    let slash: string | null = null
+    try { slash = getRendererAgent(agentId).renameSlashCommand(name) } catch { slash = null }
+    const pipeRenameSlash = () => {
+      if (!slash) return
+      try { window.electronAPI?.writeTerminal?.(api.id, slash) } catch { /* fire-and-forget */ }
+    }
+    // Match the main-process format ("folderName - name") so the optimistic title doesn't briefly
+    // differ from what the title poller re-sends.
+    const applyOptimisticTitle = () => api.setTitle(`${folderPrefix(params)}${name}`)
+
+    if (sessionId) {
+      // Resolved session: write the custom-title straight to its transcript (exact target, immediate),
+      // then sync Claude's live footer.
+      const result = await window.electronAPI.renameSession(projectDir, sessionId, name)
+      if (result?.ok) { applyOptimisticTitle(); pipeRenameSlash(); setRenamePrompt(null) }
+      else setRenameError(result?.error ?? 'Rename failed')
+    } else if (slash) {
+      // Brand-new session: its transcript doesn't exist yet, so the backend can't write it — and its
+      // empty-id fallback (resolveActiveSessionFile = "most recent") could target a PREVIOUS session.
+      // Name it through the live agent's own /rename instead: unambiguously THIS tab's session, same
+      // record. This is what makes F2 work the instant a session is created (no transcript needed).
+      pipeRenameSlash(); applyOptimisticTitle(); setRenamePrompt(null)
     } else {
-      setRenameError(result?.error ?? 'Rename failed')
+      // No id yet and no rename command (e.g. a Codex tab): let the backend's resolver try so its real
+      // error surfaces rather than a silent no-op.
+      const result = await window.electronAPI.renameSession(projectDir, '', name)
+      if (result?.ok) { applyOptimisticTitle(); setRenamePrompt(null) }
+      else setRenameError(result?.error ?? 'Rename failed')
     }
   }, [renamePrompt, renameValue, api, params])
 

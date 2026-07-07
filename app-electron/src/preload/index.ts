@@ -54,6 +54,7 @@ const api = {
   resumeCrashedSession: (terminalId: string): Promise<{ ok: boolean; error?: string }> => invokeChannel('pty:resume', terminalId),
 
   onScreenTitle: (callback: (id: string, title: string) => void): (() => void) => onChannel('screen:title', callback),
+  onScreenPhase: (callback: (id: string, phase: 'menu' | 'running') => void): (() => void) => onChannel('screen:phase', callback),
   onScreenRefit: (callback: (id: string) => void): (() => void) => onChannel('screen:refit', callback),
   onScreenUpdateParams: (callback: (id: string, params: Record<string, unknown>) => void): (() => void) => onChannel('screen:update-params', callback),
   restoreTerminal: (id: string, meta: OpenTabMeta, immediate?: boolean): void => sendChannel('screen:restore', id, meta, immediate),

@@ -22,6 +22,18 @@ export function bracketedPaste(terminalId: string, text: string): void {
   window.electronAPI.writeTerminal(terminalId, `\x1b[200~${text}\x1b[201~`)
 }
 
+/**
+ * Strip a leading quote-gutter from every line of copied terminal text.
+ *
+ * Claude Code's TUI draws a left vertical bar down quoted / wrapped blocks; selecting across it puts
+ * that bar at the start of each copied line. Remove a leading `|` (or the box-drawing `│` the TUI
+ * actually renders) plus the single space after it so the clipboard holds clean text. Per-line — a
+ * line that doesn't start with the gutter is left untouched.
+ */
+export function stripQuoteGutter(text: string): string {
+  return text.replace(/^[|│] ?/gm, '')
+}
+
 /** Delay between per-line pastes in {@link pasteAsTextByLines}. Small enough to feel quick
  *  for normal text, large enough that the TUI registers each line as its own paste event. */
 const PASTE_LINE_DELAY_MS = 10

@@ -10,6 +10,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir, homedir } from 'os'
 import { getAgent, listAgents, listAvailableAgents, resolveAgentForSessionId } from '../core/agents/index'
+import { normalizeTty } from '../core/agents/claude/patterns'
 
 let passed = 0
 let failed = 0
@@ -169,6 +170,36 @@ console.log('\n[12] selected-agent routing guard — claude parses a real sessio
       codex.loadSessionPreview(routeDir, sid).length === 0)
   } finally {
     rmSync(routeDir, { recursive: true, force: true })
+  }
+}
+
+console.log('\n[13] Busy detection — busyWide (deep-scan elapsed subset) catches the spinner status line')
+{
+  const busy = claude.ttyPatterns.busy
+  const wide = claude.ttyPatterns.busyWide
+  ok('claude.ttyPatterns.busy is defined', !!busy)
+  ok('claude.ttyPatterns.busyWide is defined', !!wide)
+  // The classifier tests these against normalizeTty(screen) — normalize the raw samples the same way.
+  const matchesWide = (raw: string) => !!wide && wide.test(normalizeTty(raw))
+  const matchesBusy = (raw: string) => !!busy && busy.test(normalizeTty(raw))
+
+  // Positive: the elapsed-timer forms that stay present through a whole "thinking" turn.
+  ok('busyWide matches "(1h 25m 33s · …)" (elapsedDot)',
+    matchesWide('✻ Flowing… (1h 25m 33s · still thinking with xhigh effort)'))
+  ok('busyWide matches "…(45s)" (elapsedEllipsis)',
+    matchesWide('Compacting conversation… (45s)'))
+  ok('busyWide matches a bare "(8s ·" elapsed', matchesWide('✶ Spinning… (8s · thinking)'))
+
+  // Negative: prose parentheticals must NOT read as busy (that's why only the tightly-anchored
+  // elapsed markers get the deep scan — spinnerGlyph / esc-to-interrupt stay shallow-window only).
+  ok('busyWide rejects prose "(5s) pause"', !matchesWide('the (5s) pause before the retry'))
+  ok('busyWide rejects a section ref "(2)"', !matchesWide('see step (2) below for details'))
+  ok('busyWide rejects the idle prompt', !matchesWide('> \n  bypass permissions on (shift+tab to cycle)'))
+
+  // Subset invariant: anything busyWide matches, the full busy union also matches (it's built from
+  // the same BUSY_SIGNALS_COLLAPSED entries) — so the deep scan can only ADD coverage, never diverge.
+  for (const s of ['✻ Flowing… (1h 25m 33s · x)', 'Compacting… (45s)', '✶ Spinning… (8s · thinking)']) {
+    ok(`busyWide ⊆ busy for ${JSON.stringify(s)}`, !matchesWide(s) || matchesBusy(s))
   }
 }
 
