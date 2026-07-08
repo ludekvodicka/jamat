@@ -72,6 +72,13 @@ export interface AgentTtyPatterns {
    * goes 'waiting' rather than idle. Also matched against the collapsed output.
    */
   questionMenu?: RegExp
+  /**
+   * Optional background-process marker (e.g. Claude's "N shell" footer count). ORTHOGONAL to the
+   * turn status: its presence means a background process is still alive while the turn itself may be
+   * idle — surfaced as a distinct "done, but a shell is still running" tab indicator, NOT folded into
+   * 'running'. Matched against the rendered screen bottom (de-ANSI'd, lowercased).
+   */
+  bgShell?: RegExp
 }
 
 // ────────────────────────────────────────────────────────────────────────────

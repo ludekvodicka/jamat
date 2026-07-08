@@ -51,6 +51,10 @@ export function CustomTab({ api, containerApi, params }: IDockviewPanelHeaderPro
   // "Finished off-screen, not yet seen" — tracked centrally by useCompletedTabs; shows a green
   // ✓ badge while the tab is idle so a just-completed background run stands out from plain grey.
   const completed = useLayoutStore(s => !!s.completedTabs[api.id])
+  // "Turn done, but a background shell is still running" — orthogonal to `status` (see the store).
+  // On an idle tab this shows a muted, slow-pulsing dot so a finished turn that left a shell alive
+  // (or hung) stands out from both a plain idle tab and a just-completed ✓ one.
+  const bgShell = useLayoutStore(s => !!s.bgShellTabs[api.id])
   const contextLevels = useLayoutStore(s => s.appConfig?.contextLevels)
   // Inline rename prompt — Electron 35+ silently returns the default value
   // from `window.prompt`, so we render our own modal instead.
@@ -336,9 +340,11 @@ export function CustomTab({ api, containerApi, params }: IDockviewPanelHeaderPro
         {isAi && <span className="custom-tab-ai-badge" aria-hidden="true">🤖</span>}
         {status === 'waiting'
           ? <span className="status-question-badge" title="Waiting for your answer — needs interaction">?</span>
-          : (status === 'idle' && completed)
-            ? <span className="status-completed-badge" title="Finished while you were away — switch to this tab to clear">✓</span>
-            : <span className={`tab-status-dot status-${status}`} />}
+          : (status === 'idle' && bgShell)
+            ? <span className="tab-status-dot status-bgshell" title="Turn finished, but a background shell is still running (may be hung) — Ctrl+T in the terminal to manage it" />
+            : (status === 'idle' && completed)
+              ? <span className="status-completed-badge" title="Finished while you were away — switch to this tab to clear">✓</span>
+              : <span className={`tab-status-dot status-${status}`} />}
         <span className="custom-tab-title">{api.title ?? 'Terminal'}</span>
         {(() => {
           const c = contextLevel(ctxPct, contextLevels)

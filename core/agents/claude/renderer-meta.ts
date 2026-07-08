@@ -10,7 +10,7 @@
  */
 
 import type { AgentTtyPatterns } from '../types.js'
-import { CLAUDE_TOOL_USE_PATTERN, CLAUDE_BLOCKED_PATTERNS, CLAUDE_BUSY_PATTERN, CLAUDE_BUSY_WIDE_PATTERN, CLAUDE_BUSY_SPACED_PATTERN, CLAUDE_QUESTION_MENU_PATTERN } from './patterns.js'
+import { CLAUDE_TOOL_USE_PATTERN, CLAUDE_BLOCKED_PATTERNS, CLAUDE_BUSY_PATTERN, CLAUDE_BUSY_WIDE_PATTERN, CLAUDE_BUSY_SPACED_PATTERN, CLAUDE_QUESTION_MENU_PATTERN, CLAUDE_BG_SHELL_PATTERN } from './patterns.js'
 
 export const CLAUDE_TTY_PATTERNS: AgentTtyPatterns = {
   toolUse: CLAUDE_TOOL_USE_PATTERN,
@@ -19,6 +19,7 @@ export const CLAUDE_TTY_PATTERNS: AgentTtyPatterns = {
   busyWide: CLAUDE_BUSY_WIDE_PATTERN,
   busySpaced: CLAUDE_BUSY_SPACED_PATTERN,
   questionMenu: CLAUDE_QUESTION_MENU_PATTERN,
+  bgShell: CLAUDE_BG_SHELL_PATTERN,
 }
 
 export const claudeRenameSlash = (name: string): string => `/rename ${name}\r`

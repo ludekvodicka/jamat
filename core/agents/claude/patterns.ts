@@ -187,6 +187,22 @@ export const CLAUDE_QUESTION_MENU_PATTERN: RegExp =
   /arrowkeystonavigate|esctocancel|↑\/↓tonavigate|❯\d+\./
 
 /**
+ * Background-shell marker — Claude Code's footer shows a live count of background shells
+ * (`Bash(run_in_background)` tasks) while any are still running: the persistent bottom bar
+ * "· N shell · ctrl+t to hide tasks" and the transient "… · N shell still running" turn summary
+ * both carry "<count> shell(s)". Its presence means a background process is STILL ALIVE even
+ * though the agent's turn itself may be finished (no busy marker fired) — the "idle but not fully
+ * done" state, distinct from a truly idle prompt. The count is what disappears at 0, so matching
+ * the digit is what makes the signal clear the instant the last shell exits.
+ *
+ * Matched against the RENDERED screen bottom rows (de-ANSI'd, lowercased) — the footer always sits
+ * there — NOT the collapsed/space-preserved busy forms, so it needs its OWN whitespace (the "N shell"
+ * gap). Kept off the busy markers on purpose: a running shell is NOT the agent working, so it must
+ * not flip the tab to 'running'.
+ */
+export const CLAUDE_BG_SHELL_PATTERN: RegExp = /\b\d+\s+shells?\b/i
+
+/**
  * Tool names whose `tool_use` block represents a file edit. Used by the
  * JSONL parser to decide which turns to record file changes for.
  *

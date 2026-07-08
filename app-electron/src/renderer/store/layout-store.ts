@@ -66,6 +66,14 @@ interface LayoutStore {
   terminalStatus: Record<string, TerminalStatus>
   setTerminalStatus: (id: string, status: TerminalStatus) => void
 
+  /** Tabs whose agent turn is idle but a BACKGROUND SHELL is still running (Claude's "N shell"
+   *  footer count > 0). ORTHOGONAL to `terminalStatus` — a running shell is not the agent working,
+   *  so it never flips the dot to 'running'; instead CustomTab/TabListPanel show a muted, slow-pulsing
+   *  dot on an idle tab so "turn done, but something's still alive (and may hang)" is visible at a
+   *  glance. Keyed by terminalId; written by useTerminal's classifier, cleared on terminal destroy. */
+  bgShellTabs: Record<string, boolean>
+  setBgShell: (id: string, on: boolean) => void
+
   /** Work-detection status-bar widget toggle. While true, useTerminal publishes each terminal's
    *  normalized output tail into `terminalDebug` (throttled) so the widget can show what the busy
    *  classifier sees live. Off by default → zero overhead; flipped on only while the widget is mounted. */
@@ -135,6 +143,15 @@ export const useLayoutStore = create<LayoutStore>((set, get) => ({
   setTerminalStatus: (id, status) =>
     set((s) => (s.terminalStatus[id] === status ? s : { terminalStatus: { ...s.terminalStatus, [id]: status } })),
 
+  bgShellTabs: {},
+  setBgShell: (id, on) =>
+    set((s) => {
+      if (!!s.bgShellTabs[id] === on) return s
+      if (on) return { bgShellTabs: { ...s.bgShellTabs, [id]: true } }
+      const next = { ...s.bgShellTabs }; delete next[id]
+      return { bgShellTabs: next }
+    }),
+
   detectionDebug: false,
   setDetectionDebug: (on) => set((s) => (s.detectionDebug === on ? s : { detectionDebug: on })),
 
@@ -151,7 +168,8 @@ export const useLayoutStore = create<LayoutStore>((set, get) => ({
       const dims = { ...s.terminalDims }; delete dims[id]
       const status = { ...s.terminalStatus }; delete status[id]
       const debug = { ...s.terminalDebug }; delete debug[id]
-      return { terminalRenderers: renderers, terminalDims: dims, terminalStatus: status, terminalDebug: debug }
+      const bgShell = { ...s.bgShellTabs }; delete bgShell[id]
+      return { terminalRenderers: renderers, terminalDims: dims, terminalStatus: status, terminalDebug: debug, bgShellTabs: bgShell }
     }),
 
   terminalDims: {},

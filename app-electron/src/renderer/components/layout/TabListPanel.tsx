@@ -5,7 +5,7 @@ import { IDockviewPanel } from 'dockview'
 type TerminalStatus = 'idle' | 'running' | 'tool-use' | 'blocked' | 'waiting' | 'done'
 
 export function TabListPanel() {
-  const { dockviewApi, sidebarOpen, setSidebarOpen, addPanel: storeAddPanel, completedTabs } = useLayoutStore()
+  const { dockviewApi, sidebarOpen, setSidebarOpen, addPanel: storeAddPanel, completedTabs, bgShellTabs } = useLayoutStore()
   const [panels, setPanels] = useState<{ id: string; title: string; type: string }[]>([])
   const [statusMap, setStatusMap] = useState<Record<string, TerminalStatus>>({})
 
@@ -76,11 +76,13 @@ export function TabListPanel() {
                 <span className="panel-name">{p.title}</span>
                 {st === 'waiting'
                   ? <span className="status-question-badge sidebar-status-question" title="Waiting for your answer — needs interaction">?</span>
-                  : (st === 'idle' && completedTabs[p.id])
-                    ? <span className="status-completed-badge sidebar-status-question" title="Finished while you were away — switch to this tab to clear">✓</span>
-                    : (st && st !== 'idle')
-                      ? <span className={`sidebar-status-dot status-${st}`} title={st} />
-                      : null}
+                  : (st === 'idle' && bgShellTabs[p.id])
+                    ? <span className="sidebar-status-dot status-bgshell" title="Turn finished, but a background shell is still running (may be hung) — Ctrl+T in the terminal to manage it" />
+                    : (st === 'idle' && completedTabs[p.id])
+                      ? <span className="status-completed-badge sidebar-status-question" title="Finished while you were away — switch to this tab to clear">✓</span>
+                      : (st && st !== 'idle')
+                        ? <span className={`sidebar-status-dot status-${st}`} title={st} />
+                        : null}
               </div>
             )
           })}

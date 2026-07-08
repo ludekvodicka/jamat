@@ -335,6 +335,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     let outputBuffer = ''
     type Status = 'idle' | 'running' | 'tool-use' | 'blocked' | 'waiting' | 'done'
     let currentStatus: Status = 'idle'
+    let currentBgShell = false
 
     const setStatus = (status: Status) => {
       if (currentStatus === status) return
@@ -422,6 +423,21 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       return false
     }
 
+    // Background-shell indicator — ORTHOGONAL to the turn status. Claude's footer shows a live
+    // "N shell" count while a `Bash(run_in_background)` task is still executing; it disappears at 0.
+    // The footer always sits in the rendered bottom rows, so scan the same screen tail (never the raw
+    // buffer, which lingers a stale count after the shell exits). Published to the store only on
+    // change (dedup) — CustomTab/TabListPanel show a muted pulsing dot when an IDLE tab has one, so a
+    // finished turn that left a shell alive (or hung) is visible. Kept off the busy markers on purpose:
+    // a running shell is not the agent working, so it must NOT flip the tab to 'running'.
+    const publishBgShell = () => {
+      const p = patternsRef.current
+      const on = !!p.bgShell && p.bgShell.test(readScreenTail().toLowerCase())
+      if (on === currentBgShell) return
+      currentBgShell = on
+      useLayoutStore.getState().setBgShell(options.terminalId, on)
+    }
+
     // Re-classify based on recent output. Called on every data chunk so
     // blocked-prompts and tool-calls surface immediately rather than after
     // the 15s silence timer.
@@ -481,6 +497,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
       setStatus('idle')
       outputBuffer = ''
+      // Settled-screen recheck: guarantees the bg-shell dot converges even if Claude goes fully
+      // quiescent after the last shell exits (no idle repaint to re-trigger the data-path publish).
+      publishBgShell()
     }
 
     const flushBuffer = () => {
@@ -524,6 +543,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // is only the fallback that flips `running` → `idle` when Claude
       // stops streaming (extended thinking ≤ 15s is intentionally tolerated).
       reclassifyFromOutput()
+      publishBgShell()
       if (idleTimer) clearTimeout(idleTimer)
       idleTimer = setTimeout(checkSilence, 15000)
 
@@ -563,6 +583,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         if (idleTimer) clearTimeout(idleTimer)
         if (toolUseExpiryTimer) clearTimeout(toolUseExpiryTimer)
         if (promptIdleTimer) clearTimeout(promptIdleTimer)
+        // Process gone → no shells left; drop the bg-shell dot (the footer that carried the count
+        // is gone too, so nothing would clear it otherwise).
+        currentBgShell = false
+        useLayoutStore.getState().setBgShell(options.terminalId, false)
         setStatus('done')
         setTimeout(() => setStatus('idle'), 3000)
       }

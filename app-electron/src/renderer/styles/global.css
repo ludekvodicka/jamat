@@ -441,6 +441,21 @@ html, body, #root {
 .sidebar-status-dot.status-waiting { background: #c06bff; box-shadow: 0 0 6px #c06bff; animation: pulse-running 1.2s ease-in-out infinite; }
 .sidebar-status-dot.status-done { background: #4ec94e; box-shadow: 0 0 4px #4ec94e; }
 
+/* "Turn done, but a background shell is still running" — muted slate, low glow, slow 2s pulse so it
+   reads as a third, quieter level BETWEEN active work (amber, sharp 1.2s pulse) and a dead/idle
+   prompt (static grey). Shown on an IDLE tab (see CustomTab / TabListPanel); a hung shell keeps it
+   pulsing until the shell is killed, which is what makes a stuck background task noticeable. */
+.tab-status-dot.status-bgshell, .sidebar-status-dot.status-bgshell {
+  background: #6b8299;
+  box-shadow: 0 0 3px rgba(107, 130, 153, 0.5);
+  animation: pulse-bgshell 2s ease-in-out infinite;
+}
+
+@keyframes pulse-bgshell {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
 @keyframes pulse-running {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
