@@ -35,12 +35,14 @@ export function registerUpdateIpc(): void {
 }
 
 /**
- * The user consented outside the dialog — the status-bar chip's Update button. Skips the offer and goes
- * straight to the work (github: download → install, watched in the dialog; source: restart).
+ * The user consented in the dialog's no-prompt path (opened from the chip). It skips the offer and goes
+ * straight to the work — the dialog already showed the busy terminals, which it reads from
+ * `UpdateStatus.busy`. github: download → install, or the restart alone when the bytes are on disk.
  */
 export async function installPending(): Promise<{ ok: boolean; error?: string }> {
   const res = resolve()
   if (res.channel === 'github') {
+    if (github.pendingInstall()) { github.offerRestart(true); return { ok: true } }
     if (!github.pendingUpdate()) return { ok: false, error: 'No update has been found yet.' }
     github.consent()
     return { ok: true }
@@ -100,7 +102,11 @@ async function info(message: string, detail?: string): Promise<void> {
 export async function checkForUpdatesManual(): Promise<void> {
   const res = resolve()
   if (res.channel === 'github') {
-    if (github.pendingUpdate()) { github.offerIfAvailable(true); return }
+    // Work already in flight owns the answer — asking the feed again would change nothing.
+    if (github.pendingInstall()) { github.offerRestart(true); return }
+    if (github.isDownloading()) { await info(`Jamat ${github.pendingUpdate()} is downloading…`, 'The progress is in the status bar; the install prompt follows.'); return }
+    // Otherwise ALWAYS re-query. Short-circuiting on a version a previous check happened to find meant
+    // the manual check stopped touching the network for the life of the process.
     const found = await github.check('manual')
     if (found.error)
       await dialog.showMessageBox({ type: 'error', title: 'Updates', message: 'Could not check for updates.', detail: found.error })
@@ -162,6 +168,13 @@ export async function runHeadlessUpdate(install: boolean): Promise<HeadlessUpdat
   const common = { channel: res.channel, reason: res.reason, running: getAppVersion() }
 
   if (res.channel === 'github') {
+    // Already downloaded (a consented download that landed while a terminal was busy) — install=1 is
+    // the conscious "restart now anyway"; the busy tabs it closes are logged.
+    const downloaded = github.pendingInstall()
+    if (downloaded) {
+      if (install) { github.offerRestart(true); return { ...common, installing: downloaded } }
+      return { ...common, downloaded, hint: 'Repeat with install=1 to restart into it now; otherwise it installs once every terminal is idle (or on the next quit).' }
+    }
     const pending = github.pendingUpdate() ?? (await github.check('remote')).version
     if (!pending) return { ...common, upToDate: true, found: null }
     // The remote caller IS the consent (install=1) — nothing downloads without it, and a remote check

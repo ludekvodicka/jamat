@@ -44,26 +44,33 @@ export function UpdateChip() {
       </span>
     )
 
-  if (phase === 'available')
+  if (phase === 'available' || phase === 'ready') {
+    // `ready` = downloaded while a terminal was busy; the restart is waiting for an idle moment.
+    const downloaded = phase === 'ready'
     return (
       <span
         className="status-item update-chip update-chip-ready"
         style={{ cursor: 'pointer' }}
         title={isSource
           ? `A newer build (${pendingVersion}) is on disk — click to restart into it.`
-          : `Jamat ${pendingVersion} is available — click to download and install it.`}
+          : downloaded
+            ? `Jamat ${pendingVersion} is downloaded — it installs on the restart.`
+            : `Jamat ${pendingVersion} is available — click to download and install it.`}
         onClick={openDialog}
       >
-        {isSource ? `New build ${pendingVersion} on disk` : `New version ${pendingVersion} available`}
+        {isSource
+          ? `New build ${pendingVersion} on disk`
+          : `New version ${pendingVersion} ${downloaded ? 'ready' : 'available'}`}
         <button
           className="status-btn"
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); openDialog() }}
         >
-          {isSource ? 'Restart' : 'Update'}
+          {isSource || downloaded ? 'Restart' : 'Update'}
         </button>
       </span>
     )
+  }
 
   if (phase === 'error')
     return (

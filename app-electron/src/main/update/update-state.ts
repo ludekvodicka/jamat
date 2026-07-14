@@ -15,7 +15,9 @@
 import type { UpdateResolution } from '../../../../core/update/update-channel.js'
 import type { UpdateDownloadProgress, UpdatePhase, UpdateStatus } from '../../../../core/update/update-status.types.js'
 import { getAppVersion } from '../app-root'
+import { buildSessionList } from '../relaunch'
 import { publish } from '../streams'
+import { allTabsIdle } from '../tab-tree-cache'
 
 export type { UpdateStatus }
 
@@ -40,7 +42,7 @@ export function setCurrentResolution(res: UpdateResolution): void { current = re
 
 /** A phase the user has already consented to — a later check must not knock it back. */
 function inProgress(): boolean {
-  return phase === 'downloading' || phase === 'installing'
+  return phase === 'downloading' || phase === 'ready' || phase === 'installing'
 }
 
 export function setChecking(): void {
@@ -62,6 +64,15 @@ export function setAvailable(v: string): void {
 export function setDownloading(p: UpdateDownloadProgress): void {
   phase = 'downloading'
   progress = p
+  lastError = null
+  notify()
+}
+
+/** Downloaded, but a terminal is busy — the installer is staged and waits for everything to go idle. */
+export function setReady(v: string): void {
+  pendingVersion = v
+  phase = 'ready'
+  progress = null
   lastError = null
   notify()
 }
@@ -112,6 +123,9 @@ export function getUpdateStatus(): UpdateStatus {
     running: getAppVersion(),
     phase,
     progress,
+    // Live, not a snapshot — a dialog opened from the chip (no prompt behind it) must warn about the
+    // terminals a restart would close, exactly as the offer does.
+    busy: allTabsIdle() ? null : buildSessionList(),
     lastError,
     lastCheckAt,
     lastCheckOutcome,

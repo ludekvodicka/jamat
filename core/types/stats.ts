@@ -1,13 +1,7 @@
-/**
- * Canonical shape of the usage-statistics report (`stats.json`).
- *
- * Produced by `app-stats/generate-stats.ts`; consumed by the native-React
- * Usage Stats tab (`stats:data` IPC channel) and — historically — by the
- * legacy HTML dashboard (`app-stats/generate-html.ts`, which still keeps its
- * own local copy of these interfaces). This is the single source of truth for
- * the new code path; lives in `core/` (the zero-dep boundary) so the producer,
- * the IPC contract, the main handler, and the renderer all share one type.
- */
+import type { AgentId } from './contracts.js'
+
+export type StatsAgentFilter = 'all' | AgentId
+export type MetricCoverage = 'full' | 'partial' | 'none'
 
 export interface ModelBreakdown {
   modelName: string
@@ -15,6 +9,7 @@ export interface ModelBreakdown {
   outputTokens: number
   cacheCreationTokens: number
   cacheReadTokens: number
+  reasoningTokens: number
   cost: number
 }
 
@@ -24,18 +19,21 @@ export interface DailyUsage {
   outputTokens: number
   cacheCreationTokens: number
   cacheReadTokens: number
+  reasoningTokens: number
   totalCost: number
   modelsUsed: string[]
   modelBreakdowns: ModelBreakdown[]
 }
 
 export interface SessionUsage {
+  agent: AgentId
   sessionId: string
   projectPath: string
   inputTokens: number
   outputTokens: number
   cacheCreationTokens: number
   cacheReadTokens: number
+  reasoningTokens: number
   totalCost: number
   lastActivity: string
   modelsUsed: string[]
@@ -48,6 +46,7 @@ export interface HourlyUsage {
   outputTokens: number
   cacheCreationTokens: number
   cacheReadTokens: number
+  reasoningTokens: number
   cost: number
   durationMs: number
   modelsUsed: string[]
@@ -59,6 +58,7 @@ export interface Hourly24hProjectBreakdown {
   outputTokens: number
   cacheCreationTokens: number
   cacheReadTokens: number
+  reasoningTokens: number
   cost: number
   durationMs: number
 }
@@ -69,6 +69,7 @@ export interface Hourly24hEntry {
   outputTokens: number
   cacheCreationTokens: number
   cacheReadTokens: number
+  reasoningTokens: number
   cost: number
   durationMs: number
   modelsUsed: string[]
@@ -83,6 +84,7 @@ export interface ModelSummary24h {
   outputTokens: number
   cacheCreationTokens: number
   cacheReadTokens: number
+  reasoningTokens: number
   totalTokens: number
   cost: number
   durationMs: number
@@ -91,12 +93,14 @@ export interface ModelSummary24h {
 }
 
 export interface DetailedRequest {
+  agent: AgentId
   timestamp: string
   model: string
   inputTokens: number
   outputTokens: number
   cacheCreationTokens: number
   cacheReadTokens: number
+  reasoningTokens: number
   totalTokens: number
   cost: number
   durationMs: number
@@ -110,6 +114,7 @@ export interface ProjectSummary {
   outputTokens: number
   cacheCreationTokens: number
   cacheReadTokens: number
+  reasoningTokens: number
   totalTokens: number
   cost: number
   durationMs: number
@@ -131,6 +136,7 @@ export interface ProjectModelCell {
   outputTokens: number
   cacheCreationTokens: number
   cacheReadTokens: number
+  reasoningTokens: number
   totalTokens: number
   cost: number
   durationMs: number
@@ -143,12 +149,12 @@ export interface StatsTotals {
   outputTokens: number
   cacheCreationTokens: number
   cacheReadTokens: number
+  reasoningTokens: number
   totalCost: number
   totalTokens: number
 }
 
-export interface Stats {
-  generatedAt: string
+export interface StatsView {
   daily: DailyUsage[]
   sessions: SessionUsage[]
   hourly: HourlyUsage[]
@@ -158,6 +164,13 @@ export interface Stats {
   projectModels24h: Record<string, Record<string, ProjectModelCell>>
   detailed: DetailedData
   totals: StatsTotals
+  costCoverage: MetricCoverage
+  durationCoverage: MetricCoverage
+}
+
+export interface Stats extends StatsView {
+  generatedAt: string
+  byAgent: Record<AgentId, StatsView>
 }
 
 /** Result of the `stats:data` IPC channel — the native tab's data fetch. */

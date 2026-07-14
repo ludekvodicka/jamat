@@ -15,9 +15,11 @@ Current Codex stores one JSON object per name update:
 The file is append-only. Duplicate IDs are expected and the last valid row wins. Malformed rows are
 ignored. A missing or empty latest name means the session has no explicit title.
 
-This behavior was verified against `codex-cli 0.144.4` and the official Codex implementation in
-`codex-rs/rollout/src/session_index.rs`. The official CLI also supports `/rename <name>` and updates
-its other internal metadata through that native path.
+This behavior was verified against `codex-cli 0.144.4` and its official
+[`session_index.rs`](https://github.com/openai/codex/blob/rust-v0.144.4/codex-rs/rollout/src/session_index.rs).
+The matching
+[`slash_dispatch.rs`](https://github.com/openai/codex/blob/rust-v0.144.4/codex-rs/tui/src/chatwidget/slash_dispatch.rs)
+accepts `/rename <name>` and updates Codex's other internal metadata through that native path.
 
 ## Reading and caching
 

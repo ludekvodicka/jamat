@@ -6,7 +6,6 @@ import type { SessionTitleWatchTarget } from '../types.js'
 interface SessionIndexRecord {
   id?: unknown
   thread_name?: unknown
-  updated_at?: unknown
 }
 
 interface ThreadNamesCache {
@@ -76,12 +75,12 @@ export class CodexThreadNames {
 
   private static load(path: string): ReadonlyMap<string, string> {
     let stat: ReturnType<typeof statSync>
-    try { stat = statSync(path) } catch { return new Map() }
+    try { stat = statSync(path) } catch { CodexThreadNames.cache.delete(path); return new Map() }
     const cached = CodexThreadNames.cache.get(path)
     if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.names
 
     let content: string
-    try { content = readFileSync(path, 'utf8') } catch { return new Map() }
+    try { content = readFileSync(path, 'utf8') } catch { CodexThreadNames.cache.delete(path); return new Map() }
     const names = new Map<string, string>()
     for (const line of content.split(/\r?\n/)) {
       if (!line.trim()) continue

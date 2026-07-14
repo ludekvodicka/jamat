@@ -21,14 +21,13 @@
  */
 import { BrowserWindow, dialog } from 'electron'
 
+import { SNOOZE_HOURS, isSnoozeHours } from '../../../../core/update/update-const.js'
 import type { UpdateChoice, UpdatePrompt } from '../../../../core/update/update-status.types.js'
 import { allTabsIdle } from '../tab-tree-cache'
 import { buildSessionList } from '../relaunch'
 import { publish } from '../streams'
 import { logUpdate } from './update-log'
 import { getSnoozedUntil, setSnoozedUntil } from './update-state'
-
-const SNOOZE_HOURS = [1, 2, 4, 12] // the snooze choices offered in both the dialog and the fallback
 
 export interface PromptSpec {
   channel: 'github' | 'source'
@@ -50,11 +49,21 @@ interface GateState {
 /** Resolves the in-flight renderer prompt. Null when no dialog is open. */
 let pendingChoice: ((choice: UpdateChoice) => void) | null = null
 
-/** The renderer's answer (`update:choice`) — routed here by the manager's IPC registration. */
+/**
+ * The renderer's answer (`update:choice`) — routed here by the manager's IPC registration. The payload
+ * crosses an IPC boundary, so it is VALIDATED, not trusted: an out-of-range `hours` would snooze for
+ * centuries (killing every future offer), a NaN would loop the re-offer timer, and an unknown `kind`
+ * would throw inside a voided promise. Anything unrecognized degrades to the shortest snooze and is
+ * logged — never an install nobody asked for.
+ */
 export function resolveChoice(choice: UpdateChoice): void {
   const resolve = pendingChoice
   pendingChoice = null
-  resolve?.(choice)
+  if (!resolve) return
+  if (choice?.kind === 'action') { resolve(choice); return }
+  if (choice?.kind === 'snooze' && isSnoozeHours(choice.hours)) { resolve(choice); return }
+  logUpdate({ event: 'error', detail: `ignored an invalid update:choice — ${JSON.stringify(choice)}` })
+  resolve({ kind: 'snooze', hours: SNOOZE_HOURS[0] })
 }
 
 /** Per-driver state (a driver owns exactly one gate). */

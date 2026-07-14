@@ -81,6 +81,9 @@ function poll(): void {
 export function offerIfPending(manual = false): boolean {
   if (!pendingVersion) return false
   const target = pendingVersion
+  // Keep the phase in step with the prompt — the dialog renders the offer from the prompt, but a phase
+  // that says something else (error, idle) would confuse the chip and the status.
+  setAvailable(target)
   gate.offer({
     channel: 'source',
     version: target,

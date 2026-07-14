@@ -1,20 +1,20 @@
 /**
- * The update dialog — one window that carries the WHOLE update: the offer, the download (with a real
- * progress bar), the hand-off to the installer, and any failure. It replaces a native message box that
- * could show none of that: the old flow downloaded 128 MB unasked, then asked, and the user's click was
- * followed by 10–20 silent seconds of teardown + installer hand-off. Now the order matches what a
- * person expects — ask, then work where they can watch it.
+ * The update dialog — one window that carries the whole update: the offer, the download (with a real
+ * progress bar), the hand-off to the installer, and any failure.
  *
- * It opens by itself when main offers an update (`update:prompt`), and can be opened from the status-bar
- * chip at any time (the `OPEN_UPDATE_DIALOG_EVENT`).
+ * The PROMPT, not the phase, decides whether the answer buttons are shown. Main blocks on the answer,
+ * so a prompt rendered as anything else (an `error` body, an "up to date" body) is an offer the user
+ * cannot answer — which wedges the gate and kills every later offer for the session.
+ *
+ * It opens by itself when main offers an update (`update:prompt`), and can be opened from the
+ * status-bar chip at any time (`OPEN_UPDATE_DIALOG_EVENT`).
  */
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { UpdatePrompt, UpdateStatus } from '../../../../core/update/update-status.types'
+import { SNOOZE_HOURS } from '../../../../core/update/update-const'
+import type { UpdateChoice, UpdatePrompt, UpdateStatus } from '../../../../core/update/update-status.types'
 
 export const OPEN_UPDATE_DIALOG_EVENT = 'jamat:open-update-dialog'
-
-const SNOOZE_HOURS = [1, 2, 4, 12]
 
 function fmtMB(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
@@ -24,7 +24,7 @@ export function UpdateDialog() {
   const [prompt, setPrompt] = useState<UpdatePrompt | null>(null)
   const [status, setStatus] = useState<UpdateStatus | null>(null)
   const [open, setOpen] = useState(false)
-  const [snoozeHours, setSnoozeHours] = useState(SNOOZE_HOURS[0])
+  const [snoozeHours, setSnoozeHours] = useState<number>(SNOOZE_HOURS[0])
 
   useEffect(() => {
     void window.electronAPI?.getUpdateStatus?.().then(setStatus).catch(() => {})
@@ -40,18 +40,55 @@ export function UpdateDialog() {
   }, [])
 
   if (!open || !status) return null
-  const { phase, progress, pendingVersion, lastError, running, channel } = status
+  const { phase, progress, pendingVersion, lastError, running, channel, busy } = status
   const version = prompt?.version ?? pendingVersion ?? ''
   const isSource = (prompt?.channel ?? channel) === 'source'
 
-  // An answered prompt is spent — a stale copy would otherwise re-arm the buttons mid-download.
-  const answer = (choice: Parameters<NonNullable<typeof window.electronAPI.answerUpdatePrompt>>[0], keepOpen: boolean) => {
+  // An answered prompt is spent — a stale copy would re-arm the buttons mid-download.
+  const answer = (choice: UpdateChoice, keepOpen: boolean) => {
     setPrompt(null)
     if (!keepOpen) setOpen(false)
     void window.electronAPI?.answerUpdatePrompt?.(choice).catch(() => {})
   }
 
-  const body = () => {
+  const busyBlock = (list: string) => (
+    <div className="update-dialog-meta update-dialog-busy">
+      Restarting closes these terminals — some are still working:
+      <pre>{list}</pre>
+    </div>
+  )
+
+  /** The offer: main is waiting for an answer, so this wins over whatever the phase says. */
+  const offerBody = (p: UpdatePrompt) => (
+    <>
+      <div className="update-dialog-msg">
+        {p.channel === 'source' ? `A newer build is on disk (${p.version}).` : `Jamat ${p.version} is available.`}
+      </div>
+      <div className="update-dialog-meta">Running: {p.running} → New: {p.version}</div>
+      {p.busy && busyBlock(p.busy)}
+      <div className="update-dialog-meta">
+        {p.channel === 'source'
+          ? 'Restarting loads it (the launcher recompiles).'
+          : p.actionLabel.startsWith('Restart')
+            ? 'It is already downloaded — the installer runs after the restart.'
+            : 'The download starts when you accept, and its progress is shown here.'}
+      </div>
+      <div className="update-dialog-actions">
+        <select
+          className="update-dialog-snooze"
+          value={snoozeHours}
+          onChange={(e) => setSnoozeHours(Number(e.target.value))}
+          title="Ask again later"
+        >
+          {SNOOZE_HOURS.map((h) => <option key={h} value={h}>in {h}h</option>)}
+        </select>
+        <button className="abilities-confirm-cancel" onClick={() => answer({ kind: 'snooze', hours: snoozeHours }, false)}>Later</button>
+        <button className="abilities-confirm-ok" onClick={() => answer({ kind: 'action' }, true)}>{p.actionLabel}</button>
+      </div>
+    </>
+  )
+
+  const phaseBody = () => {
     if (phase === 'downloading') {
       const pct = progress?.percent ?? 0
       return (
@@ -62,7 +99,7 @@ export function UpdateDialog() {
             {pct}% · {fmtMB(progress?.transferred ?? 0)} of {fmtMB(progress?.total ?? 0)}
             {progress?.bytesPerSecond ? ` · ${fmtMB(progress.bytesPerSecond)}/s` : ''}
           </div>
-          <div className="update-dialog-meta">The installer starts as soon as the download finishes.</div>
+          <div className="update-dialog-meta">The install follows as soon as the download finishes.</div>
           <div className="update-dialog-actions">
             <button className="abilities-confirm-cancel" onClick={() => setOpen(false)}>Hide</button>
           </div>
@@ -92,73 +129,67 @@ export function UpdateDialog() {
           <div className="update-dialog-meta update-dialog-reason">{lastError ?? 'unknown error'}</div>
           <div className="update-dialog-actions">
             <button className="abilities-confirm-cancel" onClick={() => setOpen(false)}>Close</button>
-            <button className="abilities-confirm-ok" onClick={() => { void window.electronAPI?.checkForUpdates?.().catch(() => {}) }}>Try again</button>
+            <button
+              className="abilities-confirm-ok"
+              // A known version means the DOWNLOAD failed — retry that, not the check (which would
+              // just find the same release again).
+              onClick={() => {
+                const retry = pendingVersion ? window.electronAPI?.installUpdate?.() : window.electronAPI?.checkForUpdates?.()
+                void retry?.catch(() => {})
+              }}
+            >
+              Try again
+            </button>
           </div>
         </>
       )
 
-    if (phase === 'available') {
-      // Without an open prompt (dialog opened from the chip) the consent goes through update:install —
-      // the same path, minus the gate's snooze bookkeeping.
-      const consent = () => prompt
-        ? answer({ kind: 'action' }, true)
-        : (setPrompt(null), void window.electronAPI?.installUpdate?.().catch(() => {}))
+    if (phase === 'available' || phase === 'ready') {
+      // Opened from the chip: no prompt behind it, so consent goes through update:install. The busy
+      // warning still shows — it comes from the status, not from the prompt.
+      const downloaded = phase === 'ready'
       return (
         <>
           <div className="update-dialog-msg">
-            {isSource ? `A newer build is on disk (${version}).` : `Jamat ${version} is available.`}
+            {isSource ? `A newer build is on disk (${version}).` : `Jamat ${version} is ${downloaded ? 'downloaded' : 'available'}.`}
           </div>
           <div className="update-dialog-meta">Running: {running} → New: {version}</div>
-          {prompt?.busy && (
-            <div className="update-dialog-meta update-dialog-busy">
-              Restarting closes these terminals — some are still working:
-              <pre>{prompt.busy}</pre>
-            </div>
-          )}
+          {busy && busyBlock(busy)}
           <div className="update-dialog-meta">
             {isSource
               ? 'Restarting loads it (the launcher recompiles).'
-              : 'The download starts when you accept, and its progress is shown here.'}
+              : downloaded
+                ? 'It installs on the restart.'
+                : 'The download starts when you accept, and its progress is shown here.'}
           </div>
           <div className="update-dialog-actions">
-            {prompt && (
-              <>
-                <select
-                  className="update-dialog-snooze"
-                  value={snoozeHours}
-                  onChange={(e) => setSnoozeHours(Number(e.target.value))}
-                  title="Ask again later"
-                >
-                  {SNOOZE_HOURS.map((h) => <option key={h} value={h}>in {h}h</option>)}
-                </select>
-                <button className="abilities-confirm-cancel" onClick={() => answer({ kind: 'snooze', hours: snoozeHours }, false)}>Later</button>
-              </>
-            )}
-            {!prompt && <button className="abilities-confirm-cancel" onClick={() => setOpen(false)}>Close</button>}
-            <button className="abilities-confirm-ok" onClick={consent}>
-              {prompt?.actionLabel ?? (isSource ? 'Restart now' : 'Download & install')}
+            <button className="abilities-confirm-cancel" onClick={() => setOpen(false)}>Close</button>
+            <button className="abilities-confirm-ok" onClick={() => { void window.electronAPI?.installUpdate?.().catch(() => {}) }}>
+              {isSource || downloaded ? 'Restart & install' : 'Download & install'}
             </button>
           </div>
         </>
       )
     }
 
-    // idle / checking — only reachable when opened by hand from the chip.
-    return (
-      <>
-        <div className="update-dialog-msg">{phase === 'checking' ? 'Checking for updates…' : `Jamat is up to date (${running}).`}</div>
-        <div className="update-dialog-actions">
-          <button className="abilities-confirm-cancel" onClick={() => setOpen(false)}>Close</button>
-        </div>
-      </>
-    )
+    if (phase === 'checking' || phase === 'idle')
+      return (
+        <>
+          <div className="update-dialog-msg">{phase === 'checking' ? 'Checking for updates…' : `Jamat is up to date (${running}).`}</div>
+          <div className="update-dialog-actions">
+            <button className="abilities-confirm-cancel" onClick={() => setOpen(false)}>Close</button>
+          </div>
+        </>
+      )
+
+    throw new Error(`Unknown update phase: ${JSON.stringify(phase)}`)
   }
 
   return createPortal(
     <div className="abilities-confirm-backdrop">
       <div className="abilities-confirm update-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="abilities-confirm-title">{isSource ? 'New build available' : 'Software update'}</div>
-        {body()}
+        {prompt ? offerBody(prompt) : phaseBody()}
       </div>
     </div>,
     document.body,

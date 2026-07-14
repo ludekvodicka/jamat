@@ -9,12 +9,11 @@ import type { UpdateChannel } from './update-channel.js'
  * What the update module is doing RIGHT NOW — the status bar and the update dialog render this
  * directly, so every state a user can sit in must be nameable.
  *
- * The order matters: `available` comes BEFORE `downloading`. Nothing is fetched until the user says
- * yes — a background download of a 128 MB installer is not the app's call to make, and downloading
- * first made the dialog appear *after* the work, with the visible wait landing in the wrong place
- * (click → 10–20 s of silence → installer). Now: ask → download with a progress bar → install.
+ * `available` precedes `downloading`: nothing is fetched before the user says yes. `ready` is the
+ * downloaded-but-waiting state — a download can take minutes, so the app re-checks that no terminal is
+ * busy before it quits, even though the user already consented (see the update-module ADR).
  */
-export type UpdatePhase = 'idle' | 'checking' | 'available' | 'downloading' | 'installing' | 'error'
+export type UpdatePhase = 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'installing' | 'error'
 
 export interface UpdateDownloadProgress {
   version: string
@@ -52,6 +51,9 @@ export interface UpdateStatus {
   phase: UpdatePhase
   /** Live download progress while `phase === 'downloading'`; null otherwise. */
   progress: UpdateDownloadProgress | null
+  /** The terminals a restart would close, when some are still working; null = everything is idle.
+   *  Carried in the status (not only in the prompt) so a dialog opened from the chip warns too. */
+  busy: string | null
   /** The last check/download failure. Cleared by the next successful step. */
   lastError: string | null
   /** Epoch ms of the last check (any trigger); null = none yet. */
