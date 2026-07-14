@@ -4,7 +4,7 @@ Config-driven commands that run in a project folder **before an agent instance i
 The motivating case (SvnTea `nodejs/AppJamat#1`) is the **Codex AGENTS.md packer**: Codex cannot
 resolve our `CLAUDE.md` `@`-imports or walk the directory-group `CLAUDE.md` above the git root, so
 before a Codex session starts we flatten our rule cascade into a Codex-native `<dir>/AGENTS.md`
-(`node ~/.claude/extensions/codex/CLI/packer.mjs build --dir <P>`).
+(`node Q:/Tooling/agent_extensions/codex/CLI/packer.mjs build --dir <P>`).
 
 ## Why config-driven (not hardcoded)
 
@@ -23,7 +23,7 @@ every public clone. Instead the hook is a **config field** (`AppConfig.agents.<i
   "codex": {
     "preLaunch": {
       "command": "node",
-      "args": ["~/.claude/extensions/codex/CLI/packer.mjs", "build", "--dir", "{dir}"],
+      "args": ["Q:/Tooling/agent_extensions/codex/CLI/packer.mjs", "build", "--dir", "{dir}"],
       "cwd": "{dir}",        // optional; default = the project dir being launched
       "timeoutMs": 20000     // optional; default 20000
     }
@@ -63,7 +63,7 @@ global `~/.codex/AGENTS.md` + the runtime fallback ritual still apply there.
 
 ## Relationship to `codex-run`
 
-`codex-run` (in `ai/claude_extensions`) is a sibling wrapper that packs **and** launches Codex for CLI
+`codex-run` (in `ai/agent_extensions`) is a sibling wrapper that packs **and** launches Codex for CLI
 / pp use. Jamat does **not** delegate its launch to it — Jamat owns its own resume / fork / trust-seed
 / PTY machinery and must emit the exact `codex` / `codex resume` / `codex fork` invocation itself. So
 Jamat integrates at the **packer choke-point** they both share (`packer.mjs build --dir`), per the

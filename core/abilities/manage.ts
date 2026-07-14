@@ -116,7 +116,7 @@ export function removePlugin(claudeDir: string, key: string): R {
 }
 
 /** Delete a user skill: remove its ~/.claude/skills symlink AND its source under
- *  ~/.claude/extensions/skills (IRREVERSIBLE — that's the claude-extensions working copy). */
+ *  Q:/Tooling/agent_extensions/skills (IRREVERSIBLE — that's the claude-extensions working copy). */
 export function removeSkill(claudeDir: string, name: string): R {
   if (!SAFE_SKILL.test(name)) return fail(`invalid skill name: ${name}`)
   const link = join(claudeDir, 'skills', name)
