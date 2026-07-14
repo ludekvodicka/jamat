@@ -20,9 +20,11 @@ import { onTabsChanged } from '../tab-tree-cache'
 import { logInfo } from '../logger'
 import { logUpdate } from './update-log'
 import { createPromptGate } from './prompt-gate'
-import { setLastCheck, setPendingVersion } from './update-state'
+import { setAvailable, setIdle, setInstalling, setLastCheck } from './update-state'
 
 const INITIAL_DELAY_MS = 45_000
+/** Let the renderer paint "restarting" before the app tears itself down. */
+const INSTALL_PAINT_MS = 250
 
 const gate = createPromptGate()
 let started = false
@@ -69,8 +71,9 @@ function poll(): void {
   const newer = diskIsNewer(disk)
   setLastCheck(newer ? `on-disk build ${disk} is newer than the running ${running}` : `running build matches the sources (${running})`)
   logUpdate({ event: 'check', channel: 'source', trigger: 'background', running, found: newer ? disk : null })
-  pendingVersion = newer ? disk : null
-  setPendingVersion(pendingVersion)
+  pendingVersion = newer && disk ? disk : null
+  if (pendingVersion) setAvailable(pendingVersion)
+  else setIdle()
   offerIfPending()
 }
 
@@ -81,12 +84,14 @@ export function offerIfPending(manual = false): boolean {
   gate.offer({
     channel: 'source',
     version: target,
-    title: 'Newer build on disk',
-    message: `A newer build is on disk (${target}).`,
-    idleDetail: `Running: ${getAppVersion()}\nOn disk: ${target}\n\nAll terminals are idle — restarting loads it (the launcher recompiles).`,
+    running: getAppVersion(),
     actionLabel: 'Restart now',
+    // Nothing to download — the newer build is already on disk; the restart (which recompiles) is the
+    // whole install. The dialog still shows the "restarting" state, so the teardown isn't silent.
     onAction: async () => {
+      setInstalling(target)
       logUpdate({ event: 'relaunch', channel: 'source', found: target })
+      await new Promise((r) => setTimeout(r, INSTALL_PAINT_MS))
       await relaunchApp()
       pendingVersion = null
     },

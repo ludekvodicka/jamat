@@ -13,34 +13,36 @@ import { getAppVersion, getMonorepoRoot } from '../app-root'
 import { buildSessionList, relaunchApp } from '../relaunch'
 import { registerHandler } from '../../shared/typed-ipc'
 import { logUpdate } from './update-log'
+import { resolveChoice } from './prompt-gate'
 import { getUpdateStatus, setBootResolution, setCurrentResolution, type UpdateStatus } from './update-state'
 import * as github from './update-channel-github'
 import * as source from './update-channel-source'
 
 export { getUpdateStatus, type UpdateStatus }
 
-/** Settings → Updates + the status-bar chip: read the live status, check, install. */
+/** Settings → Updates, the status-bar chip and the update dialog: read status, check, consent, answer. */
 export function registerUpdateIpc(): void {
   registerHandler('update:status', async () => { resolve(); return getUpdateStatus() })
-  // Fire-and-forget: the dialogs come from main, so the renderer only needs to know the call landed.
-  // The catch matters — this is the one path whose contract is "always ends visibly", so a failure
-  // must reach the log instead of dying as an unhandled rejection.
+  // Fire-and-forget: the dialog/progress comes from main, so the renderer only needs to know the call
+  // landed. The catch matters — this is the one path whose contract is "always ends visibly", so a
+  // failure must reach the log instead of dying as an unhandled rejection.
   registerHandler('update:check', async () => {
     void checkForUpdatesManual().catch((e) => logUpdate({ event: 'error', trigger: 'manual', detail: (e as Error)?.message ?? String(e) }))
     return { ok: true }
   })
   registerHandler('update:install', async () => installPending())
+  registerHandler('update:choice', async (_e, choice) => { resolveChoice(choice); return { ok: true } })
 }
 
 /**
- * The status bar's "Update" / "Restart" button — a conscious click, so the confirm dialog BYPASSES the
- * idle gate and lists the terminals a restart would close instead of quietly doing nothing.
+ * The user consented outside the dialog — the status-bar chip's Update button. Skips the offer and goes
+ * straight to the work (github: download → install, watched in the dialog; source: restart).
  */
 export async function installPending(): Promise<{ ok: boolean; error?: string }> {
   const res = resolve()
   if (res.channel === 'github') {
-    if (!github.pendingDownload()) return { ok: false, error: 'Nothing downloaded yet.' }
-    github.maybePromptInstall(true)
+    if (!github.pendingUpdate()) return { ok: false, error: 'No update has been found yet.' }
+    github.consent()
     return { ok: true }
   }
   if (res.channel === 'source') {
@@ -91,22 +93,20 @@ async function info(message: string, detail?: string): Promise<void> {
 
 /**
  * The menu action / Settings "Check now". A conscious act, so: it re-resolves from the current config,
- * it BYPASSES the idle gate (the dialog lists the terminals a restart would kill instead of silently
- * doing nothing), and it never ends in silence — either a dialog, or a visibly progressing status-bar
- * chip. It deliberately does NOT pop a "Downloading…" modal: that modal told the user to wait for a
- * dialog that a failed download would never show, hiding the failure. The chip shows the percentage
- * while it runs and turns red on failure.
+ * it BYPASSES the idle gate (the offer lists the terminals a restart would kill instead of silently
+ * doing nothing), and it never ends in silence — a release that is found opens the update dialog, and
+ * one that is not says so.
  */
 export async function checkForUpdatesManual(): Promise<void> {
   const res = resolve()
   if (res.channel === 'github') {
-    if (github.pendingDownload()) { github.maybePromptInstall(true); return }
+    if (github.pendingUpdate()) { github.offerIfAvailable(true); return }
     const found = await github.check('manual')
     if (found.error)
       await dialog.showMessageBox({ type: 'error', title: 'Updates', message: 'Could not check for updates.', detail: found.error })
     else if (!found.version)
       await info(`Jamat is up to date (${app.getVersion()}).`)
-    // Found: the download is already running (autoDownload) — the status bar carries it from here.
+    // Found: `check` already opened the offer dialog — which is where the download then happens.
   } else if (res.channel === 'source') {
     const disk = source.diskVersion(res.monorepoRoot)
     if (source.diskIsNewer(disk)) {
@@ -162,15 +162,12 @@ export async function runHeadlessUpdate(install: boolean): Promise<HeadlessUpdat
   const common = { channel: res.channel, reason: res.reason, running: getAppVersion() }
 
   if (res.channel === 'github') {
-    const pending = github.pendingDownload()
-    if (pending) {
-      if (install) { github.installNow('remote'); return { ...common, installing: pending } }
-      return { ...common, downloaded: pending, hint: 'Repeat with install=1 to restart into it now; otherwise it installs on the next quit.' }
-    }
-    const found = await github.check('remote')
-    if (found.error) return { ...common, error: found.error }
-    if (!found.version) return { ...common, upToDate: true, found: null }
-    return { ...common, found: found.version, hint: 'Downloading — call again with install=1 once it is downloaded, or let it install on the next quit.' }
+    const pending = github.pendingUpdate() ?? (await github.check('remote')).version
+    if (!pending) return { ...common, upToDate: true, found: null }
+    // The remote caller IS the consent (install=1) — nothing downloads without it, and a remote check
+    // never pops a dialog on the local user's screen.
+    if (install) { github.consent(); return { ...common, installing: pending } }
+    return { ...common, found: pending, hint: 'Repeat with install=1 to download it and restart into it.' }
   }
 
   if (res.channel === 'source') {

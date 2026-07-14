@@ -37,7 +37,7 @@ Record `type` values (one real session): `session_meta` (1, the header), `turn_c
 
 ### `response_item` — conversation items (`payload.type`)
 - `message` — `{ role: 'user'|'assistant'|'developer', content: [{ type: 'input_text'|'output_text', text }] }`.
-  The **final assistant message** = last `message` with `role:'assistant'` → `content[].text` (session preview + title source).
+  The **final assistant message** = last `message` with `role:'assistant'` → `content[].text` (session preview source).
 - `reasoning` — model reasoning (skip for turns/preview).
 - `custom_tool_call` — `{ name: 'exec', call_id, input }`. In 0.144.1 file edits go through the
   `exec` tool; `input` is a JS snippet, e.g. `const r = await tools.apply_patch("*** Begin Patch\n*** Add File: hello.txt\n+hi\n*** End Patch"); text(r);`.
@@ -50,6 +50,28 @@ Record `type` values (one real session): `session_meta` (1, the header), `turn_c
   → `hasFileEdits` = any such event. (Preferred over parsing the `apply_patch` envelope text.)
 - **`token_count`** — usage + context, LOCAL (see below).
 - `agent_message` / `user_message`, `task_started` / `task_complete`, `web_search_end`, `patch_apply_begin`.
+
+### Human user-message normalization
+
+Current rollouts can store generated `# AGENTS.md instructions … <INSTRUCTIONS>…` content as a
+`response_item/message/role:user` before the actual prompt. The generated record and the real prompt
+can share one `turn_id`, so taking the first user-role response produces identical, misleading
+session titles.
+
+For `firstUserMessage`, `sessions.ts` prefers the first `event_msg/user_message`, whose `message`
+contains the clean human prompt. It retains the first non-synthetic user `response_item` as a legacy
+fallback and commits to that fallback at the first agent output, so a later event added after a CLI
+upgrade cannot retitle an old resumed session. A following `task_started` is also a boundary for an
+interrupted first turn with no output. Preview and turn extraction continue to use ordered conversation
+items but share the same synthetic filter. The filter excludes:
+
+- `<environment_context>…`;
+- `<user_instructions>…`;
+- generated `# AGENTS.md instructions …` records that also contain the `<INSTRUCTIONS>` envelope.
+
+A session with no human prompt returns `firstUserMessage:null`; the UI then uses the session UUID.
+Rows are never deduplicated by title because independently resumable sessions may legitimately have
+the same prompt.
 
 ## `token_count` — usage AND context, read LOCALLY (no OpenAI API)
 

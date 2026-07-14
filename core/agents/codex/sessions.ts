@@ -295,23 +295,44 @@ export function messageText(rec: RolloutRecord, role: 'user' | 'assistant'): str
 }
 
 /**
- * Codex injects synthetic `user`-role messages at session start — an
- * `<environment_context>` block (cwd/os) and `<user_instructions>`. They are
- * NOT the user's prompt, so they must not become the row label or a turn.
+ * Codex injects synthetic `user`-role messages at session start. They are not
+ * the user's prompt, so they must not become the row label, preview, or a turn.
  */
 export function isInjectedUserContext(text: string): boolean {
-  return /^<(environment_context|user_instructions)\b/i.test(text.trimStart())
+  const trimmed = text.trimStart()
+  if (/^<(environment_context|user_instructions)\b/i.test(trimmed)) return true
+  const firstLine = trimmed.split(/\r?\n/, 1)[0]
+  return /^# AGENTS\.md instructions(?: for .+)?$/i.test(firstLine)
+    && /\r?\n<INSTRUCTIONS>(?:\r?\n|$)/i.test(trimmed)
 }
 
 function readFirstUserMessage(file: string): string | null {
   let fallback: string | null = null
   for (const rec of iterateRollout(file)) {
+    const eventText = explicitUserMessageText(rec)
+    if (eventText && !isInjectedUserContext(eventText)) return eventText
     const t = messageText(rec, 'user')
-    if (!t) continue
-    if (isInjectedUserContext(t)) { fallback ??= t; continue }
-    return t
+    if (t && !isInjectedUserContext(t)) fallback ??= t
+    if (fallback && isFirstPromptBoundary(rec)) return fallback
   }
   return fallback
+}
+
+function explicitUserMessageText(rec: RolloutRecord): string | null {
+  if (rec.type !== 'event_msg' || rec.payload?.type !== 'user_message') return null
+  const text = rec.payload.message?.trim()
+  return text || null
+}
+
+function isFirstPromptBoundary(rec: RolloutRecord): boolean {
+  if (rec.type === 'response_item')
+    return rec.payload?.type === 'reasoning'
+      || rec.payload?.type === 'custom_tool_call'
+      || (rec.payload?.type === 'message' && rec.payload.role === 'assistant')
+  return rec.type === 'event_msg'
+    && (rec.payload?.type === 'agent_message'
+      || rec.payload?.type === 'task_complete'
+      || rec.payload?.type === 'task_started')
 }
 
 function safeReaddir(dir: string): string[] {

@@ -78,7 +78,10 @@ console.log('\n[3] Discovery over a synthesized ~/.codex date tree')
       JSON.stringify({ timestamp: '2026-07-10T11:00:56.797Z', type: 'session_meta', payload: { session_id: sid, id: sid, timestamp: '2026-07-10T11:00:56.797Z', cwd: projDir } }) + '\n' +
       // Codex injects an <environment_context> user message first — must be skipped as the label.
       JSON.stringify({ timestamp: '2026-07-10T11:00:56.9Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '<environment_context>\n  <cwd>' + projDir + '</cwd>\n</environment_context>' }] } }) + '\n' +
-      JSON.stringify({ timestamp: '2026-07-10T11:00:57Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'do the thing' }] } }) + '\n')
+      JSON.stringify({ timestamp: '2026-07-10T11:00:57Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'do the thing' }] } }) + '\n' +
+      JSON.stringify({ timestamp: '2026-07-10T11:00:58Z', type: 'event_msg', payload: { type: 'agent_message', message: 'done' } }) + '\n' +
+      JSON.stringify({ timestamp: '2026-07-10T12:00:00Z', type: 'event_msg', payload: { type: 'task_started' } }) + '\n' +
+      JSON.stringify({ timestamp: '2026-07-10T12:00:01Z', type: 'event_msg', payload: { type: 'user_message', message: 'later prompt from a newer schema' } }) + '\n')
     // A second rollout under a DIFFERENT cwd.
     const sid2 = '019f4bf7-aaaa-7bbb-8ccc-ddddeeeeffff'
     writeFileSync(join(dayDir, `rollout-2026-07-10T15-00-00-${sid2}.jsonl`),
@@ -90,7 +93,7 @@ console.log('\n[3] Discovery over a synthesized ~/.codex date tree')
 
     const sessions = listCodexSessionsForProject(projDir, home)
     ok('listCodexSessionsForProject → exactly the projDir session', sessions.length === 1 && sessions[0].sessionId === sid, `got ${sessions.length}`)
-    ok('session firstUserMessage skips <environment_context>, returns the real prompt', sessions[0]?.firstUserMessage === 'do the thing')
+    ok('legacy title keeps the original prompt across later event records', sessions[0]?.firstUserMessage === 'do the thing')
     ok('session marked not-active (Codex has no live pids)', sessions[0]?.active === false)
 
     ok('findCodexSessionFileById → the file', findCodexSessionFileById(sid, home) === rollout)
@@ -106,7 +109,48 @@ console.log('\n[3] Discovery over a synthesized ~/.codex date tree')
   }
 }
 
-console.log('\n[4] resolveCodexLaunchedSession — newest rollout for cwd since launch (fork / new-session id)')
+console.log('\n[4] Current Codex user prompt normalization')
+{
+  const home = mkdtempSync(join(tmpdir(), 'codex-prompts-'))
+  const projectDir = join(home, 'work', 'current-shape')
+  const syntheticOnlyDir = join(home, 'work', 'synthetic-only')
+  try {
+    const dayDir = join(home, '.codex', 'sessions', '2026', '07', '14')
+    mkdirSync(dayDir, { recursive: true })
+    const sid = '019f6128-1111-7000-8000-000000000001'
+    const turnId = '019f6128-2222-7000-8000-000000000002'
+    const agentsEnvelope = '# AGENTS.md instructions for ' + projectDir + '\n\n<INSTRUCTIONS>\nGenerated project rules\n</INSTRUCTIONS>\n<environment_context>\n</environment_context>'
+    const responsePrompt = '<image name=[Image #1] path="d:\\Upload\\shot.png"></image>Fix the Codex session titles [Image #1]'
+    const cleanPrompt = 'Fix the Codex session titles [Image #1]'
+    writeFileSync(join(dayDir, `rollout-2026-07-14T17-04-23-${sid}.jsonl`),
+      JSON.stringify({ timestamp: '2026-07-14T15:04:23Z', type: 'session_meta', payload: { session_id: sid, id: sid, cwd: projectDir } }) + '\n' +
+      JSON.stringify({ timestamp: '2026-07-14T15:04:24Z', type: 'event_msg', payload: { type: 'task_started', turn_id: turnId } }) + '\n' +
+      JSON.stringify({ timestamp: '2026-07-14T15:04:25Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: agentsEnvelope }], internal_chat_message_metadata_passthrough: { turn_id: turnId } } }) + '\n' +
+      JSON.stringify({ timestamp: '2026-07-14T15:04:26Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: responsePrompt }], internal_chat_message_metadata_passthrough: { turn_id: turnId } } }) + '\n' +
+      JSON.stringify({ timestamp: '2026-07-14T15:04:27Z', type: 'event_msg', payload: { type: 'user_message', message: cleanPrompt, local_images: ['d:\\Upload\\shot.png'] } }) + '\n' +
+      JSON.stringify({ timestamp: '2026-07-14T15:04:28Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'I will inspect it.' }] } }) + '\n')
+
+    const syntheticSid = '019f6128-3333-7000-8000-000000000003'
+    writeFileSync(join(dayDir, `rollout-2026-07-14T17-05-23-${syntheticSid}.jsonl`),
+      JSON.stringify({ timestamp: '2026-07-14T15:05:23Z', type: 'session_meta', payload: { session_id: syntheticSid, id: syntheticSid, cwd: syntheticOnlyDir } }) + '\n' +
+      JSON.stringify({ timestamp: '2026-07-14T15:05:24Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: agentsEnvelope }] } }) + '\n')
+
+    invalidateCodexIndex()
+    const session = listCodexSessionsForProject(projectDir, home)[0]
+    ok('current shape title uses clean event_msg/user_message', session?.firstUserMessage === cleanPrompt, JSON.stringify(session?.firstUserMessage))
+    const preview = loadCodexSessionPreview(projectDir, sid)
+    ok('preview excludes generated AGENTS envelope', !preview.some((line) => line.startsWith('# AGENTS.md instructions')))
+    const turns = extractCodexTurns(findCodexSessionFileById(sid, home)!)
+    ok('turns exclude generated AGENTS envelope', turns.length === 1 && turns[0].userPromptText === responsePrompt, JSON.stringify(turns.map((turn) => turn.userPromptText)))
+    const syntheticOnly = listCodexSessionsForProject(syntheticOnlyDir, home)[0]
+    ok('synthetic-only rollout has no firstUserMessage', syntheticOnly?.firstUserMessage === null, JSON.stringify(syntheticOnly?.firstUserMessage))
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+    invalidateCodexIndex()
+  }
+}
+
+console.log('\n[5] resolveCodexLaunchedSession — newest rollout for cwd since launch (fork / new-session id)')
 {
   const home = mkdtempSync(join(tmpdir(), 'codex-launch-'))
   const projDir = join(home, 'work', 'myproj')

@@ -22,6 +22,7 @@ import { TerminalContextMenu } from './components/TerminalContextMenu'
 import { CommandPalette } from './components/CommandPalette'
 import { SelectionIndicator } from './components/SelectionIndicator'
 import { UpdateChip } from './components/UpdateChip'
+import { UpdateDialog } from './components/UpdateDialog'
 import { ClipboardDebug } from './components/ClipboardDebug'
 import { WorkDetectionStatus } from './components/WorkDetectionStatus'
 import { loadSettings, SETTINGS_CHANGED_EVENT, STORAGE_KEY as SETTINGS_STORAGE_KEY } from './components/panels/SettingsPanel'
@@ -435,6 +436,7 @@ export function App() {
       <TerminalContextMenu />
       <ToastContainer />
       <SessionDonePromptPopup />
+      <UpdateDialog />
     </div>
   )
 }

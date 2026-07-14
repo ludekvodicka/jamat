@@ -6,11 +6,15 @@
 import type { UpdateChannel } from './update-channel.js'
 
 /**
- * What the update module is doing RIGHT NOW — the status bar renders this directly, so every state a
- * user can sit in must be nameable. `error` is one of them on purpose: a failed download used to be
- * invisible (a 404 on a mis-named release asset looked exactly like "nothing happened").
+ * What the update module is doing RIGHT NOW — the status bar and the update dialog render this
+ * directly, so every state a user can sit in must be nameable.
+ *
+ * The order matters: `available` comes BEFORE `downloading`. Nothing is fetched until the user says
+ * yes — a background download of a 128 MB installer is not the app's call to make, and downloading
+ * first made the dialog appear *after* the work, with the visible wait landing in the wrong place
+ * (click → 10–20 s of silence → installer). Now: ask → download with a progress bar → install.
  */
-export type UpdatePhase = 'idle' | 'checking' | 'downloading' | 'ready' | 'error'
+export type UpdatePhase = 'idle' | 'checking' | 'available' | 'downloading' | 'installing' | 'error'
 
 export interface UpdateDownloadProgress {
   version: string
@@ -19,6 +23,22 @@ export interface UpdateDownloadProgress {
   total: number
   bytesPerSecond: number
 }
+
+/** The offer, rendered as the in-app update dialog (the native message box is the fallback). */
+export interface UpdatePrompt {
+  channel: 'github' | 'source'
+  version: string
+  running: string
+  /** 'Download & install' (github — the download starts on this click) / 'Restart now' (source). */
+  actionLabel: string
+  /** The terminals a restart would close, when some are still working; null = everything is idle. */
+  busy: string | null
+}
+
+/** What the user picked in the dialog. */
+export type UpdateChoice =
+  | { kind: 'action' }
+  | { kind: 'snooze'; hours: number }
 
 export interface UpdateStatus {
   channel: UpdateChannel
@@ -37,7 +57,7 @@ export interface UpdateStatus {
   /** Epoch ms of the last check (any trigger); null = none yet. */
   lastCheckAt: number | null
   lastCheckOutcome: string | null
-  /** A newer version known/downloaded and waiting for a restart (`phase === 'ready'`). */
+  /** The newer version this build knows about — offered, downloading, or installing. */
   pendingVersion: string | null
   /** Epoch ms until which the prompt is snoozed (0 = not snoozed). */
   snoozedUntil: number

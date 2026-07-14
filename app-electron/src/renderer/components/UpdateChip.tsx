@@ -1,19 +1,14 @@
 /**
- * Status-bar update indicator — the answer to "I clicked check, it said there's a new version, and
- * nothing happened". Every phase the update module can be in is visible here: the download's progress,
- * the ready-to-install build (with the button that installs it), and the failure that used to be
- * silent. Renders NOTHING while idle — an app with no update pending shows no chip at all.
+ * Status-bar update indicator — the small, always-visible half of the update UI (the dialog is the
+ * other half). It renders NOTHING while idle; every other phase is one click away from the dialog,
+ * which is where the actual work is watched.
  */
 import { useEffect, useState } from 'react'
 import type { UpdateStatus } from '../../../../core/update/update-status.types'
-
-function fmtMB(bytes: number): string {
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-}
+import { OPEN_UPDATE_DIALOG_EVENT } from './UpdateDialog'
 
 export function UpdateChip() {
   const [status, setStatus] = useState<UpdateStatus | null>(null)
-  const [installing, setInstalling] = useState(false)
 
   useEffect(() => {
     void window.electronAPI?.getUpdateStatus?.().then(setStatus).catch(() => {})
@@ -24,14 +19,17 @@ export function UpdateChip() {
   const { phase, progress, pendingVersion, lastError, channel } = status
   if (phase === 'idle' || phase === 'checking') return null
 
+  const openDialog = () => window.dispatchEvent(new CustomEvent(OPEN_UPDATE_DIALOG_EVENT))
+  const isSource = channel === 'source'
+
   if (phase === 'downloading') {
     const pct = progress?.percent ?? 0
     return (
       <span
         className="status-item update-chip"
-        title={progress
-          ? `Downloading Jamat ${progress.version}\n${fmtMB(progress.transferred)} of ${fmtMB(progress.total)} · ${fmtMB(progress.bytesPerSecond)}/s`
-          : 'Downloading update…'}
+        style={{ cursor: 'pointer' }}
+        title={`Downloading Jamat ${progress?.version ?? ''} — click to watch`}
+        onClick={openDialog}
       >
         ⬇ {progress?.version ?? 'update'} · {pct}%
         <span className="update-progress"><span className="update-progress-fill" style={{ width: `${pct}%` }} /></span>
@@ -39,43 +37,41 @@ export function UpdateChip() {
     )
   }
 
-  if (phase === 'ready') {
-    // Source checkout: the newer build is on disk, a restart (which recompiles) loads it. Installed
-    // build: the release is downloaded and the installer runs on restart. Same button, different verb.
-    const isSource = channel === 'source'
+  if (phase === 'installing')
+    return (
+      <span className="status-item update-chip update-chip-ready" title="Jamat is closing to finish the update">
+        {isSource ? 'Restarting…' : 'Installing…'}
+      </span>
+    )
+
+  if (phase === 'available')
     return (
       <span
         className="status-item update-chip update-chip-ready"
+        style={{ cursor: 'pointer' }}
         title={isSource
-          ? `A newer build (${pendingVersion}) is on disk — restarting loads it.`
-          : `Jamat ${pendingVersion} is downloaded and installs on restart.`}
+          ? `A newer build (${pendingVersion}) is on disk — click to restart into it.`
+          : `Jamat ${pendingVersion} is available — click to download and install it.`}
+        onClick={openDialog}
       >
-        {isSource ? `New build ${pendingVersion} on disk` : `New version ${pendingVersion} ready`}
+        {isSource ? `New build ${pendingVersion} on disk` : `New version ${pendingVersion} available`}
         <button
           className="status-btn"
-          disabled={installing}
           onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation()
-            setInstalling(true)
-            void window.electronAPI?.installUpdate?.()
-              .catch(() => {})
-              .finally(() => setInstalling(false))
-          }}
+          onClick={(e) => { e.stopPropagation(); openDialog() }}
         >
           {isSource ? 'Restart' : 'Update'}
         </button>
       </span>
     )
-  }
 
   if (phase === 'error')
     return (
       <span
         className="status-item update-chip update-chip-error"
-        title={`Update failed: ${lastError ?? 'unknown error'}\n\nClick to try again.`}
         style={{ cursor: 'pointer' }}
-        onClick={() => { void window.electronAPI?.checkForUpdates?.().catch(() => {}) }}
+        title={`Update failed: ${lastError ?? 'unknown error'}\n\nClick for details.`}
+        onClick={openDialog}
       >
         ⚠ Update failed
       </span>

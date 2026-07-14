@@ -25,7 +25,7 @@ import type { Idea } from './ideas.js'
 import type { AbilitiesResult, AbilitiesManageRequest, AbilitiesManageResult } from './abilities.js'
 import type { StatsDataResult } from './stats.js'
 import type { AgentId } from './contracts.js'
-import type { UpdateStatus } from '../update/update-status.types.js'
+import type { UpdateChoice, UpdatePrompt, UpdateStatus } from '../update/update-status.types.js'
 import type {
   RemoteControlData,
   RemotePeer,
@@ -182,10 +182,12 @@ export interface IpcInvokeMap {
   // Manual check ("Check now" / the menu item). Ends visibly — a dialog (up to date / failed) or a
   // status-bar chip that progresses — and bypasses the idle gate on purpose.
   'update:check': () => Promise<{ ok: boolean }>
-  // The status bar's Update/Restart button: install what is already pending (github: the downloaded
-  // build; source: the newer build on disk). Opens the confirm dialog listing the terminals a restart
-  // closes. `ok:false` = nothing pending / no channel, with the reason.
+  // The status bar's Update/Restart button — the user's consent, given outside the dialog. github:
+  // starts the download (which the dialog then shows) and installs when it lands; source: restarts into
+  // the newer on-disk build. `ok:false` = nothing found yet / no channel, with the reason.
   'update:install': () => Promise<{ ok: boolean; error?: string }>
+  // The update dialog's answer to `update:prompt` — install now, or snooze for N hours.
+  'update:choice': (choice: UpdateChoice) => Promise<{ ok: boolean }>
   // Native folder picker (showOpenDialog, openDirectory) for the Projects/categories editor.
   // Returns the chosen absolute path, or null if the user cancelled.
   'dialog:pick-directory': (opts?: { title?: string; defaultPath?: string }) => Promise<string | null>
@@ -430,9 +432,13 @@ export interface IpcEventMap {
   // usage
   'usage:update': (data: UsageCache) => void
 
-  // update module — pushed on every phase/progress change (checking → downloading % → ready → error),
-  // so the status bar is a live view instead of a poll. Same record as `update:status`.
+  // update module — pushed on every phase/progress change (checking → available → downloading % →
+  // installing → error), so the status bar and the dialog are live views instead of polls. Same record
+  // as `update:status`.
   'update:changed': (status: UpdateStatus) => void
+  // The offer: main asks the renderer to show the update dialog. The answer comes back as
+  // `update:choice`. Main falls back to a native message box only when no window exists.
+  'update:prompt': (prompt: UpdatePrompt) => void
 
   // config — broadcast to every window after a successful `config:update` so each renderer's
   // store refreshes (categories/agent/menus/prompts apply live, no restart).

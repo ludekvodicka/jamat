@@ -38,10 +38,24 @@ export function setBootResolution(res: UpdateResolution): void { boot = res; cur
 /** Called on every manual action / status read — refreshes the config-derived view. */
 export function setCurrentResolution(res: UpdateResolution): void { current = res; notify() }
 
+/** A phase the user has already consented to — a later check must not knock it back. */
+function inProgress(): boolean {
+  return phase === 'downloading' || phase === 'installing'
+}
+
 export function setChecking(): void {
-  // A check while a download runs (or one is ready) must not erase the more advanced phase.
-  if (phase === 'downloading' || phase === 'ready') return
+  if (inProgress() || phase === 'available') return
   phase = 'checking'
+  notify()
+}
+
+/** A newer version exists and is waiting for the user's yes. NOTHING has been fetched yet. */
+export function setAvailable(v: string): void {
+  pendingVersion = v
+  if (inProgress()) return
+  phase = 'available'
+  progress = null
+  lastError = null
   notify()
 }
 
@@ -52,11 +66,21 @@ export function setDownloading(p: UpdateDownloadProgress): void {
   notify()
 }
 
+/** The user said yes and the app is handing over to the installer / restarting. */
+export function setInstalling(v: string): void {
+  pendingVersion = v
+  phase = 'installing'
+  progress = null
+  lastError = null
+  notify()
+}
+
 /** Up to date — the check ran and there is nothing to do. */
 export function setIdle(): void {
-  if (phase === 'ready') return  // a pending update outranks a later "nothing new" check
+  if (inProgress()) return
   phase = 'idle'
   progress = null
+  pendingVersion = null
   lastError = null
   notify()
 }
@@ -71,14 +95,6 @@ export function setError(message: string): void {
 export function setLastCheck(outcome: string): void {
   lastCheckAt = Date.now()
   lastCheckOutcome = outcome
-  notify()
-}
-
-/** A version is waiting for a restart (github: downloaded; source: newer build on disk). */
-export function setPendingVersion(v: string | null): void {
-  pendingVersion = v
-  if (v) { phase = 'ready'; progress = null; lastError = null }
-  else if (phase === 'ready') phase = 'idle'
   notify()
 }
 

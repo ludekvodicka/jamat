@@ -4,7 +4,7 @@ import type { SessionInfo, SessionMessage, SessionSearchMatch, UsageCache, Sessi
 import type { DiffBaseline, DiffMode, DiffOptions } from '../../../core/types/file-diff'
 import type { AppConfig, ConfigPatch } from '../../../core/types/config'
 import type { AgentMeta, AppPathsInfo, CommitResult, CommitVcsRequest, CommitOptions, DirEntry, IpcEventMap, SessionRenameResult } from '../../../core/types/ipc-contracts'
-import type { UpdateStatus } from '../../../core/update/update-status.types'
+import type { UpdateChoice, UpdatePrompt, UpdateStatus } from '../../../core/update/update-status.types'
 import type { AgentId } from '../../../core/types/contracts'
 import type { Idea } from '../../../core/types/ideas'
 import type { AbilitiesResult, AbilitiesManageRequest, AbilitiesManageResult } from '../../../core/types/abilities'
@@ -45,6 +45,7 @@ const api = {
   getUpdateStatus: (): Promise<UpdateStatus> => invokeChannel('update:status'),
   checkForUpdates: (): Promise<{ ok: boolean }> => invokeChannel('update:check'),
   installUpdate: (): Promise<{ ok: boolean; error?: string }> => invokeChannel('update:install'),
+  answerUpdatePrompt: (choice: UpdateChoice): Promise<{ ok: boolean }> => invokeChannel('update:choice', choice),
 
   createScreenTerminal: (id: string, config: { cols: number; rows: number }): void => sendChannel('screen:create', id, config),
   createTerminal: (id: string, config: { cols: number; rows: number; cwd?: string; command?: string; args?: string[] }): void => sendChannel('pty:create', id, config),
@@ -141,6 +142,7 @@ const api = {
   getStatsData: (force?: boolean): Promise<StatsDataResult> => invokeChannel('stats:data', force),
   onUsageUpdate: (callback: (cache: UsageCache) => void): (() => void) => onChannel('usage:update', callback),
   onUpdateStatus: (callback: (status: UpdateStatus) => void): (() => void) => onChannel('update:changed', callback),
+  onUpdatePrompt: (callback: (prompt: UpdatePrompt) => void): (() => void) => onChannel('update:prompt', callback),
 
   // ── Remote App Control ──
   getRemoteConfig: (): Promise<RemoteControlData> => invokeChannel('remote:get-config'),
