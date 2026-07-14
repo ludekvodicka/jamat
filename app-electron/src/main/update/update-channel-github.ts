@@ -23,13 +23,17 @@ import { buildSessionList } from '../relaunch'
 import { logError, logInfo } from '../logger'
 import { logUpdate } from './update-log'
 import { createPromptGate } from './prompt-gate'
-import { setLastCheck, setPendingVersion } from './update-state'
+import { setChecking, setDownloading, setError, setIdle, setLastCheck, setPendingVersion } from './update-state'
 
 const INITIAL_DELAY_MS = 45_000 // let the app settle before the first network poll
+
+type Trigger = 'background' | 'manual' | 'remote'
 
 const gate = createPromptGate()
 let started = false
 let downloadedVersion: string | null = null
+/** The trigger of the check currently talking to the feed — its events belong to it. */
+let inFlightTrigger: Trigger = 'background'
 /**
  * Which trigger STARTED the in-flight download. Only a MANUAL check earns a gate-bypassing prompt:
  * the user asked and is watching. It must not be a "last check wins" flag — a background check landing
@@ -38,7 +42,11 @@ let downloadedVersion: string | null = null
  * that would pop a dialog on someone else's screen mid-turn (the conscious remote install goes through
  * `installNow()` instead).
  */
-let downloadTrigger: 'background' | 'manual' | 'remote' = 'background'
+let downloadTrigger: Trigger = 'background'
+/** A download owns its trigger until it ends — a later check must not re-label it (see downloadTrigger). */
+let downloading = false
+/** The version being downloaded — `download-progress` events don't carry it. */
+let inFlightVersion: string | null = null
 
 export interface GithubCheckResult {
   version: string | null   // null = up to date
@@ -59,17 +67,36 @@ export function startGithubDriver(res: UpdateResolution): void {
   }
 
   autoUpdater.on('error', (e) => {
-    logUpdate({ event: 'error', channel: 'github', trigger: downloadTrigger, detail: e?.message ?? String(e) })
+    const detail = e?.message ?? String(e)
+    downloading = false
+    setError(detail)
+    logUpdate({ event: 'error', channel: 'github', trigger: downloadTrigger, detail })
   })
   autoUpdater.on('update-available', (info) => {
+    // The download starts HERE (autoDownload), inside the checkForUpdates() call — so the trigger must
+    // already be known: reading it after the await would mis-file a manual download as background.
+    if (!downloading) { downloadTrigger = inFlightTrigger; downloading = true }
+    inFlightVersion = info.version
+    setDownloading({ version: info.version, percent: 0, transferred: 0, total: 0, bytesPerSecond: 0 })
     logUpdate({ event: 'download-start', channel: 'github', trigger: downloadTrigger, running: app.getVersion(), found: info.version })
+  })
+  autoUpdater.on('download-progress', (p) => {
+    setDownloading({
+      version: downloadedVersion ?? inFlightVersion ?? app.getVersion(),
+      percent: Math.round(p.percent),
+      transferred: p.transferred,
+      total: p.total,
+      bytesPerSecond: Math.round(p.bytesPerSecond),
+    })
   })
   autoUpdater.on('update-downloaded', (info) => {
     downloadedVersion = info.version
+    downloading = false
     setPendingVersion(info.version)
     logUpdate({ event: 'downloaded', channel: 'github', trigger: downloadTrigger, found: info.version })
     // The MANUAL check that started this download gets its prompt now (the user is watching); a
-    // background or remote one waits for idle. Either way the outcome is logged.
+    // background or remote one waits for idle. Either way the outcome is logged — and the status bar
+    // shows the "New version ready" button regardless of what the gate decides.
     maybePromptInstall(downloadTrigger === 'manual')
   })
 
@@ -87,8 +114,10 @@ export function startGithubDriver(res: UpdateResolution): void {
 }
 
 /** Ask the feed. Always logs the outcome; never throws. */
-export async function check(trigger: 'background' | 'manual' | 'remote'): Promise<GithubCheckResult> {
+export async function check(trigger: Trigger): Promise<GithubCheckResult> {
   try {
+    inFlightTrigger = trigger
+    setChecking()
     const r = await autoUpdater.checkForUpdates()
     // `updateInfo.version` is the feed's latest REGARDLESS of direction — comparing it by hand (`!==
     // app.getVersion()`) reports "found" for a downgrade/prerelease/locally-newer build too, and then
@@ -98,12 +127,12 @@ export async function check(trigger: 'background' | 'manual' | 'remote'): Promis
     const latest = r?.updateInfo?.version ?? null
     setLastCheck(available ? `found ${latest}` : `up to date (${app.getVersion()})`)
     logUpdate({ event: 'check', channel: 'github', trigger, running: app.getVersion(), found: available ? latest : null })
-    // Only a check that actually starts a download owns the resulting prompt (see downloadTrigger).
-    if (available) downloadTrigger = trigger
+    if (!available) setIdle()   // the `update-available` handler owns the found case (it starts the download)
     return { version: available ? latest : null }
   } catch (e) {
     const error = (e as Error)?.message ?? String(e)
     setLastCheck(`failed: ${error}`)
+    setError(error)
     logUpdate({ event: 'error', channel: 'github', trigger, detail: `check failed: ${error}` })
     return { version: null, error }
   }

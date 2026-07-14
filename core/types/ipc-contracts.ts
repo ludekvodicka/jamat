@@ -179,9 +179,13 @@ export interface IpcInvokeMap {
   // compare, unsigned mac→none), running version, last check + outcome, a pending version, deprecated
   // config keys. Read by Settings → Updates; the same record is in `debug:info.update`.
   'update:status': () => Promise<UpdateStatus>
-  // Manual check ("Check now" / the menu item). Always ends in a dialog from the main process (the
-  // renderer only needs to know the call went through), and bypasses the idle gate on purpose.
+  // Manual check ("Check now" / the menu item). Ends visibly — a dialog (up to date / failed) or a
+  // status-bar chip that progresses — and bypasses the idle gate on purpose.
   'update:check': () => Promise<{ ok: boolean }>
+  // The status bar's Update/Restart button: install what is already pending (github: the downloaded
+  // build; source: the newer build on disk). Opens the confirm dialog listing the terminals a restart
+  // closes. `ok:false` = nothing pending / no channel, with the reason.
+  'update:install': () => Promise<{ ok: boolean; error?: string }>
   // Native folder picker (showOpenDialog, openDirectory) for the Projects/categories editor.
   // Returns the chosen absolute path, or null if the user cancelled.
   'dialog:pick-directory': (opts?: { title?: string; defaultPath?: string }) => Promise<string | null>
@@ -425,6 +429,10 @@ export interface IpcEventMap {
 
   // usage
   'usage:update': (data: UsageCache) => void
+
+  // update module — pushed on every phase/progress change (checking → downloading % → ready → error),
+  // so the status bar is a live view instead of a poll. Same record as `update:status`.
+  'update:changed': (status: UpdateStatus) => void
 
   // config — broadcast to every window after a successful `config:update` so each renderer's
   // store refreshes (categories/agent/menus/prompts apply live, no restart).

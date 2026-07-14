@@ -74,8 +74,9 @@ function poll(): void {
   offerIfPending()
 }
 
-function offerIfPending(): void {
-  if (!pendingVersion) return
+/** `manual` = the user clicked (status bar / menu) → the gate skips the idle wait and just lists what dies. */
+export function offerIfPending(manual = false): boolean {
+  if (!pendingVersion) return false
   const target = pendingVersion
   gate.offer({
     channel: 'source',
@@ -89,5 +90,6 @@ function offerIfPending(): void {
       await relaunchApp()
       pendingVersion = null
     },
-  }, false)
+  }, manual)
+  return true
 }

@@ -19,7 +19,7 @@ import * as source from './update-channel-source'
 
 export { getUpdateStatus, type UpdateStatus }
 
-/** Settings → Updates: read the live status, and run the same manual check the menu item runs. */
+/** Settings → Updates + the status-bar chip: read the live status, check, install. */
 export function registerUpdateIpc(): void {
   registerHandler('update:status', async () => { resolve(); return getUpdateStatus() })
   // Fire-and-forget: the dialogs come from main, so the renderer only needs to know the call landed.
@@ -29,6 +29,26 @@ export function registerUpdateIpc(): void {
     void checkForUpdatesManual().catch((e) => logUpdate({ event: 'error', trigger: 'manual', detail: (e as Error)?.message ?? String(e) }))
     return { ok: true }
   })
+  registerHandler('update:install', async () => installPending())
+}
+
+/**
+ * The status bar's "Update" / "Restart" button — a conscious click, so the confirm dialog BYPASSES the
+ * idle gate and lists the terminals a restart would close instead of quietly doing nothing.
+ */
+export async function installPending(): Promise<{ ok: boolean; error?: string }> {
+  const res = resolve()
+  if (res.channel === 'github') {
+    if (!github.pendingDownload()) return { ok: false, error: 'Nothing downloaded yet.' }
+    github.maybePromptInstall(true)
+    return { ok: true }
+  }
+  if (res.channel === 'source') {
+    if (!source.offerIfPending(true)) return { ok: false, error: 'The running build already matches the sources on disk.' }
+    return { ok: true }
+  }
+  if (res.channel === 'none') return { ok: false, error: res.reason }
+  throw new Error(`Unknown update channel: ${JSON.stringify(res)}`)
 }
 
 function runtimeInput() {
@@ -72,8 +92,10 @@ async function info(message: string, detail?: string): Promise<void> {
 /**
  * The menu action / Settings "Check now". A conscious act, so: it re-resolves from the current config,
  * it BYPASSES the idle gate (the dialog lists the terminals a restart would kill instead of silently
- * doing nothing), and it ALWAYS ends in a dialog — the old manual check could start a download and
- * show nothing at all.
+ * doing nothing), and it never ends in silence — either a dialog, or a visibly progressing status-bar
+ * chip. It deliberately does NOT pop a "Downloading…" modal: that modal told the user to wait for a
+ * dialog that a failed download would never show, hiding the failure. The chip shows the percentage
+ * while it runs and turns red on failure.
  */
 export async function checkForUpdatesManual(): Promise<void> {
   const res = resolve()
@@ -84,8 +106,7 @@ export async function checkForUpdatesManual(): Promise<void> {
       await dialog.showMessageBox({ type: 'error', title: 'Updates', message: 'Could not check for updates.', detail: found.error })
     else if (!found.version)
       await info(`Jamat is up to date (${app.getVersion()}).`)
-    else
-      await info(`Downloading ${found.version}…`, 'The install prompt appears once the download completes.')
+    // Found: the download is already running (autoDownload) — the status bar carries it from here.
   } else if (res.channel === 'source') {
     const disk = source.diskVersion(res.monorepoRoot)
     if (source.diskIsNewer(disk)) {

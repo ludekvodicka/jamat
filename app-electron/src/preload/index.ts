@@ -44,6 +44,7 @@ const api = {
   completeOnboarding: (): Promise<{ ok: boolean }> => invokeChannel('onboarding:complete'),
   getUpdateStatus: (): Promise<UpdateStatus> => invokeChannel('update:status'),
   checkForUpdates: (): Promise<{ ok: boolean }> => invokeChannel('update:check'),
+  installUpdate: (): Promise<{ ok: boolean; error?: string }> => invokeChannel('update:install'),
 
   createScreenTerminal: (id: string, config: { cols: number; rows: number }): void => sendChannel('screen:create', id, config),
   createTerminal: (id: string, config: { cols: number; rows: number; cwd?: string; command?: string; args?: string[] }): void => sendChannel('pty:create', id, config),
@@ -139,6 +140,7 @@ const api = {
   generateStats: (force?: boolean): Promise<{ ok: boolean; htmlPath?: string; error?: string }> => invokeChannel('stats:generate', force),
   getStatsData: (force?: boolean): Promise<StatsDataResult> => invokeChannel('stats:data', force),
   onUsageUpdate: (callback: (cache: UsageCache) => void): (() => void) => onChannel('usage:update', callback),
+  onUpdateStatus: (callback: (status: UpdateStatus) => void): (() => void) => onChannel('update:changed', callback),
 
   // ── Remote App Control ──
   getRemoteConfig: (): Promise<RemoteControlData> => invokeChannel('remote:get-config'),

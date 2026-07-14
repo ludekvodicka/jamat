@@ -21,6 +21,7 @@ import { addError } from './components/panels/ErrorLogPanel'
 import { TerminalContextMenu } from './components/TerminalContextMenu'
 import { CommandPalette } from './components/CommandPalette'
 import { SelectionIndicator } from './components/SelectionIndicator'
+import { UpdateChip } from './components/UpdateChip'
 import { ClipboardDebug } from './components/ClipboardDebug'
 import { WorkDetectionStatus } from './components/WorkDetectionStatus'
 import { loadSettings, SETTINGS_CHANGED_EVENT, STORAGE_KEY as SETTINGS_STORAGE_KEY } from './components/panels/SettingsPanel'
@@ -420,6 +421,7 @@ export function App() {
         })() : usageData ? (
           <span className="status-item" style={{ color: '#888' }} title={usageData.error ?? 'No usage data'}>S:? W:?</span>
         ) : null}
+        <UpdateChip />
       </div>
       {showTabPicker && (
         <TabTypePicker

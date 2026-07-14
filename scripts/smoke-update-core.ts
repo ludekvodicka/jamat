@@ -5,7 +5,7 @@
 // dead `provider`/`vcs` keys must NOT be able to change it — `provider:'vcs'` on an installed build
 // used to disable GitHub updates entirely (silently), which is the bug this file guards against.
 
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -103,6 +103,17 @@ try {
   check('oversize log trimmed', trimmed.length < 4002 && trimmed.length > 0, `kept ${trimmed.length}`)
   check('trimmed log keeps whole, parseable lines', trimmed.every((e) => typeof e.event === 'string'))
   check('newest entry survives the trim', trimmed[trimmed.length - 1].found === '0.0.3999')
+
+  // The release asset's filename must contain NO SPACE. GitHub rewrites spaces in an uploaded asset
+  // name to DOTS ("Jamat.Setup.0.2.2.exe") while electron-updater rewrites them to DASHES when it
+  // builds the download URL ("Jamat-Setup-0.2.2.exe") — so a spaced artifactName (the electron-builder
+  // default, `${productName} Setup ${version}.${ext}`) makes every auto-update download 404. This is
+  // exactly how 0.1.x–0.2.2 shipped: checks found the release, the download died, nothing was visible.
+  console.log('\n[7] release artifact name (auto-update 404 guard)')
+  const builderConfig = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'app-electron', 'package.json'), 'utf-8')).build
+  const artifactName: string | undefined = builderConfig?.nsis?.artifactName
+  check('nsis.artifactName is set', typeof artifactName === 'string', String(artifactName))
+  check('nsis.artifactName has no space', !!artifactName && !/\s/.test(artifactName), artifactName)
 } finally {
   rmSync(tmp, { recursive: true, force: true })
 }

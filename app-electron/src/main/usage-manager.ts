@@ -51,9 +51,17 @@ function fetchUsage(orgId: string, sessionKey: string): UsageCache['data'] {
     { timeout: FETCH_TIMEOUT, encoding: 'utf-8' }
   )
   const raw = JSON.parse(out)
+  // claude.ai answers a missing/expired sessionKey with an error body (or an empty one), NOT an HTTP
+  // error curl would surface. Defaulting the missing fields to 0 persisted that as a legitimate
+  // "0% used" reading — the status bar then showed a confident, wrong S: 0% / W: 0%. Treat a response
+  // without the two windows as a failure so it lands in `cache.error` instead.
+  if (!raw?.five_hour || !raw?.seven_day) {
+    const reason = typeof raw?.error === 'string' ? raw.error : raw?.error?.message
+    throw new Error(reason ?? 'the usage API returned no data — the session key is missing or expired')
+  }
   return {
-    five_hour: { utilization: raw.five_hour?.utilization ?? 0, resets_at: raw.five_hour?.resets_at ?? '' },
-    seven_day: { utilization: raw.seven_day?.utilization ?? 0, resets_at: raw.seven_day?.resets_at ?? '' },
+    five_hour: { utilization: raw.five_hour.utilization ?? 0, resets_at: raw.five_hour.resets_at ?? '' },
+    seven_day: { utilization: raw.seven_day.utilization ?? 0, resets_at: raw.seven_day.resets_at ?? '' },
     ...(raw.seven_day_sonnet && { seven_day_sonnet: { utilization: raw.seven_day_sonnet.utilization, resets_at: raw.seven_day_sonnet.resets_at } }),
     ...(raw.seven_day_omelette && { seven_day_omelette: { utilization: raw.seven_day_omelette.utilization, resets_at: raw.seven_day_omelette.resets_at } })
   }
@@ -161,8 +169,10 @@ export function startUsagePolling(config: AppConfig): void {
   storedConfigPath = config.configPath
   // Register unconditionally so the renderer's invoke('usage:get') never throws
   // "No handler registered" — even on configs without a claudeUsage block
-  // (e.g. config-<user>.json). Returns the (possibly empty) cache.
-  registerHandler('usage:get', async () => readCache())
+  // (e.g. config-<user>.json). WITHOUT credentials it returns null, never the cache: a stale
+  // usage-cache.json from an earlier configured run would otherwise keep feeding the status bar
+  // numbers nobody can refresh.
+  registerHandler('usage:get', async () => (storedOrgId && storedSessionKey ? readCache() : null))
   registerHandler('usage:get-credentials', async () => getUsageCredentials())
   registerHandler('usage:set-credentials', async (_e, orgId, sessionKey) => setUsageCredentials(orgId, sessionKey))
 

@@ -220,6 +220,45 @@ html, body, #root {
   background: rgba(255, 255, 255, 0.1);
 }
 
+.status-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Update indicator — only rendered while something is happening (downloading / ready / failed). */
+.update-chip {
+  font-family: monospace;
+  font-size: 11px;
+  letter-spacing: -0.5px;
+}
+
+.update-chip-ready {
+  color: #a6e22e;
+  font-weight: 600;
+}
+
+.update-chip-error {
+  color: #e0707a;
+  font-weight: 600;
+}
+
+.update-progress {
+  display: inline-block;
+  width: 70px;
+  height: 6px;
+  margin-left: 2px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.update-progress-fill {
+  display: block;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.85);
+  transition: width 0.2s linear;
+}
+
 /* Custom tab */
 .custom-tab {
   display: flex;
