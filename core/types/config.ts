@@ -20,32 +20,26 @@ export interface Category {
 }
 
 /**
- * Built-in update config. Two channels, chosen by `provider`:
- *  - `'vcs'` (default): the app runs over a checked-out repo and updates via a VCS
- *    pull + relaunch — the OWNER/dev path (`self-update.ts` / `update-checker.ts`).
- *    `vcs` names which to pull from (explicit, not auto-detected: a checkout can have
- *    BOTH a local-only git and a parent SVN — auto-detect would pick git and no-op).
- *  - `'github'`: a PACKAGED public installer has no repo to pull — it auto-updates from
- *    the GitHub Releases feed baked into `app-update.yml` by electron-builder's `publish`
- *    config (`auto-updater.ts`). `vcs`/`repoPath` are unused in this mode.
- * `repoPath` absent → the monorepo root.
+ * Built-in update config — KNOBS ONLY. The config cannot choose an update channel: the channel is
+ * derived from the RUNTIME (`core/update/update-channel.ts`) — an installed build updates from the
+ * GitHub Releases feed, a build running over its sources compares itself to the sources on disk, and
+ * an installed macOS build has no channel (unsigned). Letting the config pick was a footgun: the old
+ * Settings tab defaulted to `provider:'vcs'` and, once saved, silently disabled GitHub updates.
  */
 export interface SelfUpdateConfig {
-  /** Update channel. Absent → `'vcs'` (the owner/source-checkout path). */
-  provider?: 'vcs' | 'github'
-  /** VCS to pull (provider `'vcs'` only). Absent in that mode → treated as `'git'`. */
-  vcs?: 'svn' | 'git'
-  repoPath?: string
   /**
-   * Background update checker (Electron only). When `selfUpdate` is present it runs
-   * by default; set `autoCheck: false` to disable just the checker (the manual
-   * "Update & Restart" menu action stays available). The checker polls the repo HEAD
-   * for a newer `package.json` version, waits until every tab in every window is idle
-   * (no `running`/`tool-use`/`blocked` Claude turn), then prompts to update or postpone.
+   * Background checking (Electron only). Default true. `false` disables only the background
+   * watcher — the manual menu action / "Check now" still works.
    */
   autoCheck?: boolean
-  /** Repo poll cadence in minutes (default 120). */
+  /** Check cadence in minutes. Default 120 (installed/GitHub) or 15 (source-checkout disk poll). */
   checkIntervalMinutes?: number
+  /** @deprecated Ignored — the channel follows the runtime. Present only so old configs still load. */
+  provider?: string
+  /** @deprecated Ignored — the app runs no VCS command; update the sources yourself. */
+  vcs?: string
+  /** @deprecated Ignored. */
+  repoPath?: string
 }
 
 /**

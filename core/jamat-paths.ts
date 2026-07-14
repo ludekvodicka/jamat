@@ -23,6 +23,8 @@ export interface JamatPaths {
   ideasDir: string           // <configDir>/ (ideas-<windowId>.json)
   remoteActivityDir: string  // <configDir>/remote-activity
   remoteControl: string      // <configDir>/remote-control.json (machine key + peers — lives WITH the config)
+  /** <configDir>/update-log.jsonl — the ONLY log that survives the restart an update causes. */
+  updateLog: string
 }
 
 export function buildJamatPaths(configDir: string, userDataDir: string): JamatPaths {
@@ -40,5 +42,6 @@ export function buildJamatPaths(configDir: string, userDataDir: string): JamatPa
     ideasDir: configDir,
     remoteActivityDir: join(configDir, 'remote-activity'),
     remoteControl: join(configDir, REMOTE_CONTROL_FILE),
+    updateLog: join(configDir, 'update-log.jsonl'),
   }
 }

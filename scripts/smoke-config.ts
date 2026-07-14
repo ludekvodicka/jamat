@@ -37,7 +37,7 @@ try {
   check('[1] created on first run', r1.created === true && existsSync(r1.path))
   const created = JSON.parse(readFileSync(r1.path, 'utf-8'))
   check('[1] _README stripped', created._README === undefined)
-  check('[1] selfUpdate stripped (channel left to runtime default)', created.selfUpdate === undefined)
+  check('[1] selfUpdate stripped (updates run on their runtime-derived defaults)', created.selfUpdate === undefined)
   check('[1] name = My Jamat', created.name === 'My Jamat')
   check('[1] single category at JamatProjects',
     Array.isArray(created.categories) && created.categories.length === 1 &&

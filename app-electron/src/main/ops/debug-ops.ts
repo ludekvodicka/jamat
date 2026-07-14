@@ -27,8 +27,7 @@
  */
 
 import { app, BrowserWindow } from 'electron'
-import { execSync, spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { execSync } from 'node:child_process'
 import { join as pathJoin } from 'node:path'
 import { homedir } from 'node:os'
 import { registerOp } from '../../../../core/op/registry.js'
@@ -39,8 +38,9 @@ import { destroyAll, listPtys } from '../pty-manager'
 import { getScreenState } from '../screen-executor'
 import { getLogBuffer } from '../logger'
 import { getAppConfig, restartAllWindows, getMenuDir } from '../ipc-windows'
-import { getMonorepoRoot } from '../app-root'
-import { relaunchApp } from '../self-update'
+import { relaunchApp } from '../relaunch'
+import { runHeadlessUpdate, getUpdateStatus } from '../update/update-manager'
+import { readLogTail } from '../update/update-log'
 import { getUsageCache, forceRefreshUsage } from '../usage-manager'
 import { getAgent } from '../../../../core/agents/index.js'
 import { getRemoteActivityLog } from '../app-state'
@@ -49,7 +49,8 @@ const claudeAgent = getAgent('claude')
 // reach includes 'remote' so the UI's Remote list can debug/control a peer (see header).
 const REACH = ['ui', 'ai', 'remote'] as const
 
-// Serialize concurrent self-updates: two VCS processes on one working copy → lock/corruption.
+// Reject an OVERLAPPING op invocation (a client retrying while a check/download is being kicked off).
+// It does not span the download itself — electron-updater owns that, and a second call during it is a no-op.
 let updateInFlight = false
 
 export function registerDebugOps(): void {
@@ -74,6 +75,7 @@ export function registerDebugOps(): void {
         windows: BrowserWindow.getAllWindows().length,
         terminals: listPtys().length,
         packaged: app.isPackaged,
+        update: getUpdateStatus(),
       },
     }),
   })
@@ -215,45 +217,34 @@ export function registerDebugOps(): void {
     },
   })
 
-  // The "update" half of remote update+restart, in the APP's own op layer. This used to live ONLY
-  // in app-agent's /api/update — but the agent is a SEPARATE always-on process that may be down
-  // (it serves the app-CLOSED case: pull + launch). A RUNNING app must be able to self-update
-  // without it. NOT devOnly: a packaged app pulls source, then a fullrestart makes the launcher
-  // recompile on the version bump; a dev electron-vite watch reloads on the pulled files. The
-  // caller chains debug:fullrestart for the restart half.
+  // The "update" half of remote update+restart, in the APP's own op layer (the agent's /api/update
+  // proxies straight to it, so both entry points behave identically). Runtime-aware: an installed
+  // build checks/downloads from GitHub (install=1 restarts into it); a source checkout reports the
+  // on-disk build vs the running one — the app runs NO VCS command anymore, so pulling sources is
+  // the human's job on that machine. The caller chains debug:fullrestart for the restart half.
   registerOp({
     name: 'debug:update',
-    meta: { summary: 'Pull latest source (git pull / svn update) into the monorepo', reach: [...REACH], rw: 'rw', audit: 'discrete' },
-    handler: async (): Promise<Result> => {
+    meta: { summary: 'Runtime-aware update (installed: GitHub check/download[/install=1]; source: disk vs running)', reach: [...REACH], rw: 'rw', audit: 'discrete' },
+    handler: async (args): Promise<Result> => {
       if (updateInFlight) return { ok: false, error: 'update already in progress', code: 'conflict' }
       updateInFlight = true
-      const root = getMonorepoRoot()
-      // This project is SVN-primary (the git→SVN migration; the old Gitea git host is
-      // decommissioned and must NOT be pulled from). Prefer `svn update` for any SVN checkout;
-      // fall back to `git pull` only for a git-only checkout (no .svn) with its own real remote.
-      const useSvn = existsSync(pathJoin(root, '.svn')) || existsSync(pathJoin(root, '..', '.svn'))
-      const cmd = useSvn ? 'svn' : 'git'
-      const args = useSvn ? ['update', root] : ['-C', root, 'pull']
-      return await new Promise<Result>((resolveResult) => {
-        let out = ''
-        let settled = false
-        const finish = (r: Result) => { if (settled) return; settled = true; updateInFlight = false; clearTimeout(timer); resolveResult(r) }
-        let child: ReturnType<typeof spawn>
-        try {
-          child = spawn(cmd, args, { shell: true })
-        } catch (e: any) {
-          finish({ ok: false, error: `update failed to start: ${e?.message ?? e}`, code: 'threw' })
-          return
-        }
-        const timer = setTimeout(() => { try { child.kill() } catch { /* ignore */ } finish({ ok: false, error: 'update timeout after 120s', code: 'threw' }) }, 120_000)
-        child.stdout?.on('data', (d) => { out += d.toString() })
-        child.stderr?.on('data', (d) => { out += d.toString() })
-        child.on('error', (e) => finish({ ok: false, error: e.message, code: 'threw' }))
-        child.on('close', (code) => {
-          if (code === 0) finish({ ok: true, data: { ok: true, action: 'update', vcs: cmd, code, output: out.slice(-4000) } })
-          else finish({ ok: false, error: out.slice(-4000) || `${cmd} exited with code ${code}`, code: 'threw' })
-        })
-      })
+      try {
+        const install = ['1', 'true'].includes(String((args[0] as any)?.install ?? ''))
+        return { ok: true, data: await runHeadlessUpdate(install) }
+      } catch (e: any) {
+        return { ok: false, error: e?.message ?? String(e), code: 'threw' }
+      } finally {
+        updateInFlight = false
+      }
+    },
+  })
+
+  registerOp({
+    name: 'debug:update-log',
+    meta: { summary: 'Persistent update log tail (?limit) — survives the restart an update causes', reach: [...REACH], rw: 'ro', audit: 'never' },
+    handler: (args): Result => {
+      const limit = Number((args[0] as any)?.limit) || 200
+      return { ok: true, data: { status: getUpdateStatus(), entries: readLogTail(limit) } }
     },
   })
 

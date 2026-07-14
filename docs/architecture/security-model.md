@@ -55,8 +55,8 @@ a registry (`core/op/*`, `app-electron/src/main/ops/*`) carrying:
 - **`audit`** — whether the call is written to the activity log.
 
 Remote **file** access is **path-scoped** — confined to configured roots, not arbitrary FS access.
-RCE-adjacent endpoints (`/api/launch-app`, `/api/update` — they pull and run code) are **never** on
-an open CORS surface and always require the machine key.
+RCE-adjacent endpoints (`/api/launch-app` — it launches code; `/api/update` — it can download and
+install a new build) are **never** on an open CORS surface and always require the machine key.
 
 ## Auditability
 

@@ -106,6 +106,7 @@ function statusFromCode(code?: string): number {
   switch (code) {
     case 'bad_args': return 400
     case 'not_found': case 'no_op': return 404
+    case 'conflict': return 409   // debug:update while one is already in flight
     case 'too_large': return 413
     case 'reach_denied': case 'dev_only': return 403
     case 'no_window': case 'write_failed': case 'threw': return 500
@@ -156,6 +157,7 @@ const DEBUG_ROUTES: Record<string, string> = {
   'POST /debug/build-reload': 'debug:build-reload',
   'POST /debug/build-restart': 'debug:build-restart',
   'POST /debug/update': 'debug:update',
+  'GET /debug/update-log': 'debug:update-log',
   'POST /debug/open-tab': 'debug:open-tab',
   'GET /debug/sessions': 'debug:sessions',
   'POST /debug/sessions/open': 'debug:sessions-open',

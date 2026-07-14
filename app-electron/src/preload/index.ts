@@ -4,6 +4,7 @@ import type { SessionInfo, SessionMessage, SessionSearchMatch, UsageCache, Sessi
 import type { DiffBaseline, DiffMode, DiffOptions } from '../../../core/types/file-diff'
 import type { AppConfig, ConfigPatch } from '../../../core/types/config'
 import type { AgentMeta, AppPathsInfo, CommitResult, CommitVcsRequest, CommitOptions, DirEntry, IpcEventMap, SessionRenameResult } from '../../../core/types/ipc-contracts'
+import type { UpdateStatus } from '../../../core/update/update-status.types'
 import type { AgentId } from '../../../core/types/contracts'
 import type { Idea } from '../../../core/types/ideas'
 import type { AbilitiesResult, AbilitiesManageRequest, AbilitiesManageResult } from '../../../core/types/abilities'
@@ -41,6 +42,8 @@ const api = {
   pickDirectory: (opts?: { title?: string; defaultPath?: string }): Promise<string | null> => invokeChannel('dialog:pick-directory', opts),
   getOnboardingState: (): Promise<{ firstRun: boolean }> => invokeChannel('onboarding:get-state'),
   completeOnboarding: (): Promise<{ ok: boolean }> => invokeChannel('onboarding:complete'),
+  getUpdateStatus: (): Promise<UpdateStatus> => invokeChannel('update:status'),
+  checkForUpdates: (): Promise<{ ok: boolean }> => invokeChannel('update:check'),
 
   createScreenTerminal: (id: string, config: { cols: number; rows: number }): void => sendChannel('screen:create', id, config),
   createTerminal: (id: string, config: { cols: number; rows: number; cwd?: string; command?: string; args?: string[] }): void => sendChannel('pty:create', id, config),

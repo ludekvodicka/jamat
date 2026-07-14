@@ -565,41 +565,52 @@ function handleLaunchApp(req: http.IncomingMessage, res: http.ServerResponse) {
   json(res, { ok: true, launching: true, user });
 }
 
-// --- Remote "pull latest code" (for autonomous testing) ---
-// Updates the agent's OWN repo (MONOREPO_ROOT) so a peer can be brought to the latest
-// committed code without local shell access; the caller then restarts the app (the launcher
-// recompiles on version change) and/or the agent (POST /debug/restart) to load it. Token-gated
-// like /api/launch-app — RCE-adjacent (pulls + runs code), so never on the open CORS surface.
+// --- Remote update (for autonomous testing / driving a peer) ---
+// The agent no longer knows HOW to update anything: it proxies to the RUNNING app's `debug:update`
+// op, which is runtime-aware (installed build → GitHub check/download, `install=1` restarts into it;
+// source checkout → reports the on-disk build vs the running one). The app runs no VCS command
+// anymore, so "pull the sources with the app closed" is gone on purpose — that is the human's job on
+// that machine. Token-gated like /api/launch-app.
 let updateInFlight = false;
-function handleUpdate(req: http.IncomingMessage, res: http.ServerResponse) {
+const APP_DEBUG_PORTS = [47100, 47101]; // packaged first, then dev (op-server.ts)
+const UPDATE_PROXY_TIMEOUT_MS = 130_000;
+
+async function handleUpdate(req: http.IncomingMessage, res: http.ServerResponse) {
   if (!checkControlAuth(req)) return error(res, "Unauthorized", 401);
-  // Serialize: a concurrent pull (e.g. a client retry while the 120s server pull is still running)
-  // would run two VCS processes on one working copy → lock/corruption. Reject the overlap.
+  // Serialize: a client retry while a download is still running would trigger a second one.
   if (updateInFlight) return error(res, "update already in progress", 409);
   updateInFlight = true;
-  // This repo's real remote is the parent SVN (its git is local-only, no remote). Prefer svn
-  // when a .svn marker exists at the repo or its parent; otherwise fall back to git pull.
-  let cmd = "git";
-  let args: string[] = ["-C", MONOREPO_ROOT, "pull"];
-  let child: ReturnType<typeof spawn>;
   try {
-    // svn when a .svn marker exists at the repo or its parent; else git pull. A synchronous throw
-    // here (e.g. EMFILE on spawn) must release the in-flight lock — otherwise /api/update wedges at 409.
-    if (existsSync(path.join(MONOREPO_ROOT, ".svn")) || existsSync(path.join(MONOREPO_ROOT, "..", ".svn"))) {
-      cmd = "svn"; args = ["update", MONOREPO_ROOT];
+    const install = new URL(req.url ?? "/", "http://x").searchParams.get("install");
+    const query = install ? `?install=${encodeURIComponent(install)}` : "";
+    for (const port of APP_DEBUG_PORTS) {
+      let r: Response;
+      try {
+        r = await fetch(`http://127.0.0.1:${port}/debug/update${query}`, {
+          method: "POST",
+          signal: AbortSignal.timeout(UPDATE_PROXY_TIMEOUT_MS),
+        });
+      } catch (e: any) {
+        // A TIMEOUT means the app IS there and stalled — reporting "not running" (and then retrying the
+        // other port for another 130 s) would be a lie. Only a connect error falls through to the next port.
+        if (e?.name === "TimeoutError" || e?.name === "AbortError")
+          return error(res, `Jamat app on port ${port} did not respond within ${UPDATE_PROXY_TIMEOUT_MS / 1000}s`, 504);
+        continue;
+      }
+      // Pass the app's status THROUGH: a failed update (409 in-flight, 4xx/5xx) must not reach the
+      // caller as a 200 with an { error } body — a bridge script checking res.ok would read it as success.
+      return json(res, await r.json(), r.status);
     }
-    child = spawn(cmd, args, { shell: true });
+    return error(res,
+      "Jamat app is not running — the agent cannot update anything on its own (no VCS pull exists anymore). " +
+      "Start the app (POST /api/launch-app) and retry: an installed build then updates from GitHub Releases; " +
+      "a source checkout needs its sources updated on that machine (svn update / git pull), after which the " +
+      "app offers to restart into the new build.", 503);
   } catch (e: any) {
+    return error(res, `update proxy failed: ${e?.message ?? e}`, 502);
+  } finally {
     updateInFlight = false;
-    return error(res, `update failed to start: ${e?.message ?? e}`, 500);
   }
-  let out = ""; let errOut = ""; let settled = false;
-  const finish = (r: object) => { if (settled) return; settled = true; updateInFlight = false; clearTimeout(timer); json(res, r); };
-  const timer = setTimeout(() => { try { child.kill(); } catch { /* ignore */ } finish({ ok: false, vcs: cmd, error: "timeout after 120s" }); }, 120_000);
-  child.stdout?.on("data", (d) => { out += d.toString(); });
-  child.stderr?.on("data", (d) => { errOut += d.toString(); });
-  child.on("error", (e) => finish({ ok: false, vcs: cmd, error: e.message }));
-  child.on("close", (code) => finish({ ok: code === 0, vcs: cmd, code, output: (out + errOut).slice(-4000) }));
 }
 
 // --- Router ---

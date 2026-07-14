@@ -25,6 +25,7 @@ import type { Idea } from './ideas.js'
 import type { AbilitiesResult, AbilitiesManageRequest, AbilitiesManageResult } from './abilities.js'
 import type { StatsDataResult } from './stats.js'
 import type { AgentId } from './contracts.js'
+import type { UpdateStatus } from '../update/update-status.types.js'
 import type {
   RemoteControlData,
   RemotePeer,
@@ -174,6 +175,13 @@ export interface IpcInvokeMap {
   // secrets (claudeUsage lives in the `.local.json` overlay), so this is safe to surface. null if
   // unloaded/unreadable.
   'config:get-raw': () => Promise<Record<string, unknown> | null>
+  // The update module's live status — resolved channel + WHY (installed→GitHub, source checkout→disk
+  // compare, unsigned mac→none), running version, last check + outcome, a pending version, deprecated
+  // config keys. Read by Settings → Updates; the same record is in `debug:info.update`.
+  'update:status': () => Promise<UpdateStatus>
+  // Manual check ("Check now" / the menu item). Always ends in a dialog from the main process (the
+  // renderer only needs to know the call went through), and bypasses the idle gate on purpose.
+  'update:check': () => Promise<{ ok: boolean }>
   // Native folder picker (showOpenDialog, openDirectory) for the Projects/categories editor.
   // Returns the chosen absolute path, or null if the user cancelled.
   'dialog:pick-directory': (opts?: { title?: string; defaultPath?: string }) => Promise<string | null>

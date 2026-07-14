@@ -27,16 +27,12 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
     build: {
       rollupOptions: {
-        // `self-update.ts` is INTENTIONALLY dynamic-imported by `ipc-windows.ts` to break the
-        // static cycle (self-update statically imports ipc-windows), while `debug-ops`/`update-checker`
-        // import it statically. Rollup then notes the dynamic import "won't move it to another chunk"
-        // — which is meaningless for the single-file main bundle. Suppress just that one benign note.
+        // `relaunch.ts` / `update/update-manager.ts` are INTENTIONALLY dynamic-imported by the menu in
+        // `ipc-windows.ts` to break the static cycle (both import ipc-windows back), while `debug-ops`
+        // imports them statically. Rollup then notes the dynamic import "won't move it to another
+        // chunk" — meaningless for the single-file main bundle. Suppress just that one benign note.
         onwarn(warning, defaultHandler) {
-          if (
-            warning.code === 'DYNAMIC_IMPORT_WILL_NOT_BE_MOVED' ||
-            (typeof warning.message === 'string' &&
-              warning.message.includes('self-update.ts is dynamically imported'))
-          ) return
+          if (warning.code === 'DYNAMIC_IMPORT_WILL_NOT_BE_MOVED') return
           defaultHandler(warning)
         }
       }

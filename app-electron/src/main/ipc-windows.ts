@@ -18,6 +18,7 @@ import { flushAppStateNow, getOnboardingComplete, isOnboardingDecided, setOnboar
 import { getJamatPaths } from './jamat-paths'
 import { getMonorepoRoot, getAppVersion } from './app-root'
 import { loadConfig as loadCoreConfig, ensureConfig, validateConfigPatch, writeConfigPatch } from '../../../core/config.js'
+import { resolveUpdateChannel } from '../../../core/update/update-channel.js'
 import type { AppConfig, ConfigPatch } from '../../../core/types.js'
 import type { PtyConfig } from '../shared/types'
 import type { ScreenOpenTabMeta, AppPathsInfo } from '../../../core/types/ipc-contracts.js'
@@ -560,16 +561,24 @@ export function rebuildMenu(): void {
           }
         },
         {
-          label: 'Update & Restart',
-          click: () => { void import('./self-update').then((m) => m.updateAndRestart()) }
+          // Channel-aware label — a source checkout fetches nothing, it only restarts into the build
+          // already on disk, so calling that an "update" would be a lie. The label comes from the PURE
+          // core resolver (no import cycle); the click goes through a dynamic import (existing pattern:
+          // the update module imports back from here for getAppConfig / persistWindowState).
+          label: resolveUpdateChannel({
+            packaged: app.isPackaged,
+            jamatRoot: process.env['JAMAT_ROOT'],
+            platform: process.platform,
+            monorepoRoot: getMonorepoRoot(),
+            selfUpdate: getAppConfig()?.selfUpdate,
+          }).channel === 'source' ? 'Restart to Latest Build…' : 'Check for Updates…',
+          click: () => { void import('./update/update-manager').then((m) => m.checkForUpdatesManual()) }
         },
         {
           // Full process relaunch (new process → main-process code reloads too),
-          // NOT the in-process restartAllWindows. Dynamic import keeps ipc-windows →
-          // self-update off the static graph (self-update statically imports back
-          // from here for getMonorepoRoot / persistWindowState / getAppConfig).
+          // NOT the in-process restartAllWindows.
           label: 'Full Restart',
-          click: () => { void import('./self-update').then((m) => m.relaunchApp()) }
+          click: () => { void import('./relaunch').then((m) => m.relaunchApp()) }
         }
       ]
     }

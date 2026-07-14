@@ -21,8 +21,7 @@ import { registerTabTreeCache } from './tab-tree-cache'
 import { startOpServer, reconcileOpServer, stopOpServer } from './op-server'
 import { sweepRetention } from './remote-activity'
 import { startUsagePolling, stopUsagePolling } from './usage-manager'
-import { startUpdateChecker } from './update-checker'
-import { startAutoUpdater } from './auto-updater'
+import { registerUpdateIpc, startUpdateManager } from './update/update-manager'
 import {
   loadScreenConfig,
   getAppConfig,
@@ -61,6 +60,7 @@ app.whenReady().then(async () => {
   registerAgentIpc()
   registerRemoteConfigIpc()
   registerRemoteClientIpc()
+  registerUpdateIpc()
   registerTabTreeCache()
   registerWindowIpc()
   registerPtyIpc()
@@ -79,13 +79,11 @@ app.whenReady().then(async () => {
   mountOpAdapter()
   const config = getAppConfig()
   if (config) startUsagePolling(config)
-  // Background update watchers — both wait for all tabs idle before the inevitable restart, and
-  // each self-gates on `selfUpdate.provider`: the VCS self-pull checker (provider 'vcs'/default,
-  // the owner's source checkout) and the GitHub-Releases auto-updater (provider 'github', packaged
-  // public builds). They self-delay the first network poll, so starting them before windows exist
-  // is fine. No-ops unless `selfUpdate` is configured for the matching channel.
-  startUpdateChecker()
-  startAutoUpdater()
+  // The update module: resolves ONE channel from the runtime (installed → GitHub Releases; source
+  // checkout → compare against the sources on disk; installed macOS → none, unsigned) and starts the
+  // matching driver. It self-delays the first check, so starting it before windows exist is fine.
+  // Every outcome — including "did nothing, because …" — goes to <configDir>/update-log.jsonl.
+  startUpdateManager()
   rebuildMenu()
   // Op-server LAN listener (the Remote App Control surface) — binds only when enabled &&
   // a valid key is set (closed-by-default). Reconciled after windows exist so the tab-tree

@@ -90,7 +90,7 @@ dir and let first-run seed it). `configs/config.example.json` documents every fi
 | `categories` | array | The project roots Jamat scans — **the one field you must set**. |
 | `defaultAgent` | `"claude"` | Which agent the menu preselects: its `＋ New <Agent> session` row is listed first in the session picker, and it's the agent a launch uses unless another is picked (`codex` also accepted; falls back to an installed agent if the chosen one isn't on PATH). Edit in **Settings → Agents**. |
 | `dockerIsolation` | boolean | `false` hides the start menu's "Isolated (Docker)?" create prompt + 🐳 marker — set it on machines without Docker. Default (absent/`true`) = offered. |
-| `selfUpdate` | object | Update channel — see [Self-update](#self-update). |
+| `selfUpdate` | object | Update knobs (`autoCheck`, `checkIntervalMinutes`) — the channel itself follows the runtime. See [Self-update](#self-update). |
 | `customMenus` | array | Your own per-project actions (press **F3** on a project). See [Custom menus](#custom-menus). |
 | `sessionDonePrompts` | array | One-click quick prompts shown when a session finishes a turn. See [Session-done prompts](#session-done-prompts). |
 
@@ -114,14 +114,24 @@ Replace the example paths with your own.
 ### Self-update
 
 ```jsonc
-"selfUpdate": { "provider": "github" }
+"selfUpdate": { "autoCheck": true, "checkIntervalMinutes": 120 }
 ```
 
-- `"provider": "github"` (default for a packaged install) — auto-updates the **packaged** app from
-  this project's GitHub Releases (Windows + Linux; macOS needs a signed build).
-- `"provider": "vcs"` — for running **from source**: pulls a checkout via git/svn and relaunches —
-  `{ "provider": "vcs", "vcs": "git", "repoPath"?: "..." }`.
-- Add `"autoCheck": false` to silence the background check.
+**The update channel follows how the app RUNS — the config cannot pick it:**
+
+- **Installed build** (Windows + Linux) — auto-updates from this project's GitHub Releases. macOS
+  needs a signed build, so it has no channel and updates manually.
+- **Running from source** — the app makes **no network check and runs no VCS command**. It compares
+  itself to the sources on disk and offers a restart (the launcher recompiles). Updating the sources
+  is your job (`svn update` / `git pull`).
+
+Keys: `"autoCheck": false` silences only the background check (the menu action still works);
+`"checkIntervalMinutes"` sets the cadence (default 120 installed / 15 from source). The old
+`provider` / `vcs` / `repoPath` keys are **ignored** — a config carrying them still loads and shows a
+warning in Settings → Updates.
+
+Every check, download, prompt — and every prompt that was *suppressed*, with the reason — is appended
+to `<config-dir>/update-log.jsonl`, which survives the restart an update causes.
 
 ### Custom menus
 

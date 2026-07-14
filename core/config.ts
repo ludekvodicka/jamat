@@ -89,17 +89,11 @@ function validateDefaultAgent(v: unknown, where: string): void {
   }
 }
 
+// `provider` / `vcs` / `repoPath` are DEAD keys (the channel now follows the runtime) and are
+// deliberately NOT validated: a config written by an older build — even a nonsense `vcs:"hg"` — must
+// still load. They are ignored at resolve time and surfaced as warnings in Settings + the update log.
 function validateSelfUpdate(su: RawConfig['selfUpdate'], where: string): void {
   if (su === undefined) return
-  if (su.provider !== undefined && su.provider !== 'vcs' && su.provider !== 'github') {
-    throw new Error(`Config ${where}: "selfUpdate.provider" must be "vcs" or "github" (got: ${su.provider})`)
-  }
-  if (su.vcs !== undefined && su.vcs !== 'svn' && su.vcs !== 'git') {
-    throw new Error(`Config ${where}: "selfUpdate.vcs" must be "svn" or "git" (got: ${su.vcs})`)
-  }
-  if (su.repoPath !== undefined && typeof su.repoPath !== 'string') {
-    throw new Error(`Config ${where}: "selfUpdate.repoPath" must be a string`)
-  }
   if (su.autoCheck !== undefined && typeof su.autoCheck !== 'boolean') {
     throw new Error(`Config ${where}: "selfUpdate.autoCheck" must be a boolean`)
   }
@@ -277,8 +271,8 @@ export function loadConfig(configPath: string): AppConfig {
   if (raw.selfUpdate !== undefined) {
     const su = raw.selfUpdate
     selfUpdate = {
-      provider: su.provider as SelfUpdateConfig['provider'],
-      vcs: su.vcs as SelfUpdateConfig['vcs'],
+      provider: su.provider,
+      vcs: su.vcs,
       repoPath: su.repoPath,
       autoCheck: su.autoCheck,
       checkIntervalMinutes: su.checkIntervalMinutes,

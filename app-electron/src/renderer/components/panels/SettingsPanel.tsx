@@ -4,6 +4,7 @@ import { useLayoutStore } from '../../store/layout-store'
 import { themes, type ThemeId } from '../../themes'
 import type { SessionDonePrompt } from '../../../shared/types'
 import type { CategoryJson, SelfUpdateConfig, CustomMenuNode, CustomRun, ContextWarnLevel, AgentsConfig, AgentPreLaunch } from '../../../../../core/types/config'
+import type { UpdateStatus } from '../../../../../core/update/update-status.types'
 import type { AppPathsInfo } from '../../../../../core/types/ipc-contracts'
 import { type MenuPath, mutateNode, deleteNode, moveNode, newLeaf, newBranch, firstMenuError } from './menuTree'
 import { DEFAULT_CONTEXT_LEVELS } from '../../utils/context-level'
@@ -796,42 +797,41 @@ function AgentsEditor() {
 }
 
 /**
- * Editor for `selfUpdate` (the built-in "Update & Restart"). Gated by an "enable" toggle so opening
- * the tab and saving never accidentally MATERIALIZES a selfUpdate block on a config that had none
- * (which would change update behaviour). Seeds from the raw config. `checkIntervalMinutes` is guarded
- * client-side (positive finite) so a NaN can't reach the writer.
+ * Editor for `selfUpdate` — KNOBS ONLY, plus a live status block. The channel is NOT editable: it is
+ * derived from the runtime (installed → GitHub Releases; source checkout → compare against the sources
+ * on disk; unsigned macOS install → none). The old channel selector defaulted to "vcs" and, once
+ * saved, silently disabled GitHub updates on an installed build — that footgun is gone by construction.
+ * Gated by an "enable" toggle so opening the tab and saving never MATERIALIZES a selfUpdate block on a
+ * config that had none.
  */
 function UpdatesEditor() {
+  const [st, setSt] = useState<UpdateStatus | null>(null)
   const [enabled, setEnabled] = useState(false)
-  const [provider, setProvider] = useState<'vcs' | 'github'>('vcs')
-  const [vcs, setVcs] = useState<'svn' | 'git'>('git')
-  const [repoPath, setRepoPath] = useState('')
   const [autoCheck, setAutoCheck] = useState(true)
-  const [interval, setIntervalMin] = useState('120')
+  const [interval, setIntervalMin] = useState('')
   const [status, setStatus] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const touched = useRef(false)
+
+  const loadStatus = useCallback(() => {
+    void window.electronAPI.getUpdateStatus?.().then(setSt).catch(() => {})
+  }, [])
 
   const seed = useCallback(() => {
     void window.electronAPI.getRawConfig().then((raw) => {
       if (touched.current || !raw) return
       const su = (raw.selfUpdate ?? null) as SelfUpdateConfig | null
       setEnabled(su !== null)
-      setProvider(su?.provider === 'github' ? 'github' : 'vcs')
-      setVcs(su?.vcs === 'svn' ? 'svn' : 'git')
-      setRepoPath(su?.repoPath ?? '')
       setAutoCheck(su?.autoCheck !== false)
-      setIntervalMin(su?.checkIntervalMinutes != null ? String(su.checkIntervalMinutes) : '120')
+      setIntervalMin(su?.checkIntervalMinutes != null ? String(su.checkIntervalMinutes) : '')
     }).catch(() => {})
   }, [])
-  useEffect(() => { seed(); return window.electronAPI.onConfigChanged?.(() => seed()) }, [seed])
+  useEffect(() => { seed(); loadStatus(); return window.electronAPI.onConfigChanged?.(() => { seed(); loadStatus() }) }, [seed, loadStatus])
 
   const mark = () => { touched.current = true; setStatus(null) }
   const save = async () => {
-    if (!enabled) { setStatus('Self-update stays as configured in the file. Enable it to edit here.'); return }
-    const su: SelfUpdateConfig = { provider, autoCheck }
-    if (provider === 'vcs') su.vcs = vcs
-    if (repoPath.trim()) su.repoPath = repoPath.trim()
+    if (!enabled) { setStatus('Updates stay on their defaults. Enable to tune the knobs.'); return }
+    const su: SelfUpdateConfig = { autoCheck }
     if (interval.trim()) {
       const n = parseInt(interval, 10)
       if (!Number.isFinite(n) || n <= 0) { setStatus('✗ Check interval must be a positive number of minutes'); return }
@@ -840,7 +840,7 @@ function UpdatesEditor() {
     setSaving(true); setStatus(null)
     try {
       const res = await window.electronAPI.updateConfig({ selfUpdate: su })
-      if (res.ok) { touched.current = false; setStatus('✓ Saved') }
+      if (res.ok) { touched.current = false; setStatus('✓ Saved'); loadStatus() }
       else setStatus(`✗ ${res.error ?? 'Failed to save'}`)
     } catch (e: any) {
       setStatus(`✗ ${e.message}`)
@@ -849,49 +849,76 @@ function UpdatesEditor() {
     }
   }
 
+  const checkNow = async () => {
+    setStatus(null)
+    try { await window.electronAPI.checkForUpdates?.(); setTimeout(loadStatus, 1500) }
+    catch (e: any) { setStatus(`✗ ${e.message}`) }
+  }
+
+  const channelLabel: Record<UpdateStatus['channel'], string> = {
+    github: 'GitHub Releases (installed build)',
+    source: 'Source checkout (compares against the sources on disk)',
+    none: 'No update channel',
+  }
+
   return (
     <section className="settings-section">
       <h2>Updates</h2>
       <p className="settings-note">
-        The built-in “Update &amp; Restart”. Packaged installs use the GitHub Releases auto-updater;
-        a source checkout pulls from its VCS. Most users can leave this off.
+        The update channel follows how this build RUNS, not the config: an installed build updates from
+        GitHub Releases; a build started from a source checkout never checks the network — it compares
+        itself to the sources on disk and offers a restart (the launcher recompiles), so updating the
+        sources stays your job. Every check, download, prompt — and every prompt that was SUPPRESSED,
+        with the reason — is written to <code>update-log.jsonl</code> in your config folder.
       </p>
+
+      {st && (
+        <div className="settings-agent-block">
+          <div className="settings-row">
+            <label><strong>Channel</strong></label>
+            <span className={`agent-status ${st.channel === 'none' ? 'off' : 'ok'}`}>{channelLabel[st.channel]}</span>
+          </div>
+          <div className="settings-row"><label>Why</label><span className="settings-note">{st.reason}</span></div>
+          <div className="settings-row"><label>Running version</label><span className="settings-note">{st.running}</span></div>
+          <div className="settings-row">
+            <label>Last check</label>
+            <span className="settings-note">
+              {st.lastCheckAt ? `${new Date(st.lastCheckAt).toLocaleString()} — ${st.lastCheckOutcome ?? ''}` : 'not yet'}
+            </span>
+          </div>
+          {st.pendingVersion && (
+            <div className="settings-row">
+              <label>Pending</label>
+              <span className="settings-note">{st.pendingVersion} — waiting for a restart{st.snoozedUntil > Date.now() ? ` (snoozed until ${new Date(st.snoozedUntil).toLocaleTimeString()})` : ''}</span>
+            </div>
+          )}
+          {st.warnings.map((w) => (
+            <div className="settings-row" key={w}>
+              <label>⚠ Config</label>
+              <span className="settings-note">{w}</span>
+            </div>
+          ))}
+          <div className="settings-actions">
+            <button className="settings-add-btn" onClick={() => void checkNow()}>Check now</button>
+          </div>
+        </div>
+      )}
+
       <div className="settings-row">
-        <label>Enable self-update</label>
+        <label title="Materializes a selfUpdate block in your config so the knobs below persist.">Tune update settings</label>
         <input type="checkbox" checked={enabled} onChange={e => { mark(); setEnabled(e.target.checked) }} />
       </div>
       {enabled && (
         <>
           <div className="settings-row">
-            <label title="vcs = a source checkout pulls from svn/git. github = a packaged install updates from GitHub Releases.">Channel</label>
-            <select value={provider} onChange={e => { mark(); setProvider(e.target.value as 'vcs' | 'github') }}>
-              <option value="vcs">Source checkout (VCS pull)</option>
-              <option value="github">Packaged (GitHub Releases)</option>
-            </select>
-          </div>
-          {provider === 'vcs' && (
-            <>
-              <div className="settings-row">
-                <label>VCS</label>
-                <select value={vcs} onChange={e => { mark(); setVcs(e.target.value as 'svn' | 'git') }}>
-                  <option value="git">git</option>
-                  <option value="svn">svn</option>
-                </select>
-              </div>
-              <div className="settings-row">
-                <label title="Repo to pull from. Blank = the monorepo root.">Repo path (optional)</label>
-                <input type="text" value={repoPath} placeholder="(monorepo root)" onChange={e => { mark(); setRepoPath(e.target.value) }} />
-              </div>
-            </>
-          )}
-          <div className="settings-row">
-            <label title="Poll for a newer version in the background and prompt when all tabs are idle.">Background auto-check</label>
+            <label title="Check in the background and prompt when all tabs are idle. The manual check always works.">Background auto-check</label>
             <input type="checkbox" checked={autoCheck} onChange={e => { mark(); setAutoCheck(e.target.checked) }} />
           </div>
           <div className="settings-row">
-            <label>Check interval (minutes)</label>
-            <input type="number" min={1} value={interval} disabled={!autoCheck} onChange={e => { mark(); setIntervalMin(e.target.value) }} />
+            <label title="Blank = 120 min for an installed build, 15 min for a source checkout.">Check interval (minutes)</label>
+            <input type="number" min={1} value={interval} placeholder="(default)" disabled={!autoCheck} onChange={e => { mark(); setIntervalMin(e.target.value) }} />
           </div>
+          <p className="settings-note">Background settings apply after a restart; “Check now” always uses the current settings.</p>
         </>
       )}
       <div className="settings-actions">

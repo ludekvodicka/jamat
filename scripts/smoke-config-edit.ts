@@ -64,7 +64,11 @@ writeFileSync(cfgPath, JSON.stringify({
   rejects('rejects empty categories array', () => validateConfigPatch({ categories: [] }))
   rejects('rejects category missing path', () => validateConfigPatch({ categories: [{ label: 'L' } as never] }))
   rejects('rejects bad defaultAgent', () => validateConfigPatch({ defaultAgent: 'nope' as never }))
-  rejects('rejects bad selfUpdate.vcs', () => validateConfigPatch({ selfUpdate: { vcs: 'hg' as never } }))
+  // The channel now follows the runtime, so `vcs` (like `provider`/`repoPath`) is a DEAD key: a config
+  // written by an older build — even a nonsense one — must still load instead of bricking the app.
+  ok('accepts (and ignores) the deprecated selfUpdate.vcs', (() => {
+    validateConfigPatch({ selfUpdate: { vcs: 'hg' } }); return true
+  })())
   rejects('rejects selfUpdate.checkIntervalMinutes <= 0', () => validateConfigPatch({ selfUpdate: { checkIntervalMinutes: 0 } }))
   rejects('rejects NaN selfUpdate.checkIntervalMinutes (would JSON->null and brick)', () => validateConfigPatch({ selfUpdate: { checkIntervalMinutes: NaN } }))
   rejects('rejects non-boolean dockerIsolation', () => validateConfigPatch({ dockerIsolation: 'yes' as never }))

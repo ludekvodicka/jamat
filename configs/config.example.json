@@ -17,7 +17,7 @@
     "",
     "\"customMenus\" add your own per-project actions to the start menu — press F3 on a (non-Docker-isolated) project to open them. Each node is either a GROUP { label, items:[...] } that opens a sub-menu, or a COMMAND { label, run:{ command, args, cwd } } that runs against the selected project. Placeholders {dir} (absolute project path) and {name} (folder name) are substituted in args/cwd. Groups nest freely. Example: [ { \"label\": \"Deploy\", \"items\": [ { \"label\": \"Build\", \"run\": { \"command\": \"npm\", \"args\": [\"run\", \"build\"], \"cwd\": \"{dir}\" } } ] } ]. Empty/absent = no custom actions (default).",
     "",
-    "\"selfUpdate\" picks the update channel. \"provider\": \"github\" (default for a public install) auto-updates the PACKAGED app from this project's GitHub Releases (Windows + Linux; macOS needs a signed build). \"provider\": \"vcs\" instead pulls a source checkout via git/svn + relaunch — for running from source: { \"provider\": \"vcs\", \"vcs\": \"git\", \"repoPath\"?: \"...\" }. Add \"autoCheck\": false to silence the background check.",
+    "\"selfUpdate\" tunes updates — it does NOT pick a channel. The channel follows the RUNTIME: an INSTALLED build auto-updates from this project's GitHub Releases (Windows + Linux; macOS needs a signed build, so it has no channel); a build running from a SOURCE checkout never touches the network — it compares itself to the sources on disk and offers a restart (the launcher recompiles), so updating the sources stays your job (svn update / git pull). Keys: \"autoCheck\": false silences the background check (the manual menu action still works); \"checkIntervalMinutes\" sets the cadence (default 120 installed / 15 from source). The old \"provider\"/\"vcs\"/\"repoPath\" keys are ignored (a config carrying them still loads and warns in Settings -> Updates).",
     "",
     "\"agents\" configures per-agent PRE-LAUNCH hooks (Settings -> Agents): a command run in the project folder right before that agent starts a session. Shape: { \"codex\": { \"preLaunch\": { \"command\": \"node\", \"args\": [\"~/.claude/extensions/codex/CLI/packer.mjs\", \"build\", \"--dir\", \"{dir}\"], \"cwd\"?: \"{dir}\", \"timeoutMs\"?: 20000 } } }. Placeholders {dir} (absolute project path) and {name} (folder name) are substituted; a leading ~ expands to your home dir. A failing hook is NON-FATAL — it is logged and the agent launches anyway. Absent/empty (the default here) = no hooks. The Codex example above runs the AGENTS.md packer so a Codex session picks up our CLAUDE.md conventions; enable it only if you use that tooling.",
     "",
@@ -30,7 +30,7 @@
   ],
   "defaultAgent": "claude",
   "dockerIsolation": true,
-  "selfUpdate": { "provider": "github" },
+  "selfUpdate": { "autoCheck": true },
   "customMenus": [],
   "sessionDonePrompts": [
     { "label": "Continue", "prompt": "What should we do next?" },

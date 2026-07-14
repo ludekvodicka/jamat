@@ -275,7 +275,8 @@ Everything is editable in **Settings** (the first launch opens a guided wizard).
 
 | Thing | Purpose |
 |------|---------|
-| \`<config-dir>/config.json\` | App config — categories, paths, defaultAgent, customMenus, selfUpdate. Default dir \`~/.jamat\`; override with \`bin/start.bat <dir>\` (e.g. an SVN-synced dir to share across machines). |
+| \`<config-dir>/config.json\` | App config — categories, paths, defaultAgent, customMenus, selfUpdate (update knobs only — the channel follows the runtime). Default dir \`~/.jamat\`; override with \`bin/start.bat <dir>\` (e.g. an SVN-synced dir to share across machines). |
+| \`<config-dir>/update-log.jsonl\` | Persistent update log — every check, download, prompt (and every prompt SUPPRESSED, with the reason). Survives the restart an update causes; answers "why didn't it update?". |
 | \`<config-dir>/config.local.json\` | Secret overlay — e.g. Claude.ai usage credentials (never committed) |
 | \`bin/start.bat [config-dir]\` | Launch the app; recompiles automatically when the version changed. Empty dir → setup wizard. |
 | \`npm run bump\` | Stamp the version (date+time) so launchers pick up changes |
