@@ -160,9 +160,8 @@ export function CustomTab({ api, containerApi, params }: IDockviewPanelHeaderPro
       setRenamePrompt(null)
       return
     }
-    // The agent's own rename command (Claude: `/rename <name>`; Codex: none → null). Piped to the
-    // running PTY it appends the SAME `custom-title` record Claude writes for a hand-typed /rename —
-    // so it refreshes Claude's footer AND persists the name (the title poller then surfaces it).
+    // The agent's own rename command. Piping it updates the live TUI and lets the agent synchronize
+    // its own metadata; the backend write below gives a known session an immediate durable name.
     // No-op when the terminal is gone or the agent is mid-response (the byte just buffers in stdin).
     const rawAgent = params?.agent
     const agentId = isAgentId(rawAgent) ? rawAgent : DEFAULT_AGENT_ID
@@ -177,8 +176,7 @@ export function CustomTab({ api, containerApi, params }: IDockviewPanelHeaderPro
     const applyOptimisticTitle = () => api.setTitle(`${folderPrefix(params)}${name}`)
 
     if (sessionId) {
-      // Resolved session: write the custom-title straight to its transcript (exact target, immediate),
-      // then sync Claude's live footer.
+      // Resolved session: persist to the adapter's exact title store, then sync the live TUI.
       const result = await window.electronAPI.renameSession(projectDir, sessionId, name)
       if (result?.ok) { applyOptimisticTitle(); pipeRenameSlash(); setRenamePrompt(null) }
       else setRenameError(result?.error ?? 'Rename failed')
@@ -189,7 +187,7 @@ export function CustomTab({ api, containerApi, params }: IDockviewPanelHeaderPro
       // record. This is what makes F2 work the instant a session is created (no transcript needed).
       pipeRenameSlash(); applyOptimisticTitle(); setRenamePrompt(null)
     } else {
-      // No id yet and no rename command (e.g. a Codex tab): let the backend's resolver try so its real
+      // No id yet and no rename command: let the backend's resolver try so its real
       // error surfaces rather than a silent no-op.
       const result = await window.electronAPI.renameSession(projectDir, '', name)
       if (result?.ok) { applyOptimisticTitle(); setRenamePrompt(null) }

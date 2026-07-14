@@ -126,7 +126,7 @@ try {
   rmSync(synthHome, { recursive: true, force: true })
 }
 
-console.log('\n[9] getSessionTitle — reads the custom-title (rename) record')
+console.log('\n[9] getSessionTitle — reads each agent\'s durable rename store')
 const titleHome = mkdtempSync(join(tmpdir(), 'agents-title-'))
 try {
   const projDirName = claude.encodeProjectDir('Q:\\fake-proj')
@@ -145,7 +145,20 @@ try {
   writeFileSync(unnamed, JSON.stringify({ type: 'user', message: { content: 'hi' } }) + '\n')
   ok('claude.getSessionTitle is null when never renamed', claude.getSessionTitle(unnamed) === null)
 
-  ok('codex.getSessionTitle is always null (stub)', codex.getSessionTitle(named) === null)
+  const codexSid = '99999999-1234-1234-1234-123456789012'
+  const codexDay = join(titleHome, '.codex', 'sessions', '2026', '07', '14')
+  mkdirSync(codexDay, { recursive: true })
+  const codexRollout = join(codexDay, `rollout-2026-07-14T17-04-23-${codexSid}.jsonl`)
+  writeFileSync(codexRollout, JSON.stringify({ type: 'session_meta', payload: { id: codexSid, cwd: '/project' } }) + '\n')
+  writeFileSync(join(titleHome, '.codex', 'session_index.jsonl'), JSON.stringify({ id: codexSid, thread_name: 'Codex Named Session', updated_at: '2026-07-14T15:33:27Z' }) + '\n')
+  ok('codex.getSessionTitle returns the latest index name', codex.getSessionTitle(codexRollout) === 'Codex Named Session')
+  ok('codex.appendCustomTitle appends a durable index name', codex.appendCustomTitle(codexRollout, codexSid, 'Renamed by Jamat'))
+  ok('codex.getSessionTitle sees the appended name', codex.getSessionTitle(codexRollout) === 'Renamed by Jamat')
+
+  const claudeWatch = claude.getSessionTitleWatchTarget(root, sid, titleHome)
+  ok('Claude title watch targets its transcript', claudeWatch?.dir === root && claudeWatch.base === `${sid}.jsonl`)
+  const codexWatch = codex.getSessionTitleWatchTarget('/project', codexSid, titleHome)
+  ok('Codex title watch targets session_index.jsonl', codexWatch?.dir === join(titleHome, '.codex') && codexWatch.base === 'session_index.jsonl')
 } finally {
   rmSync(titleHome, { recursive: true, force: true })
 }
@@ -154,13 +167,13 @@ console.log('\n[10] listActivePids — shape (alive sessions with owning pid)')
 const pids = claude.listActivePids(homedir())
 ok('claude.listActivePids returns an array', Array.isArray(pids))
 ok('claude.listActivePids entries have pid+sessionId', pids.every((p) => typeof p.pid === 'number' && typeof p.sessionId === 'string'))
-ok('codex.listActivePids is empty (stub)', Array.isArray(codex.listActivePids(homedir())) && codex.listActivePids(homedir()).length === 0)
+ok('codex.listActivePids is empty (no live-pid registry)', Array.isArray(codex.listActivePids(homedir())) && codex.listActivePids(homedir()).length === 0)
 
 console.log('\n[11] discovery + rename members routed through the adapter (plan 004 #2)')
-ok('codex.buildSessionMetaCache → empty Map (stub)', codex.buildSessionMetaCache('/nope', ['a']).size === 0)
+ok('codex.buildSessionMetaCache → empty Map for a missing project', codex.buildSessionMetaCache('/nope', ['a']).size === 0)
 {
   const cp = codex.loadSessionPreview('/nope', 'x')
-  ok('codex.loadSessionPreview → [] (stub)', Array.isArray(cp) && cp.length === 0)
+  ok('codex.loadSessionPreview → [] for a missing session', Array.isArray(cp) && cp.length === 0)
 }
 ok('codex.invalidateDiscoveryCache is a no-op (no throw)', (() => { try { codex.invalidateDiscoveryCache(); return true } catch { return false } })())
 ok('claude.invalidateDiscoveryCache does not throw', (() => { try { claude.invalidateDiscoveryCache(); return true } catch { return false } })())
@@ -174,7 +187,7 @@ ok('claude.invalidateDiscoveryCache does not throw', (() => { try { claude.inval
   }
 }
 
-console.log('\n[12] selected-agent routing guard — claude parses a real session, codex (stub) does not')
+console.log('\n[12] selected-agent routing guard — each adapter uses its own storage layout')
 // Plan 2026-06-01-004 rerouted menu-core discovery through getAgent(selectedAgent). [11] only
 // exercised the trivial early-exit branches (empty/missing inputs). This asserts the HAPPY path
 // (real JSONL parse) AND that the SAME inputs through the other agent do NOT yield Claude's result
@@ -237,6 +250,7 @@ ok('claude.capabilities.usageSource = claude-web', claude.capabilities.usageSour
 ok('claude.capabilities.execModels includes opus', claude.capabilities.execModels.some((m) => m.id === 'opus'))
 ok('claude.capabilities.docker image = jamat-isolated', claude.capabilities.docker?.image === 'jamat-isolated')
 ok('codex.capabilities.fork = true', codex.capabilities.fork === true)
+ok('codex.capabilities.liveRename = true', codex.capabilities.liveRename === true)
 ok('codex.capabilities.usageSource = openai', codex.capabilities.usageSource === 'openai')
 ok('codex.capabilities.docker configDirName = .codex', codex.capabilities.docker?.configDirName === '.codex')
 ok('codex.capabilities.execModels empty (filled in U8)', codex.capabilities.execModels.length === 0)
@@ -269,11 +283,12 @@ try {
   rmSync(memoHome, { recursive: true, force: true })
 }
 
-console.log('\n[16] base graceful-degrade defaults inherited by Codex + parseExecOutput (U1)')
+console.log('\n[16] remaining graceful-degrade defaults + rename command + parseExecOutput (U1)')
 ok('codex.encodeProjectDir → "" (base default)', codex.encodeProjectDir('/whatever') === '')
-ok('codex.renameSlashCommand → null (base default)', codex.renameSlashCommand('x') === null)
+ok('codex.renameSlashCommand uses native inline /rename', codex.renameSlashCommand('x') === '/rename x\r')
+ok('renderer Codex rename slash matches main adapter', getRendererAgent('codex').renameSlashCommand('x') === '/rename x\r')
 ok('codex.readEffortLevel → null (base default)', codex.readEffortLevel('/p', '/h') === null)
-ok('codex.appendCustomTitle → false (base default)', codex.appendCustomTitle('/f', 'id', 't') === false)
+ok('codex.appendCustomTitle rejects invalid inputs', codex.appendCustomTitle('/f', 'id', 't') === false)
 // codex overrides parseExecOutput (NDJSON reduce) — exercised in [4]. Claude inherits the base trim:
 ok('claude.parseExecOutput inherits base trim (correct for `claude -p`)', claude.parseExecOutput('  hello \n') === 'hello')
 

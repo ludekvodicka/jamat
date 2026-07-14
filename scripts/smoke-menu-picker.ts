@@ -48,6 +48,8 @@ function seedCodex(sid: string, tsPart: string, prompt: string, mtimeSec: number
 }
 seedCodex('019f4bf7-aaaa-7000-8000-000000000001', '10-00-00', 'older codex session', 1_700_000_000)
 seedCodex('019f4bf7-bbbb-7000-8000-000000000002', '11-00-00', 'newer codex session', 1_700_000_500)
+writeFileSync(join(HOME, '.codex', 'session_index.jsonl'),
+  JSON.stringify({ id: '019f4bf7-bbbb-7000-8000-000000000002', thread_name: 'codexUI', updated_at: '2026-07-10T11:30:00Z' }) + '\n')
 
 function makeState(selectedAgent: AgentId, availableAgents: AgentId[]): MenuState {
   return {
@@ -78,6 +80,7 @@ console.log('\n[1] Picker: per-agent new-session rows (selected first) + merged 
   ok('first resume row = last-session (newest)', resumeRows[0]?.kind === 'last-session')
   ok('resume rows carry agent codex', resumeRows.every((r) => (r as { agent: AgentId }).agent === 'codex'))
   ok('newest first (recency sort)', resumeRows[0]?.kind !== 'new-session' && /newer codex session/.test((resumeRows[0] as { session: { firstUserMessage: string } }).session.firstUserMessage))
+  ok('renamed Codex row carries thread_name as slug', resumeRows[0]?.kind !== 'new-session' && (resumeRows[0] as { session: { slug: string | null } }).session.slug === 'codexUI')
   ok('spProjectDirs: codex found, claude null', s.spProjectDirs.get('codex') === PROJ && s.spProjectDirs.get('claude') === null)
 }
 
@@ -108,6 +111,7 @@ console.log('\n[4] buildUnionSessionMetaCache: folder shows Codex activity')
   const union = buildUnionSessionMetaCache(WORK, [FOLDER], ['claude', 'codex'])
   ok('union has the folder from Codex sessions', union.has(FOLDER))
   ok('lastActivity is a Date', union.get(FOLDER)?.lastActivity instanceof Date)
+  ok('latest Codex thread_name reaches union metadata', union.get(FOLDER)?.label === 'codexUI')
 }
 
 rmSync(HOME, { recursive: true, force: true })

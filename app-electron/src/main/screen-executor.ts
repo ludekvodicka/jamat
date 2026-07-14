@@ -55,13 +55,11 @@ interface TerminalState {
    * new session / fork resolves to its OWN id. Set at spawn; cleared on (re)start.
    */
   launchedAtMs?: number
-  /** fs.watch on the session's PROJECT DIR — fires applyTitle the instant the
-   *  session's `<id>.jsonl` is created or appended (so the FIRST `/rename`,
-   *  which creates the transcript, is caught too — not just later appends). */
+  /** fs.watch on the adapter-owned title store; fires applyTitle on rename. */
   titleWatcher?: FSWatcher
   /** Directory the titleWatcher is watching (re-arm only when it changes). */
   watchedTitleDir?: string
-  /** The session's transcript filename — watch events for other files are ignored. */
+  /** Adapter-owned title filename — watch events for other files are ignored. */
   watchedTitleBase?: string
   /** Debounce timer coalescing the burst of watch events per JSONL write. */
   titleWatchTimer?: ReturnType<typeof setTimeout>
@@ -123,7 +121,7 @@ function sessionFileFor(adapter: AgentAdapter | null, dir: string, sessionId: st
 }
 
 /** The custom (renamed) title for a KNOWN sessionId, or null when never renamed
- *  / no transcript yet. Routed through the adapter (Codex returns null). */
+ *  / no transcript yet. Routed through the owning adapter. */
 function customTitleForSessionId(adapter: AgentAdapter | null, dir: string, sessionId: string | undefined): string | null {
   const file = sessionFileFor(adapter, dir, sessionId)
   if (!file || !adapter) return null
@@ -176,12 +174,9 @@ function closeTitleWatch(state: TerminalState): void {
 }
 
 /**
- * Watch the session's PROJECT DIR (which exists even before the session's own
- * transcript does) and react only to `<id>.jsonl` events. This catches the
- * FIRST `/rename` — which CREATES the transcript — instantly, not just later
- * appends to an existing file; that was the source of the poll-length delay on
- * a fresh session. Debounced because each write fires several fs events;
- * re-arms only when dir/base change.
+ * Watch the adapter-owned title source. Claude points at the session transcript;
+ * Codex points at its shared session-name index. Debounced because each write
+ * fires several fs events; re-arms only when dir/base change.
  */
 function ensureTitleWatch(terminalId: string, state: TerminalState, dir: string, base: string): void {
   if (state.watchedTitleDir === dir && state.watchedTitleBase === base && state.titleWatcher) return
@@ -215,9 +210,10 @@ function applyTitle(terminalId: string, state: TerminalState): void {
   let projDir: string | null = null
   try { projDir = adapter.findProjectDir(state.meta.dir, homedir()) } catch { /* unresolved */ }
   if (!projDir) return
-  // Arm the watcher as soon as the sessionId is known — before the transcript
-  // exists — so the rename that creates it is caught without a poll wait.
-  ensureTitleWatch(terminalId, state, projDir, `${id}.jsonl`)
+  try {
+    const target = adapter.getSessionTitleWatchTarget(projDir, id, homedir())
+    if (target) ensureTitleWatch(terminalId, state, target.dir, target.base)
+  } catch { /* poller remains the backstop */ }
   let file: string | null = null
   try { file = adapter.resolveSessionFile(projDir, id, homedir()) } catch { /* none */ }
   if (!file) return
@@ -354,9 +350,8 @@ function kickSessionIdResolution(): void {
 }
 
 // ── Live tab-title sync ─────────────────────────────────────────────────────
-// A `/rename` typed directly into the running TUI (or our rename modal, which
-// writes the same record) only appends a `custom-title` line to the session
-// JSONL — nothing else tells the tab. Poll running terminals and push
+// A `/rename` typed directly into the running TUI updates the agent's on-disk
+// title store; nothing else tells the tab. Poll running terminals and push
 // `screen:title` on change. Lazy: starts with the first terminal, stops once
 // none remain.
 const TITLE_POLL_MS = 2500
@@ -599,8 +594,8 @@ function startClaudeInTerminal(
   }
   terminals.set(terminalId, newState)
 
-  // A stub adapter (Codex) throws here. Recover by dropping back to the
-  // menu so the user can pick a different agent / project, rather than
+  // Recover from any adapter launch failure by dropping back to the menu so
+  // the user can pick a different agent / project, rather than
   // leaving the terminal stuck in 'running' with no PTY (the throw would
   // otherwise escape into node-pty's onExit callback as an
   // uncaughtException).

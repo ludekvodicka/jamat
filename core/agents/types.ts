@@ -1,8 +1,6 @@
 /**
- * Universal agent adapter interface. Today only `ClaudeAdapter` is fully
- * implemented; `CodexAdapter` is a stub that throws "not implemented" so
- * the design is exercised by two consumers (real + stub) and a future
- * Codex implementation slots in without further refactor.
+ * Universal agent adapter interface implemented by the Claude and Codex
+ * backends. New agents slot in without changing consumer contracts.
  *
  * The interface mirrors the 8 categories in
  * `docs/architecture/codex-portability-assessment.md` — every Claude
@@ -145,6 +143,11 @@ export interface AgentCapabilities {
   execModels: readonly { id: string; label: string }[]
 }
 
+export interface SessionTitleWatchTarget {
+  dir: string
+  base: string
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // The adapter itself
 // ────────────────────────────────────────────────────────────────────────────
@@ -235,13 +238,13 @@ export interface AgentAdapter {
   appendCustomTitle(sessionFile: string, sessionId: string, title: string): boolean
 
   /**
-   * The session's custom (renamed) title, i.e. the name written by the
-   * agent's rename mechanism — Claude's `/rename` / our rename modal both
-   * append a `custom-title` record. Null when the session was never renamed
-   * (or the agent has no such concept). Used to label tabs on launch/reopen
-   * and to live-update them when the user renames inside the running TUI.
+   * The session's custom title from the agent's native rename store. Null
+   * when the session was never renamed (or the agent has no such concept).
    */
   getSessionTitle(sessionFile: string): string | null
+
+  /** File whose changes can alter `getSessionTitle()` for this session. */
+  getSessionTitleWatchTarget(projectDir: string, sessionId: string, homeDir: string): SessionTitleWatchTarget | null
 
   /**
    * Currently-running sessions with the OS pid that owns each. Lets a caller

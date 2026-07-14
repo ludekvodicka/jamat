@@ -29,6 +29,7 @@ import type {
   AgentTtyPatterns,
   ExecCommand,
   ExecOptions,
+  SessionTitleWatchTarget,
 } from './types.js'
 
 export abstract class AgentAdapterBase implements AgentAdapter {
@@ -66,6 +67,7 @@ export abstract class AgentAdapterBase implements AgentAdapter {
   invalidateDiscoveryCache(): void { /* no discovery cache by default */ }
   appendCustomTitle(_sessionFile: string, _sessionId: string, _title: string): boolean { return false }
   getSessionTitle(_sessionFile: string): string | null { return null }
+  getSessionTitleWatchTarget(_projectDir: string, _sessionId: string, _homeDir: string): SessionTitleWatchTarget | null { return null }
   listActivePids(_homeDir: string): { pid: number; sessionId: string }[] { return [] }
   /** Pid-tracking agents resolve via listActivePids; no-pid agents (Codex) override this. */
   resolveLaunchedSession(_projectDir: string, _homeDir: string, _sinceMs: number): { sessionId: string } | null { return null }

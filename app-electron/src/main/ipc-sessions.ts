@@ -163,9 +163,8 @@ export function registerSessionIpc(): void {
     return loadJsonlFile(filePath)
   })
 
-  // Rename a session by appending a `{type:"custom-title"...}` line to its
-  // JSONL transcript. Equivalent to Claude Code's `/rename` slash command —
-  // `findCustomTitle` picks up the latest entry as the displayed slug.
+  // Persist a session title through its owning adapter. Claude appends a
+  // `custom-title` transcript row; Codex appends its session-name index.
   //
   // sessionId is optional: when missing we fall back to the project's most
   // recently-active session. This lets the UI offer Rename on tabs that
@@ -194,15 +193,13 @@ export function registerSessionIpc(): void {
         return { ok: false, error: 'could not extract sessionId from active session file' }
       }
     }
-    // Route the title-append through whichever agent owns this session —
-    // a Codex session must use Codex's parser (which today returns false,
-    // surfacing "rename failed" gracefully rather than corrupting the
-    // transcript with a Claude-shaped record).
+    // Route the write through whichever agent owns this session.
     const owner = getAgent(resolveAgentForSessionId(resolvedSessionId, homedir()) ?? DEFAULT_AGENT_ID)
     const projDir = owner.findProjectDir(projectDir, homedir())
     if (!projDir) return { ok: false, error: 'project dir not resolved' }
-    const jsonlPath = join(projDir, `${resolvedSessionId}.jsonl`)
-    const ok = owner.appendCustomTitle(jsonlPath, resolvedSessionId, name)
+    const sessionFile = owner.resolveSessionFile(projDir, resolvedSessionId, homedir())
+    if (!sessionFile) return { ok: false, error: 'session transcript not found' }
+    const ok = owner.appendCustomTitle(sessionFile, resolvedSessionId, name)
     return ok ? { ok: true, sessionId: resolvedSessionId } : { ok: false, error: 'rename failed (invalid id or missing transcript)' }
   })
 

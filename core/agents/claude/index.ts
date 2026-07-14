@@ -43,6 +43,7 @@ import type {
   AgentTtyPatterns,
   ExecCommand,
   ExecOptions,
+  SessionTitleWatchTarget,
 } from '../types.js'
 import type { LaunchCommand, LaunchMode, MenuSelection } from '../../types/contracts.js'
 import type { SessionModelInfo, LatestSessionMeta } from '../../types/session.js'
@@ -142,6 +143,10 @@ export class ClaudeAdapter extends AgentAdapterBase {
 
   getSessionTitle(sessionFile: string): string | null {
     return findCustomTitle(sessionFile)
+  }
+
+  getSessionTitleWatchTarget(projectDir: string, sessionId: string, _homeDir: string): SessionTitleWatchTarget {
+    return { dir: projectDir, base: `${sessionId}.jsonl` }
   }
 
   listActivePids(_homeDir: string): { pid: number; sessionId: string }[] {

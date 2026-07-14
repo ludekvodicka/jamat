@@ -1,12 +1,13 @@
 # CodexAdapter — Codex CLI backend
 
 Schema + CLI reference for the Codex (OpenAI GPT) backend, **verified live** on
-2026-07-10 against **`codex-cli 0.144.1`** (Windows, `~/.codex/`). The verification
+2026-07-10 against **`codex-cli 0.144.1`**, with session naming re-verified on
+2026-07-14 against **`codex-cli 0.144.4`** (Windows, `~/.codex/`). The verification
 items from `.aidocs/architecture/codex-portability-assessment.md` are answered below;
 `fixtures/` holds neutral, schema-faithful captures the U3/U4 parsers are written against.
 
-Status: `AgentAdapterBase`-derived. Discovery/parse land in U3, CLI/exec in U4 (they
-throw today). Every degrade member (rename, active-pids, effort) is inherited from the base.
+Status: `AgentAdapterBase`-derived with discovery, parsing, launch/exec, durable session names,
+and native live rename implemented. Active-pids and effort still use base degradation.
 
 ## Filesystem layout
 
@@ -16,6 +17,9 @@ throw today). Every degrade member (rename, active-pids, effort) is inherited fr
   `rollout-<start-ts>-<sessionId>.jsonl`.
 - **Auth:** `~/.codex/auth.json` (present when logged in). Config: `~/.codex/config.toml`
   (`model`, `model_reasoning_effort`, `sandbox`, per-project `[projects.'<path>']` blocks).
+- **Session names:** `~/.codex/session_index.jsonl`, append-only rows shaped
+  `{id,thread_name,updated_at}`. The latest valid row per session ID wins. It is separate from the
+  rollout and shared by all projects.
 - **Scale note:** a heavy user's tree had **25,189** rollout files — the U3 walker MUST be
   incremental (per-day-dir mtime cache; header-line reads only), never a full re-parse.
 
@@ -147,7 +151,9 @@ Different, cleaner schema than the rollout — top-level `{ type, ... }` per lin
 - [x] Windows binary shape — `codex.cmd` shim on PATH. **Confirmed.**
 - [x] Auth/credential file — `~/.codex/auth.json`. **Confirmed** (drives `AgentDockerSpec.credentialFile`).
 - [x] Usage/context source — LOCAL `token_count.rate_limits` + `model_context_window`; no OpenAI API. **Confirmed** (reshapes U6).
-- [~] `custom-title` tolerance — **NOT tested.** Kept `appendCustomTitle` = false (base default); rename degrades to a toast. Revisit only if durable Codex rename is wanted.
+- [x] Session naming — `/rename <name>` is supported; names persist in append-only
+  `session_index.jsonl`, latest row wins. Jamat reads, watches, and appends that native shape and
+  pipes the slash command so Codex updates its own live metadata. **Confirmed on 0.144.4.**
 - [~] **TUI markers (tool glyph / approval prompt / busy line) — NOT captured.** Needs an interactive PTY session (exec is non-interactive). `CODEX_TTY_PATTERNS` stays minimal → the turn indicator falls back to the 15s silence timer (upstream-agnostic, per plan). Follow-up: capture a real `codex` TUI transcript and fill `toolUse`/`blocked`/`busy`.
 
 ## Fixtures

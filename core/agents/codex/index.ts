@@ -4,15 +4,15 @@
  * CLI launch/resume/exec (U4, `launcher.ts`) are real. `parseExecOutput` is
  * overridden for Codex's NDJSON exec stream; Docker isolation still refuses
  * loudly until U7 builds the `dockerized-codex` image. Every remaining
- * "doesn't apply" member (encodeProjectDir, appendCustomTitle, listActivePids,
- * readSessionModelInfo, readEffortLevel, renameSlashCommand) is inherited from the base.
+ * "doesn't apply" member (encodeProjectDir, listActivePids, readSessionModelInfo,
+ * readEffortLevel) is inherited from the base.
  *
  * Codex keys sessions by DATE + a `cwd` header, not by project dir — see
  * `sessions.ts` and `./README.md` (schema verified vs codex-cli 0.144.1).
  */
 
 import { join } from 'path'
-import { CODEX_TTY_PATTERNS, CODEX_CAPABILITIES } from './renderer-meta.js'
+import { CODEX_TTY_PATTERNS, CODEX_CAPABILITIES, codexRenameSlash } from './renderer-meta.js'
 import { AgentAdapterBase } from '../base.js'
 import {
   findCodexProjectDir,
@@ -26,12 +26,14 @@ import {
 } from './sessions.js'
 import { extractCodexTurns, extractCodexHasEdits, extractCodexEditedFiles } from './session-changes.js'
 import { buildCodexLaunchCommand } from './launcher.js'
+import { CodexThreadNames } from './threadNames.js'
 import type {
   AgentSession,
   AgentTurnInfo,
   AgentTtyPatterns,
   ExecCommand,
   ExecOptions,
+  SessionTitleWatchTarget,
 } from '../types.js'
 import type { LaunchCommand, LaunchMode, MenuSelection } from '../../types/contracts.js'
 import type { LatestSessionMeta } from '../../types/session.js'
@@ -79,7 +81,9 @@ export class CodexAdapter extends AgentAdapterBase {
   // Codex has no live pids — a just-launched tab (new session or fork) resolves its id by
   // finding the newest rollout for the cwd created at/after launch (see the base contract).
   resolveLaunchedSession(projectDir: string, homeDir: string, sinceMs: number): { sessionId: string } | null {
-    return resolveCodexLaunchedSession(projectDir, homeDir, sinceMs)
+    const hit = resolveCodexLaunchedSession(projectDir, homeDir, sinceMs)
+    if (hit) invalidateCodexIndex()
+    return hit
   }
 
   // --- 3. JSONL parsing (U3) ---
@@ -91,6 +95,18 @@ export class CodexAdapter extends AgentAdapterBase {
   }
   extractEditedFiles(sessionFile: string): string[] {
     return extractCodexEditedFiles(sessionFile)
+  }
+
+  appendCustomTitle(sessionFile: string, sessionId: string, title: string): boolean {
+    return CodexThreadNames.appendForSessionFile(sessionFile, sessionId, title)
+  }
+
+  getSessionTitle(sessionFile: string): string | null {
+    return CodexThreadNames.getForSessionFile(sessionFile)
+  }
+
+  getSessionTitleWatchTarget(_projectDir: string, _sessionId: string, homeDir: string): SessionTitleWatchTarget {
+    return CodexThreadNames.watchTarget(homeDir)
   }
 
   // --- 4. CLI invocation (U4) ---
@@ -126,6 +142,10 @@ export class CodexAdapter extends AgentAdapterBase {
       } catch { /* non-JSON noise line */ }
     }
     return last.trim()
+  }
+
+  renameSlashCommand(name: string): string {
+    return codexRenameSlash(name)
   }
 
   // --- 7. Permissions — Codex config.toml (project override then user-global) ---

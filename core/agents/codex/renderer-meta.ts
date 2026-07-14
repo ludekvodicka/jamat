@@ -1,7 +1,6 @@
 /**
  * Renderer-relevant Codex metadata. Placeholder values until the Codex
- * adapter ships — shared by `CodexAdapter` and the renderer registry so
- * the never-match pattern set and null rename slash live in one place.
+ * adapter ships — shared by `CodexAdapter` and the renderer registry.
  *
  * Pure — types only. Safe for the Vite renderer bundle.
  */
@@ -21,7 +20,7 @@ export const CODEX_TTY_PATTERNS: AgentTtyPatterns = {
 
 /**
  * Codex's feature set. Several capabilities are intentionally off vs Claude:
- * no `/rename` slash, no live-pid tracking. `contextPercent` stays false until the
+ * no live-pid tracking. `contextPercent` stays false until the
  * U2 spike confirms the rollout carries usable token data; `execModels` is filled in
  * U8 from the spike's verified model ids. Fork IS supported (`codex fork <id>`), made
  * restart-safe by the launched-session resolver (activePids stays false — id is resolved
@@ -29,7 +28,7 @@ export const CODEX_TTY_PATTERNS: AgentTtyPatterns = {
  */
 export const CODEX_CAPABILITIES: AgentCapabilities = {
   fork: true,
-  liveRename: false,
+  liveRename: true,
   contextPercent: false,
   usageSource: 'openai',
   activePids: false,
@@ -43,5 +42,4 @@ export const CODEX_CAPABILITIES: AgentCapabilities = {
   execModels: [],
 }
 
-/** Codex has no documented `/rename` equivalent → skip the pipe. */
-export const codexRenameSlash = (_name: string): string | null => null
+export const codexRenameSlash = (name: string): string => `/rename ${name}\r`

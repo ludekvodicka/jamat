@@ -22,6 +22,7 @@ import { closeSync, openSync, readdirSync, readSync, readFileSync, statSync } fr
 import { homedir } from 'os'
 import { join } from 'path'
 import type { SessionInfo, LatestSessionMeta } from '../../types/session.js'
+import { CodexThreadNames } from './threadNames.js'
 
 /** Only index sessions from the last N days — bounds cold-start on large histories. */
 const SCAN_WINDOW_DAYS = 90
@@ -146,6 +147,7 @@ const index = new CodexSessionIndex()
 
 export function invalidateCodexIndex(): void {
   index.invalidate()
+  CodexThreadNames.invalidate()
 }
 
 /** Real cwd IS the storage-dir identity for Codex (no path encoding). Null when no sessions. */
@@ -154,9 +156,10 @@ export function findCodexProjectDir(projectDir: string, homeDir: string): string
 }
 
 export function listCodexSessionsForProject(projectDir: string, homeDir: string): SessionInfo[] {
+  const threadNames = CodexThreadNames.all(homeDir)
   return index.sessionsForCwd(homeDir, projectDir).map((meta) => ({
     sessionId: meta.sessionId,
-    slug: null,
+    slug: threadNames.get(meta.sessionId) ?? null,
     firstUserMessage: readFirstUserMessage(meta.file),
     createdAt: new Date(meta.createdAtMs),
     lastActivity: new Date(meta.mtimeMs),
@@ -168,6 +171,7 @@ export function listCodexSessionsForProject(projectDir: string, homeDir: string)
 
 export function buildCodexSessionMetaCache(catPath: string, folderNames: string[]): Map<string, LatestSessionMeta> {
   const home = homedir()
+  const threadNames = CodexThreadNames.all(home)
   const out = new Map<string, LatestSessionMeta>()
   for (const folder of folderNames) {
     const metas = index.sessionsForCwd(home, join(catPath, folder))
@@ -176,7 +180,7 @@ export function buildCodexSessionMetaCache(catPath: string, folderNames: string[
     out.set(folder, {
       createdAt: new Date(latest.createdAtMs),
       lastActivity: new Date(latest.mtimeMs),
-      label: null,
+      label: threadNames.get(latest.sessionId) ?? null,
     })
   }
   return out

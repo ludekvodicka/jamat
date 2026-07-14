@@ -19,6 +19,7 @@ import {
   invalidateCodexIndex,
 } from '../core/agents/codex/sessions'
 import { extractCodexEditedFiles, extractCodexHasEdits, extractCodexTurns } from '../core/agents/codex/session-changes'
+import { CodexThreadNames } from '../core/agents/codex/threadNames'
 
 let passed = 0
 let failed = 0
@@ -86,6 +87,12 @@ console.log('\n[3] Discovery over a synthesized ~/.codex date tree')
     const sid2 = '019f4bf7-aaaa-7bbb-8ccc-ddddeeeeffff'
     writeFileSync(join(dayDir, `rollout-2026-07-10T15-00-00-${sid2}.jsonl`),
       JSON.stringify({ timestamp: '2026-07-10T13:00:00Z', type: 'session_meta', payload: { session_id: sid2, id: sid2, timestamp: '2026-07-10T13:00:00Z', cwd: otherDir } }) + '\n')
+    const titleIndex = join(home, '.codex', 'session_index.jsonl')
+    writeFileSync(titleIndex,
+      '{not valid json}\n' +
+      JSON.stringify({ id: sid, thread_name: 'Old name', updated_at: '2026-07-10T10:00:00Z' }) + '\n' +
+      JSON.stringify({ id: sid2, thread_name: 'Other project name', updated_at: '2026-07-10T13:00:00Z' }) + '\n' +
+      JSON.stringify({ id: sid, thread_name: 'Renamed session', updated_at: '2026-07-10T14:00:00Z' }))
 
     invalidateCodexIndex()
     ok('findCodexProjectDir → projDir when it has sessions', findCodexProjectDir(projDir, home) === projDir)
@@ -94,12 +101,24 @@ console.log('\n[3] Discovery over a synthesized ~/.codex date tree')
     const sessions = listCodexSessionsForProject(projDir, home)
     ok('listCodexSessionsForProject → exactly the projDir session', sessions.length === 1 && sessions[0].sessionId === sid, `got ${sessions.length}`)
     ok('legacy title keeps the original prompt across later event records', sessions[0]?.firstUserMessage === 'do the thing')
+    ok('session slug uses the latest valid Codex thread-name row', sessions[0]?.slug === 'Renamed session', JSON.stringify(sessions[0]?.slug))
     ok('session marked not-active (Codex has no live pids)', sessions[0]?.active === false)
 
     ok('findCodexSessionFileById → the file', findCodexSessionFileById(sid, home) === rollout)
     ok('findCodexSessionFileById → null for unknown id', findCodexSessionFileById('00000000-0000-0000-0000-000000000000', home) === null)
     ok('resolveCodexActiveSessionFile(null) → newest for the cwd', resolveCodexActiveSessionFile(projDir, null, home) === rollout)
     ok('loadCodexSessionPreview → the user line', loadCodexSessionPreview(projDir, sid).some((l) => l === 'do the thing'))
+
+    ok('Codex title append accepts the matching rollout', CodexThreadNames.appendForSessionFile(rollout, sid, 'codexUI'))
+    const titleLines = readFileSync(titleIndex, 'utf8').split(/\r?\n/).filter(Boolean)
+    ok('title append preserves JSONL after an unterminated prior row', titleLines.length === 5 && titleLines.every((line, i) => i === 0 || (() => { try { JSON.parse(line); return true } catch { return false } })()))
+    ok('Codex title read sees the appended latest name', CodexThreadNames.getForSessionFile(rollout) === 'codexUI')
+    ok('session picker sees an appended rename without rebuilding rollout discovery', listCodexSessionsForProject(projDir, home)[0]?.slug === 'codexUI')
+    ok('title append rejects a mismatched session id', !CodexThreadNames.appendForSessionFile(rollout, sid2, 'wrong target'))
+
+    writeFileSync(titleIndex, readFileSync(titleIndex, 'utf8') + JSON.stringify({ id: sid, thread_name: '   ', updated_at: '2026-07-10T15:00:00Z' }) + '\n')
+    CodexThreadNames.invalidate()
+    ok('latest empty thread name clears the picker slug', listCodexSessionsForProject(projDir, home)[0]?.slug === null)
 
     // The other cwd's session must NOT leak into projDir's list.
     ok('other cwd session excluded from projDir', !sessions.some((s) => s.sessionId === sid2))
