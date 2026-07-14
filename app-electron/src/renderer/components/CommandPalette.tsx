@@ -58,7 +58,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
     for (const t of TAB_TYPES) {
       cmds.push({
         id: `new-${t.id}`,
-        label: `New ${t.label} Tab`,
+        label: t.commandLabel ?? `New ${t.label} Tab`,
         category: 'Tabs',
         action: () => {
           if (!api) return

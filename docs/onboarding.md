@@ -30,7 +30,8 @@ Every field that lives in the per-machine config is editable from **Settings**:
 | Tab | Edits |
 |---|---|
 | **Projects** | `categories` — project folders (add/remove/reorder, native folder picker, "not found" hint) |
-| **General** | `name`, `defaultAgent`, `dockerIsolation` |
+| **General** | `name`, `dockerIsolation` |
+| **Agents** | `defaultAgent` (the agent the menu lists first + preselects) and `agents` — per-agent pre-launch hooks |
 | **Project menus** | `customMenus` — the recursive F3 action menus (groups + commands) |
 | **Updates** | `selfUpdate` (gated behind an "enable" toggle) |
 | **Quick prompts** | `sessionDonePrompts` |

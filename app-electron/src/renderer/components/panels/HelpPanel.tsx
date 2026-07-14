@@ -51,7 +51,7 @@ const HELP_CONTENT = `
 | **Ctrl+V / Ctrl+Shift+V** | Paste from clipboard |
 | **Ctrl+C** | Copy selection / Send SIGINT when no selection |
 | **Ctrl+Shift+C** | Copy selection (native — keeps the selection) |
-| **Shift+Enter** | Newline without submit (in Claude Code) |
+| **Shift+Enter** | Newline without submit (in agent prompts) |
 | **Right-click** | Context menu (Copy, Open in VS Code, Open in Tab) |
 | **Shift+Right-click** | Paste from clipboard |
 
@@ -71,8 +71,7 @@ The **Ctrl+Shift+T** picker groups tab types into sections:
 ### Agents
 | Type | Shortcut | Description |
 |------|----------|-------------|
-| 🤖 **Claude Code** | Ctrl+T | Jamat Menu → project selection → Claude Code session |
-| 🟢 **Codex** | — | Codex agent session (where the \`codex\` binary is on PATH) |
+| 🤖 **New Agent Session** | Ctrl+T | Jamat Menu → project selection → agent session. **Which** agent (Claude Code / Codex) is picked in the menu, not here. |
 
 ### Shells
 | Type | Description |
@@ -118,9 +117,10 @@ The **Ctrl+Shift+T** picker groups tab types into sections:
 - Screen-managed lifecycle: menu → claude → menu (no PowerShell wrapper)
 
 ### Codex
-- A second agent alongside Claude Code — open a **Codex** tab from the picker
-- Available where the \`codex\` binary is on PATH; otherwise the row is disabled
-- Sessions, history and discovery route through the selected agent
+- A second agent alongside Claude Code — every agent tab opens the same menu, and the session picker
+  offers a **＋ New session** row per agent installed on PATH (plus the merged resume list, C/X badged)
+- **Settings → Agents → Default agent** decides which one is listed first and preselected
+- Sessions, history and discovery route through the agent that owns the session
 
 ### Session Persistence
 - Layout (tabs, splits, positions) saved automatically on every change

@@ -3,7 +3,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useLayoutStore } from '../../store/layout-store'
 import { themes, type ThemeId } from '../../themes'
 import type { SessionDonePrompt } from '../../../shared/types'
-import type { CategoryJson, SelfUpdateConfig, CustomMenuNode, CustomRun, ContextWarnLevel } from '../../../../../core/types/config'
+import type { CategoryJson, SelfUpdateConfig, CustomMenuNode, CustomRun, ContextWarnLevel, AgentsConfig, AgentPreLaunch } from '../../../../../core/types/config'
 import type { AppPathsInfo } from '../../../../../core/types/ipc-contracts'
 import { type MenuPath, mutateNode, deleteNode, moveNode, newLeaf, newBranch, firstMenuError } from './menuTree'
 import { DEFAULT_CONTEXT_LEVELS } from '../../utils/context-level'
@@ -88,11 +88,12 @@ function saveSettings(s: Settings) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(s))
 }
 
-type TabId = 'projects' | 'general' | 'menus' | 'appearance' | 'terminal' | 'notifications' | 'context' | 'recentFiles' | 'prompts' | 'usage' | 'updates' | 'remote' | 'debug' | 'info'
+type TabId = 'projects' | 'general' | 'agents' | 'menus' | 'appearance' | 'terminal' | 'notifications' | 'context' | 'recentFiles' | 'prompts' | 'usage' | 'updates' | 'remote' | 'debug' | 'info'
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'projects', label: 'Projects' },
   { id: 'general', label: 'General' },
+  { id: 'agents', label: 'Agents' },
   { id: 'menus', label: 'Project menus' },
   { id: 'appearance', label: 'Appearance' },
   { id: 'terminal', label: 'Terminal' },
@@ -188,6 +189,8 @@ export function SettingsPanel(props: IDockviewPanelProps) {
           {tab === 'projects' && <CategoriesEditor />}
 
           {tab === 'general' && <GeneralEditor />}
+
+          {tab === 'agents' && <AgentsEditor />}
 
           {tab === 'updates' && <UpdatesEditor />}
 
@@ -406,7 +409,7 @@ function GuidedChecklist({ onJump, onFinish, onDismiss }: {
   const hasProject = cats.some(c => !/[\\/]JamatProjects$/.test(c.path))
   const steps: { id: string; label: string; done: boolean; tab: TabId; required: boolean }[] = [
     { id: 'projects', label: 'Add a project folder', done: hasProject, tab: 'projects', required: true },
-    { id: 'agent', label: 'Choose your default agent', done: !!appConfig?.defaultAgent, tab: 'general', required: true },
+    { id: 'agent', label: 'Choose your default agent', done: !!appConfig?.defaultAgent, tab: 'agents', required: true },
     { id: 'usage', label: 'Connect usage stats (optional)', done: usageHasKey, tab: 'usage', required: false },
   ]
   const doneCount = steps.filter(s => s.done).length
@@ -569,12 +572,12 @@ function CategoriesEditor() {
 }
 
 /**
- * Editor for the scalar config fields: app `name`, `defaultAgent`, and the `dockerIsolation` offer
- * toggle. Seeds from the raw on-disk config; persists via `config:update`.
+ * Editor for the scalar config fields: app `name` and the `dockerIsolation` offer toggle.
+ * (`defaultAgent` lives in the Agents tab, next to the per-agent blocks it orders.)
+ * Seeds from the raw on-disk config; persists via `config:update`.
  */
 function GeneralEditor() {
   const [name, setName] = useState('')
-  const [agent, setAgent] = useState<'claude' | 'codex'>('claude')
   const [docker, setDocker] = useState(true)
   const [status, setStatus] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -584,7 +587,6 @@ function GeneralEditor() {
     void window.electronAPI.getRawConfig().then((raw) => {
       if (touched.current || !raw) return
       setName(typeof raw.name === 'string' ? raw.name : '')
-      setAgent(raw.defaultAgent === 'codex' ? 'codex' : 'claude')
       setDocker(raw.dockerIsolation !== false) // absent/true → offered
     }).catch(() => {})
   }, [])
@@ -595,7 +597,7 @@ function GeneralEditor() {
     if (!name.trim()) { setStatus('✗ App name is required'); return }
     setSaving(true); setStatus(null)
     try {
-      const res = await window.electronAPI.updateConfig({ name: name.trim(), defaultAgent: agent, dockerIsolation: docker })
+      const res = await window.electronAPI.updateConfig({ name: name.trim(), dockerIsolation: docker })
       if (res.ok) { touched.current = false; setStatus('✓ Saved') }
       else setStatus(`✗ ${res.error ?? 'Failed to save'}`)
     } catch (e: any) {
@@ -613,16 +615,178 @@ function GeneralEditor() {
         <input type="text" value={name} placeholder="My Jamat" onChange={e => { mark(); setName(e.target.value) }} />
       </div>
       <div className="settings-row">
-        <label title="Which agent a new tab starts when you don't pick one explicitly.">Default agent</label>
-        <select value={agent} onChange={e => { mark(); setAgent(e.target.value as 'claude' | 'codex') }}>
+        <label title="When on, the start menu offers per-project Docker isolation (the 🐳 marker + the 'Isolated?' prompt on create). Turn off on machines without Docker.">Offer Docker isolation</label>
+        <input type="checkbox" checked={docker} onChange={e => { mark(); setDocker(e.target.checked) }} />
+      </div>
+      <div className="settings-actions">
+        <button className="settings-save-btn" onClick={() => void save()} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+        {status && <span className="settings-note">{status}</span>}
+      </div>
+    </section>
+  )
+}
+
+/**
+ * Editor for `defaultAgent` + `agents` — the menu's default agent, plus per-agent installed-status and
+ * PRE-LAUNCH hooks (a command run in the project dir before the agent instance is created; the
+ * motivating case is the Codex AGENTS.md packer). `defaultAgent` decides which agent the Jamat menu
+ * lists FIRST and preselects on its `＋ New <Agent> session` rows; it also orders the blocks below.
+ * Each agent shows whether its CLI is detected on PATH (read-only, `agents:list` IPC); a hook can only
+ * be enabled/edited for a detected agent. Each hook is gated by an enable toggle so opening the tab and
+ * saving never materializes a hook on an agent that had none. `{dir}`/`{name}` are substituted and a
+ * leading `~` is expanded at launch (core/executor/pre-launch.ts). Seeds from the raw on-disk config;
+ * persists via `config:update`. A failing hook never blocks a launch.
+ */
+type AgentFormId = 'claude' | 'codex'
+interface AgentForm { enabled: boolean; command: string; args: string; cwd: string; timeout: string }
+const EMPTY_AGENT_FORM: AgentForm = { enabled: false, command: '', args: '', cwd: '', timeout: '' }
+const AGENT_FORM_LIST: { id: AgentFormId; label: string }[] = [
+  { id: 'claude', label: 'Claude' },
+  { id: 'codex', label: 'Codex' },
+]
+
+function preLaunchToForm(pre: AgentPreLaunch | undefined): AgentForm {
+  if (!pre) return { ...EMPTY_AGENT_FORM }
+  return {
+    enabled: true,
+    command: pre.command ?? '',
+    args: (pre.args ?? []).join('\n'),
+    cwd: pre.cwd ?? '',
+    timeout: pre.timeoutMs != null ? String(pre.timeoutMs) : '',
+  }
+}
+
+function AgentsEditor() {
+  const agentsMeta = useLayoutStore(s => s.agentsMeta)
+  const [defaultAgent, setDefaultAgent] = useState<AgentFormId>('claude')
+  const [forms, setForms] = useState<Record<AgentFormId, AgentForm>>({ claude: { ...EMPTY_AGENT_FORM }, codex: { ...EMPTY_AGENT_FORM } })
+  const [status, setStatus] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const touched = useRef(false)
+
+  const seed = useCallback(() => {
+    void window.electronAPI.getRawConfig().then((raw) => {
+      if (touched.current || !raw) return
+      const agents = (raw.agents ?? {}) as AgentsConfig
+      setDefaultAgent(raw.defaultAgent === 'codex' ? 'codex' : 'claude')
+      setForms({
+        claude: preLaunchToForm(agents.claude?.preLaunch),
+        codex: preLaunchToForm(agents.codex?.preLaunch),
+      })
+    }).catch(() => {})
+  }, [])
+  useEffect(() => { seed(); return window.electronAPI.onConfigChanged?.(() => seed()) }, [seed])
+
+  const setField = (id: AgentFormId, key: keyof AgentForm, value: string | boolean) => {
+    touched.current = true; setStatus(null)
+    setForms(prev => ({ ...prev, [id]: { ...prev[id], [key]: value } }))
+  }
+
+  const save = async () => {
+    const agents: AgentsConfig = {}
+    for (const { id, label } of AGENT_FORM_LIST) {
+      const f = forms[id]
+      if (!f.enabled) continue
+      if (!f.command.trim()) { setStatus(`✗ ${label}: a command is required (or turn the hook off)`); return }
+      const pre: AgentPreLaunch = { command: f.command.trim() }
+      const args = f.args.split(/\r?\n/).map(a => a.trim()).filter(Boolean)
+      if (args.length) pre.args = args
+      if (f.cwd.trim()) pre.cwd = f.cwd.trim()
+      if (f.timeout.trim()) {
+        const n = parseInt(f.timeout, 10)
+        if (!Number.isFinite(n) || n <= 0) { setStatus(`✗ ${label}: timeout must be a positive number of ms`); return }
+        pre.timeoutMs = n
+      }
+      agents[id] = { preLaunch: pre }
+    }
+    setSaving(true); setStatus(null)
+    try {
+      const res = await window.electronAPI.updateConfig({ defaultAgent, agents })
+      if (res.ok) { touched.current = false; setStatus('✓ Saved'); seed() }
+      else setStatus(`✗ ${res.error ?? 'Failed to save'}`)
+    } catch (e: any) {
+      setStatus(`✗ ${e.message}`)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // Default first — the same order the menu uses for its `＋ New <Agent> session` rows.
+  const orderedAgentForms = [...AGENT_FORM_LIST].sort((a, b) => Number(b.id === defaultAgent) - Number(a.id === defaultAgent))
+
+  return (
+    <section className="settings-section">
+      <h2>Agents</h2>
+      <p className="settings-note">
+        Which agent CLIs are <strong>installed</strong> on this machine (detected on your PATH), which one
+        is the <strong>default</strong>, and an optional per-agent <strong>pre-launch command</strong> run
+        in the project folder right before that agent starts a session there. Placeholders <code>{'{dir}'}</code> (absolute
+        project path) and <code>{'{name}'}</code> (folder name) are substituted, and a leading <code>~</code> expands
+        to your home dir. A failing hook never blocks the launch — it's logged and the agent starts
+        anyway. A hook can only be configured for a detected agent. Saved to your committed config.
+      </p>
+      <div className="settings-row">
+        <label title="The agent the Jamat menu lists first and preselects on its 'New session' rows. The menu still offers the other installed agents — this only decides the default.">Default agent</label>
+        <select value={defaultAgent} onChange={e => { touched.current = true; setStatus(null); setDefaultAgent(e.target.value as AgentFormId) }}>
           <option value="claude">Claude</option>
           <option value="codex">Codex</option>
         </select>
       </div>
-      <div className="settings-row">
-        <label title="When on, the start menu offers per-project Docker isolation (the 🐳 marker + the 'Isolated?' prompt on create). Turn off on machines without Docker.">Offer Docker isolation</label>
-        <input type="checkbox" checked={docker} onChange={e => { mark(); setDocker(e.target.checked) }} />
-      </div>
+      {orderedAgentForms.map(({ id, label }) => {
+        const f = forms[id]
+        const meta = agentsMeta?.find(m => m.id === id)
+        const detecting = agentsMeta === null
+        const available = meta?.available ?? false
+        const name = meta?.displayName ?? label
+        return (
+          <div className="settings-agent-block" key={id}>
+            <div className="settings-row">
+              <label><strong>{name}</strong></label>
+              {detecting
+                ? <span className="agent-status detecting">Detecting…</span>
+                : available
+                  ? <span className="agent-status ok" title={`${meta?.binary ?? id} found on PATH`}>● Installed</span>
+                  : <span className="agent-status off" title={`${meta?.binary ?? id} not found on PATH`}>○ Not installed</span>}
+            </div>
+            <div className="settings-row">
+              <label title={available ? 'Run a command in the project folder before this agent starts a session there.' : `Install the ${name} CLI to configure a pre-launch hook.`}>Pre-launch hook</label>
+              <input
+                type="checkbox"
+                checked={f.enabled}
+                disabled={detecting || !available}
+                onChange={e => setField(id, 'enabled', e.target.checked)}
+              />
+              {!detecting && !available && <span className="settings-note">install {name} to enable</span>}
+            </div>
+            {f.enabled && (
+              <>
+                <div className="settings-row">
+                  <label>Command</label>
+                  <input type="text" value={f.command} placeholder="node" disabled={!available} onChange={e => setField(id, 'command', e.target.value)} />
+                </div>
+                <div className="settings-row">
+                  <label title="One argument per line. {dir}/{name} substituted; leading ~ expanded.">Arguments (one per line)</label>
+                  <textarea
+                    rows={4}
+                    value={f.args}
+                    disabled={!available}
+                    placeholder={'~/.some-tool/prepare.mjs\n--dir\n{dir}'}
+                    onChange={e => setField(id, 'args', e.target.value)}
+                  />
+                </div>
+                <div className="settings-row">
+                  <label title="Working dir for the command. Blank = the project dir being launched.">Working dir (optional)</label>
+                  <input type="text" value={f.cwd} placeholder="{dir}" disabled={!available} onChange={e => setField(id, 'cwd', e.target.value)} />
+                </div>
+                <div className="settings-row">
+                  <label title="Kill the hook after this many ms. Blank = 20000.">Timeout ms (optional)</label>
+                  <input type="number" min={1} value={f.timeout} placeholder="20000" disabled={!available} onChange={e => setField(id, 'timeout', e.target.value)} />
+                </div>
+              </>
+            )}
+          </div>
+        )
+      })}
       <div className="settings-actions">
         <button className="settings-save-btn" onClick={() => void save()} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
         {status && <span className="settings-note">{status}</span>}

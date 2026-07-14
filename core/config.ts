@@ -1,7 +1,7 @@
 import { readFileSync, existsSync, statSync, writeFileSync, mkdirSync, renameSync } from 'fs'
 import { resolve, dirname, join } from 'path'
 import { homedir } from 'os'
-import type { AppConfig, AgentId, Category, CategoryJson, ConfigPatch, SelfUpdateConfig, SessionDonePrompt, CustomMenuNode, ContextWarnLevel } from './types.js'
+import type { AppConfig, AgentId, AgentsConfig, Category, CategoryJson, ConfigPatch, SelfUpdateConfig, SessionDonePrompt, CustomMenuNode, ContextWarnLevel } from './types.js'
 import { isAgentId } from './types.js'
 
 interface RawConfig {
@@ -15,6 +15,7 @@ interface RawConfig {
   selfUpdate?: { provider?: string; vcs?: string; repoPath?: string; autoCheck?: boolean; checkIntervalMinutes?: number }
   sessionDonePrompts?: SessionDonePrompt[]
   contextLevels?: unknown
+  agents?: unknown
 }
 
 /**
@@ -140,10 +141,46 @@ function validateContextLevels(levels: unknown, where: string): void {
   }
 }
 
+function validateAgents(agents: unknown, where: string): void {
+  if (agents === undefined) return
+  if (typeof agents !== 'object' || agents === null || Array.isArray(agents)) {
+    throw new Error(`Config ${where}: "agents" must be an object keyed by agent id`)
+  }
+  for (const [key, settings] of Object.entries(agents as Record<string, unknown>)) {
+    if (!isAgentId(key)) {
+      throw new Error(`Config ${where}: unknown agent "${key}" in "agents" (expected claude or codex)`)
+    }
+    if (settings === undefined) continue
+    if (typeof settings !== 'object' || settings === null || Array.isArray(settings)) {
+      throw new Error(`Config ${where}: "agents.${key}" must be an object`)
+    }
+    const pre = (settings as { preLaunch?: unknown }).preLaunch
+    if (pre === undefined) continue
+    if (typeof pre !== 'object' || pre === null || Array.isArray(pre)) {
+      throw new Error(`Config ${where}: "agents.${key}.preLaunch" must be an object`)
+    }
+    const { command, args, cwd, timeoutMs } = pre as Record<string, unknown>
+    if (typeof command !== 'string' || !command.trim()) {
+      throw new Error(`Config ${where}: "agents.${key}.preLaunch.command" must be a non-empty string`)
+    }
+    if (args !== undefined && (!Array.isArray(args) || args.some((a) => typeof a !== 'string'))) {
+      throw new Error(`Config ${where}: "agents.${key}.preLaunch.args" must be an array of strings`)
+    }
+    if (cwd !== undefined && typeof cwd !== 'string') {
+      throw new Error(`Config ${where}: "agents.${key}.preLaunch.cwd" must be a string`)
+    }
+    if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || (timeoutMs as number) <= 0)) {
+      // Number.isFinite (not just typeof) so NaN/Infinity are rejected — they'd JSON.stringify to `null`.
+      throw new Error(`Config ${where}: "agents.${key}.preLaunch.timeoutMs" must be a positive number`)
+    }
+  }
+}
+
 function validateConfig(raw: RawConfig, configPath: string): void {
   validateCategories(raw.categories, configPath)
   validateSessionDonePrompts(raw.sessionDonePrompts, configPath)
   validateContextLevels(raw.contextLevels, configPath)
+  validateAgents(raw.agents, configPath)
 }
 
 /**
@@ -161,6 +198,7 @@ export function validateConfigPatch(patch: ConfigPatch): void {
   validateSelfUpdate(patch.selfUpdate, 'patch')
   validateSessionDonePrompts(patch.sessionDonePrompts, 'patch')
   validateContextLevels(patch.contextLevels, 'patch')
+  validateAgents(patch.agents, 'patch')
   if ('dockerIsolation' in patch && typeof patch.dockerIsolation !== 'boolean') {
     throw new Error('Config patch: "dockerIsolation" must be a boolean')
   }
@@ -260,6 +298,7 @@ export function loadConfig(configPath: string): AppConfig {
     skippedCategories: skippedCategories.length ? skippedCategories : undefined,
     sessionDonePrompts: raw.sessionDonePrompts,
     contextLevels: raw.contextLevels as ContextWarnLevel[] | undefined,
+    agents: raw.agents as AgentsConfig | undefined,
   }
 }
 

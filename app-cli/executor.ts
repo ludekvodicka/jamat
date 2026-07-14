@@ -4,11 +4,12 @@ import { join, dirname, resolve } from 'path'
 import { tmpdir } from 'os'
 import { fileURLToPath } from 'url'
 
-import type { MenuSelection } from '../core/types.js'
+import type { AppConfig, MenuSelection } from '../core/types.js'
 import { SESSION_ID_RE } from '../core/types.js'
-import { ensureConfig, firstRunConfigMessage } from '../core/config.js'
+import { ensureConfig, firstRunConfigMessage, loadConfig } from '../core/config.js'
 import { resolveConfigDir } from '../core/config-dir.js'
 import { buildLaunchCommand } from '../core/executor/agent-launcher.js'
+import { resolveAgentPreLaunch } from '../core/executor/pre-launch.js'
 import { getAgent } from '../core/agents/index.js'
 import { ensureDockerImage, syncDockerCredentials, buildDockerRunArgs } from '../core/executor/docker-utils.js'
 
@@ -48,6 +49,12 @@ try {
   console.error('[config] First-run setup failed:', e instanceof Error ? e.message : String(e))
   process.exit(1)
 }
+
+// Load the config once for per-agent pre-launch hooks (Settings → Agents). Best-effort: the menu-tui
+// subprocess is the authority on config validity, so a load failure here just means no hooks (never a
+// blocked launch). `agents` is the only field the executor reads from it.
+let cliConfig: AppConfig | null = null
+try { cliConfig = loadConfig(configPath) } catch { cliConfig = null }
 
 const DOCKER_CONTEXT_DIR = join(MONOREPO_ROOT, 'dockerized-claude')
 
@@ -131,6 +138,7 @@ function launchAgent(sel: MenuSelection): void {
     selection: sel,
     mode: 'terminal',
     dockerContextDir: DOCKER_CONTEXT_DIR,
+    preLaunch: resolveAgentPreLaunch(cliConfig?.agents, sel.agent),
   })
 
   const env = { ...process.env, ...cmd.env }

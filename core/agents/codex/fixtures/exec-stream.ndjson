@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"019f4bf7-b5d8-74b0-9175-a5a5938a4082"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I'll create the file with exactly that one line."}}
+{"type":"item.started","item":{"id":"item_1","type":"file_change"}}
+{"type":"item.completed","item":{"id":"item_1","type":"file_change","status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Created hello.txt."}}
+{"type":"turn.completed","usage":{"input_tokens":26395,"cached_input_tokens":19968,"output_tokens":150,"reasoning_output_tokens":17}}

@@ -3,13 +3,11 @@ import {
   mkdirSync,
 } from "fs";
 import { join, basename } from "path";
-import { homedir } from "os";
 import * as readline from "readline";
 
 import { matchesVirtualPrefix, moveProjectPrefix, renameProject } from "../core/menu-core/projects.js";
 import { statsKey, saveStats, recordUsage } from "../core/menu-core/stats.js";
 import { clampScroll, applySearch, enterSearch, exitSearch, switchCategory, openSessionPicker, rebuildItems, nextSelectable } from "../core/menu-core/transitions.js";
-import { resolveAgentForSessionId } from "../core/agents/index.js";
 import {
   promptFolderName,
   promptIsolated,
@@ -407,14 +405,13 @@ export function handleSessionPicker(s: MenuState, key: readline.Key, _str: strin
     const item = s.spItems[s.spSelected];
     if (!item) return { needsRender: false };
     if (item.kind === "new-session") {
-      launchInFolder(cfg, s.cat, s.spFolderName, "cc", s.stats, s.antiFlicker, s.selectedAgent);
+      // One `New <Agent> session` row per available agent — launch THIS row's agent.
+      launchInFolder(cfg, s.cat, s.spFolderName, "cc", s.stats, s.antiFlicker, item.agent);
       return { needsRender: false };
     }
-    // Resume rows inherit the session file's owning adapter when known.
-    // Falls back to the menu-level pick when no adapter recognizes the id
-    // (e.g. file was deleted but the meta cache still has it).
-    const owner = resolveAgentForSessionId(item.session.sessionId, homedir()) ?? s.selectedAgent;
-    launchSessionResume(cfg, s.cat, s.spFolderName, item.session.sessionId, item.session.active, s.stats, s.antiFlicker, owner);
+    // Resume rows carry their owning agent (set at build time from the transcript's
+    // adapter), so there's nothing to re-derive here.
+    launchSessionResume(cfg, s.cat, s.spFolderName, item.session.sessionId, item.session.active, s.stats, s.antiFlicker, item.agent);
     return { needsRender: false };
   }
   if (key.name === "f9") {

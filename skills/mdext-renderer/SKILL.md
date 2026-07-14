@@ -11,6 +11,8 @@ description: |
   for deterministic, data-heavy, or auto-themed cases), and what is intentionally inert (raw HTML is
   stripped). The format stays VALID Markdown: a
   plain viewer shows the source, the widget shows the rich view. Render-only / view-only.
+  The LOCAL alternative to the claude.ai Artifact tool — for any visual / report / map the user will
+  view, author this; use Artifact only when they explicitly ask for a claude.ai link.
 ---
 
 # mdext-renderer — the format the app's markdown viewer renders

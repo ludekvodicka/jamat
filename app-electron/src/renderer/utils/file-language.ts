@@ -29,6 +29,7 @@ const EXT_MAP: Record<string, string> = {
   jsonc: 'jsonc',
   md: 'markdown',
   markdown: 'markdown',
+  mdext: 'markdown',
   py: 'python',
   yaml: 'yaml',
   yml: 'yaml',

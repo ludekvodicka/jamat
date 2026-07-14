@@ -400,7 +400,7 @@ export function FileViewerPanel({ api, params }: IDockviewPanelProps<FileViewerP
   const fileName = filePath.replace(/^.*[/\\]/, '')
   const ext = fileName.split('.').pop()?.toLowerCase() ?? ''
   const lang = langForPath(filePath)
-  const isMarkdown = ext === 'md' || ext === 'markdown'
+  const isMarkdown = ext === 'md' || ext === 'markdown' || ext === 'mdext'
   // Markdown now renders via the shared MdExtRenderer widget (react-markdown + Shiki, sanitized) —
   // real React DOM, so the old marked + dangerouslySetInnerHTML memoization hack is gone. In-file
   // search keeps working via the CSS Custom Highlight API; a MutationObserver in useFileSearch

@@ -4,9 +4,9 @@ import { DEFAULT_AGENT_ID } from '../types/contracts.js'
 import { listAvailableAgents, getAgent } from '../agents/index.js'
 import { getFolders, buildMenuEntries, loadProjectConfig } from './projects.js'
 import { loadStats, getStatsPath } from './stats.js'
-import { computeLayout } from './transitions.js'
+import { computeLayout, buildUnionSessionMetaCache } from './transitions.js'
 
-export { clampScroll, applySearch, enterSearch, exitSearch, enterVirtualFolder, exitVirtualFolder, switchCategory, openSessionPicker, rebuildItems, invalidateCaches } from './transitions.js'
+export { clampScroll, applySearch, enterSearch, exitSearch, enterVirtualFolder, exitVirtualFolder, switchCategory, openSessionPicker, rebuildItems, invalidateCaches, buildUnionSessionMetaCache } from './transitions.js'
 export { matchesVirtualPrefix, moveProjectPrefix, renameProject } from './projects.js'
 export { loadProjectConfig } from './projects.js'
 export { statsKey, saveStats, recordUsage, loadStats, getStatsPath } from './stats.js'
@@ -39,7 +39,9 @@ export function createMenuState(config: AppConfig, prefs: { antiFlicker: boolean
     }
     selectedAgent = available[0] ?? DEFAULT_AGENT_ID
   }
-  const sessionMetaCache = getAgent(selectedAgent).buildSessionMetaCache(cat.path, initialFolders)
+  // Union across ALL available agents so a folder's activity reflects any agent's
+  // sessions, independent of which one is currently selected (gap #4).
+  const sessionMetaCache = buildUnionSessionMetaCache(cat.path, initialFolders, available)
 
   const s: MenuState = {
     categories,
@@ -64,12 +66,11 @@ export function createMenuState(config: AppConfig, prefs: { antiFlicker: boolean
     jumpLastIndex: -1,
     visibleRows: Math.max(5, (process.stdout.rows || 24) - 10),
     spItems: [],
-    spSessions: [],
     spSelected: 0,
     spScrollOffset: 0,
     spFolderName: '',
     spPreviewCache: new Map(),
-    spProjectDir: null,
+    spProjectDirs: new Map(),
     mpTargets: [],
     mpSelected: 0,
     mpFolderName: '',
@@ -88,10 +89,13 @@ export function createMenuState(config: AppConfig, prefs: { antiFlicker: boolean
 
 export function getSessionPreview(s: MenuState): string[] {
   const item = s.spItems[s.spSelected]
-  if (!item || item.kind === 'new-session' || !s.spProjectDir) return []
+  if (!item || item.kind === 'new-session') return []
+  const projectDir = s.spProjectDirs.get(item.agent)
+  if (!projectDir) return []
   const sess = item.session
   if (s.spPreviewCache.has(sess.sessionId)) return s.spPreviewCache.get(sess.sessionId)!
-  const preview = getAgent(s.selectedAgent).loadSessionPreview(s.spProjectDir, sess.sessionId)
+  // Load the preview through the ROW's OWN agent (a merged list mixes agents).
+  const preview = getAgent(item.agent).loadSessionPreview(projectDir, sess.sessionId)
   s.spPreviewCache.set(sess.sessionId, preview)
   return preview
 }

@@ -18,6 +18,7 @@ import { loadStats, saveStats, recordUsage, statsKey, getStatsPath } from "../co
 import { getFolders, loadProjectConfig, moveProjectPrefix } from "../core/menu-core/projects.js";
 import { findProjectDir, loadSessionsForProject, loadSessionPreview } from "../core/agents/claude/sessions.js";
 import { buildLaunchCommand } from "../core/executor/agent-launcher.js";
+import { resolveAgentPreLaunch } from "../core/executor/pre-launch.js";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const MONOREPO_ROOT = path.resolve(SCRIPT_DIR, "..");
@@ -264,6 +265,7 @@ async function handleLaunch(req: http.IncomingMessage, res: http.ServerResponse)
     },
     mode: 'detached',
     dockerContextDir: DOCKER_CONTEXT_DIR,
+    preLaunch: resolveAgentPreLaunch(appConfig.agents, appConfig.defaultAgent ?? DEFAULT_AGENT_ID),
   });
 
   const stats = loadStats(STATS_FILE);

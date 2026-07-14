@@ -7,13 +7,40 @@ import { statsKey } from "./stats.js";
 import { formatRelativeDate } from "./pure.js";
 import type { MenuState, MenuItem, SessionPickerItem, RenderLayout } from "../types.js";
 import { SEARCH_ITEM, SEPARATOR_ITEM, CROSS_FOLDER_THRESHOLD } from "../types.js";
+import type { AgentId } from "../types/contracts.js";
+import type { SessionInfo, LatestSessionMeta } from "../types/session.js";
+import { listAvailableAgents } from "../agents/index.js";
 
 export function invalidateCaches(s: MenuState) {
-  const agent = getAgent(s.selectedAgent);
-  agent.invalidateDiscoveryCache();
+  for (const id of s.availableAgents) getAgent(id).invalidateDiscoveryCache();
   invalidateProjectConfigCache();
   s.crossFolderCache.clear();
-  s.sessionMetaCache = agent.buildSessionMetaCache(s.cat.path, s.cachedFolderNames);
+  s.sessionMetaCache = buildUnionSessionMetaCache(s.cat.path, s.cachedFolderNames, s.availableAgents);
+}
+
+/**
+ * Latest-session meta per project folder, UNIONED across the available agents:
+ * a folder's row shows the newest activity of ANY agent that has sessions there,
+ * so a mixed Claude+Codex project isn't misreported by whichever agent happens
+ * to be selected. (gap #4)
+ */
+export function buildUnionSessionMetaCache(catPath: string, folderNames: string[], agents: AgentId[]): Map<string, LatestSessionMeta> {
+  const union = new Map<string, LatestSessionMeta>();
+  const ids = agents.length > 0 ? agents : listAvailableAgents().map((a) => a.id);
+  for (const id of ids) {
+    for (const [folder, meta] of getAgent(id).buildSessionMetaCache(catPath, folderNames)) {
+      const existing = union.get(folder);
+      if (!existing || meta.lastActivity > existing.lastActivity) union.set(folder, meta);
+    }
+  }
+  return union;
+}
+
+/** Available agents with the currently-selected one first (drives new-session row order). */
+function orderedAgents(s: MenuState): AgentId[] {
+  const avail = s.availableAgents.length > 0 ? s.availableAgents : [s.selectedAgent];
+  const rest = avail.filter((a) => a !== s.selectedAgent);
+  return avail.includes(s.selectedAgent) ? [s.selectedAgent, ...rest] : avail;
 }
 
 /**
@@ -194,7 +221,7 @@ export function switchCategory(s: MenuState, newIndex: number) {
   s.currentVirtualFolder = null;
   s.cachedFolderNames = getFolders(s.cat, s.stats, s.sortMode);
   s.allEntries = buildMenuEntries(s.cat, s.cachedFolderNames, s.currentVirtualFolder, s.virtualFoldersEnabled);
-  s.sessionMetaCache = getAgent(s.selectedAgent).buildSessionMetaCache(s.cat.path, s.cachedFolderNames);
+  s.sessionMetaCache = buildUnionSessionMetaCache(s.cat.path, s.cachedFolderNames, s.availableAgents);
   exitSearch(s);
   const saved = s.tabMemory.get(s.catIndex);
   if (saved && saved.selected < s.items.length) {
@@ -206,23 +233,32 @@ export function switchCategory(s: MenuState, newIndex: number) {
 
 export function openSessionPicker(s: MenuState, folderName: string) {
   const folderPath = join(s.cat.path, folderName);
-  // `homeDir` is part of the adapter contract (an agent may key sessions off it);
-  // the Claude adapter resolves home internally and ignores the arg.
-  const agent = getAgent(s.selectedAgent);
   const home = homedir();
-  s.spProjectDir = agent.findProjectDir(folderPath, home);
-  s.spSessions = s.spProjectDir ? agent.listSessionsForProject(s.spProjectDir, home) : [];
+  const agents = orderedAgents(s);
+
+  // One `New <Agent> session` row per available agent (selected first), then the
+  // resume rows MERGED across agents and sorted by recency — so a project with
+  // both Claude and Codex sessions shows all of them in one list, each badged
+  // with its owner. (resolves gaps #4/#15 — no Esc→Tab→re-open to see the other agent)
+  s.spProjectDirs = new Map();
+  const merged: { session: SessionInfo; agent: AgentId }[] = [];
+  for (const id of agents) {
+    const agent = getAgent(id);
+    // `homeDir` is part of the adapter contract; the Claude adapter resolves home internally.
+    const dir = agent.findProjectDir(folderPath, home);
+    s.spProjectDirs.set(id, dir);
+    if (dir) for (const session of agent.listSessionsForProject(dir, home)) merged.push({ session, agent: id });
+  }
+  merged.sort((a, b) => new Date(b.session.lastActivity).getTime() - new Date(a.session.lastActivity).getTime());
   s.spFolderName = folderName;
 
-  const items: SessionPickerItem[] = [{ kind: "new-session" }];
-  if (s.spSessions.length > 0) {
-    const latest = s.spSessions[0];
-    items.push(latest.active
-      ? { kind: "session", session: latest }
-      : { kind: "last-session", session: latest });
-    for (let i = 1; i < s.spSessions.length; i++) {
-      items.push({ kind: "session", session: s.spSessions[i] });
-    }
+  const items: SessionPickerItem[] = agents.map((agent) => ({ kind: "new-session", agent }));
+  if (merged.length > 0) {
+    const [latest, ...rest] = merged;
+    items.push(latest.session.active
+      ? { kind: "session", session: latest.session, agent: latest.agent }
+      : { kind: "last-session", session: latest.session, agent: latest.agent });
+    for (const m of rest) items.push({ kind: "session", session: m.session, agent: m.agent });
   }
   s.spItems = items;
 

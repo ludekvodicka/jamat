@@ -1,12 +1,16 @@
-import { homedir } from "os";
 import { formatRelativeDate, formatDuration } from "../core/menu-core/pure.js";
 import { statsKey } from "../core/menu-core/stats.js";
-import { getAgent, resolveAgentForSessionId } from "../core/agents/index.js";
+import { getAgent } from "../core/agents/index.js";
 import type { AgentId, MenuState, SessionPickerItem, SortMode } from "../core/types.js";
 
 function agentBadge(agentId: AgentId | null): string {
   if (!agentId) return "  ";
   return agentId === "claude" ? "C " : "X ";
+}
+
+/** "+ New Claude session" / "+ New Codex session" — one row per available agent. */
+function newSessionLabel(agentId: AgentId): string {
+  return `+ New ${getAgent(agentId).displayName} session`;
 }
 
 export function renderMovePrefix(s: MenuState) {
@@ -203,21 +207,23 @@ export function renderSessionPicker(
     return "";
   }
 
-  let maxNameW = "+ New session".length;
+  let maxNameW = 0;
   let maxSessActivityW = 0;
   let maxDateSuffixW = 0;
   for (const item of items) {
-    if (item.kind !== "new-session") {
-      const sess = item.session;
-      const pfx = sessionPrefix(item);
-      const rawName = sess.slug || (sess.firstUserMessage ? sess.firstUserMessage.slice(0, 30) : sess.sessionId.slice(0, 8));
-      const nameLen = pfx.length + rawName.length;
-      if (nameLen > maxNameW) maxNameW = nameLen;
-      const actW = formatRelativeDate(new Date(sess.lastActivity).toISOString()).length;
-      if (actW > maxSessActivityW) maxSessActivityW = actW;
-      const suffixW = ` (${formatDuration(new Date(sess.createdAt).toISOString())} old)`.length;
-      if (suffixW > maxDateSuffixW) maxDateSuffixW = suffixW;
+    if (item.kind === "new-session") {
+      maxNameW = Math.max(maxNameW, newSessionLabel(item.agent).length);
+      continue;
     }
+    const sess = item.session;
+    const pfx = sessionPrefix(item);
+    const rawName = sess.slug || (sess.firstUserMessage ? sess.firstUserMessage.slice(0, 30) : sess.sessionId.slice(0, 8));
+    const nameLen = pfx.length + rawName.length;
+    if (nameLen > maxNameW) maxNameW = nameLen;
+    const actW = formatRelativeDate(new Date(sess.lastActivity).toISOString()).length;
+    if (actW > maxSessActivityW) maxSessActivityW = actW;
+    const suffixW = ` (${formatDuration(new Date(sess.createdAt).toISOString())} old)`.length;
+    if (suffixW > maxDateSuffixW) maxDateSuffixW = suffixW;
   }
   // `dateStr` = `<relative-date padded-to-maxSessActivityW>` + ` (<duration> old)`.
   // We want the **start** of dateStr to line up across rows (not just the end),
@@ -245,10 +251,11 @@ export function renderSessionPicker(
     const item = items[i];
 
     if (item.kind === "new-session") {
+      const label = newSessionLabel(item.agent);
       if (i === selected) {
-        console.log(`${pad}\x1b[36m❯ \x1b[32;1m+ New session\x1b[0m`);
+        console.log(`${pad}\x1b[36m❯ \x1b[32;1m${label}\x1b[0m`);
       } else {
-        console.log(`${innerPad}\x1b[32m+ New session\x1b[0m`);
+        console.log(`${innerPad}\x1b[32m${label}\x1b[0m`);
       }
       continue;
     }
@@ -286,8 +293,10 @@ export function renderSessionPicker(
     }
 
     const namePadding = " ".repeat(Math.max(1, contentW - 2 - truncPlain.length - dateStr.length));
+    // The row carries its owning agent (merged list), so badge directly — no per-row
+    // resolveAgentForSessionId scan (which is a date-tree walk for Codex; gap #16).
     const badge = showAgentBadges
-      ? `\x1b[90m${agentBadge(resolveAgentForSessionId(sess.sessionId, homedir()))}\x1b[0m`
+      ? `\x1b[90m${agentBadge(item.agent)}\x1b[0m`
       : "";
 
     if (i === selected) {
@@ -305,7 +314,7 @@ export function renderSessionPicker(
   const selItem = items[selected];
   if (selItem) {
     if (selItem.kind === "new-session") {
-      console.log(`${pad}\x1b[33m→ New session\x1b[0m`);
+      console.log(`${pad}\x1b[33m→ New ${getAgent(selItem.agent).displayName} session\x1b[0m`);
     } else {
       const sess = selItem.session;
       const name = sess.slug || (sess.firstUserMessage ? sess.firstUserMessage.slice(0, 30) : sess.sessionId.slice(0, 8));
@@ -346,7 +355,9 @@ export function renderSessionPicker(
   }
 
   let enterLabel = "Enter New";
-  if (selItem && selItem.kind !== "new-session") {
+  if (selItem?.kind === "new-session") {
+    enterLabel = `Enter New ${getAgent(selItem.agent).displayName}`;
+  } else if (selItem) {
     enterLabel = selItem.session.active ? "Enter Fork" : "Enter Resume";
   }
   const f9hint = antiFlicker ? `   \x1b[7m F9 NoFlicker:ON \x1b[0m\x1b[90m` : `   F9 NoFlicker`;

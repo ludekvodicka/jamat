@@ -687,6 +687,37 @@ html, body, #root {
 .settings-row input[type="text"]:focus,
 .settings-row input[type="password"]:focus { border-color: #007acc; }
 
+.settings-row textarea {
+  background: #3c3c3c;
+  border: 1px solid #555;
+  border-radius: 3px;
+  color: #ccc;
+  font-size: 13px;
+  font-family: monospace;
+  padding: 4px 8px;
+  outline: none;
+  width: 280px;
+  resize: vertical;
+}
+.settings-row textarea:focus { border-color: #007acc; }
+
+/* Settings — per-agent pre-launch hook block (Agents tab) */
+.settings-agent-block {
+  border: 1px solid #333;
+  border-radius: 4px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+.settings-agent-block .settings-row:last-child { margin-bottom: 0; }
+.settings-agent-block textarea:disabled,
+.settings-agent-block input:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Agent installed-status chip */
+.agent-status { font-size: 12px; font-weight: 600; }
+.agent-status.ok { color: #6cc46c; }
+.agent-status.off { color: #9a9a9a; }
+.agent-status.detecting { color: #b0b0b0; font-style: italic; font-weight: 400; }
+
 /* Settings — tabbed navigation */
 .settings-layout { display: flex; gap: 28px; align-items: flex-start; }
 .settings-nav {
@@ -1440,15 +1471,6 @@ html, body, #root {
   color: white;
 }
 
-.tab-picker-item-disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.tab-picker-item-disabled:hover {
-  background: transparent;
-  color: #ccc;
-}
 
 .tab-picker-icon {
   font-size: 16px;

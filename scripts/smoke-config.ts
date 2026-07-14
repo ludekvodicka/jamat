@@ -7,7 +7,7 @@
 // ~/JamatProjects placeholder (so loadConfig's "accessible path" check passes) — that dir is left
 // in place, exactly as a real first run would.
 
-import { ensureConfig, loadConfig, firstRunConfigMessage } from '../core/config.js'
+import { ensureConfig, loadConfig, firstRunConfigMessage, validateConfigPatch } from '../core/config.js'
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -69,6 +69,32 @@ try {
   // [6] firstRunConfigMessage names the config path + the projects dir
   const msg = firstRunConfigMessage(r1.path)
   check('[6] message names config + projects dir', msg.includes(r1.path) && msg.includes('JamatProjects'))
+
+  // [7] agents (per-agent pre-launch hook) validation — load path + patch path
+  const withAgents = (agents: unknown): string => {
+    const p = join(tmp, `cfg-agents-${Math.abs(JSON.stringify(agents).length)}-${Date.now()}.json`)
+    writeFileSync(p, JSON.stringify({ name: 'A', categories: [{ label: 'X', path: tmp }], agents }, null, 2))
+    return p
+  }
+  const validAgents = { codex: { preLaunch: { command: 'node', args: ['~/x/packer.mjs', 'build', '--dir', '{dir}'], timeoutMs: 15000 } } }
+  const loaded = loadConfig(withAgents(validAgents))
+  check('[7] loadConfig keeps a valid agents block', loaded.agents?.codex?.preLaunch?.command === 'node')
+
+  const throwsLoad = (agents: unknown): boolean => {
+    try { loadConfig(withAgents(agents)); return false } catch { return true }
+  }
+  check('[7] unknown agent id rejected', throwsLoad({ gpt: { preLaunch: { command: 'x' } } }))
+  check('[7] preLaunch without command rejected', throwsLoad({ codex: { preLaunch: { args: ['x'] } } }))
+  check('[7] non-string args rejected', throwsLoad({ codex: { preLaunch: { command: 'node', args: [1, 2] } } }))
+  check('[7] non-positive timeoutMs rejected', throwsLoad({ codex: { preLaunch: { command: 'node', timeoutMs: 0 } } }))
+
+  const patchThrows = (agents: unknown): boolean => {
+    try { validateConfigPatch({ agents } as any); return false } catch { return true }
+  }
+  let patchOk = true
+  try { validateConfigPatch({ agents: validAgents } as any) } catch { patchOk = false }
+  check('[7] validateConfigPatch accepts a valid agents patch', patchOk)
+  check('[7] validateConfigPatch rejects a bad agents patch', patchThrows({ claude: { preLaunch: { command: '' } } }))
 } finally {
   rmSync(tmp, { recursive: true, force: true })
 }

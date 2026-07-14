@@ -3,7 +3,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { TabContextMenu } from './TabContextMenu'
 import { getRendererAgent } from '../../../../../core/agents/renderer'
-import { DEFAULT_AGENT_ID, isAgentId } from '../../../../../core/types/contracts'
+import { DEFAULT_AGENT_ID, isAgentId, type AgentId } from '../../../../../core/types/contracts'
 import { formatInstanceId } from '../../../../../core/instance-id'
 import type { RemotePeer } from '../../../../../core/types/remote-control'
 import { closePanelActivatingNeighbor } from '../../utils/terminal-helpers'
@@ -213,14 +213,16 @@ export function CustomTab({ api, containerApi, params }: IDockviewPanelHeaderPro
     return () => window.removeEventListener('rename-session', handler)
   }, [api.id, isAgentTab, handleRenameSession])
 
-  // Fork: open a `--fork-session` branch of THIS tab's session in a new tab —
-  // history preserved under a fresh session id, the original session untouched.
-  // Only offered for Claude tabs whose sessionId is known (a fresh --continue tab
-  // before pid resolution has none yet → no fork item until it resolves).
+  // Fork: open a fork branch of THIS tab's session in a new tab — history preserved
+  // under a fresh session id, the original session untouched. Offered per the agent's
+  // `capabilities.fork` (Claude `--fork-session`, Codex `codex fork <id>`) and only once
+  // the sessionId is known (a fresh continue/new tab before id resolution has none yet →
+  // no fork item until it resolves).
   const forkAgentId = isAgentId(params?.agent) ? params.agent : DEFAULT_AGENT_ID
   const forkSessionId = params?.sessionId as string | undefined
   const forkProjectDir = (params?.projectDir as string | undefined) ?? (params?.cwd as string | undefined) ?? ''
-  const canFork = forkAgentId === 'claude' && !!forkSessionId && !!forkProjectDir
+  const agentCanFork = (() => { try { return getRendererAgent(forkAgentId).capabilities.fork } catch { return false } })()
+  const canFork = agentCanFork && !!forkSessionId && !!forkProjectDir
   const handleForkSession = useCallback(() => {
     if (!forkSessionId || !forkProjectDir || !window.electronAPI?.openSessionInTab) return
     void window.electronAPI.openSessionInTab(forkProjectDir, forkSessionId, true)
@@ -263,19 +265,33 @@ export function CustomTab({ api, containerApi, params }: IDockviewPanelHeaderPro
   // session (executor rewrites the persisted cmd to 'resume'+id once the new id resolves,
   // so a restart reopens THIS session). Offered for agent tabs with a known project dir.
   const canNewSession = isAgentId(params?.agent) && !!forkProjectDir
-  const handleNewSession = useCallback(() => {
+  // Open a fresh, empty 'cc' session in THIS tab's folder with the given agent. Shared by "New blank
+  // session" (same agent) and "New session in <other agent>" (the cross-agent quick-launch below).
+  const openNewSessionWith = useCallback((agentId: AgentId) => {
     if (!forkProjectDir) return
-    const agentLabel = forkAgentId === 'codex' ? 'Codex' : 'Claude'
+    const agentLabel = agentId === 'codex' ? 'Codex' : 'Claude'
     const folderName = (params?.folderName as string | undefined) ?? forkProjectDir.replace(/.*[/\\]/, '')
     const id = `screen-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     containerApi.addPanel({
       id,
       component: 'terminalPanel',
       title: `${folderName} - ${agentLabel}`,
-      params: { projectDir: forkProjectDir, cmd: 'cc', folderName, agent: forkAgentId },
+      params: { projectDir: forkProjectDir, cmd: 'cc', folderName, agent: agentId },
     })
     try { containerApi.getPanel(id)?.api.setActive() } catch { /* ignore */ }
-  }, [forkProjectDir, forkAgentId, params?.folderName, containerApi])
+  }, [forkProjectDir, params?.folderName, containerApi])
+  const handleNewSession = useCallback(() => openNewSessionWith(forkAgentId), [openNewSessionWith, forkAgentId])
+
+  // Cross-agent quick-launch: a fresh session in the SAME folder with the OTHER agent — so you can run
+  // Claude↔Codex side by side in one folder. Offered only when BOTH agents are installed (on PATH,
+  // from the store's `agentsMeta`); the current tab's agent is obviously usable, so this effectively
+  // gates on the other agent being available, but we check both to be explicit ("má oba").
+  const agentsMeta = useLayoutStore(s => s.agentsMeta)
+  const otherAgentId: AgentId = forkAgentId === 'claude' ? 'codex' : 'claude'
+  const otherAgentLabel = otherAgentId === 'codex' ? 'Codex' : 'Claude'
+  const availableAgentIds = new Set((agentsMeta ?? []).filter(a => a.available).map(a => a.id))
+  const canNewSessionOtherAgent = canNewSession && availableAgentIds.has('claude') && availableAgentIds.has('codex')
+  const handleNewSessionOtherAgent = useCallback(() => openNewSessionWith(otherAgentId), [openNewSessionWith, otherAgentId])
 
   // Copy instance id: a stable, copyable handle for THIS tab (`<machine>:<folder>-<rand>`) so a
   // second LLM can address it via `jamat ask <id> "…"`. Minted lazily on first copy and
@@ -373,6 +389,8 @@ export function CustomTab({ api, containerApi, params }: IDockviewPanelHeaderPro
           onDetach={handleDetach}
           onRenameSession={isAgentTab ? handleRenameSession : undefined}
           onNewSession={canNewSession && !isRemoteView ? handleNewSession : undefined}
+          onNewSessionOtherAgent={canNewSessionOtherAgent && !isRemoteView ? handleNewSessionOtherAgent : undefined}
+          newSessionOtherAgentLabel={otherAgentLabel}
           onForkSession={canFork ? handleForkSession : undefined}
           onRestartSession={canFork ? handleRestartSession : undefined}
           onCompactSession={isRemoteView || (isAgentTab && forkAgentId === 'claude') ? handleCompactSession : undefined}

@@ -61,16 +61,19 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // resizes only on a genuine change, so a same-size reveal is a no-op.
   const refitRef = useRef<(() => void) | null>(null)
 
-  // TUI pattern set, kept in a ref so the status-classification closures
-  // always read the CURRENT agent's regexes. The main effect runs once
+  // Renderer agent metadata, kept in refs so the long-lived terminal callbacks
+  // always read the CURRENT agent's behavior. The main effect runs once
   // (keyed on terminalId) and never re-binds; `screen:update-params` can
   // change `options.agent` mid-life (a screen-managed tab resolves its
-  // agent only after the menu finishes), so capturing patterns in the
-  // effect closure would leave them stale. The effect below re-points the
+  // agent only after the menu finishes), so capturing metadata in the
+  // effect closure would leave it stale. The effect below re-points the
   // ref without a costly PTY re-mount.
-  const patternsRef = useRef(getRendererAgent(options.agent ?? DEFAULT_AGENT_ID).ttyPatterns)
+  const rendererAgentRef = useRef(getRendererAgent(options.agent ?? DEFAULT_AGENT_ID))
+  const patternsRef = useRef(rendererAgentRef.current.ttyPatterns)
   useEffect(() => {
-    patternsRef.current = getRendererAgent(options.agent ?? DEFAULT_AGENT_ID).ttyPatterns
+    const agent = getRendererAgent(options.agent ?? DEFAULT_AGENT_ID)
+    rendererAgentRef.current = agent
+    patternsRef.current = agent.ttyPatterns
   }, [options.agent])
 
   // Terminal phase, authoritative from the main process ('menu' = the CLI menu TUI owns the PTY;
@@ -102,7 +105,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       fontFamily: t.fontFamily,
       theme: t.theme,
       cursorBlink: settings.cursorBlink,
-      allowProposedApi: true
+      allowProposedApi: true,
+      vtExtensions: { win32InputMode: true }
     })
 
     const fitAddon = new FitAddon()
@@ -240,10 +244,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         }
         return true
       }
-      // Shift+Enter — send CSI u encoding (same as Windows Terminal)
+      // Shift+Enter inserts a prompt newline using the active agent's PTY encoding.
       if (ev.shiftKey && ev.key === 'Enter') {
         ev.preventDefault()
-        window.electronAPI.writeTerminal(options.terminalId, '\x1b[13;2u')
+        const sequences = rendererAgentRef.current.promptNewlineSequences
+        window.electronAPI.writeTerminal(options.terminalId, term.modes.win32InputMode ? sequences.win32InputMode : sequences.standard)
         return false
       }
       return true

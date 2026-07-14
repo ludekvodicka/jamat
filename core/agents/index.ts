@@ -19,6 +19,15 @@ const registry = new Map<AgentId, AgentAdapter>([
   ['codex', new CodexAdapter()],
 ])
 
+/**
+ * sessionId → owning agent memo. A session never changes owner, so a positive
+ * hit is cached forever. Misses are NOT cached — the session may be created
+ * after the miss. This keeps `resolveAgentForSessionId` (called per session
+ * row + at every resume) cheap once Codex's `findSessionFileById` becomes a
+ * real date-tree walk (gap #16).
+ */
+const ownerMemo = new Map<string, AgentId>()
+
 export function getAgent(id: AgentId): AgentAdapter {
   const adapter = registry.get(id)
   if (!adapter) throw new Error(`unknown agent id: ${id}`)
@@ -70,8 +79,13 @@ function isBinaryOnPath(binary: string): boolean {
  * derive the agent without making them re-pick.
  */
 export function resolveAgentForSessionId(sessionId: string, homeDir: string): AgentId | null {
+  const memoized = ownerMemo.get(sessionId)
+  if (memoized) return memoized
   for (const adapter of listAgents()) {
-    if (adapter.findSessionFileById(sessionId, homeDir)) return adapter.id
+    if (adapter.findSessionFileById(sessionId, homeDir)) {
+      ownerMemo.set(sessionId, adapter.id)
+      return adapter.id
+    }
   }
   return null
 }

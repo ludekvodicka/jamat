@@ -35,9 +35,9 @@ import {
   extractSessionHasEdits,
 } from './session-changes.js'
 import { buildLaunchCommand as buildClaudeLaunchCommand } from './launcher.js'
-import { CLAUDE_TTY_PATTERNS, claudeRenameSlash } from './renderer-meta.js'
+import { CLAUDE_TTY_PATTERNS, CLAUDE_CAPABILITIES, claudeRenameSlash } from './renderer-meta.js'
+import { AgentAdapterBase } from '../base.js'
 import type {
-  AgentAdapter,
   AgentSession,
   AgentTurnInfo,
   AgentTtyPatterns,
@@ -47,10 +47,11 @@ import type {
 import type { LaunchCommand, LaunchMode, MenuSelection } from '../../types/contracts.js'
 import type { SessionModelInfo, LatestSessionMeta } from '../../types/session.js'
 
-export class ClaudeAdapter implements AgentAdapter {
+export class ClaudeAdapter extends AgentAdapterBase {
   readonly id = 'claude' as const
   readonly displayName = 'Claude'
   readonly binary = 'claude'
+  readonly capabilities = CLAUDE_CAPABILITIES
 
   // --- 1. Filesystem ---
 

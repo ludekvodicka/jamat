@@ -12,7 +12,7 @@ import {
   createMenuState, getSessionPreview, getStatsPath,
   clampScroll, applySearch, enterSearch, exitSearch,
   enterVirtualFolder, exitVirtualFolder, switchCategory, openSessionPicker,
-  invalidateCaches, loadProjectConfig,
+  loadProjectConfig,
 } from "../core/menu-core/facade.js";
 import { render, renderMovePrefix, renderSessionPicker } from "./render.js";
 import {
@@ -194,15 +194,11 @@ function run() {
     }
 
     if (key.name === "tab" && s.availableAgents.length > 1) {
-      // Cycle through available agents. No-op when only one is on PATH —
-      // the hint isn't shown then either, so the key just does nothing.
+      // Cycle the SELECTED agent. It orders the picker's `New <Agent>` rows and is
+      // the new-session default; the project rows now show a UNION of all agents'
+      // activity, so there's no per-agent cache to rebuild here.
       const idx = s.availableAgents.indexOf(s.selectedAgent);
       s.selectedAgent = s.availableAgents[(idx + 1) % s.availableAgents.length];
-      // Session discovery (meta cache + picker) now keys off the selected agent,
-      // so rebuild the caches for the newly-selected agent before re-rendering —
-      // otherwise the rows keep showing the previous agent's metadata until a
-      // category switch.
-      invalidateCaches(s);
       doRender();
       return;
     }

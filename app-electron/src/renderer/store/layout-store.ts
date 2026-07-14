@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { DockviewApi, DockviewGroupPanel } from 'dockview'
-import type { AppConfig, UsageCache } from '../../shared/types'
+import type { AppConfig, UsageCache, AgentMeta } from '../../shared/types'
 import { DEFAULT_THEME, type ThemeId } from '../themes'
 
 /** The xterm renderer a terminal ACTUALLY ended up on. 'dom' (default) loads no addon; 'webgl' is the
@@ -106,6 +106,11 @@ interface LayoutStore {
   appConfig: AppConfig | null
   setAppConfig: (config: AppConfig | null) => void
 
+  /** Registered agents + whether each binary is on PATH (from the `agents:list` IPC). `null` until
+   *  the first fetch resolves — so consumers can tell "detecting" apart from "detected, unavailable". */
+  agentsMeta: AgentMeta[] | null
+  setAgentsMeta: (meta: AgentMeta[] | null) => void
+
   usageData: UsageCache | null
   setUsageData: (data: UsageCache | null) => void
 
@@ -185,6 +190,9 @@ export const useLayoutStore = create<LayoutStore>((set, get) => ({
 
   appConfig: null,
   setAppConfig: (config) => set({ appConfig: config }),
+
+  agentsMeta: null,
+  setAgentsMeta: (meta) => set({ agentsMeta: meta }),
 
   usageData: null,
   setUsageData: (data) => set({ usageData: data }),

@@ -28,10 +28,16 @@ export const CROSS_FOLDER_THRESHOLD = 10
 
 export type MenuEntry = DisplayEntry
 
+/**
+ * A session-picker row. Every row carries its owning `agent`: `new-session`
+ * rows are one-per-available-agent (Enter launches THAT agent's new session),
+ * and resume rows (`last-session` / `session`) carry the agent that wrote the
+ * transcript — so badges + resume launches never re-derive it per render.
+ */
 export type SessionPickerItem =
-  | { kind: 'new-session' }
-  | { kind: 'last-session'; session: SessionInfo }
-  | { kind: 'session'; session: SessionInfo }
+  | { kind: 'new-session'; agent: AgentId }
+  | { kind: 'last-session'; session: SessionInfo; agent: AgentId }
+  | { kind: 'session'; session: SessionInfo; agent: AgentId }
 
 export interface RenderLayout {
   maxNameW: number
@@ -66,12 +72,13 @@ export interface MenuState {
   visibleRows: number
 
   spItems: SessionPickerItem[]
-  spSessions: SessionInfo[]
   spSelected: number
   spScrollOffset: number
   spFolderName: string
   spPreviewCache: Map<string, string[]>
-  spProjectDir: string | null
+  /** Per-agent on-disk storage dir for the picked project (each agent's `findProjectDir`
+   *  result). Used to load a resume row's preview through its OWN agent. */
+  spProjectDirs: Map<AgentId, string | null>
 
   mpTargets: Array<{ prefix: string; title: string }>
   mpSelected: number

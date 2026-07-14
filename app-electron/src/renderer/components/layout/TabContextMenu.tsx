@@ -29,6 +29,11 @@ interface TabContextMenuProps {
   onRenameSession?: () => void
   /** Set for agent tabs with a known project dir — opens a fresh, empty session in the same folder. */
   onNewSession?: () => void
+  /** Set only when BOTH agents are installed — opens a fresh session in the same folder with the
+   *  OTHER agent (Claude tab → Codex, and vice versa). Needs `newSessionOtherAgentLabel` to render. */
+  onNewSessionOtherAgent?: () => void
+  /** The other agent's display name (e.g. "Codex") for the cross-agent item's label. */
+  newSessionOtherAgentLabel?: string
   /** Set only for Claude tabs with a known session — forks it into a new tab. */
   onForkSession?: () => void
   /** Set only for Claude tabs with a known session — closes & reopens the SAME session in a fresh process (reloads skills/CLAUDE.md/MCP). */
@@ -44,7 +49,7 @@ interface TabContextMenuProps {
   onClose: () => void
 }
 
-export function TabContextMenu({ x, y, panelId, projectDir, sessionId, currentColor, onSelectColor, onDetach, onRenameSession, onNewSession, onForkSession, onRestartSession, onCompactSession, onCopyInstanceId, onShowInfo, onCloseRemote, onClose }: TabContextMenuProps) {
+export function TabContextMenu({ x, y, panelId, projectDir, sessionId, currentColor, onSelectColor, onDetach, onRenameSession, onNewSession, onNewSessionOtherAgent, newSessionOtherAgentLabel, onForkSession, onRestartSession, onCompactSession, onCopyInstanceId, onShowInfo, onCloseRemote, onClose }: TabContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null)
   const [showColors, setShowColors] = useState(false)
 
@@ -103,6 +108,16 @@ export function TabContextMenu({ x, y, panelId, projectDir, sessionId, currentCo
         onClick={() => { onNewSession(); onClose() }}
       >
         New blank session
+      </div>
+    ),
+    onNewSessionOtherAgent && newSessionOtherAgentLabel && (
+      <div
+        key="new-session-other"
+        className="tab-context-item"
+        title={`Open a fresh session in the same folder using ${newSessionOtherAgentLabel} instead — run the other agent side by side`}
+        onClick={() => { onNewSessionOtherAgent(); onClose() }}
+      >
+        New session in {newSessionOtherAgentLabel}
       </div>
     ),
     onForkSession && (

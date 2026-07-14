@@ -19,6 +19,8 @@
     "",
     "\"selfUpdate\" picks the update channel. \"provider\": \"github\" (default for a public install) auto-updates the PACKAGED app from this project's GitHub Releases (Windows + Linux; macOS needs a signed build). \"provider\": \"vcs\" instead pulls a source checkout via git/svn + relaunch — for running from source: { \"provider\": \"vcs\", \"vcs\": \"git\", \"repoPath\"?: \"...\" }. Add \"autoCheck\": false to silence the background check.",
     "",
+    "\"agents\" configures per-agent PRE-LAUNCH hooks (Settings -> Agents): a command run in the project folder right before that agent starts a session. Shape: { \"codex\": { \"preLaunch\": { \"command\": \"node\", \"args\": [\"~/.claude/extensions/codex/CLI/packer.mjs\", \"build\", \"--dir\", \"{dir}\"], \"cwd\"?: \"{dir}\", \"timeoutMs\"?: 20000 } } }. Placeholders {dir} (absolute project path) and {name} (folder name) are substituted; a leading ~ expands to your home dir. A failing hook is NON-FATAL — it is logged and the agent launches anyway. Absent/empty (the default here) = no hooks. The Codex example above runs the AGENTS.md packer so a Codex session picks up our CLAUDE.md conventions; enable it only if you use that tooling.",
+    "",
     "(The :3500 remote-server proxy has its own deploy config — see app-agent/config-remote.example.json — it is NOT a per-user app config.)"
   ],
   "name": "Example",

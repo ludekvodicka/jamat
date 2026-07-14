@@ -4,7 +4,7 @@
 export { SESSION_ID_RE, DEFAULT_AGENT_ID, isAgentId } from './types/contracts.js'
 export type { MenuSelection, LaunchMode, LaunchConfig, LaunchCommand, AgentId } from './types/contracts.js'
 
-export type { VirtualFolderDef, CategoryJson, Category, AppConfig, ConfigPatch, SelfUpdateConfig, SessionDonePrompt, CustomMenuNode, CustomRun, ContextWarnLevel, FolderStats, StatsMap } from './types/config.js'
+export type { VirtualFolderDef, CategoryJson, Category, AppConfig, ConfigPatch, SelfUpdateConfig, SessionDonePrompt, CustomMenuNode, CustomRun, ContextWarnLevel, AgentPreLaunch, AgentSettings, AgentsConfig, FolderStats, StatsMap } from './types/config.js'
 
 export type { SessionInfo, LatestSessionMeta, SessionModelInfo, UsageCache, EditStep, FileTurnEdit, TurnInfo } from './types/session.js'
 

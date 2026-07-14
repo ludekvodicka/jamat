@@ -99,6 +99,50 @@ export interface ExecOptions {
   permissionMode?: 'plan'
   /** Don't persist this spawn to session history. */
   ephemeral?: boolean
+  /**
+   * Payload piped to the exec's stdin (e.g. a git diff for the AI commit summary).
+   * The ADAPTER decides placement — Claude appends it after the prompt on stdin;
+   * Codex passes the prompt as a `codex exec` arg and the payload alone on stdin.
+   */
+  stdinPayload?: string
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Per-agent capabilities — declarative feature flags read instead of
+// `agent === 'claude'` literal checks scattered across the UI / main process.
+// Pure data (no fs), so the same object is exposed by both the main-process
+// registry and the renderer-safe registry (see renderer-meta.ts / renderer.ts).
+// ────────────────────────────────────────────────────────────────────────────
+
+/** How an agent's isolated (Docker) launch is parameterized. `null` capability = no isolation. */
+export interface AgentDockerSpec {
+  /** Image tag built/run for this agent (e.g. 'jamat-isolated' / 'jamat-isolated-codex'). */
+  image: string
+  /** Build-context dir under the monorepo root (e.g. 'dockerized-claude' / 'dockerized-codex'). */
+  contextDirName: string
+  /** Host config dir name (e.g. '.claude' / '.codex'); per-project home = `<projectDir>-home`. */
+  configDirName: string
+  /** Credential file inside the config dir synced into the container ('.credentials.json' / 'auth.json'). */
+  credentialFile: string
+  /** In-container user; mount target is `/home/<containerUser>/<configDirName>`. */
+  containerUser: string
+}
+
+export interface AgentCapabilities {
+  /** Session forking (`--fork-session`). false → Fork UI hidden, 'resume-fork' rejected. */
+  fork: boolean
+  /** Live in-TUI rename slash command. false → rename degrades to on-disk (or not at all). */
+  liveRename: boolean
+  /** Per-tab context-fullness % is derivable from this agent's transcript. */
+  contextPercent: boolean
+  /** Which backend feeds the usage panel for this agent. */
+  usageSource: 'claude-web' | 'openai' | 'none'
+  /** Agent tracks live pids (sessionId resolution by process ancestry). */
+  activePids: boolean
+  /** Docker isolation spec; null = unsupported → loud refusal at launch. */
+  docker: AgentDockerSpec | null
+  /** One-shot exec models offered for the AI-commit summary. First entry = default. */
+  execModels: readonly { id: string; label: string }[]
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -111,6 +155,8 @@ export interface AgentAdapter {
   readonly displayName: string
   /** Binary name to look up on PATH, e.g. "claude" / "codex". */
   readonly binary: string
+  /** Declarative feature flags — read instead of `id === 'claude'` checks. */
+  readonly capabilities: AgentCapabilities
 
   // --- 1. Filesystem ---
 
@@ -206,6 +252,17 @@ export interface AgentAdapter {
    */
   listActivePids(homeDir: string): { pid: number; sessionId: string }[]
 
+  /**
+   * Resolve the session id a JUST-LAUNCHED terminal landed on, for agents that do NOT
+   * track live pids (`capabilities.activePids === false`) — Codex keys sessions by cwd+date,
+   * not by process, so pid ancestry can't link a terminal to its session. Returns the newest
+   * session for `projectDir` whose transcript was created/touched at or after `sinceMs` (the
+   * launch time), i.e. the one this launch created (a new `cc` session, or a fork's new id —
+   * NOT the fork parent). Null until it exists, so the caller keeps polling. Base default is
+   * null (pid-tracking agents use `listActivePids` instead).
+   */
+  resolveLaunchedSession(projectDir: string, homeDir: string, sinceMs: number): { sessionId: string } | null
+
   /** Model + context info from a transcript's last assistant turn (null when unavailable). */
   readSessionModelInfo(sessionFile: string): SessionModelInfo | null
 
@@ -219,6 +276,13 @@ export interface AgentAdapter {
 
   /** Build the exec / one-shot command for non-interactive prompts (AI commit summary). */
   buildExecCommand(prompt: string, model: string, opts?: ExecOptions): ExecCommand
+
+  /**
+   * Reduce the exec's raw stdout to the final assistant text ('' when none found).
+   * Claude prints plain text (trimmed identity); Codex streams NDJSON events that
+   * must be reduced to the last assistant message.
+   */
+  parseExecOutput(raw: string): string
 
   // --- 5. TUI patterns ---
 

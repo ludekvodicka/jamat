@@ -1,6 +1,6 @@
 {
   "name": "jamat",
-  "version": "2026.07.08.17.40",
+  "version": "2026.07.14.10.06",
   "type": "module",
   "license": "MIT",
   "author": "ludekvodicka",
@@ -32,6 +32,12 @@
     "smoke:menu-tree": "node --import tsx scripts/smoke-menu-tree.ts",
     "smoke:config-dir": "node --import tsx scripts/smoke-config-dir.ts",
     "smoke:context-levels": "node --import tsx scripts/smoke-context-levels.ts",
+    "smoke:agents-registry": "node --import tsx scripts/smoke-agents-registry.ts",
+    "smoke:codex-sessions": "node --import tsx scripts/smoke-codex-sessions.ts",
+    "smoke:codex-launcher": "node --import tsx scripts/smoke-codex-launcher.ts",
+    "smoke:codex-trust": "node --import tsx scripts/smoke-codex-trust.ts",
+    "smoke:menu-picker": "node --import tsx scripts/smoke-menu-picker.ts",
+    "smoke:pre-launch": "node --import tsx scripts/smoke-pre-launch.ts",
     "stats": "node --import tsx app-stats/generate-stats.ts && node --import tsx app-stats/generate-html.ts",
     "stats:data": "node --import tsx app-stats/generate-stats.ts",
     "stats:html": "node --import tsx app-stats/generate-html.ts",
@@ -41,7 +47,7 @@
     "verify:config": "node --import tsx core/config.ts",
     "check:mdext": "node --import tsx scripts/check-mdext-diagrams.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p app-electron/tsconfig.node.json && tsc --noEmit -p app-electron/tsconfig.web.json",
-    "test": "npm run smoke:jamat && npm run smoke:remote && npm run smoke:http && npm run smoke:op && npm run smoke:bridge-self && npm run smoke:jamat-cli && npm run smoke:remote-parity && npm run smoke:agent-gate && npm run smoke:reachability && npm run smoke:custom-menus && npm run smoke:config && npm run smoke:config-edit && npm run smoke:menu-tree && npm run smoke:config-dir && npm run smoke:context-levels",
+    "test": "npm run smoke:jamat && npm run smoke:remote && npm run smoke:http && npm run smoke:op && npm run smoke:bridge-self && npm run smoke:jamat-cli && npm run smoke:remote-parity && npm run smoke:agent-gate && npm run smoke:reachability && npm run smoke:custom-menus && npm run smoke:config && npm run smoke:config-edit && npm run smoke:menu-tree && npm run smoke:config-dir && npm run smoke:context-levels && npm run smoke:agents-registry && npm run smoke:codex-sessions && npm run smoke:codex-launcher && npm run smoke:codex-trust && npm run smoke:menu-picker && npm run smoke:pre-launch",
     "bump": "node --import tsx scripts/bump-version.ts"
   },
   "dependencies": {

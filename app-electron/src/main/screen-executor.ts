@@ -20,6 +20,8 @@ import { publish, publishTo } from './streams'
 import { shellWrapArgv } from '../../../core/platform-shell.js'
 import { buildDockerRunArgs, syncDockerCredentials } from '../../../core/executor/docker-utils.js'
 import { buildLaunchCommand } from '../../../core/executor/agent-launcher.js'
+import { resolveAgentPreLaunch } from '../../../core/executor/pre-launch.js'
+import { getAppConfig } from './ipc-windows'
 import { getAgent } from '../../../core/agents/index.js'
 import type { AgentAdapter } from '../../../core/agents/types.js'
 import { DEFAULT_AGENT_ID } from '../../../core/types/contracts.js'
@@ -47,6 +49,12 @@ interface TerminalState {
    * it succeeds. Cleared whenever the terminal (re)starts an agent.
    */
   resolvedSessionId?: string
+  /**
+   * Epoch ms when the agent PTY was spawned. Used by the no-pid session resolver
+   * (Codex) to find the rollout this launch created (mtime ≥ launchedAtMs), so a
+   * new session / fork resolves to its OWN id. Set at spawn; cleared on (re)start.
+   */
+  launchedAtMs?: number
   /** fs.watch on the session's PROJECT DIR — fires applyTitle the instant the
    *  session's `<id>.jsonl` is created or appended (so the FIRST `/rename`,
    *  which creates the transcript, is caught too — not just later appends). */
@@ -264,19 +272,73 @@ function isDescendant(pid: number, ancestor: number, parent: Map<number, number>
   return false
 }
 
+/**
+ * Commit a resolved sessionId onto a terminal: track/retire the fork parent, rewrite meta to a
+ * plain resume of the discovered id, and push the full param set to the renderer so Rename targets
+ * this session and a restart reopens it (not whatever is newest). Shared by both resolution paths
+ * — pid ancestry (Claude) and the launched-session lookup (Codex).
+ */
+function applyResolvedSession(terminalId: string, state: TerminalState, newSessionId: string): void {
+  if (!state.meta) return
+  // Track the fork PARENT so a fork that hasn't written a transcript can re-fork on restart.
+  // Initial fork (`resume-fork`): the parent is the launch sessionId. Re-forked tab (a
+  // `resume` whose saved fork id was gone → newId ≠ saved): keep the parent. Settled tab (saved
+  // fork id actually resumed → newId === saved → it has a real transcript now): drop the parent.
+  const prevMeta = state.meta
+  const wasInitialFork = prevMeta.cmd === 'resume-fork'
+  const resumedSaved = !wasInitialFork && newSessionId === prevMeta.sessionId
+  const forkParentId = resumedSaved ? undefined : (wasInitialFork ? prevMeta.sessionId : prevMeta.forkParentId)
+  state.resolvedSessionId = newSessionId
+  // Rewrite meta to a plain resume of the discovered id. For `--continue`/`cc` this just fills in
+  // the id; for a fork it retires the parent+fork launch so a respawn resumes `<newId>` instead of
+  // forking AGAIN, while `forkParentId` keeps the re-fork safety net until the fork is settled.
+  state.meta = { ...prevMeta, cmd: 'resume', sessionId: newSessionId, forkParentId }
+  const sel = state.meta
+  const wc = getWebContents(state.webContentsId)
+  if (wc && !wc.isDestroyed()) {
+    // `updateParameters` REPLACES the param object, so resend the full launch set with the
+    // resolved sessionId + fork parent now filled in.
+    publishTo(wc, 'screen:update-params', terminalId, {
+      projectDir: sel.dir,
+      cmd: 'resume',
+      folderName: sel.folderName,
+      antiFlicker: sel.antiFlicker,
+      sessionId: newSessionId,
+      forkParentId,
+      agent: sel.agent,
+    })
+  }
+  applyTitle(terminalId, state)
+}
+
 function kickSessionIdResolution(): void {
-  if (resolveInFlight) return
   const pending = [...terminals.entries()].filter(
     ([, s]) => s.phase === 'running' && s.meta && !effectiveSessionId(s),
   )
   if (pending.length === 0) return
+
+  // No-pid agents (Codex): a just-launched tab (new session or fork) resolves its id via the
+  // newest rollout for its cwd since launch — synchronous fs, no process snapshot. Split these
+  // out so the async pid path below runs only for agents that actually track live pids.
+  const pidPending: Array<[string, TerminalState]> = []
+  for (const [terminalId, state] of pending) {
+    if (!state.meta) continue
+    const adapter = tryGetAgent(state.meta.agent)
+    if (!adapter) continue
+    if (adapter.capabilities.activePids) { pidPending.push([terminalId, state]); continue }
+    let hit: { sessionId: string } | null = null
+    try { hit = adapter.resolveLaunchedSession(state.meta.dir, homedir(), state.launchedAtMs ?? 0) } catch { hit = null }
+    if (hit) applyResolvedSession(terminalId, state, hit.sessionId)
+  }
+
+  // Pid path (Claude): one process snapshot, matched by ancestry. Guarded so snapshots don't overlap.
+  if (pidPending.length === 0 || resolveInFlight) return
   resolveInFlight = true
   withProcessParentMap((map) => {
     resolveInFlight = false
     if (!map) return
-    for (const [terminalId, state] of pending) {
-      // Re-check: the terminal may have exited or been resolved while the
-      // snapshot was running.
+    for (const [terminalId, state] of pidPending) {
+      // Re-check: the terminal may have exited or been resolved while the snapshot was running.
       if (state.phase !== 'running' || !state.meta || effectiveSessionId(state)) continue
       const ptyPid = getPtyPid(terminalId)
       if (!ptyPid) continue
@@ -286,42 +348,7 @@ function kickSessionIdResolution(): void {
       const hit = active.find((a) => a.pid === ptyPid || isDescendant(a.pid, ptyPid, map))
       logInfo('title-resolve', `term=${terminalId} ptyPid=${ptyPid} activePids=${active.length} -> ${hit ? hit.sessionId : 'none'}`)
       if (!hit) continue
-      // Track the fork PARENT so a fork that hasn't written a transcript can re-fork on restart.
-      // Initial fork (`resume-fork`): the parent is the launch sessionId. Re-forked tab (a
-      // `resume` whose saved fork id was gone → hit ≠ saved): keep the parent. Settled tab (saved
-      // fork id actually resumed → hit === saved → it has a real transcript now): drop the parent.
-      const prevMeta = state.meta
-      const wasInitialFork = prevMeta.cmd === 'resume-fork'
-      const resumedSaved = !wasInitialFork && hit.sessionId === prevMeta.sessionId
-      const forkParentId = resumedSaved ? undefined : (wasInitialFork ? prevMeta.sessionId : prevMeta.forkParentId)
-      state.resolvedSessionId = hit.sessionId
-      // Rewrite meta to a plain resume of the discovered id. For `--continue` this just
-      // fills in the id; for a fork it retires the parent+fork-flag launch so a respawn re-runs
-      // `-r <newId>` instead of forking AGAIN, while `forkParentId` keeps the re-fork safety net
-      // until the fork is settled. Keeps main-side meta in lockstep with the renderer params below.
-      state.meta = { ...prevMeta, cmd: 'resume', sessionId: hit.sessionId, forkParentId }
-      // Tell the renderer the real sessionId so Rename targets this session and a restart
-      // reopens THIS session (the tab params carried no/parent sessionId at launch).
-      // `updateParameters` REPLACES the param object, so resend the full set
-      // the launch path uses — with the resolved sessionId now filled in.
-      const sel = state.meta
-      const wc = getWebContents(state.webContentsId)
-      if (wc && !wc.isDestroyed()) {
-        publishTo(wc, 'screen:update-params', terminalId, {
-          projectDir: sel.dir,
-          // Now that we know the exact session this `--continue` tab landed on,
-          // persist 'resume' + its id so a restart reopens THIS session (not
-          // whatever happens to be newest).
-          cmd: 'resume',
-          folderName: sel.folderName,
-          antiFlicker: sel.antiFlicker,
-          sessionId: hit.sessionId,
-          // Persist the fork parent (or clear it once settled) so restart can re-fork if needed.
-          forkParentId,
-          agent: sel.agent,
-        })
-      }
-      applyTitle(terminalId, state)
+      applyResolvedSession(terminalId, state, hit.sessionId)
     }
   })
 }
@@ -583,6 +610,7 @@ function startClaudeInTerminal(
       selection: sel,
       mode: 'pty',
       dockerContextDir: getDockerContextDir(),
+      preLaunch: resolveAgentPreLaunch(getAppConfig()?.agents, sel.agent),
     })
   } catch (err) {
     const wc = getWebContents(state.webContentsId)
@@ -620,6 +648,9 @@ function startClaudeInTerminal(
   gateAgentLaunch(() => {
     // Bail if the terminal was closed or re-launched while queued behind earlier spawns.
     if (terminals.get(terminalId) !== newState) return
+    // Stamp the real spawn time so the no-pid resolver (Codex) can find the rollout THIS launch
+    // creates (mtime ≥ launchedAtMs) rather than an older session for the same cwd.
+    newState.launchedAtMs = Date.now()
     createPty(terminalId, state.webContentsId, {
       cols: state.cols,
       rows: state.rows,
@@ -747,6 +778,7 @@ function handleAction(terminalId: string, state: TerminalState, sel: MenuSelecti
       const { spawn } = require('child_process') as typeof import('child_process')
       const cmd = buildLaunchCommand({
         selection: sel, mode: 'pty', dockerContextDir: dockerCtx,
+        preLaunch: resolveAgentPreLaunch(getAppConfig()?.agents, sel.agent),
       })
       const title = `${sel.folderName} - Claude`
       const child = spawn('wt.exe', [

@@ -1,6 +1,7 @@
 import type { VirtualFolderDef } from '../menu-core/pure.js'
-import type { AgentId } from './contracts.js'
+import type { AgentId, AgentPreLaunch } from './contracts.js'
 export type { VirtualFolderDef } from '../menu-core/pure.js'
+export type { AgentPreLaunch } from './contracts.js'
 
 export interface CategoryJson {
   label: string
@@ -87,6 +88,23 @@ export interface CustomMenuNode {
 }
 
 /**
+ * Per-agent settings block. Currently only an optional pre-launch hook (`AgentPreLaunch`, defined
+ * in `contracts.ts` beside `LaunchConfig`; re-exported above for convenience). The motivating case
+ * is Codex's AGENTS.md packer — flattening our CLAUDE.md cascade into a Codex-native `AGENTS.md`
+ * before the `codex` process starts.
+ */
+export interface AgentSettings {
+  preLaunch?: AgentPreLaunch
+}
+
+/**
+ * Per-agent configuration keyed by `AgentId` (`claude` / `codex`). Absent/empty → no hooks, the
+ * public default: a clone runs Codex without the packer unless the user opts in here. Our private
+ * (SVN-only) config sets `agents.codex.preLaunch` to the packer; the committed public config does not.
+ */
+export type AgentsConfig = Partial<Record<AgentId, AgentSettings>>
+
+/**
  * One of the 4 fixed context-fullness warning levels (Electron status bar / overlay). The count is
  * fixed at 4 — only these values are user-editable (Settings → Context warnings). `pct` is the
  * context-window fill (0–100) at which the level activates; `popup` raises the centered
@@ -141,6 +159,12 @@ export interface AppConfig {
    */
   defaultAgent?: AgentId
   /**
+   * Per-agent settings (currently a pre-launch hook per agent — e.g. the Codex AGENTS.md packer).
+   * Absent → no hooks (public default). Edited under Settings → Agents; persisted to the committed
+   * config, so our machines opt in via the SVN-only private config while public clones stay opt-out.
+   */
+  agents?: AgentsConfig
+  /**
    * Categories whose path was missing/inaccessible at load and therefore
    * skipped (instead of failing the whole config). Present so the app can
    * surface the silent drop (e.g. in the Error Log) rather than the user
@@ -165,6 +189,7 @@ export interface ConfigPatch {
   selfUpdate?: SelfUpdateConfig
   sessionDonePrompts?: SessionDonePrompt[]
   contextLevels?: ContextWarnLevel[]
+  agents?: AgentsConfig
 }
 
 export interface FolderStats {

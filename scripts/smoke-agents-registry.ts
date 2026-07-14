@@ -10,6 +10,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir, homedir } from 'os'
 import { getAgent, listAgents, listAvailableAgents, resolveAgentForSessionId } from '../core/agents/index'
+import { getRendererAgent } from '../core/agents/renderer'
 import { normalizeTty } from '../core/agents/claude/patterns'
 
 let passed = 0
@@ -46,17 +47,44 @@ try {
   ok('threw on unknown id', String(err).includes('unknown agent id'))
 }
 
-console.log('\n[4] Codex stub contract — spawn path throws, findSessionFileById returns null')
-// Only the spawn-path throw is a real regression target; the rest of the
-// stub returning `false`/`[]`/`null` is tautological and locks in absence
-// of behavior — drop those once Codex ships.
-try {
-  codex.buildExecCommand('prompt', 'gpt-5.5')
-  ok('codex.buildExecCommand throws', false, 'no throw')
-} catch (err) {
-  ok('codex.buildExecCommand throws with documented message', String(err).includes('not yet implemented'))
+console.log('\n[4] Codex CLI is real (U4) — exec command shape + launch/resume chains')
+// Build the discovery index against a FRESH empty home first, so later homedir()-based
+// discovery calls in this file reuse the empty index (the index is a process singleton) —
+// keeps this smoke off the machine's real 25k-file ~/.codex tree.
+const emptyHome = mkdtempSync(join(tmpdir(), 'codex-empty-'))
+ok('codex.findSessionFileById → null on a home with no ~/.codex', codex.findSessionFileById('12345678-1234-1234-1234-123456789012', emptyHome) === null)
+rmSync(emptyHome, { recursive: true, force: true })
+{
+  const ex = codex.buildExecCommand('summarize', 'gpt-5.6-sol', { stdinPayload: 'DIFF', ephemeral: true })
+  ok('codex.buildExecCommand command = codex', ex.command === 'codex')
+  ok('codex exec args = exec --json', ex.args.includes('exec') && ex.args.includes('--json'))
+  ok('codex exec args include the model', ex.args.includes('--model') && ex.args.includes('gpt-5.6-sol'))
+  ok('codex exec args include --ephemeral', ex.args.includes('--ephemeral'))
+  ok('codex exec prompt is the last arg', ex.args[ex.args.length - 1] === 'summarize')
+  ok('codex exec stdin carries the diff payload', ex.stdin === 'DIFF')
 }
-ok('codex.findSessionFileById returns null (stub contract for resolver)', codex.findSessionFileById('any-id', '/tmp') === null)
+{
+  // A new-session launch (cmd 'cc') in terminal mode.
+  const cc = codex.buildLaunchCommand({ dir: '/proj', cmd: 'cc', folderName: 'proj', isolated: false, antiFlicker: false, agent: 'codex' }, 'terminal')
+  ok('codex launch cc → command codex, cwd /proj', cc.command === 'codex' && cc.cwd === '/proj')
+  ok('codex launch cc skip-perms flag', cc.args.includes('--dangerously-bypass-approvals-and-sandbox'))
+  // Resume a specific session.
+  const rid = '12345678-1234-1234-1234-123456789012'
+  const rs = codex.buildLaunchCommand({ dir: '/proj', cmd: 'resume', sessionId: rid, folderName: 'proj', isolated: false, antiFlicker: false, agent: 'codex' }, 'terminal')
+  ok('codex resume → args resume <id>', rs.args[0] === 'resume' && rs.args[1] === rid)
+  // Fork maps resume-fork → `codex fork <id>`.
+  const fk = codex.buildLaunchCommand({ dir: '/proj', cmd: 'resume-fork', sessionId: rid, folderName: 'proj', isolated: false, antiFlicker: false, agent: 'codex' }, 'terminal')
+  ok('codex resume-fork → args fork <id>', fk.args[0] === 'fork' && fk.args[1] === rid)
+  // parseExecOutput reduces the NDJSON stream to the final agent_message.
+  const ndjson = [
+    '{"type":"item.completed","item":{"type":"agent_message","text":"working on it"}}',
+    '{"type":"item.completed","item":{"type":"file_change"}}',
+    '{"type":"item.completed","item":{"type":"agent_message","text":"Done: created foo."}}',
+    '{"type":"turn.completed","usage":{}}',
+  ].join('\n')
+  ok('codex.parseExecOutput → last agent_message', codex.parseExecOutput(ndjson) === 'Done: created foo.')
+  ok('codex.parseExecOutput → "" on empty/garbage', codex.parseExecOutput('not json\n{bad}') === '')
+}
 
 console.log('\n[5] Codex sessionsRoot points at ~/.codex/sessions')
 ok('codex sessionsRoot path', codex.sessionsRoot('/home/u').replace(/\\/g, '/') === '/home/u/.codex/sessions')
@@ -202,6 +230,52 @@ console.log('\n[13] Busy detection — busyWide (deep-scan elapsed subset) catch
     ok(`busyWide ⊆ busy for ${JSON.stringify(s)}`, !matchesWide(s) || matchesBusy(s))
   }
 }
+
+console.log('\n[14] capabilities — declared flags + main↔renderer parity (U1)')
+ok('claude.capabilities.fork = true', claude.capabilities.fork === true)
+ok('claude.capabilities.usageSource = claude-web', claude.capabilities.usageSource === 'claude-web')
+ok('claude.capabilities.execModels includes opus', claude.capabilities.execModels.some((m) => m.id === 'opus'))
+ok('claude.capabilities.docker image = jamat-isolated', claude.capabilities.docker?.image === 'jamat-isolated')
+ok('codex.capabilities.fork = true', codex.capabilities.fork === true)
+ok('codex.capabilities.usageSource = openai', codex.capabilities.usageSource === 'openai')
+ok('codex.capabilities.docker configDirName = .codex', codex.capabilities.docker?.configDirName === '.codex')
+ok('codex.capabilities.execModels empty (filled in U8)', codex.capabilities.execModels.length === 0)
+// The main-process adapter and the renderer registry share the SAME capabilities object — both import
+// the single const from renderer-meta.ts. So parity is object identity, and the two can't drift.
+ok('claude capabilities parity (main === renderer, same object)', getAgent('claude').capabilities === getRendererAgent('claude').capabilities)
+ok('codex capabilities parity (main === renderer, same object)', getAgent('codex').capabilities === getRendererAgent('codex').capabilities)
+ok('claude prompt newline uses CSI-u Shift+Enter',
+  getRendererAgent('claude').promptNewlineSequences.standard === '\x1b[13;2u'
+  && getRendererAgent('claude').promptNewlineSequences.win32InputMode === '\x1b[13;2u')
+ok('codex standard prompt newline uses Ctrl+J/LF', getRendererAgent('codex').promptNewlineSequences.standard === '\n')
+ok('codex Win32 prompt newline uses encoded Ctrl+J key event',
+  getRendererAgent('codex').promptNewlineSequences.win32InputMode === '\x1b[74;36;10;1;8;1_')
+
+console.log('\n[15] owner memo — positive hit survives file deletion; a miss is NOT cached (U1)')
+const memoHome = mkdtempSync(join(tmpdir(), 'agents-memo-'))
+try {
+  const projDirName = claude.encodeProjectDir('Q:\\memo-proj')
+  const root = join(claude.sessionsRoot(memoHome), projDirName)
+  mkdirSync(root, { recursive: true })
+  const memoId = '99999999-9999-9999-9999-999999999999'
+  // Miss BEFORE the file exists → null, and (crucially) must NOT be cached.
+  ok('resolve miss before file exists → null', resolveAgentForSessionId(memoId, memoHome) === null)
+  const f = join(root, `${memoId}.jsonl`)
+  writeFileSync(f, '')
+  ok('resolve after file created → claude (proves the miss was not memoized)', resolveAgentForSessionId(memoId, memoHome) === 'claude')
+  rmSync(f, { force: true })
+  ok('resolve after file deleted → still claude (proves the positive hit IS memoized)', resolveAgentForSessionId(memoId, memoHome) === 'claude')
+} finally {
+  rmSync(memoHome, { recursive: true, force: true })
+}
+
+console.log('\n[16] base graceful-degrade defaults inherited by Codex + parseExecOutput (U1)')
+ok('codex.encodeProjectDir → "" (base default)', codex.encodeProjectDir('/whatever') === '')
+ok('codex.renameSlashCommand → null (base default)', codex.renameSlashCommand('x') === null)
+ok('codex.readEffortLevel → null (base default)', codex.readEffortLevel('/p', '/h') === null)
+ok('codex.appendCustomTitle → false (base default)', codex.appendCustomTitle('/f', 'id', 't') === false)
+// codex overrides parseExecOutput (NDJSON reduce) — exercised in [4]. Claude inherits the base trim:
+ok('claude.parseExecOutput inherits base trim (correct for `claude -p`)', claude.parseExecOutput('  hello \n') === 'hello')
 
 console.log(`\n=== ${failed === 0 ? 'PASS' : 'FAIL'} (${passed} passed, ${failed} failed)`)
 process.exit(failed === 0 ? 0 : 1)

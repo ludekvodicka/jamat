@@ -54,3 +54,4 @@ app-agent/.env-production*
 /configs/config.json
 /configs/config-*.json
 !/configs/config.example.json
+/AGENTS.md

@@ -88,7 +88,7 @@ dir and let first-run seed it). `configs/config.example.json` documents every fi
 |---|---|---|
 | `name` | string | A label for this machine (shown in the UI, used by the bridge). |
 | `categories` | array | The project roots Jamat scans — **the one field you must set**. |
-| `defaultAgent` | `"claude"` | Which agent a new session launches. (More agents are coming via the adapter layer.) |
+| `defaultAgent` | `"claude"` | Which agent the menu preselects: its `＋ New <Agent> session` row is listed first in the session picker, and it's the agent a launch uses unless another is picked (`codex` also accepted; falls back to an installed agent if the chosen one isn't on PATH). Edit in **Settings → Agents**. |
 | `dockerIsolation` | boolean | `false` hides the start menu's "Isolated (Docker)?" create prompt + 🐳 marker — set it on machines without Docker. Default (absent/`true`) = offered. |
 | `selfUpdate` | object | Update channel — see [Self-update](#self-update). |
 | `customMenus` | array | Your own per-project actions (press **F3** on a project). See [Custom menus](#custom-menus). |

@@ -71,7 +71,7 @@ function RendererBadge() {
 }
 
 export function App() {
-  const { toggleSidebar, addPanel, activePanel, setAppConfig, usageData, setUsageData, setTheme } = useLayoutStore()
+  const { toggleSidebar, addPanel, activePanel, setAppConfig, setAgentsMeta, usageData, setUsageData, setTheme } = useLayoutStore()
   // User-configurable context-fullness warning levels (Settings → Context warnings); undefined → defaults.
   const contextLevels = useLayoutStore(s => s.appConfig?.contextLevels)
   // Active config profile name — the Demo/screenshot profile ("Demo") swaps the dev title suffix for " - Demo".
@@ -133,6 +133,13 @@ export function App() {
   useEffect(() => {
     window.electronAPI?.getAppVersion?.().then(setAppVersion)
   }, [])
+
+  // Which agents are installed (binary on PATH) — computed main-side. Cached once in the store so
+  // the Agents settings tab and every tab's context menu (cross-agent "New session in …") read it
+  // without each re-probing. Availability doesn't change within a session, so a single fetch is enough.
+  useEffect(() => {
+    window.electronAPI?.listAgents?.().then(setAgentsMeta).catch(() => setAgentsMeta([]))
+  }, [setAgentsMeta])
 
   // Re-read the status-bar debug toggles without a reload. Two triggers:
   //  • SETTINGS_CHANGED_EVENT — same window (the one that toggled): a plain window event, fires here.
