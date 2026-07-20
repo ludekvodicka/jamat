@@ -1,3 +1,5 @@
+import type { AgentWorkStatus } from './contracts.js'
+
 /**
  * Remote App Control — wire protocol + persisted config.
  *
@@ -106,9 +108,7 @@ export interface RemoteControlData {
   bridgeScratchDir?: string
 }
 
-/** Claude turn-indicator state mirrored from the renderer. `waiting` = turn paused on a
- *  question menu (AskUserQuestion / plan approval) and needs the user to choose. */
-export type TabStatus = 'idle' | 'running' | 'tool-use' | 'blocked' | 'waiting' | 'done'
+export type TabStatus = AgentWorkStatus
 
 /**
  * A tab as seen by a remote viewer. `terminalId` === the dockview panel id;

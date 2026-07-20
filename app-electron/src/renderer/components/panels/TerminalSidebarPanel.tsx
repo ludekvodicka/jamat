@@ -11,7 +11,7 @@ import { themes } from '../../themes'
 import { bracketedPaste, openFileChangesPanel, openSessionHistoryPanel } from '../../utils/terminal-helpers'
 import '@xterm/xterm/css/xterm.css'
 
-import type { AgentId } from '../../../../../core/types'
+import { isAgentId, type AgentId } from '../../../../../core/types'
 import type { ScreenOpenTabMeta } from '../../../../../core/types/ipc-contracts'
 import type { Terminal } from '@xterm/xterm'
 
@@ -122,6 +122,10 @@ export function TerminalSidebarPanel({ api, params }: IDockviewPanelProps<Termin
   const { appConfig, currentTheme, dockviewApi } = useLayoutStore()
   const [sidebarVisible, setSidebarVisible] = useState(false)
 
+  useEffect(() => {
+    useLayoutStore.getState().setTerminalAgent(api.id, isAgentId(params.agent) ? params.agent : null)
+  }, [api.id, params.agent])
+
   const [searchVisible, setSearchVisible] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -215,7 +219,9 @@ export function TerminalSidebarPanel({ api, params }: IDockviewPanelProps<Termin
   useEffect(() => {
     if (!window.electronAPI?.onScreenUpdateParams) return
     return window.electronAPI.onScreenUpdateParams((id, newParams) => {
-      if (id === api.id) api.updateParameters(newParams)
+      if (id !== api.id) return
+      if (isAgentId(newParams.agent)) useLayoutStore.getState().setTerminalAgent(id, newParams.agent)
+      api.updateParameters(newParams)
     })
   }, [api.id])
 
@@ -454,7 +460,7 @@ export function TerminalSidebarPanel({ api, params }: IDockviewPanelProps<Termin
           style={{ background: themes[currentTheme].theme.background }}
         />
         <CrashBanner terminalId={api.id} />
-        <ContextWarningOverlay terminalId={api.id} params={params as Record<string, unknown>} />
+        <ContextWarningOverlay terminalId={api.id} />
       </div>
       {sidebarVisible && (
         <div className="panel-sidebar-right">

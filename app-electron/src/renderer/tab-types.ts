@@ -39,8 +39,7 @@ export const TAB_TYPES: TabType[] = [
   ...SHELL_TABS,
   // Tools
   { id: 'browser', label: 'Browser', icon: '🌐', component: 'browserPanel', defaultParams: { tabType: 'browser', url: 'https://www.google.com' }, section: 'Tools' },
-  { id: 'usage-stats', label: 'Usage Stats', icon: '📊', component: 'usageStatsNativePanel', defaultParams: {}, shortcut: 'Ctrl+U', section: 'Tools' },
-  { id: 'usage-stats-html', label: 'Usage Stats (HTML)', icon: '📊', component: 'usageStatsPanel', defaultParams: {}, section: 'Tools' },
+  { id: 'usage-stats', label: 'Usage Stats', icon: '📊', component: 'usageStatsPanel', defaultParams: {}, shortcut: 'Ctrl+U', section: 'Tools' },
   { id: 'ideas', label: 'Ideas', icon: '💡', component: 'ideasPanel', defaultParams: {}, shortcut: 'Ctrl+I', section: 'Tools' },
   { id: 'abilities', label: 'Claude Abilities', icon: '🧰', component: 'abilitiesPanel', defaultParams: {}, shortcut: 'Ctrl+Y', section: 'Tools' },
   { id: 'remote', label: 'Remote connections', icon: '🛰', component: 'remoteConnectionsPanel', defaultParams: {}, section: 'Tools' },

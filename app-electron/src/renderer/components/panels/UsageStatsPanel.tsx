@@ -1,98 +1,111 @@
+import './usageStats/usageStats.css'
 import { IDockviewPanelProps } from 'dockview'
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { useIpcQuery } from '../../hooks/useIpcQuery'
+import { formatStatsGenerationProgress, useStatsGenerationProgress } from '../../hooks/useStatsGenerationProgress'
+import type { StatsAgentFilter, StatsDataResult, Stats, StatsView } from '../../../../../core/types/stats'
+import { OverviewTab } from './usageStats/OverviewTab'
+import { Last24hTab } from './usageStats/Last24hTab'
+import { DetailedTab } from './usageStats/DetailedTab'
 
-const spinnerStyle = `
-@keyframes spin { to { transform: rotate(360deg); } }
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-.stats-spinner {
-  width: 32px; height: 32px; border: 3px solid #1a3a5c;
-  border-top-color: #00d4ff; border-radius: 50%;
-  animation: spin 1s linear infinite; margin-bottom: 16px;
+type TabKey = 'overview' | '24h' | '5h' | '1h'
+const TABS: { key: TabKey; label: string }[] = [
+  { key: 'overview', label: 'Overview' },
+  { key: '24h', label: 'Last 24h' },
+  { key: '5h', label: 'Detailed 5h' },
+  { key: '1h', label: 'Detailed 1h' },
+]
+const AGENT_FILTERS: { key: StatsAgentFilter; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'claude', label: 'Claude' },
+  { key: 'codex', label: 'Codex' },
+]
+
+function statsViewForFilter(stats: Stats, filter: StatsAgentFilter): StatsView {
+  if (filter === 'all') return stats
+  else if (filter === 'claude') return stats.byAgent.claude
+  else if (filter === 'codex') return stats.byAgent.codex
+  else
+    throw new Error(`Unknown stats agent filter: ${JSON.stringify(filter)}`)
 }
-.stats-dots { animation: pulse 1.5s ease-in-out infinite; }
-`
 
 export function UsageStatsPanel({ api }: IDockviewPanelProps) {
-  const containerRef = useRef<HTMLDivElement>(null)
-  const [status, setStatus] = useState<'generating' | 'ready' | 'error'>('generating')
-  const [errorMsg, setErrorMsg] = useState('')
-  const [elapsed, setElapsed] = useState(0)
+  const forceRef = useRef(false)
+  const [tab, setTab] = useState<TabKey>('overview')
+  const [agentFilter, setAgentFilter] = useState<StatsAgentFilter>('all')
+  const generation = useStatsGenerationProgress()
+  const q = useIpcQuery<StatsDataResult>(
+    () => {
+      const force = forceRef.current
+      forceRef.current = false
+      const requestId = generation.begin()
+      return window.electronAPI.getStatsData(force, requestId).finally(generation.finish)
+    },
+    [],
+  )
+  useEffect(() => { api.setTitle('📊 Usage Stats') }, [api])
 
-  // viewHash carries the active page + chart sub-tabs across a reload (set from the
-  // dashboard's reload message) and is re-applied via the regenerated page's URL hash.
-  const loadStats = useCallback((force = false, viewHash = '') => {
-    setStatus('generating')
-    setElapsed(0)
-    const startTime = Date.now()
-    const timer = setInterval(() => setElapsed(Math.round((Date.now() - startTime) / 1000)), 1000)
+  const refresh = () => { forceRef.current = true; q.refetch() }
+  const result = q.data
+  const stats: Stats | null = result?.ok ? result.data : null
 
-    ;(window as any).electronAPI.generateStats(force).then((result: { ok: boolean; htmlPath?: string; error?: string }) => {
-      clearInterval(timer)
-      if (result.ok && result.htmlPath) {
-        setStatus('ready')
-        if (containerRef.current) {
-          const existing = containerRef.current.querySelector('webview')
-          if (existing) existing.remove()
-          const webview = document.createElement('webview') as any
-          webview.src = `file://${result.htmlPath}?t=${Date.now()}` + (viewHash ? `#${viewHash}` : '')
-          webview.style.width = '100%'
-          webview.style.height = '100%'
-          webview.style.border = 'none'
-          // The in-page "⟳ Reload" button signals us via a console message carrying the
-          // current view state ("__CLAUDE_STATS_RELOAD__:page=...&otab=...&h24=..."); we
-          // regenerate and pass that state back through the new page's URL hash to restore it.
-          webview.addEventListener('console-message', (e: any) => {
-            if (typeof e.message === 'string' && e.message.startsWith('__CLAUDE_STATS_RELOAD__')) {
-              const i = e.message.indexOf(':')
-              loadStats(true, i >= 0 ? e.message.slice(i + 1) : '')
-            }
-          })
-          containerRef.current.appendChild(webview)
-        }
-      } else {
-        setStatus('error')
-        setErrorMsg(result.error || 'Unknown error')
-      }
-    }).catch((e: Error) => {
-      clearInterval(timer)
-      setStatus('error')
-      setErrorMsg(e.message)
-    })
-  }, [])
-
-  useEffect(() => {
-    api.setTitle('📊 Usage Stats')
-    loadStats()
-  }, [])
+  if (q.loading && !stats) {
+    return (
+      <div className="usage-stats-empty">
+        <div className="usage-spinner" />
+        <div className="usage-stats-loading-title">Loading usage statistics…</div>
+        <div>{formatStatsGenerationProgress(generation.progress)}</div>
+        <div className="usage-stats-elapsed">Elapsed: {generation.elapsedSeconds}s</div>
+      </div>
+    )
+  }
+  if (q.error || (result && !result.ok)) {
+    const msg = q.error?.message || (result && !result.ok ? result.error : 'Unknown error')
+    return (
+      <div className="usage-stats-error">
+        <div>Failed to load usage stats</div>
+        <div className="usage-stats-error-detail">{msg}</div>
+        <button className="usage-stats-refresh" onClick={refresh}>Retry</button>
+      </div>
+    )
+  }
+  if (!stats) return <div className="usage-stats-empty">No usage data yet.</div>
+  const activeStats = statsViewForFilter(stats, agentFilter)
 
   return (
-    <div style={{ position: 'relative', width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: '#0f1923' }}>
-      <style>{spinnerStyle}</style>
-      {status !== 'ready' && (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-          {status === 'generating' && (
-            <>
-              <div className="stats-spinner" />
-              <div style={{ color: '#00d4ff', fontFamily: 'monospace', fontSize: 14, marginBottom: 8 }}>
-                Generating usage statistics<span className="stats-dots">...</span>
-              </div>
-              <div style={{ color: '#555', fontFamily: 'monospace', fontSize: 12 }}>
-                Scanning session files ({elapsed}s)
-              </div>
-            </>
-          )}
-          {status === 'error' && (
-            <div style={{ color: '#f44336', fontFamily: 'monospace', fontSize: 14, textAlign: 'center', padding: 20 }}>
-              <div>Failed to generate stats</div>
-              <div style={{ color: '#888', marginTop: 8, fontSize: 12, maxWidth: 600, wordBreak: 'break-all' }}>{errorMsg}</div>
-              <button onClick={() => loadStats()} style={{ marginTop: 16, padding: '6px 16px', background: '#1a3a5c', color: '#00d4ff', border: '1px solid #00d4ff', borderRadius: 4, cursor: 'pointer', fontFamily: 'monospace' }}>
-                Retry
-              </button>
-            </div>
-          )}
+    <div className="usage-stats-panel">
+      <div className="usage-stats-tabs">
+        {TABS.map((t) => (
+          <button key={t.key} className={`usage-stats-tab${tab === t.key ? ' active' : ''}`} onClick={() => setTab(t.key)}>
+            {t.label}
+          </button>
+        ))}
+        <div className="usage-agent-toggle" role="group" aria-label="Usage source">
+          {AGENT_FILTERS.map((agent) => (
+            <button key={agent.key} className={`usage-agent-option${agentFilter === agent.key ? ' active' : ''}`} onClick={() => setAgentFilter(agent.key)}>
+              {agent.label}
+            </button>
+          ))}
+        </div>
+        <div className="usage-stats-tabs-spacer" />
+        <span className="usage-stats-generatedat">{new Date(stats.generatedAt).toLocaleString()}</span>
+        <button className="usage-stats-refresh" onClick={refresh} disabled={q.loading}>
+          {q.loading ? <span className="usage-spinner-sm" /> : '⟳'} Refresh
+        </button>
+      </div>
+      {q.loading && (
+        <div className="usage-stats-progress">
+          <span>{formatStatsGenerationProgress(generation.progress)}</span>
+          <span>Elapsed: {generation.elapsedSeconds}s</span>
         </div>
       )}
-      <div ref={containerRef} style={{ flex: 1, display: status === 'ready' ? 'block' : 'none' }} />
+      <div className="usage-stats-body">
+        <div className="usage-stats-content">
+          {tab === 'overview' && <OverviewTab key={agentFilter} stats={activeStats} />}
+          {tab === '24h' && <Last24hTab key={agentFilter} stats={activeStats} />}
+          {(tab === '5h' || tab === '1h') && <DetailedTab key={agentFilter} stats={activeStats} windowHours={tab === '5h' ? 5 : 1} />}
+        </div>
+      </div>
     </div>
   )
 }

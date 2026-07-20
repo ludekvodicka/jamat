@@ -11,7 +11,6 @@ import { join } from 'path'
 import { tmpdir, homedir } from 'os'
 import { getAgent, listAgents, listAvailableAgents, resolveAgentForSessionId } from '../core/agents/index'
 import { getRendererAgent } from '../core/agents/renderer'
-import { normalizeTty } from '../core/agents/claude/patterns'
 
 let passed = 0
 let failed = 0
@@ -99,7 +98,7 @@ ok('availability is a subset of all', avail.every((a) => all.some((b) => b.id ==
 console.log('\n[7] Claude adapter — real facade over existing core/menu-core modules')
 ok('claude.sessionsRoot ends with .claude/projects', claude.sessionsRoot('/home/u').replace(/\\/g, '/').endsWith('.claude/projects'))
 ok('claude.encodeProjectDir replaces non-alnum', claude.encodeProjectDir('Q:\\foo bar') === 'Q--foo-bar')
-ok('claude.renameSlashCommand has \\r terminator', claude.renameSlashCommand('test') === '/rename test\r')
+ok('claude.renameSlashCommand returns command text', claude.renameSlashCommand('test') === '/rename test')
 const execCmd = claude.buildExecCommand('hello', 'haiku')
 ok('claude.buildExecCommand command = claude', execCmd.command === 'claude')
 ok('claude.buildExecCommand includes -p flag', execCmd.args.includes('-p'))
@@ -108,8 +107,6 @@ ok('claude.buildExecCommand stdin = prompt', execCmd.stdin === 'hello')
 const permPaths = claude.permissionConfigPaths('/proj', '/home/u')
 ok('permissionConfigPaths returns 3 entries', permPaths.length === 3)
 ok('permissionConfigPaths first is project local', permPaths[0].includes('settings.local.json'))
-ok('claude.ttyPatterns.toolUse matches Read marker', claude.ttyPatterns.toolUse.test('  ⏺ Read(/tmp/foo.ts)'))
-ok('claude.ttyPatterns.blocked matches y/n', claude.ttyPatterns.blocked.some((r) => r.test('Proceed? [y/n]')))
 
 console.log('\n[8] resolveAgentForSessionId — synthesizes a Claude session and resolves it')
 const synthHome = mkdtempSync(join(tmpdir(), 'agents-smoke-'))
@@ -214,34 +211,23 @@ console.log('\n[12] selected-agent routing guard — each adapter uses its own s
   }
 }
 
-console.log('\n[13] Busy detection — busyWide (deep-scan elapsed subset) catches the spinner status line')
+console.log('\n[13] Renderer work-detector factories are provider-specific')
 {
-  const busy = claude.ttyPatterns.busy
-  const wide = claude.ttyPatterns.busyWide
-  ok('claude.ttyPatterns.busy is defined', !!busy)
-  ok('claude.ttyPatterns.busyWide is defined', !!wide)
-  // The classifier tests these against normalizeTty(screen) — normalize the raw samples the same way.
-  const matchesWide = (raw: string) => !!wide && wide.test(normalizeTty(raw))
-  const matchesBusy = (raw: string) => !!busy && busy.test(normalizeTty(raw))
-
-  // Positive: the elapsed-timer forms that stay present through a whole "thinking" turn.
-  ok('busyWide matches "(1h 25m 33s · …)" (elapsedDot)',
-    matchesWide('✻ Flowing… (1h 25m 33s · still thinking with xhigh effort)'))
-  ok('busyWide matches "…(45s)" (elapsedEllipsis)',
-    matchesWide('Compacting conversation… (45s)'))
-  ok('busyWide matches a bare "(8s ·" elapsed', matchesWide('✶ Spinning… (8s · thinking)'))
-
-  // Negative: prose parentheticals must NOT read as busy (that's why only the tightly-anchored
-  // elapsed markers get the deep scan — spinnerGlyph / esc-to-interrupt stay shallow-window only).
-  ok('busyWide rejects prose "(5s) pause"', !matchesWide('the (5s) pause before the retry'))
-  ok('busyWide rejects a section ref "(2)"', !matchesWide('see step (2) below for details'))
-  ok('busyWide rejects the idle prompt', !matchesWide('> \n  bypass permissions on (shift+tab to cycle)'))
-
-  // Subset invariant: anything busyWide matches, the full busy union also matches (it's built from
-  // the same BUSY_SIGNALS_COLLAPSED entries) — so the deep scan can only ADD coverage, never diverge.
-  for (const s of ['✻ Flowing… (1h 25m 33s · x)', 'Compacting… (45s)', '✶ Spinning… (8s · thinking)']) {
-    ok(`busyWide ⊆ busy for ${JSON.stringify(s)}`, !matchesWide(s) || matchesBusy(s))
+  const frame = { rawTail: '', screenTail: '', wideScreenTail: '', phase: 'running' as const, timestamp: 0 }
+  const callbacks = {
+    readFrame: () => frame,
+    onStatus: () => undefined,
+    onBackgroundActivity: () => undefined,
+    onIdle: () => undefined,
+    onReport: () => undefined,
   }
+  const claudeDetector = getRendererAgent('claude').createWorkDetector(callbacks)
+  const codexDetector = getRendererAgent('codex').createWorkDetector(callbacks)
+  ok('Claude renderer creates a Claude detector', claudeDetector.agent === 'claude')
+  ok('Codex renderer creates a Codex detector', codexDetector.agent === 'codex')
+  ok('each renderer factory creates a separate detector instance', claudeDetector !== codexDetector)
+  claudeDetector.dispose()
+  codexDetector.dispose()
 }
 
 console.log('\n[14] capabilities — declared flags + main↔renderer parity (U1)')
@@ -251,13 +237,15 @@ ok('claude.capabilities.execModels includes opus', claude.capabilities.execModel
 ok('claude.capabilities.docker image = jamat-isolated', claude.capabilities.docker?.image === 'jamat-isolated')
 ok('codex.capabilities.fork = true', codex.capabilities.fork === true)
 ok('codex.capabilities.liveRename = true', codex.capabilities.liveRename === true)
-ok('codex.capabilities.usageSource = openai', codex.capabilities.usageSource === 'openai')
+ok('codex.capabilities.contextPercent = true', codex.capabilities.contextPercent === true)
+ok('codex.capabilities.usageSource = codex-app-server', codex.capabilities.usageSource === 'codex-app-server')
 ok('codex.capabilities.docker configDirName = .codex', codex.capabilities.docker?.configDirName === '.codex')
 ok('codex.capabilities.execModels empty (filled in U8)', codex.capabilities.execModels.length === 0)
 // The main-process adapter and the renderer registry share the SAME capabilities object — both import
 // the single const from renderer-meta.ts. So parity is object identity, and the two can't drift.
 ok('claude capabilities parity (main === renderer, same object)', getAgent('claude').capabilities === getRendererAgent('claude').capabilities)
 ok('codex capabilities parity (main === renderer, same object)', getAgent('codex').capabilities === getRendererAgent('codex').capabilities)
+ok('renderer display names come from the registry', getRendererAgent('claude').displayName === 'Claude' && getRendererAgent('codex').displayName === 'Codex')
 ok('claude prompt newline uses CSI-u Shift+Enter',
   getRendererAgent('claude').promptNewlineSequences.standard === '\x1b[13;2u'
   && getRendererAgent('claude').promptNewlineSequences.win32InputMode === '\x1b[13;2u')
@@ -285,12 +273,36 @@ try {
 
 console.log('\n[16] remaining graceful-degrade defaults + rename command + parseExecOutput (U1)')
 ok('codex.encodeProjectDir → "" (base default)', codex.encodeProjectDir('/whatever') === '')
-ok('codex.renameSlashCommand uses native inline /rename', codex.renameSlashCommand('x') === '/rename x\r')
-ok('renderer Codex rename slash matches main adapter', getRendererAgent('codex').renameSlashCommand('x') === '/rename x\r')
-ok('codex.readEffortLevel → null (base default)', codex.readEffortLevel('/p', '/h') === null)
+ok('codex.renameSlashCommand uses native inline /rename', codex.renameSlashCommand('x') === '/rename x')
+ok('renderer Codex rename slash matches main adapter', getRendererAgent('codex').renameSlashCommand('x') === '/rename x')
+ok('codex.readSessionModelInfo → null for a missing rollout', codex.readSessionModelInfo('/missing', '/p', '/h') === null)
 ok('codex.appendCustomTitle rejects invalid inputs', codex.appendCustomTitle('/f', 'id', 't') === false)
 // codex overrides parseExecOutput (NDJSON reduce) — exercised in [4]. Claude inherits the base trim:
 ok('claude.parseExecOutput inherits base trim (correct for `claude -p`)', claude.parseExecOutput('  hello \n') === 'hello')
+
+console.log('\n[17] complete adapter-owned model/effort/context result')
+{
+  const codexInfo = codex.readSessionModelInfo(join(process.cwd(), 'core/agents/codex/fixtures/rollout-sample.jsonl'), '/work/demo-project', homedir())
+  ok('Codex adapter returns its complete runtime snapshot', codexInfo?.model === 'gpt-5.6-sol' && codexInfo.effortLevel === 'max' && codexInfo.contextTokens === 103147)
+
+  const runtimeDir = mkdtempSync(join(tmpdir(), 'claude-runtime-'))
+  try {
+    mkdirSync(join(runtimeDir, '.claude'), { recursive: true })
+    writeFileSync(join(runtimeDir, '.claude', 'settings.local.json'), JSON.stringify({ effortLevel: 'xhigh' }))
+    const transcript = join(runtimeDir, 'session.jsonl')
+    writeFileSync(transcript, JSON.stringify({
+      type: 'assistant',
+      message: {
+        model: 'claude-opus-4-7',
+        usage: { input_tokens: 100, cache_read_input_tokens: 200, cache_creation_input_tokens: 300 },
+      },
+    }) + '\n')
+    const claudeInfo = claude.readSessionModelInfo(transcript, runtimeDir, homedir())
+    ok('Claude adapter assembles effort internally without caller mutation', claudeInfo?.effortLevel === 'xhigh' && claudeInfo.contextTokens === 600)
+  } finally {
+    rmSync(runtimeDir, { recursive: true, force: true })
+  }
+}
 
 console.log(`\n=== ${failed === 0 ? 'PASS' : 'FAIL'} (${passed} passed, ${failed} failed)`)
 process.exit(failed === 0 ? 0 : 1)

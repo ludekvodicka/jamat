@@ -11,6 +11,7 @@ import {
   resolveContextLevels,
   contextLevel,
   compactSuggestPct,
+  contextUsedPercent,
   DEFAULT_CONTEXT_LEVELS,
 } from '../app-electron/src/renderer/utils/context-level'
 
@@ -92,6 +93,28 @@ const valid: ContextWarnLevel[] = [
     { pct: 75, popup: true, statusBar: true },
     { pct: 85, popup: true, statusBar: true },
   ]) === 20)
+}
+
+// ── provider-neutral occupied/window percentage ──
+{
+  ok('Codex raw occupancy rounds to 40%', contextUsedPercent({
+    model: 'gpt-5.6-sol',
+    modelLabel: 'GPT-5.6 Sol',
+    contextTokens: 103147,
+    contextWindow: 258400,
+    effortLevel: 'max',
+  }) === 40)
+  ok('Claude occupancy keeps the same semantics', contextUsedPercent({
+    model: 'claude-opus-4-7',
+    modelLabel: 'Opus 4.7',
+    contextTokens: 125000,
+    contextWindow: 1000000,
+    effortLevel: 'xhigh',
+  }) === 13)
+  ok('missing info → null', contextUsedPercent(null) === null)
+  ok('invalid window → null', contextUsedPercent({
+    model: 'x', modelLabel: 'x', contextTokens: 1, contextWindow: 0, effortLevel: null,
+  }) === null)
 }
 
 console.log(`\n${failed === 0 ? '✓ PASS' : '✗ FAIL'} — ${passed} passed, ${failed} failed`)

@@ -1,7 +1,8 @@
 /**
  * Unified, versioned, crash-safe app-state store — the SINGLE source of truth for everything the
  * Electron app exclusively owns and restores on launch: the window list, window groups, the
- * per-window dockview tab layouts, and per-project notes. One file, written ONLY by main.
+ * per-window dockview tab layouts, per-project notes, and per-session descriptions. One file,
+ * written ONLY by main.
  *
  * Why this exists (data-loss incident 2026-06-11): the tab history lived in N separate
  * `layouts/layout-<id>.json` files written by the RENDERER. A failed/empty restore could silently
@@ -39,7 +40,7 @@ import { getJamatPaths } from './jamat-paths'
 import type { WindowStateEntry } from './window-state-manager'
 import type { WindowGroup } from './groups-manager'
 
-const SCHEMA_VERSION = 1
+const SCHEMA_VERSION = 2
 const SNAPSHOT_KEEP = 10
 
 export interface AppState {
@@ -53,6 +54,8 @@ export interface AppState {
   layouts: Record<string, unknown>
   /** sanitized panelId → notes lines. Was `notes/<id>.json`. */
   notes: Record<string, string[]>
+  /** Session UUID → private AppJamat description. */
+  sessionDescriptions: Record<string, string>
   /** First-run onboarding decided? `undefined` = never decided (pre-existing config or a brand-new
    *  install before the decision is made at load); `false` = needs the guided Settings flow;
    *  `true` = done (or a pre-existing user who never needed it). Drives `onboarding:get-state`. */
@@ -60,7 +63,15 @@ export interface AppState {
 }
 
 function emptyState(): AppState {
-  return { schemaVersion: SCHEMA_VERSION, savedAt: Date.now(), windows: {}, groups: [], layouts: {}, notes: {} }
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    savedAt: Date.now(),
+    windows: {},
+    groups: [],
+    layouts: {},
+    notes: {},
+    sessionDescriptions: {},
+  }
 }
 
 function stateFilePath(): string { return getJamatPaths().appState }
@@ -77,8 +88,11 @@ function coerce(raw: unknown): AppState {
   if (Array.isArray(o.groups)) s.groups = o.groups as AppState['groups']
   if (o.layouts && typeof o.layouts === 'object') s.layouts = o.layouts as AppState['layouts']
   if (o.notes && typeof o.notes === 'object') s.notes = o.notes as AppState['notes']
+  if (o.sessionDescriptions && typeof o.sessionDescriptions === 'object' && !Array.isArray(o.sessionDescriptions))
+    for (const [sessionId, description] of Object.entries(o.sessionDescriptions))
+      if (typeof description === 'string') s.sessionDescriptions[sessionId] = description
   if (typeof o.onboardingComplete === 'boolean') s.onboardingComplete = o.onboardingComplete
-  if (typeof o.schemaVersion === 'number') s.schemaVersion = o.schemaVersion
+  if (typeof o.schemaVersion === 'number' && o.schemaVersion > SCHEMA_VERSION) s.schemaVersion = o.schemaVersion
   return s
 }
 
@@ -190,6 +204,20 @@ export function deleteLayoutState(windowId: string): void {
 
 export function getNotesState(key: string): string[] | undefined { return loadAppState().notes[key] }
 export function setNotesState(key: string, entries: string[]): void { loadAppState().notes[key] = entries; scheduleFlush() }
+
+export function getSessionDescriptionState(sessionId: string): string | undefined {
+  return loadAppState().sessionDescriptions[sessionId]
+}
+export function setSessionDescriptionState(sessionId: string, description: string): void {
+  const descriptions = loadAppState().sessionDescriptions
+  if (description) {
+    if (descriptions[sessionId] === description) return
+    descriptions[sessionId] = description
+  }
+  else if (sessionId in descriptions) delete descriptions[sessionId]
+  else return
+  scheduleFlush()
+}
 
 /** True once onboarding is explicitly marked complete. (`undefined` flag → false here.) */
 export function getOnboardingComplete(): boolean { return loadAppState().onboardingComplete === true }

@@ -4,6 +4,8 @@ export const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[
 
 /** Agent id literal. Lives next to MenuSelection to avoid a cycle with core/agents/. */
 export type AgentId = 'claude' | 'codex'
+export type AgentWorkStatus = 'idle' | 'running' | 'tool-use' | 'blocked' | 'waiting' | 'done'
+export type AgentTerminalPhase = 'menu' | 'running'
 
 /**
  * Hard fallback used at every site that needs an agent but doesn't know

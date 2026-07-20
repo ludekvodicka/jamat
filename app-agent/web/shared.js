@@ -22,9 +22,11 @@ var __pure = (() => {
   var pure_exports = {};
   __export(pure_exports, {
     buildDisplayEntries: () => buildDisplayEntries,
+    contextWindowFor: () => contextWindowFor,
     formatDuration: () => formatDuration,
     formatRelativeDate: () => formatRelativeDate,
     matchesVirtualPrefix: () => matchesVirtualPrefix,
+    modelLabel: () => modelLabel,
     sortProjectEntries: () => sortProjectEntries,
     stripVirtualPrefix: () => stripVirtualPrefix
   });
@@ -86,6 +88,23 @@ var __pure = (() => {
     const regular = folderNames.filter((f) => !matched.has(f)).map((f) => ({ kind: "folder", name: f, displayName: f }));
     return [...virtualEntries, ...regular];
   }
+  var CONTEXT_1M = 1e6;
+  var CONTEXT_200K = 2e5;
+  function modelLabel(modelId) {
+    if (!modelId) return "unknown";
+    const id = modelId.replace(/\[1m\]$/i, "");
+    const m = id.match(/^claude-([a-z]+)-(\d+)-(\d+)/i);
+    if (!m) return modelId;
+    const family = m[1].charAt(0).toUpperCase() + m[1].slice(1);
+    return `${family} ${m[2]}.${m[3]}`;
+  }
+  function contextWindowFor(modelId) {
+    if (/\[1m\]$/i.test(modelId)) return CONTEXT_1M;
+    const fam = modelId.match(/^claude-([a-z]+)-/i)?.[1]?.toLowerCase();
+    if (fam === "opus" || fam === "sonnet") return CONTEXT_1M;
+    if (fam === "haiku") return CONTEXT_200K;
+    return 0;
+  }
   function formatRelativeDate(iso) {
     const date = new Date(iso);
     const now = /* @__PURE__ */ new Date();
@@ -119,5 +138,7 @@ var matchesVirtualPrefix = __pure.matchesVirtualPrefix;
 var stripVirtualPrefix = __pure.stripVirtualPrefix;
 var sortProjectEntries = __pure.sortProjectEntries;
 var buildDisplayEntries = __pure.buildDisplayEntries;
+var modelLabel = __pure.modelLabel;
+var contextWindowFor = __pure.contextWindowFor;
 var formatRelativeDate = __pure.formatRelativeDate;
 var formatDuration = __pure.formatDuration;

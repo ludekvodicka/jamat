@@ -17,11 +17,13 @@ import { saveWindowState, loadWindowState, type WindowBounds, type WindowStateEn
 import { flushAppStateNow, getOnboardingComplete, isOnboardingDecided, setOnboardingComplete } from './app-state-store'
 import { getJamatPaths } from './jamat-paths'
 import { getMonorepoRoot, getAppVersion } from './app-root'
+import { StatsGenerationRunner } from './statsGenerationRunner'
 import { loadConfig as loadCoreConfig, ensureConfig, validateConfigPatch, writeConfigPatch } from '../../../core/config.js'
 import { resolveUpdateChannel } from '../../../core/update/update-channel.js'
 import type { AppConfig, ConfigPatch } from '../../../core/types.js'
 import type { PtyConfig } from '../shared/types'
 import type { ScreenOpenTabMeta, AppPathsInfo } from '../../../core/types/ipc-contracts.js'
+import type { Stats } from '../../../core/types/stats.js'
 
 const windows = new Map<string, BrowserWindow>()
 let windowCounter = 1
@@ -38,6 +40,12 @@ let menuConfigPath: string = ''
 // Set by resolveConfigPath when a starter config is created on first run; consumed once by
 // loadScreenConfig to show the welcome dialog after the config loads.
 let firstRunConfigPath: string | null = null
+
+function isUnifiedStats(value: unknown): value is Stats {
+  if (!value || typeof value !== 'object') return false
+  const stats = value as Partial<Stats>
+  return !!stats.byAgent?.claude && !!stats.byAgent?.codex
+}
 
 function resolveConfigPath(): string | null {
   // The portable config-dir was resolved once in bootstrap-userdata (JAMAT_CONFIG_DIR / --config-dir
@@ -758,74 +766,18 @@ export function registerWindowIpc(): void {
   registerHandler('onboarding:get-state', async () => ({ firstRun: !getOnboardingComplete() }))
   registerHandler('onboarding:complete', async () => { setOnboardingComplete(true); return { ok: true } })
 
-  registerHandler('stats:generate', async (_event, force?: boolean) => {
-    const { spawn } = require('child_process') as typeof import('child_process')
-    const { statSync: fstatSync } = require('fs') as typeof import('fs')
+  // Usage Stats serves a fresh (<5 min) stats.json unless `force` bypasses the cache. Generation
+  // runs in a subprocess so the main thread stays responsive.
+  registerHandler('stats:data', async (_event, force?: boolean, requestId?: string) => {
     const root = getMonorepoRoot()
-    const statsScript = join(root, 'app-stats', 'generate-stats.ts')
-    const htmlScript = join(root, 'app-stats', 'generate-html.ts')
-    const configDir = getJamatPaths().configDir
-    const htmlPath = join(getJamatPaths().statsDir, 'dashboard.html')
-    const tsxBin = join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'tsx.cmd' : 'tsx')
-
-    // An installed build has no source tree (no node_modules/.bin/tsx, no app-stats/*) → the stats
-    // generator can't run. Report it instead of failing with a raw spawn error. (Bundled stats = follow-up.)
-    if (!existsSync(tsxBin)) return { ok: false, error: 'Usage stats needs a source checkout (not available in the installed build yet)' }
-
-    // Serve cached HTML if fresh (< 5 minutes old) — unless the caller forces a rebuild (Reload button).
-    if (!force) {
-      try {
-        const st = fstatSync(htmlPath)
-        if (Date.now() - st.mtimeMs < 5 * 60 * 1000) {
-          return { ok: true, htmlPath }
-        }
-      } catch {}
-    }
-
-    function runScript(script: string, timeout: number): Promise<{ ok: boolean; error?: string }> {
-      return new Promise((resolve) => {
-        const child = spawn(tsxBin, [script, '--config-dir', configDir], { cwd: root, stdio: 'pipe', shell: true })
-        let stderr = ''
-        const timer = setTimeout(() => { child.kill(); resolve({ ok: false, error: 'Timeout' }) }, timeout)
-        child.stderr?.on('data', (d: Buffer) => { stderr += d.toString() })
-        child.on('close', (code) => {
-          clearTimeout(timer)
-          resolve(code === 0 ? { ok: true } : { ok: false, error: stderr.slice(0, 500) })
-        })
-        child.on('error', (e) => { clearTimeout(timer); resolve({ ok: false, error: e.message }) })
-      })
-    }
-
-    try {
-      const r1 = await runScript(statsScript, 120000)
-      if (!r1.ok) return { ok: false, error: `Stats generation failed: ${r1.error}` }
-      const r2 = await runScript(htmlScript, 30000)
-      if (!r2.ok) return { ok: false, error: `HTML generation failed: ${r2.error}` }
-      return { ok: true, htmlPath }
-    } catch (e: any) {
-      return { ok: false, error: e.message }
-    }
-  })
-
-  // Native Usage Stats tab: runs the SAME generate-stats.ts as `stats:generate`, but skips the
-  // HTML step and returns the parsed stats.json DATA. Serves a fresh (<5 min) cached stats.json
-  // unless `force` (the ↻ button) bypasses the cache. The heavy ccusage FS scan runs in a
-  // subprocess so the main thread stays responsive.
-  registerHandler('stats:data', async (_event, force?: boolean) => {
-    const { spawn } = require('child_process') as typeof import('child_process')
-    const { statSync: fstatSync, readFileSync: fread } = require('fs') as typeof import('fs')
-    const root = getMonorepoRoot()
-    const statsScript = join(root, 'app-stats', 'generate-stats.ts')
     const configDir = getJamatPaths().configDir
     const jsonPath = join(getJamatPaths().statsDir, 'stats.json')
-    const tsxBin = join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'tsx.cmd' : 'tsx')
-
-    // An installed build has no source tree → the stats generator can't run. Report it clearly.
-    if (!existsSync(tsxBin)) return { ok: false, error: 'Usage stats needs a source checkout (not available in the installed build yet)' }
 
     const readJson = () => {
       try {
-        return { ok: true as const, data: JSON.parse(fread(jsonPath, 'utf-8')) }
+        const data: unknown = JSON.parse(readFileSync(jsonPath, 'utf-8'))
+        if (!isUnifiedStats(data)) return { ok: false as const, error: 'stats.json uses an older schema' }
+        return { ok: true as const, data }
       } catch (e: any) {
         return { ok: false as const, error: `stats.json unreadable: ${e.message}` }
       }
@@ -834,27 +786,16 @@ export function registerWindowIpc(): void {
     // Serve fresh cache without spawning the generator.
     if (!force) {
       try {
-        const st = fstatSync(jsonPath)
-        if (Date.now() - st.mtimeMs < 5 * 60 * 1000) return readJson()
+        const st = statSync(jsonPath)
+        if (Date.now() - st.mtimeMs < 5 * 60 * 1000) {
+          const cached = readJson()
+          if (cached.ok) return cached
+        }
       } catch {}
     }
 
-    function runScript(script: string, timeout: number): Promise<{ ok: boolean; error?: string }> {
-      return new Promise((resolve) => {
-        const child = spawn(tsxBin, [script, '--config-dir', configDir], { cwd: root, stdio: 'pipe', shell: true })
-        let stderr = ''
-        const timer = setTimeout(() => { child.kill(); resolve({ ok: false, error: 'Timeout' }) }, timeout)
-        child.stderr?.on('data', (d: Buffer) => { stderr += d.toString() })
-        child.on('close', (code) => {
-          clearTimeout(timer)
-          resolve(code === 0 ? { ok: true } : { ok: false, error: stderr.slice(0, 500) })
-        })
-        child.on('error', (e) => { clearTimeout(timer); resolve({ ok: false, error: e.message }) })
-      })
-    }
-
     try {
-      const r = await runScript(statsScript, 120000)
+      const r = await StatsGenerationRunner.generateData({ root, configDir }, { requestId, webContents: _event.sender })
       if (!r.ok) return { ok: false, error: `Stats generation failed: ${r.error}` }
       return readJson()
     } catch (e: any) {

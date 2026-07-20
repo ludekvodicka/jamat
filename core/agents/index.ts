@@ -90,4 +90,4 @@ export function resolveAgentForSessionId(sessionId: string, homeDir: string): Ag
   return null
 }
 
-export type { AgentAdapter, AgentId, AgentSession, AgentTurnInfo, AgentTtyPatterns, ExecCommand, ExecOptions } from './types.js'
+export type { AgentAdapter, AgentId, AgentSession, AgentTurnInfo, ExecCommand, ExecOptions } from './types.js'

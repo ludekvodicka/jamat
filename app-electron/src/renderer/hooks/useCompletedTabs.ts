@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useLayoutStore } from '../store/layout-store'
+import type { AgentWorkStatus } from '../../../../core/agents/workDetection/agentWorkDetector.types'
 
 /**
  * Tracks tabs that finished a turn while the user wasn't looking — the "completed work,
@@ -14,17 +15,20 @@ import { useLayoutStore } from '../store/layout-store'
  * or the bridge tab tree (those drive remote/AI "find a free session" logic, which only
  * knows idle/running/tool-use/blocked/waiting/done).
  */
-const WORK_STATUSES = new Set(['running', 'tool-use', 'blocked', 'waiting'])
+const WORK_STATUSES = new Set<AgentWorkStatus>(['running', 'tool-use', 'blocked', 'waiting'])
 
 export function useCompletedTabs(): void {
   useEffect(() => {
     // Last status seen per panel id — so we can detect the running/tool-use → idle EDGE
     // (terminal-status only fires on a real change, so each finish is exactly one idle event).
-    const prev: Record<string, string> = {}
+    const prev: Record<string, AgentWorkStatus> = {}
 
     const onStatus = (e: Event) => {
-      const { id, status } = (e as CustomEvent).detail ?? {}
+      const { id, status, backgroundActivity } = (e as CustomEvent<{ id?: string; status?: AgentWorkStatus; backgroundActivity?: boolean }>).detail ?? {}
       if (!id || !status) return
+      // Idle with a background shell/sub-agent still running → not truly finished; defer the badge (keep
+      // `prev` on the work state so the later idle-without-flag re-emit still reads as the finish edge).
+      if (status === 'idle' && backgroundActivity) return
       const store = useLayoutStore.getState()
       if (WORK_STATUSES.has(status)) {
         // A new turn is in flight → no longer "done".

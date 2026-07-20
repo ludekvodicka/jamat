@@ -26,7 +26,7 @@ interface TabContextMenuProps {
   currentColor: string
   onSelectColor: (color: string) => void
   onDetach: () => void
-  onRenameSession?: () => void
+  onEditSessionDetails?: () => void
   /** Set for agent tabs with a known project dir — opens a fresh, empty session in the same folder. */
   onNewSession?: () => void
   /** Set only when BOTH agents are installed — opens a fresh session in the same folder with the
@@ -49,7 +49,7 @@ interface TabContextMenuProps {
   onClose: () => void
 }
 
-export function TabContextMenu({ x, y, panelId, projectDir, sessionId, currentColor, onSelectColor, onDetach, onRenameSession, onNewSession, onNewSessionOtherAgent, newSessionOtherAgentLabel, onForkSession, onRestartSession, onCompactSession, onCopyInstanceId, onShowInfo, onCloseRemote, onClose }: TabContextMenuProps) {
+export function TabContextMenu({ x, y, panelId, projectDir, sessionId, currentColor, onSelectColor, onDetach, onEditSessionDetails, onNewSession, onNewSessionOtherAgent, newSessionOtherAgentLabel, onForkSession, onRestartSession, onCompactSession, onCopyInstanceId, onShowInfo, onCloseRemote, onClose }: TabContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null)
   const [showColors, setShowColors] = useState(false)
 
@@ -89,14 +89,14 @@ export function TabContextMenu({ x, y, panelId, projectDir, sessionId, currentCo
   ].filter(Boolean)
 
   const sessionGroup = [
-    projectDir && onRenameSession && (
+    projectDir && onEditSessionDetails && (
       <div
-        key="rename"
+        key="session-details"
         className="tab-context-item"
-        title="Rename this session — also bound to F2"
-        onClick={() => { onRenameSession(); onClose() }}
+        title="Edit this session's name and private AppJamat description — also bound to F2"
+        onClick={() => { onEditSessionDetails(); onClose() }}
       >
-        Rename session…
+        Session details…
         <span className="tab-context-shortcut">F2</span>
       </div>
     ),

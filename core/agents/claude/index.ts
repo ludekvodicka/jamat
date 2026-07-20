@@ -35,12 +35,11 @@ import {
   extractSessionHasEdits,
 } from './session-changes.js'
 import { buildLaunchCommand as buildClaudeLaunchCommand } from './launcher.js'
-import { CLAUDE_TTY_PATTERNS, CLAUDE_CAPABILITIES, claudeRenameSlash } from './renderer-meta.js'
+import { CLAUDE_CAPABILITIES, claudeRenameSlash } from './renderer-meta.js'
 import { AgentAdapterBase } from '../base.js'
 import type {
   AgentSession,
   AgentTurnInfo,
-  AgentTtyPatterns,
   ExecCommand,
   ExecOptions,
   SessionTitleWatchTarget,
@@ -155,12 +154,9 @@ export class ClaudeAdapter extends AgentAdapterBase {
     return listActiveSessionPids()
   }
 
-  readSessionModelInfo(sessionFile: string): SessionModelInfo | null {
-    return readClaudeSessionModelInfo(sessionFile)
-  }
-
-  readEffortLevel(projectDir: string, homeDir: string): string | null {
-    return readClaudeEffortLevel(projectDir, homeDir)
+  readSessionModelInfo(sessionFile: string, projectDir: string, homeDir: string): SessionModelInfo | null {
+    const info = readClaudeSessionModelInfo(sessionFile)
+    return info ? { ...info, effortLevel: readClaudeEffortLevel(projectDir, homeDir) } : null
   }
 
   // --- 4. CLI invocation ---
@@ -183,10 +179,6 @@ export class ClaudeAdapter extends AgentAdapterBase {
     if (opts?.ephemeral) args.push('--no-session-persistence')
     return { command: 'claude', args, stdin: prompt }
   }
-
-  // --- 5. TUI patterns ---
-
-  readonly ttyPatterns: AgentTtyPatterns = CLAUDE_TTY_PATTERNS
 
   // --- 6. Slash commands ---
 

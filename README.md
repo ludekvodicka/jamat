@@ -5,13 +5,13 @@
 # Jamat
 
 **Just Another Multi-Agent Terminal** — an open-source desktop control center for running many
-[Claude Code](https://www.anthropic.com/claude-code) sessions in one tiling workspace, and for
+[Claude Code](https://www.anthropic.com/claude-code) and Codex sessions in one tiling workspace, and for
 reaching the sessions running on your other computers across the network — including letting one
 AI agent operate another's tab.
 
 > **Status:** A tool I've built over ~5 months and use every day myself — now open-sourced. It's still
 > an early **WIP**: until now it was internal-only, so expect rough edges. **Windows is first-class;
-> macOS/Linux ship as beta installers** — Claude Code today, more agents soon. A spare-time project —
+> macOS/Linux ship as beta installers** — Claude Code and Codex today, more agents later. A spare-time project —
 > no company, no promises beyond "soon".
 
 [![Download](https://img.shields.io/github/v/release/ludekvodicka/jamat?label=download&color=success&sort=semver)](https://github.com/ludekvodicka/jamat/releases/latest)
@@ -36,7 +36,7 @@ Grab a **ready-to-run installer** below — no repo clone, no build step — or 
 | **Linux** _(beta)_                | `Jamat-<version>.AppImage`  | `chmod +x` then run; some distros need `libfuse2`.                                          |
 | **macOS** _(beta, Apple Silicon)_ | `Jamat-<version>-arm64.dmg` | Gatekeeper: **right-click → Open** the first time (or `xattr -cr /Applications/Jamat.app`). |
 
-**Requires** only [Claude Code](https://www.anthropic.com/claude-code) on your `PATH` — the app bundles its own runtime, so there's **no separate Node.js install**. (You only need [Node](https://nodejs.org) if you install Claude Code via npm rather than its native installer.) Windows and Linux builds **auto-update** from GitHub Releases; macOS updates manually until the app is signed.
+**Requires** at least one supported agent CLI—[Claude Code](https://www.anthropic.com/claude-code) or Codex—on your `PATH`. The app bundles its own runtime, so there's **no separate Node.js install**. (You only need [Node](https://nodejs.org) when an agent CLI is installed through npm.) Windows and Linux builds **auto-update** from GitHub Releases; macOS updates manually until the app is signed.
 
 **Verify your download:** every release ships a **`SHA256SUMS.txt`** with the installer hashes — the builds are unsigned, so check yours before running (`sha256sum -c SHA256SUMS.txt`, or PowerShell `Get-FileHash <file> -Algorithm SHA256`).
 
@@ -46,7 +46,7 @@ Want to hack on Jamat, or run the CLI / agent instead of the desktop app? [Build
 
 ## What it does
 
-You're running Claude Code in five tabs — and another two on the PC in the next room. Jamat puts
+You're running Claude Code and Codex in five tabs — and another two on the PC in the next room. Jamat puts
 every session in one tiling workspace, shows you which agent is **working** and which is **waiting
 on you**, and lets you reach (or hand work to) the agents on your **other machines**. Open source,
 self-hosted, your keys — nothing is proxied.
@@ -68,8 +68,9 @@ self-hosted, your keys — nothing is proxied.
 
   <img src="docs/images/predefined-messages.png" height="58" alt="A finished-agent notification with one-click What's next? and Continue quick replies">
 
-- **Detailed Claude stats** — a usage dashboard breaks cost & tokens down by project and model
-  (input / output / cache), across 1h / 5h / 24h windows.
+- **Detailed agent stats** — one `All / Claude / Codex` dashboard breaks tokens down by project and
+  model (input / output / cache), across 1h / 5h / 24h windows. Known Claude and Codex models include
+  an estimated API-equivalent cost; subscription charges can differ.
 
   <img src="docs/images/08-status-bar.png" height="39" alt="Status bar — model, reasoning effort, context used, and hourly (S) / weekly (W) usage meters">
 
@@ -79,7 +80,7 @@ self-hosted, your keys — nothing is proxied.
 ## Why Jamat?
 
 Plain terminal tabs, a VS Code window, or a session multiplexer each solve part of this — Jamat is
-the combination, aimed specifically at _many_ Claude Code agents:
+the combination, aimed specifically at _many_ coding-agent sessions:
 
 - **vs. terminal tabs / tmux** — tabs don't tell you which agent is _working_ vs _waiting on you_, or
   survive a reboot with the layout intact. Jamat does both, and adds diffs, usage stats and a session
@@ -103,7 +104,7 @@ Against that direct category — dedicated multi-session managers:
 | Phone access | ✅ web launcher + Wake-on-LAN | — | ✅ iOS app | — |
 | Usage / cost dashboard | ✅ per project & model | — | — | — |
 | Diff review | ✅ git + SVN, per session / per message | ✅ | ✅ | ✅ |
-| Agents beyond Claude Code | ~ adapter layer (more soon) | ✅ Codex, Gemini, Aider | ✅ Codex (+ alpha: OpenCode, Copilot) | ✅ Codex, Cursor |
+| Agent CLIs | ✅ Claude Code + Codex | ✅ Codex, Gemini, Aider | ✅ Codex (+ alpha: OpenCode, Copilot) | ✅ Codex, Cursor |
 | Platforms | Windows (macOS / Linux beta) | macOS / Linux | macOS / Windows / Linux (+ iOS) | macOS |
 | License | MIT | AGPL-3.0 | MIT | Closed source (free) |
 
@@ -171,7 +172,7 @@ drawer per subject, each with full memory and its own documents.
 | <img src="docs/images/06-diff-view.png" height="95" alt="Diff view"><br>**Diff view** — compare against a git commit, an svn base, or a point in the Claude session. | <img src="docs/images/04-file-view.png" height="95" alt="File view"><br>**File view** — breadcrumb + Open folder / Copy / Diff / Edit / VS Code over highlighted source. |
 | <img src="docs/images/10-file-context-menu.png" height="155" alt="File context menu"><br>**Open any mentioned file** — right-click a file path in a session's output to open it in a tab or VS Code, or open the whole project. | <img src="docs/images/14-context-nudge.png" height="155" alt="Context nudge"><br>**Context-full nudge** — a one-click **Compact now** prompt when a session gets large, at thresholds you set. |
 | <img src="docs/images/03-side-panel.png" height="310" alt="Side panel"><br>**Notes & recent files** — one-click reusable prompts, plus the files this session changed. | <img src="docs/images/05-settings.png" height="310" alt="Settings"><br>**Settings** — projects, appearance, terminal, notifications, usage, remote… all from the UI. |
-| <img src="docs/images/13-usage-stats.png" height="400" alt="Usage stats"><br>**Usage stats** — tokens, spend, model breakdown and daily consumption across your sessions. | <img src="docs/images/12-help.png" height="400" alt="Help"><br>**Help** — every keyboard shortcut and tab type on one page. |
+| <img src="docs/images/13-usage-stats.png" height="400" alt="Usage stats"><br>**Usage stats** — tokens, API-equivalent cost estimate, model breakdown and daily consumption across your sessions. | <img src="docs/images/12-help.png" height="400" alt="Help"><br>**Help** — every keyboard shortcut and tab type on one page. |
 
 ## Remote connections
 
@@ -242,7 +243,7 @@ Jamat is a TypeScript monorepo; several entry points share one core of business 
 | `app-electron/`      | The desktop app — Electron + React + [dockview](https://dockview.dev) + [xterm.js](https://xtermjs.org) + [node-pty](https://github.com/microsoft/node-pty).                                                                                                                                                                                            |
 | `app-cli/`           | A terminal menu + a scriptable bridge client (`jamat`).                                                                                                                                                                                                                                                                                                 |
 | `app-agent/`         | A per-machine REST API, plus an optional self-hosted relay + small web launcher to Wake-on-LAN a PC and start a session from a phone (you then drive it in Claude Code's own remote).                                                                                                                                                                                                                                                                                 |
-| `app-stats/`         | Usage / cost dashboard (ccusage → HTML).                                                                                                                                                                                                                                                                                                                |
+| `app-stats/`         | Unified local Claude + Codex usage data pipeline for the React dashboard.                                                                                                                                                                                                                                                                              |
 | `app-wol/`           | A standalone Wake-on-LAN proxy for an always-on device.                                                                                                                                                                                                                                                                                                 |
 | `dockerized-claude/` | A Docker image (`Dockerfile` + `entrypoint.sh`) that runs Claude Code sandboxed in a container — non-root user, `--dangerously-skip-permissions`, privileges dropped via gosu.                                                                                                                                                                          |
 | `skills/`            | The two Claude Code skills that ship with the app — `jamat` (drive the bridge from an agent) and `mdext-renderer` (Markdown/diagram authoring guidance). The desktop app junctions them into `~/.claude/skills` **automatically on every launch** — no manual setup; `bin/enable-jamat-skill.ps1` is a one-time fallback if you only run the CLI/agent. |
@@ -255,8 +256,8 @@ Jamat is a TypeScript monorepo; several entry points share one core of business 
 **Most people should just [download an installer](#download).** Build from source only to hack on
 Jamat, or to run the CLI / agent entry points.
 
-**Prerequisites:** Node.js 20+ and [Claude Code](https://www.anthropic.com/claude-code) installed and
-on your `PATH`.
+**Prerequisites:** Node.js 20+ and at least one supported agent CLI—
+[Claude Code](https://www.anthropic.com/claude-code) or Codex—installed on your `PATH`.
 
 ```bash
 # 0. Clone the repo
@@ -304,16 +305,16 @@ Found a vulnerability? Please report it privately — see [SECURITY.md](SECURITY
 Honest "soon", no dates:
 
 - Code signing, and hardening the macOS / Linux builds beyond beta
-- More agents via the pluggable adapter layer (Codex / GPT and others)
+- More agent CLIs beyond the current Claude Code and Codex adapters
 
 ## FAQ
 
-**Does it send my code anywhere?** No. Jamat runs Claude Code as a local subprocess on your own
-machine and your own keys — nothing is proxied through us. The only traffic is Claude Code's own
-calls to Anthropic, plus the optional LAN bridge between _your_ machines (off by default).
+**Does it send my code anywhere?** No. Jamat runs the selected agent CLI as a local subprocess on
+your own machine and account—nothing is proxied through us. The only traffic is the agent's own
+calls to Anthropic or OpenAI, plus the optional LAN bridge between _your_ machines (off by default).
 
-**Subscription or API key?** Either — Jamat drives the Claude Code CLI, so whatever you logged it in
-with (a Claude subscription or an Anthropic API key) is what it uses.
+**Subscription or API key?** Either—Jamat drives Claude Code or Codex directly, so each agent uses
+the subscription or API credentials already configured in its own CLI.
 
 **How mature are the macOS/Linux builds?** Windows is first-class (daily-driven); macOS and Linux ship
 as **beta installers** — largely cross-platform code, just less battle-tested, so expect the occasional
@@ -322,9 +323,9 @@ rough edge. Bug reports welcome.
 **Do I need all the `app-*` parts?** No. The desktop app (`app-electron`) is all you need; `app-agent`
 (phone / LAN remote), `app-stats` and `app-wol` are optional add-ons.
 
-**What runs today besides Claude Code?** Claude Code is the only wired agent for now — **Codex** is in
-the picker as the next adapter, but its backend isn't implemented yet. Everything else in the new-tab
-picker already works: real OS **shells** (CMD / PowerShell on Windows, a Terminal on macOS/Linux) and
+**What runs today besides Claude Code?** **Codex** is a fully wired agent with local session discovery,
+resume/fork/rename, project-aware token statistics, and its own launch adapter. The new-tab picker also
+offers real OS **shells** (CMD / PowerShell on Windows, a Terminal on macOS/Linux) and
 **tools** — Browser, Usage Stats, Ideas, Claude Abilities, Remote connections, Help, Settings.
 
 **Does it work with WSL?** There's no dedicated WSL mode — Jamat is a native Windows app and drives the

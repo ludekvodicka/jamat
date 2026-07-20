@@ -2,22 +2,22 @@
 import { describe, expect, it } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { DetailedTab } from './DetailedTab'
-import type { Stats, DetailedRequest } from '../../../../../../core/types/stats'
+import type { StatsView, DetailedRequest } from '../../../../../../core/types/stats'
 
 const req = (project: string, ts: string, cost: number): DetailedRequest => ({
-  timestamp: ts, model: 'claude-opus-4-8', inputTokens: 100, outputTokens: 50, cacheCreationTokens: 0, cacheReadTokens: 0,
+  agent: 'claude', timestamp: ts, model: 'claude-opus-4-8', inputTokens: 100, outputTokens: 50, cacheCreationTokens: 0, cacheReadTokens: 0, reasoningTokens: 0,
   totalTokens: 150, cost, durationMs: 1000, project, sessionId: 'sess1234abcd',
 })
 
-const STATS: Stats = {
-  generatedAt: '2026-06-27T12:00:00.000Z',
+const STATS: StatsView = {
   daily: [], sessions: [], hourly: [], hourly24h: [], projects24h: [], models24h: [], projectModels24h: {},
   detailed: {
     windowStart: '2026-06-27T07:00:00.000Z', windowEnd: '2026-06-27T12:00:00.000Z',
     requests: [req('recent', '2026-06-27T11:30:00.000Z', 1.0), req('older', '2026-06-27T09:00:00.000Z', 0.1)],
     projects: [],
   },
-  totals: { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, totalCost: 0, totalTokens: 0 },
+  totals: { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, reasoningTokens: 0, totalCost: 0, totalTokens: 0 },
+  costCoverage: 'full', durationCoverage: 'full',
 }
 
 describe('DetailedTab', () => {
@@ -32,5 +32,11 @@ describe('DetailedTab', () => {
     render(<DetailedTab stats={STATS} windowHours={1} />)
     expect(screen.getAllByText('recent').length).toBeGreaterThan(0)
     expect(screen.queryByText('older')).toBeNull()
+  })
+
+  it('hides API-time cards and duration columns when duration is unavailable', () => {
+    const { container } = render(<DetailedTab stats={{ ...STATS, durationCoverage: 'none' }} windowHours={5} />)
+    expect(container.textContent).not.toContain('API time')
+    expect(container.textContent).not.toContain('Duration')
   })
 })

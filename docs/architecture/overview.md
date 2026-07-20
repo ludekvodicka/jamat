@@ -11,8 +11,17 @@ desktop app, the terminal menu, and the per-machine REST server all behave ident
 | `app-electron/` | The desktop app — Electron + React + [dockview](https://dockview.dev) (tiling) + [xterm.js](https://xtermjs.org) + [node-pty](https://github.com/microsoft/node-pty) (real PTYs). |
 | `app-cli/` | A terminal menu, plus a scriptable bridge client (`jamat`). |
 | `app-agent/` | A per-machine REST API, a small LAN relay, and the mobile launch web app. |
-| `app-stats/` | A usage / cost dashboard (ccusage → HTML). |
+| `app-stats/` | Unified local Claude + Codex usage statistics for the React dashboard. |
 | `app-wol/` | A standalone Wake-on-LAN proxy you run on an always-on device. |
+
+The usage normalization, token semantics, coverage flags, and cache boundaries are documented in
+[Agent usage statistics](agent-usage-stats.md).
+
+The active session's model, effort, and occupied context flow is documented in
+[Agent session runtime status bar](agent-session-runtime-statusbar.md).
+
+The account-limit sources and active-tab visibility rules are documented in
+[Agent-aware rate limits in the status bar](agent-usage-statusbar.md).
 
 ## The `core/` contract
 
@@ -33,10 +42,11 @@ bridge work the same whether you start from the desktop app, the CLI, or the age
 1. **Config** (`core/config.ts`) resolves a per-machine `config.json` — your **category roots**
    (the folders that hold your projects) plus options. See [configuration.md](../configuration.md).
 2. **Project scan** walks those roots into the start menu.
-3. **Launch** spawns Claude Code as a child process in a PTY; the desktop app renders it in a
-   dockable xterm tab, the CLI runs it inline.
+3. **Launch** spawns the selected Claude Code or Codex CLI as a child process in a PTY; the desktop
+   app renders it in a dockable xterm tab, the CLI runs it inline.
 4. **Status detection** watches each session's output to classify it **working /
-   waiting-on-you / completed**.
+   waiting-on-you / completed**. Provider-specific evidence, screen/raw precedence, and timing are
+   documented in [Agent work detection](agent-work-detection.md).
 
 ## Reaching across machines
 

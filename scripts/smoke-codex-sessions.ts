@@ -6,7 +6,7 @@
  * Run: `npx tsx scripts/smoke-codex-sessions.ts`
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, utimesSync } from 'fs'
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, utimesSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import {
@@ -20,6 +20,7 @@ import {
 } from '../core/agents/codex/sessions'
 import { extractCodexEditedFiles, extractCodexHasEdits, extractCodexTurns } from '../core/agents/codex/session-changes'
 import { CodexThreadNames } from '../core/agents/codex/threadNames'
+import { SessionRuntime } from '../core/agents/codex/sessionRuntime'
 
 let passed = 0
 let failed = 0
@@ -197,6 +198,69 @@ console.log('\n[5] resolveCodexLaunchedSession — newest rollout for cwd since 
     ok('null when nothing is newer than sinceMs', resolveCodexLaunchedSession(projDir, home, LAUNCH + 50_000) === null)
   } finally {
     rmSync(home, { recursive: true, force: true })
+  }
+}
+
+console.log('\n[6] Session runtime — model, effort, context, incremental append, and reset')
+{
+  const fixtureInfo = SessionRuntime.read(FIXTURE)
+  ok('fixture runtime uses the latest token_count', fixtureInfo?.model === 'gpt-5.6-sol' && fixtureInfo.effortLevel === 'max' && fixtureInfo.contextTokens === 103147 && fixtureInfo.contextWindow === 258400, JSON.stringify(fixtureInfo))
+  ok('GPT slug gets a conservative human label', fixtureInfo?.modelLabel === 'GPT-5.6 Sol', fixtureInfo?.modelLabel)
+
+  const dir = mkdtempSync(join(tmpdir(), 'codex-runtime-'))
+  const file = join(dir, 'runtime.jsonl')
+  const row = (type: string, payload: object): string => JSON.stringify({ timestamp: 't', type, payload }) + '\n'
+  const turn = (model: string, effort: object): string => row('turn_context', { model, ...effort })
+  const token = (totalTokens: number, contextWindow = 258400): string => row('event_msg', {
+    type: 'token_count',
+    info: { last_token_usage: { total_tokens: totalTokens }, model_context_window: contextWindow },
+  })
+  try {
+    writeFileSync(file, turn('gpt-5.4', { effort: 'high' }) + token(100))
+    ok('current effort shape parsed', SessionRuntime.read(file)?.effortLevel === 'high')
+
+    appendFileSync(file, token(200))
+    ok('appended token_count updates without changing settings', SessionRuntime.read(file)?.contextTokens === 200)
+
+    appendFileSync(file, turn('gpt-5.6-sol', { effort: 'max' }))
+    const beforeNewToken = SessionRuntime.read(file)
+    ok('new turn without token_count keeps the prior complete snapshot', beforeNewToken?.model === 'gpt-5.4' && beforeNewToken.contextTokens === 200, JSON.stringify(beforeNewToken))
+
+    const partialToken = token(300)
+    appendFileSync(file, partialToken.slice(0, -2))
+    ok('partial final JSONL row is ignored', SessionRuntime.read(file)?.model === 'gpt-5.4')
+    appendFileSync(file, partialToken.slice(-2))
+    const completedNewTurn = SessionRuntime.read(file)
+    ok('completed appended row applies the pending model and effort', completedNewTurn?.model === 'gpt-5.6-sol' && completedNewTurn.effortLevel === 'max' && completedNewTurn.contextTokens === 300, JSON.stringify(completedNewTurn))
+
+    appendFileSync(file, '{malformed json]\n' + token(-1) + token(40))
+    ok('malformed/negative rows are ignored and a lower post-compact count wins', SessionRuntime.read(file)?.contextTokens === 40)
+
+    appendFileSync(file, turn('gpt-5.1-codex-max', { reasoning_effort: 'xhigh' }) + token(50))
+    const legacyEffort = SessionRuntime.read(file)
+    ok('legacy reasoning_effort parsed', legacyEffort?.effortLevel === 'xhigh')
+    ok('multi-part GPT slug formatted', legacyEffort?.modelLabel === 'GPT-5.1 Codex Max', legacyEffort?.modelLabel)
+
+    appendFileSync(file, turn('gpt-5.2', { collaboration_mode: { settings: { reasoning_effort: 'medium' } } }) + token(60))
+    ok('nested collaboration effort parsed', SessionRuntime.read(file)?.effortLevel === 'medium')
+
+    writeFileSync(file, turn('gpt-5.3', {}) + token(7, 400000))
+    const afterShrink = SessionRuntime.read(file)
+    ok('file shrink resets cached state', afterShrink?.model === 'gpt-5.3' && afterShrink.contextTokens === 7 && afterShrink.contextWindow === 400000, JSON.stringify(afterShrink))
+
+    const incomplete = join(dir, 'incomplete.jsonl')
+    writeFileSync(incomplete, row('turn_context', { effort: 'high' }) + token(10))
+    ok('missing model never produces a guessed snapshot', SessionRuntime.read(incomplete) === null)
+
+    const wide = join(dir, 'wide.jsonl')
+    writeFileSync(wide,
+      turn('gpt-5.6-sol', { effort: 'max' })
+      + row('event_msg', { type: 'noise', text: 'x'.repeat(600000) })
+      + token(77))
+    const wideInfo = SessionRuntime.read(wide)
+    ok('cold tail falls back once when turn_context is beyond the bounded tail', wideInfo?.model === 'gpt-5.6-sol' && wideInfo.contextTokens === 77, JSON.stringify(wideInfo))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 }
 

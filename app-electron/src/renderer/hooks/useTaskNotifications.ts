@@ -3,6 +3,7 @@ import { showToast } from '../components/Toast'
 import { loadSettings } from '../components/panels/SettingsPanel'
 import { useLayoutStore } from '../store/layout-store'
 import { notificationIcon, type NotifKind } from '../utils/notificationIcon'
+import type { AgentWorkStatus } from '../../../../core/agents/workDetection/agentWorkDetector.types'
 
 /**
  * Desktop + in-app notifications driven by the work-detection classifier. Listens to the rich
@@ -25,12 +26,11 @@ interface TaskState {
    *  cleared on idle/done. null when not working. */
   workStart: number | null
   /** Last status seen — so a question fires once on ENTRY, not on every same-status republish. */
-  lastStatus: string
+  lastStatus: AgentWorkStatus
   title: string
 }
 
-type Status = 'idle' | 'running' | 'tool-use' | 'blocked' | 'waiting' | 'done'
-const WORK_STATES = new Set<Status>(['running', 'tool-use'])
+const WORK_STATES = new Set<AgentWorkStatus>(['running', 'tool-use'])
 
 export function useTaskNotifications() {
   const tasks = useRef<Map<string, TaskState>>(new Map())
@@ -48,6 +48,15 @@ export function useTaskNotifications() {
     const labelFor = (id: string, state: TaskState): string => {
       const panel = useLayoutStore.getState().dockviewApi?.panels.find((p) => p.id === id)
       return state.title || panel?.title || id
+    }
+
+    const agentLabelFor = (id: string): string => {
+      const agent = useLayoutStore.getState().terminalAgents[id]
+      if (agent === 'claude') return 'Claude'
+      else if (agent === 'codex') return 'Codex'
+      else if (agent === undefined) return 'Agent'
+      else
+        throw new Error(`Unknown agent: ${JSON.stringify(agent)}`)
     }
 
     // Click target: bring the window forward (main resolves the sender's window) and activate the
@@ -71,8 +80,12 @@ export function useTaskNotifications() {
     }
 
     const statusHandler = (e: Event) => {
-      const { id, status } = (e as CustomEvent).detail ?? {}
+      const { id, status, backgroundActivity } = (e as CustomEvent<{ id?: string; status?: AgentWorkStatus; backgroundActivity?: boolean }>).detail ?? {}
       if (!id || !status) return
+      // Idle with a background shell/sub-agent still running → not truly finished; defer the COMPLETE
+      // ping (keep `workStart`/`lastStatus` so the later idle-without-flag re-emit fires it, timing the
+      // full run including the background task).
+      if (status === 'idle' && backgroundActivity) return
       const state = getOrCreate(id)
       const prev = state.lastStatus
       const settings = loadSettings()
@@ -82,7 +95,7 @@ export function useTaskNotifications() {
         state.workStart = Date.now()
       }
 
-      // QUESTION — Claude paused for the user. Fire on ENTRY only; skip if the user is already
+      // QUESTION — the agent paused for the user. Fire on ENTRY only; skip if the user is already
       // looking at this exact tab (active tab + focused window).
       if ((status === 'waiting' || status === 'blocked') && prev !== status && settings.notifyOnQuestions) {
         const visibleHere = document.hasFocus() && useLayoutStore.getState().activePanel === id
@@ -123,14 +136,15 @@ export function useTaskNotifications() {
     window.addEventListener('terminal-status', statusHandler)
     window.addEventListener('screen-title-change', titleHandler)
 
-    // PTY crash signal — surface a toast + notification so the user notices Claude exited
+    // PTY crash signal — surface a toast + notification so the user notices the agent exited
     // unexpectedly instead of silently falling back to the menu.
     const removeCrashListener = window.electronAPI?.onTerminalCrash?.((id, code) => {
       const state = getOrCreate(id)
       state.workStart = null
       const label = labelFor(id, state)
-      showToast(`${label} — Claude crashed`, `Exit code ${code} · returned to menu`)
-      notify('crash', `${label} — Claude crashed`, `Exit code ${code}`, id)
+      const agent = agentLabelFor(id)
+      showToast(`${label} — ${agent} crashed`, `Exit code ${code} · returned to menu`)
+      notify('crash', `${label} — ${agent} crashed`, `Exit code ${code}`, id)
     })
 
     return () => {

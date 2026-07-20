@@ -1,3 +1,5 @@
+import type { AgentId } from './contracts.js'
+
 export interface SessionInfo {
   sessionId: string
   slug: string | null
@@ -42,19 +44,15 @@ export interface LatestSessionMeta {
 }
 
 export interface SessionModelInfo {
-  /** Raw model id from the transcript, e.g. "claude-opus-4-7" */
+  /** Provider-native model id from the session log, e.g. "claude-opus-4-7" or "gpt-5.6-sol". */
   model: string
-  /** Human label, e.g. "Opus 4.7" */
+  /** Adapter-owned human label, e.g. "Opus 4.7" or "GPT-5.6 Sol". */
   modelLabel: string
-  /** Tokens currently occupying the context window (last assistant turn). */
+  /** Tokens currently occupying the provider-reported context window. */
   contextTokens: number
-  /** Max context window for the model, e.g. 1_000_000. */
+  /** Maximum context window for the effective model/session settings. */
   contextWindow: number
-  /**
-   * Effort level resolved from Claude Code's settings.json files
-   * (project settings.local.json > project settings.json > user-global).
-   * Common values: "low" | "medium" | "high" | "xhigh". `null` when not set.
-   */
+  /** Provider-native reasoning/thinking effort, or null when unavailable. */
   effortLevel: string | null
 }
 
@@ -63,9 +61,24 @@ export interface UsageCache {
   data: {
     five_hour: { utilization: number; resets_at: string }
     seven_day: { utilization: number; resets_at: string }
-    seven_day_sonnet?: { utilization: number; resets_at: string }
-    seven_day_omelette?: { utilization: number; resets_at: string }
+    /** Fable-scoped weekly cap, extracted from the usage API's `limits[]` (kind weekly_scoped, model Fable). */
+    seven_day_fable?: { utilization: number; resets_at: string }
   } | null
+  error?: string
+}
+
+export interface UsageWindow {
+  durationMinutes: number
+  usedPercent: number
+  resetsAt: string | null
+  /** Distinguishes a model-scoped weekly cap from the overall one — both are 10080-minute windows. */
+  model?: 'fable'
+}
+
+export interface AgentUsageSnapshot {
+  agent: AgentId
+  fetchedAt: number
+  windows: UsageWindow[]
   error?: string
 }
 

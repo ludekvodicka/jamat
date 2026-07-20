@@ -1,14 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { TurnInfo } from '../../../core/types'
-import type { SessionInfo, SessionMessage, SessionSearchMatch, UsageCache, SessionModelInfo } from '../../../core/types/session'
+import type { SessionInfo, SessionMessage, SessionSearchMatch, AgentUsageSnapshot, SessionModelInfo } from '../../../core/types/session'
 import type { DiffBaseline, DiffMode, DiffOptions } from '../../../core/types/file-diff'
 import type { AppConfig, ConfigPatch } from '../../../core/types/config'
-import type { AgentMeta, AppPathsInfo, CommitResult, CommitVcsRequest, CommitOptions, DirEntry, IpcEventMap, SessionRenameResult } from '../../../core/types/ipc-contracts'
+import type { AgentMeta, AppPathsInfo, CommitResult, CommitVcsRequest, CommitOptions, DirEntry, IpcEventMap, SessionDescriptionResult, SessionRenameResult } from '../../../core/types/ipc-contracts'
 import type { UpdateChoice, UpdatePrompt, UpdateStatus } from '../../../core/update/update-status.types'
 import type { AgentId } from '../../../core/types/contracts'
 import type { Idea } from '../../../core/types/ideas'
 import type { AbilitiesResult, AbilitiesManageRequest, AbilitiesManageResult } from '../../../core/types/abilities'
-import type { StatsDataResult } from '../../../core/types/stats'
+import type { StatsDataResult, StatsGenerationProgress } from '../../../core/types/stats'
 import type {
   RemoteControlData, RemotePeer, RemoteWindowInfo, RemoteTabInfo, PeerProbeResult,
   OpenTabReq, ControlOpenTabPayload, WsServerMsg,
@@ -124,6 +124,8 @@ const api = {
   loadSession: (projectDir: string, sessionId: string): Promise<SessionMessage[]> => invokeChannel('sessions:load', projectDir, sessionId),
   openSessionInTab: (projectDir: string, sessionId: string, fork?: boolean): Promise<boolean> => invokeChannel('sessions:open-in-tab', projectDir, sessionId, fork),
   renameSession: (projectDir: string, sessionId: string, name: string): Promise<SessionRenameResult> => invokeChannel('sessions:rename', projectDir, sessionId, name),
+  loadSessionDescription: (sessionId: string): Promise<SessionDescriptionResult> => invokeChannel('session-description:load', sessionId),
+  saveSessionDescription: (sessionId: string, description: string): Promise<SessionDescriptionResult> => invokeChannel('session-description:save', sessionId, description),
   openCommitDialog: (vcs: CommitVcsRequest, projectDir: string, opts?: CommitOptions): Promise<CommitResult> => invokeChannel('commit:open-dialog', vcs, projectDir, opts),
   detectCommitVcs: (projectDir: string): Promise<{ git: boolean; svn: boolean; hg: boolean }> => invokeChannel('commit:detect-vcs', projectDir),
   openCommitLog: (vcs: 'git' | 'svn' | 'hg', projectDir: string): Promise<{ ok: boolean; error?: string }> => invokeChannel('commit:open-log', vcs, projectDir),
@@ -135,12 +137,12 @@ const api = {
   getFileDiffBaseline: (filePath: string, mode: DiffMode, projectDir?: string | null, sessionId?: string | null): Promise<DiffBaseline> => invokeChannel('file-diff:get-baseline', filePath, mode, projectDir ?? null, sessionId ?? null),
   getAppVersion: (): Promise<string> => invokeChannel('app:version'),
   getAppPaths: (): Promise<AppPathsInfo> => invokeChannel('app:paths'),
-  getUsage: (): Promise<UsageCache | null> => invokeChannel('usage:get'),
+  getUsage: (agent: AgentId): Promise<AgentUsageSnapshot | null> => invokeChannel('usage:get', agent),
   getUsageCredentials: (): Promise<{ orgId: string; hasSessionKey: boolean }> => invokeChannel('usage:get-credentials'),
   setUsageCredentials: (orgId: string, sessionKey: string): Promise<{ ok: boolean; error?: string }> => invokeChannel('usage:set-credentials', orgId, sessionKey),
-  generateStats: (force?: boolean): Promise<{ ok: boolean; htmlPath?: string; error?: string }> => invokeChannel('stats:generate', force),
-  getStatsData: (force?: boolean): Promise<StatsDataResult> => invokeChannel('stats:data', force),
-  onUsageUpdate: (callback: (cache: UsageCache) => void): (() => void) => onChannel('usage:update', callback),
+  getStatsData: (force?: boolean, requestId?: string): Promise<StatsDataResult> => invokeChannel('stats:data', force, requestId),
+  onStatsProgress: (callback: (progress: StatsGenerationProgress) => void): (() => void) => onChannel('stats:progress', callback),
+  onUsageUpdate: (callback: (snapshot: AgentUsageSnapshot) => void): (() => void) => onChannel('usage:update', callback),
   onUpdateStatus: (callback: (status: UpdateStatus) => void): (() => void) => onChannel('update:changed', callback),
   onUpdatePrompt: (callback: (prompt: UpdatePrompt) => void): (() => void) => onChannel('update:prompt', callback),
 

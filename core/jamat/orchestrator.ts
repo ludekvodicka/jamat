@@ -11,7 +11,7 @@ import { controlPost, sleep, type PeerRef } from './http.js'
 import type { ScenarioId } from './scenarios-meta.js'
 import type { ScenarioCtx, ScenarioOutcome, ScenarioResult, BridgeLogEntry } from './types.js'
 import type { RemoteWindowInfo, TabStatus } from '../types/remote-control.js'
-import { normalizeTty } from '../agents/claude/patterns.js'
+import { AgentWorkDetectorBase } from '../agents/workDetection/agentWorkDetectorBase.js'
 
 export interface RunOpts {
   /** Explicit user gate for waking/launching an offline/closed peer. */
@@ -149,7 +149,7 @@ async function readyScratchSession(peer: PeerRef, terminalId: string, log: (p: B
     // escapes, so the raw scrollback has the spaces eaten ("Yes,Itrustthisfolder", not
     // "Yes, I trust this folder"). Strip ANSI + whitespace so the trust gate is detected
     // the instant it's in the buffer (was the cause of the slow auto-confirm).
-    const norm = normalizeTty(data)
+    const norm = AgentWorkDetectorBase.normalizeTty(data)
     if (!trusted && norm.includes('trustthisfolder')) {
       log('preflight', 'auto-confirming the trust-folder gate')
       await controlPost(peer, 'write-keys', { terminalId, data: '\r' }, { corrId: 'trust' })

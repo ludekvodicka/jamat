@@ -2,7 +2,7 @@ import { readFileSync, statSync } from 'fs'
 import type { TurnInfo, FileTurnEdit, EditStep } from '../../types/session.js'
 import { extractUserText } from './sessions.js'
 import { applyStepsToState, composeSteps, fileKey } from '../../menu-core/diff-compose.js'
-import { CLAUDE_EDITED_FILE_TOOLS as EDITED_FILE_TOOLS } from './patterns.js'
+import { ClaudeSessionChangeConst } from './sessionChangeConst.js'
 
 const PROMPT_TRUNCATE_LEN = 80
 
@@ -111,7 +111,7 @@ export function extractSessionTurns(jsonlPath: string): TurnInfo[] {
     }>) {
       if (it?.type !== 'tool_use') continue
       const toolName = it.name
-      if (!toolName || !EDITED_FILE_TOOLS.has(toolName)) continue
+      if (!toolName || !ClaudeSessionChangeConst.editedFileTools.has(toolName)) continue
       const fp = it.input?.file_path
       if (typeof fp !== 'string') continue
 
@@ -266,7 +266,7 @@ export function extractSessionHasEdits(jsonlPath: string): boolean {
     const items = obj.message?.content
     if (!Array.isArray(items)) continue
     for (const it of items as Array<{ type?: string; name?: string }>) {
-      if (it?.type === 'tool_use' && it.name && EDITED_FILE_TOOLS.has(it.name)) {
+      if (it?.type === 'tool_use' && it.name && ClaudeSessionChangeConst.editedFileTools.has(it.name)) {
         hasEdits = true
         break
       }

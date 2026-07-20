@@ -1,3 +1,6 @@
+import type { AgentId } from '../../../../../../core/types/contracts'
+import type { MetricCoverage } from '../../../../../../core/types/stats'
+
 /** Display formatters for the usage stats tab (pure, unit-testable). */
 
 /** Token/count formatter with K/M/B suffixes (mirrors generate-stats.ts formatNumber). */
@@ -20,6 +23,14 @@ export function fmtCost(n: number): string {
   return '$' + (n || 0).toFixed(2)
 }
 
+export function fmtCoveredCost(n: number, coverage: MetricCoverage): string {
+  if (coverage === 'full') return fmtCost(n)
+  else if (coverage === 'partial') return fmtCost(n)
+  else if (coverage === 'none') return '—'
+  else
+    throw new Error(`Unknown coverage: ${JSON.stringify(coverage)}`)
+}
+
 /** Duration "2h 30m" / "5m 12s" / "12s" from milliseconds. */
 export function fmtDuration(ms: number): string {
   if (!ms || ms < 1000) return '0s'
@@ -30,6 +41,29 @@ export function fmtDuration(ms: number): string {
   if (h > 0) return `${h}h ${m}m`
   if (m > 0) return `${m}m ${sec}s`
   return `${sec}s`
+}
+
+export function fmtCoveredDuration(ms: number, coverage: MetricCoverage): string {
+  if (coverage === 'full') return fmtDuration(ms)
+  else if (coverage === 'partial') return fmtDuration(ms)
+  else if (coverage === 'none') return '—'
+  else
+    throw new Error(`Unknown coverage: ${JSON.stringify(coverage)}`)
+}
+
+export function coverageLabel(coverage: MetricCoverage, full: string, partial: string, none: string): string {
+  if (coverage === 'full') return full
+  else if (coverage === 'partial') return partial
+  else if (coverage === 'none') return none
+  else
+    throw new Error(`Unknown coverage: ${JSON.stringify(coverage)}`)
+}
+
+export function fmtAgent(agent: AgentId): string {
+  if (agent === 'claude') return 'Claude'
+  else if (agent === 'codex') return 'Codex'
+  else
+    throw new Error(`Unknown agent: ${JSON.stringify(agent)}`)
 }
 
 /** Short model label: strip provider, "claude-" prefix, and a trailing 8-digit date

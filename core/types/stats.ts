@@ -2,6 +2,31 @@ import type { AgentId } from './contracts.js'
 
 export type StatsAgentFilter = 'all' | AgentId
 export type MetricCoverage = 'full' | 'partial' | 'none'
+export type StatsGenerationPhase =
+  | 'starting'
+  | 'claudeDiscover'
+  | 'claudeCheck'
+  | 'claudeParse'
+  | 'claudeBuild'
+  | 'codexDiscover'
+  | 'codexCheck'
+  | 'codexParse'
+  | 'codexBuild'
+  | 'merge'
+  | 'write'
+  | 'complete'
+
+export interface StatsGenerationProgressUpdate {
+  phase: StatsGenerationPhase
+  current?: number
+  total?: number
+  cacheHits?: number
+  changedFiles?: number
+}
+
+export interface StatsGenerationProgress extends StatsGenerationProgressUpdate {
+  requestId: string
+}
 
 export interface ModelBreakdown {
   modelName: string

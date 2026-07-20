@@ -4,10 +4,12 @@ import { createPortal } from 'react-dom'
 import { TabContextMenu } from './TabContextMenu'
 import { getRendererAgent } from '../../../../../core/agents/renderer'
 import { DEFAULT_AGENT_ID, isAgentId, type AgentId } from '../../../../../core/types/contracts'
+import type { SessionModelInfo } from '../../../../../core/types/session'
 import { formatInstanceId } from '../../../../../core/instance-id'
 import type { RemotePeer } from '../../../../../core/types/remote-control'
 import { closePanelActivatingNeighbor } from '../../utils/terminal-helpers'
-import { contextLevel } from '../../utils/context-level'
+import { TerminalPromptSubmitter } from '../../utils/terminalPromptSubmitter'
+import { contextLevel, contextUsedPercent } from '../../utils/context-level'
 import { useLayoutStore } from '../../store/layout-store'
 
 const TAB_COLORS_KEY = 'tab-colors'
@@ -41,6 +43,12 @@ function folderPrefix(params: any): string {
   return folderName ? `${folderName} - ` : ''
 }
 
+interface SessionDetailsPrompt {
+  defaultName: string
+  defaultDescription: string
+  sessionId: string | null
+}
+
 export function CustomTab({ api, containerApi, params }: IDockviewPanelHeaderProps) {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   // Turn status drives the dot color. Read LEVEL-triggered from the store (written by useTerminal's
@@ -56,14 +64,18 @@ export function CustomTab({ api, containerApi, params }: IDockviewPanelHeaderPro
   // (or hung) stands out from both a plain idle tab and a just-completed ✓ one.
   const bgShell = useLayoutStore(s => !!s.bgShellTabs[api.id])
   const contextLevels = useLayoutStore(s => s.appConfig?.contextLevels)
-  // Inline rename prompt — Electron 35+ silently returns the default value
-  // from `window.prompt`, so we render our own modal instead.
-  const [renamePrompt, setRenamePrompt] = useState<{ defaultName: string } | null>(null)
-  const [renameValue, setRenameValue] = useState('')
-  const [renameError, setRenameError] = useState<string | null>(null)
-  const renameInputRef = useRef<HTMLInputElement>(null)
-  const [ctxPct, setCtxPct] = useState<number | null>(null)
-
+  const terminalPhase = useLayoutStore(s => s.terminalPhases[api.id])
+  const sessionRuntime = useLayoutStore(s => s.sessionRuntimeByPanel[api.id] ?? null)
+  const ctxPct = contextUsedPercent(sessionRuntime)
+  const [sessionDetailsPrompt, setSessionDetailsPrompt] = useState<SessionDetailsPrompt | null>(null)
+  const [sessionDetailsName, setSessionDetailsName] = useState('')
+  const [sessionDescription, setSessionDescription] = useState('')
+  const [sessionDescriptionReady, setSessionDescriptionReady] = useState(false)
+  const [sessionDetailsLoading, setSessionDetailsLoading] = useState(false)
+  const [sessionDetailsSaving, setSessionDetailsSaving] = useState(false)
+  const [sessionDetailsError, setSessionDetailsError] = useState<string | null>(null)
+  const sessionDetailsInputRef = useRef<HTMLInputElement>(null)
+  const sessionDetailsRequestRef = useRef(0)
   const colorKey = getColorKey(params)
   const savedColors = loadTabColors()
   const tabColor = colorKey ? (savedColors[colorKey] ?? '') : ''
@@ -73,35 +85,60 @@ export function CustomTab({ api, containerApi, params }: IDockviewPanelHeaderPro
   const isAi = api.id.startsWith('ai-')
   // Session-lifecycle actions (rename / compact / fork / …) only make sense on an actual agent
   // terminal tab. File-viewer / directory-viewer / other panels carry no `agent` param, so they
-  // must not offer them (compact especially, since forkAgentId defaults to 'claude' when absent).
+  // must not offer them.
   const isAgentTab = isAgentId(params?.agent)
+  const remotePeer = params?.peer as RemotePeer | undefined
+  const remoteTerminalId = params?.terminalId as string | undefined
+  const isRemoteView = !!(remotePeer && remoteTerminalId)
+  const tabAgentId = isAgentId(params?.agent) ? params.agent : DEFAULT_AGENT_ID
+  let agentCanShowContext = false
+  try { agentCanShowContext = getRendererAgent(tabAgentId).capabilities.contextPercent } catch { agentCanShowContext = false }
 
-  // Per-tab Claude context-usage %: read the session transcript tail (cheap) and surface a small
-  // indicator on the tab. Poll fast until a value lands, then slowly (context grows a turn at a time).
+  // One runtime poll per tab feeds the tab glyph, terminal overlay, and active status-bar item.
   useEffect(() => {
-    const agentRaw = params?.agent
-    const agentId = isAgentId(agentRaw) ? agentRaw : DEFAULT_AGENT_ID
     const dir = (params?.projectDir ?? params?.cwd) as string | undefined
     const getSessionModel = window.electronAPI?.getSessionModel
-    if (agentId !== 'claude' || !dir || !getSessionModel) { setCtxPct(null); return }
     const sessionId = params?.sessionId as string | undefined
+    const peer = params?.peer as RemotePeer | undefined
+    const terminalId = params?.terminalId as string | undefined
+    const isRemote = !!(peer && terminalId && window.electronAPI?.remoteOp)
+    const canReadLocal = agentCanShowContext && terminalPhase === 'running' && !!dir && !!getSessionModel
+    const setRuntime = (info: SessionModelInfo | null) => useLayoutStore.getState().setSessionRuntime(api.id, info)
+    const publishPct = (info: SessionModelInfo | null) => {
+      window.dispatchEvent(new CustomEvent('context-pct', { detail: { id: api.id, pct: contextUsedPercent(info) } }))
+    }
+    if (!isRemote && !canReadLocal) {
+      setRuntime(null)
+      publishPct(null)
+      return
+    }
+
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | null = null
     const tick = async () => {
-      let pct: number | null = null
+      let info: SessionModelInfo | null = null
       try {
-        const info = await getSessionModel(dir, sessionId)
-        if (info && info.contextWindow > 0) pct = Math.round((info.contextTokens / info.contextWindow) * 100)
-      } catch { pct = null }
+        if (isRemote) {
+          const result = await window.electronAPI.remoteOp(peer!, 'control:session-model', [terminalId!])
+          info = result.ok ? ((result.data as SessionModelInfo | null | undefined) ?? null) : null
+        } else
+          info = await getSessionModel!(dir!, sessionId)
+      } catch { info = null }
       if (cancelled) return
-      setCtxPct(pct)
-      // Re-broadcast so the in-terminal ContextWarningOverlay rides this poll (no extra transcript read).
-      window.dispatchEvent(new CustomEvent('context-pct', { detail: { id: api.id, pct } }))
-      timer = setTimeout(tick, pct === null ? 8_000 : 20_000)
+      setRuntime(info)
+      publishPct(info)
+      timer = setTimeout(tick, info ? 20_000 : 8_000)
     }
-    tick()
-    return () => { cancelled = true; if (timer) clearTimeout(timer) }
-  }, [params?.agent, params?.projectDir, params?.cwd, params?.sessionId])
+    setRuntime(null)
+    publishPct(null)
+    void tick()
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+      setRuntime(null)
+      publishPct(null)
+    }
+  }, [api.id, agentCanShowContext, params?.projectDir, params?.cwd, params?.sessionId, params?.peer, params?.terminalId, terminalPhase])
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -122,101 +159,169 @@ export function CustomTab({ api, containerApi, params }: IDockviewPanelHeaderPro
     window.electronAPI?.detachTab({ title: panelTitle, params: panelParams })
   }, [api.id, containerApi])
 
-  const handleRenameSession = useCallback(() => {
-    const projectDir = (params?.projectDir as string | undefined) ?? (params?.cwd as string | undefined) ?? ''
-    if (!projectDir || !window.electronAPI?.renameSession) return
+  const closeSessionDetails = useCallback(() => {
+    sessionDetailsRequestRef.current++
+    setSessionDetailsPrompt(null)
+    setSessionDetailsLoading(false)
+    setSessionDetailsSaving(false)
+    setSessionDescriptionReady(false)
+    setSessionDetailsError(null)
+  }, [])
+
+  const loadSessionDescription = useCallback(async (sessionId: string, requestId: number) => {
+    try {
+      if (!window.electronAPI?.loadSessionDescription)
+        throw new Error('loadSessionDescription API not available — preload outdated?')
+      const result = await window.electronAPI.loadSessionDescription(sessionId)
+      if (sessionDetailsRequestRef.current !== requestId) return
+      if (result.ok === true) {
+        setSessionDescription(result.description)
+        setSessionDescriptionReady(true)
+        setSessionDetailsPrompt(current => {
+          if (!current || current.sessionId !== sessionId) return current
+          return { ...current, defaultDescription: result.description }
+        })
+      } else if (result.ok === false)
+        setSessionDetailsError(result.error)
+      else
+        throw new Error(`Unknown session description result: ${JSON.stringify(result)}`)
+    } catch (error) {
+      if (sessionDetailsRequestRef.current === requestId)
+        setSessionDetailsError(error instanceof Error ? error.message : String(error))
+    } finally {
+      if (sessionDetailsRequestRef.current === requestId) setSessionDetailsLoading(false)
+    }
+  }, [])
+
+  const startSessionDescriptionLoad = useCallback((sessionId: string) => {
+    const requestId = ++sessionDetailsRequestRef.current
+    setSessionDescription('')
+    setSessionDescriptionReady(false)
+    setSessionDetailsLoading(true)
+    setSessionDetailsError(null)
+    void loadSessionDescription(sessionId, requestId)
+  }, [loadSessionDescription])
+
+  const handleEditSessionDetails = useCallback(() => {
     const prefix = folderPrefix(params)
     const full = (api.title ?? '').trim()
     const current = prefix && full.startsWith(prefix) ? full.slice(prefix.length).trim() : full
-    setRenameValue(current)
-    setRenameError(null)
-    setRenamePrompt({ defaultName: current })
+    const sessionId = (params?.sessionId as string | undefined) ?? null
+    sessionDetailsRequestRef.current++
+    setSessionDetailsName(current)
+    setSessionDescription('')
+    setSessionDescriptionReady(false)
+    setSessionDetailsLoading(false)
+    setSessionDetailsSaving(false)
+    setSessionDetailsError(null)
+    setSessionDetailsPrompt({ defaultName: current, defaultDescription: '', sessionId })
+    if (sessionId) startSessionDescriptionLoad(sessionId)
     setTimeout(() => {
-      const el = renameInputRef.current
+      const el = sessionDetailsInputRef.current
       if (el) { el.focus(); el.select() }
     }, 50)
-  }, [api.title, params])
+  }, [api.title, params, startSessionDescriptionLoad])
 
-  const submitRename = useCallback(async () => {
-    if (!renamePrompt) return
+  const submitSessionDetails = useCallback(async () => {
+    if (!sessionDetailsPrompt || sessionDetailsLoading || sessionDetailsSaving) return
+    const name = sessionDetailsName.trim()
+    const description = sessionDescription.trim()
+    const nameChanged = name !== sessionDetailsPrompt.defaultName
+    const descriptionChanged = sessionDescriptionReady && description !== sessionDetailsPrompt.defaultDescription
+    if (!nameChanged && !descriptionChanged) { closeSessionDetails(); return }
+    if (nameChanged && !name) { setSessionDetailsError('Name is empty'); return }
+
     const projectDir = (params?.projectDir as string | undefined) ?? (params?.cwd as string | undefined) ?? ''
     const sessionId = params?.sessionId as string | undefined
-    if (!window.electronAPI?.renameSession) {
-      setRenameError('renameSession API not available — preload outdated?')
-      return
-    }
-    if (!projectDir) {
-      const keys = Object.keys(params ?? {}).join(', ') || '<empty>'
-      setRenameError(`projectDir missing from tab params (keys: ${keys})`)
-      return
-    }
-    const name = renameValue.trim()
-    if (!name) {
-      setRenameError('Name is empty')
-      return
-    }
-    if (name === renamePrompt.defaultName) {
-      // No-op — just close.
-      setRenamePrompt(null)
-      return
-    }
-    // The agent's own rename command. Piping it updates the live TUI and lets the agent synchronize
-    // its own metadata; the backend write below gives a known session an immediate durable name.
-    // No-op when the terminal is gone or the agent is mid-response (the byte just buffers in stdin).
-    const rawAgent = params?.agent
-    const agentId = isAgentId(rawAgent) ? rawAgent : DEFAULT_AGENT_ID
-    let slash: string | null = null
-    try { slash = getRendererAgent(agentId).renameSlashCommand(name) } catch { slash = null }
-    const pipeRenameSlash = () => {
-      if (!slash) return
-      try { window.electronAPI?.writeTerminal?.(api.id, slash) } catch { /* fire-and-forget */ }
-    }
-    // Match the main-process format ("folderName - name") so the optimistic title doesn't briefly
-    // differ from what the title poller re-sends.
-    const applyOptimisticTitle = () => api.setTitle(`${folderPrefix(params)}${name}`)
+    const requestId = sessionDetailsRequestRef.current
+    setSessionDetailsSaving(true)
+    setSessionDetailsError(null)
+    try {
+      if (nameChanged) {
+        if (!window.electronAPI?.renameSession)
+          throw new Error('renameSession API not available — preload outdated?')
+        if (!projectDir) {
+          const keys = Object.keys(params ?? {}).join(', ') || '<empty>'
+          throw new Error(`projectDir missing from tab params (keys: ${keys})`)
+        }
+        let slash: string | null = null
+        try { slash = getRendererAgent(tabAgentId).renameSlashCommand(name) } catch { slash = null }
+        const pipeRenameSlash = () => {
+          if (slash) TerminalPromptSubmitter.submit(api.id, slash)
+        }
+        const applyOptimisticTitle = () => api.setTitle(`${folderPrefix(params)}${name}`)
 
-    if (sessionId) {
-      // Resolved session: persist to the adapter's exact title store, then sync the live TUI.
-      const result = await window.electronAPI.renameSession(projectDir, sessionId, name)
-      if (result?.ok) { applyOptimisticTitle(); pipeRenameSlash(); setRenamePrompt(null) }
-      else setRenameError(result?.error ?? 'Rename failed')
-    } else if (slash) {
-      // Brand-new session: its transcript doesn't exist yet, so the backend can't write it — and its
-      // empty-id fallback (resolveActiveSessionFile = "most recent") could target a PREVIOUS session.
-      // Name it through the live agent's own /rename instead: unambiguously THIS tab's session, same
-      // record. This is what makes F2 work the instant a session is created (no transcript needed).
-      pipeRenameSlash(); applyOptimisticTitle(); setRenamePrompt(null)
-    } else {
-      // No id yet and no rename command: let the backend's resolver try so its real
-      // error surfaces rather than a silent no-op.
-      const result = await window.electronAPI.renameSession(projectDir, '', name)
-      if (result?.ok) { applyOptimisticTitle(); setRenamePrompt(null) }
-      else setRenameError(result?.error ?? 'Rename failed')
+        if (sessionId) {
+          const result = await window.electronAPI.renameSession(projectDir, sessionId, name)
+          // A just-resolved session whose transcript hasn't been flushed to disk
+          // yet can't take the durable append ('session transcript not found').
+          // The live TUI slash renames the running session durably on its own, so
+          // fall back to it rather than failing. Only surface the error when there
+          // is no live-rename path (an agent without a rename slash command).
+          if (!result?.ok && !slash) { setSessionDetailsError(result?.error ?? 'Rename failed'); return }
+          applyOptimisticTitle()
+          pipeRenameSlash()
+        } else if (slash) {
+          pipeRenameSlash()
+          applyOptimisticTitle()
+        } else {
+          const result = await window.electronAPI.renameSession(projectDir, '', name)
+          if (!result?.ok) { setSessionDetailsError(result?.error ?? 'Rename failed'); return }
+          applyOptimisticTitle()
+        }
+        if (sessionDetailsRequestRef.current !== requestId) return
+        setSessionDetailsPrompt(current => current ? { ...current, defaultName: name } : current)
+      }
+
+      if (descriptionChanged) {
+        const descriptionSessionId = sessionDetailsPrompt.sessionId
+        if (!descriptionSessionId) throw new Error('Session id is not resolved yet')
+        if (!window.electronAPI?.saveSessionDescription)
+          throw new Error('saveSessionDescription API not available — preload outdated?')
+        const result = await window.electronAPI.saveSessionDescription(descriptionSessionId, description)
+        if (sessionDetailsRequestRef.current !== requestId) return
+        if (result.ok === true)
+          setSessionDescription(result.description)
+        else if (result.ok === false) {
+          setSessionDetailsError(result.error)
+          return
+        } else
+          throw new Error(`Unknown session description result: ${JSON.stringify(result)}`)
+      }
+
+      if (sessionDetailsRequestRef.current === requestId) closeSessionDetails()
+    } catch (error) {
+      if (sessionDetailsRequestRef.current === requestId)
+        setSessionDetailsError(error instanceof Error ? error.message : String(error))
+    } finally {
+      if (sessionDetailsRequestRef.current === requestId) setSessionDetailsSaving(false)
     }
-  }, [renamePrompt, renameValue, api, params])
+  }, [sessionDetailsPrompt, sessionDetailsLoading, sessionDetailsSaving, sessionDetailsName, sessionDescription, sessionDescriptionReady, closeSessionDetails, params, tabAgentId, api])
 
-  const cancelRename = useCallback(() => {
-    setRenamePrompt(null)
-    setRenameError(null)
-  }, [])
+  const resolvedDetailsSessionId = params?.sessionId as string | undefined
+  useEffect(() => {
+    if (!sessionDetailsPrompt) return
+    if (!sessionDetailsPrompt.sessionId && resolvedDetailsSessionId) {
+      setSessionDetailsPrompt(current => current ? { ...current, sessionId: resolvedDetailsSessionId } : current)
+      startSessionDescriptionLoad(resolvedDetailsSessionId)
+    } else if (sessionDetailsPrompt.sessionId && sessionDetailsPrompt.sessionId !== resolvedDetailsSessionId)
+      closeSessionDetails()
+  }, [sessionDetailsPrompt, resolvedDetailsSessionId, startSessionDescriptionLoad, closeSessionDetails])
 
-  // F2 (global shortcut) opens THIS tab's rename modal when it's the active tab. The shortcut
-  // handler broadcasts the active panel id; only the matching agent tab reacts. Same gate as the
-  // context-menu "Rename session…" item (agent tabs only).
   useEffect(() => {
     const handler = (e: Event) => {
-      if (isAgentTab && (e as CustomEvent).detail === api.id) handleRenameSession()
+      if (isAgentTab && !isRemoteView && (e as CustomEvent).detail === api.id) handleEditSessionDetails()
     }
-    window.addEventListener('rename-session', handler)
-    return () => window.removeEventListener('rename-session', handler)
-  }, [api.id, isAgentTab, handleRenameSession])
+    window.addEventListener('edit-session-details', handler)
+    return () => window.removeEventListener('edit-session-details', handler)
+  }, [api.id, isAgentTab, isRemoteView, handleEditSessionDetails])
 
   // Fork: open a fork branch of THIS tab's session in a new tab — history preserved
   // under a fresh session id, the original session untouched. Offered per the agent's
   // `capabilities.fork` (Claude `--fork-session`, Codex `codex fork <id>`) and only once
   // the sessionId is known (a fresh continue/new tab before id resolution has none yet →
   // no fork item until it resolves).
-  const forkAgentId = isAgentId(params?.agent) ? params.agent : DEFAULT_AGENT_ID
+  const forkAgentId = tabAgentId
   const forkSessionId = params?.sessionId as string | undefined
   const forkProjectDir = (params?.projectDir as string | undefined) ?? (params?.cwd as string | undefined) ?? ''
   const agentCanFork = (() => { try { return getRendererAgent(forkAgentId).capabilities.fork } catch { return false } })()
@@ -230,7 +335,7 @@ export function CustomTab({ api, containerApi, params }: IDockviewPanelHeaderPro
   // are re-read on boot — the whole point), then close THIS tab so its old process exits and releases
   // the session. openSessionInTab → main → onOpenTab adds the new panel a tick later (IPC round-trip),
   // while removePanel is synchronous — so the old PTY dies first and the resume mounts right after, a
-  // clean handoff. Same gate as fork (Claude tab with a known session id).
+  // clean handoff. Same gate as fork (an agent tab with a known session id).
   const [restartConfirm, setRestartConfirm] = useState(false)
   const doRestartSession = useCallback(() => {
     if (!forkSessionId || !forkProjectDir || !window.electronAPI?.openSessionInTab) return
@@ -245,18 +350,11 @@ export function CustomTab({ api, containerApi, params }: IDockviewPanelHeaderPro
     else doRestartSession()
   }, [status, doRestartSession])
 
-  // Compact: type "/compact" into this tab's session and run it (the \r submits). Local tab →
-  // write to its PTY; remote-viewer tab (params carry peer + terminalId) → inject into the PEER's
-  // terminal over the bridge (control:write-keys). Same action as the status-bar model-item menu.
+  // Compact: type "/compact" into this tab's session and run it. The live local/viewer xterm owns
+  // the negotiated Enter encoding and transport. Same action as the status-bar model-item menu.
   const handleCompactSession = useCallback(() => {
-    const peer = params?.peer as RemotePeer | undefined
-    const tid = params?.terminalId as string | undefined
-    if (peer && tid) {
-      void window.electronAPI?.remoteOp?.(peer, 'control:write-keys', [{ terminalId: tid, data: '/compact\r' }])
-    } else {
-      window.electronAPI?.writeTerminal?.(api.id, '/compact\r')
-    }
-  }, [api.id, params])
+    TerminalPromptSubmitter.submit(api.id, '/compact')
+  }, [api.id])
 
   // New blank session: open a fresh, empty session in THIS tab's directory — no resume,
   // no history. Mirrors the restoreMeta 'cc' launch the menu/sidebar use for a brand-new
@@ -267,7 +365,7 @@ export function CustomTab({ api, containerApi, params }: IDockviewPanelHeaderPro
   // session" (same agent) and "New session in <other agent>" (the cross-agent quick-launch below).
   const openNewSessionWith = useCallback((agentId: AgentId) => {
     if (!forkProjectDir) return
-    const agentLabel = agentId === 'codex' ? 'Codex' : 'Claude'
+    const agentLabel = getRendererAgent(agentId).displayName
     const folderName = (params?.folderName as string | undefined) ?? forkProjectDir.replace(/.*[/\\]/, '')
     const id = `screen-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     containerApi.addPanel({
@@ -285,8 +383,12 @@ export function CustomTab({ api, containerApi, params }: IDockviewPanelHeaderPro
   // from the store's `agentsMeta`); the current tab's agent is obviously usable, so this effectively
   // gates on the other agent being available, but we check both to be explicit ("má oba").
   const agentsMeta = useLayoutStore(s => s.agentsMeta)
-  const otherAgentId: AgentId = forkAgentId === 'claude' ? 'codex' : 'claude'
-  const otherAgentLabel = otherAgentId === 'codex' ? 'Codex' : 'Claude'
+  let otherAgentId: AgentId
+  if (forkAgentId === 'claude') otherAgentId = 'codex'
+  else if (forkAgentId === 'codex') otherAgentId = 'claude'
+  else
+    throw new Error(`Unknown agent id: ${JSON.stringify(forkAgentId)}`)
+  const otherAgentLabel = getRendererAgent(otherAgentId).displayName
   const availableAgentIds = new Set((agentsMeta ?? []).filter(a => a.available).map(a => a.id))
   const canNewSessionOtherAgent = canNewSession && availableAgentIds.has('claude') && availableAgentIds.has('codex')
   const handleNewSessionOtherAgent = useCallback(() => openNewSessionWith(otherAgentId), [openNewSessionWith, otherAgentId])
@@ -328,9 +430,6 @@ export function CustomTab({ api, containerApi, params }: IDockviewPanelHeaderPro
   // Remote-viewer tabs carry {peer, terminalId} in params — only those can close
   // the tab on the peer. On success we also close the local viewer (nothing left
   // to stream); on failure we leave it so the user notices it didn't close.
-  const remotePeer = params?.peer as RemotePeer | undefined
-  const remoteTerminalId = params?.terminalId as string | undefined
-  const isRemoteView = !!(remotePeer && remoteTerminalId)
   const handleCloseRemote = useCallback(async () => {
     if (!remotePeer || !remoteTerminalId) return
     const r = await window.electronAPI?.remoteCloseTab?.(remotePeer, remoteTerminalId)
@@ -355,7 +454,7 @@ export function CustomTab({ api, containerApi, params }: IDockviewPanelHeaderPro
         {status === 'waiting'
           ? <span className="status-question-badge" title="Waiting for your answer — needs interaction">?</span>
           : (status === 'idle' && bgShell)
-            ? <span className="tab-status-dot status-bgshell" title="Turn finished, but a background shell is still running (may be hung) — Ctrl+T in the terminal to manage it" />
+            ? <span className="tab-status-dot status-bgshell" title="Turn finished, but a background shell or sub-agent is still running (may be hung) — Ctrl+T in the terminal to manage it" />
             : (status === 'idle' && completed)
               ? <span className="status-completed-badge" title="Finished while you were away — switch to this tab to clear">✓</span>
               : <span className={`tab-status-dot status-${status}`} />}
@@ -385,13 +484,13 @@ export function CustomTab({ api, containerApi, params }: IDockviewPanelHeaderPro
           currentColor={color}
           onSelectColor={handleSelectColor}
           onDetach={handleDetach}
-          onRenameSession={isAgentTab ? handleRenameSession : undefined}
+          onEditSessionDetails={isAgentTab && !isRemoteView ? handleEditSessionDetails : undefined}
           onNewSession={canNewSession && !isRemoteView ? handleNewSession : undefined}
           onNewSessionOtherAgent={canNewSessionOtherAgent && !isRemoteView ? handleNewSessionOtherAgent : undefined}
           newSessionOtherAgentLabel={otherAgentLabel}
           onForkSession={canFork ? handleForkSession : undefined}
           onRestartSession={canFork ? handleRestartSession : undefined}
-          onCompactSession={isRemoteView || (isAgentTab && forkAgentId === 'claude') ? handleCompactSession : undefined}
+          onCompactSession={isRemoteView || (isAgentTab && agentCanShowContext) ? handleCompactSession : undefined}
           onCopyInstanceId={canCopyInstanceId && !isRemoteView ? handleCopyInstanceId : undefined}
           onShowInfo={handleShowInfo}
           onCloseRemote={isRemoteView ? handleCloseRemote : undefined}
@@ -453,29 +552,62 @@ export function CustomTab({ api, containerApi, params }: IDockviewPanelHeaderPro
         </div>,
         document.body
       )}
-      {renamePrompt && createPortal(
+      {sessionDetailsPrompt && createPortal(
         <div
           className="rename-modal-backdrop"
-          onMouseDown={(e) => { if (e.target === e.currentTarget) cancelRename() }}
+          onMouseDown={(e) => { if (e.target === e.currentTarget && !sessionDetailsSaving) closeSessionDetails() }}
         >
           <div className="rename-modal" onMouseDown={(e) => e.stopPropagation()}>
-            <div className="rename-modal-title">Rename session</div>
-            <input
-              ref={renameInputRef}
-              className="rename-modal-input"
-              value={renameValue}
-              onChange={(e) => { setRenameValue(e.target.value); setRenameError(null) }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') { e.preventDefault(); submitRename() }
-                else if (e.key === 'Escape') { e.preventDefault(); cancelRename() }
-              }}
-              placeholder="Session name…"
-              spellCheck={false}
-            />
-            {renameError && <div className="rename-modal-error">{renameError}</div>}
+            <div className="rename-modal-title">Session details</div>
+            <label className="session-details-field">
+              <span className="session-details-label">Name</span>
+              <input
+                ref={sessionDetailsInputRef}
+                className="rename-modal-input"
+                value={sessionDetailsName}
+                disabled={sessionDetailsSaving}
+                onChange={(e) => { setSessionDetailsName(e.target.value); setSessionDetailsError(null) }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') { e.preventDefault(); void submitSessionDetails() }
+                  else if (e.key === 'Escape' && !sessionDetailsSaving) { e.preventDefault(); closeSessionDetails() }
+                }}
+                placeholder="Session name…"
+                spellCheck={false}
+              />
+            </label>
+            <label className="session-details-field">
+              <span className="session-details-label">Description <span>(AppJamat only)</span></span>
+              <textarea
+                className="rename-modal-input session-details-description"
+                value={sessionDescription}
+                disabled={!sessionDescriptionReady || sessionDetailsSaving}
+                maxLength={4000}
+                onChange={(e) => { setSessionDescription(e.target.value); setSessionDetailsError(null) }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); void submitSessionDetails() }
+                  else if (e.key === 'Escape' && !sessionDetailsSaving) { e.preventDefault(); closeSessionDetails() }
+                }}
+                placeholder="What is this session about?"
+                spellCheck={false}
+              />
+            </label>
+            <div className="session-details-hint">
+              {sessionDetailsLoading
+                ? 'Loading the saved description…'
+                : sessionDetailsPrompt.sessionId
+                  ? 'Stored in AppJamat. It is never sent to Claude Code or Codex. Ctrl+Enter saves from the description.'
+                  : 'Description becomes available when this new session receives its session id.'}
+            </div>
+            {sessionDetailsError && <div className="rename-modal-error">{sessionDetailsError}</div>}
             <div className="rename-modal-actions">
-              <button className="notes-btn notes-btn-primary" onClick={submitRename}>Rename</button>
-              <button className="notes-btn" onClick={cancelRename}>Cancel</button>
+              <button
+                className="notes-btn notes-btn-primary"
+                onClick={() => { void submitSessionDetails() }}
+                disabled={sessionDetailsLoading || sessionDetailsSaving}
+              >
+                {sessionDetailsSaving ? 'Saving…' : 'Save'}
+              </button>
+              <button className="notes-btn" onClick={closeSessionDetails} disabled={sessionDetailsSaving}>Cancel</button>
             </div>
           </div>
         </div>,

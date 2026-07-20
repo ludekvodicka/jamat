@@ -12,6 +12,7 @@ import { publishTo } from './streams'
 import { getAgent, resolveAgentForSessionId } from '../../../core/agents/index.js'
 import { DEFAULT_AGENT_ID, SESSION_ID_RE } from '../../../core/types/contracts.js'
 import type { SessionInfo, TurnInfo } from '../../../core/types.js'
+import { SessionDescriptionManager } from './sessionDescriptionManager'
 
 // Session-tree reads route through the Claude adapter so this module
 // stays agent-agnostic at the call site. Today everything is Claude;
@@ -163,6 +164,14 @@ export function registerSessionIpc(): void {
     return loadJsonlFile(filePath)
   })
 
+  registerHandler('session-description:load', async (_e, sessionId) =>
+    SessionDescriptionManager.load(sessionId),
+  )
+
+  registerHandler('session-description:save', async (_e, sessionId, description) =>
+    SessionDescriptionManager.save(sessionId, description),
+  )
+
   // Persist a session title through its owning adapter. Claude appends a
   // `custom-title` transcript row; Codex appends its session-name index.
   //
@@ -261,20 +270,20 @@ export function registerSessionIpc(): void {
   )
 
   registerHandler('session-model:get', async (_e, projectDir: string, sessionId?: string) => {
-    if (!projectDir) return null
+    if (!projectDir || !sessionId || !SESSION_ID_RE.test(sessionId)) return null
     // STRICT: without a sessionId, resolve to nothing — NOT resolveActiveSessionFile's
     // "newest active session in the dir" fallback. On a fresh blank/--continue tab (its id not
     // yet discovered by the pid resolver) that fallback returns a NEIGHBOURING session's .jsonl
     // and leaks its context % onto the new tab (a false "Context N% full" nag the moment it opens
     // idle). The tab re-polls once kickSessionIdResolution pushes the real id into its params.
     // Same strict rule the title path already uses (sessionFileFor in screen-executor).
-    if (!sessionId) return null
-    const file = claudeAgent.resolveActiveSessionFile(projectDir, sessionId, homedir())
+    const homeDir = homedir()
+    const ownerId = resolveAgentForSessionId(sessionId, homeDir)
+    if (!ownerId) return null
+    const owner = getAgent(ownerId)
+    const file = owner.resolveActiveSessionFile(projectDir, sessionId, homeDir)
     if (!file) return null
-    const info = claudeAgent.readSessionModelInfo(file)
-    if (!info) return null
-    info.effortLevel = claudeAgent.readEffortLevel(projectDir, homedir())
-    return info
+    return owner.readSessionModelInfo(file, projectDir, homeDir)
   })
 
   registerHandler('sessions:search-all', async (_e, query) => {

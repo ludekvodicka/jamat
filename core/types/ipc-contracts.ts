@@ -17,13 +17,13 @@
  * is the zero-dep boundary.
  */
 
-import type { TurnInfo, SessionInfo, SessionMessage, SessionSearchMatch, UsageCache, SessionModelInfo } from './session.js'
+import type { TurnInfo, SessionInfo, SessionMessage, SessionSearchMatch, AgentUsageSnapshot, SessionModelInfo } from './session.js'
 import type { DiffBaseline, DiffMode, DiffOptions } from './file-diff.js'
 import type { AppConfig, ConfigPatch } from './config.js'
 import type { JamatPaths } from '../jamat-paths.js'
 import type { Idea } from './ideas.js'
 import type { AbilitiesResult, AbilitiesManageRequest, AbilitiesManageResult } from './abilities.js'
-import type { StatsDataResult } from './stats.js'
+import type { StatsDataResult, StatsGenerationProgress } from './stats.js'
 import type { AgentId } from './contracts.js'
 import type { UpdateChoice, UpdatePrompt, UpdateStatus } from '../update/update-status.types.js'
 import type {
@@ -101,6 +101,10 @@ export interface SessionRenameResult {
    */
   sessionId?: string
 }
+
+export type SessionDescriptionResult =
+  | { ok: true; description: string }
+  | { ok: false; error: string }
 
 export interface RecentFile {
   /** Absolute path on disk. */
@@ -195,10 +199,9 @@ export interface IpcInvokeMap {
   // of Settings in guided mode; `complete` marks it done (persisted in app-state.json).
   'onboarding:get-state': () => Promise<{ firstRun: boolean }>
   'onboarding:complete': () => Promise<{ ok: boolean }>
-  'stats:generate': (force?: boolean) => Promise<{ ok: boolean; htmlPath?: string; error?: string }>
-  // Native Usage Stats tab: runs the existing generate-stats.ts and returns the parsed stats.json
-  // DATA (not an HTML path). Serves a fresh (<5 min) cached stats.json unless `force` bypasses it.
-  'stats:data': (force?: boolean) => Promise<StatsDataResult>
+  // Usage Stats runs generate-stats.ts and returns parsed stats.json. A fresh (<5 min) file is reused
+  // unless `force` bypasses it.
+  'stats:data': (force?: boolean, requestId?: string) => Promise<StatsDataResult>
 
   // clipboard — the renderer runs sandboxed under contextIsolation and, in the PACKAGED build, is
   // loaded from a file:// URL where the async navigator.clipboard API is gated by Electron's
@@ -251,6 +254,8 @@ export interface IpcInvokeMap {
   'sessions:edit-flags': (projectDir: string) => Promise<Record<string, boolean>>
   'sessions:load': (projectDir: string, sessionId: string) => Promise<SessionMessage[]>
   'sessions:rename': (projectDir: string, sessionId: string | null | undefined, name: string) => Promise<SessionRenameResult>
+  'session-description:load': (sessionId: string) => Promise<SessionDescriptionResult>
+  'session-description:save': (sessionId: string, description: string) => Promise<SessionDescriptionResult>
   'sessions:search': (projectDir: string, query: string) => Promise<SessionSearchMatch[]>
   'sessions:search-all': (query: string) => Promise<(SessionSearchMatch & { projectDir: string })[]>
   // `fork: true` opens the session as a `--fork-session` branch (new session id, history kept,
@@ -275,7 +280,7 @@ export interface IpcInvokeMap {
   'pty:resume': (terminalId: string) => Promise<{ ok: boolean; error?: string }>
 
   // usage
-  'usage:get': () => Promise<UsageCache | null>
+  'usage:get': (agent: AgentId) => Promise<AgentUsageSnapshot | null>
   // Status-detection credentials (Claude.ai usage). GET never returns the session key —
   // only orgId + a boolean — so the secret never crosses back to the renderer. SET writes
   // them into the gitignored `config-<user>.local.json` overlay (blank sessionKey = keep existing).
@@ -430,7 +435,8 @@ export interface IpcEventMap {
   'error:log': (source: string, message: string) => void
 
   // usage
-  'usage:update': (data: UsageCache) => void
+  'usage:update': (data: AgentUsageSnapshot) => void
+  'stats:progress': (progress: StatsGenerationProgress) => void
 
   // update module — pushed on every phase/progress change (checking → available → downloading % →
   // installing → error), so the status bar and the dialog are live views instead of polls. Same record

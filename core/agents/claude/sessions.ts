@@ -458,7 +458,7 @@ export function readSessionModelInfo(jsonlPath: string): SessionModelInfo | null
             // the token COUNT is overridden by the post-compact size when a compact is the newest event.
             contextTokens: postCompactTokens ?? usageTokens,
             contextWindow: contextWindowFor(msg.model),
-            effortLevel: null, // filled in by the caller via readEffortLevel
+            effortLevel: null,
           };
         } catch {
           /* partial or non-JSON line — skip */

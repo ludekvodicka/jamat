@@ -9,13 +9,13 @@ audience: users & contributors
 # What Jamat Can Do
 
 **Jamat** — *Just Another Multi-Agent Terminal* — is an open-source desktop control center for
-running many [Claude Code](https://www.anthropic.com/claude-code) sessions in one tiling workspace,
+running many Claude Code and Codex sessions in one tiling workspace,
 reaching the sessions on your other computers, and letting one AI agent operate another's tab.
 
 > This page is itself a demo: you're reading it inside Jamat's **FileViewer**, rendered by the
 > `MdExtRenderer` widget — the same viewer that shows any Markdown file you open in a tab.
 
-::status{workspace=stable cross_machine=stable ai_bridge=beta mobile=beta platform="Windows now" agents="Claude Code now"}
+::status{workspace=stable cross_machine=stable ai_bridge=beta mobile=beta platform="Windows now" agents="Claude + Codex"}
 
 ---
 
@@ -69,10 +69,12 @@ waiting) — never over an in-progress turn or a permission prompt. Postpone sno
 card reappears only once context climbs to the **next** threshold.
 :::
 
-## Detailed Claude usage stats
+## Detailed agent usage stats
 
-A usage dashboard breaks **cost and tokens** down by project and model — input / output / cache —
-across **1h / 5h / 24h** windows.
+A unified dashboard breaks **tokens** down by project, model, and agent—input / output / cache—
+across **1h / 5h / 24h** windows. One `All / Claude / Codex` selector applies to every view. Known
+Claude and Codex models include an **estimated API-equivalent cost**; this is not the actual
+ChatGPT/Codex subscription charge. Models without a current price stay visibly unpriced.
 
 ```vega-lite
 {
@@ -181,14 +183,15 @@ A per-user config points Jamat at your own folders — copied once from the publ
 - [x] Quick project & session selector (command palette)
 - [x] One-click compaction nudge at configurable thresholds
 - [x] Predefined quick-reply messages
-- [x] Detailed per-project / per-model usage & cost stats
+- [x] Unified Claude + Codex per-project / per-model usage stats
 - [x] Diffs by git/SVN, by session, or by message
 - [x] Cross-machine LAN control + AI-drives-AI bridge
 - [x] Phone launch via Wake-on-LAN + web app
 - [x] Skill / slash-command / subagent / MCP / plugin management
 - [x] Rich Markdown + diagram rendering (this document)
 - [ ] macOS & Linux builds *(soon)*
-- [ ] More agents — Codex / GPT via the adapter layer *(soon)*
+- [x] Claude Code + Codex via the adapter layer
+- [ ] More agent CLIs via the adapter layer *(soon)*
 - [ ] Native mobile app *(soon)*
 
 :::details[Architecture rules (why the layout is the way it is)]
@@ -201,5 +204,5 @@ A per-user config points Jamat at your own folders — copied once from the publ
 
 ---
 
-*Not affiliated with Anthropic. "Claude" and "Claude Code" are products of Anthropic; Jamat runs them
-as your own local subprocesses, on your own keys.*
+*Not affiliated with Anthropic or OpenAI. Jamat runs their agent CLIs as local subprocesses with your
+own configured accounts.*

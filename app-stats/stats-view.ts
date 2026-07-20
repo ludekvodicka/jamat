@@ -181,7 +181,7 @@ export class StatsViewBuilder {
         requests: detailedRequests,
         projects: detailedProjectRows,
       },
-      totals: StatsViewBuilder.totalDaily(dailyRows),
+      totals: StatsViewBuilder.calculateTotals(dailyRows),
       costCoverage,
       durationCoverage,
     }
@@ -321,7 +321,21 @@ export class StatsViewBuilder {
   }
 
   private static toDetailedRequest(record: NormalizedUsageRecord): DetailedRequest {
-    return { ...record, totalTokens: StatsViewBuilder.total(record) }
+    return {
+      agent: record.agent,
+      timestamp: record.timestamp,
+      model: record.model,
+      inputTokens: record.inputTokens,
+      outputTokens: record.outputTokens,
+      cacheCreationTokens: record.cacheCreationTokens,
+      cacheReadTokens: record.cacheReadTokens,
+      reasoningTokens: record.reasoningTokens,
+      totalTokens: StatsViewBuilder.total(record),
+      cost: record.cost,
+      durationMs: record.durationMs,
+      project: record.project,
+      sessionId: record.sessionId,
+    }
   }
 
   private static toProjectSummary(project: string, bucket: SummaryBucket): ProjectSummary {
@@ -400,7 +414,7 @@ export class StatsViewBuilder {
     return result
   }
 
-  private static totalDaily(rows: DailyUsage[]): StatsTotals {
+  static calculateTotals(rows: DailyUsage[]): StatsTotals {
     const totals: StatsTotals = { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, reasoningTokens: 0, totalCost: 0, totalTokens: 0 }
     for (const row of rows) {
       totals.inputTokens += row.inputTokens

@@ -2,9 +2,11 @@ import { useEffect, useState, useCallback, type CSSProperties } from 'react'
 import { loadSettings } from './panels/SettingsPanel'
 import { useLayoutStore } from '../store/layout-store'
 import type { SessionDonePrompt } from '../../shared/types'
+import type { AgentWorkStatus } from '../../../../core/agents/workDetection/agentWorkDetector.types'
+import { TerminalPromptSubmitter } from '../utils/terminalPromptSubmitter'
 
 /**
- * Bottom-right quick-prompt affordance for an IDLE Claude session on the active tab. Each button
+ * Bottom-right quick-prompt affordance for an idle agent session on the active tab. Each button
  * types its prompt into that session and submits it (Enter), so a finished turn can be followed up
  * in one click ("Continue", "Summarize", …). Buttons come from config (`sessionDonePrompts`, edited
  * in Settings → Quick prompts), falling back to a built-in default; toggled in Settings → Notifications.
@@ -21,8 +23,7 @@ import type { SessionDonePrompt } from '../../shared/types'
  * and only for local `terminalPanel` tabs that aren't plain shells — never Settings/Help/etc.
  */
 
-type Status = 'idle' | 'running' | 'tool-use' | 'blocked' | 'waiting' | 'done'
-const ACTIVE_STATUSES: Status[] = ['running', 'tool-use', 'blocked', 'waiting']
+const ACTIVE_STATUSES: AgentWorkStatus[] = ['running', 'tool-use', 'blocked', 'waiting']
 // A session that opens straight into idle emits no status transition; if nothing arrives this soon
 // after the tab becomes active, assume idle (a working tab would already have emitted 'running').
 const OPEN_INTO_IDLE_GRACE_MS = 1500
@@ -37,11 +38,12 @@ const DEFAULT_PROMPTS: SessionDonePrompt[] = [
 
 export function SessionDonePromptPopup() {
   // Latest known status per terminal id (only terminal tabs ever emit `terminal-status`).
-  const [statusById, setStatusById] = useState<Record<string, Status>>({})
+  const [statusById, setStatusById] = useState<Record<string, AgentWorkStatus>>({})
   // The tab whose FULL dialog is open (vs. the resting bubble). null = collapsed.
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const activePanel = useLayoutStore(s => s.activePanel)
   const dockviewApi = useLayoutStore(s => s.dockviewApi)
+  const terminalAgents = useLayoutStore(s => s.terminalAgents)
   const appConfig = useLayoutStore(s => s.appConfig)
   const prompts = appConfig?.sessionDonePrompts?.length ? appConfig.sessionDonePrompts : DEFAULT_PROMPTS
 
@@ -51,8 +53,12 @@ export function SessionDonePromptPopup() {
     const starts = new Map<string, number>()
 
     const onStatus = (e: Event) => {
-      const { id, status } = (e as CustomEvent).detail ?? {}
+      const { id, status, backgroundActivity } = (e as CustomEvent<{ id?: string; status?: AgentWorkStatus; backgroundActivity?: boolean }>).detail ?? {}
       if (!id || !status) return
+      // Idle with a background shell/sub-agent still running → the turn isn't truly finished; defer
+      // (keep `starts`, don't flip to idle). When the task clears, useTerminal re-emits idle without the
+      // flag and this fires normally.
+      if (status === 'idle' && backgroundActivity) return
       setStatusById(prev => (prev[id] === status ? prev : { ...prev, [id]: status }))
 
       if (ACTIVE_STATUSES.includes(status)) {
@@ -138,7 +144,7 @@ export function SessionDonePromptPopup() {
     const id = useLayoutStore.getState().activePanel
     setExpandedId(null)
     if (!id) return
-    window.electronAPI?.writeTerminal?.(id, `${text}\r`)
+    TerminalPromptSubmitter.submit(id, text)
   }, [])
 
   if (!activePanel) return null
@@ -151,6 +157,13 @@ export function SessionDonePromptPopup() {
   const isShell = tabType === 'cmd' || tabType === 'powershell' || tabType === 'browser'
   const isSession = panel?.api?.component === 'terminalPanel' && !isShell
   if (!isSession || statusById[activePanel] !== 'idle') return null
+  const agent = terminalAgents[activePanel]
+  let agentLabel: string
+  if (agent === 'claude') agentLabel = 'Claude'
+  else if (agent === 'codex') agentLabel = 'Codex'
+  else if (agent === undefined) agentLabel = 'Agent'
+  else
+    throw new Error(`Unknown agent: ${JSON.stringify(agent)}`)
 
   // Resting bubble — click to open the dialog.
   if (expandedId !== activePanel) {
@@ -158,8 +171,8 @@ export function SessionDonePromptPopup() {
       <button
         className="session-done-bubble"
         style={anchorStyle}
-        title="Claude je idle — zobrazit akce"
-        aria-label="Claude je idle — zobrazit akce"
+        title={`${agentLabel} je idle — zobrazit akce`}
+        aria-label={`${agentLabel} je idle — zobrazit akce`}
         onClick={() => setExpandedId(activePanel)}
       >
         💬
@@ -170,7 +183,7 @@ export function SessionDonePromptPopup() {
   return (
     <div className="session-done-popup" style={anchorStyle} role="dialog" aria-label="Session finished — quick prompts">
       <button className="session-done-close" onClick={() => setExpandedId(null)} title="Collapse to bubble">✕</button>
-      <div className="session-done-title">✓ Claude finished</div>
+      <div className="session-done-title">✓ {agentLabel} finished</div>
       <div className="session-done-actions">
         {prompts.map((p, i) => (
           <button

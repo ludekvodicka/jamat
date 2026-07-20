@@ -38,6 +38,9 @@ import { destroyAll, listPtys } from '../pty-manager'
 import { getScreenState } from '../screen-executor'
 import { getLogBuffer } from '../logger'
 import { getAppConfig, restartAllWindows, getMenuDir } from '../ipc-windows'
+import { getMonorepoRoot } from '../app-root'
+import { getJamatPaths } from '../jamat-paths'
+import { StatsGenerationRunner } from '../statsGenerationRunner'
 import { relaunchApp } from '../relaunch'
 import { runHeadlessUpdate, getUpdateStatus } from '../update/update-manager'
 import { readLogTail } from '../update/update-log'
@@ -151,8 +154,8 @@ export function registerDebugOps(): void {
   registerOp({
     name: 'debug:usage-refresh',
     meta: { summary: 'Force a usage refresh', reach: [...REACH], rw: 'rw', audit: 'never' },
-    handler: (): Result => {
-      try { return { ok: true, data: { usage: forceRefreshUsage() } } }
+    handler: async (): Promise<Result> => {
+      try { return { ok: true, data: { usage: await forceRefreshUsage() } } }
       catch (e: any) { return { ok: false, error: String(e?.message ?? e), code: 'threw' } }
     },
   })
@@ -392,23 +395,13 @@ export function registerDebugOps(): void {
 
   registerOp({
     name: 'debug:generate-stats',
-    meta: { summary: 'Regenerate the usage stats dashboard (async)', reach: [...REACH], rw: 'rw', devOnly: true, audit: 'discrete' },
-    handler: (): Result => {
+    meta: { summary: 'Regenerate usage statistics data', reach: [...REACH], rw: 'rw', devOnly: true, audit: 'discrete' },
+    handler: async (): Promise<Result> => {
       const start = Date.now()
-      const { spawn } = require('child_process') as typeof import('child_process')
-      const { resolve: pathResolve } = require('path') as typeof import('path')
-      const root = pathResolve(__dirname, '..', '..', '..')
-      const statsScript = pathResolve(root, 'app-stats', 'generate-stats.ts')
-      const htmlScript = pathResolve(root, 'app-stats', 'generate-html.ts')
-      const tsxBin = pathResolve(root, 'node_modules', '.bin', 'tsx.cmd')
-      const child = spawn(tsxBin, [statsScript], { cwd: root, stdio: 'pipe', shell: true })
-      child.on('close', (code) => {
-        console.log(`[stats] generate-stats code=${code} ${Date.now() - start}ms`)
-        if (code !== 0) return
-        const child2 = spawn(tsxBin, [htmlScript], { cwd: root, stdio: 'pipe', shell: true })
-        child2.on('close', (code2) => { console.log(`[stats] generate-html code=${code2} total=${Date.now() - start}ms`) })
-      })
-      return { ok: true, data: { ok: true, message: 'Starting async stats generation' } }
+      const context = { root: getMonorepoRoot(), configDir: getJamatPaths().configDir }
+      const data = await StatsGenerationRunner.generateData(context)
+      if (!data.ok) return { ok: false, error: data.error ?? 'Stats generation failed', code: 'threw' }
+      return { ok: true, data: { ok: true, elapsedMs: Date.now() - start } }
     },
   })
 }

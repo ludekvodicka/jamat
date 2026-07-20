@@ -21,11 +21,41 @@ filesystem modules. The local xterm enables `vtExtensions.win32InputMode`, allow
 `DECSET 9001` request to update the public `term.modes.win32InputMode` flag and xterm's normal key
 encoding.
 
+## Synthetic prompt submission
+
+One-click actions such as Compact, quick prompts, and live rename insert text and submit it without a
+physical keyboard event. They must still use the live xterm's negotiated input mode. Bare CR is a
+standard-mode Enter, but Codex in Win32 input mode interprets that direct byte as a prompt newline.
+
+`TerminalPromptSubmitter` registers each live xterm under its panel id with a transport writer and a
+live `term.modes.win32InputMode` getter. It writes the prompt text and Enter separately:
+
+| xterm mode | Enter encoding |
+|---|---|
+| Standard | `CR` (`0x0D`) |
+| Win32 input mode | `ESC [ 13 ; 28 ; 13 ; 1 ; 0 ; 1 _` (`VK_RETURN`, scan code `0x1C`) |
+
+`useTerminal` supplies the local PTY writer. `RemoteViewerPanel` enables the same xterm Win32
+extension and supplies its remote-stream writer, so local and remote Compact actions address their
+own panel id without agent/transport branches. Cleanup is binding-identity-safe for a panel id that
+is reused. Agent rename adapters return command text only; the submitter owns the terminal key.
+
 ## Lifecycle constraint
 
 A screen-managed terminal starts in the AppJamat menu and receives its selected agent later through
 `screen:update-params`. `useTerminal` therefore keeps the current `RendererAgent` in a ref. The xterm
 instance and PTY must not remount when the agent changes.
+
+## Codex submitted-message highlighting
+
+Native Codex launches advertise `COLORTERM=truecolor` from
+`core/agents/codex/launcher.ts`. Codex can then emit its own RGB background for committed user
+history rows. That semantic styling distinguishes submitted prompts from the active composer and
+working-status rows without AppJamat parsing the `›` glyph or terminal line wrapping.
+
+xterm.js already renders RGB ANSI backgrounds and forwards terminal color-query replies through the
+PTY. Existing Codex processes retain the capability detected at startup, so this takes effect in a
+newly launched Codex tab.
 
 ## Constraints
 
@@ -40,5 +70,9 @@ instance and PTY must not remount when the agent changes.
 - `core/agents/renderer.ts`
 - `core/agents/claude/renderer-meta.ts`
 - `core/agents/codex/renderer-meta.ts`
+- `core/agents/codex/launcher.ts`
 - `app-electron/src/renderer/hooks/useTerminal.ts`
+- `app-electron/src/renderer/utils/terminalPromptSubmitter.ts`
+- `app-electron/src/renderer/components/panels/RemoteViewerPanel.tsx`
 - `scripts/smoke-agents-registry.ts`
+- `scripts/smoke-codex-launcher.ts`

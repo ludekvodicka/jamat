@@ -16,7 +16,7 @@ const HELP_CONTENT = `
 | **Ctrl+Shift+Tab** | Switch to previous tab |
 | **Ctrl+Shift+PageUp** | Move tab left within its group |
 | **Ctrl+Shift+PageDown** | Move tab right within its group |
-| **F2** | Rename the active session / tab |
+| **F2** | Edit the active session name and private AppJamat description |
 
 ### Layout
 | Shortcut | Action |
@@ -83,8 +83,7 @@ The **Ctrl+Shift+T** picker groups tab types into sections:
 | Type | Shortcut | Description |
 |------|----------|-------------|
 | 🌐 **Browser** | — | Web browser with URL bar, navigation (back/forward/reload) |
-| 📊 **Usage Stats** | Ctrl+U | Native ccusage dashboard (cost / tokens) |
-| 📊 **Usage Stats (HTML)** | — | The standalone HTML ccusage report |
+| 📊 **Usage Stats** | Ctrl+U | React usage dashboard (cost / tokens) |
 | 💡 **Ideas** | Ctrl+I | Per-project ideas / TODO capture |
 | 🧰 **Claude Abilities** | Ctrl+Y | Inventory of skills, commands, agents, MCP servers, plugins |
 | 🛰 **Remote connections** | — | Connect to / drive other PCs' Claude sessions |
@@ -204,8 +203,7 @@ The **Ctrl+Shift+T** picker groups tab types into sections:
 - Persists per project so observations aren't lost between sessions
 
 ### Usage Stats (Ctrl+U)
-- **Native** dashboard built on ccusage — cost and token usage over time, rendered in-app
-- A separate **Usage Stats (HTML)** tab opens the standalone generated HTML report
+- React dashboard — cost and token usage over time, rendered in-app
 
 ### Claude Abilities (Ctrl+Y)
 - Inventory of what Claude can use: **Skills, Commands, Agents, MCP servers, Plugins, Instructions**

@@ -1,7 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { DEFAULT_AGENT_ID } from '../../../core/types/contracts'
-import type { SessionModelInfo } from '../../../core/types/session'
-import type { RemotePeer } from '../../../core/types/remote-control'
+import { getRendererAgent } from '../../../core/agents/renderer'
 import { DockLayout } from './components/layout/DockLayout'
 import { TabListPanel } from './components/layout/TabListPanel'
 import { useLayoutStore, type TerminalRenderer } from './store/layout-store'
@@ -25,23 +24,12 @@ import { UpdateChip } from './components/UpdateChip'
 import { UpdateDialog } from './components/UpdateDialog'
 import { ClipboardDebug } from './components/ClipboardDebug'
 import { WorkDetectionStatus } from './components/WorkDetectionStatus'
+import { AgentSessionStatus } from './components/AgentSessionStatus'
+import { AgentUsageStatus } from './components/AgentUsageStatus'
 import { loadSettings, SETTINGS_CHANGED_EVENT, STORAGE_KEY as SETTINGS_STORAGE_KEY } from './components/panels/SettingsPanel'
 import { openOrActivatePanel } from './utils/terminal-helpers'
-import { contextLevel, compactSuggestPct } from './utils/context-level'
 
 import { getGroupName, getGroupColor } from './utils/window-params'
-
-const BAR_LEN = 10
-function usageBar(pct: number): { filled: string; empty: string } {
-  const n = Math.round((pct / 100) * BAR_LEN)
-  return { filled: '█'.repeat(n), empty: '░'.repeat(BAR_LEN - n) }
-}
-
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1)}M`
-  if (n >= 1000) return `${Math.round(n / 1000)}k`
-  return String(n)
-}
 
 // Status-bar badge: which renderer the ACTIVE terminal tab actually runs on. DOM = the accelerated
 // addon failed to load or the GPU context was lost (a silent fallback — the title spells it out).
@@ -73,9 +61,7 @@ function RendererBadge() {
 }
 
 export function App() {
-  const { toggleSidebar, addPanel, activePanel, setAppConfig, setAgentsMeta, usageData, setUsageData, setTheme } = useLayoutStore()
-  // User-configurable context-fullness warning levels (Settings → Context warnings); undefined → defaults.
-  const contextLevels = useLayoutStore(s => s.appConfig?.contextLevels)
+  const { toggleSidebar, addPanel, setAppConfig, setAgentsMeta, setTheme } = useLayoutStore()
   // Active config profile name — the Demo/screenshot profile ("Demo") swaps the dev title suffix for " - Demo".
   const configName = useLayoutStore(s => s.appConfig?.name)
   useTaskNotifications()
@@ -86,9 +72,6 @@ export function App() {
   useRemoteActivityLog()
   const [showTabPicker, setShowTabPicker] = useState(false)
   const [showCommandPalette, setShowCommandPalette] = useState(false)
-  const [sessionModel, setSessionModel] = useState<SessionModelInfo | null>(null)
-  // True when the shown sessionModel belongs to a PEER (a remote-viewer tab) — adds a 🛰 marker.
-  const [sessionModelRemote, setSessionModelRemote] = useState(false)
   const [appVersion, setAppVersion] = useState('')
   const [groupName, setGroupName] = useState<string | null>(getGroupName())
   const [groupColor, setGroupColor] = useState<string | null>(getGroupColor())
@@ -100,22 +83,6 @@ export function App() {
   // Status-bar renderer/geometry badge ("DOM 135×68"). On by default (Settings → Debug).
   const [showRendererBadge, setShowRendererBadge] = useState(() => loadSettings().showRendererBadge)
   const remoteIdleRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  // Compact the ACTIVE tab's session: type "/compact" + Enter into it so Claude runs /compact.
-  // Local tab → write straight to its PTY; remote-viewer tab (params carry peer + terminalId) →
-  // inject into the PEER's terminal over the bridge (control:write-keys, same op the AI send uses).
-  const compactActiveSession = useCallback(() => {
-    const panel = useLayoutStore.getState().dockviewApi?.activePanel
-    if (!panel) return
-    const params = panel.params as Record<string, unknown> | undefined
-    const peer = params?.peer as RemotePeer | undefined
-    const terminalId = params?.terminalId as string | undefined
-    if (peer && terminalId) {
-      void window.electronAPI?.remoteOp?.(peer, 'control:write-keys', [{ terminalId, data: '/compact\r' }])
-    } else {
-      window.electronAPI?.writeTerminal?.(panel.id, '/compact\r')
-    }
-  }, [])
 
   useEffect(() => {
     const suffix = configName === 'Demo' ? ' - Demo' : import.meta.env.DEV ? ' - Debug' : ''
@@ -178,50 +145,6 @@ export function App() {
     return () => { off(); if (remoteIdleRef.current) clearTimeout(remoteIdleRef.current) }
   }, [])
 
-  // Model + context for the active tab's session. Re-arms on tab switch:
-  // polls fast until the transcript yields a value (layout still restoring,
-  // or a new session that hasn't produced its first assistant turn), then
-  // settles to once per minute (the transcript only grows a turn at a time).
-  useEffect(() => {
-    const FAST_MS = 2_000
-    const SLOW_MS = 60_000
-    let cancelled = false
-    let timer: ReturnType<typeof setTimeout> | null = null
-
-    const tick = async () => {
-      const api = useLayoutStore.getState().dockviewApi
-      const params = api?.activePanel?.params as Record<string, unknown> | undefined
-      let info: SessionModelInfo | null = null
-      let isRemote = false
-      try {
-        const peer = params?.peer as RemotePeer | undefined
-        const terminalId = params?.terminalId as string | undefined
-        if (peer && terminalId && window.electronAPI?.remoteOp) {
-          // Remote-viewer tab: read the PEER session's model + context over the bridge.
-          // control:session-model resolves the terminal's cwd + sessionId on the peer.
-          isRemote = true
-          const r = await window.electronAPI.remoteOp(peer, 'control:session-model', [terminalId])
-          info = r.ok ? ((r.data as SessionModelInfo | null) ?? null) : null
-        } else {
-          const dir = (params?.projectDir ?? params?.cwd) as string | undefined
-          const getSessionModel = window.electronAPI?.getSessionModel
-          if (dir && getSessionModel) {
-            info = (await getSessionModel(dir, params?.sessionId as string | undefined)) ?? null
-          }
-        }
-      } catch {
-        info = null
-      }
-      if (cancelled) return
-      setSessionModel(info)
-      setSessionModelRemote(isRemote && !!info)
-      timer = setTimeout(tick, info ? SLOW_MS : FAST_MS)
-    }
-
-    tick()
-    return () => { cancelled = true; if (timer) clearTimeout(timer) }
-  }, [activePanel])
-
   const [configLoaded, setConfigLoaded] = useState(false)
 
   useEffect(() => {
@@ -255,22 +178,12 @@ export function App() {
   }, [configLoaded, dockviewApi, onboardingChecked])
 
   useEffect(() => {
-    window.electronAPI?.getUsage?.().then((data) => {
-      if (data) setUsageData(data)
-    })
-    if (!window.electronAPI?.onUsageUpdate) return
-    return window.electronAPI.onUsageUpdate((cache) => setUsageData(cache))
-  }, [setUsageData])
-
-  useEffect(() => {
     if (!window.electronAPI?.onOpenTab) return
     return window.electronAPI.onOpenTab((id, meta) => {
       const api = useLayoutStore.getState().dockviewApi
       if (!api) return
       const agentId = meta.agent ?? DEFAULT_AGENT_ID
-      // Hardcoded label mirrors RendererAgent — kept inline because the
-      // registry is async to bootstrap and we want the title eagerly.
-      const agentLabel = agentId === 'codex' ? 'Codex' : 'Claude'
+      const agentLabel = getRendererAgent(agentId).displayName
       api.addPanel({
         id,
         component: 'terminalPanel',
@@ -365,63 +278,8 @@ export function App() {
         {/* Spacer — pushes the model/context block to the right edge (replaces the old
             "+ New Tab / + New Window" buttons; those actions live in the tab picker + shortcuts). */}
         <span style={{ marginLeft: 'auto' }} />
-        {sessionModel ? (() => {
-          const pct = sessionModel.contextWindow > 0
-            ? Math.round((sessionModel.contextTokens / sessionModel.contextWindow) * 100)
-            : 0
-          // Flag a non-opus model in red — opus is the expected default, so anything else
-          // (sonnet/haiku/…) should stand out at a glance in the status bar.
-          const isOpus = /opus/i.test(sessionModel.model || sessionModel.modelLabel)
-          // Context-fill warning on the "xk / 1M · pct%" part — SAME configured thresholds + colors
-          // as the per-tab indicator (shared contextLevel + contextLevels config): a level colours
-          // this only when its `statusBar` is on. Below the first such level it stays the default
-          // text color (a popup-only level still surfaces the Compact button below, but no colour).
-          const ctxLevel = contextLevel(pct, contextLevels)
-          const ctxStyle = ctxLevel ? { color: ctxLevel.color, fontWeight: ctxLevel.fontWeight } : undefined
-          return (
-            <span
-              className="status-item"
-              title={`${sessionModelRemote ? '🛰 remote session\n' : ''}Model: ${sessionModel.model}\nContext: ${sessionModel.contextTokens.toLocaleString()} / ${sessionModel.contextWindow.toLocaleString()} tokens (${pct}%)${sessionModel.effortLevel ? `\nEffort: ${sessionModel.effortLevel}` : ''}`}
-              style={{ fontFamily: 'monospace', fontSize: '11px', letterSpacing: '-0.5px' }}
-            >
-              {sessionModelRemote ? '🛰 ' : ''}<span style={isOpus ? undefined : { color: '#e0707a', fontWeight: 600 }}>{sessionModel.modelLabel}</span>{sessionModel.effortLevel ? ` · ${sessionModel.effortLevel}` : ''} · <span style={ctxStyle}>{fmtTokens(sessionModel.contextTokens)} / {fmtTokens(sessionModel.contextWindow)} · {pct}%</span>
-              {pct > compactSuggestPct(contextLevels) && (
-                <button
-                  className="status-btn status-compact-btn"
-                  title="Compact this session — types /compact into it and runs it"
-                  style={ctxLevel ? { background: ctxLevel.color, borderColor: ctxLevel.color, color: '#1a1a1a' } : undefined}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => { e.stopPropagation(); compactActiveSession() }}
-                >
-                  Compact
-                </button>
-              )}
-            </span>
-          )
-        })() : null}
-        {usageData?.data ? (() => {
-          const s = usageBar(usageData.data.five_hour.utilization)
-          const w = usageBar(usageData.data.seven_day.utilization)
-          return (
-            <span
-              className="status-item"
-              title={`Session: ${usageData.data.five_hour.utilization}% (resets ${new Date(usageData.data.five_hour.resets_at).toLocaleTimeString()})\nWeekly: ${usageData.data.seven_day.utilization}% (resets ${new Date(usageData.data.seven_day.resets_at).toLocaleDateString()})`}
-              style={{ cursor: 'default', fontFamily: 'monospace', fontSize: '11px', letterSpacing: '-0.5px' }}
-            >
-              S: {String(usageData.data.five_hour.utilization).padStart(2)}% [<span style={{ color: 'rgba(255,255,255,0.7)' }}>{s.filled}</span>
-              <span style={{ color: 'rgba(255,255,255,0.2)' }}>{s.empty}</span>],
-              {' '}W: {String(usageData.data.seven_day.utilization).padStart(2)}% [<span style={{ color: 'rgba(255,255,255,0.7)' }}>{w.filled}</span>
-              <span style={{ color: 'rgba(255,255,255,0.2)' }}>{w.empty}</span>]
-              <span
-                style={{ cursor: 'pointer', marginLeft: 6, fontSize: 12, opacity: 0.6 }}
-                title="Open usage on claude.ai"
-                onClick={() => (window as any).electronAPI.runAction('open-url', 'https://claude.ai/settings/usage')}
-              >↗</span>
-            </span>
-          )
-        })() : usageData ? (
-          <span className="status-item" style={{ color: '#888' }} title={usageData.error ?? 'No usage data'}>S:? W:?</span>
-        ) : null}
+        <AgentSessionStatus />
+        <AgentUsageStatus />
         <UpdateChip />
       </div>
       {showTabPicker && (

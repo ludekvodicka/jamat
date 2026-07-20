@@ -23,7 +23,7 @@ function sel(cmd: MenuSelection['cmd'], extra: Partial<MenuSelection> = {}): Men
 console.log('\n[1] terminal (native) — arg vectors')
 {
   const cc = buildCodexLaunchCommand({ selection: sel('cc'), mode: 'terminal' })
-  ok('cc: command=codex, cwd, empty env', cc.command === 'codex' && cc.cwd === '/proj' && Object.keys(cc.env).length === 0)
+  ok('cc: command=codex, cwd, truecolor env', cc.command === 'codex' && cc.cwd === '/proj' && cc.env.COLORTERM === 'truecolor')
   ok('cc: skip-perms flag by default', cc.args.includes('--dangerously-bypass-approvals-and-sandbox'))
 
   const ccNoSkip = buildCodexLaunchCommand({ selection: sel('cc'), mode: 'terminal', skipPermissions: false })
@@ -36,6 +36,10 @@ console.log('\n[1] terminal (native) — arg vectors')
   const ccc = buildCodexLaunchCommand({ selection: sel('ccc'), mode: 'terminal' })
   ok('ccc: args = resume --last', ccc.args[0] === 'resume' && ccc.args[1] === '--last')
   ok('ccc: fallback drops resume (plain codex)', !!ccc.fallback && !ccc.fallback.args.includes('resume'))
+  ok('ccc: fallback keeps truecolor env', ccc.fallback?.env.COLORTERM === 'truecolor')
+
+  const detached = buildCodexLaunchCommand({ selection: sel('cc'), mode: 'detached' })
+  ok('detached: truecolor env', detached.env.COLORTERM === 'truecolor')
 }
 
 console.log('\n[2] pty (native) — shell chains carry the || fallback')
@@ -50,6 +54,7 @@ console.log('\n[2] pty (native) — shell chains carry the || fallback')
 
   const cc = buildCodexLaunchCommand({ selection: sel('cc'), mode: 'pty' })
   ok('cc pty chain runs plain codex', cc.args.join(' ').includes('codex'))
+  ok('cc pty: truecolor env', cc.env.COLORTERM === 'truecolor')
 }
 
 console.log('\n[3] fork maps to `codex fork <id>` + resume fork-parent fallback + invalid sessionId')

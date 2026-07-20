@@ -1,10 +1,10 @@
 import { useMemo, useState } from 'react'
-import type { Stats, DetailedRequest, ProjectSummary, ModelSummary24h } from '../../../../../../core/types/stats'
+import type { StatsView, DetailedRequest, ProjectSummary, ModelSummary24h } from '../../../../../../core/types/stats'
 import { StatCard } from './StatCard'
 import { DataTable, type Column } from './DataTable'
 import { ModelChip } from './ModelChip'
 import { DistributionBar, assignModelColors } from './charts'
-import { fmtNum, fmtCost, fmtInt, fmtDuration, shortModel } from './format'
+import { coverageLabel, fmtAgent, fmtNum, fmtCoveredCost, fmtCoveredDuration, fmtInt, shortModel } from './format'
 import { summarizeRequests, deriveLastHour } from './selectors'
 
 const fmtTime = (iso: string) => {
@@ -13,7 +13,7 @@ const fmtTime = (iso: string) => {
 }
 
 /** Full Detailed view (5h or 1h). 1h is derived client-side from the 5h request set. */
-export function DetailedTab({ stats, windowHours }: { stats: Stats; windowHours: 5 | 1 }) {
+export function DetailedTab({ stats, windowHours }: { stats: StatsView; windowHours: 5 | 1 }) {
   const [projectFilter, setProjectFilter] = useState<string | null>(null)
   const [modelFilter, setModelFilter] = useState<string | null>(null)
 
@@ -35,8 +35,11 @@ export function DetailedTab({ stats, windowHours }: { stats: Stats; windowHours:
   const totals = filtered.reduce((a, r) => { a.tokens += r.totalTokens; a.cost += r.cost; a.dur += r.durationMs; return a }, { tokens: 0, cost: 0, dur: 0 })
   const maxCost = Math.max(1e-9, ...filtered.map((r) => r.cost))
 
-  const modelCostSum = summary.models.reduce((s, m) => s + m.cost, 0) || 1
-  const modelCostMax = Math.max(1e-9, ...summary.models.map((m) => m.cost))
+  const modelWeight = (model: ModelSummary24h) => stats.costCoverage === 'full' ? model.cost : model.totalTokens
+  const modelWeightSum = summary.models.reduce((sum, model) => sum + modelWeight(model), 0) || 1
+  const modelWeightMax = Math.max(1e-9, ...summary.models.map(modelWeight))
+  const showReasoning = stats.totals.reasoningTokens > 0
+  const showAgent = new Set(baseRequests.map((request) => request.agent)).size > 1
 
   const modelCols: Column<ModelSummary24h>[] = [
     { key: 'model', label: 'Model', render: (m) => <ModelChip model={m.model} color={modelColors[m.model]} /> },
@@ -46,9 +49,10 @@ export function DetailedTab({ stats, windowHours }: { stats: Stats; windowHours:
     { key: 'outputTokens', label: 'Output', align: 'right', render: (m) => fmtNum(m.outputTokens) },
     { key: 'cacheCreationTokens', label: 'C.Create', align: 'right', render: (m) => fmtNum(m.cacheCreationTokens) },
     { key: 'cacheReadTokens', label: 'C.Read', align: 'right', render: (m) => fmtNum(m.cacheReadTokens) },
-    { key: 'cost', label: 'Cost', align: 'right', render: (m) => fmtCost(m.cost) },
-    { key: 'share', label: 'Share', align: 'right', render: (m) => `${((m.cost / modelCostSum) * 100).toFixed(1)}%` },
-    { key: 'dist', label: '', width: '110px', render: (m) => <DistributionBar fraction={m.cost / modelCostMax} color={modelColors[m.model]} /> },
+    ...(showReasoning ? [{ key: 'reasoningTokens', label: 'Reasoning', align: 'right' as const, render: (m: ModelSummary24h) => fmtNum(m.reasoningTokens) }] : []),
+    { key: 'cost', label: coverageLabel(stats.costCoverage, 'API est.', 'Partial API est.', 'Cost unavailable'), align: 'right', render: (m) => fmtCoveredCost(m.cost, stats.costCoverage) },
+    { key: 'share', label: 'Share', align: 'right', render: (m) => `${((modelWeight(m) / modelWeightSum) * 100).toFixed(1)}%` },
+    { key: 'dist', label: '', width: '110px', render: (m) => <DistributionBar fraction={modelWeight(m) / modelWeightMax} color={modelColors[m.model]} /> },
   ]
 
   const projectCols: Column<ProjectSummary>[] = [
@@ -60,12 +64,14 @@ export function DetailedTab({ stats, windowHours }: { stats: Stats; windowHours:
     { key: 'outputTokens', label: 'Output', align: 'right', render: (p) => fmtNum(p.outputTokens) },
     { key: 'cacheCreationTokens', label: 'C.Create', align: 'right', render: (p) => fmtNum(p.cacheCreationTokens) },
     { key: 'cacheReadTokens', label: 'C.Read', align: 'right', render: (p) => fmtNum(p.cacheReadTokens) },
-    { key: 'cost', label: 'Cost', align: 'right', render: (p) => fmtCost(p.cost) },
-    { key: 'durationMs', label: 'API time', align: 'right', render: (p) => fmtDuration(p.durationMs) },
+    ...(showReasoning ? [{ key: 'reasoningTokens', label: 'Reasoning', align: 'right' as const, render: (p: ProjectSummary) => fmtNum(p.reasoningTokens) }] : []),
+    { key: 'cost', label: coverageLabel(stats.costCoverage, 'API est.', 'Partial API est.', 'Cost unavailable'), align: 'right', render: (p) => fmtCoveredCost(p.cost, stats.costCoverage) },
+    ...(stats.durationCoverage === 'none' ? [] : [{ key: 'durationMs', label: coverageLabel(stats.durationCoverage, 'API time', 'Claude time', 'API time'), align: 'right' as const, render: (p: ProjectSummary) => fmtCoveredDuration(p.durationMs, stats.durationCoverage) }]),
   ]
 
   const reqCols: Column<DetailedRequest>[] = [
     { key: 'timestamp', label: 'Time', render: (r) => fmtTime(r.timestamp) },
+    ...(showAgent ? [{ key: 'agent', label: 'Agent', render: (r: DetailedRequest) => fmtAgent(r.agent) }] : []),
     { key: 'project', label: 'Project' },
     { key: 'model', label: 'Model', render: (r) => shortModel(r.model) },
     { key: 'totalTokens', label: 'Total', align: 'right', render: (r) => fmtNum(r.totalTokens) },
@@ -73,8 +79,9 @@ export function DetailedTab({ stats, windowHours }: { stats: Stats; windowHours:
     { key: 'outputTokens', label: 'Output', align: 'right', render: (r) => fmtNum(r.outputTokens) },
     { key: 'cacheCreationTokens', label: 'C.Create', align: 'right', render: (r) => fmtNum(r.cacheCreationTokens) },
     { key: 'cacheReadTokens', label: 'C.Read', align: 'right', render: (r) => fmtNum(r.cacheReadTokens) },
-    { key: 'cost', label: 'Cost', align: 'right', render: (r) => fmtCost(r.cost) },
-    { key: 'durationMs', label: 'Duration', align: 'right', render: (r) => fmtDuration(r.durationMs) },
+    ...(showReasoning ? [{ key: 'reasoningTokens', label: 'Reasoning', align: 'right' as const, render: (r: DetailedRequest) => fmtNum(r.reasoningTokens) }] : []),
+    { key: 'cost', label: coverageLabel(stats.costCoverage, 'API est.', 'Partial API est.', 'Cost unavailable'), align: 'right', render: (r) => fmtCoveredCost(r.cost, stats.costCoverage) },
+    ...(stats.durationCoverage === 'none' ? [] : [{ key: 'durationMs', label: coverageLabel(stats.durationCoverage, 'Duration', 'Claude time', 'Duration'), align: 'right' as const, render: (r: DetailedRequest) => fmtCoveredDuration(r.durationMs, stats.durationCoverage) }]),
     { key: 'sessionId', label: 'Session', render: (r) => r.sessionId.slice(0, 8) },
   ]
 
@@ -102,8 +109,8 @@ export function DetailedTab({ stats, windowHours }: { stats: Stats; windowHours:
       <div className="usage-stat-row">
         <StatCard label={`Requests (${windowHours}h)`} value={fmtInt(filtered.length)} sub={`${summary.projects.length} projects`} />
         <StatCard label={`Tokens (${windowHours}h)`} value={fmtNum(totals.tokens)} accent />
-        <StatCard label={`Cost (${windowHours}h)`} value={fmtCost(totals.cost)} />
-        <StatCard label={`API time (${windowHours}h)`} value={fmtDuration(totals.dur)} />
+        <StatCard label={coverageLabel(stats.costCoverage, `Est. API cost (${windowHours}h)`, `Partial API est. (${windowHours}h)`, 'Cost unavailable')} value={fmtCoveredCost(totals.cost, stats.costCoverage)} />
+        {stats.durationCoverage !== 'none' && <StatCard label={coverageLabel(stats.durationCoverage, `API time (${windowHours}h)`, `Claude API time (${windowHours}h)`, 'API time unavailable')} value={fmtCoveredDuration(totals.dur, stats.durationCoverage)} />}
       </div>
 
       {!modelFilter && (

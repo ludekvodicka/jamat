@@ -8,6 +8,7 @@ import { logError } from './logger'
 import { registerHandler, registerSend } from '../shared/typed-ipc'
 import { publishTo } from './streams'
 import { getAgent } from '../../../core/agents/index.js'
+import { TerminalFilePathExtractor } from '../../../core/terminal/terminalFilePathExtractor.js'
 import type { DirEntry } from '../../../core/types/ipc-contracts.js'
 
 // Session reads route through the Claude adapter so this module stays
@@ -221,6 +222,9 @@ export function registerFileIpc(): void {
       // suffix matches without re-splitting. Store [absPath, segsLower].
       const files: { path: string; segs: string[] }[] = []
       const baseSegCount = baseDir.replace(/\\/g, '/').replace(/\/+$/, '').split('/').filter(Boolean).length
+      // Claude truncates a name with an inline ellipsis (`2026-07-10-001-…-plan.md`), so the last
+      // segment may be a wildcard, not a literal — match it (and every suffix segment) by pattern.
+      const lastTester = TerminalFilePathExtractor.segTester(segs[segs.length - 1])
 
       const walk = (dir: string, depth: number) => {
         if (depth > MAX_DEPTH || visited >= MAX_ENTRIES) return
@@ -231,7 +235,7 @@ export function registerFileIpc(): void {
           const full = join(dir, entry.name)
           if (entry.isDirectory()) {
             if (!IGNORE.has(entry.name)) walk(full, depth + 1)
-          } else if (entry.name.toLowerCase() === segs[segs.length - 1]) {
+          } else if (lastTester(entry.name.toLowerCase())) {
             // Only files whose basename matches the partial's last segment can ever match — cheap pre-filter.
             const parts = full.replace(/\\/g, '/').split('/').filter(Boolean).slice(baseSegCount).map(s => s.toLowerCase())
             files.push({ path: full, segs: parts })
@@ -241,19 +245,12 @@ export function registerFileIpc(): void {
       walk(baseDir, 0)
       if (files.length === 0) return []
 
-      const endsWithSegs = (fileSegs: string[], suffix: string[]): boolean => {
-        if (suffix.length > fileSegs.length) return false
-        for (let i = 1; i <= suffix.length; i++) {
-          if (fileSegs[fileSegs.length - i] !== suffix[suffix.length - i]) return false
-        }
-        return true
-      }
-
       // Longest suffix first: the most specific match wins; fall back to shorter suffixes
-      // (down to the bare filename) so a cut leading segment still resolves.
+      // (down to the bare filename) so a cut leading segment still resolves. matchesSuffix is
+      // wildcard-aware (…/.../* segments), so Claude's truncated names resolve here.
       for (let k = segs.length; k >= 1; k--) {
         const suffix = segs.slice(segs.length - k)
-        const matches = files.filter(f => endsWithSegs(f.segs, suffix))
+        const matches = files.filter(f => TerminalFilePathExtractor.matchesSuffix(f.segs, suffix))
         if (matches.length > 0) return matches.slice(0, limit).map(m => m.path)
       }
       return []

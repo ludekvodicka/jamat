@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { resolveContextLevels } from '../utils/context-level'
 import { useLayoutStore } from '../store/layout-store'
-import type { RemotePeer } from '../../../../core/types/remote-control'
+import { TerminalPromptSubmitter } from '../utils/terminalPromptSubmitter'
 
 /**
- * Context-fullness nudge — a centered, semi-transparent card drawn over the terminal when a Claude
+ * Context-fullness nudge — a centered, semi-transparent card drawn over a supported agent terminal
  * session crosses a configured popup threshold (a `contextLevels` entry with `popup` on) AND the
  * session is idle (work finished, prompt waiting). Offers Compact (runs /compact) or Postpone.
  * Postpone snoozes THIS level — the card reappears only once context climbs to the NEXT threshold.
@@ -26,11 +26,9 @@ import type { RemotePeer } from '../../../../core/types/remote-control'
 
 interface Props {
   terminalId: string
-  /** The panel's params — carries `peer` + `terminalId` for a remote-viewer tab (compact routing). */
-  params?: Record<string, unknown>
 }
 
-export function ContextWarningOverlay({ terminalId, params }: Props) {
+export function ContextWarningOverlay({ terminalId }: Props) {
   const [pct, setPct] = useState<number | null>(null)
   // Is a turn in progress? Driven by terminal-status events. Starts true ("assume busy until we
   // learn otherwise") so we never flash the card over a terminal that opened straight into work;
@@ -69,13 +67,16 @@ export function ContextWarningOverlay({ terminalId, params }: Props) {
   }, [terminalId])
 
   // Track whether a turn is in progress. running / tool-use / blocked / waiting are all "active"
-  // (the card never covers an in-progress turn or a question/permission menu); only 'idle' clears it.
+  // (the card never covers an in-progress turn or a question/permission menu); so is idle while a
+  // background shell/sub-agent runs. Only a truly-finished idle (no background task) clears it.
   useEffect(() => {
     const handler = (e: Event) => {
       const d = (e as CustomEvent).detail
       if (d?.id === terminalId) {
         sawStatusRef.current = true
-        setActive(d.status !== 'idle')
+        // Idle with a background shell/sub-agent still running counts as active — don't nudge until the
+        // turn is truly done (useTerminal re-emits idle without the flag once the task clears).
+        setActive(d.status !== 'idle' || d.backgroundActivity === true)
       }
     }
     window.addEventListener('terminal-status', handler)
@@ -122,14 +123,8 @@ export function ContextWarningOverlay({ terminalId, params }: Props) {
     // Hide now; the post-compact pct drop will re-arm dismissed back to 0 for the next era.
     dismissedLevelRef.current = shownLevel
     setVisible(false)
-    const peer = params?.peer as RemotePeer | undefined
-    const tid = params?.terminalId as string | undefined
-    if (peer && tid) {
-      void window.electronAPI?.remoteOp?.(peer, 'control:write-keys', [{ terminalId: tid, data: '/compact\r' }])
-    } else {
-      window.electronAPI?.writeTerminal?.(terminalId, '/compact\r')
-    }
-  }, [shownLevel, params, terminalId])
+    TerminalPromptSubmitter.submit(terminalId, '/compact')
+  }, [shownLevel, terminalId])
 
   // Esc closes (== Postpone). Capture so it doesn't also reach the terminal underneath.
   useEffect(() => {

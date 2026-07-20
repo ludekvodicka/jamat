@@ -1,11 +1,12 @@
 /**
  * Codex CLI launch-command builder — the analog of `claude/launcher.ts`,
  * mirroring its mode × isolation matrix. Differences from Claude (verified
- * vs codex-cli 0.144.1, see `./README.md`):
+ * vs codex-cli 0.144.4, see `./README.md`):
  *   - resume is a subcommand: `codex resume <id>` / `codex resume --last`
  *     (not `claude -r <id>`).
  *   - skip-permissions = `--dangerously-bypass-approvals-and-sandbox`.
- *   - no `CLAUDE_CODE_*` env, no anti-flicker knobs → `env: {}`.
+ *   - no `CLAUDE_CODE_*` env or anti-flicker knobs; `COLORTERM=truecolor`
+ *     lets Codex retain its native submitted-message background in Jamat.
  *   - no `--remote-control` (the AI-bridge in `core/jamat` is Claude-only, a
  *     scope non-goal), so `detached` is a plain launch the bridge can't drive.
  *   - session forking maps `resume-fork` → `codex fork <id>` (capabilities.fork=true);
@@ -24,6 +25,10 @@ import { ensureCodexProjectTrust } from './trust.js'
 
 function buildFlags(skipPermissions: boolean): string[] {
   return skipPermissions ? ['--dangerously-bypass-approvals-and-sandbox'] : []
+}
+
+function buildEnv(): Record<string, string> {
+  return { COLORTERM: 'truecolor' }
 }
 
 function validateSessionId(sel: MenuSelection): void {
@@ -74,19 +79,19 @@ type Builder = (sel: MenuSelection, flags: string[]) => LaunchCommand
 
 const terminalNative: Builder = (sel, flags) => {
   const { args, fallbackArgs } = buildArgs(sel, flags)
-  const base: LaunchCommand = { command: 'codex', args, cwd: sel.dir, env: {} }
+  const base: LaunchCommand = { command: 'codex', args, cwd: sel.dir, env: buildEnv() }
   return fallbackArgs ? { ...base, fallback: { ...base, args: fallbackArgs } } : base
 }
 
 const ptyNative: Builder = (sel, flags) => {
   const wrapped = shellWrap(buildShellChain(sel, flags))
-  return { command: wrapped.file, args: wrapped.args, cwd: sel.dir, env: {} }
+  return { command: wrapped.file, args: wrapped.args, cwd: sel.dir, env: buildEnv() }
 }
 
 const detachedNative: Builder = (sel, flags) => {
   // No --remote-control equivalent; a detached Codex tab launches but the bridge can't drive it.
   const { args, fallbackArgs } = buildArgs(sel, flags)
-  const base: LaunchCommand = { command: 'codex', args, cwd: sel.dir, env: {} }
+  const base: LaunchCommand = { command: 'codex', args, cwd: sel.dir, env: buildEnv() }
   return fallbackArgs ? { ...base, fallback: { ...base, args: fallbackArgs } } : base
 }
 

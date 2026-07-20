@@ -1,6 +1,8 @@
 import type { DockviewApi, IDockviewPanel } from 'dockview'
 import type { Terminal } from '@xterm/xterm'
 import type { RemotePeer } from '../../../../core/types/remote-control'
+import { DEFAULT_AGENT_ID } from '../../../../core/types/contracts'
+import { getTerminalFilePathExtractor } from '../../../../core/terminal/terminalFilePathExtractors'
 
 /**
  * Close a tab and, when it was the active one, activate its NEIGHBOR — the next tab in the same
@@ -344,7 +346,7 @@ const PATH_SEP = /[\\/:]/
  * The "path-like" gate prevents stitching on normal sentence wraps where both ends happen to be
  * path-chars (e.g. "Hello world\n   I am here"). `container` is the element xterm was opened on.
  */
-export function getPathAtPosition(term: Terminal, container: HTMLElement, clientX: number, clientY: number): string {
+export function getPathAtPosition(term: Terminal, container: HTMLElement, clientX: number, clientY: number, pathChars: RegExp = PATH_CHAR): string {
   const screenEl = container.querySelector('.xterm-screen')
   if (!screenEl) return ''
   const rect = screenEl.getBoundingClientRect()
@@ -365,14 +367,14 @@ export function getPathAtPosition(term: Terminal, container: HTMLElement, client
   // Find path-char run around the click on the clicked row.
   let clickCol = Math.min(col, startText.length - 1)
   if (clickCol < 0) return ''
-  if (!PATH_CHAR.test(startText[clickCol])) {
-    if (clickCol > 0 && PATH_CHAR.test(startText[clickCol - 1])) clickCol -= 1
+  if (!pathChars.test(startText[clickCol])) {
+    if (clickCol > 0 && pathChars.test(startText[clickCol - 1])) clickCol -= 1
     else return ''
   }
   let s = clickCol
   let e = clickCol + 1
-  while (s > 0 && PATH_CHAR.test(startText[s - 1])) s--
-  while (e < startText.length && PATH_CHAR.test(startText[e])) e++
+  while (s > 0 && pathChars.test(startText[s - 1])) s--
+  while (e < startText.length && pathChars.test(startText[e])) e++
   let result = startText.slice(s, e)
 
   // Only attempt cross-row stitching if the single-row run is path-like.
@@ -386,9 +388,9 @@ export function getPathAtPosition(term: Terminal, container: HTMLElement, client
       if (!prev) break
       let pe = prev.length
       while (pe > 0 && /\s/.test(prev[pe - 1])) pe--
-      if (pe === 0 || !PATH_CHAR.test(prev[pe - 1])) break
+      if (pe === 0 || !pathChars.test(prev[pe - 1])) break
       let ps = pe - 1
-      while (ps > 0 && PATH_CHAR.test(prev[ps - 1])) ps--
+      while (ps > 0 && pathChars.test(prev[ps - 1])) ps--
       result = prev.slice(ps, pe) + result
       curRow -= 1
       curText = prev
@@ -406,9 +408,9 @@ export function getPathAtPosition(term: Terminal, container: HTMLElement, client
       if (!next) break
       let ns = 0
       while (ns < next.length && /\s/.test(next[ns])) ns++
-      if (ns === next.length || !PATH_CHAR.test(next[ns])) break
+      if (ns === next.length || !pathChars.test(next[ns])) break
       let ne = ns
-      while (ne < next.length && PATH_CHAR.test(next[ne])) ne++
+      while (ne < next.length && pathChars.test(next[ne])) ne++
       result = result + next.slice(ns, ne)
       curRow += 1
       curText = next
@@ -419,27 +421,23 @@ export function getPathAtPosition(term: Terminal, container: HTMLElement, client
   return result.trim()
 }
 
+// Path cleaning + resolution now live on the universal `TerminalFilePathExtractor` (core/terminal).
+// These stay exported as thin shims over the default (agent-agnostic) behavior so the remote viewer and
+// any other caller keep working unchanged; the local terminal selects the per-agent extractor directly.
+const BASE_EXTRACTOR = getTerminalFilePathExtractor(DEFAULT_AGENT_ID)
+
 /** Strip surrounding quotes, a trailing `:line[:col]` suffix, and trailing punctuation from a raw path token. */
 export function cleanTerminalPath(raw: string): string {
-  let p = raw.replace(/["`']/g, '').trim()
-  p = p.replace(/:\d+(?::\d+)?$/, '')
-  p = p.replace(/[.,;:!?\s]+$/, '')
-  return p.trim()
+  return BASE_EXTRACTOR.clean(raw)
 }
 
 /**
  * Resolve a path token detected in a terminal to an absolute path, or null if it can't be made
  * absolute. Drive-absolute / UNC / `~` are kept as-is; a bare relative path is joined under
- * `projectDir` when known. Mirrors the local TerminalContextMenu resolution so the remote viewer
- * resolves the same way (against the remote tab's cwd).
+ * `projectDir` when known. Shim over the base extractor's first `direct` candidate, so the remote
+ * viewer resolves the same way (against the remote tab's cwd).
  */
 export function resolveTerminalPath(input: string, projectDir: string | null | undefined): string | null {
-  const cleaned = cleanTerminalPath(input)
-  if (!cleaned) return null
-  const normalized = cleaned.replace(/\//g, '\\')
-  if (normalized === '~' || normalized.startsWith('~\\')) return normalized
-  if (/^[a-zA-Z]:[\\/]/.test(normalized)) return normalized
-  if (normalized.startsWith('\\')) return normalized
-  if (projectDir) return projectDir.replace(/[\\/]+$/, '') + '\\' + normalized
-  return null
+  const direct = BASE_EXTRACTOR.resolve(input, { projectDir: projectDir ?? null }).find((c) => c.kind === 'direct')
+  return direct?.kind === 'direct' ? direct.path : null
 }

@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import { DockviewApi, DockviewGroupPanel } from 'dockview'
-import type { AppConfig, UsageCache, AgentMeta } from '../../shared/types'
+import type { AppConfig, AgentUsageSnapshot, AgentMeta, SessionModelInfo } from '../../shared/types'
+import type { AgentId } from '../../../../core/types/contracts'
+import type { AgentTerminalPhase, AgentWorkDebugSnapshot, AgentWorkStatus } from '../../../../core/agents/workDetection/agentWorkDetector.types'
 import { DEFAULT_THEME, type ThemeId } from '../themes'
 
 /** The xterm renderer a terminal ACTUALLY ended up on. 'dom' (default) loads no addon; 'webgl' is the
@@ -8,9 +10,8 @@ import { DEFAULT_THEME, type ThemeId } from '../themes'
  *  (Canvas was removed in xterm 6.) */
 export type TerminalRenderer = 'webgl' | 'dom'
 
-/** Canonical per-terminal turn status (what the agent is doing right now). Mirror of the union in
- *  useTerminal's classifier; kept here so it can be the single LEVEL-triggered source of truth. */
-export type TerminalStatus = 'idle' | 'running' | 'tool-use' | 'blocked' | 'waiting' | 'done'
+export type TerminalStatus = AgentWorkStatus
+export type TerminalPhase = AgentTerminalPhase
 
 let terminalNum = 1
 
@@ -47,6 +48,13 @@ interface LayoutStore {
   activePanel: string | null
   setActivePanel: (id: string | null) => void
 
+  terminalPhases: Record<string, TerminalPhase>
+  setTerminalPhase: (id: string, phase: TerminalPhase) => void
+  terminalAgents: Record<string, AgentId>
+  setTerminalAgent: (id: string, agent: AgentId | null) => void
+  sessionRuntimeByPanel: Record<string, SessionModelInfo>
+  setSessionRuntime: (id: string, info: SessionModelInfo | null) => void
+
   /** Tabs that finished a turn (running/tool-use → idle) while NOT focused — the
    *  "completed work, unseen" state. Keyed by panel id. Maintained by useCompletedTabs;
    *  read by CustomTab / TabListPanel to show a green ✓ badge so a tab that just finished
@@ -80,12 +88,8 @@ interface LayoutStore {
   detectionDebug: boolean
   setDetectionDebug: (on: boolean) => void
 
-  /** Live work-detection inputs per terminal, for the status-bar widget: `tail` is the space-preserved
-   *  RAW PTY tail; `screen` is the rendered xterm bottom rows (where Claude's status line always is —
-   *  robust against differential redraws). Only written while `detectionDebug` is on. Keyed by
-   *  terminalId; cleared on terminal destroy. */
-  terminalDebug: Record<string, { tail: string; screen: string; ts: number }>
-  setTerminalDebug: (id: string, tail: string, screen: string, ts: number) => void
+  terminalDebug: Record<string, AgentWorkDebugSnapshot>
+  setTerminalDebug: (id: string, snapshot: AgentWorkDebugSnapshot) => void
 
   /** Actual renderer each live terminal is on, keyed by terminalId (= dockview panel id). Written by
    *  useTerminal on create / WebGL context-loss; read by the status-bar C/OGL/DOM badge so a silent
@@ -111,8 +115,8 @@ interface LayoutStore {
   agentsMeta: AgentMeta[] | null
   setAgentsMeta: (meta: AgentMeta[] | null) => void
 
-  usageData: UsageCache | null
-  setUsageData: (data: UsageCache | null) => void
+  usageByAgent: Partial<Record<AgentId, AgentUsageSnapshot>>
+  setUsageSnapshot: (snapshot: AgentUsageSnapshot) => void
 
   currentTheme: ThemeId
   setTheme: (id: ThemeId) => void
@@ -133,6 +137,34 @@ export const useLayoutStore = create<LayoutStore>((set, get) => ({
 
   activePanel: null,
   setActivePanel: (id) => set({ activePanel: id }),
+
+  terminalPhases: {},
+  setTerminalPhase: (id, phase) =>
+    set((s) => (s.terminalPhases[id] === phase ? s : { terminalPhases: { ...s.terminalPhases, [id]: phase } })),
+  terminalAgents: {},
+  setTerminalAgent: (id, agent) =>
+    set((s) => {
+      if (agent && s.terminalAgents[id] === agent) return s
+      if (agent) return { terminalAgents: { ...s.terminalAgents, [id]: agent } }
+      if (!s.terminalAgents[id]) return s
+      const agents = { ...s.terminalAgents }; delete agents[id]
+      return { terminalAgents: agents }
+    }),
+  sessionRuntimeByPanel: {},
+  setSessionRuntime: (id, info) =>
+    set((s) => {
+      const current = s.sessionRuntimeByPanel[id]
+      if (info && current
+        && current.model === info.model
+        && current.modelLabel === info.modelLabel
+        && current.contextTokens === info.contextTokens
+        && current.contextWindow === info.contextWindow
+        && current.effortLevel === info.effortLevel) return s
+      if (info) return { sessionRuntimeByPanel: { ...s.sessionRuntimeByPanel, [id]: info } }
+      if (!current) return s
+      const runtime = { ...s.sessionRuntimeByPanel }; delete runtime[id]
+      return { sessionRuntimeByPanel: runtime }
+    }),
 
   completedTabs: {},
   markTabCompleted: (id) =>
@@ -161,8 +193,8 @@ export const useLayoutStore = create<LayoutStore>((set, get) => ({
   setDetectionDebug: (on) => set((s) => (s.detectionDebug === on ? s : { detectionDebug: on })),
 
   terminalDebug: {},
-  setTerminalDebug: (id, tail, screen, ts) =>
-    set((s) => ({ terminalDebug: { ...s.terminalDebug, [id]: { tail, screen, ts } } })),
+  setTerminalDebug: (id, snapshot) =>
+    set((s) => ({ terminalDebug: { ...s.terminalDebug, [id]: snapshot } })),
 
   terminalRenderers: {},
   setTerminalRenderer: (id, renderer) =>
@@ -174,7 +206,10 @@ export const useLayoutStore = create<LayoutStore>((set, get) => ({
       const status = { ...s.terminalStatus }; delete status[id]
       const debug = { ...s.terminalDebug }; delete debug[id]
       const bgShell = { ...s.bgShellTabs }; delete bgShell[id]
-      return { terminalRenderers: renderers, terminalDims: dims, terminalStatus: status, terminalDebug: debug, bgShellTabs: bgShell }
+      const phases = { ...s.terminalPhases }; delete phases[id]
+      const agents = { ...s.terminalAgents }; delete agents[id]
+      const runtime = { ...s.sessionRuntimeByPanel }; delete runtime[id]
+      return { terminalRenderers: renderers, terminalDims: dims, terminalStatus: status, terminalDebug: debug, bgShellTabs: bgShell, terminalPhases: phases, terminalAgents: agents, sessionRuntimeByPanel: runtime }
     }),
 
   terminalDims: {},
@@ -194,8 +229,9 @@ export const useLayoutStore = create<LayoutStore>((set, get) => ({
   agentsMeta: null,
   setAgentsMeta: (meta) => set({ agentsMeta: meta }),
 
-  usageData: null,
-  setUsageData: (data) => set({ usageData: data }),
+  usageByAgent: {},
+  setUsageSnapshot: (snapshot) =>
+    set((s) => ({ usageByAgent: { ...s.usageByAgent, [snapshot.agent]: snapshot } })),
 
   currentTheme: (localStorage.getItem('terminal-theme') as ThemeId) || DEFAULT_THEME,
   setTheme: (id) => {

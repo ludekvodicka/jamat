@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useLayoutStore } from '../store/layout-store'
-import { bracketedPaste, pasteAsTextByLines, focusTerminal, resolveTerminalPath, cleanTerminalPath, openDirectoryViewer } from '../utils/terminal-helpers'
+import { bracketedPaste, pasteAsTextByLines, focusTerminal, openDirectoryViewer } from '../utils/terminal-helpers'
 import { readClipboard } from '../utils/clipboard'
+import { getTerminalFilePathExtractor } from '../../../../core/terminal/terminalFilePathExtractors'
+import { DEFAULT_AGENT_ID, isAgentId, type AgentId } from '../../../../core/types/contracts'
 import type { DirEntry } from '../../../../core/types/ipc-contracts'
 
 /** How many files to show inline under a detected folder before collapsing into "+N more". */
@@ -39,6 +41,9 @@ export function TerminalContextMenu() {
       const panels = useLayoutStore.getState().dockviewApi?.panels ?? []
       const panel = panels.find(p => p.id === detail.terminalId)
       const projectDir = (panel?.params as any)?.projectDir ?? (panel?.params as any)?.cwd ?? null
+      const rawAgent = (panel?.params as { agent?: unknown } | undefined)?.agent
+      const agent: AgentId = isAgentId(rawAgent) ? rawAgent : DEFAULT_AGENT_ID
+      const extractor = getTerminalFilePathExtractor(agent)
 
       setMenu({ x: detail.x, y: detail.y, terminalId: detail.terminalId, projectDir })
       setDetected([])
@@ -47,54 +52,57 @@ export function TerminalContextMenu() {
       const found: DetectedPath[] = []
       const seen = new Set<string>()
 
-      const tryAdd = async (text: string) => {
-        if (!text) return
-        const resolved = resolveTerminalPath(text, projectDir)
-        if (!resolved || seen.has(resolved)) return
+      const addDirect = async (path: string) => {
+        if (seen.has(path)) return
         let ftype: 'file' | 'dir' | null = null
         try {
-          ftype = await window.electronAPI?.fileType(resolved) ?? null
+          ftype = await window.electronAPI?.fileType(path) ?? null
         } catch {
           try {
-            if (await window.electronAPI?.fileExists(resolved)) ftype = 'file'
+            if (await window.electronAPI?.fileExists(path)) ftype = 'file'
           } catch {}
         }
-        if (ftype) {
-          seen.add(resolved)
-          found.push({ path: resolved, type: ftype })
-          setDetected([...found])
-          // For a folder, pull its contents so the menu can list files inline (open one directly)
-          // alongside the "open in directory viewer" item.
-          if (ftype === 'dir') {
-            try {
-              const items = await window.electronAPI?.listDir(resolved) ?? []
-              setDirContents(prev => ({ ...prev, [resolved]: items }))
-            } catch {}
-          }
+        if (!ftype) return
+        seen.add(path)
+        found.push({ path, type: ftype })
+        setDetected([...found])
+        // For a folder, pull its contents so the menu can list files inline (open one directly)
+        // alongside the "open in directory viewer" item.
+        if (ftype === 'dir') {
+          try {
+            const items = await window.electronAPI?.listDir(path) ?? []
+            setDirContents(prev => ({ ...prev, [path]: items }))
+          } catch {}
         }
       }
 
       const wordAtCursor = detail.wordAtCursor as string ?? ''
-      await tryAdd(wordAtCursor)
-
       const selText = useLayoutStore.getState().terminalSelection
-      if (selText && selText !== wordAtCursor) {
-        await tryAdd(selText)
+      const tokens = [wordAtCursor, selText].filter((t): t is string => !!t)
+      const uniqueTokens = tokens.filter((t, i) => tokens.indexOf(t) === i)
+
+      // The per-agent extractor turns each token into on-disk candidates: a `direct` path to probe, or a
+      // `search` spec (project-tree suffix search) for a truncated path — Claude's `…` names, or a
+      // sub-agent path the host TUI clipped (`…\012-foo\bar.md`).
+      const directPaths: string[] = []
+      const searchSpecs: { baseDir: string; partial: string }[] = []
+      for (const token of uniqueTokens) {
+        for (const c of extractor.resolve(token, { projectDir })) {
+          if (c.kind === 'direct') directPaths.push(c.path)
+          else if (c.kind === 'search') searchSpecs.push({ baseDir: c.baseDir, partial: c.partial })
+          else throw new Error(`Unknown path candidate: ${JSON.stringify(c)}`)
+        }
       }
 
-      // Fallback: nothing resolved on disk, but a token looks like a TRUNCATED path — a sub-agent
-      // (e.g. the Fable skill) reported `…\012-foo\bar.md` and the host TUI clipped the absolute
-      // prefix. Search the project for files ending with that suffix and offer the matches.
-      if (found.length === 0 && projectDir && window.electronAPI?.findFileBySuffix) {
-        for (const raw of [wordAtCursor, selText]) {
-          if (!raw) continue
-          const cleaned = cleanTerminalPath(raw).replace(/\//g, '\\')
-          const segs = cleaned.split('\\').filter(s => s && s !== '…' && s !== '...')
-          const last = segs[segs.length - 1] ?? ''
-          // Worth a tree walk only for a path-ish token whose last segment looks like a filename.
-          if (segs.length < 1 || !last.includes('.')) continue
+      // Direct first: a real on-disk hit wins.
+      for (const path of [...new Set(directPaths)]) await addDirect(path)
+
+      // Fallback only when nothing resolved directly: search the project and offer the matches. First
+      // token that yields hits wins.
+      if (found.length === 0 && window.electronAPI?.findFileBySuffix) {
+        for (const spec of searchSpecs) {
           let hits: string[] = []
-          try { hits = await window.electronAPI.findFileBySuffix(projectDir, cleaned) } catch { hits = [] }
+          try { hits = await window.electronAPI.findFileBySuffix(spec.baseDir, spec.partial) } catch { hits = [] }
           if (hits.length === 0) continue
           for (const h of hits) {
             if (seen.has(h)) continue

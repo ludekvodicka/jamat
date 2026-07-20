@@ -1,10 +1,10 @@
 import { useMemo, useState } from 'react'
-import type { Stats, DailyUsage } from '../../../../../../core/types/stats'
+import type { StatsView, DailyUsage } from '../../../../../../core/types/stats'
 import { StatCard } from './StatCard'
 import { DataTable, type Column } from './DataTable'
 import { ModelChip } from './ModelChip'
 import { LineChart, StackedAreaChart, Heatmap, DistributionBar, assignModelColors } from './charts'
-import { fmtNum, fmtCost, fmtInt, fmtDuration, fmtDayLabel } from './format'
+import { coverageLabel, fmtNum, fmtCost, fmtCoveredCost, fmtCoveredDuration, fmtInt, fmtDayLabel } from './format'
 import { dayTotal, rangeFilter, cumulativeSeries, modelStackedSeries, aggregateModels, insights, filterDailyByModel, type ModelAgg } from './selectors'
 
 type ChartTab = 'tokens' | 'spend' | 'models'
@@ -14,7 +14,7 @@ const RANGES: Range[] = [
 ]
 
 /** Full Overview: model filter · summary cards · over-time chart · heatmap · insights · model + daily tables. */
-export function OverviewTab({ stats }: { stats: Stats }) {
+export function OverviewTab({ stats }: { stats: StatsView }) {
   const [chartTab, setChartTab] = useState<ChartTab>('tokens')
   const [rangeIdx, setRangeIdx] = useState(0)
   const [tokenMode, setTokenMode] = useState<'total' | 'inout'>('total')
@@ -52,6 +52,7 @@ export function OverviewTab({ stats }: { stats: Stats }) {
 
   const modelTotalSum = models.reduce((s, m) => s + m.total, 0) || 1
   const modelTotalMax = Math.max(1, ...models.map((m) => m.total))
+  const showReasoning = stats.totals.reasoningTokens > 0
 
   const chart = chartTab === 'spend'
     ? <LineChart series={spendSeries} yFormat={fmtCost} xLabels={xLabels} />
@@ -66,8 +67,9 @@ export function OverviewTab({ stats }: { stats: Stats }) {
     { key: 'input', label: 'Input', align: 'right', render: (m) => fmtNum(m.input) },
     { key: 'output', label: 'Output', align: 'right', render: (m) => fmtNum(m.output) },
     { key: 'cached', label: 'Cached', align: 'right', render: (m) => fmtNum(m.cached) },
+    ...(showReasoning ? [{ key: 'reasoning', label: 'Reasoning', align: 'right' as const, render: (m: ModelAgg) => fmtNum(m.reasoning) }] : []),
     { key: 'total', label: 'Total', align: 'right', render: (m) => fmtNum(m.total) },
-    { key: 'cost', label: 'Cost', align: 'right', render: (m) => fmtCost(m.cost) },
+    { key: 'cost', label: coverageLabel(stats.costCoverage, 'API est.', 'Partial API est.', 'Cost unavailable'), align: 'right', render: (m) => fmtCoveredCost(m.cost, stats.costCoverage) },
     { key: 'share', label: 'Share', align: 'right', render: (m) => `${((m.total / modelTotalSum) * 100).toFixed(1)}%` },
     { key: 'dist', label: '', width: '120px', render: (m) => <DistributionBar fraction={m.total / modelTotalMax} color={modelColors[m.model]} /> },
   ]
@@ -80,7 +82,8 @@ export function OverviewTab({ stats }: { stats: Stats }) {
     { key: 'outputTokens', label: 'Output', align: 'right', render: (d) => fmtNum(d.outputTokens) },
     { key: 'cacheCreationTokens', label: 'Cache Create', align: 'right', render: (d) => fmtNum(d.cacheCreationTokens) },
     { key: 'cacheReadTokens', label: 'Cache Read', align: 'right', render: (d) => fmtNum(d.cacheReadTokens) },
-    { key: 'totalCost', label: 'Cost', align: 'right', render: (d) => fmtCost(d.totalCost) },
+    ...(showReasoning ? [{ key: 'reasoningTokens', label: 'Reasoning', align: 'right' as const, render: (d: DailyUsage) => fmtNum(d.reasoningTokens) }] : []),
+    { key: 'totalCost', label: coverageLabel(stats.costCoverage, 'API est.', 'Partial API est.', 'Cost unavailable'), align: 'right', render: (d) => fmtCoveredCost(d.totalCost, stats.costCoverage) },
     { key: 'models', label: 'Models', render: (d) => <span className="usage-model-chips">{d.modelsUsed.map((m) => <ModelChip key={m} model={m} color={modelColors[m]} />)}</span> },
   ]
 
@@ -101,14 +104,14 @@ export function OverviewTab({ stats }: { stats: Stats }) {
         <StatCard label="Today" value={fmtNum(todayTokens)} />
         <StatCard label="Last 30 days" value={fmtNum(last30)} />
         <StatCard label="Sessions" value={fmtInt(sessionCount)} />
-        <StatCard label="Total spend" value={fmtCost(allTimeCost)} />
+        <StatCard label={coverageLabel(stats.costCoverage, 'Est. API cost', 'Partial API est.', 'Cost unavailable')} value={fmtCoveredCost(allTimeCost, stats.costCoverage)} />
       </div>
 
       <section className="usage-card">
         <div className="usage-chart-pills">
           {(['tokens', 'spend', 'models'] as ChartTab[]).map((t) => (
-            <button key={t} className={`usage-pill${chartTab === t ? ' active' : ''}`} onClick={() => setChartTab(t)}>
-              {t === 'tokens' ? 'Tokens' : t === 'spend' ? 'Spend' : 'Models'}
+            <button key={t} className={`usage-pill${chartTab === t ? ' active' : ''}`} onClick={() => setChartTab(t)} disabled={t === 'spend' && stats.costCoverage === 'none'}>
+              {t === 'tokens' ? 'Tokens' : t === 'spend' ? coverageLabel(stats.costCoverage, 'API cost est.', 'Partial API est.', 'Cost') : 'Models'}
             </button>
           ))}
           <div className="usage-pill-group">
@@ -142,7 +145,7 @@ export function OverviewTab({ stats }: { stats: Stats }) {
         <div className="usage-insight-card"><div className="usage-insight-value">{ins.peakDay.date ? fmtNum(ins.peakDay.tokens) : '—'}</div><div className="usage-insight-label">Peak day{ins.peakDay.date ? ` · ${fmtDayLabel(ins.peakDay.date)}` : ''}</div></div>
         <div className="usage-insight-card"><div className="usage-insight-value">{fmtInt(ins.activeDays)}</div><div className="usage-insight-label">Active days</div></div>
         <div className="usage-insight-card"><div className="usage-insight-value">{ins.streak}d</div><div className="usage-insight-label">Current streak</div></div>
-        <div className="usage-insight-card"><div className="usage-insight-value">{fmtDuration(ins.apiTimeTodayMs)}</div><div className="usage-insight-label">API time today</div></div>
+        {stats.durationCoverage !== 'none' && <div className="usage-insight-card"><div className="usage-insight-value">{fmtCoveredDuration(ins.apiTimeTodayMs, stats.durationCoverage)}</div><div className="usage-insight-label">{coverageLabel(stats.durationCoverage, 'API time today', 'Claude API time today', 'API time unavailable')}</div></div>}
       </div>
 
       <section className="usage-card">

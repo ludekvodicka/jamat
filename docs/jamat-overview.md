@@ -85,7 +85,7 @@ Point Jamat at your own folders from **Settings** — each folder becomes a proj
 | **Ctrl+Shift+T** | New-tab picker | | **Ctrl+H** | Session history search |
 | **Ctrl+W** | Close active tab | | **Ctrl+J** | File-changes panel |
 | **Ctrl+Tab** | Next / previous tab | | **Ctrl+U** | Usage & cost stats |
-| **F2** | Rename the session | | **F1** | This help |
+| **F2** | Edit session name and private description | | **F1** | This help |
 
 :::note[Security in one line]
 Remote control and the AI bridge are **off by default** and loopback-only until you opt in — the LAN

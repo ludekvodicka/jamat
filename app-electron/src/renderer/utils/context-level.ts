@@ -1,4 +1,5 @@
 import type { ContextWarnLevel } from '../../../../core/types/config'
+import type { SessionModelInfo } from '../../../../core/types/session'
 
 export interface ContextLevelVisual {
   /** Tab indicator glyph (the status bar doesn't use this). */
@@ -67,4 +68,10 @@ export function contextLevel(pct: number | null, levels?: ContextWarnLevel[] | n
  */
 export function compactSuggestPct(levels?: ContextWarnLevel[] | null): number {
   return resolveContextLevels(levels)[0].pct
+}
+
+export function contextUsedPercent(info: SessionModelInfo | null): number | null {
+  if (!info || !Number.isFinite(info.contextTokens) || info.contextTokens < 0) return null
+  if (!Number.isFinite(info.contextWindow) || info.contextWindow <= 0) return null
+  return Math.round((info.contextTokens / info.contextWindow) * 100)
 }

@@ -1,0 +1,44 @@
+[
+  {
+    "name": "working screenshot",
+    "rawTail": "\u001b[2K› Working (14m 34s • esc to interrupt)\r",
+    "screenTail": "› Working (14m 34s • esc to interrupt)\n\ngpt-5.6-sol max · C:\\projects\\demo-app",
+    "wideScreenTail": "› Working (14m 34s • esc to interrupt)\n\ngpt-5.6-sol max · C:\\projects\\demo-app",
+    "phase": "running"
+  },
+  {
+    "name": "working seconds",
+    "rawTail": "› Working (9s • esc to interrupt)",
+    "screenTail": "› Working (9s • esc to interrupt)",
+    "wideScreenTail": "› Working (9s • esc to interrupt)",
+    "phase": "running"
+  },
+  {
+    "name": "working wrapped",
+    "rawTail": "› Working (14m 34s • esc to interrupt)",
+    "screenTail": "› Working (\n  14m 34s • esc to\n  interrupt\n)",
+    "wideScreenTail": "› Working (\n  14m 34s • esc to\n  interrupt\n)",
+    "phase": "running"
+  },
+  {
+    "name": "idle prompt",
+    "rawTail": "",
+    "screenTail": "› Summarize recent commits\n\ngpt-5.6-sol max · C:\\projects\\demo-app",
+    "wideScreenTail": "› Summarize recent commits\n\ngpt-5.6-sol max · C:\\projects\\demo-app",
+    "phase": "running"
+  },
+  {
+    "name": "ordinary working prose",
+    "rawTail": "I am working through the tests now.",
+    "screenTail": "I am working through the tests now.\n› ",
+    "wideScreenTail": "I am working through the tests now.\n› ",
+    "phase": "running"
+  },
+  {
+    "name": "menu phase",
+    "rawTail": "› Working (2s • esc to interrupt)",
+    "screenTail": "› Working (2s • esc to interrupt)",
+    "wideScreenTail": "› Working (2s • esc to interrupt)",
+    "phase": "menu"
+  }
+]

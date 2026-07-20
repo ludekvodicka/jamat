@@ -3,7 +3,7 @@
  * `CodexAdapter` extend. It carries two things every backend shares:
  *
  * 1. **Graceful-degrade defaults** for the members an agent may legitimately
- *    lack (rename persistence, live pids, effort level, exec-output parsing…).
+ *    lack (rename persistence, live pids, session runtime info, exec-output parsing…).
  *    A backend overrides only what it really has; Codex leans on the defaults.
  * 2. **Shared protected helpers** — a tolerant JSONL iterator, a
  *    newline-guarded append, and safe fs probes — so the transcript-scanning
@@ -26,7 +26,6 @@ import type {
   AgentCapabilities,
   AgentSession,
   AgentTurnInfo,
-  AgentTtyPatterns,
   ExecCommand,
   ExecOptions,
   SessionTitleWatchTarget,
@@ -38,8 +37,6 @@ export abstract class AgentAdapterBase implements AgentAdapter {
   abstract readonly displayName: string
   abstract readonly binary: string
   abstract readonly capabilities: AgentCapabilities
-  abstract readonly ttyPatterns: AgentTtyPatterns
-
   // --- Discovery + spawn: no sensible default, every agent implements ---
   abstract sessionsRoot(homeDir: string): string
   abstract listProjects(homeDir: string): string[]
@@ -71,8 +68,7 @@ export abstract class AgentAdapterBase implements AgentAdapter {
   listActivePids(_homeDir: string): { pid: number; sessionId: string }[] { return [] }
   /** Pid-tracking agents resolve via listActivePids; no-pid agents (Codex) override this. */
   resolveLaunchedSession(_projectDir: string, _homeDir: string, _sinceMs: number): { sessionId: string } | null { return null }
-  readSessionModelInfo(_sessionFile: string): SessionModelInfo | null { return null }
-  readEffortLevel(_projectDir: string, _homeDir: string): string | null { return null }
+  readSessionModelInfo(_sessionFile: string, _projectDir: string, _homeDir: string): SessionModelInfo | null { return null }
   renameSlashCommand(_name: string): string | null { return null }
   /** Plain-text exec (e.g. `claude -p`) needs no parsing; NDJSON backends override. */
   parseExecOutput(raw: string): string { return raw.trim() }

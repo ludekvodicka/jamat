@@ -5,6 +5,7 @@ import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import type { RemotePeer, RemoteWindowInfo, WsServerMsg } from '../../../../../core/types/remote-control'
 import { openPeerFile, openPeerChanges, getPathAtPosition, resolveTerminalPath } from '../../utils/terminal-helpers'
+import { TerminalPromptSubmitter } from '../../utils/terminalPromptSubmitter'
 import { useLayoutStore } from '../../store/layout-store'
 import { NotesPanel } from './NotesPanel'
 import { RecentFilesPanel } from './RecentFilesPanel'
@@ -55,7 +56,7 @@ export function RemoteViewerPanel({ params, api }: IDockviewPanelProps<RemoteVie
   useEffect(() => {
     if (!peer || !terminalId || !viewerRef.current) return
     setEnded(false)
-    const term = new Terminal({ scrollback: 8000, fontSize: 13, convertEol: false, cursorBlink: true })
+    const term = new Terminal({ scrollback: 8000, fontSize: 13, convertEol: false, cursorBlink: true, vtExtensions: { win32InputMode: true } })
     term.open(viewerRef.current)
     termRef.current = term
 
@@ -177,6 +178,10 @@ export function RemoteViewerPanel({ params, api }: IDockviewPanelProps<RemoteVie
     // correlated for keystroke routing.
     const streamId = crypto.randomUUID()
     streamIdRef.current = streamId
+    const unregisterPromptSubmitter = TerminalPromptSubmitter.register(api.id, {
+      write: (data) => window.electronAPI?.remoteStreamSendKeys?.(streamId, data),
+      isWin32InputMode: () => term.modes.win32InputMode,
+    })
     let disposed = false
 
     // Keystrokes typed in the focused terminal → remote PTY (xterm encodes arrows
@@ -258,6 +263,7 @@ export function RemoteViewerPanel({ params, api }: IDockviewPanelProps<RemoteVie
       mouseHost.removeEventListener('mousedown', blockRightMouse, true)
       mouseHost.removeEventListener('mouseup', blockRightMouse, true)
       removeFrame()
+      unregisterPromptSubmitter()
       window.electronAPI?.remoteStreamClose?.(streamId)
       streamIdRef.current = null
       term.dispose()

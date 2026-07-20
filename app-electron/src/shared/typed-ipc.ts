@@ -74,7 +74,7 @@ export function onChannel<K extends keyof IpcEventMap>(
  *  is the first ~/.claude mutator; like every IPC channel its reach is ['ui','ai'] (never remote). */
 const WRITE_CHANNELS = new Set<string>([
   'file:write', 'file:open-in-vscode', 'commit:open-dialog', 'commit:open-log', 'notes:save', 'ideas:save',
-  'group:create', 'group:rename', 'sessions:rename', 'sessions:open-in-tab', 'layout:save', 'stats:generate', 'pty:resume',
+  'group:create', 'group:rename', 'sessions:rename', 'session-description:save', 'sessions:open-in-tab', 'layout:save', 'pty:resume',
   'abilities:manage', 'usage:set-credentials', 'clipboard:write-text',
   'config:update', 'dialog:pick-directory', 'onboarding:complete',
 ])

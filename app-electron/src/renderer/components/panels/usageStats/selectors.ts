@@ -1,8 +1,3 @@
-/**
- * Pure derived-view selectors for the usage stats tab — the client-side
- * equivalents of what generate-html.ts computed inline. Memoize at the call
- * site with useMemo. Unit-tested in selectors.test.ts.
- */
 import type { DailyUsage, HourlyUsage, DetailedRequest, ProjectSummary, ModelSummary24h } from '../../../../../../core/types/stats'
 import type { Series } from './charts/types'
 import { assignModelColors } from './charts/chart-utils'
@@ -39,7 +34,7 @@ export function cumulativeSeries(rows: DailyUsage[], metric: TokenMetric): Serie
     let acc = 0
     const pts: Series['points'] = []
     rows.forEach((d, i) => { acc += d.totalCost; pts.push({ x: i, y: acc }) })
-    return [{ label: 'Spend', color: '#ffb74d', points: pts }]
+    return [{ label: 'API cost est.', color: '#ffb74d', points: pts }]
   }
   let acc = 0
   const pts: Series['points'] = []
@@ -83,6 +78,7 @@ export function filterDailyByModel(daily: DailyUsage[], model: string): DailyUsa
       outputTokens: mb?.outputTokens ?? 0,
       cacheCreationTokens: mb?.cacheCreationTokens ?? 0,
       cacheReadTokens: mb?.cacheReadTokens ?? 0,
+      reasoningTokens: mb?.reasoningTokens ?? 0,
       totalCost: mb?.cost ?? 0,
       modelsUsed: mb ? [model] : [],
       modelBreakdowns: mb ? [mb] : [],
@@ -93,16 +89,17 @@ export function filterDailyByModel(daily: DailyUsage[], model: string): DailyUsa
 export interface ModelAgg {
   model: string
   input: number; output: number; cacheCreate: number; cacheRead: number
-  cached: number; total: number; cost: number
+  reasoning: number; cached: number; total: number; cost: number
 }
 
 /** Per-model all-time aggregation for the Overview Model Breakdown table (sorted by total desc). */
 export function aggregateModels(daily: DailyUsage[]): ModelAgg[] {
   const map: Record<string, ModelAgg> = {}
   for (const d of daily) for (const mb of d.modelBreakdowns) {
-    const a = map[mb.modelName] || (map[mb.modelName] = { model: mb.modelName, input: 0, output: 0, cacheCreate: 0, cacheRead: 0, cached: 0, total: 0, cost: 0 })
+    const a = map[mb.modelName] || (map[mb.modelName] = { model: mb.modelName, input: 0, output: 0, cacheCreate: 0, cacheRead: 0, reasoning: 0, cached: 0, total: 0, cost: 0 })
     a.input += mb.inputTokens; a.output += mb.outputTokens
-    a.cacheCreate += mb.cacheCreationTokens; a.cacheRead += mb.cacheReadTokens; a.cost += mb.cost
+    a.cacheCreate += mb.cacheCreationTokens; a.cacheRead += mb.cacheReadTokens
+    a.reasoning += mb.reasoningTokens; a.cost += mb.cost
   }
   const rows = Object.values(map)
   rows.forEach((a) => { a.cached = a.cacheCreate + a.cacheRead; a.total = a.input + a.output + a.cacheCreate + a.cacheRead })
@@ -142,38 +139,40 @@ function summarizeProjects(reqs: DetailedRequest[]): ProjectSummary[] {
   const map: Record<string, { p: ProjectSummary; models: Set<string>; sessions: Set<string> }> = {}
   for (const r of reqs) {
     const e = map[r.project] || (map[r.project] = {
-      p: { project: r.project, inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, totalTokens: 0, cost: 0, durationMs: 0, requestCount: 0, sessionCount: 0, modelsUsed: [] },
+      p: { project: r.project, inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, reasoningTokens: 0, totalTokens: 0, cost: 0, durationMs: 0, requestCount: 0, sessionCount: 0, modelsUsed: [] },
       models: new Set(), sessions: new Set(),
     })
     e.p.inputTokens += r.inputTokens; e.p.outputTokens += r.outputTokens
     e.p.cacheCreationTokens += r.cacheCreationTokens; e.p.cacheReadTokens += r.cacheReadTokens
+    e.p.reasoningTokens += r.reasoningTokens
     e.p.cost += r.cost; e.p.durationMs += r.durationMs; e.p.requestCount++
-    e.models.add(r.model); e.sessions.add(r.sessionId)
+    e.models.add(r.model); e.sessions.add(`${r.agent}:${r.sessionId}`)
   }
   return Object.values(map).map(({ p, models, sessions }) => ({
     ...p,
     totalTokens: p.inputTokens + p.outputTokens + p.cacheCreationTokens + p.cacheReadTokens,
     sessionCount: sessions.size, modelsUsed: [...models],
-  })).sort((a, b) => b.cost - a.cost)
+  })).sort((a, b) => b.cost - a.cost || b.totalTokens - a.totalTokens)
 }
 
 function summarizeModels(reqs: DetailedRequest[]): ModelSummary24h[] {
   const map: Record<string, { m: ModelSummary24h; sessions: Set<string> }> = {}
   for (const r of reqs) {
     const e = map[r.model] || (map[r.model] = {
-      m: { model: r.model, inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, totalTokens: 0, cost: 0, durationMs: 0, requestCount: 0, sessionCount: 0 },
+      m: { model: r.model, inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, reasoningTokens: 0, totalTokens: 0, cost: 0, durationMs: 0, requestCount: 0, sessionCount: 0 },
       sessions: new Set(),
     })
     e.m.inputTokens += r.inputTokens; e.m.outputTokens += r.outputTokens
     e.m.cacheCreationTokens += r.cacheCreationTokens; e.m.cacheReadTokens += r.cacheReadTokens
+    e.m.reasoningTokens += r.reasoningTokens
     e.m.cost += r.cost; e.m.durationMs += r.durationMs; e.m.requestCount++
-    e.sessions.add(r.sessionId)
+    e.sessions.add(`${r.agent}:${r.sessionId}`)
   }
   return Object.values(map).map(({ m, sessions }) => ({
     ...m,
     totalTokens: m.inputTokens + m.outputTokens + m.cacheCreationTokens + m.cacheReadTokens,
     sessionCount: sessions.size,
-  })).sort((a, b) => b.cost - a.cost)
+  })).sort((a, b) => b.cost - a.cost || b.totalTokens - a.totalTokens)
 }
 
 export interface WindowData {
@@ -187,7 +186,7 @@ export function summarizeRequests(requests: DetailedRequest[]): WindowData {
   return { requests, projects: summarizeProjects(requests), models: summarizeModels(requests) }
 }
 
-/** Derive the last-hour window from the 5h detailed requests (client-side, mirrors the HTML dashboard). */
+/** Derive the last-hour window from the five-hour detailed requests. */
 export function deriveLastHour(requests: DetailedRequest[], windowEnd: string): WindowData {
   const cutoff = new Date(windowEnd).getTime() - 60 * 60 * 1000
   return summarizeRequests(requests.filter((r) => new Date(r.timestamp).getTime() >= cutoff))

@@ -1,0 +1,72 @@
+[
+  {
+    "name": "wide elapsed working",
+    "rawTail": "",
+    "screenTail": "────────────────────────\n> ",
+    "wideScreenTail": "✻ Flowing… (1h 25m 33s · still thinking with xhigh effort)\n────────────────────────\n> ",
+    "phase": "running"
+  },
+  {
+    "name": "spinner working",
+    "rawTail": "",
+    "screenTail": "✻ Spinning… (8s · thinking with xhigh effort)\n> ",
+    "wideScreenTail": "✻ Spinning… (8s · thinking with xhigh effort)\n> ",
+    "phase": "running"
+  },
+  {
+    "name": "idle prompt",
+    "rawTail": "",
+    "screenTail": "────────────────────────\n> \n  bypass permissions on (shift+tab to cycle)",
+    "wideScreenTail": "────────────────────────\n> \n  bypass permissions on (shift+tab to cycle)",
+    "phase": "running"
+  },
+  {
+    "name": "stale raw busy with idle screen",
+    "rawTail": "✻ Flowing… (4s · esc to interrupt)\nDone.",
+    "screenTail": "────────────────────────\n> ",
+    "wideScreenTail": "────────────────────────\n> ",
+    "phase": "running"
+  },
+  {
+    "name": "tool use",
+    "rawTail": "⏺ Read(/tmp/example.ts)",
+    "screenTail": "⏺ Read(/tmp/example.ts)",
+    "wideScreenTail": "⏺ Read(/tmp/example.ts)",
+    "phase": "running"
+  },
+  {
+    "name": "blocked prompt",
+    "rawTail": "Do you want to proceed? [y/n]",
+    "screenTail": "Do you want to proceed? [y/n]",
+    "wideScreenTail": "Do you want to proceed? [y/n]",
+    "phase": "running"
+  },
+  {
+    "name": "question menu",
+    "rawTail": "Enter to select · Tab/Arrow keys to navigate · Esc to cancel",
+    "screenTail": "Enter to select · Tab/Arrow keys to navigate · Esc to cancel",
+    "wideScreenTail": "Enter to select · Tab/Arrow keys to navigate · Esc to cancel",
+    "phase": "running"
+  },
+  {
+    "name": "background shell",
+    "rawTail": "",
+    "screenTail": "────────────────────────\n· 1 shell · ctrl+t to hide tasks\n> ",
+    "wideScreenTail": "────────────────────────\n· 1 shell · ctrl+t to hide tasks\n> ",
+    "phase": "running"
+  },
+  {
+    "name": "background agent",
+    "rawTail": "",
+    "screenTail": "────────────────────────\n· ← 1 agent · ↓ to manage\n> ",
+    "wideScreenTail": "────────────────────────\n· ← 1 agent · ↓ to manage\n> ",
+    "phase": "running"
+  },
+  {
+    "name": "markdown and elapsed prose",
+    "rawTail": "",
+    "screenTail": "* install the dependencies first\nThe (5s) pause is intentional.\n> ",
+    "wideScreenTail": "* install the dependencies first\nThe (5s) pause is intentional.\n> ",
+    "phase": "running"
+  }
+]

@@ -310,7 +310,7 @@ function CsvTable({ text, delim }: { text: string; delim: string }) {
 }
 
 /** Rendered HTML preview — an isolated Electron <webview> loading the file via file://, so scripts and
- *  relative CSS/JS/images resolve exactly as in a browser (same mechanism as the usage-stats report).
+ *  relative CSS/JS/images resolve exactly as in a browser.
  *  Local files only; the webview runs out-of-process and popups are disabled. Re-mounts (reloads) when
  *  the path changes or the Source⇄Preview toggle flips. */
 function HtmlPreview({ filePath }: { filePath: string }) {

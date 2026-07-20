@@ -8,8 +8,8 @@
  *   - scripts/seed-demo-stats.ts          → fabricates ccusage transcripts in Q:\Demo\.claude-demo
  *   - .private/configs/demo/config.json   → the "Demo" profile points its categories here
  *
- * Nothing here touches real data. The token dashboard is isolated via CLAUDE_CONFIG_DIR
- * (ccusage honours it), so the real ~/.claude is never read or written by the demo.
+ * Nothing here touches real data. The token dashboard is isolated via CLAUDE_CONFIG_DIR and
+ * CODEX_HOME, so the real ~/.claude and ~/.codex stores are never read or written by the demo.
  */
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -23,6 +23,9 @@ export const DEMO_ROOT = 'Q:\\Demo'
  * with real history. Lives inside DEMO_ROOT but is dot-prefixed → hidden from the selector.
  */
 export const DEMO_CLAUDE_DIR = 'Q:\\Demo\\.claude-demo'
+
+/** Isolated Codex home used by demo sessions and the unified usage dashboard. */
+export const DEMO_CODEX_DIR = 'Q:\\Demo\\.codex-demo'
 
 /**
  * Portable config-dir the demo Electron instance launches with (JAMAT_CONFIG_DIR, via

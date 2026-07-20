@@ -1,13 +1,14 @@
 # CodexAdapter — Codex CLI backend
 
 Schema + CLI reference for the Codex (OpenAI GPT) backend, **verified live** on
-2026-07-10 against **`codex-cli 0.144.1`**, with session naming re-verified on
+2026-07-10 against **`codex-cli 0.144.1`**, with naming and session-runtime fields re-verified on
 2026-07-14 against **`codex-cli 0.144.4`** (Windows, `~/.codex/`). The verification
 items from `.aidocs/architecture/codex-portability-assessment.md` are answered below;
 `fixtures/` holds neutral, schema-faithful captures the U3/U4 parsers are written against.
 
 Status: `AgentAdapterBase`-derived with discovery, parsing, launch/exec, durable session names,
-and native live rename implemented. Active-pids and effort still use base degradation.
+native live rename, and model/effort/context runtime status implemented. Active-pids still use base
+degradation.
 
 ## Filesystem layout
 
@@ -29,6 +30,14 @@ Every line is `{ "timestamp": ISO, "type": <record-type>, "payload": {...} }`.
 
 Record `type` values (one real session): `session_meta` (1, the header), `turn_context`,
 `world_state`, `response_item` (the conversation items), `event_msg` (streaming/status events).
+
+### `turn_context` — effective per-turn settings
+
+Current 0.144.4 rows carry the effective `model` and `effort` after config/profile/CLI/TUI
+overrides. Older observed shapes use `reasoning_effort` or
+`collaboration_mode.settings.reasoning_effort`; the runtime parser accepts all three. A new
+`turn_context` becomes visible only after its following valid `token_count`, so Jamat never combines
+new settings with an older turn's context size.
 
 ### `session_meta` — the header (first line)
 `payload` carries what discovery needs:
@@ -84,7 +93,7 @@ the same prompt.
 info: {
   total_token_usage:  { input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens, total_tokens },
   last_token_usage:   { ...same shape... },
-  model_context_window: 400000
+  model_context_window: 258400
 },
 rate_limits: {
   limit_id: "codex",
@@ -93,12 +102,30 @@ rate_limits: {
   plan_type: "prolite", credits, rate_limit_reached_type
 }
 ```
-**Big consequence for U6:** the usage panel does NOT need the OpenAI billing API / an
-API key. The latest `token_count.rate_limits` from the newest rollout gives the 5h + weekly
-`used_percent` + `resets_at` + `plan_type` directly. Recommended `usageSource` = read local
-rollout (revisit the `'openai'` capability value + the planned `openaiUsage` API-key config in U6).
-**Context % (U6/gap):** feasible — `last_token_usage.total_tokens / model_context_window`.
-So `capabilities.contextPercent` CAN flip true for Codex once `readSessionModelInfo` reads it.
+The context window is provider-reported and has changed between versions/sessions (the older fixture
+used 400,000; current sessions report 258,400), so Jamat never hardcodes it. Runtime occupancy is
+`last_token_usage.total_tokens / model_context_window`; cached tokens are already represented by
+`total_tokens` and are not added again. `SessionRuntime` pairs this record with its preceding
+`turn_context`, cold-reads a bounded tail with one full fallback, then parses only appended bytes.
+
+Account rate limits use the Codex app-server, not rollout discovery; they remain a separate status
+item from this session-specific model/context contract.
+
+## Account rate limits — Codex app-server
+
+Codex 0.144.4 exposes stable `account/rateLimits/read` and
+`account/rateLimits/updated` methods through `codex app-server`. They use the existing Codex login;
+Jamat needs no OpenAI API key and writes no Codex credentials.
+
+Jamat prefers the exact `rateLimitsByLimitId.codex` snapshot and falls back to the compatibility
+`rateLimits` field. It maps both `primary` and `secondary` by their declared
+`windowDurationMins`: 300 minutes is the status bar's `S` window and 10080 minutes is `W`.
+Primary/secondary order is not semantic. A verified current response carries only the weekly window
+in `primary`, while older rollouts carried 5h in `primary` and weekly in `secondary`.
+
+The main process reads immediately when a running Codex tab becomes active, listens for app-server
+notifications, and refreshes once per minute while Codex remains active. Missing windows remain
+missing rather than becoming 0%; a weekly-only response therefore renders only `W`.
 
 ## `codex exec --json` — one-shot event stream (AI-commit path)
 
@@ -128,7 +155,7 @@ Different, cleaner schema than the rollout — top-level `{ type, ... }` per lin
   session is resolved by cwd + mtime (`resolveCodexLaunchedSession`) so the executor rewrites
   `resume-fork` → `resume <newForkId>` and a restart resumes the fork instead of re-forking the parent.
   Same resolver also fills in a new `cc` session's id (unlocks Rename / exact-resume for Codex).
-- Model: `gpt-5.6-sol` (the installed default; `model_reasoning_effort = "xhigh"`). Populate
+- Model: current sessions report values such as `gpt-5.6-sol` with effort `max`. Populate
   `capabilities.execModels` in U8 from the account's available ids.
 
 ## Windows specifics
@@ -150,18 +177,25 @@ Different, cleaner schema than the rollout — top-level `{ type, ... }` per lin
 - [x] Session-id format vs `SESSION_ID_RE` — UUIDv7, matches. **No change needed.**
 - [x] Windows binary shape — `codex.cmd` shim on PATH. **Confirmed.**
 - [x] Auth/credential file — `~/.codex/auth.json`. **Confirmed** (drives `AgentDockerSpec.credentialFile`).
-- [x] Usage/context source — LOCAL `token_count.rate_limits` + `model_context_window`; no OpenAI API. **Confirmed** (reshapes U6).
+- [x] Session model/effort/context source — LOCAL paired `turn_context` + `token_count`; no OpenAI API. **Confirmed on 0.144.4.**
 - [x] Session naming — `/rename <name>` is supported; names persist in append-only
   `session_index.jsonl`, latest row wins. Jamat reads, watches, and appends that native shape and
   pipes the slash command so Codex updates its own live metadata. **Confirmed on 0.144.4.**
-- [~] **TUI markers (tool glyph / approval prompt / busy line) — NOT captured.** Needs an interactive PTY session (exec is non-interactive). `CODEX_TTY_PATTERNS` stays minimal → the turn indicator falls back to the 15s silence timer (upstream-agnostic, per plan). Follow-up: capture a real `codex` TUI transcript and fill `toolUse`/`blocked`/`busy`.
+- [x] Active TUI row — `› Working (<elapsed> • esc to interrupt)` captured from a live 0.144.4
+  terminal and implemented structurally in `AgentWorkDetectorCodex`. It sustains long work beyond
+  the 15-second fallback; non-Working output emits generic `outputActivity`.
+- [ ] Explicit idle, tool, and approval/waiting layouts — not yet captured. Missing `Working` is
+  `unknown`, so Codex settles conservatively after 15 seconds and does not guess Claude states.
 
 ## Fixtures
 
-- `fixtures/rollout-sample.jsonl` — neutral session: header (`cwd:/work/demo-project`), user +
-  assistant messages, an `exec`/`apply_patch` file edit + `patch_apply_end` (changes → `hello.txt`),
-  a `token_count` with `rate_limits`, final assistant message. Base-instructions redacted.
+- `fixtures/rollout-sample.jsonl` — neutral session: header (`cwd:/work/demo-project`), current
+  model/effort fields, user + assistant messages, an `exec`/`apply_patch` file edit +
+  `patch_apply_end` (changes → `hello.txt`), and multiple context snapshots. Base-instructions redacted.
 - `fixtures/exec-stream.ndjson` — a `codex exec --json` stream ending in the final `agent_message`.
+- `fixtures/work-detection.json` — sanitized renderer frames for the verified `Working` row,
+  unknown idle/prose layouts, menu reset, and duration variants.
 
-Both are hand-built to mirror the live 0.144.1 schema (real captures were kept out of the repo:
-they carry the user's cwd/username and OpenAI's system prompt). Re-run the spike on a Codex upgrade.
+The rollout and exec fixtures are hand-built to mirror the live 0.144.1 schema. The work-detection
+fixture mirrors the live 0.144.4 screenshot. Real captures stay out of the repo because they carry
+the user's cwd/username and OpenAI's system prompt. Re-run the spike on a Codex upgrade.

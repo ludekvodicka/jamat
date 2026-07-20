@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { cumulativeSeries, rangeFilter, insights, deriveLastHour, aggregateModels, dayTotal, filterDailyByModel } from './selectors'
+import { cumulativeSeries, rangeFilter, insights, deriveLastHour, aggregateModels, dayTotal, filterDailyByModel, summarizeRequests } from './selectors'
 import type { DailyUsage, HourlyUsage, DetailedRequest } from '../../../../../../core/types/stats'
 
 const day = (date: string, input: number, output: number, model = 'claude-opus-4-8', cost = 0): DailyUsage => ({
   date, inputTokens: input, outputTokens: output, cacheCreationTokens: 0, cacheReadTokens: 0,
+  reasoningTokens: 0,
   totalCost: cost, modelsUsed: [model],
-  modelBreakdowns: [{ modelName: model, inputTokens: input, outputTokens: output, cacheCreationTokens: 0, cacheReadTokens: 0, cost }],
+  modelBreakdowns: [{ modelName: model, inputTokens: input, outputTokens: output, cacheCreationTokens: 0, cacheReadTokens: 0, reasoningTokens: 0, cost }],
 })
 
 describe('cumulativeSeries', () => {
@@ -34,8 +35,8 @@ describe('insights', () => {
   it('computes peak day, active days, streak, and API time today', () => {
     const daily = [day('2026-06-25', 0, 0), day('2026-06-26', 20, 10), day('2026-06-27', 5, 5)]
     const hourly: HourlyUsage[] = [
-      { hour: 9, inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, cost: 0, durationMs: 90000, modelsUsed: [] },
-      { hour: 10, inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, cost: 0, durationMs: 30000, modelsUsed: [] },
+      { hour: 9, inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, reasoningTokens: 0, cost: 0, durationMs: 90000, modelsUsed: [] },
+      { hour: 10, inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, reasoningTokens: 0, cost: 0, durationMs: 30000, modelsUsed: [] },
     ]
     const r = insights(daily, hourly)
     expect(r.peakDay).toEqual({ date: '2026-06-26', tokens: 30 })
@@ -57,8 +58,8 @@ describe('aggregateModels', () => {
 
 describe('deriveLastHour', () => {
   const req = (ts: string, project: string): DetailedRequest => ({
-    timestamp: ts, model: 'claude-opus-4-8', inputTokens: 10, outputTokens: 5,
-    cacheCreationTokens: 0, cacheReadTokens: 0, totalTokens: 15, cost: 0.1, durationMs: 1000,
+    agent: 'claude', timestamp: ts, model: 'claude-opus-4-8', inputTokens: 10, outputTokens: 5,
+    cacheCreationTokens: 0, cacheReadTokens: 0, reasoningTokens: 0, totalTokens: 15, cost: 0.1, durationMs: 1000,
     project, sessionId: 's1',
   })
   it('keeps only requests within 60 min of windowEnd and re-summarizes', () => {
@@ -70,6 +71,15 @@ describe('deriveLastHour', () => {
     expect(w.projects[0].project).toBe('A')
     expect(w.models[0].requestCount).toBe(1)
   })
+
+  it('keeps same-id Claude and Codex sessions distinct and sorts zero-cost rows by tokens', () => {
+    const claude = req('2026-06-27T11:30:00.000Z', 'small')
+    claude.cost = 0
+    const codex = { ...req('2026-06-27T11:40:00.000Z', 'large'), agent: 'codex' as const, inputTokens: 100, totalTokens: 105, cost: 0 }
+    const rows = summarizeRequests([claude, codex])
+    expect(rows.models[0].sessionCount).toBe(2)
+    expect(rows.projects.map((project) => project.project)).toEqual(['large', 'small'])
+  })
 })
 
 describe('dayTotal', () => {
@@ -80,11 +90,11 @@ describe('dayTotal', () => {
 
 describe('filterDailyByModel', () => {
   const multi = (date: string): DailyUsage => ({
-    date, inputTokens: 30, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, totalCost: 0.3,
+    date, inputTokens: 30, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, reasoningTokens: 0, totalCost: 0.3,
     modelsUsed: ['claude-opus-4-8', 'claude-haiku-4-5'],
     modelBreakdowns: [
-      { modelName: 'claude-opus-4-8', inputTokens: 20, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, cost: 0.2 },
-      { modelName: 'claude-haiku-4-5', inputTokens: 10, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, cost: 0.1 },
+      { modelName: 'claude-opus-4-8', inputTokens: 20, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, reasoningTokens: 0, cost: 0.2 },
+      { modelName: 'claude-haiku-4-5', inputTokens: 10, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, reasoningTokens: 0, cost: 0.1 },
     ],
   })
   it('reduces each day to one model contribution', () => {

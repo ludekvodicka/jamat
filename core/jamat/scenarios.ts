@@ -11,7 +11,7 @@ import type { ScenarioId } from './scenarios-meta.js'
 import type { TabStatus } from '../types/remote-control.js'
 // Shared TUI normalizer (collapse ANSI + whitespace, lowercase) — single source in the
 // Claude patterns module, reused by the renderer's turn-indicator too.
-import { normalizeTty as normTui } from '../agents/claude/patterns.js'
+import { AgentWorkDetectorBase } from '../agents/workDetection/agentWorkDetectorBase.js'
 
 const enter = '\r'
 
@@ -113,12 +113,12 @@ async function injectVerified(ctx: ScenarioCtx, text: string): Promise<void> {
   // pass on a partial. (Claude may instead collapse the whole input into a "[Pasted text]" block —
   // hides the head but proves the full text landed — accept that too.) On a partial / nothing,
   // clear the line and re-deliver; the REPL is now awake so the head lands. Bounded.
-  const headNorm = normTui(text).slice(0, 24)
+  const headNorm = AgentWorkDetectorBase.normalizeTty(text).slice(0, 24)
   let landed = false
   for (let attempt = 0; attempt < 4 && !landed; attempt++) {
     await pasteChunked(ctx, text)
     await sleep(500) // let the REPL settle the rendered input before reading it back
-    const dn = normTui(await deltaSince(ctx))
+    const dn = AgentWorkDetectorBase.normalizeTty(await deltaSince(ctx))
     if (dn.includes('[pastedtext') || (headNorm.length > 0 && dn.includes(headNorm))) { landed = true; break }
     await clearInput(ctx)
     await sleep(300)
@@ -137,7 +137,7 @@ async function injectVerified(ctx: ScenarioCtx, text: string): Promise<void> {
     await controlPost(ctx.peer, 'write-keys', { terminalId: ctx.terminalId, data: enter }, { corrId: ctx.corrId })
     await sleep(800)
     const data = await readScreen(ctx)
-    if (normTui(data).includes('esctointerrupt') || parseTerminalAnswer(data, ctx.corrId) !== null) return // SUBMITTED
+    if (AgentWorkDetectorBase.normalizeTty(data).includes('esctointerrupt') || parseTerminalAnswer(data, ctx.corrId) !== null) return // SUBMITTED
   }
 }
 
@@ -192,7 +192,7 @@ export async function awaitMarkedAnswer(ctx: ScenarioCtx): Promise<{ outcome: 'a
     if (d.status === 'blocked' || d.status === 'waiting') return { outcome: 'blocked' }
     // Normalize first: claude's TUI renders with cursor escapes that eat the spaces
     // ("esctointerrupt"), so match the collapsed form.
-    const busy = normTui(data).includes('esctointerrupt')
+    const busy = AgentWorkDetectorBase.normalizeTty(data).includes('esctointerrupt')
     // Mark the turn underway once it's working — so a freshly-injected REPL (still idle,
     // hasn't started) doesn't make us return immediately.
     if (busy || d.status === 'running' || d.status === 'tool-use') turnStarted = true

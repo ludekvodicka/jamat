@@ -46,18 +46,32 @@ Title watching is adapter-owned:
 read, while the existing 2.5-second poll remains the fallback. A renamed tab is composed as
 `<folderName> - <title>`.
 
-## F2 rename
+## F2 session details
 
-For a tab with a known session UUID, F2 performs two operations:
+For a tab with a known session UUID, changing **Name** in F2 performs two operations:
 
 1. `sessions:rename` resolves the real rollout through the owning adapter and appends the native
    durable title record.
 2. The renderer sends `/rename <name>` to the live Codex PTY so Codex updates its TUI and internal
    metadata.
 
-For a brand-new Codex tab whose UUID has not been resolved yet, F2 sends only the native slash
-command and updates the tab optimistically. Once the rollout appears, the no-pid resolver records its
-UUID and invalidates discovery so subsequent title reads and F2 operations target that exact session.
+For a brand-new tab whose UUID has not been resolved yet, changing Name sends only the native
+slash command and updates the tab optimistically. Once the rollout appears, the no-pid resolver
+records its UUID and invalidates discovery so subsequent title reads and F2 operations target that
+exact session.
+
+A session whose UUID *has* just been resolved (the pid/rollout resolver pushed it into the tab
+params) but whose transcript has not yet been flushed to disk is the same situation from the durable
+record's point of view: `sessions:rename` returns `session transcript not found` because there is no
+file to append to. The renderer treats an append failure as non-fatal when the agent exposes a rename
+slash command — it pipes `/rename <name>` to the live PTY (which renames the running session durably
+on its own) and applies the optimistic title, instead of surfacing the error. The error is only shown
+for an agent with no live-rename path.
+
+F2 also exposes **Description (AppJamat only)**. This value is keyed by UUID in AppJamat's own
+`app-state.json` and never enters the Codex rollout, session-name index, SQLite state, prompt, or PTY.
+Until a new tab's UUID resolves, Description stays disabled rather than falling back to another
+recent session. The agent-neutral design is documented in `session-descriptions.md`.
 
 Jamat does not edit Codex's SQLite state. The native slash command owns that implementation detail;
 the append-only index is the compatibility and fallback layer.
@@ -69,6 +83,7 @@ the append-only index is the compatibility and fallback layer.
 - `core/agents/codex/index.ts` — adapter title and rename methods.
 - `app-electron/src/main/screen-executor.ts` — live title watcher and poller.
 - `app-electron/src/main/ipc-sessions.ts` — adapter-routed durable rename.
-- `app-electron/src/renderer/components/layout/CustomTab.tsx` — F2 native slash synchronization.
+- `app-electron/src/renderer/components/layout/CustomTab.tsx` — F2 Name/native synchronization and
+  private Description UI.
 - `scripts/smoke-codex-sessions.ts` and `scripts/smoke-agents-registry.ts` — latest-wins,
   malformed-row, newline, watch-target, capability, and slash regressions.

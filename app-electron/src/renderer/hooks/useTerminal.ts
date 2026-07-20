@@ -7,12 +7,15 @@ import { themes } from '../themes'
 import { useLayoutStore } from '../store/layout-store'
 import { loadSettings } from '../components/panels/SettingsPanel'
 import { bracketedPaste, getPathAtPosition, stripQuoteGutter } from '../utils/terminal-helpers'
+import { getTerminalFilePathExtractor } from '../../../../core/terminal/terminalFilePathExtractors'
 import { copyText, readClipboard } from '../utils/clipboard'
+import { TerminalPromptSubmitter } from '../utils/terminalPromptSubmitter'
 import { getRendererAgent } from '../../../../core/agents/renderer'
-import { normalizeTty, stripAnsiLower } from '../../../../core/agents/claude/patterns'
+import { AgentWorkDetectorBase } from '../../../../core/agents/workDetection/agentWorkDetectorBase'
 import { DEFAULT_AGENT_ID } from '../../../../core/types/contracts'
 
 import type { AgentId } from '../../../../core/types'
+import type { AgentWorkFrame, AgentWorkStatus } from '../../../../core/agents/workDetection/agentWorkDetector.types'
 import type { ScreenOpenTabMeta } from '../../../../core/types/ipc-contracts'
 
 type RestoreMeta = ScreenOpenTabMeta
@@ -41,7 +44,7 @@ interface UseTerminalOptions {
   cwd?: string
   command?: string
   args?: string[]
-  /** Agent hosting this PTY. Drives the TUI pattern set (toolUse / blocked regexes). */
+  /** Agent hosting this PTY. Selects the provider-specific work detector. */
   agent?: AgentId
   /** Gate the xterm creation + agent spawn. When `false` nothing is created — lets a restored
    *  but not-yet-visible tab defer its `claude` launch until first shown, so reopening a window
@@ -69,11 +72,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // effect closure would leave it stale. The effect below re-points the
   // ref without a costly PTY re-mount.
   const rendererAgentRef = useRef(getRendererAgent(options.agent ?? DEFAULT_AGENT_ID))
-  const patternsRef = useRef(rendererAgentRef.current.ttyPatterns)
+  const workDetectorRef = useRef<AgentWorkDetectorBase | null>(null)
   useEffect(() => {
     const agent = getRendererAgent(options.agent ?? DEFAULT_AGENT_ID)
     rendererAgentRef.current = agent
-    patternsRef.current = agent.ttyPatterns
+    if (workDetectorRef.current?.agent === agent.id) return
+    workDetectorRef.current?.reset()
+    workDetectorRef.current?.dispose()
+    workDetectorRef.current = null
   }, [options.agent])
 
   // Terminal phase, authoritative from the main process ('menu' = the CLI menu TUI owns the PTY;
@@ -82,10 +88,20 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // screen-managed tab STARTS in the menu; direct-command / shell tabs never show it (default false).
   const isMenuRef = useRef(!!options.screenManaged)
   useEffect(() => {
+    const store = useLayoutStore.getState()
+    if (options.screenManaged) store.setTerminalPhase(options.terminalId, 'menu')
     if (!window.electronAPI?.onScreenPhase) return
-    return window.electronAPI.onScreenPhase((id, phase) => {
-      if (id === options.terminalId) isMenuRef.current = phase === 'menu'
+    const remove = window.electronAPI.onScreenPhase((id, phase) => {
+      if (id !== options.terminalId) return
+      if (phase === 'menu') {
+        isMenuRef.current = true
+        workDetectorRef.current?.reset()
+      } else if (phase === 'running') isMenuRef.current = false
+      else
+        throw new Error(`Unknown terminal phase: ${JSON.stringify(phase)}`)
+      useLayoutStore.getState().setTerminalPhase(id, phase)
     })
+    return () => remove()
   }, [options.terminalId])
 
   useEffect(() => {
@@ -156,6 +172,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     else term.resize(HIDDEN_COLS, HIDDEN_ROWS)
     termRef.current = term
     searchRef.current = searchAddon
+    const unregisterPromptSubmitter = TerminalPromptSubmitter.register(options.terminalId, {
+      write: (data) => window.electronAPI.writeTerminal(options.terminalId, data),
+      isWin32InputMode: () => term.modes.win32InputMode,
+    })
 
     // Publish live geometry for the status-bar diagnostic (cols×rows next to the renderer badge).
     const reportDims = () =>
@@ -205,7 +225,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (ev.type !== 'keydown') return true
       // App shortcuts — bubble to window/menu handler
       if (ev.key === 'F11') return false
-      // F1 (help) / F2 (rename session) are handled by the window keydown listener
+      // F1 (help) / F2 (session details) are handled by the window keydown listener
       // (useKeyboardShortcuts). Without this, xterm maps them to a PTY escape and cancels the event,
       // so the app shortcut never fires while the terminal is focused. EXCEPTION: while the CLI menu
       // owns this PTY it binds F1/F2 itself (Search / Manage) — pass them through (fall to `return
@@ -307,7 +327,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (me.shiftKey) {
         void readClipboard().then((text) => bracketedPaste(options.terminalId, text))
       } else {
-        const wordAtCursor = getPathAtPosition(term, container, me.clientX, me.clientY)
+        const extractor = getTerminalFilePathExtractor(options.agent ?? DEFAULT_AGENT_ID)
+        const wordAtCursor = getPathAtPosition(term, container, me.clientX, me.clientY, extractor.pathChars)
         window.dispatchEvent(new CustomEvent('terminal-context-menu', {
           detail: { x: me.clientX, y: me.clientY, terminalId: options.terminalId, wordAtCursor }
         }))
@@ -328,55 +349,36 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
     term.onData((data) => window.electronAPI.writeTerminal(options.terminalId, data))
 
-    // Pattern set is owned by the agent adapter, threaded via the
-    // terminal options. Read lazily from `patternsRef` so a mid-life
-    // agent change (via screen:update-params) is reflected without a
-    // PTY re-mount — see the ref-sync effect above.
     let writeBuffer = ''
     let writeRaf = 0
-    let idleTimer: ReturnType<typeof setTimeout> | null = null
-    let toolUseExpiryTimer: ReturnType<typeof setTimeout> | null = null
-    let promptIdleTimer: ReturnType<typeof setTimeout> | null = null
     let outputBuffer = ''
-    type Status = 'idle' | 'running' | 'tool-use' | 'blocked' | 'waiting' | 'done'
-    let currentStatus: Status = 'idle'
-    let currentBgShell = false
 
-    const setStatus = (status: Status) => {
-      if (currentStatus === status) return
-      currentStatus = status
-      // Level-triggered source of truth: a tab header that mounts/remounts after this point reads the
-      // CURRENT status from the store rather than missing the one-shot event below (which fires only on
-      // change). This is what kept the dot grey on a working tab after a resize / during a long turn.
-      useLayoutStore.getState().setTerminalStatus(options.terminalId, status)
+    // Last published status + current background activity, so a background-only change can re-emit the
+    // status event (below). `terminal-status` carries `backgroundActivity` so the "finished" consumers
+    // (done popup, compact card, completed badge, notifications) can DEFER: an idle turn with a shell/
+    // sub-agent still running isn't truly finished. Availability consumers (tab tree, status bar) ignore
+    // the flag — an idle session still accepts input while a background task runs.
+    let lastStatus: AgentWorkStatus = 'idle'
+    let bgActive = false
+
+    const dispatchTerminalStatus = (status: AgentWorkStatus) => {
       window.dispatchEvent(new CustomEvent('terminal-status', {
-        detail: { id: options.terminalId, status }
+        detail: { id: options.terminalId, status, backgroundActivity: bgActive }
       }))
-      // backwards compat for useTaskNotifications: "active" means Claude is
-      // doing something the user might want to be notified about completing.
+    }
+
+    const publishStatus = (status: AgentWorkStatus) => {
+      lastStatus = status
+      useLayoutStore.getState().setTerminalStatus(options.terminalId, status)
+      dispatchTerminalStatus(status)
       window.dispatchEvent(new CustomEvent('terminal-activity', {
         detail: {
           id: options.terminalId,
-          active: status === 'running' || status === 'tool-use' || status === 'blocked' || status === 'waiting',
+          active: AgentWorkDetectorBase.isActiveStatus(status),
         }
       }))
     }
 
-    // Busy = the turn is still working. An agent can expose TWO markers: `busy` (status-line text,
-    // matched on the whitespace-COLLAPSED tail — esc-to-interrupt / token counter / elapsed timer,
-    // which wrap across the width so collapsing reassembles them) and `busySpaced` (Claude's spinner
-    // "<glyph> <one-word>…", matched on the SPACE-PRESERVED tail — collapsing would make it look like
-    // prose). EITHER one present ⇒ working. `hasBusyMarker` = does this agent classify by busy at all
-    // (Codex doesn't → keep the prior always-'running' behavior).
-    const hasBusyMarker = () => !!(patternsRef.current.busy || patternsRef.current.busySpaced)
-
-    // Read the RENDERED bottom rows of the xterm grid — where Claude's status line ("✶ Drizzling…
-    // (28s · …)") always sits. This is the ROBUST detection source: the raw PTY byte stream only
-    // carries the status line in full when Claude redraws it whole, but its TUI updates the spinner
-    // DIFFERENTIALLY (cursor-addressed glyph/second swaps), so the raw tail often holds only fragments
-    // and the markers fall off → false idle. xterm reconstructs the full current screen regardless, so
-    // the bottom rows reliably contain the whole status line. (baseY-relative so it reads the live
-    // bottom even if the user scrolled up.)
     const readScreenTail = (rows: number = SCREEN_TAIL_ROWS): string => {
       try {
         const buf = term.buffer.active
@@ -390,129 +392,56 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       } catch { return '' }
     }
 
-    // Working = a busy marker is present in EITHER the raw recent tail OR the rendered screen bottom
-    // (OR can only catch MORE work; the idle prompt has no markers, so idle still resolves correctly).
-    const isBusy = (recent: string) => {
-      const p = patternsRef.current
-      const screen = readScreenTail()
-      if (p.busy && (p.busy.test(normalizeTty(recent)) || p.busy.test(normalizeTty(screen)))) return true
-      if (p.busySpaced && (p.busySpaced.test(stripAnsiLower(recent)) || p.busySpaced.test(stripAnsiLower(screen)))) return true
-      // Deep scan for the high-specificity elapsed-timer markers only (safe further up): catches the
-      // spinner status line during long "thinking" turns when it's pushed above the shallow window.
-      if (p.busyWide && p.busyWide.test(normalizeTty(readScreenTail(SCREEN_TAIL_WIDE_ROWS)))) return true
-      return false
-    }
+    const readWorkFrame = (): AgentWorkFrame => ({
+      rawTail: outputBuffer.slice(-2000),
+      screenTail: readScreenTail(),
+      wideScreenTail: readScreenTail(SCREEN_TAIL_WIDE_ROWS),
+      phase: isMenuRef.current ? 'menu' : 'running',
+      timestamp: Date.now(),
+    })
 
-    // Busy check for the IDLE direction — trust ONLY the rendered screen bottom, never the raw tail.
-    // `outputBuffer` keeps a whole turn's history (cleared only on a confirmed idle), so a finished
-    // turn's last "esc to interrupt" status line LINGERS in it. OR-ing that raw tail (`isBusy`) kept
-    // the tab stuck on 'running' after the turn ended: the marker stayed inside the 2000-char window
-    // (a short recap printed after it isn't enough to push it out) while the live screen already showed
-    // the idle prompt. (The det widget reads a shorter raw window that had already dropped it → it
-    // showed scr[—] raw[—] while the tab still said 'running' — that exact mismatch.) The idle checks
-    // run ≥1.2s after the last byte, so the screen is fully settled here: current AND stale-free.
-    // Running detection (`reclassifyFromOutput`) keeps `isBusy`'s raw OR for frame-immediate response.
-    const isBusyScreen = () => {
-      const p = patternsRef.current
-      const screen = readScreenTail()
-      if (screen) {
-        if (p.busy && p.busy.test(normalizeTty(screen))) return true
-        if (p.busySpaced && p.busySpaced.test(stripAnsiLower(screen))) return true
-      }
-      // Deep scan for the elapsed-timer markers only — keeps a long "thinking" turn from arming the
-      // fast idle edge (and flipping the tab to idle) when the status line sits above the shallow window.
-      if (p.busyWide) {
-        const wide = readScreenTail(SCREEN_TAIL_WIDE_ROWS)
-        if (wide && p.busyWide.test(normalizeTty(wide))) return true
-      }
-      return false
-    }
-
-    // Background-shell indicator — ORTHOGONAL to the turn status. Claude's footer shows a live
-    // "N shell" count while a `Bash(run_in_background)` task is still executing; it disappears at 0.
-    // The footer always sits in the rendered bottom rows, so scan the same screen tail (never the raw
-    // buffer, which lingers a stale count after the shell exits). Published to the store only on
-    // change (dedup) — CustomTab/TabListPanel show a muted pulsing dot when an IDLE tab has one, so a
-    // finished turn that left a shell alive (or hung) is visible. Kept off the busy markers on purpose:
-    // a running shell is not the agent working, so it must NOT flip the tab to 'running'.
-    const publishBgShell = () => {
-      const p = patternsRef.current
-      const on = !!p.bgShell && p.bgShell.test(readScreenTail().toLowerCase())
-      if (on === currentBgShell) return
-      currentBgShell = on
-      useLayoutStore.getState().setBgShell(options.terminalId, on)
-    }
-
-    // Re-classify based on recent output. Called on every data chunk so
-    // blocked-prompts and tool-calls surface immediately rather than after
-    // the 15s silence timer.
-    const reclassifyFromOutput = () => {
-      const recent = outputBuffer.slice(-2000)
-      const norm = normalizeTty(recent)
-      if (patternsRef.current.blocked.some(p => p.test(recent))) {
-        setStatus('blocked')
-        return
-      }
-      // Interactive question menu (AskUserQuestion / plan approval) → the turn paused for
-      // the user to pick something. Checked after `blocked` so y/n permission menus stay red.
-      const menu = patternsRef.current.questionMenu
-      if (menu && menu.test(norm)) {
-        setStatus('waiting')
-        return
-      }
-      if (patternsRef.current.toolUse.test(recent)) {
-        setStatus('tool-use')
-        // Tool calls finish on their own; revert to 'running' if more text
-        // streams in without another tool marker.
-        if (toolUseExpiryTimer) clearTimeout(toolUseExpiryTimer)
-        toolUseExpiryTimer = setTimeout(() => {
-          if (currentStatus === 'tool-use') setStatus('running')
-        }, 3000)
-        return
-      }
-      // If the agent classifies by a busy marker and NONE is present, the turn finished (only the
-      // redrawn idle prompt remains). Don't re-assert 'running' on those post-turn redraws —
-      // otherwise the fast idle edge flickers idle→running. `isBusy` checks both the collapsed
-      // status-line markers and the space-preserved spinner glyph. Agents with no busy marker keep
-      // the prior always-'running' behavior.
-      if (hasBusyMarker() && !isBusy(recent)) return
-      setStatus('running')
-    }
-
-    const checkSilence = () => {
-      const text = outputBuffer.slice(-2000)
-      const norm = normalizeTty(text)
-      if (patternsRef.current.blocked.some(p => p.test(text))) {
-        setStatus('blocked')
-        return
-      }
-      const menu = patternsRef.current.questionMenu
-      if (menu && menu.test(norm)) {
-        setStatus('waiting')
-        return
-      }
-      // Re-check busy at FIRE time (not arm time) on the SETTLED SCREEN (not the stale raw buffer):
-      // a big diff burst can momentarily push the markers out of the window and arm the 1.2s timer,
-      // but by fire time the next status-line redraw has landed → still working, so don't flip to idle.
-      // Using the screen (not raw) is what stops a finished turn's lingering "esc to interrupt" in
-      // `outputBuffer` from re-asserting 'running' here and wedging the tab.
-      if (isBusyScreen()) {
-        setStatus('running')
-        return
-      }
-      setStatus('idle')
-      outputBuffer = ''
-      // Settled-screen recheck: guarantees the bg-shell dot converges even if Claude goes fully
-      // quiescent after the last shell exits (no idle repaint to re-trigger the data-path publish).
-      publishBgShell()
+    const ensureWorkDetector = (): AgentWorkDetectorBase => {
+      const current = workDetectorRef.current
+      if (current?.agent === rendererAgentRef.current.id) return current
+      current?.reset()
+      current?.dispose()
+      const detector = rendererAgentRef.current.createWorkDetector({
+        readFrame: readWorkFrame,
+        onStatus: publishStatus,
+        onBackgroundActivity: (active) => {
+          bgActive = active
+          useLayoutStore.getState().setBgShell(options.terminalId, active)
+          // The detector emits no status change on a background-only transition, so if the turn already
+          // settled to idle, re-emit the idle event with the new flag — this is the deferred "finished"
+          // edge that lands the moment the background shell/sub-agent clears.
+          if (lastStatus === 'idle') dispatchTerminalStatus('idle')
+        },
+        onIdle: () => { outputBuffer = '' },
+        onReport: (report, frame) => {
+          if (!useLayoutStore.getState().detectionDebug) return
+          const now = Date.now()
+          if (report.reason === 'evidence' && now - lastDebugPublish < 150) return
+          lastDebugPublish = now
+          useLayoutStore.getState().setTerminalDebug(options.terminalId, {
+            rawTail: AgentWorkDetectorBase.stripAnsiLower(frame.rawTail.slice(-600)),
+            screenTail: frame.screenTail,
+            wideScreenTail: frame.wideScreenTail,
+            report,
+          })
+        },
+      })
+      workDetectorRef.current = detector
+      return detector
     }
 
     const flushBuffer = () => {
-      if (writeBuffer) {
-        term.write(writeBuffer)
-        writeBuffer = ''
-      }
+      const chunk = writeBuffer
+      writeBuffer = ''
       writeRaf = 0
+      if (!chunk) return
+      term.write(chunk, () => {
+        if (!disposed) ensureWorkDetector().onRenderedFrame(readWorkFrame())
+      })
     }
     const removeDataListener = window.electronAPI.onTerminalData((id, data) => {
       if (id !== options.terminalId) return
@@ -542,58 +471,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // to keep a long continuous turn from growing the string without limit.
       if (outputBuffer.length > 8000) outputBuffer = outputBuffer.slice(-8000)
       if (!writeRaf) writeRaf = requestAnimationFrame(flushBuffer)
-
-      // Immediate reclassification: blocked-prompts and tool calls surface
-      // on the same data chunk that brings them in. The 15s silence timer
-      // is only the fallback that flips `running` → `idle` when Claude
-      // stops streaming (extended thinking ≤ 15s is intentionally tolerated).
-      reclassifyFromOutput()
-      publishBgShell()
-      if (idleTimer) clearTimeout(idleTimer)
-      idleTimer = setTimeout(checkSilence, 15000)
-
-      // Fast idle edge: once the agent's "busy" marker (e.g. "esc to interrupt") is gone — turn
-      // finished, only the ready prompt remains — a short quiet means done, so flip to idle without
-      // waiting out the 15s fallback. ARM ONCE and DON'T reset it on later chunks: Claude's idle
-      // input box keeps re-emitting frames (cursor blink / redraw) under 1.2s apart, so a per-chunk
-      // reset meant the timer never fired and the tab stuck on 'running'. Cancel only when the busy
-      // marker reappears (work resumed). While busy is present, no timer is armed → full tolerance.
-      const busyAbsent = hasBusyMarker() && !isBusyScreen()
-      if (busyAbsent) {
-        if (!promptIdleTimer && currentStatus !== 'idle') {
-          promptIdleTimer = setTimeout(() => { promptIdleTimer = null; checkSilence() }, 1200)
-        }
-      } else if (promptIdleTimer) {
-        clearTimeout(promptIdleTimer)
-        promptIdleTimer = null
-      }
-
-      // Work-detection status-bar widget: when it's open, publish BOTH detection inputs (throttled
-      // ~150ms, gated on the store flag → zero cost when off): the SPACE-PRESERVED raw tail
-      // (stripAnsiLower — keeps the spinner's "<glyph> <word>…" structure; matchBusy derives the
-      // collapsed form from it) AND the rendered screen bottom rows (the robust source). So the
-      // widget shows exactly what each source contributes to the verdict.
-      if (useLayoutStore.getState().detectionDebug) {
-        const now = Date.now()
-        if (now - lastDebugPublish >= 150) {
-          lastDebugPublish = now
-          useLayoutStore.getState().setTerminalDebug(options.terminalId, stripAnsiLower(outputBuffer.slice(-600)), readScreenTail(), now)
-        }
-      }
+      ensureWorkDetector().onOutput(readWorkFrame())
     })
 
     const removeExitListener = window.electronAPI.onTerminalExit((id, code) => {
       if (id === options.terminalId) {
         term.writeln(`\r\n\x1b[90m[Process exited with code ${code}]\x1b[0m`)
-        if (idleTimer) clearTimeout(idleTimer)
-        if (toolUseExpiryTimer) clearTimeout(toolUseExpiryTimer)
-        if (promptIdleTimer) clearTimeout(promptIdleTimer)
-        // Process gone → no shells left; drop the bg-shell dot (the footer that carried the count
-        // is gone too, so nothing would clear it otherwise).
-        currentBgShell = false
-        useLayoutStore.getState().setBgShell(options.terminalId, false)
-        setStatus('done')
-        setTimeout(() => setStatus('idle'), 3000)
+        ensureWorkDetector().onProcessExit()
       }
     })
 
@@ -631,9 +515,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       disposed = true
       settleTimers.forEach(clearTimeout)
       if (writeRaf) cancelAnimationFrame(writeRaf)
-      if (idleTimer) clearTimeout(idleTimer)
-      if (toolUseExpiryTimer) clearTimeout(toolUseExpiryTimer)
-      if (promptIdleTimer) clearTimeout(promptIdleTimer)
+      const workDetector = workDetectorRef.current
+      workDetector?.dispose()
+      if (workDetectorRef.current === workDetector) workDetectorRef.current = null
       if (resizeTimer) clearTimeout(resizeTimer)
       removeDataListener()
       removeExitListener()
@@ -645,6 +529,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       container.removeEventListener('contextmenu', contextMenuHandler)
       container.removeEventListener('mousedown', blockRightMouse, true)
       container.removeEventListener('mouseup', blockRightMouse, true)
+      unregisterPromptSubmitter()
       window.electronAPI.destroyTerminal(options.terminalId)
       useLayoutStore.getState().clearTerminalRenderer(options.terminalId)
       term.dispose()

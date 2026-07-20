@@ -165,7 +165,7 @@ export function useKeyboardShortcuts(
       }
       if (e.ctrlKey && e.key === 'u' && api) {
         e.preventDefault()
-        openOrActivatePanel(api, 'usage-stats-native', 'usageStatsNativePanel', '📊 Usage Stats')
+        openOrActivatePanel(api, 'usage-stats', 'usageStatsPanel', '📊 Usage Stats')
       }
       if (e.ctrlKey && e.key === 'y' && api) {
         e.preventDefault()
@@ -218,12 +218,12 @@ export function useKeyboardShortcuts(
         e.preventDefault()
         openOrActivatePanel(api, 'help', 'helpPanel', 'Help')
       }
-      // F2 renames the active session. The rename modal lives inside each tab's CustomTab
+      // F2 edits the active session details. The modal lives inside each tab's CustomTab
       // (local state the shortcut can't reach), so broadcast the active panel id and let
       // that tab open its own modal — same bridge as the toggle-notes event above.
       if (e.key === 'F2' && api?.activePanel) {
         e.preventDefault()
-        window.dispatchEvent(new CustomEvent('rename-session', { detail: api.activePanel.id }))
+        window.dispatchEvent(new CustomEvent('edit-session-details', { detail: api.activePanel.id }))
       }
     }
     window.addEventListener('keydown', handler)

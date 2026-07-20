@@ -153,7 +153,8 @@ Windows, Terminal) plus the tab types, all on one scrollable page (**F1**).
 
 ![Usage stats](13-usage-stats.png)
 
-The **Usage Stats** dashboard: all-time / today / 30-day tokens, session count and total spend; a
+The **Usage Stats** dashboard: global All / Claude / Codex filtering; all-time / today / 30-day
+tokens, session count and API-equivalent cost estimates for priced models; a
 tokens-over-time chart; a 26-week activity heatmap; per-model breakdown (input / output / cached /
 cost / share); and a daily-consumption table — across Overview / 24h / 5h / 1h tabs.
 

@@ -7,7 +7,7 @@
  *
  * This file is a thin slice of the adapter surface that the renderer
  * actually needs:
- * - TUI pattern set for `useTerminal.ts`'s indicator state machine.
+ * - Per-agent work-detector factory for `useTerminal.ts`.
  * - Prompt-newline input encoding for `useTerminal.ts`'s Shift+Enter handler.
  * - `renameSlashCommand` for `CustomTab.tsx`'s rename pipe.
  *
@@ -16,9 +16,13 @@
  */
 
 import type { AgentId } from '../types/contracts.js'
-import type { AgentCapabilities, AgentTtyPatterns } from './types.js'
-import { CLAUDE_TTY_PATTERNS, CLAUDE_CAPABILITIES, CLAUDE_PROMPT_NEWLINE_SEQUENCES, claudeRenameSlash } from './claude/renderer-meta.js'
-import { CODEX_TTY_PATTERNS, CODEX_CAPABILITIES, CODEX_PROMPT_NEWLINE_SEQUENCES, codexRenameSlash } from './codex/renderer-meta.js'
+import type { AgentCapabilities } from './types.js'
+import { AgentWorkDetectorBase } from './workDetection/agentWorkDetectorBase.js'
+import type { AgentWorkDetectorCallbacks, AgentWorkDetectorScheduler } from './workDetection/agentWorkDetector.types.js'
+import { AgentWorkDetectorClaude } from './claude/agentWorkDetectorClaude.js'
+import { CLAUDE_CAPABILITIES, CLAUDE_PROMPT_NEWLINE_SEQUENCES, claudeRenameSlash } from './claude/renderer-meta.js'
+import { AgentWorkDetectorCodex } from './codex/agentWorkDetectorCodex.js'
+import { CODEX_CAPABILITIES, CODEX_PROMPT_NEWLINE_SEQUENCES, codexRenameSlash } from './codex/renderer-meta.js'
 
 export interface PromptNewlineSequences {
   readonly standard: string
@@ -27,28 +31,31 @@ export interface PromptNewlineSequences {
 
 export interface RendererAgent {
   readonly id: AgentId
-  readonly ttyPatterns: AgentTtyPatterns
+  readonly displayName: string
   /** Same declarative flags as the main-process adapter (fs-free pure data). */
   readonly capabilities: AgentCapabilities
   /** PTY bytes that insert a newline without submitting under each xterm input mode. */
   readonly promptNewlineSequences: PromptNewlineSequences
-  /** Slash command to update the live session title. Null when not supported. */
+  createWorkDetector(callbacks: AgentWorkDetectorCallbacks, scheduler?: AgentWorkDetectorScheduler): AgentWorkDetectorBase
+  /** Slash command text to update the live session title. Null when not supported. */
   renameSlashCommand(name: string): string | null
 }
 
 const CLAUDE_RENDERER: RendererAgent = {
   id: 'claude',
-  ttyPatterns: CLAUDE_TTY_PATTERNS,
+  displayName: 'Claude',
   capabilities: CLAUDE_CAPABILITIES,
   promptNewlineSequences: CLAUDE_PROMPT_NEWLINE_SEQUENCES,
+  createWorkDetector: (callbacks, scheduler) => new AgentWorkDetectorClaude(callbacks, scheduler),
   renameSlashCommand: claudeRenameSlash,
 }
 
 const CODEX_RENDERER: RendererAgent = {
   id: 'codex',
-  ttyPatterns: CODEX_TTY_PATTERNS,
+  displayName: 'Codex',
   capabilities: CODEX_CAPABILITIES,
   promptNewlineSequences: CODEX_PROMPT_NEWLINE_SEQUENCES,
+  createWorkDetector: (callbacks, scheduler) => new AgentWorkDetectorCodex(callbacks, scheduler),
   renameSlashCommand: codexRenameSlash,
 }
 

@@ -2,9 +2,8 @@
  * Universal agent adapter interface implemented by the Claude and Codex
  * backends. New agents slot in without changing consumer contracts.
  *
- * The interface mirrors the 8 categories in
- * `docs/architecture/codex-portability-assessment.md` — every Claude
- * dependency listed there has a corresponding method here.
+ * Filesystem, session, launcher, capability, and slash-command differences live here. Stateful TUI
+ * classification is renderer-only and uses the separate `AgentWorkDetectorBase` hierarchy.
  *
  * Pure types — no electron / no node-pty / no fs imports. Adapter
  * implementations can use Node fs (already done across `core/`).
@@ -29,55 +28,6 @@ export type AgentSession = SessionInfo
 
 /** Adapter-level turn — aliases existing `TurnInfo` for the same reason. */
 export type AgentTurnInfo = TurnInfo
-
-// ────────────────────────────────────────────────────────────────────────────
-// TUI pattern set — drives the turn-indicator state machine in useTerminal
-// ────────────────────────────────────────────────────────────────────────────
-
-export interface AgentTtyPatterns {
-  /** Tool-call marker regex. Match → indicator goes 'tool-use'. */
-  toolUse: RegExp
-  /** Blocked-prompt regexes. ANY match → 'blocked'. */
-  blocked: readonly RegExp[]
-  /** Optional explicit thinking markers (e.g. Claude's "Crunching…"). */
-  thinking?: readonly RegExp[]
-  /**
-   * Optional "actively working" marker (e.g. Claude's "esc to interrupt" hint).
-   * The input box is always drawn, so its presence can't mean idle — but the
-   * ABSENCE of this busy marker means the turn finished. The state machine uses
-   * it for a fast idle edge (~1.2s) instead of waiting out the 15s silence timer.
-   * Matched against the whitespace/ANSI-collapsed output (see `normalizeTty`).
-   */
-  busy?: RegExp
-  /**
-   * Optional SECOND busy marker matched against the SPACE-PRESERVED output (ANSI-stripped +
-   * lowercased, whitespace kept — see `stripAnsiLower`). For markers whose signal is structural
-   * (Claude's spinner "<glyph> <one-word>…", which collapsing would make indistinguishable from
-   * prose). The classifier treats the turn as working when `busy` OR `busySpaced` matches.
-   */
-  busySpaced?: RegExp
-  /**
-   * Optional HIGH-SPECIFICITY busy subset, matched (collapsed, like `busy`) against a DEEPER screen
-   * tail than the other markers. Only markers that can't plausibly appear in prose/code belong here
-   * (Claude's elapsed-timer forms), so scanning further up the screen is safe. It catches the status
-   * line during long "thinking" turns when a tall input box + tip line push it above the shallow
-   * window; agents without such a marker omit it and keep the shallow-window-only behavior.
-   */
-  busyWide?: RegExp
-  /**
-   * Optional interactive-menu marker (e.g. Claude's "❯ 1. …" AskUserQuestion /
-   * plan-approval list). Match → the turn paused for the user to choose, so the tab
-   * goes 'waiting' rather than idle. Also matched against the collapsed output.
-   */
-  questionMenu?: RegExp
-  /**
-   * Optional background-process marker (e.g. Claude's "N shell" footer count). ORTHOGONAL to the
-   * turn status: its presence means a background process is still alive while the turn itself may be
-   * idle — surfaced as a distinct "done, but a shell is still running" tab indicator, NOT folded into
-   * 'running'. Matched against the rendered screen bottom (de-ANSI'd, lowercased).
-   */
-  bgShell?: RegExp
-}
 
 // ────────────────────────────────────────────────────────────────────────────
 // Exec command — used for one-shot agent runs (AI commit summary)
@@ -134,7 +84,7 @@ export interface AgentCapabilities {
   /** Per-tab context-fullness % is derivable from this agent's transcript. */
   contextPercent: boolean
   /** Which backend feeds the usage panel for this agent. */
-  usageSource: 'claude-web' | 'openai' | 'none'
+  usageSource: 'claude-web' | 'codex-app-server' | 'none'
   /** Agent tracks live pids (sessionId resolution by process ancestry). */
   activePids: boolean
   /** Docker isolation spec; null = unsupported → loud refusal at launch. */
@@ -266,11 +216,8 @@ export interface AgentAdapter {
    */
   resolveLaunchedSession(projectDir: string, homeDir: string, sinceMs: number): { sessionId: string } | null
 
-  /** Model + context info from a transcript's last assistant turn (null when unavailable). */
-  readSessionModelInfo(sessionFile: string): SessionModelInfo | null
-
-  /** Reasoning-effort / thinking level for a project (null when not applicable). */
-  readEffortLevel(projectDir: string, homeDir: string): string | null
+  /** Complete effective model, effort, and context snapshot for one exact session. */
+  readSessionModelInfo(sessionFile: string, projectDir: string, homeDir: string): SessionModelInfo | null
 
   // --- 4. CLI invocation ---
 
@@ -287,13 +234,9 @@ export interface AgentAdapter {
    */
   parseExecOutput(raw: string): string
 
-  // --- 5. TUI patterns ---
-
-  readonly ttyPatterns: AgentTtyPatterns
-
   // --- 6. Slash commands we pipe to the running TUI ---
 
-  /** Slash command that updates the live session title. Null when the agent has no such slash command. */
+  /** Slash command text that updates the live session title. The renderer owns submission encoding. */
   renameSlashCommand(name: string): string | null
 
   // --- 7. Permission / settings detection ---

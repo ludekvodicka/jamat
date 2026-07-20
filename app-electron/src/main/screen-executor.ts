@@ -674,9 +674,6 @@ function startClaudeInTerminal(
       const title = `${sel.folderName} - ${name}`
       newState.lastTitle = title
       publishTo(wc, 'screen:title', terminalId, title)
-      // An agent session now owns the PTY → F1/F2 revert to app shortcuts (Help / rename session).
-      publishTo(wc, 'screen:phase', terminalId, 'running')
-      publishTo(wc, 'screen:refit', terminalId)
       // Arm the title watcher right away rather than waiting for the first poll
       // tick: immediately when the sessionId is known (resume), or as soon as the
       // pid resolver discovers it (--continue/cc) — so a quick `/rename` reflects
@@ -710,6 +707,10 @@ function startClaudeInTerminal(
         forkParentId: sel.forkParentId,
         agent: sel.agent,
       })
+      // Publish the agent params first so every active-tab consumer switches providers before the
+      // running phase makes the session-visible status items eligible to render.
+      publishTo(wc, 'screen:phase', terminalId, 'running')
+      publishTo(wc, 'screen:refit', terminalId)
     }
   }, writesClaudeJson, immediate)
 }

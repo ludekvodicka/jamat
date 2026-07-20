@@ -3,16 +3,15 @@
  * backed by `sessions.ts` / `session-changes.ts` against the U2 fixtures) and
  * CLI launch/resume/exec (U4, `launcher.ts`) are real. `parseExecOutput` is
  * overridden for Codex's NDJSON exec stream; Docker isolation still refuses
- * loudly until U7 builds the `dockerized-codex` image. Every remaining
- * "doesn't apply" member (encodeProjectDir, listActivePids, readSessionModelInfo,
- * readEffortLevel) is inherited from the base.
+ * loudly until U7 builds the `dockerized-codex` image. The remaining
+ * "doesn't apply" members (encodeProjectDir and listActivePids) inherit base defaults.
  *
  * Codex keys sessions by DATE + a `cwd` header, not by project dir — see
  * `sessions.ts` and `./README.md` (schema verified vs codex-cli 0.144.1).
  */
 
 import { join } from 'path'
-import { CODEX_TTY_PATTERNS, CODEX_CAPABILITIES, codexRenameSlash } from './renderer-meta.js'
+import { CODEX_CAPABILITIES, codexRenameSlash } from './renderer-meta.js'
 import { AgentAdapterBase } from '../base.js'
 import {
   findCodexProjectDir,
@@ -27,24 +26,22 @@ import {
 import { extractCodexTurns, extractCodexHasEdits, extractCodexEditedFiles } from './session-changes.js'
 import { buildCodexLaunchCommand } from './launcher.js'
 import { CodexThreadNames } from './threadNames.js'
+import { SessionRuntime } from './sessionRuntime.js'
 import type {
   AgentSession,
   AgentTurnInfo,
-  AgentTtyPatterns,
   ExecCommand,
   ExecOptions,
   SessionTitleWatchTarget,
 } from '../types.js'
 import type { LaunchCommand, LaunchMode, MenuSelection } from '../../types/contracts.js'
-import type { LatestSessionMeta } from '../../types/session.js'
+import type { LatestSessionMeta, SessionModelInfo } from '../../types/session.js'
 
 export class CodexAdapter extends AgentAdapterBase {
   readonly id = 'codex' as const
   readonly displayName = 'Codex'
   readonly binary = 'codex'
   readonly capabilities = CODEX_CAPABILITIES
-  readonly ttyPatterns: AgentTtyPatterns = CODEX_TTY_PATTERNS
-
   // --- 1. Filesystem (join, not POSIX concat → Windows-safe, learning #029) ---
   sessionsRoot(homeDir: string): string {
     return join(homeDir, '.codex', 'sessions')
@@ -107,6 +104,10 @@ export class CodexAdapter extends AgentAdapterBase {
 
   getSessionTitleWatchTarget(_projectDir: string, _sessionId: string, homeDir: string): SessionTitleWatchTarget {
     return CodexThreadNames.watchTarget(homeDir)
+  }
+
+  readSessionModelInfo(sessionFile: string, _projectDir: string, _homeDir: string): SessionModelInfo | null {
+    return SessionRuntime.read(sessionFile)
   }
 
   // --- 4. CLI invocation (U4) ---

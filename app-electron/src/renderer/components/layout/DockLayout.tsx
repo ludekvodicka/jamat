@@ -17,11 +17,11 @@ import { RemoteNotesPanel } from '../panels/RemoteNotesPanel'
 import { RemoteActivityLogPanel } from '../panels/RemoteActivityLogPanel'
 import { SettingsPanel } from '../panels/SettingsPanel'
 import { UsageStatsPanel } from '../panels/UsageStatsPanel'
-import { UsageStatsNativePanel } from '../panels/UsageStatsNativePanel'
 import { AbilitiesPanel } from '../panels/AbilitiesPanel'
 import { CustomTab } from './CustomTab'
 import { getWindowId, isNewWindow, getInitialFile } from '../../utils/window-params'
 import { fileViewerPanelId } from '../../utils/terminal-helpers'
+import { LayoutMigration } from '../../utils/layoutMigration'
 
 const components = {
   terminalPanel: TerminalSidebarPanel,
@@ -32,8 +32,7 @@ const components = {
   directoryViewerPanel: DirectoryViewerPanel,
   sessionChangesPanel: SessionChangesPanel,
   settingsPanel: SettingsPanel,
-  usageStatsPanel: UsageStatsPanel, // legacy webview dashboard ("Usage Stats (HTML)")
-  usageStatsNativePanel: UsageStatsNativePanel, // native-React Usage Stats (primary, Ctrl+U)
+  usageStatsPanel: UsageStatsPanel,
   abilitiesPanel: AbilitiesPanel,
   sessionSearchPanel: SessionSearchPanel,
   sessionsSearchPanel: SessionsSearchPanel,
@@ -152,16 +151,16 @@ export function DockLayout() {
 
     if (saved) {
       try {
-        api.fromJSON(JSON.parse(saved))
+        const layout = JSON.parse(saved)
+        const migrated = LayoutMigration.migrateUsageStatsPanel(layout)
+        api.fromJSON(layout)
         // Transient panels that shouldn't survive a restart: the Error Log
         // (its errorLog array is in-memory, so it'd restore empty) and remote
         // viewers (their {peer, terminalId} is from a dead session, so the
         // stream would just fail). Strip them and persist the cleanup.
         const stale = api.panels.filter((p) => p.id === 'error-log' || p.id === 'remote-activity-log' || p.id.startsWith('remote-view:'))
-        if (stale.length) {
-          for (const p of stale) api.removePanel(p)
-          saveLayoutNow(api)
-        }
+        for (const p of stale) api.removePanel(p)
+        if (stale.length || migrated) saveLayoutNow(api)
       } catch (e) {
         // Restore failed → keep the saved layout intact (do NOT persist the fallback over it) so it
         // stays recoverable. The window still gets a usable default; saves stay suppressed this session.
@@ -194,7 +193,7 @@ export function DockLayout() {
       window.removeEventListener('beforeunload', beforeUnload)
       d1.dispose(); d2.dispose(); d3.dispose(); d4.dispose()
     }
-  }, [windowId, setDockviewApi, setPanelCount, setActivePanel, saveLayout])
+  }, [windowId, setDockviewApi, setPanelCount, setActivePanel, saveLayout, saveLayoutNow])
 
   return (
     <DockviewReact

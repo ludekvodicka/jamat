@@ -21,6 +21,7 @@ import type {
   IpcEventMap,
   IpcEventArgs,
   CommitResult,
+  SessionDescriptionResult,
   SessionRenameResult,
   VcsDetectResult,
   RecentFile,
@@ -57,22 +58,30 @@ const _commitResultShared: CommitResult = _commitResult
 const _renameResult: IpcInvokeResult<'sessions:rename'> = { ok: true }
 const _renameResultShared: SessionRenameResult = _renameResult
 
-// 5. commit:detect-vcs returns the shared VcsDetectResult.
+// 5. session-description channels share the discriminated result shape.
+const _descriptionArgs: IpcInvokeArgs<'session-description:save'> = [
+  '12345678-1234-1234-1234-123456789012',
+  'Investigating restore behavior',
+]
+const _descriptionResult: IpcInvokeResult<'session-description:load'> = { ok: true, description: 'Saved note' }
+const _descriptionResultShared: SessionDescriptionResult = _descriptionResult
+
+// 6. commit:detect-vcs returns the shared VcsDetectResult.
 const _detectResult: IpcInvokeResult<'commit:detect-vcs'> = { git: true, svn: false, hg: false }
 const _detectResultShared: VcsDetectResult = _detectResult
 
-// 6. file:list-recent's RecentFile shape is canonical.
+// 7. file:list-recent's RecentFile shape is canonical.
 const _recent: IpcInvokeResult<'file:list-recent'> = [
   { path: '/a', name: 'a', mtime: 0, relative: 'a' } satisfies RecentFile,
 ]
 
-// 7. Send map: pty:write takes (id, data).
+// 8. Send map: pty:write takes (id, data).
 const _ptyWriteArgs: IpcSendArgs<'pty:write'> = ['term-1', 'echo hi\n']
 
-// 8. Event map: file:changed delivers a single filePath.
+// 9. Event map: file:changed delivers a single filePath.
 const _fileChangedArgs: IpcEventArgs<'file:changed'> = ['Q:/foo.txt']
 
-// 9. Negative-shape sanity — `@ts-expect-error` keeps these continuously
+// 10. Negative-shape sanity — `@ts-expect-error` keeps these continuously
 //    verified (tsc fails if any line STOPS being an error).
 // @ts-expect-error wrong arg count (file:read needs a path)
 const _bad: IpcInvokeArgs<'file:read'> = []
@@ -100,6 +109,9 @@ void _commitResult
 void _commitResultShared
 void _renameResult
 void _renameResultShared
+void _descriptionArgs
+void _descriptionResult
+void _descriptionResultShared
 void _detectResult
 void _detectResultShared
 void _recent

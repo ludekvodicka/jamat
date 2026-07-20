@@ -2196,6 +2196,8 @@ html, body, #root {
 .notes-entry {
   display: flex;
   flex-direction: column;
+  /* Don't let entries shrink to fit — keep natural height so .notes-entries scrolls instead */
+  flex-shrink: 0;
   border: 1px solid #333;
   border-radius: 4px;
   overflow: hidden;
@@ -3097,6 +3099,41 @@ html, body, #root {
 
 .rename-modal-input:focus {
   border-color: #0e639c;
+}
+
+.rename-modal-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.session-details-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.session-details-label {
+  color: #bbb;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.session-details-label span {
+  color: #888;
+  font-weight: 400;
+}
+
+.session-details-description {
+  min-height: 92px;
+  max-height: 240px;
+  resize: vertical;
+  line-height: 1.4;
+}
+
+.session-details-hint {
+  color: #888;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .rename-modal-error {

@@ -1,7 +1,7 @@
 ---
 title: Jamat — Architecture
 subtitle: One dependency-free core, many front doors, and a token-gated bridge to your other machines
-version: 2026.07.02
+version: 2026.07.14
 status: living document
 audience: contributors
 ---
@@ -9,8 +9,8 @@ audience: contributors
 # Jamat — Architecture
 
 Jamat is a **TypeScript monorepo**. Several independent entry points (`app-*`) share one piece of
-business logic (`core/`); `core/` spawns Claude Code as a local subprocess and reaches your other
-machines over a token-gated LAN bridge. The whole thing runs on your own keys — nothing is proxied.
+business logic (`core/`); `core/` spawns Claude Code or Codex as a local subprocess and reaches your
+other machines over a token-gated LAN bridge. The whole thing runs on your own keys — nothing is proxied.
 
 ## System context
 
@@ -18,7 +18,7 @@ machines over a token-gated LAN bridge. The whole thing runs on your own keys �
 {
   "schema_version": 1,
   "diagram_type": "architecture",
-  "meta": { "title": "app-* → core → Claude, and out to peers", "subtitle": "app-* depend on core/, never the reverse", "viewBox": [820, 390] },
+  "meta": { "title": "app-* → core → agent CLIs, and out to peers", "subtitle": "app-* depend on core/, never the reverse", "viewBox": [820, 390] },
   "components": [
     { "id": "electron", "type": "frontend", "label": "app-electron",              "pos": [40, 30],  "size": [190, 56] },
     { "id": "cli",      "type": "frontend", "label": "app-cli",                   "pos": [40, 98],  "size": [190, 56] },
@@ -26,7 +26,7 @@ machines over a token-gated LAN bridge. The whole thing runs on your own keys �
     { "id": "stats",    "type": "database", "label": "app-stats",                 "pos": [40, 234], "size": [190, 56] },
     { "id": "wol",      "type": "backend",  "label": "app-wol",                   "pos": [40, 302], "size": [190, 56] },
     { "id": "core",     "type": "backend",  "label": "core/ — shared logic",      "pos": [320, 120],"size": [190, 150] },
-    { "id": "claude",   "type": "external", "label": "Claude Code subprocess",    "pos": [590, 60], "size": [210, 64] },
+    { "id": "agentCli", "type": "external", "label": "Claude Code / Codex CLI",   "pos": [590, 60], "size": [210, 64] },
     { "id": "peer",     "type": "external", "label": "Peer machine (LAN)",        "pos": [590, 240],"size": [210, 64] }
   ],
   "connections": [
@@ -34,7 +34,7 @@ machines over a token-gated LAN bridge. The whole thing runs on your own keys �
     { "from": "cli",      "to": "core",  "label": "import", "variant": "emphasis" },
     { "from": "agent",    "to": "core",  "label": "import", "variant": "emphasis" },
     { "from": "stats",    "to": "core",  "label": "reads" },
-    { "from": "core",     "to": "claude","label": "spawns" },
+    { "from": "core",     "to": "agentCli", "label": "spawns" },
     { "from": "core",     "to": "peer",  "label": "LAN bridge", "variant": "security", "labelDy": 10 },
     { "from": "wol",      "to": "peer",  "label": "wake", "variant": "dashed" }
   ]
@@ -90,7 +90,7 @@ imports it; it imports none of them.
 | `app-electron/` | Desktop app — Electron **main** (windows, IPC, PTYs) + **renderer** (React · dockview · xterm.js · node-pty). |
 | `app-cli/` | Terminal menu (TUI) + a scriptable bridge client (`jamat`). |
 | `app-agent/` | Per-machine REST API + a small LAN relay + the mobile launch web app. |
-| `app-stats/` | Usage / cost dashboard (ccusage → HTML). |
+| `app-stats/` | Unified local Claude + Codex usage statistics for the React dashboard. |
 | `app-wol/` | Standalone Wake-on-LAN proxy for an always-on device. |
 | `dockerized-claude/` | Docker image that runs Claude Code sandboxed (non-root, `--dangerously-skip-permissions`). |
 | `skills/` · `scripts/` · `configs/` · `bin/` | Bundled Claude skills · build/test scripts · public config template · cross-platform launchers. |

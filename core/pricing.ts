@@ -1,8 +1,8 @@
 /**
- * Per-token-type cost calculation for Claude models.
+ * Per-token-type API-equivalent cost calculation for supported models.
  *
- * Each token type is priced separately — output is ~5× input, cache-create is
- * 1.25× input, and cache-read is ~0.1× input. A single blended per-token rate
+ * Each token type is priced separately because input, output, cache writes, and
+ * cache reads have different rates. A single blended per-token rate
  * (cost ÷ totalTokens) skews badly whenever a request's cache/output mix differs
  * from the historical average, so the rolling-window stats must price each type.
  *
@@ -10,7 +10,10 @@
  * (which in turn tracks the LiteLLM/Anthropic public price list). >200k input
  * tiering is applied for models that publish it (Sonnet, Opus 1M-context).
  *
- * Source: https://www.anthropic.com/pricing  +  ccusage dist PREFETCHED_CLAUDE_PRICING
+ * Sources: https://www.anthropic.com/pricing + ccusage dist PREFETCHED_CLAUDE_PRICING
+ * OpenAI rates verified 2026-07-14:
+ * https://developers.openai.com/api/docs/models/gpt-5.6-sol
+ * https://developers.openai.com/api/docs/models/gpt-5.5
  */
 
 export interface TokenCounts {
@@ -20,25 +23,35 @@ export interface TokenCounts {
   cacheRead: number;
 }
 
-interface Pricing {
+interface TokenRatesInternal {
   input: number;
   output: number;
   cacheCreate: number;
   cacheRead: number;
-  // Optional >200k-input tier (applied to tokens beyond the 200k threshold).
-  above200k?: { input: number; output: number; cacheCreate: number; cacheRead: number };
 }
+
+type PricingTier =
+  | { kind: 'incremental'; threshold: number; rates: TokenRatesInternal }
+  | { kind: 'requestMultiplier'; threshold: number; inputMultiplier: number; outputMultiplier: number };
+
+interface Pricing extends TokenRatesInternal { tier?: PricingTier }
 
 const M = 1e-6; // $ per million → $ per token
 
-// Opus 4.x (and 3 Opus): $15 / $75 / $18.75 / $1.50 per MTok.
-const OPUS: Pricing = { input: 15 * M, output: 75 * M, cacheCreate: 18.75 * M, cacheRead: 1.5 * M };
+const OPUS_LEGACY: Pricing = { input: 15 * M, output: 75 * M, cacheCreate: 18.75 * M, cacheRead: 1.5 * M };
+const OPUS_CURRENT: Pricing = { input: 5 * M, output: 25 * M, cacheCreate: 6.25 * M, cacheRead: 0.5 * M };
 
 // Sonnet 3.5 / 3.7 / 4.x: $3 / $15 / $3.75 / $0.30, with a >200k tier ($6 / $22.50 / $7.50 / $0.60).
 const SONNET: Pricing = {
   input: 3 * M, output: 15 * M, cacheCreate: 3.75 * M, cacheRead: 0.3 * M,
-  above200k: { input: 6 * M, output: 22.5 * M, cacheCreate: 7.5 * M, cacheRead: 0.6 * M },
+  tier: {
+    kind: 'incremental',
+    threshold: 200_000,
+    rates: { input: 6 * M, output: 22.5 * M, cacheCreate: 7.5 * M, cacheRead: 0.6 * M },
+  },
 };
+
+const SONNET_5: Pricing = { input: 2 * M, output: 10 * M, cacheCreate: 2.5 * M, cacheRead: 0.2 * M };
 
 // Haiku 4.5: $1 / $5 / $1.25 / $0.10.
 const HAIKU_45: Pricing = { input: 1 * M, output: 5 * M, cacheCreate: 1.25 * M, cacheRead: 0.1 * M };
@@ -51,7 +64,17 @@ const HAIKU_35: Pricing = { input: 0.8 * M, output: 4 * M, cacheCreate: 1 * M, c
 // = $0.9116, ccusage's reported daily cost for this model to the cent).
 const FABLE: Pricing = { input: 10 * M, output: 50 * M, cacheCreate: 12.5 * M, cacheRead: 1 * M };
 
-const TIER_THRESHOLD = 200_000;
+const OPENAI_LONG_CONTEXT: PricingTier = {
+  kind: 'requestMultiplier', threshold: 272_000, inputMultiplier: 2, outputMultiplier: 1.5,
+};
+const GPT_56_SOL: Pricing = {
+  input: 5 * M, output: 30 * M, cacheCreate: 6.25 * M, cacheRead: 0.5 * M,
+  tier: OPENAI_LONG_CONTEXT,
+};
+const GPT_55: Pricing = {
+  input: 5 * M, output: 30 * M, cacheCreate: 6.25 * M, cacheRead: 0.5 * M,
+  tier: OPENAI_LONG_CONTEXT,
+};
 
 /**
  * Resolve a model id to a price table by family. Handles ccusage/LiteLLM-style
@@ -59,9 +82,11 @@ const TIER_THRESHOLD = 200_000;
  */
 function resolvePricing(model: string): Pricing | null {
   const m = model.toLowerCase();
+  if (m === 'gpt-5.6-sol') return GPT_56_SOL;
+  if (m === 'gpt-5.5') return GPT_55;
   if (!m.includes('claude')) return null;
   if (m.includes('fable')) return FABLE;
-  if (m.includes('opus')) return OPUS;
+  if (m.includes('opus')) return /opus-4-(?:[5-9]|\d{2})/.test(m) ? OPUS_CURRENT : OPUS_LEGACY;
   if (m.includes('haiku')) {
     // 4.x / 4-5 haiku vs the older 3 / 3.5 haiku.
     if (/haiku-4|haiku-3-5|3-5-haiku|haiku4/.test(m)) {
@@ -69,22 +94,25 @@ function resolvePricing(model: string): Pricing | null {
     }
     return /3-5|3\.5/.test(m) ? HAIKU_35 : HAIKU_45;
   }
+  if (m.includes('sonnet-5')) return SONNET_5;
   if (m.includes('sonnet')) return SONNET;
   return null;
 }
 
-/** Cost for a single token type, splitting at the 200k threshold when a tier exists. */
-function tieredCost(tokens: number, base: number, above?: number): number {
+/** Cost for a single token type, splitting at the supplied threshold. */
+function tieredCost(tokens: number, threshold: number, base: number, above: number): number {
   if (tokens <= 0) return 0;
-  if (above != null && tokens > TIER_THRESHOLD) {
-    return TIER_THRESHOLD * base + (tokens - TIER_THRESHOLD) * above;
-  }
+  if (tokens > threshold) return threshold * base + (tokens - threshold) * above;
   return tokens * base;
+}
+
+function baseCost(t: TokenCounts, p: Pricing): number {
+  return t.input * p.input + t.output * p.output + t.cacheCreate * p.cacheCreate + t.cacheRead * p.cacheRead;
 }
 
 /**
  * Per-token-type rates for a model, in USD per million tokens (for display).
- * Returns null when the model is unknown. Tiered (>200k) rates are ignored here —
+ * Returns null when the model is unknown. Tiered/multiplied rates are ignored here —
  * these are the base/headline numbers shown next to a model chip.
  */
 export function modelRates(model: string): { input: number; output: number; cacheCreate: number; cacheRead: number } | null {
@@ -100,16 +128,31 @@ export function modelRates(model: string): { input: number; output: number; cach
 
 /**
  * USD cost for the given token counts under the given model.
- * Returns null when the model is unknown (caller can fall back).
+ * Returns null when the model is unknown.
  */
 export function costForTokens(model: string, t: TokenCounts): number | null {
   const p = resolvePricing(model);
   if (!p) return null;
-  const a = p.above200k;
-  return (
-    tieredCost(t.input, p.input, a?.input) +
-    tieredCost(t.output, p.output, a?.output) +
-    tieredCost(t.cacheCreate, p.cacheCreate, a?.cacheCreate) +
-    tieredCost(t.cacheRead, p.cacheRead, a?.cacheRead)
-  );
+  if (!p.tier) return baseCost(t, p);
+  if (p.tier.kind === 'incremental') {
+    const tier = p.tier;
+    return (
+      tieredCost(t.input, tier.threshold, p.input, tier.rates.input) +
+      tieredCost(t.output, tier.threshold, p.output, tier.rates.output) +
+      tieredCost(t.cacheCreate, tier.threshold, p.cacheCreate, tier.rates.cacheCreate) +
+      tieredCost(t.cacheRead, tier.threshold, p.cacheRead, tier.rates.cacheRead)
+    );
+  }
+  else if (p.tier.kind === 'requestMultiplier') {
+    const longContext = t.input + t.cacheCreate + t.cacheRead > p.tier.threshold;
+    if (!longContext) return baseCost(t, p);
+    return (
+      t.input * p.input * p.tier.inputMultiplier +
+      t.cacheCreate * p.cacheCreate * p.tier.inputMultiplier +
+      t.cacheRead * p.cacheRead * p.tier.inputMultiplier +
+      t.output * p.output * p.tier.outputMultiplier
+    );
+  }
+  else
+    throw new Error(`Unknown pricing tier: ${JSON.stringify(p.tier)}`);
 }

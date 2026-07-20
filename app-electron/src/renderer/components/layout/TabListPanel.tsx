@@ -1,13 +1,12 @@
 import { useLayoutStore } from '../../store/layout-store'
 import { useEffect, useState } from 'react'
 import { IDockviewPanel } from 'dockview'
-
-type TerminalStatus = 'idle' | 'running' | 'tool-use' | 'blocked' | 'waiting' | 'done'
+import type { AgentWorkStatus } from '../../../../../core/agents/workDetection/agentWorkDetector.types'
 
 export function TabListPanel() {
   const { dockviewApi, sidebarOpen, setSidebarOpen, addPanel: storeAddPanel, completedTabs, bgShellTabs } = useLayoutStore()
   const [panels, setPanels] = useState<{ id: string; title: string; type: string }[]>([])
-  const [statusMap, setStatusMap] = useState<Record<string, TerminalStatus>>({})
+  const [statusMap, setStatusMap] = useState<Record<string, AgentWorkStatus>>({})
 
   useEffect(() => {
     if (!dockviewApi) return
@@ -29,9 +28,9 @@ export function TabListPanel() {
 
   useEffect(() => {
     const handler = (e: Event) => {
-      const { id, status } = (e as CustomEvent).detail ?? {}
+      const { id, status } = (e as CustomEvent<{ id?: string; status?: AgentWorkStatus }>).detail ?? {}
       if (!id || !status) return
-      setStatusMap(prev => ({ ...prev, [id]: status as TerminalStatus }))
+      setStatusMap(prev => ({ ...prev, [id]: status }))
     }
     window.addEventListener('terminal-status', handler)
     return () => window.removeEventListener('terminal-status', handler)
@@ -77,7 +76,7 @@ export function TabListPanel() {
                 {st === 'waiting'
                   ? <span className="status-question-badge sidebar-status-question" title="Waiting for your answer — needs interaction">?</span>
                   : (st === 'idle' && bgShellTabs[p.id])
-                    ? <span className="sidebar-status-dot status-bgshell" title="Turn finished, but a background shell is still running (may be hung) — Ctrl+T in the terminal to manage it" />
+                    ? <span className="sidebar-status-dot status-bgshell" title="Turn finished, but a background shell or sub-agent is still running (may be hung) — Ctrl+T in the terminal to manage it" />
                     : (st === 'idle' && completedTabs[p.id])
                       ? <span className="status-completed-badge sidebar-status-question" title="Finished while you were away — switch to this tab to clear">✓</span>
                       : (st && st !== 'idle')
