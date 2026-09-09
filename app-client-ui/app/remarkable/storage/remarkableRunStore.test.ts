@@ -3,6 +3,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -21,7 +22,10 @@ describe('app-client-ui/app/remarkable/storage/remarkableRunStore', () => {
   let sequence: number
 
   beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), 'jamat-v3-remarkable-runs-'))
+    // This subsystem proves a path by realpath(p) === p, and os.tmpdir() is an 8.3 short
+    // name on the Windows CI runner. Only the NATIVE call expands one, so a plain
+    // realpathSync here would leave the root short and every such proof would refuse.
+    root = realpathSync.native(mkdtempSync(join(tmpdir(), 'jamat-v3-remarkable-runs-')))
     sequence = 0
   })
 

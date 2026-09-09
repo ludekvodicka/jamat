@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -86,7 +86,10 @@ describe('app-client-ui/app/remarkable/sidecar/remarkableSidecarManifest', () =>
   })
 
   function temporary(name: string): string {
-    const root = mkdtempSync(join(tmpdir(), `jamat-v3-remarkable-${name}-`))
+    // This subsystem proves a path by realpath(p) === p, and os.tmpdir() is an 8.3 short
+    // name on the Windows CI runner. Only the NATIVE call expands one, so a plain
+    // realpathSync here would leave the root short and every such proof would refuse.
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), `jamat-v3-remarkable-${name}-`)))
     roots.push(root)
     return root
   }
