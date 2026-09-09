@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { realpath, stat } from 'node:fs/promises'
-import { basename, dirname, extname, isAbsolute, parse, relative, resolve } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, parse, relative, resolve } from 'node:path'
 
 import { ErrorText } from '../shared/errorText'
 import { PathCompare } from '../shared/pathCompare'
@@ -133,8 +133,16 @@ export class FileViewer {
       try { realPath = await realpath(requested) }
       catch (error) {
         const code = (error as NodeJS.ErrnoException).code
-        if (code === 'ENOENT' || code === 'ENOTDIR') exists = false
-        else throw error
+        if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error
+        exists = false
+        // A file that is not there cannot be resolved, but its directory usually can, and the path
+        // has to end up in the same form as `rootPath` or the comparison below is between two
+        // spellings of the same place. Without this a caller that wrote the path any way other than
+        // the canonical one - an 8.3 short name on Windows, a symlinked parent - gets a file inside
+        // its own session root classified as external, and a grant rooted at a path that stops
+        // proving itself the moment the file appears.
+        try { realPath = join(await realpath(dirname(requested)), basename(requested)) }
+        catch { /* the parent is gone too, so the path as written is all there is to go on */ }
       }
       const workspace = PathCompare.isInside(rootPath, realPath)
       const source: FileViewerDocumentSource = workspace

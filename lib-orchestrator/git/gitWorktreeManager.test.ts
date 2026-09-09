@@ -3,6 +3,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -35,7 +36,11 @@ describe('lib-orchestrator/git/gitWorktreeManager', () => {
   type ScriptedRunner = GitCommandRunner & { calls: Invocation[] }
 
   function temporaryDirectory(prefix: string): string {
-    const directory = mkdtempSync(join(tmpdir(), prefix))
+    // realpathSync.NATIVE, and plain realpathSync will not do: on Windows os.tmpdir() can answer
+    // with an 8.3 short path (C:\Users\RUNNER~1\...), git reports the long one back, and a test
+    // that compared the path it asked for against the path git named would be comparing two
+    // spellings of one directory. Only the native call expands the short form.
+    const directory = realpathSync.native(mkdtempSync(join(tmpdir(), prefix)))
     created.push(directory)
     return directory
   }

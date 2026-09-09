@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -299,7 +299,9 @@ describe('lib-orchestrator/git/gitMergeManager', () => {
     })
 
     function temporaryDirectory(prefix: string): string {
-      const directory = mkdtempSync(join(tmpdir(), prefix))
+      // realpathSync.NATIVE: os.tmpdir() can be an 8.3 short path on Windows and git answers in the
+      // long form. Plain realpathSync leaves the short name alone, so it would not help here.
+      const directory = realpathSync.native(mkdtempSync(join(tmpdir(), prefix)))
       created.push(directory)
       return directory
     }
