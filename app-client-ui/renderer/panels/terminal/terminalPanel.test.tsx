@@ -394,6 +394,15 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
             contentVersion: '10:1',
           },
         }),
+        // Every open document is polled by useFileViewerFreshness on a timer, so a mock that leaves
+        // this out is not merely incomplete: once a test in this file runs longer than one poll
+        // interval, the timer calls a method that is not there, the TypeError becomes an unhandled
+        // rejection, and the test that happened to be running fails for a reason that has nothing
+        // to do with it. That is what turned the eight-file split case red on the push gate.
+        version: () => Promise.resolve({
+          ok: true as const,
+          value: { ok: true as const, kind: 'unchanged' as const },
+        }),
         release: (documentId: string) => {
           releasedDocuments.push(documentId)
           return Promise.resolve({ ok: true as const, value: undefined })

@@ -43,8 +43,13 @@ export function useFileViewerFreshness(
       if (!alive || asking || document.visibilityState !== 'visible') return
       asking = true
       try {
-        const answer = await window.appClient.fileViewer.version(documentId)
-        if (!alive || !answer.ok || !answer.value.ok) return
+        // The call is invoked as `void ask()` on a timer, so nothing downstream would catch a
+        // rejection and it would surface as an unhandled one. A poll that loses its answer is not
+        // worth that: the main-process handler can be gone while the window is being torn down, and
+        // the next tick asks again anyway. An unknown result SHAPE is a different matter and still
+        // throws below, because that one is a programming error rather than a lost round trip.
+        const answer = await window.appClient.fileViewer.version(documentId).catch(() => null)
+        if (!alive || answer === null || !answer.ok || !answer.value.ok) return
         const value = answer.value
         if (value.kind === 'unchanged') setMissing(false)
         else if (value.kind === 'missing') setMissing(true)
