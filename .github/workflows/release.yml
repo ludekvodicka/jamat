@@ -114,6 +114,22 @@ jobs:
       - name: Build main / preload / renderer (electron-vite)
         run: pnpm -C app-client-ui run build
 
+      # app-client-ui/package.json pins `build.electronDist` to node_modules/electron/dist, so
+      # packaging needs that directory and said `The specified electronDist does not exist` on all
+      # three runners without it.
+      #
+      # Nothing was going to create it. electron@43.2.0 ships install.js but declares NO scripts at
+      # all - no postinstall - so there was never a lifecycle hook for pnpm to run or to refuse, and
+      # that is why the install logs show esbuild's postinstall, no electron line, and no warning
+      # about anything being ignored. `pnpm rebuild electron` would have been just as empty.
+      #
+      # So the workflow runs electron's own installer itself. It is idempotent by design: it reads
+      # dist/version and path.txt first and exits 0 when the binary is already the right one, and
+      # otherwise downloads through @electron/get, which keeps its own cache.
+      - name: Fetch the Electron binary
+        working-directory: app-client-ui
+        run: node node_modules/electron/install.js
+
       - name: Package installer (${{ matrix.platform }}, unsigned)
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false" # do not attempt macOS signing or notarization yet
