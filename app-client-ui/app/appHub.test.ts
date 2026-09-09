@@ -1071,7 +1071,21 @@ describe('app-client-ui/app/appHub', () => {
     expect(captured.menuBuilds).toBe(1)
   })
 
-  it('rebuilds the Window menu for name changes but not color-only saves', async () => {
+  /**
+   * The only case in this file that saves a COLOUR, which is the only appearance branch that
+   * rasterises: `WindowIcon.of` hands a tinted SVG to Resvg, a real native renderer, and the result
+   * is cached per colour so the first call pays for all of them. Electron is mocked here; Resvg is
+   * not, and nothing in this suite would be worth keeping if it were.
+   *
+   * On this machine that costs a few milliseconds and the default five-second budget is invisible.
+   * On the GitHub Windows runner it does not fit, and the case failed twice in a row on `Test timed
+   * out in 5000ms` while every one of its neighbours finished inside 22ms. The budget is the thing
+   * that is wrong, so it is the thing that changes; it stays finite, so a genuine hang here still
+   * fails rather than running forever.
+   */
+  it('rebuilds the Window menu for name changes but not color-only saves', {
+    timeout: 60_000,
+  }, async () => {
     const hub = hubUnderTest()
     hub.initialize()
     const save = captured.ipcHandlers.get('window:save-appearance')
