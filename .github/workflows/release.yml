@@ -59,11 +59,20 @@ jobs:
 
       - uses: pnpm/action-setup@v4 # reads the pnpm version from package.json "packageManager"
 
+      # NO pnpm cache here, deliberately, and this is the one thing that must not be "tidied up"
+      # later by copying ci.yml's block across. ci.yml installs app-client-ui with
+      # ELECTRON_SKIP_BINARY_DOWNLOAD=1, because its tests mock Electron and never launch it. Both
+      # workflows keyed their cache on "**/pnpm-lock.yaml", so they shared one store, and
+      # app-client-ui/pnpm-workspace.yaml sets `sideEffectsCache: true`: the store restored here
+      # already held Electron recorded as built, with no dist beside it, and pnpm had no reason to
+      # run the postinstall again. The step below then said
+      # `The specified electronDist does not exist: ...\electron\dist` on the first three-OS run.
+      #
+      # Not setting the variable here was never enough - the cache carried the other workflow's
+      # decision across. A release is rare enough to pay for a cold install.
       - uses: actions/setup-node@v5
         with:
           node-version: 22 # the repository's engines floor is >=22.16.0
-          cache: pnpm
-          cache-dependency-path: "**/pnpm-lock.yaml" # one key over all five lockfiles
 
       # The same five pnpm roots as ci.yml, with one difference: ELECTRON_SKIP_BINARY_DOWNLOAD is
       # NOT set anywhere here. electron-builder packages `node_modules/electron/dist`, so the real

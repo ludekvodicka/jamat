@@ -242,7 +242,18 @@ class PrepareRemarkableSidecar {
     copyFileSync(join(PrepareRemarkableSidecar.recipeDirConst, 'package.json'), join(staging, 'package.json'))
     copyFileSync(PrepareRemarkableSidecar.packageLockFileConst, join(staging, 'package-lock.json'))
     const environment: NodeJS.ProcessEnv = { ...process.env, npm_config_update_notifier: 'false' }
-    const flags = ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund']
+    // `--no-bin-links` because this tree is a shipped RESOURCE, not a place anything is run from.
+    // npm fills node_modules/.bin with real files on Windows and with SYMLINKS on macOS and Linux,
+    // and the resource walk below accepts a directory or a file and refuses everything else - so
+    // the first three-OS build died on both posix legs at
+    // `resource tree contains an unsupported entry: .../node_modules/.bin/node-which` while Windows
+    // sailed through. Refusing a symlink in a tree that gets hashed, copied and shipped is the
+    // right rule; creating one and then arguing about it is not.
+    //
+    // Nothing needs .bin: the CLI is resolved through its own package's `bin.rmcli` and run as
+    // `node <package>/<entry>`, the recipe manifest names no .bin path, and on Windows this only
+    // drops .cmd and .ps1 shims nothing ever called.
+    const flags = ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--no-bin-links']
     const result = PrepareRemarkableSidecar.isWindowsConst
       ? spawnSync(
         process.env.ComSpec ?? 'cmd.exe',
