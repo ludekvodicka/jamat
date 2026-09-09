@@ -1077,15 +1077,12 @@ describe('app-client-ui/app/appHub', () => {
    * is cached per colour so the first call pays for all of them. Electron is mocked here; Resvg is
    * not, and nothing in this suite would be worth keeping if it were.
    *
-   * On this machine that costs a few milliseconds and the default five-second budget is invisible.
-   * On the GitHub Windows runner it does not fit, and the case failed twice in a row on `Test timed
-   * out in 5000ms` while every one of its neighbours finished inside 22ms. The budget is the thing
-   * that is wrong, so it is the thing that changes; it stays finite, so a genuine hang here still
-   * fails rather than running forever.
+   * That costs milliseconds here and does not fit five seconds on the GitHub runner, where it timed
+   * out twice while every neighbouring case finished inside 22ms. The budget it needs is the
+   * project's now, in vitest.node.config.ts, because a cold disk and a slow runner are not this
+   * one case's problem - `scripts/tokensGate` hit the same wall on its own.
    */
-  it('rebuilds the Window menu for name changes but not color-only saves', {
-    timeout: 60_000,
-  }, async () => {
+  it('rebuilds the Window menu for name changes but not color-only saves', async () => {
     const hub = hubUnderTest()
     hub.initialize()
     const save = captured.ipcHandlers.get('window:save-appearance')
