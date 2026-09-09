@@ -1,0 +1,48 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": [],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "sourceMap": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@testing-library/react": ["node_modules/@testing-library/react"],
+      "@viz-js/viz": ["node_modules/@viz-js/viz"],
+      "dompurify": ["node_modules/dompurify"],
+      "mermaid": ["node_modules/mermaid"],
+      "react": ["node_modules/@types/react/index.d.ts"],
+      "react/jsx-runtime": ["node_modules/@types/react/jsx-runtime.d.ts"],
+      "react-markdown": ["node_modules/react-markdown"],
+      "rehype-sanitize": ["node_modules/rehype-sanitize"],
+      "remark-directive": ["node_modules/remark-directive"],
+      "remark-gfm": ["node_modules/remark-gfm"],
+      "shiki/core": ["node_modules/shiki/dist/core.d.mts"],
+      "shiki/engine/javascript": ["node_modules/shiki/dist/engine-javascript.d.mts"],
+      "shiki/langs/*": ["node_modules/shiki/dist/langs/*"],
+      "shiki/themes/*": ["node_modules/shiki/dist/themes/*"],
+      "vega": ["node_modules/vega"],
+      "vega-lite": ["node_modules/vega-lite/build/index.d.ts"],
+      "vitest": ["node_modules/vitest"],
+      "yaml": ["node_modules/yaml"]
+    }
+  },
+  "include": [
+    "renderer/**/*",
+    "../mdext-renderer/renderer/**/*",
+    "preload/**/*",
+    "shared/**/*",
+    "vitest.web.setup.ts"
+  ]
+}

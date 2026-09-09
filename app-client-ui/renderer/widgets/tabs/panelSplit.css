@@ -1,0 +1,88 @@
+.jamat-panel-split {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+/* flex:1 with min-width:0 is what lets the terminal shrink with the drag instead of pushing the
+   pane off the panel; its own ResizeObserver turns the new width into a PTY resize. */
+.jamat-panel-split__content {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+/* No absolute positioning here: the splitter is a column of the row, so nothing overlaps xterm. */
+.jamat-panel-split__splitter {
+  flex: none;
+  width: var(--size-splitter);
+  cursor: col-resize;
+  touch-action: none;
+  background: var(--color-border-hairline);
+}
+.jamat-panel-split__splitter:hover,
+.jamat-panel-split__splitter:focus-visible {
+  outline: none;
+  background: var(--color-accent-strong);
+}
+/* flex-basis carries the ratio; grow and shrink stay off so the number means what it says. */
+.jamat-panel-split__pane {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--color-surface-sunken);
+}
+.jamat-panel-split__strip {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  min-height: var(--size-sidebar-header);
+  overflow: hidden;
+  border-bottom: 1px solid var(--color-border-hairline);
+}
+.jamat-panel-split__tab {
+  display: flex;
+  flex: none;
+  gap: var(--space-1);
+  align-items: center;
+  height: var(--size-sidebar-header);
+  max-width: 180px;
+  padding: 0 var(--space-1) 0 var(--space-2);
+  color: var(--color-text-3);
+  font-size: var(--fs-secondary);
+  cursor: pointer;
+  border-right: 1px solid var(--color-border-hairline);
+}
+.jamat-panel-split__tab:hover {
+  background: var(--color-surface-control-hover);
+}
+.jamat-panel-split__tab.is-active {
+  color: var(--color-text-1);
+  background: var(--color-surface-control);
+}
+.jamat-panel-split__tab.is-preview .jamat-panel-split__title {
+  font-style: italic;
+}
+.jamat-panel-split__title {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.jamat-panel-split__close {
+  flex: none;
+  padding: 0 var(--space-1);
+  color: var(--color-text-4);
+  font: inherit;
+  cursor: pointer;
+  background: none;
+  border: none;
+}
+.jamat-panel-split__close:hover {
+  color: var(--color-text-1);
+}
+/* min-height:0 is what makes the document scroll inside the pane instead of pushing the strip out. */
+.jamat-panel-split__body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}

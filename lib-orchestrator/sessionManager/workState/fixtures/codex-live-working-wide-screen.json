@@ -1,0 +1,23 @@
+{
+  "agent": "codex",
+  "expected": {
+    "hint": "working"
+  },
+  "provenance": {
+    "origin": "captured from this tree's live Host through the AppJamatV3 control API terminal peek",
+    "case": "a current Codex working row retained only in the wide serialized screen window",
+    "capture": "a real Codex CLI 0.149.0 turn actively working with two background terminals. Xterm serialized seven blank physical rows after the model footer and returned the cursor with CSI 10A, leaving the visible working row outside the final eight rows but inside the final sixteen; paths were sanitized after capture and ANSI was left intact",
+    "ported": "not ported",
+    "identical": "not identical; this is a recorded AppJamatV3 frame with only the project path sanitized",
+    "note": "This frame admits the existing wide screen window as a fallback for the full structural Working row. The shallow window remains authoritative when it contains a match."
+  },
+  "recorded": {
+    "build": "codex-cli 0.149.0",
+    "capturedAt": "2026-08-26"
+  },
+  "frame": {
+    "rawTail": "",
+    "screenTail": "\n\n\n\n\n\n\n\u001b[10A\u001b[2C\u001b[0m\u001b[?2004h\u001b[?1004h",
+    "wideScreenTail": "\u001b[32;1m•\u001b[0m \u001b[1mRan 3 commands\u001b[22;2m · ctrl + t to view transcript\n\n\u001b[0m• \u001b[2mWorking\u001b[0m \u001b[2m(47s • esc to interrupt) · 2 background terminals running · /ps to view · /stop to close\n\n\n\u001b[33;1;22m›\u001b[0m \u001b[2mAsk Codex to do anything\n\n\u001b[0m  \u001b[38;2;246;226;183mgpt-5.6-sol max\u001b[39;2m · \u001b[38;2;171;223;167;22mQ:\\PROJECT\n\n\n\n\n\n\n\n\u001b[10A\u001b[2C\u001b[0m\u001b[?2004h\u001b[?1004h"
+  }
+}

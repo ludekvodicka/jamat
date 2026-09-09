@@ -1,0 +1,22 @@
+.jamat-tab-menu {
+  min-width: 176px;
+}
+/* The colour a session already has, marked in the submenu rather than shown twice. */
+.jamat-tab-menu__item.is-current {
+  color: var(--color-text-1);
+  font-weight: 600;
+}
+/* The swatches are the same background family the tab and the tree row are painted with, so the
+   square in the menu is the colour that is about to appear rather than a brighter cousin of it. */
+.jamat-tab-menu__swatch--red { background: var(--session-color-red); }
+.jamat-tab-menu__swatch--orange { background: var(--session-color-orange); }
+.jamat-tab-menu__swatch--amber { background: var(--session-color-amber); }
+.jamat-tab-menu__swatch--green { background: var(--session-color-green); }
+.jamat-tab-menu__swatch--teal { background: var(--session-color-teal); }
+.jamat-tab-menu__swatch--cyan { background: var(--session-color-cyan); }
+.jamat-tab-menu__swatch--sky { background: var(--session-color-sky); }
+.jamat-tab-menu__swatch--blue { background: var(--session-color-blue); }
+.jamat-tab-menu__swatch--indigo { background: var(--session-color-indigo); }
+.jamat-tab-menu__swatch--violet { background: var(--session-color-violet); }
+.jamat-tab-menu__swatch--magenta { background: var(--session-color-magenta); }
+.jamat-tab-menu__swatch--rose { background: var(--session-color-rose); }

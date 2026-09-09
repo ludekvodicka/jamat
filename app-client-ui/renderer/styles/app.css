@@ -1,0 +1,65 @@
+:root {
+  background: var(--color-background);
+  color: var(--color-text-2);
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+  font-synthesis: none;
+}
+* {
+  box-sizing: border-box;
+  scrollbar-color: var(--color-surface-control-hover) transparent;
+  scrollbar-width: thin;
+}
+*::-webkit-scrollbar {
+  width: var(--space-3);
+  height: var(--space-3);
+}
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: var(--color-surface-control-hover);
+  background-clip: content-box;
+  border: 2px solid transparent;
+  border-radius: var(--radius-control);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-text-5);
+}
+*::-webkit-scrollbar-button {
+  display: none;
+}
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+/* A column, not positional grid rows: surfaces arrive one at a time, and a row template addressed
+   by position puts them on the wrong tracks whenever one of them is absent. */
+.jamat-shell {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: var(--color-background);
+}
+/* The row that holds the two side surfaces and the workspace between them. min-height:0 again,
+   for the same reason the column needs it one level up. */
+.jamat-shell__body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+/* min-height:0 is what lets the workspace shrink instead of pushing the status bar off-screen, and
+   the containing block is what the tab engine's absolutely positioned overlays need. */
+.jamat-shell__workspace {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}

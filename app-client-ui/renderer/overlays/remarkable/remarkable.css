@@ -1,0 +1,280 @@
+.jamat-remarkable {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 10vh;
+  background: var(--color-scrim);
+}
+
+.jamat-remarkable__card {
+  display: flex;
+  flex-direction: column;
+  /*
+   * Wide enough for the preview pane, the widest line beside it and nothing more. It was 1000px,
+   * which left the source rows stretched across 200px of empty card: the pane is a fixed 380 and
+   * every extra pixel of the card went to the column that needs the fewest.
+   */
+  width: min(800px, 94vw);
+  max-height: 78vh;
+  overflow: hidden;
+  color: var(--color-text-2);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-surface);
+  box-shadow: var(--shadow-overlay);
+}
+
+.jamat-remarkable__card:focus {
+  outline: none;
+}
+
+.jamat-remarkable__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface-control);
+  border-bottom: 1px solid var(--color-border-hairline);
+}
+
+.jamat-remarkable__title {
+  flex: 1;
+  font-weight: 600;
+  color: var(--color-text-1);
+}
+
+.jamat-remarkable__close {
+  padding: 0 var(--space-1);
+  font-size: var(--fs-title);
+  line-height: 1;
+  color: var(--color-text-4);
+  cursor: pointer;
+  background: none;
+  border: none;
+}
+
+.jamat-remarkable__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-height: 0;
+  padding: var(--space-3);
+  overflow: auto;
+}
+
+/* Choice on the left, the page itself on the right: the card grows sideways, never taller. */
+.jamat-remarkable__columns {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+  min-height: 0;
+}
+
+.jamat-remarkable__main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.jamat-remarkable__preview {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 380px;
+  min-height: 200px;
+  padding: var(--space-2);
+  overflow: auto;
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border-hairline);
+  border-radius: var(--radius-control);
+}
+
+.jamat-remarkable__preview-image {
+  max-width: 100%;
+  height: auto;
+  background: var(--color-background);
+  border: 1px solid var(--color-border-hairline);
+}
+
+.jamat-remarkable__preview-note {
+  display: grid;
+  gap: var(--space-2);
+  justify-items: center;
+  margin: 0;
+  color: var(--color-text-4);
+  text-align: center;
+}
+
+.jamat-remarkable__preview-note p {
+  margin: 0;
+}
+
+.jamat-remarkable__sources {
+  display: grid;
+  gap: var(--space-2);
+  padding: 0;
+  margin: 0;
+  border: 0;
+}
+
+.jamat-remarkable__sources legend {
+  margin-bottom: var(--space-2);
+  font-weight: 600;
+  color: var(--color-text-1);
+}
+
+.jamat-remarkable__source {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+  padding: var(--space-2);
+  cursor: pointer;
+  background: var(--color-surface-control);
+  border: 1px solid var(--color-border-hairline);
+  border-radius: var(--radius-control);
+}
+
+.jamat-remarkable__source span {
+  display: grid;
+  gap: 2px;
+}
+
+.jamat-remarkable__source small {
+  color: var(--color-text-4);
+}
+
+.jamat-remarkable__auto-preview {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  cursor: pointer;
+  color: var(--color-text-3);
+}
+
+.jamat-remarkable__auto-preview input:disabled + span {
+  color: var(--color-text-4);
+}
+
+.jamat-remarkable__document h2 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-base);
+  color: var(--color-text-1);
+}
+
+.jamat-remarkable__pages {
+  display: grid;
+  gap: 2px;
+  max-height: 230px;
+  overflow: auto;
+  border: 1px solid var(--color-border-hairline);
+  border-radius: var(--radius-control);
+}
+
+.jamat-remarkable__page {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  min-height: 34px;
+  padding: var(--space-1) var(--space-2);
+  cursor: pointer;
+  background: var(--color-surface-control);
+}
+
+.jamat-remarkable__page-number {
+  color: var(--color-text-1);
+}
+
+.jamat-remarkable__current,
+.jamat-remarkable__modified {
+  padding: 1px var(--space-1);
+  font-size: var(--fs-chip);
+  color: var(--color-accent);
+  background: var(--color-surface-control-hover);
+  border-radius: var(--radius-control);
+}
+
+.jamat-remarkable__template {
+  margin-left: auto;
+  color: var(--color-text-4);
+}
+
+.jamat-remarkable__status,
+.jamat-remarkable__error,
+.jamat-remarkable__output {
+  padding: var(--space-2);
+  margin: 0;
+  border-radius: var(--radius-control);
+}
+
+.jamat-remarkable__status {
+  color: var(--color-text-3);
+  background: var(--color-surface-control);
+}
+
+.jamat-remarkable__error,
+.jamat-remarkable__output {
+  color: var(--color-text-1);
+  background: var(--color-surface-control-hover);
+  border: 1px solid var(--color-danger);
+}
+
+.jamat-remarkable__error p,
+.jamat-remarkable__output p {
+  margin: 0;
+}
+
+.jamat-remarkable__detail {
+  margin-top: var(--space-1) !important;
+  color: var(--color-text-3);
+}
+
+.jamat-remarkable__path {
+  width: 100%;
+  margin: var(--space-2) 0;
+  font-family: var(--font-mono);
+  color: var(--color-text-1);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+
+.jamat-remarkable__actions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+.jamat-remarkable__button {
+  min-height: 30px;
+  padding: 0 var(--space-3);
+  color: var(--color-text-2);
+  cursor: pointer;
+  background: var(--color-surface-control);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+
+.jamat-remarkable__button--primary {
+  color: var(--color-background);
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.jamat-remarkable__button:disabled,
+.jamat-remarkable input:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+/* Above the two columns rather than beside the finished path: a page landing somewhere other than
+   the settings say is worth reading before the download, not after the path is in the terminal. */
+.jamat-remarkable__storage-note {
+  margin: 0 0 var(--space-3);
+  font-size: var(--fs-secondary);
+  color: var(--color-attention);
+}

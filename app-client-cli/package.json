@@ -1,0 +1,19 @@
+{
+  "name": "jamat-v3-client-cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Versioned JSON CLI for the running AppJamatV3 AppClientUI control API.",
+  "scripts": {
+    "start": "tsx start.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "22.16.5",
+    "tsx": "4.22.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
+  },
+  "packageManager": "pnpm@11.15.1"
+}

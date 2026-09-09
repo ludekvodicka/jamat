@@ -1,0 +1,224 @@
+---
+title: MdExt showcase
+status: testbed
+date: 2026-08-17
+purpose: hit every branch of the renderer once
+---
+
+# MdExt showcase
+
+Tento dokument existuje proto, aby v jednom otevření prošla každá větev rendereru.
+Když se něco nevykreslí, je to nález, ne vlastnost dokumentu.
+
+::status{renderer=passing security=strict diagrams=5 html=blocked}
+
+## 1. Základní GFM
+
+Odstavec s **tučným**, *kurzívou*, ~~přeškrtnutím~~ a `inline kódem`. Za ním seznam:
+
+1. první položka
+2. druhá položka
+   - vnořená odrážka
+   - druhá vnořená
+3. třetí položka
+
+Task list:
+
+- [x] hotová položka
+- [ ] nehotová položka
+- [ ] druhá nehotová
+
+> Citace přes dva řádky.
+> Druhý řádek citace.
+
+Tabulka se zarovnáním:
+
+| Sloupec vlevo | Na střed | Vpravo |
+|:---|:---:|---:|
+| text | ano | 42 |
+| delší text | ne | 1024 |
+| poslední | ano | 7 |
+
+---
+
+## 2. Callouty, čipy a sbalovačka
+
+:::note
+Poznámka bez vlastního titulku. Tělo je plný markdown: `kód`, **tučné**, [odkaz](#3-kód).
+:::
+
+:::tip[Vlastní titulek]
+Titulek v hranatých závorkách přebíjí výchozí jméno calloutu.
+:::
+
+:::warning[Pozor na tohle]
+Varování s odrážkami:
+
+- první důvod
+- druhý důvod
+:::
+
+:::danger
+Nebezpečí. Čtvrtá barva.
+:::
+
+:::important
+Důležité. Pátá barva.
+:::
+
+Čipy ve všech čtyřech tónech:
+
+::status{build=passing review=pending release=blocked owner=jamat}
+
+:::details[Dlouhý obsah za kliknutím]
+Tohle je vidět až po rozbalení.
+
+```json
+{ "collapsed": true, "reason": "keeps the page short" }
+```
+:::
+
+:::unknown-directive
+Neznámá direktiva se vykreslí jako obyčejný blok. Žádná chyba, žádné zdobení.
+:::
+
+---
+
+## 3. Kód
+
+TypeScript:
+
+```ts
+export class Greeter {
+  private static readonly prefixConst = 'hello'
+
+  static greet(name: string): string {
+    return `${Greeter.prefixConst}, ${name}`
+  }
+}
+```
+
+Python:
+
+```python
+def fib(limit: int) -> list[int]:
+    values = [0, 1]
+    while values[-1] < limit:
+        values.append(values[-1] + values[-2])
+    return values
+```
+
+SQL:
+
+```sql
+SELECT project_id, count(*) AS sessions
+FROM session_records
+WHERE created_at > now() - interval '7 days'
+GROUP BY project_id
+ORDER BY sessions DESC;
+```
+
+Bash:
+
+```bash
+pnpm dev:testbed --force
+pnpm smoke:file-viewer
+```
+
+Fence bez jazyka zůstane blok, jen bez zvýraznění:
+
+```
+plain block, no highlighting
+second line
+```
+
+Neznámý jazyk spadne na plain text:
+
+```klingon
+tlhIngan Hol vIjatlh
+```
+
+---
+
+## 4. Odkazy, obrázky a bezpečnost
+
+- externí odkaz: [vega-lite](https://vega.github.io/vega-lite/) se otevře až na klik
+- kotva: [zpět na kód](#3-kód)
+- relativní odkaz: [plain.md](./plain.md)
+- **nebezpečný odkaz musí být mrtvý**: [javascript:alert(1)](javascript:alert&#40;1&#41;)
+
+Relativní obrázek z grantu dokumentu:
+
+![logo testbedu](../assets/logo.png)
+
+Raw HTML se nevykresluje. Následující tři řádky musí zůstat textem nebo zmizet, nikdy se nesmí
+provést ani naformátovat:
+
+<script>alert('this must never run')</script>
+<b>tohle nesmí být tučné</b>
+<img src="x" onerror="alert('xss')">
+
+---
+
+## 5. Diagramy
+
+### Mermaid
+
+```mermaid
+graph TD
+  A[Session start] --> B{Git nebo SVN?}
+  B -->|git| C[HEAD baseline]
+  B -->|svn| D[BASE baseline]
+  C --> E[FileDiffData]
+  D --> E
+  E --> F[Renderer kreslí hunky]
+```
+
+### Graphviz
+
+```dot
+digraph fileviewer {
+  rankdir=LR;
+  node [shape=box, style=rounded];
+  grant [label="Grant store"];
+  reader [label="Content reader"];
+  registry [label="Format registry"];
+  panel [label="FileViewer panel"];
+  grant -> reader -> registry -> panel;
+  grant -> panel [style=dashed, label="entryId"];
+}
+```
+
+### Vega-Lite
+
+```vega-lite
+{
+  "mark": "bar",
+  "data": { "values": [
+    { "kind": "markdown", "files": 4 },
+    { "kind": "code", "files": 6 },
+    { "kind": "image", "files": 5 },
+    { "kind": "video", "files": 2 },
+    { "kind": "hex", "files": 4 }
+  ] },
+  "encoding": {
+    "x": { "field": "kind", "type": "nominal", "title": "druh dokumentu" },
+    "y": { "field": "files", "type": "quantitative", "title": "souborů v testbedu" }
+  }
+}
+```
+
+### Ruční SVG
+
+```svg
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 96" width="320" height="96" font-family="system-ui">
+  <rect x="1" y="1" width="318" height="94" rx="12" fill="#0d1117" stroke="#2d333b"/>
+  <text x="20" y="32" fill="#e6edf3" font-size="13" font-weight="700">Grant TTL</text>
+  <rect x="20" y="46" width="280" height="10" rx="5" fill="#21262d"/>
+  <rect x="20" y="46" width="196" height="10" rx="5" fill="#4ade80"/>
+  <text x="20" y="78" fill="#8b949e" font-size="12" font-family="ui-monospace,monospace">2 h klouzavě</text>
+</svg>
+```
+
+Pět rodin archify má vlastní dokument: [archify.mdext](./archify.mdext).
+Záměrně rozbité vstupy jsou v [broken.mdext](./broken.mdext).

@@ -1,0 +1,8 @@
+{"timestamp":"2026-08-14T08:00:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>ignored</environment_context>"}]}}
+{"timestamp":"2026-08-14T08:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Change files"}]}}
+{"timestamp":"2026-08-14T08:00:01.100Z","type":"event_msg","payload":{"type":"user_message","message":"Change files"}}
+{"timestamp":"2026-08-14T08:00:02.000Z","type":"event_msg","payload":{"type":"patch_apply_end","call_id":"patch-one","success":true,"changes":{"Q:/Project/src/file.ts":{"type":"update","unified_diff":"@@ -1 +1 @@\n-old\n+new\n","move_path":null},"Q:/External/new.txt":{"type":"add","content":"new\n"}}}}
+{"timestamp":"2026-08-14T08:00:03.000Z","type":"event_msg","payload":{"type":"patch_apply_end","call_id":"patch-failed","success":false,"changes":{"Q:/External/fail.txt":{"type":"add","content":"bad"}}}}
+{"timestamp":"2026-08-14T08:01:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Move it"}]}}
+{"timestamp":"2026-08-14T08:01:01.000Z","type":"response_item","payload":{"type":"reasoning"}}
+{"timestamp":"2026-08-14T08:01:02.000Z","type":"event_msg","payload":{"type":"patch_apply_end","call_id":"patch-two","success":true,"changes":{"Q:/External/new.txt":{"type":"update","unified_diff":"@@ -1 +1 @@\n-new\n+moved\n","move_path":"Q:/External/moved.txt"}}}}

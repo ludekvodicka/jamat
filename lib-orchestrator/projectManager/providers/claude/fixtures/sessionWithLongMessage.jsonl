@@ -1,0 +1,2 @@
+{"type":"summary","sessionId":"44444444-4444-4444-8444-444444444444"}
+{"type":"user","sessionId":"44444444-4444-4444-8444-444444444444","message":{"content":[{"type":"image","source":{"type":"base64"}},{"type":"text","text":"Port the Claude session driver into lib-orchestrator, keeping the encoding, the caps and the pid check exactly as V1 wrote them."}]}}

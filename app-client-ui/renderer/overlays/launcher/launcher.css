@@ -1,0 +1,224 @@
+/* Fixed to the viewport rather than to the shell column: the overlay covers the status bar and both
+   sidebars, which a flow-positioned surface inside .jamat-shell__body cannot reach. */
+.jamat-launcher {
+  position: fixed;
+  inset: 0;
+  /* High enough to clear dockview's own layers: .jamat-shell__workspace is position:relative with
+     z-index auto, so it opens no stacking context that would scope them below this one. */
+  z-index: 1000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 6vh;
+  background: var(--color-scrim);
+}
+.jamat-launcher__card {
+  display: flex;
+  flex-direction: column;
+  width: min(1180px, 94vw);
+  max-height: 88vh;
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-surface);
+  box-shadow: var(--shadow-overlay);
+  overflow: hidden;
+}
+.jamat-launcher__card--wide {
+  width: min(1440px, 97vw);
+}
+/* The card takes focus on open, and an outline on a surface nobody tabbed to reads as an error. */
+.jamat-launcher__card:focus {
+  outline: none;
+}
+.jamat-launcher__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface-control);
+  border-bottom: 1px solid var(--color-border-hairline);
+}
+.jamat-launcher__title {
+  flex: 1;
+  font-weight: 600;
+  color: var(--color-text-1);
+}
+.jamat-launcher__close {
+  padding: 0 var(--space-1);
+  font-size: var(--fs-title);
+  line-height: 1;
+  color: var(--color-text-4);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.jamat-launcher__close:hover {
+  color: var(--color-text-1);
+}
+.jamat-launcher__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.jamat-launcher__foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--fs-status);
+  color: var(--color-text-4);
+  background: var(--color-surface-control);
+  border-top: 1px solid var(--color-border-hairline);
+}
+.jamat-launcher__key {
+  color: var(--color-text-2);
+}
+/* A hint that names an action is that action. It has to look pressable without becoming a row of
+   buttons: the line is a legend first, so the affordance is the hover rather than a border. */
+.jamat-launcher__foot-key {
+  padding: 0;
+  font: inherit;
+  font-size: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.jamat-launcher__foot-key:hover {
+  color: var(--color-text-2);
+  background: var(--color-surface-control-hover);
+  box-shadow: 0 0 0 3px var(--color-surface-control-hover);
+}
+
+/* ------------------------------------------------------------------------------------------------
+   Below here: what MORE THAN ONE screen draws, under the overlay's own name.
+   The architecture document says each screen carries its own stylesheet so deleting a screen deletes
+   its style with it, and that was only true of the screen that happened to define a class first: the
+   history screen was drawn by nine `jamat-launcher-projects__*` classes and the flow screen by four
+   of the create screen's, so deleting either owner would have silently restyled a screen that has
+   nothing to do with it. Anything a second screen needs comes here instead, and a screen's own sheet
+   holds only what that screen alone draws.
+   ------------------------------------------------------------------------------------------------ */
+
+.jamat-launcher__error {
+  margin: 0 var(--space-3) var(--space-2);
+  font-size: var(--fs-secondary);
+  color: var(--color-danger);
+}
+.jamat-launcher__note {
+  margin: 0 var(--space-3) var(--space-2);
+  font-size: var(--fs-status);
+  color: var(--color-text-4);
+}
+/* A grid rather than a flex row, so every kind of row lands in the same columns without counting
+   spacers: a folder puts its project count where a project puts its session count, and the rows
+   that carry nothing but a name simply leave the rest of the columns empty.
+   **Every trailing column is a fixed width, including the last.** Each row is its own grid - they
+   are separate elements with the manage actions able to sit between them - so nothing sizes a column
+   across rows. Fixed trailing widths keep the counts, activity time and agent mark aligned when a
+   folder or tail row leaves some of them empty. */
+.jamat-launcher__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 92px 92px 16px;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 5px var(--space-2);
+  border-left: 2px solid transparent;
+  border-radius: var(--radius-control);
+  cursor: default;
+}
+.jamat-launcher__row--selected {
+  background: var(--color-surface-control);
+  border-left-color: var(--color-accent);
+}
+.jamat-launcher__name {
+  overflow: hidden;
+  color: var(--color-text-1);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Left, not right: the numbers vary in width, so a right edge lines up the ends of "1 session" and
+   "38 projects" and leaves their beginnings ragged. Reading down a column is reading the first
+   character of each row.
+   It clips like the name beside it, because a grid track is a fixed width and a value too long for
+   one overflows it SILENTLY, drawing across whatever the next column holds. That is what an address
+   did to a session count on the computers screen. A column that is too narrow for its content is a
+   width to fix; text lying on top of other text is not something a reader can even see is wrong. */
+.jamat-launcher__meta {
+  overflow: hidden;
+  font-size: var(--fs-secondary);
+  color: var(--color-text-4);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jamat-launcher__agent {
+  width: 16px;
+  padding: 1px 0;
+  font-size: var(--fs-chip);
+  font-weight: 700;
+  text-align: center;
+  border-radius: 2px;
+}
+.jamat-launcher__agent--claude {
+  color: var(--color-warn);
+  background: var(--color-surface-control-hover);
+}
+.jamat-launcher__agent--codex {
+  color: var(--color-ok);
+  background: var(--color-surface-control-hover);
+}
+.jamat-launcher__code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-status);
+  color: var(--color-text-4);
+}
+.jamat-launcher__name--tail {
+  color: var(--color-text-3);
+}
+
+.jamat-launcher__start-button {
+  min-width: 220px;
+  padding: 5px var(--space-4);
+  font: inherit;
+  color: var(--color-text-1);
+  background: var(--color-surface-control);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.jamat-launcher__start-button:hover:enabled {
+  background: var(--color-surface-control-hover);
+}
+.jamat-launcher__start-button:disabled {
+  color: var(--color-text-5);
+  cursor: default;
+}
+/* Somebody else's commands, drawn as what they are: monospace, one per line, in the order they run.
+   The frame is the danger colour because this is the one place this shell asks to run foreign text. */
+.jamat-launcher__agreement {
+  margin: 0 var(--space-3) var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-control);
+}
+.jamat-launcher__commands {
+  margin: var(--space-1) 0 var(--space-2);
+  padding-left: var(--space-4);
+  font-family: var(--font-mono);
+  font-size: var(--fs-secondary);
+  color: var(--color-text-1);
+}
+.jamat-launcher__acknowledge {
+  padding: 3px var(--space-2);
+  font: inherit;
+  color: var(--color-text-1);
+  background: var(--color-surface-control);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.jamat-launcher__acknowledge:hover {
+  background: var(--color-surface-control-hover);
+}

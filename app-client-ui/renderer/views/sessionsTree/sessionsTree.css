@@ -1,0 +1,529 @@
+/* The sidebar is narrow and the tree is the surface the user reads all day: every row is one line,
+   nothing wraps, and what overflows is cut rather than allowed to push the actions off the edge. */
+.jamat-sessions {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  color: var(--color-text-2);
+  font-family: var(--font-ui);
+  font-size: var(--fs-secondary);
+}
+
+.jamat-sessions__head {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--color-border-hairline);
+}
+.jamat-sessions__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+.jamat-sessions__chip {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px var(--space-1);
+  font: inherit;
+  font-size: var(--fs-status);
+  color: var(--color-text-4);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.jamat-sessions__chip[aria-pressed="true"] {
+  color: var(--color-text-1);
+  background: var(--color-surface-control-hover);
+  border-color: var(--color-border-frame);
+}
+.jamat-sessions__save-filter {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.jamat-sessions__save-filter-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.jamat-sessions__filter {
+  padding: 3px var(--space-2);
+  font: inherit;
+  color: var(--color-text-1);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-sessions__filter:focus {
+  border-color: var(--color-accent-strong);
+  outline: none;
+}
+
+.jamat-sessions__body {
+  flex: 1;
+  min-height: 0;
+  padding: var(--space-1) 0;
+  overflow: auto;
+}
+/* Separated is one scrolling list with the tabs held at its foot. `min-height: 100%` is what gives
+   the column free space to hand out at all, and the heading's `margin-top: auto` below takes all of
+   it - so the sessions keep the top, the tabs keep the bottom, and nothing sits in between.
+   Two regions with a scroller each were tried and measured first. They kept the tabs on screen at
+   every length, and that is not what this panel is: the tabs are the second list, and reserving them
+   a share of the height meant either a scrolling tab list above 300 px of empty panel, or floors
+   that left a gap under a short sessions list. One scroller has neither, at the price named below. */
+.jamat-sessions__stack {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+/* And this is where it stops: once the sessions fill the panel there is no free space left to take,
+   the margin collapses to nothing, and the tabs are carried down into the scroll with everything
+   else. Reaching them then means scrolling past the sessions, which is the deliberate trade - the
+   tabs are what you go looking for, the sessions are what you read. */
+/* The heading row for a section that has an action of its own. The bottom-pushing margin lives here
+   rather than on the heading, because the heading is no longer the stack's own child. */
+.jamat-sessions__section-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding-right: var(--space-2);
+  margin-top: var(--space-2);
+}
+/* The gap above the heading belongs to the row once the row can be highlighted: left on the heading
+   it sits INSIDE the highlighted band, which would draw a strip taller than every other row's. */
+.jamat-sessions__section-row .jamat-sessions__section {
+  margin-top: 0;
+}
+/* The same fill a group row takes on hover, and not decoration. The button's own background IS
+   `--color-surface-control`, so on a group row it sinks into the row and reads as an outline, while
+   on a heading that stayed flat the identical button read as a filled chip. Same component, two
+   backdrops, was the entire difference between the two. */
+.jamat-sessions__section-row:hover {
+  background: var(--color-surface-control);
+}
+.jamat-sessions__stack > .jamat-sessions__section-row--tabs {
+  margin-top: auto;
+}
+.jamat-sessions__empty {
+  margin: 0;
+  padding: var(--space-2);
+  color: var(--color-text-5);
+}
+/* A section heading, not a node: it carries no twisty, because folding the tabs away is what the
+   footer's toggle already does and two controls for one thing is one too many. */
+.jamat-sessions__section {
+  margin: var(--space-2) 0 0;
+  padding: 0 var(--space-2);
+  font-size: var(--fs-chip);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--color-text-5);
+}
+.jamat-sessions__setup-ask {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: var(--space-2);
+  color: var(--color-text-2);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  font-size: var(--fs-status);
+}
+.jamat-sessions__setup-ask p {
+  margin: 0;
+}
+.jamat-sessions__setup-ask ul {
+  margin: 0;
+  padding-left: var(--space-4);
+}
+.jamat-sessions__setup-ask code {
+  color: var(--color-text-1);
+}
+.jamat-sessions__setup-ask-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+.jamat-sessions__setup-ask button {
+  padding: 3px 10px;
+  font: inherit;
+  color: var(--color-text-2);
+  cursor: pointer;
+  background: var(--color-surface-control-hover);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-sessions__error {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  color: var(--color-danger);
+  font-size: var(--fs-status);
+}
+.jamat-sessions__retry {
+  padding: 0;
+  font: inherit;
+  color: var(--color-accent);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+/* One indent per level, applied to the container rather than to each row, so a row that is drawn
+   two ways (a session, and the same session as somebody's install) cannot indent differently. */
+.jamat-sessions__children {
+  padding-left: var(--space-3);
+}
+/* The twisty and the launch actions are separate buttons, so the row that holds both is what carries
+   the hover, not the twisty alone. */
+.jamat-sessions__group-row {
+  display: flex;
+  align-items: center;
+}
+.jamat-sessions__group-row:hover {
+  background: var(--color-surface-control);
+}
+.jamat-sessions__group {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  font: inherit;
+  color: var(--color-text-3);
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+/* Hidden until the row is pointed at or reached by the keyboard, the same bargain the session actions
+   make: a project row is read far more often than it is launched from. */
+.jamat-sessions__group-actions {
+  display: none;
+  gap: 2px;
+  padding-right: var(--space-2);
+}
+/* Two parents reveal the same container: a category or project row, and a section heading that has
+   an action of its own. One class rather than a second copy under another name - what differs is
+   which row is being pointed at, not what appears. */
+.jamat-sessions__group-row:hover .jamat-sessions__group-actions,
+.jamat-sessions__group-row:has(:focus-visible) .jamat-sessions__group-actions,
+.jamat-sessions__section-row:hover .jamat-sessions__group-actions,
+.jamat-sessions__section-row:has(:focus-visible) .jamat-sessions__group-actions {
+  display: flex;
+}
+.jamat-sessions__twisty {
+  width: 10px;
+  color: var(--color-text-5);
+}
+.jamat-sessions__label {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.jamat-sessions__remote-status {
+  font-size: var(--fs-chip);
+  color: var(--color-text-5);
+}
+.jamat-sessions__remote-status--connected {
+  color: var(--color-ok);
+}
+.jamat-sessions__remote-status--connecting {
+  color: var(--color-attention);
+}
+
+.jamat-sessions__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-left: 2px solid transparent;
+  /* A stacking context, which is what the state tint below needs: at z-index auto its negative
+     child would paint BEHIND this row's own background and never be seen at all. */
+  position: relative;
+  z-index: 0;
+}
+.jamat-sessions__row:hover {
+  background: var(--color-surface-control);
+  border-left-color: var(--color-accent);
+}
+/* After the hover rule and at the same specificity, so a coloured row keeps its colour under the
+   pointer; the accent on the left edge is what still answers the hover. */
+.jamat-sessions__row[data-session-color='red'] { background: var(--session-color-red); }
+.jamat-sessions__row[data-session-color='orange'] { background: var(--session-color-orange); }
+.jamat-sessions__row[data-session-color='amber'] { background: var(--session-color-amber); }
+.jamat-sessions__row[data-session-color='green'] { background: var(--session-color-green); }
+.jamat-sessions__row[data-session-color='teal'] { background: var(--session-color-teal); }
+.jamat-sessions__row[data-session-color='cyan'] { background: var(--session-color-cyan); }
+.jamat-sessions__row[data-session-color='sky'] { background: var(--session-color-sky); }
+.jamat-sessions__row[data-session-color='blue'] { background: var(--session-color-blue); }
+.jamat-sessions__row[data-session-color='indigo'] { background: var(--session-color-indigo); }
+.jamat-sessions__row[data-session-color='violet'] { background: var(--session-color-violet); }
+.jamat-sessions__row[data-session-color='magenta'] { background: var(--session-color-magenta); }
+.jamat-sessions__row[data-session-color='rose'] { background: var(--session-color-rose); }
+/* The row of the session whose tab is in front: the one being worked in, told apart from the ones
+   merely listed above and below it.
+   A tint laid OVER the background rather than a background of its own, which is why it is a shadow
+   and not a colour. A background would have to beat the twelve rules above it to be seen on a
+   coloured row, and beating them means erasing the colour that session was given - two facts about
+   one row, and neither is allowed to cost the other. The left edge takes the accent the tab bar
+   draws its active tab with, so the two surfaces answer "which one" the same way. */
+.jamat-sessions__row--in-front {
+  border-left-color: var(--color-accent);
+  box-shadow: inset 0 0 0 100vmax color-mix(in srgb, var(--color-accent) 14%, transparent);
+}
+/* This row's state changed: a swell of light that fades out on its own, so a person looking
+   somewhere else catches the movement rather than the colour. Deliberately not the accent - that
+   tone means "the row you are in" two rules up, and a blink in it would read as the current row
+   moving. A neutral lift means nothing except "look here", which is the whole message.
+   It lies over every background rule above and under the text: a session's colour and the
+   current-row tint are facts about this line that a one-off blink is not allowed to erase. */
+.jamat-sessions__flash {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  pointer-events: none;
+  animation: jamat-sessions-flash 1.6s ease-in-out;
+}
+@keyframes jamat-sessions-flash {
+  0%, 100% {
+    background: transparent;
+  }
+  45% {
+    background: color-mix(in srgb, var(--color-text-1) 9%, transparent);
+  }
+}
+/* Nothing is left behind instead of a still tint: this one says "just now", so a mark that stays
+   would be a lie about every row that ever changed. */
+@media (prefers-reduced-motion: reduce) {
+  .jamat-sessions__flash {
+    animation: none;
+  }
+}
+/* A button, because clicking it opens the session's terminal. It keeps the look of the text it
+   replaced: a row of buttons drawn as buttons would read as a toolbar rather than as a list. */
+.jamat-sessions__title {
+  flex: 1;
+  overflow: hidden;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-text-1);
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.jamat-sessions__title:hover {
+  color: var(--color-accent);
+}
+.jamat-sessions__title:disabled {
+  color: var(--color-text-5);
+  cursor: default;
+}
+
+/* A glyph is a state, so it is a colour AND a shape: the two live-agent states must stay apart on
+   a screen where the colour is the first thing lost.
+
+   The colour is a PAINT rather than a glyph now - `SessionNodeState.paintOf` reads the ladder and
+   this file only turns each word into a token. That is what lets one character carry both what a
+   session is doing and whether anything on it has gone unseen, without a second mark on the row. */
+.jamat-sessions__glyph {
+  width: 12px;
+  text-align: center;
+}
+.jamat-sessions__glyph--paint-ok {
+  color: var(--color-ok);
+}
+.jamat-sessions__glyph--paint-attention {
+  color: var(--color-attention);
+}
+.jamat-sessions__glyph--paint-danger {
+  color: var(--color-danger);
+}
+.jamat-sessions__glyph--paint-accent {
+  color: var(--color-accent);
+}
+.jamat-sessions__glyph--paint-idle {
+  color: var(--color-idle);
+}
+.jamat-sessions__glyph--paint-muted {
+  color: var(--color-text-4);
+}
+
+.jamat-sessions__agent {
+  font-size: var(--fs-chip);
+  font-weight: 700;
+  color: var(--color-text-4);
+}
+.jamat-sessions__worktree {
+  display: flex;
+  gap: 3px;
+  font-size: var(--fs-chip);
+  color: var(--color-text-4);
+}
+.jamat-sessions__base {
+  padding: 0 3px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--color-background);
+  background: var(--color-attention);
+  border-radius: 2px;
+}
+.jamat-sessions__setup {
+  font-size: var(--fs-chip);
+  color: var(--color-text-4);
+}
+.jamat-sessions__setup--install-failed {
+  color: var(--color-danger);
+}
+/* A launch nothing has accepted yet: attention rather than danger, because it still lifts. */
+.jamat-sessions__launch {
+  font-size: var(--fs-chip);
+  color: var(--color-attention);
+}
+/* One word each, in the row's own voice: what happened to it, what it is, whether it is done. */
+.jamat-sessions__pill {
+  font-size: var(--fs-chip);
+  color: var(--color-text-4);
+}
+.jamat-sessions__pill--interrupted {
+  color: var(--color-danger);
+}
+/* The lost row's seen axis. Its character is spoken for by danger at the top of the ladder, so this
+   pill carries "have I looked at this" instead: loud while unseen, quiet once it has been read. */
+.jamat-sessions__pill--interrupted-seen {
+  color: var(--color-text-4);
+}
+.jamat-sessions__pill--tab {
+  color: var(--color-accent);
+}
+.jamat-sessions__pill--completed {
+  color: var(--color-text-3);
+}
+.jamat-sessions__pill--exit {
+  color: var(--color-danger);
+}
+/* The quiet end. It is the dimmest thing on the row because a session that finished is not news; the
+   red above it is, and a row says one or the other and never both. */
+.jamat-sessions__pill--exit-clean {
+  color: var(--color-text-5);
+}
+/* One word beside the install badge, in the same place and the same size: what the merge is doing. */
+.jamat-sessions__merge {
+  font-size: var(--fs-chip);
+  color: var(--color-accent);
+}
+.jamat-sessions__merge--conflict {
+  color: var(--color-attention);
+}
+.jamat-sessions__merge--merge-failed {
+  color: var(--color-danger);
+}
+/* Uncommitted work, in the slot the two dots used to sit in. As quiet as the agent mark beside it:
+   it is worth noticing while reading a row, never worth looking at first. */
+.jamat-sessions__vcs {
+  font-size: var(--fs-chip);
+  color: var(--color-text-4);
+}
+
+/* Shown on hover or keyboard focus: the row is read far more often than it is acted on, and three
+   buttons on every line of a full tree is a wall of controls. An armed confirmation stays visible
+   after its context menu closes, because hiding the promised second step makes the first look inert.
+
+   `:has(:focus-visible)` and not `:focus-within`, which is what this was: a MOUSE click on the row's
+   title leaves focus sitting there, so the buttons stayed pinned to whatever row was clicked last
+   while the pointer was somewhere else entirely - a selection nobody made and nothing would clear.
+   `:focus-visible` is the browser's own answer to "was this focus reached by keyboard", so tabbing
+   still reveals them and clicking no longer does. */
+.jamat-sessions__actions {
+  display: none;
+  gap: 2px;
+}
+.jamat-sessions__row:hover .jamat-sessions__actions,
+.jamat-sessions__row:has(:focus-visible) .jamat-sessions__actions,
+.jamat-sessions__row--confirming .jamat-sessions__actions {
+  display: flex;
+}
+/* And the exit goes as the actions arrive, under the same conditions. It is the one thing on the
+   row that sits where the buttons land and cannot be clicked, so a pointer heading for Remove reads
+   a word that does not answer it. What it says is worth reading while the row is at rest; once the
+   row is being acted on, the buttons are the answer. */
+.jamat-sessions__row:hover .jamat-sessions__exit,
+.jamat-sessions__row:has(:focus-visible) .jamat-sessions__exit,
+.jamat-sessions__row--confirming .jamat-sessions__exit {
+  display: none;
+}
+.jamat-sessions__action {
+  padding: 0 var(--space-1);
+  font: inherit;
+  font-size: var(--fs-chip);
+  color: var(--color-text-3);
+  background: var(--color-surface-control);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+/* The armed step of a two-click action reads as the question it is, not as the same button again. */
+.jamat-sessions__action--armed {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+
+/* A row, with the orphans on the left growing downward as they open and the toggle pinned to the
+   right by its own margin - `justify-content` would not hold it there on the far more common footer
+   that has nothing else in it at all. */
+.jamat-sessions__foot {
+  display: flex;
+  flex: none;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-top: 1px solid var(--color-border-hairline);
+  font-size: var(--fs-status);
+  color: var(--color-text-4);
+}
+.jamat-sessions__view-toggle {
+  margin-left: auto;
+}
+.jamat-sessions__filter-toggle[data-active="true"] {
+  color: var(--color-accent);
+  border-color: var(--color-accent-strong);
+}
+.jamat-sessions__foot-button {
+  padding: 0 var(--space-1);
+  font: inherit;
+  color: var(--color-text-2);
+  background: var(--color-surface-control);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.jamat-sessions__orphan {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding-left: var(--space-2);
+}
+.jamat-sessions__orphan-id {
+  flex: 1;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}

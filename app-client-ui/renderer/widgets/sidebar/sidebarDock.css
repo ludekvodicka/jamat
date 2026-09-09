@@ -1,0 +1,100 @@
+/* flex:none plus an inline width: the width is a number in TypeScript, because the clamp that
+   guards it has to run in the state rules, and a second copy in CSS would be a second answer. */
+.jamat-sidebar {
+  position: relative;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--color-surface-sunken);
+}
+/* The closed state. `display: none` and not a zero width, so the surface takes no space and its
+   content is not asked to lay itself out at 0px - the same way dockview hides a panel it keeps. */
+.jamat-sidebar--hidden {
+  display: none;
+}
+.jamat-sidebar--left {
+  border-right: 1px solid var(--color-border-hairline);
+}
+.jamat-sidebar--right {
+  border-left: 1px solid var(--color-border-hairline);
+}
+.jamat-sidebar__header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  height: var(--size-sidebar-header);
+  padding: 0 var(--space-1) 0 var(--space-2);
+  border-bottom: 1px solid var(--color-border-hairline);
+}
+.jamat-sidebar__title {
+  /* Takes the slack, so the view's action sits beside the close rather than beside the title. */
+  flex: 1;
+  overflow: hidden;
+  color: var(--color-text-4);
+  font-size: var(--fs-status);
+  letter-spacing: 0.04em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+/* The one verb a view puts on this line. Quieter than the buttons in the body: it is a header. */
+.jamat-sidebar__action {
+  flex: none;
+  padding: 2px var(--space-2);
+  font: inherit;
+  font-size: var(--fs-status);
+  color: var(--color-text-3);
+  cursor: pointer;
+  background: var(--color-surface-control);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-sidebar__action:hover {
+  color: var(--color-text-1);
+  background: var(--color-surface-control-hover);
+}
+.jamat-sidebar__close {
+  flex: none;
+  padding: 0 var(--space-1);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-text-5);
+  font-family: inherit;
+  font-size: var(--fs-base);
+  line-height: 1;
+  cursor: pointer;
+}
+.jamat-sidebar__close:hover {
+  background: var(--color-surface-control-hover);
+  color: var(--color-text-1);
+}
+/* min-height:0 is what makes the body scroll instead of pushing the header out of the surface. */
+.jamat-sidebar__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+/* On the inner edge of each side, so both splitters face the workspace they resize against. */
+.jamat-sidebar__splitter {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: var(--size-splitter);
+  cursor: col-resize;
+  touch-action: none;
+}
+.jamat-sidebar--left .jamat-sidebar__splitter {
+  right: 0;
+}
+.jamat-sidebar--right .jamat-sidebar__splitter {
+  left: 0;
+}
+.jamat-sidebar__splitter:hover,
+.jamat-sidebar__splitter:focus-visible {
+  outline: none;
+  background: var(--color-accent-strong);
+}

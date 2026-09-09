@@ -1,0 +1,39 @@
+/* The tab holds two sections, each with its own writer and its own Save. What separates them and
+   how they are laid out is configuration.css: they are ordinary sections, like every other screen's.
+   What stays here is what only this section draws. */
+.jamat-configuration-versioning__note {
+  margin: 0;
+  color: var(--color-text-5);
+}
+.jamat-configuration-versioning__row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+.jamat-configuration-versioning__heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  color: var(--color-text-1);
+}
+.jamat-configuration-versioning__heading span {
+  font-size: var(--fs-secondary);
+  color: var(--color-text-4);
+}
+.jamat-configuration-versioning select,
+.jamat-configuration-versioning button {
+  padding: 3px 10px;
+  font: inherit;
+  color: var(--color-text-2);
+  background: var(--color-surface-control-hover);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-configuration-versioning button {
+  cursor: pointer;
+}
+.jamat-configuration-versioning button:disabled {
+  color: var(--color-text-5);
+  cursor: default;
+}

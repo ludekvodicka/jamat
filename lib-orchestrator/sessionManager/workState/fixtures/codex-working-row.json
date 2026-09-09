@@ -1,0 +1,18 @@
+{
+  "agent": "codex",
+  "expected": {
+    "hint": "working"
+  },
+  "provenance": {
+    "origin": "AppJamat (V1) core/agents/codex/fixtures/work-detection.json",
+    "case": "working screenshot",
+    "capture": "transcribed from a screenshot of a live Codex TUI for the V1 corpus, then sanitized (the V1 case is named after it)",
+    "ported": "rawTail, screenTail and wideScreenTail copied byte for byte from the V1 case; nothing was written for this tree. The V1 `phase` field is dropped: frames here carry no phase.",
+    "identical": "AppJamatV2 core/agents/*/fixtures/work-detection.json holds the same corpus byte for byte"
+  },
+  "frame": {
+    "rawTail": "\u001b[2K› Working (14m 34s • esc to interrupt)\r",
+    "screenTail": "› Working (14m 34s • esc to interrupt)\n\ngpt-5.6-sol max · C:\\projects\\demo-app",
+    "wideScreenTail": "› Working (14m 34s • esc to interrupt)\n\ngpt-5.6-sol max · C:\\projects\\demo-app"
+  }
+}

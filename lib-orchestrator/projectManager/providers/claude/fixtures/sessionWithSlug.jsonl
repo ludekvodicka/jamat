@@ -1,0 +1,3 @@
+{"type":"summary","sessionId":"22222222-2222-4222-8222-222222222222","slug":"catalog-store-review"}
+{"type":"user","sessionId":"22222222-2222-4222-8222-222222222222","message":{"content":"Fix the catalog latch"}}
+{"type":"assistant","sessionId":"22222222-2222-4222-8222-222222222222","message":{"content":[{"type":"text","text":"On it."}]}}

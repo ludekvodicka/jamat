@@ -1,0 +1,6 @@
+{"timestamp":"2026-07-10T14:19:12.019Z","type":"session_meta","payload":{"id":"019f4bf7-b5d8-74b0-9175-a5a5938a4082","timestamp":"2026-07-10T14:19:12.019Z","cwd":"Q:/Projects/AppFixture","originator":"codex_cli_rs","cli_version":"0.44.0","instructions":null}}
+{"timestamp":"2026-07-10T14:19:12.120Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>Q:/Projects/AppFixture</cwd>\n  <shell>pwsh</shell>\n</environment_context>"}]}}
+{"timestamp":"2026-07-10T14:19:12.140Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<user_instructions>\nAlways answer in English.\n</user_instructions>"}]}}
+{"timestamp":"2026-07-10T14:19:12.160Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for Q:/Projects/AppFixture\n<INSTRUCTIONS>\nBe terse.\n</INSTRUCTIONS>"}]}}
+{"timestamp":"2026-07-10T14:19:30.400Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Refactor the rollout index"}]}}
+{"timestamp":"2026-07-10T14:19:35.900Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Looking at it now."}]}}

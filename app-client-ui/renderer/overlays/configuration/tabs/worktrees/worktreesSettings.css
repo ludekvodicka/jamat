@@ -1,0 +1,97 @@
+.jamat-configuration-worktrees {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.jamat-configuration-worktrees__note {
+  margin: 0;
+  font-size: var(--fs-secondary);
+  color: var(--color-text-4);
+}
+.jamat-configuration-worktrees__tiers {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: 0;
+  margin: 0;
+  list-style: none;
+  counter-reset: tier;
+}
+.jamat-configuration-worktrees__tiers li {
+  display: flex;
+  gap: var(--space-2);
+  color: var(--color-text-2);
+}
+.jamat-configuration-worktrees__tiers li::before {
+  color: var(--color-text-5);
+  content: counter(tier);
+  counter-increment: tier;
+}
+.jamat-configuration-worktrees__tiers span {
+  font-size: var(--fs-secondary);
+  color: var(--color-text-4);
+}
+/* Wide content scrolls inside its own box rather than widening the settings pane. */
+.jamat-configuration-worktrees__families {
+  overflow-x: auto;
+}
+.jamat-configuration-worktrees__families table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.jamat-configuration-worktrees__families th,
+.jamat-configuration-worktrees__families td {
+  padding: 2px var(--space-2) 2px 0;
+  text-align: left;
+  white-space: nowrap;
+}
+.jamat-configuration-worktrees__families th {
+  font-size: var(--fs-secondary);
+  font-weight: 500;
+  color: var(--color-text-5);
+}
+.jamat-configuration-worktrees__families td {
+  color: var(--color-text-2);
+}
+.jamat-configuration-worktrees__families code {
+  color: var(--color-text-1);
+}
+.jamat-configuration-worktrees__row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.jamat-configuration-worktrees__row label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  color: var(--color-text-1);
+}
+.jamat-configuration-worktrees__row label span {
+  font-size: var(--fs-secondary);
+  color: var(--color-text-4);
+}
+.jamat-configuration-worktrees button {
+  padding: 3px 10px;
+  font: inherit;
+  color: var(--color-text-2);
+  cursor: pointer;
+  background: var(--color-surface-control-hover);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-configuration-worktrees button:disabled {
+  color: var(--color-text-5);
+  cursor: default;
+}
+.jamat-configuration-worktrees__setup {
+  width: 100%;
+  padding: var(--space-2);
+  font: inherit;
+  font-family: var(--font-mono, monospace);
+  color: var(--color-text-1);
+  resize: vertical;
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}

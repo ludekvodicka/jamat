@@ -1,0 +1,30 @@
+.jamat-boundary {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  color: var(--color-danger);
+  font-size: var(--fs-status);
+}
+
+/* The message is what a report has to carry, so it wraps rather than being cut to one line. */
+.jamat-boundary__message {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.jamat-boundary__retry {
+  padding: var(--space-1) var(--space-2);
+  font: inherit;
+  color: var(--color-accent);
+  background: var(--color-surface-control);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+
+.jamat-boundary__retry:hover {
+  background: var(--color-surface-control-hover);
+}

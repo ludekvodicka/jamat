@@ -1,0 +1,120 @@
+.jamat-configuration-remarkable {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+/* The row shape every other configuration tab uses: heading left, controls right, one line each. */
+.jamat-configuration-remarkable__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+.jamat-configuration-remarkable__heading {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-1);
+  color: var(--color-text-1);
+}
+.jamat-configuration-remarkable__title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.jamat-configuration-remarkable__number {
+  font-size: var(--fs-status);
+  color: var(--color-text-5);
+}
+/* Right edge of every row, one fixed column so the marks line up; empty on a plain setting. */
+.jamat-configuration-remarkable__status {
+  width: 1.2em;
+  flex: none;
+  text-align: center;
+}
+.jamat-configuration-remarkable__status--done {
+  color: var(--color-ok);
+  cursor: help;
+}
+.jamat-configuration-remarkable__status--todo {
+  color: var(--color-attention);
+  cursor: help;
+}
+.jamat-configuration-remarkable__note,
+.jamat-configuration-remarkable__loading,
+.jamat-configuration-remarkable__footnote {
+  margin: 0;
+  font-size: var(--fs-secondary);
+}
+.jamat-configuration-remarkable__note--hint,
+.jamat-configuration-remarkable__loading {
+  color: var(--color-text-4);
+}
+.jamat-configuration-remarkable__note--attention {
+  color: var(--color-attention);
+}
+.jamat-configuration-remarkable__note--ok {
+  color: var(--color-ok);
+}
+.jamat-configuration-remarkable__note--bad {
+  color: var(--color-danger);
+}
+.jamat-configuration-remarkable__footnote {
+  color: var(--color-text-5);
+}
+/* Takes the whole gap between the heading and the mark, so one button ends up at the right edge
+   too. With the row on space-between instead, three children put the controls in the middle. */
+.jamat-configuration-remarkable__control {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+.jamat-configuration-remarkable__input,
+.jamat-configuration-remarkable__timeout {
+  padding: var(--space-1) var(--space-2);
+  font: inherit;
+  color: var(--color-text-1);
+  background: var(--color-surface-control);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-configuration-remarkable__input {
+  width: 220px;
+}
+.jamat-configuration-remarkable__fingerprint {
+  width: 320px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-status);
+}
+.jamat-configuration-remarkable__timeout {
+  width: 120px;
+}
+.jamat-configuration-remarkable__input:focus-visible,
+.jamat-configuration-remarkable__timeout:focus-visible {
+  outline: 1px solid var(--color-accent-strong);
+  outline-offset: 2px;
+}
+.jamat-configuration-remarkable__input:disabled,
+.jamat-configuration-remarkable__timeout:disabled {
+  color: var(--color-text-5);
+}
+/* Transient: it appears under the fingerprint row only while a detected value waits to be used. */
+.jamat-configuration-remarkable__candidate {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text-2);
+}
+.jamat-configuration-remarkable__candidate code {
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--fs-status);
+  color: var(--color-text-1);
+}
+.jamat-configuration-remarkable__candidate span {
+  font-size: var(--fs-secondary);
+  color: var(--color-text-4);
+}

@@ -1,0 +1,236 @@
+/* The tab strip and the empty-workspace watermark. Dockview ships its own dark theme in hex; the
+   block below rebinds the handful of surfaces the shell is visible through to our tokens, so the
+   dock and the rest of the window are one colour scheme rather than two. */
+.dockview-theme-dark {
+  --dv-group-view-background-color: var(--color-background);
+  --dv-tabs-and-actions-container-background-color: var(--color-surface-sunken);
+  --dv-tabs-and-actions-container-height: 30px;
+  --dv-tabs-and-actions-container-font-size: var(--fs-secondary);
+  --dv-tab-divider-color: var(--color-border-hairline);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--color-background);
+  --dv-activegroup-visiblepanel-tab-color: var(--color-text-1);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--color-surface-sunken);
+  --dv-activegroup-hiddenpanel-tab-color: var(--color-text-4);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--color-surface-raised);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--color-text-3);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--color-surface-sunken);
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--color-text-5);
+  --dv-separator-border: var(--color-border-frame);
+  --dv-sash-color: var(--color-border-hairline);
+  --dv-active-sash-color: var(--color-accent-strong);
+  --dv-drag-over-background-color: var(--color-surface-control-hover);
+  --dv-drag-over-border-color: var(--color-accent);
+  --dv-icon-hover-background-color: var(--color-surface-control-hover);
+  --dv-scrollbar-background-color: var(--color-border-frame);
+  --dv-tabs-container-scrollbar-color: var(--color-border-frame);
+}
+
+.jamat-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  /* The tree's row gap, and for the same reason: a mark belongs to the title beside it, so it sits
+     against it rather than floating in a column of its own. */
+  gap: var(--space-1);
+  min-width: 0;
+  height: 100%;
+  padding: 0 var(--space-1) 0 var(--space-2);
+  font-family: var(--font-ui);
+}
+.jamat-tab__title {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The tab the tree opened for a look, which the next look reuses. Italic and nothing else: it is a
+   statement about how long the tab lasts, not a state of the session, so it stays out of the slots
+   and off the colour. */
+.jamat-tab.is-preview .jamat-tab__title {
+  font-style: italic;
+}
+/* The two signal slots. An empty one is COLLAPSED, so the state mark sits against the title the way
+   it does on a tree row rather than across a column of reserved air. That column was reserved to
+   keep every title on one axis, and the price it charged - a fixed 12px on every tab, for ever - was
+   larger than the thing it bought: the title now shifts once when the second slot fills, which in
+   practice is the `connecting` mark clearing shortly after a tab opens. */
+.jamat-tab__signals {
+  display: flex;
+  flex: none;
+  align-items: center;
+}
+.jamat-tab__signal.is-empty {
+  display: none;
+}
+.jamat-tab__signal {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-3);
+  font-size: var(--fs-chip);
+  line-height: 1;
+}
+/* A mark, not a chip. The one badge that exists is the `*` for uncommitted work, and the sessions
+   tree draws that same star as bare text: a box around it here made the two surfaces disagree about
+   one fact, and boxed a character that is already a symbol. A badge that ever carries a WORD can
+   earn its border back on the day it exists. */
+.jamat-tab__badge {
+  flex: none;
+  font-size: var(--fs-chip);
+  font-weight: 600;
+}
+/* The one place a tone becomes a colour, for both the glyphs and the badges. */
+.jamat-tab__signal[data-tone='ok'],
+.jamat-tab__badge[data-tone='ok'] {
+  color: var(--color-ok);
+}
+.jamat-tab__signal[data-tone='attention'],
+.jamat-tab__badge[data-tone='attention'] {
+  color: var(--color-attention);
+}
+.jamat-tab__signal[data-tone='danger'],
+.jamat-tab__badge[data-tone='danger'] {
+  color: var(--color-danger);
+}
+.jamat-tab__signal[data-tone='accent'],
+.jamat-tab__badge[data-tone='accent'] {
+  color: var(--color-accent);
+}
+.jamat-tab__signal[data-tone='idle'],
+.jamat-tab__badge[data-tone='idle'] {
+  color: var(--color-idle);
+}
+.jamat-tab__signal[data-tone='muted'],
+.jamat-tab__badge[data-tone='muted'] {
+  color: var(--color-text-5);
+}
+/* Bleed through dockview's tab padding so the line reaches the real top edge and full width. The
+   top distinguishes it from the panel border below.
+   In px rather than rem, which is what these three were until the UI scale arrived: the padding
+   they cancel is dockview's own and is fixed, while app.css puts the root font size on --fs-base,
+   so a rem here would grow with the scale and slide the line off the edge it is drawn to. The
+   numbers are today's rem at 13px - 0.25rem = 3.25px, 0.5rem = 6.5px. */
+.jamat-tab.is-active::after {
+  position: absolute;
+  top: -3.25px;
+  right: -6.5px;
+  left: -6.5px;
+  height: 2px;
+  background: var(--color-accent);
+  content: '';
+}
+/* The session's colour, painted with the same px bleed as the line above so it fills dockview's
+   padding rather than leaving a frame of shell around a coloured tab. Behind the content, which is
+   what -1 buys; the tab itself has no background of its own to cover it. */
+.jamat-tab[data-session-color]::before {
+  position: absolute;
+  z-index: -1;
+  top: -3.25px;
+  right: -6.5px;
+  bottom: -3.25px;
+  left: -6.5px;
+  background: var(--session-color);
+  content: '';
+}
+/* The line takes the light family of the same name: the background tone is invisible at 2px. */
+.jamat-tab.is-active[data-session-color]::after {
+  background: var(--session-line);
+}
+.jamat-tab[data-session-color='red'] {
+  --session-color: var(--session-color-red);
+  --session-line: var(--session-line-red);
+}
+.jamat-tab[data-session-color='orange'] {
+  --session-color: var(--session-color-orange);
+  --session-line: var(--session-line-orange);
+}
+.jamat-tab[data-session-color='amber'] {
+  --session-color: var(--session-color-amber);
+  --session-line: var(--session-line-amber);
+}
+.jamat-tab[data-session-color='green'] {
+  --session-color: var(--session-color-green);
+  --session-line: var(--session-line-green);
+}
+.jamat-tab[data-session-color='teal'] {
+  --session-color: var(--session-color-teal);
+  --session-line: var(--session-line-teal);
+}
+.jamat-tab[data-session-color='cyan'] {
+  --session-color: var(--session-color-cyan);
+  --session-line: var(--session-line-cyan);
+}
+.jamat-tab[data-session-color='sky'] {
+  --session-color: var(--session-color-sky);
+  --session-line: var(--session-line-sky);
+}
+.jamat-tab[data-session-color='blue'] {
+  --session-color: var(--session-color-blue);
+  --session-line: var(--session-line-blue);
+}
+.jamat-tab[data-session-color='indigo'] {
+  --session-color: var(--session-color-indigo);
+  --session-line: var(--session-line-indigo);
+}
+.jamat-tab[data-session-color='violet'] {
+  --session-color: var(--session-color-violet);
+  --session-line: var(--session-line-violet);
+}
+.jamat-tab[data-session-color='magenta'] {
+  --session-color: var(--session-color-magenta);
+  --session-line: var(--session-line-magenta);
+}
+.jamat-tab[data-session-color='rose'] {
+  --session-color: var(--session-color-rose);
+  --session-line: var(--session-line-rose);
+}
+.jamat-tab__close {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: inherit;
+  font-size: var(--fs-base);
+  line-height: 1;
+  cursor: pointer;
+}
+.jamat-tab__close:hover {
+  background: var(--color-surface-control-hover);
+  color: var(--color-text-1);
+}
+
+.jamat-watermark {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background: var(--color-background);
+}
+.jamat-watermark__text {
+  color: var(--color-text-5);
+  font-size: var(--fs-secondary);
+}
+.jamat-watermark__button {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-control);
+  color: var(--color-text-2);
+  font-family: var(--font-ui);
+  font-size: var(--fs-secondary);
+  cursor: pointer;
+}
+.jamat-watermark__button:hover {
+  background: var(--color-surface-control-hover);
+  color: var(--color-text-1);
+}

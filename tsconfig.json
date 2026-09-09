@@ -4,26 +4,24 @@
     "module": "ES2022",
     "moduleResolution": "bundler",
     "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "declaration": true,
-    "declarationMap": true,
     "sourceMap": true,
     "types": ["node"],
-    "outDir": "out",
+    "noEmit": true,
     "rootDir": "."
   },
   "include": [
-    "core/**/*",
-    "app-cli/**/*",
-    "app-agent/**/*",
     "scripts/**/*"
   ],
   "exclude": [
     "node_modules",
-    "out",
-    "app-electron"
+    "app-host",
+    "app-client-ui",
+    "app-client-cli"
   ]
 }

@@ -1,0 +1,6 @@
+{"type":"user","uuid":"message-one","timestamp":"2026-08-14T08:00:00.000Z","message":{"content":"Change both files"}}
+{"type":"assistant","timestamp":"2026-08-14T08:00:01.000Z","message":{"content":[{"type":"tool_use","id":"edit-ok","name":"Edit","input":{"file_path":"Q:/Project/src/file.ts","old_string":"old","new_string":"new","replace_all":false}},{"type":"tool_use","id":"write-failed","name":"Write","input":{"file_path":"Q:/External/fail.txt","content":"bad"}}]}}
+{"type":"user","timestamp":"2026-08-14T08:00:02.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"edit-ok","content":"done"},{"type":"tool_result","tool_use_id":"write-failed","content":"failed","is_error":true}]}}
+{"type":"user","uuid":"message-two","timestamp":"2026-08-14T08:01:00.000Z","message":{"content":"Write outside"}}
+{"type":"assistant","timestamp":"2026-08-14T08:01:01.000Z","message":{"content":[{"type":"tool_use","id":"write-ok","name":"Write","input":{"file_path":"Q:/External/new.txt","content":"content"}}]}}
+{"type":"user","timestamp":"2026-08-14T08:01:02.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"write-ok","content":"done"}]}}

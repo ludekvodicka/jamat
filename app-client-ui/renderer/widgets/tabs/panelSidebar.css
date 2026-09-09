@@ -1,0 +1,10 @@
+.jamat-panel-sidebar {
+  display: flex;
+  height: 100%;
+}
+/* min-width:0 so the content shrinks with the sidebar instead of pushing it off the panel. */
+.jamat-panel-sidebar__content {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}

@@ -1,0 +1,97 @@
+.jamat-finalize {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 10vh;
+  background: var(--color-scrim);
+}
+.jamat-finalize__card {
+  display: flex;
+  flex-direction: column;
+  width: min(820px, 92vw);
+  max-height: 80vh;
+  overflow: hidden;
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-surface);
+  box-shadow: var(--shadow-overlay);
+}
+.jamat-finalize__card:focus {
+  outline: none;
+}
+.jamat-finalize__head {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface-control);
+  border-bottom: 1px solid var(--color-border-hairline);
+}
+.jamat-finalize__title {
+  font-weight: 600;
+  color: var(--color-text-1);
+}
+.jamat-finalize__session {
+  flex: 1;
+  overflow: hidden;
+  color: var(--color-text-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jamat-finalize__close {
+  padding: 0 var(--space-1);
+  font-size: var(--fs-title);
+  line-height: 1;
+  color: var(--color-text-4);
+  cursor: pointer;
+  background: none;
+  border: none;
+}
+.jamat-finalize__close:hover:enabled {
+  color: var(--color-text-1);
+}
+.jamat-finalize__close:disabled {
+  cursor: default;
+}
+.jamat-finalize__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-height: 0;
+  padding: var(--space-3);
+  overflow: auto;
+}
+.jamat-finalize__error {
+  margin: 0;
+  font-size: var(--fs-secondary);
+  color: var(--color-danger);
+}
+.jamat-finalize__actions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+.jamat-finalize__button {
+  padding: 3px 10px;
+  font: inherit;
+  font-size: var(--fs-secondary);
+  color: var(--color-text-2);
+  cursor: pointer;
+  background: var(--color-surface-control-hover);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-finalize__button:disabled {
+  color: var(--color-text-5);
+  cursor: default;
+}
+.jamat-finalize__button--primary {
+  color: var(--color-text-1);
+  border-color: var(--color-accent);
+}
+.jamat-finalize__button--danger {
+  border-color: var(--color-danger);
+}

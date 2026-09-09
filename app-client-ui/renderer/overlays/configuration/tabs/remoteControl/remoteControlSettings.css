@@ -1,0 +1,140 @@
+/* The three Network screens, which share one frame and therefore one stylesheet. What a section is
+   and how it is separated from the one above belongs to configuration.css, because every screen in
+   this window draws the same one. Colours and sizes come from tokens.css; nothing here names a
+   value. */
+.jamat-configuration-remote {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.jamat-configuration-remote__note {
+  margin: 0;
+  font-size: var(--fs-secondary);
+  color: var(--color-text-4);
+}
+/* Whether that computer is connected RIGHT NOW, which is the one fact the trust file cannot hold.
+   The dot repeats what the words beside it say, so a reader who cannot see the colour loses
+   nothing. */
+.jamat-configuration-remote__live {
+  display: inline-flex;
+  gap: var(--space-1);
+  align-items: baseline;
+  font-size: var(--fs-secondary);
+  color: var(--color-text-4);
+}
+.jamat-configuration-remote__live::before {
+  width: 6px;
+  height: 6px;
+  content: "";
+  background: var(--color-text-5);
+  border-radius: 50%;
+}
+.jamat-configuration-remote__live--now::before {
+  background: var(--color-ok);
+}
+.jamat-configuration-remote__warning {
+  padding: var(--space-2);
+  margin: 0;
+  font-size: var(--fs-secondary);
+  color: var(--color-attention);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-attention);
+  border-radius: var(--radius-control);
+}
+/* What the listener is DOING, as opposed to what the fields above ask of it. */
+.jamat-configuration-remote__runtime {
+  margin: 0;
+  color: var(--color-text-1);
+}
+.jamat-configuration-remote__row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.jamat-configuration-remote__row label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  color: var(--color-text-1);
+}
+.jamat-configuration-remote__row label span {
+  font-size: var(--fs-secondary);
+  color: var(--color-text-4);
+}
+/* Label beside field, so the three addresses line up rather than reading as three paragraphs. */
+.jamat-configuration-remote__fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+.jamat-configuration-remote__fields label {
+  font-size: var(--fs-secondary);
+  color: var(--color-text-3);
+}
+.jamat-configuration-remote__facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-1) var(--space-2);
+  margin: 0;
+}
+.jamat-configuration-remote__facts dt {
+  font-size: var(--fs-secondary);
+  color: var(--color-text-5);
+}
+.jamat-configuration-remote__facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--color-text-2);
+}
+.jamat-configuration-remote__computer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-configuration-remote__computer-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  color: var(--color-text-1);
+}
+.jamat-configuration-remote__computer-head span {
+  font-size: var(--fs-secondary);
+  color: var(--color-text-4);
+}
+.jamat-configuration-remote__status {
+  color: var(--color-text-2);
+}
+.jamat-configuration-remote__bundle {
+  width: 100%;
+  padding: var(--space-2);
+  font: inherit;
+  font-family: var(--font-mono, monospace);
+  color: var(--color-text-1);
+  resize: vertical;
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-configuration-remote input[type="text"],
+.jamat-configuration-remote input[type="number"] {
+  padding: 3px var(--space-2);
+  font: inherit;
+  color: var(--color-text-1);
+  background: var(--color-surface-control-hover);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-configuration-remote input:disabled,
+.jamat-configuration-remote textarea:disabled {
+  color: var(--color-text-5);
+}
+/* The row of buttons wraps rather than pushing the card sideways: a computer carries five of them. */
+.jamat-configuration-remote .jamat-configuration__actions {
+  flex-wrap: wrap;
+}

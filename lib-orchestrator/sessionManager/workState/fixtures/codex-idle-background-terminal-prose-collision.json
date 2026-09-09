@@ -1,0 +1,19 @@
+{
+  "agent": "codex",
+  "expected": {
+    "hint": "idle"
+  },
+  "provenance": {
+    "origin": "written in AppJamatV3 beside the 2026-08-21 background-terminal recordings",
+    "case": "a reply quotes the complete background-terminal status",
+    "capture": "written collision negative: the complete live status is quoted after ordinary prose rather than occupying the status row",
+    "ported": "not ported",
+    "identical": "not identical; deliberately constructed from the recorded status wording",
+    "note": "The full phrase alone is not work. The marker must introduce the status directly in the shallow screen window."
+  },
+  "frame": {
+    "rawTail": "",
+    "screenTail": "\n• The captured row was: Waiting for background terminal (1m 09s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close\n\n› Ask Codex to do anything",
+    "wideScreenTail": "\n• The captured row was: Waiting for background terminal (1m 09s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close\n\n› Ask Codex to do anything"
+  }
+}

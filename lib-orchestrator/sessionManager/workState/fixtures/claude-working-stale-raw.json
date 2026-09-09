@@ -1,0 +1,19 @@
+{
+  "agent": "claude",
+  "expected": {
+    "hint": "idle"
+  },
+  "provenance": {
+    "origin": "AppJamat (V1) core/agents/claude/fixtures/work-detection.json",
+    "case": "stale raw busy with idle screen",
+    "capture": "two captures composed into one frame for the V1 corpus: a busy raw tail over a screen that has already returned to the prompt",
+    "ported": "rawTail, screenTail and wideScreenTail copied byte for byte from the V1 case; nothing was written for this tree. The V1 `phase` field is dropped: frames here carry no phase.",
+    "identical": "AppJamatV2 core/agents/*/fixtures/work-detection.json holds the same corpus byte for byte",
+    "note": "The frame is V1's, the EXPECTATION is not. V1 called this working and left the staleness to a timer; on 2026-08-20 a live session proved that wrong - a dead marker in the ring counted as work for as long as a background sub-agent kept printing anything, so the row flashed green and every drop back raised a false attention mark. The ring is where finished work goes to be remembered, so no work family reads it any more. This case is now the negative that pins that: a busy marker in raw with an empty prompt on screen is IDLE."
+  },
+  "frame": {
+    "rawTail": "✻ Flowing… (4s · esc to interrupt)\nDone.",
+    "screenTail": "────────────────────────\n> ",
+    "wideScreenTail": "────────────────────────\n> "
+  }
+}

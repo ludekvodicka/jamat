@@ -1,0 +1,75 @@
+/* Label left, content right. The current row carries the same accent edge a selected list row does,
+   so "where the arrows are" reads the same on a form as it does on a list. */
+.jamat-choice__row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-left: 2px solid transparent;
+}
+.jamat-choice__row--current {
+  background: var(--color-surface-control);
+  border-left-color: var(--color-accent);
+}
+.jamat-choice__label {
+  width: 90px;
+  padding-top: 5px;
+  font-size: var(--fs-secondary);
+  color: var(--color-text-3);
+}
+.jamat-choice__content {
+  flex: 1;
+  min-width: 0;
+}
+.jamat-choice__cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.jamat-choice__card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 210px;
+  padding: var(--space-2);
+  font: inherit;
+  text-align: left;
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.jamat-choice__card:hover:enabled {
+  background: var(--color-surface-control-hover);
+}
+.jamat-choice__card--chosen {
+  border-color: var(--color-accent);
+}
+.jamat-choice__card:disabled {
+  cursor: default;
+}
+.jamat-choice__glyph {
+  font-family: var(--font-mono);
+  font-size: var(--fs-secondary);
+  color: var(--color-accent);
+}
+.jamat-choice__card--danger .jamat-choice__glyph {
+  color: var(--color-danger);
+}
+.jamat-choice__card:disabled .jamat-choice__glyph {
+  color: var(--color-text-5);
+}
+.jamat-choice__card-title {
+  font-weight: 600;
+  color: var(--color-text-1);
+}
+.jamat-choice__card:disabled .jamat-choice__card-title {
+  color: var(--color-text-5);
+}
+.jamat-choice__card-note {
+  font-size: var(--fs-secondary);
+  color: var(--color-text-4);
+}
+.jamat-choice__card:disabled .jamat-choice__card-note {
+  color: var(--color-text-5);
+}

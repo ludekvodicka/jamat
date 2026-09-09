@@ -1,0 +1,90 @@
+---
+title: Záměrně rozbité vstupy
+status: testbed
+purpose: každá chyba musí spadnout na zdroj, ne shodit dokument
+---
+
+# Záměrně rozbité vstupy
+
+Nic v tomhle dokumentu není překlep. Každý blok je vadný schválně a čeká se od něj
+čitelná chyba a vypsaný zdroj. Text kolem se musí vykreslit normálně.
+
+:::danger[Co je nález]
+Nález je: bílá stránka, zmizelý zbytek dokumentu, tichý prázdný rámeček bez zdroje,
+nebo naopak vykreslený diagram tam, kde je vstup nevalidní.
+:::
+
+## Mermaid se syntaktickou chybou
+
+```mermaid
+graph TD
+  A[Start --> B{chybí závorka
+  B --?? C
+```
+
+## Vega-Lite, které není JSON
+
+```vega-lite
+{ "mark": "bar", "data": { "values": [ { "a": 1 } ] }
+```
+
+## Vega-Lite, které načítá vzdálená data
+
+Externí čtení je zakázané, takže tenhle spec musí skončit chybou, ne stažením.
+
+```vega-lite
+{
+  "mark": "line",
+  "data": { "url": "https://example.com/data.json" },
+  "encoding": {
+    "x": { "field": "date", "type": "temporal" },
+    "y": { "field": "value", "type": "quantitative" }
+  }
+}
+```
+
+## Archify s neznámým typem diagramu
+
+```archify
+{
+  "schema_version": 1,
+  "diagram_type": "constellation",
+  "meta": { "title": "Nic takového neexistuje" },
+  "components": []
+}
+```
+
+## Archify s překryvem uzlů
+
+Dva uzly na stejné souřadnici. Layout je explicitní, takže tohle je chyba, ne přeskládání.
+
+```archify
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": { "title": "Overlap" },
+  "components": [
+    { "id": "a", "type": "backend", "label": "A", "pos": [40, 40], "size": [200, 80] },
+    { "id": "b", "type": "backend", "label": "B", "pos": [60, 60], "size": [200, 80] }
+  ],
+  "connections": []
+}
+```
+
+## SVG fence, ve které není SVG
+
+```svg
+{ "this": "is not an svg element" }
+```
+
+## Graphviz, který se nedá naparsovat
+
+```dot
+digraph {
+  a -> ;
+  -> b
+```
+
+---
+
+Poslední odstavec. Když ho vidíš, dokument přežil všech sedm chyb nad sebou.

@@ -1,16 +1,35 @@
 name: Release build
 
 # Cross-platform desktop installers (Windows / macOS / Linux) via electron-builder.
-# UNSIGNED for now — code signing (certs available) is a later step; see the notes below.
-# Triggers on a version tag (vX.Y.Z) or manually (workflow_dispatch). Each OS runner
-# builds its own native installer and uploads it as a workflow artifact; on a tag a final
-# job attaches all installers to a DRAFT GitHub Release for review before publishing.
+# UNSIGNED for now - code signing is a later step; see the notes below.
+#
+# Two triggers, and the second one carries real weight:
+#   push of a v* tag  - builds the matrix, then drafts a GitHub Release carrying every installer
+#                       and SHA256SUMS.txt. The release stays a DRAFT: making it live is what
+#                       starts offering the new version to every polling install, so it is a human
+#                       keystroke taken after the draft has been inspected. The maintainer's
+#                       release script creates the tag, watches this run and stops at that draft.
+#   workflow_dispatch - a tag-less DRY RUN. Same matrix, same artifacts, no release. This is the
+#                       ONLY proof that the macOS and Linux reMarkable sidecar seeds, the host
+#                       bundle and the extraResources FileSets work at all: the development machine
+#                       is Windows and cannot run any of them. Run it before the first tag.
+#
+# There is deliberately NO electron-rebuild step. node-pty ships N-API prebuilds, and an N-API
+# binding is ABI-stable across Node versions and across Electron alike, so the prebuild the package
+# already carries loads unchanged under Electron's Node - the packaged-host smoke spawns a real PTY
+# through exactly that binding. A rebuild would also break the source tree it ran in, because
+# `pnpm host` runs app-host under plain Node. The full reasoning lives in the header of
+# scripts/release/prepare-host-bundle.ts; do not re-add the step without reading it.
+#
+# Each runner seeds its OWN platform. Nothing here cross-compiles: the sidecar seed downloads the
+# pinned Node for the runner it is on, and the host bundle prunes node-pty to the running
+# platform-arch. That is why the dry run has to build all three legs to prove all three.
 #
 # Adding signing later:
-#   win  — set env CSC_LINK (base64 .pfx) + CSC_KEY_PASSWORD from repo secrets.
-#   mac  — set CSC_LINK/CSC_KEY_PASSWORD, drop `identity: null` in package.json build.mac,
-#          flip CSC_IDENTITY_AUTO_DISCOVERY to true, add APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/
-#          APPLE_TEAM_ID for notarization.
+#   win  - set env CSC_LINK (base64 .pfx) + CSC_KEY_PASSWORD from repository secrets.
+#   mac  - set CSC_LINK/CSC_KEY_PASSWORD, drop `identity: null` in app-client-ui/package.json
+#          build.mac, flip CSC_IDENTITY_AUTO_DISCOVERY to true, and add APPLE_ID /
+#          APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID for notarization.
 
 on:
   push:
@@ -19,14 +38,14 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write # the release job creates/attaches a GitHub Release on tag
+  contents: write # the release job creates and attaches a draft GitHub Release on a tag
 
 jobs:
   build:
     name: build (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false
+      fail-fast: false # one platform failing must not hide the state of the other two
       matrix:
         include:
           - os: windows-latest
@@ -38,55 +57,77 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - uses: pnpm/action-setup@v4 # reads the pnpm version from package.json "packageManager"
+
       - uses: actions/setup-node@v5
         with:
-          node-version: 20
-          cache: npm
+          node-version: 22 # the repository's engines floor is >=22.16.0
+          cache: pnpm
+          cache-dependency-path: "**/pnpm-lock.yaml" # one key over all five lockfiles
 
+      # The same five pnpm roots as ci.yml, with one difference: ELECTRON_SKIP_BINARY_DOWNLOAD is
+      # NOT set anywhere here. electron-builder packages `node_modules/electron/dist`, so the real
+      # Electron binary has to be on disk.
       - name: Install root dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
-      - name: Install desktop dependencies
-        working-directory: app-electron
-        run: npm ci
+      - name: Install host dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: app-host
 
-      - name: Rebuild native modules for Electron (node-pty)
-        working-directory: app-electron
-        run: npx electron-rebuild -f -w node-pty
+      - name: Install orchestrator dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: lib-orchestrator
 
-      - name: Build main/preload/renderer (electron-vite)
-        working-directory: app-electron
-        run: npx electron-vite build
+      - name: Install client shell dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: app-client-ui
 
-      - name: Bundle menu TUI (esbuild)
-        run: node --import tsx scripts/build-menu.ts
+      - name: Install client CLI dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: app-client-cli
 
-      - name: Smoke the menu bundle (usage exit)
-        shell: bash
-        run: node app-electron/out/menu/menu-tui.cjs && exit 1 || test $? -eq 1
+      # Downloads the pinned Node runtime and the reMarkable CLI for THIS platform into
+      # out/remarkable-sidecar/<os>-<arch>/current, which is where the build block's FileSet reads.
+      - name: Seed the reMarkable sidecar (this platform)
+        run: pnpm setup:remarkable-sidecar
+
+      # Platform-neutral by design: on macOS and Linux it is the only proof the seed actually runs,
+      # because no packaged smoke can execute there.
+      - name: Check the sidecar seed runs
+        run: pnpm check:remarkable-sidecar-seed
+
+      # esbuild-bundles app-host into out/host-bundle/current, node-pty copied beside it and pruned
+      # to this platform-arch. Ships to resources/host; an installed client starts the Host from it.
+      - name: Bundle the Host
+        run: pnpm release:host-bundle
+
+      - name: Build main / preload / renderer (electron-vite)
+        run: pnpm -C app-client-ui run build
 
       - name: Package installer (${{ matrix.platform }}, unsigned)
-        working-directory: app-electron
         env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false" # don't attempt macOS signing/notarization yet
-        run: npx electron-builder --${{ matrix.platform }} --publish never
+          CSC_IDENTITY_AUTO_DISCOVERY: "false" # do not attempt macOS signing or notarization yet
+        run: pnpm -C app-client-ui exec electron-builder --${{ matrix.platform }} --publish never
 
+      # `error` rather than a warning: a leg that built nothing is exactly the failure the dry run
+      # exists to catch, and an empty artifact would let it pass unnoticed.
       - name: Upload installer artifact
         uses: actions/upload-artifact@v7
         with:
           name: jamat-${{ matrix.platform }}
           path: |
-            app-electron/dist/*.exe
-            app-electron/dist/*.dmg
-            app-electron/dist/*.AppImage
-            app-electron/dist/latest*.yml
-            app-electron/dist/*.blockmap
-          if-no-files-found: warn
+            app-client-ui/dist/*.exe
+            app-client-ui/dist/*.dmg
+            app-client-ui/dist/*.AppImage
+            app-client-ui/dist/latest*.yml
+            app-client-ui/dist/*.blockmap
+          if-no-files-found: error
 
   release:
-    name: attach installers to GitHub Release
+    name: attach installers to a draft GitHub Release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') # a workflow_dispatch dry run stops after `build`
     runs-on: ubuntu-latest
     steps:
       - name: Download all build artifacts
@@ -104,6 +145,10 @@ jobs:
           done > SHA256SUMS.txt
           echo '----- SHA256SUMS.txt -----'; cat SHA256SUMS.txt
 
+      # These notes are the fallback for a bare tag push. A release driven by the maintainer's
+      # release script replaces the body with that version's own notes file before the draft is
+      # inspected; the checksums stay reachable either way, because SHA256SUMS.txt is attached as
+      # an asset and not only quoted here.
       - name: Assemble release notes (checksums + verify hint)
         run: |
           {
@@ -123,6 +168,6 @@ jobs:
       - name: Create draft GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          draft: true
+          draft: true # going live is the point of no return and stays a human keystroke
           body_path: release-notes.md
           files: artifacts/**/*

@@ -1,0 +1,19 @@
+{
+  "agent": "claude",
+  "expected": {
+    "hint": "blocked"
+  },
+  "provenance": {
+    "origin": "AppJamat (V1) core/agents/claude/agentWorkDetectorClaude.ts, its BLOCKED list",
+    "case": "permission prompt: a shell command count",
+    "capture": "wording case written for this tree from V1's pattern list; no frame of a permission prompt has been captured, because this machine's agents run with permissions already granted. It exists so that no pattern ships without a case, and it asserts the normalized form and nothing more",
+    "ported": "the wording only, normalized. The V1 frame it came from was itself a one-line sanitized text, not a screen",
+    "identical": "the wording appears in the V1 and V2 pattern lists",
+    "note": "Retire trigger: the first recorded frame of a real permission prompt. It either proves this wording, and this file is replaced by the recording, or it contradicts it, and the pattern goes with the file"
+  },
+  "frame": {
+    "rawTail": "Run 3 shell commands?",
+    "screenTail": "Run 3 shell commands?",
+    "wideScreenTail": "Run 3 shell commands?"
+  }
+}

@@ -2,7 +2,7 @@ blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
     url: https://github.com/ludekvodicka/jamat/security/advisories/new
-    about: Please report security issues privately, not as a public issue.
-  - name: Question / discussion
+    about: Report security problems privately, never as a public issue.
+  - name: Question or idea
     url: https://github.com/ludekvodicka/jamat/discussions
-    about: Ask questions and share ideas in Discussions.
+    about: Ask questions and talk through ideas in Discussions.

@@ -1,0 +1,384 @@
+.file-viewer {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: var(--color-background);
+  color: var(--color-text-2);
+}
+.file-viewer-toolbar,
+.file-viewer-path-control {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--size-sidebar-header);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--color-border-hairline);
+  background: var(--color-surface-raised);
+}
+.file-viewer-path-control span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-status);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-viewer button,
+.file-viewer select {
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-control);
+  color: var(--color-text-2);
+  font: inherit;
+  font-size: var(--fs-secondary);
+}
+.file-viewer button { cursor: pointer; }
+.file-viewer button:hover:not(:disabled) {
+  background: var(--color-surface-control-hover);
+  color: var(--color-text-1);
+}
+.file-viewer button:disabled {
+  color: var(--color-text-5);
+  cursor: default;
+}
+.file-viewer-view-control {
+  display: flex;
+}
+.file-viewer-view-control button,
+.file-viewer-copy-path,
+.file-viewer-path-control button {
+  padding: 2px var(--space-2);
+}
+.file-viewer-view-control button[aria-pressed='true'],
+.file-diff-toolbar button[aria-pressed='true'] {
+  border-color: var(--color-accent-strong);
+  color: var(--color-accent);
+}
+.file-viewer-diff-control {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--color-text-4);
+  font-size: var(--fs-status);
+}
+.file-viewer-diff-control select {
+  max-width: 280px;
+  padding: 2px var(--space-1);
+}
+.file-viewer-diff-empty {
+  color: var(--color-text-5);
+  font-size: var(--fs-status);
+}
+.file-viewer-zoom-control {
+  display: flex;
+  align-items: center;
+}
+.file-viewer-zoom-control button {
+  padding: 2px var(--space-2);
+}
+.file-viewer-zoom-value {
+  min-width: 52px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.file-viewer-reload {
+  padding: 2px var(--space-2);
+}
+.file-viewer-gone {
+  color: var(--color-attention);
+  font-size: var(--fs-status);
+}
+/* Everything below the toolbars, at the viewer's own reading size. It REDECLARES the tokens rather
+   than overriding a scale they read, because a custom property that uses var() is substituted where
+   it is DECLARED: the `--fs-base` inherited from :root already carries the root's scale alone, and
+   setting `--file-viewer-font-scale` here would change nothing. Building the same calc again with
+   all three scales - the window's, the viewer's own setting and this panel's zoom - is what makes
+   markdown, source, hex and diff follow together, including the sizes mdExtRenderer.css reaches for
+   inside them. The px are still tokens.css's alone. */
+.file-viewer-body {
+  --fs-title: calc(var(--fs-title-px) * var(--ui-font-scale) * var(--file-viewer-font-scale) * var(--file-viewer-zoom));
+  --fs-base: calc(var(--fs-base-px) * var(--ui-font-scale) * var(--file-viewer-font-scale) * var(--file-viewer-zoom));
+  --fs-secondary: calc(var(--fs-secondary-px) * var(--ui-font-scale) * var(--file-viewer-font-scale) * var(--file-viewer-zoom));
+  --fs-status: calc(var(--fs-status-px) * var(--ui-font-scale) * var(--file-viewer-font-scale) * var(--file-viewer-zoom));
+  --fs-chip: calc(var(--fs-chip-px) * var(--ui-font-scale) * var(--file-viewer-font-scale) * var(--file-viewer-zoom));
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+/* The reading column is a WIDTH IN UNZOOMED PIXELS, so it carries the zoom like every other length
+   here: at 200 % the words are twice as tall and the line they sit on is twice as long, which is
+   what keeps the same sentence on the same line at every size. It stays a cap and never a width,
+   so a panel narrower than the column still reflows instead of scrolling sideways. The measure is
+   a property because the media below has to know it: a picture that grew from its own box AND from
+   the zoom would carry the zoom twice, which is a picture 56 % too wide at 125 %. */
+.file-viewer-body {
+  --file-viewer-reading-width: 1100px;
+}
+.file-viewer-body > .mdext,
+.file-viewer-location > .mdext {
+  max-width: calc(var(--file-viewer-reading-width) * var(--file-viewer-zoom, 1));
+  margin: 0 auto;
+  padding: var(--space-4);
+}
+/* Media INSIDE a document, which the text scale cannot reach: a picture is sized in its own pixels
+   and then capped at the column, so it drew exactly the same at every zoom while the words above
+   and below it grew alone - and a picture already filling the column was the one the zoom did
+   nothing at all for. What is wanted is the size it FITS at times the zoom, and it takes `zoom`
+   rather than `transform` to get it: the layout box has to grow with the picture or the scroll
+   area never learns there is more to see, and Chromium scales the intrinsic size with it, so a
+   picture smaller than the column grows too. The cap is the smaller of two things:
+   - `100% x zoom`, its own box multiplied, because Chromium resolves a percentage inside a zoomed
+     element back into that element's own space - a plain `max-width: 100%` pins the picture to the
+     column at every zoom, which is the state being fixed. This is the term that binds in a panel
+     narrower than the reading measure, where the column cannot grow and only the picture can;
+   - the reading measure itself, which needs no multiplier because a length inside a zoomed element
+     is already in that element's space. This is the term that binds in a wide panel, where the
+     column has grown with the zoom and multiplying its width again would square the zoom.
+   Together: the picture is drawn at the size it fits the UNZOOMED column at, times the zoom, and
+   it sits on the text column instead of hanging off its right edge. Verified in Chromium at a
+   1730 px panel: a 1600 px picture draws 1068 px at zoom 1 and 1335 px at 125 %, inside a 1343 px
+   column that needs no scrolling, and 2136 px at 200 %, where the body scrolls. In a 700 px panel
+   the same picture draws 668 px at zoom 1 and 1336 px at 200 %, and a 200 px one draws 400 px. */
+.file-viewer-body .mdext img,
+.file-viewer-body .mdext video,
+.file-viewer-body .mdext-diagram svg {
+  zoom: var(--file-viewer-zoom, 1);
+  max-width: min(
+    calc(100% * var(--file-viewer-zoom, 1)),
+    calc(var(--file-viewer-reading-width) - 2 * var(--space-4))
+  );
+}
+.file-viewer-location {
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+}
+/* The page in its own document, filling the body the way a browser tab fills a window: it brings
+   its own scrollbar, because what is inside it is a page and not a paragraph of this one. `zoom` is
+   the same lever the pictures above take, and on a frame it is exactly what a browser's own zoom
+   does - the frame keeps its 100 % of the body while the viewport INSIDE it narrows, so the page
+   reflows at the new size instead of being stretched. The white is the frame's own, so a page that
+   has not finished loading its ground does not flash the app's dark one. */
+.file-viewer-html {
+  zoom: var(--file-viewer-zoom, 1);
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  /* The ground the page paints on, named rather than themed: the frame carries `color-scheme: light`
+     inside it, so this only covers the moment before it has painted anything at all. */
+  background: white;
+}
+.file-viewer-code .shiki,
+.file-viewer-raw,
+.file-hex-rows {
+  min-width: max-content;
+  min-height: 100%;
+  margin: 0;
+  padding: var(--space-3);
+  background: var(--color-background) !important;
+  color: var(--color-text-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-secondary);
+  line-height: 1.5;
+  tab-size: 2;
+}
+.file-viewer-source-lines > span,
+.file-viewer-code .shiki .line {
+  display: block;
+  min-width: 100%;
+  min-height: 1.5em;
+}
+.file-viewer-line-target {
+  animation: file-viewer-line-target 1.8s ease-out;
+}
+@keyframes file-viewer-line-target {
+  0%, 35% {
+    background: color-mix(in srgb, var(--color-attention) 28%, transparent);
+    box-shadow: inset 3px 0 var(--color-attention);
+  }
+  100% {
+    background: transparent;
+    box-shadow: inset 3px 0 transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .file-viewer-line-target {
+    animation: none;
+    background: color-mix(in srgb, var(--color-attention) 28%, transparent);
+    box-shadow: inset 3px 0 var(--color-attention);
+  }
+}
+/* Media follows the same zoom as the text, and it takes two things to be zoomed rather than one:
+   `transform` draws the picture bigger without occupying any more room, so the frame is what gives
+   the scroll area something to scroll. The frame is the picture's FITTED size times the zoom, never
+   the panel's box times the zoom: those are the same thing only for a picture that already fills
+   the panel, and for a small one the second would hang an icon in the middle of a canvas twice the
+   window, off screen at rest. The fitted size is measured once and handed in as `--file-viewer-
+   media-fit-*`; until it arrives the fallbacks are exactly today's rules, which is the size being
+   measured. Verified in Chromium: at zoom 1.5 a 4:3 picture in a 584x360 box draws 720x540 with a
+   884x548 scroll area, and a 60x40 icon draws 90x60 with no scroll area at all. */
+.file-viewer-media {
+  display: flex;
+  min-width: 100%;
+  height: 100%;
+  min-height: 100%;
+  padding: var(--space-3);
+}
+.file-viewer-media-frame {
+  display: flex;
+  /* `flex: none` is the whole of the sizing: the frame is wider than the flex line it sits on
+     whenever the zoom is above 1, and a flex item shrinks back onto that line by default - which
+     silently capped every zoom at the panel's own width. */
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: max(100%, calc(var(--file-viewer-media-fit-width, 0px) * var(--file-viewer-zoom)));
+  height: max(100%, calc(var(--file-viewer-media-fit-height, 0px) * var(--file-viewer-zoom)));
+  margin: auto;
+}
+.file-viewer-media img,
+.file-viewer-media video {
+  max-width: var(--file-viewer-media-fit-width, 100%);
+  max-height: var(--file-viewer-media-fit-height, 100%);
+  object-fit: contain;
+  transform: scale(var(--file-viewer-zoom));
+}
+.file-viewer-svg {
+  display: flex;
+  align-items: flex-start;
+  /* `safe` is what makes a zoomed drawing readable: centring an item wider than the box overflows
+     it on BOTH sides, and the half that hangs off the left is behind the scroll origin, so nothing
+     reaches it. Above the box's width the drawing is laid out from the left instead. */
+  justify-content: safe center;
+  min-height: 100%;
+  padding: var(--space-4);
+}
+/* A drawing opened as its own document is the same case as a picture inside one, in both
+   directions: it fits the panel and then the zoom multiplies that fit. `flex: none` for the reason
+   the media frame below carries it - a flex item shrinks back onto its line by default, which put
+   every zoomed drawing back at exactly the panel's width. */
+.file-viewer-svg svg {
+  flex: none;
+  zoom: var(--file-viewer-zoom, 1);
+  max-width: calc(100% * var(--file-viewer-zoom, 1));
+  max-height: calc(100% * var(--file-viewer-zoom, 1));
+}
+.file-viewer-note,
+.file-viewer-error {
+  margin: var(--space-3);
+  color: var(--color-text-4);
+}
+.file-viewer-error { color: var(--color-danger); }
+.file-viewer-load-more {
+  margin: 0 var(--space-3) var(--space-3);
+  padding: var(--space-1) var(--space-2);
+}
+.file-hex-summary {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--color-border-hairline);
+  background: var(--color-surface-raised);
+  color: var(--color-text-4);
+  font-size: var(--fs-status);
+}
+.file-hex-offset { color: var(--color-text-5); }
+.file-diff {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.file-diff-toolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--color-border-hairline);
+  color: var(--color-text-4);
+  font-size: var(--fs-status);
+}
+.file-diff-toolbar span { margin-right: auto; }
+.file-diff-detail {
+  flex: none;
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  background: color-mix(in srgb, var(--color-attention) 10%, transparent);
+  color: var(--color-attention);
+  font-size: var(--fs-status);
+}
+.file-diff-area {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.file-diff-scroll {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+}
+.file-diff-lines {
+  min-width: max-content;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-secondary);
+  line-height: 1.5;
+}
+.file-diff-line {
+  position: relative;
+  display: block;
+  min-height: 1.5em;
+}
+.file-diff-line--add { background: color-mix(in srgb, var(--color-ok) 13%, transparent); }
+.file-diff-line--remove { background: color-mix(in srgb, var(--color-danger) 13%, transparent); }
+.file-diff-gutter {
+  display: inline-block;
+  width: 54px;
+  padding-right: var(--space-2);
+  color: var(--color-text-5);
+  text-align: right;
+  user-select: none;
+}
+.file-diff-marker {
+  display: inline-block;
+  width: 20px;
+  color: var(--color-text-4);
+  text-align: center;
+  user-select: none;
+}
+.file-diff-text { padding-right: var(--space-3); }
+.file-diff-hunk {
+  position: absolute;
+  left: 0;
+  transform: translateY(-100%);
+  padding-left: var(--space-2);
+  color: var(--color-accent);
+  font-size: var(--fs-status);
+}
+.file-diff-line:has(.file-diff-hunk) { margin-top: 1.5em; }
+.file-diff-minimap {
+  position: relative;
+  flex: none;
+  width: 54px;
+  cursor: pointer;
+  background: var(--color-surface-sunken);
+}
+.file-diff-minimap canvas {
+  width: 100%;
+  height: 100%;
+}
+.file-diff-minimap > div {
+  position: absolute;
+  right: 0;
+  left: 0;
+  border: 1px solid var(--color-text-5);
+  background: color-mix(in srgb, var(--color-text-4) 10%, transparent);
+  pointer-events: none;
+}

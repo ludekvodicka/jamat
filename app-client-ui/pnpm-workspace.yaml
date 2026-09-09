@@ -1,0 +1,35 @@
+allowBuilds:
+  electron: true
+  electron-winstaller: false
+  esbuild: true
+virtualStoreDir: node_modules/.pnpm-v3
+minimumReleaseAgeExclude:
+  - vega-crossfilter@5.1.3
+  - vega-dataflow@6.1.3
+  - vega-encode@5.2.2
+  - vega-expression@6.2.2
+  - vega-force@5.1.3
+  - vega-format@2.1.3
+  - vega-functions@6.2.0
+  - vega-geo@5.1.3
+  - vega-hierarchy@5.1.3
+  - vega-label@2.1.3
+  - vega-loader@5.1.3
+  - vega-parser@7.1.3
+  - vega-projection@2.1.3
+  - vega-regression@2.1.3
+  - vega-runtime@7.1.3
+  - vega-scale@8.1.3
+  - vega-scenegraph@5.3.0
+  - vega-selections@6.1.5
+  - vega-time@3.3.0
+  - vega-transforms@5.2.2
+  - vega-typings@2.3.0
+  - vega-util@2.1.3
+  - vega-view-transforms@5.2.2
+  - vega-view@6.2.0
+  - vega-voronoi@5.1.3
+  - vega-wordcloud@5.1.3
+  - vega@6.4.0
+pmOnFail: error
+sideEffectsCache: true

@@ -1,18 +1,19 @@
-<!-- Thanks for contributing to Jamat! Keep PRs small and focused. -->
+<!-- Thanks for contributing to Jamat. Small, focused pull requests merge fastest. -->
 
-## What & why
+## What and why
 
-<!-- What does this change, and why? Link the issue it addresses (e.g. "Closes #123"). -->
+<!-- What does this change, and what problem does it solve? Link the issue: "Closes #123". -->
 
-## How to test
+## How to test it
 
-<!-- Steps a reviewer can follow to verify the change. -->
+<!-- The steps a reviewer follows to see it work. -->
 
 ## Checklist
 
-- [ ] Discussed in an issue first (for anything non-trivial)
-- [ ] `npm run typecheck` passes
-- [ ] `npm test` (or the relevant `smoke:*` scripts) pass
-- [ ] If the desktop app was touched, it still launches
-- [ ] No secrets, machine-specific paths, or personal data added
-- [ ] Matches the style of the surrounding code
+- [ ] Discussed in an issue first, for anything beyond a small fix
+- [ ] `pnpm typecheck` passes
+- [ ] `pnpm test` passes
+- [ ] The `smoke:*` scripts covering the change pass, or none applies
+- [ ] The client still launches, if it was touched
+- [ ] No secrets, machine-specific paths, host names or personal data, in fixtures and tests too
+- [ ] Matches the style of the code around it

@@ -1,0 +1,188 @@
+.jamat-launcher__search {
+  width: calc(100% - 2 * var(--space-3));
+  margin: var(--space-2) var(--space-3);
+  padding: 5px var(--space-2);
+  font: inherit;
+  color: var(--color-text-1);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-launcher__search:focus {
+  border-color: var(--color-accent-strong);
+  outline: none;
+}
+.jamat-launcher__rows {
+  padding: 0 var(--space-3) var(--space-2);
+}
+
+/* Wraps, because the number of categories is the user's to decide: one row too wide would put the
+   whole body on a horizontal scrollbar and hide the last categories behind it. */
+.jamat-launcher-projects__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: var(--space-2) var(--space-3) 0;
+}
+.jamat-launcher-projects__tab {
+  padding: 3px 9px;
+  font: inherit;
+  font-size: var(--fs-secondary);
+  color: var(--color-text-3);
+  white-space: nowrap;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.jamat-launcher-projects__tab--active {
+  color: var(--color-text-1);
+  background: var(--color-surface-control-hover);
+  border-color: var(--color-border-frame);
+}
+.jamat-launcher-projects__tab-number {
+  margin-right: 5px;
+  font-size: var(--fs-status);
+  color: var(--color-text-5);
+}
+.jamat-launcher-projects__tab-warn {
+  margin-left: 5px;
+  color: var(--color-attention);
+}
+
+/* Where the list is standing, and the key that leaves. Drawn only inside a virtual folder, where
+   the rows carry names with the folder's prefix taken off and would otherwise read as a root. */
+.jamat-launcher-projects__breadcrumb {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: 0 var(--space-3) var(--space-2);
+  font-size: var(--fs-secondary);
+  color: var(--color-text-2);
+}
+.jamat-launcher-projects__breadcrumb-hint {
+  font-size: var(--fs-status);
+  color: var(--color-text-5);
+}
+
+/* The name and the category it came from are one column between them: a search row that names its
+   foreign category must not push the counts one column to the right. */
+.jamat-launcher-projects__label {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.jamat-launcher-projects__foreign {
+  flex: none;
+  font-size: var(--fs-status);
+  color: var(--color-text-5);
+}
+.jamat-launcher-projects__other-folders {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 var(--space-1);
+  font-size: var(--fs-status);
+  color: var(--color-text-5);
+}
+.jamat-launcher-projects__other-folders::after {
+  flex: 1;
+  content: '';
+  border-top: 1px solid var(--color-border-hairline);
+}
+.jamat-launcher-manage {
+  padding: var(--space-2) var(--space-2) var(--space-2) 26px;
+  margin-bottom: var(--space-1);
+  background: var(--color-surface-control);
+  border-left: 2px solid var(--color-accent);
+  border-radius: 0 0 var(--radius-control) var(--radius-control);
+}
+/* The same strip drawn at the card's own edge rather than under a list row: squared off against the
+   key line below it, indented like that line instead of like a row, and with the field taking the
+   space a row's columns were leaving. */
+.jamat-launcher-manage--bar {
+  padding-left: var(--space-3);
+  padding-right: var(--space-3);
+  margin-bottom: 0;
+  border-radius: 0;
+  border-top: 1px solid var(--color-border-hairline);
+}
+.jamat-launcher-manage--bar .jamat-launcher-manage__edit {
+  flex: 1;
+}
+.jamat-launcher-manage__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.jamat-launcher-manage__button {
+  padding: 3px 10px;
+  font: inherit;
+  font-size: var(--fs-secondary);
+  color: var(--color-text-2);
+  background: var(--color-surface-control-hover);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.jamat-launcher-manage__button--danger {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+.jamat-launcher-manage__edit {
+  min-width: 220px;
+  padding: 2px var(--space-2);
+  font: inherit;
+  color: var(--color-text-1);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-accent-strong);
+  border-radius: var(--radius-control);
+}
+.jamat-launcher-manage__hint {
+  font-size: var(--fs-status);
+  color: var(--color-text-5);
+}
+.jamat-launcher-manage__ask {
+  font-size: var(--fs-secondary);
+  color: var(--color-text-2);
+}
+.jamat-launcher-manage__error {
+  margin: var(--space-1) 0 0;
+  font-size: var(--fs-secondary);
+  color: var(--color-danger);
+}
+.jamat-launcher-manage__report {
+  margin: var(--space-1) 0 0;
+  font-size: var(--fs-secondary);
+  color: var(--color-text-3);
+}
+.jamat-launcher-manage__warn {
+  margin: var(--space-1) 0 0;
+  font-size: var(--fs-secondary);
+  color: var(--color-attention);
+}
+.jamat-launcher-manage__delete {
+  border-left: 2px solid var(--color-danger);
+  padding-left: var(--space-2);
+  margin-left: -26px;
+  padding-inline-start: 24px;
+}
+.jamat-launcher-manage__path {
+  margin: 0 0 var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-secondary);
+  color: var(--color-text-2);
+}
+.jamat-launcher-manage__counts {
+  display: flex;
+  gap: var(--space-4);
+  margin-bottom: var(--space-2);
+  font-size: var(--fs-secondary);
+  color: var(--color-text-1);
+}
+.jamat-launcher-manage__button:disabled {
+  color: var(--color-text-5);
+  cursor: default;
+}

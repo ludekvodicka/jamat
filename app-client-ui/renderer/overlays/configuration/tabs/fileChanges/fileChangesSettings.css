@@ -1,0 +1,36 @@
+.jamat-configuration-file-changes__note {
+  margin: 0;
+  color: var(--color-text-5);
+}
+.jamat-configuration-file-changes__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+.jamat-configuration-file-changes__heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  color: var(--color-text-1);
+}
+.jamat-configuration-file-changes__heading span {
+  font-size: var(--fs-secondary);
+  color: var(--color-text-4);
+}
+.jamat-configuration-file-changes select,
+.jamat-configuration-file-changes button {
+  padding: 3px 10px;
+  font: inherit;
+  color: var(--color-text-2);
+  background: var(--color-surface-control-hover);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-configuration-file-changes button {
+  cursor: pointer;
+}
+.jamat-configuration-file-changes button:disabled {
+  color: var(--color-text-5);
+  cursor: default;
+}

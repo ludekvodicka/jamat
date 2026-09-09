@@ -1,10 +1,22 @@
-# Paths excluded from `git archive` exports — e.g. when seeding the public mirror
-# from `git archive HEAD | tar -x`. They live in the internal repo but must NOT ship
-# in a public release:
-#   - .aidocs/      : internal AI-workflow history (plans, research, session summaries)
-#   - website brief : internal product/marketing draft, not a repo doc
-.aidocs/ export-ignore
-docs/jamat-website-brief.md export-ignore
+# Every text file is LF in the repository AND in the working copy.
+#
+# Without this, a machine with core.autocrlf=true (the Windows default) gets CRLF written into the
+# working copy on every checkout, and the token gate's "keeps every source file on LF" rule goes red
+# on a tree nobody touched. It happened on 2026-08-04: a `git reset --hard` rewrote 27 restored files
+# as CRLF and the gate failed. `eol=lf` is what makes the checkout side match the storage side, so
+# the rule holds for a fresh clone as well as an edited tree.
+* text=auto eol=lf
 
-# Normalize line endings so the repo is consistent across Windows/macOS/Linux.
-* text=auto
+# Binaries git must never translate.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.pdf binary
+*.zip binary
+*.exe binary
+*.dll binary
+*.node binary

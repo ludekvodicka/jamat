@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "sourceMap": true,
+    "noEmit": true
+  },
+  "include": [
+    "start.ts",
+    "app/**/*",
+    "preload/**/*",
+    "shared/**/*",
+    "scripts/**/*",
+    "electron.vite.config.ts",
+    "vitest.workspace.ts",
+    "vitest.node.config.ts",
+    "vitest.web.config.ts"
+  ]
+}

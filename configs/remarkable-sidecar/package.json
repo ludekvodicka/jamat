@@ -1,0 +1,8 @@
+{
+  "name": "jamat-v3-remarkable-sidecar",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "remarkable-cli": "0.3.0"
+  }
+}

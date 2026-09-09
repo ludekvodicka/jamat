@@ -1,0 +1,148 @@
+/* xterm's own stylesheet, which draws the screen it builds. It is the one import here that is not
+   this file's own rules; without it every cell renders at the document's font and the cursor has no
+   box at all. */
+@import '@xterm/xterm/css/xterm.css';
+
+/* The chosen terminal theme's background, not the window's: the screen below is inset by a padding,
+   so painting the window colour here would frame every canvas in a hairline of a different colour
+   the moment a theme other than `original` is picked - the rectangle-pasted-on look the default
+   avoids, four pixels wide. Under `original` the two resolve to the same colour. */
+.jamat-terminal {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  background: var(--terminal-background);
+}
+
+/* The screen takes everything left over, and `min-height: 0` is what stops a flex child from
+   refusing to shrink: without it a terminal grown by output pushes the note off the panel. */
+.jamat-terminal__screen {
+  flex: 1;
+  min-height: 0;
+  padding: var(--space-1);
+}
+
+.jamat-terminal__screen .xterm {
+  --vscode-scrollbarSliderBackground: var(--color-surface-control-hover);
+  --vscode-scrollbar-shadow: var(--color-surface-sunken);
+
+  height: 100%;
+}
+
+/* Over the dead screen rather than under it: what the terminal last printed is still worth reading,
+   and the one action there is has to be where the eye already is. */
+.jamat-terminal__interrupted {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  background: color-mix(in srgb, var(--terminal-background) 82%, transparent);
+}
+
+.jamat-terminal__interrupted-text {
+  margin: 0;
+  color: var(--color-text-2);
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+}
+
+.jamat-terminal__restart {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-raised);
+  color: var(--color-text-1);
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+  cursor: pointer;
+}
+
+.jamat-terminal__restart:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.jamat-terminal__note {
+  flex: none;
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  border-top: 1px solid var(--color-border-hairline);
+  background: var(--color-surface-sunken);
+  color: var(--color-text-3);
+  font-family: var(--font-ui);
+  font-size: var(--fs-secondary);
+}
+
+/*
+ * What is left of a session once the screen it exited on is gone. It sits where the note does, under
+ * an empty screen, and scrolls on its own: a tail of ten messages is longer than the strip below a
+ * terminal ever is.
+ */
+.jamat-postmortem {
+  flex: none;
+  max-height: 40%;
+  overflow-y: auto;
+  padding: var(--space-2);
+  border-top: 1px solid var(--color-border-hairline);
+  background: var(--color-surface-sunken);
+  font-family: var(--font-ui);
+  font-size: var(--fs-secondary);
+}
+
+.jamat-postmortem__headline {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  margin: 0 0 var(--space-2);
+}
+
+.jamat-postmortem__verdict {
+  font-weight: 600;
+}
+
+.jamat-postmortem__verdict--finished { color: var(--color-ok); }
+.jamat-postmortem__verdict--failed { color: var(--color-danger); }
+.jamat-postmortem__verdict--interrupted { color: var(--color-warn); }
+
+.jamat-postmortem__when {
+  color: var(--color-text-3);
+}
+
+.jamat-postmortem__messages {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.jamat-postmortem__message {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+.jamat-postmortem__role {
+  flex: none;
+  min-width: 5rem;
+  color: var(--color-text-3);
+}
+
+.jamat-postmortem__text {
+  /* The tail is verbatim, so the newlines an agent wrote are part of what it said. */
+  white-space: pre-wrap;
+  color: var(--color-text-2);
+}
+
+.jamat-postmortem__missing,
+.jamat-postmortem__changes {
+  margin: var(--space-2) 0 0;
+  color: var(--color-text-3);
+}

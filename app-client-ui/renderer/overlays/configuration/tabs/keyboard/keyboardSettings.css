@@ -1,0 +1,54 @@
+/* The Keyboard tab's own sheet. It borrows the UI tab's row shape rather than a second vocabulary
+   for the same thing: a label with a hint on the left, the control on the right. */
+.jamat-configuration-keyboard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+/* The two options are radio rows rather than a select, because each one has a second line saying
+   what the pair becomes: a dropped-open list is drawn by the platform and cannot carry that. */
+.jamat-configuration-keyboard__choices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.jamat-configuration-keyboard__choice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  background: var(--color-surface-control);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.jamat-configuration-keyboard__choice--chosen {
+  border-color: var(--color-accent-strong);
+}
+.jamat-configuration-keyboard__choice:has(:disabled) {
+  cursor: default;
+}
+.jamat-configuration-keyboard__radio {
+  margin-top: 2px;
+  accent-color: var(--color-accent);
+  cursor: inherit;
+}
+.jamat-configuration-keyboard__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.jamat-configuration-keyboard__title {
+  color: var(--color-text-1);
+}
+/* The keys themselves, in the mono font every other key in this shell is drawn in. */
+.jamat-configuration-keyboard__note {
+  font-family: var(--font-mono);
+  font-size: var(--fs-status);
+  color: var(--color-text-4);
+}
+.jamat-configuration-keyboard__hint {
+  margin: 0;
+  font-size: var(--fs-status);
+  color: var(--color-text-5);
+}

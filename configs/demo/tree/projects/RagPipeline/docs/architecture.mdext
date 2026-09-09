@@ -1,0 +1,80 @@
+---
+title: RagPipeline architecture
+status: draft
+date: 2026-03-14
+---
+
+# RagPipeline architecture
+
+How a question becomes a grounded answer: documents are chunked and embedded once, then every
+query is a vector search followed by one generation call over the retrieved passages.
+
+::status{stage=design retrieval=hybrid store=pgvector answers=grounded}
+
+## The path a query takes
+
+```mermaid
+flowchart LR
+  Q[Question] --> E[Embed query]
+  E --> S[(Vector store)]
+  S --> R[Top-k passages]
+  R --> G[Generate answer]
+  G --> A[Answer with citations]
+  D[Documents] --> C[Chunk]
+  C --> V[Embed chunks]
+  V --> S
+```
+
+Ingestion is the lower branch and runs once per document. Everything above it runs per question,
+which is why the chunk size is chosen for retrieval quality rather than for ingestion cost.
+
+## Choosing a store
+
+| Store | Filtering | Operations | Chosen |
+|:---|:---:|:---:|:---:|
+| pgvector | SQL, full | reuses the existing database | yes |
+| Qdrant | payload filters | one more service to run | no |
+| In-memory | none | lost on restart | no |
+
+:::note[Why the boring option won]
+The corpus is small enough that recall is decided by the chunking, not by the index. A store we
+already operate costs nothing extra to run and keeps filtering in one query language.
+:::
+
+## Retrieval, in the service
+
+```python
+def retrieve(question: str, k: int = 6) -> list[Passage]:
+    """Hybrid search: dense vectors, then a lexical pass to rescue exact terms."""
+    embedding = embed(question)
+    dense = store.search(embedding, limit=k * 2)
+    lexical = store.keyword_search(question, limit=k)
+    merged = rerank(question, dedupe(dense + lexical))
+    return merged[:k]
+```
+
+## Querying it from the client
+
+```ts
+export async function ask(question: string): Promise<Answer> {
+  const response = await fetch('/v1/ask', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ question }),
+  })
+  if (!response.ok) throw new Error(`ask failed: ${response.status}`)
+  return response.json() as Promise<Answer>
+}
+```
+
+:::warning[Citations are part of the contract]
+An answer without the passages it stood on cannot be checked. The endpoint returns both or it
+returns an error; there is no mode that answers from the model alone.
+:::
+
+## Open
+
+- [x] Pick the store
+- [x] Settle the chunk size at 800 tokens with 100 overlap
+- [ ] Decide whether reranking earns its latency
+- [ ] Measure recall on the evaluation set

@@ -1,0 +1,201 @@
+/* Fixed to the viewport rather than to the shell column, for the same reason the launcher is: the
+   card covers the status bar and both sidebars, which a flow-positioned surface cannot reach. */
+.jamat-configuration {
+  position: fixed;
+  inset: 0;
+  /* The same layer as the launcher: the shell never opens both, so they never race. */
+  z-index: 1000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 10vh;
+  background: var(--color-scrim);
+}
+.jamat-configuration__card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(860px, 92vw);
+  height: 76vh;
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-surface);
+  box-shadow: var(--shadow-overlay);
+  overflow: hidden;
+}
+/* The card takes focus on open, and an outline on a surface nobody tabbed to reads as an error. */
+.jamat-configuration__card:focus {
+  outline: none;
+}
+.jamat-configuration__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface-control);
+  border-bottom: 1px solid var(--color-border-hairline);
+}
+.jamat-configuration__title {
+  flex: 1;
+  font-weight: 600;
+  color: var(--color-text-1);
+}
+.jamat-configuration__close {
+  padding: 0 var(--space-1);
+  font-size: var(--fs-title);
+  line-height: 1;
+  color: var(--color-text-4);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.jamat-configuration__close:hover {
+  color: var(--color-text-1);
+}
+.jamat-configuration__body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.jamat-configuration__groups {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 200px;
+  padding: var(--space-2);
+  overflow: auto;
+  background: var(--color-surface-sunken);
+  border-right: 1px solid var(--color-border-hairline);
+}
+.jamat-configuration__group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 5px var(--space-2);
+  font: inherit;
+  font-size: var(--fs-secondary);
+  color: var(--color-text-3);
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.jamat-configuration__group--active {
+  color: var(--color-text-1);
+  background: var(--color-surface-control-hover);
+  border-color: var(--color-border-frame);
+}
+.jamat-configuration__dirty {
+  font-size: var(--fs-chip);
+  color: var(--color-attention);
+}
+.jamat-configuration__pane {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-3);
+  overflow: auto;
+}
+
+/* Inside the card, not over the whole window: a question about one tab's work is part of that
+   card, and a second surface floating over the first is the stacking the shell refuses. */
+.jamat-configuration__ask {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--color-scrim);
+}
+.jamat-configuration__ask-text {
+  margin: 0;
+  font-size: var(--fs-base);
+  color: var(--color-text-1);
+  text-align: center;
+}
+.jamat-configuration__ask-buttons {
+  display: flex;
+  gap: var(--space-2);
+}
+/*
+ * The frame's own controls, and every card's. The four cards each drew their own Save and Reset -
+ * two with a padding of their own, two with none at all, so one button was a different height on
+ * every other tab of one dialog. A card styles what is ITS OWN and takes the chrome from here.
+ */
+.jamat-configuration__button {
+  padding: 3px 10px;
+  font: inherit;
+  font-size: var(--fs-secondary);
+  color: var(--color-text-2);
+  background: var(--color-surface-control-hover);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.jamat-configuration__button:disabled {
+  color: var(--color-text-5);
+  cursor: default;
+}
+.jamat-configuration__button--primary {
+  color: var(--color-text-1);
+  border-color: var(--color-accent);
+}
+.jamat-configuration__button--danger {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+/*
+ * One titled block of a screen. The rule belongs to the section that FOLLOWS another, so a screen
+ * is a list of sections with nothing between them, and the first one needs no special case beyond
+ * not drawing a rule above the top of the pane.
+ */
+.jamat-configuration__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+/* Frame rather than hairline: on the raised surface of this card a hairline is a rule nobody sees,
+   and being seen is the whole job of this one. */
+.jamat-configuration__section + .jamat-configuration__section {
+  padding-top: var(--space-3);
+  margin-top: var(--space-2);
+  border-top: 1px solid var(--color-border-frame);
+}
+/*
+ * Brighter and heavier than anything under it, and deliberately NOT upper case: one of these
+ * titles carries a project name, and a heading that rewrites the data in it is a heading that
+ * lies about what the project is called.
+ */
+.jamat-configuration__section-title {
+  margin: 0;
+  font-size: var(--fs-secondary);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--color-text-1);
+}
+/** The row a card ends with: Reset, then Save. */
+.jamat-configuration__actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+/** What a card says when a read or a save failed, in the one place it is said. */
+.jamat-configuration__problem {
+  padding: var(--space-2);
+  margin: 0;
+  font-size: var(--fs-secondary);
+  color: var(--color-danger);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-control);
+}
+/* The children of one group, indented by the row's own inline padding rather than by a margin here:
+   the depth is a property of the node, and the frame draws any level the catalog holds. */
+.jamat-configuration__branch {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}

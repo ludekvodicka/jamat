@@ -1,0 +1,10 @@
+2026-08-17T09:00:01.104Z INFO  host      descriptor written, port 51431
+2026-08-17T09:00:01.980Z INFO  client    host reachable in 876 ms
+2026-08-17T09:00:02.331Z INFO  session   created 7510a0d5, agent=claude, cwd=.testbed
+2026-08-17T09:00:02.502Z DEBUG terminal  attach opened, cols=120 rows=34
+2026-08-17T09:00:11.774Z WARN  rate      usage endpoint answered in 4210 ms
+2026-08-17T09:00:19.006Z INFO  files     git status: 9 entries, svn status: 11 entries
+2026-08-17T09:00:19.221Z DEBUG files     baseline HEAD resolved for 9 paths
+2026-08-17T09:00:24.640Z ERROR files     diff refused: data/big-app.log is over 2 MiB
+2026-08-17T09:00:31.115Z INFO  viewer    grant issued for docs/showcase.mdext
+2026-08-17T09:00:31.902Z DEBUG viewer    shiki loaded grammar: typescript

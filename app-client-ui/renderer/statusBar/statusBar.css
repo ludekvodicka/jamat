@@ -1,0 +1,129 @@
+/* flex: none is the bar's half of the shell contract: the workspace above it takes the free space,
+   the bar never shrinks below its own height. */
+.jamat-status {
+  display: flex;
+  flex: none;
+  align-items: center;
+  min-height: var(--size-statusbar);
+  padding: 0 var(--space-2);
+  border-top: 1px solid var(--color-border-hairline);
+  background: var(--window-color, var(--window-color-default));
+  color: var(--color-text-4);
+  font-family: var(--font-ui);
+  /* The pinned token, not --fs-status: the bar is a strip of fixed height, so its text is the one
+     text in the window the UI scale leaves alone. The control below inherits this size. */
+  font-size: var(--fs-statusbar);
+}
+.jamat-status__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.jamat-status__separator {
+  width: 1px;
+  height: var(--space-3);
+  background: var(--color-border-frame);
+}
+.jamat-status__spacer {
+  flex: 1;
+}
+
+/* The one item that carries a control. It lives here rather than in the tree's stylesheet because
+   what it has to fit is the bar: a default button is taller than the whole strip. */
+.jamat-host-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.jamat-host-status__start,
+.jamat-rate__retry,
+.jamat-session-model__compact {
+  padding: 0 var(--space-1);
+  font: inherit;
+  line-height: var(--space-4);
+  color: var(--color-text-2);
+  background: var(--color-surface-control);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.jamat-host-status__start:hover,
+.jamat-rate__retry:hover,
+.jamat-session-model__compact:hover {
+  color: var(--color-text-1);
+  background: var(--color-surface-control-hover);
+}
+
+/* The usage widget, narrowed to the provider whose terminal is the tab in front. Monospace because
+   the meter is ten characters rather than a drawn bar: only a fixed pitch keeps the cells square and
+   the percentage - padded to two - aligned as the numbers move. It is the same font the model widget
+   beside it draws in, so switching from one agent's tab to another's moves neither of them. */
+.jamat-rate {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+/* Both are controls stripped back to text: the bar keeps reading as one line rather than as two
+   buttons someone dropped into it. The line asks for a fresh read, the arrow opens the usage page. */
+.jamat-rate__line,
+.jamat-rate__link {
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+/* Old numbers, no numbers at all, or no provider behind them. Dimmed rather than hidden - which of
+   the three it is, and why, is in the tooltip. --color-text-5 is what decoration is for: nothing
+   dimmed here is readable ON ITS OWN. */
+.jamat-rate__line--dim,
+.jamat-rate__absent {
+  color: var(--color-text-5);
+}
+.jamat-rate__link {
+  color: var(--color-text-4);
+}
+.jamat-rate__link:hover {
+  color: var(--color-text-1);
+}
+
+/* The model, the effort and how full the context is, for the session the active tab is attached to.
+   Monospace so that switching from one agent's terminal to another's moves nothing beside it: the
+   two widgets appear and disappear together, and the reflow that costs is paid once. */
+.jamat-session-model {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+/* The whole of what colours the line; the thresholds behind these names belong to sessionModelLine.
+   `none` is declared rather than left out, so this block is the whole mapping and nothing is missing. */
+.jamat-session-model--none {
+  color: inherit;
+}
+.jamat-session-model--notice {
+  color: var(--color-attention);
+}
+.jamat-session-model--warn {
+  color: var(--color-warn);
+}
+.jamat-session-model--danger {
+  color: var(--color-danger);
+}
+/* A reading that stopped being refreshed. Dimmed rather than blanked - it is still the last true
+   thing this window knows - and the Compact button goes with it, because acting on a number nobody
+   can refresh is the part that should stop. The rate widget one item away marks staleness the same
+   way. */
+.jamat-session-model--stale {
+  color: var(--color-text-4);
+  opacity: 0.75;
+}
+
+/* Inside the widget rather than beside it, so it travels with the line it is about; the gap of the
+   bar's own item is between ITEMS, and this is not one. The colour is the control's, not the level's:
+   what the threshold colours is the reading, and a button that changed colour with it would read as
+   a warning of its own. */
+.jamat-session-model__compact {
+  margin-left: var(--space-2);
+}

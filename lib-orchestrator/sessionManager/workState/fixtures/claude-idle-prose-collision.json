@@ -1,0 +1,19 @@
+{
+  "agent": "claude",
+  "expected": {
+    "hint": "idle"
+  },
+  "provenance": {
+    "origin": "AppJamat (V1) core/agents/claude/fixtures/work-detection.json",
+    "case": "markdown and elapsed prose",
+    "capture": "collision negative written for the V1 corpus: ordinary text that must NOT match the busy patterns. Constructed, never captured",
+    "ported": "rawTail, screenTail and wideScreenTail copied byte for byte from the V1 case; nothing was written for this tree. The V1 `phase` field is dropped: frames here carry no phase.",
+    "identical": "AppJamatV2 core/agents/*/fixtures/work-detection.json holds the same corpus byte for byte",
+    "note": "A markdown bullet looks like a spinner glyph and a reply can mention \"(5s)\". Both must stay idle."
+  },
+  "frame": {
+    "rawTail": "",
+    "screenTail": "* install the dependencies first\nThe (5s) pause is intentional.\n> ",
+    "wideScreenTail": "* install the dependencies first\nThe (5s) pause is intentional.\n> "
+  }
+}

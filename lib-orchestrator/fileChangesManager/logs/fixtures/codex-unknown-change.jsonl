@@ -1,0 +1,4 @@
+{"timestamp":"2026-08-14T08:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"Change files"}}
+{"timestamp":"2026-08-14T08:00:02.000Z","type":"event_msg","payload":{"type":"patch_apply_end","call_id":"patch-one","success":true,"changes":{"Q:/Project/src/file.ts":{"type":"add","content":"new"}}}}
+{"timestamp":"2026-08-14T08:00:03.000Z","type":"event_msg","payload":{"type":"user_message","message":"And again"}}
+{"timestamp":"2026-08-14T08:00:04.000Z","type":"event_msg","payload":{"type":"patch_apply_end","call_id":"patch-two","success":true,"changes":{"Q:/Project/src/other.ts":{"type":"rename","from":"Q:/Project/src/was.ts"},"Q:/Project/src/kept.ts":{"type":"add","content":"kept"}}}}

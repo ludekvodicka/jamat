@@ -1,0 +1,23 @@
+{
+  "agent": "codex",
+  "expected": {
+    "hint": "background"
+  },
+  "provenance": {
+    "origin": "captured from this tree's live Host through the installed appjamat-v3 terminal peek",
+    "case": "Codex waiting for one background terminal in a 103-column terminal",
+    "capture": "the user-reported live Codex session was inspected through AppJamatV3 on 2026-08-30. Codex clipped the status itself with a Unicode ellipsis after the exact background-terminal counter; paths were sanitized after capture",
+    "ported": "not ported",
+    "identical": "not identical; this is a sanitized recorded AppJamatV3 frame",
+    "note": "Before the fix this status missed the full navigation-suffix pattern and the empty input placeholder classified the live background command as idle."
+  },
+  "recorded": {
+    "build": "codex-cli 0.150.1",
+    "capturedAt": "2026-08-30"
+  },
+  "frame": {
+    "rawTail": "",
+    "screenTail": "\n• Waiting for background terminal (55s • esc to interrupt) · 1 background terminal running · /ps to vi…\n  └ node Q:/Tooling/agent_extensions/codex/CLI/gitbash.mjs Q:/Tooling/agent_extensions/runtime-scripts/commit-svn.sh openwait Q:/PROJECT…\n\n\n› Ask Codex to do anything\n\n  gpt-5.6-sol max · Q:\\PROJECT",
+    "wideScreenTail": "\n• TortoiseSVN stále čeká na lidské potvrzení. Proces nechávám běžet.\n\n• Waiting for background terminal (55s • esc to interrupt) · 1 background terminal running · /ps to vi…\n  └ node Q:/Tooling/agent_extensions/codex/CLI/gitbash.mjs Q:/Tooling/agent_extensions/runtime-scripts/commit-svn.sh openwait Q:/PROJECT…\n\n\n› Ask Codex to do anything\n\n  gpt-5.6-sol max · Q:\\PROJECT"
+  }
+}

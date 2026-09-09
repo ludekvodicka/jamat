@@ -1,0 +1,67 @@
+.jamat-launcher-flows {
+  padding: var(--space-2) 0;
+}
+/* The same two-column form the create screen uses: one card, one shape. */
+.jamat-launcher-flows__row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-1) var(--space-3);
+}
+.jamat-launcher-flows__label {
+  width: 90px;
+  padding-top: 5px;
+  font-size: var(--fs-secondary);
+  color: var(--color-text-3);
+}
+.jamat-launcher-flows__path {
+  padding-top: 5px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-secondary);
+  color: var(--color-text-2);
+}
+.jamat-launcher-flows__carried {
+  padding-top: 5px;
+  font-size: var(--fs-status);
+  color: var(--color-text-4);
+}
+.jamat-launcher-flows__line,
+.jamat-launcher-flows__area {
+  flex: 1;
+  min-width: 0;
+  padding: 3px var(--space-2);
+  font: inherit;
+  color: var(--color-text-1);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-launcher-flows__area {
+  font-family: var(--font-mono);
+  font-size: var(--fs-secondary);
+  resize: vertical;
+}
+.jamat-launcher-flows__line:focus,
+.jamat-launcher-flows__area:focus {
+  border-color: var(--color-accent-strong);
+  outline: none;
+}
+/* Drawn where the field is, because it is about that field. */
+.jamat-launcher-flows__problem {
+  font-size: var(--fs-secondary);
+  color: var(--color-danger);
+}
+.jamat-launcher-flows__start {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-3) var(--space-3) var(--space-1);
+}
+.jamat-launcher-flows__note {
+  margin: 0 var(--space-3) var(--space-2);
+  font-size: var(--fs-status);
+  color: var(--color-text-4);
+  text-align: center;
+}
+.jamat-launcher-flows__line--invalid {
+  border-color: var(--color-danger);
+}

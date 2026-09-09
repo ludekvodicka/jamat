@@ -1,0 +1,142 @@
+---
+title: FileViewer a File Changes - ruční acceptance
+type: testbed
+generated: scripts/dev/make-file-viewer-testbed.ts
+vcs: git + svn v jedné pracovní kopii
+---
+
+# Testbed pro FileViewer a File Changes
+
+Tenhle strom je vyrobený, ne psaný rukou. Vzniká příkazem `pnpm dev:testbed --force`
+a je zároveň **git repozitářem a SVN pracovní kopií**, takže v jednom projektu jde
+přepnout `primaryVcs` a vidět rozdíl.
+
+::status{git="3 commity" svn="2 revize" stav="špinavá pracovní kopie" účel="ruční test"}
+
+:::warning[Než začneš]
+Aplikaci spusť čerstvě. Renderer se do už otevřeného okna nedostane, takže test na
+staré instanci může spadnout na starém bundle, ne na kódu.
+
+Projekt musí být v katalogu. V konfiguračním overlay přidej project root
+`C:\Projects\NodeJs\AppJamatV3\.testbed`; kategorie pak obsahuje jediný projekt,
+`FileViewerTestbed`. Kořen je schválně s tečkou: scanner tečkové adresáře přeskakuje,
+takže do žádné jiné kategorie tenhle strom nespadne.
+:::
+
+---
+
+## 1. Formáty ve FileVieweru
+
+Otevři každý soubor a zkontroluj, že režimy nahoře sedí s tím, co je v tabulce.
+
+| Soubor | Očekávaný druh | Režimy |
+|---|---|---|
+| `docs/showcase.mdext` · `docs/archify.mdext` · `docs/broken.mdext` | Markdown, flavor `mdext` | Rendered, Raw, Diff |
+| `docs/plain.md` | Markdown, flavor `markdown` | Rendered, Raw, Diff |
+| `src/app.ts` | Code, typescript | Rendered, Raw, Diff |
+| `src/worker.py` · `src/query.sql` · `src/styles.css` | Code, python / sql / css | Rendered, Raw, Diff |
+| `src/Dockerfile` · `src/Makefile` · `.gitignore` | Code podle JMÉNA, ne přípony | Rendered, Raw, Diff |
+| `data/report.csv` · `logs/app.log` · `.env-local` | Text | Raw, Diff |
+| `assets/logo.png` · `photo.jpg` · `animated.gif` · `sample.webp` · `sample.bmp` | Image | Preview, Hex |
+| `assets/icon.svg` | SVG | Rendered, Raw, Diff |
+| `media/clip.mp4` · `media/clip.webm` | Video | Preview, Hex |
+| `binary/sample.bin` | Hex | Hex |
+| `data/big-app.log` | Text nad 2 MiB | **Hex a Diff**, nikdy Raw |
+
+Sloupec režimů platí pro soubor, který VCS zná. U souboru mimo VCS Diff nebude.
+
+- [ ] `binary/sample.bin` v hexu: offsety, hex sloupec, ASCII sloupec, stránkování po 64 KiB
+- [ ] `data/big-app.log` NEnabídne Raw, protože je nad 2 MiB
+- [ ] `animated.gif` se v preview opravdu hýbe (jde přes `jamat-v3-file://`)
+- [ ] `media/clip.mp4` se přehraje a umí přeskočit doprostřed (byte range)
+
+## 2. Negativní cesty klasifikátoru
+
+Tyhle soubory lžou o svém obsahu. Klasifikace jde po bajtech, ne po příponě.
+
+- [ ] `binary/broken-text.txt` má NUL bajty, takže je Hex, ne Text
+- [ ] `binary/not-really.png` je text s příponou obrázku: preview zůstane prázdné, Hex ukáže písmena
+- [ ] `binary/broken.svg` je nevalidní XML: Rendered ukáže chybu, Raw ukáže zdroj
+- [ ] `docs/broken.mdext`: každý rozbitý diagram spadne na "show source", zbytek dokumentu se vykreslí
+
+## 3. MdExt renderer
+
+V `docs/showcase.mdext`:
+
+- [ ] frontmatter je sbalený proužek, ne text v těle
+- [ ] pět callout barev, `::status` čipy zelený, žlutý, červený a neutrální, `:::details` se rozbalí
+- [ ] tabulky, task listy, citace, zvýrazněné fence podle jazyka, Copy tlačítko na fenci
+- [ ] `<script>` ani `<b>` se nevykreslí, `javascript:` odkaz je mrtvý
+- [ ] obrázek `../assets/logo.png` se načte relativně z grantu dokumentu
+- [ ] mermaid, graphviz, vega-lite a ruční `svg` fence vykreslí SVG
+
+V `docs/archify.mdext`:
+
+- [ ] všech pět rodin: architecture, workflow, sequence, dataflow, lifecycle
+
+## 4. Directory Explorer
+
+Sidebar `Ctrl+G`, přepnout na Directory Explorer. Samostatný panel: kontextové menu tabu →
+`Open project folder`.
+
+- [ ] `docs/empty/` hlásí přesně `This directory is empty.`
+- [ ] `docs/deep/level-1/…/level-4/` postaví celý breadcrumb, klik na segment skočí zpět
+- [ ] `↑` na kořeni grantu je zakázané, o patro níž funguje
+- [ ] `links/inside-link` je průchozí, protože míří dovnitř rootu
+- [ ] `links/outside-junction` je zakázaný s hláškou o cíli mimo root
+- [ ] v embedded exploreru NEJDE vylézt nad kořen session, v Project Folder panelu grant sahá
+      až na kořen disku
+
+## 5. File Changes
+
+Sidebar `Ctrl+H`. Pracovní kopie je schválně špinavá.
+
+| Cesta | Co se s ní stalo |
+|---|---|
+| `src/app.ts` | **čtyři** oddělené hunky, ověř dva žlaby, značky a minimapu |
+| `docs/plain.md` | jeden hunk, k tomu Rendered a Raw na stejném souboru |
+| `data/report.csv` | změna ve stagi A v pracovní kopii: git kódy `MM` |
+| `src/legacy/renamedFile.ts` | **přejmenovaný soubor**, git ukáže `movedFile.ts` jako zdroj. Diff je prázdný schválně: změnila se cesta, ne obsah |
+| `src/removed.ts` | smazaný: druh `missing`, jediný režim Diff, diff je samé odebrání |
+| `docs/untracked.md` | nový nesledovaný soubor |
+| `assets/logo.png` | změněný obrázek: diff hlásí `binary` |
+| `binary/sample.bin` | změněný binární soubor: diff hlásí `binary` |
+| `data/big-app.log` | změněný soubor nad 2 MiB: diff hlásí `too-large` |
+| `src/feature/` | nový adresář, v seznamu je syntetický řádek adresáře |
+
+- [ ] přepnutí `primaryVcs` v nastavení mění výsledek. `src/gitOnly.ts` je v gitu zacommitovaný,
+      v SVN je pořád nesledovaný, protože ho třetí git commit nese a SVN revize ne
+- [ ] pod SVN je stejné přejmenování dvojicí `movedFile.ts` smazaný a `renamedFile.ts` přidaný.
+      Není to chyba: pracovní stav SVN zdroj přejmenování nenese, jen jeho log
+- [ ] historie: dvě SVN revize, tři git commity, každý jde vybrat jako baseline
+- [ ] `src/legacy/renamedInHistory.ts` má zdroj přejmenování ve druhé revizi historie
+
+## 6. Chat atribuce a externí soubor
+
+Tohle harness nevyrobí, chce to živou session. Spusť v tomhle projektu Claude nebo Codex a
+zadej mu doslova:
+
+:::tip[Prompt do session]
+Uprav `src/app.ts` tak, aby funkce `greet` vracela velká písmena. Pak přidej nový soubor
+`docs/from-agent.md` s jednou větou. Nakonec uprav soubor mimo tenhle projekt:
+`%LOCALAPPDATA%\jamat-v3-testbed\external\external-notes.md`, přidej do něj jeden řádek.
+:::
+
+- [ ] `src/app.ts` má vedle VCS stavu i chat atribuci, VCS stav nezmizel
+- [ ] `docs/from-agent.md` přibyl jako nový soubor
+- [ ] `external-notes.md` se objevil jako **externí položka** s atribucí, i když leží mimo cwd
+- [ ] výběr baseline "po zprávě" ukáže stav po té zprávě, ne HEAD
+
+---
+
+:::details[Jak testbed vyrobit znovu]
+Pracovní kopii během testu zašpiníš. Reset je jeden příkaz z kořene AppJamatV3:
+
+```bash
+pnpm dev:testbed --force
+```
+
+Smaže `.testbed/`, smaže `%LOCALAPPDATA%\jamat-v3-testbed\` a postaví oboje znovu.
+Project root se tím nemění, takže ho stačí zaregistrovat jednou. Zdroj dokumentů leží
+v `configs/testbed/tree/`, generátor v `scripts/dev/make-file-viewer-testbed.ts`.
+:::

@@ -1,0 +1,4 @@
+allowBuilds:
+  node-pty: true
+pmOnFail: error
+sideEffectsCache: true

@@ -1,0 +1,76 @@
+.jamat-configuration-remarkable-storage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.jamat-configuration-remarkable-storage__note,
+.jamat-configuration-remarkable-storage__bad {
+  margin: 0;
+  font-size: var(--fs-secondary);
+}
+.jamat-configuration-remarkable-storage__note {
+  color: var(--color-text-5);
+}
+.jamat-configuration-remarkable-storage__bad {
+  color: var(--color-danger);
+}
+.jamat-configuration-remarkable-storage__scope {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  margin: 0;
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-configuration-remarkable-storage__scope legend {
+  padding: 0 var(--space-1);
+  color: var(--color-text-1);
+}
+/* The hint sits under the title rather than beside it: the two choices differ in what they cost
+   later, and that does not fit on the same line as a three-word name. */
+.jamat-configuration-remarkable-storage__scope label {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0 var(--space-2);
+  align-items: baseline;
+}
+.jamat-configuration-remarkable-storage__label {
+  color: var(--color-text-2);
+}
+.jamat-configuration-remarkable-storage__hint {
+  grid-column: 2;
+  font-size: var(--fs-secondary);
+  color: var(--color-text-4);
+}
+.jamat-configuration-remarkable-storage__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+.jamat-configuration-remarkable-storage__heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  color: var(--color-text-1);
+}
+.jamat-configuration-remarkable-storage__heading span {
+  font-size: var(--fs-secondary);
+  color: var(--color-text-4);
+}
+.jamat-configuration-remarkable-storage input[type="text"] {
+  flex: 0 1 320px;
+  padding: 3px 8px;
+  font: inherit;
+  color: var(--color-text-2);
+  background: var(--color-surface-control-hover);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-configuration-remarkable-storage input[type="text"][aria-invalid="true"] {
+  border-color: var(--color-danger);
+}
+.jamat-configuration-remarkable-storage input[type="text"]:disabled {
+  color: var(--color-text-5);
+}

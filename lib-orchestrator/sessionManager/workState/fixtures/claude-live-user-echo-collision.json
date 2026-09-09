@@ -1,0 +1,22 @@
+{
+  "agent": "claude",
+  "expected": {
+    "hint": "working"
+  },
+  "provenance": {
+    "origin": "assembled from claude session 042 on this tree's own Host, 2026-08-27",
+    "case": "a working turn whose screen still carries the echo of a numbered user message",
+    "capture": "real rows, assembled: every row is the recorded bytes of that screen with the padding that filled it to 195 columns removed, and the rows between the echo and the status region dropped so the echo sits where the bug put it - inside the shallow window. It is the negative that pins the second half of the corroboration rule: `> 1. opraveno.` normalizes to the selected menu row `>1.`, and a bare row is not a menu wherever it is seen",
+    "ported": "nothing - recorded here",
+    "identical": "the same idea as claude-live-quoted-menu-collision, from the other direction: there the row is quoted text, here it is the user's own message echoed back"
+  },
+  "recorded": {
+    "build": "claude-code 2.1.247",
+    "capturedAt": "2026-08-27T09:22:20.016Z"
+  },
+  "frame": {
+    "rawTail": "\u001b[38;2;80;80;80;48;2;55;55;55m> \u001b[38;2;255;255;255m1. opraveno.\r\n\u001b[39m     \u001b[38;2;255;255;255mpokracuj\r\n-\u001b[1D\u001b[1X\u001b[38;2;153;153;153;49m  ⎿  \u001b[1m1\u001b[22m skill available\u001b[0m\r\n\u001b[38;2;215;119;87m✽ Swooping… \u001b[38;2;153;153;153m(8m 26s · ↓ 16.2k tokens)\r\n⎿  Tip: Use /config to change your default permission mode (including Plan Mode)\r\n\u001b[38;2;136;136;136m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[38;2;153;153;153m> \n\u001b[38;2;136;136;136m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[0m  \u001b[38;2;255;107;128m⏵⏵ bypass permissions on \u001b[38;2;153;153;153m(shift+tab to cycle) · esc to interrupt · ← 1 agent\u001b[114C\u001b[38;2;78;186;101m/rc  \u001b[2A\u001b[195D\u001b[0m\u001b[?2004h\u001b[?1004h\u001b[?1003h",
+    "screenTail": "\u001b[38;2;80;80;80;48;2;55;55;55m> \u001b[38;2;255;255;255m1. opraveno.\r\n\u001b[39m     \u001b[38;2;255;255;255mpokracuj\r\n-\u001b[1D\u001b[1X\u001b[38;2;153;153;153;49m  ⎿  \u001b[1m1\u001b[22m skill available\u001b[0m\r\n\u001b[38;2;215;119;87m✽ Swooping… \u001b[38;2;153;153;153m(8m 26s · ↓ 16.2k tokens)\r\n⎿  Tip: Use /config to change your default permission mode (including Plan Mode)\r\n\u001b[38;2;136;136;136m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[38;2;153;153;153m> \n\u001b[38;2;136;136;136m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[0m  \u001b[38;2;255;107;128m⏵⏵ bypass permissions on \u001b[38;2;153;153;153m(shift+tab to cycle) · esc to interrupt · ← 1 agent\u001b[114C\u001b[38;2;78;186;101m/rc  \u001b[2A\u001b[195D\u001b[0m\u001b[?2004h\u001b[?1004h\u001b[?1003h",
+    "wideScreenTail": "\u001b[38;2;80;80;80;48;2;55;55;55m> \u001b[38;2;255;255;255m1. opraveno.\r\n\u001b[39m     \u001b[38;2;255;255;255mpokracuj\r\n-\u001b[1D\u001b[1X\u001b[38;2;153;153;153;49m  ⎿  \u001b[1m1\u001b[22m skill available\u001b[0m\r\n\u001b[38;2;215;119;87m✽ Swooping… \u001b[38;2;153;153;153m(8m 26s · ↓ 16.2k tokens)\r\n⎿  Tip: Use /config to change your default permission mode (including Plan Mode)\r\n\u001b[38;2;136;136;136m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[38;2;153;153;153m> \n\u001b[38;2;136;136;136m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[0m  \u001b[38;2;255;107;128m⏵⏵ bypass permissions on \u001b[38;2;153;153;153m(shift+tab to cycle) · esc to interrupt · ← 1 agent\u001b[114C\u001b[38;2;78;186;101m/rc  \u001b[2A\u001b[195D\u001b[0m\u001b[?2004h\u001b[?1004h\u001b[?1003h"
+  }
+}

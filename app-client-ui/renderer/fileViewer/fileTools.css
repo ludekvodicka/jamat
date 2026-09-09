@@ -1,0 +1,250 @@
+.file-tools {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.file-tools button,
+.file-tools select {
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-control);
+  color: var(--color-text-2);
+  font: inherit;
+  font-size: var(--fs-secondary);
+}
+.file-tools button { cursor: pointer; }
+.file-tools button:hover:not(:disabled) {
+  background: var(--color-surface-control-hover);
+  color: var(--color-text-1);
+}
+.file-tools button:disabled {
+  color: var(--color-text-5);
+  cursor: default;
+}
+.file-tools-tabs {
+  display: flex;
+  flex: none;
+  border-bottom: 1px solid var(--color-border-hairline);
+}
+.file-tools-tabs button {
+  flex: 1;
+  padding: var(--space-1);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-text-4);
+  font: inherit;
+}
+.file-tools-tabs button[aria-selected='true'] {
+  border-bottom-color: var(--color-accent);
+  color: var(--color-text-1);
+}
+.file-tools-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.file-tools-controls,
+.file-tools-explorer-path,
+.file-tools-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--color-border-hairline);
+}
+.file-tools-controls select {
+  flex: 1;
+  min-width: 0;
+}
+.file-tools-controls .file-tools-sort {
+  flex: none;
+}
+.file-tools-controls button,
+.file-tools-explorer-path button,
+.file-tools-load-more {
+  padding: 2px var(--space-1);
+}
+.file-tools-summary {
+  justify-content: space-between;
+  color: var(--color-text-4);
+  font-size: var(--fs-status);
+}
+.file-tools-note,
+.file-tools-error,
+.file-tools-warning {
+  margin: var(--space-2);
+  color: var(--color-text-4);
+  font-size: var(--fs-status);
+}
+.file-tools-error { color: var(--color-danger); }
+.file-tools-warning { color: var(--color-attention); }
+.file-tools-file-list,
+.file-tools-directory-list,
+.file-tools-tree,
+.file-tools-tree ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+button.file-tools-tree-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  width: 100%;
+  padding-top: 2px;
+  padding-right: var(--space-2);
+  padding-bottom: 2px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-text-2);
+  text-align: left;
+  cursor: pointer;
+}
+button.file-tools-tree-row:hover:not(:disabled) {
+  background: var(--color-surface-control-hover);
+  color: var(--color-text-1);
+}
+.file-tools-tree-chevron {
+  flex: none;
+  width: 12px;
+  color: var(--color-text-5);
+  text-align: center;
+}
+.file-tools-tree-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-tools-file-list button,
+.file-tools-directory-list button {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  width: 100%;
+  padding: 3px var(--space-2);
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-text-2);
+  text-align: left;
+  cursor: pointer;
+}
+.file-tools-file-list button:hover:not(:disabled),
+.file-tools-directory-list button:hover:not(:disabled) {
+  background: var(--color-surface-control-hover);
+  color: var(--color-text-1);
+}
+.file-tools-file-list button:disabled,
+.file-tools-directory-list button:disabled {
+  color: var(--color-text-5);
+  cursor: default;
+}
+.file-tools-file-path,
+.file-tools-directory-list button span:last-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-tools-status {
+  width: 14px;
+  color: var(--color-text-4);
+  font-weight: 600;
+  text-align: center;
+}
+.file-tools-status--added,
+.file-tools-status--untracked,
+.file-tools-status--copied { color: var(--color-ok); }
+.file-tools-status--deleted,
+.file-tools-status--missing,
+.file-tools-status--conflicted,
+.file-tools-status--obstructed { color: var(--color-danger); }
+.file-tools-status--modified,
+.file-tools-status--renamed,
+.file-tools-status--replaced { color: var(--color-attention); }
+.file-tools-location {
+  color: var(--color-warn);
+  font-size: var(--fs-chip);
+}
+.file-tools-when {
+  flex: none;
+  color: var(--color-text-5);
+  font-size: var(--fs-chip);
+  white-space: nowrap;
+}
+.file-tools-history {
+  border-top: 1px solid var(--color-border-hairline);
+}
+.file-tools-history > summary {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-1) var(--space-2);
+  color: var(--color-text-3);
+  cursor: pointer;
+  font-size: var(--fs-status);
+}
+.file-tools-history > summary span:last-child { color: var(--color-text-5); }
+.file-tools-history > p {
+  margin: var(--space-1) var(--space-2);
+  color: var(--color-text-4);
+  font-size: var(--fs-status);
+}
+.file-tools-load-more {
+  margin: var(--space-2);
+}
+.file-tools-explorer-path-display,
+.file-tools-explorer-breadcrumb {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-4);
+  font-family: var(--font-mono);
+  font-size: var(--fs-status);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-tools-explorer-breadcrumb {
+  display: flex;
+  align-items: center;
+  overflow-x: auto;
+  text-overflow: clip;
+}
+.file-tools-explorer-breadcrumb > span {
+  flex: none;
+  color: var(--color-text-5);
+}
+.file-tools-explorer-breadcrumb button {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-3);
+  cursor: pointer;
+  font: inherit;
+}
+.file-tools-explorer-breadcrumb button:hover:not(:disabled),
+.file-tools-explorer-breadcrumb button[aria-current='page'] {
+  color: var(--color-text-1);
+  background: var(--color-surface-control-hover);
+}
+.file-tools-explorer-breadcrumb button:disabled {
+  color: var(--color-text-5);
+  cursor: default;
+}
+.file-directory-viewer {
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  background: var(--color-surface-sunken);
+}
+.file-directory-menu {
+  min-width: 120px;
+}

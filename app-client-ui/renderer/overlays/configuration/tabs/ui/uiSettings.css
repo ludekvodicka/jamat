@@ -1,0 +1,90 @@
+/* The UI tab's own sheet, the way each launcher screen carries one: the pane it draws into is the
+   window's, everything below the pane is this screen's. */
+.jamat-configuration-ui {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.jamat-configuration-ui__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.jamat-configuration-ui__heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 260px;
+}
+.jamat-configuration-ui__label {
+  color: var(--color-text-1);
+  cursor: pointer;
+}
+.jamat-configuration-ui__hint {
+  font-size: var(--fs-status);
+  color: var(--color-text-4);
+}
+/* The first range control in this shell. `accent-color` is the whole of its theming: it colours the
+   track and the thumb from the same token every other control here uses, which is why there are no
+   webkit pseudo-elements below it - a hand-drawn track would need a raw colour, and the token gate
+   refuses one anywhere but tokens.css. */
+.jamat-configuration-ui__slider {
+  flex: 1;
+  max-width: 320px;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+.jamat-configuration-ui__slider:disabled {
+  accent-color: var(--color-text-5);
+  cursor: default;
+}
+.jamat-configuration-ui__slider:focus-visible {
+  outline: 1px solid var(--color-accent-strong);
+  outline-offset: 2px;
+}
+/* The first `select` in this shell, sharing the slider's track width so the two rows line up. The
+   closed control is ours to paint from tokens; the dropped-open list is not - the platform draws
+   that one, and on Windows it draws it light unless the control declares which scheme it is in.
+   `color-scheme` is that declaration and carries no colour of its own, so the palette stays where
+   the gate expects it. */
+.jamat-configuration-ui__select {
+  flex: 1;
+  max-width: 320px;
+  padding: 2px 6px;
+  font: inherit;
+  font-size: var(--fs-secondary);
+  color: var(--color-text-1);
+  background: var(--color-surface-control);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  color-scheme: dark;
+  cursor: pointer;
+}
+.jamat-configuration-ui__select:disabled {
+  color: var(--color-text-5);
+  background: var(--color-surface-sunken);
+  cursor: default;
+}
+.jamat-configuration-ui__select:focus-visible {
+  outline: 1px solid var(--color-accent-strong);
+  outline-offset: 2px;
+}
+/* Fixed width and monospace: the number changes under the thumb, and a proportional one would move
+   the whole row as it went from 95 to 100. */
+/* The width is in ch and the text never wraps, because this readout is the one label in the window
+   that has to stay legible AT the size it is reporting: in px it held "100 %" on one line and broke
+   "150 %" across two, which is the reading the slider was moved to get. Five characters of the mono
+   font it is already set in, so the row still does not shift between 95 and 100. */
+.jamat-configuration-ui__value {
+  width: 5ch;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-secondary);
+  color: var(--color-text-1);
+  text-align: right;
+}
+.jamat-configuration-ui__note {
+  margin: 0;
+  font-size: var(--fs-status);
+  color: var(--color-text-5);
+}

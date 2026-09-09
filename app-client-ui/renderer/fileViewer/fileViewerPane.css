@@ -1,0 +1,12 @@
+.file-viewer-pane {
+  min-width: 0;
+  min-height: 0;
+}
+
+.file-viewer-pane .file-viewer-toolbar {
+  flex-wrap: wrap;
+}
+
+.file-viewer-back {
+  padding: 2px var(--space-2);
+}

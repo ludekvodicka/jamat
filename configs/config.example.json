@@ -1,39 +1,61 @@
 {
-  "_README": [
-    "Template for a per-user app config: configs/config-<user>.json (read by app-cli, app-agent, app-electron).",
-    "Copy to config-<yourname>.json and edit `name` + `categories` for this machine.",
-    "Launch: JAMAT_CONFIG=config-<yourname>.json (electron) or --config configs/config-<yourname>.json (cli/agent).",
-    "",
-    "`categories[].path` = an absolute folder Jamat scans for projects; replace the examples with your own (Windows e.g. C:\\Code\\projects, macOS/Linux e.g. /home/you/code). `hiddenFolders` and `virtualFolders` are optional.",
-    "",
-    "SECRETS DO NOT GO HERE. The Claude.ai usage credentials live in a gitignored sibling file",
-    "configs/config-<yourname>.local.json = { \"claudeUsage\": { \"orgId\": \"...\", \"sessionKey\": \"sk-ant-...\" } }.",
-    "core/config.ts merges that overlay at load time as a sibling next to the config file (never git, never bundled into the exe).",
-    "Omit the .local.json entirely and the usage dashboard is simply empty — everything else still works.",
-    "",
-    "\"dockerIsolation\": false hides the start menu's Docker-isolation offer (the \"Isolated (Docker)?\" create prompt + the 🐳 marker) — set it on machines without Docker. Absent/true = offered (default).",
-    "",
-    "\"sessionDonePrompts\" are the one-click quick prompts in the bottom-right popup that appears (Electron) when a Claude session finishes a non-trivial turn on the active tab. Each {label,prompt} is typed into the session + Enter on click. Omit to use a small built-in default. The popup is toggled in app Settings → Notifications.",
-    "",
-    "\"customMenus\" add your own per-project actions to the start menu — press F3 on a (non-Docker-isolated) project to open them. Each node is either a GROUP { label, items:[...] } that opens a sub-menu, or a COMMAND { label, run:{ command, args, cwd } } that runs against the selected project. Placeholders {dir} (absolute project path) and {name} (folder name) are substituted in args/cwd. Groups nest freely. Example: [ { \"label\": \"Deploy\", \"items\": [ { \"label\": \"Build\", \"run\": { \"command\": \"npm\", \"args\": [\"run\", \"build\"], \"cwd\": \"{dir}\" } } ] } ]. Empty/absent = no custom actions (default).",
-    "",
-    "\"selfUpdate\" tunes updates — it does NOT pick a channel. The channel follows the RUNTIME: an INSTALLED build auto-updates from this project's GitHub Releases (Windows + Linux; macOS needs a signed build, so it has no channel); a build running from a SOURCE checkout never touches the network — it compares itself to the sources on disk and offers a restart (the launcher recompiles), so updating the sources stays your job (svn update / git pull). Keys: \"autoCheck\": false silences the background check (the manual menu action still works); \"checkIntervalMinutes\" sets the cadence (default 120 installed / 15 from source). The old \"provider\"/\"vcs\"/\"repoPath\" keys are ignored (a config carrying them still loads and warns in Settings -> Updates).",
-    "",
-    "\"agents\" configures per-agent PRE-LAUNCH hooks (Settings -> Agents): a command run in the project folder right before that agent starts a session. Shape: { \"codex\": { \"preLaunch\": { \"command\": \"node\", \"args\": [\"~/.claude/extensions/codex/CLI/packer.mjs\", \"build\", \"--dir\", \"{dir}\"], \"cwd\"?: \"{dir}\", \"timeoutMs\"?: 20000 } } }. Placeholders {dir} (absolute project path) and {name} (folder name) are substituted; a leading ~ expands to your home dir. A failing hook is NON-FATAL — it is logged and the agent launches anyway. Absent/empty (the default here) = no hooks. The Codex example above runs the AGENTS.md packer so a Codex session picks up our CLAUDE.md conventions; enable it only if you use that tooling.",
-    "",
-    "(The :3500 remote-server proxy has its own deploy config — see app-agent/config-remote.example.json — it is NOT a per-user app config.)"
-  ],
-  "name": "Example",
+  "_README": "Copy this file to <configDir>/config.json (default ~/.jamat-v3) and edit it. Each top-level key below is a section with one owner, which writes that key and nothing else; keys this build does not know are preserved on save, so editing by hand is safe. Override the config directory with JAMAT_V3_CONFIG_DIR.",
+  "schemaVersion": 1,
+  "_README_fileChanges": "Which version control system File Changes prefers when both Git and SVN are available. The section may be left out, which is the same as git.",
+  "fileChanges": {
+    "primaryVcs": "git"
+  },
+  "_README_ui": "Text size, as a percentage of this build's own sizes. 100 is the default appearance, the range is 70 to 150 and the step is 5; a number off that grid is snapped to it rather than thrown away. fontScalePercent is everything the window draws except the status bar, fileViewerFontScalePercent multiplies it again inside a file viewer's document, and terminalFontScalePercent is the terminal alone. terminalTheme is which colours the terminal paints in: 'original' takes the window's own background and text, 'soft' the Windows Terminal pair V1 used, 'vscodeDark' the VS Code Dark palette; a name outside those three is reported and read as 'original'. The whole section may be left out, which is the same as the values below.",
+  "ui": {
+    "fontScalePercent": 100,
+    "fileViewerFontScalePercent": 100,
+    "terminalFontScalePercent": 100,
+    "terminalTheme": "original"
+  },
+  "_README_remarkable": "Connection settings for the reMarkable tablet. host and fingerprint stay absent until explicitly configured; fingerprint must be the verified SHA256 value shown by the tablet. timeoutMilliseconds accepts 1000 through 600000 and defaults to 180000. The password is encrypted in machine-local state through the operating system and must never be written here.",
+  "remarkable": {
+    "timeoutMilliseconds": 180000
+  },
+  "_README_agents": "Per agent, what a session starts with when nothing overrides it. yolo skips the agent's own permission prompts and is off for both until somebody turns it on. model and effort are ABSENT by default, and absent is a real value: no flag is emitted and the agent starts on whatever it defaults to itself, which may be something the user set in the agent's own config. A model name must start alphanumeric so it can never be read as a flag by the CLI it is handed to. The whole section may be left out, which is the same as the values below.",
+  "agents": {
+    "claude": {
+      "yolo": false
+    },
+    "codex": {
+      "yolo": false
+    }
+  },
+  "_README_remoteControl": "Controlling this computer from another one, and reaching others from here. It is OFF until listener.enabled is set, and pairing a peer needs a dialog somebody clicks on this machine - never a flag in this file. All four listener keys are REQUIRED whenever the section is present: one of them missing makes the whole section damaged, and a damaged section reads as switched off with no peers, which looks exactly like a listener that was never turned on. bindHost is the address the socket takes (0.0.0.0 is every interface); advertisedHost is what a paired computer is told to dial, so on a real network it must be this machine's LAN or VPN address rather than the 127.0.0.1 shown here. Editing it by hand is not the intended path: the Remote Control tab writes it, and a profile carries key material this file then holds. Read docs/architecture/remote-control.md and docs/runbooks/remote-lan-vpn.md before touching it. The whole section may be left out, which is the same as switched off with no peers.",
+  "remoteControl": {
+    "listener": {
+      "enabled": false,
+      "bindHost": "0.0.0.0",
+      "port": 47150,
+      "advertisedHost": "127.0.0.1"
+    },
+    "profiles": []
+  },
   "categories": [
-    { "label": "Projects", "path": "C:\\Code\\projects", "hiddenFolders": ["archive", "docs"], "virtualFolders": [{ "prefix": "temporary", "title": "Temporary projects" }] },
-    { "label": "Work", "path": "C:\\Code\\work", "hiddenFolders": ["docs"] }
-  ],
-  "defaultAgent": "claude",
-  "dockerIsolation": true,
-  "selfUpdate": { "autoCheck": true },
-  "customMenus": [],
-  "sessionDonePrompts": [
-    { "label": "Continue", "prompt": "What should we do next?" },
-    { "label": "Summarize", "prompt": "Summarize what you just did." }
+    {
+      "_README_id": "Stable and unique. Everything else refers to a category by this, so the label can be renamed freely without orphaning anything.",
+      "id": "nodejs",
+      "_README_label": "What a human sees. Not a key.",
+      "label": "NodeJs",
+      "_README_path": "The root directory scanned for projects. A project is any directory one level below it; no marker file is required. Written the way you spell it - only comparisons are normalized.",
+      "path": "C:/Projects/NodeJs",
+      "_README_hiddenFolders": "Names never listed as projects. Directories starting with a dot and the literal 'Archived' are always hidden and need no entry.",
+      "hiddenFolders": ["node_modules"],
+      "_README_flattenFolders": "Containers expanded one level deeper, so their children are listed as 'container/child'.",
+      "flattenFolders": ["Plugins"],
+      "_README_virtualFolders": "Display-only grouping by name prefix. 'temporaryFoo' groups under prefix 'temporary'; a prefix ending in '-' or '_' matches without the capital-letter rule.",
+      "virtualFolders": [{ "prefix": "temporary", "title": "Temporary" }],
+      "_README_afterCreate": "Run once in a newly created project directory while it is still empty. {dir} and {name} are substituted. A failure is reported, not fatal.",
+      "afterCreate": { "command": "svn", "args": ["add", "{dir}"] }
+    },
+    {
+      "id": "web",
+      "label": "Web",
+      "path": "C:/Projects/Web"
+    }
   ]
 }

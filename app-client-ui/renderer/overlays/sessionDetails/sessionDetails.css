@@ -1,0 +1,216 @@
+/* Fixed to the viewport rather than to the shell column, like the launcher and the settings: the
+   card covers the status bar and both sidebars, which a flow-positioned surface cannot reach. */
+.jamat-session-details {
+  position: fixed;
+  inset: 0;
+  /* The same layer as the other overlays: the shell never opens two, so they never race. */
+  z-index: 1000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 10vh;
+  background: var(--color-scrim);
+}
+.jamat-session-details__card {
+  display: flex;
+  flex-direction: column;
+  width: min(520px, 92vw);
+  max-height: 80vh;
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-surface);
+  box-shadow: var(--shadow-overlay);
+  overflow: hidden;
+}
+/* The card takes focus on open, and an outline on a surface nobody tabbed to reads as an error. */
+.jamat-session-details__card:focus {
+  outline: none;
+}
+.jamat-session-details__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface-control);
+  border-bottom: 1px solid var(--color-border-hairline);
+}
+.jamat-session-details__title {
+  flex: 1;
+  font-weight: 600;
+  color: var(--color-text-1);
+}
+.jamat-session-details__close {
+  padding: 0 var(--space-1);
+  font-size: var(--fs-title);
+  line-height: 1;
+  color: var(--color-text-4);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.jamat-session-details__close:hover {
+  color: var(--color-text-1);
+}
+.jamat-session-details__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-height: 0;
+  padding: var(--space-3);
+  overflow: auto;
+}
+.jamat-session-details__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.jamat-session-details__label {
+  font-size: var(--fs-secondary);
+  color: var(--color-text-4);
+}
+.jamat-session-details__name-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+/* The number is part of the title and not part of the edit: a fixed chip, never an input. */
+.jamat-session-details__chip {
+  padding: 2px var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-secondary);
+  color: var(--color-text-3);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-session-details__name {
+  flex: 1;
+  min-width: 0;
+  padding: 2px var(--space-2);
+  font: inherit;
+  color: var(--color-text-1);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-session-details__note {
+  min-height: 72px;
+  padding: var(--space-1) var(--space-2);
+  font: inherit;
+  color: var(--color-text-1);
+  resize: vertical;
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-session-details__swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+/* The same background family the tab and the tree row are painted with, exactly as the colour
+   submenu draws its squares: the square is the colour that is about to appear. */
+.jamat-session-details__swatch {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  cursor: pointer;
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-session-details__swatch.is-current {
+  box-shadow: 0 0 0 2px var(--color-accent);
+}
+/* None is a choice, so it gets a square of its own: the empty one, struck through (V1's mark). */
+.jamat-session-details__swatch--none {
+  background:
+    linear-gradient(
+      to top right,
+      transparent 44%,
+      var(--color-danger) 44%,
+      var(--color-danger) 56%,
+      transparent 56%
+    )
+    var(--color-surface-sunken);
+}
+.jamat-session-details__swatch--red { background: var(--session-color-red); }
+.jamat-session-details__swatch--orange { background: var(--session-color-orange); }
+.jamat-session-details__swatch--amber { background: var(--session-color-amber); }
+.jamat-session-details__swatch--green { background: var(--session-color-green); }
+.jamat-session-details__swatch--teal { background: var(--session-color-teal); }
+.jamat-session-details__swatch--cyan { background: var(--session-color-cyan); }
+.jamat-session-details__swatch--sky { background: var(--session-color-sky); }
+.jamat-session-details__swatch--blue { background: var(--session-color-blue); }
+.jamat-session-details__swatch--indigo { background: var(--session-color-indigo); }
+.jamat-session-details__swatch--violet { background: var(--session-color-violet); }
+.jamat-session-details__swatch--magenta { background: var(--session-color-magenta); }
+.jamat-session-details__swatch--rose { background: var(--session-color-rose); }
+.jamat-session-details__meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px var(--space-3);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--color-border-hairline);
+}
+.jamat-session-details__hint {
+  margin: 0;
+  font-size: var(--fs-secondary);
+  color: var(--color-text-4);
+}
+.jamat-session-details__meta-label {
+  font-size: var(--fs-secondary);
+  color: var(--color-text-4);
+}
+.jamat-session-details__meta-value {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--fs-secondary);
+  color: var(--color-text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jamat-session-details__meta-value--mono {
+  font-family: var(--font-mono);
+}
+.jamat-session-details__copy {
+  padding: 0 var(--space-2);
+  font: inherit;
+  font-size: var(--fs-status);
+  color: var(--color-text-3);
+  cursor: pointer;
+  background: var(--color-surface-control-hover);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-session-details__error {
+  margin: 0;
+  font-size: var(--fs-secondary);
+  color: var(--color-danger);
+}
+.jamat-session-details__actions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+.jamat-session-details__button {
+  padding: 3px 10px;
+  font: inherit;
+  font-size: var(--fs-secondary);
+  color: var(--color-text-2);
+  cursor: pointer;
+  background: var(--color-surface-control-hover);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-session-details__button:disabled {
+  color: var(--color-text-5);
+  cursor: default;
+}
+.jamat-session-details__button--primary {
+  color: var(--color-text-1);
+  border-color: var(--color-accent);
+}

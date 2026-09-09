@@ -1,0 +1,56 @@
+.jamat-configuration-window {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.jamat-configuration-window__label {
+  color: var(--color-text-1);
+}
+.jamat-configuration-window__name {
+  width: min(420px, 100%);
+  padding: var(--space-2);
+  font: inherit;
+  color: var(--color-text-1);
+  background: var(--color-surface-control);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-configuration-window__name:focus-visible {
+  outline: 1px solid var(--color-accent-strong);
+  outline-offset: 2px;
+}
+.jamat-configuration-window__hint {
+  font-size: var(--fs-status);
+  color: var(--color-text-4);
+}
+.jamat-configuration-window__palette {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(44px, 1fr));
+  gap: var(--space-2);
+  max-width: 520px;
+}
+.jamat-configuration-window__swatch {
+  min-width: 44px;
+  height: 34px;
+  padding: 0 var(--space-1);
+  overflow: hidden;
+  font: inherit;
+  font-size: var(--fs-status);
+  color: var(--color-text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--color-surface-control);
+  border: 2px solid transparent;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.jamat-configuration-window__swatch:hover {
+  border-color: var(--color-text-3);
+}
+.jamat-configuration-window__swatch--selected {
+  border-color: var(--color-text-1);
+}
+.jamat-configuration-window__swatch:focus-visible {
+  outline: 1px solid var(--color-accent-strong);
+  outline-offset: 2px;
+}

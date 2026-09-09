@@ -1,57 +1,56 @@
 node_modules/
 out/
 dist/
+build/
 
-# SVN admin dirs. This tree is also an SVN working copy (the mdExtRenderer widget is an
-# svn:external); its .svn/ metadata must never be tracked by git or shipped to the public repo.
+# This tree is also an SVN working copy; its metadata is never tracked by git.
 .svn/
-# Per-user secret overlay: configs/config-<user>.local.json holds claudeUsage
-# (Claude.ai orgId + sessionKey). Merged by core/config.ts; never committed.
-# Copy configs/config.example.json's note to create one.
+
+# Claude's own versioning store and the worktrees cut from it. SVN carries neither, and the public
+# mirror must never see either: the store is a second history of this same tree.
+.checkpoints/
+.worktrees/
+
+# Our per-user configs and launchers. Carried by SVN so they follow us across PCs, never by git:
+# this tree gets a public mirror the day it ships, and nothing under here belongs in one.
+.private/
+
+# AI workflow artifacts and agent configuration. SVN-committed by convention, git-ignored here for
+# the same reason as .private/: they are how the work was done, not the product.
+.aidocs/
+.claude/
+.claude-home/
+/CLAUDE.md
+/project-planner.local.md
+
+# Per-user secrets and machine-local data never reach a committed config.
 *.local.json
 .env
 .env.*
 *.pem
 *.key
-.claude-home/
-
-# Remote-server proxy config — holds per-PC machine keys (= RCE credentials).
-# Never commit it. Copy config-remote.example.json → config-remote.json and fill tokens.
-app-agent/config-remote.json
-
-# Our app-agent deploy descriptors (atomix-dd target: server, domain, container). Read
-# in place by atomix-dd, kept in INTERNAL SVN, but NEVER in the public git repo — a public
-# deployer brings their own host (docker-compose / their own .axapp.json).
-app-agent/.axapp.json
-app-agent/.env-production*
-
-# Our private stuff — per-user configs, launchers (jamat-*, start-agent-*, jamat-menu-*),
-# and owner scripts (full-restart, firewall). Kept in INTERNAL SVN so it syncs across our
-# PCs, but NEVER goes to the public git/GitHub repo. The public repo ships only
-# configs/config.example.json. (Secrets inside are also covered by *.local.json above.)
-.private/
-
-# AI workflow artifacts (plans, research, sessions, ideas, architecture notes). Kept in
-# INTERNAL SVN so they travel with the repo across our PCs, but NEVER pushed to the public
-# git/GitHub repo — they carry internal references (qmd/svntea/atomix) and our process
-# history. The public repo ships only docs/ (clean, public-facing documentation).
-.aidocs/
-
-# Internal Claude Code project commands (e.g. /commit-github → the internal publish flow that
-# calls .private/scripts/). Kept in INTERNAL SVN so it syncs across our PCs, but NEVER public —
-# it references .private/ tooling that a public clone doesn't have. Claude Code loads it from the
-# filesystem regardless of git.
-.claude/
-
-# Our internal Claude Code project instructions — SVN-first workflow, .private/ tooling, publish
-# flow, atomix conventions. Needed by OUR sessions (loaded from disk) + kept in INTERNAL SVN, but
-# NOT part of the public repo: it's internal dev guidance, not required to build/run the app, and
-# a public clone uses CONTRIBUTING.md instead. (Only the repo-root one; nested fixtures may exist.)
-/CLAUDE.md
-
-# First-run-generated per-user config (ensureConfig writes this on a fresh clone). It carries
-# the contributor's real paths — the public repo ships ONLY configs/config.example.json.
-/configs/config.json
-/configs/config-*.json
-!/configs/config.example.json
+data/
+# The testbed fixture ships a data/ directory of its own, and the rule above would swallow it.
+!/configs/testbed/tree/data/
 /AGENTS.md
+*.tsbuildinfo
+
+# The FileViewer testbed is a generated working copy with its own git repository and its own SVN
+# working copy inside it. Its source lives in configs/testbed/; the built tree never belongs here.
+# Rebuild it with `pnpm dev:testbed --force`.
+/.testbed/
+
+# This is a pnpm workspace: five pnpm roots, and CI installs every one of them with
+# `pnpm install --frozen-lockfile`. Nothing reads an npm lockfile here, so a root one is a stray
+# left by an `npm install <pkg>` run to try a dependency out - and a second lockfile that disagrees
+# with pnpm-lock.yaml is worse than none. Anchored to the root on purpose:
+# configs/remarkable-sidecar/package-lock.json is committed and load-bearing, because the sidecar
+# seed is built by running `npm ci` against exactly it.
+/package-lock.json
+
+# docs/ is internal: architecture decisions, runbooks, and the notes that say how this tree works.
+# The one exception is docs/images/, which the public README embeds. The export gate carries the
+# same rule, so a miss here is a RED gate rather than a shipped leak - but the rule lives here too,
+# because .gitignore is what decides the tracked set in the first place.
+/docs/*
+!/docs/images/

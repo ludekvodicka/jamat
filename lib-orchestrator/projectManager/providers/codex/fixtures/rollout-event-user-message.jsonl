@@ -1,0 +1,4 @@
+{"timestamp":"2026-07-11T09:02:41.500Z","type":"session_meta","payload":{"id":"019f4c11-2a3b-7c4d-8e5f-6a7b8c9d0e1f","timestamp":"2026-07-11T09:02:41.500Z","cwd":"Q:\\Projects\\AppFixture","originator":"codex_cli_rs","cli_version":"0.44.0","instructions":null}}
+{"timestamp":"2026-07-11T09:02:41.620Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>Q:\\Projects\\AppFixture</cwd>\n</environment_context>"}]}}
+{"timestamp":"2026-07-11T09:02:44.000Z","type":"event_msg","payload":{"type":"user_message","message":"Plain hello from the event stream"}}
+{"timestamp":"2026-07-11T09:02:49.700Z","type":"event_msg","payload":{"type":"agent_message","message":"Hello back."}}

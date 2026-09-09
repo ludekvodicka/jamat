@@ -1,0 +1,79 @@
+.jamat-context-menu {
+  position: fixed;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-1) 0;
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-surface);
+  background: var(--color-surface-raised);
+  font-family: var(--font-ui);
+  /* The backstop under the placement maths: a menu taller than the window is reachable by scrolling
+     rather than cut off at the edge. */
+  max-height: 100vh;
+  overflow-y: auto;
+}
+.jamat-context-menu__row {
+  display: flex;
+}
+.jamat-context-menu__item {
+  display: flex;
+  flex: 1;
+  gap: var(--space-2);
+  align-items: center;
+  padding: var(--space-1) var(--space-3);
+  border: 0;
+  background: transparent;
+  color: var(--color-text-2);
+  font-family: inherit;
+  font-size: var(--fs-secondary);
+  white-space: nowrap;
+  text-align: left;
+  cursor: pointer;
+}
+.jamat-context-menu__item:hover:not(:disabled) {
+  background: var(--color-surface-control-hover);
+  color: var(--color-text-1);
+}
+.jamat-context-menu__item:disabled {
+  color: var(--color-text-5);
+  cursor: default;
+}
+/* Takes the row's spare width, which is what pushes every submenu arrow to the same far edge,
+   whatever the labels are. */
+.jamat-context-menu__label {
+  flex: 1;
+}
+.jamat-context-menu__more {
+  color: var(--color-text-4);
+}
+.jamat-context-menu__check {
+  width: 1em;
+  flex: none;
+  color: var(--color-accent);
+}
+.jamat-context-menu__swatch {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border: 1px solid var(--color-border-hairline);
+  border-radius: 2px;
+}
+.jamat-context-menu__separator {
+  height: 1px;
+  margin: var(--space-1) 0;
+  background: var(--color-border-hairline);
+}
+.jamat-context-menu__flyout {
+  /* Fixed escapes the main menu's scroll clip while the flyout remains its DOM descendant. */
+  position: fixed;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-1) 0;
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-surface);
+  background: var(--color-surface-raised);
+  max-height: 100vh;
+  overflow-y: auto;
+}

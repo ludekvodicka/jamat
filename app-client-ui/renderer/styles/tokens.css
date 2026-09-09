@@ -1,0 +1,216 @@
+/* The single source of visual values. Every other renderer stylesheet uses var(--…) only, and
+   scripts/tokensGate.test.ts fails on a raw hex found anywhere else under renderer/.
+   --color-background is held equal to ShellWindowBase.backgroundColorConst, which every window
+   inherits; the same gate compares them,
+   because a window painted in a different colour than the document flashes through until the
+   first paint.
+   --ui-font-scale and --file-viewer-font-scale are the values a running window overwrites:
+   UiSettingsStore, under renderer/uiSettings/, sets those two properties on documentElement and no
+   others. Every size they multiply still carries its own literal px here, in the --fs-*-px pair, so
+   this file stays where a size is read off and a scale only says by how much. */
+:root[data-theme='dark'] {
+  --color-background: #101318;
+  --color-surface-raised: #171b22;
+  --color-surface-sunken: #0b0e13;
+  --color-surface-control: #1e242d;
+  --color-surface-control-hover: #28303b;
+
+  --color-border-hairline: #1d222a;
+  --color-border-frame: #2a323d;
+
+  --color-accent: #4fc1ff;
+  --color-accent-strong: #1e7cc4;
+
+  --color-ok: #23d18b;
+  --color-idle: var(--color-accent);
+  --color-attention: #e5b567;
+  --color-warn: #f0a58a;
+  --color-danger: #f14c4c;
+
+  /* Window identity is data at runtime. The picker reads these computed values and stores the
+     chosen hex; no renderer module carries a second copy of this palette. */
+  --window-color-default: var(--color-surface-raised);
+  --window-color-red: #922b21;
+  --window-color-orange: #9c4000;
+  --window-color-amber: #7d6608;
+  --window-color-green: #14633a;
+  --window-color-teal: #117864;
+  --window-color-cyan: #0e6678;
+  --window-color-sky: #1f618d;
+  --window-color-blue: #1b4f72;
+  --window-color-indigo: #2c3e9b;
+  --window-color-violet: #6c3483;
+  --window-color-magenta: #7d356f;
+  --window-color-rose: #873653;
+
+  /* A session's own colour, in two families of the same twelve names.
+     The dark one is a BACKGROUND - a tab and a tree row are painted with it, so it has to sit under
+     text and stay quiet; V1's palette is where these tones come from.
+     The light one is the 2px line over the active tab, which the dark family cannot do: two pixels
+     of a muted tone against a dark shell is a line nobody sees. */
+  --session-color-red: #4a2020;
+  --session-color-orange: #4a3320;
+  --session-color-amber: #4a4220;
+  --session-color-green: #204a2a;
+  --session-color-teal: #204a3f;
+  --session-color-cyan: #204348;
+  --session-color-sky: #20344a;
+  --session-color-blue: #202a4a;
+  --session-color-indigo: #26204a;
+  --session-color-violet: #35204a;
+  --session-color-magenta: #45204a;
+  --session-color-rose: #4a2033;
+
+  --session-line-red: #e06a6a;
+  --session-line-orange: #e0906a;
+  --session-line-amber: #d8c06a;
+  --session-line-green: #6ad080;
+  --session-line-teal: #5ec9b0;
+  --session-line-cyan: #5ec2d8;
+  --session-line-sky: #6aa8e0;
+  --session-line-blue: #7a90e8;
+  --session-line-indigo: #8f86ea;
+  --session-line-violet: #a97ae0;
+  --session-line-magenta: #d878cf;
+  --session-line-rose: #e0789c;
+
+  --color-text-1: #e6eef6;
+  --color-text-2: #b9c8d6;
+  --color-text-3: #9fb4c8;
+  --color-text-4: #8ba0b5;
+  /* decoration and disabled ONLY: below AA, so it never carries information on its own */
+  --color-text-5: #697f95;
+
+  --size-statusbar: 24px;
+  /* Sidebar chrome only. The widths themselves live in SidebarsState, because the clamp that
+     guards them runs there and a second copy here would be a second answer. */
+  --size-sidebar-header: 28px;
+  --size-splitter: 4px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+
+  --radius-surface: 6px;
+  --radius-control: 4px;
+
+  /* The overlay pair: what dims the shell behind a card, and what lifts the card off it. */
+  --color-scrim: rgba(6, 9, 13, 0.55);
+  --shadow-overlay: 0 18px 48px rgba(0, 0, 0, 0.55);
+
+  --font-ui: 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'Cascadia Mono', Consolas, monospace;
+  /* 1 is today, and it is the default no window has to reach any JS to get. */
+  --ui-font-scale: 1;
+  /* The second scale, and the only surface that carries one: a file is read for minutes and the
+     tree beside it is glanced at, so `fileViewerPanel.css` multiplies the sizes below by this one
+     again inside the viewer's body. 1 there is the interface size, which is what it always was. */
+  --file-viewer-font-scale: 1;
+  /* The third scale, and the only one nothing global writes: ONE open document, zoomed by the
+     panel that draws it. It sits on the panel element, so 1 here is what every other surface of
+     the window reads and what a panel nobody zoomed inherits. */
+  --file-viewer-zoom: 1;
+  /* Each size, once, as the plain number it is read off at. The pair below turns it into the token
+     everything uses; the viewer's own block builds the same token from the same number and its
+     extra scale, so a size that changed here would otherwise reach one of the two and not the
+     other. */
+  --fs-title-px: 20px;
+  --fs-base-px: 13px;
+  --fs-secondary-px: 12px;
+  --fs-status-px: 11px;
+  /* Tab signals and badges: they sit beside a title and must read as a mark, not as a second word. */
+  --fs-chip-px: 10px;
+  --fs-title: calc(var(--fs-title-px) * var(--ui-font-scale));
+  --fs-base: calc(var(--fs-base-px) * var(--ui-font-scale));
+  --fs-secondary: calc(var(--fs-secondary-px) * var(--ui-font-scale));
+  --fs-status: calc(var(--fs-status-px) * var(--ui-font-scale));
+  --fs-chip: calc(var(--fs-chip-px) * var(--ui-font-scale));
+  /* Pinned, and the one size the scale does not touch: the status bar is chrome of a fixed height.
+     Leaving --fs-status out of the scaling instead was not possible - the tree, the launcher and
+     the settings window all draw their small text with it. */
+  --fs-statusbar: 11px;
+
+  /* The pair of the CHOSEN terminal theme, and the one pair anything reads: the blocks at the foot
+     of this file redirect it per theme, so neither terminalTheme.ts nor the panel around the canvas
+     carries a second map of name to colour. The default IS `original` - the window's own pair, so a
+     terminal sits in the shell rather than in a rectangle pasted onto it, and a document whose store
+     never sets the attribute draws exactly what it always drew. */
+  --terminal-background: var(--color-background);
+  --terminal-foreground: var(--color-text-1);
+
+  /* The sixteen colours a program addresses by number, ported from the Windows Terminal palette V1
+     shipped as its default: years of Claude and Codex TUIs were read against exactly these. The pair
+     that would normally come with them is the one above. Every value is read once, through
+     getComputedStyle, by terminalTheme.ts. */
+  --terminal-ansi-0: #0c0c0c;
+  --terminal-ansi-1: #c50f1f;
+  --terminal-ansi-2: #13a10e;
+  --terminal-ansi-3: #c19c00;
+  --terminal-ansi-4: #0037da;
+  --terminal-ansi-5: #881798;
+  --terminal-ansi-6: #3a96dd;
+  --terminal-ansi-7: #cccccc;
+  --terminal-ansi-8: #767676;
+  --terminal-ansi-9: #e74856;
+  --terminal-ansi-10: #16c60c;
+  --terminal-ansi-11: #f9f1a5;
+  --terminal-ansi-12: #3b78ff;
+  --terminal-ansi-13: #b4009e;
+  --terminal-ansi-14: #61d6d6;
+  --terminal-ansi-15: #f2f2f2;
+  --terminal-cursor: #ffffff;
+  --terminal-selection: #264f78;
+
+  /* What the two named terminal themes bring that `original` does not. `original` adds nothing
+     here - it is the block above plus the window's own pair - so a machine that never touches the
+     setting looks exactly as it did.
+     `soft` is V1's terminal, letter for letter, over the sixteen colours above: those sixteen were
+     already identical in both, so this pair IS the whole of why V3 drew brighter. It is offered as
+     "Jamat v1"; the value stays `soft` because that is the name already written in config.json.
+     `vscodeDark` carries its own sixteen, copied from V1 themes.ts `vscode-dark`; cursor and
+     selection are the same in all three there too, so they stay shared. Reached through the pair
+     above, by the blocks at the foot of this file. */
+  --terminal-soft-background: #0c0c0c;
+  --terminal-soft-foreground: #cccccc;
+
+  --terminal-vscode-background: #1e1e1e;
+  --terminal-vscode-foreground: #cccccc;
+  --terminal-vscode-ansi-0: #000000;
+  --terminal-vscode-ansi-1: #cd3131;
+  --terminal-vscode-ansi-2: #0dbc79;
+  --terminal-vscode-ansi-3: #e5e510;
+  --terminal-vscode-ansi-4: #2472c8;
+  --terminal-vscode-ansi-5: #bc3fbc;
+  --terminal-vscode-ansi-6: #11a8cd;
+  --terminal-vscode-ansi-7: #e5e5e5;
+  --terminal-vscode-ansi-8: #666666;
+  --terminal-vscode-ansi-9: #f14c4c;
+  --terminal-vscode-ansi-10: #23d18b;
+  --terminal-vscode-ansi-11: #f5f543;
+  --terminal-vscode-ansi-12: #3b8eea;
+  --terminal-vscode-ansi-13: #d670d6;
+  --terminal-vscode-ansi-14: #29b8db;
+  --terminal-vscode-ansi-15: #e5e5e5;
+}
+
+/* There is no light theme, and adding one is a `:root[data-theme='light']` block here and nothing
+   else: no component ever learns a concrete colour, and `index.html` is the only thing that names a
+   theme today. The empty block that used to stand here was a placeholder that applied no rule. */
+
+/* Which pair the chosen terminal theme redirects --terminal-background and --terminal-foreground
+   to. UiSettingsStore writes the attribute, in the same call that sets --ui-font-scale; a name with
+   no block here is `original`, whose pair is the default in the theme block above.
+
+   Last in the file on purpose: these carry the same specificity as the theme blocks, so order is
+   what decides, and a terminal theme has to win over the window's own pair - that is the whole of
+   what choosing one means. */
+:root[data-terminal-theme='soft'] {
+  --terminal-background: var(--terminal-soft-background);
+  --terminal-foreground: var(--terminal-soft-foreground);
+}
+
+:root[data-terminal-theme='vscodeDark'] {
+  --terminal-background: var(--terminal-vscode-background);
+  --terminal-foreground: var(--terminal-vscode-foreground);
+}

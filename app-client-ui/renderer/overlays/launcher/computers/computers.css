@@ -1,0 +1,30 @@
+.jamat-launcher-computers {
+  padding: var(--space-3);
+}
+.jamat-launcher-computers__rows {
+  display: flex;
+  flex-direction: column;
+}
+/* The endpoint is what tells two connections to one computer apart, so it reads as an address
+   rather than as a second name. */
+.jamat-launcher-computers__endpoint {
+  font-family: var(--font-mono);
+}
+/* The shared row sizes its trailing columns for a count, and an address is longer than a count:
+   `127.0.0.1:47166` measures 105px in the mono face at the default scale and the column is 92px, so
+   it ran over the session count beside it. The width is derived from the same token the text is
+   drawn with rather than written as a pixel number, because `--fs-secondary` carries the user's font
+   scale and a fixed column would clip the moment that goes up. 0.6em is the upper bound of the
+   advance width of the faces in `--font-mono` (Cascadia Mono measures 0.586em), and 21 characters is
+   a full `255.255.255.255:65535`. A host name longer than that ellipsises, which is the shared row's
+   behaviour and not this screen's business. */
+.jamat-launcher-computers__rows .jamat-launcher__row {
+  grid-template-columns: minmax(0, 1fr) calc(var(--fs-secondary) * 0.6 * 21) 92px 16px;
+}
+.jamat-launcher-computers__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+}

@@ -1,0 +1,141 @@
+{
+  "name": "jamat-v3-client-ui",
+  "version": "3.0.0",
+  "private": true,
+  "license": "MIT",
+  "author": "ludekvodicka",
+  "description": "Electron client shell: status bar, native menu and dockview tabs. Reaches the Host only through lib-orchestrator.",
+  "main": "./out/main/start.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "dist:dir": "electron-vite build && electron-builder --win --x64 --dir",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "pnpm run test:node && pnpm run test:web",
+    "test:node": "vitest run --config vitest.workspace.ts --project node",
+    "test:web": "vitest run --config vitest.workspace.ts --project web"
+  },
+  "dependencies": {
+    "@resvg/resvg-js": "2.6.2",
+    "@viz-js/viz": "3.29.0",
+    "@xterm/addon-fit": "0.12.0-beta.287",
+    "@xterm/addon-unicode11": "0.10.0-beta.287",
+    "@xterm/xterm": "6.1.0-beta.287",
+    "dockview": "4.13.1",
+    "dockview-core": "4.13.1",
+    "dompurify": "3.4.13",
+    "electron-updater": "6.8.9",
+    "fast-xml-parser": "5.10.1",
+    "mermaid": "11.16.1",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "react-markdown": "10.1.0",
+    "rehype-sanitize": "6.0.0",
+    "remark-directive": "4.0.0",
+    "remark-gfm": "4.0.1",
+    "shiki": "4.4.3",
+    "vega": "6.4.0",
+    "vega-lite": "6.4.3",
+    "ws": "8.21.1",
+    "yaml": "2.9.0"
+  },
+  "optionalDependencies": {
+    "@resvg/resvg-js-win32-x64-msvc": "2.6.2"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "6.9.1",
+    "@testing-library/react": "16.3.2",
+    "@types/node": "22.16.5",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@types/ws": "8.18.1",
+    "@vitejs/plugin-react": "5.2.0",
+    "electron": "43.2.0",
+    "electron-builder": "26.8.1",
+    "electron-vite": "5.0.0",
+    "jsdom": "25.0.1",
+    "scheduler": "0.27.0",
+    "typescript": "5.9.3",
+    "vite": "7.3.6",
+    "vitest": "4.1.10"
+  },
+  "build": {
+    "appId": "com.jamat.app",
+    "productName": "Jamat",
+    "electronDist": "node_modules/electron/dist",
+    "directories": {
+      "output": "dist",
+      "buildResources": "buildResources"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "npmRebuild": false,
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "ludekvodicka",
+        "repo": "jamat"
+      }
+    ],
+    "extraResources": [
+      {
+        "from": "../out/remarkable-sidecar/${os}-${arch}/current",
+        "to": "remarkable-sidecar",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../out/remarkable-sidecar/${os}-${arch}/current/node_modules",
+        "to": "remarkable-sidecar/node_modules",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../out/host-bundle/current",
+        "to": "host",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../out/host-bundle/current/node_modules",
+        "to": "host/node_modules",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "buildResources/icon.ico",
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "identity": null,
+      "icon": "buildResources/icon.icns",
+      "category": "public.app-category.developer-tools"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "icon": "buildResources/icon.png",
+      "category": "Development"
+    }
+  },
+  "packageManager": "pnpm@11.15.1"
+}

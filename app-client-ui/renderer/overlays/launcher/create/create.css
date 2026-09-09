@@ -1,0 +1,133 @@
+.jamat-launcher-create {
+  padding: var(--space-2) 0;
+}
+.jamat-launcher-create__path {
+  display: inline-block;
+  padding-top: 5px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-secondary);
+  color: var(--color-text-2);
+}
+/* The number and the field share one box, so the pair reads as the one title it becomes. */
+.jamat-launcher-create__name {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 3px var(--space-2);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-launcher-create__name:focus-within {
+  border-color: var(--color-accent-strong);
+}
+.jamat-launcher-create__token {
+  font-family: var(--font-mono);
+  color: var(--color-text-4);
+  white-space: pre;
+}
+.jamat-launcher__start {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-3);
+}
+
+.jamat-launcher-create__name-input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  color: var(--color-text-1);
+  background: none;
+  border: none;
+  outline: none;
+}
+/* What lands on disk, said before anything is created. */
+.jamat-launcher-create__note {
+  margin: var(--space-2) 0 0;
+  font-size: var(--fs-status);
+  color: var(--color-text-4);
+}
+.jamat-launcher-create__note code {
+  font-family: var(--font-mono);
+  color: var(--color-text-2);
+}
+/* The reason a disabled control is disabled, in words rather than only in a tooltip. */
+.jamat-launcher-create__refusal {
+  margin: var(--space-2) 0 0;
+  font-size: var(--fs-status);
+  color: var(--color-text-4);
+}
+/* What a remote card leaves out, listed under the form rather than beside rows it does not draw.
+   A shorter form than the one somebody knows reads as a form that lost something. */
+.jamat-launcher-create__refusals {
+  margin: 0 var(--space-3) var(--space-2);
+  padding-left: var(--space-4);
+  list-style: disc;
+}
+.jamat-launcher-create__sessions {
+  max-height: min(420px, 46vh);
+  overflow: auto;
+}
+.jamat-launcher-create__sessions-field.jamat-choice__row--current {
+  background: transparent;
+}
+.jamat-launcher-create__session-row {
+  grid-template-columns: minmax(0, 1fr) 16px 210px 16px;
+}
+.jamat-launcher-create__session-time {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.jamat-launcher-create__session-time > span {
+  white-space: nowrap;
+}
+.jamat-launcher-create__sessions-error {
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-secondary);
+  color: var(--color-danger);
+}
+.jamat-launcher-create__sessions-empty {
+  margin: var(--space-4) 0;
+  font-size: var(--fs-secondary);
+  color: var(--color-text-5);
+  text-align: center;
+}
+.jamat-launcher-create__session-untitled {
+  color: var(--color-text-3);
+}
+.jamat-launcher-create__session-live {
+  width: 6px;
+  height: 6px;
+  background: var(--color-ok);
+  border-radius: 50%;
+}
+/* The target's own catalog, as a list rather than as cards: a machine can name two dozen models,
+   and a card per model would push the rest of the form off the card. */
+.jamat-launcher-create__model {
+  max-width: 100%;
+  padding: 3px var(--space-2);
+  font: inherit;
+  color: var(--color-text-1);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-launcher-create__model:focus {
+  border-color: var(--color-accent-strong);
+  outline: none;
+}
+/* Offered only where asking again could answer differently, never on a refusal. */
+.jamat-launcher-create__model-retry {
+  margin-top: var(--space-2);
+  padding: 3px var(--space-2);
+  font: inherit;
+  color: var(--color-text-1);
+  background: var(--color-surface-control);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.jamat-launcher-create__model-retry:hover {
+  background: var(--color-surface-control-hover);
+}

@@ -1,0 +1,2 @@
+{"timestamp":"2026-07-12T08:00:00.000Z","type":"turn_context","payload":{"type":"turn_context","model":"gpt-5","effort":"medium"}}
+{"timestamp":"2026-07-12T08:00:01.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"A rollout whose session_meta line never made it to disk."}]}}

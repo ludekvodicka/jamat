@@ -1,0 +1,22 @@
+.jamat-welcome {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  height: 100%;
+  padding: var(--space-4);
+  background: var(--color-background);
+  color: var(--color-text-2);
+}
+.jamat-welcome__name {
+  margin: 0;
+  color: var(--color-text-1);
+  font-size: var(--fs-title);
+  font-weight: 600;
+}
+.jamat-welcome__hint {
+  max-width: 52ch;
+  margin: 0;
+  color: var(--color-text-4);
+  font-size: var(--fs-secondary);
+  line-height: 1.5;
+}

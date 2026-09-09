@@ -5,48 +5,87 @@ on:
     branches: [main]
   pull_request:
 
-# Basic CI: type-check + smoke tests on Windows (the current target platform).
-# A cross-platform build matrix (macOS / Linux) + electron-builder packaging is future work.
+# Type-check and unit tests on Windows, plus a secret scan on Linux.
+#
+# Windows is a constraint, not a preference: `@resvg/resvg-js-win32-x64-msvc` is a plain dependency
+# of app-client-ui and the lockfile pins it to `os: [win32]`, so a frozen install on a macOS or
+# Linux runner hits the unsupported-platform path. Windows is also the first release platform,
+# which makes it the right single-runner choice anyway. The three-OS proof lives in release.yml,
+# whose tag-less `workflow_dispatch` dry run builds the whole matrix.
+#
+# Five pnpm roots, five installs: the repository root, app-host, lib-orchestrator, app-client-ui
+# and app-client-cli each carry their own lockfile. app-host gets a FULL install (no
+# --ignore-scripts) because node-pty's prebuild has to land - the root TS program covers app-host
+# and its tests import the module. app-client-ui skips only the Electron binary download: its tests
+# mock Electron and never launch it, while the remaining install scripts still prepare esbuild.
+#
+# NOT run here, deliberately: none of the `smoke:*` scripts and no packaging run. They spawn real
+# PTYs, boot a real Electron, open real listeners and download real runtimes, which a hosted runner
+# should not be paying for on every push. That coverage comes from two other places, and both run
+# before anything public moves:
+#   - the pre-push build gate, which type-checks and tests every pushed commit on the maintainer
+#     machine before it reaches this repository;
+#   - the release preflight, which builds the Windows package and runs the packaging smokes
+#     (packaged Host, packaged sidecar, client boot) before a release tag exists.
 jobs:
   build:
-    name: typecheck + smoke tests
+    name: typecheck + tests
     runs-on: windows-latest
 
     steps:
       - uses: actions/checkout@v5
 
+      - uses: pnpm/action-setup@v4 # reads the pnpm version from package.json "packageManager"
+
       - uses: actions/setup-node@v5
         with:
-          node-version: 20
-          cache: npm
+          node-version: 22 # the repository's engines floor is >=22.16.0
+          cache: pnpm
+          cache-dependency-path: "**/pnpm-lock.yaml" # one key over all five lockfiles
 
       - name: Install root dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
-      # The desktop package's deps are needed only so the type-check can resolve React /
-      # Electron types. Skip postinstall native builds (node-pty) — CI does not launch the app.
-      - name: Install desktop dependencies (types only)
-        run: npm ci --ignore-scripts
-        working-directory: app-electron
+      # A full install on purpose: node-pty's prebuild must be in place for the root TS program and
+      # for app-host's own test run.
+      - name: Install host dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: app-host
 
+      - name: Install orchestrator dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: lib-orchestrator
+
+      # Electron itself is never launched here (the node tests mock it, the web tests run under
+      # jsdom), so its binary download can stay disabled.
+      - name: Install client shell dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: app-client-ui
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+
+      - name: Install client CLI dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: app-client-cli
+
+      # Five TS programs plus the skill-adapter byte-identity check, all chained in one script.
       - name: Type-check
-        run: npm run typecheck
+        run: pnpm run typecheck
 
-      - name: Smoke tests
-        run: npm test
+      - name: Unit tests
+        run: pnpm test
 
-  # Secret scan — a post-push SAFETY NET for outside contributor PRs, NOT the primary defense.
-  # It runs AFTER a push lands, so it cannot prevent a leak (a pushed secret is already exposed
-  # and must be rotated). Real prevention is the pre-push export gate (.private/scripts/
-  # export-public.ts) plus the architecture (secrets live in git-ignored .private/). This job's
-  # job is to catch a secret a contributor commits and to block its PR from merging into main.
+  # Secret scan - a post-push SAFETY NET for outside contributor PRs, NOT the primary defense.
+  # It runs AFTER a push lands, so it cannot prevent a leak (a pushed secret is already exposed and
+  # must be rotated). Real prevention is the pre-push gate that scans and builds every pushed
+  # commit, plus the architecture: nothing secret is tracked in the first place.
   gitleaks:
     name: secret scan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
         with:
-          fetch-depth: 0   # full history so the scan covers every commit, not just the PR diff
+          fetch-depth: 0 # full history so the scan covers every commit, not just the PR diff
       - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

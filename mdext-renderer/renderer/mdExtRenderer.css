@@ -1,0 +1,279 @@
+.mdext {
+  color: var(--color-text-1);
+  font-size: var(--fs-base);
+  line-height: 1.6;
+  overflow-wrap: break-word;
+}
+.mdext a {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+.mdext a:hover {
+  text-decoration: underline;
+}
+.mdext h1,
+.mdext h2,
+.mdext h3,
+.mdext h4,
+.mdext h5,
+.mdext h6 {
+  margin: 1.2em 0 0.5em;
+  color: var(--color-text-1);
+  font-weight: 600;
+  line-height: 1.25;
+}
+.mdext h1 { font-size: 1.6em; }
+.mdext h2 {
+  padding-bottom: 0.2em;
+  border-bottom: 1px solid var(--color-border-frame);
+  font-size: 1.35em;
+}
+.mdext h3 { font-size: 1.15em; }
+.mdext p { margin: 0.6em 0; }
+.mdext ul,
+.mdext ol {
+  margin: 0.5em 0;
+  padding-left: 1.6em;
+}
+.mdext blockquote {
+  margin: 0.6em 0;
+  padding: 0 1em;
+  border-left: 3px solid var(--color-border-frame);
+  color: var(--color-text-3);
+}
+.mdext table {
+  display: block;
+  margin: 0.6em 0;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+.mdext th,
+.mdext td {
+  padding: var(--space-1) 10px;
+  border: 1px solid var(--color-border-frame);
+}
+.mdext th { background: var(--color-surface-raised); }
+.mdext img {
+  max-width: 100%;
+  height: auto;
+}
+.mdext hr {
+  margin: 1em 0;
+  border: 0;
+  border-top: 1px solid var(--color-border-frame);
+}
+.mdext > :first-child { margin-top: 0; }
+.mdext > :last-child { margin-bottom: 0; }
+.mdext-inline {
+  padding: 0.15em 0.35em;
+  border-radius: var(--radius-control);
+  background: var(--color-surface-control);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+.mdext-code {
+  position: relative;
+  margin: 0.75em 0;
+}
+.mdext-source-block { display: contents; }
+.mdext-code .shiki,
+.mdext-code-fallback {
+  margin: 0;
+  padding: var(--space-3);
+  overflow-x: auto;
+  border-radius: var(--radius-surface);
+  font-family: var(--font-mono);
+  font-size: var(--fs-secondary);
+  line-height: 1.45;
+}
+.mdext-code-fallback {
+  background: var(--color-surface-raised);
+  color: var(--color-text-1);
+}
+.mdext-copy,
+.mdext-diagram button {
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-control);
+  color: var(--color-text-2);
+  cursor: pointer;
+  font-size: var(--fs-status);
+}
+.mdext-copy {
+  position: absolute;
+  z-index: 1;
+  top: var(--space-2);
+  right: var(--space-2);
+  padding: 2px var(--space-2);
+  opacity: 0;
+}
+.mdext-code:hover .mdext-copy,
+.mdext-copy:focus { opacity: 1; }
+.mdext-frontmatter,
+.mdext-details {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-1) 10px;
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-surface);
+  color: var(--color-text-3);
+  font-size: var(--fs-secondary);
+}
+.mdext-frontmatter summary,
+.mdext-details summary {
+  cursor: pointer;
+  user-select: none;
+}
+.mdext-frontmatter dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px var(--space-3);
+  margin: var(--space-2) 0 2px;
+}
+.mdext-frontmatter dt {
+  color: var(--color-text-1);
+  font-weight: 600;
+}
+.mdext-frontmatter dd {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+}
+.mdext-blocked-link,
+.mdext-blocked-img {
+  color: var(--color-text-4);
+  font-style: italic;
+}
+.mdext-diagram-wrap {
+  position: relative;
+  margin: 0.75em 0;
+}
+.mdext-diagram {
+  overflow: auto;
+}
+.mdext-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+.mdext-diagram-loading,
+.mdext-diagram-error {
+  min-height: 48px;
+  padding: var(--space-2);
+  border: 1px dashed var(--color-border-frame);
+  border-radius: var(--radius-surface);
+  color: var(--color-text-3);
+  font-size: var(--fs-secondary);
+}
+.mdext-diagram-error-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.mdext-diagram-error pre {
+  overflow-x: auto;
+  font-family: var(--font-mono);
+}
+.mdext-diagram-source-button {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  opacity: 0;
+}
+.mdext-diagram-wrap:hover .mdext-diagram-source-button { opacity: 1; }
+.mdext-callout {
+  margin: var(--space-3) 0;
+  padding: var(--space-2) var(--space-3);
+  border-left: 4px solid var(--mdext-tone, var(--color-border-frame));
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--mdext-tone, var(--color-text-4)) 10%, transparent);
+}
+.mdext-callout-title {
+  margin-bottom: var(--space-1);
+  color: var(--mdext-tone, var(--color-text-1));
+  font-weight: 600;
+}
+.mdext-callout-note { --mdext-tone: var(--color-accent); }
+.mdext-callout-tip { --mdext-tone: var(--color-ok); }
+.mdext-callout-warning { --mdext-tone: var(--color-attention); }
+.mdext-callout-danger { --mdext-tone: var(--color-danger); }
+.mdext-callout-important { --mdext-tone: var(--color-accent-strong); }
+.mdext-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 10px 0;
+}
+.mdext-chip {
+  padding: 1px var(--space-2);
+  border: 1px solid var(--mdext-tone, var(--color-text-4));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--mdext-tone, var(--color-text-4)) 12%, transparent);
+  color: var(--mdext-tone, var(--color-text-4));
+  font-size: 0.85em;
+  font-weight: 600;
+}
+.mdext-chip-good { --mdext-tone: var(--color-ok); }
+.mdext-chip-warn { --mdext-tone: var(--color-attention); }
+.mdext-chip-bad { --mdext-tone: var(--color-danger); }
+.mdext-chip-neutral { --mdext-tone: var(--color-text-4); }
+.mdext-diagram-archify {
+  --afy-grid: var(--color-border-hairline);
+  --afy-text: var(--color-text-1);
+  --afy-text-muted: var(--color-text-3);
+  --afy-text-dim: var(--color-text-5);
+  --afy-mask: var(--color-background);
+  --afy-arrow: var(--color-text-4);
+  --afy-arrow-emphasis: var(--color-ok);
+  --afy-frontend-fill: color-mix(in srgb, var(--color-accent) 15%, transparent);
+  --afy-frontend-stroke: var(--color-accent);
+  --afy-backend-fill: color-mix(in srgb, var(--color-ok) 15%, transparent);
+  --afy-backend-stroke: var(--color-ok);
+  --afy-database-fill: color-mix(in srgb, var(--color-accent-strong) 20%, transparent);
+  --afy-database-stroke: var(--color-accent-strong);
+  --afy-cloud-fill: color-mix(in srgb, var(--color-attention) 18%, transparent);
+  --afy-cloud-stroke: var(--color-attention);
+  --afy-security-fill: color-mix(in srgb, var(--color-danger) 15%, transparent);
+  --afy-security-stroke: var(--color-danger);
+  --afy-messagebus-fill: color-mix(in srgb, var(--color-warn) 15%, transparent);
+  --afy-messagebus-stroke: var(--color-warn);
+  --afy-external-fill: color-mix(in srgb, var(--color-text-4) 18%, transparent);
+  --afy-external-stroke: var(--color-text-4);
+  --afy-lane-fill: color-mix(in srgb, var(--color-surface-raised) 65%, transparent);
+  --afy-lane-stroke: var(--color-border-frame);
+}
+.mdext-diagram-archify svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  font-family: var(--font-mono);
+}
+.mdext-diagram-archify .c-grid { stroke: var(--afy-grid); fill: none; }
+.mdext-diagram-archify .c-mask { fill: var(--afy-mask); stroke: none; }
+.mdext-diagram-archify .c-frontend { fill: var(--afy-frontend-fill); stroke: var(--afy-frontend-stroke); }
+.mdext-diagram-archify .c-backend { fill: var(--afy-backend-fill); stroke: var(--afy-backend-stroke); }
+.mdext-diagram-archify .c-database { fill: var(--afy-database-fill); stroke: var(--afy-database-stroke); }
+.mdext-diagram-archify .c-cloud { fill: var(--afy-cloud-fill); stroke: var(--afy-cloud-stroke); }
+.mdext-diagram-archify .c-security { fill: var(--afy-security-fill); stroke: var(--afy-security-stroke); }
+.mdext-diagram-archify .c-messagebus { fill: var(--afy-messagebus-fill); stroke: var(--afy-messagebus-stroke); }
+.mdext-diagram-archify .c-external { fill: var(--afy-external-fill); stroke: var(--afy-external-stroke); }
+.mdext-diagram-archify .t-primary { fill: var(--afy-text); }
+.mdext-diagram-archify .t-muted { fill: var(--afy-text-muted); }
+.mdext-diagram-archify .t-dim { fill: var(--afy-text-dim); }
+.mdext-diagram-archify .t-frontend { fill: var(--afy-frontend-stroke); }
+.mdext-diagram-archify .t-backend { fill: var(--afy-backend-stroke); }
+.mdext-diagram-archify .t-database { fill: var(--afy-database-stroke); }
+.mdext-diagram-archify .t-cloud { fill: var(--afy-cloud-stroke); }
+.mdext-diagram-archify .t-security { fill: var(--afy-security-stroke); }
+.mdext-diagram-archify .t-messagebus { fill: var(--afy-messagebus-stroke); }
+.mdext-diagram-archify .t-external { fill: var(--afy-external-stroke); }
+.mdext-diagram-archify .a-default { stroke: var(--afy-arrow); fill: none; }
+.mdext-diagram-archify .a-emphasis { stroke: var(--afy-arrow-emphasis); fill: none; }
+.mdext-diagram-archify .a-security { stroke: var(--afy-security-stroke); fill: none; stroke-dasharray: 5, 5; }
+.mdext-diagram-archify .a-dashed { stroke: var(--afy-database-stroke); fill: none; stroke-dasharray: 4, 4; }
+.mdext-diagram-archify .m-default { fill: var(--afy-arrow); }
+.mdext-diagram-archify .m-emphasis { fill: var(--afy-arrow-emphasis); }
+.mdext-diagram-archify .m-security { fill: var(--afy-security-stroke); }
+.mdext-diagram-archify .m-dashed { fill: var(--afy-database-stroke); }
+.mdext-diagram-archify .c-security-group { fill: transparent; stroke: var(--afy-security-stroke); stroke-dasharray: 4, 4; }
+.mdext-diagram-archify .c-region { fill: color-mix(in srgb, var(--afy-cloud-stroke) 5%, transparent); stroke: var(--afy-cloud-stroke); stroke-dasharray: 8, 4; }
+.mdext-diagram-archify .c-lane { fill: var(--afy-lane-fill); stroke: var(--afy-lane-stroke); stroke-dasharray: 6, 6; }

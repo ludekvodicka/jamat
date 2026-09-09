@@ -1,0 +1,19 @@
+{
+  "agent": "codex",
+  "expected": {
+    "hint": "working"
+  },
+  "provenance": {
+    "origin": "AppJamat (V1) core/agents/codex/fixtures/work-detection.json",
+    "case": "working wrapped",
+    "capture": "sanitized capture of a live TUI tail; the V1 corpus is built by capturing raw and rendered tails from that app's diagnostic and stripping prompts, paths and ids (AppJamat docs/architecture/agent-work-detection.md)",
+    "ported": "rawTail, screenTail and wideScreenTail copied byte for byte from the V1 case; nothing was written for this tree. The V1 `phase` field is dropped: frames here carry no phase.",
+    "identical": "AppJamatV2 core/agents/*/fixtures/work-detection.json holds the same corpus byte for byte",
+    "note": "The status row broken across three rendered lines by a narrow terminal: this is why the raw pattern is matched with every space removed."
+  },
+  "frame": {
+    "rawTail": "› Working (14m 34s • esc to interrupt)",
+    "screenTail": "› Working (\n  14m 34s • esc to\n  interrupt\n)",
+    "wideScreenTail": "› Working (\n  14m 34s • esc to\n  interrupt\n)"
+  }
+}

@@ -1,0 +1,132 @@
+/*
+ * The projects card's own styles. They lived in `configuration.css` - the FRAME's stylesheet -
+ * for 163 lines, while the four cards added later each kept theirs beside their component.
+ */
+.jamat-configuration-projects {
+  position: relative;
+  min-height: 100%;
+}
+.jamat-configuration-projects__note {
+  margin: 0 0 var(--space-3);
+  font-size: var(--fs-status);
+  color: var(--color-text-5);
+}
+/* The file moved under a modified buffer. It reads as a warning rather than as an error, because
+   nothing has gone wrong yet - what happens next is the user's choice between two versions. */
+.jamat-configuration-projects__banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  margin: 0 0 var(--space-3);
+  font-size: var(--fs-secondary);
+  color: var(--color-attention);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-attention);
+  border-radius: var(--radius-control);
+}
+.jamat-configuration-projects__rows {
+  padding: 0;
+  margin: 0 0 var(--space-3);
+  list-style: none;
+}
+.jamat-configuration-projects__entry {
+  padding: 3px 0;
+}
+.jamat-configuration-projects__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 3px 0;
+}
+/* Indented under the root it belongs to, so a collapsed block reads as part of that row rather
+   than as another root. */
+.jamat-configuration-projects__folders {
+  padding-left: var(--space-4);
+}
+.jamat-configuration-projects__folders-toggle {
+  padding: 2px 0;
+  font: inherit;
+  font-size: var(--fs-secondary);
+  color: var(--color-text-4);
+  cursor: pointer;
+  background: none;
+  border: 0;
+}
+.jamat-configuration-projects__folders-toggle:hover {
+  color: var(--color-text-2);
+}
+.jamat-configuration-projects__folder {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 2px 0;
+}
+.jamat-configuration-projects__folder-title {
+  width: 180px;
+  padding: 2px var(--space-2);
+  font: inherit;
+  color: var(--color-text-1);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-configuration-projects__prefix {
+  width: 120px;
+  padding: 2px var(--space-2);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: var(--fs-secondary);
+  color: var(--color-text-1);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-configuration-projects__warn {
+  font-size: var(--fs-status);
+  color: var(--color-attention);
+}
+.jamat-configuration-projects__label {
+  width: 180px;
+  padding: 2px var(--space-2);
+  font: inherit;
+  color: var(--color-text-1);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-configuration-projects__path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--fs-secondary);
+  color: var(--color-text-4);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Inside the pane, like the frame's own question is inside the card: a root leaving the catalog is
+   about this tab, and a second floating layer is the stacking the shell refuses. */
+.jamat-configuration-projects__ask {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--color-scrim);
+}
+.jamat-configuration-projects__ask-text {
+  max-width: 46em;
+  margin: 0;
+  font-size: var(--fs-base);
+  color: var(--color-text-1);
+  text-align: center;
+}
+.jamat-configuration-projects__ask-buttons {
+  display: flex;
+  gap: var(--space-2);
+}

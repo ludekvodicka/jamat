@@ -1,0 +1,251 @@
+/* The Debug window's frame: a list of sections on the left, the chosen one on the right. Colours
+   and spacing come from tokens.css alone; scripts/tokensGate.test.ts fails on a raw hex here. */
+.jamat-debug {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  background: var(--color-background);
+  color: var(--color-text-2);
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+}
+
+.jamat-debug__sections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  flex: 0 0 180px;
+  padding: var(--space-3) var(--space-2);
+  border-right: 1px solid var(--color-border-hairline);
+  background: var(--color-surface-sunken);
+  overflow-y: auto;
+}
+
+/* The tree's own rows. The indent is set per level in the markup, because the depth is the tree's
+   fact and not a class name to keep inventing one of per level. */
+.jamat-debug__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.jamat-debug__section {
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-text-3);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.jamat-debug__section:hover {
+  background: var(--color-surface-control-hover);
+  color: var(--color-text-1);
+}
+
+.jamat-debug__section--active {
+  background: var(--color-surface-control);
+  color: var(--color-text-1);
+}
+
+/* The pane scrolls on its own: a section is a page of readings and the list must stay put. */
+.jamat-debug__pane {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-4);
+  overflow: auto;
+}
+
+/* The section screens. Readings are monospace where they are identifiers or numbers to compare:
+   a pid, a port and a hash are read character by character, not as words.
+
+   The host and the rate screens share every rule below by selector rather than by each keeping a
+   copy: they are the same kind of surface - a header, blocks of label-and-value readings, a table -
+   and two sets of identical declarations would drift the first time one of them was tuned. What a
+   screen does NOT share with the other is declared under its own name alone. */
+.jamat-debug-host,
+.jamat-debug-rate {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.jamat-debug-host__head,
+.jamat-debug-rate__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.jamat-debug-host__headline,
+.jamat-debug-rate__headline {
+  color: var(--color-text-1);
+  font-size: var(--fs-title);
+}
+
+.jamat-debug-host__verdict {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-control);
+  color: var(--color-text-3);
+  font-size: var(--fs-chip);
+  text-transform: uppercase;
+}
+
+/* Anything but the good word is marked, `unknown` included: a verdict nobody can give is not a
+   verdict that everything is fine. */
+.jamat-debug-host__verdict--off {
+  background: var(--color-surface-control-hover);
+  color: var(--color-attention);
+}
+
+.jamat-debug-host__actions,
+.jamat-debug-rate__actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.jamat-debug-host__button,
+.jamat-debug-rate__button {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-control);
+  color: var(--color-text-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.jamat-debug-host__button:hover:not(:disabled),
+.jamat-debug-rate__button:hover:not(:disabled) {
+  background: var(--color-surface-control-hover);
+  color: var(--color-text-1);
+}
+
+.jamat-debug-host__button:disabled,
+.jamat-debug-rate__button:disabled {
+  color: var(--color-text-5);
+  cursor: default;
+}
+
+.jamat-debug-host__problem,
+.jamat-debug-rate__problem {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-raised);
+  color: var(--color-warn);
+}
+
+.jamat-debug-host__block,
+.jamat-debug-rate__block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.jamat-debug-host__title,
+.jamat-debug-rate__title {
+  margin: 0;
+  color: var(--color-text-4);
+  font-size: var(--fs-secondary);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+/* The rate blocks are cut into parts a provider block does not repeat - windows, extras, payload -
+   so they need a second heading level. It is quieter than the block title on purpose: the provider
+   is what the eye looks for, and its parts are where it goes next. */
+.jamat-debug-rate__subtitle {
+  margin: var(--space-2) 0 0;
+  color: var(--color-text-5);
+  font-size: var(--fs-chip);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+/* One fact per line, and deliberately not a grid of columns. Readings are read by looking for a
+   label and reading across, and a four-column wall of them on a wide window gives the eye no
+   direction to go. Tall and scrolled beats dense and unreadable. */
+.jamat-debug-host__facts,
+.jamat-debug-rate__facts {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+}
+
+.jamat-debug-host__fact,
+.jamat-debug-rate__fact {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--color-border-hairline);
+}
+
+.jamat-debug-host__label,
+.jamat-debug-rate__label {
+  flex: 0 0 200px;
+  color: var(--color-text-4);
+}
+
+.jamat-debug-host__value,
+.jamat-debug-rate__value {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  color: var(--color-text-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-secondary);
+  overflow-wrap: anywhere;
+}
+
+.jamat-debug-host__table,
+.jamat-debug-rate__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: var(--fs-secondary);
+}
+
+.jamat-debug-host__table th,
+.jamat-debug-rate__table th {
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--color-border-frame);
+  color: var(--color-text-4);
+  font-weight: 600;
+  text-align: left;
+}
+
+.jamat-debug-host__table td,
+.jamat-debug-rate__table td {
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--color-border-hairline);
+  color: var(--color-text-2);
+}
+
+.jamat-debug-host__empty,
+.jamat-debug-rate__empty {
+  margin: 0;
+  color: var(--color-text-4);
+}
+
+/* The unreduced answer, kept scrollable rather than wrapped: it is read by looking for a key, and a
+   body reflowed to the pane's width stops being the shape the provider sent. */
+.jamat-debug-rate__raw {
+  max-height: 320px;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-hairline);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-sunken);
+  color: var(--color-text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-secondary);
+  overflow: auto;
+}
