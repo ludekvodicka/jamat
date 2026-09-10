@@ -41,6 +41,11 @@ class TabControlHarness {
   readonly windows = new FakeWindows()
   readonly index = new WorkspacePanelIndex()
   readonly resolver = new FakeFileOpenResolver()
+  readonly commits = {
+    prepare: vi.fn<import('../versioning/versioningCommitManager').VersioningCommitManager['prepare']>(async () => ({ ok: true,
+      value: { draftId: 'draft', scopeRoot: 'Q:/app/shared', title: 'Commit SVN' }, messageApplied: false })),
+    attach: vi.fn(), releaseUnattached: vi.fn(),
+  }
   readonly broker: TabControlBroker
   private nextRequest = 0
 
@@ -49,6 +54,7 @@ class TabControlHarness {
       this.windows.asWindows(),
       this.index,
       this.resolver,
+      this.commits,
       {
         requestId: () => `request-${++this.nextRequest}`,
         timeoutMilliseconds,
@@ -90,6 +96,42 @@ class FakeFileOpenResolver {
 
 describe('app-client-ui/app/tabs/tabControlBroker', () => {
   afterEach(() => vi.useRealTimers())
+
+  it('opens a prepared commit in the existing owner window and reports an unapplied proposal', async () => {
+    const harness = new TabControlHarness()
+    const pending = harness.broker.openCommit('session-1', 'App', 'svn', 'shared', 'Proposal', { plain: false })
+    const first = await harness.command()
+    harness.acknowledge('main', first, { kind: 'focused-existing', panelId: 'session-panel', windowId: 'holder' })
+    const second = await harness.command(1)
+    expect(second).toMatchObject({ kind: 'open-commit', scopeRoot: 'Q:/app/shared', messageApplied: false })
+    harness.acknowledge('holder', second, { kind: 'commit-opened', panelId: 'session-panel' })
+    expect(await pending).toMatchObject({ ok: true, value: { kind: 'commit-opened', scopeRoot: 'Q:/app/shared', windowId: 'holder', messageApplied: false } })
+    expect(harness.commits.attach).toHaveBeenCalledWith('draft', 'holder')
+    expect(harness.commits.prepare).toHaveBeenCalledWith('session-1', 'svn', 'shared', 'Proposal')
+  })
+
+  it('does not open a tab after prepare refuses, but a person can see the missing-working-copy pane', async () => {
+    const harness = new TabControlHarness()
+    harness.commits.prepare.mockResolvedValue({ ok: false, code: 'no-working-copy', detail: 'No SVN here' })
+    expect(await harness.broker.openCommit('session-1', 'App', 'svn', null, null, { plain: false })).toMatchObject({ ok: false, error: { code: 'operation-failed' } })
+    expect(harness.windows.published).toEqual([])
+    const pending = harness.broker.openCommit('session-1', 'App', 'svn', null, null, { plain: false, showRefusal: true })
+    harness.acknowledge('main', await harness.command(), { kind: 'opened', panelId: 'panel' })
+    harness.acknowledge('main', await harness.command(1), { kind: 'commit-opened', panelId: 'panel' })
+    expect(await pending).toMatchObject({ ok: true, value: { kind: 'commit-opened' } })
+  })
+
+  it('releases an unattached draft after a tab failure or a renderer timeout', async () => {
+    const harness = new TabControlHarness(50)
+    const pending = harness.broker.openCommit('session-1', 'App', 'svn', null, null, { plain: true })
+    harness.acknowledge('main', await harness.command(), { kind: 'failed', detail: 'File cap' })
+    expect(await pending).toMatchObject({ ok: false, error: { code: 'operation-failed' } })
+    expect(harness.commits.releaseUnattached).toHaveBeenCalledWith('draft')
+    const timed = harness.broker.openCommit('session-1', 'App', 'svn', null, null, { plain: true })
+    expect(await timed).toMatchObject({ ok: false, error: { code: 'timeout' } })
+    expect(harness.commits.releaseUnattached).toHaveBeenCalledTimes(2)
+    expect(harness.commits.attach).not.toHaveBeenCalled()
+  })
 
   it('lists the full panel snapshot and requests a plain terminal open from the main renderer', async () => {
     const harness = new TabControlHarness()

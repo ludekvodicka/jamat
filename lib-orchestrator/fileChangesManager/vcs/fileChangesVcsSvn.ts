@@ -14,13 +14,14 @@ import type {
   FileChangesVcsContentResult,
   FileChangesVcsEntry,
   FileChangesVcsHistoryGroup,
+  FileChangesVcsStatus,
 } from './fileChangesVcs.types'
 import { ErrorText } from '../../shared/errorText'
 import { JsonShape } from '../../shared/jsonShape'
 import { FileChangesLimits } from '../fileChangesLimits'
 import type { CommandOutcome, CommandRunner } from '../../shared/commandInvoker.types'
 import { FileChangesVcsBase } from './fileChangesVcsBase'
-import { SvnInvoker } from './svnInvoker'
+import { SvnInvoker } from '../../svn/svnInvoker'
 
 interface XmlNode {
   [key: string]: unknown
@@ -76,7 +77,7 @@ export class FileChangesVcsSvn extends FileChangesVcsBase implements FileChanges
 
   async status(
     detection: FileChangesVcsDetection,
-  ): Promise<FileChangesVcsResult<readonly FileChangesVcsEntry[]>> {
+  ): Promise<FileChangesVcsResult<FileChangesVcsStatus>> {
     // No `--verbose`: it prints an XML entry for every VERSIONED node, and `statusOf` throws all of
     // those away - a working copy of forty thousand files then overran the reader's output ceiling
     // and the panel said "0 changed" about a tree full of changes. Plain `--xml` still reports a
@@ -189,7 +190,7 @@ export class FileChangesVcsSvn extends FileChangesVcsBase implements FileChanges
   private async parseStatus(
     detection: FileChangesVcsDetection,
     xml: string,
-  ): Promise<FileChangesVcsEntry[]> {
+  ): Promise<FileChangesVcsStatus> {
     const document = this.parser.parse(xml) as XmlNode
     const status = FileChangesVcsSvn.objectOf(document.status)
     const entries: XmlNode[] = []
@@ -198,18 +199,21 @@ export class FileChangesVcsSvn extends FileChangesVcsBase implements FileChanges
       entries.push(...FileChangesVcsSvn.arrayOf(targetNode.entry).map(FileChangesVcsSvn.objectOf))
     }
     const parsed: FileChangesVcsEntry[] = []
+    const externalRoots = new Set<string>()
     for (const entry of entries) {
       const wcStatus = FileChangesVcsSvn.objectOf(entry['wc-status'])
       const item = String(wcStatus['@_item'] ?? '')
       const props = String(wcStatus['@_props'] ?? 'none')
       const treeConflicted = String(wcStatus['@_tree-conflicted'] ?? '') === 'true'
       const mapped = FileChangesVcsSvn.statusOf(item, props, treeConflicted)
-      if (mapped === null) continue
+      if (mapped === null && item !== 'external') continue
       const entryPath = String(entry['@_path'] ?? '')
       if (!entryPath) throw new Error('SVN status entry has no path')
       const absolutePath = resolve(detection.cwd, entryPath)
       if (!PathCompare.isInside(detection.cwd, absolutePath))
         throw new Error(`SVN returned a path outside its requested scope: ${entryPath}`)
+      if (item === 'external') externalRoots.add(absolutePath)
+      if (mapped === null) continue
       parsed.push({
         absolutePath,
         repositoryPath: FileChangesVcsSvn.localRepositoryPath(detection, entryPath),
@@ -220,7 +224,7 @@ export class FileChangesVcsSvn extends FileChangesVcsBase implements FileChanges
         gitState: null,
       })
     }
-    return parsed
+    return { entries: parsed, externalRoots: [...externalRoots] }
   }
 
   private async parseHistory(

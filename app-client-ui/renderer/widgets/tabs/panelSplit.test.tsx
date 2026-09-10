@@ -8,16 +8,58 @@ import {
   PanelSplitParams,
   PanelSplitStrip,
   usePanelSplit,
-  type PanelSplitItem,
+  type PanelSplitFileItem,
 } from './panelSplit'
 
 describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
+  it('keeps legacy files and eight files alongside four permanent commit scopes', () => {
+    const files = Array.from({ length: 8 }, (_, i) => ({ key: `f${i}`, title: `f${i}`, source: sourceFixture(`f${i}`) }))
+    const commits = Array.from({ length: 4 }, (_, i) => ({ kind: 'commit', key: `c${i}`, title: `c${i}`, vcs: 'svn', scopeRoot: `Q:/scope${i}`, draftId: 'must-not-persist' }))
+    const state = PanelSplitParams.of({ split: { items: [...files, ...commits, { kind: 'unknown', key: 'bad' }], active: 'c0', preview: 'c0', history: commits } })
+    expect(state.items).toHaveLength(12)
+    expect(state.items[0].kind).toBe('file')
+    expect(state.items[8]).not.toHaveProperty('draftId')
+    expect(state.preview).toBeNull()
+    expect(state.history).toEqual([])
+    const refusal = PanelSplitParams.opened(state, itemFixture('ninth'))
+    expect(refusal).toEqual({ ok: false, refusal: 'The split already holds 8 files. Close one before opening another.' })
+    const opened = PanelSplitParams.opened(state, { kind: 'commit', key: 'c4', title: 'Fifth', vcs: 'git', scopeRoot: 'Q:/fifth' })
+    if (!opened.ok) throw new Error(opened.refusal)
+    expect(opened.state.items).toHaveLength(13)
+    expect(opened.state.preview).toBeNull()
+    expect(opened.state.history).toEqual([])
+  })
+
+  it('never replaces a commit with a preview and refuses the ninth commit', () => {
+    let state = PanelSplitParams.default()
+    for (let i = 0; i < 8; i++) {
+      const result = PanelSplitParams.opened(state, { kind: 'commit', key: `c${i}`, title: `c${i}`, vcs: 'svn', scopeRoot: `Q:/scope${i}` })
+      if (!result.ok) throw new Error(result.refusal)
+      state = result.state
+    }
+    expect(PanelSplitParams.opened(state, { kind: 'commit', key: 'ninth', title: 'Ninth', vcs: 'svn', scopeRoot: 'Q:/ninth' }).ok).toBe(false)
+    const first = PanelSplitParams.opened(state, itemFixture('first'))
+    if (!first.ok) throw new Error(first.refusal)
+    const second = PanelSplitParams.opened(first.state, itemFixture('second'))
+    if (!second.ok) throw new Error(second.refusal)
+    expect(second.state.items.filter((item) => item.kind === 'commit')).toEqual(state.items)
+    expect(second.state.preview).toBe('key:second')
+  })
+
+  it('shows the commit scope and offers Close without Detach', () => {
+    render(<PanelSplitStrip items={[{ kind: 'commit', key: 'c', title: 'Commit SVN', vcs: 'svn', scopeRoot: 'Q:/app' }]}
+      active="c" preview={null} onActivate={vi.fn()} onKeepOpen={vi.fn()} onClose={vi.fn()} onDetach={vi.fn()} />)
+    fireEvent.contextMenu(screen.getByTitle('Q:/app'))
+    expect(screen.getByRole('menuitem', { name: 'Close' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Detach from split' })).toBeNull()
+  })
+
   function sourceFixture(path: string): FileViewerDocumentSource {
     return { kind: 'workspace', sessionId: 's1', path }
   }
 
-  function itemFixture(path: string): PanelSplitItem {
-    return { key: `key:${path}`, title: path, source: sourceFixture(path) }
+  function itemFixture(path: string): PanelSplitFileItem {
+    return { kind: 'file', key: `key:${path}`, title: path, source: sourceFixture(path) }
   }
 
   /** Only what the hook touches, the same shape the sidebar's own test uses. */
@@ -126,8 +168,8 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
       expect(again.state.items).toHaveLength(2)
       expect(again.state.active).toBe('key:a.md')
       expect(again.state.preview).toBe('key:b.md')
-      expect(again.state.items[0].baselineHint).toEqual({ kind: 'git-head', revision: null })
-      expect(again.state.items[0].location).toEqual({ line: 1571 })
+      expect(again.state.items[0].kind === 'file' && again.state.items[0].baselineHint).toEqual({ kind: 'git-head', revision: null })
+      expect(again.state.items[0].kind === 'file' && again.state.items[0].location).toEqual({ line: 1571 })
     })
 
     it('replaces the previous preview in place', () => {

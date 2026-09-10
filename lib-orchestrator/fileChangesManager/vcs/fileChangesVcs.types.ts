@@ -28,6 +28,11 @@ export interface FileChangesVcsHistoryGroup {
   entries: readonly FileChangesVcsEntry[]
 }
 
+export interface FileChangesVcsStatus {
+  entries: readonly FileChangesVcsEntry[]
+  externalRoots: readonly string[]
+}
+
 /**
  * Which revision of a file a diff is against.
  *
@@ -58,7 +63,7 @@ export interface FileChangesVcs {
   readonly defaultBaselineRef: FileChangesVcsBaselineRef
   historyBaselineRef(revision: string): FileChangesVcsBaselineRef
   detect(cwd: string): Promise<FileChangesVcsDetection | null>
-  status(detection: FileChangesVcsDetection): Promise<FileChangesVcsResult<readonly FileChangesVcsEntry[]>>
+  status(detection: FileChangesVcsDetection): Promise<FileChangesVcsResult<FileChangesVcsStatus>>
   /** One cheap question - is the scope dirty - without parsing per-file entries. */
   dirty(detection: FileChangesVcsDetection): Promise<FileChangesVcsResult<boolean>>
   history(

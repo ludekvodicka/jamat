@@ -6,6 +6,7 @@ import type {
   VersioningSettingsEffect,
   VersioningSettingsInput,
 } from './versioningSettingsModel'
+import type { VersioningSettingsValue } from '../../../../../shared/versioningSettings'
 
 export type VersioningSettingsPorts = SettingsCardPorts<VersioningSettingsInput>
 
@@ -14,6 +15,7 @@ export class VersioningSettingsEffects {
   static async run(
     effect: VersioningSettingsEffect,
     ports: VersioningSettingsPorts,
+    field: keyof VersioningSettingsValue = 'mode',
   ): Promise<void> {
     if (effect.effect === 'load')
       return SettingsCardEffects.load(
@@ -27,7 +29,7 @@ export class VersioningSettingsEffects {
     else if (effect.effect === 'save')
       return SettingsCardEffects.save(
         effect.value,
-        (value) => window.appClient.versioning.saveSettings(value),
+        (value) => window.appClient.versioning.saveSettings(value, field),
         ports,
         {
           failed: (detail) => ({ input: 'failed' as const, detail }),

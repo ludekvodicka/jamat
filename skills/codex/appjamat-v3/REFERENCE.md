@@ -112,6 +112,7 @@ a number may also take `--working-directory PATH` for exact disambiguation.
 | Plain tab session | Add `--plain --open-tab` |
 | Reopen/finalize | `sessions reopen\|finalize <session selector> [--working-directory PATH]` |
 | Tabs | `tabs list`, `tabs open <session selector>`, `tabs open-file <session selector> --path PATH`, `tabs focus\|close --panel-id ID` |
+| Review a commit | `commit-svn-jamat` or `commit-git-jamat`, with `--self` or `<session selector>`, optionally `--path PATH` and `--message TEXT` or `--message-file FILE` |
 | Read terminal | `terminal peek <session selector> [--working-directory PATH] [--cols N --rows N] [--timeout-ms N]` |
 | Write terminal | `terminal send <session selector> [--working-directory PATH] --text TEXT [--enter] [--timeout-ms N]` |
 | Watch changes | `events watch [--after-revision N]` until interrupted |
@@ -127,6 +128,43 @@ transcript are local-only. The local controller and the selected remote endpoint
 Mutations accept `--operation-id ID`; the CLI generates one when omitted and returns it. Session
 creation also accepts `--flow-id ID`, `--acknowledge-setup HASH`, `--open-tab`, and `--plain`.
 `--plain` requires `--open-tab` because no other surface draws a plain session.
+
+## Commit through Jamat
+
+The user's own commit and autocommit instructions take precedence. These commands offer a human
+review dialog; they never perform an unattended commit, including docs-only changes. There is no
+`vcs.commit` operation. A person selects files, reviews the diff, edits the message and clicks OK.
+
+Inside the session, use:
+
+```powershell
+node "<skill>/scripts/jamat-v3.mjs" commit-svn-jamat --self --message-file "Q:/temp/message.txt"
+```
+
+Use `commit-git-jamat` for an ordinary human Git repository; checkpoint worktrees are refused.
+Git commits never push. `--path` narrows the session's scope to a nested directory. SVN externals
+commit separately. Without a path, Jamat uses the session's working directory, never an enclosing
+SVN working-copy root.
+
+`--self` reads `JAMAT_V3_SESSION_ID` and the controller pair
+`JAMAT_V3_SESSION_CONTROLLER` / `JAMAT_V3_SESSION_CHANNEL`. It cannot be combined with a session,
+number, working-directory or config selector. When the controller pair is absent, normal discovery
+applies. Claude sessions minted by Jamat share their native id with the Jamat id; resumed ids keep
+the existing record mapping. Codex ids remain captured in the record after launch; never infer them
+from the Jamat id.
+
+Messages are limited to 16,384 characters. `--message` and `--message-file` are exclusive. The
+message reaches SVN, Git and Tortoise through a UTF-8 file. An existing human edit is preserved;
+`messageApplied: false` says the proposal was not used. Reopening the same scope focuses its dialog.
+
+If discovery finds no running controller or the requested session is absent or not live, Windows
+opens TortoiseSVN or TortoiseGit and returns `kind: "opened-aside"` with the reason. Its scope is
+`--path` resolved from the CLI working directory, or that working directory itself. This response
+means a dialog was opened, never that a commit happened. Conflict, invalid request, forbidden,
+timeout, protocol/operation failures, a failed session-list read and a missing `tabs.openCommit`
+capability do not fall back. Report them without guessing another controller. Remote sessions are
+not supported. Messages handed to Tortoise remain available until a later sweep of files older than
+one day, since the detached dialog may still be reading them.
 
 ## Read results
 

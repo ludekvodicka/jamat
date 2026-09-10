@@ -130,6 +130,7 @@ export interface SessionClaudeTitlesPort {
 }
 
 export interface SessionLifecycleDeps {
+  controller: NonNullable<LaunchPlanOptions['controller']>
   records: SessionRecordsStore
   host: SessionHostPort
   worktrees: SessionWorktreePort
@@ -202,6 +203,7 @@ export class SessionLifecycle {
   /** V1's bound, kept: a note is a paragraph about a session, not a document inside one. */
 
   private readonly records: SessionRecordsStore
+  private readonly controller: SessionLifecycleDeps['controller']
   private readonly host: SessionHostPort
   private readonly worktrees: SessionWorktreePort
   private readonly setup: SessionSetupPort
@@ -224,6 +226,7 @@ export class SessionLifecycle {
   private readonly setupFlow: SetupFlow
 
   constructor(deps: SessionLifecycleDeps) {
+    this.controller = deps.controller
     this.records = deps.records
     this.host = deps.host
     this.worktrees = deps.worktrees
@@ -279,6 +282,7 @@ export class SessionLifecycle {
     launch: 'create' | 'reopen',
     options?: LaunchPlanOptions,
   ): RuntimeLaunchSpec {
+    options = { ...options, controller: this.controller }
     if (record.kind === 'shell')
       return LaunchPlanner.plan(record, options)
     else if (record.kind === 'agent') {
@@ -289,11 +293,11 @@ export class SessionLifecycle {
       let model: string | undefined
       let effort: string | undefined
       if (launch === 'create') {
-        // The record's own model wins over the live setting: a caller that NAMED one - which today
-        // is a create sent from another computer - asked for that model, and a replay of the same
-        // create has to repeat the same command line however the setting has moved since.
+        // The record and nothing else: `recordAgentOf` has already resolved this machine's setting
+        // into it, so a replay repeats the same command line however the setting has moved since,
+        // and a model NAMED by a caller - which today is a create sent from another computer - is
+        // the same field. The effort is still read live here, because nothing reads it back.
         model = record.agent?.model
-          ?? (agentId === undefined ? undefined : this.modelFor(agentId))
         effort = agentId === undefined ? undefined : this.effortFor(agentId)
       }
       else if (launch === 'reopen') {
@@ -882,8 +886,16 @@ export class SessionLifecycle {
    * A fork is a session of the tree, never a plain tab: closing a plain tab discards its record, so a
    * plain tab holding a fork would be a tab that dies for good the first time it is closed. The
    * launcher settled the same question the same way.
+   *
+   * `name` is the ONE thing a caller may say, because it is the one thing the record cannot: the
+   * card that asks for a fork lets the name be typed over before anything starts. It replaces the
+   * parent's name and nothing else - the number pair is still composed here, from the number the
+   * counter actually hands out.
    */
-  async forkFrom(sessionId: string): Promise<SessionsOpResult<{ sessionId: string }>> {
+  async forkFrom(
+    sessionId: string,
+    options?: { name?: string },
+  ): Promise<SessionsOpResult<{ sessionId: string }>> {
     const record = this.records.get(sessionId)
     if (!record) return OperationOutcomes.notFound(sessionId)
     if (record.kind !== 'agent' || record.agent === undefined)
@@ -911,14 +923,20 @@ export class SessionLifecycle {
         code: 'invalid-spec',
         detail: `Session ${sessionId} never named the conversation it is holding, so there is nothing to fork from`,
       }
+    const parts = SessionTitle.partsOf(captured.title)
+    // An empty name is a name: it says "no name", and the fork is then called by its numbers alone,
+    // exactly as a create with an empty field is. Only an absent option keeps the parent's.
+    const name = options?.name === undefined
+      ? parts.name
+      : SessionTitle.normalizeName(options.name)
     // The project directory rather than the worktree, and no worktree of its own: a worktree belongs
     // to the one session it was cut for, and a fork sharing it would put two agents in one checkout.
     return this.forkConversation(
       captured.directory,
       agentId,
       parentId,
-      SessionTitle.partsOf(captured.title),
-      captured.title,
+      { number: parts.number, name },
+      SessionTitle.compose(parts.number, name),
     )
   }
 
@@ -946,27 +964,6 @@ export class SessionLifecycle {
       directory,
       agent: { agentId, mode: 'fork', forkParentId: parentId },
       title,
-    })
-  }
-
-  /**
-   * A fresh session in the same place as this one, under whichever agent was asked for. It is how
-   * "another one of these" and "the same thing in the other agent" are both said.
-   *
-   * A plain tab, because that is what asking from a tab means: no number is taken from the project
-   * and the tree does not draw it until somebody keeps it.
-   */
-  async createBeside(
-    sessionId: string,
-    agentId: SessionAgentId,
-  ): Promise<SessionsOpResult<{ sessionId: string }>> {
-    const record = this.records.get(sessionId)
-    if (!record) return OperationOutcomes.notFound(sessionId)
-    return this.create({
-      kind: 'agent',
-      directory: record.directory,
-      agent: { agentId, mode: 'new' },
-      presentation: 'tab',
     })
   }
 
@@ -1491,7 +1488,7 @@ export class SessionLifecycle {
     operationId: string,
     marks?: { oneShot: true; resolveFor: string },
   ): SessionRecord {
-    const agent = spec.agent ? this.recordAgentOf(spec.agent, marks?.oneShot) : undefined
+    const agent = spec.agent ? this.recordAgentOf(spec.agent, sessionId, marks?.oneShot) : undefined
     const cwd = worktree?.worktreePath ?? LaunchPlanner.directoryOf(spec.directory)
     const record: SessionRecord = {
       sessionId,
@@ -1515,14 +1512,19 @@ export class SessionLifecycle {
     return record
   }
 
-  private recordAgentOf(agent: SessionAgentSpec, oneShot?: true): SessionRecordAgent {
+  private recordAgentOf(agent: SessionAgentSpec, sessionId: string, oneShot?: true): SessionRecordAgent {
     const nativeSessionId = agent.nativeSessionId
-      ?? (AgentPresets.mintsNativeSessionId(agent) ? this.newId() : undefined)
+      ?? (AgentPresets.mintsNativeSessionId(agent) ? sessionId : undefined)
     const stored: SessionRecordAgent = { agentId: agent.agentId, launchMode: agent.mode }
     if (nativeSessionId) stored.nativeSessionId = nativeSessionId
     if (agent.forkParentId) stored.forkParentId = agent.forkParentId
     if (agent.initialPrompt) stored.initialPrompt = agent.initialPrompt
-    if (agent.model) stored.model = agent.model
+    // Resolved HERE rather than at the launch, and that is what makes the field readable at all: the
+    // reader that draws the context window has the record and no way to reach a setting, so a model
+    // left for `plannedLaunch` to read is one nothing can ask about afterwards. A caller that named
+    // one still wins - it is answering for the machine that runs the session, not for this one.
+    const model = agent.model ?? this.modelFor(agent.agentId)
+    if (model) stored.model = model
     if (oneShot) stored.oneShot = oneShot
     return stored
   }

@@ -31,7 +31,7 @@ export interface SessionRecordAgent {
   launchMode: 'new' | 'continue' | 'resume' | 'fork'
   /**
    * The conversation this session is holding, however it came to be known: minted by the client
-   * before launch for a Claude `new` or `fork`, found afterwards from the rollout Codex wrote for a
+   * before launch, equal to the Jamat session id, for a Claude `new` or `fork`; found afterwards from the rollout Codex wrote for a
    * Codex `new` or `fork`, and handed in by the caller for a `resume`. Absent means the record can
    * name no conversation, which is what every reopen and every fork is refused for.
    */
@@ -40,9 +40,15 @@ export interface SessionRecordAgent {
   /** Part of the command line, so it is kept for the same reason `launchMode` is: replay. */
   initialPrompt?: string
   /**
-   * The model this session was founded on, when its caller named one. Part of the command line and
-   * kept for exactly the reason `initialPrompt` is: a replayed create has to repeat the same one,
-   * and the live setting it would otherwise fall back to may have moved since.
+   * The model this session was founded on: the one its caller named, or - where it named none - what
+   * this machine's own setting resolved to at create. Part of the command line and kept for exactly
+   * the reason `initialPrompt` is: a replayed create has to repeat the same one, and the live
+   * setting it would otherwise fall back to may have moved since.
+   *
+   * It is also the ONLY place a Claude session's context TIER is written down, and that is why the
+   * local setting is resolved into it rather than left for the launch to read. A Claude transcript
+   * records the bare id the API answered with, `claude-opus-5`, and never the `[1m]` the launch
+   * asked for, so a session read without this field draws a fifth of the window it is running on.
    *
    * A reopen still names no model at all - that rule belongs to the launch, not to this field.
    */

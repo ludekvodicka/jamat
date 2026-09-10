@@ -1,7 +1,7 @@
 import { useCallback } from 'react'
 
 import type { FileViewerDocumentSource } from '../../../lib-orchestrator/fileViewer/fileViewerApi.types'
-import type { PanelSplitItem } from '../widgets/tabs/panelSplit'
+import type { PanelSplitFileItem } from '../widgets/tabs/panelSplit'
 import { FileViewerContent } from './fileViewerContent'
 import {
   FileViewerCopyPathButton,
@@ -21,12 +21,12 @@ import './fileViewerPanel.css'
 import './fileViewerPane.css'
 
 export function FileViewerPane(props: {
-  item: PanelSplitItem
+  item: PanelSplitFileItem
   changes: FileChangesViewModel
   workingTree: FileChangesWorkingTreeViewModel
   backPath: string | null
   onBack(): void
-  onOpenItem(item: PanelSplitItem): string | null
+  onOpenItem(item: PanelSplitFileItem): string | null
   onRefused(reason: string): void
 }): React.JSX.Element {
   const model = useFileViewerDocument(
@@ -50,6 +50,7 @@ export function FileViewerPane(props: {
   const openSource = useCallback((source: FileViewerDocumentSource): void => {
     model.openSource(source, (document) => {
       const refusal = onOpenItem({
+        kind: 'file',
         key: document.documentKey,
         title: document.name,
         source: document.source,

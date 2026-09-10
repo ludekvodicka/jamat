@@ -9,6 +9,7 @@ import './create.css'
 import type {
   CreateScreenInput,
   CreateScreenState,
+  CreateSessionTarget,
   CreateType,
 } from './createScreenModel'
 import { CreateScreenModel } from './createScreenModel'
@@ -43,6 +44,14 @@ export function LauncherCreateScreen(props: {
   const worktreeRefusal = CreateScreenModel.worktreeRefusal(state)
   const agentRefusal = CreateScreenModel.agentRefusal(state)
   const existing = CreateScreenModel.typeOf(state).kind === 'existing'
+  // The session the chosen ROW acts on, and which of the two words applies to it. Null on every
+  // other row of that list, and on a card that has since been moved off the list entirely.
+  const acting = CreateScreenModel.actingOn(state)
+  // Which rows are drawn is the model's answer, and the name is the one row that comes and goes:
+  // only a fork founds a session that is still to be called something.
+  const named = CreateScreenModel.fieldsOf(state).includes('name')
+  // The fixed prefix the name is typed behind, which for a fork is the number PAIR.
+  const token = CreateScreenModel.tokenLabelOf(state)
   const existingRefusal = existing ? CreateScreenModel.existingRefusal(state) : null
   const remote = CreateScreenModel.endpointOf(state.target) !== null
   const remoteRefusals = CreateScreenModel.remoteRefusals(state)
@@ -58,21 +67,24 @@ export function LauncherCreateScreen(props: {
         </span>
       </ChoiceRow>
 
-      {!existing && (
+      {/* No name row for anything opened out of the Continue list but a fork: a resume brings back
+          the very session, which is already named, and a continue takes the conversation's own
+          name. The card that renames one is the details dialog. */}
+      {named && (
       <ChoiceRow label="Name" current={state.field === 'name'}>
         {/* The number is not editable, so it is drawn beside the field rather than typed into it:
             putting it in the value would make backspace able to delete the thing that names the
             branch. */}
         <span className="jamat-launcher-create__name">
-          {state.token !== null && (
-            <span className="jamat-launcher-create__token">{`${state.token} - `}</span>
+          {token !== null && (
+            <span className="jamat-launcher-create__token">{`${token} - `}</span>
           )}
           <input
             ref={nameInput}
             className="jamat-launcher-create__name-input"
             type="text"
             aria-label="Session name"
-            placeholder={state.token === null ? 'name this session' : 'type to append a name'}
+            placeholder={token === null ? 'name this session' : 'type to append a name'}
             value={state.name}
             onFocus={() => dispatch({ input: 'nameFocus' })}
             onChange={(event) => dispatch({ input: 'nameChanged', name: event.target.value })}
@@ -229,7 +241,7 @@ export function LauncherCreateScreen(props: {
           title={existingRefusal ?? undefined}
           onClick={() => dispatch({ input: 'activate' })}
         >
-          {CreateTypes.submitLabelOf(CreateScreenModel.typeOf(state))}
+          {CreateTypes.submitLabelOf(CreateScreenModel.typeOf(state), acting)}
           <span className="jamat-launcher__key"> Enter</span>
         </button>
       </div>
@@ -307,8 +319,14 @@ function SetupAgreement(props: {
   )
 }
 
-/** What each type card says. A flow's words are the flow's own, read from the catalog. */
-class CreateTypes {
+/**
+ * What each type card says. A flow's words are the flow's own, read from the catalog.
+ *
+ * Exported for the one line outside this file that has to say the same word: the launcher's key
+ * legend names what Enter does, and a legend that disagrees with the button under it is the drift
+ * this class exists to stop.
+ */
+export class CreateTypes {
   static keyOf(type: CreateType): string {
     if (type.kind === 'raw') return 'raw'
     else if (type.kind === 'shell') return 'shell'
@@ -360,9 +378,20 @@ class CreateTypes {
       throw new Error(`Unknown create type: ${JSON.stringify(type)}`)
   }
 
-  static submitLabelOf(type: CreateType): string {
+  /**
+   * What Enter does, in one word. Continue/Fork says both of its own words until a row is standing
+   * under the cursor that settles which: the card opened on a running session forks it, and the one
+   * opened on a stopped session brings that session back.
+   */
+  static submitLabelOf(type: CreateType, acting: CreateSessionTarget | null): string {
     if (type.kind === 'flow') return 'Configure'
-    else if (type.kind === 'existing') return 'Continue/Fork'
+    else if (type.kind === 'existing') {
+      if (acting === null) return 'Continue/Fork'
+      else if (acting.mode === 'fork') return 'Fork'
+      else if (acting.mode === 'resume') return 'Resume'
+      else
+        throw new Error(`Unknown session mode: ${JSON.stringify(acting)}`)
+    }
     else if (type.kind === 'raw' || type.kind === 'shell') return 'Start'
     else
       throw new Error(`Unknown create type: ${JSON.stringify(type)}`)

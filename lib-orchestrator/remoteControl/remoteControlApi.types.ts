@@ -185,6 +185,14 @@ export interface RemoteControlTabOpenFileDto {
   path: string
 }
 
+export interface RemoteControlTabOpenCommitDto {
+  kind: 'commit-opened'
+  panelId: string
+  windowId: string
+  scopeRoot: string
+  messageApplied: boolean
+}
+
 export type RemoteControlErrorCode = typeof RemoteControlConst.errorCodes[number]
 
 export interface RemoteControlError {
@@ -370,6 +378,10 @@ export interface RemoteControlOperationMap {
   'tabs.openFile': {
     request: { session: RemoteControlSessionSelector; path: string }
     response: RemoteControlTabOpenFileDto
+  }
+  'tabs.openCommit': {
+    request: { session: RemoteControlSessionSelector; vcs: 'svn' | 'git'; scope?: string; message?: string }
+    response: RemoteControlTabOpenCommitDto
   }
   'tabs.focus': {
     request: { panelId: string }

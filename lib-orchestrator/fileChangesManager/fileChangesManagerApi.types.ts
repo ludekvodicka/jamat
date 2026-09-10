@@ -1,6 +1,6 @@
 export type FileChangesAgentId = 'claude' | 'codex'
 export type FileChangesVcsId = 'git' | 'svn'
-export type FileChangesWorkingTreeSource = 'checkpoint' | 'svn' | 'worktree-base'
+export type FileChangesWorkingTreeSource = 'checkpoint' | 'svn' | 'worktree-base' | 'git'
 export type FileChangeStatus =
   | 'added'
   | 'modified'
@@ -126,7 +126,14 @@ export interface FileChangesWorkingTreeSnapshot {
   source: FileChangesWorkingTreeSelection
   defaultBaseline: FileChangeBaseline | null
   entries: readonly FileChangeEntry[]
+  externalRoots: readonly FileChangesWorkingTreeExternalRoot[]
   warnings: readonly string[]
+}
+
+export interface FileChangesWorkingTreeExternalRoot {
+  path: string
+  displayPath: string
+  fileIds: readonly string[]
 }
 
 export type FileChangesWorkingTreeSnapshotResult =

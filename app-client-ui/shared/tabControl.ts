@@ -1,6 +1,8 @@
 import type { FileViewerDocumentSource } from '../../lib-orchestrator/fileViewer/fileViewerApi.types'
+import type { FileChangesVcsId } from '../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 
 export type TabControlCommand =
+  | { kind: 'open-commit'; requestId: string; panelId: string; vcs: FileChangesVcsId; scopeRoot: string; title: string; messageApplied: boolean }
   | {
       kind: 'open-session'
       requestId: string
@@ -25,6 +27,7 @@ export type TabControlCommandResult =
   | { kind: 'focused'; panelId: string }
   | { kind: 'closed'; panelId: string }
   | { kind: 'file-opened'; panelId: string }
+  | { kind: 'commit-opened'; panelId: string }
   | { kind: 'failed'; detail: string }
 
 export interface TabControlAck {

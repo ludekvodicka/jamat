@@ -13,16 +13,6 @@ import { SessionCommandRun } from './sessionCommandRun'
  * the menu standing and the next click lands on the session that arrived.
  */
 describe('app-client-ui/renderer/commands/sessionCommandRun', () => {
-  const placeConst = {
-    kind: 'project' as const,
-    project: {
-      kind: 'project' as const,
-      categoryId: 'c1',
-      projectName: 'one',
-      projectPath: 'Q:/one',
-    },
-  }
-
   function registry(): { commands: CommandRegistry; execute: ReturnType<typeof vi.spyOn> } {
     const commands = new CommandRegistry()
     return { commands, execute: vi.spyOn(commands, 'execute').mockReturnValue('handled') }
@@ -31,7 +21,7 @@ describe('app-client-ui/renderer/commands/sessionCommandRun', () => {
   it('names the session for every command that takes one', () => {
     const ids: CommandId[] = [
       'session.details',
-      'session.newBlank',
+      'session.newBeside',
       'session.newInClaude',
       'session.newInCodex',
       'session.fork',
@@ -45,25 +35,10 @@ describe('app-client-ui/renderer/commands/sessionCommandRun', () => {
     for (const id of ids) {
       const { commands, execute } = registry()
 
-      SessionCommandRun.at(commands, id, 's1', null)
+      SessionCommandRun.at(commands, id, 's1')
 
       expect(execute.mock.calls, id).toEqual([[id, { sessionId: 's1' }]])
     }
-  })
-
-  it('carries a place for the launcher, which no session id can supply', () => {
-    const { commands, execute } = registry()
-
-    SessionCommandRun.at(commands, 'session.newHere', 's1', placeConst)
-
-    expect(execute.mock.calls).toEqual([['session.newHere', { place: placeConst }]])
-  })
-
-  it('refuses to open the launcher beside a session that belongs to no project', () => {
-    const { commands } = registry()
-
-    expect(() => SessionCommandRun.at(commands, 'session.newHere', 's1', null))
-      .toThrow(/no place/)
   })
 
   /*
@@ -74,14 +49,16 @@ describe('app-client-ui/renderer/commands/sessionCommandRun', () => {
   it('refuses a command that names no session rather than running it bare', () => {
     const { commands, execute } = registry()
 
-    expect(() => SessionCommandRun.at(commands, 'tab.close', 's1', null))
+    expect(() => SessionCommandRun.at(commands, 'tab.close', 's1'))
       .toThrow(/cannot be aimed at a session/)
     expect(execute).not.toHaveBeenCalled()
   })
 
   it('says which commands it can aim', () => {
     expect(SessionCommandRun.targets('session.restart')).toBe(true)
-    expect(SessionCommandRun.targets('session.newHere')).toBe(true)
+    expect(SessionCommandRun.targets('session.newBeside')).toBe(true)
+    // A project row's command: it carries a place, and this class aims ids at a session.
+    expect(SessionCommandRun.targets('session.newHere')).toBe(false)
     expect(SessionCommandRun.targets('tab.close')).toBe(false)
     expect(SessionCommandRun.targets('tab.resetLayout')).toBe(false)
     // Its own colour path: the menu passes the colour AND the session, so it is not aimed here.

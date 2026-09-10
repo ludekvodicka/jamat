@@ -7,7 +7,7 @@ import type {
   SessionModelReading,
 } from './sessionModelReaderApi.types'
 import { TranscriptTailReader } from '../shared/transcriptTailReader'
-import type { SessionModelSource } from './sessionModelSource'
+import type { SessionModelContext, SessionModelSource } from './sessionModelSource'
 
 export interface SessionModelTranscriptResolver {
   resolve(input: {
@@ -15,12 +15,6 @@ export interface SessionModelTranscriptResolver {
     cwd: string
     nativeSessionId: string
   }): Promise<ProviderTranscriptRef | null>
-}
-
-export interface SessionModelContext {
-  agentId: SessionModelAgentId
-  cwd: string
-  nativeSessionId: string
 }
 
 export interface SessionModelReaderDeps {
@@ -66,14 +60,14 @@ export class SessionModelReader
   }
 
   protected saltOf(context: SessionModelContext): Promise<string> {
-    return this.sourceOf(context.agentId).cacheSaltOf(context.cwd)
+    return this.sourceOf(context.agentId).cacheSaltOf(context)
   }
 
   protected readFrom(
     ref: ProviderTranscriptRef,
     context: SessionModelContext,
   ): Promise<SessionModelReading> {
-    return this.sourceOf(context.agentId).read(ref, context.cwd)
+    return this.sourceOf(context.agentId).read(ref, context)
   }
 
   private sourceOf(agentId: SessionModelAgentId): SessionModelSource {

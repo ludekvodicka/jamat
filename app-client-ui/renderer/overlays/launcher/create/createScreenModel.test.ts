@@ -9,6 +9,7 @@ import type {
 import type { LauncherBinding } from '../launcherBinding'
 import type { LauncherTarget } from '../launcherTarget'
 import type {
+  CreateSessionTarget,
   CreateScreenInput,
   CreateScreenState,
   CreateScreenStep,
@@ -20,13 +21,17 @@ import { CreateScreenModel } from './createScreenModel'
 describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', () => {
   /** The three profiles the type list is asked about, spelled once. */
   const CreateProfilesConst: Readonly<
-    Record<'local' | 'tab' | 'remote', { tabProfile: boolean; target: LauncherTarget }>
+    Record<
+      'local' | 'tab' | 'remote',
+      { tabProfile: boolean; target: LauncherTarget; source: CreateSessionTarget | null }
+    >
   > = {
-    local: { tabProfile: false, target: { kind: 'local' } },
-    tab: { tabProfile: true, target: { kind: 'local' } },
+    local: { tabProfile: false, target: { kind: 'local' }, source: null },
+    tab: { tabProfile: true, target: { kind: 'local' }, source: null },
     remote: {
       tabProfile: false,
       target: { kind: 'remote', remoteEndpointId: 'endpoint-a', displayName: 'Studio' },
+      source: null,
     },
   }
   const remoteTargetConst = CreateProfilesConst.remote.target
@@ -83,6 +88,22 @@ describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', ()
   const projectPathConst = projectConst.mode === 'project'
     ? projectConst.projectPath
     : ''
+  /**
+   * The session a card was opened on: its id, its conversation, its own number and its name. The
+   * conversation is the first of the project's own listing below on purpose - that is the case the
+   * list has to draw once rather than twice.
+   */
+  const forkConst: CreateSessionTarget = {
+    mode: 'fork',
+    sessionId: 's-parent',
+    agentId: 'claude',
+    nativeSessionId: 'claude-1',
+    number: '014',
+    title: '014 - the wire',
+    tabTitle: 'AppJamatV3 - the wire',
+  }
+  /** The same session as the OTHER card opens it: ended, and brought back rather than branched. */
+  const resumeConst: CreateSessionTarget = { ...forkConst, mode: 'resume' }
   const existingConst: readonly ExistingSessionSummary[] = [
     {
       agentId: 'claude',
@@ -201,6 +222,42 @@ describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', ()
       return Run.opened().on({ input: 'numberLoaded', projectPath: projectPathConst, token })
     }
 
+    /** The card as `session.fork` opens it: on the parent's own name, with its number peeked. */
+    static forking(token: string | null = '015'): Run {
+      return Run.acting(forkConst, token)
+    }
+
+    /** The same card once the project's own conversations have been read in beside its row. */
+    static forkingListed(): Run {
+      return Run.forking().on({
+        input: 'existingSessionsLoaded',
+        categoryId: 'nodejs',
+        projectName: 'AppJamatV3',
+        summaries: existingConst,
+      })
+    }
+
+    /** A card opened on a session somewhere that has no project list to read at all. */
+    static actingIn(binding: LauncherBinding, source: CreateSessionTarget): Run {
+      return new Run(CreateScreenModel.opened(binding, { source }))
+    }
+
+    /** The card as `session.resume` opens it: the same session, brought back rather than branched. */
+    static resuming(token: string | null = '015'): Run {
+      return Run.acting(resumeConst, token)
+    }
+
+    private static acting(source: CreateSessionTarget, token: string | null): Run {
+      const opened = new Run(CreateScreenModel.opened(projectConst, {
+        name: 'the wire',
+        agentId: 'claude',
+        source,
+      }))
+      return token === null
+        ? opened
+        : opened.on({ input: 'numberLoaded', projectPath: projectPathConst, token })
+    }
+
     static existing(summaries = existingConst): Run {
       const index = CreateScreenModel.typesOf(CreateProfilesConst.local).findIndex((type) => type.kind === 'existing')
       return Run.numbered().on(
@@ -240,6 +297,186 @@ describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', ()
   // question, and Raw is the answer it opens with wherever it was opened from.
   it('starts on Raw', () => {
     expect(CreateScreenModel.typeOf(Run.opened().state).kind).toBe('raw')
+  })
+
+  /**
+   * The card `Fork session` opens: Continue/Fork, standing on the session it was opened on.
+   *
+   * That session is a ROW of that list rather than a type beside it. The list's own words are
+   * "resume ended sessions, fork running ones", so a second card next to it saying Fork was one
+   * operation drawn twice, and what the command does is answer the question the list asks.
+   */
+  describe('a card opened on a running session', () => {
+    it('opens on Continue/Fork standing on that session, and reads the list around it', () => {
+      const run = Run.forking(null)
+
+      expect(CreateScreenModel.typeOf(run.state).kind).toBe('existing')
+      expect(CreateScreenModel.actingOn(run.state)).toEqual(forkConst)
+      expect(run.state.name).toBe('the wire')
+      expect(run.effects).toEqual([
+        { effect: 'fetchNumber', projectPath: projectPathConst },
+        {
+          effect: 'fetchExistingSessions',
+          categoryId: 'nodejs',
+          projectName: 'AppJamatV3',
+          projectPath: projectPathConst,
+        },
+      ])
+    })
+
+    // The number PAIR, which is what the title will carry: the parent keeps the left half and the
+    // fork spends its own on the right. `SessionTitle` composes both, here and in the library.
+    it('draws the number as the pair the title will carry', () => {
+      expect(CreateScreenModel.tokenLabelOf(Run.forking().state)).toBe('014-015')
+      expect(CreateScreenModel.tokenLabelOf(Run.forking(null).state)).toBeNull()
+      expect(CreateScreenModel.tokenLabelOf(Run.numbered().state)).toBe('015')
+    })
+
+    // Continue/Fork leads, and the rest stay: the same card still says "actually, a fresh one in
+    // the same place" without being closed and opened again.
+    it('leads the type list without taking the others away', () => {
+      expect(CreateScreenModel.typesOf(Run.forking().state).map((type) => type.kind))
+        .toEqual(['existing', 'raw', 'flow', 'shell'])
+      expect(CreateScreenModel.typesOf(CreateProfilesConst.local).map((type) => type.kind))
+        .toEqual(['raw', 'flow', 'existing', 'shell'])
+    })
+
+    /*
+     * One conversation, one row. The session a card is opened on is usually in the project's own
+     * listing as well, and drawing it twice would offer the same conversation as two rows that do
+     * different things.
+     */
+    it('leads the list as a row of its own, and never as a second one', () => {
+      const rows = CreateScreenModel.existingDisplayRowsOf(Run.forkingListed().state)
+
+      expect(rows.map((row) => row.label)).toEqual(['014 - the wire', 'Codex work'])
+      expect(rows[0]?.mark).toBe('this session')
+      expect(rows[1]?.mark).toBeNull()
+    })
+
+    // The filter picks which of the project's conversations to look through, and this row is not
+    // one of them: it is what the card is about.
+    it('keeps its own row through the agent filter', () => {
+      const filtered = Run.forkingListed().on({ input: 'chooseExistingAgent', agentId: 'codex' })
+
+      expect(CreateScreenModel.existingDisplayRowsOf(filtered.state).map((row) => row.label))
+        .toEqual(['014 - the wire', 'Codex work'])
+      expect(CreateScreenModel.actingOn(filtered.state)).toEqual(forkConst)
+    })
+
+    /*
+     * A fork founds a session that is still to be called something, so this is the one row of that
+     * list which asks for a name. Its directory is not asked at all: a session opened out of this
+     * list runs where it already runs, and the row says so instead of drawing a choice that does
+     * nothing.
+     */
+    it('asks for a name, and says where the isolation was decided', () => {
+      const run = Run.forking()
+
+      expect(CreateScreenModel.fieldsOf(run.state))
+        .toEqual(['name', 'type', 'agent', 'existingSessions'])
+      expect(CreateScreenModel.worktreeRefusal(run.state)).toMatch(/runs in its project/)
+      expect(run.on({ input: 'toggleWorktree' }).state.worktree).toBe(false)
+    })
+
+    it('submits the session it was opened on and the name that was typed over', () => {
+      const run = Run.forking().on({ input: 'nameChanged', name: '  the wire again  ' })
+
+      const activated = run.on({ input: 'activate' })
+
+      expect(activated.effects)
+        .toEqual([{ effect: 'forkSession', sessionId: 's-parent', name: 'the wire again' }])
+      expect(activated.state.submitting).toBe(true)
+    })
+
+    /*
+     * Moved onto another conversation, the card is doing what the list does: that conversation is
+     * opened by its own id, the pair prefix goes back to an ordinary number, and the name row goes
+     * with it - what comes back from there is already named.
+     */
+    it('lets go of the session as soon as the cursor moves off its row', () => {
+      const moved = Run.forkingListed().on({ input: 'setExistingCursor', index: 1 })
+
+      expect(CreateScreenModel.actingOn(moved.state)).toBeNull()
+      expect(CreateScreenModel.tokenLabelOf(moved.state)).toBe('015')
+      expect(CreateScreenModel.fieldsOf(moved.state)).toEqual(['type', 'agent', 'existingSessions'])
+      const effect = moved.on({ input: 'activate' }).effects[0]
+      expect(effect?.effect === 'openHistory' && effect.spec.nativeSessionId).toBe('codex-1')
+    })
+  })
+
+  /**
+   * The same row under the other of that list's two words. Over a session that has STOPPED, opening
+   * its row brings THAT session back - its number, its name, its colour, its note - so there is
+   * nothing to name and the number it draws is its own rather than a pair.
+   */
+  describe('a card opened on a session that has stopped', () => {
+    it('opens standing on its row, with nothing to type', () => {
+      const run = Run.resuming()
+
+      expect(CreateScreenModel.typeOf(run.state).kind).toBe('existing')
+      expect(CreateScreenModel.actingOn(run.state)).toEqual(resumeConst)
+      expect(run.state.field).toBe('existingSessions')
+      expect(CreateScreenModel.fieldsOf(run.state)).toEqual(['type', 'agent', 'existingSessions'])
+      expect(CreateScreenModel.tokenLabelOf(run.state)).toBe('015')
+    })
+
+    // The row draws it as what it is: a session that is not running, where a fork's row carries the
+    // dot that says it is.
+    it('draws its row as the stopped session it is', () => {
+      expect(CreateScreenModel.existingDisplayRowsOf(Run.resuming().state)
+        .map((row) => [row.label, row.active]))
+        .toEqual([['014 - the wire', false]])
+      expect(CreateScreenModel.existingDisplayRowsOf(Run.forking().state)
+        .map((row) => row.active))
+        .toEqual([true])
+    })
+
+    it('submits the session it was opened on, and the name of a tab for it', () => {
+      const activated = Run.resuming().on({ input: 'activate' })
+
+      expect(activated.effects).toEqual([{
+        effect: 'resumeSession',
+        sessionId: 's-parent',
+        tabTitle: 'AppJamatV3 - the wire',
+      }])
+      expect(activated.state.submitting).toBe(true)
+    })
+
+    /*
+     * A session in a worktree writes its transcript where it runs and an ad-hoc directory has no
+     * project list at all, so the row stands on its own: the card acts from it with nothing loaded,
+     * and says the list is read rather than drawing `Loading sessions…` under a fetch that is never
+     * made.
+     */
+    it('acts on that session where there is no project list to read', () => {
+      const run = Run.actingIn({ mode: 'adHoc', path: 'Q:\\somewhere' }, resumeConst)
+
+      expect(run.effects).toEqual([])
+      expect(CreateScreenModel.existingLoaded(run.state)).toBe(true)
+      expect(CreateScreenModel.existingRefusal(run.state)).toBeNull()
+      expect(CreateScreenModel.typeRefusal(run.state, { kind: 'existing' })).toBeNull()
+      expect(CreateScreenModel.existingDisplayRowsOf(run.state).map((row) => row.label))
+        .toEqual(['014 - the wire'])
+      expect(run.on({ input: 'activate' }).effects).toEqual([{
+        effect: 'resumeSession',
+        sessionId: 's-parent',
+        tabTitle: 'AppJamatV3 - the wire',
+      }])
+    })
+
+    /*
+     * Moved off the list, the card is an ordinary create in that project: an ordinary number, the
+     * rows a create asks, and nothing being done to a session any more.
+     */
+    it('goes back to an ordinary card when another type is chosen', () => {
+      const raw = Run.forking().on({ input: 'chooseType', index: 1 })
+
+      expect(CreateScreenModel.typeOf(raw.state).kind).toBe('raw')
+      expect(CreateScreenModel.actingOn(raw.state)).toBeNull()
+      expect(CreateScreenModel.tokenLabelOf(raw.state)).toBe('015')
+      expect(CreateScreenModel.fieldsOf(raw.state)).toEqual(['name', 'type', 'isolation', 'agent'])
+    })
   })
 
   it('seeds only the agent from the remembered choice', () => {

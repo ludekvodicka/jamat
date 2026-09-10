@@ -27,9 +27,11 @@ export class ClaudeContextWindows {
    *
    * `configured` is the second source, and it is the one that made this readable at all: a Claude
    * transcript records the id the API answered with, `claude-opus-5`, while the tier lives only in
-   * the settings the session was started under, `"model": "opus[1m]"`. Without it every 1M session
-   * drew a fifth of its window, which is the same error the other way round - 91k of a million read
-   * as 46 percent, compact offered and auto-compact fired on a session at 9 percent.
+   * what the session was STARTED with - this app's own `--model claude-opus-5[1m]`, or, where it
+   * named nothing, `"model": "opus[1m]"` in Claude's own settings. Which of the two is handed over
+   * is the caller's decision. Without either, every 1M session drew a fifth of its window, which is
+   * the same error the other way round - 91k of a million read as 46 percent, compact offered and
+   * auto-compact fired on a session at 9 percent.
    *
    * It is believed only when it MATCHES the id in the transcript, because it is configuration and
    * `/model` can move a running session off it. A mismatch falls back to the smaller window, and so

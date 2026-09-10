@@ -39,6 +39,7 @@ export interface FileChangesWorkingTreeRead {
     baselineLabel: string
   } | null
   entries: readonly FileChangesVcsEntry[]
+  externalRoots: readonly string[]
   warnings: readonly string[]
 }
 
@@ -77,7 +78,7 @@ export class FileChangesWorkingTreeSources {
         : null,
     }
     if (selected === null)
-      return { selection, selected: null, entries: [], warnings }
+      return { selection, selected: null, entries: [], externalRoots: [], warnings }
     if (selected.source === 'worktree-base') {
       if (!(selected.adapter instanceof FileChangesVcsGit) || selected.baseRef === null)
         throw new Error(`Invalid worktree-base candidate: ${JSON.stringify(selected)}`)
@@ -86,7 +87,7 @@ export class FileChangesWorkingTreeSources {
         .catch((error) => ({ ok: false as const, detail: ErrorText.of(error) }))
       if (!status.ok) {
         warnings.push(`Worktree base: ${status.detail}`)
-        return { selection, selected: null, entries: [], warnings }
+        return { selection, selected: null, entries: [], externalRoots: [], warnings }
       }
       return {
         selection,
@@ -97,16 +98,17 @@ export class FileChangesWorkingTreeSources {
           baselineLabel: `Worktree base ${status.value.revision.slice(0, 12)}`,
         },
         entries: status.value.entries,
+        externalRoots: status.value.externalRoots,
         warnings,
       }
     }
-    else if (selected.source === 'checkpoint' || selected.source === 'svn') {
+    else if (selected.source === 'checkpoint' || selected.source === 'svn' || selected.source === 'git') {
       const status = await selected.adapter
         .status(selected.detection)
         .catch((error) => ({ ok: false as const, detail: ErrorText.of(error) }))
       if (!status.ok) {
         warnings.push(`${FileChangesWorkingTreeSources.labelOf(selected.source)}: ${status.detail}`)
-        return { selection, selected: null, entries: [], warnings }
+        return { selection, selected: null, entries: [], externalRoots: [], warnings }
       }
       return {
         selection,
@@ -114,9 +116,10 @@ export class FileChangesWorkingTreeSources {
           adapter: selected.adapter,
           detection: selected.detection,
           baseline: selected.adapter.defaultBaselineRef,
-          baselineLabel: selected.source === 'checkpoint' ? 'Checkpoint HEAD' : 'SVN BASE',
+          baselineLabel: selected.source === 'checkpoint' ? 'Checkpoint HEAD' : FileChangesWorkingTreeSources.labelOf(selected.source),
         },
-        entries: status.value,
+        entries: status.value.entries,
+        externalRoots: status.value.externalRoots,
         warnings,
       }
     }
@@ -134,7 +137,14 @@ export class FileChangesWorkingTreeSources {
       ? []
       : [{ source: 'svn' as const, adapter: this.svn, detection: svnDetection, baseRef: null }]
     if (context.worktree !== null) return [...git, ...svn]
-    return [...svn, ...git]
+    return [...svn, ...git, ...await this.ownGitCandidate(context)]
+  }
+
+  private async ownGitCandidate(context: FileChangesWorkingTreeContext): Promise<FileChangesWorkingTreeCandidate[]> {
+    const adapter = this.gitOf([])
+    const detection = await adapter.detect(context.cwd).catch(() => null)
+    if (detection === null || await this.checkpointStore.worktreeBelongsToStore(detection.root)) return []
+    return [{ source: 'git', adapter, detection, baseRef: null }]
   }
 
   private async gitCandidates(
@@ -190,6 +200,7 @@ export class FileChangesWorkingTreeSources {
     if (source === 'checkpoint') return 'Checkpoint'
     else if (source === 'svn') return 'SVN BASE'
     else if (source === 'worktree-base') return 'Worktree base'
+    else if (source === 'git') return 'Git HEAD'
     else throw new Error(`Unknown working tree source: ${JSON.stringify(source)}`)
   }
 }

@@ -44,8 +44,8 @@ describe('lib-orchestrator/fileChangesManager/vcsStatusView', () => {
       return this.answer
     }
 
-    async status(): Promise<FileChangesVcsResult<readonly never[]>> {
-      return { ok: true, value: [] }
+    async status(): Promise<Awaited<ReturnType<FileChangesVcs['status']>>> {
+      return { ok: true, value: { entries: [], externalRoots: [] } }
     }
 
     async history(): Promise<FileChangesVcsResult<readonly FileChangesVcsHistoryGroup[]>> {

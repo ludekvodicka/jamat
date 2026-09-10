@@ -28,6 +28,7 @@ export class RemoteControlRequestValidation {
   private static readonly promptLengthConst = 1_000_000
   private static readonly terminalTextLengthConst = 1_000_000
   private static readonly modelLengthConst = 128
+  private static readonly messageLengthConst = 65_536
   /**
    * A DELIBERATE copy of `AgentSettings.modelShapeConst`: this library may never import
    * app-client-ui, and the value reaches a command line either way. It rules out anything that
@@ -132,6 +133,12 @@ export class RemoteControlRequestValidation {
         operation,
         operationId: RemoteControlEnvelopeValidation.requiredOperationId(operationId),
         body: RemoteControlRequestValidation.tabFileBody(body),
+      }
+    else if (operation === 'tabs.openCommit')
+      return {
+        ...base, operation,
+        operationId: RemoteControlEnvelopeValidation.requiredOperationId(operationId),
+        body: RemoteControlRequestValidation.tabCommitBody(body),
       }
     else if (operation === 'tabs.focus')
       return {
@@ -238,6 +245,21 @@ export class RemoteControlRequestValidation {
         'path',
         RemoteControlRequestValidation.pathLengthConst,
       ),
+    }
+  }
+
+  private static tabCommitBody(input: unknown): {
+    session: RemoteControlSessionSelector; vcs: 'svn' | 'git'; scope?: string; message?: string
+  } {
+    const value = RemoteControlEnvelopeValidation.object(input, 'tabs.openCommit body')
+    RemoteControlEnvelopeValidation.keys(value, ['session', 'vcs', 'scope', 'message'], 'tabs.openCommit body')
+    if (value.vcs !== 'svn' && value.vcs !== 'git') throw new RemoteControlValidationError('vcs must be svn or git')
+    if (value.message !== undefined && (typeof value.message !== 'string' || value.message.length > RemoteControlRequestValidation.messageLengthConst))
+      throw new RemoteControlValidationError('message must be text of at most 65536 characters')
+    return {
+      session: RemoteControlRequestValidation.sessionSelector(value.session), vcs: value.vcs,
+      ...(value.scope === undefined ? {} : { scope: RemoteControlEnvelopeValidation.text(value.scope, 'scope', RemoteControlRequestValidation.pathLengthConst) }),
+      ...(value.message === undefined ? {} : { message: value.message }),
     }
   }
 

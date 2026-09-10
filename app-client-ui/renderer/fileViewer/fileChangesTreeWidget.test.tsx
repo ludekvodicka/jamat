@@ -36,6 +36,7 @@ describe('app-client-ui/renderer/fileViewer/fileChangesTreeWidget', () => {
       snapshotId: 'snapshot-1',
       sessionId: 'session-1',
       createdAt: 1,
+      externalRoots: [],
       source: {
         requested: null,
         selected: 'checkpoint',

@@ -30,6 +30,7 @@ import type {
   RemoteControlTabCommandDto,
   RemoteControlTabDto,
   RemoteControlTabOpenFileDto,
+  RemoteControlTabOpenCommitDto,
   RemoteControlTerminalPeekDto,
   RemoteControlTerminalSendDto,
   RemoteControlSessionTranscriptDto,
@@ -59,6 +60,8 @@ export interface RemoteControlSessionsPort {
 }
 
 export interface RemoteControlTabsPort {
+  openCommit(sessionId: string, tabTitle: string, vcs: 'svn' | 'git', scope: string | null,
+    proposal: string | null, options: { plain: boolean }): Promise<RemoteControlStepResult<RemoteControlTabOpenCommitDto>>
   list(): Promise<readonly RemoteControlTabDto[]>
   open(
     sessionId: string,
@@ -279,6 +282,12 @@ export class RemoteControl {
         request.body.path,
         { plain: session.value.presentation === 'tab' },
       )
+    } else if (request.operation === 'tabs.openCommit') {
+      const session = this.session(request.body.session)
+      if (!session.ok) return session
+      if (session.value.life !== 'live') return { ok: false, error: { code: 'not-found', detail: 'The session is not live' } }
+      return this.deps.tabs.openCommit(session.value.sessionId, session.value.tabTitle, request.body.vcs,
+        request.body.scope ?? null, request.body.message ?? null, { plain: session.value.presentation === 'tab' })
     } else if (request.operation === 'tabs.focus')
       return this.deps.tabs.focus(request.body.panelId)
     else if (request.operation === 'tabs.close')

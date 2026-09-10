@@ -92,6 +92,16 @@ export class ServiceFileChangesIpc extends ServiceIpcBase<
       }
   }
 
+  ownedFileAccess(ownerId: string, snapshotId: string, fileId: string): ReturnType<FileChangesManager['fileAccess']> {
+    if (!this.owns(ownerId, snapshotId))
+      return { ok: false, code: 'snapshot-expired', detail: 'The file changes snapshot expired' }
+    return this.manager.fileAccess(snapshotId, fileId)
+  }
+
+  ownedWorkingTreeSnapshot(ownerId: string, snapshotId: string): ReturnType<FileChangesManager['workingSnapshot']> {
+    return this.owns(ownerId, snapshotId) ? this.manager.workingSnapshot(snapshotId) : null
+  }
+
   /**
    * Restoring one external document from a saved layout. It goes through the same listing as the
    * panel does, and through the same single flight: a window restored with four external documents
@@ -161,17 +171,20 @@ export class ServiceFileChangesIpc extends ServiceIpcBase<
     return started
   }
 
-  private async workingTree(
+  async workingTree(
     ownerId: string,
     sessionId: string,
     source: FileChangesWorkingTreeSource | null,
+    scopeRoot?: string,
   ): Promise<FileChangesWorkingTreeSnapshotResult> {
     const context = await this.sessions.workingContext(sessionId)
     if (!context.ok)
       return { ok: false, code: 'invalid-context', detail: context.detail }
-    const key = `${sessionId}\u0000${source ?? ''}`
+    if (scopeRoot !== undefined && !PathCompare.isInside(context.value.cwd, scopeRoot))
+      return { ok: false, code: 'invalid-context', detail: 'The scope is outside the session working directory' }
+    const key = `${sessionId}\u0000${source ?? ''}\u0000${scopeRoot ?? ''}`
     const running = this.workingTrees.get(key)
-    const result = await (running ?? this.startWorkingTree(key, context.value, source))
+    const result = await (running ?? this.startWorkingTree(key, { ...context.value, cwd: scopeRoot ?? context.value.cwd }, source))
     if (result.ok) this.track(result.value.snapshotId, ownerId, sessionId)
     return result
   }

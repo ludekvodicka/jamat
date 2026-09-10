@@ -458,6 +458,12 @@ class SmokeRemoteControl extends SmokeHarness {
       && fileOpened.panelId === panelId
       && fileOpened.path === join(this.workDir, 'reports/report.md'))
 
+    const commitOpened = CliClient.valueOf(await this.cli('commit-svn-jamat', '--session-id', sessionId,
+      '--message', 'Review these changes', '--operation-id', 'smoke-commit-open-1'), 'tabs.openCommit')
+    this.check('CLI commit command crossed the wrapper and opened in the existing session panel',
+      commitOpened.kind === 'commit-opened' && commitOpened.panelId === panelId
+      && commitOpened.scopeRoot === this.workDir && commitOpened.messageApplied === true)
+
     await this.cli(
       'tabs',
       'focus',
@@ -606,6 +612,12 @@ class SmokeRemoteControl extends SmokeHarness {
       }))),
       open: (sessionId, tabTitle, options) =>
         Promise.resolve(this.openTab(sessionId, tabTitle, options.plain)),
+      openCommit: async (sessionId, title, _vcs, scope, proposal, options) => {
+        const opened = this.openTab(sessionId, title, options.plain)
+        if (!opened.ok) return opened
+        return { ok: true, value: { kind: 'commit-opened', panelId: opened.value.panelId, windowId: opened.value.windowId,
+          scopeRoot: scope === null ? this.workDir : join(this.workDir, scope), messageApplied: proposal !== null } }
+      },
       openFile: (sessionId, tabTitle, path, options) =>
         Promise.resolve(this.openFile(sessionId, tabTitle, path, options)),
       focus: (panelId) => Promise.resolve(this.focusTab(panelId)),

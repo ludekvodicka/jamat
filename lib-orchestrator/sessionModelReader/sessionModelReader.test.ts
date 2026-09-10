@@ -2,12 +2,9 @@ import { describe, expect, it } from 'vitest'
 
 import type { ProviderTranscriptRef } from '../projectManager/providerTranscriptView'
 import { SessionModelReader } from './sessionModelReader'
-import type {
-  SessionModelContext,
-  SessionModelTranscriptResolver,
-} from './sessionModelReader'
+import type { SessionModelTranscriptResolver } from './sessionModelReader'
 import type { SessionModelReading } from './sessionModelReaderApi.types'
-import type { SessionModelSource } from './sessionModelSource'
+import type { SessionModelContext, SessionModelSource } from './sessionModelSource'
 
 describe('lib-orchestrator/sessionModelReader/sessionModelReader', () => {
   interface World {
@@ -53,13 +50,17 @@ describe('lib-orchestrator/sessionModelReader/sessionModelReader', () => {
     }
     return {
       reader: new SessionModelReader({ transcripts, sources: [source] }),
-      context: { agentId: 'claude', cwd: 'Q:/Project', nativeSessionId: 'session' },
+      context: contextOf('session'),
       opened: () => opened,
       touch: () => { ref = { ...ref!, mtimeMs: ref!.mtimeMs + 1 } },
       grow: (size) => { ref = { ...ref!, size } },
       resalt: (value) => { salt = value },
       lose: () => { ref = null },
     }
+  }
+
+  function contextOf(nativeSessionId: string): SessionModelContext {
+    return { agentId: 'claude', cwd: 'Q:/Project', nativeSessionId, launchModel: null }
   }
 
   it('does not re-open an unmoved transcript on the next poll', async () => {
@@ -132,14 +133,13 @@ describe('lib-orchestrator/sessionModelReader/sessionModelReader', () => {
       },
     }
     const reader = new SessionModelReader({ transcripts, sources: [source] })
-    for (let index = 0; index < 17; index += 1)
-      await reader.read({ agentId: 'claude', cwd: 'Q:/Project', nativeSessionId: `s${index}` })
+    for (let index = 0; index < 17; index += 1) await reader.read(contextOf(`s${index}`))
     expect(opened).toBe(17)
 
-    await reader.read({ agentId: 'claude', cwd: 'Q:/Project', nativeSessionId: 's16' })
+    await reader.read(contextOf('s16'))
     expect(opened).toBe(17)
 
-    await reader.read({ agentId: 'claude', cwd: 'Q:/Project', nativeSessionId: 's0' })
+    await reader.read(contextOf('s0'))
     expect(opened).toBe(18)
   })
 
@@ -175,8 +175,7 @@ describe('lib-orchestrator/sessionModelReader/sessionModelReader', () => {
       },
     }
     const reader = new SessionModelReader({ transcripts, sources: [source] })
-    const read = (name: string): Promise<SessionModelReading> =>
-      reader.read({ agentId: 'claude', cwd: 'Q:/Project', nativeSessionId: name })
+    const read = (name: string): Promise<SessionModelReading> => reader.read(contextOf(name))
 
     for (let index = 0; index < 16; index += 1) await read(`s${index}`)
     expect(opened).toBe(16)

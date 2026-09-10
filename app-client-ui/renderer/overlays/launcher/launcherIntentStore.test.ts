@@ -17,28 +17,33 @@ describe('app-client-ui/renderer/overlays/launcher/launcherIntentStore', () => {
     expect(store.consume()).toBeNull()
   })
 
-  it('keeps the project a caller already knew', () => {
+  it('keeps the place a caller already knew', () => {
     const store = new LauncherIntentStore()
     store.set({
-      project: {
-        kind: 'project',
-        categoryId: 'nodejs',
-        projectName: 'AppJamatV3',
-        projectPath: 'C:/Projects/NodeJs/AppJamatV3',
+      prefill: {
+        binding: {
+          mode: 'project',
+          categoryId: 'nodejs',
+          projectName: 'AppJamatV3',
+          projectPath: 'C:/Projects/NodeJs/AppJamatV3',
+        },
       },
     })
 
-    expect(store.consume()?.project?.projectName).toBe('AppJamatV3')
+    const binding = store.consume()?.prefill?.binding
+    expect(binding?.mode === 'project' ? binding.projectName : null).toBe('AppJamatV3')
   })
 
   it('answers with the last intent written, not the first', () => {
     const store = new LauncherIntentStore()
     store.set({
-      project: {
-        kind: 'project',
-        categoryId: 'nodejs',
-        projectName: 'AppJamatV3',
-        projectPath: 'C:/Projects/NodeJs/AppJamatV3',
+      prefill: {
+        binding: {
+          mode: 'project',
+          categoryId: 'nodejs',
+          projectName: 'AppJamatV3',
+          projectPath: 'C:/Projects/NodeJs/AppJamatV3',
+        },
       },
     })
     store.set({})

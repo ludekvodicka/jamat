@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 
-import { CommandInvoker } from '../../shared/commandInvoker'
-import type { CommandOutcome, CommandRunner } from '../../shared/commandInvoker.types'
+import { CommandInvoker } from '../shared/commandInvoker'
+import type { CommandOutcome, CommandRunner } from '../shared/commandInvoker.types'
 
 export interface SvnInvokerOptions {
   /** As for git: `svn log` and `svn cat` reach the repository server, so the default is far too long. */

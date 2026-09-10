@@ -1,3 +1,4 @@
+import { CommitOpenStore } from '../versioning/commitOpenStore'
 import {
   Suspense,
   lazy,
@@ -15,6 +16,8 @@ import type {
   RemoteConnectionsSnapshot,
 } from '../../../lib-orchestrator/remoteControl/remoteConnectionsApi.types'
 import type {
+  SessionAgentId,
+  SessionInfo,
   SessionsSnapshot,
 } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type { AppInfo } from '../../shared/appClientUiIpc'
@@ -45,6 +48,7 @@ import type {
 import { WorktreeSetupIntentStore } from '../overlays/configuration/worktreeSetupIntentStore'
 import type { FinalizeAsk, FinalizeOpenRequest } from '../overlays/finalize/finalizeModel'
 import { FinalizeOverlay } from '../overlays/finalize/finalizeOverlay'
+import type { LauncherBinding } from '../overlays/launcher/launcherBinding'
 import {
   type LauncherIntent,
   LauncherIntentStore,
@@ -54,6 +58,7 @@ import { RemarkableOverlay } from '../overlays/remarkable/remarkableOverlay'
 import type { SessionDetailsOpenRequest } from '../overlays/sessionDetails/sessionDetailsModel'
 import { SessionDetailsOverlay } from '../overlays/sessionDetails/sessionDetailsOverlay'
 import { ProbePanel } from '../panels/probePanel'
+import { SessionFolder } from '../sessions/sessionFolder'
 import { TerminalPanel } from '../panels/terminal/terminalPanel'
 import { WelcomePanel } from '../panels/welcomePanel'
 import { SessionOperations } from './sessionOperations'
@@ -154,6 +159,7 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
   // than in the tree, because a window with no sidebar still has to put a mark out when its tab is
   // looked at.
   useEffect(() => wiring.sessionsMarks.start(), [wiring])
+  useEffect(() => wiring.commitOpen.start(), [wiring])
   useEffect(() => window.appClient.onTabsVisibleTerminalTargets(
     (targetKeys) => wiring.sessionsMarks.setActiveTargets(new Set(targetKeys)),
   ), [wiring])
@@ -454,7 +460,7 @@ class AppShellComposition {
     if (role === 'main') {
       const sidebarCommands = new LateBoundCommand<SidebarSide>('sidebar')
       const common = AppShellComposition.workspaceWiring(role, sidebarCommands)
-      const { sessionPorts, sessionsSnapshot, sessionsMarks } = common
+      const { sessionPorts, sessionsSnapshot, sessionsMarks, commitOpen } = common
       const restartChain = new SessionRestartChain({
         read: async () => {
           const snapshot = sessionsSnapshot.current().snapshot
@@ -463,7 +469,9 @@ class AppShellComposition {
             : { ok: true, value: snapshot }
         },
         subscribe: (onChanged) => sessionsSnapshot.subscribe(onChanged),
-        reopen: (sessionId) => sessionPorts.reopen(sessionId),
+        // Straight from the bridge, like the two below it: reopening left the tree's own ports
+        // when Rerun became `Resume session`, and this chain is the other caller.
+        reopen: (sessionId) => window.appClient.sessions.reopen(sessionId),
         reportError: (message) => sessionPorts.reportError(message),
         openSessionIds: () => WorkspaceChannels.openSessionIds(),
         publishSessionRestarted: (sessionId) =>
@@ -487,6 +495,7 @@ class AppShellComposition {
               // from one answer about what a session is.
               sessionFacts={common.sessionFacts}
               marks={sessionsMarks}
+              commitOpen={commitOpen}
               activeTerminal={common.activeTerminal}
               onLaunch={(intent) =>
                 AppShellComposition.launch(common.intents, common.launcherCommands, intent)}
@@ -550,6 +559,8 @@ class AppShellComposition {
       remotePorts,
     )
     const sessionsMarks = new SessionsMarksStore(sessionsSnapshot, remoteSnapshot)
+    const commitOpen = new CommitOpenStore({ read: () => window.appClient.versioning.openCommitSessions(),
+      subscribe: (onChanged) => window.appClient.onCommitChanged(onChanged), reportError: AppClientUiReport.error })
     const ratePorts = AppShellComposition.ratePorts()
     const rateSnapshot = new SnapshotStore<RateMonitorSnapshot>('The rate limits', ratePorts)
     const activeTerminal = new ActiveTerminalStore()
@@ -607,6 +618,7 @@ class AppShellComposition {
             compact={contextCompact}
             compaction={contextCompaction}
             marks={sessionsMarks}
+              commitOpen={commitOpen}
             fileTools={fileTools}
             openFile={(source, documentKey, hint, location) =>
               WorkspacePanels.openFileViewer(controller, source, documentKey, hint, location)}
@@ -686,6 +698,7 @@ class AppShellComposition {
       remotePorts,
       remoteSnapshot,
       sessionsMarks,
+      commitOpen,
       ratePorts,
       rateSnapshot,
       activeTerminal,
@@ -730,7 +743,6 @@ class AppShellComposition {
       subscribe: (onChanged) => window.appClient.onSessionsChanged(onChanged),
       reportError: (message) => AppClientUiReport.error(`${message}`),
       finalize: (sessionId) => window.appClient.sessions.finalize(sessionId),
-      reopen: (sessionId) => window.appClient.sessions.reopen(sessionId),
       remove: (sessionId) => window.appClient.sessions.remove(sessionId),
       retrySetup: (sessionId, acknowledgeSetup) =>
         window.appClient.sessions.retrySetup(sessionId, acknowledgeSetup),
@@ -810,10 +822,95 @@ class AppShellComposition {
    * answer and it skips to the create form; a category gives it only where to stand.
    */
   private static intentOf(place: NewSessionPlace): LauncherIntent {
-    if (place.kind === 'project') return { project: place.project }
+    if (place.kind === 'project')
+      return {
+        prefill: {
+          binding: {
+            mode: 'project',
+            categoryId: place.project.categoryId,
+            projectName: place.project.projectName,
+            projectPath: place.project.projectPath,
+          },
+        },
+      }
     else if (place.kind === 'category') return { category: place.categoryId }
     else
       throw new Error(`Unknown new-session place: ${JSON.stringify(place)}`)
+  }
+
+  /**
+   * The five commands aimed at ONE session: another session in the same place, the same thing in
+   * the other agent, a fork of the conversation it holds, and that session back on its feet.
+   *
+   * None of them starts anything. Each opens the create card holding what that session already
+   * answers - where it runs, what it is called, which agent - so the thing that arrives is a named
+   * session of the tree rather than the unnamed plain tab three of them used to make. The two that
+   * act ON the session hand it over as the row Continue/Fork opens standing on.
+   */
+  private static launchBeside(
+    sessions: SnapshotStore<SessionsSnapshot>,
+    controller: TabsController,
+    intents: LauncherIntentStore,
+    launcherCommands: LateBoundCommandPort<void>,
+    arg: { sessionId?: string } | undefined,
+    options: { agentId: SessionAgentId | null; act: 'fork' | 'resume' | null },
+  ): void {
+    const info = SessionOperations.sessionInfoOf(
+      sessions, WorkspacePanels.commandTargetOf(controller, arg))
+    if (info === null) return
+    const binding = AppShellComposition.bindingOf(info)
+    // Both menus draw these items only for a session that names a directory, because the card has
+    // to open somewhere: a session with none is one the control API founded without a directory.
+    if (binding === null) return
+    const agentId = options.agentId ?? info.agent?.agentId ?? null
+    AppShellComposition.launch(intents, launcherCommands, {
+      prefill: {
+        binding,
+        name: info.titleParts.name,
+        ...(agentId === null ? {} : { agentId }),
+        ...(options.act === null
+          ? {}
+          : {
+              session: {
+                mode: options.act,
+                sessionId: info.sessionId,
+                // Both absent for a shell, which holds no conversation and is deduped against
+                // nothing: the row still stands for the session, and only a resume ever aims at
+                // one.
+                agentId: info.agent?.agentId ?? null,
+                nativeSessionId: info.agent?.nativeSessionId ?? null,
+                number: info.titleParts.number,
+                title: info.title,
+                tabTitle: info.tabTitle,
+              },
+            }),
+      },
+    })
+  }
+
+  /**
+   * Where the card opens, from what the catalog made of this session's directory. A project is the
+   * project; anything else it can name is an ad-hoc path, which is what the projects screen's own
+   * `Home` row binds too. Null only for a session that names no directory at all.
+   */
+  private static bindingOf(info: SessionInfo): LauncherBinding | null {
+    const project = info.project
+    if (project.kind === 'project')
+      return {
+        mode: 'project',
+        categoryId: project.categoryId,
+        projectName: project.projectName,
+        projectPath: project.projectPath,
+      }
+    else if (project.kind === 'adHoc') return { mode: 'adHoc', path: project.path }
+    else if (project.kind === 'none') {
+      // The repository rather than the worktree: a worktree belongs to the one session it was cut
+      // for, so nothing new is started inside it.
+      const path = SessionFolder.ofDirectory(info.directory)
+      return path === null ? null : { mode: 'adHoc', path }
+    }
+    else
+      throw new Error(`Unknown project binding: ${JSON.stringify(project)}`)
   }
 
   /** Every opening path is this one: write what was meant, then show the launcher. */
@@ -936,34 +1033,24 @@ class AppShellComposition {
         SessionOperations.onSession(
           WorkspacePanels.commandTargetOf(controller, arg),
           (sessionId) => window.appClient.sessions.setColor(sessionId, arg.color))))
-    // The same agent as the target session, which only the session itself can say.
-    commands.register('session.newBlank', (arg) =>
-      WorkspacePanels.started('session.newBlank',
-        SessionOperations.createFrom(session,
-          WorkspacePanels.commandTargetOf(controller, arg),
-          (sessionId, info) => info.agent === undefined
-            ? null
-            : window.appClient.sessions.newBeside(sessionId, info.agent.agentId),
-          { plain: true })))
+    // The same launcher again, opened ON a session: the four below differ only in which agent they
+    // fill in and whether they carry the conversation to fork.
+    commands.register('session.newBeside', (arg) =>
+      AppShellComposition.launchBeside(session.snapshot, controller, intents, launcherCommands, arg,
+        { agentId: null, act: null }))
     commands.register('session.newInClaude', (arg) =>
-      WorkspacePanels.started('session.newInClaude',
-        SessionOperations.createFrom(session,
-          WorkspacePanels.commandTargetOf(controller, arg),
-          (sessionId) => window.appClient.sessions.newBeside(sessionId, 'claude'),
-          { plain: true })))
+      AppShellComposition.launchBeside(session.snapshot, controller, intents, launcherCommands, arg,
+        { agentId: 'claude', act: null }))
     commands.register('session.newInCodex', (arg) =>
-      WorkspacePanels.started('session.newInCodex',
-        SessionOperations.createFrom(session,
-          WorkspacePanels.commandTargetOf(controller, arg),
-          (sessionId) => window.appClient.sessions.newBeside(sessionId, 'codex'),
-          { plain: true })))
-    // A fork is a session of the tree, so its tab is not a plain one.
+      AppShellComposition.launchBeside(session.snapshot, controller, intents, launcherCommands, arg,
+        { agentId: 'codex', act: null }))
     commands.register('session.fork', (arg) =>
-      WorkspacePanels.started('session.fork',
-        SessionOperations.createFrom(session,
-          WorkspacePanels.commandTargetOf(controller, arg),
-          (sessionId) => window.appClient.sessions.fork(sessionId),
-          { plain: false })))
+      AppShellComposition.launchBeside(session.snapshot, controller, intents, launcherCommands, arg,
+        { agentId: null, act: 'fork' }))
+    // The card again, on the one thing an ENDED session can still be asked for: itself, back.
+    commands.register('session.resume', (arg) =>
+      AppShellComposition.launchBeside(session.snapshot, controller, intents, launcherCommands, arg,
+        { agentId: null, act: 'resume' }))
     commands.register('session.restart', (arg) =>
       WorkspacePanels.started('session.restart',
         SessionOperations.restartSession(session.snapshot,
@@ -973,6 +1060,10 @@ class AppShellComposition {
     commands.register('session.compact', (arg) =>
       SessionOperations.compactSession(session.compact,
         WorkspacePanels.commandTargetOf(controller, arg)))
+    commands.register('session.commitSvn', (arg) => WorkspacePanels.started('session.commitSvn',
+      SessionOperations.commitSession(session.snapshot, WorkspacePanels.commandTargetOf(controller, arg), 'svn')))
+    commands.register('session.commitGit', (arg) => WorkspacePanels.started('session.commitGit',
+      SessionOperations.commitSession(session.snapshot, WorkspacePanels.commandTargetOf(controller, arg), 'git')))
     commands.register('tab.close', () =>
       WorkspacePanels.started('tab.close', WorkspacePanels.closeActive(controller)))
     commands.register('tab.closeOthers', () => WorkspacePanels.closeOthers(controller))

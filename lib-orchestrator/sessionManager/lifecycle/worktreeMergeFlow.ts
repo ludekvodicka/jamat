@@ -80,7 +80,8 @@ export interface WorktreeMergeFlowDeps {
  * measured what a long job on that queue costs. What the queue is used for here is what it is for
  * everywhere: the record writes.
  *
- * SVN is not touched. The final commit is a person's, through TortoiseSVN, exactly as before.
+ * The merge ends at git. The final commit is a person's, through TortoiseSVN or Jamat's confirmed
+ * commit dialog; see docs/architecture/versioning-commit-dialog.md.
  */
 export class WorktreeMergeFlow {
   /**

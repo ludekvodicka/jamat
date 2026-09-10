@@ -22,6 +22,9 @@ import {
   TerminalTargetCodec,
 } from '../../../shared/terminalTarget'
 import { FileToolsSidebar } from '../../fileViewer/fileToolsSidebar'
+import { CommitPane } from '../../versioning/commitPane'
+import { IpcFailure } from '../../ipc/ipcFailure'
+import { type CommitOpenStore, useCommitOpen } from '../../versioning/commitOpenStore'
 import { FileViewerPane } from '../../fileViewer/fileViewerPane'
 import type { AgentSettingsStore } from '../../contextCompaction/agentSettingsStore'
 import { ContextCompactionPanel } from '../../contextCompaction/contextCompactionPanel'
@@ -88,6 +91,7 @@ export type TerminalPanelProps = IDockviewPanelProps & {
   compaction: Pick<ContextCompactionController, 'inspect'>
   /** What this window has seen. A tab draws the same mark a tree row does, off the same answer. */
   marks: SessionsMarksStore
+  commitOpen: CommitOpenStore
   fileTools: PanelFileToolsRegistry
   openFile(
     source: FileViewerDocumentSource,
@@ -169,13 +173,15 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   const color = info?.color ?? null
   const marked = useSessionMarked(props.marks, targetKey)
   const dirtyVcs = info?.vcs?.dirty === true ? info.vcs.vcsId : null
+  const openCommits = useCommitOpen(props.commitOpen)
+  const commitOpen = localTools && openCommits.has(sessionId)
   const sidebar = usePanelSidebar(props, 'workingTree')
   const split = usePanelSplit(props)
   const splitRef = useRef(split)
   useLayoutEffect(() => { splitRef.current = split }, [split])
   const toolsTab = PanelFileToolsRegistry.tab(sidebar.state.activeView)
   const activeItem = split.state.items.find((item) => item.key === split.state.active) ?? null
-  const requiredWorkingTreeSource = localTools
+  const requiredWorkingTreeSource = localTools && activeItem?.kind === 'file'
     ? activeItem?.baselineHint?.workingTreeSource
     : undefined
   // One read for all readers. Every visible pane gets the full Changelog target set; a working-tree
@@ -201,6 +207,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
     baselineHint?: FileViewerBaselineHint,
     location?: FileViewerLocation,
   ): string | null => openSplitItem({
+    kind: 'file',
     key: document.documentKey,
     title: document.name,
     source: document.source,
@@ -208,9 +215,13 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
     location,
   }), [openSplitItem])
 
+  const openCommitItem = useCallback((vcs: FileChangesVcsId, scopeRoot = '.'): void => {
+    void window.appClient.versioning.openCommitTab(sessionId, vcs, scopeRoot).then((answer) => setMenuNote(IpcFailure.of(answer)))
+  }, [sessionId])
+
   const detach = useCallback(async (key: string): Promise<void> => {
     const capture = splitRef.current.capture(key)
-    if (capture === null) return
+    if (capture === null || capture.item.kind === 'commit') return
     let detached: PanelOpenOutcome
     try {
       detached = await props.openFile(
@@ -306,8 +317,8 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   }, [])
 
   useEffect(
-    () => publish(TerminalPanelState.decorationsOf(state, glyph, color, marked, dirtyVcs)),
-    [publish, state, glyph, color, marked, dirtyVcs],
+    () => publish(TerminalPanelState.decorationsOf(state, glyph, color, marked, dirtyVcs, commitOpen)),
+    [publish, state, glyph, color, marked, dirtyVcs, commitOpen],
   )
 
   useEffect(() => {
@@ -422,8 +433,8 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
       )}
       pane={activeItem === null
         ? null
-        : (
-          <FileViewerPane
+        : (<>
+          {activeItem.kind === 'file' && <FileViewerPane
             key={activeItem.key}
             item={activeItem}
             changes={changes}
@@ -432,8 +443,17 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
             onBack={() => setMenuNote(splitRef.current.back())}
             onOpenItem={openSplitItem}
             onRefused={setMenuNote}
-          />
-        )}
+          />}
+          {split.state.items.map((item) => {
+            if (item.kind === 'file') return null
+            else if (item.kind === 'commit') return <div key={item.key} className="commit-pane-slot" hidden={item.key !== activeItem.key}>
+              <CommitPane sessionId={sessionId} item={item} onClose={() => split.close(item.key)}
+                onOpenChanged={(value) => openInSplit(value.document, value.baselineHint ?? undefined)}
+                onOpenSeparately={(root) => openCommitItem(item.vcs, root)} />
+            </div>
+            else throw new Error(`Unknown split item: ${JSON.stringify(item)}`)
+          })}
+        </>)}
       onResize={split.resize}
     >
       {terminal}
@@ -458,6 +478,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
             changes={changes}
             workingTree={workingTree}
             onSelect={sidebar.open}
+            onOpenCommit={localTools && info?.life === 'live' ? openCommitItem : undefined}
             onOpenChanged={(value) => {
               setMenuNote(openInSplit(value.document, value.baselineHint ?? undefined))
               void window.appClient.fileViewer.release(value.document.documentId)
@@ -560,17 +581,18 @@ class TerminalPanelState {
     color: SessionColorName | null,
     marked: boolean,
     dirtyVcs: FileChangesVcsId | null,
+    commitOpen: boolean,
   ): TabDecorations {
     const attachment = TerminalPanelState.attachmentSignalOf(state)
     // The first badge a session tab has ever published. Muted on purpose: it is worth noticing
     // while reading the strip, never worth looking at first.
-    const badges = dirtyVcs === null
+    const badges = dirtyVcs === null && !commitOpen
       ? []
       : [{
         key: 'vcs',
         text: '*',
-        tone: 'muted' as const,
-        title: `Uncommitted changes (${dirtyVcs})`,
+        tone: commitOpen ? 'danger' as const : 'muted' as const,
+        title: commitOpen ? 'Commit dialog open' : `Uncommitted changes (${dirtyVcs})`,
       }]
     // Undefined rather than null where there is none: the tab puts it straight on an attribute, and
     // an attribute set to nothing is an attribute the CSS still matches.

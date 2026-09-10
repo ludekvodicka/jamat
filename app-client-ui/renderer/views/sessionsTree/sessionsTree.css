@@ -527,3 +527,5 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+
+.jamat-sessions__vcs.is-commit-open { color: var(--color-danger); }

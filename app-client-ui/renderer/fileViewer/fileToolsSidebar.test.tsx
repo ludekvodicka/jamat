@@ -32,6 +32,19 @@ describe('app-client-ui/renderer/fileViewer/fileToolsSidebar', () => {
     snapshotFor: () => null,
   }
 
+  it.each(['svn', 'git', 'checkpoint', 'worktree-base'] as const)('offers Commit only for a writable %s source', (source) => {
+    const open = vi.fn()
+    render(<FileToolsSidebar sessionId="session" documentId={null} selected="workingTree" changes={changesConst}
+      workingTree={{ ...workingConst, selectedSource: source }} onSelect={vi.fn()} onOpenChanged={vi.fn()} onOpenDocument={vi.fn()} onOpenCommit={open} />)
+    const commit = screen.queryByRole('button', { name: 'Commit…' })
+    if (source === 'svn' || source === 'git') {
+      expect(commit).not.toBeNull()
+      fireEvent.click(commit!)
+      expect(open).toHaveBeenCalledWith(source)
+    } else if (source === 'checkpoint' || source === 'worktree-base') expect(commit).toBeNull()
+    else throw new Error(`Unexpected source ${source}`)
+  })
+
   it('shows File Changes, Changelog and Explorer in that order', () => {
     const onSelect = vi.fn()
     render(

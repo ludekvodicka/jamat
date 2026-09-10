@@ -79,6 +79,7 @@ import {
 } from './sessionsTreeModel'
 import { useSessionsSnapshot, useSnapshotStore } from './useSessionsSnapshot'
 import { useSessionStateFlash } from './useSessionStateFlash'
+import { type CommitOpenStore, useCommitOpen } from '../../versioning/commitOpenStore'
 import { SessionsFilterMenu } from './sessionsFilterMenu'
 import { SessionsSavedFilters } from './sessionsSavedFilters'
 import { useSavedSessionsFilters, type SavedSessionsFiltersPorts } from './useSavedSessionsFilters'
@@ -87,7 +88,6 @@ import { useSavedSessionsFilters, type SavedSessionsFiltersPorts } from './useSa
 export interface SessionsTreePorts extends SavedSessionsFiltersPorts {
   reportError(message: string): void
   finalize(sessionId: string): Promise<IpcResult<SessionsOpResult>>
-  reopen(sessionId: string): Promise<IpcResult<SessionsOpResult>>
   remove(sessionId: string): Promise<IpcResult<SessionsOpResult>>
   /** The hash answers a `setup-not-acknowledged` refusal, and travels no further than one call. */
   retrySetup(sessionId: string, acknowledgeSetup?: string): Promise<IpcResult<SessionsOpResult>>
@@ -129,6 +129,7 @@ export interface SessionsTreeViewProps extends SidebarViewProps {
    * owning it the day a tab had to draw the same fact with the sidebar closed.
    */
   marks: SessionsMarksStore
+  commitOpen: CommitOpenStore
   /** The terminal panel THIS workspace window has in front. */
   activeTerminal: ActiveTerminalStore
   /** Writes the intent and opens the launcher; what the launcher then does is its own business. */
@@ -280,6 +281,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     useCallback(() => props.marks.current(), [props.marks]),
   )
   const marks = marksView.marks
+  const commitOpen = useCommitOpen(props.commitOpen)
   const visibleTargetKeys = marksView.activeTargetKeys
   const activeTerminal = useSyncExternalStore(
     useCallback((listener) => props.activeTerminal.subscribe(listener), [props.activeTerminal]),
@@ -346,6 +348,8 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       { filters, content, filterText, now, inFront: visibleTargetKeys, stateGroup },
       marks,
       previous.current[stateGroup ?? content],
+      undefined,
+      commitOpen,
     )
     const remote = (stateGroup?: TreeStateGroup): RemoteSessionsSections | null => remoteSnapshot === null
       ? null
@@ -363,7 +367,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       })) }
     else
       throw new Error(`Unknown sessions view: ${JSON.stringify(view)}`)
-  }, [snapshot, remoteSnapshot, filters, filterText, marks, view, visibleTargetKeys])
+  }, [snapshot, remoteSnapshot, filters, filterText, marks, view, visibleTargetKeys, commitOpen])
 
   /*
    * The cursor moves AFTER the commit, never during the render that produced the tree. React may run
@@ -564,8 +568,9 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
           () => ports.finalize(sessionId),
           onStopped,
         )
-      else if (action === 'reopen')
-        run(key, 'Rerun', () => ports.reopen(sessionId), () => onRerunTerminal(node.target))
+      // `reopen` is `Resume session` here since 2026-09-10: the catalog item opens the create card
+      // on this session, and the card is what calls the library. It cannot reach this branch, and a
+      // local row that sent one anyway would be drawing an item nothing in this file draws.
       else if (action === 'remove')
         run(key, 'Remove', () => ports.remove(sessionId), () => onCloseTerminal(node.target))
       else if (action === 'retrySetup')
@@ -1220,7 +1225,18 @@ const TreeRow = memo(function TreeRow(
       <GroupRow
         node={node}
         title={node.path}
-        launch={node.launch === null ? null : { project: node.launch }}
+        launch={node.launch === null
+          ? null
+          : {
+              prefill: {
+                binding: {
+                  mode: 'project',
+                  categoryId: node.launch.categoryId,
+                  projectName: node.launch.projectName,
+                  projectPath: node.launch.projectPath,
+                },
+              },
+            }}
         chrome={chrome}
       />
     )
@@ -1451,11 +1467,11 @@ function Badges(props: { badges: SessionBadges }): React.JSX.Element {
         </span>
       )}
       {badges.worktree !== null && <WorktreeMark worktree={badges.worktree} />}
-      {badges.vcs !== null && (
+      {(badges.vcs !== null || badges.commitOpen) && (
         <span
-          className="jamat-sessions__vcs"
-          title={`Uncommitted changes (${badges.vcs})`}
-          aria-label={`Uncommitted changes (${badges.vcs})`}
+          className={`jamat-sessions__vcs${badges.commitOpen ? ' is-commit-open' : ''}`}
+          title={badges.commitOpen ? 'Commit dialog open' : `Uncommitted changes (${badges.vcs})`}
+          aria-label={badges.commitOpen ? 'Commit dialog open' : `Uncommitted changes (${badges.vcs})`}
         >
           *
         </span>

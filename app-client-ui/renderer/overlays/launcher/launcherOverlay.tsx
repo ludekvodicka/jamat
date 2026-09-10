@@ -13,14 +13,14 @@ import {
   CreateScreenModel,
   type CreateScreenState,
 } from './create/createScreenModel'
-import { LauncherCreateScreen } from './create/launcherCreateScreen'
+import { CreateTypes, LauncherCreateScreen } from './create/launcherCreateScreen'
 import { FlowCatalog } from './flows/flowCatalog'
 import { LauncherFlowScreen } from './flows/launcherFlowScreen'
 import { FlowScreenModel, type FlowScreenState } from './flows/flowScreenModel'
 import './launcher.css'
 import { LauncherEffects, type LauncherPorts } from './launcherEffects'
 import type { LauncherBinding } from './launcherBinding'
-import type { LauncherIntentStore } from './launcherIntentStore'
+import type { LauncherIntentStore, LauncherPrefill } from './launcherIntentStore'
 import type { LauncherRemoteTarget, LauncherTarget } from './launcherTarget'
 import { type LauncherInput, LauncherModel, type LauncherState } from './projects/launcherModel'
 import { LauncherProjectsScreen, NewProjectEdit } from './projects/launcherProjectsScreen'
@@ -159,7 +159,11 @@ export function LauncherOverlay(props: {
     ready: boolean
     agentId: CreateScreenState['agentId']
   }>({ ready: false, agentId: 'claude' })
-  const pendingBinding = useRef<LauncherBinding | null>(null)
+  /** A binding chosen before the stored agent arrived, with whatever the opener said about it. */
+  const pendingBinding = useRef<{
+    binding: LauncherBinding
+    prefill: LauncherPrefill | null
+  } | null>(null)
   /**
    * The last form typed into each flow, so Escape is a way back rather than a way to lose a
    * paragraph. It is a ref and not state: nothing draws from it, and re-rendering the card every
@@ -234,16 +238,21 @@ export function LauncherOverlay(props: {
       // Enter on a project means one thing again: start a session in it. It meant two while the
       // manage mode existed - in the mode it pointed the actions at the row instead - and `from` was
       // how the mouse kept meaning open. The actions have their own keys now, so nothing branches.
-      chooseBinding: (binding) => {
+      chooseBinding: (binding, prefill) => {
         if (!agentPreference.current.ready) {
-          pendingBinding.current = binding
+          pendingBinding.current = { binding, prefill: prefill ?? null }
           return
         }
         pendingBinding.current = null
         const step = CreateScreenModel.opened(binding, {
           tabProfile: tabProfile ? true : undefined,
-          agentId: agentPreference.current.agentId,
+          // What the clicked session runs beats what was last started from the launcher: the
+          // preference answers "which agent do I usually start", and this card was opened on one
+          // that has already answered it.
+          agentId: prefill?.agentId ?? agentPreference.current.agentId,
           target: LauncherOverlayTarget.of(stateRef.current.remote),
+          ...(prefill?.name === undefined ? {} : { name: prefill.name }),
+          ...(prefill?.session === undefined ? {} : { source: prefill.session }),
         })
         screenRef.current = { kind: 'create', state: step.state }
         setScreen(screenRef.current)
@@ -323,7 +332,7 @@ export function LauncherOverlay(props: {
   useEffect(() => {
     const restore = document.activeElement
     card.current?.focus()
-    if (opening.kind === 'projects' && !intent?.project)
+    if (opening.kind === 'projects' && !intent?.prefill)
       ports.dispatch({ input: 'searchOpen' })
     return () => {
       if (!handedOff.current && restore instanceof HTMLElement)
@@ -336,9 +345,9 @@ export function LauncherOverlay(props: {
     void LauncherEffects.loadNewSessionAgent().then((agentId) => {
       if (disposed) return
       agentPreference.current = { ready: true, agentId }
-      const binding = pendingBinding.current
-      if (binding !== null)
-        ports.chooseBinding(binding)
+      const pending = pendingBinding.current
+      if (pending !== null)
+        ports.chooseBinding(pending.binding, pending.prefill ?? undefined)
     })
     return () => { disposed = true }
   }, [ports])
@@ -373,15 +382,11 @@ export function LauncherOverlay(props: {
     }
     for (const effect of start.effects)
       void LauncherEffects.run(effect, ports)
-    // An opener that already knew the project skips the screen that picks one: from a project node
-    // in the tree, a new session stays two keystrokes away.
-    if (intent?.project)
-      ports.chooseBinding({
-        mode: 'project',
-        categoryId: intent.project.categoryId,
-        projectName: intent.project.projectName,
-        projectPath: intent.project.projectPath,
-      })
+    // An opener that already knew where skips the screen that picks one: from a project node in
+    // the tree, a new session stays two keystrokes away, and from a session row the card opens
+    // holding that session's own name and agent as well.
+    if (intent?.prefill)
+      ports.chooseBinding(intent.prefill.binding, intent.prefill)
   }, [start, opening, computersStart, ports, intent])
 
   /*
@@ -586,14 +591,19 @@ class LauncherScreens {
        */
       footKeysOf: (screen) => {
         const type = CreateScreenModel.typeOf(screen.state)
-        if (type.kind === 'existing')
+        // Continue/Fork says both its words until a row settles which, and only one of its rows has
+        // a name to type: a fork founds a session that is still to be called something.
+        if (type.kind === 'existing') {
+          const acting = CreateScreenModel.actingOn(screen.state)
           return LauncherFootKeys.legend([
             ['Esc', 'Back'],
             ['↑↓', 'Row'],
             ['←→', 'Choose'],
-            ['Enter', 'Continue/Fork'],
+            ['Enter', CreateTypes.submitLabelOf(type, acting)],
+            ...(acting?.mode === 'fork' ? [['N', 'Name'] as const] : []),
             ['Tab', 'Agent filter'],
           ])
+        }
         else if (type.kind === 'flow' || type.kind === 'raw' || type.kind === 'shell')
           return LauncherFootKeys.legend([
             ['Esc', 'Back'],

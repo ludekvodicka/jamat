@@ -25,12 +25,8 @@ function factsOf(over: Partial<TabSessionFacts> = {}): TabSessionFacts {
     agentId: 'claude',
     color: null,
     directoryPath: 'C:/Projects/NodeJs/AppJamatV3',
-    launch: {
-      kind: 'project',
-      categoryId: 'nodejs',
-      projectName: 'AppJamatV3',
-      projectPath: 'C:/Projects/NodeJs/AppJamatV3',
-    },
+    ended: false,
+    live: over.ended !== true,
     admits: everyOperationConst,
     ...over,
   }
@@ -139,6 +135,22 @@ class MenuView {
 describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
   afterEach(() => vi.restoreAllMocks())
 
+  it('routes commit to the clicked local live session and hides it for ended and remote tabs', () => {
+    const commands = new CommandRegistry()
+    const run = vi.fn()
+    commands.register('session.commitSvn', run)
+    const view = render(<MenuHost commands={commands} panelKey="terminal" params={{ sessionId: 'clicked' }} facts={factsOf()} />)
+    fireEvent.click(MenuView.itemTitled('Commit (SVN)…'))
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'clicked' }))
+    view.unmount()
+    for (const options of [{ facts: factsOf({ ended: true }) }, { facts: factsOf(), params: { sessionId: 'clicked', remoteEndpointId: 'peer' } }]) {
+      const other = render(<MenuHost commands={commands} panelKey="terminal" params={{ sessionId: 'clicked' }} {...options} />)
+      expect(MenuView.titles()).not.toContain('Commit (SVN)…')
+      expect(MenuView.titles()).not.toContain('Commit (Git)…')
+      other.unmount()
+    }
+  })
+
   // The catalog is the menu: a command declaring the surface arrives here without a code change.
   it('shows the catalog commands that apply to this tab, in catalog order', () => {
     render(
@@ -156,13 +168,14 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
       'Session properties…',
       // The launcher pre-bound to this tab's project: it starts nothing by itself, which is why it
       // is above the three that do.
-      'New session…',
-      'New blank session',
+      'New session',
       // The other agent only: this tab is already Claude's.
       'New session in Codex',
       'Fork session',
       'Restart session',
       'Compact session',
+      'Commit (SVN)…',
+      'Commit (Git)…',
       'Open project folder',
       'Copy project folder',
       'Copy unique session id',
@@ -194,77 +207,18 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
    * The pre-bound launcher needs a project to bind TO, and a tab whose session runs in an ad-hoc
    * directory belongs to none. It is the one gate that is about the binding rather than `admits`.
    */
-  it('leaves out the pre-bound launcher on a tab that belongs to no project', () => {
+  it('leaves the project row’s pre-bound launcher out of a session tab’s menu', () => {
     render(
       <MenuHost
         commands={new CommandRegistry()}
-        panelKey="terminal"
-        params={{ sessionId: 's1' }}
-        facts={factsOf({ launch: null })}
-      />,
-    )
-
-    expect(MenuView.titles()).not.toContain(titleOf('session.newHere'))
-    expect(MenuView.titles()).toContain(titleOf('session.newBlank'))
-  })
-
-  // The one item of this menu that carries a value: no active tab can supply a place.
-  it('sends the tab session’s project as the place of a new session', () => {
-    const commands = new CommandRegistry()
-    const execute = vi.spyOn(commands, 'execute')
-    render(
-      <MenuHost
-        commands={commands}
         panelKey="terminal"
         params={{ sessionId: 's1' }}
         facts={factsOf()}
       />,
     )
 
-    fireEvent.click(MenuView.itemTitled(titleOf('session.newHere')))
-
-    expect(execute.mock.calls).toEqual([['session.newHere', {
-      place: {
-        kind: 'project',
-        project: {
-          kind: 'project',
-          categoryId: 'nodejs',
-          projectName: 'AppJamatV3',
-          projectPath: 'C:/Projects/NodeJs/AppJamatV3',
-        },
-      },
-    }]])
-  })
-
-  /*
-   * The bare branch runs a command with no argument, and `CommandRegistry.execute(id)` now refuses a
-   * value-carrying id BY TYPE, so a plain id reaching it has to be narrowed first. That narrowing is
-   * this throw. Without it the compiler is satisfied by a cast nobody sees and the click ends as
-   * `undefined.place` inside a React `onSelect`, where nothing catches it and the menu stays open.
-   */
-  it('refuses a value-carrying command it cannot supply the value for', () => {
-    const commands = new CommandRegistry()
-    const execute = vi.spyOn(commands, 'execute')
-    render(
-      <MenuHost commands={commands} panelKey="terminal" params={{}} facts={factsOf()} />,
-    )
-
-    const reported: string[] = []
-    const onError = (event: ErrorEvent): void => {
-      reported.push(String(event.error))
-      event.preventDefault()
-    }
-    window.addEventListener('error', onError)
-    try {
-      fireEvent.click(MenuView.itemTitled(titleOf('session.newHere')))
-    } finally {
-      window.removeEventListener('error', onError)
-    }
-
-    // React reports what an `onSelect` throws rather than letting it out of `fireEvent`, which is
-    // the same silence the running app would have shown.
-    expect(reported.join(' ')).toMatch(/cannot supply the value/)
-    expect(execute).not.toHaveBeenCalled()
+    expect(MenuView.titles()).not.toContain(titleOf('session.newHere'))
+    expect(MenuView.titles()).toContain(titleOf('session.newBeside'))
   })
 
   /**
@@ -281,7 +235,7 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
       />,
     )
 
-    expect(MenuView.titles()).toContain(titleOf('session.newBlank'))
+    expect(MenuView.titles()).toContain(titleOf('session.newBeside'))
     expect(MenuView.titles()).not.toContain(titleOf('session.fork'))
     expect(MenuView.titles()).not.toContain(titleOf('session.restart'))
     expect(MenuView.titles()).not.toContain(titleOf('session.compact'))

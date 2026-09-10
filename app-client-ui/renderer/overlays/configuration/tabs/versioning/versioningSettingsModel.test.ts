@@ -8,21 +8,21 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/versioni
     expect(step.effects).toEqual([{ effect: 'load' }])
     step = VersioningSettingsModel.transition(step.state, {
       input: 'loaded',
-      value: { mode: 'checkpoints' },
+      value: { mode: 'checkpoints', diffTool: { kind: 'internal' } },
     })
     step = VersioningSettingsModel.transition(step.state, { input: 'mode', value: 'git' })
     expect(VersioningSettingsModel.isModified(step.state)).toBe(true)
     step = VersioningSettingsModel.transition(step.state, { input: 'save' })
-    expect(step.effects).toEqual([{ effect: 'save', value: { mode: 'git' } }])
+    expect(step.effects).toEqual([{ effect: 'save', value: { mode: 'git', diffTool: { kind: 'internal' } } }])
     expect(VersioningSettingsModel.isModified(step.state)).toBe(false)
     step = VersioningSettingsModel.transition(step.state, { input: 'saved', ok: true })
-    expect(step.state.loaded).toEqual({ mode: 'git' })
+    expect(step.state.loaded).toEqual({ mode: 'git', diffTool: { kind: 'internal' } })
   })
 
   it('keeps an edited buffer after a refused save', () => {
     let state = VersioningSettingsModel.transition(
       VersioningSettingsModel.initial().state,
-      { input: 'loaded', value: { mode: 'checkpoints' } },
+      { input: 'loaded', value: { mode: 'checkpoints', diffTool: { kind: 'internal' } } },
     ).state
     state = VersioningSettingsModel.transition(state, { input: 'mode', value: 'git' }).state
     state = VersioningSettingsModel.transition(state, { input: 'save' }).state
@@ -31,7 +31,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/versioni
       ok: false,
       detail: 'latched',
     }).state
-    expect(state.buffer).toEqual({ mode: 'git' })
+    expect(state.buffer).toEqual({ mode: 'git', diffTool: { kind: 'internal' } })
     expect(state.problem).toBe('latched')
   })
 })

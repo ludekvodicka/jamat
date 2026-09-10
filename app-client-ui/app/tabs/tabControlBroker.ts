@@ -5,14 +5,16 @@ import type {
   RemoteControlTabCommandDto,
   RemoteControlTabDto,
   RemoteControlTabOpenFileDto,
+  RemoteControlTabOpenCommitDto,
 } from '../../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import type { RemoteControlTabsPort } from '../../../lib-orchestrator/remoteControl/remoteControl'
 import type { TabControlAck, TabControlCommand } from '../../shared/tabControl'
 import type { WorkspaceWindows } from '../shell/workspaceWindows'
 import type { WorkspacePanelIndex } from './workspacePanelIndex'
 import type { TabFileOpenResolver } from './tabFileOpenResolver'
+import type { VersioningCommitManager } from '../versioning/versioningCommitManager'
 
-type TabControlBrokerDto = RemoteControlTabCommandDto | RemoteControlTabOpenFileDto
+type TabControlBrokerDto = RemoteControlTabCommandDto | RemoteControlTabOpenFileDto | RemoteControlTabOpenCommitDto
 type TabControlBrokerResult = RemoteControlStepResult<TabControlBrokerDto>
 
 interface PendingTabControlCommand {
@@ -37,6 +39,7 @@ export class TabControlBroker implements RemoteControlTabsPort {
     private readonly windows: WorkspaceWindows,
     private readonly index: WorkspacePanelIndex,
     private readonly fileOpenResolver: Pick<TabFileOpenResolver, 'resolve'>,
+    private readonly commits: Pick<VersioningCommitManager, 'prepare' | 'attach' | 'releaseUnattached'>,
     deps?: TabControlBrokerDeps,
   ) {
     this.requestId = deps?.requestId ?? randomUUID
@@ -49,6 +52,26 @@ export class TabControlBroker implements RemoteControlTabsPort {
       ...panel,
       params: { ...panel.params },
     }))
+  }
+
+  async openCommit(sessionId: string, tabTitle: string, vcs: 'svn' | 'git', scope: string | null,
+    proposal: string | null, options: { plain: boolean; showRefusal?: true }): Promise<RemoteControlStepResult<RemoteControlTabOpenCommitDto>> {
+    const prepared = await this.commits.prepare(sessionId, vcs, scope, proposal)
+    if (!prepared.ok && !(options.showRefusal && (prepared.code === 'no-working-copy' || prepared.code === 'store-worktree')))
+      return TabControlBroker.error(prepared.code === 'unknown-session' ? 'not-found' : 'operation-failed', prepared.detail)
+    const draftId = prepared.ok ? prepared.value.draftId : null
+    try {
+      const opened = await this.open(sessionId, tabTitle, options)
+      if (!opened.ok) return opened
+      const result = await this.request(opened.value.windowId, {
+        kind: 'open-commit', requestId: this.requestId(), panelId: opened.value.panelId, vcs,
+        scopeRoot: prepared.ok ? prepared.value.scopeRoot : scope ?? '.',
+        title: prepared.ok ? prepared.value.title : `Commit ${vcs.toUpperCase()}`,
+        messageApplied: prepared.ok && prepared.messageApplied,
+      })
+      if (result.ok && draftId !== null) this.commits.attach(draftId, result.value.windowId)
+      return result
+    } finally { if (draftId !== null) this.commits.releaseUnattached(draftId) }
   }
 
   async open(
@@ -156,11 +179,15 @@ export class TabControlBroker implements RemoteControlTabsPort {
 
   private request(
     windowId: string,
+    command: Extract<TabControlCommand, { kind: 'open-commit' }>,
+  ): Promise<RemoteControlStepResult<RemoteControlTabOpenCommitDto>>
+  private request(
+    windowId: string,
     command: Extract<TabControlCommand, { kind: 'open-file' }>,
   ): Promise<RemoteControlStepResult<RemoteControlTabOpenFileDto>>
   private request(
     windowId: string,
-    command: Exclude<TabControlCommand, { kind: 'open-file' }>,
+    command: Exclude<TabControlCommand, { kind: 'open-file' | 'open-commit' }>,
   ): Promise<RemoteControlStepResult<RemoteControlTabCommandDto>>
   private request(
     windowId: string,
@@ -216,6 +243,12 @@ export class TabControlBroker implements RemoteControlTabsPort {
     const result = ack.result
     if (result.kind === 'failed')
       return TabControlBroker.error('operation-failed', result.detail)
+    if (pending.command.kind === 'open-commit') {
+      if (result.kind !== 'commit-opened' || result.panelId !== pending.command.panelId)
+        throw new Error(`Unexpected commit result: ${JSON.stringify(result)}`)
+      return TabControlBroker.success({ kind: 'commit-opened', panelId: result.panelId, windowId: pending.windowId,
+        scopeRoot: pending.command.scopeRoot, messageApplied: pending.command.messageApplied })
+    }
     if (pending.command.kind === 'open-session') {
       if (result.kind === 'opened')
         return TabControlBroker.success({

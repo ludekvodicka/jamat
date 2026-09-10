@@ -57,7 +57,7 @@ describe('lib-orchestrator/fileChangesManager/working/fileChangesWorkingTreeSour
       defaultBaselineRef: { kind: 'svn-base', revision: 'BASE' },
       historyBaselineRef: (revision) => ({ kind: 'svn-revision', revision }),
       detect: async (cwd) => { asked.push(cwd); return detection('svn') },
-      status: async () => ({ ok: true, value: [] }),
+      status: async () => ({ ok: true, value: { entries: [], externalRoots: [] } }),
       dirty: async () => ({ ok: true, value: false }),
       history: async () => ({ ok: true, value: [] }),
       readBaseline: async () => ({ kind: 'missing', detail: 'not used' }),
@@ -100,7 +100,7 @@ describe('lib-orchestrator/fileChangesManager/working/fileChangesWorkingTreeSour
     expect(initial.selection).toEqual({
       requested: null,
       selected: 'svn',
-      available: ['svn', 'checkpoint'],
+      available: ['svn', 'checkpoint', 'git'],
       fallbackReason: null,
     })
     expect(initial.selected?.baselineLabel).toBe('SVN BASE')
@@ -136,7 +136,7 @@ describe('lib-orchestrator/fileChangesManager/working/fileChangesWorkingTreeSour
     expect(result.selection).toEqual({
       requested: 'checkpoint',
       selected: 'svn',
-      available: ['svn'],
+      available: ['svn', 'git'],
       fallbackReason: `Checkpoint is not available in ${cwdConst}; using SVN BASE`,
     })
   })
@@ -155,5 +155,29 @@ describe('lib-orchestrator/fileChangesManager/working/fileChangesWorkingTreeSour
     expect(result.selected).toBeNull()
     expect(result.entries).toEqual([])
     expect(result.warnings).toEqual(['SVN BASE: status exploded'])
+  })
+
+  it('offers Git HEAD alone in a main copy without SVN or a checkpoint store', async () => {
+    const noSvn = svn([])
+    noSvn.detect = async () => null
+    const sources = new FileChangesWorkingTreeSources({
+      checkpointStore: store(null, false),
+      gitOf: (args) => new FileChangesVcsGit(new Runner(), args),
+      svn: noSvn,
+    })
+
+    const result = await sources.read(context(), 'git')
+
+    expect(result.selection.available).toEqual(['git'])
+    expect(result.selection.selected).toBe('git')
+    expect(result.selected?.baselineLabel).toBe('Git HEAD')
+    expect(result.externalRoots).toEqual([])
+    expect(FileChangesWorkingTreeSources.labelOf('git')).toBe('Git HEAD')
+  })
+
+  it('never offers a store worktree as the human Git source even without worktree facts', async () => {
+    const result = await subject({ existing: null, belongs: true }).read(context(), null)
+
+    expect(result.selection.available).toEqual(['svn'])
   })
 })

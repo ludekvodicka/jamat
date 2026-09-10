@@ -1,0 +1,22 @@
+.commit-pane { display: flex; flex-direction: column; gap: var(--space-2); height: 100%; box-sizing: border-box; padding: var(--space-3); color: var(--color-text-1); }
+.commit-pane button { padding: var(--space-1) var(--space-2); font: inherit; color: var(--color-text-2); background: var(--color-surface-control); border: 1px solid var(--color-border-frame); border-radius: var(--radius-control); cursor: pointer; }
+.commit-pane button:hover:not(:disabled) { background: var(--color-surface-control-hover); }
+.commit-pane button:disabled { color: var(--color-text-5); cursor: default; }
+.commit-pane button.commit-submit:not(:disabled) { color: var(--color-text-1); background: var(--color-accent-strong); }
+.commit-pane input[type='checkbox'] { accent-color: var(--color-accent-strong); flex-shrink: 0; }
+.commit-pane-slot { height: 100%; min-height: 0; }
+.commit-pane-slot[hidden] { display: none; }
+.commit-scope { overflow-wrap: anywhere; }
+.commit-targets { flex: 1; overflow: auto; min-height: 0; }
+.commit-targets ul { list-style: none; margin: 0; padding-left: var(--space-3); }
+.commit-targets > ul { padding-left: 0; }
+.commit-target { display: flex; align-items: center; gap: var(--space-1); padding: var(--space-1) 0; }
+.commit-target small { color: var(--color-text-3); }
+.commit-selection, .commit-actions { display: flex; align-items: center; gap: var(--space-2); }
+.commit-actions { justify-content: flex-end; }
+.commit-external { border-top: 1px solid var(--color-border-frame); padding-top: var(--space-2); margin-top: var(--space-2); }
+.commit-external > button { margin-left: var(--space-2); }
+.commit-message { display: flex; flex-direction: column; gap: var(--space-1); flex: 0 0 25%; min-height: 0; }
+.commit-message textarea { flex: 1; min-height: 0; resize: vertical; background: var(--color-surface-sunken); color: var(--color-text-1); border: 1px solid var(--color-border-frame); padding: var(--space-2); font: inherit; }
+.commit-status { white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; max-height: 30%; }
+.commit-warning { color: var(--color-warn); margin: 0; }

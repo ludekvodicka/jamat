@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { resolve } from 'node:path'
 
 import type {
   RemoteControlComputerDto,
@@ -26,6 +27,7 @@ import { RemoteControlClient } from '../../lib-orchestrator/remoteControl/remote
 import { RemoteControlPairing } from '../../lib-orchestrator/remoteControl/remoteControlPairing'
 import type { RemoteControlPeerPairingBundle } from '../../lib-orchestrator/remoteControl/remoteControlPeerApi.types'
 import type { SessionCreateSpec } from '../../lib-orchestrator/sessionManager/sessionManagerApi.types'
+import { SessionsSnapshotValidation } from '../../lib-orchestrator/sessionManager/sessionsSnapshotValidation'
 import { ErrorText } from '../../lib-orchestrator/shared/errorText'
 import { AppClientCliError } from './appClientCliError'
 import { AppConfig } from './appConfig'
@@ -34,6 +36,9 @@ import { CliJsonFile } from './cliJsonFile'
 import { JsonShape } from '../../lib-orchestrator/shared/jsonShape'
 import { LocalInstanceResolver } from './localInstanceResolver'
 import { SessionSelectorResolver } from './sessionSelectorResolver'
+import { SelfSession } from './selfSession'
+import { CommitMessageFile } from './commitMessageFile'
+import { CommitAsideLauncher, type CommitAsideRequest } from './commitAsideLauncher'
 
 export interface AppClientCliClientPort {
   execute(request: RemoteControlRequestUnion): Promise<RemoteControlResponse>
@@ -50,6 +55,11 @@ export interface AppClientCliClientPort {
 }
 
 export interface AppClientCliDeps {
+  env: NodeJS.ProcessEnv
+  cwd(): string
+  readMessage(file: string): string
+  writeMessageFile(text: string): Promise<string>
+  aside: Pick<CommitAsideLauncher, 'open'>
   loadConfig(args: CliArguments): AppConfig
   discover(config: AppConfig): Promise<RemoteControlStepResult<RemoteControlDescriptor>>
     | RemoteControlStepResult<RemoteControlDescriptor>
@@ -62,6 +72,7 @@ export interface AppClientCliDeps {
 }
 
 type AppClientCliPlan =
+  | CommitPlan
   | {
       kind: 'request'
       request: RemoteControlRequestUnion
@@ -71,6 +82,19 @@ type AppClientCliPlan =
   | { kind: 'local'; request: RemoteControlLocalRequestUnion }
   | { kind: 'events'; afterRevision?: number }
 
+interface CommitPlan {
+  kind: 'commit'
+  args: CliArguments
+  vcs: 'svn' | 'git'
+  selector: RemoteControlSessionSelector | null
+  scope: string | null
+  workingDirectory: string | null
+  message: string | null
+  messageFile: string | null
+  requestId: string
+  operationId: string
+}
+
 export class AppClientCli {
   private readonly deps: AppClientCliDeps
 
@@ -79,7 +103,12 @@ export class AppClientCli {
     deps?: Partial<AppClientCliDeps>,
   ) {
     this.deps = {
-      loadConfig: deps?.loadConfig ?? ((args) => AppConfig.load(args)),
+      env: deps?.env ?? process.env,
+      cwd: deps?.cwd ?? (() => process.cwd()),
+      readMessage: deps?.readMessage ?? CommitMessageFile.read,
+      writeMessageFile: deps?.writeMessageFile ?? CommitMessageFile.write,
+      aside: deps?.aside ?? new CommitAsideLauncher(),
+      loadConfig: deps?.loadConfig ?? ((args) => AppConfig.load(args, deps?.env ?? process.env)),
       discover: deps?.discover ?? ((config) => new LocalInstanceResolver().resolve({
         ...(config.configDir === null ? {} : { configDir: config.configDir }),
         ...(config.configIdentity === null ? {} : { configIdentity: config.configIdentity }),
@@ -99,6 +128,7 @@ export class AppClientCli {
     try {
       const args = CliArguments.parse(this.argv)
       plan = this.plan(args)
+      if (plan.kind === 'commit') return await this.runCommit(plan)
       const config = this.deps.loadConfig(args)
       const descriptor = await this.deps.discover(config)
       if (!descriptor.ok)
@@ -152,6 +182,8 @@ export class AppClientCli {
   }
 
   private plan(args: CliArguments): AppClientCliPlan {
+    if (args.command === 'commit-svn-jamat') return this.commitPlan(args, 'svn')
+    else if (args.command === 'commit-git-jamat') return this.commitPlan(args, 'git')
     if (args.command === 'events watch') {
       const afterRevision = args.integer('--after-revision', 0, Number.MAX_SAFE_INTEGER)
       return { kind: 'events', ...(afterRevision === undefined ? {} : { afterRevision }) }
@@ -273,6 +305,53 @@ export class AppClientCli {
         }, requestId, this.operationId(args)))
     } else
       throw new Error(`Unknown parsed CLI command: ${JSON.stringify(args.command)}`)
+  }
+
+  private commitPlan(args: CliArguments, vcs: 'svn' | 'git'): CommitPlan {
+    const self = args.has('--self') ? SelfSession.of(this.deps.env) : null
+    const selector = args.has('--self') ? self === null ? null : { kind: 'sessionId' as const, sessionId: self.sessionId } : this.selector(args)
+    const messageFile = args.option('--message-file')
+    const message = messageFile === null ? args.option('--message') : this.deps.readMessage(messageFile)
+    if (message !== null) CommitMessageFile.validate(message)
+    const scope = args.option('--path')
+    if (scope !== null && !scope.trim()) throw new AppClientCliError('invalid-request', '--path cannot be empty')
+    return { kind: 'commit', args, vcs, selector, scope, workingDirectory: args.option('--working-directory'), message, messageFile,
+      requestId: this.deps.requestId(), operationId: this.operationId(args) }
+  }
+
+  private async runCommit(plan: CommitPlan): Promise<number> {
+    const descriptor = await this.deps.discover(this.deps.loadConfig(plan.args))
+    if (!descriptor.ok) return descriptor.error.code === 'unavailable'
+      ? this.finishAside(plan, 'jamat-unavailable') : this.finishFailure(plan, descriptor.error)
+    if (!RemoteControlCapabilities.of(descriptor.value).includes('tabs.openCommit'))
+      return this.finishFailure(plan, { code: 'unavailable', detail: 'tabs.openCommit is not exposed by this AppClientUI' })
+    if (plan.selector === null) return this.finishAside(plan, 'session-not-open')
+    const client = this.deps.client(descriptor.value)
+    const listed = await client.execute(this.request('sessions.list', {}, this.deps.requestId()))
+    if (!listed.ok) return this.finishFailure(plan, listed.error)
+    const snapshot = SessionsSnapshotValidation.parse(listed.value)
+    if (snapshot === null) return this.finishFailure(plan, { code: 'operation-failed', detail: 'AppClientUI returned an invalid sessions snapshot' })
+    const canonical = await new SessionSelectorResolver({ list: async () => ({ ok: true, value: snapshot }) })
+      .canonical(plan.selector, plan.workingDirectory ?? undefined)
+    if (!canonical.ok) return canonical.error.code === 'not-found'
+      ? this.finishAside(plan, 'session-not-open') : this.finishFailure(plan, canonical.error)
+    const session = snapshot.sessions.find((info) => info.sessionId === canonical.value.sessionId)
+    if (session?.life !== 'live') return this.finishAside(plan, 'session-not-open')
+    const response = await client.execute(this.request('tabs.openCommit', {
+      session: canonical.value, vcs: plan.vcs,
+      ...(plan.scope === null ? {} : { scope: plan.scope }), ...(plan.message === null ? {} : { message: plan.message }),
+    }, plan.requestId, plan.operationId))
+    this.write(response)
+    return AppClientCli.exitCode(response.ok ? null : response.error.code)
+  }
+
+  private async finishAside(plan: CommitPlan, reason: CommitAsideRequest['reason']): Promise<number> {
+    const messageFile = plan.messageFile === null
+      ? plan.message === null ? null : await this.deps.writeMessageFile(plan.message)
+      : resolve(this.deps.cwd(), plan.messageFile)
+    const result = await this.deps.aside.open({ vcs: plan.vcs, scope: resolve(this.deps.cwd(), plan.scope ?? '.'), messageFile, reason })
+    this.write(result)
+    return AppClientCli.exitCode(result.ok ? null : result.error.code)
   }
 
   private requestPlan(
@@ -403,6 +482,7 @@ export class AppClientCli {
       || request.operation === 'sessions.transcript'
       || request.operation === 'tabs.open'
       || request.operation === 'tabs.openFile'
+      || request.operation === 'tabs.openCommit'
       || request.operation === 'terminal.peek'
       || request.operation === 'terminal.send') {
       const resolver = new SessionSelectorResolver({
@@ -543,9 +623,9 @@ export class AppClientCli {
     const request = plan?.kind === 'request' || plan?.kind === 'local' ? plan.request : null
     this.write({
       protocol: RemoteControlConst.protocol,
-      requestId: request?.requestId ?? null,
-      operation: request?.operation ?? null,
-      operationId: request?.operationId ?? null,
+      requestId: plan?.kind === 'commit' ? plan.requestId : request?.requestId ?? null,
+      operation: plan?.kind === 'commit' ? 'tabs.openCommit' : request?.operation ?? null,
+      operationId: plan?.kind === 'commit' ? plan.operationId : request?.operationId ?? null,
       ok: false,
       error,
     })

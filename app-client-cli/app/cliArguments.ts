@@ -22,6 +22,8 @@ export class CliArguments {
    * what the sixteen are.
    */
   private static readonly commandSpecsConst = {
+    'commit-svn-jamat': { options: ['--session-id', '--number', '--working-directory', '--path', '--message', '--message-file'], flags: ['--self'], mutation: true },
+    'commit-git-jamat': { options: ['--session-id', '--number', '--working-directory', '--path', '--message', '--message-file'], flags: ['--self'], mutation: true },
     'status': { options: [CliArguments.remoteComputerOptionConst], flags: [], mutation: false },
     'projects list': {
       options: ['--category-id', '--sort', CliArguments.remoteComputerOptionConst],
@@ -183,6 +185,10 @@ export class CliArguments {
       throw CliArguments.usage(`Argument --operation-id is not valid for ${command}`)
     if (options.has('--config-dir') && options.has('--config-identity'))
       throw CliArguments.usage('--config-dir and --config-identity are mutually exclusive')
+    if (flags.has('--self') && ['--session-id', '--number', '--working-directory', '--config-dir', '--config-identity'].some((key) => options.has(key)))
+      throw CliArguments.usage('--self cannot be combined with a session or controller selector')
+    if (options.has('--message') && options.has('--message-file'))
+      throw CliArguments.usage('--message and --message-file are mutually exclusive')
     return new CliArguments(command, options, flags, spec.mutation)
   }
 

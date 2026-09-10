@@ -7,6 +7,7 @@ import type {
 import { ConfigIdentityStore } from '../../lib-orchestrator/shared/configIdentityStore'
 import { AppClientCliError } from './appClientCliError'
 import type { CliArguments } from './cliArguments'
+import { SelfSession } from './selfSession'
 
 export class AppConfig {
   private constructor(
@@ -17,6 +18,15 @@ export class AppConfig {
   ) {}
 
   static load(args: CliArguments, env: NodeJS.ProcessEnv = process.env): AppConfig {
+    if (args.has('--self')) {
+      const self = SelfSession.of(env)
+      const explicitChannel = args.option('--channel')
+      if (explicitChannel !== null && explicitChannel !== 'development' && explicitChannel !== 'production')
+        throw new AppClientCliError('invalid-request', '--channel must be development or production')
+      if (self?.controller && explicitChannel !== null && explicitChannel !== self.controller.channel)
+        throw new AppClientCliError('invalid-request', '--channel conflicts with the session controller channel')
+      return new AppConfig(null, self?.controller?.channel ?? explicitChannel, null, self?.controller?.configIdentity ?? null)
+    }
     const channel = args.option('--channel')
       ?? env.JAMAT_V3_RUNTIME_CHANNEL
       ?? null

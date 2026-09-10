@@ -14,7 +14,10 @@ import type { VersioningMode } from '../../lib-orchestrator/git/git.types'
  */
 export interface VersioningSettingsValue {
   mode: VersioningMode
+  diffTool: VersioningDiffTool
 }
+
+export type VersioningDiffTool = { kind: 'internal' } | { kind: 'external'; command: string; argumentTemplate: string }
 
 export type VersioningSettingsSaveResult =
   | { ok: true }
@@ -24,8 +27,44 @@ export class VersioningSettings {
   static readonly modeOptionsConst: readonly VersioningMode[] = ['checkpoints', 'git']
   static readonly defaultModeConst: VersioningMode = 'checkpoints'
 
+  static tortoiseMerge(): VersioningDiffTool {
+    return { kind: 'external', command: 'C:\\Program Files\\TortoiseSVN\\bin\\TortoiseMerge.exe',
+      argumentTemplate: '/base:%base /mine:%mine /basename:%bname /minename:%yname' }
+  }
+
+  static argumentsOf(template: string): string[] | null {
+    const args: string[] = []
+    let quote: string | null = null
+    let token = ''
+    let started = false
+    for (const character of template) {
+      if (quote !== null) {
+        if (character === quote) quote = null
+        else token += character
+      } else if (character === '"' || character === "'") { quote = character; started = true }
+      else if (/\s/.test(character)) {
+        if (started) args.push(token)
+        token = ''; started = false
+      } else { token += character; started = true }
+    }
+    if (quote !== null) return null
+    if (started) args.push(token)
+    return args
+  }
+
+  static isDiffTool(value: unknown): value is VersioningDiffTool {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+    const tool = value as Record<string, unknown>
+    if (tool.kind === 'internal') return true
+    if (tool.kind !== 'external') return false
+    return typeof tool.command === 'string' && tool.command.trim().length > 0
+      && typeof tool.argumentTemplate === 'string'
+      && /%base\b/.test(tool.argumentTemplate) && /%mine\b/.test(tool.argumentTemplate)
+      && VersioningSettings.argumentsOf(tool.argumentTemplate) !== null
+  }
+
   static defaultValue(): VersioningSettingsValue {
-    return { mode: VersioningSettings.defaultModeConst }
+    return { mode: VersioningSettings.defaultModeConst, diffTool: { kind: 'internal' } }
   }
 
   /**
@@ -40,21 +79,23 @@ export class VersioningSettings {
       return VersioningSettings.defaultValue()
     }
     const document = value as Partial<Record<keyof VersioningSettingsValue, unknown>>
-    if (VersioningSettings.isMode(document.mode))
-      return { ...document, mode: document.mode }
-    if (document.mode !== undefined)
+    const mode = VersioningSettings.isMode(document.mode) ? document.mode : VersioningSettings.defaultModeConst
+    if (document.mode !== undefined && !VersioningSettings.isMode(document.mode))
       report(
         'The versioning section of config.json has an unusable mode '
         + `(${JSON.stringify(document.mode)}); reading it as checkpoints`,
       )
-    return { ...document, mode: VersioningSettings.defaultModeConst }
+    const diffTool = VersioningSettings.isDiffTool(document.diffTool) ? document.diffTool : { kind: 'internal' as const }
+    if (document.diffTool !== undefined && !VersioningSettings.isDiffTool(document.diffTool))
+      report('The versioning diff tool is unusable; reading it as internal')
+    return { ...document, mode, diffTool }
   }
 
   /** Writing is strict, which is what keeps the file readable by the next version that reads it. */
   static isValid(value: unknown): value is VersioningSettingsValue {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false
     const document = value as Partial<Record<keyof VersioningSettingsValue, unknown>>
-    return VersioningSettings.isMode(document.mode)
+    return VersioningSettings.isMode(document.mode) && VersioningSettings.isDiffTool(document.diffTool)
   }
 
   private static isMode(value: unknown): value is VersioningMode {

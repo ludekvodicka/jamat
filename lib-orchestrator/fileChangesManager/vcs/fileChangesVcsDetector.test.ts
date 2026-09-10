@@ -41,8 +41,8 @@ describe('lib-orchestrator/fileChangesManager/vcs/fileChangesVcsDetector', () =>
         throw new Error(`Unknown adapter outcome: ${JSON.stringify(this.outcome)}`)
     }
 
-    async status(): Promise<FileChangesVcsResult<readonly never[]>> {
-      return { ok: true, value: [] }
+    async status(): Promise<Awaited<ReturnType<FileChangesVcs['status']>>> {
+      return { ok: true, value: { entries: [], externalRoots: [] } }
     }
 
     async dirty(): Promise<FileChangesVcsResult<boolean>> {

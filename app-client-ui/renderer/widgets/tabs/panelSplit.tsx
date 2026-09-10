@@ -1,4 +1,5 @@
 import type { IDockviewPanelProps } from 'dockview'
+import type { FileChangesVcsId } from '../../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import type {
@@ -15,7 +16,8 @@ import './panelSplit.css'
 /** One inner tab. Its identity is the document key, which is what makes opening the same file twice
  *  an activation rather than a second tab. `source` is the only durable half: grant ids never
  *  reach a layout, so a restored item asks for its grant again. */
-export interface PanelSplitItem {
+export interface PanelSplitFileItem {
+  kind: 'file'
   key: string
   title: string
   source: FileViewerDocumentSource
@@ -25,13 +27,23 @@ export interface PanelSplitItem {
   zoomPercent?: number
 }
 
+export interface PanelSplitCommitItem {
+  kind: 'commit'
+  key: string
+  title: string
+  vcs: FileChangesVcsId
+  scopeRoot: string
+}
+
+export type PanelSplitItem = PanelSplitFileItem | PanelSplitCommitItem
+
 export interface PanelSplitState {
   ratio: number
   active: string | null
   preview: string | null
   /** Empty means the split is not there at all: visibility is derived, never stored. */
   items: readonly PanelSplitItem[]
-  history: readonly PanelSplitItem[]
+  history: readonly PanelSplitFileItem[]
 }
 
 export interface PanelSplitCapture {
@@ -65,6 +77,7 @@ export interface PanelSplitHandle {
 export class PanelSplitParams {
   private static readonly paramsKeyConst = 'split'
   static readonly itemsMaxConst = 8
+  static readonly commitItemsMaxConst = 8
   static readonly historyMaxConst = 50
   private static readonly ratioDefaultConst = 0.5
   private static readonly ratioMinConst = 0.15
@@ -74,6 +87,16 @@ export class PanelSplitParams {
 
   static default(): PanelSplitState {
     return { ratio: PanelSplitParams.ratioDefaultConst, active: null, preview: null, items: [], history: [] }
+  }
+
+  static commitKeyOf(vcs: FileChangesVcsId, scopeRoot: string): string {
+    return `commit:${vcs}:${scopeRoot}`
+  }
+
+  static tooltipOf(item: PanelSplitItem): string {
+    if (item.kind === 'file') return item.source.path
+    else if (item.kind === 'commit') return item.scopeRoot
+    else throw new Error(`Unknown split item: ${JSON.stringify(item)}`)
   }
 
   static of(params: unknown): PanelSplitState {
@@ -120,7 +143,7 @@ export class PanelSplitParams {
     }
   }
 
-  static backTargetOf(state: PanelSplitState): PanelSplitItem | null {
+  static backTargetOf(state: PanelSplitState): PanelSplitFileItem | null {
     if (state.active === null)
       return null
     return state.history.findLast((item) => item.key !== state.active) ?? null
@@ -139,9 +162,9 @@ export class PanelSplitParams {
     }
   }
 
-  private static remembered(state: PanelSplitState, nextKey: string): readonly PanelSplitItem[] {
+  private static remembered(state: PanelSplitState, nextKey: string): readonly PanelSplitFileItem[] {
     const previous = state.items.find((item) => item.key === state.active)
-    if (previous === undefined || previous.key === nextKey)
+    if (previous === undefined || previous.key === nextKey || previous.kind === 'commit')
       return state.history
     return [...state.history, previous].slice(-PanelSplitParams.historyMaxConst)
   }
@@ -157,9 +180,15 @@ export class PanelSplitParams {
       const items = state.items.map((candidate, index) => index === existing ? item : candidate)
       return { ok: true, state: { ...state, items, active: item.key } }
     }
+    if (item.kind === 'commit') {
+      if (state.items.filter((candidate) => candidate.kind === 'commit').length >= PanelSplitParams.commitItemsMaxConst)
+        return { ok: false, refusal: `The split already holds ${PanelSplitParams.commitItemsMaxConst} commit dialogs. Close one before opening another.` }
+      return { ok: true, state: { ...state, items: [...state.items, item], active: item.key } }
+    }
+    else if (item.kind !== 'file') throw new Error(`Unknown split item: ${JSON.stringify(item)}`)
     const previewIndex = state.preview === null
       ? -1
-      : state.items.findIndex((candidate) => candidate.key === state.preview)
+      : state.items.findIndex((candidate) => candidate.kind === 'file' && candidate.key === state.preview)
     if (previewIndex !== -1) {
       const items = state.items.map((candidate, index) => index === previewIndex ? item : candidate)
       return {
@@ -167,7 +196,7 @@ export class PanelSplitParams {
         state: { ...state, items, active: item.key, preview: item.key },
       }
     }
-    if (state.items.length >= PanelSplitParams.itemsMaxConst)
+    if (state.items.filter((candidate) => candidate.kind === 'file').length >= PanelSplitParams.itemsMaxConst)
       return {
         ok: false,
         refusal: `The split already holds ${PanelSplitParams.itemsMaxConst} files.`
@@ -222,31 +251,38 @@ export class PanelSplitParams {
       return []
     const items: PanelSplitItem[] = []
     for (const entry of value) {
-      if (items.length >= PanelSplitParams.itemsMaxConst)
-        break
       const item = PanelSplitParams.item(entry)
       if (item === null)
         continue
       if (items.some((held) => held.key === item.key))
         continue
+      const limit = item.kind === 'file' ? PanelSplitParams.itemsMaxConst : PanelSplitParams.commitItemsMaxConst
+      if (items.filter((held) => held.kind === item.kind).length >= limit) continue
       items.push(item)
     }
     return items
   }
 
-  private static history(value: unknown): readonly PanelSplitItem[] {
+  private static history(value: unknown): readonly PanelSplitFileItem[] {
     if (!Array.isArray(value))
       return []
     return value.slice(-PanelSplitParams.historyMaxConst).flatMap((entry) => {
       const item = PanelSplitParams.item(entry)
-      return item === null ? [] : [item]
+      return item === null || item.kind !== 'file' ? [] : [item]
     })
   }
 
   private static item(value: unknown): PanelSplitItem | null {
     if (!value || typeof value !== 'object')
       return null
-    const candidate = value as Partial<PanelSplitItem>
+    const candidate = value as Record<string, unknown>
+    const kind = candidate.kind ?? 'file'
+    if (kind === 'commit') {
+      if (typeof candidate.key !== 'string' || !candidate.key || typeof candidate.title !== 'string'
+        || (candidate.vcs !== 'svn' && candidate.vcs !== 'git') || typeof candidate.scopeRoot !== 'string' || !candidate.scopeRoot) return null
+      return { kind, key: candidate.key, title: candidate.title, vcs: candidate.vcs, scopeRoot: candidate.scopeRoot }
+    }
+    else if (kind !== 'file') return null
     const source = FileViewerSourceShape.read(candidate.source)
     if (source === null
       || typeof candidate.key !== 'string' || !candidate.key
@@ -258,6 +294,7 @@ export class PanelSplitParams {
       ? FileViewerZoom.snap(candidate.zoomPercent)
       : undefined
     return {
+      kind: 'file',
       key: candidate.key,
       title: candidate.title,
       source,
@@ -276,7 +313,7 @@ export class PanelSplitParams {
   }
 
   private static preview(value: unknown, items: readonly PanelSplitItem[]): string | null {
-    if (typeof value === 'string' && items.some((item) => item.key === value))
+    if (typeof value === 'string' && items.some((item) => item.kind === 'file' && item.key === value))
       return value
     return null
   }
@@ -528,7 +565,7 @@ export function PanelSplitStrip(props: {
           className={`jamat-panel-split__tab${item.key === props.active ? ' is-active' : ''}${item.key === props.preview ? ' is-preview' : ''}`}
           role="tab"
           aria-selected={item.key === props.active}
-          title={item.source.path}
+          title={PanelSplitParams.tooltipOf(item)}
           onClick={() => props.onActivate(item.key)}
           onDoubleClick={() => props.onKeepOpen(item.key)}
           onContextMenu={(event) => {
@@ -556,11 +593,11 @@ export function PanelSplitStrip(props: {
           position={menu.position}
           ariaLabel="Split tab actions"
           items={[
-            {
+            ...(props.items.find((item) => item.key === menu.key)?.kind === 'file' ? [{
               key: 'split.detach',
               label: 'Detach from split',
               onSelect: () => queueMicrotask(() => onDetach(menu.key)),
-            },
+            }] : []),
             { key: 'split.close', label: 'Close', onSelect: () => onClose(menu.key) },
           ]}
           onClose={() => setMenu(null)}

@@ -3,12 +3,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionManager } from '../../../lib-orchestrator/sessionManager/sessionManager'
 import type {
-  SessionModelContext,
   SessionModelReader,
 } from '../../../lib-orchestrator/sessionModelReader/sessionModelReader'
 import type {
   SessionModelReading,
 } from '../../../lib-orchestrator/sessionModelReader/sessionModelReaderApi.types'
+import type {
+  SessionModelContext,
+} from '../../../lib-orchestrator/sessionModelReader/sessionModelSource'
 import type { AppClientUiIpcInvokeMap } from '../../shared/appClientUiIpc'
 import { ServiceSessionModelIpc } from './serviceSessionModelIpc'
 
@@ -42,9 +44,9 @@ describe('app-client-ui/app/sessionModel/serviceSessionModelIpc', () => {
    * was handed the reduced answer and never performed the reduction.
    */
   const sessionsConst = {
-    'agent-1': { kind: 'agent' as const, cwd: 'C:/work', agent: { agentId: 'claude' as const, nativeSessionId: 'native-1' } },
+    'agent-1': { kind: 'agent' as const, cwd: 'C:/work', agent: { agentId: 'claude' as const, nativeSessionId: 'native-1', model: 'claude-opus-5[1m]' as string | null } },
     'shell-1': { kind: 'shell' as const, cwd: 'C:/work', agent: null },
-    'agent-unlaunched': { kind: 'agent' as const, cwd: 'C:/work', agent: { agentId: 'claude' as const, nativeSessionId: '' } },
+    'agent-unlaunched': { kind: 'agent' as const, cwd: 'C:/work', agent: { agentId: 'claude' as const, nativeSessionId: '', model: null as string | null } },
   }
   let reads: SessionModelContext[]
   let service: ServiceSessionModelIpc
@@ -75,6 +77,7 @@ describe('app-client-ui/app/sessionModel/serviceSessionModelIpc', () => {
             agentId: agent?.agentId ?? null,
             cwd: found.cwd,
             nativeSessionId: agent?.nativeSessionId || null,
+            launchModel: agent?.model ?? null,
           },
         })
       },
@@ -135,12 +138,23 @@ describe('app-client-ui/app/sessionModel/serviceSessionModelIpc', () => {
     expect(reads).toEqual([])
   })
 
-  it('hands the reader the agent, the directory and the native id, and nothing else', async () => {
+  /*
+   * The launch model travels with the rest, and it is the only one of the four the transcript cannot
+   * answer: Claude records `claude-opus-5` for a session running on the million-token tier, so the
+   * window drawn without this is a fifth of the real one.
+   */
+  it('hands the reader the agent, the directory, the native id and the launch model', async () => {
     expect(await invoke('sessionModel:get', 'agent-1')).toEqual({ ok: true, value: readingConst })
 
-    expect(reads).toEqual([{ agentId: 'claude', cwd: 'C:/work', nativeSessionId: 'native-1' }])
+    expect(reads).toEqual([{
+      agentId: 'claude',
+      cwd: 'C:/work',
+      nativeSessionId: 'native-1',
+      launchModel: 'claude-opus-5[1m]',
+    }])
     // Composed field by field rather than forwarded: the session id the caller named has no field
     // to travel in, so a record that grows one cannot carry it over this seam.
-    expect(Object.keys(reads[0]!).sort()).toEqual(['agentId', 'cwd', 'nativeSessionId'])
+    expect(Object.keys(reads[0]!).sort())
+      .toEqual(['agentId', 'cwd', 'launchModel', 'nativeSessionId'])
   })
 })

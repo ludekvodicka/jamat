@@ -1,3 +1,4 @@
+import type { CommitOpenStore } from '../versioning/commitOpenStore'
 import type {
   RateMonitorSnapshot,
 } from '../../../lib-orchestrator/rateMonitor/rateMonitorApi.types'
@@ -102,6 +103,7 @@ export interface WorkspaceShellWiring {
    * screen. Holders get one too, because a holder draws session tabs and a tab now carries the
    * same mark a tree row does.
    */
+  commitOpen: CommitOpenStore
   sessionsMarks: SessionsMarksStore
   /**
    * Every workspace draws the rate limits too: what is spent is the machine's, not this window's,

@@ -254,6 +254,7 @@ export class WorkspacePanels {
       try {
         const applied = controller.applyPanelParameters(command.panelId, (params) => {
           const result = PanelSplitParams.opened(PanelSplitParams.of(params), {
+            kind: 'file',
             key: command.documentKey,
             title: command.title,
             source: command.source,
@@ -268,6 +269,20 @@ export class WorkspacePanels {
       } catch (error) {
         return { kind: 'failed', detail: ErrorText.of(error) }
       }
+    } else if (command.kind === 'open-commit') {
+      if (controller.keyOf(command.panelId) !== PanelKeysConst.terminal)
+        return { kind: 'failed', detail: `Not a terminal panel: ${command.panelId}` }
+      let refusal: string | null = null
+      const applied = controller.applyPanelParameters(command.panelId, (params) => {
+        const result = PanelSplitParams.opened(PanelSplitParams.of(params), {
+          kind: 'commit', key: PanelSplitParams.commitKeyOf(command.vcs, command.scopeRoot), title: command.title,
+          vcs: command.vcs, scopeRoot: command.scopeRoot,
+        })
+        if (!result.ok) { refusal = result.refusal; return params }
+        return PanelSplitParams.merged(params, result.state)
+      })
+      return refusal !== null ? { kind: 'failed', detail: refusal }
+        : applied ? { kind: 'commit-opened', panelId: command.panelId } : { kind: 'failed', detail: `Unknown panel: ${command.panelId}` }
     } else if (command.kind === 'focus-panel')
       return controller.activatePanel(command.panelId)
         ? { kind: 'focused', panelId: command.panelId }

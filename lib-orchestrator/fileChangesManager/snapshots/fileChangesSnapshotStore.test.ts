@@ -90,6 +90,7 @@ describe('lib-orchestrator/fileChangesManager/snapshots/fileChangesSnapshotStore
     const store = new FileChangesSnapshotStore(() => 42)
     const current = input()
     const snapshot = store.putWorking({
+      externalRoots: [],
       context: current.context,
       selectedVcs: current.selectedVcs,
       logGroups: current.logGroups,

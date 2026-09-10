@@ -1,3 +1,4 @@
+import { CommitOpenStore } from '../../versioning/commitOpenStore'
 import { act, cleanup, fireEvent, render, type RenderResult, waitFor } from '@testing-library/react'
 import type { IDockviewPanelProps } from 'dockview'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -39,7 +40,7 @@ import type { PanelOpenOutcome } from '../../shell/appShell.types'
 import { SessionsMarksStore } from '../../sessions/sessionsMarksStore'
 import { TabDecorationsStore } from '../../widgets/tabs/tabDecorations'
 import { TabDecorationsProvider } from '../../widgets/tabs/tabDecorationsContext'
-import { PanelSplitParams, type PanelSplitItem } from '../../widgets/tabs/panelSplit'
+import { PanelSplitParams, type PanelSplitFileItem } from '../../widgets/tabs/panelSplit'
 import { TerminalPanel, type TerminalPanelProps } from './terminalPanel'
 
 const xtermMock = vi.hoisted(() => ({
@@ -159,6 +160,7 @@ class TerminalPanelFixtures {
       snapshotId: 'working-tree-snapshot',
       sessionId: 'session-1',
       createdAt: 1,
+      externalRoots: [],
       source: {
         requested: null,
         selected: 'checkpoint',
@@ -213,10 +215,11 @@ class TerminalPanelFixtures {
 
   static splitItem(
     index: number,
-    baselineHint?: PanelSplitItem['baselineHint'],
-  ): PanelSplitItem {
+    baselineHint?: PanelSplitFileItem['baselineHint'],
+  ): PanelSplitFileItem {
     const path = `C:/work/file-${index}.ts`
     return {
+      kind: 'file',
       key: `key:${path}`,
       title: `file-${index}.ts`,
       source: { kind: 'workspace', sessionId: 'session-1', path },
@@ -523,6 +526,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
     options: {
       params?: Record<string, unknown>
       openFile?: TerminalPanelProps['openFile']
+      commitOpen?: CommitOpenStore
     } = {},
   ): RenderResult {
     return render(
@@ -540,6 +544,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
           compact={compact}
           compaction={{ inspect: () => Promise.resolve({ reason: 'Test session', nextCheckAt: null, cooldown: null }) }}
           marks={marks}
+          commitOpen={options.commitOpen ?? new CommitOpenStore({ read: async () => ({ ok: true, value: { revision: 0, sessionIds: [] } }), subscribe: () => () => undefined, reportError: vi.fn() })}
           fileTools={new PanelFileToolsRegistry()}
           openFile={options.openFile ?? (() => Promise.resolve({
             kind: 'opened', panelId: 'file:default',
@@ -571,6 +576,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
           compact={compact}
           compaction={{ inspect: () => Promise.resolve({ reason: 'Test session', nextCheckAt: null, cooldown: null }) }}
           marks={marks}
+          commitOpen={new CommitOpenStore({ read: async () => ({ ok: true, value: { revision: 0, sessionIds: [] } }), subscribe: () => () => undefined, reportError: vi.fn() })}
           fileTools={new PanelFileToolsRegistry()}
           openFile={() => Promise.resolve({ kind: 'opened', panelId: 'file:remote' })}
           openDirectoryAt={() => undefined}
@@ -832,6 +838,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
       expect(openFile).not.toHaveBeenCalled()
       expect(releasedDocuments).toContain('changed-document')
       expect(PanelSplitParams.of(api.paramsValue()).items).toEqual([{
+        kind: 'file',
         key: 'key:C:/work/report.ts',
         title: 'report.ts',
         source: changedDocument.source,
@@ -1195,6 +1202,18 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
       mount(new PanelApiFake('terminal:1'), 's-clean')
 
       expect(store.get('terminal:1').badges).toEqual([])
+    })
+
+    it('marks a clean session red while its commit dialog remains open', async () => {
+      await withSessions(SessionsFixtures.stoppedWorktree())
+      const commitOpen = new CommitOpenStore({ read: async () => ({ ok: true, value: { revision: 1, sessionIds: ['s-clean'] } }), subscribe: () => () => undefined, reportError: vi.fn() })
+      const stop = commitOpen.start()
+      try {
+        mount(new PanelApiFake('terminal:1'), 's-clean', { commitOpen })
+        await waitFor(() => expect(store.get('terminal:1').badges).toEqual([
+          { key: 'vcs', text: '*', tone: 'danger', title: 'Commit dialog open' },
+        ]))
+      } finally { stop() }
     })
 
     // Two crosses beside each other read as a bug, not as two facts.
@@ -1890,6 +1909,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
           compact={compact}
           compaction={{ inspect: () => Promise.resolve({ reason: 'Test session', nextCheckAt: null, cooldown: null }) }}
           marks={marks}
+          commitOpen={new CommitOpenStore({ read: async () => ({ ok: true, value: { revision: 0, sessionIds: [] } }), subscribe: () => () => undefined, reportError: vi.fn() })}
           fileTools={new PanelFileToolsRegistry()}
           openFile={() => Promise.resolve({ kind: 'opened', panelId: 'file:invalid' })}
           openDirectoryAt={() => undefined}

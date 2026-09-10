@@ -61,6 +61,7 @@ describe('app-client-ui/app/fileChanges/serviceFileChangesIpc', () => {
     modes: ['rendered', 'raw', 'diff'],
   }
   const workingSnapshot: FileChangesWorkingTreeSnapshot = {
+    externalRoots: [],
     snapshotId: 'working-snapshot-1',
     sessionId: 'session-1',
     createdAt: 1,
@@ -86,6 +87,7 @@ describe('app-client-ui/app/fileChanges/serviceFileChangesIpc', () => {
     calls = []
     runDiff = () => Promise.resolve({ ok: true, kind: 'source-unavailable', detail: 'none' })
     const manager = {
+      workingSnapshot: () => workingSnapshot,
       list: (...args: unknown[]) => {
         calls.push({ method: 'list', args })
         return Promise.resolve({ ok: true as const, value: snapshot })
@@ -163,6 +165,16 @@ describe('app-client-ui/app/fileChanges/serviceFileChangesIpc', () => {
         { preferredVcs: 'git' },
       ],
     })
+  })
+
+  it('shares the existing owner check with commit target and snapshot reads', async () => {
+    await invoke('fileChanges:working-tree', sender, 'session-1', 'svn')
+    expect(service.ownedWorkingTreeSnapshot('window-1', workingSnapshot.snapshotId)).toEqual(workingSnapshot)
+    expect(service.ownedWorkingTreeSnapshot('window-2', workingSnapshot.snapshotId)).toBeNull()
+    expect(service.ownedFileAccess('window-1', workingSnapshot.snapshotId, 'file-1').ok).toBe(true)
+    expect(service.ownedFileAccess('window-2', workingSnapshot.snapshotId, 'file-1').ok).toBe(false)
+    service.revokeOwner('window-1')
+    expect(service.ownedWorkingTreeSnapshot('window-1', workingSnapshot.snapshotId)).toBeNull()
   })
 
   it('derives worktree context and single-flights each requested current source', async () => {

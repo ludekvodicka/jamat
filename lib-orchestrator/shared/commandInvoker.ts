@@ -13,6 +13,10 @@ export interface CommandInvokerOptions {
   platform?: NodeJS.Platform
 }
 
+export type InteractiveCommandResult =
+  | { ok: true; closed: Promise<void> }
+  | { ok: false; detail: string }
+
 export class CommandInvoker {
   private static readonly timeoutMillisecondsConst = 10 * 60_000
   private static readonly maxOutputBytesConst = 8 * 1_048_576
@@ -44,6 +48,24 @@ export class CommandInvoker {
       }
     if (invocation.signal?.aborted) return CommandInvoker.abortedOutcome()
     return this.spawn(invocation)
+  }
+
+  async launchInteractive(invocation: Omit<CommandInvocation, 'signal'>): Promise<InteractiveCommandResult> {
+    if (!await CommandInvoker.isDirectory(invocation.cwd))
+      return { ok: false, detail: `${invocation.cwd} is not a directory` }
+    return new Promise((resolve) => {
+      let finish: () => void = () => {}
+      const closed = new Promise<void>((settle) => { finish = settle })
+      try {
+        const child = this.spawnImpl(invocation.command, invocation.args, {
+          cwd: invocation.cwd, env: invocation.env, windowsHide: true, stdio: 'ignore',
+        })
+        child.once('error', (error) => { finish(); resolve({ ok: false, detail: ErrorText.of(error) }) })
+        child.once('close', finish)
+        // An editor belongs to the person: no command timeout and no app-exit dependency.
+        child.once('spawn', () => { child.unref(); resolve({ ok: true, closed }) })
+      } catch (error) { finish(); resolve({ ok: false, detail: ErrorText.of(error) }) }
+    })
   }
 
   private static abortedOutcome(): CommandOutcome {

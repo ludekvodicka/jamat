@@ -69,7 +69,6 @@ describe('app-client-ui/app/sessions/serviceSessionsIpc', () => {
       discardPlainSession: record('discardPlainSession'),
       promotePlainSession: record('promotePlainSession'),
       forkSession: record('forkSession'),
-      newSessionBeside: record('newSessionBeside'),
       restartSession: record('restartSession'),
       setSessionColor: record('setSessionColor'),
       setSessionDetails: record('setSessionDetails'),
@@ -126,7 +125,7 @@ describe('app-client-ui/app/sessions/serviceSessionsIpc', () => {
     await invoke('sessions:fork', 'session-1')
     // The two-argument ones, which are the whole reason a forwarding test is worth writing: a
     // swapped pair or a dropped second argument is invisible everywhere else.
-    await invoke('sessions:new-beside', 'session-1', 'codex')
+    await invoke('sessions:fork', 'session-1', { name: 'renamed' })
     await invoke('sessions:restart', 'session-1')
     await invoke('sessions:set-color', 'session-1', 'teal')
     await invoke('sessions:adopt-orphan', 'runtime-9')
@@ -147,8 +146,8 @@ describe('app-client-ui/app/sessions/serviceSessionsIpc', () => {
       { method: 'removeSession', args: ['session-1'] },
       { method: 'discardPlainSession', args: ['session-1'] },
       { method: 'promotePlainSession', args: ['session-1'] },
-      { method: 'forkSession', args: ['session-1'] },
-      { method: 'newSessionBeside', args: ['session-1', 'codex'] },
+      { method: 'forkSession', args: ['session-1', undefined] },
+      { method: 'forkSession', args: ['session-1', { name: 'renamed' }] },
       { method: 'restartSession', args: ['session-1'] },
       { method: 'setSessionColor', args: ['session-1', 'teal'] },
       { method: 'adoptOrphan', args: ['runtime-9'] },

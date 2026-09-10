@@ -69,10 +69,10 @@ describe('lib-orchestrator/fileChangesManager/vcs/fileChangesVcsSvn', () => {
 
     expect(await vcs.status(detected)).toEqual({
       ok: true,
-      value: [
+      value: { externalRoots: [], entries: [
         expect.objectContaining({ repositoryPath: 'nested/changed.ts', status: 'modified' }),
         expect.objectContaining({ repositoryPath: 'nested/new', status: 'untracked' }),
-      ],
+      ] },
     })
   })
 
@@ -103,6 +103,27 @@ describe('lib-orchestrator/fileChangesManager/vcs/fileChangesVcsSvn', () => {
         ],
       })],
     })
+  })
+
+  it('keeps nested external roots and their changed files', async () => {
+    const { root, cwd } = workingCopy()
+    const vcs = new FileChangesVcsSvn(new Runner((args) => detectionAnswer(root, args) ?? ok(`
+      <status><target path=".">
+        <entry path="shared"><wc-status item="external" props="none"/></entry>
+      </target><target path="shared">
+        <entry path="shared/a.ts"><wc-status item="modified" props="none"/></entry>
+        <entry path="shared/b.ts"><wc-status item="modified" props="none"/></entry>
+      </target></status>`)))
+
+    const result = await vcs.status((await vcs.detect(cwd))!)
+
+    expect(result).toEqual({ ok: true, value: {
+      externalRoots: [join(cwd, 'shared')],
+      entries: [
+        expect.objectContaining({ absolutePath: join(cwd, 'shared/a.ts'), status: 'modified' }),
+        expect.objectContaining({ absolutePath: join(cwd, 'shared/b.ts'), status: 'modified' }),
+      ],
+    } })
   })
 
   it('uses the local BASE target and repository URL for a selected revision', async () => {

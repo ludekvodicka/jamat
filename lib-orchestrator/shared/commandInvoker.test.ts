@@ -25,6 +25,25 @@ describe('lib-orchestrator/shared/commandInvoker', () => {
 
   afterEach(() => vi.useRealTimers())
 
+  it('returns an interactive launch before close, without timing out the editor', async () => {
+    const child = new FakeChild()
+    const spawnImpl = vi.fn(() => child) as unknown as typeof spawn
+    const started = new CommandInvoker({ spawnImpl, timeoutMilliseconds: 1 }).launchInteractive({ command: 'editor', args: ['two words'], cwd: import.meta.dirname, env: {} })
+    await vi.waitFor(() => expect(spawnImpl).toHaveBeenCalled())
+    child.emit('spawn')
+    const result = await started
+    expect(result.ok).toBe(true)
+    expect(spawnImpl).toHaveBeenCalledWith('editor', ['two words'], expect.objectContaining({ stdio: 'ignore', windowsHide: true }))
+    let closed = false
+    if (!result.ok) throw new Error(result.detail)
+    void result.closed.then(() => { closed = true })
+    expect(closed).toBe(false)
+    expect(child.killed).toBe(false)
+    child.emit('close', 0)
+    await result.closed
+    expect(closed).toBe(true)
+  })
+
   it('runs a command with the exact invocation and captures both streams', async () => {
     const child = new FakeChild()
     const calls: { command: string; args: readonly string[]; options: SpawnOptions }[] = []

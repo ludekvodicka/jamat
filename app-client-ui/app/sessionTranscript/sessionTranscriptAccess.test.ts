@@ -11,7 +11,12 @@ describe('app-client-ui/app/sessionTranscript/sessionTranscriptAccess', () => {
     const sessions = {
       transcriptContext: () => Promise.resolve({
         ok: true as const,
-        value: { agentId: 'claude' as const, cwd: 'Q:/old-worktree', nativeSessionId: 'native-1' },
+        value: {
+          agentId: 'claude' as const,
+          cwd: 'Q:/old-worktree',
+          nativeSessionId: 'native-1',
+          launchModel: null,
+        },
       }),
     } as unknown as SessionManager
     const reader = {
@@ -27,6 +32,7 @@ describe('app-client-ui/app/sessionTranscript/sessionTranscriptAccess', () => {
       agentId: 'claude',
       cwd: 'Q:/old-worktree',
       nativeSessionId: 'native-1',
+      launchModel: null,
     }])
   })
 

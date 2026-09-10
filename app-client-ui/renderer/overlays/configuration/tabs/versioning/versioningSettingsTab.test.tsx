@@ -24,7 +24,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/versioni
     const saved: unknown[] = []
     ;(window as unknown as { appClient: BridgeStub }).appClient = {
       versioning: {
-        getSettings: () => Promise.resolve({ ok: true, value: { mode: 'git' } }),
+        getSettings: () => Promise.resolve({ ok: true, value: { mode: 'git', diffTool: { kind: 'internal' } } }),
         saveSettings: (value) => {
           saved.push(value)
           return Promise.resolve({ ok: true, value: { ok: true } })
@@ -53,10 +53,10 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/versioni
     const titles = [...view.container.querySelectorAll('.jamat-configuration__section-title')]
       .map((node) => node.textContent)
 
-    expect(titles).toEqual(['AI versioning', 'File changes'])
-    expect(selectsOf(view.container).map((select) => select.value)).toEqual(['git', 'svn'])
+    expect(titles).toEqual(['AI versioning', 'Commit diff viewer', 'File changes'])
+    expect(selectsOf(view.container).map((select) => select.value)).toEqual(['git', 'internal', 'svn'])
     // Two, deliberately: one button reporting two writes would report one outcome for two.
-    expect(view.getAllByText('Save')).toHaveLength(2)
+    expect(view.getAllByText('Save')).toHaveLength(3)
   })
 
   /*
@@ -65,7 +65,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/versioni
    */
   it('stays dirty while either section holds an unsaved edit', async () => {
     const { onDirtyChange, saved, view } = await mount()
-    const [mode, vcs] = selectsOf(view.container)
+    const [mode, , vcs] = selectsOf(view.container)
 
     fireEvent.change(mode!, { target: { value: 'checkpoints' } })
     expect(onDirtyChange).toHaveBeenLastCalledWith(true)
@@ -74,11 +74,11 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/versioni
 
     // The first section's own Save, which leaves the second one's edit exactly where it was.
     await act(async () => { fireEvent.click(view.getAllByText('Save')[0]!) })
-    expect(saved).toEqual([{ mode: 'checkpoints' }])
+    expect(saved).toEqual([{ mode: 'checkpoints', diffTool: { kind: 'internal' } }])
     expect(onDirtyChange).toHaveBeenLastCalledWith(true)
 
-    await act(async () => { fireEvent.click(view.getAllByText('Save')[1]!) })
-    expect(saved).toEqual([{ mode: 'checkpoints' }, { primaryVcs: 'git' }])
+    await act(async () => { fireEvent.click(view.getAllByText('Save')[2]!) })
+    expect(saved).toEqual([{ mode: 'checkpoints', diffTool: { kind: 'internal' } }, { primaryVcs: 'git' }])
     expect(onDirtyChange).toHaveBeenLastCalledWith(false)
   })
 })

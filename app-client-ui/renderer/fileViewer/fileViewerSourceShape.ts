@@ -54,7 +54,7 @@ export class FileViewerSourceShape {
     if (candidate.revision !== null && typeof candidate.revision !== 'string')
       return undefined
     const sources: readonly FileChangesWorkingTreeSource[] = [
-      'checkpoint', 'svn', 'worktree-base',
+      'checkpoint', 'svn', 'worktree-base', 'git',
     ]
     if (candidate.workingTreeSource !== undefined
       && !sources.includes(candidate.workingTreeSource))

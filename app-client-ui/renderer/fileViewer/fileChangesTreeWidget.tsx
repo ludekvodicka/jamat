@@ -222,7 +222,7 @@ function FileChangesTreeItem(props: {
 
 class FileChangesTreeSources {
   static read(value: string): FileChangesWorkingTreeSource {
-    if (value === 'checkpoint' || value === 'svn' || value === 'worktree-base') return value
+    if (value === 'checkpoint' || value === 'svn' || value === 'worktree-base' || value === 'git') return value
     else throw new Error(`Unknown working tree source: ${JSON.stringify(value)}`)
   }
 
@@ -230,6 +230,7 @@ class FileChangesTreeSources {
     if (source === 'checkpoint') return 'Checkpoint'
     else if (source === 'svn') return 'SVN BASE'
     else if (source === 'worktree-base') return 'Worktree base'
+    else if (source === 'git') return 'Git HEAD'
     else throw new Error(`Unknown working tree source: ${JSON.stringify(source)}`)
   }
 }

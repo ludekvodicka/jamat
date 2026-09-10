@@ -29,6 +29,7 @@ export class RemoteControlConst {
   ] as const
   static readonly optionalOperations = [
     'tabs.openFile',
+    'tabs.openCommit',
     'sessions.transcript',
     'agents.describe',
   ] as const
@@ -39,6 +40,7 @@ export class RemoteControlConst {
     'sessions.finalize',
     'tabs.open',
     'tabs.openFile',
+    'tabs.openCommit',
     'tabs.focus',
     'tabs.close',
     'terminal.send',

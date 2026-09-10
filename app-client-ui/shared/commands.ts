@@ -23,12 +23,15 @@ export type CommandId =
   | 'session.details'
   | 'session.setColor'
   | 'session.newHere'
-  | 'session.newBlank'
+  | 'session.newBeside'
   | 'session.newInClaude'
   | 'session.newInCodex'
   | 'session.fork'
+  | 'session.resume'
   | 'session.restart'
   | 'session.compact'
+  | 'session.commitSvn'
+  | 'session.commitGit'
   | 'tab.openProjectFolder'
   | 'tab.copyProjectFolder'
   | 'session.copyReference'
@@ -90,12 +93,15 @@ export interface CommandArgById {
   'session.details': { sessionId?: string } | undefined
   'session.setColor': { color: SessionColorName | null; sessionId?: string }
   'session.newHere': { place: NewSessionPlace }
-  'session.newBlank': { sessionId?: string } | undefined
+  'session.newBeside': { sessionId?: string } | undefined
   'session.newInClaude': { sessionId?: string } | undefined
   'session.newInCodex': { sessionId?: string } | undefined
   'session.fork': { sessionId?: string } | undefined
+  'session.resume': { sessionId?: string } | undefined
   'session.restart': { sessionId?: string } | undefined
   'session.compact': { sessionId?: string } | undefined
+  'session.commitSvn': { sessionId?: string } | undefined
+  'session.commitGit': { sessionId?: string } | undefined
   'tab.openProjectFolder': { sessionId?: string } | undefined
   'tab.copyProjectFolder': { sessionId?: string } | undefined
   /**
@@ -342,24 +348,38 @@ export class AppCommands {
       accelerator: 'F2',
       terminalSafe: true,
     },
-    // The only one of this block that asks before it acts: the rest start something beside the
-    // session in front, this opens the launcher pre-bound to the place the click named - a project,
-    // or a category with the project still to pick. It is `session.new` with the place filled in,
-    // which is exactly why it is a second command: a place is a value, and the native menu can send
-    // an id and nothing more, so `Ctrl+N` and the File menu keep pointing at the bare one.
+    /*
+     * The launcher pre-bound to the place a click named - a project, or a category with the project
+     * still to pick. It is `session.new` with the place filled in, which is exactly why it is a
+     * second command: a place is a value, and the native menu can send an id and nothing more, so
+     * `Ctrl+N` and the File menu keep pointing at the bare one.
+     *
+     * A PROJECT row's command, and no longer a session row's. On a session row it drew a second
+     * "New session…" beside the one below, and the one below knows strictly more: the same project,
+     * plus the name and the agent of the session that was clicked.
+     */
     {
       id: 'session.newHere',
       title: 'New session…',
       target: 'renderer',
       windowScope: 'any',
-      surfaces: ['contextMenu', 'sessionsTree', 'sessionsTreeGroup'],
+      surfaces: ['sessionsTreeGroup'],
       contextMenuGroup: 1,
       carriesValue: true,
       terminalSafe: true,
     },
+    /*
+     * The three that start work BESIDE the session in front, and none of them starts it outright:
+     * every one opens the create card with what the clicked session already answers - its project,
+     * its name, and an agent - so the thing that arrives is a session of the tree with a number,
+     * not an unnamed plain tab.
+     *
+     * It made a plain tab until 2026-09-10, and was called `New blank session` for it. Nothing about
+     * it was blank except what it left out.
+     */
     {
-      id: 'session.newBlank',
-      title: 'New blank session',
+      id: 'session.newBeside',
+      title: 'New session',
       target: 'renderer',
       windowScope: 'any',
       surfaces: ['contextMenu', 'sessionsTree'],
@@ -395,6 +415,25 @@ export class AppCommands {
       contextMenuGroup: 1,
       terminalSafe: true,
     },
+    /*
+     * The other half of the pair above, and the one that is offered only where the session has
+     * ENDED: a resume brings that very session back - its number, its name, its colour, its note -
+     * where a fork branches its conversation into a new one. Over a RUNNING session a resume means
+     * nothing, and what somebody asking for one there means is the fork.
+     *
+     * It opens the same card as the fork, so the two are one screen apart rather than two menu items
+     * that cannot see each other. `Restart session` below is the live half of the same operation and
+     * the two are never drawn together.
+     */
+    {
+      id: 'session.resume',
+      title: 'Resume session',
+      target: 'renderer',
+      windowScope: 'any',
+      surfaces: ['contextMenu', 'sessionsTree'],
+      contextMenuGroup: 1,
+      terminalSafe: true,
+    },
     {
       id: 'session.restart',
       title: 'Restart session',
@@ -412,6 +451,14 @@ export class AppCommands {
       surfaces: ['contextMenu', 'sessionsTree'],
       contextMenuGroup: 1,
       terminalSafe: true,
+    },
+    {
+      id: 'session.commitSvn', title: 'Commit (SVN)…', target: 'renderer', windowScope: 'any',
+      surfaces: ['contextMenu', 'sessionsTree'], contextMenuGroup: 2, terminalSafe: true,
+    },
+    {
+      id: 'session.commitGit', title: 'Commit (Git)…', target: 'renderer', windowScope: 'any',
+      surfaces: ['contextMenu', 'sessionsTree'], contextMenuGroup: 2, terminalSafe: true,
     },
     {
       id: 'tab.openProjectFolder',

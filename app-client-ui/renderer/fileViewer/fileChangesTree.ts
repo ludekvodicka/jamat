@@ -23,10 +23,10 @@ interface MutableTreeNode {
 }
 
 export class FileChangesTree {
-  static of(entries: readonly FileChangeEntry[]): FileChangesTreeModel {
+  static of(entries: readonly FileChangeEntry[], compressDirectories = true): FileChangesTreeModel {
     const root = new Map<string, MutableTreeNode>()
     for (const entry of entries) FileChangesTree.add(root, entry)
-    const nodes = FileChangesTree.finish([...root.values()])
+    const nodes = FileChangesTree.finish([...root.values()], compressDirectories)
     const directoryKeys = new Set<string>()
     FileChangesTree.collectDirectories(nodes, directoryKeys)
     return {
@@ -57,16 +57,19 @@ export class FileChangesTree {
     }
   }
 
-  private static finish(nodes: readonly MutableTreeNode[]): FileChangesTreeNode[] {
+  private static finish(nodes: readonly MutableTreeNode[], compressDirectories: boolean): FileChangesTreeNode[] {
     return [...nodes]
       .sort(FileChangesTree.compare)
-      .map((node) => FileChangesTree.compress({
+      .map((node) => {
+        const finished = {
         key: node.key,
         label: node.label,
         kind: node.kind,
         entry: node.entry,
-        children: FileChangesTree.finish([...node.children.values()]),
-      }))
+        children: FileChangesTree.finish([...node.children.values()], compressDirectories),
+        }
+        return compressDirectories ? FileChangesTree.compress(finished) : finished
+      })
   }
 
   private static compress(node: FileChangesTreeNode): FileChangesTreeNode {

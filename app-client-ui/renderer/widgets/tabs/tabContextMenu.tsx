@@ -1,16 +1,9 @@
 import type {
-  ProjectBinding,
-} from '../../../../lib-orchestrator/projectManager/projectManagerApi.types'
-import type {
   SessionAgentId,
   SessionColorName,
   SessionOperation,
 } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
-import {
-  AppCommands,
-  type CommandDescriptor,
-  type NewSessionPlace,
-} from '../../../shared/commands'
+import { AppCommands, type CommandDescriptor } from '../../../shared/commands'
 import { PanelKeysConst } from '../../../shared/tabTransfer'
 import type { CommandRegistry } from '../../commands/commandRegistry'
 import { SessionCommandRun } from '../../commands/sessionCommandRun'
@@ -27,29 +20,18 @@ export type TabContextMenuPosition = ContextMenuPosition
  * question about the record, and a second derivation in a drawing surface is a copy that drifts.
  */
 export interface TabSessionFacts {
+  live: boolean
   agentId: SessionAgentId | null
   color: SessionColorName | null
   /** The directory to copy. `null` where there is nothing to copy, which is the default directory. */
   directoryPath: string | null
   /**
-   * The catalog project this session belongs to, or null where it belongs to none - an ad-hoc
-   * directory, or no directory at all. It is what a new session started from here is pre-bound to,
-   * so a session with none simply does not offer that item.
+   * Whether this session has stopped - ended or lost. `admits` cannot answer it: `restart` is
+   * admitted at both moments, and the two moments are two different menu items. Resume brings an
+   * ended session back; Restart replaces the process of a live one.
    */
-  launch: Extract<ProjectBinding, { kind: 'project' }> | null
+  ended: boolean
   admits: readonly SessionOperation[]
-}
-
-/**
- * The place a `session.newHere` opened from a SESSION names: that session's own project. Shared by
- * this menu and the sessions tree's, which ask the same question of the same facts.
- */
-export class TabSessionPlace {
-  static of(facts: TabSessionFacts): NewSessionPlace {
-    if (facts.launch === null)
-      throw new Error('A new session was asked for beside a session that belongs to no project')
-    return { kind: 'project', project: facts.launch }
-  }
 }
 
 /**
@@ -102,12 +84,7 @@ export function TabContextMenu(props: {
               props.commands.execute(id)
               return
             }
-            SessionCommandRun.at(
-              props.commands,
-              id,
-              sessionId,
-              props.facts === null ? null : TabSessionPlace.of(props.facts),
-            )
+            SessionCommandRun.at(props.commands, id, sessionId)
           },
           setColor: (color) => props.commands.execute('session.setColor', {
             color,
@@ -139,24 +116,31 @@ class TabContextMenuItems {
     const onSession = panelKey === PanelKeysConst.terminal && facts !== null
     const admits = (operation: SessionOperation): boolean =>
       facts !== null && facts.admits.includes(operation)
+    // The four below open the create card, and a card has to open somewhere: a session that names no
+    // directory - one the control API founded without one - has no place to hand it.
+    const placed = facts !== null && facts.directoryPath !== null
     return AppCommands.forSurface('contextMenu')
       // No admits gate on purpose: an ended or lost session is still renameable.
       .filter((descriptor) => descriptor.id !== 'session.details' || onSession)
       .filter((descriptor) => descriptor.id !== 'session.setColor' || onSession)
-      // No admits gate either: the launcher creates from scratch rather than beside this session,
-      // so what this one still allows says nothing. What it does need is a project to pre-bind to.
-      .filter((descriptor) => descriptor.id !== 'session.newHere'
-        || onSession && facts?.launch !== null && facts?.launch !== undefined)
-      .filter((descriptor) => descriptor.id !== 'session.newBlank'
-        || onSession && admits('newBeside'))
+      .filter((descriptor) => descriptor.id !== 'session.newBeside'
+        || onSession && placed && admits('newBeside'))
       // Only ever the OTHER agent: the one this tab already runs is not an alternative to itself.
       .filter((descriptor) => descriptor.id !== 'session.newInClaude'
-        || onSession && admits('newBeside') && facts?.agentId === 'codex')
+        || onSession && placed && admits('newBeside') && facts?.agentId === 'codex')
       .filter((descriptor) => descriptor.id !== 'session.newInCodex'
-        || onSession && admits('newBeside') && facts?.agentId === 'claude')
-      .filter((descriptor) => descriptor.id !== 'session.fork' || onSession && admits('fork'))
-      .filter((descriptor) => descriptor.id !== 'session.restart' || onSession && admits('restart'))
+        || onSession && placed && admits('newBeside') && facts?.agentId === 'claude')
+      .filter((descriptor) => descriptor.id !== 'session.fork'
+        || onSession && placed && admits('fork'))
+      // The same operation at two moments, and never both at once: over a session that has stopped
+      // the word is Resume and the card says what it will bring back, over a live one it is Restart.
+      .filter((descriptor) => descriptor.id !== 'session.resume'
+        || onSession && placed && admits('restart') && facts?.ended === true)
+      .filter((descriptor) => descriptor.id !== 'session.restart'
+        || onSession && admits('restart') && facts?.ended === false)
       .filter((descriptor) => descriptor.id !== 'session.compact' || onSession && admits('compact'))
+      .filter((descriptor) => (descriptor.id !== 'session.commitSvn' && descriptor.id !== 'session.commitGit')
+        || onSession && facts?.live === true && typeof params.remoteEndpointId !== 'string')
       .filter((descriptor) => descriptor.id !== 'tab.copyProjectFolder'
         || facts?.directoryPath !== null && facts?.directoryPath !== undefined)
       // A session and nothing else, the same gate the details dialog takes: a file viewer carries a

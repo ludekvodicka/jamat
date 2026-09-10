@@ -18,7 +18,7 @@ describe('app-client-ui/renderer/overlays/launcher/create/existingSessions', () 
 
   function state(): CreateScreenState {
     const opened = CreateScreenModel.opened(projectConst)
-    const index = CreateScreenModel.typesOf({ tabProfile: false, target: { kind: 'local' } }).findIndex((type) => type.kind === 'existing')
+    const index = CreateScreenModel.typesOf({ tabProfile: false, target: { kind: 'local' }, source: null }).findIndex((type) => type.kind === 'existing')
     const typed = CreateScreenModel.transition(opened.state, { input: 'chooseType', index })
     return CreateScreenModel.transition(typed.state, {
       input: 'existingSessionsLoaded',

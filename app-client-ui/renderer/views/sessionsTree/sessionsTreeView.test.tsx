@@ -1,3 +1,4 @@
+import { CommitOpenStore } from '../../versioning/commitOpenStore'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -29,6 +30,16 @@ import {
 } from './sessionsTreeView'
 
 describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
+  it('draws a red commit star for a clean session', async () => {
+    const snapshot = SessionsFixtures.mixed()
+    const sessionId = snapshot.sessions[0].sessionId
+    await mount({ ...snapshot, sessions: snapshot.sessions.map((info) => ({ ...info, vcs: undefined })) }, null,
+      { revision: 1, outbound: [], inbound: [] }, [], [sessionId])
+    const star = await screen.findByLabelText('Commit dialog open')
+    expect(star).toHaveClass('is-commit-open')
+    expect(star).toHaveTextContent('*')
+  })
+
   /** Every operation is recorded rather than performed, and every one answers the same way. */
   class Ports implements SessionsTreePorts, SnapshotStorePorts<SessionsSnapshot> {
     readonly calls: string[] = []
@@ -90,10 +101,6 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
       return this.record(`finalize:${sessionId}`)
     }
 
-    reopen(sessionId: string): Promise<IpcResult<SessionsOpResult>> {
-      return this.record(`reopen:${sessionId}`)
-    }
-
     remove(sessionId: string): Promise<IpcResult<SessionsOpResult>> {
       return this.record(`remove:${sessionId}`)
     }
@@ -142,6 +149,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     storedView: SessionsTabsView | null = null,
     initialRemote: RemoteConnectionsSnapshot = { revision: 1, outbound: [], inbound: [] },
     storedFilters: readonly SavedSessionsFilter[] = [],
+    commitSessionIds: string[] = [],
   ) {
     const ports = new Ports(snapshot)
     ports.storedView = storedView
@@ -154,19 +162,22 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     const onFinalizeAsk = vi.fn()
     const onFocusTerminal = vi.fn()
     const commands = new CommandRegistry()
-    /** What the shell would answer about any session: canned facts that admit everything. */
-    const sessionFacts = (_sessionId: string): TabSessionFacts | null => ({
-      agentId: 'claude',
-      color: null,
-      directoryPath: 'C:/Projects/NodeJs/AppJamatV3',
-      launch: {
-        kind: 'project',
-        categoryId: 'nodejs',
-        projectName: 'AppJamatV3',
-        projectPath: 'C:/Projects/NodeJs/AppJamatV3',
-      },
-      admits: ['newBeside', 'fork', 'restart', 'compact'],
-    })
+    /**
+     * What the shell would answer about any session: canned facts that admit everything, with the
+     * one thing the menu branches on read off the snapshot itself - a stopped session gets `Resume
+     * session` where a live one gets `Restart session`, and a canned `false` drew the wrong one.
+     */
+    const sessionFacts = (sessionId: string): TabSessionFacts | null => {
+      const life = snapshot.sessions.find((one) => one.sessionId === sessionId)?.life
+      return {
+        agentId: 'claude',
+        color: null,
+        directoryPath: 'C:/Projects/NodeJs/AppJamatV3',
+        live: life === 'live',
+        ended: life === 'ended' || life === 'lost',
+        admits: ['newBeside', 'fork', 'restart', 'compact'],
+      }
+    }
     const snapshotStore = new SnapshotStore<SessionsSnapshot>('The sessions snapshot', ports)
     stops.push(snapshotStore.start())
     let remote = initialRemote
@@ -211,6 +222,8 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     stops.push(remoteSnapshotStore.start())
     const marks = new SessionsMarksStore(snapshotStore, remoteSnapshotStore)
     stops.push(marks.start())
+    const commitOpen = new CommitOpenStore({ read: async () => ({ ok: true, value: { revision: 1, sessionIds: commitSessionIds } }), subscribe: () => () => undefined, reportError: vi.fn() })
+    stops.push(commitOpen.start())
     const activeTerminal = new ActiveTerminalStore()
     const tree = (
       <SessionsTreeView
@@ -224,6 +237,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
         commands={commands}
         sessionFacts={sessionFacts}
         marks={marks}
+          commitOpen={commitOpen}
         activeTerminal={activeTerminal}
         onLaunch={onLaunch}
         onOpenSettings={onOpenSettings}
@@ -1676,14 +1690,14 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
   // Every action, not only the confirmed ones: one that acts at once loses nothing by first showing
   // the session it is acting on.
   it('opens it for an action that acts on the first click too', async () => {
-    const { onOpenTerminal, container } = await mount(SessionsFixtures.mixed())
+    const { onOpenTerminal, container } = await mount(SessionsFixtures.setupOutcomes())
     showAll(container)
 
-    chooseSessionMenuAction(container, 's-lost', 'Rerun')
+    chooseSessionMenuAction(container, 's-failed', 'Retry setup')
 
     expect(onOpenTerminal.mock.calls).toEqual([[
-      { kind: 'local', sessionId: 's-lost' },
-      'WebJamatAdmin - Lost claude',
+      { kind: 'local', sessionId: 's-failed' },
+      'AppJamatV3 - Beta worktree',
       'preview',
     ]])
   })
@@ -1759,15 +1773,15 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
    * moved and answers `launch-pending`, in red, under the filter, for an action that worked.
    */
   it('fires one call per action while its own answer is still out', async () => {
-    const { ports, container } = await mount(SessionsFixtures.mixed())
+    const { ports, container } = await mount(SessionsFixtures.setupOutcomes())
     showAll(container)
     ports.hold()
 
-    chooseSessionMenuAction(container, 's-lost', 'Rerun')
-    await waitFor(() => expect(ports.calls).toEqual(['reopen:s-lost']))
-    chooseSessionMenuAction(container, 's-lost', 'Rerun')
+    chooseSessionMenuAction(container, 's-failed', 'Retry setup')
+    await waitFor(() => expect(ports.calls).toEqual(['retrySetup:s-failed']))
+    chooseSessionMenuAction(container, 's-failed', 'Retry setup')
 
-    expect(ports.calls).toEqual(['reopen:s-lost'])
+    expect(ports.calls).toEqual(['retrySetup:s-failed'])
 
     ports.release()
   })
@@ -1780,18 +1794,20 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
   it('keeps one operation failure while another one succeeds', async () => {
     const { ports, container } = await mount(SessionsFixtures.mixed())
     showAll(container)
-    ports.answers.set('reopen:s-lost', {
+    ports.answers.set('remove:s-lost', {
       ok: true,
       value: { ok: false, code: 'launch-pending', detail: 'a launch is already waiting' },
     })
 
-    chooseSessionMenuAction(container, 's-lost', 'Rerun')
+    chooseSessionMenuAction(container, 's-lost', 'Remove…')
+    fireEvent.click(actionNamed(container, 's-lost', 'Remove?'))
     await waitFor(() =>
       expect(container.querySelector('.jamat-sessions__error')?.textContent)
         .toContain('a launch is already waiting'))
 
-    chooseSessionMenuAction(container, 's-ended', 'Rerun')
-    await waitFor(() => expect(ports.calls).toContain('reopen:s-ended'))
+    chooseSessionMenuAction(container, 's-ended', 'Remove…')
+    fireEvent.click(actionNamed(container, 's-ended', 'Remove?'))
+    await waitFor(() => expect(ports.calls).toContain('remove:s-ended'))
 
     expect(container.querySelector('.jamat-sessions__error')?.textContent)
       .toContain('a launch is already waiting')
@@ -1908,29 +1924,21 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(ports.calls).toEqual([])
   })
 
-  /**
-   * And the tab that was showing it gets told. The panel reads no snapshot, so without this it goes
-   * on drawing the dead screen it was left with while the session runs behind it.
+  /*
+   * Bringing a stopped session back is `Resume session` since 2026-09-10, and it is a CATALOG
+   * command: this row names the session and stops there, and the card that command opens is what
+   * calls the library and tells the tab to attach again. The row's own operations - Finish, Remove,
+   * Retry setup - still act from here, which is why the tests above use one of those.
    */
-  it('reruns a lost session on the first click, and tells its tab to attach again', async () => {
-    const { ports, container, onRerunTerminal } = await mount(SessionsFixtures.mixed())
+  it('hands a stopped row to the resume command and calls the library for none of it', async () => {
+    const { ports, commands, container, onRerunTerminal } = await mount(SessionsFixtures.mixed())
+    const execute = vi.spyOn(commands, 'execute').mockReturnValue('handled')
+
     showAll(container)
+    chooseSessionMenuAction(container, 's-lost', 'Resume session')
 
-    chooseSessionMenuAction(container, 's-lost', 'Rerun')
-
-    expect(ports.calls).toEqual(['reopen:s-lost'])
-    await waitFor(() => expect(onRerunTerminal.mock.calls)
-      .toEqual([[{ kind: 'local', sessionId: 's-lost' }]]))
-  })
-
-  it('tells no tab anything when the rerun was refused', async () => {
-    const { ports, container, onRerunTerminal } = await mount(SessionsFixtures.mixed())
-    ports.answer = { ok: true, value: { ok: false, code: 'launch-pending', detail: 'waiting' } }
-    showAll(container)
-
-    chooseSessionMenuAction(container, 's-lost', 'Rerun')
-
-    await waitFor(() => expect(ports.calls).toEqual(['reopen:s-lost']))
+    expect(execute.mock.calls).toEqual([['session.resume', { sessionId: 's-lost' }]])
+    expect(ports.calls).toEqual([])
     expect(onRerunTerminal.mock.calls).toEqual([])
   })
 
@@ -1976,13 +1984,13 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
 
     fireEvent.click(labelled(container, '+ Session in AppJamatV3'))
 
-    const project = {
-      kind: 'project',
+    const binding = {
+      mode: 'project',
       categoryId: 'nodejs',
       projectName: 'AppJamatV3',
       projectPath: 'C:/Projects/NodeJs/AppJamatV3',
     }
-    expect(onLaunch.mock.calls).toEqual([[{ project }]])
+    expect(onLaunch.mock.calls).toEqual([[{ prefill: { binding } }]])
   })
 
   it('names only the category when the launch comes from a category row', async () => {

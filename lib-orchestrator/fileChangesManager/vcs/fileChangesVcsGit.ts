@@ -17,6 +17,7 @@ import type {
   FileChangesVcsContentResult,
   FileChangesVcsEntry,
   FileChangesVcsHistoryGroup,
+  FileChangesVcsStatus,
 } from './fileChangesVcs.types'
 
 interface GitHistoryHeader {
@@ -79,7 +80,7 @@ export class FileChangesVcsGit extends FileChangesVcsBase implements FileChanges
 
   async status(
     detection: FileChangesVcsDetection,
-  ): Promise<FileChangesVcsResult<readonly FileChangesVcsEntry[]>> {
+  ): Promise<FileChangesVcsResult<FileChangesVcsStatus>> {
     const outcome = await this.run(detection.root, [
       'status',
       '--porcelain=v1',
@@ -91,7 +92,7 @@ export class FileChangesVcsGit extends FileChangesVcsBase implements FileChanges
     ])
     if (!FileChangesVcsGit.succeeded(outcome))
       return { ok: false, detail: this.detailOf(outcome) }
-    return { ok: true, value: await this.parseStatus(detection, outcome.stdout) }
+    return { ok: true, value: { entries: await this.parseStatus(detection, outcome.stdout), externalRoots: [] } }
   }
 
   /**
@@ -104,6 +105,7 @@ export class FileChangesVcsGit extends FileChangesVcsBase implements FileChanges
   ): Promise<FileChangesVcsResult<{
     revision: string
     entries: readonly FileChangesVcsEntry[]
+    externalRoots: readonly string[]
   }>> {
     const verified = await this.run(detection.root, [
       'rev-parse', '--verify', '--end-of-options', `${baseRef}^{commit}`,
@@ -127,7 +129,8 @@ export class FileChangesVcsGit extends FileChangesVcsBase implements FileChanges
       ok: true,
       value: {
         revision,
-        entries: FileChangesVcsGit.mergeAgainstBase(againstBase, porcelain.value),
+        entries: FileChangesVcsGit.mergeAgainstBase(againstBase, porcelain.value.entries),
+        externalRoots: [],
       },
     }
   }

@@ -9,7 +9,7 @@ import type {
 } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import type { FileViewerDocument } from '../../../lib-orchestrator/fileViewer/fileViewerApi.types'
 import type { AppClientUiBridge } from '../../shared/appClientUiIpc'
-import { PanelSplitParams, type PanelSplitItem } from '../widgets/tabs/panelSplit'
+import { PanelSplitParams, type PanelSplitFileItem } from '../widgets/tabs/panelSplit'
 import { FileViewerPane } from './fileViewerPane'
 import type {
   FileChangesViewModel,
@@ -32,8 +32,8 @@ class FileViewerPaneHarness {
     }
   }
 
-  static item(document = FileViewerPaneHarness.document()): PanelSplitItem {
-    return { key: document.documentKey, title: document.name, source: document.source }
+  static item(document = FileViewerPaneHarness.document()): PanelSplitFileItem {
+    return { kind: 'file', key: document.documentKey, title: document.name, source: document.source }
   }
 
   static changes(): FileChangesViewModel {
@@ -122,6 +122,7 @@ class FileViewerPaneHarness {
       snapshotId: 'snapshot-checkpoint',
       sessionId: 'session-1',
       createdAt: 1,
+      externalRoots: [],
       source: {
         requested: 'checkpoint',
         selected: 'checkpoint',
@@ -256,7 +257,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
       return (
         <FileViewerPane
           key={item.key}
-          item={item}
+          item={item.kind === 'file' ? item : (() => { throw new Error('Expected file') })()}
           changes={FileViewerPaneHarness.changes()}
           workingTree={FileViewerPaneHarness.workingTree()}
           backPath={PanelSplitParams.backTargetOf(state)?.source.path ?? null}
@@ -320,6 +321,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
 
     fireEvent.click(await screen.findByRole('link', { name: 'Other' }))
     await waitFor(() => expect(onOpenItem).toHaveBeenCalledWith({
+      kind: 'file',
       key: 'key-b',
       title: 'b.md',
       source: linked.source,

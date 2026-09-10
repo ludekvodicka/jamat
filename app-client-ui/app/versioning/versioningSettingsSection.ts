@@ -10,6 +10,6 @@ export class VersioningSettingsSection {
     coerce: (value, report) => VersioningSettings.coerce(value, report),
     validate: (value) => VersioningSettings.isValid(value)
       ? null
-      : `versioning.mode must be one of ${VersioningSettings.modeOptionsConst.join(', ')}`,
+      : `versioning.mode must be one of ${VersioningSettings.modeOptionsConst.join(', ')}; an external diff tool needs an executable and quoted arguments containing %base and %mine`,
   }
 }

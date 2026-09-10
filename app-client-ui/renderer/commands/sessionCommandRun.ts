@@ -1,4 +1,4 @@
-import type { CommandId, NewSessionPlace } from '../../shared/commands'
+import type { CommandId } from '../../shared/commands'
 import type { CommandRegistry } from './commandRegistry'
 
 /**
@@ -14,18 +14,20 @@ import type { CommandRegistry } from './commandRegistry'
  */
 export class SessionCommandRun {
   /**
-   * Every command whose target is a session. `session.newHere` is in the list and takes a PLACE
-   * rather than an id: it opens the launcher pre-bound to the row's project and starts nothing.
+   * Every command whose target is a session. All of them take an id and nothing else: the one that
+   * took a PLACE, `session.newHere`, belongs to a project row now, and the row's own menu runs it.
    */
   private static readonly targetedConst: ReadonlySet<CommandId> = new Set<CommandId>([
-    'session.newHere',
     'session.details',
-    'session.newBlank',
+    'session.newBeside',
     'session.newInClaude',
     'session.newInCodex',
     'session.fork',
+    'session.resume',
     'session.restart',
     'session.compact',
+    'session.commitSvn',
+    'session.commitGit',
     'tab.openProjectFolder',
     'tab.copyProjectFolder',
     'session.copyReference',
@@ -36,25 +38,18 @@ export class SessionCommandRun {
     return SessionCommandRun.targetedConst.has(id)
   }
 
-  static at(
-    commands: CommandRegistry,
-    id: CommandId,
-    sessionId: string,
-    place: NewSessionPlace | null,
-  ): void {
+  static at(commands: CommandRegistry, id: CommandId, sessionId: string): void {
     switch (id) {
-      case 'session.newHere':
-        if (place === null)
-          throw new Error('A new session was asked for beside a session with no place')
-        commands.execute(id, { place })
-        return
       case 'session.details':
-      case 'session.newBlank':
+      case 'session.newBeside':
       case 'session.newInClaude':
       case 'session.newInCodex':
       case 'session.fork':
+      case 'session.resume':
       case 'session.restart':
       case 'session.compact':
+      case 'session.commitSvn':
+      case 'session.commitGit':
       case 'tab.openProjectFolder':
       case 'tab.copyProjectFolder':
       case 'session.copyReference':

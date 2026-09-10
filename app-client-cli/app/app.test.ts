@@ -18,6 +18,7 @@ import type {
   SessionsSnapshot,
 } from '../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type { AppConfig } from './appConfig'
+import type { CommitAsideRequest } from './commitAsideLauncher'
 import {
   AppClientCli,
   type AppClientCliClientPort,
@@ -169,6 +170,10 @@ class FakeCliClient implements AppClientCliClientPort {
 }
 
 class CliHarness {
+  readonly env: NodeJS.ProcessEnv = {}
+  readonly asideCalls: CommitAsideRequest[] = []
+  readonly writtenMessages: string[] = []
+  messageInput = 'Message from file\n\nDetails'
   readonly client = new FakeCliClient()
   readonly output: string[] = []
   configLoads = 0
@@ -207,6 +212,12 @@ class CliHarness {
 
   deps(signal?: AbortSignal): AppClientCliDeps {
     return {
+      env: this.env,
+      cwd: () => 'Q:/Apps/One',
+      readMessage: () => this.messageInput,
+      writeMessageFile: async (text) => { this.writtenMessages.push(text); return 'Q:/temp/message.txt' },
+      aside: { open: async (request) => { this.asideCalls.push(request); return { ok: true,
+        value: { kind: 'opened-aside', tool: request.vcs === 'svn' ? 'tortoisesvn' : 'tortoisegit', scope: request.scope, reason: request.reason } } } },
       loadConfig: () => {
         this.configLoads += 1
         return this.config
@@ -268,6 +279,61 @@ class CliHarness {
 }
 
 describe('app-client-cli/app/app', () => {
+  it('opens a native SVN dialog for --self with the proposed message, without invoking the fallback', async () => {
+    const harness = new CliHarness()
+    harness.env.JAMAT_V3_SESSION_ID = 'session-001'
+    harness.client.sessions[0] = { ...harness.client.sessions[0]!, life: 'live' }
+    expect(await new AppClientCli(['commit-svn-jamat', '--self', '--message-file', 'proposal.txt'], harness.deps()).run()).toBe(0)
+    expect(harness.client.requests).toMatchObject([{ operation: 'sessions.list' }, { operation: 'tabs.openCommit',
+      body: { session: { kind: 'sessionId', sessionId: 'session-001' }, vcs: 'svn', message: harness.messageInput } }])
+    expect(harness.asideCalls).toEqual([])
+  })
+
+  it.each(['unavailable', 'conflict', 'timeout', 'forbidden', 'operation-failed'] as const)('uses the aside only for discovery unavailable, not %s', async (code) => {
+    const harness = new CliHarness()
+    harness.discoveryError = { code, detail: 'Discovery refused' }
+    await new AppClientCli(['commit-svn-jamat', '--self', '--message', 'Český návrh\n\nBody'], harness.deps()).run()
+    if (code === 'unavailable') {
+      expect(harness.asideCalls).toMatchObject([{ vcs: 'svn', messageFile: 'Q:/temp/message.txt', reason: 'jamat-unavailable' }])
+      expect(harness.writtenMessages).toEqual(['Český návrh\n\nBody'])
+      expect(harness.parsedOutput()).toMatchObject({ ok: true, value: { kind: 'opened-aside', tool: 'tortoisesvn' } })
+    } else expect(harness.asideCalls).toEqual([])
+  })
+
+  it.each(['absent', 'ended'] as const)('opens TortoiseGit for an %s session and sends no commit operation', async (state) => {
+    const harness = new CliHarness()
+    if (state === 'absent') harness.client.sessions = []
+    expect(await new AppClientCli(['commit-git-jamat', '--session-id', 'session-001'], harness.deps()).run()).toBe(0)
+    expect(harness.asideCalls).toMatchObject([{ vcs: 'git', reason: 'session-not-open' }])
+    expect(harness.client.requests.map((request) => request.operation)).toEqual(['sessions.list'])
+  })
+
+  it('reports capability, listing and ambiguous selector failures without a fallback', async () => {
+    const old = new CliHarness()
+    old.descriptor.optionalOperations = []
+    expect(await new AppClientCli(['commit-svn-jamat', '--self'], old.deps()).run()).toBe(6)
+    expect(old.asideCalls).toEqual([])
+    const listing = new CliHarness()
+    listing.client.responseError = { code: 'unavailable', detail: 'List unavailable' }
+    expect(await new AppClientCli(['commit-svn-jamat', '--session-id', 'session-001'], listing.deps()).run()).toBe(6)
+    expect(listing.asideCalls).toEqual([])
+    const ambiguous = new CliHarness()
+    ambiguous.client.sessions.push({ ...ambiguous.client.sessions[0]!, sessionId: 'other' })
+    expect(await new AppClientCli(['commit-svn-jamat', '--number', '001'], ambiguous.deps()).run()).toBe(4)
+    expect(ambiguous.asideCalls).toEqual([])
+  })
+
+  it.each([
+    ['--self', '--session-id', 'one'], ['--self', '--config-dir', 'Q:/config'], ['--self', '--number', '001'],
+    ['--self', '--message', 'one', '--message-file', 'two'], ['--self', '--computer', 'remote'], ['--self', '--unknown'],
+    ['--self', '--message', 'x'.repeat(16_385)],
+  ])('rejects invalid commit arguments before discovery: %j', async (...args) => {
+    const harness = new CliHarness()
+    expect(await new AppClientCli(['commit-svn-jamat', ...args], harness.deps()).run()).toBe(2)
+    expect(harness.discoveries).toBe(0)
+    expect(harness.asideCalls).toEqual([])
+  })
+
   it('rejects unknown and command-specific arguments before config discovery', async () => {
     const unknown = new CliHarness()
     const wrongCommand = new CliHarness()

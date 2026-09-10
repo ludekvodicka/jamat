@@ -28,6 +28,7 @@ describe('app-client-ui/renderer/fileViewer/useWorkingTreeChanges', () => {
       snapshotId: id,
       sessionId,
       createdAt: 1,
+      externalRoots: [],
       source: { requested: source, selected: source, available: [source], fallbackReason: null },
       defaultBaseline: null,
       entries: [],

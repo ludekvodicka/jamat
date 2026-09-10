@@ -23,12 +23,15 @@ export class ServiceVersioningSettingsIpc extends ServiceIpcBase<
       'versioning:settings-get',
       () => this.configStore.readSection(VersioningSettingsSection.spec),
     )
-    this.register('versioning:settings-save', (_event, value) => this.save(value))
+    this.register('versioning:settings-save', (_event, value, field) => this.save(value, field))
     this.assertComplete(ServiceVersioningSettingsIpc.channelsConst)
   }
 
-  private save(value: VersioningSettingsValue): VersioningSettingsSaveResult {
-    const saved = this.configStore.saveSection(VersioningSettingsSection.spec, value)
+  private save(value: VersioningSettingsValue, field: keyof VersioningSettingsValue = 'mode'): VersioningSettingsSaveResult {
+    if (field !== 'mode' && field !== 'diffTool')
+      return { ok: false, code: 'invalid-section', detail: 'Unknown versioning setting' }
+    const current = this.configStore.readSection(VersioningSettingsSection.spec)
+    const saved = this.configStore.saveSection(VersioningSettingsSection.spec, { ...current, [field]: value[field] })
     if (saved.ok) return saved
     else if (saved.code === 'config-latched' || saved.code === 'invalid-section')
       return { ok: false, code: saved.code, detail: saved.detail }

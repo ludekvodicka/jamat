@@ -43,6 +43,7 @@ export type ProjectLaunch = Extract<ProjectBinding, { kind: 'project' }>
 
 /** Independent facts. None is ever folded into another, which is the whole point of listing them. */
 export interface SessionBadges {
+  commitOpen: boolean
   agentId: SessionAgentId | null
   worktree: WorktreeBadge | null
   /** A turn settled or a runtime exited while the person was looking somewhere else. */
@@ -229,10 +230,11 @@ export class SessionsTreeModel {
     marks: ReadonlySet<string>,
     previous: TreeResult | null,
     options: SessionsTreeBuildOptions = SessionsTreeModel.localOptions(),
+    commitOpen: ReadonlySet<string> = new Set(),
   ): TreeResult {
     if (snapshot.sessions.length === 0)
       return { nodes: [], emptyState: 'noSessions', fingerprints: new Map() }
-    const entries = snapshot.sessions.map((info) => SessionsTreeModel.entryOf(info, marks, options))
+    const entries = snapshot.sessions.map((info) => SessionsTreeModel.entryOf(info, marks, options, commitOpen))
     const matching = entries.filter((entry) => SessionsTreeModel.matches(entry, view))
     if (matching.length === 0)
       return { nodes: [], emptyState: 'noMatch', fingerprints: new Map() }
@@ -255,10 +257,12 @@ export class SessionsTreeModel {
     info: SessionInfo,
     marks: ReadonlySet<string>,
     options: SessionsTreeBuildOptions,
+    commitOpen: ReadonlySet<string>,
   ): SessionEntry {
     const target = SessionsTreeModel.targetOf(info.sessionId, options)
     const targetKey = TerminalTargetCodec.key(target)
     const badges: SessionBadges = {
+      commitOpen: options.target.kind === 'local' && commitOpen.has(info.sessionId),
       agentId: info.agent?.agentId ?? null,
       worktree: info.worktree
         ? {

@@ -64,7 +64,7 @@ describe('lib-orchestrator/fileChangesManager/vcs/fileChangesVcsGit', () => {
     const result = await vcs.status(detected!)
     expect(result).toEqual({
       ok: true,
-      value: [
+      value: { externalRoots: [], entries: [
         expect.objectContaining({
           repositoryPath: 'nested/changed.ts',
           status: 'modified',
@@ -76,7 +76,7 @@ describe('lib-orchestrator/fileChangesManager/vcs/fileChangesVcsGit', () => {
           status: 'renamed',
         }),
         expect.objectContaining({ repositoryPath: 'nested/new-file.ts', status: 'untracked' }),
-      ],
+      ] },
     })
     expect(runner.calls[1].args.at(-1)).toBe(':(literal)nested')
   })
@@ -107,6 +107,7 @@ describe('lib-orchestrator/fileChangesManager/vcs/fileChangesVcsGit', () => {
       ok: true,
       value: {
         revision: 'abcdef0123456789',
+        externalRoots: [],
         entries: [
           expect.objectContaining({ repositoryPath: 'nested/committed.ts', status: 'added' }),
           expect.objectContaining({

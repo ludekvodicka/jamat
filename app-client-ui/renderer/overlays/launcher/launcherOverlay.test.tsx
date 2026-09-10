@@ -170,7 +170,6 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
         discardWorktree: ProjectsStub.unused('discardWorktree'),
         retrySetup: ProjectsStub.unused('retrySetup'),
         fork: ProjectsStub.unused('fork'),
-        newBeside: ProjectsStub.unused('newBeside'),
         restart: ProjectsStub.unused('restart'),
         setColor: ProjectsStub.unused('setColor'),
         setDetails: ProjectsStub.unused('setDetails'),
@@ -424,11 +423,13 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
     stub.install()
     const intents = new LauncherIntentStore()
     intents.set({
-      project: {
-        kind: 'project',
-        categoryId: 'nodejs',
-        projectName: 'AppJamatV3',
-        projectPath: 'C:/Projects/NodeJs/AppJamatV3',
+      prefill: {
+        binding: {
+          mode: 'project',
+          categoryId: 'nodejs',
+          projectName: 'AppJamatV3',
+          projectPath: 'C:/Projects/NodeJs/AppJamatV3',
+        },
       },
     })
     const onClose = vi.fn()
@@ -1079,11 +1080,13 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
     new ProjectsStub().install()
     const intents = new LauncherIntentStore()
     intents.set({
-      project: {
-        kind: 'project',
-        categoryId: 'nodejs',
-        projectName: 'AppJamat',
-        projectPath: 'C:/Projects/NodeJs/AppJamat',
+      prefill: {
+        binding: {
+          mode: 'project',
+          categoryId: 'nodejs',
+          projectName: 'AppJamat',
+          projectPath: 'C:/Projects/NodeJs/AppJamat',
+        },
       },
     })
     const { opener, view } = hosted(intents)
@@ -1161,6 +1164,59 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
       fireEvent.keyDown(card(container), { key: 'ArrowRight' })
       fireEvent.keyDown(card(container), { key: 'Enter' })
     }
+
+    /** The card as a session's own menu opens it: on that session, under one of two words. */
+    async function openOnSession(mode: 'fork' | 'resume') {
+      new ProjectsStub().install()
+      const intents = new LauncherIntentStore()
+      intents.set({
+        prefill: {
+          binding: {
+            mode: 'project',
+            categoryId: 'nodejs',
+            projectName: 'AppJamatV3',
+            projectPath: 'C:/Projects/NodeJs/AppJamatV3',
+          },
+          name: 'the wire',
+          agentId: 'claude',
+          session: {
+            mode,
+            sessionId: 's-parent',
+            agentId: 'claude',
+            nativeSessionId: 'claude-1',
+            number: '014',
+            title: '014 - the wire',
+            tabTitle: 'AppJamatV3 - the wire',
+          },
+        },
+      })
+      const hostedView = hosted(intents)
+      await waitFor(() => expect(hostedView.view.container
+        .querySelector('.jamat-launcher-create')).toBeTruthy())
+      return hostedView
+    }
+
+    /*
+     * Continue/Fork says both its words, so the footer names the one Enter actually does - and only
+     * the fork half has a name to type, because only it founds a session still to be called
+     * something.
+     */
+    it('names what Enter does on the session the card was opened on', async () => {
+      const forking = await openOnSession('fork')
+
+      // `All` because the Agent row is that list's provider FILTER, and the session's own row is
+      // not filtered by it: the row is what the card is about, not one of the rows it looks through.
+      expect(chosen(forking.view.container)).toEqual(['Continue/Fork', 'All'])
+      expect(foot(forking.view.container)).toContain('Enter Fork')
+      expect(footKeys(forking.view.container)).toEqual(['Esc', '↑↓', '←→', 'Enter', 'N', 'Tab'])
+      forking.opener.remove()
+
+      const resuming = await openOnSession('resume')
+
+      expect(foot(resuming.view.container)).toContain('Enter Resume')
+      expect(footKeys(resuming.view.container)).toEqual(['Esc', '↑↓', '←→', 'Enter', 'Tab'])
+      resuming.opener.remove()
+    })
 
     function chooseCard(container: HTMLElement, title: string): void {
       const button = [...container.querySelectorAll<HTMLButtonElement>(

@@ -55,6 +55,20 @@ describe('lib-orchestrator/sessionManager/launch/launchPlanner', () => {
     expect(plan(record(), 'linux').command).toBe('/bin/zsh')
   })
 
+  it('exports the session and its controller after removing inherited Jamat variables', () => {
+    for (const value of [record(), record({ kind: 'agent', agent: { agentId: 'codex', launchMode: 'new' } })]) {
+      const launch = LaunchPlanner.plan(value, {
+        agentArgs: [],
+        environment: { PATH: 'x', JAMAT_CONFIG_DIR: 'old', JAMAT_V3_SESSION_ID: 'parent' },
+        controller: { configIdentity: 'cfg-1', channel: 'development' },
+      })
+      expect(launch.env).toEqual({
+        PATH: 'x', JAMAT_V3_SESSION_ID: 's1',
+        JAMAT_V3_SESSION_CONTROLLER: 'cfg-1', JAMAT_V3_SESSION_CHANNEL: 'development',
+      })
+    }
+  })
+
   it('falls back to a shell that exists when the environment names none', () => {
     expect(LaunchPlanner.plan(record(), { platform: 'win32', environment: {} }).command)
       .toBe('cmd.exe')
@@ -404,7 +418,8 @@ describe('lib-orchestrator/sessionManager/launch/launchPlanner', () => {
     const env = plan(record(), 'win32').env
     expect(env.PATH).toBe('/usr/bin')
     expect(env.PNPM_HOME).toBe('C:\\pnpm')
-    expect(Object.keys(env).filter((key) => key.startsWith('JAMAT'))).toEqual([])
+    expect(Object.keys(env).filter((key) => key.startsWith('JAMAT'))).toEqual(['JAMAT_V3_SESSION_ID'])
+    expect(env.JAMAT_V3_SESSION_ID).toBe('s1')
     expect(env.NODE_ENV).toBeUndefined()
     expect(env.NODE_PATH).toBeUndefined()
     expect(env.ELECTRON_RENDERER_URL).toBeUndefined()

@@ -5,6 +5,7 @@ import type {
   FileChangesWorkingTreeSource,
 } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import { IpcFailure } from '../ipc/ipcFailure'
+import type { AppClientUiBridge } from '../../shared/appClientUiIpc'
 import type { FileChangesWorkingTreeViewModel } from './fileViewerPanel.types'
 
 interface WorkingTreeReading {
@@ -23,12 +24,14 @@ export function useWorkingTreeChanges(
   sessionId: string,
   enabled: boolean,
   requiredSource?: FileChangesWorkingTreeSource,
+  reader?: AppClientUiBridge['fileChanges']['workingTree'],
 ): FileChangesWorkingTreeViewModel {
   const [selected, setSelected] = useState<FileChangesWorkingTreeSource | null>(null)
   const [readings, setReadings] = useState<Record<string, WorkingTreeReading>>({})
   const generations = useRef(new Map<string, number>())
   const desired = useRef(new Set<string>())
   const latestSnapshot = useRef<LatestWorkingTreeSnapshot | null>(null)
+  const previousReader = useRef(reader)
 
   const read = useCallback(async (
     source: FileChangesWorkingTreeSource | null,
@@ -48,7 +51,7 @@ export function useWorkingTreeChanges(
         error: null,
       },
     }))
-    const answer = await window.appClient.fileChanges.workingTree(sessionId, source)
+    const answer = await (reader ?? window.appClient.fileChanges.workingTree)(sessionId, source)
     if (generations.current.get(key) !== current || !desired.current.has(key)) return
     const refusal = IpcFailure.of(answer)
     if (refusal !== null) {
@@ -84,7 +87,7 @@ export function useWorkingTreeChanges(
       ...value,
       [key]: { sessionId, snapshot, loading: false, error: null },
     }))
-  }, [sessionId])
+  }, [sessionId, reader])
 
   const desiredKey = JSON.stringify({ sessionId, enabled, selected, requiredSource: requiredSource ?? null })
   useEffect(() => {
@@ -93,6 +96,8 @@ export function useWorkingTreeChanges(
     if (requiredSource !== undefined)
       sources.set(UseWorkingTreeChanges.keyOf(sessionId, requiredSource), requiredSource)
     const previous = desired.current
+    const readerChanged = previousReader.current !== reader
+    previousReader.current = reader
     const next = new Set(sources.keys())
     desired.current = next
     // A sidebar tab switch changes membership, not the sources in the intersection. Re-reading the
@@ -105,7 +110,7 @@ export function useWorkingTreeChanges(
       Object.entries(value).filter(([key]) => next.has(key)),
     ))
     for (const [key, source] of sources) {
-      if (!previous.has(key)) void read(source)
+      if (readerChanged || !previous.has(key)) void read(source)
     }
   }, [desiredKey, read])
 

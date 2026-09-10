@@ -1,6 +1,6 @@
 import { homedir } from 'node:os'
 
-import type { RuntimeLaunchSpec } from '../../../app-host/app/wire/hostWire.js'
+import type { RuntimeChannel, RuntimeLaunchSpec } from '../../../app-host/app/wire/hostWire.js'
 import { ChildEnvironment } from '../../shared/childEnvironment'
 import type {
   SessionDirectoryRef,
@@ -11,6 +11,7 @@ import type {
 import { AgentPresets } from './agentPresets'
 
 export interface LaunchPlanOptions {
+  controller?: { configIdentity: string; channel: RuntimeChannel }
   cols?: number
   rows?: number
   /**
@@ -50,6 +51,9 @@ export interface LaunchPlanOptions {
  * so everything the child will see is decided here.
  */
 export class LaunchPlanner {
+  static readonly sessionIdVariableConst = 'JAMAT_V3_SESSION_ID'
+  static readonly sessionControllerVariableConst = 'JAMAT_V3_SESSION_CONTROLLER'
+  static readonly sessionChannelVariableConst = 'JAMAT_V3_SESSION_CHANNEL'
   private static readonly defaultColsConst = 120
   private static readonly defaultRowsConst = 30
   /**
@@ -67,7 +71,14 @@ export class LaunchPlanner {
     const environment = options?.environment ?? process.env
     const common = {
       cwd: LaunchPlanner.cwdOf(record),
-      env: ChildEnvironment.withoutJamat(environment),
+      env: {
+        ...ChildEnvironment.withoutJamat(environment),
+        [LaunchPlanner.sessionIdVariableConst]: record.sessionId,
+        ...(options?.controller === undefined ? {} : {
+          [LaunchPlanner.sessionControllerVariableConst]: options.controller.configIdentity,
+          [LaunchPlanner.sessionChannelVariableConst]: options.controller.channel,
+        }),
+      },
       cols: options?.cols ?? LaunchPlanner.defaultColsConst,
       rows: options?.rows ?? LaunchPlanner.defaultRowsConst,
     }

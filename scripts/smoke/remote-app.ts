@@ -1666,6 +1666,7 @@ class SmokeRemoteAppPorts {
       open: (_sessionId, _tabTitle, _options) => Promise.resolve(
         SmokeRemoteAppPorts.tabRefusal(),
       ),
+      openCommit: async () => ({ ok: true, value: { kind: 'commit-opened', panelId: 'commit-panel', windowId: 'main', scopeRoot: 'Q:/app', messageApplied: true } }),
       openFile: (_sessionId, _tabTitle, _path, _options) => Promise.resolve(
         SmokeRemoteAppPorts.tabFileRefusal(),
       ),

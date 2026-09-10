@@ -449,6 +449,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       resumed,
       clock,
       lifecycle: wire(new SessionLifecycle({
+        controller: { configIdentity: 'controller-1', channel: 'development' },
         records: store,
         host: host.port,
         worktrees: worktrees.port,
@@ -628,8 +629,12 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       agent: { agentId: 'claude', mode: 'new' },
     })
     expect(context.store.get('id-1')?.agent)
-      .toEqual({ agentId: 'claude', launchMode: 'new', nativeSessionId: 'id-3' })
-    expect(launchOf(context.host.calls[0]).args.slice(-2)).toEqual(['--session-id', 'id-3'])
+      .toEqual({ agentId: 'claude', launchMode: 'new', nativeSessionId: 'id-1' })
+    expect(launchOf(context.host.calls[0]).args.slice(-2)).toEqual(['--session-id', 'id-1'])
+    expect(launchOf(context.host.calls[0]).env).toMatchObject({
+      JAMAT_V3_SESSION_ID: 'id-1', JAMAT_V3_SESSION_CONTROLLER: 'controller-1',
+      JAMAT_V3_SESSION_CHANNEL: 'development',
+    })
     expect(context.store.get('id-1')?.title)
       .toBe(`${basename(context.workDirectory)} (claude)`)
     expect(context.store.get('id-1')?.transcriptCwd).toBe(context.workDirectory)
@@ -1334,7 +1339,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       operation: 'create',
     }])
     expect(launchOf(callsNamed(context.host, 'runtime.create')[1]).args.slice(-2))
-      .toEqual(['--session-id', 'id-3'])
+      .toEqual(['--session-id', 'id-1'])
   })
 
   // The other half of the same replay: the effect landed and only the answer was lost. The fake Host
@@ -3184,7 +3189,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     })
   })
 
-  describe('forking a session, and starting one beside it', () => {
+  describe('forking a session', () => {
     /** Robust against the ComSpec wrap and against a yolo flag appended behind the mode flags. */
     function argsOf(context: Harness): string[] {
       return launchOf(callsNamed(context.host, 'runtime.create')[0]).args
@@ -3220,6 +3225,42 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       const args = argsOf(context)
       expect(args[args.indexOf('--resume') + 1]).toBe('native-1')
       expect(args).toContain('--fork-session')
+    })
+
+    /*
+     * The one thing a caller may say about a fork, because it is the one thing the record cannot:
+     * the card that asks for the fork lets the name be typed over first. The numbers around it stay
+     * this library's - a caller naming the whole title would be composing the pair itself.
+     */
+    it('takes a name over the parent’s and still composes the number pair', async () => {
+      const context = await harness()
+      context.numbers.token = '015'
+      await context.store.put(record('s1', {
+        kind: 'agent',
+        title: '007 - the wire',
+        agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'native-1' },
+        directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
+      }))
+
+      const forked = successOf(await context.lifecycle.forkFrom('s1', { name: '  the listener  ' }))
+
+      expect(context.store.get(forked.sessionId)?.title).toBe('007-015 - the listener')
+    })
+
+    // An empty name is a name: it says "no name", and the fork is then called by its numbers alone.
+    it('reads an empty name as no name rather than as the parent’s', async () => {
+      const context = await harness()
+      context.numbers.token = '015'
+      await context.store.put(record('s1', {
+        kind: 'agent',
+        title: '007 - the wire',
+        agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'native-1' },
+        directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
+      }))
+
+      const forked = successOf(await context.lifecycle.forkFrom('s1', { name: '' }))
+
+      expect(context.store.get(forked.sessionId)?.title).toBe('007-015')
     })
 
     it('gives a project fork without a parent number the new ordinary number', async () => {
@@ -3389,66 +3430,6 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       const args = launchOf(callsNamed(context.host, 'runtime.create')[0]).args
       expect(args.slice(-2)).toEqual(['--resume', 'native-2'])
       expect(args).not.toContain('--fork-session')
-    })
-
-    it('starts a plain tab beside a session, in the same directory and with no number', async () => {
-      const context = await harness()
-      await context.store.put(record('s1', {
-        kind: 'agent',
-        agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'native-1' },
-        directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
-      }))
-
-      const beside = successOf(await context.lifecycle.createBeside('s1', 'claude'))
-      const child = context.store.get(beside.sessionId)
-      expect(child?.presentation).toBe('tab')
-      expect(child?.agent?.agentId).toBe('claude')
-      expect(child?.agent?.launchMode).toBe('new')
-      // Claude is the one agent whose id can be chosen before the conversation exists, and a `new`
-      // launch gets one minted so this tab is resumable from its first second.
-      expect(child?.agent?.nativeSessionId).toEqual(expect.any(String))
-      expect(child?.agent?.forkParentId).toBeUndefined()
-      expect(child?.directory)
-        .toEqual({ mode: 'project', categoryId: 'c1', projectPath: projectRoot })
-      // A plain tab takes no number from the project; keeping it is what does that.
-      expect(context.numbers.calls).toEqual([])
-    })
-
-    it('starts the other agent beside this one', async () => {
-      const context = await harness()
-      await context.store.put(record('s1', {
-        kind: 'agent',
-        agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'native-1' },
-        directory: { mode: 'adHoc', path: context.workDirectory },
-      }))
-
-      const beside = successOf(await context.lifecycle.createBeside('s1', 'codex'))
-      expect(context.store.get(beside.sessionId)?.agent?.agentId).toBe('codex')
-    })
-
-    /**
-     * A worktree belongs to the one session it was cut for, so the new session lands in the project
-     * rather than in that checkout, and cuts none of its own.
-     */
-    it('leaves the worktree behind when it starts a session beside a worktree session', async () => {
-      const context = await harness()
-      await context.store.put(record('s1', {
-        kind: 'agent',
-        agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'native-1' },
-        directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
-        worktree: {
-          worktreePath: join(projectRoot, '.worktrees', 'alpha'),
-          branch: 'feature/alpha',
-          baseCommit: 'aa11bb22',
-          repositoryRoot: projectRoot,
-        },
-      }))
-
-      const beside = successOf(await context.lifecycle.createBeside('s1', 'claude'))
-      const child = context.store.get(beside.sessionId)
-      expect(child?.worktree).toBeUndefined()
-      expect(child?.directory)
-        .toEqual({ mode: 'project', categoryId: 'c1', projectPath: projectRoot })
     })
   })
 
@@ -4393,7 +4374,23 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         .toEqual(['--model', 'sonnet'])
     })
 
-    it('replays a create that never answered with the model still named', async () => {
+    /*
+     * The whole reason the setting is resolved into the record at create: the reader that draws the
+     * context window has the record and no way to reach a setting, and a Claude transcript states
+     * `claude-opus-5` for a session running on the million-token tier the launch asked for.
+     */
+    it('stores the model this machine is set to on the record it founds', async () => {
+      const context = await harness()
+      context.models.set('claude', 'claude-opus-5[1m]')
+
+      const sessionId = await created(context, 'claude')
+
+      expect(context.store.get(sessionId)?.agent?.model).toBe('claude-opus-5[1m]')
+    })
+
+    // The record is what a replay repeats, and a create resolved the setting into it: a record that
+    // names no model was founded without one, so its replay names none either.
+    it('replays a create with the model the record was founded on, not the setting', async () => {
       const context = await harness()
       context.models.set('claude', 'opus')
       await context.store.put(record('s1', {
@@ -4408,7 +4405,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       await context.lifecycle.reconcile(context.host.listing())
 
       expect(agentArgsOf(launchOf(callsNamed(context.host, 'runtime.create')[0])))
-        .toContain('--model')
+        .not.toContain('--model')
     })
 
     // The replay is whatever the interrupted operation was, so a pending reopen stays a reopen.

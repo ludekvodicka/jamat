@@ -211,7 +211,8 @@ class RemoteControlServerHarness {
           ok: true,
           value: { kind: 'opened', panelId: 'terminal:{}', windowId: 'main' },
         }),
-        openFile: async () => ({
+        openCommit: async () => ({ ok: true, value: { kind: 'commit-opened', panelId: 'commit-panel', windowId: 'main', scopeRoot: 'Q:/app', messageApplied: true } }),
+      openFile: async () => ({
           ok: true,
           value: {
             kind: 'file-opened',

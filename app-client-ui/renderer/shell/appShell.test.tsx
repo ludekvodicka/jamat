@@ -159,7 +159,10 @@ class AppClientStub {
   private readonly panelBySession = new Map<string, string>()
   /** What the tab menu's handlers asked for, and the answer this stub gives the one question. */
   readonly restarted: string[] = []
-  readonly forked: string[] = []
+  readonly reopened: string[] = []
+  /** Every session a tab was told to attach to again, in the order it was told. */
+  readonly restartsPublished: string[] = []
+  readonly forked: { sessionId: string; name?: string }[] = []
   readonly copied: string[] = []
   readonly referenced: string[] = []
   readonly remoteReferenced: string[] = []
@@ -279,6 +282,7 @@ class AppClientStub {
           return Promise.resolve({ ok: true as const, value: undefined })
         },
         publishTerminalRestarted: (targetKey) => {
+          this.restartsPublished.push(targetKey)
           this.tabsSessionRestarted?.(targetKey)
           return Promise.resolve({ ok: true as const, value: undefined })
         },
@@ -315,6 +319,15 @@ class AppClientStub {
         sectionActive: () => Promise.resolve({ ok: true as const, value: undefined }),
       },
       versioning: {
+        externalDiff: async () => { throw new Error('unused') },
+        openDraft: async () => { throw new Error('unused') },
+        openCommitTab: async () => { throw new Error('unused') },
+        commitFiles: async () => { throw new Error('unused') },
+        readCommit: async () => { throw new Error('unused') },
+        setCommitMessage: async () => { throw new Error('unused') },
+        runCommit: async () => { throw new Error('unused') },
+        closeCommit: async () => ({ ok: true, value: undefined }),
+        openCommitSessions: async () => ({ ok: true, value: { revision: 0, sessionIds: [] } }),
         getSettings: () => {
           throw new Error('No test of the shell reads the versioning settings')
         },
@@ -577,6 +590,7 @@ class AppClientStub {
         }),
       },
       onUiSettingsChanged: () => () => undefined,
+      onCommitChanged: () => () => undefined,
       onKeyboardSettingsChanged: () => () => undefined,
       onAgentSettingsChanged: () => () => undefined,
       onRateChanged: () => () => undefined,
@@ -794,12 +808,17 @@ class AppClientStub {
         return Promise.resolve({ ok: true as const, value: this.sessionsSnapshot })
       },
       create: refuse('create'),
-      historyReferences: refuse('historyReferences'),
-      openHistory: refuse('openHistory'),
-      reopen: () => Promise.resolve({
+      // Read whenever a card opens on Continue/Fork, which the two commands acting on a session
+      // now do: this project has nothing recorded, so the session's own row is the whole list.
+      historyReferences: () => Promise.resolve({
         ok: true as const,
-        value: { ok: true as const, value: undefined },
+        value: { ok: true as const, value: { references: [] } },
       }),
+      openHistory: refuse('openHistory'),
+      reopen: (sessionId: string) => {
+        this.reopened.push(sessionId)
+        return Promise.resolve({ ok: true as const, value: { ok: true as const, value: undefined } })
+      },
       finalize: () => Promise.resolve({
         ok: true as const,
         value: { ok: true as const, value: undefined },
@@ -813,8 +832,8 @@ class AppClientStub {
         })
       },
       promotePlain: refuse('promotePlain'),
-      fork: (sessionId: string) => {
-        this.forked.push(sessionId)
+      fork: (sessionId: string, options?: { name?: string }) => {
+        this.forked.push({ sessionId, ...(options?.name === undefined ? {} : { name: options.name }) })
         return Promise.resolve({
           ok: true as const,
           value: {
@@ -823,7 +842,6 @@ class AppClientStub {
           },
         })
       },
-      newBeside: refuse('newBeside'),
       restart: (sessionId: string) => {
         this.restarted.push(sessionId)
         return Promise.resolve({
@@ -2045,7 +2063,13 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     expect(client.asked).toEqual([])
   })
 
-  it('forks the session of the tab in front and opens a tab for what came back', async () => {
+  /*
+   * The commands that start work beside a session ask before they act, and this is the one whose
+   * answer only the library can compose: the card collects a name, the fork itself is the library's
+   * from the record. Nothing is forked until the card is submitted, and what the card opens on is
+   * Continue/Fork with that session standing as its chosen row.
+   */
+  it('opens the fork card on the session of the tab in front and forks what it names', async () => {
     const { client, view } = await mount({ sidebars: null, failed: false })
     AppShellTest.openSession(view.container, 'Alpha worktree')
     await waitFor(() => expect(view.container
@@ -2053,7 +2077,18 @@ describe('app-client-ui/renderer/shell/appShell', () => {
 
     client.run('session.fork')
 
-    await waitFor(() => expect(client.forked).toEqual(['s-working']))
+    await waitFor(() =>
+      expect(view.container.querySelector('.jamat-launcher-create')).toBeTruthy())
+    expect(client.forked).toEqual([])
+    // The session it would branch is the row the list stands on, and the name field opens holding
+    // that session's name.
+    expect(AppShellTest.launcherRow(view.container)).toBe('Alpha worktreethis sessionC')
+    expect(AppShellTest.launcherName(view.container)).toBe('Alpha worktree')
+
+    fireEvent.click(AppShellTest.launcherStart(view.container))
+
+    await waitFor(() =>
+      expect(client.forked).toEqual([{ sessionId: 's-working', name: 'Alpha worktree' }]))
     await waitFor(() => expect(view.container
       .querySelector('[aria-label="Terminal for session forked-1"]')).toBeTruthy())
   })
@@ -2141,9 +2176,63 @@ describe('app-client-ui/renderer/shell/appShell', () => {
 
     act(() => void commandsOf().execute('session.fork', { sessionId: 's-working' }))
 
-    await waitFor(() => expect(client.forked).toEqual(['s-working']))
+    await waitFor(() =>
+      expect(view.container.querySelector('.jamat-launcher-create')).toBeTruthy())
+    fireEvent.click(AppShellTest.launcherStart(view.container))
+
+    await waitFor(() =>
+      expect(client.forked).toEqual([{ sessionId: 's-working', name: 'Alpha worktree' }]))
     await waitFor(() => expect(view.container
       .querySelector('[aria-label="Terminal for session forked-1"]')).toBeTruthy())
+  })
+
+  /*
+   * The ended half of the same pair. It brings THAT session back rather than founding one, so what
+   * the card sends is an id: the session keeps its number, its name and its colour, and the tab that
+   * was left holding a dead screen is told to attach again before it is put in front.
+   */
+  it('opens the resume card on a stopped session and brings that session back', async () => {
+    const commandsOf = AppShellTest.captureCommands()
+    const { client, view } = await mount({ sidebars: null, failed: false })
+    await waitFor(() => expect(view.container.textContent).toContain('Lost claude'))
+
+    // The restart chain reopens lost sessions of its own accord, so what this test reads is what
+    // the CARD added: everything before the click belongs to the shell's own startup.
+    const before = { reopened: client.reopened.length, published: client.restartsPublished.length }
+    act(() => void commandsOf().execute('session.resume', { sessionId: 's-lost' }))
+
+    await waitFor(() =>
+      expect(view.container.querySelector('.jamat-launcher-create')).toBeTruthy())
+    expect(client.reopened.slice(before.reopened)).toEqual([])
+    // No name to type over: the card stands on the session it would bring back and asks nothing.
+    expect(view.container.querySelector('[aria-label="Session name"]')).toBeNull()
+    expect(AppShellTest.launcherRow(view.container)).toBe('Lost claudethis sessionC')
+
+    fireEvent.click(AppShellTest.launcherStart(view.container))
+
+    await waitFor(() => expect(client.reopened.slice(before.reopened)).toEqual(['s-lost']))
+    expect(client.restartsPublished.slice(before.published)).toEqual(['s-lost'])
+    await waitFor(() => expect(view.container
+      .querySelector('[aria-label="Terminal for session s-lost"]')).toBeTruthy())
+  })
+
+  /*
+   * The other three of that block. They start nothing themselves: what arrives is an ordinary create
+   * from the card, which is what makes it a session of the tree with a number rather than the
+   * unnamed plain tab this used to open.
+   */
+  it('opens the create card on the session a new-beside command names', async () => {
+    const commandsOf = AppShellTest.captureCommands()
+    const { view } = await mount({ sidebars: null, failed: false })
+    await waitFor(() => expect(view.container.textContent).toContain('Alpha worktree'))
+
+    act(() => void commandsOf().execute('session.newBeside', { sessionId: 's-working' }))
+
+    await waitFor(() =>
+      expect(view.container.querySelector('.jamat-launcher-create')).toBeTruthy())
+    // A fresh session in the same place: nothing is being acted on, so no row stands for one.
+    expect(AppShellTest.launcherRow(view.container)).toBeNull()
+    expect(AppShellTest.launcherName(view.container)).toBe('Alpha worktree')
   })
 
   /*
@@ -2200,6 +2289,28 @@ class AppShellTest {
 
   static color(index: number): string {
     return `#${index.toString(16).padStart(6, '0')}`
+  }
+
+  /** What the launcher's create card is holding in its name field. */
+  static launcherName(container: HTMLElement): string {
+    const input = container.querySelector('.jamat-launcher-create__name-input')
+    if (!(input instanceof HTMLInputElement))
+      throw new Error('The launcher drew no name field')
+    return input.value
+  }
+
+  /** The row Continue/Fork stands on, or null where the card is acting on no session at all. */
+  static launcherRow(container: HTMLElement): string | null {
+    const row = container.querySelector(
+      '.jamat-launcher-create__session-row.jamat-launcher__row--selected')
+    return row === null ? null : row.textContent
+  }
+
+  static launcherStart(container: HTMLElement): HTMLElement {
+    const button = container.querySelector('.jamat-launcher__start-button')
+    if (!(button instanceof HTMLElement))
+      throw new Error('The launcher drew no start button')
+    return button
   }
 
   /** The bar as a run of text per item, with the gap between the two groups read as an item too. */

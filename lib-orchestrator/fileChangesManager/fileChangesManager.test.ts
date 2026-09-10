@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { FileDiffComputer } from './diff/fileDiffComputer'
 import type { FileChangesVcs } from './vcs/fileChangesVcs.types'
 import { FileChangesManager } from './fileChangesManager'
-import type { FileChangesWorkingTreeSources } from './working/fileChangesWorkingTreeSources'
+import { FileChangesWorkingTreeSources } from './working/fileChangesWorkingTreeSources'
 
 describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
   const created: string[] = []
@@ -40,7 +40,7 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
         }
       },
       async status() {
-        return { ok: true, value: [{
+        return { ok: true, value: { externalRoots: [], entries: [{
           absolutePath: join(root, 'file.ts'),
           repositoryPath: 'file.ts',
           nodeKind: 'file',
@@ -48,7 +48,7 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
           previousAbsolutePath: null,
           previousRepositoryPath: null,
           gitState: { index: ' ', worktree: 'M' },
-        }] }
+        }] } }
       },
       async dirty() {
         return { ok: true, value: true }
@@ -87,6 +87,24 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
       logReaders: [{ agentId: 'codex', async load() { return [] } }],
     })
   }
+
+  it('reads main-only VCS baselines, distinguishes additions and binary content, and rejects expired tokens', async () => {
+    const root = cwd()
+    const adapter = vcs(root)
+    const instance = new FileChangesManager({ diffExecutor: new FileDiffComputer(), vcsAdapters: [adapter] })
+    const listed = await instance.list({ sessionId: 'session', cwd: root, agent: null })
+    if (!listed.ok) throw new Error(listed.detail)
+    const request = { snapshotId: listed.value.snapshotId, fileId: listed.value.entries[0]!.fileId, baselineId: listed.value.defaultBaseline!.baselineId }
+    expect(await instance.readBaseline(request)).toEqual(expect.objectContaining({ ok: true, kind: 'content', content: 'old\n' }))
+    adapter.readBaseline = async () => ({ kind: 'missing', detail: 'Added file' })
+    expect(await instance.readBaseline(request)).toEqual(expect.objectContaining({ ok: true, kind: 'missing' }))
+    adapter.readBaseline = async () => ({ kind: 'content', content: 'binary\0' })
+    expect(await instance.readBaseline(request)).toEqual(expect.objectContaining({ ok: true, kind: 'binary' }))
+    adapter.readBaseline = async () => ({ kind: 'content', content: 'text' })
+    writeFileSync(join(root, 'file.ts'), Buffer.from([255, 0]))
+    expect(await instance.readBaseline(request)).toEqual(expect.objectContaining({ ok: true, kind: 'binary' }))
+    expect(await instance.readBaseline({ ...request, snapshotId: 'expired' })).toEqual(expect.objectContaining({ ok: false, code: 'snapshot-expired' }))
+  })
 
   it('returns current entries, commit and default baseline tokens and builds their text diff', async () => {
     const root = cwd()
@@ -165,6 +183,8 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
     const root = cwd()
     const adapter = vcs(root)
     const detected = (await adapter.detect(root))!
+    const status = await adapter.status(detected)
+    if (!status.ok) throw new Error(status.detail)
     const workingSources = {
       read: async () => ({
         selection: {
@@ -179,7 +199,8 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
           baseline: adapter.defaultBaselineRef,
           baselineLabel: 'Checkpoint HEAD',
         },
-        entries: (await adapter.status(detected) as { ok: true; value: readonly never[] }).value,
+        entries: status.value.entries,
+        externalRoots: status.value.externalRoots,
         warnings: [],
       }),
     } as unknown as FileChangesWorkingTreeSources
@@ -214,6 +235,27 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
     })).toEqual(expect.objectContaining({ ok: true, kind: 'text' }))
   })
 
+  it('groups external file ids in the working snapshot', async () => {
+    const root = cwd()
+    const adapter = vcs(root)
+    const originalStatus = adapter.status.bind(adapter)
+    adapter.status = async (detection) => {
+      const status = await originalStatus(detection)
+      if (!status.ok) throw new Error(status.detail)
+      return { ok: true, value: { ...status.value, externalRoots: [root] } }
+    }
+    const managerInstance = new FileChangesManager({
+      diffExecutor: new FileDiffComputer(),
+      workingSources: new FileChangesWorkingTreeSources({
+        svn: adapter,
+        checkpointStore: { existingContextOf: async () => ({ ok: true, value: null }), worktreeBelongsToStore: async () => false },
+      }),
+    })
+    const result = await managerInstance.workingTree({ sessionId: 'session', cwd: root, agent: null, worktree: null }, 'svn')
+    if (!result.ok) throw new Error(result.detail)
+    expect(result.value.externalRoots).toEqual([{ path: root, displayPath: '', fileIds: result.value.entries.map((entry) => entry.fileId) }])
+  })
+
   it('builds untracked and deleted VCS files through the direct diff paths', async () => {
     const root = cwd()
     const addedPath = join(root, 'added.txt')
@@ -222,7 +264,7 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
     const adapter = vcs(root)
     adapter.status = async () => ({
       ok: true,
-      value: [
+      value: { externalRoots: [], entries: [
         {
           absolutePath: addedPath,
           repositoryPath: 'added.txt',
@@ -241,7 +283,7 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
           previousRepositoryPath: null,
           gitState: { index: ' ', worktree: 'D' },
         },
-      ],
+      ] },
     })
     adapter.readBaseline = async (_detection, repositoryPath) => repositoryPath === 'added.txt'
       ? { kind: 'missing', detail: 'not in HEAD' }

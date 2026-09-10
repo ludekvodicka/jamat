@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { readFile, stat } from 'node:fs/promises'
+import { lstat, readFile, stat } from 'node:fs/promises'
+import { relative } from 'node:path'
 
 import type { ProviderTranscriptRef } from '../projectManager/providerTranscriptView'
 import { ProviderTranscriptView } from '../projectManager/providerTranscriptView'
@@ -18,6 +19,7 @@ import type {
   FileChangesSnapshotResult,
   FileChangesWorkingTreeContext,
   FileChangesWorkingTreeSnapshotResult,
+  FileChangesWorkingTreeSnapshot,
   FileChangesWorkingTreeSource,
   FileChangesVcsDetection,
   FileDiffRequest,
@@ -67,6 +69,13 @@ export interface FileChangesManagerDeps {
   workingSources?: FileChangesWorkingTreeSources
 }
 
+export type FileChangesBaselineContentResult =
+  | { ok: true; kind: 'content'; content: string; label: string }
+  | { ok: true; kind: 'missing'; label: string }
+  | { ok: true; kind: 'binary'; detail: string }
+  | { ok: true; kind: 'unavailable'; detail: string }
+  | Extract<FileDiffResult, { ok: false }>
+
 export type FileChangesFileAccessResult =
   | {
     ok: true
@@ -76,6 +85,7 @@ export type FileChangesFileAccessResult =
       path: string
       nodeKind: FileChangeEntry['nodeKind']
       status: FileChangeEntry['status']
+      workingState?: SnapshotFile['workingState']
     }
   }
   | { ok: false; code: 'snapshot-expired' | 'unknown-file'; detail: string }
@@ -130,6 +140,12 @@ export class FileChangesManager {
     })
     const registry: FileRegistry = { ids: new Map(), files: new Map() }
     const entries = items.map((item) => this.publicEntry(item, item.absolutePath, registry))
+    for (const item of items) {
+      const file = registry.files.get(registry.ids.get(PathCompare.comparable(item.absolutePath))!)!
+      // Folder labels show the newest descendant; committing needs the node's own timestamp.
+      const stamp = await lstat(item.absolutePath).then((value) => Math.round(value.mtimeMs)).catch(() => null)
+      file.workingState = { modifiedAt: stamp, vcsEntry: item.repositoryPath !== null }
+    }
     const baselines = new Map<string, SnapshotBaseline>()
     const defaultBaseline = read.selected === null
       ? null
@@ -152,6 +168,11 @@ export class FileChangesManager {
         files: registry.files,
         baselines,
         source: read.selection,
+        externalRoots: read.externalRoots.map((path) => ({
+          path,
+          displayPath: relative(context.cwd, path).replace(/\\/g, '/'),
+          fileIds: entries.filter((entry) => PathCompare.isInside(path, entry.path)).map((entry) => entry.fileId),
+        })),
         defaultBaseline,
         entries,
         warnings,
@@ -187,7 +208,7 @@ export class FileChangesManager {
           detail: ErrorText.of(error),
         })),
       ])
-      if (status.ok) vcsEntries = status.value
+      if (status.ok) vcsEntries = status.value.entries
       else warnings.push(`${selection.selected.adapter.id} status: ${status.detail}`)
       if (history.ok) vcsGroups = history.value
       else warnings.push(`${selection.selected.adapter.id} history: ${history.detail}`)
@@ -240,6 +261,10 @@ export class FileChangesManager {
     return this.snapshots.nextPage(snapshotId, cursor)
   }
 
+  workingSnapshot(snapshotId: string): FileChangesWorkingTreeSnapshot | null {
+    return this.snapshots.workingSnapshot(snapshotId)
+  }
+
   fileAccess(snapshotId: string, fileId: string): FileChangesFileAccessResult {
     const found = this.snapshots.lookupFile(snapshotId, fileId)
     if (!found.ok) return found
@@ -251,8 +276,33 @@ export class FileChangesManager {
         path: found.file.currentPath,
         nodeKind: found.file.nodeKind,
         status: found.file.status,
+        ...(found.file.workingState === undefined ? {} : { workingState: found.file.workingState }),
       },
     }
+  }
+
+  async readBaseline(request: FileDiffRequest): Promise<FileChangesBaselineContentResult> {
+    const found = this.snapshots.lookupDiff(request.snapshotId, request.fileId, request.baselineId)
+    if (!found.ok) return found
+    if (found.file.nodeKind === 'directory')
+      return { ok: false, code: 'invalid-pair', detail: 'A directory has no text diff' }
+    const current = await FileChangesManager.currentContent(found.baselineFile.currentPath)
+    if (current.kind === 'unavailable') return { ok: true, kind: 'unavailable', detail: current.detail }
+    const text = FileChangesManager.currentText(current.content)
+    if (!text.ok) return { ok: true, kind: 'binary', detail: 'Working tree file is not UTF-8 text' }
+    if (found.baseline.kind === 'chat')
+      return { ok: false, code: 'invalid-pair', detail: 'External diffs require a VCS baseline' }
+    else if (found.baseline.kind !== 'vcs') throw new Error(`Unknown snapshot baseline: ${JSON.stringify(found.baseline)}`)
+    const selected = found.snapshot.selectedVcs
+    if (selected === null || found.baselineFile.repositoryPath === null)
+      return { ok: false, code: 'invalid-pair', detail: 'The VCS baseline has no repository path' }
+    const baseline = await selected.adapter.readBaseline(selected.detection, found.baselineFile.repositoryPath, found.baseline.ref)
+    if (baseline.kind === 'unavailable') return { ok: true, kind: 'unavailable', detail: baseline.detail }
+    else if (baseline.kind === 'missing') return { ok: true, kind: 'missing', label: found.baseline.public.label }
+    else if (baseline.kind === 'content') {
+      if (baseline.content.includes('\0')) return { ok: true, kind: 'binary', detail: 'Baseline file is binary' }
+      return { ok: true, kind: 'content', content: baseline.content, label: found.baseline.public.label }
+    } else throw new Error(`Unknown baseline content: ${JSON.stringify(baseline)}`)
   }
 
   async diff(

@@ -49,6 +49,19 @@ class WorkspacePanelsTestController {
 }
 
 describe('app-client-ui/renderer/shell/workspacePanels', () => {
+  it('adds a permanent commit to the terminal split and returns the independent cap refusal', async () => {
+    const controller = new WorkspacePanelsTestController()
+    const command: Extract<TabControlCommand, { kind: 'open-commit' }> = { kind: 'open-commit', requestId: 'commit', panelId: controller.panelId,
+      vcs: 'svn', scopeRoot: 'Q:/app', title: 'Commit SVN', messageApplied: true }
+    for (let i = 0; i < 8; i++) expect(await WorkspacePanels.tabControlResult(controller.asController(), { ...command, scopeRoot: `Q:/app/${i}` }))
+      .toEqual({ kind: 'commit-opened', panelId: controller.panelId })
+    const before = structuredClone(controller.params)
+    expect(await WorkspacePanels.tabControlResult(controller.asController(), command)).toMatchObject({ kind: 'failed', detail: expect.stringContaining('8 commit dialogs') })
+    expect(controller.params).toEqual(before)
+    expect(PanelSplitParams.of(controller.params).preview).toBeNull()
+    controller.key = 'fileViewer'
+    expect(await WorkspacePanels.tabControlResult(controller.asController(), command)).toMatchObject({ kind: 'failed', detail: expect.stringContaining('Not a terminal panel') })
+  })
   it('routes Back to the active split and leaves unrelated panel parameters intact', () => {
     const controller = new WorkspacePanelsTestController()
     controller.params = { sessionId: 'session-one', sidebar: { visible: true }, split: {
@@ -123,6 +136,7 @@ describe('app-client-ui/renderer/shell/workspacePanels', () => {
   it('returns the split cap refusal without changing the panel parameters', async () => {
     const controller = new WorkspacePanelsTestController()
     const items = Array.from({ length: PanelSplitParams.itemsMaxConst }, (_, index) => ({
+      kind: 'file' as const,
       key: `document-${index}`,
       title: `file-${index}.md`,
       source: {
@@ -188,6 +202,7 @@ describe('app-client-ui/renderer/shell/workspacePanels', () => {
 class WorkspacePanelsTest {
   static item(name: string) {
     return {
+      kind: 'file' as const,
       key: `document-${name}`,
       title: `${name}.md`,
       source: {

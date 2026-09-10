@@ -19,7 +19,6 @@ export class ServiceSessionsIpc extends ServiceIpcBase<typeof ServiceSessionsIpc
     'sessions:close-plain': true,
     'sessions:promote-plain': true,
     'sessions:fork': true,
-    'sessions:new-beside': true,
     'sessions:restart': true,
     'sessions:set-color': true,
     'sessions:set-details': true,
@@ -51,9 +50,8 @@ export class ServiceSessionsIpc extends ServiceIpcBase<typeof ServiceSessionsIpc
       this.sessions.discardPlainSession(sessionId))
     this.register('sessions:promote-plain', (_event, sessionId) =>
       this.sessions.promotePlainSession(sessionId))
-    this.register('sessions:fork', (_event, sessionId) => this.sessions.forkSession(sessionId))
-    this.register('sessions:new-beside', (_event, sessionId, agentId) =>
-      this.sessions.newSessionBeside(sessionId, agentId))
+    this.register('sessions:fork', (_event, sessionId, options) =>
+      this.sessions.forkSession(sessionId, options))
     this.register('sessions:restart', (_event, sessionId) =>
       this.sessions.restartSession(sessionId))
     this.register('sessions:set-color', (_event, sessionId, color) =>

@@ -135,6 +135,17 @@ describe('lib-orchestrator/remoteControl/remoteControlRequestValidation', () => 
       })
   })
 
+  it('requires an explicit commit VCS and a bounded proposal with no unknown fields', () => {
+    const valid = { protocol: RemoteControlConst.protocol, requestId: 'commit', operation: 'tabs.openCommit', operationId: 'open-commit',
+      body: { session: { kind: 'number', number: '001' }, vcs: 'svn', scope: 'shared', message: 'Subject\n\nBody' } }
+    expect(RemoteControlRequestValidation.parse(valid)).toEqual({ ok: true, request: valid })
+    for (const body of [{ ...valid.body, vcs: undefined }, { ...valid.body, vcs: 'hg' }, { ...valid.body, commit: true }, { ...valid.body, message: 'x'.repeat(65_537) }])
+      expect(RemoteControlRequestValidation.parse({ ...valid, body })).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+    expect(RemoteControlConst.optionalOperations).toContain('tabs.openCommit')
+    expect(RemoteControlConst.mutatingOperations).toContain('tabs.openCommit')
+    expect(RemoteControlRequestValidation.parse({ ...valid, operation: 'vcs.commit' }).ok).toBe(false)
+  })
+
   it('accepts sessions.transcript only as an exact read-only session request', () => {
     const valid = {
       protocol: RemoteControlConst.protocol,

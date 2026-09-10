@@ -84,6 +84,7 @@ import type {
   VersioningSettingsSaveResult,
   VersioningSettingsValue,
 } from './versioningSettings'
+import type { VersioningCommitDraftDto, VersioningCommitOpenResult, VersioningCommitOpenSessions, VersioningCommitRunRequest, VersioningCommitRunResult } from './versioningCommit'
 import type {
   ProjectSetupRead,
   ProjectSetupWrite,
@@ -289,14 +290,15 @@ export interface AppClientUiIpcInvokeMap {
   /** A plain tab becomes a session of the tree, and answers with the name its tab now takes. */
   'sessions:promote-plain': (sessionId: string) => SessionsOpResult<{ tabTitle: string }>
   /**
-   * The four operations derived from an existing session rather than described by the caller. The
-   * renderer names the session and the agent and nothing else: what forking or restarting MEANS is
-   * the library's, which is why none of these takes a `SessionCreateSpec`.
+   * The operations derived from an existing session rather than described by the caller. The
+   * renderer names the session and nothing else: what forking or restarting MEANS is the library's,
+   * which is why neither takes a `SessionCreateSpec`. The one exception is the fork's `name`, which
+   * the card asking for the fork lets somebody type over before anything starts - the number pair
+   * around it is still the library's to compose.
    */
-  'sessions:fork': (sessionId: string) => SessionsOpResult<{ sessionId: string; tabTitle: string }>
-  'sessions:new-beside': (
+  'sessions:fork': (
     sessionId: string,
-    agentId: SessionAgentId,
+    options?: { name?: string },
   ) => SessionsOpResult<{ sessionId: string; tabTitle: string }>
   'sessions:restart': (sessionId: string) => SessionsOpResult
   /** `null` is None. An unknown name is refused rather than stored. */
@@ -552,8 +554,18 @@ export interface AppClientUiIpcInvokeMap {
   /** Which section is on screen, so the main process can stop pinging for one that is not. */
   'debug:section-active': (section: DebugSectionId | null) => void
   'versioning:settings-get': () => VersioningSettingsValue
+  'versioning:commit-open-draft': (sessionId: string, vcs: FileChangesVcsId, scope: string | null) => VersioningCommitOpenResult
+  'versioning:commit-read': (draftId: string) => VersioningCommitDraftDto | null
+  'versioning:commit-files': (draftId: string) => FileChangesWorkingTreeSnapshotResult
+  'versioning:commit-external-diff': (request: FileDiffRequest) => import('./versioningCommit').VersioningExternalDiffResult
+  'versioning:commit-open-tab': (sessionId: string, vcs: FileChangesVcsId, scope?: string) => import('../../lib-orchestrator/remoteControl/remoteControlApi.types').RemoteControlStepResult<import('../../lib-orchestrator/remoteControl/remoteControlApi.types').RemoteControlTabOpenCommitDto>
+  'versioning:commit-set-message': (draftId: string, message: string) => boolean
+  'versioning:commit-run': (request: VersioningCommitRunRequest) => VersioningCommitRunResult
+  'versioning:commit-close': (draftId: string) => void
+  'versioning:commit-open-sessions': () => VersioningCommitOpenSessions
   'versioning:settings-save': (
     value: VersioningSettingsValue,
+    field?: keyof VersioningSettingsValue,
   ) => VersioningSettingsSaveResult
   'worktrees:settings-get': () => WorktreeSettingsValue
   'worktrees:settings-save': (
@@ -707,6 +719,7 @@ export interface AppClientUiIpcInvokeMap {
 }
 
 export interface AppClientUiIpcEventMap {
+  'versioning:commit-changed': () => void
   'menu:command': (commandId: BareCommandId) => void
   'app:error': (message: string) => void
   'window:changed': () => void
@@ -829,7 +842,6 @@ export const AppClientUiBridgeCallsConst = {
     closePlain: 'sessions:close-plain',
     promotePlain: 'sessions:promote-plain',
     fork: 'sessions:fork',
-    newBeside: 'sessions:new-beside',
     restart: 'sessions:restart',
     setColor: 'sessions:set-color',
     setDetails: 'sessions:set-details',
@@ -905,6 +917,15 @@ export const AppClientUiBridgeCallsConst = {
     sectionActive: 'debug:section-active',
   },
   versioning: {
+    openDraft: 'versioning:commit-open-draft',
+    readCommit: 'versioning:commit-read',
+    commitFiles: 'versioning:commit-files',
+    externalDiff: 'versioning:commit-external-diff',
+    openCommitTab: 'versioning:commit-open-tab',
+    setCommitMessage: 'versioning:commit-set-message',
+    runCommit: 'versioning:commit-run',
+    closeCommit: 'versioning:commit-close',
+    openCommitSessions: 'versioning:commit-open-sessions',
     getSettings: 'versioning:settings-get',
     saveSettings: 'versioning:settings-save',
   },
@@ -1006,6 +1027,7 @@ export const AppClientUiBridgeEventsConst = {
   onTabsTransferOut: 'tabs:transfer-out',
   onTabsControlCommand: 'tabs:control-command',
   onUiSettingsChanged: 'ui:settings-changed',
+  onCommitChanged: 'versioning:commit-changed',
   onKeyboardSettingsChanged: 'keyboard:settings-changed',
   onAgentSettingsChanged: 'agents:settings-changed',
   onRateChanged: 'rate:changed',

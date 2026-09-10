@@ -43,6 +43,7 @@ import { CreateScreenModel } from './create/createScreenModel'
 import type { FlowScreenEffect, FlowScreenInput, FlowScreenState } from './flows/flowScreenModel'
 import { FlowScreenModel } from './flows/flowScreenModel'
 import type { LauncherBinding } from './launcherBinding'
+import type { LauncherPrefill } from './launcherIntentStore'
 import type { LauncherRemoteTarget } from './launcherTarget'
 import type { LauncherEffect, LauncherInput, LauncherSort } from './projects/launcherModel'
 import type { ManageEffect, ManageInput } from './projects/manageModel'
@@ -69,11 +70,11 @@ export interface LauncherPorts {
   /** Back out of a flow: the create screen returns holding exactly what it was holding. */
   showCreate(options: CreateScreenState): void
   /**
-   * Where a session would run, decided on the first screen and answered by the overlay. `from` is
-   * what separates Enter from a double click in manage mode: the key points the row's actions at the
-   * cursor, the mouse opens the row.
+   * Where a session would run, decided on the first screen and answered by the overlay. `prefill`
+   * is what a SESSION row knew on top of that - the name, the agent, the conversation to fork - and
+   * it is absent whenever the place is all anybody said.
    */
-  chooseBinding(binding: LauncherBinding): void
+  chooseBinding(binding: LauncherBinding, prefill?: LauncherPrefill): void
   /** Which computer the rest of the card is about, answered by its first screen. */
   chooseComputer(target: LauncherRemoteTarget): void
   showProjects(): void
@@ -204,6 +205,10 @@ export class LauncherEffects {
       )
     else if (effect.effect === 'openHistory')
       return LauncherEffects.openHistory(effect.spec, ports)
+    else if (effect.effect === 'forkSession')
+      return LauncherEffects.forkSession(effect.sessionId, effect.name, ports)
+    else if (effect.effect === 'resumeSession')
+      return LauncherEffects.resumeSession(effect.sessionId, effect.tabTitle, ports)
     else if (effect.effect === 'openFlow') return ports.openFlow(effect.flowId, state)
     else if (effect.effect === 'back') return ports.showProjects()
     else
@@ -603,6 +608,57 @@ export class LauncherEffects {
       (code, detail) => ports.create({ input: 'submitFailed', code, detail }),
       ports,
     )
+  }
+
+  /**
+   * The one submit that names a session instead of a spec. What a fork IS stays the library's: this
+   * sends the id and the name that was typed over the parent's, and the number pair, the agent, the
+   * conversation and the directory are all read off the record on the other side.
+   */
+  private static async forkSession(
+    sessionId: string,
+    name: string,
+    ports: LauncherPorts,
+  ): Promise<void> {
+    const answer = await window.appClient.sessions.fork(sessionId, { name })
+    return LauncherEffects.openSessionResult(
+      answer,
+      false,
+      (code, detail) => ports.create({ input: 'submitFailed', code, detail }),
+      ports,
+    )
+  }
+
+  /**
+   * Bring one session back, which is the tree row's Rerun asked from the card: `reopen` resumes the
+   * conversation by id under the SAME record, so nothing is created and nothing is named here.
+   *
+   * The restart is published before the tab is drawn, for the panel that is already open on this
+   * session holding a terminal that has stopped: that is the one thing an open panel cannot work out
+   * for itself. A panel opened by the line after it attaches to the live runtime as it mounts.
+   */
+  private static async resumeSession(
+    sessionId: string,
+    tabTitle: string,
+    ports: LauncherPorts,
+  ): Promise<void> {
+    const onFailure = (code: string, detail: string, setup?: SessionSetupAgreement): void =>
+      ports.create({ input: 'submitFailed', code, detail, setup })
+    const answer = await window.appClient.sessions.reopen(sessionId)
+    if (!answer.ok) return onFailure('transport', answer.error)
+    if (!answer.value.ok)
+      return onFailure(answer.value.code, answer.value.detail, answer.value.setup)
+    const published = await window.appClient.tabs.publishTerminalRestarted(sessionId)
+    if (!published.ok) AppClientUiReport.error(`terminal restart not published: ${published.error}`)
+    const failure = await SessionTabOpener.open(
+      (id, title, options) => ports.openTerminal({ kind: 'local', sessionId: id }, title, options),
+      sessionId,
+      tabTitle,
+      { plain: false, closePlain: (id) => SessionTabOpener.closePlain(id) },
+    )
+    if (failure !== null) return onFailure('panel-open', failure)
+    ports.markHandedOff()
+    ports.close()
   }
 
   private static async openSessionResult(

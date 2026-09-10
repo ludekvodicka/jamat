@@ -43,12 +43,12 @@ export abstract class ServiceIpcBase<TChannels extends IpcChannelSet> {
    * of listeners. It lives here because two services beside each other held their own copy of it,
    * with the same WeakSet and almost the same comment, and a third would have copied one of them.
    */
-  protected watchSender(sender: WebContents, release: () => void): void {
+  protected watchSender(sender: WebContents, release: () => void, releaseOnNavigation = true): void {
     if (this.watched.has(sender)) return
     this.watched.add(sender)
     sender.on('destroyed', () => release())
     sender.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
-      if (isInPlace !== true && isMainFrame !== false) release()
+      if (releaseOnNavigation && isInPlace !== true && isMainFrame !== false) release()
     })
   }
 

@@ -455,7 +455,12 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     seedRecords(context, [
       recordOf(context, 'provenance', {
         kind: 'agent',
-        agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'native-1' },
+        agent: {
+          agentId: 'claude',
+          launchMode: 'new',
+          nativeSessionId: 'native-1',
+          model: 'claude-opus-5[1m]',
+        },
         directory: {
           mode: 'project',
           categoryId: 'code',
@@ -480,7 +485,14 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
 
     expect(await client.manager.transcriptContext('provenance')).toEqual({
       ok: true,
-      value: { agentId: 'claude', cwd: originalWorktree, nativeSessionId: 'native-1' },
+      value: {
+        agentId: 'claude',
+        cwd: originalWorktree,
+        nativeSessionId: 'native-1',
+        // The tier this session was founded on, which its transcript never states: the status bar
+        // draws a fifth of the window without it.
+        launchModel: 'claude-opus-5[1m]',
+      },
     })
     expect(await client.manager.workingContext('provenance')).toMatchObject({
       ok: true,
@@ -492,6 +504,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
         agentId: 'codex',
         cwd: join(context.root, 'legacy-cwd'),
         nativeSessionId: 'native-2',
+        launchModel: null,
       },
     })
   }, 20_000)
@@ -1683,6 +1696,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
           agentId: 'claude',
           cwd: transcriptCwd,
           nativeSessionId: 'native-provenance',
+          launchModel: null,
         },
       })
     })

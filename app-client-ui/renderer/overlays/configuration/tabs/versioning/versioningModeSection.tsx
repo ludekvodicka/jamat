@@ -1,18 +1,11 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useId } from 'react'
 
 import type { VersioningMode } from '../../../../../../lib-orchestrator/git/git.types'
 import { VersioningSettings } from '../../../../../shared/versioningSettings'
 import { ConfigurationSection } from '../../configurationSection'
 import type { ConfigurationTabProps } from '../../configurationTab.types'
 import './versioningSettings.css'
-import {
-  VersioningSettingsEffects,
-  type VersioningSettingsPorts,
-} from './versioningSettingsEffects'
-import {
-  VersioningSettingsModel,
-  type VersioningSettingsModelState,
-} from './versioningSettingsModel'
+import { useVersioningSettings } from './useVersioningSettings'
 
 /** What each mode does, in the two sentences somebody choosing between them actually needs. */
 const modeLabelsConst: Readonly<Record<VersioningMode, { title: string; detail: string }>> = {
@@ -34,42 +27,8 @@ const modeLabelsConst: Readonly<Record<VersioningMode, { title: string; detail: 
  * the `versioning` key; the VCS preference beside it writes its own.
  */
 export function VersioningModeSection(props: ConfigurationTabProps): React.JSX.Element {
-  const [start] = useState(() => VersioningSettingsModel.initial())
-  const [state, setState] = useState<VersioningSettingsModelState>(start.state)
-  const stateRef = useRef(start.state)
-  const reportedDirty = useRef(false)
-  const dirtyChange = useRef(props.onDirtyChange)
-  const mounted = useRef(true)
-  dirtyChange.current = props.onDirtyChange
+  const { state, dispatch, modified } = useVersioningSettings('mode', props.onDirtyChange)
   const selectId = useId()
-  useEffect(() => {
-    mounted.current = true
-    return () => { mounted.current = false }
-  }, [])
-  const [ports] = useState<VersioningSettingsPorts>(() => {
-    const self: VersioningSettingsPorts = {
-      dispatch: (input) => {
-        if (!mounted.current) return
-        const step = VersioningSettingsModel.transition(stateRef.current, input)
-        stateRef.current = step.state
-        setState(step.state)
-        const modified = VersioningSettingsModel.isModified(step.state)
-        if (modified !== reportedDirty.current) {
-          reportedDirty.current = modified
-          dirtyChange.current(modified)
-        }
-        for (const effect of step.effects)
-          void VersioningSettingsEffects.run(effect, self)
-      },
-    }
-    return self
-  })
-
-  useEffect(() => {
-    for (const effect of start.effects)
-      void VersioningSettingsEffects.run(effect, ports)
-  }, [ports, start.effects])
-
   const saving = state.saving !== null
   const mode = state.buffer?.mode ?? VersioningSettings.defaultModeConst
   return (
@@ -89,7 +48,7 @@ export function VersioningModeSection(props: ConfigurationTabProps): React.JSX.E
           id={selectId}
           disabled={state.buffer === null || saving}
           value={mode}
-          onChange={(event) => ports.dispatch({
+          onChange={(event) => dispatch({
             input: 'mode',
             value: event.currentTarget.value as VersioningMode,
           })}
@@ -104,13 +63,13 @@ export function VersioningModeSection(props: ConfigurationTabProps): React.JSX.E
           className="jamat-configuration__button"
           type="button"
           disabled={state.buffer === null || saving}
-          onClick={() => ports.dispatch({ input: 'reset' })}
+          onClick={() => dispatch({ input: 'reset' })}
         >Reset to default</button>
         <button
           className="jamat-configuration__button jamat-configuration__button--primary"
           type="button"
-          disabled={!VersioningSettingsModel.isModified(state) || saving}
-          onClick={() => ports.dispatch({ input: 'save' })}
+          disabled={!modified || saving}
+          onClick={() => dispatch({ input: 'save' })}
         >{saving ? 'Saving…' : 'Save'}</button>
       </div>
     </ConfigurationSection>

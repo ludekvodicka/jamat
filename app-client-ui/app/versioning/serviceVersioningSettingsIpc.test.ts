@@ -19,7 +19,7 @@ vi.mock('electron', () => ({
 }))
 
 describe('app-client-ui/app/versioning/serviceVersioningSettingsIpc', () => {
-  const storedConst: VersioningSettingsValue = { mode: 'checkpoints' }
+  const storedConst: VersioningSettingsValue = { mode: 'checkpoints', diffTool: { kind: 'internal' } }
   let answer: ConfigOpResult
   let written: VersioningSettingsValue[]
 
@@ -47,11 +47,11 @@ describe('app-client-ui/app/versioning/serviceVersioningSettingsIpc', () => {
 
   it('reads and writes only its config section', async () => {
     expect(await invoke('versioning:settings-get')).toEqual({ ok: true, value: storedConst })
-    expect(await invoke('versioning:settings-save', { mode: 'git' })).toEqual({
+    expect(await invoke('versioning:settings-save', { mode: 'git', diffTool: { kind: 'internal' } })).toEqual({
       ok: true,
       value: { ok: true },
     })
-    expect(written).toEqual([{ mode: 'git' }])
+    expect(written).toEqual([{ mode: 'git', diffTool: { kind: 'internal' } }])
   })
 
   it('returns a strict section refusal as domain data', async () => {
@@ -60,5 +60,11 @@ describe('app-client-ui/app/versioning/serviceVersioningSettingsIpc', () => {
       ok: true,
       value: { ok: false, code: 'invalid-section', detail: 'mode' },
     })
+  })
+
+  it('saves only the named field, preserving a mode changed since the diff section loaded', async () => {
+    const diffTool = { kind: 'external', command: 'tool', argumentTemplate: '%base %mine' }
+    await invoke('versioning:settings-save', { mode: 'git', diffTool }, 'diffTool')
+    expect(written).toEqual([{ mode: 'checkpoints', diffTool }])
   })
 })

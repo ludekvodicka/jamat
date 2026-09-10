@@ -22,6 +22,7 @@
   color: var(--color-text-4);
 }
 .jamat-configuration-versioning select,
+.jamat-configuration-versioning input,
 .jamat-configuration-versioning button {
   padding: 3px 10px;
   font: inherit;
@@ -29,6 +30,11 @@
   background: var(--color-surface-control-hover);
   border: 1px solid var(--color-border-frame);
   border-radius: var(--radius-control);
+}
+.jamat-configuration-diff-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
 }
 .jamat-configuration-versioning button {
   cursor: pointer;

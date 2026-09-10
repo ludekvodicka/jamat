@@ -3,11 +3,16 @@ import type {
 } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type { SessionManager } from '../../../lib-orchestrator/sessionManager/sessionManager'
 
-/** Everything a transcript reader needs to find one session's file, and nothing else. */
+/**
+ * Everything a transcript reader needs: where one session's file is, and what its launch asked the
+ * agent to run on. The second is not decoration - a Claude transcript records the bare model id and
+ * never the `[1m]` tier, so the reader that draws the context window learns it here or nowhere.
+ */
 export interface AgentSessionWorkingContext {
   agentId: SessionAgentId
   cwd: string
   nativeSessionId: string
+  launchModel: string | null
 }
 
 /**
@@ -48,6 +53,7 @@ export class AgentSessionContext {
         agentId: context.value.agentId,
         cwd: context.value.cwd,
         nativeSessionId: context.value.nativeSessionId,
+        launchModel: context.value.launchModel,
       },
     }
   }

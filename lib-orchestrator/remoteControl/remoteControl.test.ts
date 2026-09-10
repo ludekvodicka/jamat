@@ -160,6 +160,7 @@ function world(options?: {
         tabCalls.push({ method: 'open', args })
         return options?.tabOpen ?? successTab('opened')
       },
+      openCommit: async (...args) => { tabCalls.push({ method: 'openCommit', args }); return { ok: true, value: { kind: 'commit-opened', panelId: 'commit-panel', windowId: 'main', scopeRoot: 'Q:/app', messageApplied: true } } },
       openFile: async (...args) => {
         tabCalls.push({ method: 'openFile', args })
         return successFile(args[2])
@@ -320,6 +321,7 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
         session: { kind: 'sessionId', sessionId: 'session-1' },
         path: 'reports/report.md',
       }, 'op-5'),
+      request('tabs.openCommit', { session: { kind: 'sessionId', sessionId: 'session-1' }, vcs: 'svn', message: 'Proposed' }, 'op-commit'),
       request('tabs.focus', { panelId: 'terminal:{}' }, 'op-6'),
       request('tabs.close', { panelId: 'terminal:{}' }, 'op-7'),
       request('terminal.peek', { session: { kind: 'sessionId', sessionId: 'session-1' } }),
@@ -353,6 +355,7 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     expect(found.tabCalls.map((call) => call.method)).toEqual([
       'open',
       'openFile',
+      'openCommit',
       'focus',
       'close',
     ])
@@ -716,7 +719,8 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
       tabs: {
         list: async () => [],
         open: async () => successTab('opened'),
-        openFile: async (_sessionId, _tabTitle, path, _options) => successFile(path),
+        openCommit: async () => ({ ok: true, value: { kind: 'commit-opened', panelId: 'commit-panel', windowId: 'main', scopeRoot: 'Q:/app', messageApplied: true } }),
+      openFile: async (_sessionId, _tabTitle, path, _options) => successFile(path),
         focus: async () => successTab('focused-existing'),
         close: async () => successTab('closed'),
       },

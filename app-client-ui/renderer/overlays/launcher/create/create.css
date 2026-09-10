@@ -96,6 +96,16 @@
 .jamat-launcher-create__session-untitled {
   color: var(--color-text-3);
 }
+/* The row the card was opened on. It leads the list and is chosen there, and without a word saying
+   so it reads as one of the project's conversations that happened to sort first. */
+.jamat-launcher-create__session-mark {
+  margin-left: var(--space-2);
+  padding: 1px var(--space-2);
+  font-size: var(--fs-secondary);
+  color: var(--color-text-3);
+  background: var(--color-surface-sunken);
+  border-radius: var(--radius-control);
+}
 .jamat-launcher-create__session-live {
   width: 6px;
   height: 6px;

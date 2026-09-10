@@ -18,7 +18,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/versioni
     const saved: unknown[] = []
     ;(window as unknown as { appClient: BridgeStub }).appClient = {
       versioning: {
-        getSettings: () => Promise.resolve({ ok: true, value: { mode: 'git' } }),
+        getSettings: () => Promise.resolve({ ok: true, value: { mode: 'git', diffTool: { kind: 'internal' } } }),
         saveSettings: (value) => {
           saved.push(value)
           return Promise.resolve(answer.ok
@@ -49,7 +49,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/versioni
     expect(onDirtyChange).toHaveBeenCalledWith(true)
     await act(async () => { fireEvent.click(view.getByText('Save')) })
 
-    expect(saved).toEqual([{ mode: 'checkpoints' }])
+    expect(saved).toEqual([{ mode: 'checkpoints', diffTool: { kind: 'internal' } }])
     expect(onDirtyChange.mock.calls).toEqual([[true], [false]])
   })
 
@@ -86,7 +86,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/versioni
     let finish = (): void => undefined
     ;(window as unknown as { appClient: BridgeStub }).appClient = {
       versioning: {
-        getSettings: async () => ({ ok: true, value: { mode: 'git' } }),
+        getSettings: async () => ({ ok: true, value: { mode: 'git', diffTool: { kind: 'internal' } } }),
         saveSettings: () => new Promise((resolve) => {
           finish = () => resolve({
             ok: true,

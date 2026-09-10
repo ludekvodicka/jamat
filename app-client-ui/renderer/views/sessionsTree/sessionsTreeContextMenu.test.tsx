@@ -27,12 +27,8 @@ function factsOf(over: Partial<TabSessionFacts> = {}): TabSessionFacts {
     agentId: 'claude',
     color: null,
     directoryPath: 'C:/Projects/NodeJs/AppJamatV3',
-    launch: {
-      kind: 'project',
-      categoryId: 'nodejs',
-      projectName: 'AppJamatV3',
-      projectPath: 'C:/Projects/NodeJs/AppJamatV3',
-    },
+    ended: false,
+    live: over.ended !== true,
     admits: everyOperationConst,
     ...over,
   }
@@ -120,13 +116,14 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
       'Session properties…',
       // The launcher pre-bound to this session's project: it starts nothing by itself, which is why
       // it is above the three that do.
-      'New session…',
-      'New blank session',
+      'New session',
       // The other agent only: this session is already Claude's.
       'New session in Codex',
       'Fork session',
       'Restart session',
       'Compact session',
+      'Commit (SVN)…',
+      'Commit (Git)…',
       'Open project folder',
       'Copy project folder',
       'Copy unique session id',
@@ -157,7 +154,8 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
       'Session Appearance',
       'Session properties…',
       // Not gated on `admits` either: the launcher creates from scratch rather than beside this one.
-      'New session…',
+      'Commit (SVN)…',
+      'Commit (Git)…',
       'Open project folder',
       'Copy project folder',
       // Gated on nothing either, and the one item on this row a SECOND agent is meant to read: an
@@ -169,7 +167,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
   it('leaves out every session action the session does not admit, and keeps the rest', () => {
     render(<MenuHost commands={new CommandRegistry()} facts={{ admits: ['newBeside'] }} />)
 
-    expect(MenuView.titles()).toContain(titleOf('session.newBlank'))
+    expect(MenuView.titles()).toContain(titleOf('session.newBeside'))
     expect(MenuView.titles()).toContain(titleOf('session.newInCodex'))
     expect(MenuView.titles()).not.toContain(titleOf('session.fork'))
     expect(MenuView.titles()).not.toContain(titleOf('session.restart'))
@@ -178,15 +176,22 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
 
   it('moves every secondary tree operation into a final menu group and keeps Finish on the row', () => {
     const onAction = vi.fn()
+    // A row that offers a rerun is a row whose session has stopped, which is the same fact the
+    // catalog block reads to draw `Resume session` there instead of `Restart session`.
     render(<MenuHost
       commands={new CommandRegistry()}
+      facts={{ ended: true }}
       actions={['finalize', 'retrySetup', 'reopen', 'remove']}
       onAction={onAction}
     />)
 
     expect(MenuView.titles()).not.toContain('Finish')
     expect(MenuView.titles()).not.toContain('Restart session')
-    expect(MenuView.titles().slice(-3)).toEqual(['Retry setup', 'Rerun', 'Remove…'])
+    // Rerun left this block on 2026-09-10: bringing a stopped session back is `Resume session` in
+    // the catalog block above, and one operation under two names on one menu is what that block's
+    // own rule already forbade.
+    expect(MenuView.titles()).not.toContain('Rerun')
+    expect(MenuView.titles().slice(-2)).toEqual(['Retry setup', 'Remove…'])
     expect(MenuView.separators()).toHaveLength(3)
 
     fireEvent.click(MenuView.itemTitled('Remove…'))
@@ -203,37 +208,29 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
     expect(MenuView.titles()).toContain(titleOf('tab.openProjectFolder'))
   })
 
-  /**
-   * The pre-bound launcher needs a project to bind TO, and a session in an ad-hoc directory or in no
-   * directory at all belongs to none. Everything else about that row's menu is unchanged.
+  /*
+   * The four that open the create card need a place to open it ON. A session founded with no
+   * directory at all - which only the control API can do - has none, so the block is absent rather
+   * than drawn to refuse a moment later.
    */
-  it('leaves out the pre-bound launcher on a row that belongs to no project', () => {
-    render(<MenuHost commands={new CommandRegistry()} facts={{ launch: null }} />)
+  it('leaves out the whole start-beside block on a row with no directory', () => {
+    render(<MenuHost commands={new CommandRegistry()} facts={{ directoryPath: null }} />)
 
-    expect(MenuView.titles()).not.toContain(titleOf('session.newHere'))
-    expect(MenuView.titles()).toContain(titleOf('session.newBlank'))
+    expect(MenuView.titles()).not.toContain(titleOf('session.newBeside'))
+    expect(MenuView.titles()).not.toContain(titleOf('session.fork'))
+    // Still the whole point of the row: naming it and reading it ask nothing of a directory.
+    expect(MenuView.titles()).toContain(titleOf('session.details'))
   })
 
-  // The one item of this menu that names a place instead of the clicked session.
-  it('sends the row session’s project as the place of a new session', () => {
-    const commands = new CommandRegistry()
-    const execute = vi.spyOn(commands, 'execute')
-    render(<MenuHost commands={commands} />)
+  /*
+   * `session.newHere` belongs to a PROJECT row now. This menu's own "New session" knows the same
+   * project and the row's name and agent besides, so the two drawn together were one item twice.
+   */
+  it('leaves the project row’s pre-bound launcher out of a session row’s menu', () => {
+    render(<MenuHost commands={new CommandRegistry()} />)
 
-    fireEvent.click(MenuView.itemTitled(titleOf('session.newHere')))
-
-    expect(execute.mock.calls).toEqual([['session.newHere', {
-      place: {
-        kind: 'project',
-        project: {
-          kind: 'project',
-          categoryId: 'nodejs',
-          projectName: 'AppJamatV3',
-          projectPath: 'C:/Projects/NodeJs/AppJamatV3',
-        },
-      },
-    }]])
-    expect(MenuView.isOpen()).toBe(false)
+    expect(MenuView.titles()).not.toContain(titleOf('session.newHere'))
+    expect(MenuView.titles()).toContain(titleOf('session.newBeside'))
   })
 
   it('offers keeping the tab only on a plain-tab row', () => {

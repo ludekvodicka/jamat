@@ -10,6 +10,11 @@ import { app, net, safeStorage, type WebContents } from 'electron'
 import { ConfigStore } from '../../lib-orchestrator/configStore/configStore'
 import { FileChangesManager } from '../../lib-orchestrator/fileChangesManager/fileChangesManager'
 import { VcsStatusView } from '../../lib-orchestrator/fileChangesManager/vcsStatusView'
+import { GitCommitManager } from '../../lib-orchestrator/git/gitCommitManager'
+import { GitCheckpointStore } from '../../lib-orchestrator/git/gitCheckpointStore'
+import { GitInvoker } from '../../lib-orchestrator/git/gitInvoker'
+import { SvnCommitManager } from '../../lib-orchestrator/svn/svnCommitManager'
+import { SvnInvoker } from '../../lib-orchestrator/svn/svnInvoker'
 import type { FileChangesContext } from '../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import { FileViewer } from '../../lib-orchestrator/fileViewer/fileViewer'
 import { ProjectManager } from '../../lib-orchestrator/projectManager/projectManager'
@@ -49,6 +54,9 @@ import { FileChangesSettingsSection } from './fileChanges/fileChangesSettingsSec
 import { FileDiffWorker } from './fileChanges/diff/fileDiffWorker'
 import { ServiceFileChangesSettingsIpc } from './fileChanges/serviceFileChangesSettingsIpc'
 import { ServiceVersioningSettingsIpc } from './versioning/serviceVersioningSettingsIpc'
+import { ServiceVersioningCommitIpc } from './versioning/serviceVersioningCommitIpc'
+import { ExternalDiffLauncher } from './versioning/externalDiffLauncher'
+import { VersioningCommitManager } from './versioning/versioningCommitManager'
 import { ServiceWorktreeSettingsIpc } from './worktrees/serviceWorktreeSettingsIpc'
 import { VersioningSettingsSection } from './versioning/versioningSettingsSection'
 import { WorktreeSettingsSection } from './worktrees/worktreeSettingsSection'
@@ -147,6 +155,7 @@ export class AppHub {
     ServiceTerminalMenuIpc.channelsConst,
     ServiceDebugIpc.channelsConst,
     ServiceVersioningSettingsIpc.channelsConst,
+    ServiceVersioningCommitIpc.channelsConst,
     ServiceWorktreeSettingsIpc.channelsConst,
     ServiceFileChangesSettingsIpc.channelsConst,
     ServiceFileChangesIpc.channelsConst,
@@ -199,6 +208,8 @@ export class AppHub {
   private readonly terminalMenuIpc: ServiceTerminalMenuIpc
   private readonly debugIpc: ServiceDebugIpc
   private readonly versioningSettingsIpc: ServiceVersioningSettingsIpc
+  private readonly commits: VersioningCommitManager
+  private readonly versioningCommitIpc: ServiceVersioningCommitIpc
   private readonly worktreeSettingsIpc: ServiceWorktreeSettingsIpc
   private readonly fileChangesSettingsIpc: ServiceFileChangesSettingsIpc
   private readonly fileDiffWorker: FileDiffWorker
@@ -427,6 +438,28 @@ export class AppHub {
       configStore,
       workspaceOwnerIdOf,
     )
+    const commitGit = new GitInvoker()
+    const checkpointStore = new GitCheckpointStore(commitGit)
+    this.commits = new VersioningCommitManager({
+      sessions: this.sessions,
+      vcsStatus: new VcsStatusView(),
+      checkpointStore,
+      fileAccess: (owner, snapshot, file) => this.fileChangesIpc.ownedFileAccess(owner, snapshot, file),
+      snapshotOf: (owner, snapshot) => this.fileChangesIpc.ownedWorkingTreeSnapshot(owner, snapshot),
+      git: new GitCommitManager(commitGit),
+      svn: new SvnCommitManager({ svn: new SvnInvoker(), git: commitGit, checkpointStore }),
+      onChanged: () => this.broadcast('versioning:commit-changed'),
+    })
+    this.versioningCommitIpc = new ServiceVersioningCommitIpc(this.commits, workspaceOwnerIdOf, this.fileChangesIpc, async (sessionId, vcs, scope) => {
+      const info = this.sessions.snapshot().sessions.find((session) => session.sessionId === sessionId)
+      if (info?.life !== 'live') return { ok: false, error: { code: 'not-found', detail: 'The session is not live' } }
+      return this.tabControlBroker.openCommit(sessionId, info.tabTitle, vcs, scope ?? null, null, { plain: info.presentation === 'tab', showRefusal: true })
+    }, new ExternalDiffLauncher({
+      readBaseline: (request) => this.fileChanges.readBaseline(request),
+      fileAccess: (owner, snapshot, file) => this.fileChangesIpc.ownedFileAccess(owner, snapshot, file),
+      toolOf: () => configStore.readSection(VersioningSettingsSection.spec).diffTool,
+      reportError: (detail) => AppClientUiReport.error(detail),
+    }))
     this.terminalDetector = new TerminalDetector({
       workingContext: (sessionId) => this.sessions.workingContext(sessionId),
       // Names only. What an agent wrote about narrows which file a half-written token means, and it
@@ -437,6 +470,7 @@ export class AppHub {
       this.workspaceWindows,
       this.panelIndex,
       new TabFileOpenResolver(this.sessions, this.fileViewer, this.terminalDetector),
+      this.commits,
     )
     this.fileViewerIpc = new ServiceFileViewerIpc(
       this.fileViewer,
@@ -717,6 +751,7 @@ export class AppHub {
     this.terminalMenuIpc.initialize()
     this.debugIpc.initialize()
     this.versioningSettingsIpc.initialize()
+    this.versioningCommitIpc.initialize()
     this.worktreeSettingsIpc.initialize()
     this.fileChangesSettingsIpc.initialize()
     this.fileChangesIpc.initialize()
@@ -907,6 +942,7 @@ export class AppHub {
   }
 
   private workspaceWindowClosed(windowId: string): void {
+    this.commits.revokeOwner(windowId)
     this.visibleWorkspaceWindowIds.delete(windowId)
     this.transferBroker.rendererGone(windowId)
     this.tabControlBroker.rendererGone(windowId)

@@ -1,3 +1,4 @@
+import type { FileChangesVcsId } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import type { FileViewerDocument } from '../../../lib-orchestrator/fileViewer/fileViewerApi.types'
 import { DirectoryExplorer } from './directoryExplorer'
 import { FileChangesWidget } from './fileChangesWidget'
@@ -15,6 +16,7 @@ export function FileToolsSidebar(props: {
   selected: FileToolsTab
   changes: FileChangesViewModel
   workingTree: FileChangesWorkingTreeViewModel
+  onOpenCommit?(vcs: FileChangesVcsId): void
   onSelect(tab: FileToolsTab): void
   onOpenChanged(value: FileViewerChangedOpen): void
   onOpenDocument(document: FileViewerDocument): void
@@ -49,7 +51,14 @@ export function FileToolsSidebar(props: {
       </div>
       <div className="file-tools-body">
         {props.selected === 'workingTree'
-          ? <FileChangesTreeWidget model={props.workingTree} onOpen={props.onOpenChanged} />
+          ? <>
+              {props.onOpenCommit && (props.workingTree.selectedSource === 'svn' || props.workingTree.selectedSource === 'git') && <button type="button"
+                onClick={() => {
+                  const source = props.workingTree.selectedSource
+                  if (source === 'svn' || source === 'git') props.onOpenCommit?.(source)
+                }}>Commit…</button>}
+              <FileChangesTreeWidget model={props.workingTree} onOpen={props.onOpenChanged} />
+            </>
           : props.selected === 'fileChanges'
             ? <FileChangesWidget model={props.changes} onOpen={props.onOpenChanged} />
           : props.selected === 'directoryExplorer'

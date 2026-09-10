@@ -16,6 +16,7 @@ export type VersioningSettingsModelState = SettingsCardState<VersioningSettingsV
 export type VersioningSettingsInput =
   | SettingsCardInput<VersioningSettingsValue>
   | { input: 'mode'; value: VersioningMode }
+  | { input: 'diffTool'; value: VersioningSettingsValue['diffTool'] }
 
 export type VersioningSettingsEffect = SettingsCardEffect<VersioningSettingsValue>
 
@@ -33,24 +34,25 @@ export class VersioningSettingsModel {
     return SettingsCard.initial()
   }
 
-  static isModified(state: VersioningSettingsModelState): boolean {
-    return SettingsCard.isModified(state, (loaded, buffer) => loaded.mode === buffer.mode)
+  static isModified(state: VersioningSettingsModelState, field: keyof VersioningSettingsValue = 'mode'): boolean {
+    return SettingsCard.isModified(state, (loaded, buffer) => JSON.stringify(loaded[field]) === JSON.stringify(buffer[field]))
   }
 
   static transition(
     state: VersioningSettingsModelState,
     input: VersioningSettingsInput,
+    field: keyof VersioningSettingsValue = 'mode',
   ): VersioningSettingsStep {
     const shared = SettingsCard.transition<VersioningSettingsValue, VersioningSettingsEffect>(
       state,
       input,
-      (buffer) => ({ ...buffer, ...VersioningSettings.defaultValue() }),
+      (buffer) => ({ ...buffer, [field]: VersioningSettings.defaultValue()[field] }),
     )
     if (shared !== null) return shared
-    if (input.input === 'mode')
+    if (input.input === 'mode' || input.input === 'diffTool')
       return state.buffer === null
         ? SettingsCard.step(state)
-        : SettingsCard.step({ ...state, buffer: { ...state.buffer, mode: input.value } })
+        : SettingsCard.step({ ...state, buffer: { ...state.buffer, [input.input]: input.value } })
     else
       throw new Error(`Unknown versioning settings input: ${JSON.stringify(input)}`)
   }

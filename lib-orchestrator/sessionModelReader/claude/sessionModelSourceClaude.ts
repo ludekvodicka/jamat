@@ -6,7 +6,7 @@ import { ClaudeConfigHome } from '../../shared/claudeConfigHome'
 import { ErrorText } from '../../shared/errorText'
 import { FileTail } from '../../shared/fileTail'
 import type { SessionModelReading } from '../sessionModelReaderApi.types'
-import { SessionModelSource } from '../sessionModelSource'
+import { type SessionModelContext, SessionModelSource } from '../sessionModelSource'
 import { ClaudeContextWindows } from './claudeContextWindows'
 import { ClaudeSettingsCascade } from './claudeSettingsCascade'
 
@@ -36,14 +36,21 @@ export class SessionModelSourceClaude extends SessionModelSource {
   }
 
   /**
-   * The effort AND the context window are three settings files, and none of them is the transcript
-   * the key is taken from: both would freeze at what they were when the transcript last moved.
+   * The effort AND the context window come from outside the transcript the key is taken from - three
+   * settings files and the model this session was launched with - so both would otherwise freeze at
+   * what they were when the transcript last moved.
    */
-  override async cacheSaltOf(cwd: string): Promise<string> {
-    return JSON.stringify(await ClaudeSettingsCascade.readingOf(cwd, this.claudeHome))
+  override async cacheSaltOf(context: SessionModelContext): Promise<string> {
+    return JSON.stringify([
+      context.launchModel,
+      await ClaudeSettingsCascade.readingOf(context.cwd, this.claudeHome),
+    ])
   }
 
-  async read(ref: ProviderTranscriptRef, cwd: string): Promise<SessionModelReading> {
+  async read(
+    ref: ProviderTranscriptRef,
+    context: SessionModelContext,
+  ): Promise<SessionModelReading> {
     let turn: ClaudeTurn | null
     try {
       turn = SessionModelSourceClaude.scan(
@@ -58,13 +65,19 @@ export class SessionModelSourceClaude extends SessionModelSource {
       return { kind: 'none', reason: `transcript unreadable: ${ErrorText.of(error)}` }
     }
     if (turn === null) return { kind: 'none', reason: 'no real assistant turn in the transcript tail' }
-    const settings = await ClaudeSettingsCascade.readingOf(cwd, this.claudeHome)
+    const settings = await ClaudeSettingsCascade.readingOf(context.cwd, this.claudeHome)
     return { kind: 'ok', info: {
       model: turn.model,
       modelLabel: ClaudeContextWindows.labelOf(turn.model),
       effortLevel: settings.effortLevel,
       contextTokens: turn.tokens,
-      contextWindow: ClaudeContextWindows.windowOf(turn.model, settings.model),
+      // The launch WINS over the settings files rather than falling through to them: `--model` is
+      // what the agent was actually started with, so a launch that named a model without a tier is
+      // evidence that the settings file's tier is not what this session runs on. It is also the only
+      // source there is on a machine that configures the model in this app instead of in Claude's
+      // own settings, which is where a million-token session was drawn as a fifth of itself.
+      contextWindow: ClaudeContextWindows.windowOf(
+        turn.model, context.launchModel ?? settings.model),
     } }
   }
 

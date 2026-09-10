@@ -10,7 +10,7 @@ import {
   type ContextMenuEntry,
   type ContextMenuPosition,
 } from '../../widgets/contextMenu'
-import { type TabSessionFacts, TabSessionPlace } from '../../widgets/tabs/tabContextMenu'
+import type { TabSessionFacts } from '../../widgets/tabs/tabContextMenu'
 import { type SessionAction, SessionNodeState } from './sessionNodeState'
 
 /**
@@ -65,10 +65,10 @@ class SessionsTreeMenuItems {
     onAction: (action: SessionAction) => void,
   ): readonly ContextMenuEntry[] {
     const commandItems = CommandMenuEntries.of(
-      SessionsTreeMenuItems.applicable(facts, plainTab, actions),
+      SessionsTreeMenuItems.applicable(facts, plainTab),
       facts.color,
       {
-        run: (id) => SessionsTreeMenuItems.run(commands, id, sessionId, facts),
+        run: (id) => SessionsTreeMenuItems.run(commands, id, sessionId),
         setColor: (color) => commands.execute('session.setColor', { color, sessionId }),
       },
     )
@@ -87,8 +87,10 @@ class SessionsTreeMenuItems {
   ): readonly ContextMenuEntry[] {
     const items: ContextMenuEntry[] = []
     for (const action of actions) {
-      if (action === 'finalize') continue
-      else if (action === 'reopen' || action === 'retrySetup' || action === 'remove')
+      // Finish is the row's own button, and Rerun is `Resume session` in the block above since
+      // 2026-09-10: the catalog item opens the card that says what it will bring back.
+      if (action === 'finalize' || action === 'reopen') continue
+      else if (action === 'retrySetup' || action === 'remove')
         items.push({
           key: `tree-${action}`,
           label: action === 'remove' ? 'Remove…' : SessionNodeState.actionLabelOf(action),
@@ -103,28 +105,32 @@ class SessionsTreeMenuItems {
   private static applicable(
     facts: TabSessionFacts,
     plainTab: boolean,
-    actions: readonly SessionAction[],
   ): readonly CommandDescriptor[] {
     const admits = (operation: SessionOperation): boolean => facts.admits.includes(operation)
+    // The four that open the create card need a place to open it on, which a session founded with no
+    // directory at all does not have.
+    const placed = facts.directoryPath !== null
     return AppCommands.forSurface('sessionsTree')
       // No gate on details, setColor or openProjectFolder: renaming and colouring ask nothing of
       // the runtime, so an ended or lost session keeps both, and the folder tab needs only the
       // session the row already is.
-      // The launcher creates from scratch rather than beside this session, so `admits` says nothing
-      // about it either; what it needs is a project to pre-bind to.
-      .filter((descriptor) => descriptor.id !== 'session.newHere' || facts.launch !== null)
-      .filter((descriptor) => descriptor.id !== 'session.newBlank' || admits('newBeside'))
+      .filter((descriptor) => descriptor.id !== 'session.newBeside'
+        || placed && admits('newBeside'))
       // Only ever the OTHER agent: the one this session already runs is not an alternative to itself.
       .filter((descriptor) => descriptor.id !== 'session.newInClaude'
-        || admits('newBeside') && facts.agentId === 'codex')
+        || placed && admits('newBeside') && facts.agentId === 'codex')
       .filter((descriptor) => descriptor.id !== 'session.newInCodex'
-        || admits('newBeside') && facts.agentId === 'claude')
-      .filter((descriptor) => descriptor.id !== 'session.fork' || admits('fork'))
-      // A live row gets the stop-and-reopen command. An ended row appends the same capability below
-      // as Rerun, so drawing the catalog item there would offer one operation twice under two names.
+        || placed && admits('newBeside') && facts.agentId === 'claude')
+      .filter((descriptor) => descriptor.id !== 'session.fork' || placed && admits('fork'))
+      // A live row gets the stop-and-reopen command; an ended row gets the card that brings it back.
+      // Never both: it is one operation asked at two moments, and Rerun - the row action that used
+      // to be the ended half - left the block below when Resume arrived.
+      .filter((descriptor) => descriptor.id !== 'session.resume'
+        || placed && admits('restart') && facts.ended)
       .filter((descriptor) => descriptor.id !== 'session.restart'
-        || admits('restart') && !actions.includes('reopen'))
+        || admits('restart') && !facts.ended)
       .filter((descriptor) => descriptor.id !== 'session.compact' || admits('compact'))
+      .filter((descriptor) => (descriptor.id !== 'session.commitSvn' && descriptor.id !== 'session.commitGit') || facts.live)
       .filter((descriptor) => descriptor.id !== 'tab.copyProjectFolder'
         || facts.directoryPath !== null)
       .filter((descriptor) => descriptor.id !== 'tab.promote' || plainTab)
@@ -135,19 +141,7 @@ class SessionsTreeMenuItems {
    * the type system so. A command that joins the surface without joining this list fails the click
    * loudly instead of quietly acting on the active tab of some other row's window.
    */
-  private static run(
-    commands: CommandRegistry,
-    id: CommandId,
-    sessionId: string,
-    facts: TabSessionFacts,
-  ): void {
-    // The launcher's place is the one thing the shared runner cannot derive: it opens pre-bound to
-    // the project this row's session belongs to, and starts nothing by itself.
-    SessionCommandRun.at(
-      commands,
-      id,
-      sessionId,
-      facts.launch === null ? null : TabSessionPlace.of(facts),
-    )
+  private static run(commands: CommandRegistry, id: CommandId, sessionId: string): void {
+    SessionCommandRun.at(commands, id, sessionId)
   }
 }

@@ -82,6 +82,9 @@ function ExistingSessionRow(props: {
           row.untitled ? ' jamat-launcher-create__session-untitled' : ''}`}
       >
         {row.label}
+        {row.mark !== null && (
+          <span className="jamat-launcher-create__session-mark">{row.mark}</span>
+        )}
       </span>
       {row.active
         ? (

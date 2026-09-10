@@ -142,6 +142,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerControls', () => {
         snapshotId: 'checkpoint-snapshot',
         sessionId: 's1',
         createdAt: 1,
+        externalRoots: [],
         source: {
           requested: 'checkpoint', selected: 'checkpoint', available: ['checkpoint'],
           fallbackReason: null,

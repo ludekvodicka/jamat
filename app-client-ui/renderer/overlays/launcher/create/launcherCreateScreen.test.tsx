@@ -68,7 +68,7 @@ describe('app-client-ui/renderer/overlays/launcher/create/launcherCreateScreen',
   })
 
   it('replaces Name and Isolation with Existing sessions and adds All to Agent', () => {
-    const index = CreateScreenModel.typesOf({ tabProfile: false, target: { kind: 'local' } }).findIndex((type) => type.kind === 'existing')
+    const index = CreateScreenModel.typesOf({ tabProfile: false, target: { kind: 'local' }, source: null }).findIndex((type) => type.kind === 'existing')
     const state = CreateScreenModel.transition(opened(), { input: 'chooseType', index }).state
     const view = draw(state)
     const labels = [...view.container.querySelectorAll('.jamat-choice__label')]
@@ -81,6 +81,40 @@ describe('app-client-ui/renderer/overlays/launcher/create/launcherCreateScreen',
     expect(view.container.querySelector('[aria-label="Session name"]')).toBeNull()
     expect(view.container.textContent).not.toContain('Worktree')
     expect(view.container.querySelector('.jamat-launcher-create__sessions-field')).toBeTruthy()
+  })
+
+  /*
+   * The card `Fork session` opens: Continue/Fork, standing on the session it was opened on, with
+   * the number drawn as the PAIR the title will carry. The isolation row is not drawn at all - a
+   * session opened out of that list runs where it already runs - and the name row is, because a
+   * fork is the one row of it that founds a session still to be called something.
+   */
+  it('stands on the session it was opened on and draws the number pair', () => {
+    const state = CreateScreenModel.opened(projectConst, {
+      name: 'the wire',
+      source: {
+        mode: 'fork',
+        sessionId: 's-parent',
+        agentId: 'claude',
+        nativeSessionId: 'claude-1',
+        number: '014',
+        title: '014 - the wire',
+        tabTitle: 'AppJamatV3 - the wire',
+      },
+    }).state
+    const view = draw({ ...state, token: '015' })
+    const labels = [...view.container.querySelectorAll('.jamat-choice__label')]
+      .map((node) => node.textContent)
+
+    expect(labels).toEqual(['Project', 'Name', 'Type', 'Agent', 'Existing sessions'])
+    const rows = [...view.container.querySelectorAll('.jamat-launcher-create__session-row')]
+      .map((row) => row.textContent)
+    expect(rows).toEqual(['014 - the wirethis sessionC'])
+    expect(rows[0]).toContain('this session')
+    expect(view.container.textContent).toContain('014-015 - ')
+    expect(view.container.textContent).toContain('Fork')
+    expect(nameField(view).value).toBe('the wire')
+    expect(view.container.textContent).not.toContain('runs in its own worktree')
   })
 
   /*

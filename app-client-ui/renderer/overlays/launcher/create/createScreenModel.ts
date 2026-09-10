@@ -1,4 +1,5 @@
 import { WorktreeNaming } from '../../../../../lib-orchestrator/git/worktreeNaming'
+import { SessionTitle } from '../../../../../lib-orchestrator/sessionManager/records/sessionTitle'
 import type { ProviderSessionSummary } from '../../../../../lib-orchestrator/projectManager/projectManagerApi.types'
 import type {
   RemoteControlAgentDto,
@@ -11,6 +12,7 @@ import type {
 } from '../../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { FlowCatalog } from '../flows/flowCatalog'
 import type { LauncherBinding } from '../launcherBinding'
+import type { LauncherSessionPrefill } from '../launcherIntentStore'
 import { LauncherLabels } from '../launcherLabels'
 import type { LauncherTarget } from '../launcherTarget'
 
@@ -19,6 +21,21 @@ export type CreateType =
   | { kind: 'flow'; flowId: string }
   | { kind: 'existing' }
   | { kind: 'shell' }
+
+/**
+ * The session the card was opened ON, drawn as the first ROW of Continue/Fork and chosen there.
+ *
+ * It was a type of its own until 2026-09-10 - one card called Fork, one called Resume - standing
+ * beside a Continue/Fork whose own words are "resume ended sessions, fork running ones". That is
+ * one operation drawn twice, and the card opened from a session's menu answers the question the
+ * list asks rather than replacing it: which conversation, and this one.
+ *
+ * A row rather than an index into the loaded list, because that list is the PROJECT's transcripts:
+ * a session in a worktree writes its own somewhere else, an ad-hoc directory has no project list at
+ * all, and a codex session names its conversation late. The row stands for the session in every one
+ * of those cases, and what it submits is composed by the library out of that session's record.
+ */
+export type CreateSessionTarget = LauncherSessionPrefill
 
 /** Which row the cursor stands on. `↑↓` moves between them and `←→` chooses inside one. */
 export type CreateField = 'name' | 'type' | 'isolation' | 'agent' | 'model' | 'existingSessions'
@@ -59,7 +76,23 @@ export interface ExistingRow {
   active: boolean
   /** The provider's timestamps. A target session carries none and leaves the column empty. */
   times: { lastActivity: number; createdAt: number } | null
+  /**
+   * Present only on the row the card was opened on, which is why that row leads the list. Without
+   * it the row is one conversation among the project's, drawn where nothing put it.
+   */
+  mark: string | null
 }
+
+/**
+ * What Enter acts on, from the row the cursor stands on. Three kinds because there are three: the
+ * session the card was opened on, a conversation this machine's agents left behind, and a session
+ * the target computer keeps. Each is opened by its own call, and none of them is the other two with
+ * a field missing.
+ */
+export type ExistingSelection =
+  | { kind: 'source'; source: CreateSessionTarget }
+  | { kind: 'summary'; summary: ExistingSessionSummary }
+  | { kind: 'remote'; session: RemoteExistingSession }
 
 /**
  * What the TARGET said it can start an agent on, and the four ways that question can stand.
@@ -112,6 +145,13 @@ export interface CreateScreenState {
    * exactly as it did before this row existed.
    */
   modelId: string | null
+  /**
+   * The session this card was opened ON, or null. It leads the Continue/Fork list as a row of its
+   * own, that type opens chosen with the cursor on it, and `mode` says which of the list's two
+   * words applies to it. Its submit sends the session's id and nothing else: what a fork or a
+   * resume IS gets composed by the library out of that record.
+   */
+  source: CreateSessionTarget | null
   existingAgentFilter: ExistingAgentFilter
   existingSessions: readonly ExistingSessionSummary[] | null
   /** The target's own sessions in this project, for a remote card. Null while none has been read. */
@@ -260,6 +300,18 @@ export type CreateScreenEffect =
       running: boolean
     }
   | { effect: 'openFlow'; flowId: string }
+  /**
+   * Branch one named session. The name travels and nothing else does: what a fork IS - which agent,
+   * which conversation, which directory, which number pair - is read off that session's record by
+   * the library, and a card that composed it would be a second place that knows what forking means.
+   */
+  | { effect: 'forkSession'; sessionId: string; name: string }
+  /**
+   * Bring one named session back. Nothing travels but its id and the name of a tab for it: a resume
+   * founds no session, so nothing comes back carrying one, and the tab is what a person watches it
+   * come back in.
+   */
+  | { effect: 'resumeSession'; sessionId: string; tabTitle: string }
   | { effect: 'back' }
 
 export interface CreateScreenStep {
@@ -281,19 +333,29 @@ export interface CreateScreenStep {
 export class CreateScreenModel {
   static opened(
     binding: LauncherBinding,
-    options?: { tabProfile?: true; agentId?: SessionAgentId; target?: LauncherTarget },
+    options?: {
+      tabProfile?: true
+      agentId?: SessionAgentId
+      target?: LauncherTarget
+      /** What the name field opens holding, from the session this card was opened beside. */
+      name?: string
+      source?: CreateSessionTarget
+    },
   ): CreateScreenStep {
     const tabProfile = options?.tabProfile === true
     const target: LauncherTarget = options?.target ?? { kind: 'local' }
+    const source = options?.source ?? null
     const state: CreateScreenState = {
       binding,
       target,
       tabProfile,
       // The name is the one answer nobody else can give: every other row opens on what is wanted
-      // most of the time, so the card opens ready to be typed into and `↓` leaves the field.
-      field: 'name',
+      // most of the time, so the card opens ready to be typed into and `↓` leaves the field. A
+      // resume asks for no name, so there the cursor opens on the list, standing on its session.
+      field: options?.source?.mode === 'resume' ? 'existingSessions' : 'name',
       typeIndex: 0,
       agentId: options?.agentId ?? 'claude',
+      source,
       models: { status: 'none' },
       modelId: null,
       existingAgentFilter: 'all',
@@ -301,7 +363,7 @@ export class CreateScreenModel {
       remoteSessions: null,
       existingSessionsError: null,
       existingCursor: 0,
-      name: '',
+      name: options?.name ?? '',
       token: null,
       worktree: false,
       submitError: null,
@@ -318,36 +380,59 @@ export class CreateScreenModel {
         { ...state, models: { status: 'loading' } },
         { effect: 'describeAgents', remoteEndpointId: endpoint },
       )
+    const effects: CreateScreenEffect[] = []
     // A tab is not counted: a number is a project's running count of the work done in it, and a tab
     // is not work the tree is keeping. Continue/Fork from this profile does land in the tree, but it
-    // takes the number the conversation already has rather than one peeked here.
-    if (tabProfile) return CreateScreenModel.step(state)
-    // Only a catalog project is counted: the other two bindings name a directory, and a number is
-    // this project's own running count of the work done in it.
-    if (binding.mode === 'project')
-      return CreateScreenModel.step(state, {
-        effect: 'fetchNumber',
+    // takes the number the conversation already has rather than one peeked here. Only a catalog
+    // project is counted at all: the other two bindings name a directory, not a project.
+    if (!tabProfile && binding.mode === 'project')
+      effects.push({ effect: 'fetchNumber', projectPath: binding.projectPath })
+    // Opened on a session: Continue/Fork leads and opens chosen, so its list is read now rather
+    // than when somebody walks onto the type.
+    if (source !== null && binding.mode === 'project')
+      effects.push({
+        effect: 'fetchExistingSessions',
+        categoryId: binding.categoryId,
+        projectName: binding.projectName,
         projectPath: binding.projectPath,
       })
-    return CreateScreenModel.step(state)
+    // A binding with no project has no list to read, and the session's own row is the whole list
+    // there. Saying that outright is what stops the card drawing `Loading sessions…` under a fetch
+    // that is never made.
+    if (source !== null && binding.mode !== 'project')
+      return CreateScreenModel.step({ ...state, existingSessions: [] }, ...effects)
+    return CreateScreenModel.step(state, ...effects)
   }
 
   /**
-   * Raw first, the catalog's flows, Continue/Fork, and Shell last.
+   * Raw, the catalog's flows, Continue/Fork, and Shell last - except on a card opened ON a session,
+   * where Continue/Fork leads instead.
+   *
+   * It leads there because the type row opens on its first entry and that is the type the command
+   * asked for: the answer somebody came for is the one already chosen. Everything else stays in the
+   * list, so the same card still says "actually, a fresh one in the same place" without being
+   * closed and reopened.
    *
    * The tab profile offers the same types minus the flows: a flow composes work the tree keeps, and
    * a card whose whole premise is the short question has no room to configure one. Nothing else is
    * withheld - the list is shorter, never a different vocabulary.
    */
-  static typesOf(profile: { tabProfile: boolean; target: LauncherTarget }): readonly CreateType[] {
-    if (profile.tabProfile || CreateScreenModel.endpointOf(profile.target) !== null)
-      return CreateScreenModel.shortTypesConst
-    return [
-      { kind: 'raw' },
-      ...FlowCatalog.flows().map((flow): CreateType => ({ kind: 'flow', flowId: flow.id })),
-      { kind: 'existing' },
-      { kind: 'shell' },
-    ]
+  static typesOf(profile: {
+    tabProfile: boolean
+    target: LauncherTarget
+    source: CreateSessionTarget | null
+  }): readonly CreateType[] {
+    const types: readonly CreateType[] =
+      profile.tabProfile || CreateScreenModel.endpointOf(profile.target) !== null
+        ? CreateScreenModel.shortTypesConst
+        : [
+            { kind: 'raw' },
+            ...FlowCatalog.flows().map((flow): CreateType => ({ kind: 'flow', flowId: flow.id })),
+            { kind: 'existing' },
+            { kind: 'shell' },
+          ]
+    if (profile.source === null) return types
+    return [{ kind: 'existing' }, ...types.filter((type) => type.kind !== 'existing')]
   }
 
   static typeOf(state: CreateScreenState): CreateType {
@@ -541,6 +626,21 @@ export class CreateScreenModel {
   }
 
   /**
+   * The fixed prefix the name field is drawn behind, which for a fork is the number PAIR: a fork
+   * keeps its parent's number on the left and spends its own on the right, and it is `SessionTitle`
+   * that says so - the library composes the real title the same way, from the number it actually
+   * takes. Null while no number has been read, and for a binding that has none to read.
+   */
+  static tokenLabelOf(state: CreateScreenState): string | null {
+    if (state.token === null) return null
+    // What the cursor stands on decides it, not what the card was opened for: moved off that row or
+    // off the list, this is an ordinary new session here and takes an ordinary number.
+    const acting = CreateScreenModel.actingOn(state)
+    if (acting === null || acting.mode !== 'fork') return state.token
+    return SessionTitle.composeFork(acting.number, state.token, '')
+  }
+
+  /**
    * What the title will be. The number is the prefix by construction, which is what lets the store
    * read the count back out of the records without a field of its own.
    */
@@ -689,6 +789,8 @@ export class CreateScreenModel {
     if (CreateScreenModel.endpointOf(state.target) !== null)
       return 'worktree isolation is set up on the target computer'
     if (state.tabProfile) return 'a tab runs without isolation'
+    // The same rule the library keeps: a session opened out of this list runs where it already
+    // runs, and a worktree belongs to the one session it was cut for.
     if (CreateScreenModel.typeOf(state).kind === 'existing')
       return 'an existing conversation runs in its project'
     if (state.binding.mode !== 'project') return 'a worktree needs a catalog project'
@@ -705,6 +807,9 @@ export class CreateScreenModel {
 
   static typeRefusal(state: CreateScreenState, type: CreateType): string | null {
     if (type.kind !== 'existing') return null
+    // The session the card was opened on is a row of that list wherever it runs, so the type is
+    // choosable even where the project's own list cannot be read at all.
+    if (state.source !== null) return null
     return state.binding.mode === 'project'
       ? null
       : 'existing sessions need a catalog project'
@@ -721,11 +826,46 @@ export class CreateScreenModel {
       state.existingAgentFilter === 'all' || session.agentId === state.existingAgentFilter)
   }
 
+  /**
+   * The project's conversations minus the one the card's own row already stands for. The session a
+   * card is opened on is usually in this list too, and drawing it twice would offer one
+   * conversation as two rows that do different things.
+   */
+  private static localSummariesOf(state: CreateScreenState): readonly ExistingSessionSummary[] {
+    const source = state.source
+    const rows = CreateScreenModel.existingRowsOf(state)
+    if (source === null) return rows
+    return rows.filter((summary) =>
+      summary.agentId !== source.agentId || summary.nativeSessionId !== source.nativeSessionId)
+  }
+
+  /**
+   * The row for the session this card was opened on, or null on a card that was opened on none.
+   *
+   * It ignores the agent filter on purpose: the filter picks which of the project's conversations
+   * to look through, and this row is not one of them - it is what the card is about.
+   */
+  private static sourceRowOf(state: CreateScreenState): ExistingRow | null {
+    const source = state.source
+    if (source === null || CreateScreenModel.endpointOf(state.target) !== null) return null
+    return {
+      key: `source/${source.sessionId}`,
+      label: source.title,
+      untitled: false,
+      agentId: source.agentId,
+      // A fork is offered for a session that is running and a resume for one that has stopped, so
+      // the mode already says which, and a second field carrying the same fact could disagree.
+      active: source.mode === 'fork',
+      times: null,
+      mark: 'this session',
+    }
+  }
+
   /** What the Continue list DRAWS, from whichever of the two lists the target names. */
   static existingDisplayRowsOf(state: CreateScreenState): readonly ExistingRow[] {
     const endpoint = CreateScreenModel.endpointOf(state.target)
-    if (endpoint === null)
-      return CreateScreenModel.existingRowsOf(state).map((summary) => ({
+    if (endpoint === null) {
+      const rows = CreateScreenModel.localSummariesOf(state).map((summary): ExistingRow => ({
         key: CreateScreenModel.existingRowKeyOf(summary),
         label: summary.localTitle ?? LauncherLabels.summaryLabelOf(summary),
         untitled: summary.localTitle === null
@@ -733,8 +873,12 @@ export class CreateScreenModel {
         agentId: summary.agentId,
         active: summary.active,
         times: { lastActivity: summary.lastActivity, createdAt: summary.createdAt },
+        mark: null,
       }))
-    return CreateScreenModel.remoteSessionRowsOf(state).map((session) => ({
+      const pinned = CreateScreenModel.sourceRowOf(state)
+      return pinned === null ? rows : [pinned, ...rows]
+    }
+    return CreateScreenModel.remoteSessionRowsOf(state).map((session): ExistingRow => ({
       key: session.sessionId,
       label: session.title.length === 0 ? 'Untitled session' : session.title,
       untitled: session.title.length === 0,
@@ -743,7 +887,35 @@ export class CreateScreenModel {
       // The target's snapshot carries no provider timestamps, and inventing one from this machine's
       // clock would put a time on the row that nothing measured.
       times: null,
+      mark: null,
     }))
+  }
+
+  /** What Enter acts on: the row under the cursor, as the thing that row stands for. */
+  static existingSelectionOf(state: CreateScreenState): ExistingSelection | null {
+    if (CreateScreenModel.endpointOf(state.target) !== null) {
+      const session = CreateScreenModel.remoteSessionRowsOf(state)[state.existingCursor]
+      return session === undefined ? null : { kind: 'remote', session }
+    }
+    const source = state.source
+    const pinned = CreateScreenModel.sourceRowOf(state)
+    if (pinned !== null && source !== null && state.existingCursor === 0)
+      return { kind: 'source', source }
+    const summary = CreateScreenModel.localSummariesOf(state)[
+      pinned === null ? state.existingCursor : state.existingCursor - 1]
+    return summary === undefined ? null : { kind: 'summary', summary }
+  }
+
+  /**
+   * The session this card ACTS on, which is the one it was opened on for as long as its row is the
+   * chosen one. Null the moment the cursor moves off that row or the type moves off the list: a
+   * card left on Raw starts a fresh session, and one standing on another conversation continues
+   * that conversation.
+   */
+  static actingOn(state: CreateScreenState): CreateSessionTarget | null {
+    if (CreateScreenModel.typeOf(state).kind !== 'existing') return null
+    const selection = CreateScreenModel.existingSelectionOf(state)
+    return selection?.kind === 'source' ? selection.source : null
   }
 
   /** Why the Continue list is empty, or null while it has rows. */
@@ -765,6 +937,7 @@ export class CreateScreenModel {
   }
 
   static existingRefusal(state: CreateScreenState): string | null {
+    if (CreateScreenModel.actingOn(state) !== null) return null
     if (state.binding.mode !== 'project') return 'existing sessions need a catalog project'
     if (!CreateScreenModel.existingLoaded(state)) return 'sessions are loading'
     if (CreateScreenModel.existingDisplayRowsOf(state).length === 0) return 'nothing to continue'
@@ -795,11 +968,20 @@ export class CreateScreenModel {
     ['name', 'type', 'agent', 'model']
   private static readonly existingFieldsConst: readonly CreateField[] =
     ['type', 'agent', 'existingSessions']
+  /**
+   * The same rows plus a name, for the one row of that list that can take one: a fork founds a new
+   * session and gets to be called something. Every other row of it opens a session that is already
+   * named - a resume brings back the very record, and a continue takes the conversation's own name.
+   */
+  private static readonly existingForkFieldsConst: readonly CreateField[] =
+    ['name', 'type', 'agent', 'existingSessions']
 
   /** The cursor walks only the rows that are drawn, which is what the screen shows. */
   static fieldsOf(state: CreateScreenState): readonly CreateField[] {
     if (CreateScreenModel.typeOf(state).kind === 'existing')
-      return CreateScreenModel.existingFieldsConst
+      return CreateScreenModel.actingOn(state)?.mode === 'fork'
+        ? CreateScreenModel.existingForkFieldsConst
+        : CreateScreenModel.existingFieldsConst
     if (CreateScreenModel.endpointOf(state.target) !== null)
       return CreateScreenModel.remoteFieldsConst
     if (state.tabProfile) return CreateScreenModel.shortFieldsConst
@@ -993,27 +1175,46 @@ export class CreateScreenModel {
     if (type.kind === 'flow')
       return CreateScreenModel.step(state, { effect: 'openFlow', flowId: type.flowId })
     else if (type.kind === 'existing') {
-      const endpoint = CreateScreenModel.endpointOf(state.target)
-      if (endpoint !== null) {
-        const session = CreateScreenModel.remoteSessionRowsOf(state)[state.existingCursor]
-        if (!session) return CreateScreenModel.step(state)
+      const selection = CreateScreenModel.existingSelectionOf(state)
+      // An empty list, or one still being read: the button says so and this is the key doing the
+      // same nothing.
+      if (selection === null) return CreateScreenModel.step(state)
+      const submitting = { ...state, submitting: true, submitError: null }
+      if (selection.kind === 'source')
         return CreateScreenModel.step(
-          { ...state, submitting: true, submitError: null },
-          {
-            effect: 'openRemoteSession',
-            remoteEndpointId: endpoint,
-            sessionId: session.sessionId,
-            tabTitle: session.tabTitle,
-            running: session.running,
-          },
+          submitting,
+          selection.source.mode === 'fork'
+            ? {
+                effect: 'forkSession',
+                sessionId: selection.source.sessionId,
+                name: state.name.trim(),
+              }
+            : {
+                effect: 'resumeSession',
+                sessionId: selection.source.sessionId,
+                tabTitle: selection.source.tabTitle,
+              },
         )
+      else if (selection.kind === 'remote') {
+        const endpoint = CreateScreenModel.endpointOf(state.target)
+        // The remote row is drawn from the target's own list, so a null endpoint here is a row
+        // nobody could have built.
+        if (endpoint === null) throw new Error('A target session was chosen on a local card')
+        return CreateScreenModel.step(submitting, {
+          effect: 'openRemoteSession',
+          remoteEndpointId: endpoint,
+          sessionId: selection.session.sessionId,
+          tabTitle: selection.session.tabTitle,
+          running: selection.session.running,
+        })
       }
-      const summary = CreateScreenModel.existingRowsOf(state)[state.existingCursor]
-      if (!summary) return CreateScreenModel.step(state)
-      return CreateScreenModel.step(
-        { ...state, submitting: true, submitError: null },
-        { effect: 'openHistory', spec: CreateScreenModel.openHistorySpecOf(state, summary) },
-      )
+      else if (selection.kind === 'summary')
+        return CreateScreenModel.step(submitting, {
+          effect: 'openHistory',
+          spec: CreateScreenModel.openHistorySpecOf(state, selection.summary),
+        })
+      else
+        throw new Error(`Unknown existing selection: ${JSON.stringify(selection)}`)
     }
     else if (type.kind === 'raw' || type.kind === 'shell')
       return CreateScreenModel.step(

@@ -11,6 +11,7 @@ import type {
   FileChangesSnapshot,
   FileChangesWorkingTreeSelection,
   FileChangesWorkingTreeSnapshot,
+  FileChangesWorkingTreeExternalRoot,
   FileChangesVcsDetection,
   FileChangesVcsSelection,
 } from '../fileChangesManagerApi.types'
@@ -25,6 +26,7 @@ export interface SnapshotFile {
   currentPath: string
   nodeKind: FileChangeNodeKind
   status: FileChangeStatus
+  workingState?: { modifiedAt: number | null; vcsEntry: boolean }
 }
 
 export interface SnapshotBaselineFile {
@@ -69,10 +71,12 @@ export interface FileChangesWorkingTreeSnapshotStoreInput extends FileChangesSna
   source: FileChangesWorkingTreeSelection
   defaultBaseline: FileChangeBaseline | null
   entries: readonly FileChangeEntry[]
+  externalRoots: readonly FileChangesWorkingTreeExternalRoot[]
   warnings: readonly string[]
 }
 
 interface StoredSnapshot extends FileChangesSnapshotRuntime {
+  working: FileChangesWorkingTreeSnapshot | null
   snapshotId: string
   createdAt: number
   expiresAt: number
@@ -127,15 +131,23 @@ export class FileChangesSnapshotStore {
 
   putWorking(input: FileChangesWorkingTreeSnapshotStoreInput): FileChangesWorkingTreeSnapshot {
     const stored = this.store({ ...input, groups: [], pageSize: 1 })
-    return {
+    const snapshot: FileChangesWorkingTreeSnapshot = {
       snapshotId: stored.snapshotId,
       sessionId: input.context.sessionId,
       createdAt: stored.createdAt,
       source: input.source,
+      externalRoots: input.externalRoots,
       defaultBaseline: input.defaultBaseline,
       entries: input.entries,
       warnings: input.warnings,
     }
+    stored.working = snapshot
+    return snapshot
+  }
+
+  workingSnapshot(snapshotId: string): FileChangesWorkingTreeSnapshot | null {
+    const found = this.lookup(snapshotId)
+    return found.ok ? found.snapshot.working : null
   }
 
   private store(
@@ -150,6 +162,7 @@ export class FileChangesSnapshotStore {
     const snapshotId = randomUUID()
     const createdAt = this.now()
     const stored: StoredSnapshot = {
+      working: null,
       snapshotId,
       createdAt,
       expiresAt: createdAt + FileChangesSnapshotStore.ttlMillisecondsConst,

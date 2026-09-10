@@ -3,6 +3,7 @@ import type {
   SessionsOpResult,
   SessionsSnapshot,
 } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
+import type { FileChangesVcsId } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import { AppClientUiReport } from '../../shared/appClientUiReport'
 import type { IpcResult } from '../../shared/appClientUiIpc'
 import { IpcFailure } from '../ipc/ipcFailure'
@@ -49,10 +50,11 @@ export class SessionOperations {
       .find((session) => session.sessionId === sessionId)
     if (info === undefined) return null
     return {
+      live: info.life === 'live',
       agentId: info.agent?.agentId ?? null,
       color: info.color ?? null,
       directoryPath: SessionFolder.ofDirectory(info.directory),
-      launch: info.project.kind === 'project' ? info.project : null,
+      ended: info.life === 'ended' || info.life === 'lost',
       admits: info.admits,
     }
   }
@@ -137,6 +139,15 @@ export class SessionOperations {
   ): void {
     if (target === null) return
     compact.manual(target.sessionId)
+  }
+
+  static async commitSession(sessions: SnapshotStore<SessionsSnapshot>, target: { sessionId: string } | null,
+    vcs: FileChangesVcsId): Promise<void> {
+    const info = SessionOperations.sessionInfoOf(sessions, target)
+    if (info?.life !== 'live') return
+    const answer = await window.appClient.versioning.openCommitTab(info.sessionId, vcs)
+    const refusal = IpcFailure.of(answer, 'Opening commit dialog')
+    if (refusal !== null) AppClientUiReport.error(refusal)
   }
 
   static async copyProjectFolder(

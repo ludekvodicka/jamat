@@ -190,6 +190,13 @@ export type SessionTranscriptContextResult =
       agentId: SessionAgentId | null
       cwd: string
       nativeSessionId: string | null
+      /**
+       * What the founding launch asked this agent to run on, `null` where it asked for nothing. It
+       * travels beside the transcript's whereabouts because it is the one thing the transcript
+       * cannot say: Claude records the bare model id the API answered with and never the `[1m]`
+       * tier, so the reader that draws the context window learns it here or nowhere.
+       */
+      launchModel: string | null
     }
   }
   | { ok: false; code: 'unknown-session'; detail: string }
@@ -441,6 +448,7 @@ export class SessionManager {
         agentId: agent?.agentId ?? null,
         cwd: record.transcriptCwd ?? SessionWorkingDirectory.ofRecord(record),
         nativeSessionId: agent?.nativeSessionId ?? null,
+        launchModel: agent?.model ?? null,
       },
     }
   }
@@ -505,20 +513,21 @@ export class SessionManager {
   }
 
   /**
-   * The two creates that are derived from a session rather than described by a caller: forking the
-   * conversation one is holding, and starting a fresh one in the same place.
+   * The one create derived from a session rather than described by a caller: forking the
+   * conversation it is holding. Everything the fork needs is on the record; `name` is the single
+   * thing a caller may say, because it is the one thing the record cannot know in advance.
+   *
+   * "Another session in the same place" was a second method here until 2026-09-10. It is an
+   * ordinary create now: the card that asks for it fills the directory, the name and the agent in
+   * from the session it was opened on, and the spec that comes back says everything this library
+   * needs. A method whose whole body copied one field off a record was a second create path with
+   * rules of its own - it made a plain tab, where the card makes a session of the tree.
    */
   async forkSession(
     sessionId: string,
+    options?: { name?: string },
   ): Promise<SessionsOpResult<{ sessionId: string; tabTitle: string }>> {
-    return this.tabTitled(this.operate((lifecycle) => lifecycle.forkFrom(sessionId)))
-  }
-
-  async newSessionBeside(
-    sessionId: string,
-    agentId: SessionAgentId,
-  ): Promise<SessionsOpResult<{ sessionId: string; tabTitle: string }>> {
-    return this.tabTitled(this.operate((lifecycle) => lifecycle.createBeside(sessionId, agentId)))
+    return this.tabTitled(this.operate((lifecycle) => lifecycle.forkFrom(sessionId, options)))
   }
 
   /**
@@ -1035,6 +1044,7 @@ export class SessionManager {
     )
     this.records = records
     const lifecycle = new SessionLifecycle({
+      controller: { configIdentity: this.deps.configIdentity, channel: this.deps.channel },
       records,
       host: this.client,
       worktrees: this.worktrees,
@@ -1157,6 +1167,10 @@ export class SessionManager {
    * draw a mark for, so nothing is measured at all; the staleness windows then catch everything up
    * within a tick of a window coming back.
    */
+  settleVcs(cwd: string): void {
+    this.vcsFacts?.markStale(cwd)
+  }
+
   private async refreshVcsFacts(): Promise<void> {
     if (this.vcsFacts === null || !this.visible) return
     const cwds = new Set<string>()
@@ -1387,6 +1401,9 @@ export class SessionManager {
   private admitsOf(record: SessionRecord): SessionOperation[] {
     const admits: SessionOperation[] = []
     if (record.kind === 'agent') {
+      // Still a question this library answers, and no longer a method of it: "can another session be
+      // started in this one's place" is what a menu asks before it offers the row, and the row now
+      // opens the create card rather than calling a create of its own.
       admits.push('newBeside')
       // No id, nothing to fork from. A Claude session is told its id at launch, a Codex one earns
       // this the moment its id is found, and a fork of either now has one of its own. Not a
