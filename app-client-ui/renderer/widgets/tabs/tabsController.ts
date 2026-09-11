@@ -39,7 +39,8 @@ export interface TabsControllerPorts {
   /** Answers whether the layout reached disk; the controller advances its cursor only on true. */
   saveLayout(layout: string): Promise<boolean>
   clearLayout(): Promise<boolean>
-  claimPanel(panel: WorkspacePanelPresence): Promise<ClaimPanelResult>
+  claimPanel(panel: WorkspacePanelPresence, activate?: boolean): Promise<ClaimPanelResult>
+  focusPanelContent?(panelId: string): void
   reconcilePanels(panels: readonly WorkspacePanelPresence[]): Promise<ReconcilePanelsResult>
   releasePanel(panelId: string): Promise<void>
   setActivePanel(panelId: string | null): Promise<void>
@@ -214,7 +215,7 @@ export class TabsController {
     title: string,
     params: Record<string, unknown> = {},
     panelId?: string,
-    options?: { preview?: true },
+    options?: { preview?: true; activate?: boolean },
   ): Promise<PanelOpenOutcome> {
     let granted: string | null = null
     try {
@@ -241,7 +242,7 @@ export class TabsController {
         this.closedPanelParameters.delete(presence.panelId)
         return this.focusExisting(existing, presence.panelId, title, params, panelId !== undefined, options)
       }
-      const claim = await this.ports.claimPanel(presence)
+      const claim = await this.ports.claimPanel(presence, options?.activate)
       if (claim.kind === 'owned')
         return {
           kind: 'focusedExisting',
@@ -271,6 +272,7 @@ export class TabsController {
         component: key,
         title,
         params: openingParameters,
+        ...(options?.activate === false ? { inactive: true } : {}),
         ...(position === null ? {} : { position }),
       })
       this.closedPanelParameters.delete(presence.panelId)
@@ -306,16 +308,20 @@ export class TabsController {
     title: string,
     params: Record<string, unknown>,
     rewrite: boolean,
-    options?: { preview?: true },
+    options?: { preview?: true; activate?: boolean },
   ): PanelOpenOutcome {
     if (rewrite) {
       panel.api.updateParameters(params)
       panel.api.setTitle(title)
     }
-    panel.api.setActive()
+    if (options?.activate !== false) panel.api.setActive()
     if (options?.preview !== true && panelId === this.previewPanelId)
       this.setPreviewPanelId(null)
     return { kind: 'opened', panelId }
+  }
+
+  focusPanelContent(panelId: string): void {
+    if (this.activePanelId() === panelId) this.ports.focusPanelContent?.(panelId)
   }
 
   /**

@@ -81,15 +81,16 @@ export interface LauncherState {
 }
 
 export type LauncherInput =
-  | { input: 'categoriesLoaded'; categories: readonly CategoryInfo[] }
+  | { input: 'categoriesLoaded'; remoteEndpointId?: string; categories: readonly CategoryInfo[] }
   | {
       input: 'projectsLoaded'
+      remoteEndpointId?: string
       categoryId: string
       sort: LauncherSort
       listing: ProjectListResult
     }
-  | { input: 'projectsLoadFailed'; categoryId: string; sort: LauncherSort; detail: string }
-  | { input: 'loadFailed'; detail: string }
+  | { input: 'projectsLoadFailed'; remoteEndpointId?: string; categoryId: string; sort: LauncherSort; detail: string }
+  | { input: 'loadFailed'; remoteEndpointId?: string; detail: string }
   | { input: 'selectCategory'; categoryId: string }
   | { input: 'moveCursor'; delta: number }
   | { input: 'setCursor'; index: number }
@@ -330,6 +331,9 @@ export class LauncherModel {
   }
 
   static transition(state: LauncherState, input: LauncherInput): LauncherStep {
+    if ('remoteEndpointId' in input && input.remoteEndpointId !== undefined
+      && input.remoteEndpointId !== state.remote?.remoteEndpointId)
+      return { state, effects: [] }
     if (input.input === 'categoriesLoaded') return LauncherModel.withCategories(state, input.categories)
     else if (input.input === 'projectsLoaded') return LauncherModel.withListing(state, input)
     else if (input.input === 'projectsLoadFailed')

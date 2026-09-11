@@ -9,7 +9,7 @@ export type RemarkableErrorCode =
   | 'cancelled'
   | 'credential-unavailable'
   | 'device-busy'
-  | 'device-sleeping'
+  | 'device-unreachable'
   | 'host-key-changed'
   | 'import-failed'
   | 'install-failed'

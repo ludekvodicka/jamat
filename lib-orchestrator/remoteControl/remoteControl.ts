@@ -31,6 +31,7 @@ import type {
   RemoteControlTabDto,
   RemoteControlTabOpenFileDto,
   RemoteControlTabOpenCommitDto,
+  RemoteControlCommitStatusDto,
   RemoteControlTerminalPeekDto,
   RemoteControlTerminalSendDto,
   RemoteControlSessionTranscriptDto,
@@ -60,6 +61,7 @@ export interface RemoteControlSessionsPort {
 }
 
 export interface RemoteControlTabsPort {
+  commitStatus?(commitSessionId: string): RemoteControlStepResult<RemoteControlCommitStatusDto>
   openCommit(sessionId: string, tabTitle: string, vcs: 'svn' | 'git', scope: string | null,
     proposal: string | null, options: { plain: boolean }): Promise<RemoteControlStepResult<RemoteControlTabOpenCommitDto>>
   list(): Promise<readonly RemoteControlTabDto[]>
@@ -288,7 +290,10 @@ export class RemoteControl {
       if (session.value.life !== 'live') return { ok: false, error: { code: 'not-found', detail: 'The session is not live' } }
       return this.deps.tabs.openCommit(session.value.sessionId, session.value.tabTitle, request.body.vcs,
         request.body.scope ?? null, request.body.message ?? null, { plain: session.value.presentation === 'tab' })
-    } else if (request.operation === 'tabs.focus')
+    } else if (request.operation === 'tabs.commitStatus')
+      return this.deps.tabs.commitStatus?.(request.body.commitSessionId)
+        ?? { ok: false, error: { code: 'unavailable', detail: 'Commit status is unavailable' } }
+    else if (request.operation === 'tabs.focus')
       return this.deps.tabs.focus(request.body.panelId)
     else if (request.operation === 'tabs.close')
       return this.deps.tabs.close(request.body.panelId)

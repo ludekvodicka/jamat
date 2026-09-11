@@ -25,6 +25,8 @@ describe('app-client-ui/app/uiSettings/serviceUiSettingsIpc', () => {
     fileViewerFontScalePercent: 130,
     terminalFontScalePercent: 90,
     terminalTheme: 'soft',
+    scrollSpeedPercent: 200,
+    terminalScrollSpeedPercent: 150,
   }
   let saveAnswer: ConfigOpResult
   let written: UiSettingsValue[]

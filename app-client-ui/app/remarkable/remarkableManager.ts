@@ -58,13 +58,8 @@ interface RemarkableOperationIdentity {
 
 type RemarkableActiveOperation = RemarkableOperationIdentity & {
   abort: AbortController
-  /**
-   * Set by a failure that trying again cannot fix, and never by one that can. A sleeping tablet or
-   * a held device lock is a state outside this app that changes while the card is open, and every
-   * attempt is a click the user made, so refusing the next one only makes them close the card and
-   * open it again to get the same operation back.
-   */
-  unrecoverable: boolean
+  /** Preserve the cause when a later action is refused without contacting the tablet again. */
+  stoppedFailure: RemarkableFailure | null
 } & (
   | { state: 'open' }
   | {
@@ -180,7 +175,7 @@ export class RemarkableManager {
         run,
         destination: resolution.value.destination,
         abort: new AbortController(),
-        unrecoverable: false,
+        stoppedFailure: null,
       }
       this.operations.set(operation.id, operation)
       return { ok: true, value: {
@@ -255,13 +250,12 @@ export class RemarkableManager {
   private async ensureListed(
     operation: RemarkableActiveOperation,
   ): Promise<RemarkableResult<Extract<RemarkableActiveOperation, { state: 'listed' }>>> {
+    if (operation.stoppedFailure !== null) return operation.stoppedFailure
     if (operation.state === 'listed') return { ok: true, value: operation }
     else if (operation.state !== 'open') {
       const unhandled: never = operation
       throw new Error(`Unknown active reMarkable operation: ${JSON.stringify(unhandled)}`)
     }
-    if (!this.canAttempt(operation)) return RemarkableManager.operationStopped()
-
     const auth = await this.auth(operation.abort.signal)
     if (!this.isActive(operation)) return RemarkableManager.cancelled()
     if (!auth.ok) return this.recordFailure(operation, auth)
@@ -300,7 +294,7 @@ export class RemarkableManager {
       run: operation.run,
       destination: operation.destination,
       abort: operation.abort,
-      unrecoverable: operation.unrecoverable,
+      stoppedFailure: operation.stoppedFailure,
       documentId: current.value.documentId,
       documentName: current.value.name,
       currentPageId: openPageId,
@@ -324,7 +318,7 @@ export class RemarkableManager {
       const owned = this.activeOperation(ownerId, operationId)
       if (!owned.ok) return owned
       const operation = owned.value
-      if (!this.canAttempt(operation)) return RemarkableManager.operationStopped()
+      if (operation.stoppedFailure !== null) return operation.stoppedFailure
       if (target.kind === 'current') return await this.renderCurrent(operation)
       else if (target.kind === 'listed-page') return await this.renderListed(operation, target.pageId)
       else {
@@ -351,7 +345,7 @@ export class RemarkableManager {
       const owned = this.activeOperation(ownerId, operationId)
       if (!owned.ok) return owned
       const operation = owned.value
-      if (!this.canAttempt(operation)) return RemarkableManager.operationStopped()
+      if (operation.stoppedFailure !== null) return operation.stoppedFailure
       const attempt = await this.createAttempt(operation)
       if (!this.isActive(operation)) return RemarkableManager.cancelled()
       if (!attempt.ok) return attempt
@@ -686,12 +680,8 @@ export class RemarkableManager {
     // A retryable failure is the tablet's state, not the operation's: it can be true now and false
     // in ten seconds, so it leaves the operation exactly as it was and the user may click again.
     if (failure.retryable) return failure
-    if (this.isActive(operation)) operation.unrecoverable = true
+    if (this.isActive(operation)) operation.stoppedFailure = failure
     return failure
-  }
-
-  private canAttempt(operation: RemarkableActiveOperation): boolean {
-    return !operation.unrecoverable
   }
 
   /**
@@ -837,12 +827,6 @@ export class RemarkableManager {
 
   private ownerOperations(ownerId: string): number {
     return [...this.operations.values()].filter((operation) => operation.ownerId === ownerId).length
-  }
-
-  private static operationStopped<T>(): RemarkableResult<T> {
-    return RemarkableManager.invalidOperation(
-      'The reMarkable operation stopped on a failure that trying again cannot fix',
-    )
   }
 
   private static invalidOperation<T>(detail: string): RemarkableResult<T> {

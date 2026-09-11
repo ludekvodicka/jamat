@@ -19,17 +19,19 @@ export type UiSettingsInput =
   | { input: 'file-viewer-scale'; percent: number }
   | { input: 'terminal-scale'; percent: number }
   | { input: 'terminal-theme'; name: TerminalThemeName }
+  | { input: 'scroll-speed'; percent: number }
+  | { input: 'terminal-scroll-speed'; percent: number }
 
 export type UiSettingsEffect = SettingsCardEffect<UiSettingsValue>
 
 export type UiSettingsStep = SettingsCardStep<UiSettingsValue, UiSettingsEffect>
 
 /**
- * The UI tab as data: three percentages and a palette name being edited.
+ * The UI tab as data: five percentages and a palette name being edited.
  *
  * There is deliberately no `staleOnDisk` here, the flag the projects tab carries. That flag exists
  * because a catalog is work - roots named, ordered and grouped by hand - and a file that moved under
- * it holds someone else's version of that work. This section is four fields with no history: the
+ * it holds someone else's version of that work. This section is six fields with no history: the
  * last write wins, which is what a font size means. Nothing is reconciled because nothing here can
  * be lost that is not on screen while it is being lost.
  *
@@ -54,7 +56,9 @@ export class UiSettingsModel {
       buffer.fontScalePercent === loaded.fontScalePercent
       && buffer.fileViewerFontScalePercent === loaded.fileViewerFontScalePercent
       && buffer.terminalFontScalePercent === loaded.terminalFontScalePercent
-      && buffer.terminalTheme === loaded.terminalTheme)
+      && buffer.terminalTheme === loaded.terminalTheme
+      && buffer.scrollSpeedPercent === loaded.scrollSpeedPercent
+      && buffer.terminalScrollSpeedPercent === loaded.terminalScrollSpeedPercent)
   }
 
   static transition(state: UiSettingsModelState, input: UiSettingsInput): UiSettingsStep {
@@ -62,7 +66,7 @@ export class UiSettingsModel {
       state,
       input,
       // Over the buffer rather than in place of it: what the buffer also carries is whatever else
-      // was written inside the `ui` key, and Reset asks for the four fields back, not for a
+      // was written inside the `ui` key, and Reset asks for the six fields back, not for a
       // hand-written note beside them to be deleted by the save that follows.
       (buffer) => ({ ...buffer, ...UiSettings.defaultValue() }),
     )
@@ -70,22 +74,32 @@ export class UiSettingsModel {
     if (input.input === 'ui-scale')
       return UiSettingsModel.edited(state, (buffer) => ({
         ...buffer,
-        fontScalePercent: UiSettings.snap(input.percent),
+        fontScalePercent: UiSettings.snap(input.percent, UiSettings.fontRangeConst),
       }))
     else if (input.input === 'file-viewer-scale')
       return UiSettingsModel.edited(state, (buffer) => ({
         ...buffer,
-        fileViewerFontScalePercent: UiSettings.snap(input.percent),
+        fileViewerFontScalePercent: UiSettings.snap(input.percent, UiSettings.fontRangeConst),
       }))
     else if (input.input === 'terminal-scale')
       return UiSettingsModel.edited(state, (buffer) => ({
         ...buffer,
-        terminalFontScalePercent: UiSettings.snap(input.percent),
+        terminalFontScalePercent: UiSettings.snap(input.percent, UiSettings.fontRangeConst),
       }))
     else if (input.input === 'terminal-theme')
       return UiSettingsModel.edited(state, (buffer) => ({
         ...buffer,
         terminalTheme: input.name,
+      }))
+    else if (input.input === 'scroll-speed')
+      return UiSettingsModel.edited(state, (buffer) => ({
+        ...buffer,
+        scrollSpeedPercent: UiSettings.snap(input.percent, UiSettings.scrollRangeConst),
+      }))
+    else if (input.input === 'terminal-scroll-speed')
+      return UiSettingsModel.edited(state, (buffer) => ({
+        ...buffer,
+        terminalScrollSpeedPercent: UiSettings.snap(input.percent, UiSettings.scrollRangeConst),
       }))
     else
       throw new Error(`Unknown ui settings input: ${JSON.stringify(input)}`)

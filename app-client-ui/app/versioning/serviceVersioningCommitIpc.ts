@@ -15,6 +15,8 @@ export class ServiceVersioningCommitIpc extends ServiceIpcBase<typeof ServiceVer
     'versioning:commit-open-tab': true,
     'versioning:commit-set-message': true,
     'versioning:commit-run': true,
+    'versioning:commit-revert': true,
+    'versioning:commit-tortoise': true,
     'versioning:commit-close': true,
     'versioning:commit-open-sessions': true,
   } as const
@@ -22,7 +24,8 @@ export class ServiceVersioningCommitIpc extends ServiceIpcBase<typeof ServiceVer
   constructor(private readonly manager: VersioningCommitManager, private readonly ownerIdOf: (sender: WebContents) => string | null,
     private readonly files: Pick<ServiceFileChangesIpc, 'workingTree'>,
     private readonly openTab: (sessionId: string, vcs: 'svn' | 'git', scope?: string) => Promise<ReturnType<AppClientUiIpcInvokeMap['versioning:commit-open-tab']>>,
-    private readonly diff: Pick<ExternalDiffLauncher, 'launch'>) { super() }
+    private readonly diff: Pick<ExternalDiffLauncher, 'launch'>,
+    private readonly confirmRevert: (sender: WebContents, paths: readonly string[], vcs: 'svn' | 'git') => Promise<boolean>) { super() }
 
   initialize(): void {
     this.register('versioning:commit-external-diff', (event, request) => this.diff.launch(this.owner(event.sender), request))
@@ -41,10 +44,13 @@ export class ServiceVersioningCommitIpc extends ServiceIpcBase<typeof ServiceVer
       const ownerId = this.owner(event.sender)
       const draft = this.manager.read(ownerId, draftId)
       if (draft === null) return { ok: false, code: 'invalid-context', detail: 'The commit dialog no longer exists' }
-      return this.files.workingTree(ownerId, draft.sessionId, draft.source, draft.scopeRoot)
+      return this.files.workingTree(ownerId, draft.sessionId, draft.source, draft.scopeRoot, true)
     })
     this.register('versioning:commit-set-message', (event, draftId, message) => this.manager.setMessage(this.owner(event.sender), draftId, message))
     this.register('versioning:commit-run', (event, request) => this.manager.run(this.owner(event.sender), request))
+    this.register('versioning:commit-revert', (event, request) => this.manager.revert(this.owner(event.sender), request,
+      (paths, vcs) => this.confirmRevert(event.sender, paths, vcs)))
+    this.register('versioning:commit-tortoise', (event, draftId, message) => this.manager.openTortoise(this.owner(event.sender), draftId, message))
     this.register('versioning:commit-close', (event, draftId) => this.manager.release(draftId, this.owner(event.sender)))
     this.register('versioning:commit-open-sessions', (event) => { this.owner(event.sender); return this.manager.openSessions() })
     this.assertComplete(ServiceVersioningCommitIpc.channelsConst)

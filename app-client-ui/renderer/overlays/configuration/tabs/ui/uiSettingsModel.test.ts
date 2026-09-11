@@ -16,6 +16,8 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/ui/uiSettingsModel'
     fileViewerFontScalePercent: 125,
     terminalFontScalePercent: 120,
     terminalTheme: 'soft',
+    scrollSpeedPercent: 150,
+    terminalScrollSpeedPercent: 200,
   }
 
   /** What the section holds after the one edit every save test below makes. */
@@ -88,10 +90,8 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/ui/uiSettingsModel'
     const { state } = run(loaded(), { input: 'terminal-scale', percent: 200 })
 
     expect(state.buffer).toEqual({
-      fontScalePercent: 110,
-      fileViewerFontScalePercent: 125,
-      terminalFontScalePercent: UiSettings.maxPercentConst,
-      terminalTheme: 'soft',
+      ...storedConst,
+      terminalFontScalePercent: UiSettings.fontRangeConst.maxPercent,
     })
   })
 
@@ -100,30 +100,20 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/ui/uiSettingsModel'
   it('moves the file viewer scale without touching the interface it sits in', () => {
     const { state } = run(loaded(), { input: 'file-viewer-scale', percent: 140 })
 
-    expect(state.buffer).toEqual({
-      fontScalePercent: 110,
-      fileViewerFontScalePercent: 140,
-      terminalFontScalePercent: 120,
-      terminalTheme: 'soft',
-    })
+    expect(state.buffer).toEqual({ ...storedConst, fileViewerFontScalePercent: 140 })
     expect(UiSettingsModel.isModified(state)).toBe(true)
   })
 
   it('snaps the file viewer scale onto the step like the two beside it', () => {
     const { state } = run(loaded(), { input: 'file-viewer-scale', percent: 200 })
 
-    expect(state.buffer?.fileViewerFontScalePercent).toBe(UiSettings.maxPercentConst)
+    expect(state.buffer?.fileViewerFontScalePercent).toBe(UiSettings.fontRangeConst.maxPercent)
   })
 
-  it('chooses a palette without touching either scale', () => {
+  it('chooses a palette without touching a scale or a speed', () => {
     const { state } = run(loaded(), { input: 'terminal-theme', name: 'vscodeDark' })
 
-    expect(state.buffer).toEqual({
-      fontScalePercent: 110,
-      fileViewerFontScalePercent: 125,
-      terminalFontScalePercent: 120,
-      terminalTheme: 'vscodeDark',
-    })
+    expect(state.buffer).toEqual({ ...storedConst, terminalTheme: 'vscodeDark' })
     expect(UiSettingsModel.isModified(state)).toBe(true)
   })
 
@@ -139,15 +129,10 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/ui/uiSettingsModel'
     expect(UiSettingsModel.isModified(state)).toBe(false)
   })
 
-  it('puts every scale and the palette back to what the shell shipped with', () => {
+  it('puts every scale, both speeds and the palette back to what the shell shipped with', () => {
     const { state } = run(loaded(), { input: 'reset' })
 
-    expect(state.buffer).toEqual({
-      fontScalePercent: 100,
-      fileViewerFontScalePercent: 100,
-      terminalFontScalePercent: 100,
-      terminalTheme: 'original',
-    })
+    expect(state.buffer).toEqual(UiSettings.defaultValue())
     expect(UiSettingsModel.isModified(state)).toBe(true)
   })
 
@@ -162,13 +147,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/ui/uiSettingsModel'
 
     const { state } = run(read, { input: 'reset' })
 
-    expect(state.buffer).toEqual({
-      fontScalePercent: 100,
-      fileViewerFontScalePercent: 100,
-      terminalFontScalePercent: 100,
-      terminalTheme: 'original',
-      _note: 'hand written',
-    })
+    expect(state.buffer).toEqual({ ...UiSettings.defaultValue(), _note: 'hand written' })
   })
 
   it('changes nothing before the value has been read', () => {

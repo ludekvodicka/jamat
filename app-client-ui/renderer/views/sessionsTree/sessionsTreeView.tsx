@@ -24,6 +24,7 @@ import type {
   RemoteControlResponse,
 } from '../../../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import type { IpcResult, LoadSessionsViewResult } from '../../../shared/appClientUiIpc'
+import { AppClientUiReport } from '../../../shared/appClientUiReport'
 import { AppCommands } from '../../../shared/commands'
 import { ErrorText } from '../../../shared/errorText'
 import { type SessionsTabsView, SessionsViewState } from '../../../shared/sessionsViewState'
@@ -102,6 +103,7 @@ export interface SessionsTreePorts extends SavedSessionsFiltersPorts {
 }
 
 export interface SessionsTreeRemotePorts {
+  disconnect(remoteEndpointId: string, sessionIds?: readonly string[]): Promise<IpcResult<void>>
   reopen(remoteEndpointId: string, sessionId: string): Promise<IpcResult<RemoteControlResponse>>
   finalize(remoteEndpointId: string, sessionId: string): Promise<IpcResult<RemoteControlResponse>>
 }
@@ -247,6 +249,7 @@ interface SessionsTreeChrome {
   openMenu(node: SessionTreeNode, position: ContextMenuPosition): void
   openGroupMenu(facts: GroupRowFacts, position: ContextMenuPosition): void
   openRemoteMenu: RemoteRowMenu
+  disconnect(remoteEndpointId: string, sessionIds?: readonly string[]): void
   openSettings(tab: ConfigurationTabId): void
 }
 
@@ -727,10 +730,18 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     openGroupMenu,
     openRemoteMenu,
     openSettings: onOpenSettings,
+    disconnect: (remoteEndpointId, sessionIds) => {
+      void remotePorts.disconnect(remoteEndpointId, sessionIds).then((answer) => {
+        if (!answer.ok) throw new Error(answer.error)
+        const entry = remoteSnapshot?.outbound.find((endpoint) => endpoint.remoteEndpointId === remoteEndpointId)
+        for (const sessionId of sessionIds ?? entry?.selectedSessionIds ?? [])
+          onCloseTerminal({ kind: 'remote', remoteEndpointId, sessionId })
+      }).catch((error: unknown) => AppClientUiReport.error(String(error)))
+    },
   }), [
     pending, collapsed, activeTargetKey, inFlight, awaitingAsk,
     toggle, request, onLaunch, onOpenTerminal, openMenu, openGroupMenu, openRemoteMenu,
-    onOpenSettings,
+    onOpenSettings, remotePorts, remoteSnapshot, onCloseTerminal,
   ])
 
   const resetFilters = (): void => {
@@ -1381,13 +1392,13 @@ function SessionRow(props: {
         )}
         <span
           className={`jamat-sessions__glyph jamat-sessions__glyph--paint-${
-            SessionNodeState.paintOf(node.glyph, marked)}`}
+            node.badges.commitOpen ? 'danger' : SessionNodeState.paintOf(node.glyph, marked)}`}
           data-glyph={node.glyph}
-          data-paint={SessionNodeState.paintOf(node.glyph, marked)}
-          title={SessionNodeState.glyphTitleOf(node.glyph, marked)}
-          aria-label={SessionNodeState.glyphTitleOf(node.glyph, marked)}
+          data-paint={node.badges.commitOpen ? 'danger' : SessionNodeState.paintOf(node.glyph, marked)}
+          title={node.badges.commitOpen ? 'Commit review required' : SessionNodeState.glyphTitleOf(node.glyph, marked)}
+          aria-label={node.badges.commitOpen ? 'Commit review required' : SessionNodeState.glyphTitleOf(node.glyph, marked)}
         >
-          <SignalGlyph glyph={SessionNodeState.characterOf(node.glyph, marked)} />
+          <SignalGlyph glyph={node.badges.commitOpen ? '!' : SessionNodeState.characterOf(node.glyph, marked)} />
         </span>
         <button
           type="button"
@@ -1762,6 +1773,8 @@ class RemoteSessionMenu {
     const endpointId = TerminalTargetCodec.endpointOf(node.target)
     if (endpointId === null)
       throw new Error(`A remote row was drawn for a local session: ${node.sessionId}`)
+    items.push({ key: 'disconnect', label: 'Disconnect',
+      onSelect: () => chrome.disconnect(endpointId, [node.sessionId]) })
     items.push({
       key: 'copy-reference',
       label: AppCommands.byId('session.copyReference').title,
@@ -1801,6 +1814,16 @@ class RemoteComputerMenu {
           purpose: 'remote',
           remote: { remoteEndpointId: menu.remoteEndpointId, displayName: menu.displayName },
         }),
+      },
+      {
+        key: 'disconnect',
+        label: 'Disconnect',
+        onSelect: () => chrome.disconnect(menu.remoteEndpointId),
+      },
+      {
+        key: 'connect-session',
+        label: 'Connect session…',
+        onSelect: () => chrome.launch({ purpose: 'remote' }),
       },
       {
         key: 'remote-settings',

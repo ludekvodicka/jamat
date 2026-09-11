@@ -1,6 +1,10 @@
 import { useEffect, useId, useRef, useState } from 'react'
 
-import { type TerminalThemeName, UiSettings } from '../../../../../shared/uiSettings'
+import {
+  type TerminalThemeName,
+  UiSettings,
+  type UiSettingsRange,
+} from '../../../../../shared/uiSettings'
 import { UiSettingsStore } from '../../../../uiSettings/uiSettingsStore'
 import { ConfigurationSection } from '../../configurationSection'
 import type { ConfigurationTabProps } from '../../configurationTab.types'
@@ -9,8 +13,9 @@ import { UiSettingsEffects, type UiSettingsPorts } from './uiSettingsEffects'
 import { UiSettingsModel, type UiSettingsModelState } from './uiSettingsModel'
 
 /**
- * The three font scales and the terminal's colours: how big this shell draws its own text, how big
- * a file viewer and a terminal draw theirs, and which palette the terminal draws it in.
+ * The three font scales, the two scroll speeds and the terminal's colours: how big this shell draws
+ * its own text, how big a file viewer and a terminal draw theirs, how far one turn of the wheel
+ * moves each of them, and which palette the terminal draws in.
  *
  * It saves itself, and only when Save is pressed. Everything before that is a PREVIEW: the store
  * applies it to the live document so the answer to "is 115 % too big" is the window itself rather
@@ -31,6 +36,8 @@ export function UiSettingsTab(props: ConfigurationTabProps): React.JSX.Element {
   const fileViewerSliderId = useId()
   const terminalSliderId = useId()
   const terminalThemeId = useId()
+  const scrollSliderId = useId()
+  const terminalScrollSliderId = useId()
 
   const [ports] = useState<UiSettingsPorts>(() => {
     const self: UiSettingsPorts = {
@@ -128,7 +135,8 @@ export function UiSettingsTab(props: ConfigurationTabProps): React.JSX.Element {
           hint="Everything this window draws except the status bar, which is chrome of a fixed height."
           id={uiSliderId}
           label="Interface text size"
-          percent={buffer?.fontScalePercent ?? UiSettings.defaultPercentConst}
+          percent={buffer?.fontScalePercent ?? UiSettings.fontRangeConst.defaultPercent}
+          range={UiSettings.fontRangeConst}
           // Live while the thumb moves: the window behind this card is the answer to how big 115 % is.
           onSlide={(percent) => {
             ports.dispatch({ input: 'ui-scale', percent })
@@ -140,7 +148,8 @@ export function UiSettingsTab(props: ConfigurationTabProps): React.JSX.Element {
           hint="The document a file viewer draws: markdown, source, hex and diff. Its toolbar above them keeps the interface size."
           id={fileViewerSliderId}
           label="File viewer text size"
-          percent={buffer?.fileViewerFontScalePercent ?? UiSettings.defaultPercentConst}
+          percent={buffer?.fileViewerFontScalePercent ?? UiSettings.fontRangeConst.defaultPercent}
+          range={UiSettings.fontRangeConst}
           // Live, like the interface scale and unlike the terminal's: a viewer is styled by the same
           // document this card sits in, so a step of the drag is a repaint and nothing more.
           onSlide={(percent) => {
@@ -153,9 +162,42 @@ export function UiSettingsTab(props: ConfigurationTabProps): React.JSX.Element {
           hint="The terminal alone. It follows once the slider is let go, not while it is dragged."
           id={terminalSliderId}
           label="Terminal text size"
-          percent={buffer?.terminalFontScalePercent ?? UiSettings.defaultPercentConst}
+          percent={buffer?.terminalFontScalePercent ?? UiSettings.fontRangeConst.defaultPercent}
+          range={UiSettings.fontRangeConst}
           sliderRef={terminalSlider}
           onSlide={(percent) => ports.dispatch({ input: 'terminal-scale', percent })}
+        />
+      </ConfigurationSection>
+      <ConfigurationSection title="Scrolling">
+        <UiSettingsSlider
+          disabled={buffer === null || saving}
+          hint="How far one turn of the wheel moves a list, a tree or a document. 100 % is what the window does on its own."
+          id={scrollSliderId}
+          label="Interface scroll speed"
+          percent={buffer?.scrollSpeedPercent ?? UiSettings.scrollRangeConst.defaultPercent}
+          range={UiSettings.scrollRangeConst}
+          // Live, like the two scales this card applies at once: the window behind the card is
+          // scrollable, so the answer to how fast 250 % is comes from turning the wheel on it.
+          onSlide={(percent) => {
+            ports.dispatch({ input: 'scroll-speed', percent })
+            UiSettingsPreview.of(stateRef.current)
+          }}
+        />
+        <UiSettingsSlider
+          disabled={buffer === null || saving}
+          hint="The terminal alone, which scrolls a buffer of its own. It takes this while it is dragged; no resize is involved."
+          id={terminalScrollSliderId}
+          label="Terminal scroll speed"
+          percent={
+            buffer?.terminalScrollSpeedPercent ?? UiSettings.scrollRangeConst.defaultPercent
+          }
+          range={UiSettings.scrollRangeConst}
+          // Live, unlike the terminal's font size: a multiplier on the wheel changes no cell, so
+          // nothing renegotiates the PTY geometry and there is no drag to settle.
+          onSlide={(percent) => {
+            ports.dispatch({ input: 'terminal-scroll-speed', percent })
+            UiSettingsPreview.of(stateRef.current)
+          }}
         />
       </ConfigurationSection>
       <ConfigurationSection title="Terminal colours">
@@ -225,12 +267,14 @@ class UiSettingsPreview {
 }
 
 /**
- * One scale. The bounds and the step come from `UiSettings`, the same four numbers the main process
- * validates a write against, so a slider cannot offer a value the store would then refuse.
+ * One percentage. The bounds and the step are the caller's `range` - one of the two `UiSettings`
+ * holds, the same numbers the main process validates a write against - so a slider cannot offer a
+ * value the store would then refuse. A scale and a scroll speed want different ones: a size is
+ * nudged 5 % at a time inside a narrow band, a multiplier is moved in quarters up to four times.
  *
  * `onInput` rather than `onChange`, for all of them: the buffer has to follow the thumb, or the
  * readout beside it and the position of the thumb would disagree while it is dragged. Whether a
- * MOVE is also a preview is the caller's decision, and the terminal's is the one that says no.
+ * MOVE is also a preview is the caller's decision, and the terminal's font size says no.
  */
 function UiSettingsSlider(props: {
   disabled: boolean
@@ -238,6 +282,7 @@ function UiSettingsSlider(props: {
   id: string
   label: string
   percent: number
+  range: UiSettingsRange
   sliderRef?: React.Ref<HTMLInputElement>
   onSlide: (percent: number) => void
 }): React.JSX.Element {
@@ -254,10 +299,10 @@ function UiSettingsSlider(props: {
         className="jamat-configuration-ui__slider"
         disabled={props.disabled}
         id={props.id}
-        max={UiSettings.maxPercentConst}
-        min={UiSettings.minPercentConst}
+        max={props.range.maxPercent}
+        min={props.range.minPercent}
         ref={props.sliderRef}
-        step={UiSettings.stepPercentConst}
+        step={props.range.stepPercent}
         type="range"
         value={props.percent}
         // The readout beside it is a second copy of the value, not the only one: without this a

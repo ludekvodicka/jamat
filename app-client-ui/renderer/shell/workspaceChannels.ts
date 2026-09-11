@@ -36,8 +36,8 @@ export class WorkspaceChannels {
     return result.ok && result.value
   }
 
-  static async claimPanel(panel: WorkspacePanelPresence): Promise<ClaimPanelResult> {
-    return IpcFailure.unwrap(await window.appClient.tabs.claimPanel(panel))
+  static async claimPanel(panel: WorkspacePanelPresence, activate?: boolean): Promise<ClaimPanelResult> {
+    return IpcFailure.unwrap(await window.appClient.tabs.claimPanel(panel, activate))
   }
 
   static async reconcilePanels(

@@ -21,7 +21,6 @@ import type {
   RemoteControlPeerIdentity,
   RemoteControlPeerProfile,
 } from '../../../lib-orchestrator/remoteControl/remoteControlPeerApi.types'
-import { RemoteControlPeerBackoff } from '../../../lib-orchestrator/remoteControl/remoteControlPeerBackoff'
 import { RemoteControlPeerChannel } from '../../../lib-orchestrator/remoteControl/remoteControlPeerChannel'
 import type {
   SessionsOpResult,
@@ -36,13 +35,11 @@ import { JsonShape } from '../../../lib-orchestrator/shared/jsonShape'
 export interface RemoteConnectionsManagerDeps {
   identity: RemoteControlPeerIdentity
   profiles(): readonly RemoteControlPeerProfile[]
-  connect(profile: RemoteControlPeerProfile): Promise<RemoteControlStepResult<RemoteControlPeerTransport>>
+  connect(profile: RemoteControlPeerProfile, signal: AbortSignal): Promise<RemoteControlStepResult<RemoteControlPeerTransport>>
   onChanged(): void
   onError(message: string): void
   requestId?(): string
   operationId?(): string
-  reconnectDelay?(attempt: number): number
-  /** The clock the two timestamps in the snapshot are read off, so a test can hold one still. */
   now?(): number
   /** How long a connection outlives its last holder. Named by a test rather than waited out. */
   idleDelayMilliseconds?: number
@@ -55,6 +52,7 @@ interface ManagedRemoteAttachment {
   spec: TerminalAttachSpec
   onFrame(frame: TerminalFrame): void
   attached: boolean
+  attachPromise: Promise<RemoteControlStepResult<{ attachId: string; sessionId: string }>> | null
   active: boolean
 }
 
@@ -70,8 +68,8 @@ interface RemoteOutboundState {
   nextRetryAt: number | null
   applicationVersion: string | null
   optionalOperations: readonly RemoteControlOptionalOperation[] | null
-  reconnectAttempt: number
-  reconnectTimer: ReturnType<typeof setTimeout> | null
+  selectedSessionIds: Set<string>
+  abort: AbortController | null
   /** Set while a dial is in flight, so a second caller waits for it instead of starting another. */
   connectPromise: Promise<void> | null
   /** Counts commands in flight through this endpoint; one of them is a reason to stay connected. */
@@ -84,22 +82,11 @@ interface RemoteOutboundState {
 }
 
 export class RemoteConnectionsManager implements RemoteConnectionsPort {
-  /**
-   * How long a connection outlives its last holder. Long enough that closing a remote tab and
-   * opening another does not cost a handshake, short enough that a window left on the sessions
-   * tree is not holding a socket open on the other machine for the rest of the day.
-   */
-  static readonly idleDelayMillisecondsConst = 30_000
+  static readonly idleDelayMillisecondsConst = 0
   private readonly byEndpoint = new Map<string, RemoteOutboundState>()
-  /**
-   * Who is asking for every paired computer to be reachable: a launcher card picking a computer,
-   * the Network settings screen. Held by name so the same surface asking twice is one hold, and
-   * so a window that dies without releasing can be cleaned up by the id it was given.
-   */
-  private readonly holders = new Set<string>()
+  private readonly holders = new Map<string, string>()
   private readonly requestId: () => string
   private readonly operationId: () => string
-  private readonly reconnectDelay: (attempt: number) => number
   private readonly setTimer: (
     callback: () => void,
     milliseconds: number,
@@ -114,7 +101,6 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
   constructor(private readonly deps: RemoteConnectionsManagerDeps) {
     this.requestId = deps.requestId ?? randomUUID
     this.operationId = deps.operationId ?? randomUUID
-    this.reconnectDelay = deps.reconnectDelay ?? RemoteControlPeerBackoff.delay
     this.setTimer = deps.setTimer ?? setTimeout
     this.clearTimer = deps.clearTimer ?? clearTimeout
     this.now = deps.now ?? Date.now
@@ -135,23 +121,63 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
     this.reloadProfiles()
   }
 
-  /**
-   * "Keep every paired computer reachable while I am open." The launcher's computer list and the
-   * Network settings screen each take one: both draw what only a live connection can answer, and
-   * both are closed again in seconds.
-   *
-   * A hold is not a connection. It says a dial may happen and should be retried while it fails;
-   * what a caller waits for is the status in the snapshot.
-   */
-  holdConnections(holderId: string): void {
-    if (this.holders.has(holderId)) return
-    this.holders.add(holderId)
-    for (const state of this.byEndpoint.values()) this.wanted(state)
+  async connectComputer(holderId: string, remoteEndpointId: string): Promise<RemoteControlStepResult<undefined>> {
+    const state = this.byEndpoint.get(remoteEndpointId)
+    if (!state) return RemoteConnectionsManager.error('not-found', 'Remote endpoint is unknown')
+    const previous = this.holders.get(holderId)
+    this.holders.set(holderId, remoteEndpointId)
+    if (previous && previous !== remoteEndpointId) {
+      const old = this.byEndpoint.get(previous)
+      if (old) this.unwanted(old)
+    }
+    if (!await this.ensureConnected(state))
+      return { ok: false, error: state.error ?? { code: 'unavailable', detail: 'Remote computer is offline. Press Connect to try again.' } }
+    return { ok: true, value: undefined }
   }
 
   releaseConnections(holderId: string): void {
-    if (!this.holders.delete(holderId)) return
-    for (const state of this.byEndpoint.values()) this.unwanted(state)
+    const endpointId = this.holders.get(holderId)
+    this.holders.delete(holderId)
+    const state = endpointId === undefined ? undefined : this.byEndpoint.get(endpointId)
+    if (state) this.unwanted(state)
+  }
+
+  async selectSession(remoteEndpointId: string, sessionId: string): Promise<RemoteControlStepResult<undefined>> {
+    const state = this.byEndpoint.get(remoteEndpointId)
+    if (!state || state.status !== 'connected')
+      return RemoteConnectionsManager.error('unavailable', 'Connect the computer first')
+    if (!state.sessions?.sessions.some((session) => session.sessionId === sessionId))
+      await this.refreshSessions(state, state.generation)
+    if (state.status !== 'connected' || !state.sessions?.sessions.some((session) => session.sessionId === sessionId))
+      return RemoteConnectionsManager.error('not-found', 'Remote session is no longer available')
+    state.selectedSessionIds.add(sessionId)
+    this.cancelIdle(state)
+    this.changed()
+    return { ok: true, value: undefined }
+  }
+
+  isSessionSelected(remoteEndpointId: string, sessionId: string): boolean {
+    return this.byEndpoint.get(remoteEndpointId)?.selectedSessionIds.has(sessionId) ?? false
+  }
+
+  async disconnectSessions(remoteEndpointId: string, sessionIds?: readonly string[]): Promise<void> {
+    const state = this.byEndpoint.get(remoteEndpointId)
+    if (!state) return
+    const removed = new Set(sessionIds ?? state.selectedSessionIds)
+    for (const id of removed) state.selectedSessionIds.delete(id)
+    if (sessionIds === undefined)
+      for (const [holder, endpointId] of this.holders)
+        if (endpointId === remoteEndpointId) this.holders.delete(holder)
+    this.changed()
+    const attachments = [...state.attachments.values()].filter((attachment) =>
+      sessionIds === undefined || removed.has(attachment.spec.sessionId))
+    await Promise.all(attachments.map(async (attachment) => {
+      RemoteConnectionsManager.safeFrame(attachment, {
+        type: 'terminal.status', status: 'lost', detail: 'Disconnected locally. The remote session continues running.',
+      })
+      await this.detachTerminal(remoteEndpointId, attachment.attachId)
+    }))
+    this.unwanted(state)
   }
 
   reloadProfiles(): void {
@@ -169,7 +195,6 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
         const created = RemoteConnectionsManager.state(profile)
         this.byEndpoint.set(profile.remoteEndpointId, created)
         this.changed()
-        if (this.started) this.wanted(created)
       } else if (JSON.stringify(state.profile) !== JSON.stringify(profile)) {
         this.disposeState(state)
         state.profile = profile
@@ -183,47 +208,33 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
         state.applicationVersion = null
         state.optionalOperations = null
         this.changed()
-        if (this.started) this.wanted(state)
       }
     }
   }
 
-  /** Whether anything is asking for this computer right now: a screen, a tab, a command. */
-  private static needed(state: RemoteOutboundState, holders: ReadonlySet<string>): boolean {
-    return holders.size > 0 || state.attachments.size > 0 || state.pending > 0
+  private needed(state: RemoteOutboundState): boolean {
+    return [...this.holders.values()].includes(state.profile.remoteEndpointId)
+      || state.selectedSessionIds.size > 0 || state.attachments.size > 0 || state.pending > 0
   }
 
-  /** Something started needing it: cancel the hang-up, and dial if nothing is connected. */
-  private wanted(state: RemoteOutboundState): void {
-    if (!this.started
-      || this.stopping
-      || !RemoteConnectionsManager.needed(state, this.holders))
-      return
-    this.cancelIdle(state)
-    if (state.status === 'connected' || state.status === 'connecting') return
-    void this.connect(state)
-  }
-
-  /**
-   * Something stopped needing it. The hang-up waits out `idleDelay` rather than happening here,
-   * because closing one remote tab to open another would otherwise cost a full handshake, and
-   * because the first thing a person does after closing the settings card is open it again.
-   */
   private unwanted(state: RemoteOutboundState): void {
-    if (RemoteConnectionsManager.needed(state, this.holders) || state.idleTimer) return
+    if (this.needed(state) || state.idleTimer) return
     const generation = state.generation
     state.idleTimer = this.setTimer(() => {
       state.idleTimer = null
       if (!this.current(state, generation)
-        || RemoteConnectionsManager.needed(state, this.holders))
+        || this.needed(state))
         return
-      this.cancelReconnect(state)
+      state.generation += 1
+      state.abort?.abort()
+      state.connectPromise = null
+      state.refreshPromise = null
+      state.refreshOwed = false
       this.disposeConnection(state)
       state.status = 'idle'
       state.error = null
       // Hung up, so what it last said about its sessions is history rather than an answer.
       state.sessions = null
-      state.reconnectAttempt = 0
       this.changed()
     }, this.idleDelay)
     state.idleTimer.unref?.()
@@ -235,21 +246,10 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
     state.idleTimer = null
   }
 
-  /**
-   * Now, instead of when the backoff says. The person at the screen knows what the timer cannot -
-   * the far end was just started, the firewall rule was just written - so the wait goes and the
-   * count with it: a dial that fails again starts the backoff over at its shortest delay rather
-   * than at the hour this one had climbed to.
-   *
-   * A profile that is already connected or already dialling is answered by doing nothing, which is
-   * `connect`'s own rule and not a second one written here. The pending hang-up is called off too:
-   * the button is on a screen that is holding this computer anyway, and a Retry that dialled into a
-   * timer about to fire would be a connection that hangs up a moment after it stands.
-   */
   retryNow(remoteEndpointId: string): void {
     const state = this.byEndpoint.get(remoteEndpointId)
     if (!state) return
-    void this.ensureConnected(state)
+    void this.ensureConnected(state).finally(() => this.unwanted(state))
   }
 
   stop(): void {
@@ -357,27 +357,23 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
       spec: structuredClone(spec),
       onFrame,
       attached: false,
+      attachPromise: null,
       active: false,
     }
-    // In the map before the dial, so it is already a reason to be connected and the reconnect
-    // loop keeps it: an attach is the one holder that outlives the call that made it.
     state.attachments.set(attachId, attachment)
     this.cancelIdle(state)
-    if (state.status !== 'connected') {
+    if (state.status !== 'connected' || !state.channel) {
       RemoteConnectionsManager.safeFrame(attachment, {
-        type: 'terminal.status',
-        status: 'connecting',
-        detail: 'Reaching the remote computer',
+        type: 'terminal.status', status: 'connecting',
+        detail: 'Remote computer is disconnected. Open Remote computers and press Connect.',
       })
-      if (!await this.ensureConnected(state) || !state.channel) {
-        // Left in the map on purpose when the endpoint is still wanted: the frame above says
-        // connecting, and the reconnect loop is what turns that into a terminal.
-        if (state.attachments.get(attachId) !== attachment)
-          return RemoteConnectionsManager.error('unavailable', 'Remote terminal attach was removed')
-        return RemoteConnectionsManager.error('unavailable', 'Remote AppClientUI is offline')
-      }
-      if (state.attachments.get(attachId) !== attachment)
-        return RemoteConnectionsManager.error('unavailable', 'Remote terminal attach was removed')
+      return RemoteConnectionsManager.error('unavailable', 'Connect the remote computer first')
+    }
+    if (state.sessions?.reconciled !== true) {
+      RemoteConnectionsManager.safeFrame(attachment, {
+        type: 'terminal.status', status: 'connecting', detail: 'Waiting for remote sessions to synchronize.',
+      })
+      return RemoteConnectionsManager.error('unavailable', 'Waiting for remote sessions to synchronize.')
     }
     return this.attach(state, attachment)
   }
@@ -425,7 +421,7 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
       return RemoteConnectionsManager.error('not-found', 'Remote terminal attach is unknown')
     attachment.active = active
     if (!state.channel || state.status !== 'connected' || !attachment.attached)
-      return RemoteConnectionsManager.error('unavailable', 'Remote terminal attach is reconnecting')
+      return RemoteConnectionsManager.error('unavailable', 'Remote terminal is disconnected. Press Connect to reconnect.')
     return RemoteConnectionsManager.socketStep(await state.channel.socket({
       protocol: RemoteControlConst.protocol,
       requestId: this.requestId(),
@@ -461,28 +457,20 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
     }))
   }
 
-  /**
-   * One dial per endpoint at a time, and every caller waits for the same one. Two surfaces opening
-   * at once is the ordinary case - a launcher card over a settings screen - and two dials to one
-   * computer would leave one of the two transports orphaned.
-   */
   private connect(state: RemoteOutboundState): Promise<void> {
     if (state.connectPromise) return state.connectPromise
-    if (this.stopping || state.status === 'connecting' || state.status === 'connected')
+    if (!this.started || this.stopping || state.status === 'connecting' || state.status === 'connected')
       return Promise.resolve()
-    state.connectPromise = this.dial(state)
-    return state.connectPromise.finally(() => { state.connectPromise = null })
+    const promise = this.dial(state)
+    state.connectPromise = promise
+    return promise.finally(() => {
+      if (state.connectPromise === promise) state.connectPromise = null
+    })
   }
 
-  /**
-   * Dial now, whatever the backoff had planned. What asks for this knows what a timer cannot: a
-   * person just opened a card about this computer, or a command was just sent to it.
-   */
   private async ensureConnected(state: RemoteOutboundState): Promise<boolean> {
     if (RemoteConnectionsManager.isConnected(state)) return true
     this.cancelIdle(state)
-    this.cancelReconnect(state)
-    state.reconnectAttempt = 0
     await this.connect(state)
     return RemoteConnectionsManager.isConnected(state)
   }
@@ -498,7 +486,10 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
     state.error = null
     state.nextRetryAt = null
     this.changed()
-    const answer = await this.deps.connect(state.profile)
+    const abort = new AbortController()
+    state.abort = abort
+    const answer = await this.deps.connect(state.profile, abort.signal).catch(() =>
+      RemoteConnectionsManager.error<RemoteControlPeerTransport>('unavailable', 'Remote connection failed'))
     if (!this.current(state, generation)) {
       if (answer.ok) answer.value.close()
       return
@@ -507,7 +498,6 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
       state.status = 'offline'
       state.error = structuredClone(answer.error)
       this.changed()
-      this.scheduleReconnect(state)
       return
     }
     state.connectionId = answer.value.connectionId
@@ -520,8 +510,10 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
       const attachment = state.attachments.get(message.attachId)
       if (!attachment) return
       if (message.frame.type === 'terminal.exit'
-        || (message.frame.type === 'terminal.status' && message.frame.status === 'lost'))
+        || (message.frame.type === 'terminal.status' && message.frame.status === 'lost')) {
         attachment.attached = false
+        attachment.attachPromise = null
+      }
       RemoteConnectionsManager.safeFrame(attachment, message.frame)
     })
     const ready = await this.synchronize(state, generation)
@@ -531,14 +523,10 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
     }
     state.status = 'connected'
     state.error = null
-    state.reconnectAttempt = 0
     state.lastConnectedAt = this.now()
     this.changed()
     void this.hello(state, generation)
-    for (const attachment of state.attachments.values()) {
-      if (!this.current(state, generation)) return
-      void this.attach(state, attachment)
-    }
+    this.reattachAvailable(state)
   }
 
   /**
@@ -556,7 +544,7 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
       operation: 'system.hello',
       body: {},
     })
-    if (!this.current(state, generation) || !response.ok) return
+    if (!this.current(state, generation) || state.channel !== channel || !response.ok) return
     const hello = RemoteConnectionsManager.helloOf(response.value)
     if (!hello) return
     state.applicationVersion = hello.applicationVersion
@@ -592,13 +580,16 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
       state.refreshOwed = true
       return state.refreshPromise
     }
-    state.refreshPromise = this.refreshSessionsNow(state, generation)
-    try { return await state.refreshPromise }
+    const promise = this.refreshSessionsNow(state, generation)
+    state.refreshPromise = promise
+    try { return await promise }
     finally {
-      state.refreshPromise = null
-      if (state.refreshOwed && this.current(state, generation)) {
-        state.refreshOwed = false
-        void this.refreshSessions(state, generation)
+      if (state.refreshPromise === promise) {
+        state.refreshPromise = null
+        if (state.refreshOwed && this.current(state, generation)) {
+          state.refreshOwed = false
+          void this.refreshSessions(state, generation)
+        }
       }
     }
   }
@@ -615,7 +606,7 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
       operation: 'sessions.list',
       body: {},
     })
-    if (!this.current(state, generation)) return false
+    if (!this.current(state, generation) || state.channel !== channel) return false
     if (!response.ok) {
       state.error = structuredClone(response.error)
       return false
@@ -626,6 +617,7 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
       return false
     }
     state.sessions = snapshot
+    this.reattachAvailable(state)
     this.changed()
     return true
   }
@@ -642,7 +634,30 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
       throw new Error(`Unknown remote event kind: ${JSON.stringify(event)}`)
   }
 
-  private async attach(
+  private reattachAvailable(state: RemoteOutboundState): void {
+    // Persisted live rows can arrive before the restarted peer has resolved their Host runtimes.
+    if (state.status !== 'connected' || state.sessions?.reconciled !== true) return
+    for (const attachment of state.attachments.values())
+      if (!attachment.attached && state.sessions?.sessions.some((session) =>
+        session.sessionId === attachment.spec.sessionId && session.life === 'live'))
+        void this.attach(state, attachment)
+  }
+
+  private attach(
+    state: RemoteOutboundState,
+    attachment: ManagedRemoteAttachment,
+  ): Promise<RemoteControlStepResult<{ attachId: string; sessionId: string }>> {
+    if (attachment.attached)
+      return Promise.resolve({ ok: true, value: { attachId: attachment.attachId, sessionId: attachment.spec.sessionId } })
+    if (attachment.attachPromise) return attachment.attachPromise
+    const promise = this.attachNow(state, attachment)
+    attachment.attachPromise = promise
+    return promise.finally(() => {
+      if (attachment.attachPromise === promise) attachment.attachPromise = null
+    })
+  }
+
+  private async attachNow(
     state: RemoteOutboundState,
     attachment: ManagedRemoteAttachment,
   ): Promise<RemoteControlStepResult<{ attachId: string; sessionId: string }>> {
@@ -658,17 +673,21 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
       sessionId: attachment.spec.sessionId,
       size: structuredClone(attachment.spec.size),
     })
-    if (state.attachments.get(attachment.attachId) !== attachment)
+    if (state.channel !== channel || state.attachments.get(attachment.attachId) !== attachment) {
+      // A disconnect can remove the local attachment before the peer finishes opening it.
+      if (response.ok && state.channel === channel)
+        await channel.socket({
+          protocol: RemoteControlConst.protocol,
+          requestId: this.requestId(),
+          operationId: this.operationId(),
+          operation: 'terminal.detach',
+          attachId: attachment.attachId,
+        })
       return RemoteConnectionsManager.error('unavailable', 'Remote terminal attach was removed')
+    }
     const result = RemoteConnectionsManager.socketStep(response)
     attachment.attached = result.ok
-    /*
-     * A refusal is the remote's own answer - no such session, not live - and it is final. Keeping
-     * the attachment after one poisons its attachId for every retry (`already exists`) and hands
-     * each reconnect a dead attachment to open again for as long as the profile lives. A transport
-     * failure is the other case: it says nothing about the session, so that one waits for the next
-     * connection, which is what the reconnect loop is for.
-     */
+    // Transport failures retain the attachment for a later explicit connection attempt.
     if (!result.ok) {
       if (result.error.code !== 'unavailable' && result.error.code !== 'timeout')
         state.attachments.delete(attachment.attachId)
@@ -689,61 +708,41 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
     if (!state || !attachment)
       return RemoteConnectionsManager.error('not-found', 'Remote terminal attach is unknown')
     if (!state.channel || state.status !== 'connected' || !attachment.attached)
-      return RemoteConnectionsManager.error('unavailable', 'Remote terminal attach is reconnecting')
+      return RemoteConnectionsManager.error('unavailable', 'Remote terminal is disconnected. Press Connect to reconnect.')
     return RemoteConnectionsManager.socketStep(await state.channel.socket(request))
   }
 
   private disconnected(state: RemoteOutboundState, generation: number): void {
     if (!this.current(state, generation) || state.status === 'offline') return
-    const needed = RemoteConnectionsManager.needed(state, this.holders)
+    const needed = this.needed(state)
+    state.generation += 1
+    state.connectPromise = null
+    state.refreshPromise = null
+    state.refreshOwed = false
     state.channel = null
     state.connectionId = null
     state.status = needed ? 'offline' : 'idle'
     state.error = needed
-      ? { code: 'unavailable', detail: 'Remote AppClientUI disconnected' }
+      ? { code: 'unavailable', detail: 'Remote AppClientUI disconnected. Press Connect to reconnect.' }
       : null
     for (const attachment of state.attachments.values()) {
       attachment.attached = false
+      attachment.attachPromise = null
       RemoteConnectionsManager.safeFrame(attachment, {
         type: 'terminal.status',
         status: 'connecting',
-        detail: 'Remote AppClientUI disconnected',
+        detail: 'Remote AppClientUI disconnected. Press Connect to reconnect.',
       })
     }
     this.changed()
-    if (needed) this.scheduleReconnect(state)
-  }
-
-  /** Only while something is still asking. Nobody retries a computer nobody wants to reach. */
-  private scheduleReconnect(state: RemoteOutboundState): void {
-    if (this.stopping
-      || state.reconnectTimer
-      || !RemoteConnectionsManager.needed(state, this.holders))
-      return
-    const generation = state.generation
-    const delay = this.reconnectDelay(state.reconnectAttempt++)
-    // Written where the wait is decided rather than where it is drawn: a screen adding the delay to
-    // its own clock would say a different minute on every computer whose clock has drifted.
-    state.nextRetryAt = this.now() + delay
-    state.reconnectTimer = this.setTimer(() => {
-      state.reconnectTimer = null
-      if (this.current(state, generation)) void this.connect(state)
-    }, delay)
-    state.reconnectTimer.unref?.()
-  }
-
-  private cancelReconnect(state: RemoteOutboundState): void {
-    if (state.reconnectTimer) {
-      this.clearTimer(state.reconnectTimer)
-      state.reconnectTimer = null
-    }
-    state.nextRetryAt = null
   }
 
   private disposeState(state: RemoteOutboundState): void {
     state.generation += 1
     this.cancelIdle(state)
-    this.cancelReconnect(state)
+    state.abort?.abort()
+    state.connectPromise = null
+    state.selectedSessionIds.clear()
     this.disposeConnection(state)
     for (const attachment of state.attachments.values())
       RemoteConnectionsManager.safeFrame(attachment, {
@@ -787,8 +786,8 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
       nextRetryAt: null,
       applicationVersion: null,
       optionalOperations: null,
-      reconnectAttempt: 0,
-      reconnectTimer: null,
+      selectedSessionIds: new Set(),
+      abort: null,
       connectPromise: null,
       pending: 0,
       idleTimer: null,
@@ -817,6 +816,7 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
         : [...state.optionalOperations],
       connectionId: state.connectionId,
       sessions: structuredClone(state.sessions),
+      selectedSessionIds: [...state.selectedSessionIds],
     }
   }
 

@@ -1,3 +1,4 @@
+import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import type {
@@ -90,6 +91,10 @@ class FakeCliClient implements AppClientCliClientPort {
   }
 
   private value(operation: RemoteControlRequestUnion['operation']): unknown {
+    if (operation === 'tabs.openCommit') return { kind: 'commit-opened', commitSessionId: '11111111-1111-4111-8111-111111111111',
+      panelId: 'panel', windowId: 'main', scopeRoot: 'Q:/Apps/One', messageApplied: true }
+    if (operation === 'tabs.commitStatus') return { kind: 'commit-status', commitSessionId: '11111111-1111-4111-8111-111111111111',
+      sessionId: 'session-001', vcs: 'svn', scopeRoot: 'Q:/Apps/One', state: 'committed', closed: false, revision: '42', detail: null }
     if (operation === 'sessions.list')
       return this.invalidSessionsSnapshot ? { sessions: [null] } : FakeCliClient.snapshot(this.sessions)
     if (operation === 'sessions.transcript')
@@ -233,6 +238,8 @@ class CliHarness {
       requestId: () => `request-${++this.nextRequestId}`,
       write: (value) => this.output.push(value),
       readJson: () => this.jsonInput,
+      now: Date.now,
+      pause: async () => {},
       ...(signal === undefined ? {} : { signal }),
     }
   }
@@ -279,11 +286,81 @@ class CliHarness {
 }
 
 describe('app-client-cli/app/app', () => {
+  it.each(['svn', 'git'])('waits through the %s open into the returned commit UUID on the same controller', async (vcs) => {
+    const h = new CliHarness()
+    h.env.JAMAT_V3_SESSION_ID = 'session-001'
+    h.client.sessions[0] = { ...h.client.sessions[0]!, life: 'live' }
+    expect(await new AppClientCli([`commit-${vcs}-jamat`, '--self', '--wait', '--fallback', 'report'], h.deps()).run()).toBe(0)
+    expect(h.discoveries).toBe(1)
+    expect(h.client.requests.map((request) => request.operation)).toEqual(['sessions.list', 'tabs.openCommit', 'tabs.commitStatus'])
+    expect(h.client.requests[2]?.body).toEqual({ commitSessionId: '11111111-1111-4111-8111-111111111111' })
+    expect(h.parsedOutput()).toMatchObject({ value: { state: 'committed', revision: '42' } })
+    expect(h.output).toHaveLength(1)
+    expect(h.asideCalls).toEqual([])
+  })
+  it('reads a completed commit without requiring a live agent session', async () => {
+    const h = new CliHarness()
+    h.client.sessions = []
+    expect(await new AppClientCli(['commit', 'status', '--commit-session-id', '11111111-1111-4111-8111-111111111111'], h.deps()).run()).toBe(0)
+    expect(h.client.requests.map((request) => request.operation)).toEqual(['tabs.commitStatus'])
+  })
+  it('refuses invalid UUIDs and wait options before discovery', async () => {
+    for (const args of [['commit', 'status', '--commit-session-id', 'other'], ['commit-svn-jamat', '--self', '--timeout-ms', '1'],
+      ['commit-git-jamat', '--self', '--wait', '--timeout-ms', '0']]) {
+      const h = new CliHarness()
+      expect(await new AppClientCli(args, h.deps()).run()).toBe(2)
+      expect(h.discoveries).toBe(0)
+    }
+  })
+  it('refuses missing status capability before opening a dialog to wait on', async () => {
+    const h = new CliHarness()
+    h.env.JAMAT_V3_SESSION_ID = 'session-001'
+    h.client.sessions[0] = { ...h.client.sessions[0]!, life: 'live' }
+    h.descriptor.optionalOperations = ['tabs.openCommit']
+    expect(await new AppClientCli(['commit-svn-jamat', '--self', '--wait'], h.deps()).run()).toBe(6)
+    expect(h.client.requests.map((request) => request.operation)).toEqual(['sessions.list'])
+    expect(h.asideCalls).toEqual([])
+  })
+  it.each(['svn', 'git'])('routes a different %s project to Tortoise before opening, including older Jamat clients', async (vcs) => {
+    const h = new CliHarness()
+    h.env.JAMAT_V3_SESSION_ID = 'session-001'
+    h.client.sessions[0] = { ...h.client.sessions[0]!, life: 'live' }
+    h.descriptor.optionalOperations = ['tabs.openCommit']
+    const scope = 'Q:/Other/Project'
+    expect(await new AppClientCli([`commit-${vcs}-jamat`, '--self', '--path', scope, '--wait', '--fallback', 'report'], h.deps()).run()).toBe(0)
+    expect(h.parsedOutput()).toEqual({ ok: true, value: { kind: 'fallback-required', reason: 'outside-session', scope: resolve(scope) } })
+    expect(h.client.requests.map((request) => request.operation)).toEqual(['sessions.list'])
+    expect(h.asideCalls).toEqual([])
+    expect(h.writtenMessages).toEqual([])
+  })
+  it('opens the exact sibling scope in Tortoise with the message file', async () => {
+    const h = new CliHarness()
+    h.client.sessions[0] = { ...h.client.sessions[0]!, life: 'live' }
+    expect(await new AppClientCli(['commit-git-jamat', '--session-id', 'session-001', '--path', '../OneMore', '--message-file', 'proposal.txt'], h.deps()).run()).toBe(0)
+    expect(h.asideCalls).toEqual([{ vcs: 'git', scope: resolve('Q:/Apps/OneMore'), messageFile: resolve('Q:/Apps/One/proposal.txt'), reason: 'outside-session' }])
+    expect(h.client.requests.map((request) => request.operation)).toEqual(['sessions.list'])
+  })
+  it('keeps a nested scope inside the session in Jamat', async () => {
+    const h = new CliHarness()
+    h.client.sessions[0] = { ...h.client.sessions[0]!, life: 'live' }
+    expect(await new AppClientCli(['commit-svn-jamat', '--session-id', 'session-001', '--path', 'nested'], h.deps()).run()).toBe(0)
+    expect(h.client.requests).toMatchObject([{ operation: 'sessions.list' }, { operation: 'tabs.openCommit', body: { scope: 'nested' } }])
+    expect(h.asideCalls).toEqual([])
+  })
+  it('compares against the effective worktree, not its original project', async () => {
+    const h = new CliHarness()
+    h.client.sessions[0] = { ...h.client.sessions[0]!, life: 'live', worktree: {
+      worktreePath: 'Q:/Apps/One/.worktrees/task', branch: 'jamat/task', baseCommit: 'abc', diff: null, baseMoved: false,
+    } }
+    expect(await new AppClientCli(['commit-svn-jamat', '--session-id', 'session-001', '--path', 'Q:/Apps/One', '--fallback', 'report'], h.deps()).run()).toBe(0)
+    expect(h.parsedOutput()).toMatchObject({ value: { kind: 'fallback-required', reason: 'outside-session' } })
+    expect(h.client.requests.map((request) => request.operation)).toEqual(['sessions.list'])
+  })
   it('opens a native SVN dialog for --self with the proposed message, without invoking the fallback', async () => {
     const harness = new CliHarness()
     harness.env.JAMAT_V3_SESSION_ID = 'session-001'
     harness.client.sessions[0] = { ...harness.client.sessions[0]!, life: 'live' }
-    expect(await new AppClientCli(['commit-svn-jamat', '--self', '--message-file', 'proposal.txt'], harness.deps()).run()).toBe(0)
+    expect(await new AppClientCli(['commit-svn-jamat', '--self', '--message-file', 'proposal.txt', '--fallback', 'report'], harness.deps()).run()).toBe(0)
     expect(harness.client.requests).toMatchObject([{ operation: 'sessions.list' }, { operation: 'tabs.openCommit',
       body: { session: { kind: 'sessionId', sessionId: 'session-001' }, vcs: 'svn', message: harness.messageInput } }])
     expect(harness.asideCalls).toEqual([])
@@ -308,10 +385,25 @@ describe('app-client-cli/app/app', () => {
     expect(harness.client.requests.map((request) => request.operation)).toEqual(['sessions.list'])
   })
 
+  it.each(['unavailable', 'absent', 'ended', 'no-self'] as const)('reports %s to the fallback owner without launching or writing a message file', async (state) => {
+    const harness = new CliHarness()
+    if (state === 'unavailable') harness.discoveryError = { code: 'unavailable', detail: 'No controller' }
+    else if (state === 'absent') harness.client.sessions = []
+    else if (state !== 'ended' && state !== 'no-self') throw new Error(`Unknown fixture: ${state}`)
+    const selector = state === 'no-self' ? ['--self'] : ['--session-id', 'session-001']
+    expect(await new AppClientCli(['commit-svn-jamat', ...selector, '--path', 'nested', '--message', 'Proposal', '--fallback', 'report'], harness.deps()).run()).toBe(0)
+    expect(harness.parsedOutput()).toEqual({ ok: true, value: { kind: 'fallback-required',
+      reason: state === 'unavailable' ? 'jamat-unavailable' : 'session-not-open', scope: resolve('Q:/Apps/One', 'nested') } })
+    expect(harness.asideCalls).toEqual([])
+    expect(harness.writtenMessages).toEqual([])
+    expect(harness.client.requests.every((request) => request.operation === 'sessions.list')).toBe(true)
+  })
+
   it('reports capability, listing and ambiguous selector failures without a fallback', async () => {
     const old = new CliHarness()
     old.descriptor.optionalOperations = []
-    expect(await new AppClientCli(['commit-svn-jamat', '--self'], old.deps()).run()).toBe(6)
+    expect(await new AppClientCli(['commit-svn-jamat', '--self', '--fallback', 'report'], old.deps()).run()).toBe(6)
+    expect(old.parsedOutput()).toMatchObject({ ok: false })
     expect(old.asideCalls).toEqual([])
     const listing = new CliHarness()
     listing.client.responseError = { code: 'unavailable', detail: 'List unavailable' }
@@ -326,7 +418,7 @@ describe('app-client-cli/app/app', () => {
   it.each([
     ['--self', '--session-id', 'one'], ['--self', '--config-dir', 'Q:/config'], ['--self', '--number', '001'],
     ['--self', '--message', 'one', '--message-file', 'two'], ['--self', '--computer', 'remote'], ['--self', '--unknown'],
-    ['--self', '--message', 'x'.repeat(16_385)],
+    ['--self', '--message', 'x'.repeat(16_385)], ['--self', '--fallback', 'anything'],
   ])('rejects invalid commit arguments before discovery: %j', async (...args) => {
     const harness = new CliHarness()
     expect(await new AppClientCli(['commit-svn-jamat', ...args], harness.deps()).run()).toBe(2)

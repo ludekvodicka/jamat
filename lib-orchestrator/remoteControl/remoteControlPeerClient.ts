@@ -30,7 +30,10 @@ export class RemoteControlPeerClient {
 
   connect(
     profile: RemoteControlPeerProfile,
+    signal?: AbortSignal,
   ): Promise<RemoteControlStepResult<RemoteControlPeerConnection>> {
+    if (signal?.aborted)
+      return Promise.resolve(RemoteControlPeerClient.error('unavailable', 'Remote connection cancelled'))
     return new Promise((resolve) => {
       const state = RemoteControlPeerCodec.createClientHello(
         this.identity,
@@ -55,20 +58,14 @@ export class RemoteControlPeerClient {
         if (settled) return
         settled = true
         clearTimeout(timer)
+        signal?.removeEventListener('abort', aborted)
         socket.off('open', opened)
         socket.off('message', message)
         socket.off('close', closed)
-        /*
-         * The `error` listener is REPLACED, never removed. `ws.close()` on a socket still in
-         * CONNECTING calls `abortHandshake`, which schedules `emitErrorAndClose` on the next tick -
-         * so taking the last listener off first turns an ordinary timeout into an unhandled
-         * `error` event, and this process does not catch those. The timeout path is the ordinary
-         * one: any enabled profile pointed at a machine that accepts TCP and never answers the
-         * upgrade reaches it on a backoff loop.
-         */
+        // Terminating a pending handshake can emit a late error after its promise has settled.
         socket.off('error', failed)
         socket.on('error', () => undefined)
-        if (!result.ok) try { socket.close() } catch {}
+        if (!result.ok) try { socket.terminate() } catch {}
         resolve(result)
       }
       const opened = (): void => {
@@ -95,6 +92,8 @@ export class RemoteControlPeerClient {
         finish(RemoteControlPeerClient.error('unavailable', 'Remote AppClientUI is unavailable'))
       const closed = (): void =>
         finish(RemoteControlPeerClient.error('unavailable', 'Remote handshake was closed'))
+      const aborted = (): void =>
+        finish(RemoteControlPeerClient.error('unavailable', 'Remote connection cancelled'))
       socket.once('open', opened)
       socket.once('message', message)
       socket.once('error', failed)
@@ -103,6 +102,8 @@ export class RemoteControlPeerClient {
         finish(RemoteControlPeerClient.error('timeout', 'Remote handshake timed out')),
       this.options?.connectTimeoutMilliseconds
         ?? RemoteControlPeerClient.connectTimeoutMillisecondsConst)
+      signal?.addEventListener('abort', aborted, { once: true })
+      if (signal?.aborted) aborted()
     })
   }
 

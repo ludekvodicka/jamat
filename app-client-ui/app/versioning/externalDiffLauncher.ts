@@ -31,7 +31,7 @@ export class ExternalDiffLauncher {
     if (access.value.nodeKind === 'directory') return { ok: false, detail: 'A directory has no text diff' }
     const tool = this.deps.toolOf()
     if (!VersioningSettings.isDiffTool(tool)) return { ok: false, detail: 'The external diff tool is not configured correctly' }
-    if (tool.kind === 'internal') return { ok: false, detail: 'The internal diff viewer is selected' }
+    if (tool.kind === 'internal') return { ok: false, detail: 'No external diff viewer is configured' }
     else if (tool.kind !== 'external') throw new Error(`Unknown diff tool: ${JSON.stringify(tool)}`)
     const template = VersioningSettings.argumentsOf(tool.argumentTemplate)
     if (template === null) return { ok: false, detail: 'The external diff arguments contain unmatched quotes' }
@@ -46,8 +46,9 @@ export class ExternalDiffLauncher {
       await mkdir(join(directory, 'base'))
       const base = join(directory, 'base', basename(access.value.path))
       await writeFile(base, baseline.kind === 'content' ? baseline.content : '', 'utf8')
-      const tokens: Record<string, string> = { base, mine: access.value.path, bname: baseline.label, yname: 'Working tree' }
-      const args = template.map((argument) => argument.replace(/%(base|mine|bname|yname)\b/g, (_match, key: string) => tokens[key]!))
+      const tokens: Record<string, string> = { '1': base, '2': access.value.path, base, mine: access.value.path, bname: baseline.label, yname: 'Working tree' }
+      const args = template.map((argument) => argument.replace(/\$([12])(?!\d)|%(base|mine|bname|yname)\b/g,
+        (_match, numbered: string | undefined, named: string) => tokens[numbered ?? named]!))
       const started = await this.commands.launchInteractive({ command: tool.command, args, cwd: access.value.cwd, env: process.env })
       if (!started.ok) return { ok: false, detail: `Cannot start ${tool.command}: ${started.detail}` }
       const ownedDirectory = directory

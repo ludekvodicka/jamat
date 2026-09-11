@@ -352,11 +352,12 @@ export interface AppClientUiIpcInvokeMap {
   'sessions:reference': (sessionId: string) => SessionsOpResult<{ text: string }>
   'remote:snapshot': () => RemoteConnectionsSnapshot
   /**
-   * "Keep the paired computers reachable while this screen is open." Nothing is dialled until
-   * something asks, so a screen that draws what only a live connection can answer has to ask.
+   * Connect one explicitly chosen computer while the dialog is open.
    * Released by the window that took it, and by its death: see `ServiceRemoteControlIpc`.
    */
-  'remote:hold': (reason: RemoteConnectionsHoldReason) => void
+  'remote:connect': (reason: RemoteConnectionsHoldReason, remoteEndpointId: string) => RemoteControlStepResult<undefined>
+  'remote:select-session': (remoteEndpointId: string, sessionId: string) => RemoteControlStepResult<undefined>
+  'remote:disconnect': (remoteEndpointId: string, sessionIds?: readonly string[]) => void
   'remote:release': (reason: RemoteConnectionsHoldReason) => void
   /**
    * What that computer can start an agent on: its own catalog and its own configured value. The
@@ -459,7 +460,7 @@ export interface AppClientUiIpcInvokeMap {
     remoteComputerId: string,
     remoteEndpointId: string,
   ) => RemoteSettingsSaveResult
-  'tabs:claim-panel': (panel: WorkspacePanelPresence) => ClaimPanelResult
+  'tabs:claim-panel': (panel: WorkspacePanelPresence, activate?: boolean) => ClaimPanelResult
   'tabs:reconcile-panels': (
     panels: readonly WorkspacePanelPresence[],
   ) => ReconcilePanelsResult
@@ -561,6 +562,8 @@ export interface AppClientUiIpcInvokeMap {
   'versioning:commit-open-tab': (sessionId: string, vcs: FileChangesVcsId, scope?: string) => import('../../lib-orchestrator/remoteControl/remoteControlApi.types').RemoteControlStepResult<import('../../lib-orchestrator/remoteControl/remoteControlApi.types').RemoteControlTabOpenCommitDto>
   'versioning:commit-set-message': (draftId: string, message: string) => boolean
   'versioning:commit-run': (request: VersioningCommitRunRequest) => VersioningCommitRunResult
+  'versioning:commit-revert': (request: import('./versioningCommit').VersioningRevertRequest) => import('./versioningCommit').VersioningRevertResult
+  'versioning:commit-tortoise': (draftId: string, message: string) => import('./versioningCommit').VersioningTortoiseResult
   'versioning:commit-close': (draftId: string) => void
   'versioning:commit-open-sessions': () => VersioningCommitOpenSessions
   'versioning:settings-save': (
@@ -855,7 +858,9 @@ export const AppClientUiBridgeCallsConst = {
   },
   remote: {
     snapshot: 'remote:snapshot',
-    hold: 'remote:hold',
+    connect: 'remote:connect',
+    selectSession: 'remote:select-session',
+    disconnect: 'remote:disconnect',
     release: 'remote:release',
     describeAgents: 'remote:agents-describe',
     listProjects: 'remote:projects-list',
@@ -924,6 +929,8 @@ export const AppClientUiBridgeCallsConst = {
     openCommitTab: 'versioning:commit-open-tab',
     setCommitMessage: 'versioning:commit-set-message',
     runCommit: 'versioning:commit-run',
+    revertCommitFile: 'versioning:commit-revert',
+    openTortoise: 'versioning:commit-tortoise',
     closeCommit: 'versioning:commit-close',
     openCommitSessions: 'versioning:commit-open-sessions',
     getSettings: 'versioning:settings-get',

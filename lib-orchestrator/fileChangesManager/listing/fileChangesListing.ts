@@ -43,6 +43,7 @@ export class FileChangesListing {
     vcsEntries: readonly FileChangesVcsEntry[]
     logGroups: readonly FileChangesLogGroup[]
     warnings?: string[]
+    includeDirectories?: boolean
   }): Promise<readonly FileChangesListingItem[]> {
     const byPath = new Map<string, MutableListingItem>()
     for (const vcs of input.vcsEntries) {
@@ -77,7 +78,7 @@ export class FileChangesListing {
         },
       })
     }
-    FileChangesListing.addDirectories(input.cwd, byPath)
+    if (input.includeDirectories !== false) FileChangesListing.addDirectories(input.cwd, byPath)
     if (byPath.size > FileChangesLimits.listingEntriesMax) {
       const dropped = byPath.size - FileChangesLimits.listingEntriesMax
       for (const key of [...byPath.keys()].slice(FileChangesLimits.listingEntriesMax))

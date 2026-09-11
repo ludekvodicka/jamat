@@ -68,9 +68,9 @@ function ConnectBody(props: RemoteControlBodyProps): React.JSX.Element {
       </ConfigurationSection>
       <ConfigurationSection title="After you connect">
         <p className="jamat-configuration-remote__note">
-          That computer stays refused until somebody at it allows this one in. It appears under
-          Remote connections the moment it is added, and a Retry now there takes their Allow into
-          effect rather than waiting for the next dial.
+          Saving a computer does not connect it automatically. Open Remote computers, press Connect,
+          then choose the sessions to add to your tree. If the connection needs approval, somebody
+          at that computer allows this one in, then you press Connect again.
         </p>
       </ConfigurationSection>
     </>

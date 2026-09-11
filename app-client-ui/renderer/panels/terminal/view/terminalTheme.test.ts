@@ -50,6 +50,8 @@ describe('app-client-ui/renderer/panels/terminal/terminalTheme', () => {
       fileViewerFontScalePercent: 100,
       terminalFontScalePercent: 100,
       terminalTheme,
+      scrollSpeedPercent: 100,
+      terminalScrollSpeedPercent: 100,
     }
     return TerminalTheme.current(value).theme
   }

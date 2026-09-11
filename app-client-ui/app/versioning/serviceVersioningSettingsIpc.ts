@@ -28,7 +28,7 @@ export class ServiceVersioningSettingsIpc extends ServiceIpcBase<
   }
 
   private save(value: VersioningSettingsValue, field: keyof VersioningSettingsValue = 'mode'): VersioningSettingsSaveResult {
-    if (field !== 'mode' && field !== 'diffTool')
+    if (field !== 'mode' && field !== 'diffTool' && field !== 'activateSessionOnCommit')
       return { ok: false, code: 'invalid-section', detail: 'Unknown versioning setting' }
     const current = this.configStore.readSection(VersioningSettingsSection.spec)
     const saved = this.configStore.saveSection(VersioningSettingsSection.spec, { ...current, [field]: value[field] })

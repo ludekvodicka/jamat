@@ -29,6 +29,8 @@ describe('app-client-ui/renderer/uiSettings/uiSettingsStore', () => {
       fileViewerFontScalePercent,
       terminalFontScalePercent,
       terminalTheme,
+      scrollSpeedPercent: 100,
+      terminalScrollSpeedPercent: 100,
     }
   }
 

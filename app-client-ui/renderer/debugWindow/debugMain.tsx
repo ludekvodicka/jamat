@@ -4,6 +4,7 @@ import '../styles/tokens.css'
 import '../styles/app.css'
 
 import { UiSettingsStore } from '../uiSettings/uiSettingsStore'
+import { WheelSpeed } from '../uiSettings/wheelSpeed'
 import { DebugWindow } from './debugWindow'
 
 const root = document.getElementById('root')
@@ -15,6 +16,8 @@ if (!root)
 // closes far more often than the workspace one, so a jump on every open would be seen more, not
 // less. The stop function is dropped with the document.
 await UiSettingsStore.startSettled()
+// This window is a stack of long lists, so the speed is a property of it too.
+WheelSpeed.install()
 
 // No StrictMode, for the same reason the workspace document has none: a dev-only double mount would
 // run every reader twice against the same main process.

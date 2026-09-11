@@ -1,6 +1,21 @@
-import type { FileChangesVcsId } from '../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
+import type { FileChangeEntry, FileChangesVcsId } from '../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 
 export type VersioningExternalDiffResult = { ok: true } | { ok: false; detail: string }
+
+export class VersioningRevert {
+  static allows(entry: FileChangeEntry): boolean {
+    return entry.nodeKind === 'file' && entry.previousPath === null
+      && (entry.status === 'modified' || entry.status === 'missing' || entry.status === 'deleted')
+  }
+}
+
+export type VersioningRevertRequest = {
+  draftId: string
+  snapshotId: string
+} & ({ fileIds: readonly string[]; fileId?: never } | { fileId: string; fileIds?: never })
+
+export type VersioningRevertResult = { ok: true; reverted: boolean } | Extract<VersioningCommitRunResult, { ok: false }>
+export type VersioningTortoiseResult = { ok: true } | Extract<VersioningCommitRunResult, { ok: false }>
 
 export class VersioningCommitLimits {
   static readonly messageMaxCharactersConst = 16_384

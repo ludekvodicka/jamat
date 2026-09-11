@@ -28,6 +28,7 @@ export class RemoteControlConst {
     'terminal.send',
   ] as const
   static readonly optionalOperations = [
+    'tabs.commitStatus',
     'tabs.openFile',
     'tabs.openCommit',
     'sessions.transcript',

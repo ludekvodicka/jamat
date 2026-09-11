@@ -9,12 +9,14 @@ describe('app-client-ui/shared/uiSettings', () => {
     return { messages, report: (message) => messages.push(message) }
   }
 
-  it('reads 100 % for every scale and today\'s palette when nothing is stored', () => {
+  it('reads 100 % for every scale and speed, and today\'s palette, when nothing is stored', () => {
     expect(UiSettings.defaultValue()).toEqual({
       fontScalePercent: 100,
       fileViewerFontScalePercent: 100,
       terminalFontScalePercent: 100,
       terminalTheme: 'original',
+      scrollSpeedPercent: 100,
+      terminalScrollSpeedPercent: 100,
     })
   })
 
@@ -44,6 +46,8 @@ describe('app-client-ui/shared/uiSettings', () => {
       fileViewerFontScalePercent: 100,
       terminalFontScalePercent: 90,
       terminalTheme: 'original',
+      scrollSpeedPercent: 100,
+      terminalScrollSpeedPercent: 100,
     })
     expect(messages).toHaveLength(1)
     expect(messages[0]).toContain('fontScalePercent')
@@ -67,6 +71,8 @@ describe('app-client-ui/shared/uiSettings', () => {
         fileViewerFontScalePercent: read,
         terminalFontScalePercent: read,
         terminalTheme: 'original',
+        scrollSpeedPercent: 100,
+        terminalScrollSpeedPercent: 100,
       })
       expect(messages).toHaveLength(3)
     }
@@ -95,6 +101,8 @@ describe('app-client-ui/shared/uiSettings', () => {
       fileViewerFontScalePercent: 130,
       terminalFontScalePercent: 70,
       terminalTheme: 'soft',
+      scrollSpeedPercent: 250,
+      terminalScrollSpeedPercent: 50,
     }
     expect(UiSettings.coerce(stored, report)).toEqual(stored)
     expect(messages).toEqual([])
@@ -109,6 +117,37 @@ describe('app-client-ui/shared/uiSettings', () => {
 
     expect(value.terminalTheme).toBe('original')
     expect(messages).toEqual([])
+  })
+
+  // The same case two fields later, and the reason the scroll speeds default to the speed the
+  // window already had: every section ever saved was written before they existed.
+  it('reads absent scroll speeds as 100 %, and says nothing', () => {
+    const { messages, report } = reported()
+
+    const value = UiSettings.coerce(
+      { fontScalePercent: 115, terminalFontScalePercent: 115, terminalTheme: 'soft' },
+      report,
+    )
+
+    expect(value.scrollSpeedPercent).toBe(100)
+    expect(value.terminalScrollSpeedPercent).toBe(100)
+    expect(messages).toEqual([])
+  })
+
+  // A speed is snapped onto ITS own grid, which is not the font one: 110 is a font scale somebody
+  // could have typed and a scroll speed nobody can have, so it lands on the nearest quarter.
+  it('snaps a hand-edited scroll speed onto the coarser step of its own range', () => {
+    const { messages, report } = reported()
+
+    const value = UiSettings.coerce(
+      { scrollSpeedPercent: 110, terminalScrollSpeedPercent: 900 },
+      report,
+    )
+
+    expect(value.scrollSpeedPercent).toBe(100)
+    expect(value.terminalScrollSpeedPercent).toBe(400)
+    expect(messages).toHaveLength(2)
+    expect(messages[0]).toContain('scrollSpeedPercent')
   })
 
   // The same case one field later: every machine that has ever saved this section wrote it before
@@ -170,6 +209,8 @@ describe('app-client-ui/shared/uiSettings', () => {
       fileViewerFontScalePercent: 130,
       terminalFontScalePercent: 70,
       terminalTheme: 'vscodeDark',
+      scrollSpeedPercent: 175,
+      terminalScrollSpeedPercent: 300,
       _note: 'hand written',
     }
 
@@ -195,17 +236,21 @@ describe('app-client-ui/shared/uiSettings', () => {
       fileViewerFontScalePercent: 100,
       terminalFontScalePercent: 100,
       terminalTheme: 'original',
+      scrollSpeedPercent: 100,
+      terminalScrollSpeedPercent: 100,
       _note: 'hand written',
     })
   })
 
-  /** A whole section at one percentage, since `isValid` answers about all four fields at once. */
+  /** A whole section at one font percentage, since `isValid` answers about every field at once. */
   function section(percent: number, terminalTheme: unknown = 'original'): unknown {
     return {
       fontScalePercent: percent,
       fileViewerFontScalePercent: percent,
       terminalFontScalePercent: percent,
       terminalTheme,
+      scrollSpeedPercent: 100,
+      terminalScrollSpeedPercent: 100,
     }
   }
 
@@ -216,6 +261,8 @@ describe('app-client-ui/shared/uiSettings', () => {
       terminalFontScalePercent: 100,
       fileViewerFontScalePercent: 100,
       fontScalePercent: 100,
+      terminalScrollSpeedPercent: 100,
+      scrollSpeedPercent: 100,
     })).toBe(true)
     expect(UiSettings.isValid({ fontScalePercent: 100 })).toBe(false)
     expect(UiSettings.isValid({ fontScalePercent: 100, terminalFontScalePercent: '100' }))
@@ -239,24 +286,62 @@ describe('app-client-ui/shared/uiSettings', () => {
       expect(UiSettings.isValid(value)).toBe(false)
   })
 
-  it('validates the bounds and the step', () => {
-    for (const percent of [UiSettings.minPercentConst, UiSettings.maxPercentConst, 115])
+  it('validates the bounds and the step of the font range', () => {
+    const font = UiSettings.fontRangeConst
+    for (const percent of [font.minPercent, font.maxPercent, 115])
       expect(UiSettings.isValid(section(percent))).toBe(true)
     for (const percent of [65, 155, 112, 100.5, Number.NaN, Number.POSITIVE_INFINITY])
       expect(UiSettings.isValid(section(percent))).toBe(false)
   })
 
-  it('snaps a percentage into the range and onto the step', () => {
-    expect(UiSettings.snap(112)).toBe(110)
-    expect(UiSettings.snap(200)).toBe(150)
-    expect(UiSettings.snap(0)).toBe(70)
-    expect(UiSettings.snap(113)).toBe(115)
-    expect(UiSettings.snap(115)).toBe(115)
-    expect(UiSettings.snap(Number.NaN)).toBe(UiSettings.defaultPercentConst)
+  // Its own bounds and its own step, which is the whole reason a range is a parameter: a speed of
+  // 400 % is valid and a font scale of 400 % is not, and 105 is the other way round.
+  it('validates a scroll speed against the scroll range', () => {
+    const scroll = UiSettings.scrollRangeConst
+    for (const percent of [scroll.minPercent, scroll.maxPercent, 175])
+      expect(UiSettings.isValid({ ...UiSettings.defaultValue(), scrollSpeedPercent: percent }))
+        .toBe(true)
+    for (const percent of [25, 425, 110, 100.5, Number.NaN])
+      expect(UiSettings.isValid({
+        ...UiSettings.defaultValue(),
+        terminalScrollSpeedPercent: percent,
+      })).toBe(false)
+  })
+
+  it('snaps a percentage into the range and onto the step it was given', () => {
+    const font = UiSettings.fontRangeConst
+    expect(UiSettings.snap(112, font)).toBe(110)
+    expect(UiSettings.snap(200, font)).toBe(150)
+    expect(UiSettings.snap(0, font)).toBe(70)
+    expect(UiSettings.snap(113, font)).toBe(115)
+    expect(UiSettings.snap(115, font)).toBe(115)
+    expect(UiSettings.snap(Number.NaN, font)).toBe(font.defaultPercent)
+
+    const scroll = UiSettings.scrollRangeConst
+    // 112 is nearer 100 than 125 on a grid of 25, which is the whole point of a coarser step.
+    expect(UiSettings.snap(112, scroll)).toBe(100)
+    expect(UiSettings.snap(113, scroll)).toBe(125)
+    expect(UiSettings.snap(900, scroll)).toBe(400)
+    expect(UiSettings.snap(0, scroll)).toBe(50)
+    expect(UiSettings.snap(Number.NaN, scroll)).toBe(scroll.defaultPercent)
   })
 
   it('snaps every percentage to something it would then call valid', () => {
-    for (let percent = 0; percent <= 200; percent += 1)
-      expect(UiSettings.isValid(section(UiSettings.snap(percent)))).toBe(true)
+    for (let percent = 0; percent <= 500; percent += 1) {
+      expect(UiSettings.isValid(section(UiSettings.snap(percent, UiSettings.fontRangeConst))))
+        .toBe(true)
+      expect(UiSettings.isValid({
+        ...UiSettings.defaultValue(),
+        scrollSpeedPercent: UiSettings.snap(percent, UiSettings.scrollRangeConst),
+      })).toBe(true)
+    }
+  })
+
+  // One conversion for both readers: xterm takes it as `scrollSensitivity` and the window's own
+  // handler multiplies a delta by it, and the two dividing differently would be two speeds.
+  it('hands a speed to its readers as a multiplier', () => {
+    expect(UiSettings.scrollFactorOf(100)).toBe(1)
+    expect(UiSettings.scrollFactorOf(250)).toBe(2.5)
+    expect(UiSettings.scrollFactorOf(50)).toBe(0.5)
   })
 })

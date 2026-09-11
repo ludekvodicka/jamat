@@ -53,6 +53,7 @@ interface FakePanel {
 }
 
 interface FakeAddOptions {
+  inactive?: boolean
   id: string
   component: string
   title: string
@@ -182,8 +183,10 @@ class FakeDockview {
       group.panels.push(panel)
     else
       group.panels.splice(index, 0, panel)
-    this.activeId = panel.id
-    this.emitActivePanelChange()
+    if (!options.inactive) {
+      this.activeId = panel.id
+      this.emitActivePanelChange()
+    }
     this.emitLayoutChange()
     return panel
   }
@@ -561,6 +564,15 @@ class TabsControllerHarness {
 }
 
 describe('app-client-ui/renderer/widgets/tabs/tabsController', () => {
+  it('preserves the active panel when opening and reopening an inactive review session', async () => {
+    const h = TabsControllerHarness.fresh()
+    await h.controller.openPanel(PanelKeysConst.probe, 'Current', {}, 'current')
+    await h.controller.openPanel(PanelKeysConst.terminal, 'Review', { sessionId: 'review' }, 'review', { activate: false })
+    expect(h.dockview.added.at(-1)).toMatchObject({ id: 'review', inactive: true })
+    expect(h.controller.activePanelId()).toBe('current')
+    await h.controller.openPanel(PanelKeysConst.terminal, 'Review', { sessionId: 'review' }, 'review', { activate: false })
+    expect(h.controller.activePanelId()).toBe('current')
+  })
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => {
     vi.useRealTimers()

@@ -275,10 +275,13 @@ describe('app-client-ui/app/remarkable/sidecar/remarkableCli', () => {
     ['Another rmcli run (PID 123) holds the lock for 10.0.0.2. Wait for it to finish.', 'device-busy'],
     ['Host key for 10.0.0.2 changed from SHA256:old to SHA256:new', 'host-key-changed'],
     ['Nothing is open on the tablet; it is showing the library list', 'nothing-open'],
-    ['CommunicationError: SSH connection timed out while connecting', 'device-sleeping'],
-    ['CommunicationError: Cannot connect to 10.0.0.2: connect ETIMEDOUT 10.0.0.2:22', 'device-sleeping'],
-    ['CommunicationError: Cannot connect to 10.0.0.2: connect EHOSTUNREACH 10.0.0.2:22', 'device-sleeping'],
-    ['CommunicationError: Cannot connect to 10.0.0.2: connect ENETUNREACH 10.0.0.2:22', 'device-sleeping'],
+    ['CommunicationError: SSH connection timed out while connecting', 'device-unreachable'],
+    ['CommunicationError: SSH connection timed out after 15000 ms', 'device-unreachable'],
+    ['CommunicationError: Cannot connect to 10.0.0.2: connect ETIMEDOUT 10.0.0.2:22', 'device-unreachable'],
+    ['CommunicationError: Cannot connect to 10.0.0.2: connect EHOSTUNREACH 10.0.0.2:22', 'device-unreachable'],
+    ['CommunicationError: Cannot connect to 10.0.0.2: connect ENETUNREACH 10.0.0.2:22', 'device-unreachable'],
+    ['CommunicationError: Cannot connect to tablet.local: getaddrinfo ENOTFOUND tablet.local', 'device-unreachable'],
+    ['CommunicationError: Cannot connect to 10.0.0.2: connect ECONNREFUSED 10.0.0.2:22', 'device-unreachable'],
     ['Device 10.0.0.2 is offline or its WiFi SSH tunnel is unavailable', 'web-interface-unavailable'],
     ['unrecognized future failure secret-value', 'cli-failed'],
   ])('maps pinned stderr %s', async (stderr, code) => {
@@ -286,6 +289,7 @@ describe('app-client-ui/app/remarkable/sidecar/remarkableCli', () => {
       settings, 'secret-value', new AbortController().signal,
     )
     expect(result).toMatchObject({ ok: false, code })
+    if (code === 'device-unreachable') expect(result).toMatchObject({ retryable: true })
     if (!result.ok) expect(result.detail).not.toContain('secret-value')
   })
 

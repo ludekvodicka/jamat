@@ -17,6 +17,7 @@ export type VersioningSettingsInput =
   | SettingsCardInput<VersioningSettingsValue>
   | { input: 'mode'; value: VersioningMode }
   | { input: 'diffTool'; value: VersioningSettingsValue['diffTool'] }
+  | { input: 'activateSessionOnCommit'; value: boolean }
 
 export type VersioningSettingsEffect = SettingsCardEffect<VersioningSettingsValue>
 
@@ -49,7 +50,7 @@ export class VersioningSettingsModel {
       (buffer) => ({ ...buffer, [field]: VersioningSettings.defaultValue()[field] }),
     )
     if (shared !== null) return shared
-    if (input.input === 'mode' || input.input === 'diffTool')
+    if (input.input === 'mode' || input.input === 'diffTool' || input.input === 'activateSessionOnCommit')
       return state.buffer === null
         ? SettingsCard.step(state)
         : SettingsCard.step({ ...state, buffer: { ...state.buffer, [input.input]: input.value } })

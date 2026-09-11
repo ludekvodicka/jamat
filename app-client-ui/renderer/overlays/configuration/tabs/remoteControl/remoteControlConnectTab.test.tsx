@@ -57,16 +57,16 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/remoteControl/remot
   })
 
   /* The screen the computer lands on is not this one, so this one has to name it. */
-  it('sends the reader to Remote connections for what happens next', async () => {
+  it('sends the reader to Remote computers for what happens next', async () => {
     const { view } = await RemoteControlSettingsFixtures
       .mount(<RemoteControlConnectTab onDirtyChange={vi.fn()} />)
 
     const next = [...view.container.querySelectorAll('.jamat-configuration-remote__note')]
       .map((node) => node.textContent ?? '')
-      .find((text) => text.includes('Remote connections'))
+      .find((text) => text.includes('Remote computers'))
 
     expect(next).toContain('allows this one in')
-    expect(next).toContain('Retry now')
+    expect(next).toContain('press Connect again')
   })
 
   it('says nothing was typed rather than calling the main process with an empty field', async () => {

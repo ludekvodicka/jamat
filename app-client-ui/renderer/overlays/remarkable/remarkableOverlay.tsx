@@ -17,32 +17,39 @@ export function RemarkableOverlay(props: {
   onClose(): void
 }): React.JSX.Element {
   const card = useRef<HTMLDivElement | null>(null)
-  const [start] = useState(() => RemarkableModel.initial())
-  const [state, setState] = useState<RemarkableOverlayState>(start.state)
-  const stateRef = useRef(start.state)
-  const dispatchRef = useRef<(input: RemarkableInput) => void>(() => undefined)
+  const [state, setState] = useState<RemarkableOverlayState>(() => RemarkableModel.initial().state)
+  const stateRef = useRef(state)
+  const effectsRef = useRef<RemarkableEffects | null>(null)
   const insertRef = useRef(props.onInsert)
   const closeRef = useRef(props.onClose)
   insertRef.current = props.onInsert
   closeRef.current = props.onClose
 
-  const [effects] = useState(() => new RemarkableEffects(window.appClient, {
-    dispatch: (input) => dispatchRef.current(input),
-    insert: (path) => insertRef.current(path),
-    close: () => closeRef.current(),
-  }, props.sessionId))
   const [dispatch] = useState(() => (input: RemarkableInput): void => {
+    const effects = effectsRef.current
+    if (effects === null) return
     const step = RemarkableModel.transition(stateRef.current, input)
     stateRef.current = step.state
     setState(step.state)
     for (const effect of step.effects) void effects.run(effect)
   })
-  dispatchRef.current = dispatch
 
   useEffect(() => {
+    const start = RemarkableModel.initial()
+    stateRef.current = start.state
+    setState(start.state)
+    const effects = new RemarkableEffects(window.appClient, {
+      dispatch,
+      insert: (path) => insertRef.current(path),
+      close: () => closeRef.current(),
+    }, props.sessionId)
+    effectsRef.current = effects
     for (const effect of start.effects) void effects.run(effect)
-    return () => effects.dispose()
-  }, [effects, start.effects])
+    return () => {
+      effectsRef.current = null
+      effects.dispose()
+    }
+  }, [dispatch, props.sessionId])
 
   useEffect(() => {
     const restore = document.activeElement
@@ -262,7 +269,7 @@ function RemarkablePreviewNote(props: {
 }): React.JSX.Element {
   const { state } = props
   if (state.previewPhase === 'loading')
-    return <p className="jamat-remarkable__preview-note">Rendering preview…</p>
+    return <p className="jamat-remarkable__preview-note">Loading page preview…</p>
   else if (state.previewPhase === 'failed' && state.previewFailure !== null)
     return (
       <div className="jamat-remarkable__preview-note">
@@ -316,8 +323,8 @@ function RemarkableStatus(props: { state: RemarkableOverlayState }): React.JSX.E
 
 class RemarkableMessage {
   static instructionOf(code: RemarkableErrorCode): string {
-    if (code === 'device-sleeping')
-      return 'Wake the tablet, keep it awake and lift the pen, then retry.'
+    if (code === 'device-unreachable')
+      return 'Cannot reach the tablet. Check its Wi-Fi connection and that the host in Settings matches its current IP address. Keep the tablet awake, then retry.'
     else if (code === 'device-busy')
       return 'Another reMarkable operation holds the device lock. Wait for it to finish, then retry.'
     else if (code === 'nothing-open')
@@ -327,7 +334,7 @@ class RemarkableMessage {
     else if (code === 'host-key-changed')
       return 'The tablet fingerprint changed. Detect and explicitly save it again in Settings.'
     else if (code === 'web-interface-unavailable')
-      return 'Enable Web Interface in the tablet storage settings, then try again.'
+      return 'Enable Web Interface in the tablet storage settings. After a tablet system update, its Wi-Fi setup may need to be restored.'
     else if (code === 'settings-incomplete')
       return 'Finish the reMarkable host and fingerprint setup in Settings.'
     else if (code === 'password-missing')

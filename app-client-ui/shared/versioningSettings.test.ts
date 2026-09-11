@@ -6,11 +6,13 @@ describe('app-client-ui/shared/versioningSettings', () => {
   it('migrates a mode-only document and validates external arguments before substituting paths', () => {
     const messages: string[] = []
     expect(VersioningSettings.coerce({ mode: 'git' }, (text) => messages.push(text)))
-      .toEqual({ mode: 'git', diffTool: { kind: 'internal' } })
+      .toEqual({ mode: 'git', diffTool: { kind: 'internal' }, activateSessionOnCommit: true })
     expect(messages).toEqual([])
     const preset = VersioningSettings.tortoiseMerge()
     expect(VersioningSettings.isDiffTool(preset)).toBe(true)
-    for (const argumentTemplate of ['%base', '%mine', '"%base %mine'])
+    expect(VersioningSettings.isDiffTool({ kind: 'external', command: 'tool', argumentTemplate: '"$1" "$2"' })).toBe(true)
+    expect(VersioningSettings.isDiffTool({ kind: 'external', command: 'tool', argumentTemplate: '"%base" "%mine"' })).toBe(true)
+    for (const argumentTemplate of ['%base', '%mine', '"%base %mine', '$1', '$2', '$10 $2', '$1 $20', '"$1 $2'])
       expect(VersioningSettings.isDiffTool({ kind: 'external', command: 'tool', argumentTemplate })).toBe(false)
     expect(VersioningSettings.isDiffTool({ kind: 'external', command: '', argumentTemplate: '%base %mine' })).toBe(false)
     expect(VersioningSettings.argumentsOf('"--label=two words" "%base" %mine ""'))
@@ -22,11 +24,11 @@ describe('app-client-ui/shared/versioningSettings', () => {
   it('defaults a missing or unusable section to checkpoints and reports only real damage', () => {
     const messages: string[] = []
     expect(VersioningSettings.coerce(undefined, (message) => messages.push(message)))
-      .toEqual({ mode: 'checkpoints', diffTool: { kind: 'internal' } })
+      .toEqual({ mode: 'checkpoints', diffTool: { kind: 'internal' }, activateSessionOnCommit: true })
     expect(VersioningSettings.coerce({ mode: 'jj' }, (message) => messages.push(message)))
-      .toEqual({ mode: 'checkpoints', diffTool: { kind: 'internal' } })
+      .toEqual({ mode: 'checkpoints', diffTool: { kind: 'internal' }, activateSessionOnCommit: true })
     expect(VersioningSettings.coerce('not an object', (message) => messages.push(message)))
-      .toEqual({ mode: 'checkpoints', diffTool: { kind: 'internal' } })
+      .toEqual({ mode: 'checkpoints', diffTool: { kind: 'internal' }, activateSessionOnCommit: true })
     // An absent section is not damage: it is a config nobody has written this key into yet.
     expect(messages).toHaveLength(2)
   })
@@ -37,6 +39,6 @@ describe('app-client-ui/shared/versioningSettings', () => {
     expect(VersioningSettings.isValid({ mode: 'jj' })).toBe(false)
     expect(VersioningSettings.isValid(undefined)).toBe(false)
     expect(VersioningSettings.coerce({ mode: 'git', note: 'keep', diffTool: { kind: 'internal' } }, () => undefined))
-      .toEqual({ mode: 'git', note: 'keep', diffTool: { kind: 'internal' } })
+      .toEqual({ mode: 'git', note: 'keep', diffTool: { kind: 'internal' }, activateSessionOnCommit: true })
   })
 })

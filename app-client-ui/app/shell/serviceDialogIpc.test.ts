@@ -70,6 +70,32 @@ describe('app-client-ui/app/shell/serviceDialogIpc', () => {
       .toEqual(Object.keys(ServiceDialogIpc.channelsConst).sort())
   })
 
+  it('parents revert confirmation, defaults to Cancel and explains staged Git changes', async () => {
+    const sender = { isDestroyed: () => false } as WebContents
+    expect(await service.confirmRevert(sender, ['Q:/app/file.txt'], 'git')).toBe(false)
+    expect(electronMock.messageBoxes[0]).toMatchObject({ parent: windowConst, options: {
+      buttons: ['Revert', 'Cancel'], defaultId: 1, cancelId: 1,
+      detail: expect.stringContaining('including their staged changes'),
+    } })
+    electronMock.messageAnswer = { response: 0 }
+    expect(await service.confirmRevert(sender, ['Q:/app/file.txt'], 'svn')).toBe(true)
+    expect(electronMock.messageBoxes[1].options.detail).toContain('SVN BASE')
+    expect(await new ServiceDialogIpc(() => null).confirmRevert(sender, ['file'], 'svn')).toBe(false)
+    expect(electronMock.messageBoxes).toHaveLength(2)
+  })
+
+  it('lists batch targets and bounds a large confirmation with an explicit omitted count', async () => {
+    const sender = { isDestroyed: () => false } as WebContents
+    await service.confirmRevert(sender, ['Q:/app/first.txt', 'Q:/app/second.txt'], 'svn')
+    expect(electronMock.messageBoxes[0].options).toMatchObject({ message: 'Revert changes to 2 files?',
+      detail: expect.stringContaining('Q:/app/first.txt\nQ:/app/second.txt'), defaultId: 1, cancelId: 1 })
+    await service.confirmRevert(sender, Array.from({ length: 25 }, (_, index) => `Q:/app/file-${index}.txt`), 'git')
+    expect(electronMock.messageBoxes[1].options).toMatchObject({ message: 'Revert changes to 25 files?',
+      detail: expect.stringContaining('... and 5 more selected files') })
+    expect(await service.confirmRevert(sender, [], 'svn')).toBe(false)
+    expect(electronMock.messageBoxes).toHaveLength(2)
+  })
+
   it('fails the boot when one of its channels has no handler', () => {
     const internals = service as unknown as {
       assertComplete(channels: typeof ServiceDialogIpc.channelsConst): void

@@ -2,13 +2,14 @@ import type { FileViewerDocumentSource } from '../../lib-orchestrator/fileViewer
 import type { FileChangesVcsId } from '../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 
 export type TabControlCommand =
-  | { kind: 'open-commit'; requestId: string; panelId: string; vcs: FileChangesVcsId; scopeRoot: string; title: string; messageApplied: boolean }
+  | { kind: 'open-commit'; requestId: string; panelId: string; vcs: FileChangesVcsId; scopeRoot: string; title: string; messageApplied: boolean; activate?: boolean }
   | {
       kind: 'open-session'
       requestId: string
       sessionId: string
       tabTitle: string
       plain: boolean
+      activate?: boolean
     }
   | {
       kind: 'open-file'

@@ -6,6 +6,7 @@ import type {
   RemoteControlTabDto,
   RemoteControlTabOpenFileDto,
   RemoteControlTabOpenCommitDto,
+  RemoteControlCommitStatusDto,
 } from '../../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import type { RemoteControlTabsPort } from '../../../lib-orchestrator/remoteControl/remoteControl'
 import type { TabControlAck, TabControlCommand } from '../../shared/tabControl'
@@ -27,6 +28,7 @@ interface PendingTabControlCommand {
 export interface TabControlBrokerDeps {
   requestId?(): string
   timeoutMilliseconds?: number
+  activateSessionOnCommit?(): boolean
 }
 
 export class TabControlBroker implements RemoteControlTabsPort {
@@ -39,8 +41,8 @@ export class TabControlBroker implements RemoteControlTabsPort {
     private readonly windows: WorkspaceWindows,
     private readonly index: WorkspacePanelIndex,
     private readonly fileOpenResolver: Pick<TabFileOpenResolver, 'resolve'>,
-    private readonly commits: Pick<VersioningCommitManager, 'prepare' | 'attach' | 'releaseUnattached'>,
-    deps?: TabControlBrokerDeps,
+    private readonly commits: Pick<VersioningCommitManager, 'prepare' | 'attach' | 'releaseUnattached' | 'status'>,
+    private readonly deps?: TabControlBrokerDeps,
   ) {
     this.requestId = deps?.requestId ?? randomUUID
     this.timeoutMilliseconds = deps?.timeoutMilliseconds
@@ -61,26 +63,37 @@ export class TabControlBroker implements RemoteControlTabsPort {
       return TabControlBroker.error(prepared.code === 'unknown-session' ? 'not-found' : 'operation-failed', prepared.detail)
     const draftId = prepared.ok ? prepared.value.draftId : null
     try {
-      const opened = await this.open(sessionId, tabTitle, options)
+      const activate = options.showRefusal === true || (this.deps?.activateSessionOnCommit?.() ?? true)
+      const existing = this.index.panelsOfSession(sessionId)[0]
+      const opened = existing === undefined
+        ? await this.open(sessionId, tabTitle, { ...options, activate })
+        : { ok: true as const, value: { windowId: existing.windowId, panelId: existing.panel.panelId } }
       if (!opened.ok) return opened
+      if (activate) this.windows.focusOrRecreate(opened.value.windowId)
       const result = await this.request(opened.value.windowId, {
         kind: 'open-commit', requestId: this.requestId(), panelId: opened.value.panelId, vcs,
+        activate,
         scopeRoot: prepared.ok ? prepared.value.scopeRoot : scope ?? '.',
         title: prepared.ok ? prepared.value.title : `Commit ${vcs.toUpperCase()}`,
         messageApplied: prepared.ok && prepared.messageApplied,
       })
       if (result.ok && draftId !== null) this.commits.attach(draftId, result.value.windowId)
-      return result
+      return result.ok && draftId !== null ? { ok: true, value: { ...result.value, commitSessionId: draftId } } : result
     } finally { if (draftId !== null) this.commits.releaseUnattached(draftId) }
+  }
+
+  commitStatus(commitSessionId: string): RemoteControlStepResult<RemoteControlCommitStatusDto> {
+    const value = this.commits.status(commitSessionId)
+    return value === null ? TabControlBroker.error('not-found', 'The commit session is unknown or expired; its outcome is unknown') : { ok: true, value }
   }
 
   async open(
     sessionId: string,
     tabTitle: string,
-    options: { plain: boolean },
+    options: { plain: boolean; activate?: boolean },
   ): Promise<RemoteControlStepResult<RemoteControlTabCommandDto>> {
     try {
-      this.windows.focusOrRecreate('main')
+      if (options.activate !== false) this.windows.focusOrRecreate('main')
     } catch {
       return TabControlBroker.error('unavailable', 'The main workspace window is unavailable')
     }
@@ -90,6 +103,7 @@ export class TabControlBroker implements RemoteControlTabsPort {
       sessionId,
       tabTitle,
       plain: options.plain,
+      ...(options.activate === undefined ? {} : { activate: options.activate }),
     })
   }
 

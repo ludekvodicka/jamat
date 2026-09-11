@@ -573,13 +573,13 @@ describe('app-client-ui/app/remarkable/remarkableManager', () => {
       renderArchive: async (documentId, pageId, archivePath, outputPath, _signal, width) =>
         width === undefined
           ? rendered(outputPath, archivePath, documentId, pageId, 1)
-          : failure('device-sleeping', true),
+          : failure('device-unreachable', true),
     })
     const operationId = await start(current.manager, 'window-a')
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
       expect(await current.manager.preview('window-a', operationId, { kind: 'current' }))
-        .toMatchObject({ ok: false, code: 'device-sleeping' })
+        .toMatchObject({ ok: false, code: 'device-unreachable' })
     }
 
     expect(await current.manager.render('window-a', operationId, { kind: 'current' }))
@@ -836,18 +836,37 @@ describe('app-client-ui/app/remarkable/remarkableManager', () => {
    * spot, so the card says what is wrong instead of asking the tablet four more times.
    */
   it('stops the operation on a failure that trying again cannot fix', async () => {
+    const cause = failure('invalid-cli-output', false)
     const current = fixture({
-      renderArchive: async () => failure('invalid-cli-output', false),
+      renderArchive: async () => cause,
     })
     const operationId = await start(current.manager, 'window-a')
 
     expect(await current.manager.render('window-a', operationId, { kind: 'current' }))
-      .toMatchObject({ ok: false, code: 'invalid-cli-output' })
+      .toEqual(cause)
     expect(await current.manager.render('window-a', operationId, { kind: 'current' }))
-      .toMatchObject({ ok: false, code: 'invalid-operation', retryable: false })
+      .toEqual(cause)
     expect(await current.manager.preview('window-a', operationId, { kind: 'current' }))
-      .toMatchObject({ ok: false, code: 'invalid-operation', retryable: false })
+      .toEqual(cause)
+    expect(await current.manager.listOpenDocument('window-a', operationId)).toEqual(cause)
     expect(current.cli.calls.filter((call) => call.kind === 'renderArchive')).toHaveLength(1)
+  })
+
+  it('preserves an open-document failure across preview, insert and page-list actions', async () => {
+    const cause = {
+      ok: false as const,
+      code: 'cli-failed' as const,
+      detail: 'CommunicationError: open document ID must be a canonical UUID',
+      retryable: false,
+    }
+    const current = fixture({ currentDocument: async () => cause })
+    const operationId = await start(current.manager, 'window-a')
+
+    expect(await current.manager.preview('window-a', operationId, { kind: 'current' })).toEqual(cause)
+    expect(await current.manager.render('window-a', operationId, { kind: 'current' })).toEqual(cause)
+    expect(await current.manager.listOpenDocument('window-a', operationId)).toEqual(cause)
+    expect(current.cli.calls.filter((call) => call.kind === 'currentDocument')).toHaveLength(1)
+    expect(current.cli.calls.some((call) => call.kind === 'listPages')).toBe(false)
   })
 
   it('aborts a live child, waits for it to settle and releases every run during stop', async () => {
@@ -982,7 +1001,7 @@ describe('app-client-ui/app/remarkable/remarkableManager', () => {
   }
 
   function failure(
-    code: 'cancelled' | 'device-busy' | 'device-sleeping' | 'invalid-cli-output' | 'no-open-page'
+    code: 'cancelled' | 'device-busy' | 'device-unreachable' | 'invalid-cli-output' | 'no-open-page'
       | 'nothing-open',
     retryable: boolean,
   ): RemarkableResult<never> {

@@ -178,6 +178,12 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   const sidebar = usePanelSidebar(props, 'workingTree')
   const split = usePanelSplit(props)
   const splitRef = useRef(split)
+  const commitPanes = useRef<HTMLDivElement>(null)
+  const focusPanel = useCallback(() => {
+    const pane = commitPanes.current?.querySelector<HTMLElement>('.commit-pane-slot:not([hidden]) .commit-pane')
+    if (pane) pane.focus()
+    else focus()
+  }, [focus])
   useLayoutEffect(() => { splitRef.current = split }, [split])
   const toolsTab = PanelFileToolsRegistry.tab(sidebar.state.activeView)
   const activeItem = split.state.items.find((item) => item.key === split.state.active) ?? null
@@ -273,8 +279,8 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   // just taken the focus for the element under it.
   const { panelFocus } = props
   useEffect(
-    () => panelFocus.register(props.api.id, focus),
-    [focus, panelFocus, props.api.id],
+    () => panelFocus.register(props.api.id, focusPanel),
+    [focusPanel, panelFocus, props.api.id],
   )
 
   /**
@@ -336,11 +342,11 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   useEffect(() => {
     if (props.api.isActive) {
       setActive(true)
-      focus()
+      focusPanel()
     }
     const disposable = props.api.onDidActiveChange((event) => {
       setActive(event.isActive)
-      if (event.isActive) focus()
+      if (event.isActive) focusPanel()
     })
     return () => {
       setActive(false)
@@ -349,7 +355,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
     // attachEpoch is in here because the bump disposes one terminal and builds another. Nothing else
     // in the list moves with it, and the tab was already active, so no activation event fires: the
     // panel was left holding a live terminal that owned no focus and typing went nowhere.
-  }, [props.api, focus, setActive, attachEpoch])
+  }, [props.api, focusPanel, setActive, attachEpoch])
 
   const note = TerminalPanelState.noteOf(state, outcome)
   const recovery = TerminalPanelState.recoveryOf(state, info)
@@ -425,7 +431,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
           items={split.state.items}
           active={split.state.active}
           preview={split.state.preview}
-          onActivate={split.activate}
+          onActivate={(key) => { split.activate(key); requestAnimationFrame(focusPanel) }}
           onKeepOpen={split.keepOpen}
           onClose={split.close}
           onDetach={(key) => { void detach(key) }}
@@ -444,7 +450,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
             onOpenItem={openSplitItem}
             onRefused={setMenuNote}
           />}
-          {split.state.items.map((item) => {
+          <div ref={commitPanes} className="commit-pane-slots">{split.state.items.map((item) => {
             if (item.kind === 'file') return null
             else if (item.kind === 'commit') return <div key={item.key} className="commit-pane-slot" hidden={item.key !== activeItem.key}>
               <CommitPane sessionId={sessionId} item={item} onClose={() => split.close(item.key)}
@@ -452,7 +458,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
                 onOpenSeparately={(root) => openCommitItem(item.vcs, root)} />
             </div>
             else throw new Error(`Unknown split item: ${JSON.stringify(item)}`)
-          })}
+          })}</div>
         </>)}
       onResize={split.resize}
     >
@@ -597,6 +603,9 @@ class TerminalPanelState {
     // Undefined rather than null where there is none: the tab puts it straight on an attribute, and
     // an attribute set to nothing is an attribute the CSS still matches.
     const painted = color === null ? {} : { color }
+    if (commitOpen)
+      return { primary: { glyph: '!', tone: 'danger', title: 'Commit review required' },
+        secondary: glyph === null ? attachment : TerminalPanelState.sessionSignalOf(glyph, marked), badges, ...painted }
     if (glyph === null)
       return { primary: attachment, secondary: null, badges, ...painted }
     return {

@@ -140,6 +140,13 @@ export class RemoteControlRequestValidation {
         operationId: RemoteControlEnvelopeValidation.requiredOperationId(operationId),
         body: RemoteControlRequestValidation.tabCommitBody(body),
       }
+    else if (operation === 'tabs.commitStatus') {
+      const value = RemoteControlEnvelopeValidation.object(body, 'tabs.commitStatus body')
+      RemoteControlEnvelopeValidation.keys(value, ['commitSessionId'], 'tabs.commitStatus body')
+      if (typeof value.commitSessionId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.commitSessionId))
+        throw new RemoteControlValidationError('commitSessionId must be a UUID')
+      return { ...base, operation, body: { commitSessionId: value.commitSessionId } }
+    }
     else if (operation === 'tabs.focus')
       return {
         ...base,

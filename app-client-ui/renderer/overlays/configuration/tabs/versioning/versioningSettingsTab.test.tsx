@@ -53,10 +53,23 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/versioni
     const titles = [...view.container.querySelectorAll('.jamat-configuration__section-title')]
       .map((node) => node.textContent)
 
-    expect(titles).toEqual(['AI versioning', 'Commit diff viewer', 'File changes'])
-    expect(selectsOf(view.container).map((select) => select.value)).toEqual(['git', 'internal', 'svn'])
-    // Two, deliberately: one button reporting two writes would report one outcome for two.
-    expect(view.getAllByText('Save')).toHaveLength(3)
+    expect(titles).toEqual(['AI versioning', 'Commit review', 'External diff viewer', 'File changes'])
+    expect(selectsOf(view.container).map((select) => select.value)).toEqual(['git', 'svn'])
+    expect(view.getAllByText('Save')).toHaveLength(4)
+  })
+
+  it('saves and resets commit activation independently', async () => {
+    const { view, saved, onDirtyChange } = await mount()
+    const toggle = view.getByLabelText('Activate session when an agent opens a commit dialog')
+    expect(toggle).toBeChecked()
+    fireEvent.click(toggle)
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true)
+    await act(async () => { fireEvent.click(view.getAllByText('Save')[1]!) })
+    expect(saved).toEqual([expect.objectContaining({ activateSessionOnCommit: false })])
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false)
+    fireEvent.click(view.getAllByText('Reset to default')[1]!)
+    expect(toggle).toBeChecked()
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true)
   })
 
   /*
@@ -65,7 +78,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/versioni
    */
   it('stays dirty while either section holds an unsaved edit', async () => {
     const { onDirtyChange, saved, view } = await mount()
-    const [mode, , vcs] = selectsOf(view.container)
+    const [mode, vcs] = selectsOf(view.container)
 
     fireEvent.change(mode!, { target: { value: 'checkpoints' } })
     expect(onDirtyChange).toHaveBeenLastCalledWith(true)
@@ -77,7 +90,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/versioni
     expect(saved).toEqual([{ mode: 'checkpoints', diffTool: { kind: 'internal' } }])
     expect(onDirtyChange).toHaveBeenLastCalledWith(true)
 
-    await act(async () => { fireEvent.click(view.getAllByText('Save')[2]!) })
+    await act(async () => { fireEvent.click(view.getAllByText('Save')[3]!) })
     expect(saved).toEqual([{ mode: 'checkpoints', diffTool: { kind: 'internal' } }, { primaryVcs: 'git' }])
     expect(onDirtyChange).toHaveBeenLastCalledWith(false)
   })

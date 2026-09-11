@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import type { RemoteControlCommitStatusDto } from '../../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import { lstat, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -11,8 +12,10 @@ import type { GitCommitManager } from '../../../lib-orchestrator/git/gitCommitMa
 import type { SessionManager } from '../../../lib-orchestrator/sessionManager/sessionManager'
 import { ErrorText } from '../../../lib-orchestrator/shared/errorText'
 import { PathCompare } from '../../../lib-orchestrator/shared/pathCompare'
+import type { TortoiseCommitDialog } from '../../../lib-orchestrator/shared/tortoiseCommitDialog'
 import type { SvnCommitManager } from '../../../lib-orchestrator/svn/svnCommitManager'
-import { VersioningCommitLimits } from '../../shared/versioningCommit'
+import { VersioningCommitLimits, VersioningRevert } from '../../shared/versioningCommit'
+import type { VersioningRevertRequest, VersioningRevertResult, VersioningTortoiseResult } from '../../shared/versioningCommit'
 import type { VersioningCommitDraftDto, VersioningCommitOpenResult, VersioningCommitOpenSessions, VersioningCommitRunRequest, VersioningCommitRunResult } from '../../shared/versioningCommit'
 
 export interface VersioningCommitManagerDeps {
@@ -21,8 +24,9 @@ export interface VersioningCommitManagerDeps {
   checkpointStore: Pick<GitCheckpointStore, 'worktreeBelongsToStore'>
   fileAccess(ownerId: string, snapshotId: string, fileId: string): FileChangesFileAccessResult
   snapshotOf(ownerId: string, snapshotId: string): FileChangesWorkingTreeSnapshot | null
-  git: Pick<GitCommitManager, 'commit'>
-  svn: Pick<SvnCommitManager, 'commit'>
+  git: Pick<GitCommitManager, 'commit' | 'revertFile'>
+  svn: Pick<SvnCommitManager, 'commit' | 'revertFile'>
+  tortoise: Pick<TortoiseCommitDialog, 'open'>
   onChanged(): void
   now?(): number
   newId?(): string
@@ -33,6 +37,7 @@ interface Draft {
   owners: Set<string>
   cwd: string
   lockRoot: string
+  externalReview?: 'running' | 'closed'
 }
 
 interface CommitTarget {
@@ -41,7 +46,10 @@ interface CommitTarget {
 }
 
 export class VersioningCommitManager {
+  private static readonly retentionMillisecondsConst = 86_400_000
+  private static readonly retainedCountConst = 256
   private readonly drafts = new Map<string, Draft>()
+  private readonly closed = new Map<string, { draft: Draft; closedAt: number }>()
   private readonly running = new Set<string>()
   private revision = 0
 
@@ -87,6 +95,31 @@ export class VersioningCommitManager {
     return draft === null ? null : structuredClone(draft.dto)
   }
 
+  status(commitSessionId: string): RemoteControlCommitStatusDto | null {
+    this.sweepClosed()
+    const draft = this.drafts.get(commitSessionId) ?? this.closed.get(commitSessionId)?.draft
+    if (draft === undefined) return null
+    const closed = this.closed.has(commitSessionId)
+    const { phase, sessionId, vcs, scopeRoot } = draft.dto
+    let state: RemoteControlCommitStatusDto['state']
+    if (phase.kind === 'done') state = 'committed'
+    else if (phase.kind === 'running' || draft.externalReview === 'running') state = 'running'
+    else if (draft.externalReview === 'closed') state = 'external-closed'
+    else if (phase.kind === 'failed') state = 'failed'
+    else if (phase.kind === 'editing') state = closed ? 'cancelled' : 'editing'
+    else throw new Error(`Unknown commit phase: ${JSON.stringify(phase)}`)
+    return { kind: 'commit-status', commitSessionId, sessionId, vcs, scopeRoot, state, closed,
+      revision: phase.kind === 'done' ? phase.revision : null, detail: state === 'failed' && phase.kind === 'failed' ? phase.detail : null }
+  }
+
+  private sweepClosed(): void {
+    for (const [id, entry] of this.closed)
+      if (entry.draft.dto.phase.kind !== 'running' && entry.draft.externalReview !== 'running'
+        && (this.now() - entry.closedAt >= VersioningCommitManager.retentionMillisecondsConst
+          || this.closed.size > VersioningCommitManager.retainedCountConst))
+        this.closed.delete(id)
+  }
+
   attach(draftId: string, ownerId: string): void {
     this.drafts.get(draftId)?.owners.add(ownerId)
   }
@@ -98,8 +131,11 @@ export class VersioningCommitManager {
   }
 
   releaseUnattached(draftId: string): void {
-    if (this.drafts.get(draftId)?.owners.size !== 0) return
+    const draft = this.drafts.get(draftId)
+    if (draft === undefined || draft.owners.size !== 0) return
+    this.closed.set(draftId, { draft, closedAt: this.now() })
     this.drafts.delete(draftId)
+    this.sweepClosed()
     this.changed()
   }
 
@@ -108,7 +144,8 @@ export class VersioningCommitManager {
   }
 
   openSessions(): VersioningCommitOpenSessions {
-    return { revision: this.revision, sessionIds: [...new Set([...this.drafts.values()].map((draft) => draft.dto.sessionId))] }
+    return { revision: this.revision, sessionIds: [...new Set([...this.drafts.values()]
+      .filter((draft) => draft.dto.phase.kind !== 'done').map((draft) => draft.dto.sessionId))] }
   }
 
   setMessage(ownerId: string, draftId: string, message: string): boolean {
@@ -144,6 +181,7 @@ export class VersioningCommitManager {
       draft.dto.message = request.message
       draft.dto.editedByPerson = true
       draft.dto.phase = { kind: 'running', startedAt: this.now() }
+      delete draft.externalReview
       this.bump(draft)
       temporary = await mkdtemp(join(tmpdir(), 'jamat-v3-commit-'))
       const messageFile = join(temporary, 'message.txt')
@@ -176,6 +214,101 @@ export class VersioningCommitManager {
     }
   }
 
+  async revert(ownerId: string, request: VersioningRevertRequest,
+    confirm: (paths: readonly string[], vcs: FileChangesVcsId) => Promise<boolean>): Promise<VersioningRevertResult> {
+    const draft = this.owned(ownerId, request.draftId)
+    if (draft === null) return { ok: false, code: 'unknown-draft', detail: 'The commit dialog no longer exists' }
+    if (this.running.has(draft.lockRoot) || draft.dto.phase.kind === 'running' || draft.dto.phase.kind === 'done')
+      return { ok: false, code: 'busy', detail: 'Another change is running or this dialog has already committed' }
+    const snapshot = this.deps.snapshotOf(ownerId, request.snapshotId)
+    if (snapshot === null || snapshot.sessionId !== draft.dto.sessionId || snapshot.source.selected !== draft.dto.source)
+      return { ok: false, code: 'invalid-target', detail: 'The file list does not belong to this dialog; reload it' }
+    if (request.fileIds !== undefined && request.fileId !== undefined)
+      return { ok: false, code: 'invalid-target', detail: 'Specify either one file or a list of files' }
+    const ids = request.fileIds !== undefined ? request.fileIds : [request.fileId]
+    const targets = this.resolveTargets(ownerId, draft, snapshot, ids)
+    if (!targets.ok) return targets
+    if (targets.value.length !== new Set(ids).size || targets.value.some(({ entry }) => !VersioningRevert.allows(entry)))
+      return { ok: false, code: 'invalid-target', detail: 'Revert supports modified, missing or deleted versioned files; handle additions, moves and directories in your VCS client' }
+    this.running.add(draft.lockRoot)
+    let attempted = false
+    let reverted = 0
+    const progress = (detail: string): string => `Reverted ${reverted} of ${targets.value.length} files. ${detail}`
+    try {
+      const stale = await this.staleOf(draft.dto.scopeRoot, targets.value)
+      if (stale !== null) return { ok: false, code: 'stale', detail: stale }
+      if (!await confirm(targets.value.map(({ entry }) => entry.path), draft.dto.vcs)) return { ok: true, reverted: false }
+      if (this.owned(ownerId, request.draftId) !== draft)
+        return { ok: false, code: 'unknown-draft', detail: 'The commit dialog closed before reverting' }
+      const changed = await this.staleOf(draft.dto.scopeRoot, targets.value)
+      if (changed !== null) return { ok: false, code: 'stale', detail: changed }
+      for (const { entry } of targets.value) {
+        const current = await lstat(entry.path).catch(() => null)
+        if (current !== null && !current.isFile())
+          return { ok: false, code: 'invalid-target', detail: 'Only regular files can be reverted here' }
+      }
+      for (const target of targets.value) {
+        if (this.owned(ownerId, request.draftId) !== draft)
+          return { ok: false, code: 'unknown-draft', detail: progress('The commit dialog closed while reverting') }
+        const changed = await this.staleOf(draft.dto.scopeRoot, [target])
+        if (changed !== null) return { ok: false, code: 'stale', detail: progress(changed) }
+        attempted = true
+        let result: Awaited<ReturnType<SvnCommitManager['revertFile']>> | Awaited<ReturnType<GitCommitManager['revertFile']>>
+        if (draft.dto.vcs === 'svn') result = await this.deps.svn.revertFile(draft.dto.scopeRoot, target.entry.path)
+        else if (draft.dto.vcs === 'git') result = await this.deps.git.revertFile(draft.dto.scopeRoot, target.entry.path)
+        else throw new Error(`Unknown revert VCS: ${JSON.stringify(draft.dto.vcs)}`)
+        if (!result.ok) return { ok: false, code: 'vcs-failed', detail: progress(`${target.entry.displayPath}: ${result.detail}`) }
+        reverted++
+      }
+      return { ok: true, reverted: true }
+    } catch (error) { return { ok: false, code: 'vcs-failed', detail: progress(ErrorText.of(error)) } }
+    finally {
+      this.running.delete(draft.lockRoot)
+      if (attempted) {
+        draft.dto.phase = { kind: 'editing' }
+        this.bump(draft)
+        this.deps.sessions.settleVcs(draft.cwd)
+      }
+    }
+  }
+
+  async openTortoise(ownerId: string, draftId: string, message: string): Promise<VersioningTortoiseResult> {
+    const draft = this.owned(ownerId, draftId)
+    if (draft === null) return { ok: false, code: 'unknown-draft', detail: 'The commit dialog no longer exists' }
+    if (this.running.has(draft.lockRoot) || draft.dto.phase.kind === 'running' || draft.dto.phase.kind === 'done')
+      return { ok: false, code: 'busy', detail: 'Another change is running or this dialog has already committed' }
+    if (typeof message !== 'string' || message.length > VersioningCommitLimits.messageMaxCharactersConst)
+      return { ok: false, code: 'message-too-long', detail: `The commit message is limited to ${VersioningCommitLimits.messageMaxCharactersConst} characters` }
+    this.running.add(draft.lockRoot)
+    let temporary: string | null = null
+    try {
+      temporary = await mkdtemp(join(tmpdir(), 'jamat-v3-commit-'))
+      const messageFile = join(temporary, 'message.txt')
+      await writeFile(messageFile, message, 'utf8')
+      if (this.owned(ownerId, draftId) !== draft)
+        return { ok: false, code: 'unknown-draft', detail: 'The commit dialog closed before opening Tortoise' }
+      draft.externalReview = 'running'
+      this.bump(draft)
+      const opened = await this.deps.tortoise.open({ vcs: draft.dto.vcs, scope: draft.dto.scopeRoot, messageFile })
+      if (!opened.ok) {
+        delete draft.externalReview
+        this.bump(draft)
+        return { ok: false, code: 'vcs-failed', detail: opened.detail }
+      }
+      try { await opened.closed }
+      finally { draft.externalReview = 'closed'; this.bump(draft) }
+      this.deps.sessions.settleVcs(draft.cwd)
+      return { ok: true }
+    } catch (error) {
+      if (draft.externalReview === 'running') { draft.externalReview = 'closed'; this.bump(draft) }
+      return { ok: false, code: 'vcs-failed', detail: ErrorText.of(error) }
+    }
+    finally {
+      this.running.delete(draft.lockRoot)
+      if (temporary !== null) await rm(temporary, { recursive: true, force: true })
+    }
+  }
+
   private resolveTargets(ownerId: string, draft: Draft, snapshot: FileChangesWorkingTreeSnapshot, ids: readonly string[]):
     | { ok: true; value: CommitTarget[] }
     | Extract<VersioningCommitRunResult, { ok: false }> {
@@ -183,7 +316,7 @@ export class VersioningCommitManager {
       return { ok: false, code: 'invalid-target', detail: 'Too many commit targets' }
     const selected = new Set(ids)
     for (const entry of snapshot.entries)
-      if (entry.nodeKind === 'directory' && entry.status === 'added'
+      if (entry.nodeKind === 'directory' && (entry.status === 'added' || entry.status === 'untracked')
         && snapshot.entries.some((child) => selected.has(child.fileId) && PathCompare.isInside(entry.path, child.path))) selected.add(entry.fileId)
     const targets: CommitTarget[] = []
     if (selected.size > VersioningCommitLimits.targetsMaxConst)

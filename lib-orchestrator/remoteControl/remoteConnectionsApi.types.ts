@@ -20,6 +20,7 @@ import type {
 export interface RemoteOutboundEndpointDto extends RemoteControlComputerFactsDto {
   connectionId: string | null
   sessions: SessionsSnapshot | null
+  selectedSessionIds?: readonly string[]
 }
 
 export type RemoteEndpointIdentityDto = Omit<RemoteControlPeerIdentity, 'signing'>

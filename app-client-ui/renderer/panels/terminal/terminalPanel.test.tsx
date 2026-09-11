@@ -58,7 +58,9 @@ vi.mock('@xterm/xterm', () => ({
     readonly buffer = {
       active: { getLine: (): undefined => undefined, viewportY: 0, length: 0 },
     }
+    /** Read per wheel event by the repeat the attachment installs. */
     attachCustomKeyEventHandler(): void {}
+    attachCustomWheelEventHandler(): void {}
     onData(): void {}
     onSelectionChange(): void {}
     getSelection(): string { return '' }
@@ -1213,6 +1215,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
         await waitFor(() => expect(store.get('terminal:1').badges).toEqual([
           { key: 'vcs', text: '*', tone: 'danger', title: 'Commit dialog open' },
         ]))
+        expect(store.get('terminal:1').primary).toEqual({ glyph: '!', tone: 'danger', title: 'Commit review required' })
       } finally { stop() }
     })
 

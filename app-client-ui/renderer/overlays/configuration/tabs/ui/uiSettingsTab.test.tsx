@@ -15,6 +15,8 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/ui/uiSettingsTab', 
     fileViewerFontScalePercent: 125,
     terminalFontScalePercent: 120,
     terminalTheme: 'soft',
+    scrollSpeedPercent: 150,
+    terminalScrollSpeedPercent: 200,
   }
 
   let stopStore: (() => void) | null = null
@@ -112,15 +114,50 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/ui/uiSettingsTab', 
     vi.useRealTimers()
   })
 
-  it('draws the three scales the settings answered with', async () => {
+  it('draws the three scales and the two speeds the settings answered with', async () => {
     const { view } = await mount()
 
-    expect(sliders(view.container).map((slider) => slider.value)).toEqual(['110', '125', '120'])
+    expect(sliders(view.container).map((slider) => slider.value))
+      .toEqual(['110', '125', '120', '150', '200'])
     expect([...view.container.querySelectorAll('.jamat-configuration-ui__value')]
       .map((node) => node.textContent))
-      .toEqual(['110 %', '125 %', '120 %'])
+      .toEqual(['110 %', '125 %', '120 %', '150 %', '200 %'])
     expect(scale()).toBe('1.1')
     expect(viewerScale()).toBe('1.25')
+  })
+
+  /*
+   * A speed is offered on its own grid, not the fonts': the two rows above it step by 5 inside
+   * 70-150, and these step by 25 up to 400. A slider that offered a value the main process refuses
+   * would be a Save that fails on something the card itself drew.
+   */
+  it('offers the scroll speeds on their own range, and writes one on Save', async () => {
+    const { stub, view } = await mount()
+    const [,,, windowSpeed, terminalSpeed] = sliders(view.container)
+
+    expect([windowSpeed?.min, windowSpeed?.max, windowSpeed?.step]).toEqual(['50', '400', '25'])
+    expect([terminalSpeed?.min, terminalSpeed?.max, terminalSpeed?.step]).toEqual(['50', '400', '25'])
+
+    fireEvent.input(windowSpeed, { target: { value: '275' } })
+    fireEvent.click(buttonNamed(view.container, 'Save'))
+    await stub.answersSave()
+
+    expect(stub.saved).toEqual([{ ...storedConst, scrollSpeedPercent: 275 }])
+  })
+
+  /*
+   * The terminal's speed previews while the thumb moves, unlike its font size: a multiplier on the
+   * wheel changes no cell, so nothing renegotiates the PTY geometry and there is no drag to settle.
+   */
+  it('previews the terminal speed without waiting for the thumb to be let go', async () => {
+    const { view } = await mount()
+    const applied: number[] = []
+    const off = UiSettingsStore.subscribe((value) => applied.push(value.terminalScrollSpeedPercent))
+
+    fireEvent.input(sliders(view.container)[4], { target: { value: '300' } })
+
+    expect(applied).toEqual([300])
+    off()
   })
 
   /**
@@ -227,7 +264,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/ui/uiSettingsTab', 
 
     expect(themeChoice(view.container).value).toBe('original')
     expect(sliders(view.container).map((slider) => slider.value))
-      .toEqual(['100', '100', '100'])
+      .toEqual(['100', '100', '100', '100', '100'])
   })
 
   it('lets go of the palette while its own write is out', async () => {

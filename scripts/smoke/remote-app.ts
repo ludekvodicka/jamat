@@ -112,11 +112,6 @@ class SmokeRemoteApp extends SmokeHarness {
   private static readonly channelConst = 'development'
   private static readonly waitMillisecondsConst = 30_000
   private static readonly repoRootConst = join(import.meta.dirname, '..', '..')
-  /**
-   * How many further refusals prove a caller really did dial again after its answer, rather than
-   * stopping. Three, because the backoff here is 50ms: a caller that went quiet reaches the wait's
-   * deadline instead of this number, and says so.
-   */
   private static readonly redialsAfterAnswerConst = 3
 
   private readonly controllerPaths: SmokeSidePaths
@@ -239,6 +234,12 @@ class SmokeRemoteApp extends SmokeHarness {
     )
 
     await this.verifyCliTerminal(sessionId)
+    await this.requiredController().disconnectComputer(this.targetIdentity().remoteEndpointId)
+    await this.waitUntil(() => !this.requiredController().connected, 'Disconnect kept the peer socket open')
+    this.checkRuntimeIdentity('Disconnect', before)
+    this.check('Disconnect leaves the remote session live', this.requiredTarget().sessions.snapshot().sessions.some((session) => session.sessionId === sessionId && session.life === 'live'))
+    await this.requiredController().connectComputer(this.targetIdentity().remoteEndpointId)
+    await this.verifyCliTerminal(sessionId)
     await this.finalizeRemoteSession(sessionId)
     await this.proveModelSelection()
     await this.proveReplayedCreate()
@@ -276,12 +277,12 @@ class SmokeRemoteApp extends SmokeHarness {
    * person is asked about it by name, fingerprint and calling address, and the brakes on that
    * question are proved one at a time.
    *
-   * Nothing waits on the wire while the question stands. The dial that raised it was already
-   * refused, so what makes an answer take effect is the caller's own backoff coming round again -
-   * which is why every step here is a wait rather than a return value.
+   * A refused dial closes before the person answers. Each subsequent attempt is explicit.
    */
   private async proveInboundApproval(): Promise<void> {
     const controller = this.requiredController().peerIdentity
+    this.check('pairing alone does not connect', !this.requiredController().connected && this.approvals.count === 0)
+    await this.requiredController().connectComputer(this.targetIdentity().remoteEndpointId)
     await this.waitUntil(
       () => this.approvals.count === 1,
       'the target never asked about the unknown computer dialling it',
@@ -307,6 +308,8 @@ class SmokeRemoteApp extends SmokeHarness {
     this.takeRefusals('the second unknown caller was turned away on the wire instead')
 
     this.approvals.answer(false)
+    for (let attempt = 0; attempt < SmokeRemoteApp.redialsAfterAnswerConst; attempt += 1)
+      await this.requiredController().connectComputer(this.targetIdentity().remoteEndpointId)
     await this.waitUntil(
       () => this.errors.length >= SmokeRemoteApp.redialsAfterAnswerConst,
       'the denied computer stopped dialling instead of being turned away again',
@@ -316,11 +319,14 @@ class SmokeRemoteApp extends SmokeHarness {
       this.approvals.count === 1)
 
     this.approvals.advance(RemoteInboundApprovalManager.denySuppressionMillisecondsConst)
+    await this.requiredController().connectComputer(this.targetIdentity().remoteEndpointId)
     await this.waitUntil(
       () => this.approvals.count === 2,
       'the target never asked again once the deny window had passed',
     )
     this.approvals.answer(true)
+    await this.waitUntil(() => this.requiredTarget().trustsInbound(controller), 'Allow did not save inbound trust')
+    await this.requiredController().connectComputer(this.targetIdentity().remoteEndpointId)
     await this.checkWaiting(
       'Allow lets the very next dial in',
       () => this.requiredTarget().inboundSnapshot().length === 1,
@@ -446,8 +452,9 @@ class SmokeRemoteApp extends SmokeHarness {
     ), 'remote.pairing.import')
     this.check('the republished pairing bundle names the port that actually bound',
       CliClient.object(imported.endpoint, 'reimported endpoint').port === this.targetPort)
+    await this.requiredController().connectComputer(this.targetIdentity().remoteEndpointId)
     await this.checkWaiting(
-      'the paired computer reconnects to the port the listener moved to',
+      'Connect reaches the port the listener moved to',
       () => this.requiredController().connected
         && this.requiredTarget().inboundSnapshot().length === 1,
       'the controller never reconnected to the rebound listener',
@@ -490,17 +497,22 @@ class SmokeRemoteApp extends SmokeHarness {
       'the revoked peer kept its live inbound connection',
     )
     this.check('Revoke takes the row out of the Allowed-in list', target.allowedIn().length === 0)
+    await this.waitUntil(() => !this.requiredController().connected, 'The controller did not notice the disconnect')
+    await this.requiredController().connectComputer(this.targetIdentity().remoteEndpointId)
     await this.checkWaiting(
       'the revoked computer is turned away when it dials again',
       () => this.errors.some((message) => message.includes('handshake refused')),
       'the revoked peer was never refused when it retried',
     )
     this.approvals.advance(RemoteInboundApprovalManager.promptIntervalMillisecondsConst)
+    await this.requiredController().connectComputer(this.targetIdentity().remoteEndpointId)
     await this.waitUntil(
       () => this.approvals.count === raised + 1,
       'the target never asked about the revoked computer again',
     )
     this.approvals.answer(true)
+    await this.waitUntil(() => this.requiredTarget().trustsInbound(controller), 'Allow did not save inbound trust')
+    await this.requiredController().connectComputer(this.targetIdentity().remoteEndpointId)
     await this.checkWaiting(
       'a fresh prompt re-admits the revoked computer',
       () => target.inboundSnapshot().length === 1,
@@ -658,6 +670,8 @@ class SmokeRemoteApp extends SmokeHarness {
     const restartedPort = await this.controller.start(this.controllerPort)
     this.check('the controller AppClientUI listener restarted on its own bound port',
       restartedPort === this.controllerPort)
+    this.check('restarting the controller does not dial saved computers', !this.controller.connected)
+    await this.controller.connectComputer(this.targetIdentity().remoteEndpointId)
     await this.waitForControllerConnection()
     const status = CliClient.valueOf(await this.cli(
       'status',
@@ -674,6 +688,7 @@ class SmokeRemoteApp extends SmokeHarness {
   ): Promise<void> {
     const attachCount = remoteFrames.attachedCount
     await this.requiredTarget().stop()
+    await this.waitUntil(() => !this.requiredController().connected, 'The controller did not notice the stopped target')
     this.target = new SmokeTargetApp(
       this.targetPaths,
       SmokeRemoteApp.repoRootConst,
@@ -683,12 +698,15 @@ class SmokeRemoteApp extends SmokeHarness {
     const restartedPort = await this.target.start(this.targetPort)
     this.check('the target AppClientUI listener restarted on its paired endpoint',
       restartedPort === this.targetPort)
+    this.check('restarting the target does not cause a background reconnect', !this.requiredController().connected)
+    await this.requiredController().connectComputer(this.targetIdentity().remoteEndpointId)
     await this.checkWaiting(
-      'the live remote terminal reattached after target AppClientUI restart',
+      'the restarted target AppClientUI reached AppHost',
       () => this.requiredTarget().sessions.snapshot().host.presence === 'running',
       'the restarted target AppClientUI never reached AppHost',
     )
-    await this.waitUntil(
+    await this.checkWaiting(
+      'the live remote terminal reattached after target AppClientUI restart',
       () => this.requiredController().connected
         && remoteFrames.attachedCount > attachCount
         && this.requiredTarget().inboundSnapshot()[0]?.activeSessionIds.includes(sessionId) === true,
@@ -1051,10 +1069,9 @@ class SmokeTargetApp {
     this.connections = new RemoteConnectionsManager({
       identity: this.peerIdentity,
       profiles: () => config.readSection(RemoteControlSettingsSection.spec).profiles,
-      connect: (profile) => peerClient.connect(profile),
+      connect: (profile, signal) => peerClient.connect(profile, signal),
       onChanged: () => undefined,
       onError: (message) => this.errors.push(message),
-      reconnectDelay: () => 50,
     })
     this.listener = new RemotePeerListenerManager({
       serverFactory: () => new RemoteControlPeerServer({
@@ -1081,7 +1098,6 @@ class SmokeTargetApp {
     if (!applied.ok)
       throw new Error(`FAILED: the target listener refused to bind: ${applied.detail}`)
     this.connections.start()
-    this.connections.holdConnections('smoke')
     return this.listeningPort()
   }
 
@@ -1256,10 +1272,9 @@ class SmokeControllerApp {
     this.connections = new RemoteConnectionsManager({
       identity: this.peerIdentity,
       profiles: () => config.readSection(RemoteControlSettingsSection.spec).profiles,
-      connect: (profile) => peerClient.connect(profile),
+      connect: (profile, signal) => peerClient.connect(profile, signal),
       onChanged: () => undefined,
       onError: (message) => this.errors.push(message),
-      reconnectDelay: () => 50,
     })
     const unavailableSessions = new SmokeUnavailableSessions()
     const terminal = new RemoteControlTerminal(unavailableSessions, {
@@ -1323,10 +1338,6 @@ class SmokeControllerApp {
     const address = await this.peerServer.start('127.0.0.1', port)
     this.pairing.publish(address)
     this.connections.start()
-    // What a running app does while a window is on a screen that draws remote computers. Nothing is
-    // dialled without it, so the smoke would prove a connection that a real client also would not
-    // have made.
-    this.connections.holdConnections('smoke')
     await this.server.start()
     return address.port
   }
@@ -1366,6 +1377,14 @@ class SmokeControllerApp {
 
   forget(profileId: string): RemoteProfileSaveResult {
     return this.lifecycle.forget(profileId)
+  }
+
+  disconnectComputer(remoteEndpointId: string) {
+    return this.connections.disconnectSessions(remoteEndpointId)
+  }
+
+  connectComputer(remoteEndpointId: string) {
+    return this.connections.connectComputer('smoke-dialog', remoteEndpointId)
   }
 
   optionalOperationsOf(remoteEndpointId: string): readonly string[] {

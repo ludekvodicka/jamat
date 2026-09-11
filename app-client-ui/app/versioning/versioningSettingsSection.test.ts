@@ -13,7 +13,7 @@ describe('app-client-ui/app/versioning/versioningSettingsSection', () => {
   it('reads a damaged section rather than refusing, so the app always has a mode', () => {
     const messages: string[] = []
     expect(VersioningSettingsSection.spec.coerce({ mode: 'jj' }, (m) => messages.push(m)))
-      .toEqual({ mode: 'checkpoints', diffTool: { kind: 'internal' } })
+      .toEqual({ mode: 'checkpoints', diffTool: { kind: 'internal' }, activateSessionOnCommit: true })
     expect(messages).toHaveLength(1)
   })
 })

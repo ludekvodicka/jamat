@@ -60,6 +60,20 @@ export class ServiceDialogIpc extends ServiceIpcBase<typeof ServiceDialogIpc.cha
     this.assertComplete(ServiceDialogIpc.channelsConst)
   }
 
+  async confirmRevert(sender: WebContents, paths: readonly string[], vcs: 'svn' | 'git'): Promise<boolean> {
+    const parent = this.parent(sender)
+    if (parent === null || sender.isDestroyed() || paths.length === 0) return false
+    let detail: string
+    if (vcs === 'svn') detail = 'Restore the selected files and their properties to SVN BASE. Their uncommitted changes will be lost.'
+    else if (vcs === 'git') detail = 'Restore the selected files to Git HEAD, including their staged changes. Their uncommitted changes will be lost.'
+    else throw new Error(`Unknown revert VCS: ${JSON.stringify(vcs)}`)
+    return ServiceDialogIpc.askedYes(parent, {
+      type: 'warning', message: paths.length === 1 ? 'Revert changes to this file?' : `Revert changes to ${paths.length} files?`,
+      detail: `${paths.slice(0, 20).join('\n')}${paths.length > 20 ? `\n... and ${paths.length - 20} more selected files` : ''}\n\n${detail}`,
+      buttons: ['Revert', 'Cancel'], defaultId: 1, cancelId: 1,
+    })
+  }
+
   /**
    * The gate in front of trusting another machine, and the reason it is a dialog rather than a flag:
    * `remote.pairing.import` used to grant permanent inbound control behind the same bearer token as

@@ -12,7 +12,7 @@ import type {
 interface RemoteSettingsBridgeParts {
   remoteSettings: AppClientUiBridge['remoteSettings']
   /** The Remote connections screen holds the connections open while it is drawn; see its tab. */
-  remote: Pick<AppClientUiBridge['remote'], 'hold' | 'release'>
+  remote: Pick<AppClientUiBridge['remote'], 'connect' | 'release'>
   clipboard: Pick<AppClientUiBridge['clipboard'], 'writeText'>
   onRemoteChanged: AppClientUiBridge['onRemoteChanged']
 }
@@ -121,9 +121,9 @@ export class RemoteControlSettingsFixtures {
           answered(`revokeInbound:${remoteComputerId}:${remoteEndpointId}`),
       },
       remote: {
-        hold: (reason) => {
-          holds.push(`hold:${reason}`)
-          return Promise.resolve({ ok: true as const, value: undefined })
+        connect: (reason) => {
+          holds.push(`connect:${reason}`)
+          return Promise.resolve({ ok: true as const, value: { ok: true as const, value: undefined } })
         },
         release: (reason) => {
           holds.push(`release:${reason}`)

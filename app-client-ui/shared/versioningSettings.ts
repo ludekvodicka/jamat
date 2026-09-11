@@ -15,6 +15,7 @@ import type { VersioningMode } from '../../lib-orchestrator/git/git.types'
 export interface VersioningSettingsValue {
   mode: VersioningMode
   diffTool: VersioningDiffTool
+  activateSessionOnCommit?: boolean
 }
 
 export type VersioningDiffTool = { kind: 'internal' } | { kind: 'external'; command: string; argumentTemplate: string }
@@ -29,7 +30,7 @@ export class VersioningSettings {
 
   static tortoiseMerge(): VersioningDiffTool {
     return { kind: 'external', command: 'C:\\Program Files\\TortoiseSVN\\bin\\TortoiseMerge.exe',
-      argumentTemplate: '/base:%base /mine:%mine /basename:%bname /minename:%yname' }
+      argumentTemplate: '/base:"$1" /mine:"$2"' }
   }
 
   static argumentsOf(template: string): string[] | null {
@@ -59,12 +60,12 @@ export class VersioningSettings {
     if (tool.kind !== 'external') return false
     return typeof tool.command === 'string' && tool.command.trim().length > 0
       && typeof tool.argumentTemplate === 'string'
-      && /%base\b/.test(tool.argumentTemplate) && /%mine\b/.test(tool.argumentTemplate)
+      && /\$1(?!\d)|%base\b/.test(tool.argumentTemplate) && /\$2(?!\d)|%mine\b/.test(tool.argumentTemplate)
       && VersioningSettings.argumentsOf(tool.argumentTemplate) !== null
   }
 
   static defaultValue(): VersioningSettingsValue {
-    return { mode: VersioningSettings.defaultModeConst, diffTool: { kind: 'internal' } }
+    return { mode: VersioningSettings.defaultModeConst, diffTool: { kind: 'internal' }, activateSessionOnCommit: true }
   }
 
   /**
@@ -88,7 +89,10 @@ export class VersioningSettings {
     const diffTool = VersioningSettings.isDiffTool(document.diffTool) ? document.diffTool : { kind: 'internal' as const }
     if (document.diffTool !== undefined && !VersioningSettings.isDiffTool(document.diffTool))
       report('The versioning diff tool is unusable; reading it as internal')
-    return { ...document, mode, diffTool }
+    const activateSessionOnCommit = typeof document.activateSessionOnCommit === 'boolean' ? document.activateSessionOnCommit : true
+    if (document.activateSessionOnCommit !== undefined && typeof document.activateSessionOnCommit !== 'boolean')
+      report('The commit activation setting is unusable; reading it as enabled')
+    return { ...document, mode, diffTool, activateSessionOnCommit }
   }
 
   /** Writing is strict, which is what keeps the file readable by the next version that reads it. */
@@ -96,6 +100,7 @@ export class VersioningSettings {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false
     const document = value as Partial<Record<keyof VersioningSettingsValue, unknown>>
     return VersioningSettings.isMode(document.mode) && VersioningSettings.isDiffTool(document.diffTool)
+      && (document.activateSessionOnCommit === undefined || typeof document.activateSessionOnCommit === 'boolean')
   }
 
   private static isMode(value: unknown): value is VersioningMode {

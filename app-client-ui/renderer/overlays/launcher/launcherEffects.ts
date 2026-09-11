@@ -143,6 +143,14 @@ export class LauncherEffects {
   /** The computer list's I/O: one snapshot read, and two handovers the overlay answers for. */
   static async runComputers(effect: ComputersScreenEffect, ports: LauncherPorts): Promise<void> {
     if (effect.effect === 'fetchComputers') return LauncherEffects.readComputers(ports)
+    else if (effect.effect === 'connect') {
+      const answer = await window.appClient.remote.connect('launcher-computers', effect.remoteEndpointId)
+      if (!answer.ok) ports.computers({ input: 'failed', detail: answer.error })
+      else if (!answer.value.ok) ports.computers({ input: 'failed', detail: answer.value.error.detail })
+      return LauncherEffects.readComputers(ports)
+    }
+    else if (effect.effect === 'selectSession')
+      return LauncherEffects.openRemoteTab(effect.remoteEndpointId, effect.sessionId, effect.tabTitle, ports)
     else if (effect.effect === 'chosen') return ports.chooseComputer(effect.target)
     else if (effect.effect === 'openSettings') return ports.openRemoteSettings()
     else if (effect.effect === 'close') return ports.close()
@@ -380,6 +388,13 @@ export class LauncherEffects {
     tabTitle: string,
     ports: LauncherPorts,
   ): Promise<void> {
+    const selected = await window.appClient.remote.selectSession(remoteEndpointId, sessionId)
+    if (!selected.ok || !selected.value.ok) {
+      const detail = !selected.ok ? selected.error : !selected.value.ok ? selected.value.error.detail : 'Remote selection failed'
+      ports.computers({ input: 'failed', detail })
+      ports.create({ input: 'submitFailed', code: 'unavailable', detail })
+      return
+    }
     const outcome = await ports
       .openTerminal({ kind: 'remote', remoteEndpointId, sessionId }, tabTitle)
       .catch((error: unknown): PanelOpenOutcome => ({
@@ -729,14 +744,15 @@ export class LauncherEffects {
   ): Promise<void> {
     const answer = await window.appClient.remote.listProjects(remoteEndpointId, {})
     const categories = LauncherEffects.remoteCatalogOf(answer, (detail) =>
-      ports.dispatch({ input: 'loadFailed', detail }))
+      ports.dispatch({ input: 'loadFailed', remoteEndpointId, detail }))
     if (categories === null) return
     // The listings first and the categories after: the categories are what makes the screen ask for
     // a listing, and by then it is already held.
     for (const entry of categories)
-      LauncherEffects.reportRemoteListing(entry.category.id, 'recent', entry.listing, ports)
+      LauncherEffects.reportRemoteListing(remoteEndpointId, entry.category.id, 'recent', entry.listing, ports)
     ports.dispatch({
       input: 'categoriesLoaded',
+      remoteEndpointId,
       categories: categories.map((entry) => entry.category),
     })
   }
@@ -750,20 +766,22 @@ export class LauncherEffects {
     const answer = await window.appClient.remote
       .listProjects(remoteEndpointId, { categoryId, sort })
     const categories = LauncherEffects.remoteCatalogOf(answer, (detail) =>
-      ports.dispatch({ input: 'projectsLoadFailed', categoryId, sort, detail }))
+      ports.dispatch({ input: 'projectsLoadFailed', remoteEndpointId, categoryId, sort, detail }))
     if (categories === null) return
     const found = categories.find((entry) => entry.category.id === categoryId)
     if (found === undefined)
       return ports.dispatch({
         input: 'projectsLoadFailed',
+        remoteEndpointId,
         categoryId,
         sort,
         detail: `That computer no longer has a category ${JSON.stringify(categoryId)}.`,
       })
-    LauncherEffects.reportRemoteListing(categoryId, sort, found.listing, ports)
+    LauncherEffects.reportRemoteListing(remoteEndpointId, categoryId, sort, found.listing, ports)
   }
 
   private static reportRemoteListing(
+    remoteEndpointId: string,
     categoryId: string,
     sort: LauncherSort,
     listing: ProjectsOpResult<ProjectListResult>,
@@ -772,11 +790,12 @@ export class LauncherEffects {
     if (!listing.ok)
       return ports.dispatch({
         input: 'projectsLoadFailed',
+        remoteEndpointId,
         categoryId,
         sort,
         detail: `${listing.code}: ${listing.detail}`,
       })
-    ports.dispatch({ input: 'projectsLoaded', categoryId, sort, listing: listing.value })
+    ports.dispatch({ input: 'projectsLoaded', remoteEndpointId, categoryId, sort, listing: listing.value })
   }
 
   /** Both unwraps plus the shape check, because this value crossed two processes and a network. */

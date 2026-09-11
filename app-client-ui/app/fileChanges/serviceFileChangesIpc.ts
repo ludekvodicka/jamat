@@ -176,15 +176,16 @@ export class ServiceFileChangesIpc extends ServiceIpcBase<
     sessionId: string,
     source: FileChangesWorkingTreeSource | null,
     scopeRoot?: string,
+    forCommit = false,
   ): Promise<FileChangesWorkingTreeSnapshotResult> {
     const context = await this.sessions.workingContext(sessionId)
     if (!context.ok)
       return { ok: false, code: 'invalid-context', detail: context.detail }
     if (scopeRoot !== undefined && !PathCompare.isInside(context.value.cwd, scopeRoot))
       return { ok: false, code: 'invalid-context', detail: 'The scope is outside the session working directory' }
-    const key = `${sessionId}\u0000${source ?? ''}\u0000${scopeRoot ?? ''}`
+    const key = `${sessionId}\u0000${source ?? ''}\u0000${scopeRoot ?? ''}\u0000${forCommit}`
     const running = this.workingTrees.get(key)
-    const result = await (running ?? this.startWorkingTree(key, { ...context.value, cwd: scopeRoot ?? context.value.cwd }, source))
+    const result = await (running ?? this.startWorkingTree(key, { ...context.value, cwd: scopeRoot ?? context.value.cwd }, source, forCommit))
     if (result.ok) this.track(result.value.snapshotId, ownerId, sessionId)
     return result
   }
@@ -193,8 +194,9 @@ export class ServiceFileChangesIpc extends ServiceIpcBase<
     key: string,
     context: Parameters<FileChangesManager['workingTree']>[0],
     source: FileChangesWorkingTreeSource | null,
+    forCommit: boolean,
   ): Promise<FileChangesWorkingTreeSnapshotResult> {
-    const started = this.manager.workingTree(context, source)
+    const started = this.manager.workingTree(context, source, forCommit)
       .finally(() => this.workingTrees.delete(key))
     this.workingTrees.set(key, started)
     return started

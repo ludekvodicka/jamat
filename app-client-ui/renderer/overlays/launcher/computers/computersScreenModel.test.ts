@@ -68,7 +68,7 @@ describe('app-client-ui/renderer/overlays/launcher/computers/computersScreenMode
    * that offered a computer this one cannot reach would take a project, a name and an agent before
    * saying so. Everything left out here is listed in Settings -> Remote Control with its reason.
    */
-  it('draws the connected computers and none of the other three states', () => {
+  it('lists every saved computer without connecting it', () => {
     const rows = ComputersScreenModel.rowsOf(snapshotOf(
       endpoint('a', 'Studio', 'connected', 2),
       endpoint('b', 'Laptop', 'offline'),
@@ -76,12 +76,10 @@ describe('app-client-ui/renderer/overlays/launcher/computers/computersScreenMode
       endpoint('d', 'Attic', 'idle'),
     ))
 
-    expect(rows).toEqual([{
-      remoteEndpointId: 'a',
-      displayName: 'Studio',
-      endpointLabel: '203.0.113.10:47150',
-      sessionCount: 2,
-    }])
+    expect(rows.map((row) => [row.displayName, row.status])).toEqual([
+      ['Attic', 'idle'], ['Bench', 'connecting'], ['Laptop', 'offline'], ['Studio', 'connected'],
+    ])
+    expect(rows[3]?.sessionCount).toBe(2)
   })
 
   it('throws on a status nobody has decided about here', () => {
@@ -93,9 +91,9 @@ describe('app-client-ui/renderer/overlays/launcher/computers/computersScreenMode
   // "Nobody has looked yet" and "nothing is connected" are the same empty list otherwise.
   it('says it is still reading before the first snapshot, and offers the settings after it', () => {
     expect(ComputersScreenModel.emptyRefusal(ComputersScreenModel.initial().state))
-      .toBe('Reading the connected computers…')
+      .toBe('Reading saved computers…')
     expect(ComputersScreenModel.emptyRefusal(loaded()))
-      .toBe('No connected computers. Pair one and connect it in Settings → Remote Control.')
+      .toBe('No saved computers. Add a computer in Remote Control settings.')
     expect(ComputersScreenModel.emptyRefusal(loaded(endpoint('a', 'Studio', 'connected'))))
       .toBeNull()
   })
@@ -111,13 +109,11 @@ describe('app-client-ui/renderer/overlays/launcher/computers/computersScreenMode
     const state = loaded(endpoint('a', 'Studio', 'connected'), endpoint('b', 'Bench', 'connected'))
 
     expect(ComputersScreenModel.transition(state, { input: 'activate' }).effects).toEqual([{
-      effect: 'chosen',
-      target: { remoteEndpointId: 'b', displayName: 'Bench' },
+      effect: 'connect', remoteEndpointId: 'b',
     }])
     const moved = ComputersScreenModel.transition(state, { input: 'moveCursor', delta: 1 }).state
     expect(ComputersScreenModel.transition(moved, { input: 'activate' }).effects).toEqual([{
-      effect: 'chosen',
-      target: { remoteEndpointId: 'a', displayName: 'Studio' },
+      effect: 'connect', remoteEndpointId: 'a',
     }])
     expect(ComputersScreenModel.transition(loaded(), { input: 'activate' }).effects).toEqual([])
   })
@@ -126,7 +122,7 @@ describe('app-client-ui/renderer/overlays/launcher/computers/computersScreenMode
     const state = loaded(endpoint('a', 'Studio', 'connected'), endpoint('b', 'Bench', 'connected'))
 
     expect(ComputersScreenModel.transition(state, { input: 'openRow', index: 1 }).effects)
-      .toEqual([{ effect: 'chosen', target: { remoteEndpointId: 'a', displayName: 'Studio' } }])
+      .toEqual([{ effect: 'connect', remoteEndpointId: 'a' }])
   })
 
   /*

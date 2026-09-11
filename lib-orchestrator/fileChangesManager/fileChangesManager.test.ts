@@ -256,6 +256,30 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
     expect(result.value.externalRoots).toEqual([{ path: root, displayPath: '', fileIds: result.value.entries.map((entry) => entry.fileId) }])
   })
 
+  it('omits synthetic directories only for commit reads and retains real property changes', async () => {
+    const root = cwd()
+    const adapter = vcs(root)
+    const detected = (await adapter.detect(root))!
+    const status = await adapter.status(detected)
+    if (!status.ok) throw new Error(status.detail)
+    const file = { ...status.value.entries[0], absolutePath: join(root, 'src', 'file.ts'), repositoryPath: 'src/file.ts' }
+    const property = { ...file, absolutePath: join(root, 'property'), repositoryPath: 'property', nodeKind: 'directory' as const }
+    const managerInstance = new FileChangesManager({
+      diffExecutor: new FileDiffComputer(),
+      workingSources: { read: async () => ({
+        selection: { requested: 'git', selected: 'git', available: ['git'], fallbackReason: null },
+        selected: { adapter, detection: detected, baseline: adapter.defaultBaselineRef, baselineLabel: 'HEAD' },
+        entries: [file, property], externalRoots: [], warnings: [],
+      }) } as unknown as FileChangesWorkingTreeSources,
+    })
+    const context = { sessionId: 'session', cwd: root, agent: null, worktree: null }
+    const normal = await managerInstance.workingTree(context, 'git')
+    const commit = await managerInstance.workingTree(context, 'git', true)
+    if (!normal.ok || !commit.ok) throw new Error('Listing failed')
+    expect(normal.value.entries.map((entry) => entry.displayPath).sort()).toEqual(['property', 'src', 'src/file.ts'])
+    expect(commit.value.entries.map((entry) => entry.displayPath).sort()).toEqual(['property', 'src/file.ts'])
+  })
+
   it('builds untracked and deleted VCS files through the direct diff paths', async () => {
     const root = cwd()
     const addedPath = join(root, 'added.txt')

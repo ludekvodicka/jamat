@@ -378,8 +378,10 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
       />,
     )
 
+    // None first, then Green: the menu is ordered by what is reached for, not by hue, and the
+    // remaining eleven keep the wheel from red so the set still reads as a spectrum.
     expect(MenuView.colours()).toEqual([
-      'None', 'Red', 'Orange', 'Amber', 'Green', 'Teal', 'Cyan',
+      'None', 'Green', 'Red', 'Orange', 'Amber', 'Teal', 'Cyan',
       'Sky', 'Blue', 'Indigo', 'Violet', 'Magenta', 'Rose',
     ])
 

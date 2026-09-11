@@ -51,22 +51,22 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/remoteControl/remot
     expect(row?.textContent).toContain('offline')
     expect(row?.textContent).toContain('ECONNREFUSED 203.0.113.10:47150')
     expect(row?.textContent).toContain('2026.08.30.11.00')
-    expect(RemoteControlSettingsFixtures.buttonNamed(view.container, 'Retry now')).toBeTruthy()
+    expect(RemoteControlSettingsFixtures.buttonNamed(view.container, 'Connect')).toBeTruthy()
   })
 
   /*
    * Nothing is dialled until something asks, and this screen is one of the things that ask. Without
    * the hold every row would read idle, which is true and useless.
    */
-  it('holds the connections open for as long as it is drawn', async () => {
+  it('does not connect to any computer when settings open', async () => {
     const { view, holds } = await RemoteControlSettingsFixtures
       .mount(<RemoteControlConnectionsTab onDirtyChange={vi.fn()} />)
 
-    expect(holds).toEqual(['hold:network-settings'])
+    expect(holds).toEqual([])
 
     view.unmount()
 
-    expect(holds).toEqual(['hold:network-settings', 'release:network-settings'])
+    expect(holds).toEqual([])
   })
 
   it('redraws a row from the snapshot that follows a command', async () => {
@@ -196,7 +196,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/remoteControl/remot
     )
 
     expect(view.getByRole('alert').textContent).toContain('cannot read')
-    expect(RemoteControlSettingsFixtures.buttonNamed(view.container, 'Retry now').disabled)
+    expect(RemoteControlSettingsFixtures.buttonNamed(view.container, 'Connect').disabled)
       .toBe(true)
     expect(RemoteControlSettingsFixtures.buttonNamed(view.container, 'Revoke').disabled).toBe(true)
     expect(calls).toEqual([])

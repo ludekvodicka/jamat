@@ -8,11 +8,13 @@ import type {
 import type { TerminalDetectResult } from '../../../../../lib-orchestrator/terminalDetector/terminalDetectorApi.types'
 import type { IpcResult } from '../../../../shared/appClientUiIpc'
 import { type TerminalTarget, TerminalTargetCodec } from '../../../../shared/terminalTarget'
+import { UiSettings } from '../../../../shared/uiSettings'
 import { UiSettingsStore } from '../../../uiSettings/uiSettingsStore'
 import { TerminalBufferScan } from '../menu/terminalBufferScan'
 import { TerminalClipboard } from '../input/terminalClipboard'
 import { TerminalInterrupt } from '../input/terminalInterrupt'
 import { TerminalKeyGate } from '../input/terminalKeyGate'
+import { TerminalWheelRepeat } from '../input/terminalWheelRepeat'
 import { type TerminalRefusalCode, TerminalTransports } from './terminalTransport'
 import { type TerminalAgentId, TerminalPromptNewline } from '../input/terminalPromptNewline'
 import { TerminalLinks } from '../view/terminalLinks'
@@ -176,6 +178,11 @@ export function useTerminalAttachment(
       fontFamily: appearance.fontFamily,
       fontSize: appearance.fontSize,
       theme: appearance.theme,
+      // The terminal's own half of the scroll setting, for the half of it xterm scrolls: its own
+      // viewport over its own scrollback. No event of ours is involved and the window's
+      // `WheelSpeed` leaves this surface alone. An agent that takes the mouse scrolls ITSELF and
+      // never sees this option, which is what `TerminalWheelRepeat` below is for.
+      scrollSensitivity: UiSettings.scrollFactorOf(settings.terminalScrollSpeedPercent),
       // An OSC 8 hyperlink is opened by us, or by xterm's own dialog that cannot open anything here.
       linkHandler: TerminalLinks.handlerConst,
       // Not for win32 key encoding, whatever it used to say: that rides on `vtExtensions`, which
@@ -187,6 +194,13 @@ export function useTerminalAttachment(
     // Before anything is written: a table registered after the first frame would leave what is
     // already in the buffer measured the old way.
     TerminalUnicode.apply(terminal)
+    // The other half of the same speed, read per event rather than applied: the agent that scrolls
+    // itself is sent as many notches as the setting asks for. Nothing to undo - xterm holds one
+    // handler for the life of the terminal, and the terminal is disposed with this attachment.
+    TerminalWheelRepeat.install(
+      terminal,
+      () => UiSettings.scrollFactorOf(UiSettingsStore.current().terminalScrollSpeedPercent),
+    )
     /**
      * Every copy leaves through here, so the gutter is stripped in one place. The write goes to the
      * main process because `navigator.clipboard` is gated on a secure origin and on focus: under the
@@ -479,6 +493,11 @@ export function useTerminalAttachment(
         terminal.options.fontSize = fontSize
         applyFit()
       }
+      // No fit: a multiplier on the wheel changes nothing about the cell, so the PTY is not told.
+      // Only the xterm half is written here; the repeat reads the store itself, per event.
+      const sensitivity = UiSettings.scrollFactorOf(value.terminalScrollSpeedPercent)
+      if (terminal.options.scrollSensitivity !== sensitivity)
+        terminal.options.scrollSensitivity = sensitivity
       if (appliedTheme !== value.terminalTheme) {
         appliedTheme = value.terminalTheme
         terminal.options.theme = TerminalTheme.current(value).theme

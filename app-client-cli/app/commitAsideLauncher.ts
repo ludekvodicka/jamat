@@ -1,5 +1,4 @@
-import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { TortoiseCommitDialog } from '../../lib-orchestrator/shared/tortoiseCommitDialog'
 
 import type { RemoteControlStepResult } from '../../lib-orchestrator/remoteControl/remoteControlApi.types'
 
@@ -7,7 +6,7 @@ export interface CommitAsideRequest {
   vcs: 'svn' | 'git'
   scope: string
   messageFile: string | null
-  reason: 'jamat-unavailable' | 'session-not-open'
+  reason: 'jamat-unavailable' | 'session-not-open' | 'outside-session'
 }
 
 export interface CommitAsideResult {
@@ -18,30 +17,19 @@ export interface CommitAsideResult {
 }
 
 export class CommitAsideLauncher {
-  static readonly svnToolConst = 'C:\\Program Files\\TortoiseSVN\\bin\\TortoiseProc.exe'
-  static readonly gitToolConst = 'C:\\Program Files\\TortoiseGit\\bin\\TortoiseGitProc.exe'
-
-  constructor(private readonly deps = { platform: process.platform, exists: existsSync, spawn }) {}
+  constructor(private readonly dialog: Pick<TortoiseCommitDialog, 'open'> = new TortoiseCommitDialog()) {}
 
   async open(request: CommitAsideRequest): Promise<RemoteControlStepResult<CommitAsideResult>> {
-    let command: string
     let tool: CommitAsideResult['tool']
-    if (request.vcs === 'svn') { command = CommitAsideLauncher.svnToolConst; tool = 'tortoisesvn' }
-    else if (request.vcs === 'git') { command = CommitAsideLauncher.gitToolConst; tool = 'tortoisegit' }
+    if (request.vcs === 'svn') tool = 'tortoisesvn'
+    else if (request.vcs === 'git') tool = 'tortoisegit'
     else throw new Error(`Unknown commit VCS: ${JSON.stringify(request.vcs)}`)
-    if (this.deps.platform !== 'win32' || !this.deps.exists(command))
-      return { ok: false, error: { code: 'unavailable', detail: `Tortoise commit dialog is unavailable: ${command}` } }
-    const args = ['/command:commit', `/path:${request.scope}`,
-      ...(request.messageFile === null ? [] : [`/logmsgfile:${request.messageFile}`])]
     try {
-      await new Promise<void>((resolve, reject) => {
-        const child = this.deps.spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: true })
-        child.once('error', reject)
-        child.once('spawn', () => { child.unref(); resolve() })
-      })
+      const opened = await this.dialog.open(request)
+      if (!opened.ok) return { ok: false, error: { code: 'unavailable', detail: opened.detail } }
       return { ok: true, value: { kind: 'opened-aside', tool, scope: request.scope, reason: request.reason } }
     } catch (error) {
-      return { ok: false, error: { code: 'unavailable', detail: `${command}: ${String(error)}` } }
+      return { ok: false, error: { code: 'unavailable', detail: String(error) } }
     }
   }
 }

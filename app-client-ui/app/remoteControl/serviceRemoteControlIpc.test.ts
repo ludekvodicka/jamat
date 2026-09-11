@@ -62,14 +62,14 @@ describe('app-client-ui/app/remoteControl/serviceRemoteControlIpc', () => {
   it('holds and releases per window and per reason', async () => {
     const one = new ServiceRemoteControlIpcTestSender()
     const two = new ServiceRemoteControlIpcTestSender()
-    await ServiceRemoteControlIpcTest.invoke('remote:hold', one, 'network-settings')
-    await ServiceRemoteControlIpcTest.invoke('remote:hold', two, 'network-settings')
+    await ServiceRemoteControlIpcTest.invoke('remote:connect', one, 'network-settings', 'target-endpoint')
+    await ServiceRemoteControlIpcTest.invoke('remote:connect', two, 'network-settings', 'target-endpoint')
     await ServiceRemoteControlIpcTest.invoke('remote:release', one, 'network-settings')
 
-    expect(calls.filter((call) => call.method.endsWith('Connections')))
+    expect(calls.filter((call) => ['connectComputer', 'releaseConnections'].includes(call.method)))
       .toEqual([
-        { method: 'holdConnections', args: [`renderer ${one.id} network-settings`] },
-        { method: 'holdConnections', args: [`renderer ${two.id} network-settings`] },
+        { method: 'connectComputer', args: [`renderer ${one.id} network-settings`, 'target-endpoint'] },
+        { method: 'connectComputer', args: [`renderer ${two.id} network-settings`, 'target-endpoint'] },
         { method: 'releaseConnections', args: [`renderer ${one.id} network-settings`] },
       ])
   })
@@ -80,8 +80,8 @@ describe('app-client-ui/app/remoteControl/serviceRemoteControlIpc', () => {
    */
   it('releases every hold a window held when that window dies', async () => {
     const sender = new ServiceRemoteControlIpcTestSender()
-    await ServiceRemoteControlIpcTest.invoke('remote:hold', sender, 'launcher-computers')
-    await ServiceRemoteControlIpcTest.invoke('remote:hold', sender, 'network-settings')
+    await ServiceRemoteControlIpcTest.invoke('remote:connect', sender, 'launcher-computers', 'target-endpoint')
+    await ServiceRemoteControlIpcTest.invoke('remote:connect', sender, 'network-settings', 'target-endpoint')
     calls.length = 0
 
     sender.fire('destroyed')
@@ -249,7 +249,7 @@ class ServiceRemoteControlIpcTest {
           value: {},
         })
       },
-      holdConnections: (...args: unknown[]) => { calls.push({ method: 'holdConnections', args }) },
+      connectComputer: (...args: unknown[]) => { calls.push({ method: 'connectComputer', args }) },
       releaseConnections: (...args: unknown[]) => {
         calls.push({ method: 'releaseConnections', args })
       },
@@ -257,6 +257,9 @@ class ServiceRemoteControlIpcTest {
         calls.push({ method: 'sessionReference', args })
         return { ok: true, value: { text: `AppJamatV3 session remote ${String(args[1])}` } }
       },
+      isSessionSelected: () => true,
+      selectSession: () => ({ ok: true, value: undefined }),
+      disconnectSessions: (...args: unknown[]) => { calls.push({ method: 'disconnectSessions', args }) },
       attachTerminal: (...args: unknown[]) => {
         calls.push({ method: 'attachTerminal', args: args.slice(0, 3) })
         captureFrame(args[3] as (frame: unknown) => void)

@@ -15,10 +15,10 @@ import type {
 import { RemoteConnectionsManager } from './remoteConnectionsManager'
 
 describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
-  it('connects, keeps a stale snapshot offline and reconnects with open terminal attaches', async () => {
+  it('keeps a disconnected terminal without redialling until Connect is pressed', async () => {
     const harness = new RemoteConnectionsManagerTest()
     harness.manager.start()
-    harness.manager.holdConnections('test')
+    await harness.manager.connectComputer('test', 'target-endpoint')
     await harness.waitUntil(() => harness.manager.snapshot().outbound[0]?.status === 'connected')
     expect(harness.manager.snapshot().outbound[0]?.sessions?.revision).toBe(1)
     const frames: unknown[] = []
@@ -34,6 +34,10 @@ describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
     expect(harness.transports[0]?.activeRequests).toBe(1)
 
     harness.transports[0]?.close()
+    await harness.settle()
+    expect(harness.dials).toEqual(['target-endpoint'])
+    expect(harness.manager.snapshot().outbound[0]?.nextRetryAt).toBeNull()
+    await harness.manager.connectComputer('test', 'target-endpoint')
     await harness.waitUntil(() => harness.transports.length === 2
       && harness.manager.snapshot().outbound[0]?.status === 'connected')
     expect(harness.transports[1]?.attachRequests).toBe(1)
@@ -42,7 +46,7 @@ describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
     expect(frames).toContainEqual({
       type: 'terminal.status',
       status: 'connecting',
-      detail: 'Remote AppClientUI disconnected',
+      detail: 'Remote AppClientUI disconnected. Press Connect to reconnect.',
     })
     harness.manager.stop()
   })
@@ -55,7 +59,7 @@ describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
   it('writes down a paired session from what is held, and refuses what it does not hold', async () => {
     const harness = new RemoteConnectionsManagerTest()
     harness.manager.start()
-    harness.manager.holdConnections('test')
+    await harness.manager.connectComputer('test', 'target-endpoint')
     await harness.waitUntil(() => harness.manager.snapshot().outbound[0]?.status === 'connected')
 
     expect(harness.manager.sessionReference('target-endpoint', 'session-a')).toEqual({
@@ -94,7 +98,7 @@ describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
   it('refuses a sessions snapshot whose elements are not sessions', async () => {
     const harness = new RemoteConnectionsManagerTest()
     harness.manager.start()
-    harness.manager.holdConnections('test')
+    await harness.manager.connectComputer('test', 'target-endpoint')
     await harness.waitUntil(() => harness.manager.snapshot().outbound[0]?.status === 'connected')
     const transport = harness.transports[0]
     if (!transport) throw new Error('Transport was not created')
@@ -117,7 +121,7 @@ describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
   it('frees the attachId when the far end refuses a terminal attach', async () => {
     const harness = new RemoteConnectionsManagerTest()
     harness.manager.start()
-    harness.manager.holdConnections('test')
+    await harness.manager.connectComputer('test', 'target-endpoint')
     await harness.waitUntil(() => harness.manager.snapshot().outbound[0]?.status === 'connected')
     const transport = harness.transports[0]
     if (!transport) throw new Error('Transport was not created')
@@ -157,7 +161,7 @@ describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
       status: 'idle',
     })
 
-    harness.manager.holdConnections('a-screen')
+    await harness.manager.connectComputer('a-screen', 'target-endpoint')
     await harness.waitUntil(() => harness.manager.snapshot().outbound[0]?.status === 'connected')
     expect(harness.dials).toEqual(['target-endpoint'])
     harness.manager.stop()
@@ -167,8 +171,8 @@ describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
   it('hangs up once the last holder lets go, and not before', async () => {
     const harness = new RemoteConnectionsManagerTest()
     harness.manager.start()
-    harness.manager.holdConnections('one')
-    harness.manager.holdConnections('two')
+    await harness.manager.connectComputer('one', 'target-endpoint')
+    await harness.manager.connectComputer('two', 'target-endpoint')
     await harness.waitUntil(() => harness.manager.snapshot().outbound[0]?.status === 'connected')
 
     harness.manager.releaseConnections('one')
@@ -213,7 +217,7 @@ describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
   it('takes a full sessions snapshot after an event revision gap', async () => {
     const harness = new RemoteConnectionsManagerTest()
     harness.manager.start()
-    harness.manager.holdConnections('test')
+    await harness.manager.connectComputer('test', 'target-endpoint')
     await harness.waitUntil(() => harness.manager.snapshot().outbound[0]?.status === 'connected')
     const transport = harness.transports[0]
     if (!transport) throw new Error('Transport was not created')
@@ -227,7 +231,7 @@ describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
   it('stops terminal mutations after an exit frame', async () => {
     const harness = new RemoteConnectionsManagerTest()
     harness.manager.start()
-    harness.manager.holdConnections('test')
+    await harness.manager.connectComputer('test', 'target-endpoint')
     await harness.waitUntil(() => harness.manager.snapshot().outbound[0]?.status === 'connected')
     expect(await harness.manager.attachTerminal(
       'target-endpoint',
@@ -255,7 +259,7 @@ describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
   it('reads the version and the offered operations from one hello, dropping a name it does not know', async () => {
     const harness = new RemoteConnectionsManagerTest()
     harness.manager.start()
-    harness.manager.holdConnections('test')
+    await harness.manager.connectComputer('test', 'target-endpoint')
     await harness.waitUntil(() =>
       harness.manager.snapshot().outbound[0]?.applicationVersion !== null)
 
@@ -276,7 +280,7 @@ describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
   it('stays connected to a computer that answers no hello', async () => {
     const harness = new RemoteConnectionsManagerTest(undefined, { offersHello: false })
     harness.manager.start()
-    harness.manager.holdConnections('test')
+    await harness.manager.connectComputer('test', 'target-endpoint')
     await harness.waitUntil(() => harness.manager.snapshot().outbound[0]?.status === 'connected')
     await new Promise<void>((resolve) => setTimeout(resolve, 50))
 
@@ -293,21 +297,21 @@ describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
    * The wait between two dials, said as a moment rather than as a duration, and then dropped. The
    * screen that draws it is the only place a computer nothing answers at is drawn at all, and the
    * button beside it is for the person who has just started the far end or written the firewall
-   * rule - they know what the backoff cannot.
+   * rule: the person decides when another attempt is wanted.
    */
-  it('says when the next dial is due, and dials at once when a person asks', async () => {
+  it('schedules no retry after failure and retries only when asked', async () => {
     const harness = new RemoteConnectionsManagerTest(undefined, { heldTimers: true })
     harness.refuseConnect = true
     harness.manager.start()
-    harness.manager.holdConnections('test')
+    await harness.manager.connectComputer('test', 'target-endpoint')
     await harness.waitUntil(() => harness.manager.snapshot().outbound[0]?.status === 'offline')
 
     expect(harness.manager.snapshot().outbound[0]).toMatchObject({
       status: 'offline',
       lastConnectedAt: null,
-      nextRetryAt: harness.clock + 30_000,
+      nextRetryAt: null,
     })
-    expect(harness.timers.map((timer) => timer.milliseconds)).toEqual([30_000])
+    expect(harness.timers).toEqual([])
 
     harness.manager.retryNow('endpoint-nobody-has')
     expect(harness.dials).toEqual(['target-endpoint'])
@@ -317,12 +321,101 @@ describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
     harness.manager.retryNow('target-endpoint')
     await harness.waitUntil(() => harness.manager.snapshot().outbound[0]?.status === 'connected')
 
-    expect(harness.timers[0]?.cleared).toBe(true)
     expect(harness.dials).toEqual(['target-endpoint', 'target-endpoint'])
     expect(harness.manager.snapshot().outbound[0]).toMatchObject({
       lastConnectedAt: harness.clock,
       nextRetryAt: null,
     })
+    harness.manager.stop()
+  })
+
+  it('keeps only selected sessions and disconnects without finalizing them', async () => {
+    const harness = new RemoteConnectionsManagerTest()
+    harness.manager.start()
+    await harness.manager.connectComputer('dialog', 'target-endpoint')
+    expect(harness.manager.snapshot().outbound[0]?.selectedSessionIds).toEqual([])
+    expect(await harness.manager.selectSession('target-endpoint', 'missing'))
+      .toMatchObject({ ok: false, error: { code: 'not-found' } })
+    expect(await harness.manager.selectSession('target-endpoint', 'session-a')).toMatchObject({ ok: true })
+    await harness.manager.attachTerminal('target-endpoint', 'selected', { sessionId: 'session-a', size: null }, () => {})
+    harness.manager.releaseConnections('dialog')
+    await harness.settle()
+    expect(harness.manager.snapshot().outbound[0]?.status).toBe('connected')
+    expect(harness.manager.snapshot().outbound[0]?.selectedSessionIds).toEqual(['session-a'])
+    await harness.manager.disconnectSessions('target-endpoint', ['session-a'])
+    await harness.settle()
+    expect(harness.manager.snapshot().outbound[0]?.selectedSessionIds).toEqual([])
+    expect(harness.transports[0]?.isOpen()).toBe(false)
+    expect(harness.transports[0]?.detachRequests).toBe(1)
+    expect(harness.dials).toEqual(['target-endpoint'])
+    harness.manager.stop()
+  })
+
+  it('waits for a reconciled peer snapshot before reattaching after a restart', async () => {
+    const harness = new RemoteConnectionsManagerTest()
+    harness.manager.start()
+    await harness.manager.connectComputer('dialog', 'target-endpoint')
+    await harness.manager.attachTerminal('target-endpoint', 'restart', { sessionId: 'session-a', size: null }, () => {})
+    harness.transports[0]?.close()
+    harness.reconciled = false
+    await harness.manager.connectComputer('dialog', 'target-endpoint')
+    const transport = harness.transports[1]
+    if (!transport) throw new Error('Transport was not created')
+    expect(transport.attachRequests).toBe(0)
+    expect(await harness.manager.attachTerminal('target-endpoint', 'new-tab', { sessionId: 'session-a', size: null }, () => {}))
+      .toMatchObject({ ok: false, error: { code: 'unavailable' } })
+    expect(transport.attachRequests).toBe(0)
+    transport.reconciled = true
+    transport.emitEvent(3)
+    await harness.waitUntil(() => transport.attachRequests === 2)
+    harness.manager.stop()
+  })
+
+  it('detaches a terminal that finishes opening after a local disconnect', async () => {
+    const harness = new RemoteConnectionsManagerTest()
+    harness.manager.start()
+    await harness.manager.connectComputer('dialog', 'target-endpoint')
+    await harness.manager.selectSession('target-endpoint', 'session-a')
+    const transport = harness.transports[0]
+    if (!transport) throw new Error('Transport was not created')
+    let finish!: () => void
+    transport.attachGate = new Promise<void>((resolve) => { finish = resolve })
+    const attaching = harness.manager.attachTerminal(
+      'target-endpoint', 'pending', { sessionId: 'session-a', size: null }, () => {},
+    )
+    await harness.manager.disconnectSessions('target-endpoint', ['session-a'])
+    finish()
+    expect(await attaching).toMatchObject({ ok: false, error: { code: 'unavailable' } })
+    expect(transport.detachRequests).toBe(1)
+    expect(transport.isOpen()).toBe(true)
+    expect(harness.manager.snapshot().outbound[0]?.selectedSessionIds).toEqual([])
+    harness.manager.stop()
+  })
+
+  it('cancels a pending dial when its dialog closes and ignores a late completion', async () => {
+    const harness = new RemoteConnectionsManagerTest()
+    let finish!: () => void
+    harness.dialGate = new Promise<void>((resolve) => { finish = resolve })
+    harness.manager.start()
+    const connecting = harness.manager.connectComputer('dialog', 'target-endpoint')
+    harness.manager.releaseConnections('dialog')
+    await harness.settle()
+    expect(harness.signals[0]?.aborted).toBe(true)
+    finish()
+    expect(await connecting).toMatchObject({ ok: false })
+    expect(harness.manager.snapshot().outbound[0]?.status).toBe('idle')
+    expect(harness.transports).toEqual([])
+    harness.manager.stop()
+  })
+
+  it('restoring a terminal never dials a saved computer', async () => {
+    const harness = new RemoteConnectionsManagerTest()
+    harness.manager.start()
+    expect(await harness.manager.attachTerminal('target-endpoint', 'restored', { sessionId: 'session-a', size: null }, () => {}))
+      .toMatchObject({ ok: false, error: { code: 'unavailable' } })
+    await harness.settle()
+    expect(harness.dials).toEqual([])
+    expect(harness.timers).toEqual([])
     harness.manager.stop()
   })
 
@@ -332,7 +425,10 @@ describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
       RemoteConnectionsManagerTest.profile('profile-b', 'computer-b', 'endpoint-b'),
     ])
     harness.manager.start()
-    harness.manager.holdConnections('test')
+    await harness.manager.connectComputer('a', 'endpoint-a')
+    expect(harness.dials).toEqual(['endpoint-a'])
+    expect(harness.manager.snapshot().outbound[1]?.status).toBe('idle')
+    await harness.manager.connectComputer('b', 'endpoint-b')
     await harness.waitUntil(() => harness.manager.snapshot().outbound.every((entry) =>
       entry.status === 'connected'))
     const snapshot = harness.manager.snapshot()
@@ -346,7 +442,6 @@ describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
   })
 })
 
-/** A reconnect that was scheduled and has not fired: the wait, and whether it was called off. */
 interface RemoteConnectionsManagerTestTimer {
   milliseconds: number
   handle: ReturnType<typeof setTimeout>
@@ -354,10 +449,6 @@ interface RemoteConnectionsManagerTestTimer {
 }
 
 interface RemoteConnectionsManagerTestOptions {
-  /**
-   * Timers the test holds instead of the clock: nothing fires on its own, so a pending reconnect
-   * stays pending and `retryNow` is the only thing that can move it.
-   */
   heldTimers?: boolean
   /** A peer that grants no hello - an older computer, which is a refusal and not a failure. */
   offersHello?: boolean
@@ -368,9 +459,11 @@ class RemoteConnectionsManagerTest {
   readonly timers: RemoteConnectionsManagerTestTimer[] = []
   readonly dials: string[] = []
   readonly manager: RemoteConnectionsManager
-  /** Read through the dep, so both timestamps in the snapshot are exact rather than approximate. */
   clock = 1_700_000_000_000
   refuseConnect = false
+  reconciled = true
+  dialGate: Promise<void> | null = null
+  readonly signals: AbortSignal[] = []
   private requestSequence = 0
 
   constructor(
@@ -383,8 +476,11 @@ class RemoteConnectionsManagerTest {
     this.manager = new RemoteConnectionsManager({
       identity: RemoteConnectionsManagerTest.identity('local-computer', 'local-endpoint'),
       profiles: () => profiles,
-      connect: async (profile) => {
+      connect: async (profile, signal) => {
         this.dials.push(profile.remoteEndpointId)
+        this.signals.push(signal)
+        if (this.dialGate) await this.dialGate
+        if (signal.aborted) return { ok: false, error: { code: 'unavailable', detail: 'Cancelled' } }
         if (this.refuseConnect)
           return { ok: false, error: { code: 'unavailable', detail: 'Nothing answers there' } }
         const transport = new RemoteConnectionsManagerTestTransport(
@@ -393,6 +489,7 @@ class RemoteConnectionsManagerTest {
           this.transports.length + 1,
           options.offersHello !== false,
         )
+        transport.reconciled = this.reconciled
         this.transports.push(transport)
         return { ok: true, value: transport }
       },
@@ -400,10 +497,6 @@ class RemoteConnectionsManagerTest {
       onError: (message) => { throw new Error(message) },
       requestId: () => `request-${++this.requestSequence}`,
       operationId: () => `operation-${this.requestSequence}`,
-      reconnectDelay: () => (held ? 30_000 : 0),
-      // Zero, so a hang-up happens on the next macrotask rather than half a minute later. What the
-      // real delay is worth is a judgement about people opening and closing cards, not a rule a
-      // test can check.
       idleDelayMilliseconds: 0,
       now: () => this.clock,
       ...(held
@@ -484,9 +577,12 @@ class RemoteConnectionsManagerTestTransport implements RemoteControlPeerTranspor
   sessionLists = 0
   hellos = 0
   poisonSnapshot = false
+  reconciled = true
   refuseAttach = false
+  attachGate: Promise<void> | null = null
   attachRequests = 0
   activeRequests = 0
+  detachRequests = 0
 
   constructor(
     readonly remoteIdentity: RemoteControlPeerIdentity,
@@ -512,7 +608,9 @@ class RemoteConnectionsManagerTestTransport implements RemoteControlPeerTranspor
 
   send(message: RemoteControlPeerApplicationMessage): boolean {
     if (!this.open) return false
-    queueMicrotask(() => this.answer(message))
+    if (message.type === 'socket-request' && message.request.operation === 'terminal.attach' && this.attachGate)
+      void this.attachGate.then(() => this.answer(message))
+    else queueMicrotask(() => this.answer(message))
     return true
   }
 
@@ -592,12 +690,13 @@ class RemoteConnectionsManagerTestTransport implements RemoteControlPeerTranspor
                 ...RemoteConnectionsManagerTestTransport.snapshot(this.snapshotRevision),
                 sessions: [null],
               } as unknown as SessionsSnapshot
-            : RemoteConnectionsManagerTestTransport.snapshot(this.snapshotRevision),
+            : { ...RemoteConnectionsManagerTestTransport.snapshot(this.snapshotRevision), reconciled: this.reconciled },
         },
       })
     } else if (message.type === 'socket-request') {
       if (message.request.operation === 'terminal.attach') this.attachRequests += 1
       else if (message.request.operation === 'terminal.active') this.activeRequests += 1
+      else if (message.request.operation === 'terminal.detach') this.detachRequests += 1
       if (this.refuseAttach && message.request.operation === 'terminal.attach') {
         this.emit({
           type: 'socket-response',

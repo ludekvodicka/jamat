@@ -1,21 +1,33 @@
-.commit-pane { display: flex; flex-direction: column; gap: var(--space-2); height: 100%; box-sizing: border-box; padding: var(--space-3); color: var(--color-text-1); }
+.commit-pane { display: flex; flex-direction: column; gap: var(--space-2); height: 100%; min-height: 0; min-width: 0; overflow: hidden; box-sizing: border-box; padding: var(--space-2); color: var(--color-text-1); }
 .commit-pane button { padding: var(--space-1) var(--space-2); font: inherit; color: var(--color-text-2); background: var(--color-surface-control); border: 1px solid var(--color-border-frame); border-radius: var(--radius-control); cursor: pointer; }
 .commit-pane button:hover:not(:disabled) { background: var(--color-surface-control-hover); }
 .commit-pane button:disabled { color: var(--color-text-5); cursor: default; }
 .commit-pane button.commit-submit:not(:disabled) { color: var(--color-text-1); background: var(--color-accent-strong); }
 .commit-pane input[type='checkbox'] { accent-color: var(--color-accent-strong); flex-shrink: 0; }
 .commit-pane-slot { height: 100%; min-height: 0; }
+.commit-pane-slots { display: contents; }
 .commit-pane-slot[hidden] { display: none; }
-.commit-scope { overflow-wrap: anywhere; }
-.commit-targets { flex: 1; overflow: auto; min-height: 0; }
-.commit-targets ul { list-style: none; margin: 0; padding-left: var(--space-3); }
-.commit-targets > ul { padding-left: 0; }
-.commit-target { display: flex; align-items: center; gap: var(--space-1); padding: var(--space-1) 0; }
-.commit-target small { color: var(--color-text-3); }
+.commit-scope { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+.commit-targets { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; gap: var(--space-1); }
+.commit-files { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--color-border-frame); background: var(--color-surface-sunken); font-size: var(--fs-base); }
+.commit-target, .commit-files-heading { display: grid; grid-template-columns: 1.5em 2em minmax(0, 1fr); align-items: center; gap: var(--space-1); padding: 0 var(--space-1); min-width: max-content; line-height: 1.7; box-sizing: border-box; white-space: nowrap; }
+.commit-files-heading { position: sticky; top: 0; z-index: 1; color: var(--color-text-3); background: var(--color-surface-control); border-bottom: 1px solid var(--color-border-frame); }
+.commit-target { line-height: 1.25; cursor: default; user-select: none; }
+.commit-target:hover { background: var(--color-surface-control-hover); }
+.commit-target[aria-selected='true'] { background: var(--color-accent-strong); color: var(--color-text-1); }
+.commit-target:focus-visible { outline: 1px solid var(--color-accent); outline-offset: -1px; }
+.commit-target input[type='checkbox'] { display: block; margin: 0; }
+.commit-target-previous, .commit-target-hint { color: var(--color-text-3); }
+.commit-target-hint { margin-left: var(--space-2); }
+.commit-target[aria-selected='true'] :is(.commit-target-previous, .commit-target-hint, .file-tools-status) { color: inherit; }
 .commit-selection, .commit-actions { display: flex; align-items: center; gap: var(--space-2); }
-.commit-actions { justify-content: flex-end; }
-.commit-external { border-top: 1px solid var(--color-border-frame); padding-top: var(--space-2); margin-top: var(--space-2); }
-.commit-external > button { margin-left: var(--space-2); }
+.commit-selection, .commit-actions, .commit-status { flex-shrink: 0; }
+.commit-selection { font-size: var(--fs-secondary); }
+.commit-actions { justify-content: space-between; flex-wrap: wrap; }
+.commit-actions-left, .commit-actions-right { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.commit-actions-right { margin-left: auto; }
+.commit-external { border-top: 1px solid var(--color-border-frame); }
+.commit-external-heading { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1); white-space: nowrap; }
 .commit-message { display: flex; flex-direction: column; gap: var(--space-1); flex: 0 0 25%; min-height: 0; }
 .commit-message textarea { flex: 1; min-height: 0; resize: vertical; background: var(--color-surface-sunken); color: var(--color-text-1); border: 1px solid var(--color-border-frame); padding: var(--space-2); font: inherit; }
 .commit-status { white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; max-height: 30%; }

@@ -181,7 +181,7 @@ export class WorkspacePanels {
     controller: TabsController,
     target: TerminalTarget,
     title: string,
-    options?: { plain?: true; preview?: true },
+    options?: { plain?: true; preview?: true; activate?: boolean },
   ): Promise<PanelOpenOutcome> {
     // A session already on screen as a plain tab is shown THERE. The two presentations derive
     // different panel ids from the same session, so opening the other one would put one session in
@@ -191,8 +191,10 @@ export class WorkspacePanels {
         PanelKeysConst.terminal,
         TerminalTargetCodec.params(target, 'tab'),
       )
-      if (options?.plain !== true && controller.activatePanel(plainPanelId))
+      if (options?.plain !== true && controller.keyOf(plainPanelId) !== null) {
+        if (options?.activate !== false) controller.activatePanel(plainPanelId)
         return Promise.resolve({ kind: 'opened', panelId: plainPanelId })
+      }
     } else if (target.kind === 'remote') {
       if (options?.plain === true)
         throw new Error('A remote terminal cannot be opened as a plain tab')
@@ -203,7 +205,7 @@ export class WorkspacePanels {
       title,
       TerminalTargetCodec.params(target, options?.plain === true ? 'tab' : 'session'),
       undefined,
-      options?.preview === true ? { preview: true } : undefined,
+      options,
     )
   }
 
@@ -234,7 +236,7 @@ export class WorkspacePanels {
         controller,
         { kind: 'local', sessionId: command.sessionId },
         command.tabTitle,
-        command.plain ? { plain: true } : undefined,
+        { ...(command.plain ? { plain: true } : {}), ...(command.activate === undefined ? {} : { activate: command.activate }) },
       )
       if (outcome.kind === 'opened')
         return { kind: 'opened', panelId: outcome.panelId }
@@ -281,6 +283,10 @@ export class WorkspacePanels {
         if (!result.ok) { refusal = result.refusal; return params }
         return PanelSplitParams.merged(params, result.state)
       })
+      if (applied && refusal === null && command.activate !== false) {
+        controller.activatePanel(command.panelId)
+        requestAnimationFrame(() => controller.focusPanelContent(command.panelId))
+      }
       return refusal !== null ? { kind: 'failed', detail: refusal }
         : applied ? { kind: 'commit-opened', panelId: command.panelId } : { kind: 'failed', detail: `Unknown panel: ${command.panelId}` }
     } else if (command.kind === 'focus-panel')

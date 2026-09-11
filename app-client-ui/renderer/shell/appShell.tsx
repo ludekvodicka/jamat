@@ -672,7 +672,8 @@ class AppShellComposition {
       registry: panels,
       saveLayout: (layout) => WorkspaceChannels.saveLayout(layout),
       clearLayout: () => WorkspaceChannels.clearLayout(),
-      claimPanel: (panel) => WorkspaceChannels.claimPanel(panel),
+      claimPanel: (panel, activate) => WorkspaceChannels.claimPanel(panel, activate),
+      focusPanelContent: (panelId) => panelFocus.focus(panelId),
       reconcilePanels: (presence) => WorkspaceChannels.reconcilePanels(presence),
       releasePanel: (panelId) => WorkspaceChannels.releasePanel(panelId),
       // This document's own reading first, then the main process: local surfaces would draw the
@@ -730,8 +731,12 @@ class AppShellComposition {
       remarkableCommands,
       intents,
       worktreeSetupIntents,
-      openTerminal: (target, title, options) =>
-        WorkspacePanels.openTerminal(controller, target, title, options),
+      openTerminal: async (target, title, options) => {
+        const outcome = await WorkspacePanels.openTerminal(controller, target, title, options)
+        if (target.kind === 'remote' && outcome.kind === 'focusedExisting')
+          await WorkspaceChannels.publishTerminalRestarted(TerminalTargetCodec.key(target))
+        return outcome
+      },
       sessionFacts: (sessionId) =>
         SessionOperations.sessionFactsOf(sessionsSnapshot, sessionId),
     }
@@ -757,6 +762,7 @@ class AppShellComposition {
 
   private static remotePorts(): AppShellRemotePorts {
     return {
+      disconnect: (endpointId, sessionIds) => window.appClient.remote.disconnect(endpointId, sessionIds),
       read: () => window.appClient.remote.snapshot(),
       subscribe: (onChanged) => window.appClient.onRemoteChanged(onChanged),
       reportError: (message) => AppClientUiReport.error(`${message}`),

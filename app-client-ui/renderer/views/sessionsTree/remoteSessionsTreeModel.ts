@@ -67,28 +67,11 @@ export class RemoteSessionsTreeModel {
   ): readonly RemoteSessionsComputerTree[] {
     const computers = new Map<string, RemoteSessionsComputerTree>()
     for (const entry of entries) {
-      /*
-       * Connected-only, and deliberately so: a computer this one cannot reach draws NO row here, not
-       * a greyed one. The tree is what is running right now; a paired computer that is idle, still
-       * dialling or offline is a settings matter, and Settings -> Network -> Remote connections is
-       * where it is listed with the reason - last success, next retry, its version and a manual
-       * Retry. `remoteSessionsTreeModel.test.ts` pins each of the three, because "show them here
-       * too" is the obvious change to make and it is the one that was decided against.
-       *
-       * Since dialling became on demand this is also why the tree is quiet: a paired computer is
-       * idle until a tab, a launcher card or the settings screen asks for it, so a row here means
-       * something is really connected rather than that a profile exists.
-       */
-      switch (entry.status) {
-        case 'connected': break
-        case 'idle':
-        case 'connecting':
-        case 'offline': continue
-        default: throw new Error(`Unknown remote endpoint status: ${JSON.stringify(entry.status)}`)
-      }
+      const selected = new Set(entry.selectedSessionIds ?? [])
+      if (selected.size === 0 || entry.sessions === null) continue
       const key = `remote:${entry.remoteEndpointId}`
       const tree = SessionsTreeModel.build(
-        entry.sessions ?? RemoteSessionsTreeModel.emptySnapshot(),
+        { ...entry.sessions, sessions: entry.sessions.sessions.filter((session) => selected.has(session.sessionId)), orphans: [] },
         { ...view, content: 'both' },
         marks,
         previous.get(key) ?? null,
@@ -101,7 +84,7 @@ export class RemoteSessionsTreeModel {
         },
       )
       next.set(key, tree)
-      if (view.stateGroup !== undefined && tree.nodes.length === 0) continue
+      if (tree.nodes.length === 0) continue
       RemoteSessionsTreeModel.push(computers, {
         id: `remote-computer:${entry.remoteComputerId}`,
         remoteComputerId: entry.remoteComputerId,
@@ -192,20 +175,4 @@ export class RemoteSessionsTreeModel {
     return `${entry.configIdentity} (${entry.runtimeChannel})`
   }
 
-  private static emptySnapshot(): SessionsSnapshot {
-    return {
-      revision: 0,
-      reconciled: false,
-      host: {
-        presence: 'unreachable',
-        hostVersion: null,
-        hostInstanceId: null,
-        liveCount: 0,
-        lastStartError: null,
-      },
-      categories: [],
-      sessions: [],
-      orphans: [],
-    }
-  }
 }

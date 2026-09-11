@@ -54,7 +54,7 @@ type RemarkableCliSymptom =
   | 'busy'
   | 'host-key-changed'
   | 'nothing-open'
-  | 'sleeping'
+  | 'unreachable'
   | 'unknown'
   | 'web-interface'
 
@@ -404,7 +404,7 @@ export class RemarkableCli {
       if (symptom === 'busy') return RemarkableCli.failure('device-busy', detail, true)
       else if (symptom === 'host-key-changed') return RemarkableCli.failure('host-key-changed', detail)
       else if (symptom === 'nothing-open') return RemarkableCli.failure('nothing-open', detail)
-      else if (symptom === 'sleeping') return RemarkableCli.failure('device-sleeping', detail, true)
+      else if (symptom === 'unreachable') return RemarkableCli.failure('device-unreachable', detail, true)
       else if (symptom === 'web-interface')
         return RemarkableCli.failure('web-interface-unavailable', detail)
       else if (symptom === 'unknown') throw new Error('Unknown remarkable-cli stderr')
@@ -421,11 +421,10 @@ export class RemarkableCli {
     if (/Another rmcli run(?: \(PID \d+\))? holds the lock/.test(detail)) return 'busy'
     if (/Host key for .+ changed from SHA256:.+ to SHA256:/.test(detail)) return 'host-key-changed'
     if (detail.includes('Nothing is open on the tablet')) return 'nothing-open'
-    // A tablet that is off, out of WiFi, or asleep with its radio down all land here: the socket
-    // never opens, and the error code is whichever one the network stack picked.
+    // Connection failures cannot distinguish sleep from a changed IP or an unavailable network.
     if (detail.includes('SSH connection timed out')
       || /Cannot connect to .+(?:timed out|ETIMEDOUT|ECONNREFUSED|EHOSTUNREACH|EHOSTDOWN|ENETUNREACH|ENOTFOUND|ECONNRESET)/i
-        .test(detail)) return 'sleeping'
+        .test(detail)) return 'unreachable'
     if (detail.includes('Web Interface')
       || /Device .+ is offline or its WiFi SSH tunnel is unavailable/.test(detail)) return 'web-interface'
     return 'unknown'

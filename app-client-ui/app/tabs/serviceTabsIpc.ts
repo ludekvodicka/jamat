@@ -39,7 +39,7 @@ export class ServiceTabsIpc extends ServiceIpcBase<typeof ServiceTabsIpc.channel
   }
 
   initialize(): void {
-    this.register('tabs:claim-panel', (event, panel) => {
+    this.register('tabs:claim-panel', (event, panel, activate) => {
       const windowId = this.windows.windowIdOf(event.sender)
       if (windowId === null)
         return { kind: 'refused', detail: 'Unknown workspace renderer' }
@@ -47,6 +47,7 @@ export class ServiceTabsIpc extends ServiceIpcBase<typeof ServiceTabsIpc.channel
         return { kind: 'refused', detail: 'The workspace window is closing' }
       const answer = this.index.claimOpen(windowId, panel)
       if (answer.kind === 'owned') {
+        if (activate === false) return answer
         this.windows.focusOrRecreate(answer.windowId)
         // A terminal owns renderer-local split and sidebar state inside its params. A duplicate
         // open only focuses that tab; publishing the request's base params would erase that state.

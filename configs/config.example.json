@@ -5,12 +5,14 @@
   "fileChanges": {
     "primaryVcs": "git"
   },
-  "_README_ui": "Text size, as a percentage of this build's own sizes. 100 is the default appearance, the range is 70 to 150 and the step is 5; a number off that grid is snapped to it rather than thrown away. fontScalePercent is everything the window draws except the status bar, fileViewerFontScalePercent multiplies it again inside a file viewer's document, and terminalFontScalePercent is the terminal alone. terminalTheme is which colours the terminal paints in: 'original' takes the window's own background and text, 'soft' the Windows Terminal pair V1 used, 'vscodeDark' the VS Code Dark palette; a name outside those three is reported and read as 'original'. The whole section may be left out, which is the same as the values below.",
+  "_README_ui": "Text size, as a percentage of this build's own sizes. 100 is the default appearance, the range is 70 to 150 and the step is 5; a number off that grid is snapped to it rather than thrown away. fontScalePercent is everything the window draws except the status bar, fileViewerFontScalePercent multiplies it again inside a file viewer's document, and terminalFontScalePercent is the terminal alone. terminalTheme is which colours the terminal paints in: 'original' takes the window's own background and text, 'soft' the Windows Terminal pair V1 used, 'vscodeDark' the VS Code Dark palette; a name outside those three is reported and read as 'original'. Scroll speed multiplies one turn of the wheel and has a range of its own: 50 to 400 in steps of 25, snapped the same way. scrollSpeedPercent is everything the window scrolls except the terminal, and at 100 the window scrolls exactly as it would without the setting; terminalScrollSpeedPercent is the terminal alone: xterm multiplies the wheel where it does the scrolling, and where the agent takes the mouse and scrolls itself - Claude Code does - the wheel is instead repeated that many times, so one turn moves the agent's own transcript as far. The whole section may be left out, which is the same as the values below.",
   "ui": {
     "fontScalePercent": 100,
     "fileViewerFontScalePercent": 100,
     "terminalFontScalePercent": 100,
-    "terminalTheme": "original"
+    "terminalTheme": "original",
+    "scrollSpeedPercent": 100,
+    "terminalScrollSpeedPercent": 100
   },
   "_README_remarkable": "Connection settings for the reMarkable tablet. host and fingerprint stay absent until explicitly configured; fingerprint must be the verified SHA256 value shown by the tablet. timeoutMilliseconds accepts 1000 through 600000 and defaults to 180000. The password is encrypted in machine-local state through the operating system and must never be written here.",
   "remarkable": {

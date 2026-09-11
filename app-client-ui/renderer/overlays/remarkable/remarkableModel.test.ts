@@ -234,7 +234,7 @@ describe('app-client-ui/renderer/overlays/remarkable/remarkableModel', () => {
     const failed = switched.then({
       input: 'previewed',
       previewFor: 'page-c',
-      result: failure('device-sleeping'),
+      result: failure('device-unreachable'),
     })
     expect(failed.state.previewPhase).toBe('failed')
     expect(failed.then({ input: 'preview-requested' }).effects).toEqual([{
@@ -258,13 +258,8 @@ describe('app-client-ui/renderer/overlays/remarkable/remarkableModel', () => {
     expect(refused.then({ input: 'confirm' }).state.currentPageRefused).toBe(false)
   })
 
-  /**
-   * However many times: a sleeping tablet is fixed by picking it up, and the card cannot know
-   * which attempt is the one after that. Capping it at one made the third click say the request
-   * was no longer valid and ask the user to close the card and open it again.
-   */
-  it('keeps offering a retry after a sleeping or busy failure', () => {
-    for (const code of ['device-sleeping', 'device-busy'] as const) {
+  it('keeps offering a retry after an unreachable or busy failure', () => {
+    for (const code of ['device-unreachable', 'device-busy'] as const) {
       let failed = Run.ready()
         .then({ input: 'confirm' })
         .then({ input: 'rendered', result: failure(code) })

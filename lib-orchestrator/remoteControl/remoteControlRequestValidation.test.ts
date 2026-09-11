@@ -146,6 +146,16 @@ describe('lib-orchestrator/remoteControl/remoteControlRequestValidation', () => 
     expect(RemoteControlRequestValidation.parse({ ...valid, operation: 'vcs.commit' }).ok).toBe(false)
   })
 
+  it('accepts only a read-only query of one commit UUID', () => {
+    const valid = { protocol: RemoteControlConst.protocol, requestId: 'status', operation: 'tabs.commitStatus',
+      body: { commitSessionId: '11111111-1111-4111-8111-111111111111' } }
+    expect(RemoteControlRequestValidation.parse(valid)).toEqual({ ok: true, request: valid })
+    for (const input of [{ ...valid, operationId: 'mutate' }, { ...valid, body: {} },
+      { ...valid, body: { commitSessionId: 'wrong' } }, { ...valid, body: { ...valid.body, commit: true } }])
+      expect(RemoteControlRequestValidation.parse(input)).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+    expect(RemoteControlConst.mutatingOperations).not.toContain('tabs.commitStatus')
+  })
+
   it('accepts sessions.transcript only as an exact read-only session request', () => {
     const valid = {
       protocol: RemoteControlConst.protocol,

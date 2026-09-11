@@ -108,6 +108,18 @@ describe('app-client-ui/renderer/overlays/launcher/launcherModel', () => {
     }
   }
 
+  it('ignores catalog answers from a computer that has been left', () => {
+    const state = LauncherModel.initial(null, { remoteEndpointId: 'new-computer', displayName: 'New' }).state
+    const step = LauncherModel.transition(state, {
+      input: 'categoriesLoaded', remoteEndpointId: 'old-computer', categories: LauncherFixtures.categories(),
+    })
+    expect(step.state).toBe(state)
+    expect(step.effects).toEqual([])
+    expect(LauncherModel.transition(state, {
+      input: 'loadFailed', remoteEndpointId: 'old-computer', detail: 'Offline',
+    }).state).toBe(state)
+  })
+
   it('asks for the categories before anything else', () => {
     expect(LauncherModel.initial(null).effects).toEqual([{ effect: 'fetchCategories', remoteEndpointId: null }])
   })

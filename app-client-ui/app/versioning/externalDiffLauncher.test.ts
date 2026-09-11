@@ -10,10 +10,10 @@ describe('app-client-ui/app/versioning/externalDiffLauncher', () => {
   const roots: string[] = []
   afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
 
-  async function fixture() {
+  async function fixture(argumentTemplate = '/base:"$1" /mine:"$2" "%bname" "%yname" "two words"') {
     const root = await mkdtemp(join(tmpdir(), 'jamat-external-diff-test-'))
     roots.push(root)
-    const mine = join(root, 'working file.txt')
+    const mine = join(root, 'working $1 %base file.txt')
     await writeFile(mine, 'mine', 'utf8')
     let close: () => void = () => {}
     const closed = new Promise<void>((resolve) => { close = resolve })
@@ -21,7 +21,7 @@ describe('app-client-ui/app/versioning/externalDiffLauncher', () => {
     const readBaseline = vi.fn<() => Promise<FileChangesBaselineContentResult>>(async () => ({ ok: true, kind: 'content', content: 'původní\n', label: 'SVN BASE' }))
     const fileAccess = vi.fn(() => ({ ok: true as const, value: { sessionId: 'session', cwd: root, path: mine, nodeKind: 'file' as const, status: 'modified' as const } }))
     const launcher = new ExternalDiffLauncher({ readBaseline, fileAccess, tmpRoot: root, commands: { launchInteractive }, reportError: vi.fn(),
-      toolOf: () => ({ kind: 'external', command: 'diff tool', argumentTemplate: '/base:%base /mine:%mine "%bname" "%yname" "two words"' }) })
+      toolOf: () => ({ kind: 'external', command: 'diff tool', argumentTemplate }) })
     return { root, mine, launcher, launchInteractive, fileAccess, readBaseline, close,
       request: { snapshotId: 'snapshot', fileId: 'file', baselineId: 'baseline' } }
   }
@@ -40,7 +40,7 @@ describe('app-client-ui/app/versioning/externalDiffLauncher', () => {
     expect(await readdir(f.root)).not.toContain('jamat-v3-diff-old')
     await writeFile(f.mine, 'edited in the tool', 'utf8')
     f.close()
-    await vi.waitFor(async () => expect(await readdir(f.root)).toEqual(['working file.txt']))
+    await vi.waitFor(async () => expect(await readdir(f.root)).toEqual(['working $1 %base file.txt']))
     expect(await readFile(f.mine, 'utf8')).toBe('edited in the tool')
   })
 
@@ -52,7 +52,7 @@ describe('app-client-ui/app/versioning/externalDiffLauncher', () => {
       return { ok: false, detail: 'ENOENT' }
     })
     expect(await f.launcher.launch('owner', f.request)).toEqual({ ok: false, detail: 'Cannot start diff tool: ENOENT' })
-    expect(await readdir(f.root)).toEqual(['working file.txt'])
+    expect(await readdir(f.root)).toEqual(['working $1 %base file.txt'])
   })
 
   it('refuses binary and expired baselines without starting a process', async () => {
@@ -62,6 +62,14 @@ describe('app-client-ui/app/versioning/externalDiffLauncher', () => {
       expect(await f.launcher.launch('owner', f.request)).toEqual({ ok: false, detail: baseline.detail })
     }
     expect(f.launchInteractive).not.toHaveBeenCalled()
-    expect(await readdir(f.root)).toEqual(['working file.txt'])
+    expect(await readdir(f.root)).toEqual(['working $1 %base file.txt'])
+  })
+
+  it('keeps saved templates with named placeholders working', async () => {
+    const f = await fixture('/base:%base /mine:%mine')
+    expect(await f.launcher.launch('owner', f.request)).toEqual({ ok: true })
+    expect(f.launchInteractive.mock.calls[0]![0].args[1]).toBe(`/mine:${f.mine}`)
+    f.close()
+    await vi.waitFor(async () => expect(await readdir(f.root)).toEqual(['working $1 %base file.txt']))
   })
 })

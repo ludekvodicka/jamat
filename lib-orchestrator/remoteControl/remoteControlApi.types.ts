@@ -187,10 +187,23 @@ export interface RemoteControlTabOpenFileDto {
 
 export interface RemoteControlTabOpenCommitDto {
   kind: 'commit-opened'
+  commitSessionId?: string
   panelId: string
   windowId: string
   scopeRoot: string
   messageApplied: boolean
+}
+
+export interface RemoteControlCommitStatusDto {
+  kind: 'commit-status'
+  commitSessionId: string
+  sessionId: string
+  vcs: 'svn' | 'git'
+  scopeRoot: string
+  state: 'editing' | 'running' | 'committed' | 'failed' | 'cancelled' | 'external-closed'
+  closed: boolean
+  revision: string | null
+  detail: string | null
 }
 
 export type RemoteControlErrorCode = typeof RemoteControlConst.errorCodes[number]
@@ -382,6 +395,10 @@ export interface RemoteControlOperationMap {
   'tabs.openCommit': {
     request: { session: RemoteControlSessionSelector; vcs: 'svn' | 'git'; scope?: string; message?: string }
     response: RemoteControlTabOpenCommitDto
+  }
+  'tabs.commitStatus': {
+    request: { commitSessionId: string }
+    response: RemoteControlCommitStatusDto
   }
   'tabs.focus': {
     request: { panelId: string }

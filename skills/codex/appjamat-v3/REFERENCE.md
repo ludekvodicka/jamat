@@ -113,6 +113,7 @@ a number may also take `--working-directory PATH` for exact disambiguation.
 | Reopen/finalize | `sessions reopen\|finalize <session selector> [--working-directory PATH]` |
 | Tabs | `tabs list`, `tabs open <session selector>`, `tabs open-file <session selector> --path PATH`, `tabs focus\|close --panel-id ID` |
 | Review a commit | `commit-svn-jamat` or `commit-git-jamat`, with `--self` or `<session selector>`, optionally `--path PATH` and `--message TEXT` or `--message-file FILE` |
+| Commit result | `commit status --commit-session-id UUID [--wait] [--timeout-ms N]` |
 | Read terminal | `terminal peek <session selector> [--working-directory PATH] [--cols N --rows N] [--timeout-ms N]` |
 | Write terminal | `terminal send <session selector> [--working-directory PATH] --text TEXT [--enter] [--timeout-ms N]` |
 | Watch changes | `events watch [--after-revision N]` until interrupted |
@@ -155,9 +156,39 @@ from the Jamat id.
 
 Messages are limited to 16,384 characters. `--message` and `--message-file` are exclusive. The
 message reaches SVN, Git and Tortoise through a UTF-8 file. An existing human edit is preserved;
-`messageApplied: false` says the proposal was not used. Reopening the same scope focuses its dialog.
+`messageApplied: false` says the proposal was not used. Reopening the same scope selects its dialog;
+Versioning's activation setting controls whether an agent open brings the session to the front.
 
-If discovery finds no running controller or the requested session is absent or not live, Windows
+A native open returns `commitSessionId`, a UUID for this specific review. Reopening a held review
+returns the same UUID; a new review after close receives a new one. `commit status` reads its result
+without requiring the originating session to stay live. Keep the original controller selectors.
+An expired or unknown UUID means unknown outcome, never cancellation.
+
+Add `--wait` to either native open command to wait on that UUID using the same controller, or use
+`commit status --commit-session-id UUID --wait` for an existing review. The CLI polls once per second
+and returns one final JSON envelope; await that original execution, never launch a second waiter.
+`--timeout-ms` requires `--wait`, accepts 1 through 86,400,000 and defaults to 24 hours. Waiting requires
+the `tabs.commitStatus` capability, checked before an open mutation. A timeout, abort, missing
+capability, connection loss or invalid response stops without fallback. Query the same UUID after
+recovering the connection; never infer completion from a clean working copy or silently reopen.
+
+`value.kind: "commit-status"` carries `state`, `closed`, `revision` and `detail`:
+
+- `editing` or `running`: still pending.
+- `committed`: actual SVN revision or Git hash in `revision`, even before the result pane closes.
+- `cancelled`: closed without committing.
+- `failed`: the attempt failed; `detail` explains why. The human can retry in the still-open panel.
+- `external-closed`: the person used Open in Tortoise and closed that window. Verify VCS history and
+  status because an external process exit does not prove a commit.
+
+Closed results stay available for 24 hours, limited to the latest 256 completed closed reviews,
+and are lost on AppClientUI restart. A successful status read has exit 0 even for cancelled/failed;
+inspect `state`, not only `ok`. The shared commit helpers translate those outcomes into their exits.
+After a real commit, check remaining changes separately; a partial commit may leave a dirty scope.
+Enter confirms enabled OK, Shift+Enter adds a message line, and Escape closes before a write starts.
+
+If discovery finds no running controller, the requested session is absent or not live, or an explicit
+scope lies outside the session's known working directory, Windows
 opens TortoiseSVN or TortoiseGit and returns `kind: "opened-aside"` with the reason. Its scope is
 `--path` resolved from the CLI working directory, or that working directory itself. This response
 means a dialog was opened, never that a commit happened. Conflict, invalid request, forbidden,
@@ -165,6 +196,20 @@ timeout, protocol/operation failures, a failed session-list read and a missing `
 capability do not fall back. Report them without guessing another controller. Remote sessions are
 not supported. Messages handed to Tortoise remain available until a later sweep of files older than
 one day, since the detached dialog may still be reading them.
+
+The `outside-session` fallback is decided from the session snapshot before sending `tabs.openCommit`,
+using the effective worktree when present. Relative native paths resolve against the session directory;
+an outside-session fallback keeps that resolved scope. A different project does not create a new
+Jamat session or bypass the native scope restriction. This preflight also works against older clients
+without status support. A native refusal after preflight, including symlink escape, still does not
+fall back. A default-directory session without a known snapshot path leaves scope validation to Jamat.
+
+Automation that already owns a Tortoise launcher may pass `--fallback report` (default: `tortoise`).
+On the same eligible fallback conditions the CLI returns `ok: true` with
+`value: { kind: "fallback-required", reason, scope }`, without opening a dialog or writing a message
+file. The caller then launches its existing fallback. `--wait` waits only on the native branch;
+the composing helper owns waiting on Tortoise. An open or fallback acknowledgement never confirms
+a completed commit.
 
 ## Read results
 

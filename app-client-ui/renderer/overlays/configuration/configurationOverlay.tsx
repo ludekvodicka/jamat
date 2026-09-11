@@ -10,6 +10,7 @@ import {
   ConfigurationModel,
   type ConfigurationState,
 } from './configurationModel'
+import { ConfigurationLastTab } from './configurationLastTab'
 import { ConfigurationTabs } from './configurationTabs'
 import type { WorktreeSetupIntentStore } from './worktreeSetupIntentStore'
 
@@ -29,7 +30,10 @@ export function ConfigurationOverlay(props: {
   onClose(): void
 }): React.JSX.Element {
   const card = useRef<HTMLDivElement | null>(null)
-  const [start] = useState(() => ConfigurationModel.initial(props.request.tab))
+  // Where the card opens: what the opener named, and otherwise wherever this window was last left.
+  const [start] = useState(() => ConfigurationModel.initial(
+    props.request.tab ?? ConfigurationLastTab.read(),
+  ))
   const [state, setState] = useState<ConfigurationState>(start)
   // Read through a ref rather than through the rendered state: two dispatches in one tick have to
   // see what the first decided, not what React has drawn.
@@ -53,6 +57,12 @@ export function ConfigurationOverlay(props: {
     if (props.request.tab !== null)
       dispatch({ input: 'select', tab: props.request.tab })
   }, [props.request.requestId, props.request.tab, dispatch])
+
+  // The screen, never the group the opener may have asked for: reopening on a group would land on
+  // its first screen and quietly lose which of its screens was being read.
+  useEffect(() => {
+    ConfigurationLastTab.remember(state.activeTab)
+  }, [state.activeTab])
 
   // Whoever had focus gets it back: an overlay opened from a keystroke that returns focus nowhere
   // leaves a keyboard user at the top of the document.

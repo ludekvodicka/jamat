@@ -1,4 +1,3 @@
-import { useId } from 'react'
 import { VersioningSettings, type VersioningDiffTool } from '../../../../../shared/versioningSettings'
 import { ConfigurationSection } from '../../configurationSection'
 import type { ConfigurationTabProps } from '../../configurationTab.types'
@@ -6,32 +5,23 @@ import { useVersioningSettings } from './useVersioningSettings'
 
 export function DiffToolSection(props: ConfigurationTabProps): React.JSX.Element {
   const { state, dispatch, modified } = useVersioningSettings('diffTool', props.onDirtyChange)
-  const id = useId()
   const tool = state.buffer?.diffTool ?? VersioningSettings.defaultValue().diffTool
+  const external = tool.kind === 'external' ? tool : { kind: 'external' as const, command: '', argumentTemplate: '"$1" "$2"' }
   const disabled = state.buffer === null || state.saving !== null
   const change = (value: VersioningDiffTool): void => dispatch({ input: 'diffTool', value })
   const valid = VersioningSettings.isDiffTool(tool)
-  return <ConfigurationSection title="Commit diff viewer" className="jamat-configuration-versioning">
+  return <ConfigurationSection title="External diff viewer" className="jamat-configuration-versioning">
     {state.problem !== null && <p role="alert" className="jamat-configuration__problem">{state.problem}</p>}
-    <div className="jamat-configuration-versioning__row">
-      <label htmlFor={id}>Open a file from the commit dialog</label>
-      <select id={id} value={tool.kind} disabled={disabled} onChange={(event) => {
-        const kind = event.currentTarget.value
-        if (kind === 'internal') change({ kind })
-        else if (kind === 'external') change({ kind, command: '', argumentTemplate: '%base %mine' })
-        else throw new Error(`Unknown diff viewer: ${kind}`)
-      }}><option value="internal">Internal viewer</option><option value="external">External tool</option></select>
-    </div>
-    {tool.kind === 'external' && <>
-      <label className="jamat-configuration-diff-field">Executable
-        <input disabled={disabled} value={tool.command} onChange={(event) => change({ ...tool, command: event.currentTarget.value })} />
-      </label>
-      <label className="jamat-configuration-diff-field">Arguments
-        <input disabled={disabled} value={tool.argumentTemplate} onChange={(event) => change({ ...tool, argumentTemplate: event.currentTarget.value })} />
-      </label>
-      <p className="jamat-configuration-versioning__note">Use %base and %mine for the files, %bname and %yname for their labels. Quote arguments containing spaces. Edits to the working file are saved in your project.</p>
-      {!valid && <p role="alert" className="jamat-configuration__problem">Enter an executable and arguments containing %base and %mine with matching quotes.</p>}
-    </>}
+    <label className="jamat-configuration-diff-field">Executable
+      <input disabled={disabled} value={external.command} onChange={(event) => change(event.currentTarget.value.trim()
+        ? { ...external, command: event.currentTarget.value } : { kind: 'internal' })} />
+    </label>
+    <label className="jamat-configuration-diff-field">Arguments
+      <input disabled={disabled || tool.kind === 'internal'} value={external.argumentTemplate} onChange={(event) => change({ ...external, argumentTemplate: event.currentTarget.value })} />
+    </label>
+    <p className="jamat-configuration-versioning__note">Use $1 for the original file and $2 for the working file. Quote arguments containing spaces. Edits to the working file are saved in your project.</p>
+    <p className="jamat-configuration-versioning__note">Show external diff appears in the commit file menu when configured. Clear the executable to hide it. Show diff and double-click always use the internal viewer.</p>
+    {!valid && <p role="alert" className="jamat-configuration__problem">Enter arguments containing $1 and $2 with matching quotes.</p>}
     <div className="jamat-configuration__actions">
       <button type="button" disabled={disabled} onClick={() => change(VersioningSettings.tortoiseMerge())}>TortoiseMerge preset</button>
       <button type="button" disabled={disabled} onClick={() => dispatch({ input: 'reset' })}>Reset to default</button>

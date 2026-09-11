@@ -4,6 +4,18 @@
  */
 export type TerminalThemeName = 'original' | 'soft' | 'vscodeDark'
 
+/**
+ * The bounds of one kind of percentage: what a slider offers, what a hand-written value is snapped
+ * onto, and what a save is refused against. A kind rather than a field, because the two kinds here
+ * want different numbers and the fields inside each want the same ones.
+ */
+export interface UiSettingsRange {
+  minPercent: number
+  maxPercent: number
+  stepPercent: number
+  defaultPercent: number
+}
+
 export interface UiSettingsValue {
   /** Everything this shell draws except the status bar, as a percentage of the size tokens. */
   fontScalePercent: number
@@ -17,6 +29,18 @@ export interface UiSettingsValue {
   terminalFontScalePercent: number
   /** Which colours the terminal paints in. `original` is what every terminal had before this. */
   terminalTheme: TerminalThemeName
+  /**
+   * How far one turn of the wheel moves anything this window scrolls EXCEPT the terminal: a list, a
+   * tree, a document. At 100 % nothing of ours touches a wheel event and Chromium scrolls as it
+   * always did, which is why that is the default and why the handler is not even installed there.
+   */
+  scrollSpeedPercent: number
+  /**
+   * The terminal alone, which scrolls a buffer of its own. It is a separate row because it is a
+   * separate mechanism - xterm takes the multiplier as an option and never sees a wheel event of
+   * ours - and because a screen of output and a list of files are read at different speeds.
+   */
+  terminalScrollSpeedPercent: number
 }
 
 /**
@@ -28,20 +52,39 @@ export type UiSettingsSaveResult =
   | { ok: false; code: 'config-latched' | 'invalid-section'; detail: string }
 
 /**
- * The rules of the three font scales and of the terminal's palette, with no React, no DOM and no
- * imports at all: this file compiles into the node program and the web one alike, which is what
- * lets the renderer take its slider bounds and the main process validate a write from the same
- * four numbers, and the combobox its three names from the same list.
+ * The rules of the three font scales, the two scroll speeds and the terminal's palette, with no
+ * React, no DOM and no imports at all: this file compiles into the node program and the web one
+ * alike, which is what lets the renderer take its slider bounds and the main process validate a
+ * write from the same ranges, and the combobox its three names from the same list.
  *
  * Reads are lenient and writes are strict, the asymmetry every store in this tree uses: a percentage
  * nobody can use is reported and read as 100, while a save carrying one is refused, because coercing
  * a write would store something other than what was asked for.
  */
 export class UiSettings {
-  static readonly minPercentConst = 70
-  static readonly maxPercentConst = 150
-  static readonly stepPercentConst = 5
-  static readonly defaultPercentConst = 100
+  /**
+   * The three font scales. A narrow range and a small step: this is the size of text somebody reads
+   * for hours, and the sizes either side of the one that fits are worth having.
+   */
+  static readonly fontRangeConst: UiSettingsRange = {
+    minPercent: 70,
+    maxPercent: 150,
+    stepPercent: 5,
+    defaultPercent: 100,
+  }
+
+  /**
+   * The two scroll speeds. Wider and coarser than a font's, because this multiplies a gesture
+   * rather than sizing anything: 400 % is four turns' worth of movement out of one turn, and the
+   * half below 100 % is there for a wheel that overshoots.
+   */
+  static readonly scrollRangeConst: UiSettingsRange = {
+    minPercent: 50,
+    maxPercent: 400,
+    stepPercent: 25,
+    defaultPercent: 100,
+  }
+
   /** In the order the tab offers them, the default first. */
   static readonly terminalThemesConst: readonly TerminalThemeName[] = [
     'original',
@@ -54,11 +97,22 @@ export class UiSettings {
   /** Today's appearance throughout, so a machine with no `ui` section looks exactly as it did. */
   static defaultValue(): UiSettingsValue {
     return {
-      fontScalePercent: UiSettings.defaultPercentConst,
-      fileViewerFontScalePercent: UiSettings.defaultPercentConst,
-      terminalFontScalePercent: UiSettings.defaultPercentConst,
+      fontScalePercent: UiSettings.fontRangeConst.defaultPercent,
+      fileViewerFontScalePercent: UiSettings.fontRangeConst.defaultPercent,
+      terminalFontScalePercent: UiSettings.fontRangeConst.defaultPercent,
       terminalTheme: UiSettings.defaultTerminalThemeConst,
+      scrollSpeedPercent: UiSettings.scrollRangeConst.defaultPercent,
+      terminalScrollSpeedPercent: UiSettings.scrollRangeConst.defaultPercent,
     }
+  }
+
+  /**
+   * A scroll percentage as the multiplier its reader wants. One conversion for both of them: xterm
+   * takes it as `scrollSensitivity` and the window's own handler multiplies a delta by it, and the
+   * two dividing by different numbers would be two speeds under one slider.
+   */
+  static scrollFactorOf(percent: number): number {
+    return percent / 100
   }
 
   /**
@@ -71,12 +125,14 @@ export class UiSettings {
       return UiSettings.defaultValue()
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       report(
-        'The ui section of config.json is not an object; reading every font scale as '
-        + `${UiSettings.defaultPercentConst} %`,
+        'The ui section of config.json is not an object; reading every font scale and scroll speed '
+        + `as ${UiSettings.fontRangeConst.defaultPercent} %`,
       )
       return UiSettings.defaultValue()
     }
     const document = value as Partial<Record<keyof UiSettingsValue, unknown>>
+    const font = UiSettings.fontRangeConst
+    const scroll = UiSettings.scrollRangeConst
     // The RAW object first, because what a save writes back is what a read returned: `config.json`
     // is meant to be edited by hand and its own README promises that a key this build does not know
     // is preserved, so a note or a field of a later version written inside `ui` has to come back out
@@ -85,15 +141,28 @@ export class UiSettings {
     return {
       ...document,
       fontScalePercent:
-        UiSettings.coercePercent(document.fontScalePercent, 'fontScalePercent', report),
+        UiSettings.coercePercent(document.fontScalePercent, 'fontScalePercent', font, report),
       fileViewerFontScalePercent: UiSettings.coercePercent(
         document.fileViewerFontScalePercent,
         'fileViewerFontScalePercent',
+        font,
         report,
       ),
-      terminalFontScalePercent:
-        UiSettings.coercePercent(document.terminalFontScalePercent, 'terminalFontScalePercent', report),
+      terminalFontScalePercent: UiSettings.coercePercent(
+        document.terminalFontScalePercent,
+        'terminalFontScalePercent',
+        font,
+        report,
+      ),
       terminalTheme: UiSettings.coerceTerminalTheme(document.terminalTheme, report),
+      scrollSpeedPercent:
+        UiSettings.coercePercent(document.scrollSpeedPercent, 'scrollSpeedPercent', scroll, report),
+      terminalScrollSpeedPercent: UiSettings.coercePercent(
+        document.terminalScrollSpeedPercent,
+        'terminalScrollSpeedPercent',
+        scroll,
+        report,
+      ),
     }
   }
 
@@ -122,21 +191,22 @@ export class UiSettings {
     if (!value || typeof value !== 'object' || Array.isArray(value))
       return false
     const document = value as Partial<Record<keyof UiSettingsValue, unknown>>
-    return UiSettings.isValidPercent(document.fontScalePercent)
-      && UiSettings.isValidPercent(document.fileViewerFontScalePercent)
-      && UiSettings.isValidPercent(document.terminalFontScalePercent)
+    const font = UiSettings.fontRangeConst
+    const scroll = UiSettings.scrollRangeConst
+    return UiSettings.isValidPercent(document.fontScalePercent, font)
+      && UiSettings.isValidPercent(document.fileViewerFontScalePercent, font)
+      && UiSettings.isValidPercent(document.terminalFontScalePercent, font)
       && UiSettings.isValidTerminalTheme(document.terminalTheme)
+      && UiSettings.isValidPercent(document.scrollSpeedPercent, scroll)
+      && UiSettings.isValidPercent(document.terminalScrollSpeedPercent, scroll)
   }
 
   /** Into the range first, then onto the step: both ends are multiples of it, so that order holds. */
-  static snap(percent: number): number {
+  static snap(percent: number, range: UiSettingsRange): number {
     if (!Number.isFinite(percent))
-      return UiSettings.defaultPercentConst
-    const clamped = Math.min(
-      UiSettings.maxPercentConst,
-      Math.max(UiSettings.minPercentConst, percent),
-    )
-    return Math.round(clamped / UiSettings.stepPercentConst) * UiSettings.stepPercentConst
+      return range.defaultPercent
+    const clamped = Math.min(range.maxPercent, Math.max(range.minPercent, percent))
+    return Math.round(clamped / range.stepPercent) * range.stepPercent
   }
 
   /**
@@ -148,23 +218,24 @@ export class UiSettings {
   private static coercePercent(
     value: unknown,
     field: keyof UiSettingsValue,
+    range: UiSettingsRange,
     report: (message: string) => void,
   ): number {
     if (value === undefined)
-      return UiSettings.defaultPercentConst
+      return range.defaultPercent
     if (typeof value !== 'number' || !Number.isFinite(value)) {
       report(
         `The ui section of config.json has an unusable ${field} (${JSON.stringify(value)}); `
-        + `reading it as ${UiSettings.defaultPercentConst} %`,
+        + `reading it as ${range.defaultPercent} %`,
       )
-      return UiSettings.defaultPercentConst
+      return range.defaultPercent
     }
-    if (!UiSettings.isValidPercent(value)) {
-      const snapped = UiSettings.snap(value)
+    if (!UiSettings.isValidPercent(value, range)) {
+      const snapped = UiSettings.snap(value, range)
       report(
         `The ui section of config.json has ${field} at ${value} %, which is outside `
-        + `${UiSettings.minPercentConst}-${UiSettings.maxPercentConst} % or off the `
-        + `${UiSettings.stepPercentConst} % step; reading it as ${snapped} %`,
+        + `${range.minPercent}-${range.maxPercent} % or off the `
+        + `${range.stepPercent} % step; reading it as ${snapped} %`,
       )
       return snapped
     }
@@ -176,11 +247,11 @@ export class UiSettings {
       && (UiSettings.terminalThemesConst as readonly string[]).includes(value)
   }
 
-  private static isValidPercent(value: unknown): value is number {
+  private static isValidPercent(value: unknown, range: UiSettingsRange): value is number {
     if (typeof value !== 'number' || !Number.isFinite(value))
       return false
-    if (value < UiSettings.minPercentConst || value > UiSettings.maxPercentConst)
+    if (value < range.minPercent || value > range.maxPercent)
       return false
-    return value % UiSettings.stepPercentConst === 0
+    return value % range.stepPercent === 0
   }
 }

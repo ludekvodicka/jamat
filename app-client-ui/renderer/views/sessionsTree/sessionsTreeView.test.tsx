@@ -38,6 +38,9 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     const star = await screen.findByLabelText('Commit dialog open')
     expect(star).toHaveClass('is-commit-open')
     expect(star).toHaveTextContent('*')
+    const marker = screen.getByLabelText('Commit review required')
+    expect(marker).toHaveAttribute('data-paint', 'danger')
+    expect(marker).toHaveTextContent('!')
   })
 
   /** Every operation is recorded rather than performed, and every one answers the same way. */
@@ -200,6 +203,10 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
       },
     })
     const remotePorts: SessionsTreeRemotePorts & SnapshotStorePorts<RemoteConnectionsSnapshot> = {
+      disconnect: (endpointId, sessionIds) => {
+        remoteCalls.push(`disconnect:${endpointId}:${sessionIds?.join(',') ?? 'all'}`)
+        return Promise.resolve({ ok: true, value: undefined })
+      },
       read: () => Promise.resolve({ ok: true, value: remote }),
       subscribe: (onChanged) => {
         remoteChanged = onChanged
@@ -347,6 +354,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
       optionalOperations: null,
       connectionId: `connection-${remoteEndpointId}`,
       sessions,
+      selectedSessionIds: sessions.sessions.map((session) => session.sessionId),
       ...over,
     }
   }
@@ -938,7 +946,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     )
 
     fireEvent.contextMenu(groupRowLabelled(container, 'Office PC'))
-    expect(menuTitles()).toEqual(['New session…', 'Open Remote connections settings'])
+    expect(menuTitles()).toEqual(['New session…', 'Disconnect', 'Connect session…', 'Open Remote connections settings'])
     clickMenuItem('New session…')
 
     // The intent and nothing else: what the launcher makes of it is the launcher's own business.
@@ -992,7 +1000,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(document.querySelector('.jamat-tab-menu')).toBeNull()
   })
 
-  it('hides an offline remote computer and its stale sessions', async () => {
+  it('keeps selected sessions visible after a connection drops', async () => {
     const mixed = SessionsFixtures.mixed()
     const offline = outboundEndpoint(mixed, 'endpoint-a', {
       status: 'offline',
@@ -1001,7 +1009,21 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     })
     const { container } = await mount(mixed, null, remoteSnapshot([offline]))
 
-    expect(sectionNames(container)).toEqual(['Tabs'])
+    expect(sectionNames(container)).toEqual(['Tabs', 'Remote'])
+  })
+
+  it('disconnects one remote session without running its finish action', async () => {
+    const mixed = SessionsFixtures.mixed()
+    const { container, remoteCalls, onCloseTerminal } = await mount(mixed, null, remoteSnapshot([outboundEndpoint(mixed, 'endpoint-a')]))
+    showAll(container)
+    const remote = sectionAfter(container, 'Remote')
+    const target = { kind: 'remote' as const, remoteEndpointId: 'endpoint-a', sessionId: 's-working' }
+    const row = remote.querySelector(`[data-session='${TerminalTargetCodec.key(target)}']`)
+    if (!row) throw new Error('Remote session row missing')
+    fireEvent.contextMenu(row.querySelector('.jamat-sessions__row') ?? row)
+    clickMenuItem('Disconnect')
+    await waitFor(() => expect(remoteCalls).toEqual(['disconnect:endpoint-a:s-working']))
+    expect(onCloseTerminal).toHaveBeenCalledWith(target)
   })
 
   it('routes remote rerun and finish through their endpoint and target key', async () => {
@@ -1628,7 +1650,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
         status: 'offline',
         connectionId: null,
       })], [], 2))
-      await waitFor(() => expect(sectionNames(container)).toEqual(['Tabs']))
+      await waitFor(() => expect(container.querySelector('.jamat-sessions__remote-status--offline')).not.toBeNull())
       const ended = settled(snapshot, 's-working', 'ended', 'finished')
       pushRemote(remoteSnapshot([outboundEndpoint(ended, 'endpoint-a')], [], 3))
       await waitFor(() => expect(sectionNames(container)).toEqual(['Tabs', 'Remote']))

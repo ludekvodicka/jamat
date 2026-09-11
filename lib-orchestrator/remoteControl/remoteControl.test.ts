@@ -161,6 +161,8 @@ function world(options?: {
         return options?.tabOpen ?? successTab('opened')
       },
       openCommit: async (...args) => { tabCalls.push({ method: 'openCommit', args }); return { ok: true, value: { kind: 'commit-opened', panelId: 'commit-panel', windowId: 'main', scopeRoot: 'Q:/app', messageApplied: true } } },
+      commitStatus: (commitSessionId) => ({ ok: true, value: { kind: 'commit-status', commitSessionId, sessionId: 'session-1', vcs: 'svn',
+        scopeRoot: 'Q:/app', state: 'cancelled', closed: true, revision: null, detail: null } }),
       openFile: async (...args) => {
         tabCalls.push({ method: 'openFile', args })
         return successFile(args[2])
@@ -322,6 +324,7 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
         path: 'reports/report.md',
       }, 'op-5'),
       request('tabs.openCommit', { session: { kind: 'sessionId', sessionId: 'session-1' }, vcs: 'svn', message: 'Proposed' }, 'op-commit'),
+      request('tabs.commitStatus', { commitSessionId: '11111111-1111-4111-8111-111111111111' }),
       request('tabs.focus', { panelId: 'terminal:{}' }, 'op-6'),
       request('tabs.close', { panelId: 'terminal:{}' }, 'op-7'),
       request('terminal.peek', { session: { kind: 'sessionId', sessionId: 'session-1' } }),

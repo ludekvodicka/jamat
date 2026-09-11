@@ -31,7 +31,9 @@ export class ServiceRemoteControlIpc
   extends ServiceIpcBase<typeof ServiceRemoteControlIpc.channelsConst> {
   static readonly channelsConst = {
     'remote:snapshot': true,
-    'remote:hold': true,
+    'remote:connect': true,
+    'remote:select-session': true,
+    'remote:disconnect': true,
     'remote:release': true,
     'remote:agents-describe': true,
     'remote:projects-list': true,
@@ -48,7 +50,7 @@ export class ServiceRemoteControlIpc
 
   private readonly owned = new Map<WebContents, Set<string>>()
   private readonly attaches = new Map<string, RemoteRendererAttach>()
-  /** One entry per screen that is open and wants the paired computers reachable. */
+  /** Window ownership releases an explicitly connected endpoint when its dialog closes. */
   private readonly holds = new Map<WebContents, Set<RemoteConnectionsHoldReason>>()
   private readonly wired = new WeakSet<WebContents>()
   private readonly requestId: () => string
@@ -70,22 +72,22 @@ export class ServiceRemoteControlIpc
       outbound: this.outbound.snapshot().outbound,
       inbound: this.inbound.snapshot(),
     }))
-    /*
-     * A screen that draws what only a live connection can answer says so while it is open, and the
-     * connector dials for it. Keyed by the window AND the reason, so two windows on the same screen
-     * are two holds and one window cannot release another's.
-     */
-    this.register('remote:hold', (event, reason) => {
+    this.register('remote:connect', (event, reason, endpointId) => {
+      if (!this.deps.acceptsRenderer(event.sender)) throw new Error('The workspace window is closing')
       const held = this.holds.get(event.sender)
       if (held) held.add(reason)
       else this.holds.set(event.sender, new Set([reason]))
       this.wire(event.sender)
-      this.outbound.holdConnections(ServiceRemoteControlIpc.holdKey(event.sender, reason))
+      return this.outbound.connectComputer(ServiceRemoteControlIpc.holdKey(event.sender, reason), endpointId)
     })
     this.register('remote:release', (event, reason) => {
       this.holds.get(event.sender)?.delete(reason)
       this.outbound.releaseConnections(ServiceRemoteControlIpc.holdKey(event.sender, reason))
     })
+    this.register('remote:select-session', (_event, endpointId, sessionId) =>
+      this.outbound.selectSession(endpointId, sessionId))
+    this.register('remote:disconnect', (_event, endpointId, sessionIds) =>
+      this.outbound.disconnectSessions(endpointId, sessionIds))
     this.register('remote:agents-describe', (_event, endpointId) =>
       this.outbound.execute(endpointId, this.describeRequest()))
     this.register('remote:projects-list', (_event, endpointId, request) =>
@@ -103,9 +105,12 @@ export class ServiceRemoteControlIpc
     this.register('remote:terminal-attach', async (event, endpointId, attachId, spec) => {
       if (!this.deps.acceptsRenderer(event.sender))
         throw new Error('The workspace window is closing')
+      if (!this.outbound.isSessionSelected(endpointId, spec.sessionId))
+        return { ok: false, error: { code: 'unavailable', detail: 'Select this session in Remote computers to connect it.' } }
       const key = ServiceRemoteControlIpc.attachKey(endpointId, attachId)
       if (this.attaches.has(key))
         throw new Error(`Remote terminal attach already exists: ${attachId}`)
+      this.claim(event.sender, endpointId, attachId)
       const answer = await this.outbound.attachTerminal(
         endpointId,
         attachId,
@@ -115,8 +120,8 @@ export class ServiceRemoteControlIpc
             event.sender.send('remote:terminal-frame', endpointId, attachId, frame)
         },
       )
-      if (answer.ok || answer.error.code === 'unavailable')
-        this.claim(event.sender, endpointId, attachId)
+      if (!answer.ok && answer.error.code !== 'unavailable')
+        this.release(event.sender, endpointId, attachId)
       return answer
     })
     this.register('remote:terminal-input', (event, endpointId, attachId, data) => {

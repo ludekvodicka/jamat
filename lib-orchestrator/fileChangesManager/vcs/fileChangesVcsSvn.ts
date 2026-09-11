@@ -165,7 +165,7 @@ export class FileChangesVcsSvn extends FileChangesVcsBase implements FileChanges
       '-r',
       revision,
       '--',
-      target,
+      `${target}@`,
     ])
     if (FileChangesVcsSvn.succeeded(outcome)) return { kind: 'content', content: outcome.stdout }
     const detail = this.detailOf(outcome)

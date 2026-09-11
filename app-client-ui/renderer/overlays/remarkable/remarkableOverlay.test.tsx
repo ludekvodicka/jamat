@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { StrictMode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { AppClientUiBridge, IpcResult } from '../../../shared/appClientUiIpc'
@@ -103,6 +104,27 @@ describe('app-client-ui/renderer/overlays/remarkable/remarkableOverlay', () => {
     delete (window as unknown as { appClient?: unknown }).appClient
   })
 
+  it('starts a live operation after an effect cleanup and releases the retired operation', async () => {
+    const calls = bridge()
+    calls.startOperation
+      .mockResolvedValueOnce(domain({ ok: true, value: {
+        operationId: 'retired-operation', storageNote: null, autoPreviewOnOpen: true,
+      } }))
+      .mockResolvedValueOnce(domain({ ok: true, value: {
+        operationId: 'live-operation', storageNote: null, autoPreviewOnOpen: true,
+      } }))
+    const view = render(<StrictMode>
+      <RemarkableOverlay sessionId="s-1" onInsert={() => true} onClose={() => undefined} />
+    </StrictMode>)
+
+    expect(await screen.findByAltText('Preview of page 2')).toBeTruthy()
+    expect(calls.startOperation).toHaveBeenCalledTimes(2)
+    expect(calls.preview).toHaveBeenCalledExactlyOnceWith('live-operation', { kind: 'current' })
+    expect(calls.release).toHaveBeenCalledExactlyOnceWith('retired-operation')
+    view.unmount()
+    expect(calls.release).toHaveBeenLastCalledWith('live-operation')
+  })
+
   /**
    * Listing a document downloads it, so a listed page renders locally and can be previewed the
    * moment it is picked. The tablet's own page cannot: that one waits to be asked.
@@ -138,8 +160,8 @@ describe('app-client-ui/renderer/overlays/remarkable/remarkableOverlay', () => {
     const calls = bridge()
     calls.preview.mockResolvedValue(domain({
       ok: false,
-      code: 'device-sleeping',
-      detail: 'the tablet did not wake',
+      code: 'device-unreachable',
+      detail: 'CommunicationError: SSH connection timed out after 15000 ms',
       retryable: true,
     }))
     const test = mount(calls)
@@ -147,8 +169,9 @@ describe('app-client-ui/renderer/overlays/remarkable/remarkableOverlay', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Preview current page' }))
 
-    await screen.findByText('Wake the tablet, keep it awake and lift the pen, then retry.')
-    expect(screen.getByText('the tablet did not wake')).toBeTruthy()
+    await screen.findByText(/Cannot reach the tablet\. Check its Wi-Fi connection/)
+    expect(screen.getByText(/host in Settings matches its current IP address/)).toBeTruthy()
+    expect(screen.getByText('CommunicationError: SSH connection timed out after 15000 ms')).toBeTruthy()
     expect(insertButton().disabled).toBe(false)
 
     // A preview costs the operation nothing, so a failed one is always worth offering again.

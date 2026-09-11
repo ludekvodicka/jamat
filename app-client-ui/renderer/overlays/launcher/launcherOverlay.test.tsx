@@ -210,7 +210,8 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
         // Nothing is dialled until something asks, and the computers screen is one of the things
         // that ask. The stub answers rather than counting: what a hold DOES is the connector's own
         // test, and this one is about the card.
-        hold: () => Promise.resolve({ ok: true as const, value: undefined }),
+        connect: () => Promise.resolve({ ok: true as const, value: { ok: true as const, value: undefined } }),
+        selectSession: () => Promise.resolve({ ok: true as const, value: { ok: true as const, value: undefined } }),
         release: () => Promise.resolve({ ok: true as const, value: undefined }),
         snapshot: () => Promise.resolve({
           ok: true as const,
@@ -271,7 +272,7 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
           })
         },
       } satisfies Pick<AppClientUiBridge['remote'],
-        'snapshot' | 'hold' | 'release' | 'describeAgents' | 'listProjects'>
+        'snapshot' | 'connect' | 'selectSession' | 'release' | 'describeAgents' | 'listProjects'>
       ;(window as unknown as {
         appClient:
           Pick<AppClientUiBridge, 'projects' | 'sessions' | 'dialog'>
@@ -1860,7 +1861,7 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
         .querySelector('.jamat-launcher-computers__empty')).toBeTruthy())
       expect(heading(context.view.container)).toBe('Remote computers')
       expect(context.view.container.textContent)
-        .toContain('No connected computers. Pair one and connect it in Settings → Remote Control.')
+        .toContain('No saved computers. Add a computer in Remote Control settings.')
 
       const button = context.view.container.querySelector('.jamat-launcher__start-button')
       if (!(button instanceof HTMLElement)) throw new Error('The empty state offers no way on')
@@ -1872,9 +1873,9 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
 
     it('lists the chosen computer catalog and never this machine own tail rows', async () => {
       const context = await mountRemote(new ProjectsStub().computers(studioConst))
-      await waitFor(() => expect(rowNames(context.view.container)).toContain('Studio'))
+      await waitFor(() => expect(context.view.container.textContent).toContain('Studio'))
 
-      fireEvent.keyDown(card(context.view.container), { key: 'Enter' })
+      fireEvent.click(context.view.getByRole('tab', { name: 'New session' }))
 
       await waitFor(() => expect(heading(context.view.container)).toBe('Projects on Studio'))
       expect(context.stub.remoteListed).toEqual(['endpoint-a'])
@@ -1887,13 +1888,34 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
 
     it('goes back to the computer list rather than closing the card', async () => {
       const context = await mountRemote(new ProjectsStub().computers(studioConst))
-      await waitFor(() => expect(rowNames(context.view.container)).toContain('Studio'))
-      fireEvent.keyDown(card(context.view.container), { key: 'Enter' })
+      await waitFor(() => expect(context.view.container.textContent).toContain('Studio'))
+      fireEvent.click(context.view.getByRole('tab', { name: 'New session' }))
       await waitFor(() => expect(heading(context.view.container)).toBe('Projects on Studio'))
 
       fireEvent.keyDown(card(context.view.container), { key: 'Escape' })
 
       await waitFor(() => expect(heading(context.view.container)).toBe('Remote computers'))
+      expect(context.onClose).not.toHaveBeenCalled()
+    })
+
+    it('keeps the computer selector through creation and switches back to sessions', async () => {
+      const bench = { remoteEndpointId: 'endpoint-b', displayName: 'Bench' }
+      const context = await mountRemote(new ProjectsStub().computers(studioConst, bench), studioConst)
+      await waitFor(() => expect(rowNames(context.view.container)).toContain('AppJamat'))
+      expect(context.view.getByRole('option', { name: /Studio/ })).toHaveAttribute('aria-selected', 'true')
+      moveTo(context.view.container, 'AppJamat')
+      fireEvent.keyDown(card(context.view.container), { key: 'Enter' })
+      await waitFor(() => expect(heading(context.view.container)).toBe('New session on Studio'))
+      fireEvent.click(context.view.getByRole('button', { name: '1. Project' }))
+      await waitFor(() => expect(heading(context.view.container)).toBe('Projects on Studio'))
+      fireEvent.click(context.view.getByRole('option', { name: /Bench/ }))
+      expect(heading(context.view.container)).toBe('Remote computers')
+      expect(context.view.getByRole('tab', { name: 'Sessions' })).toHaveAttribute('aria-selected', 'true')
+      fireEvent.click(context.view.getByRole('tab', { name: 'New session' }))
+      await waitFor(() => expect(context.stub.remoteListed).toContain('endpoint-b'))
+      expect(heading(context.view.container)).toBe('Projects on Bench')
+      fireEvent.click(context.view.getByRole('tab', { name: 'Sessions' }))
+      expect(heading(context.view.container)).toBe('Remote computers')
       expect(context.onClose).not.toHaveBeenCalled()
     })
 
@@ -1913,6 +1935,9 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
       fireEvent.keyDown(card(context.view.container), { key: 'Enter' })
 
       await waitFor(() => expect(heading(context.view.container)).toBe('New session on Studio'))
+      expect(context.view.getByRole('listbox', { name: 'Saved computers' })).toBeTruthy()
+      expect(context.view.getByRole('tab', { name: 'New session' })).toHaveAttribute('aria-selected', 'true')
+      expect(context.view.getByRole('button', { name: '1. Project' })).toBeEnabled()
       expect(context.stub.peeked).toEqual([])
       expect(context.view.container.querySelector('.jamat-launcher-create__refusals')?.textContent)
         .toContain('Flows run where they were defined')

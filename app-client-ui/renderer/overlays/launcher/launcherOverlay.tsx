@@ -8,6 +8,7 @@ import {
   type ComputersScreenState,
 } from './computers/computersScreenModel'
 import { LauncherComputersScreen } from './computers/launcherComputersScreen'
+import { LauncherRemoteWorkspace } from './computers/launcherRemoteWorkspace'
 import {
   type CreateScreenInput,
   CreateScreenModel,
@@ -38,7 +39,7 @@ import { ProjectSummaryLoader, type SummaryRequest } from './projects/projectSum
  * would be eight combinations of which only three are legal, and nothing would be enforcing that.
  */
 type LauncherScreen =
-  | { kind: 'computers'; state: ComputersScreenState }
+  | { kind: 'computers' }
   | { kind: 'projects' }
   | { kind: 'create'; state: CreateScreenState }
   | { kind: 'flow'; state: FlowScreenState }
@@ -74,7 +75,7 @@ interface LauncherScreenDescriptor<K extends LauncherScreenKind> {
   /** The key line under it, which for one screen is drawn from the state rather than fixed. */
   footKeysOf(screen: ScreenOf<K>, state: LauncherState, manage: ManageState): readonly FootHint[]
   /** What the body draws. */
-  render(screen: ScreenOf<K>, state: LauncherState, ports: LauncherPorts): React.JSX.Element
+  render(screen: ScreenOf<K>, state: LauncherState, ports: LauncherPorts, computers: ComputersScreenState): React.JSX.Element
   tab: LauncherScreenTab
   /** Escape, which on every screen but one is that screen's own input. */
   escape(ports: LauncherPorts, manage: ManageState): void
@@ -139,6 +140,9 @@ export function LauncherOverlay(props: {
   // projects and Enter again is still the tab card, or still the network card.
   const tabProfile = intent?.purpose === 'tabProfile'
   const remoteProfile = intent?.purpose === 'remote'
+  useEffect(() => () => {
+    if (remoteProfile) void window.appClient.remote.release('launcher-computers')
+  }, [remoteProfile])
   const [start] = useState(() => LauncherModel.initial(
     remoteProfile ? null : intent?.category ?? null,
     remoteProfile ? intent?.remote ?? null : null,
@@ -146,8 +150,10 @@ export function LauncherOverlay(props: {
   // Ctrl+N knows no computer and asks; the tree's action on a paired computer already knows, so
   // that card opens where the local one does - on the projects of the machine it names.
   const [computersStart] = useState(() => ComputersScreenModel.initial())
+  const [computers, setComputers] = useState(computersStart.state)
+  const computersRef = useRef(computersStart.state)
   const [opening] = useState<LauncherScreen>(() => (remoteProfile && intent?.remote === undefined
-    ? { kind: 'computers', state: computersStart.state }
+    ? { kind: 'computers' }
     : { kind: 'projects' }))
   const [state, setState] = useState<LauncherState>(start.state)
   const [manage, setManage] = useState<ManageState>(() => ManageModel.initial())
@@ -207,14 +213,19 @@ export function LauncherOverlay(props: {
         }
       },
       computers: (input) => {
-        // The list refreshes itself whenever that snapshot moves, so an answer can land after the
-        // screen has been left. Nothing to tell then, and nothing to throw about.
-        const current = screenRef.current
-        if (current.kind !== 'computers')
-          return
-        const step = ComputersScreenModel.transition(current.state, input)
-        screenRef.current = { kind: 'computers', state: step.state }
-        setScreen(screenRef.current)
+        const previous = computersRef.current
+        let step = ComputersScreenModel.transition(previous, input)
+        if (input.input === 'snapshotLoaded' && !previous.loaded && intent?.remote) {
+          const index = step.state.rows.findIndex((row) => row.remoteEndpointId === intent.remote?.remoteEndpointId)
+          if (index >= 0) step = ComputersScreenModel.transition(step.state, { input: 'setCursor', index })
+        }
+        computersRef.current = step.state
+        setComputers(step.state)
+        if (input.input === 'setCursor' || input.input === 'moveCursor') {
+          pendingBinding.current = null
+          screenRef.current = { kind: 'computers' }
+          setScreen(screenRef.current)
+        }
         for (const effect of step.effects)
           void LauncherEffects.runComputers(effect, self)
       },
@@ -303,14 +314,11 @@ export function LauncherOverlay(props: {
         for (const effect of step.effects)
           void LauncherEffects.run(effect, self)
       },
-      // Fresh every time rather than the list this card started with: which computers are connected
-      // is exactly the thing that changes while a card is open.
       showComputers: () => {
-        const step = ComputersScreenModel.initial()
-        screenRef.current = { kind: 'computers', state: step.state }
+        pendingBinding.current = null
+        screenRef.current = { kind: 'computers' }
         setScreen(screenRef.current)
-        for (const effect of step.effects)
-          void LauncherEffects.runComputers(effect, self)
+        void LauncherEffects.runComputers({ effect: 'fetchComputers' }, self)
       },
       openRemoteSettings: () => {
         closeRef.current()
@@ -373,13 +381,10 @@ export function LauncherOverlay(props: {
   })
 
   useEffect(() => {
-    if (opening.kind === 'computers') {
-      // The projects model was built for a computer nobody has named yet, so its own first read is
-      // deliberately not run: `chooseComputer` builds it again once there is a machine to read.
+    if (remoteProfile)
       for (const effect of computersStart.effects)
         void LauncherEffects.runComputers(effect, ports)
-      return
-    }
+    if (opening.kind === 'computers') return
     for (const effect of start.effects)
       void LauncherEffects.run(effect, ports)
     // An opener that already knew where skips the screen that picks one: from a project node in
@@ -397,12 +402,11 @@ export function LauncherOverlay(props: {
   useEffect(() => {
     if (!remoteProfile) return
     return window.appClient.onRemoteChanged(() => {
-      if (screenRef.current.kind === 'computers')
-        return void LauncherEffects.runComputers({ effect: 'fetchComputers' }, ports)
-      const target = stateRef.current.remote
-      if (target === null) return
       void LauncherEffects.readRemoteSnapshot().then((snapshot) => {
         if (snapshot === null) return
+        ports.computers({ input: 'snapshotLoaded', rows: ComputersScreenModel.rowsOf(snapshot) })
+        const target = stateRef.current.remote
+        if (screenRef.current.kind === 'computers' || target === null) return
         const endpoint = snapshot.outbound
           .find((candidate) => candidate.remoteEndpointId === target.remoteEndpointId)
         if (endpoint !== undefined && endpoint.status === 'connected') return
@@ -443,9 +447,9 @@ export function LauncherOverlay(props: {
     >
       <div
         className={`jamat-launcher__card${
-          screen.kind === 'create' && CreateScreenModel.typeOf(screen.state).kind === 'existing'
+          remoteProfile || screen.kind === 'create' && CreateScreenModel.typeOf(screen.state).kind === 'existing'
             ? ' jamat-launcher__card--wide'
-            : ''}`}
+            : ''}${remoteProfile ? ' jamat-launcher__card--remote' : ''}`}
         role="dialog"
         aria-modal="true"
         aria-label={LauncherScreens.titleOf(screen, state)}
@@ -454,7 +458,7 @@ export function LauncherOverlay(props: {
         // The only keydown of this surface, and it is on the card. A second listener on the document
         // is how V1 ran every command twice.
         onKeyDown={(event) => LauncherKeys.handle(
-          event, stateRef.current, manageRef.current, screenRef.current, ports, card.current,
+          event, stateRef.current, manageRef.current, screenRef.current, ports, card.current, remoteProfile,
         )}
       >
         <header className="jamat-launcher__head">
@@ -469,7 +473,14 @@ export function LauncherOverlay(props: {
           </button>
         </header>
         <div className="jamat-launcher__body">
-          {LauncherScreens.render(screen, state, ports)}
+          {remoteProfile
+            ? <LauncherRemoteWorkspace state={computers} creating={screen.kind !== 'computers'}
+              configuring={screen.kind === 'create' || screen.kind === 'flow'}
+              locked={screen.kind === 'create' && screen.state.submitting}
+              dispatch={ports.computers} onSessions={ports.showComputers} onProjects={ports.showProjects}>
+              {LauncherScreens.render(screen, state, ports, computers)}
+            </LauncherRemoteWorkspace>
+            : LauncherScreens.render(screen, state, ports, computers)}
         </div>
         {/* Beside the key line rather than inside the body, which scrolls: at the end of a long list
             a strip would open below the fold and the key that opened it would look like it did
@@ -532,10 +543,10 @@ class LauncherScreens {
       footKeysOf: () => LauncherFootKeys.legend([
         ['Esc', 'Close'],
         ['↑↓', 'Row'],
-        ['Enter', 'Choose'],
+        ['Enter', 'Connect'],
       ]),
-      render: (screen, _state, ports) => (
-        <LauncherComputersScreen state={screen.state} dispatch={ports.computers} />
+      render: (_screen, _state, ports, computers) => (
+        <LauncherComputersScreen state={computers} dispatch={ports.computers} />
       ),
       // The empty state carries a button, and it is the only thing here Tab can reach.
       tab: 'focus',
@@ -601,7 +612,7 @@ class LauncherScreens {
             ['←→', 'Choose'],
             ['Enter', CreateTypes.submitLabelOf(type, acting)],
             ...(acting?.mode === 'fork' ? [['N', 'Name'] as const] : []),
-            ['Tab', 'Agent filter'],
+            ['Tab', screen.state.target.kind === 'remote' ? 'Focus' : 'Agent filter'],
           ])
         }
         else if (type.kind === 'flow' || type.kind === 'raw' || type.kind === 'shell')
@@ -610,8 +621,8 @@ class LauncherScreens {
             ['↑↓', 'Row'],
             ['←→', 'Choose'],
             ['Enter', type.kind === 'flow' ? 'Configure' : 'Start'],
-            ['Tab', 'Agent'],
-            ...(screen.state.tabProfile
+            ['Tab', screen.state.target.kind === 'remote' ? 'Focus' : 'Agent'],
+            ...(screen.state.tabProfile || screen.state.target.kind === 'remote'
               ? []
               : [['W', 'Worktree'] as const]),
             ['N', 'Name'],
@@ -684,8 +695,9 @@ class LauncherScreens {
     screen: LauncherScreen,
     state: LauncherState,
     ports: LauncherPorts,
+    computers: ComputersScreenState,
   ): React.JSX.Element {
-    return LauncherScreens.of(screen).render(screen as never, state, ports)
+    return LauncherScreens.of(screen).render(screen as never, state, ports, computers)
   }
 
   static tabOf(screen: LauncherScreen): LauncherScreenTab {
@@ -954,14 +966,15 @@ class LauncherKeys {
     screen: LauncherScreen,
     ports: LauncherPorts,
     card: HTMLElement | null,
+    remoteProfile: boolean,
   ): void {
     // Tab is never left to the browser: at the edge it would take focus out of an overlay the user
     // cannot see they have left. Which of the three meanings it has belongs to the screen.
     if (event.key === 'Tab') {
       event.preventDefault()
-      if (event.ctrlKey || event.altKey || event.metaKey || LauncherKeys.typing(event.target))
+      if (event.ctrlKey || event.altKey || event.metaKey || !remoteProfile && screen.kind !== 'computers' && LauncherKeys.typing(event.target))
         return
-      return LauncherKeys.tab(LauncherScreens.tabOf(screen), event, state, ports, card)
+      return LauncherKeys.tab(remoteProfile ? 'focus' : LauncherScreens.tabOf(screen), event, state, ports, card)
     }
     if (event.ctrlKey || event.altKey || event.metaKey)
       return
@@ -976,6 +989,7 @@ class LauncherKeys {
       return LauncherScreens.escape(screen, ports, manage)
     }
     if (event.key === 'Enter') {
+      if ((remoteProfile || screen.kind === 'computers') && event.target instanceof HTMLButtonElement) return
       // The one place Enter is not the surface's: a flow's multi-line fields are where a newline is
       // typed, and a screen that submits instead is a screen nobody can write a paragraph in.
       if (screen.kind === 'flow' && event.target instanceof HTMLTextAreaElement)

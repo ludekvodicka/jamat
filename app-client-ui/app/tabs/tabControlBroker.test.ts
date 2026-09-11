@@ -44,12 +44,12 @@ class TabControlHarness {
   readonly commits = {
     prepare: vi.fn<import('../versioning/versioningCommitManager').VersioningCommitManager['prepare']>(async () => ({ ok: true,
       value: { draftId: 'draft', scopeRoot: 'Q:/app/shared', title: 'Commit SVN' }, messageApplied: false })),
-    attach: vi.fn(), releaseUnattached: vi.fn(),
+    attach: vi.fn(), releaseUnattached: vi.fn(), status: vi.fn(() => null),
   }
   readonly broker: TabControlBroker
   private nextRequest = 0
 
-  constructor(timeoutMilliseconds = 1_000) {
+  constructor(timeoutMilliseconds = 1_000, activateSessionOnCommit = true) {
     this.broker = new TabControlBroker(
       this.windows.asWindows(),
       this.index,
@@ -58,6 +58,7 @@ class TabControlHarness {
       {
         requestId: () => `request-${++this.nextRequest}`,
         timeoutMilliseconds,
+        activateSessionOnCommit: () => activateSessionOnCommit,
       },
     )
   }
@@ -95,6 +96,29 @@ class FakeFileOpenResolver {
 }
 
 describe('app-client-ui/app/tabs/tabControlBroker', () => {
+  it('opens in the existing holder without activating a window when the setting is disabled', async () => {
+    const h = new TabControlHarness(1_000, false)
+    h.index.claimOpen('holder', { panelId: 'panel', key: 'terminal', title: 'App', sessionId: 'session', params: { sessionId: 'session' }, presentation: 'session' })
+    const pending = h.broker.openCommit('session', 'App', 'svn', null, null, { plain: false })
+    const command = await h.command()
+    expect(command).toMatchObject({ kind: 'open-commit', activate: false, panelId: 'panel' })
+    h.acknowledge('holder', command, { kind: 'commit-opened', panelId: 'panel' })
+    expect(await pending).toMatchObject({ ok: true, value: { commitSessionId: 'draft' } })
+    expect(h.windows.focused).toEqual([])
+  })
+
+  it('requests an inactive new session tab before opening a background commit', async () => {
+    const h = new TabControlHarness(1_000, false)
+    const pending = h.broker.openCommit('session', 'App', 'git', null, null, { plain: false })
+    const session = await h.command()
+    expect(session).toMatchObject({ kind: 'open-session', activate: false })
+    h.acknowledge('main', session, { kind: 'opened', panelId: 'panel' })
+    const commit = await h.command(1)
+    expect(commit).toMatchObject({ kind: 'open-commit', activate: false })
+    h.acknowledge('main', commit, { kind: 'commit-opened', panelId: 'panel' })
+    expect((await pending).ok).toBe(true)
+    expect(h.windows.focused).toEqual([])
+  })
   afterEach(() => vi.useRealTimers())
 
   it('opens a prepared commit in the existing owner window and reports an unapplied proposal', async () => {

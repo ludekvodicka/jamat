@@ -153,7 +153,7 @@ export class RemarkableModel {
       || state.failedAction === null
       || state.failedAction === 'start'
       || !state.failure.retryable) return false
-    return state.failure.code === 'device-sleeping' || state.failure.code === 'device-busy'
+    return state.failure.code === 'device-unreachable' || state.failure.code === 'device-busy'
   }
 
   static canChooseSource(state: RemarkableOverlayState): boolean {

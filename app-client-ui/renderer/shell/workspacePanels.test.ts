@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import type { TabControlCommand } from '../../shared/tabControl'
 import { PanelKeysConst } from '../../shared/tabTransfer'
@@ -12,6 +12,10 @@ class WorkspacePanelsTestController {
   params: Record<string, unknown> = { sessionId: 'session-one' }
   writes = 0
   readonly hidden: string[] = []
+  readonly activated: string[] = []
+  readonly focused: string[] = []
+  activatePanel(id: string): boolean { this.activated.push(id); return true }
+  focusPanelContent(id: string): void { this.focused.push(id) }
 
   activePanelId(): string | null {
     return this.key === null ? null : this.panelId
@@ -49,6 +53,18 @@ class WorkspacePanelsTestController {
 }
 
 describe('app-client-ui/renderer/shell/workspacePanels', () => {
+  it('focuses the selected commit after rendering only for an activating open', async () => {
+    const c = new WorkspacePanelsTestController()
+    const command: Extract<TabControlCommand, { kind: 'open-commit' }> = { kind: 'open-commit', requestId: 'open', panelId: c.panelId,
+      vcs: 'svn', scopeRoot: 'Q:/app', title: 'Commit SVN', messageApplied: true, activate: false }
+    await WorkspacePanels.tabControlResult(c.asController(), command)
+    expect(c.activated).toEqual([])
+    expect(c.focused).toEqual([])
+    await WorkspacePanels.tabControlResult(c.asController(), { ...command, activate: true })
+    expect(c.activated).toEqual([c.panelId])
+    await vi.waitFor(() => expect(c.focused).toEqual([c.panelId]))
+    expect(PanelSplitParams.of(c.params).active).toBe(PanelSplitParams.commitKeyOf('svn', 'Q:/app'))
+  })
   it('adds a permanent commit to the terminal split and returns the independent cap refusal', async () => {
     const controller = new WorkspacePanelsTestController()
     const command: Extract<TabControlCommand, { kind: 'open-commit' }> = { kind: 'open-commit', requestId: 'commit', panelId: controller.panelId,

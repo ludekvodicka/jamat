@@ -187,6 +187,7 @@ describe('app-client-ui/app/fileChanges/serviceFileChangesIpc', () => {
     expect(calls.find((call) => call.method === 'workingTree')?.args).toEqual([
       { sessionId: 'session-1', cwd: 'C:/work', agent: null, worktree: null },
       'checkpoint',
+      false,
     ])
     for (const answer of answers)
       expect(answer).toEqual({ ok: true, value: { ok: true, value: workingSnapshot } })
@@ -204,6 +205,16 @@ describe('app-client-ui/app/fileChanges/serviceFileChangesIpc', () => {
       invoke('fileChanges:working-tree', sender, 'session-1', 'svn'),
     ])
     expect(calls.filter((call) => call.method === 'workingTree')).toHaveLength(3)
+  })
+
+  it('keeps commit reads separate from simultaneous sidebar reads of the same scope', async () => {
+    await Promise.all([
+      service.workingTree('window-1', 'session-1', 'svn', 'C:/work'),
+      service.workingTree('window-1', 'session-1', 'svn', 'C:/work', true),
+    ])
+    const reads = calls.filter((call) => call.method === 'workingTree')
+    expect(reads).toHaveLength(2)
+    expect(reads.map((read) => read.args[2]).sort()).toEqual([false, true])
   })
 
   /**

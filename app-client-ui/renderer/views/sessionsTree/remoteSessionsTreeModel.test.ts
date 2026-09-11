@@ -39,6 +39,26 @@ describe('app-client-ui/renderer/views/sessionsTree/remoteSessionsTreeModel', ()
       .toEqual([['endpoint-a', 'connected']])
   })
 
+  it('adds only selected sessions with their category and project, and keeps them after a disconnect', () => {
+    const sessions = RemoteSessionsTreeFixtures.snapshot([
+      RemoteSessionsTreeFixtures.session('chosen', 'Alpha'),
+      RemoteSessionsTreeFixtures.session('not-chosen', 'Beta'),
+    ])
+    const endpoint = RemoteSessionsTreeFixtures.outbound('profile', 'computer', 'endpoint', 'Computer', sessions)
+    const build = (selectedSessionIds: string[], status: RemoteOutboundEndpointDto['status']) => RemoteSessionsTreeModel.build(
+      RemoteSessionsTreeFixtures.remote([{ ...endpoint, selectedSessionIds, status }]),
+      RemoteSessionsTreeFixtures.snapshot([]), RemoteSessionsTreeFixtures.view(), new Set(), new Map(),
+    )
+    expect(build([], 'connected').outbound).toEqual([])
+    for (const status of ['connected', 'offline'] as const) {
+      const tree = build(['chosen'], status)
+      expect(tree.outbound).toHaveLength(1)
+      expect(JSON.stringify(tree.outbound)).toContain('chosen')
+      expect(JSON.stringify(tree.outbound)).not.toContain('not-chosen')
+      expect(JSON.stringify(tree.outbound)).not.toContain('Beta')
+    }
+  })
+
   it('keeps identical session IDs from two endpoints distinct and strips local path operations', () => {
     const remote = RemoteSessionsTreeFixtures.remote([
       RemoteSessionsTreeFixtures.outbound('profile-a', 'computer-a', 'endpoint-a', 'Same name',
@@ -272,6 +292,7 @@ class RemoteSessionsTreeFixtures {
       optionalOperations: status === 'connected' ? ['sessions.transcript'] : null,
       connectionId: status === 'connected' ? `connection-${profileId}` : null,
       sessions,
+      selectedSessionIds: status === 'connected' ? sessions?.sessions.map((session) => session.sessionId) ?? [] : [],
     }
   }
 

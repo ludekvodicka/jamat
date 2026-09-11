@@ -20,6 +20,7 @@ import type { TabMoveTarget, TabTransferLease, TabTransferPayload } from '../../
 import { TerminalTargetCodec } from '../../shared/terminalTarget'
 import type { WindowAppearance, WindowInfo } from '../../shared/windowInfo'
 import { CommandRegistry } from '../commands/commandRegistry'
+import { ConfigurationLastTab } from '../overlays/configuration/configurationLastTab'
 import type { FinalizeAsk } from '../overlays/finalize/finalizeModel'
 import { SessionsFixtures } from '../sessions/fixtures/sessionsFixtures'
 import { TabsController } from '../widgets/tabs/tabsController'
@@ -62,7 +63,9 @@ vi.mock('@xterm/xterm', () => ({
     readonly unicode = { activeVersion: '6' }
     /** Only what the buffer scan reads before jsdom's zero-sized screen rect ends it. */
     readonly buffer = { active: { getLine: () => undefined, viewportY: 0, length: 0 } }
+    /** Read per wheel event by the repeat the attachment installs. */
     attachCustomKeyEventHandler(): void {}
+    attachCustomWheelEventHandler(): void {}
     onData(): void {}
     onSelectionChange(): void {}
     getSelection(): string { return '' }
@@ -319,6 +322,8 @@ class AppClientStub {
         sectionActive: () => Promise.resolve({ ok: true as const, value: undefined }),
       },
       versioning: {
+        revertCommitFile: async () => { throw new Error('unused') },
+        openTortoise: async () => { throw new Error('unused') },
         externalDiff: async () => { throw new Error('unused') },
         openDraft: async () => { throw new Error('unused') },
         openCommitTab: async () => { throw new Error('unused') },
@@ -482,7 +487,9 @@ class AppClientStub {
           ok: true as const,
           value: { revision: 0, outbound: [], inbound: [] },
         }),
-        hold: () => Promise.resolve({ ok: true as const, value: undefined }),
+        connect: () => Promise.resolve({ ok: true as const, value: { ok: true as const, value: undefined } }),
+        selectSession: () => Promise.resolve({ ok: true as const, value: { ok: true as const, value: undefined } }),
+        disconnect: () => Promise.resolve({ ok: true as const, value: undefined }),
         release: () => Promise.resolve({ ok: true as const, value: undefined }),
         describeAgents: () => { throw new Error('No test of the shell describes remote agents') },
         listProjects: () => { throw new Error('No test of the shell lists remote projects') },
@@ -899,6 +906,9 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     // than sleeping on it, and a fake clock left installed would stop the next mount settling.
     vi.useRealTimers()
     cleanup()
+    // The settings card reopens where it was last left, and that outlives an unmount by design:
+    // without this, a case that opened Window hands the next one a Window tab it never set up.
+    ConfigurationLastTab.reset()
     WindowInfoStore.reset()
     AppShellTest.clearPalette()
     remarkableOverlayMock.props = null

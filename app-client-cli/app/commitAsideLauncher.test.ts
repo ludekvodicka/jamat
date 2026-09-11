@@ -1,25 +1,18 @@
-import { ChildProcess, type spawn } from 'node:child_process'
 import { describe, expect, it, vi } from 'vitest'
 import { CommitAsideLauncher } from './commitAsideLauncher'
 
 describe('app-client-cli/app/commitAsideLauncher', () => {
-  it.each(['svn', 'git'] as const)('starts detached %s with a message file and waits only for spawn', async (vcs) => {
-    const child = new ChildProcess()
-    const unref = vi.spyOn(child, 'unref')
-    const launch = vi.fn(() => { queueMicrotask(() => child.emit('spawn')); return child })
-    const launcher = new CommitAsideLauncher({ platform: 'win32', exists: () => true, spawn: launch as unknown as typeof spawn })
-    expect(await launcher.open({ vcs, scope: 'Q:/app with spaces', messageFile: 'Q:/temp/message.txt', reason: 'jamat-unavailable' }))
-      .toMatchObject({ ok: true, value: { kind: 'opened-aside' } })
-    expect(launch).toHaveBeenCalledWith(vcs === 'svn' ? CommitAsideLauncher.svnToolConst : CommitAsideLauncher.gitToolConst,
-      ['/command:commit', '/path:Q:/app with spaces', '/logmsgfile:Q:/temp/message.txt'], { detached: true, stdio: 'ignore', windowsHide: true })
-    expect(unref).toHaveBeenCalledOnce()
+  it.each(['svn', 'git'] as const)('returns the %s fallback result after spawn without waiting for the human dialog', async (vcs) => {
+    const open = vi.fn(async () => ({ ok: true as const, closed: new Promise<void>(() => {}) }))
+    const request = { vcs, scope: 'Q:/app with spaces', messageFile: 'Q:/temp/message.txt', reason: 'jamat-unavailable' as const }
+    expect(await new CommitAsideLauncher({ open }).open(request))
+      .toEqual({ ok: true, value: { kind: 'opened-aside', tool: vcs === 'svn' ? 'tortoisesvn' : 'tortoisegit', scope: request.scope, reason: request.reason } })
+    expect(open).toHaveBeenCalledExactlyOnceWith(request)
   })
 
-  it.each(['linux', 'missing'] as const)('reports %s without spawning', async (state) => {
-    const launch = vi.fn()
-    const launcher = new CommitAsideLauncher({ platform: state === 'linux' ? 'linux' : 'win32', exists: () => false, spawn: launch })
-    expect(await launcher.open({ vcs: 'svn', scope: 'Q:/app', messageFile: null, reason: 'session-not-open' }))
-      .toMatchObject({ ok: false, error: { code: 'unavailable', detail: expect.stringContaining(CommitAsideLauncher.svnToolConst) } })
-    expect(launch).not.toHaveBeenCalled()
+  it('preserves the launch refusal', async () => {
+    const open = vi.fn(async () => ({ ok: false as const, detail: 'Tortoise is missing' }))
+    expect(await new CommitAsideLauncher({ open }).open({ vcs: 'svn', scope: 'Q:/app', messageFile: null, reason: 'session-not-open' }))
+      .toEqual({ ok: false, error: { code: 'unavailable', detail: 'Tortoise is missing' } })
   })
 })

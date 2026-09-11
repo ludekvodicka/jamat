@@ -13,8 +13,10 @@ export class UiSettingsSection {
     coerce: (value, report) => UiSettings.coerce(value, report),
     validate: (value) => (UiSettings.isValid(value)
       ? null
-      : `ui font scales must be multiples of ${UiSettings.stepPercentConst} between `
-        + `${UiSettings.minPercentConst} and ${UiSettings.maxPercentConst}, and terminalTheme `
-        + `one of ${UiSettings.terminalThemesConst.join(', ')}`),
+      : `ui font scales must be multiples of ${UiSettings.fontRangeConst.stepPercent} between `
+        + `${UiSettings.fontRangeConst.minPercent} and ${UiSettings.fontRangeConst.maxPercent}, `
+        + `scroll speeds multiples of ${UiSettings.scrollRangeConst.stepPercent} between `
+        + `${UiSettings.scrollRangeConst.minPercent} and ${UiSettings.scrollRangeConst.maxPercent}, `
+        + `and terminalTheme one of ${UiSettings.terminalThemesConst.join(', ')}`),
   }
 }

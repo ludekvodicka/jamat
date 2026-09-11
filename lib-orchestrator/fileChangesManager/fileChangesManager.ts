@@ -46,6 +46,7 @@ import { FileChangesVcsDetector } from './vcs/fileChangesVcsDetector'
 import { FileChangesVcsGit } from './vcs/fileChangesVcsGit'
 import { FileChangesVcsSvn } from './vcs/fileChangesVcsSvn'
 import { FileChangesWorkingTreeSources } from './working/fileChangesWorkingTreeSources'
+import { FileChangesSvnUntracked } from './working/fileChangesSvnUntracked'
 
 export interface FileChangesTranscriptResolver {
   resolve(input: {
@@ -67,6 +68,7 @@ export interface FileChangesManagerDeps {
   logReaders?: readonly FileChangesLogReader[]
   snapshotStore?: FileChangesSnapshotStore
   workingSources?: FileChangesWorkingTreeSources
+  svnUntracked?: Pick<FileChangesSvnUntracked, 'expand'>
 }
 
 export type FileChangesBaselineContentResult =
@@ -109,6 +111,7 @@ export class FileChangesManager {
   private readonly historyComposer = new FileHistoryComposer()
   private readonly diffBuilder: FileDiffBuilder
   private readonly workingSources: FileChangesWorkingTreeSources
+  private readonly svnUntracked: Pick<FileChangesSvnUntracked, 'expand'>
 
   constructor(deps: FileChangesManagerDeps) {
     this.detector = new FileChangesVcsDetector(
@@ -121,22 +124,30 @@ export class FileChangesManager {
     this.snapshots = deps.snapshotStore ?? new FileChangesSnapshotStore()
     this.diffBuilder = new FileDiffBuilder(deps.diffExecutor)
     this.workingSources = deps.workingSources ?? new FileChangesWorkingTreeSources()
+    this.svnUntracked = deps.svnUntracked ?? new FileChangesSvnUntracked()
   }
 
   async workingTree(
     context: FileChangesWorkingTreeContext,
     requested: FileChangesWorkingTreeSource | null,
+    forCommit = false,
   ): Promise<FileChangesWorkingTreeSnapshotResult> {
     const invalid = await FileChangesManager.invalidContext(context)
     if (invalid !== null) return { ok: false, code: 'invalid-context', detail: invalid }
     const read = await this.workingSources.read(context, requested)
+    let vcsEntries = read.entries
+    if (forCommit && read.selection.selected === 'svn') {
+      try { vcsEntries = await this.svnUntracked.expand(vcsEntries) }
+      catch (error) { return { ok: false, code: 'invalid-context', detail: ErrorText.of(error) } }
+    }
     const warnings = [...read.warnings]
     const items = await this.listing.build({
       cwd: context.cwd,
       hasVcs: read.selected !== null,
-      vcsEntries: read.entries,
+      vcsEntries,
       logGroups: [],
       warnings,
+      includeDirectories: !forCommit,
     })
     const registry: FileRegistry = { ids: new Map(), files: new Map() }
     const entries = items.map((item) => this.publicEntry(item, item.absolutePath, registry))

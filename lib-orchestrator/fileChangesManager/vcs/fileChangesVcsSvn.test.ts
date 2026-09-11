@@ -144,8 +144,8 @@ describe('lib-orchestrator/fileChangesManager/vcs/fileChangesVcsSvn', () => {
     await vcs.readBaseline(detected, 'nested/changed.ts', { kind: 'svn-base', revision: 'BASE' })
     await vcs.readBaseline(detected, 'nested/changed.ts', { kind: 'svn-revision', revision: '42' })
     expect(targets).toEqual([
-      join(root, 'nested', 'changed.ts'),
-      'https://svn.example/repo/trunk/nested/changed.ts',
+      `${join(root, 'nested', 'changed.ts')}@`,
+      'https://svn.example/repo/trunk/nested/changed.ts@',
     ])
   })
 

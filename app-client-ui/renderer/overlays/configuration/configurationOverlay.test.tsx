@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CatalogCategoryDto } from '../../../../lib-orchestrator/projectManager/projectManagerApi.types'
 import type { AppClientUiBridge } from '../../../shared/appClientUiIpc'
 import { WindowInfoStore } from '../../shell/windowInfoStore'
+import { ConfigurationLastTab } from './configurationLastTab'
 import { ConfigurationOverlay } from './configurationOverlay'
 import { WorktreeSetupIntentStore } from './worktreeSetupIntentStore'
 import type { ConfigurationOpenRequest } from './configurationTab.types'
@@ -48,6 +49,7 @@ describe('app-client-ui/renderer/overlays/configuration/configurationOverlay', (
 
   afterEach(() => {
     cleanup()
+    ConfigurationLastTab.reset()
     WindowInfoStore.reset()
     for (const token of ConfigurationOverlayTest.paletteTokensConst)
       document.documentElement.style.removeProperty(`--window-color-${token}`)
@@ -56,6 +58,8 @@ describe('app-client-ui/renderer/overlays/configuration/configurationOverlay', (
 
   async function mount(
     request: ConfigurationOpenRequest = { requestId: 1, tab: null },
+    /** Which screen to wait for, where the request alone does not say - a remembered one. */
+    opensOn: 'projects' | 'window' = request.tab === 'window' ? 'window' : 'projects',
   ) {
     installBridge()
     ConfigurationOverlayTest.installPalette()
@@ -65,7 +69,7 @@ describe('app-client-ui/renderer/overlays/configuration/configurationOverlay', (
       <ConfigurationOverlay request={request} worktreeSetupIntents={new WorktreeSetupIntentStore()}
         onClose={onClose} />,
     )
-    const readySelector = request.tab === 'window'
+    const readySelector = opensOn === 'window'
       ? '.jamat-configuration-window__name'
       : '.jamat-configuration-projects__label'
     await waitFor(() => expect(view.container.querySelector(readySelector)).toBeTruthy())
@@ -129,6 +133,31 @@ describe('app-client-ui/renderer/overlays/configuration/configurationOverlay', (
     expect(view.container.querySelector('.jamat-configuration__pane')?.getAttribute('aria-label'))
       .toBe('Window')
     expect(view.container.querySelector('.jamat-configuration-window')).toBeTruthy()
+  })
+
+  /*
+   * Settings are read in bursts, and the screen you were just on is nearly always the one you want
+   * next. It is memory and not a file on purpose: a restart starts at the first screen again.
+   */
+  it('reopens on the screen it was last left on', async () => {
+    const first = await mount()
+    fireEvent.click(buttonNamed(first.view.container, 'Window'))
+    first.view.unmount()
+
+    const { view } = await mount({ requestId: 2, tab: null }, 'window')
+
+    expect(view.container.querySelector('.jamat-configuration__pane')?.getAttribute('aria-label'))
+      .toBe('Window')
+  })
+
+  // A named open is somebody saying which screen they mean, so it beats a screen left open earlier.
+  it('opens where the request asks even after another screen was left open', async () => {
+    ConfigurationLastTab.remember('window')
+
+    const { view } = await mount({ requestId: 1, tab: 'projects' })
+
+    expect(view.container.querySelector('.jamat-configuration__pane')?.getAttribute('aria-label'))
+      .toBe('Projects')
   })
 
   it('routes a new request through the dirty tab leave question', async () => {

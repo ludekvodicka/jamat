@@ -24,7 +24,7 @@ const xtermMock = vi.hoisted(() => ({
     keyHandler: ((event: KeyboardEvent) => boolean) | null
     selection: string
     /** What the surface writes to when a setting changes, the way real xterm carries them. */
-    options: { fontSize: number; theme: unknown }
+    options: { fontSize: number; theme: unknown; scrollSensitivity: number }
     /** Buffer rows a test seeded, so a click can be scanned into a token. */
     lines: string[]
     type(data: string): void
@@ -58,11 +58,12 @@ vi.mock('@xterm/xterm', () => {
       rows = 24
       /** Real xterm carries these and the surface writes to them; without them the block that does
        *  could not have run at all, which is why nothing noticed it was unreached. */
-      options: { fontSize: number; theme: unknown }
+      options: { fontSize: number; theme: unknown; scrollSensitivity: number }
       /** The width table the surface registers before it writes anything into the buffer. */
       readonly unicode = { activeVersion: '6' }
       readonly calls: { method: string; args: unknown[] }[] = []
       keyHandler: ((event: KeyboardEvent) => boolean) | null = null
+      wheelHandler: ((event: WheelEvent) => boolean) | null = null
       /** What a drag would have left behind; a test sets it through `select`. */
       selection = ''
       lines: string[] = []
@@ -77,11 +78,15 @@ vi.mock('@xterm/xterm', () => {
         },
       }
 
-      constructor(options?: { fontSize?: number; theme?: unknown }) {
+      constructor(options?: { fontSize?: number; theme?: unknown; scrollSensitivity?: number }) {
         // Taken from the constructor, the way the real one does: a mock that ignored them would
         // start out disagreeing with the surface about the font size, and the first settings frame
         // would then look like a change and refit for nothing.
-        this.options = { fontSize: options?.fontSize ?? 14, theme: options?.theme ?? null }
+        this.options = {
+          fontSize: options?.fontSize ?? 14,
+          theme: options?.theme ?? null,
+          scrollSensitivity: options?.scrollSensitivity ?? 1,
+        }
         xtermMock.instances.push(this)
       }
 
@@ -125,6 +130,11 @@ vi.mock('@xterm/xterm', () => {
 
       attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean): void {
         this.keyHandler = handler
+      }
+
+      /** The repeat the surface installs over the wheel. Its own file is where it is exercised. */
+      attachCustomWheelEventHandler(handler: (event: WheelEvent) => boolean): void {
+        this.wheelHandler = handler
       }
 
       onData(listener: (data: string) => void): void { this.data = listener }
@@ -1055,6 +1065,28 @@ describe('app-client-ui/renderer/panels/terminal/useTerminalAttachment', () => {
       expect(terminal().options.fontSize).to.not.equal(before)
       // The PTY has to be told the new geometry, or the glyphs change size under an unchanged grid.
       expect(xtermMock.fits).to.equal(fits + 1)
+    })
+
+    /*
+     * The terminal's own half of the scroll setting. It is an xterm option and not a wheel event of
+     * ours, which is the whole reason the window's speed and this one are two rows in the card -
+     * and a multiplier changes no cell, so unlike the font size it costs no refit.
+     */
+    it('takes the terminal scroll speed as a multiplier, and asks for no refit', async () => {
+      render(<Harness sessionId="session-1" />)
+      const fits = xtermMock.fits
+
+      expect(terminal().options.scrollSensitivity).to.equal(1)
+
+      await act(async () => {
+        UiSettingsStore.preview({
+          ...UiSettings.defaultValue(),
+          terminalScrollSpeedPercent: 250,
+        })
+      })
+
+      expect(terminal().options.scrollSensitivity).to.equal(2.5)
+      expect(xtermMock.fits).to.equal(fits)
     })
 
     it('repaints on a theme change and asks for no refit, because a colour is not a size', async () => {

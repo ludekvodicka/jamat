@@ -1,30 +1,78 @@
+.jamat-launcher__card--remote { width: min(1440px, 97vw); height: min(620px, 88vh); }
+.jamat-launcher__card--remote > .jamat-launcher__body { display: flex; overflow: hidden; }
 .jamat-launcher-computers {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(0, 3fr);
+  gap: var(--space-4);
   padding: var(--space-3);
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
 }
-.jamat-launcher-computers__rows {
+.jamat-launcher-computers__sidebar { display: flex; flex-direction: column; gap: var(--space-2); min-height: 0; overflow: auto; }
+.jamat-launcher-computers__rows { display: flex; flex-direction: column; gap: var(--space-2); }
+.jamat-launcher-computers__computer {
   display: flex;
   flex-direction: column;
+  gap: var(--space-1);
+  text-align: left;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  overflow-wrap: anywhere;
 }
-/* The endpoint is what tells two connections to one computer apart, so it reads as an address
-   rather than as a second name. */
-.jamat-launcher-computers__endpoint {
-  font-family: var(--font-mono);
+.jamat-launcher-computers__computer--selected { background: var(--color-surface-control-hover); border-color: var(--color-accent); }
+.jamat-launcher-computers__endpoint { font-family: var(--font-mono); font-size: var(--fs-secondary); }
+.jamat-launcher-computers__workspace { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.jamat-launcher-computers__heading { display: flex; align-items: center; gap: var(--space-3); min-height: 30px; margin-bottom: var(--space-2); }
+.jamat-launcher-computers__heading > button { margin-left: auto; }
+.jamat-launcher-computers__connection { color: var(--color-text-4); font-size: var(--fs-secondary); }
+.jamat-launcher-computers__tabs { display: flex; gap: var(--space-1); border-bottom: 1px solid var(--color-border-frame); margin-bottom: var(--space-2); }
+.jamat-launcher-computers__tabs button { padding: var(--space-2) var(--space-3); background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--color-text-3); font: inherit; cursor: pointer; }
+.jamat-launcher-computers__tabs button[aria-selected="true"] { color: var(--color-text-1); border-bottom-color: var(--color-accent); }
+.jamat-launcher-computers__steps { display: flex; align-items: center; gap: var(--space-2); padding-bottom: var(--space-2); font-size: var(--fs-secondary); color: var(--color-text-4); }
+.jamat-launcher-computers__steps button { background: transparent; color: var(--color-text-1); border: 0; font: inherit; cursor: pointer; }
+.jamat-launcher-computers__steps [aria-current="step"] { color: var(--color-text-1); }
+.jamat-launcher-computers__content { flex: 1; display: flex; min-height: 0; min-width: 0; }
+.jamat-launcher-computers__content--form { display: block; overflow: auto; }
+.jamat-launcher-computers__sessions { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.jamat-launcher-computers__filter { display: flex; align-items: center; gap: var(--space-3); padding-bottom: var(--space-2); }
+.jamat-launcher-computers__filter > span { white-space: nowrap; color: var(--color-text-4); font-size: var(--fs-secondary); }
+.jamat-launcher-computers__filter input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-2);
+  background: var(--color-surface-sunken);
+  color: var(--color-text-1);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  font: inherit;
 }
-/* The shared row sizes its trailing columns for a count, and an address is longer than a count:
-   `127.0.0.1:47166` measures 105px in the mono face at the default scale and the column is 92px, so
-   it ran over the session count beside it. The width is derived from the same token the text is
-   drawn with rather than written as a pixel number, because `--fs-secondary` carries the user's font
-   scale and a fixed column would clip the moment that goes up. 0.6em is the upper bound of the
-   advance width of the faces in `--font-mono` (Cascadia Mono measures 0.586em), and 21 characters is
-   a full `255.255.255.255:65535`. A host name longer than that ellipsises, which is the shared row's
-   behaviour and not this screen's business. */
-.jamat-launcher-computers__rows .jamat-launcher__row {
-  grid-template-columns: minmax(0, 1fr) calc(var(--fs-secondary) * 0.6 * 21) 92px 16px;
-}
-.jamat-launcher-computers__empty {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-2);
-  padding: var(--space-2) 0;
-}
+.jamat-launcher-computers__tree-scroll { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--color-border-frame); border-radius: var(--radius-control); }
+.jamat-launcher-computers__tree { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: var(--fs-secondary); }
+.jamat-launcher-computers__tree col:nth-child(1) { width: 44%; }
+.jamat-launcher-computers__tree col:nth-child(3) { width: 88px; }
+.jamat-launcher-computers__tree th { position: sticky; top: 0; z-index: 1; background: var(--color-surface-control); color: var(--color-text-3); font-weight: 500; text-align: left; padding: 5px var(--space-2); border-bottom: 1px solid var(--color-border-frame); }
+.jamat-launcher-computers__tree td { height: 27px; padding: 0 var(--space-2); }
+.jamat-launcher-computers__tree-row:hover, .jamat-launcher-computers__tree-row:focus-within { background: var(--color-surface-control-hover); }
+.jamat-launcher-computers__tree-row:focus { outline: 1px solid var(--color-accent); outline-offset: -1px; }
+.jamat-launcher-computers__tree-row--category { background: var(--color-surface-control); font-weight: 600; }
+.jamat-launcher-computers__tree-row--project { font-weight: 600; }
+.jamat-launcher-computers__tree-name { display: flex; align-items: center; min-width: 0; gap: var(--space-1); }
+.jamat-launcher-computers__label, .jamat-launcher-computers__directory { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jamat-launcher-computers__directory { color: var(--color-text-4); font-size: var(--fs-status); font-weight: 400; }
+.jamat-launcher-computers__twisty { width: 12px; flex: 0 0 12px; padding: 0; border: 0; background: none; color: var(--color-text-3); font: inherit; cursor: pointer; }
+.jamat-launcher-computers__glyph { font-family: var(--font-mono); color: var(--color-text-4); }
+.jamat-launcher-computers__glyph--ok { color: var(--color-ok); }
+.jamat-launcher-computers__glyph--attention { color: var(--color-attention); }
+.jamat-launcher-computers__glyph--danger { color: var(--color-danger); }
+.jamat-launcher-computers__glyph--accent { color: var(--color-accent); }
+.jamat-launcher-computers__action { text-align: right; }
+.jamat-launcher-computers .jamat-launcher__start-button { min-width: 0; }
+.jamat-launcher-computers__action .jamat-launcher__start-button { padding: 1px var(--space-2); font-size: var(--fs-status); line-height: 18px; }
+.jamat-launcher-computers__hint { margin: var(--space-2) 0 0; font-size: var(--fs-status); color: var(--color-text-4); }
+.jamat-launcher-computers__empty { padding: var(--space-3); }

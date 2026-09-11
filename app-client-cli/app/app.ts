@@ -28,6 +28,8 @@ import { RemoteControlPairing } from '../../lib-orchestrator/remoteControl/remot
 import type { RemoteControlPeerPairingBundle } from '../../lib-orchestrator/remoteControl/remoteControlPeerApi.types'
 import type { SessionCreateSpec } from '../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { SessionsSnapshotValidation } from '../../lib-orchestrator/sessionManager/sessionsSnapshotValidation'
+import { SessionWorkingDirectory } from '../../lib-orchestrator/sessionManager/sessionWorkingDirectory'
+import { PathCompare } from '../../lib-orchestrator/shared/pathCompare'
 import { ErrorText } from '../../lib-orchestrator/shared/errorText'
 import { AppClientCliError } from './appClientCliError'
 import { AppConfig } from './appConfig'
@@ -39,6 +41,7 @@ import { SessionSelectorResolver } from './sessionSelectorResolver'
 import { SelfSession } from './selfSession'
 import { CommitMessageFile } from './commitMessageFile'
 import { CommitAsideLauncher, type CommitAsideRequest } from './commitAsideLauncher'
+import { CommitStatusReader } from './commitStatusReader'
 
 export interface AppClientCliClientPort {
   execute(request: RemoteControlRequestUnion): Promise<RemoteControlResponse>
@@ -69,10 +72,13 @@ export interface AppClientCliDeps {
   write(value: string): void
   readJson(file: string): unknown
   signal?: AbortSignal
+  now(): number
+  pause(milliseconds: number, signal?: AbortSignal): Promise<void>
 }
 
 type AppClientCliPlan =
   | CommitPlan
+  | { kind: 'commit-status'; id: string; wait: boolean; timeoutMs: number }
   | {
       kind: 'request'
       request: RemoteControlRequestUnion
@@ -91,6 +97,9 @@ interface CommitPlan {
   workingDirectory: string | null
   message: string | null
   messageFile: string | null
+  fallback: 'tortoise' | 'report'
+  wait: boolean
+  timeoutMs: number
   requestId: string
   operationId: string
 }
@@ -119,6 +128,8 @@ export class AppClientCli {
       requestId: deps?.requestId ?? randomUUID,
       write: deps?.write ?? ((value) => process.stdout.write(`${value}\n`)),
       readJson: deps?.readJson ?? CliJsonFile.read,
+      now: deps?.now ?? Date.now,
+      pause: deps?.pause ?? CommitStatusReader.pause,
       ...(deps?.signal === undefined ? {} : { signal: deps.signal }),
     }
   }
@@ -134,6 +145,11 @@ export class AppClientCli {
       if (!descriptor.ok)
         return this.finishFailure(plan, descriptor.error)
       const client = this.deps.client(descriptor.value)
+      if (plan.kind === 'commit-status') {
+        if (!RemoteControlCapabilities.of(descriptor.value).includes('tabs.commitStatus'))
+          return this.finishFailure(plan, { code: 'unavailable', detail: 'tabs.commitStatus is not exposed by this AppClientUI' })
+        return await this.readCommitStatus(client, plan.id, plan.wait, plan.timeoutMs)
+      }
       if (plan.kind === 'request') {
         if (plan.request.operation === 'sessions.transcript'
           && !RemoteControlCapabilities.of(descriptor.value).includes('sessions.transcript'))
@@ -184,6 +200,12 @@ export class AppClientCli {
   private plan(args: CliArguments): AppClientCliPlan {
     if (args.command === 'commit-svn-jamat') return this.commitPlan(args, 'svn')
     else if (args.command === 'commit-git-jamat') return this.commitPlan(args, 'git')
+    else if (args.command === 'commit status') {
+      const id = args.required('--commit-session-id')
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
+        throw new AppClientCliError('invalid-request', '--commit-session-id must be a UUID')
+      return { kind: 'commit-status', id, wait: args.has('--wait'), timeoutMs: this.commitTimeout(args) }
+    }
     if (args.command === 'events watch') {
       const afterRevision = args.integer('--after-revision', 0, Number.MAX_SAFE_INTEGER)
       return { kind: 'events', ...(afterRevision === undefined ? {} : { afterRevision }) }
@@ -315,7 +337,10 @@ export class AppClientCli {
     if (message !== null) CommitMessageFile.validate(message)
     const scope = args.option('--path')
     if (scope !== null && !scope.trim()) throw new AppClientCliError('invalid-request', '--path cannot be empty')
-    return { kind: 'commit', args, vcs, selector, scope, workingDirectory: args.option('--working-directory'), message, messageFile,
+    const fallback = args.option('--fallback') ?? 'tortoise'
+    if (fallback !== 'tortoise' && fallback !== 'report') throw new AppClientCliError('invalid-request', '--fallback must be tortoise or report')
+    return { kind: 'commit', args, vcs, selector, scope, workingDirectory: args.option('--working-directory'), message, messageFile, fallback,
+      wait: args.has('--wait'), timeoutMs: this.commitTimeout(args),
       requestId: this.deps.requestId(), operationId: this.operationId(args) }
   }
 
@@ -337,19 +362,52 @@ export class AppClientCli {
       ? this.finishAside(plan, 'session-not-open') : this.finishFailure(plan, canonical.error)
     const session = snapshot.sessions.find((info) => info.sessionId === canonical.value.sessionId)
     if (session?.life !== 'live') return this.finishAside(plan, 'session-not-open')
+    const cwd = SessionWorkingDirectory.of(session)
+    if (cwd !== null && plan.scope !== null) {
+      const scope = resolve(cwd, plan.scope)
+      if (!PathCompare.isInside(cwd, scope)) return this.finishAside(plan, 'outside-session', scope)
+    }
+    if (plan.wait && !RemoteControlCapabilities.of(descriptor.value).includes('tabs.commitStatus'))
+      return this.finishFailure(plan, { code: 'unavailable', detail: 'tabs.commitStatus is not exposed by this AppClientUI; update Jamat before waiting for native review' })
     const response = await client.execute(this.request('tabs.openCommit', {
       session: canonical.value, vcs: plan.vcs,
       ...(plan.scope === null ? {} : { scope: plan.scope }), ...(plan.message === null ? {} : { message: plan.message }),
     }, plan.requestId, plan.operationId))
+    if (response.ok && plan.wait) {
+      const opened = JsonShape.record(response.value)
+      if (opened?.kind !== 'commit-opened' || typeof opened.commitSessionId !== 'string')
+        return this.finishFailure(plan, { code: 'operation-failed', detail: 'The commit opened without a trackable UUID; its outcome is unknown' })
+      return this.readCommitStatus(client, opened.commitSessionId, true, plan.timeoutMs)
+    }
     this.write(response)
     return AppClientCli.exitCode(response.ok ? null : response.error.code)
   }
 
-  private async finishAside(plan: CommitPlan, reason: CommitAsideRequest['reason']): Promise<number> {
+  private commitTimeout(args: CliArguments): number {
+    if (args.option('--timeout-ms') !== null && !args.has('--wait'))
+      throw new AppClientCliError('invalid-request', '--timeout-ms requires --wait for commit commands')
+    return args.integer('--timeout-ms', 1, CommitStatusReader.timeoutMillisecondsConst) ?? CommitStatusReader.timeoutMillisecondsConst
+  }
+
+  private async readCommitStatus(client: AppClientCliClientPort, id: string, wait: boolean, timeoutMs: number): Promise<number> {
+    const reader = new CommitStatusReader({
+      read: () => client.execute(this.request('tabs.commitStatus', { commitSessionId: id }, this.deps.requestId())),
+      now: this.deps.now, pause: this.deps.pause,
+    })
+    const response = await reader.read(id, wait, timeoutMs, this.deps.signal)
+    this.write(response)
+    return AppClientCli.exitCode(response.ok ? null : response.error.code)
+  }
+
+  private async finishAside(plan: CommitPlan, reason: CommitAsideRequest['reason'], scope = resolve(this.deps.cwd(), plan.scope ?? '.')): Promise<number> {
+    if (plan.fallback === 'report') {
+      this.write({ ok: true, value: { kind: 'fallback-required', reason, scope } })
+      return 0
+    } else if (plan.fallback !== 'tortoise') throw new Error(`Unknown commit fallback: ${JSON.stringify(plan.fallback)}`)
     const messageFile = plan.messageFile === null
       ? plan.message === null ? null : await this.deps.writeMessageFile(plan.message)
       : resolve(this.deps.cwd(), plan.messageFile)
-    const result = await this.deps.aside.open({ vcs: plan.vcs, scope: resolve(this.deps.cwd(), plan.scope ?? '.'), messageFile, reason })
+    const result = await this.deps.aside.open({ vcs: plan.vcs, scope, messageFile, reason })
     this.write(result)
     return AppClientCli.exitCode(result.ok ? null : result.error.code)
   }

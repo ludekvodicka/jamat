@@ -5,6 +5,7 @@
  * is not touched.
  */
 import { CliClient, type CliEnvelope } from './cliClient.js'
+import { randomUUID } from 'node:crypto'
 import { SmokeHarness, SmokeRun } from './smokeHarness.js'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -74,6 +75,9 @@ class SmokeRemoteControl extends SmokeHarness {
   private conflictServer: RemoteControlServer | null = null
   private host: ChildProcess | null = null
   private tabSequence = 0
+  private readonly commitSessionId = randomUUID()
+  private commitSessionOwner = ''
+  private commitReads = 0
 
   private constructor(root: string) {
     super()
@@ -459,10 +463,15 @@ class SmokeRemoteControl extends SmokeHarness {
       && fileOpened.path === join(this.workDir, 'reports/report.md'))
 
     const commitOpened = CliClient.valueOf(await this.cli('commit-svn-jamat', '--session-id', sessionId,
-      '--message', 'Review these changes', '--operation-id', 'smoke-commit-open-1'), 'tabs.openCommit')
+      '--message', 'Review these changes', '--fallback', 'report', '--operation-id', 'smoke-commit-open-1'), 'tabs.openCommit')
     this.check('CLI commit command crossed the wrapper and opened in the existing session panel',
       commitOpened.kind === 'commit-opened' && commitOpened.panelId === panelId
       && commitOpened.scopeRoot === this.workDir && commitOpened.messageApplied === true)
+    this.check('native open exposes a commit UUID', commitOpened.commitSessionId === this.commitSessionId)
+    const pending = CliClient.valueOf(await this.cli('commit', 'status', '--commit-session-id', this.commitSessionId), 'tabs.commitStatus')
+    this.check('commit status reports this review as pending', pending.state === 'editing' && pending.closed === false)
+    const completed = CliClient.valueOf(await this.cli('commit', 'status', '--commit-session-id', this.commitSessionId, '--wait'), 'tabs.commitStatus')
+    this.check('commit wait returns the completed revision while the panel remains open', completed.state === 'committed' && completed.revision === '42' && completed.closed === false)
 
     await this.cli(
       'tabs',
@@ -615,8 +624,18 @@ class SmokeRemoteControl extends SmokeHarness {
       openCommit: async (sessionId, title, _vcs, scope, proposal, options) => {
         const opened = this.openTab(sessionId, title, options.plain)
         if (!opened.ok) return opened
+        this.commitSessionOwner = sessionId
+        this.commitReads = 0
         return { ok: true, value: { kind: 'commit-opened', panelId: opened.value.panelId, windowId: opened.value.windowId,
+          commitSessionId: this.commitSessionId,
           scopeRoot: scope === null ? this.workDir : join(this.workDir, scope), messageApplied: proposal !== null } }
+      },
+      commitStatus: (commitSessionId) => {
+        if (commitSessionId !== this.commitSessionId) return { ok: false, error: { code: 'not-found', detail: 'Unknown review' } }
+        const completed = ++this.commitReads >= 3
+        return { ok: true, value: { kind: 'commit-status', commitSessionId, sessionId: this.commitSessionOwner,
+          vcs: 'svn', scopeRoot: this.workDir, state: completed ? 'committed' : 'editing', closed: false,
+          revision: completed ? '42' : null, detail: null } }
       },
       openFile: (sessionId, tabTitle, path, options) =>
         Promise.resolve(this.openFile(sessionId, tabTitle, path, options)),

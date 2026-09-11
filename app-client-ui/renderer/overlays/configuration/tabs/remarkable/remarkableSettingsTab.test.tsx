@@ -388,8 +388,8 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/remarkable/remarkab
     const testStub = new BridgeStub()
     testStub.testResult = {
       ok: false,
-      code: 'device-sleeping',
-      detail: 'tablet did not wake',
+      code: 'device-unreachable',
+      detail: 'CommunicationError: SSH connection timed out after 15000 ms',
       retryable: true,
     }
     const tested = await mount(testStub)
@@ -397,7 +397,9 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/remarkable/remarkab
       fireEvent.click(tested.view.getByRole('button', { name: 'Test connection' }))
     })
     expect(tested.view.getByRole('alert').textContent)
-      .toContain('Wake the tablet and keep it awake. tablet did not wake')
+      .toContain('Cannot reach the tablet. Check its Wi-Fi connection and that the saved host matches its current IP address.')
+    expect(tested.view.getByRole('alert').textContent)
+      .toContain('CommunicationError: SSH connection timed out after 15000 ms')
     expect((tested.view.getByLabelText('Tablet host or IP address') as HTMLInputElement).value)
       .toBe('10.0.0.25')
   })

@@ -16,10 +16,7 @@ describe('lib-orchestrator/svn/svnCommitManager', () => {
       if (args[0] === 'commit') lists.push(await readFile(args[args.indexOf('--targets') + 1], 'utf8'))
       return { code: failure === undefined ? 0 : 1, stdout: 'Committed revision 42.\n', stderr: failure ?? '', failure: null }
     } }
-    const manager = new SvnCommitManager({ svn,
-      git: { run: async () => ({ code: 0, failure: null, stderr: '', stdout: 'nested/file.txt\0' }) },
-      checkpointStore: { existingContextOf: async () => ({ ok: true, value: null }) },
-    })
+    const manager = new SvnCommitManager(svn)
     return { manager, scope, calls, lists }
   }
 
@@ -31,20 +28,20 @@ describe('lib-orchestrator/svn/svnCommitManager', () => {
       { absolutePath: a, nodeKind: 'file', status: 'untracked' },
       { absolutePath: b, nodeKind: 'file', status: 'missing' },
     ], 'message.txt')).toEqual({ ok: true, value: { revision: '42', output: 'Committed revision 42.\n' } })
-    expect(calls[0]).toEqual(['add', '--parents', '--non-interactive', '--', `${a}@`])
+    expect(calls[0]).toEqual(['add', '--parents', '--depth', 'empty', '--non-interactive', '--', `${a}@`])
     expect(calls[1]).toEqual(['delete', '--non-interactive', '--', `${b}@`])
     expect(calls[2]).toEqual(['commit', '--non-interactive', '--encoding', 'UTF-8', '--file', 'message.txt', '--targets', expect.any(String), '--depth', 'empty'])
     expect(lists).toEqual([`${a}@\n${b}@\n`])
     await expect(readFile(calls[2][7], 'utf8')).rejects.toThrow()
   })
 
-  it('uses Git listing for an untracked directory and includes all added ancestors', async () => {
+  it('adds a selected directory at depth empty without discovering or staging its children', async () => {
     const { manager, scope, calls, lists } = fixture()
     const directory = resolve(scope, 'new')
     expect(await manager.commit(scope, [{ absolutePath: directory, nodeKind: 'directory', status: 'untracked' }], 'message.txt')).toMatchObject({ ok: true })
     expect(calls[0]).toEqual(['add', '--parents', '--depth', 'empty', '--non-interactive', '--', `${directory}@`])
-    expect(lists[0]).toContain(`${resolve(directory, 'nested')}@\n`)
-    expect(lists[0]).toContain(`${resolve(directory, 'nested/file.txt')}@\n`)
+    expect(lists[0]).toBe(`${directory}@\n`)
+    expect(calls).toHaveLength(2)
   })
 
   it('refuses conflicts and outside targets before any write', async () => {

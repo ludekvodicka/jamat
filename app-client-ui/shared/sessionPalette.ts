@@ -14,11 +14,20 @@ type MissingSessionColor = Exclude<SessionColorName, (typeof SessionPalette.name
  *
  * The names are the library's and the VALUES are not here at all: every colour is a CSS custom
  * property, so the whole palette can be themed in one file and the token gate stays green. This
- * class knows what to call each one and which class draws its square, and nothing more.
+ * class knows what to call each one, which class draws its square, and in what ORDER they are
+ * offered, and nothing more.
+ *
+ * **The order is a menu order, not a colour wheel (2026-09-11).** Green leads because it is the one
+ * actually reached for, and a colour a person picks daily sitting fourth costs a look down the list
+ * every time. The other eleven keep the wheel from red, so the set still reads as a spectrum and a
+ * colour stays where it was found last time. The library's own list is hue-ordered still and that is
+ * not drift: `SessionColors.namesConst` decides what may be STORED and is asked `includes`, where
+ * order means nothing, while this one decides what a person SEES, where order is the whole point.
  */
 export class SessionPalette {
   static readonly namesConst = [
-    'red', 'orange', 'amber', 'green', 'teal', 'cyan',
+    'green',
+    'red', 'orange', 'amber', 'teal', 'cyan',
     'sky', 'blue', 'indigo', 'violet', 'magenta', 'rose',
   ] as const satisfies readonly SessionColorName[]
 

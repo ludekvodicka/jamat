@@ -27,6 +27,7 @@ import { SessionManager } from '../../lib-orchestrator/sessionManager/sessionMan
 import { SessionModelReader } from '../../lib-orchestrator/sessionModelReader/sessionModelReader'
 import { SessionTranscriptReader } from '../../lib-orchestrator/sessionTranscriptReader/sessionTranscriptReader'
 import { OrchestratorPaths } from '../../lib-orchestrator/shared/orchestratorPaths'
+import { TortoiseCommitDialog } from '../../lib-orchestrator/shared/tortoiseCommitDialog'
 import {
   TerminalDetector,
   type TerminalDetectorDeps,
@@ -447,7 +448,8 @@ export class AppHub {
       fileAccess: (owner, snapshot, file) => this.fileChangesIpc.ownedFileAccess(owner, snapshot, file),
       snapshotOf: (owner, snapshot) => this.fileChangesIpc.ownedWorkingTreeSnapshot(owner, snapshot),
       git: new GitCommitManager(commitGit),
-      svn: new SvnCommitManager({ svn: new SvnInvoker(), git: commitGit, checkpointStore }),
+      svn: new SvnCommitManager(new SvnInvoker()),
+      tortoise: new TortoiseCommitDialog(),
       onChanged: () => this.broadcast('versioning:commit-changed'),
     })
     this.versioningCommitIpc = new ServiceVersioningCommitIpc(this.commits, workspaceOwnerIdOf, this.fileChangesIpc, async (sessionId, vcs, scope) => {
@@ -459,7 +461,7 @@ export class AppHub {
       fileAccess: (owner, snapshot, file) => this.fileChangesIpc.ownedFileAccess(owner, snapshot, file),
       toolOf: () => configStore.readSection(VersioningSettingsSection.spec).diffTool,
       reportError: (detail) => AppClientUiReport.error(detail),
-    }))
+    }), (sender, paths, vcs) => this.dialogIpc.confirmRevert(sender, paths, vcs))
     this.terminalDetector = new TerminalDetector({
       workingContext: (sessionId) => this.sessions.workingContext(sessionId),
       // Names only. What an agent wrote about narrows which file a half-written token means, and it
@@ -471,6 +473,7 @@ export class AppHub {
       this.panelIndex,
       new TabFileOpenResolver(this.sessions, this.fileViewer, this.terminalDetector),
       this.commits,
+      { activateSessionOnCommit: () => configStore.readSection(VersioningSettingsSection.spec).activateSessionOnCommit !== false },
     )
     this.fileViewerIpc = new ServiceFileViewerIpc(
       this.fileViewer,
@@ -615,7 +618,7 @@ export class AppHub {
     this.remoteConnections = new RemoteConnectionsManager({
       identity: peerIdentity,
       profiles: () => configStore.readSection(RemoteControlSettingsSection.spec).profiles,
-      connect: (profile) => peerClient.connect(profile),
+      connect: (profile, signal) => peerClient.connect(profile, signal),
       onChanged: () => this.remoteChanged(),
       onError: (message) => this.report(message),
     })

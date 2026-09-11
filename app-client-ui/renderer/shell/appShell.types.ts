@@ -46,6 +46,7 @@ export type AppShellSessionPorts =
 export type AppShellRatePorts = RateStatusPorts & SnapshotStorePorts<RateMonitorSnapshot>
 
 export interface AppShellRemotePorts extends SnapshotStorePorts<RemoteConnectionsSnapshot> {
+  disconnect(remoteEndpointId: string, sessionIds?: readonly string[]): Promise<IpcResult<void>>
   reopen(remoteEndpointId: string, sessionId: string): Promise<IpcResult<RemoteControlResponse>>
   finalize(remoteEndpointId: string, sessionId: string): Promise<IpcResult<RemoteControlResponse>>
 }

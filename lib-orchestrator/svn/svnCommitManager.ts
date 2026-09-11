@@ -1,12 +1,10 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { join } from 'node:path'
 
 import { XMLParser } from 'fast-xml-parser'
 
 import type { FileChangeNodeKind, FileChangeStatus } from '../fileChangesManager/fileChangesManagerApi.types'
-import type { GitCommandRunner } from '../git/git.types'
-import type { GitCheckpointStore } from '../git/gitCheckpointStore'
 import type { CommandOutcome, CommandRunner } from '../shared/commandInvoker.types'
 import { ErrorText } from '../shared/errorText'
 import { JsonShape } from '../shared/jsonShape'
@@ -19,14 +17,8 @@ export interface SvnCommitTarget {
   status: FileChangeStatus
 }
 
-export interface SvnCommitManagerDeps {
-  svn: CommandRunner
-  git: GitCommandRunner
-  checkpointStore: Pick<GitCheckpointStore, 'existingContextOf'>
-}
-
 export class SvnCommitManager {
-  constructor(private readonly deps: SvnCommitManagerDeps) {}
+  constructor(private readonly svn: CommandRunner) {}
 
   async commit(scope: string, targets: readonly SvnCommitTarget[], messageFile: string): Promise<SvnResult<{ revision: string; output: string }>> {
     if (targets.length === 0 || targets.some((target) => !SvnCommitManager.inside(scope, target.absolutePath)))
@@ -36,16 +28,11 @@ export class SvnCommitManager {
     const listed = new Set<string>()
     let temporary: string | null = null
     try {
-      for (const target of targets) {
+      for (const target of [...targets].sort((left, right) => left.absolutePath.length - right.absolutePath.length)) {
         if (listed.has(target.absolutePath)) continue
         if (target.status === 'untracked') {
-          if (target.nodeKind === 'directory') {
-            const added = await this.addDirectory(scope, target.absolutePath)
-            if (!added.ok) return added
-            for (const path of added.value) listed.add(path)
-          }
-          else if (target.nodeKind === 'file') {
-            const added = await this.run(scope, ['add', '--parents', '--non-interactive', '--', `${target.absolutePath}@`])
+          if (target.nodeKind === 'directory' || target.nodeKind === 'file') {
+            const added = await this.run(scope, ['add', '--parents', '--depth', 'empty', '--non-interactive', '--', `${target.absolutePath}@`])
             if (!added.ok) return added
             listed.add(target.absolutePath)
           }
@@ -80,57 +67,24 @@ export class SvnCommitManager {
     finally { if (temporary !== null) await rm(temporary, { recursive: true, force: true }) }
   }
 
-  private async addDirectory(scope: string, directory: string): Promise<SvnResult<readonly string[]>> {
-    const own = await this.deps.git.run(directory, ['rev-parse', '--show-toplevel'])
-    let commandArgs: readonly string[] | null
-    if (own.code === 0 && own.failure === null) commandArgs = []
-    else {
-      const stored = await this.deps.checkpointStore.existingContextOf(directory)
-      if (!stored.ok) return { ok: false, code: 'svn-failed', detail: stored.detail }
-      commandArgs = stored.value?.gitDirArgs ?? null
-    }
-    if (commandArgs === null) {
-      const added = await this.run(scope, ['add', '--parents', '--non-interactive', '--', `${directory}@`])
-      if (!added.ok) return added
-      // Depth-empty commit needs every node recursive add scheduled, including directories.
-      const info = await this.run(scope, ['info', '--xml', '--depth', 'infinity', '--non-interactive', '--', `${directory}@`])
-      if (!info.ok) return info
-      const parsed = new XMLParser({ ignoreAttributes: false }).parse(info.value.stdout) as unknown
-      const document = JsonShape.record(JsonShape.record(parsed)?.info)
-      const raw = document?.entry
-      const entries = raw === undefined ? [] : Array.isArray(raw) ? raw : [raw]
-      const paths = entries.map((entry) => resolve(scope, String(JsonShape.record(entry)?.['@_path'] ?? '')))
-      if (paths.length === 0 || paths.some((path) => !SvnCommitManager.inside(directory, path)))
-        return { ok: false, code: 'svn-failed', detail: 'SVN returned an invalid added subtree' }
-      return { ok: true, value: paths }
-    }
-    const files = await this.deps.git.run(directory, [
-      ...commandArgs, 'ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', '.',
-    ])
-    if (files.failure !== null || files.code !== 0)
-      return { ok: false, code: 'svn-failed', detail: files.stderr || 'Git could not enumerate the new directory' }
-    const paths = [...new Set(files.stdout.split('\0').filter(Boolean).map((path) => resolve(directory, path)))]
-    if (paths.some((path) => !SvnCommitManager.inside(directory, path)))
-      return { ok: false, code: 'svn-failed', detail: 'Git returned a path outside the new directory' }
-    const added = await this.run(scope, ['add', '--parents', '--depth', 'empty', '--non-interactive', '--', `${directory}@`])
-    if (!added.ok) return added
-    const listed = new Set([directory])
-    for (const path of paths) {
-      const result = await this.run(scope, ['add', '--parents', '--depth', 'empty', '--non-interactive', '--', `${path}@`])
-      if (!result.ok) return result
-      listed.add(path)
-      let parent = dirname(path)
-      while (PathCompare.isInside(directory, parent)) {
-        listed.add(parent)
-        if (PathCompare.comparable(parent) === PathCompare.comparable(directory)) break
-        parent = dirname(parent)
-      }
-    }
-    return { ok: true, value: [...listed] }
+  async revertFile(scope: string, path: string): Promise<SvnResult<void>> {
+    if (!SvnCommitManager.inside(scope, path))
+      return { ok: false, code: 'svn-failed', detail: 'Select a file inside the commit scope' }
+    const info = await this.run(scope, ['info', '--xml', '--non-interactive', '--', `${path}@`])
+    if (!info.ok) return info
+    const parsed = JsonShape.record(new XMLParser({ ignoreAttributes: false }).parse(info.value.stdout))
+    const entry = JsonShape.record(JsonShape.record(parsed?.info)?.entry)
+    const working = JsonShape.record(entry?.['wc-info'])
+    if (entry?.['@_kind'] !== 'file' || working === null
+      || working['moved-from'] !== undefined || working['moved-to'] !== undefined
+      || (working.schedule !== 'normal' && working.schedule !== 'delete'))
+      return { ok: false, code: 'svn-failed', detail: 'Revert supports existing versioned files; handle additions, moves and directories in your SVN client' }
+    const reverted = await this.run(scope, ['revert', '--depth', 'empty', '--non-interactive', '--', `${path}@`])
+    return reverted.ok ? { ok: true, value: undefined } : reverted
   }
 
   private async run(scope: string, args: string[]): Promise<SvnResult<CommandOutcome>> {
-    const outcome = await this.deps.svn.run(scope, args)
+    const outcome = await this.svn.run(scope, args)
     if (outcome.failure === null && outcome.code === 0) return { ok: true, value: outcome }
     const detail = outcome.stderr.trim() || outcome.stdout.trim() || `svn could not run (${outcome.failure ?? outcome.code})`
     const code = outcome.failure === 'command-missing' ? 'svn-missing'

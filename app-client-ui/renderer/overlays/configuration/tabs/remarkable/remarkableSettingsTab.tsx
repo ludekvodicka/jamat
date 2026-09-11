@@ -528,7 +528,8 @@ class RemarkableSettingsViewText {
     if (code === 'cancelled') return 'The operation was cancelled.'
     else if (code === 'credential-unavailable') return 'Secure password storage is unavailable.'
     else if (code === 'device-busy') return 'Another reMarkable operation is using the tablet.'
-    else if (code === 'device-sleeping') return 'Wake the tablet and keep it awake.'
+    else if (code === 'device-unreachable')
+      return 'Cannot reach the tablet. Check its Wi-Fi connection and that the saved host matches its current IP address. Keep the tablet awake, then retry.'
     else if (code === 'host-key-changed') return 'The saved fingerprint no longer matches the tablet.'
     else if (code === 'import-failed') return 'The page could not be written to the storage folder.'
     else if (code === 'install-failed') return 'The dependencies could not be installed.'
@@ -542,7 +543,7 @@ class RemarkableSettingsViewText {
     else if (code === 'sidecar-not-installed') return 'Install the reMarkable dependencies first.'
     else if (code === 'timeout') return 'The tablet did not answer before the timeout.'
     else if (code === 'unsupported-platform') return 'This platform is not supported.'
-    else if (code === 'web-interface-unavailable') return 'Enable the Web Interface on the tablet.'
+    else if (code === 'web-interface-unavailable') return 'Enable Web Interface on the tablet. After a tablet system update, its Wi-Fi setup may need to be restored.'
     else if (code === 'cli-failed') return 'The reMarkable tool failed.'
     else {
       const unhandled: never = code

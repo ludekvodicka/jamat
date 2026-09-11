@@ -184,6 +184,7 @@ describe('app-client-ui/renderer/overlays/launcher/launcherEffects', () => {
     }, record: { calls: unknown[][] }) {
       ;(window as unknown as { appClient: unknown }).appClient = {
         remote: {
+          selectSession: () => Promise.resolve({ ok: true, value: { ok: true, value: undefined } }),
           createSession: (...args: unknown[]) => {
             record.calls.push(['createSession', ...args])
             return Promise.resolve(answers.createSession)
@@ -431,12 +432,13 @@ describe('app-client-ui/renderer/overlays/launcher/launcherEffects', () => {
       expect(reported).toEqual([
         {
           input: 'projectsLoaded',
+          remoteEndpointId: 'endpoint-a',
           categoryId: 'nodejs',
           sort: 'recent',
           listing: LauncherFixtures.nodejs(),
         },
-        { input: 'projectsLoadFailed', categoryId: 'web', sort: 'recent', detail: 'not-found: gone' },
-        { input: 'categoriesLoaded', categories: LauncherFixtures.categories().slice(0, 2) },
+        { input: 'projectsLoadFailed', remoteEndpointId: 'endpoint-a', categoryId: 'web', sort: 'recent', detail: 'not-found: gone' },
+        { input: 'categoriesLoaded', remoteEndpointId: 'endpoint-a', categories: LauncherFixtures.categories().slice(0, 2) },
       ])
     })
 

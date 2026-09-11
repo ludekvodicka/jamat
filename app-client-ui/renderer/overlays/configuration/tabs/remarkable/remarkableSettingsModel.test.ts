@@ -412,12 +412,12 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/remarkable/remarkab
     const testing = RemarkableSettingsModel.transition(ready, { input: 'test-connection' }).state
     const failed = RemarkableSettingsModel.transition(testing, {
       input: 'connection-tested',
-      result: { ok: false, code: 'device-sleeping', detail: 'wake it' },
+      result: { ok: false, code: 'device-unreachable', detail: 'wake it' },
     }).state
 
     expect(failed.connectionTest).toEqual({
       ok: false,
-      code: 'device-sleeping',
+      code: 'device-unreachable',
       detail: 'wake it',
     })
     expect(failed.persisted.buffer).toEqual(storedConst)

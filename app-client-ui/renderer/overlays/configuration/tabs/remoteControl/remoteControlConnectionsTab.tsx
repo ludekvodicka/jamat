@@ -1,4 +1,4 @@
-import { useEffect, useId } from 'react'
+import { useId } from 'react'
 
 import { RemoteControlSettings } from '../../../../../shared/remoteControlSettings'
 import type {
@@ -28,15 +28,6 @@ import {
  * is each one doing right now", and that is the question somebody opens this screen with.
  */
 export function RemoteControlConnectionsTab(props: ConfigurationTabProps): React.JSX.Element {
-  /*
-   * Nothing is dialled until something asks, so this screen asks for as long as it is open. Every
-   * status, error and version on it comes from a live connection; without the hold the list would
-   * read `idle` for every computer, which is true and useless.
-   */
-  useEffect(() => {
-    void window.appClient.remote.hold('network-settings')
-    return () => { void window.appClient.remote.release('network-settings') }
-  }, [])
   return (
     <RemoteControlSettingsScreen
       onDirtyChange={props.onDirtyChange}
@@ -163,7 +154,7 @@ function PairedRow(props: {
           type="button"
           disabled={busy}
           onClick={() => ports.dispatch({ input: 'profile-retry', profileId: profile.profileId })}
-        >Retry now</button>
+        >Connect</button>
         {edit === null && (
           <button
             className="jamat-configuration__button"

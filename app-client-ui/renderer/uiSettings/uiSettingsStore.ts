@@ -2,8 +2,8 @@ import { UiSettings, type UiSettingsValue } from '../../shared/uiSettings'
 import { IpcSnapshotReader } from '../ipc/ipcSnapshotReader'
 
 /**
- * The UI scale of one document: what is on disk, what a slider is showing while it is dragged, and
- * the single CSS property both end up in.
+ * The appearance of one document: what is on disk, what a slider is showing while it is dragged,
+ * and the CSS properties, the attribute and the subscribers it all ends up in.
  *
  * Statics rather than an instance, the shape `TerminalTheme` uses: there is one document per window
  * and one `documentElement` in it, so a second store would be a second answer to what size the text
@@ -134,6 +134,8 @@ export class UiSettingsStore {
       && one.fileViewerFontScalePercent === other.fileViewerFontScalePercent
       && one.terminalFontScalePercent === other.terminalFontScalePercent
       && one.terminalTheme === other.terminalTheme
+      && one.scrollSpeedPercent === other.scrollSpeedPercent
+      && one.terminalScrollSpeedPercent === other.terminalScrollSpeedPercent
   }
 
   private static apply(value: UiSettingsValue): void {
@@ -153,8 +155,10 @@ export class UiSettingsStore {
     // the pair it redirects is the panel around the canvas, in CSS, and `TerminalTheme` beside it.
     document.documentElement.dataset.terminalTheme = value.terminalTheme
     // The terminal's half of the value leaves through here: xterm paints into a canvas, where no
-    // stylesheet of ours reaches, so it is told rather than restyled. After the attribute, not
-    // before: the callback reads the computed pair, and it has to be the one just chosen.
+    // stylesheet of ours reaches, so it is told rather than restyled - its font size, its palette
+    // and its scroll speed alike. After the attribute, not before: the callback reads the computed
+    // pair, and it has to be the one just chosen. The window's OWN scroll speed reaches nothing
+    // from here: `WheelSpeed` reads it per event, which is also what makes a preview of it live.
     for (const callback of UiSettingsStore.subscribers)
       callback(value)
   }
