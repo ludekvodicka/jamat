@@ -1,0 +1,18 @@
+{
+  "agent": "codex",
+  "expected": {
+    "hint": "compacting"
+  },
+  "provenance": {
+    "origin": "User screenshot 2026-09-13_11-01-32_electron.png",
+    "case": "active context compaction with two background terminals",
+    "capture": "Transcribed the visible status, prompt and footer from the user screenshot. This is not a captured Host frame; the screenshot does not identify the Codex CLI build. Conversation history above the status is omitted.",
+    "ported": "2026-09-13",
+    "identical": "No; see capture provenance"
+  },
+  "frame": {
+    "rawTail": "• Compacting context (1m 09s • esc to interrupt) · 2 background terminals running · /ps to view · /stop to close\n  └ Making room to continue.\n\n\n› Ask Codex to do anything\n\ngpt-6-astra high · Q:\\PROJECTS\\PortfolioApp · Prověřit legacy kód a stav",
+    "screenTail": "• Compacting context (1m 09s • esc to interrupt) · 2 background terminals running · /ps to view · /stop to close\n  └ Making room to continue.\n\n\n› Ask Codex to do anything\n\ngpt-6-astra high · Q:\\PROJECTS\\PortfolioApp · Prověřit legacy kód a stav",
+    "wideScreenTail": "• Compacting context (1m 09s • esc to interrupt) · 2 background terminals running · /ps to view · /stop to close\n  └ Making room to continue.\n\n\n› Ask Codex to do anything\n\ngpt-6-astra high · Q:\\PROJECTS\\PortfolioApp · Prověřit legacy kód a stav"
+  }
+}

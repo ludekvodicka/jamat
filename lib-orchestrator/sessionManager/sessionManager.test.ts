@@ -39,7 +39,9 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     for (const host of hosts.splice(0)) await host.stop()
     if (previousStateRoot === undefined) delete process.env.JAMAT_V3_LOCAL_STATE_DIR
     else process.env.JAMAT_V3_LOCAL_STATE_DIR = previousStateRoot
-    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+    // A test here runs real git; on Windows a handle from the child that just exited can outlive
+    // it by a moment, and the recursive delete then fails with EPERM. rmSync retries exactly that.
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   })
 
   /**
@@ -198,6 +200,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       exitClock?: SessionManagerDeps['exitClock']
       transcripts?: SessionManagerDeps['transcripts']
       versioningModeOf?: SessionManagerDeps['versioningModeOf']
+      terminalSocketFactory?: SessionManagerDeps['terminalSocketFactory']
     },
   ): Client {
     const errors: string[] = []
@@ -223,6 +226,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       codexHome: options?.codexHome,
       transcripts: options?.transcripts,
       versioningModeOf: options?.versioningModeOf,
+      terminalSocketFactory: options?.terminalSocketFactory,
       // The machine's real name would put the host running the suite into an asserted block.
       computerName: () => 'TEST-PC',
     })
@@ -337,6 +341,103 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(storedRecord(context, 'codex-old')?.agent?.nativeSessionId).toBe(conversationId)
     expect(client.errors).toEqual([])
   }, 20_000)
+
+  it('lists recorded agent history without finding transcripts or starting the Host', async () => {
+    const context = await world()
+    const directory = { mode: 'project' as const, categoryId: 'code', projectPath: join(context.categoryRoot, 'Alpha') }
+    const agent = { agentId: 'claude' as const, launchMode: 'new' as const, nativeSessionId: 'native', model: 'saved-model' }
+    seedRecords(context, [
+      recordOf(context, 'recorded', { kind: 'agent', directory, agent, title: 'Recorded title', createdAt: 1_000, endedAt: 3_000 }),
+      recordOf(context, 'nested', {
+        kind: 'agent', agent: { ...agent, nativeSessionId: 'nested-native' },
+        directory: { ...directory, projectPath: join(context.categoryRoot, 'Container', 'Nested') },
+      }),
+      recordOf(context, 'lost', { kind: 'agent', directory, agent: { ...agent, nativeSessionId: 'lost-native', model: undefined }, life: 'lost', createdAt: 500 }),
+      recordOf(context, 'shell', { directory }),
+      recordOf(context, 'unnamed', { kind: 'agent', directory, agent: { agentId: 'codex', launchMode: 'new' } }),
+      recordOf(context, 'outside', { kind: 'agent', agent }),
+    ])
+    const resolveTranscript = vi.fn()
+    const client = clientOf(context, { transcripts: { resolve: resolveTranscript } })
+    const history = await client.manager.localHistory()
+    expect(history).toHaveLength(3)
+    expect(history.find((row) => row.nativeSessionId === 'native')).toEqual({
+      category: { id: 'code', label: 'Code', path: context.categoryRoot },
+      project: { kind: 'project', categoryId: 'code', projectName: 'Alpha', projectPath: directory.projectPath },
+      agentId: 'claude', nativeSessionId: 'native', title: 'Recorded title', model: 'saved-model',
+      createdAt: 1_000, lastActivity: null, active: false,
+    })
+    expect(history.find((row) => row.nativeSessionId === 'lost-native')).toMatchObject({ lastActivity: null, model: null, active: false })
+    expect(history.find((row) => row.nativeSessionId === 'nested-native')?.project).toMatchObject({
+      projectName: 'Container/Nested', projectPath: join(context.categoryRoot, 'Container', 'Nested'),
+    })
+    expect(resolveTranscript).not.toHaveBeenCalled()
+    expect(client.spawns()).toBe(0)
+    expect(context.runtimes.size).toBe(0)
+  })
+
+  it('uses persisted user input and ignores newer runtime starts and output in history', async () => {
+    const context = await world()
+    context.publishDescriptor()
+    context.runtimes.set('running-history', runtime('running-history', { startedAt: 5_000, lastOutputAt: 9_000 }))
+    seedRecords(context, [recordOf(context, 'running-history', {
+      kind: 'agent', life: 'live',
+      lastUserInputAt: 2_000,
+      binding: { hostInstanceId: context.host.descriptor().hostInstanceId, generation: 1 },
+      directory: { mode: 'project', categoryId: 'code', projectPath: join(context.categoryRoot, 'Alpha') },
+      agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'live-native', model: 'saved-model' },
+    })])
+    const client = clientOf(context)
+    await client.manager.start()
+    await writable(client)
+    await vi.waitFor(() => expect(client.manager.snapshot().reconciled).toBe(true))
+    const revision = client.manager.snapshot().revision
+    expect(await client.manager.localHistory()).toEqual([expect.objectContaining({
+      nativeSessionId: 'live-native', createdAt: 1_000, lastActivity: 2_000, active: true,
+    })])
+    expect(client.manager.snapshot().revision).toBe(revision)
+  })
+
+  it('keeps accepted terminal input in history immediately and flushes it when the client closes', async () => {
+    const context = await world()
+    context.publishDescriptor()
+    const live = runtime('history-input')
+    context.runtimes.set(live.runtimeSessionId, live)
+    seedRecords(context, [recordOf(context, live.runtimeSessionId, {
+      kind: 'agent', life: 'live',
+      binding: { hostInstanceId: context.host.descriptor().hostInstanceId, generation: 1 },
+      directory: { mode: 'project', categoryId: 'code', projectPath: join(context.categoryRoot, 'Alpha') },
+      agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'history-native' },
+    })])
+    const client = clientOf(context, {
+      terminalSocketFactory: (deps) => ({
+        connect: () => undefined,
+        close: () => undefined,
+        send: (message) => {
+          if (message.type === 'terminal.attach')
+            deps.onFrame({ type: 'terminal.attached', writer: true, session: live })
+        },
+      }),
+    })
+    await client.manager.start()
+    await writable(client)
+    expect(client.manager.terminalAttach('history-panel', { sessionId: live.runtimeSessionId, size: null }, {
+      source: 'local', onFrame: () => undefined,
+    })).toEqual({ ok: true })
+    client.manager.terminalInput('history-panel', '\x1b[1;2R')
+    expect((await client.manager.localHistory())[0]?.lastActivity).toBeNull()
+    const before = Date.now()
+    expect(client.manager.terminalInput('history-panel', 'actual prompt\r')).toEqual({ kind: 'sent' })
+    const lastUsed = (await client.manager.localHistory())[0]?.lastActivity
+    expect(lastUsed).toBeGreaterThanOrEqual(before)
+    client.manager.terminalResize('history-panel', 110, 30)
+    client.manager.terminalInput('history-panel', '\x1b[I')
+    expect((await client.manager.localHistory())[0]?.lastActivity).toBe(lastUsed)
+    await client.manager.stop()
+    expect(storedRecord(context, live.runtimeSessionId)?.lastUserInputAt).toBe(lastUsed)
+    expect((await clientOf(context).manager.localHistory())[0]?.lastActivity).toBe(lastUsed)
+    expect(client.errors).toEqual([])
+  })
 
   it('names the Host, the catalog and where every session belongs', async () => {
     const context = await world()
@@ -1284,6 +1385,16 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
         activity: 'working',
         activityDetail: 'background',
       })
+    }, { timeout: 10_000 })
+    context.screens.set(created.sessionId, screenOf('claude-compacting-conversation.json'))
+    context.runtimes.set(created.sessionId, {
+      ...running,
+      outputSeq: 9,
+      lastOutputAt: Date.now(),
+    })
+    await vi.waitFor(() => {
+      expect(sessionOf(client, created.sessionId)).toMatchObject({ activity: 'working', compacting: true })
+      expect(sessionOf(client, created.sessionId)?.activityDetail).toBeUndefined()
     }, { timeout: 10_000 })
     expect(client.errors).toEqual([])
   }, 20_000)

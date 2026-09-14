@@ -53,8 +53,48 @@ describe('lib-orchestrator/svn/svnCommitManager', () => {
     expect(calls).toEqual([])
   })
 
-  it('returns the SVN out-of-date code', async () => {
-    const { manager, scope } = fixture('E155011: out of date')
+  it.each(['E155011', 'E160028', 'E170004'])('recognizes the SVN %s out-of-date code', async (code) => {
+    const { manager, scope } = fixture(`${code}: commit refused`)
     expect(await manager.commit(scope, [{ absolutePath: resolve(scope, 'a'), nodeKind: 'file', status: 'modified' }], 'message.txt')).toMatchObject({ ok: false, code: 'out-of-date' })
+  })
+
+  it.each([
+    ['text', '<target path="scope"><entry path="text.txt"><wc-status item="conflicted" props="none" /></entry></target>', 'text.txt'],
+    ['properties', '<target path="scope"><entry path="folder"><wc-status item="normal" props="conflicted" /></entry></target>', 'folder'],
+    ['tree', '<target path="scope"><entry path="deleted"><wc-status item="deleted" props="none" tree-conflicted="true" /></entry></target>', 'deleted'],
+    ['changelist', '<target path="scope"/><changelist name="review"><entry path="grouped.txt"><wc-status item="conflicted" props="none" /></entry></changelist>', 'grouped.txt'],
+    ['clean', '<target path="scope"/>', null],
+  ])('checks %s conflicts after a zero-exit update without resolving or including externals', async (_kind, xml, conflict) => {
+    const scope = resolve('scope@with spaces')
+    const calls: string[][] = []
+    const manager = new SvnCommitManager({ run: async (cwd, args) => {
+      expect(cwd).toBe(scope)
+      calls.push(args)
+      return { code: 0, failure: null, stderr: '', stdout: args[0] === 'update' ? 'Updated to revision 43.\n' : `<status>${xml}</status>` }
+    } })
+    const result = await manager.update(scope)
+    expect(calls).toEqual([
+      ['update', '--non-interactive', '--accept', 'postpone', '--ignore-externals', '--', `${scope}@`],
+      ['status', '--xml', '--non-interactive', '--ignore-externals', '--', `${scope}@`],
+    ])
+    if (conflict === null) expect(result).toEqual({ ok: true, value: { output: 'Updated to revision 43.\n' } })
+    else expect(result).toMatchObject({ ok: false, detail: expect.stringContaining(conflict) })
+  })
+
+  it('reports update stdout and stderr and stops after a failed update', async () => {
+    const calls: string[][] = []
+    const manager = new SvnCommitManager({ run: async (_cwd, args) => {
+      calls.push(args)
+      return { code: 1, failure: null, stdout: 'C    conflict.txt\n', stderr: 'E170013: Connection refused' }
+    } })
+    expect(await manager.update(resolve('scope'))).toEqual({ ok: false, code: 'svn-failed', detail: 'C    conflict.txt\nE170013: Connection refused' })
+    expect(calls).toHaveLength(1)
+  })
+
+  it.each(['status-error', 'invalid-status'])('never reports a clean update after %s', async (kind) => {
+    const manager = new SvnCommitManager({ run: async (_cwd, args) => args[0] === 'update'
+      ? { code: 0, failure: null, stdout: 'Updated to revision 43.', stderr: '' }
+      : { code: kind === 'status-error' ? 1 : 0, failure: null, stdout: 'invalid status', stderr: '' } })
+    expect(await manager.update(resolve('scope'))).toMatchObject({ ok: false, detail: expect.stringContaining('Updated to revision 43.') })
   })
 })

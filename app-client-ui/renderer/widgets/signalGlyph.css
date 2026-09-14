@@ -12,3 +12,17 @@
 .jamat-signal-square[data-filled='true'] {
   background: currentColor;
 }
+
+.jamat-signal-broom {
+  display: inline-flex;
+  flex: none;
+  width: calc(12px * var(--ui-font-scale));
+  height: calc(12px * var(--ui-font-scale));
+  font-size: 0;
+  vertical-align: middle;
+}
+
+.jamat-signal-broom svg {
+  width: 100%;
+  height: 100%;
+}

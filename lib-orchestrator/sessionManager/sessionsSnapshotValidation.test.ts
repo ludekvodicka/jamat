@@ -84,6 +84,20 @@ describe('lib-orchestrator/sessionManager/sessionsSnapshotValidation', () => {
     }
   })
 
+  it('accepts optional compaction only as foreground working activity', () => {
+    const current = snapshot([
+      session({ kind: 'agent', activity: 'working', compacting: true }),
+    ])
+    expect(SessionsSnapshotValidation.parse(current)).not.toBeNull()
+    for (const fields of [
+      { activity: 'idle', compacting: true },
+      { activity: 'working', compacting: false },
+      { activity: 'working', compacting: 'true' },
+      { activity: 'working', compacting: true, activityDetail: 'background' },
+    ])
+      expect(SessionsSnapshotValidation.parse(snapshot([session(fields)]))).toBeNull()
+  })
+
   it('validates every optional worktree field before a caller reads its path', () => {
     const worktree = {
       worktreePath: 'Q:\\worktrees\\one',

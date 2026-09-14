@@ -29,6 +29,7 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
   private static readonly snapshotPatternConst =
     /^session-records-\d+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$/
   private records: SessionRecord[] = []
+  private readonly pendingUserInput = new Map<string, number>()
 
   private constructor(
     file: string,
@@ -81,6 +82,21 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
 
   get(sessionId: string): SessionRecord | null {
     return this.records.find((record) => record.sessionId === sessionId) ?? null
+  }
+
+  lastUserInputAt(sessionId: string): number | null {
+    return this.pendingUserInput.get(sessionId) ?? this.get(sessionId)?.lastUserInputAt ?? null
+  }
+
+  noteUserInput(sessionId: string, at: number): void {
+    if (!Number.isFinite(at) || at <= 0) throw new Error('User input time must be a positive timestamp')
+    if (this.get(sessionId) && at > (this.lastUserInputAt(sessionId) ?? 0))
+      this.pendingUserInput.set(sessionId, at)
+  }
+
+  async flushUserInput(): Promise<boolean> {
+    return this.inTurn(() => this.pendingUserInput.size === 0
+      ? Promise.resolve(true) : this.commit(this.records, false))
   }
 
   /** Insert or replace. Routine, so it spends no recovery point. Answers whether it landed. */
@@ -158,6 +174,12 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
    * the rest of the session, because writing over damage is how a workspace was lost.
    */
   private async commit(records: SessionRecord[], destructive: boolean): Promise<boolean> {
+    const inputTimes = new Map(this.records.map((record) => [record.sessionId, record.lastUserInputAt ?? 0]))
+    for (const [sessionId, at] of this.pendingUserInput) inputTimes.set(sessionId, at)
+    records = records.map((record) => {
+      const at = Math.max(record.lastUserInputAt ?? 0, inputTimes.get(record.sessionId) ?? 0)
+      return at > 0 ? { ...record, lastUserInputAt: at } : record
+    })
     const document: SessionRecordsDocument = { schemaVersion: 1, savedAt: Date.now(), records }
     // A destructive write with no recovery point behind it is refused rather than made: `false`
     // means "the file was left as this write found it", and that has to stay true of the case
@@ -172,6 +194,9 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     })
     if (!written) return false
     this.records = records
+    for (const [sessionId, at] of this.pendingUserInput)
+      if (!this.get(sessionId) || at <= (this.get(sessionId)?.lastUserInputAt ?? 0))
+        this.pendingUserInput.delete(sessionId)
     return true
   }
 
@@ -231,6 +256,9 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       return `record ${record.sessionId}: title must be a string`
     if (typeof record.createdAt !== 'number' || !Number.isFinite(record.createdAt))
       return `record ${record.sessionId}: createdAt must be a number`
+    if (record.lastUserInputAt !== undefined && (typeof record.lastUserInputAt !== 'number'
+      || !Number.isFinite(record.lastUserInputAt) || record.lastUserInputAt <= 0))
+      return `record ${record.sessionId}: lastUserInputAt must be a positive timestamp`
     if (record.life !== 'starting' && record.life !== 'live'
       && record.life !== 'ended' && record.life !== 'lost')
       return `record ${record.sessionId}: unknown life ${JSON.stringify(record.life)}`

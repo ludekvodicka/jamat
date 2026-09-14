@@ -93,6 +93,8 @@ import { ServiceSessionModelIpc } from './sessionModel/serviceSessionModelIpc'
 import { ServiceSessionTranscriptIpc } from './sessionTranscript/serviceSessionTranscriptIpc'
 import { SessionTranscriptAccess } from './sessionTranscript/sessionTranscriptAccess'
 import { ServiceSessionsIpc } from './sessions/serviceSessionsIpc'
+import { ServiceHistoricSessionsIpc } from './sessions/serviceHistoricSessionsIpc'
+import { HistoricSessions } from './sessions/history/historicSessions'
 import { SkillLinkInstaller } from './skills/skillLinkInstaller'
 import { AppMenu } from './shell/appMenu'
 import { AppRestart } from './shell/appRestart'
@@ -149,6 +151,7 @@ export class AppHub {
     ServiceClipboardIpc.channelsConst,
     ServiceProjectsIpc.channelsConst,
     ServiceSessionsIpc.channelsConst,
+    ServiceHistoricSessionsIpc.channelsConst,
     ServiceRemoteControlIpc.channelsConst,
     ServiceRemoteSettingsIpc.channelsConst,
     ServiceTabsIpc.channelsConst,
@@ -203,6 +206,7 @@ export class AppHub {
   private readonly remoteListenerSettings: () => RemoteControlListenerSettings
   private readonly skillLinks: SkillLinkInstaller
   private readonly sessionsIpc: ServiceSessionsIpc
+  private readonly historicSessionsIpc: ServiceHistoricSessionsIpc
   private readonly tabsIpc: ServiceTabsIpc
   private readonly terminalsIpc: ServiceTerminalIpc
   private readonly terminalDetector: TerminalDetector
@@ -382,11 +386,13 @@ export class AppHub {
       transcripts: this.projects.transcripts,
     })
     this.sessionsIpc = new ServiceSessionsIpc(this.sessions)
+    const modelReader = new SessionModelReader({ transcripts: this.projects.transcripts })
+    this.historicSessionsIpc = new ServiceHistoricSessionsIpc(new HistoricSessions(this.projects, this.sessions, modelReader))
     // Each reader is handed over rather than held: there is no timer to stop and no child to end.
     // The transcript view is the project manager's, because resolving a Codex rollout is not free -
     // a view of one's own has no memo behind its index, and this pair is POLLED.
     this.sessionModelIpc = new ServiceSessionModelIpc(
-      new SessionModelReader({ transcripts: this.projects.transcripts }),
+      modelReader,
       this.sessions,
     )
     const transcriptReader = new SessionTranscriptReader({ transcripts: this.projects.transcripts })
@@ -747,6 +753,7 @@ export class AppHub {
     this.clipboardIpc.initialize()
     this.projectsIpc.initialize()
     this.sessionsIpc.initialize()
+    this.historicSessionsIpc.initialize()
     this.remoteIpc.initialize()
     this.remoteSettingsIpc.initialize()
     this.tabsIpc.initialize()

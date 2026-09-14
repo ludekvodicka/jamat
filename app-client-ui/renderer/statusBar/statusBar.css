@@ -16,16 +16,44 @@
 }
 .jamat-status__item {
   display: flex;
+  flex: none;
   align-items: center;
   gap: var(--space-2);
+  white-space: nowrap;
 }
 .jamat-status__separator {
+  flex: none;
   width: 1px;
   height: var(--space-3);
   background: var(--color-border-frame);
 }
 .jamat-status__spacer {
   flex: 1;
+}
+
+.jamat-status__item:has(.jamat-current-project) {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.jamat-status__item:has(.jamat-current-project) > .jamat-status__separator {
+  width: auto;
+  height: auto;
+  margin-left: var(--space-2);
+  background: none;
+  color: var(--color-text-3);
+}
+.jamat-status__item:has(.jamat-current-project) > .jamat-status__separator::before {
+  content: '|';
+}
+.jamat-current-project {
+  min-width: 0;
+  max-width: 40vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jamat-current-project__focus {
+  color: var(--color-text-2);
 }
 
 /* The one item that carries a control. It lives here rather than in the tree's stylesheet because

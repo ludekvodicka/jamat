@@ -66,6 +66,39 @@ describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
     return existsSync(directory) ? readdirSync(directory).length : 0
   }
 
+  it('coalesces user input and persists the latest time without replacing concurrent record edits', async () => {
+    const it_ = harness()
+    const store = await it_.load()
+    const original = record('a')
+    await store.put(original)
+    expect(store.lastUserInputAt('a')).toBeNull()
+    store.noteUserInput('a', 100)
+    store.noteUserInput('a', 200)
+    store.noteUserInput('a', 150)
+    expect(store.lastUserInputAt('a')).toBe(200)
+    expect((await it_.load()).lastUserInputAt('a')).toBeNull()
+    await Promise.all([store.flushUserInput(), store.put({ ...original, title: 'Renamed' })])
+    const loaded = await it_.load()
+    expect(loaded.get('a')).toMatchObject({ title: 'Renamed', lastUserInputAt: 200 })
+    expect(snapshotCount(it_.snapshotsDirectory)).toBe(0)
+    expect(it_.reports).toEqual([])
+  })
+
+  it('does not resurrect a removed record when queued user input is flushed', async () => {
+    const it_ = harness()
+    const store = await it_.load()
+    await store.put(record('a'))
+    store.noteUserInput('a', 100)
+    const removing = store.remove('a')
+    store.noteUserInput('a', 200)
+    await removing
+    store.noteUserInput('a', 300)
+    await store.flushUserInput()
+    expect(store.lastUserInputAt('a')).toBeNull()
+    expect((await it_.load()).list()).toEqual([])
+    expect(it_.reports).toEqual([])
+  })
+
   describe('two writers at once', () => {
     /*
      * Every mutation is a read-modify-write with an await in the middle: a destructive commit takes

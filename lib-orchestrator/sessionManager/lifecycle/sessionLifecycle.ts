@@ -401,6 +401,9 @@ export class SessionLifecycle {
     const runningRecord = matching.find((record) =>
       record.life === 'starting' || record.life === 'live')
     const known = runningRecord ?? matching[matching.length - 1]
+    if (spec.action === 'fork') return this.createHistoryRecord(spec, 'fork', known ?? null)
+    if (spec.action === 'rerun' && (spec.providerActive || runningRecord !== undefined))
+      return { ok: false, code: 'invalid-spec', detail: 'This session is running. Select Fork to start a separate session.' }
     if (!spec.providerActive && runningRecord === undefined && known !== undefined) {
       const reopened = await this.reopen(known.sessionId)
       if (!reopened.ok) return reopened
@@ -1504,6 +1507,7 @@ export class SessionLifecycle {
     if (agent) {
       record.agent = agent
       record.transcriptCwd = cwd
+      if (agent.initialPrompt) record.lastUserInputAt = record.createdAt
     }
     if (marks) record.resolveFor = marks.resolveFor
     if (spec.flowId) record.flowId = spec.flowId
@@ -1616,6 +1620,8 @@ export class SessionLifecycle {
       return 'opening history needs the provider session name'
     if (typeof spec.providerActive !== 'boolean')
       return 'opening history needs the provider activity state'
+    if (spec.action !== undefined && spec.action !== 'rerun' && spec.action !== 'fork')
+      return 'unknown history action'
     return null
   }
 

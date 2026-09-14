@@ -25,7 +25,7 @@ export interface VersioningCommitManagerDeps {
   fileAccess(ownerId: string, snapshotId: string, fileId: string): FileChangesFileAccessResult
   snapshotOf(ownerId: string, snapshotId: string): FileChangesWorkingTreeSnapshot | null
   git: Pick<GitCommitManager, 'commit' | 'revertFile'>
-  svn: Pick<SvnCommitManager, 'commit' | 'revertFile'>
+  svn: Pick<SvnCommitManager, 'commit' | 'revertFile' | 'update'>
   tortoise: Pick<TortoiseCommitDialog, 'open'>
   onChanged(): void
   now?(): number
@@ -38,11 +38,13 @@ interface Draft {
   cwd: string
   lockRoot: string
   externalReview?: 'running' | 'closed'
+  rejectedSnapshotId?: string
 }
 
 interface CommitTarget {
   entry: FileChangeEntry
   modifiedAt: number | null
+  scopeRoot: string
 }
 
 export class VersioningCommitManager {
@@ -167,15 +169,54 @@ export class VersioningCommitManager {
       return { ok: false, code: 'busy', detail: 'A commit is already running or this dialog has already committed' }
     const snapshot = this.deps.snapshotOf(ownerId, request.snapshotId)
     if (snapshot === null || snapshot.sessionId !== draft.dto.sessionId || snapshot.source.selected !== draft.dto.source)
-      return { ok: false, code: 'invalid-target', detail: 'The file list does not belong to this dialog; reload it' }
-    const targets = this.resolveTargets(ownerId, draft, snapshot, request.fileIds)
+      return { ok: false, code: 'invalid-target', detail: 'The file list does not belong to this dialog; reload it', reloadRequired: true }
+    if (request.includeExternals !== undefined && request.includeExternals !== true)
+      return { ok: false, code: 'invalid-target', detail: 'Invalid external selection' }
+    if (draft.rejectedSnapshotId === request.snapshotId)
+      return { ok: false, code: 'invalid-target', detail: 'This commit attempt changed the working copy; reload the file list', reloadRequired: true }
+    const targets = this.resolveTargets(ownerId, draft, snapshot, request.fileIds, request.includeExternals === true)
     if (!targets.ok) return targets
+    const grouped = new Map<string, CommitTarget[]>()
+    for (const target of targets.value) {
+      const group = grouped.get(target.scopeRoot) ?? []
+      group.push(target)
+      grouped.set(target.scopeRoot, group)
+    }
+    const groups = [...grouped].sort(([left], [right]) =>
+      Number(left === draft.dto.scopeRoot) - Number(right === draft.dto.scopeRoot) || left.localeCompare(right))
+    const completed: { scope: string; revision: string; output: string }[] = []
+    const fail = (detail: string, reloadRequired = false): VersioningCommitRunResult => {
+      if (groups.length > 1) {
+        draft.rejectedSnapshotId = snapshot.snapshotId
+        const committed = completed.map((item) => `${item.scope}: ${item.revision}`).join('\n') || 'None'
+        const remaining = groups.slice(completed.length).map(([scope]) => scope).join('\n')
+        detail = `Committed:\n${committed}\n\nRemaining or unconfirmed:\n${remaining}\n\n${detail}\n\nReview the refreshed files before trying again.`
+      }
+      return this.failed(draft, detail, reloadRequired || groups.length > 1)
+    }
     // Lock before the async preflight so sibling scopes cannot both pass it and start staging.
     this.running.add(draft.lockRoot)
+    const locks = new Set([draft.lockRoot])
     let temporary: string | null = null
     try {
-      const stale = await this.staleOf(draft.dto.scopeRoot, targets.value)
-      if (stale !== null) return { ok: false, code: 'stale', detail: stale }
+      const actualScope = await realpath(draft.dto.scopeRoot)
+      for (const [scope, entries] of groups) {
+        if (scope !== draft.dto.scopeRoot) {
+          const actual = await realpath(scope).catch(() => null)
+          const detection = await this.deps.vcsStatus.detect(scope, draft.dto.vcs)
+          if (actual === null || !PathCompare.isInside(actualScope, actual) || detection?.id !== 'svn'
+            || PathCompare.comparable(detection.root) !== PathCompare.comparable(scope)
+            || !(await lstat(scope)).isDirectory())
+            return { ok: false, code: 'external-target', detail: `The external working copy changed: ${scope}; reload the list`, reloadRequired: true }
+          const lock = PathCompare.comparable(detection.root)
+          if (!locks.has(lock) && this.running.has(lock))
+            return { ok: false, code: 'busy', detail: `Another change is running in ${scope}` }
+          locks.add(lock)
+          this.running.add(lock)
+        }
+        const stale = await this.staleOf(scope, entries)
+        if (stale !== null) return { ok: false, code: 'stale', detail: stale }
+      }
       if (this.owned(ownerId, request.draftId) !== draft)
         return { ok: false, code: 'unknown-draft', detail: 'The commit dialog closed before the commit started' }
       draft.dto.message = request.message
@@ -186,30 +227,42 @@ export class VersioningCommitManager {
       temporary = await mkdtemp(join(tmpdir(), 'jamat-v3-commit-'))
       const messageFile = join(temporary, 'message.txt')
       await writeFile(messageFile, request.message.replace(/\n?$/, '\n'), 'utf8')
-      let revision: string
-      let output: string
-      if (draft.dto.vcs === 'svn') {
-        const result = await this.deps.svn.commit(draft.dto.scopeRoot, targets.value.map(({ entry }) => ({ absolutePath: entry.path, nodeKind: entry.nodeKind, status: entry.status })), messageFile)
-        if (!result.ok) return this.failed(draft, result.detail)
-        revision = result.value.revision
-        output = result.value.output
+      for (const [scope, entries] of groups) {
+        if (completed.length > 0 && this.owned(ownerId, request.draftId) !== draft)
+          return fail('The commit dialog closed before the remaining groups were committed')
+        if (!PathCompare.isInside(actualScope, await realpath(scope)))
+          return fail(`${scope} points outside the commit scope; reload the list`, true)
+        const stale = await this.staleOf(scope, entries)
+        if (stale !== null) return fail(stale, true)
+        if (groups.length > 1) {
+          draft.dto.phase = { kind: 'running', startedAt: this.now(),
+            detail: `Committing ${completed.length + 1} of ${groups.length}: ${scope}` }
+          this.bump(draft)
+        }
+        if (draft.dto.vcs === 'svn') {
+          const result = await this.deps.svn.commit(scope, entries.map(({ entry }) => ({ absolutePath: entry.path, nodeKind: entry.nodeKind, status: entry.status })), messageFile)
+          if (!result.ok) return result.code === 'out-of-date'
+            ? fail(await this.updateOutdated(draft, scope, result.detail), true) : fail(result.detail)
+          completed.push({ scope, ...result.value })
+        }
+        else if (draft.dto.vcs === 'git') {
+          const paths = entries.flatMap(({ entry }) => entry.status === 'renamed' && entry.previousPath !== null ? [entry.path, entry.previousPath] : [entry.path])
+          const result = await this.deps.git.commit(scope, paths, messageFile)
+          if (!result.ok) return fail(result.detail)
+          completed.push({ scope, revision: result.value.hash, output: result.value.output })
+        }
+        else throw new Error(`Unknown commit VCS: ${JSON.stringify(draft.dto.vcs)}`)
       }
-      else if (draft.dto.vcs === 'git') {
-        const paths = targets.value.flatMap(({ entry }) => entry.status === 'renamed' && entry.previousPath !== null ? [entry.path, entry.previousPath] : [entry.path])
-        const result = await this.deps.git.commit(draft.dto.scopeRoot, paths, messageFile)
-        if (!result.ok) return this.failed(draft, result.detail)
-        revision = result.value.hash
-        output = result.value.output
-      }
-      else throw new Error(`Unknown commit VCS: ${JSON.stringify(draft.dto.vcs)}`)
+      const revision = completed.map((item) => item.revision).join(', ')
+      const output = completed.map((item) => groups.length === 1 ? item.output : `${item.scope}: ${item.revision}\n${item.output}`).join('\n\n')
       draft.dto.phase = { kind: 'done', revision, output, finishedAt: this.now() }
       this.bump(draft)
-      this.deps.sessions.settleVcs(draft.cwd)
       return { ok: true, revision }
     }
-    catch (error) { return this.failed(draft, ErrorText.of(error)) }
+    catch (error) { return fail(ErrorText.of(error)) }
     finally {
-      this.running.delete(draft.lockRoot)
+      for (const lock of locks) this.running.delete(lock)
+      if (completed.length > 0) this.deps.sessions.settleVcs(draft.cwd)
       if (temporary !== null) await rm(temporary, { recursive: true, force: true })
     }
   }
@@ -309,7 +362,7 @@ export class VersioningCommitManager {
     }
   }
 
-  private resolveTargets(ownerId: string, draft: Draft, snapshot: FileChangesWorkingTreeSnapshot, ids: readonly string[]):
+  private resolveTargets(ownerId: string, draft: Draft, snapshot: FileChangesWorkingTreeSnapshot, ids: readonly string[], includeExternals = false):
     | { ok: true; value: CommitTarget[] }
     | Extract<VersioningCommitRunResult, { ok: false }> {
     if (!Array.isArray(ids) || ids.length > VersioningCommitLimits.targetsMaxConst)
@@ -330,12 +383,18 @@ export class VersioningCommitManager {
         || (entry.previousPath !== null && !PathCompare.isInside(draft.dto.scopeRoot, entry.previousPath))
         || entry.status === 'conflicted' || entry.status === 'obstructed')
         return { ok: false, code: 'invalid-target', detail: 'A selected target is invalid or conflicted; reload the list' }
-      if (snapshot.externalRoots.some((root) => PathCompare.comparable(root.path) !== PathCompare.comparable(draft.dto.scopeRoot)
-        && PathCompare.isInside(draft.dto.scopeRoot, root.path) && PathCompare.isInside(root.path, entry.path)))
+      const external = snapshot.externalRoots.filter((root) => PathCompare.comparable(root.path) !== PathCompare.comparable(draft.dto.scopeRoot)
+        && PathCompare.isInside(draft.dto.scopeRoot, root.path) && PathCompare.isInside(root.path, entry.path))
+        .sort((left, right) => right.path.length - left.path.length)[0]
+      if (external !== undefined && (!includeExternals || draft.dto.vcs !== 'svn'))
         return { ok: false, code: 'external-target', detail: 'Commit this external separately' }
+      const scopeRoot = external?.path ?? draft.dto.scopeRoot
+      if (external !== undefined && (!external.fileIds.includes(id)
+        || (entry.previousPath !== null && !PathCompare.isInside(scopeRoot, entry.previousPath))))
+        return { ok: false, code: 'external-target', detail: 'A selected path crosses an external boundary; reload the list' }
       if (!access.value.workingState.vcsEntry) continue
       if (draft.dto.vcs === 'git' && entry.nodeKind === 'directory') continue
-      targets.push({ entry, modifiedAt: access.value.workingState.modifiedAt })
+      targets.push({ entry, modifiedAt: access.value.workingState.modifiedAt, scopeRoot })
     }
     return targets.length === 0 ? { ok: false, code: 'no-targets', detail: 'Select at least one changed file' } : { ok: true, value: targets }
   }
@@ -372,10 +431,23 @@ export class VersioningCommitManager {
     return draft?.owners.has(ownerId) ? draft : null
   }
 
-  private failed(draft: Draft, detail: string): Extract<VersioningCommitRunResult, { ok: false }> {
+  private async updateOutdated(draft: Draft, scope: string, commitError: string): Promise<string> {
+    draft.dto.phase = { kind: 'running', startedAt: this.now(), detail: 'SVN is out of date. Updating this commit scope...' }
+    this.bump(draft)
+    let detail: string
+    try {
+      const result = await this.deps.svn.update(scope)
+      detail = result.ok ? `SVN update completed. Review the refreshed changes and click Commit files to retry the commit.\n\n${result.value.output}`
+        : `SVN update failed or left conflicts:\n${result.detail}`
+    } catch (error) { detail = `SVN update failed: ${ErrorText.of(error)}` }
+    this.deps.sessions.settleVcs(draft.cwd)
+    return `${detail}\n\nOriginal commit error:\n${commitError}`
+  }
+
+  private failed(draft: Draft, detail: string, reloadRequired = false): Extract<VersioningCommitRunResult, { ok: false }> {
     draft.dto.phase = { kind: 'failed', detail, failedAt: this.now() }
     this.bump(draft)
-    return { ok: false, code: 'vcs-failed', detail }
+    return { ok: false, code: 'vcs-failed', detail, ...(reloadRequired ? { reloadRequired: true } : {}) }
   }
 
   private now(): number { return this.deps.now?.() ?? Date.now() }

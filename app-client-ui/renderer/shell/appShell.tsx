@@ -69,6 +69,7 @@ import { SessionsMarksStore } from '../sessions/sessionsMarksStore'
 import { useSessionModel } from '../statusBar/sessionModelItem'
 import { type SessionModelPorts, SessionModelStore } from '../sessionModel/sessionModelStore'
 import { AppShellItems } from '../statusBar/appShellItems'
+import { useCurrentProject } from '../statusBar/currentProjectItem'
 import { StatusBar } from '../statusBar/statusBar'
 import { ActiveAgentTerminals, useActiveAgentTerminal } from '../statusBar/useActiveAgentTerminal'
 import { SessionsTreeView } from '../views/sessionsTree/sessionsTreeView'
@@ -148,6 +149,9 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
   const { wiring } = props
   // What both terminal widgets are about: the session of the tab in front, and whose agent it is.
   const focus = useActiveAgentTerminal(wiring.activeTerminal, wiring.sessionsSnapshot)
+  const currentProject = useCurrentProject(
+    wiring.activeTerminal, wiring.sessionsSnapshot, wiring.remoteSnapshot,
+  )
   const sessionModel = useSessionModel(wiring.sessionModel, focus)
 
   // Started here rather than in the main shell: a holder window draws session tabs too, and each
@@ -284,8 +288,7 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
     }
   }, [])
 
-  // The one way a menu click or an accelerator reaches the workspace. There is no second keydown
-  // listener for the same action: V1 had one, and every command it covered ran twice.
+  // Native menu accelerators are delivered only here; the local Escape alias registers no accelerator.
   useEffect(() => window.appClient.onMenuCommand((commandId) => {
     wiring.commands.execute(commandId)
   }), [wiring])
@@ -336,7 +339,23 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
   }, [wiring, props.sidebars])
 
   return (
-    <div className="jamat-shell">
+    <div
+      className="jamat-shell"
+      onKeyDownCapture={(event) => {
+        if (event.key !== 'Escape' || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+          || event.defaultPrevented || event.nativeEvent.isComposing || overlayOpen.current)
+          return
+        if (event.target instanceof Element && event.target.closest('[role="menu"], [role="dialog"]'))
+          return
+        if (!(event.target instanceof Element) || !event.target.closest('.file-viewer'))
+          return
+        if (!WorkspacePanels.hasActiveFileViewer(wiring.controller))
+          return
+        event.preventDefault()
+        event.stopPropagation()
+        wiring.commands.execute('tab.close')
+      }}
+    >
       <div className="jamat-shell__body">
         {props.sidebars === null
           ? null
@@ -363,7 +382,7 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
           : AppShellSidebars.render('right', props.sidebars.registry, props.sidebars.handle)}
       </div>
       <StatusBar
-        left={AppShellItems.left(appInfo, props.hostStatus)}
+        left={AppShellItems.left(appInfo, props.hostStatus, currentProject)}
         right={AppShellItems.right(appInfo, windowInfo, focus, {
           sessionModel,
           compact: wiring.contextCompact,
@@ -963,6 +982,8 @@ class AppShellComposition {
     const commands = new CommandRegistry()
     commands.register('session.new', () =>
       AppShellComposition.launch(intents, launcherCommands, {}))
+    commands.register('session.history', () =>
+      AppShellComposition.launch(intents, launcherCommands, { purpose: 'history' }))
     // The same launcher, opened knowing as much as the row that asked for it did.
     commands.register('session.newHere', (arg) =>
       AppShellComposition.launch(intents, launcherCommands,

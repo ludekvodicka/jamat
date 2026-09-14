@@ -1,0 +1,18 @@
+{
+  "agent": "claude",
+  "expected": {
+    "hint": "compacting"
+  },
+  "provenance": {
+    "origin": "Claude Code 2.1.269 installed executable, inspected 2026-09-13",
+    "case": "active context compaction",
+    "capture": "Source-derived fixture, not a live capture. applyCompactProgress sets the compact_start override to Compacting conversation; Lo appends an ellipsis and fo renders it beside the existing spinner. The progress variant fo/en/loe strips the ellipsis and prefixes a live marker from kHt=[∴,∷,∵,∷]. Brief renderer Bn draws the exact override with one to three animated dots or a reduced-motion ellipsis. These alternate headers are exercised by the inspector test. Prompt context is synthetic.",
+    "ported": "2026-09-13",
+    "identical": "No; see capture provenance"
+  },
+  "frame": {
+    "rawTail": "✻ Compacting conversation…\n\n❯ \n  ? for shortcuts",
+    "screenTail": "✻ Compacting conversation…\n\n❯ \n  ? for shortcuts",
+    "wideScreenTail": "✻ Compacting conversation…\n\n❯ \n  ? for shortcuts"
+  }
+}

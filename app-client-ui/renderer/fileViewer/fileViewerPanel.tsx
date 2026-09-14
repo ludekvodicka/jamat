@@ -45,7 +45,7 @@ export function FileViewerPanel(props: FileViewerPanelProps): React.JSX.Element 
   const restored = FileViewerPanelState.read(props.params)
   if (!restored.ok)
     return (
-      <section className="file-viewer" aria-label="File viewer">
+      <section className="file-viewer" aria-label="File viewer" tabIndex={-1}>
         <p className="file-viewer-error">{restored.detail}</p>
       </section>
     )
@@ -146,6 +146,7 @@ function FileViewerPanelBody(
       <section
         className="file-viewer"
         aria-label="File viewer"
+        tabIndex={-1}
         style={{
           '--file-viewer-zoom': FileViewerZoom.scaleOf(zoomPercent),
         } as React.CSSProperties}

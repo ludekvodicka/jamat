@@ -60,6 +60,7 @@ describe('lib-orchestrator/sessionManager/terminals/terminalGateway', () => {
     sockets: FakeSocket[]
     frames: { attachId: string; frame: TerminalFrame }[]
     errors: string[]
+    userInput: string[]
     descriptor: HostDescriptor | null
     leaseId: string | null
     resolution: TerminalRefResolution
@@ -73,6 +74,7 @@ describe('lib-orchestrator/sessionManager/terminals/terminalGateway', () => {
       sockets: [],
       frames: [],
       errors: [],
+      userInput: [],
       descriptor: descriptorConst,
       leaseId: 'lease-1',
       resolution: { ok: true, ref: refConst, alive: true },
@@ -82,6 +84,7 @@ describe('lib-orchestrator/sessionManager/terminals/terminalGateway', () => {
       leaseIdOf: () => state.leaseId,
       refOf: () => state.resolution,
       onError: (message) => state.errors.push(message),
+      onUserInput: (sessionId) => state.userInput.push(sessionId),
       socketFactory: (deps) => {
         const socket = new FakeSocket(deps)
         state.sockets.push(socket)
@@ -166,6 +169,28 @@ describe('lib-orchestrator/sessionManager/terminals/terminalGateway', () => {
       .map((entry) => entry.frame)
       .filter((frame) => frame.type === 'terminal.status')
   }
+
+  it('records accepted user input only, ignoring redraws, resizing, focus and protocol replies', () => {
+    attach('a1', { sessionId: 'session-1', size: { cols: 120, rows: 40 } })
+    expect(world.gateway.input('a1', 'not ready')).toEqual({ kind: 'not-writer' })
+    expect(world.gateway.input('missing', 'unknown')).toEqual({ kind: 'unknown-attach' })
+    const socket = latest()
+    socket.serve(attached())
+    socket.serve(snapshot(1))
+    socket.serve(data('Automatic redraw', 2))
+    world.gateway.resize('a1', 100, 30)
+    world.gateway.input('a1', '\x1b[1;2R')
+    world.gateway.input('a1', '\x1b[I')
+    world.gateway.input('a1', '')
+    expect(world.userInput).toEqual([])
+    world.gateway.input('a1', 'prompt\r')
+    world.gateway.input('a1', '\x1b[200~pasted\x1b[201~')
+    expect(world.userInput).toEqual(['session-1', 'session-1'])
+    socket.serve(attached(false))
+    world.gateway.input('a1', 'read only')
+    expect(world.userInput).toHaveLength(2)
+    world.gateway.closeAll()
+  })
 
   it('attaches without a cursor, then moves it with what it is told', () => {
     expect(attach('a1', { sessionId: 'session-1', size: { cols: 120, rows: 40 } }))

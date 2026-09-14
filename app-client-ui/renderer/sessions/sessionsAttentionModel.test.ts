@@ -137,6 +137,17 @@ describe('app-client-ui/renderer/sessions/sessionsAttentionModel', () => {
     expect(background.has('s-1')).toBe(false)
   })
 
+  it('raises no result mark when a working session compacts and resumes work', () => {
+    const model = new SessionsAttentionModel()
+    model.apply({ sessions: [sessionOf()], activeSessionIds: new Set() })
+    expect(model.apply({
+      sessions: [sessionOf({ compacting: true })], activeSessionIds: new Set(),
+    }).has('s-1')).toBe(false)
+    expect(model.apply({
+      sessions: [sessionOf()], activeSessionIds: new Set(),
+    }).has('s-1')).toBe(false)
+  })
+
   /** The same answer the deleted `clear()` used to give, reached the way it is actually reached. */
   it('puts the mark out the moment the session is on screen', () => {
     const model = new SessionsAttentionModel()

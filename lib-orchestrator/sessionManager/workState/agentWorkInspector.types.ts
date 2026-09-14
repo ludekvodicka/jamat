@@ -18,7 +18,7 @@
  * age differently - see the evidence clock in `WorkStateMonitor.apply`.
  */
 export type AgentWorkHint =
-  'working' | 'idle' | 'tool-use' | 'blocked' | 'waiting' | 'background' | 'unknown'
+  'working' | 'compacting' | 'idle' | 'tool-use' | 'blocked' | 'waiting' | 'background' | 'unknown'
 
 /** Which of the three windows a match was found in. */
 export type AgentWorkEvidenceSource = 'raw' | 'screen' | 'wide-screen'

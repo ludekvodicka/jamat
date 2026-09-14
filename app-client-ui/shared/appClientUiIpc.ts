@@ -1,3 +1,4 @@
+import type { HistoricSession, HistoricSessionGroup } from './historicSessions'
 import type {
   CatalogCategoryDto,
   CategoryInfo,
@@ -230,6 +231,8 @@ export interface AppClientUiIpcInvokeMap {
     categoryId: string,
     projectName: string,
   ) => ProjectsOpResult<ProjectSessionsResult>
+  'historic-sessions:project': (categoryId: string, projectName: string, lastUsedSince?: number | null) => ProjectsOpResult<HistoricSession[]>
+  'historic-sessions:appjamat': (lastUsedSince?: number | null) => HistoricSessionGroup[]
   'projects:create': (
     categoryId: string,
     name: string,
@@ -834,6 +837,7 @@ export const AppClientUiBridgeCallsConst = {
     deletePreview: 'projects:delete-preview',
     deleteProject: 'projects:delete',
   },
+  historicSessions: { project: 'historic-sessions:project', appJamat: 'historic-sessions:appjamat' },
   sessions: {
     snapshot: 'sessions:snapshot',
     create: 'sessions:create',

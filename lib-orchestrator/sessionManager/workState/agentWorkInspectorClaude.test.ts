@@ -19,6 +19,54 @@ describe('lib-orchestrator/sessionManager/workState/agentWorkInspectorClaude', (
     expect(fixtures.length).toBeGreaterThanOrEqual(10)
   })
 
+  it('recognizes compaction ahead of tools and background work, including ANSI and wrapping', () => {
+    const frame = recorded('claude-compacting-conversation.json').frame
+    for (const screenTail of [
+      frame.screenTail,
+      frame.screenTail.replaceAll(' ', '\x1b[1C'),
+      frame.screenTail.replace('Compacting conversation', 'Compacting\nconversation'),
+      frame.screenTail.replace('conversation…', 'conversation… (40s · ↓ 1.2k tokens)'),
+      frame.screenTail.replace('conversation…', 'conversation… (40s ·\n↓ 1.2k tokens)'),
+      `${frame.screenTail}\n↓ to manage`,
+    ]) {
+      const inspection = AgentWorkInspectorClaude.inspect({ ...frame, screenTail })
+      expect(inspection.hint).toBe('compacting')
+      expect(inspection.evidence.map((item) => item.signal)).toEqual(['compactingRow'])
+    }
+  })
+
+  it('recognizes the source-verified compact progress header and brief animation', () => {
+    const frame = recorded('claude-compacting-conversation.json').frame
+    for (const screenTail of [
+      '∴ Compacting conversation\n❯ ',
+      '∷ Compacting conversation\n❯ ',
+      '∵ Compacting conversation\n❯ ',
+      '  Compacting conversation.  ',
+      '  Compacting conversation.. ',
+      '  Compacting conversation...',
+      '  Compacting conversation…',
+    ])
+      expect(AgentWorkInspectorClaude.inspect({ ...frame, screenTail }).hint).toBe('compacting')
+  })
+
+  it('does not infer compaction from stale windows or a sentence quoting the label', () => {
+    const frame = recorded('claude-compacting-conversation.json').frame
+    for (const screenTail of [
+      '❯ ',
+      'Compacted conversation\n❯ ',
+      'The status was Compacting conversation…\n❯ ',
+      'Error compacting conversation\n❯ ',
+    ])
+      expect(AgentWorkInspectorClaude.inspect({ ...frame, screenTail }).hint).toBe('idle')
+  })
+
+  it('keeps a current permission prompt ahead of compaction', () => {
+    const frame = recorded('claude-live-permission-prompt.json').frame
+    const compacting = recorded('claude-compacting-conversation.json').frame.screenTail
+    expect(AgentWorkInspectorClaude.inspect({ ...frame, screenTail: `${compacting}\n${frame.screenTail}` }).hint)
+      .toBe('blocked')
+  })
+
   // The corpus this tree inherited was V1 text about a screen, never a screen, which is how the
   // marker glyph moved and the plan prompt went unnoticed while the suite stayed green. This is the
   // rule that stops that repeating: the verdicts that matter are answered over frames recorded HERE.

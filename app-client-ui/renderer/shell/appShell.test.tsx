@@ -1,6 +1,9 @@
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type { FileChangesWorkingTreeSnapshot } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
+import type { FileViewerDocument } from '../../../lib-orchestrator/fileViewer/fileViewerApi.types'
+import type { VersioningCommitDraftDto } from '../../shared/versioningCommit'
 import type { RateMonitorSnapshot } from '../../../lib-orchestrator/rateMonitor/rateMonitorApi.types'
 import type { SessionsSnapshot } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type {
@@ -574,6 +577,10 @@ class AppClientStub {
         refresh: () => { throw new Error('No test of the shell refreshes the rate limits') },
         debugStatus: () => { throw new Error('The rate debug view belongs to the Debug window') },
       },
+      historicSessions: {
+        project: () => Promise.resolve({ ok: true as const, value: { ok: true as const, value: [] } }),
+        appJamat: () => Promise.resolve({ ok: true as const, value: [] }),
+      },
       sessionModel: {
         get: (sessionId: string) => {
           this.sessionModelReads.push(sessionId)
@@ -995,6 +1002,123 @@ describe('app-client-ui/renderer/shell/appShell', () => {
 
     expect(Sidebars.hidden(view.container, 'Sessions')).toBe(false)
     expect(Sidebars.hidden(view.container, 'Right Probe')).toBe(true)
+  })
+
+  it.each(['svn', 'git'] as const)('focuses a double-clicked %s commit diff so Escape closes only the file', async (vcs) => {
+    const { client, view } = await mount({ sidebars: null, failed: false })
+    const draft: VersioningCommitDraftDto = { draftId: 'focus-review', sessionId: 's-working', vcs, source: vcs,
+      scopeRoot: 'C:/work', scopeDisplay: 'C:/work', message: 'Review this change', editedByPerson: false,
+      proposedByAgent: true, phase: { kind: 'editing' }, revision: 1 }
+    const snapshot: FileChangesWorkingTreeSnapshot = { snapshotId: 'focus-snapshot', sessionId: draft.sessionId, createdAt: 1,
+      source: { requested: vcs, selected: vcs, available: [vcs], fallbackReason: null },
+      defaultBaseline: { baselineId: 'base', kind: vcs === 'svn' ? 'svn-base' : 'git-head', revision: 'HEAD', label: 'Base', createdAt: null },
+      entries: [{ fileId: 'report', path: 'C:/work/report.ts', displayPath: 'report.ts', nodeKind: 'file', status: 'modified',
+        location: 'workspace', previousPath: null, previousDisplayPath: null, modifiedAt: 1, sources: ['vcs'], gitState: null }],
+      externalRoots: [], warnings: [] }
+    const document: FileViewerDocument = { documentId: 'focus-file', documentKey: 'focus-file', path: 'C:/work/report.ts',
+      source: { kind: 'workspace', sessionId: draft.sessionId, path: 'C:/work/report.ts' }, name: 'report.ts',
+      size: 1, contentVersion: '1:1', kind: { kind: 'text' }, modes: ['raw', 'diff'] }
+    vi.spyOn(window.appClient.versioning, 'openDraft').mockResolvedValue({ ok: true,
+      value: { ok: true, value: { draftId: draft.draftId, scopeRoot: draft.scopeRoot, title: 'Commit review' }, messageApplied: true } })
+    vi.spyOn(window.appClient.versioning, 'readCommit').mockResolvedValue({ ok: true, value: draft })
+    vi.spyOn(window.appClient.versioning, 'commitFiles').mockResolvedValue({ ok: true, value: { ok: true, value: snapshot } })
+    vi.spyOn(window.appClient.versioning, 'getSettings').mockResolvedValue({ ok: true, value: { mode: 'checkpoints', diffTool: { kind: 'internal' } } })
+    const run = vi.spyOn(window.appClient.versioning, 'runCommit')
+    const close = vi.spyOn(window.appClient.versioning, 'closeCommit')
+    vi.spyOn(window.appClient.fileChanges, 'list').mockResolvedValue({ ok: true,
+      value: { ok: false, code: 'invalid-context', detail: 'Changelog unavailable' } })
+    vi.spyOn(window.appClient.fileChanges, 'workingTree').mockResolvedValue({ ok: true, value: { ok: true, value: snapshot } })
+    vi.spyOn(window.appClient.fileChanges, 'openFile').mockResolvedValue({ ok: true, value: { ok: true, value: document } })
+    vi.spyOn(window.appClient.fileChanges, 'diff').mockResolvedValue({ ok: true,
+      value: { ok: true, kind: 'source-unavailable', detail: 'Fixture baseline unavailable' } })
+    vi.spyOn(window.appClient.fileViewer, 'restore').mockResolvedValue({ ok: true, value: { ok: true, value: document } })
+    vi.spyOn(window.appClient.fileViewer, 'text').mockResolvedValue({ ok: true,
+      value: { ok: true, kind: 'text', text: 'changed', contentVersion: '1:1' } })
+    vi.spyOn(window.appClient.fileViewer, 'version').mockResolvedValue({ ok: true, value: { ok: true, kind: 'unchanged' } })
+    vi.spyOn(window.appClient.fileViewer, 'release').mockResolvedValue({ ok: true, value: undefined })
+    AppShellTest.openSession(view.container, 'Alpha worktree')
+    const terminal = await view.findByLabelText('Terminal for session s-working')
+    client.controlTabs({ kind: 'open-commit', requestId: 'focus-commit', panelId: 'terminal:{"sessionId":"s-working"}',
+      vcs, scopeRoot: draft.scopeRoot, title: 'Commit review', messageApplied: true })
+    const row = (await view.findByLabelText('Include report.ts')).closest('[role="row"]')
+    if (!(row instanceof HTMLElement)) throw new Error('Commit file row is missing')
+    row.focus()
+    fireEvent.doubleClick(row)
+    const viewer = await view.findByLabelText('Split file')
+    await waitFor(() => expect(viewer).toHaveFocus())
+    expect(fireEvent.keyDown(viewer.ownerDocument.activeElement!, { key: 'Escape' })).toBe(false)
+    await waitFor(() => expect(view.queryByLabelText('Split file')).toBeNull())
+    expect(view.getByRole('button', { name: 'Commit files' })).toBeVisible()
+    expect(view.getByRole('textbox', { name: 'Commit message' })).toHaveValue('Review this change')
+    expect(view.getByLabelText('Terminal for session s-working')).toBe(terminal)
+    expect(run).not.toHaveBeenCalled()
+    expect(close).not.toHaveBeenCalled()
+  })
+
+  it.each(['split', 'tab'] as const)('closes a focused %s viewer with Escape but leaves terminal and dialog Escape alone', async (placement) => {
+    const { client, view } = await mount({ sidebars: null, failed: false })
+    vi.spyOn(window.appClient.fileViewer, 'restore').mockResolvedValue({
+      ok: true, value: { ok: false, code: 'not-found', detail: 'File unavailable' },
+    })
+    vi.spyOn(window.appClient.fileChanges, 'list').mockResolvedValue({
+      ok: true, value: { ok: false, code: 'invalid-context', detail: 'File changes unavailable' },
+    })
+    AppShellTest.openSession(view.container, 'Alpha worktree')
+    const terminal = await view.findByLabelText('Terminal for session s-working')
+    const source = { kind: 'workspace' as const, sessionId: 's-working', path: 'C:/work/report.md' }
+    if (placement === 'split')
+      client.controlTabs({ kind: 'open-file', requestId: 'file-escape', panelId: 'terminal:{"sessionId":"s-working"}',
+        source, documentKey: 'file-escape', title: 'report.md' })
+    else if (placement === 'tab') {
+      client.transferLease = { token: 'file-escape', panel: {
+        panelId: 'fileViewer:file-escape', key: 'fileViewer', title: 'report.md',
+        params: { sessionId: 's-working', source }, sessionId: 's-working', presentation: null,
+      } }
+      client.transferIn('file-escape')
+    } else
+      throw new Error(`Unknown viewer placement: ${placement}`)
+    const label = placement === 'split' ? 'Split file' : 'File viewer'
+    const viewer = await view.findByLabelText(label)
+    const close = vi.spyOn(WorkspacePanels, 'closeActive')
+
+    const reachedTerminal = vi.fn()
+    terminal.addEventListener('keydown', reachedTerminal)
+    expect(fireEvent.keyDown(terminal, { key: 'Escape' })).toBe(true)
+    expect(reachedTerminal).toHaveBeenCalledTimes(1)
+    expect(view.getByLabelText(label)).toBe(viewer)
+    expect(close).not.toHaveBeenCalled()
+    terminal.removeEventListener('keydown', reachedTerminal)
+
+    viewer.focus()
+    expect(document.activeElement).toBe(viewer)
+    fireEvent.keyDown(viewer, { key: 'Escape', shiftKey: true })
+    expect(close).not.toHaveBeenCalled()
+    client.run('session.new')
+    fireEvent.keyDown(view.getByRole('textbox', { name: 'Filter projects' }), { key: 'Escape' })
+    expect(view.container.querySelector('.jamat-launcher')).toBeNull()
+    expect(view.getByLabelText(label)).toBe(viewer)
+    expect(close).not.toHaveBeenCalled()
+
+    if (placement === 'split') {
+      AppShellTest.rightClickTerminal(view.container, 's-working')
+      const menu = await view.findByRole('menu', { name: 'Terminal actions' })
+      fireEvent.keyDown(menu, { key: 'Escape' })
+      await waitFor(() => expect(view.queryByRole('menu', { name: 'Terminal actions' })).toBeNull())
+      expect(view.getByLabelText(label)).toBe(viewer)
+      expect(close).not.toHaveBeenCalled()
+    }
+
+    const reachedContent = vi.fn()
+    viewer.focus()
+    viewer.addEventListener('keydown', reachedContent)
+    expect(fireEvent.keyDown(viewer, { key: 'Escape' })).toBe(false)
+    expect(reachedContent).not.toHaveBeenCalled()
+    await waitFor(() => expect(view.queryByLabelText(label)).toBeNull())
+    expect(close).toHaveBeenCalledTimes(1)
+    expect(view.getByLabelText('Terminal for session s-working')).toBe(terminal)
+    fireEvent.keyDown(terminal, { key: 'Escape' })
+    expect(close).toHaveBeenCalledTimes(1)
+    viewer.removeEventListener('keydown', reachedContent)
   })
 
   /**
@@ -1783,6 +1907,7 @@ describe('app-client-ui/renderer/shell/appShell', () => {
 
   it.each([
     ['session.new', '.jamat-launcher'],
+    ['session.history', '.jamat-launcher-history'],
     ['settings.open', '.jamat-configuration'],
     ['session.details', '.jamat-session-details'],
   ] as const)('does not open Remarkable over %s', async (command, selector) => {
@@ -1813,6 +1938,7 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     client.run('session.new')
     client.run('settings.open')
     client.run('session.details')
+    client.run('session.history')
 
     expect(view.container.querySelector('.jamat-launcher')).toBeNull()
     expect(view.container.querySelector('.jamat-configuration')).toBeNull()
@@ -1883,6 +2009,7 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     await waitFor(() => expect(AppShellTest.barText(bar)).toEqual([
       'v0.0.0',
       'Host v2026.08.04.09.30 · 4 live',
+      'NodeJs / AppJamatV3 / Alpha worktree',
       '|',
       'Sonnet 4.5 · high · 90k / 1M · 9%Compact',
       'S: 42% [████░░░░░░], W: 12% [█░░░░░░░░░]↗',
@@ -1910,6 +2037,7 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     await waitFor(() => expect(AppShellTest.barText(bar)).toEqual([
       'v0.0.0',
       'Host v2026.08.04.09.30 · 4 live',
+      'NodeJs / AppJamatV3 / Beta worktree',
       '|',
       '-',
       'development',

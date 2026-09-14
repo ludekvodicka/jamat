@@ -1155,6 +1155,18 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
    * The mark is the tree's own character, taken from the same document, so the two cannot drift.
    */
   describe('the session mark', () => {
+    it('shows a broom while context compaction is running', async () => {
+      const mixed = SessionsFixtures.mixed()
+      await withSessions({
+        ...mixed,
+        sessions: mixed.sessions.map((session) => session.sessionId === 's-working'
+          ? { ...session, compacting: true as const } : session),
+      })
+      mount(new PanelApiFake('terminal:1'), 's-working')
+      expect(store.get('terminal:1').primary)
+        .toEqual({ glyph: '🧹', tone: 'ok', title: 'compacting context' })
+    })
+
     it('draws what the sessions document says this session is doing', async () => {
       await withSessions(SessionsFixtures.mixed())
       mount(new PanelApiFake('terminal:1'), 's-working')
@@ -1303,6 +1315,22 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
     mount(new PanelApiFake('terminal:1', true))
 
     expect(xtermMock.focuses).toBe(1)
+  })
+
+  it.each([true, false])('focuses a restored file only when its session is active (%s)', async (active) => {
+    const outside = render(<button type="button">Other panel</button>).getByRole('button')
+    outside.focus()
+    const item = TerminalPanelFixtures.splitItem(1)
+    const view = mount(new PanelApiFake('terminal:file-focus', active), 'session-1', {
+      params: { split: { ratio: 0.5, active: item.key, items: [item] } },
+    })
+    const viewer = await view.findByLabelText('Split file')
+    expect(active ? viewer : outside).toHaveFocus()
+    expect(xtermMock.focuses).toBe(0)
+    outside.focus()
+    act(() => { panelFocus.focus('terminal:file-focus') })
+    expect(viewer).toHaveFocus()
+    expect(xtermMock.focuses).toBe(0)
   })
 
   /**

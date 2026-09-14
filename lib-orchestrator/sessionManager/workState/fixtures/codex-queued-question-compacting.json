@@ -1,0 +1,18 @@
+{
+  "agent": "codex",
+  "expected": {
+    "hint": "waiting"
+  },
+  "provenance": {
+    "origin": "User screenshot 2026-09-13_13-00-51_electron.png",
+    "case": "queued question while compacting context",
+    "capture": "Transcribed visible status text from the user screenshot. This is not a captured Host frame; the screenshot does not identify the Codex build.",
+    "ported": "2026-09-13",
+    "identical": "No; see capture provenance"
+  },
+  "frame": {
+    "rawTail": "",
+    "screenTail": "◦ Compacting context (2m 22s • esc to interrupt)\n  └ Making room to continue.\n\n• Queued follow-up inputs\n  ? 1 question\n    alt + ↑ to answer\n\n› Ask Codex to do anything",
+    "wideScreenTail": "◦ Compacting context (2m 22s • esc to interrupt)\n  └ Making room to continue.\n\n• Queued follow-up inputs\n  ? 1 question\n    alt + ↑ to answer\n\n› Ask Codex to do anything"
+  }
+}

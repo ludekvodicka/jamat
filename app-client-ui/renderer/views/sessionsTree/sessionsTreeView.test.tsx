@@ -706,6 +706,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
         // A live agent nothing classifies. It is the one state no recorded fixture holds, and
         // drawing it as idle is exactly how a waiting agent goes unnoticed.
         { ...live, sessionId: 's-unclassified', title: 'Unclassified', activity: 'unknown' },
+        { ...live, sessionId: 's-compacting', title: 'Compacting', compacting: true },
       ],
     }
     const { container } = await mount(everyState)
@@ -715,8 +716,12 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     const glyphs = [...container.querySelectorAll('[data-glyph]')]
       .map((node) => node.getAttribute('data-glyph'))
     expect([...new Set(glyphs)].sort()).toEqual([
-      'ended', 'idle', 'lost', 'shell', 'starting', 'unknown', 'waiting', 'working',
+      'compacting', 'ended', 'idle', 'lost', 'shell', 'starting', 'unknown', 'waiting', 'working',
     ])
+    const compacting = glyphOf(container, 's-compacting')
+    expect(compacting).toHaveAttribute('aria-label', 'compacting context')
+    expect(compacting).toHaveAttribute('data-paint', 'ok')
+    expect(compacting?.querySelector('.jamat-signal-broom svg')).not.toBeNull()
   })
 
   /**

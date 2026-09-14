@@ -114,6 +114,7 @@ export interface SessionRecordLaunchWait {
 }
 
 export interface SessionRecord {
+  lastUserInputAt?: number
   /** Equals `runtimeSessionId` on the Host, forever. The Host separates instances by binding. */
   sessionId: string
   kind: 'shell' | 'agent'

@@ -65,6 +65,8 @@ export class SessionsSnapshotValidation {
       && SessionsSnapshotValidation.life(session.life)
       && SessionsSnapshotValidation.activity(session.activity)
       && SessionsSnapshotValidation.activityDetail(session.activity, session.activityDetail)
+      && (session.compacting === undefined || (session.compacting === true
+        && session.activity === 'working' && session.activityDetail === undefined))
       && SessionsSnapshotValidation.worktree(session.worktree)
       && Array.isArray(session.admits)
       && session.admits.every((operation) => typeof operation === 'string')

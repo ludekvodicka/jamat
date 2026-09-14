@@ -48,6 +48,7 @@ describe('app-client-ui/shared/commands', () => {
     const accelerators = AppCommands.all().map(({ id, accelerator }) => [id, accelerator ?? null])
     expect(accelerators).toEqual([
       ['session.new', 'Ctrl+T'],
+      ['session.history', 'Ctrl+H'],
       ['session.newRemote', 'Ctrl+N'],
       ['settings.open', 'Ctrl+,'],
       ['app.quit', 'Ctrl+Q'],
@@ -86,7 +87,7 @@ describe('app-client-ui/shared/commands', () => {
       ['view.toggleLeftSidebar', 'Ctrl+B'],
       ['view.toggleRightSidebar', 'Ctrl+Alt+B'],
       ['view.toggleTabSidebar', 'Ctrl+G'],
-      ['view.fileChanges', 'Ctrl+H'],
+      ['view.fileChanges', null],
       ['view.fileBack', null],
       ['view.maximizeToggle', 'F11'],
       ['app.toggleDevTools', 'Ctrl+Shift+I'],

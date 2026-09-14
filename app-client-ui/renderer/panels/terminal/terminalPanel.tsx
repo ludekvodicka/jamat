@@ -167,7 +167,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   const publish = useTabDecorationsPublisher(props.api.id)
   const glyph = info === null
     ? null
-    : SessionNodeState.glyphOf(info.life, info.kind, info.activity, info.activityDetail)
+    : SessionNodeState.glyphOf(info.life, info.kind, info.activity, info.activityDetail, info.compacting)
   const outcome = info?.outcome ?? null
   const endedAt = info?.endedAt ?? null
   const color = info?.color ?? null
@@ -179,8 +179,13 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   const split = usePanelSplit(props)
   const splitRef = useRef(split)
   const commitPanes = useRef<HTMLDivElement>(null)
+  const filePane = useRef<HTMLElement | null>(null)
+  const attachFilePane = useCallback((element: HTMLElement | null) => {
+    filePane.current = element
+    if (element !== null && props.api.isActive) element.focus()
+  }, [props.api])
   const focusPanel = useCallback(() => {
-    const pane = commitPanes.current?.querySelector<HTMLElement>('.commit-pane-slot:not([hidden]) .commit-pane')
+    const pane = filePane.current ?? commitPanes.current?.querySelector<HTMLElement>('.commit-pane-slot:not([hidden]) .commit-pane')
     if (pane) pane.focus()
     else focus()
   }, [focus])
@@ -442,6 +447,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
         : (<>
           {activeItem.kind === 'file' && <FileViewerPane
             key={activeItem.key}
+            ref={attachFilePane}
             item={activeItem}
             changes={changes}
             workingTree={workingTree}

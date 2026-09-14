@@ -14,7 +14,7 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
 
   afterEach(() => {
     for (const directory of created.splice(0))
-      rmSync(directory, { recursive: true, force: true })
+      rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   })
 
   function cwd(): string {

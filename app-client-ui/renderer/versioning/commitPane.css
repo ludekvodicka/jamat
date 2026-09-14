@@ -14,9 +14,13 @@
 .commit-files-heading { position: sticky; top: 0; z-index: 1; color: var(--color-text-3); background: var(--color-surface-control); border-bottom: 1px solid var(--color-border-frame); }
 .commit-target { line-height: 1.25; cursor: default; user-select: none; }
 .commit-target:hover { background: var(--color-surface-control-hover); }
-.commit-target[aria-selected='true'] { background: var(--color-accent-strong); color: var(--color-text-1); }
+.commit-target[aria-selected='true'] { background: var(--color-surface-control-hover); color: var(--color-text-1); }
 .commit-target:focus-visible { outline: 1px solid var(--color-accent); outline-offset: -1px; }
 .commit-target input[type='checkbox'] { display: block; margin: 0; }
+.commit-target-path--modified { color: var(--color-commit-modified); }
+.commit-target-path--added, .commit-target-path--copied, .commit-target-path--renamed, .commit-target-path--replaced { color: var(--color-commit-added); }
+.commit-target-path--deleted, .commit-target-path--missing, .commit-target-path--conflicted, .commit-target-path--obstructed { color: var(--color-commit-deleted); }
+.commit-target-path--untracked { color: var(--color-text-1); }
 .commit-target-previous, .commit-target-hint { color: var(--color-text-3); }
 .commit-target-hint { margin-left: var(--space-2); }
 .commit-target[aria-selected='true'] :is(.commit-target-previous, .commit-target-hint, .file-tools-status) { color: inherit; }
@@ -32,3 +36,7 @@
 .commit-message textarea { flex: 1; min-height: 0; resize: vertical; background: var(--color-surface-sunken); color: var(--color-text-1); border: 1px solid var(--color-border-frame); padding: var(--space-2); font: inherit; }
 .commit-status { white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; max-height: 30%; }
 .commit-warning { color: var(--color-warn); margin: 0; }
+.commit-groups-note {
+  color: var(--color-text-2);
+  font-size: var(--fs-secondary);
+}

@@ -5,6 +5,7 @@ import type { SessionCompact } from '../contextCompaction/sessionCompact'
 import { SnapshotStore } from '../ipc/snapshotStore'
 import type { AppShellHostStatus } from '../shell/appShell.types'
 import { HostStatusItem } from './hostStatusItem'
+import { CurrentProjectItem, type CurrentProject } from './currentProjectItem'
 import { RateStatusItem, type RateStatusPorts } from './rateStatusItem'
 import { SessionModelItem } from './sessionModelItem'
 import type { SessionModelCurrent } from '../sessionModel/sessionModelStore'
@@ -25,6 +26,7 @@ export class AppShellItems {
   static left(
     appInfo: AppInfo | null,
     hostStatus: AppShellHostStatus | null,
+    currentProject: CurrentProject | null,
   ): readonly StatusBarItem[] {
     const items: StatusBarItem[] = []
     // Before app:info answers there is no version to draw, rather than a placeholder reading.
@@ -35,6 +37,8 @@ export class AppShellItems {
         key: 'host',
         node: <HostStatusItem ports={hostStatus.ports} snapshotStore={hostStatus.snapshot} />,
       })
+    if (currentProject !== null)
+      items.push({ key: 'project', node: <CurrentProjectItem current={currentProject} /> })
     return items
   }
 

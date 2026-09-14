@@ -302,6 +302,39 @@ describe('lib-orchestrator/sessionManager/workState/workStateMonitor', () => {
     expect(context.calls.inspect).toHaveLength(1)
   })
 
+  it('holds queued Codex questions through output and silence, then resumes the current activity', async () => {
+    const context = harness()
+    const question = frameOf('codex-queued-question-compacting.json')
+    const compacting = frameOf('codex-compacting-context.json')
+    context.add({ runtimeSessionId: 'a', agent: 'codex', screen: compacting.screenTail })
+    await context.observe()
+    expect(context.monitor.compacting('a')).toBe(true)
+
+    context.emit('a', question.screenTail)
+    await context.observe()
+    expect(context.monitor.activity('a')).toBe('waiting')
+    expect(context.monitor.compacting('a')).toBe(false)
+    expect(context.monitor.activityDetail('a')).toBeNull()
+
+    context.emit('a', question.screenTail.replace('Compacting context', 'Working'))
+    await context.observe()
+    expect(context.monitor.activity('a')).toBe('waiting')
+
+    await vi.advanceTimersByTimeAsync(60_000)
+    await context.observe()
+    expect(context.monitor.activity('a')).toBe('waiting')
+
+    context.emit('a', compacting.screenTail, question.screenTail)
+    await context.observe()
+    expect(context.monitor.activity('a')).toBe('working')
+    expect(context.monitor.compacting('a')).toBe(true)
+
+    context.emit('a', codexWorkingScreenConst)
+    await context.observe()
+    expect(context.monitor.activity('a')).toBe('working')
+    expect(context.monitor.compacting('a')).toBe(false)
+  })
+
   // The bug this subsystem was reworked for, pinned from the monitor's side. A misread prompt used
   // to reach here as a fresh `idle`, and `settle` turns that into `working` for fifteen seconds
   // before dropping it to idle - so the row read working, then idle, and never waiting. Now the
@@ -465,6 +498,51 @@ describe('lib-orchestrator/sessionManager/workState/workStateMonitor', () => {
     expect(context.monitor.activity('shell-1')).toBeNull()
     expect(context.monitor.activityDetail('shell-1')).toBeNull()
   })
+
+  it.each(['claude', 'codex'] as const)(
+    'keeps %s compaction working through silence and publishes both boundaries',
+    async (agent) => {
+      const context = harness()
+      const compacting = frameOf(agent === 'claude'
+        ? 'claude-compacting-conversation.json' : 'codex-compacting-context-background.json')
+      const working = agent === 'claude' ? claudeWorkingScreenConst : codexWorkingScreenConst
+      const idle = agent === 'claude' ? claudeIdleScreenConst : codexIdleScreenConst
+      context.add({ runtimeSessionId: 'a', agent, screen: working })
+      await context.observe()
+      expect(context.monitor.compacting('a')).toBe(false)
+
+      context.emit('a', compacting.screenTail, compacting.rawTail)
+      await context.observe()
+      expect(context.monitor.activity('a')).toBe('working')
+      expect(context.monitor.compacting('a')).toBe(true)
+      expect(context.monitor.activityDetail('a')).toBeNull()
+      expect(context.changes()).toBe(2)
+
+      for (let window = 0; window < 4; window += 1) {
+        await vi.advanceTimersByTimeAsync(15_000)
+        await context.observe()
+        expect(context.monitor.activity('a')).toBe('working')
+        expect(context.monitor.compacting('a')).toBe(true)
+      }
+      expect(context.changes()).toBe(2)
+      expect(context.calls.inspect).toHaveLength(6)
+
+      context.emit('a', working)
+      await context.observe()
+      expect(context.monitor.activity('a')).toBe('working')
+      expect(context.monitor.compacting('a')).toBe(false)
+      expect(context.changes()).toBe(3)
+
+      context.emit('a', compacting.screenTail)
+      await context.observe()
+      context.emit('a', idle, compacting.rawTail)
+      await context.observe()
+      expect(context.monitor.compacting('a')).toBe(false)
+      await vi.advanceTimersByTimeAsync(15_000)
+      await context.observe()
+      expect(context.monitor.activity('a')).toBe('idle')
+    },
+  )
 
   // An unrecognized Codex screen is still unknown until it has been seen working at least once.
   // After that, silence is what makes it idle.

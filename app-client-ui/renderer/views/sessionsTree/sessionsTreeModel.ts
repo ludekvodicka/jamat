@@ -311,11 +311,12 @@ export class SessionsTreeModel {
 
   private static stateGroupOf(entry: SessionEntry): TreeStateGroup {
     const info = entry.info
-    const glyph = SessionNodeState.glyphOf(info.life, info.kind, info.activity, info.activityDetail)
+    const glyph = SessionNodeState.glyphOf(info.life, info.kind, info.activity, info.activityDetail, info.compacting)
     switch (glyph) {
       case 'waiting': return 'attention'
       case 'starting':
       case 'working':
+      case 'compacting':
       case 'background':
       case 'shell': return 'running'
       case 'ended':
@@ -328,12 +329,13 @@ export class SessionsTreeModel {
 
   private static inState(entry: SessionEntry, state: SessionFilterStatus, view: TreeViewState): boolean {
     const info = entry.info
-    const glyph = SessionNodeState.glyphOf(info.life, info.kind, info.activity, info.activityDetail)
+    const glyph = SessionNodeState.glyphOf(info.life, info.kind, info.activity, info.activityDetail, info.compacting)
     switch (state) {
       case 'active': return !entry.badges.completed
       // Viewing a marked row takes its mark; retain it so a double-click cannot open the next row.
       case 'attention': return entry.badges.attention || view.inFront.has(entry.targetKey)
-      case 'running': return glyph === 'working' || glyph === 'background' || glyph === 'shell'
+      case 'running': return glyph === 'working' || glyph === 'background'
+        || glyph === 'compacting' || glyph === 'shell'
       case 'question': return glyph === 'waiting'
       case 'idle': return glyph === 'idle'
       case 'starting': return glyph === 'starting'
@@ -561,7 +563,7 @@ export class SessionsTreeModel {
       tabTitle: info.tabTitle,
       note: info.note ?? null,
       color: info.color ?? null,
-      glyph: SessionNodeState.glyphOf(info.life, info.kind, info.activity, info.activityDetail),
+      glyph: SessionNodeState.glyphOf(info.life, info.kind, info.activity, info.activityDetail, info.compacting),
       badges: entry.badges,
       setup: SessionNodeState.setupBadgeOf(info.setup),
       setupTitle: SessionNodeState.setupTitleOf(info.setup),

@@ -931,6 +931,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     const stored = context.store.get(successOf(created).sessionId)
     expect(stored?.flowId).toBe('feature-request')
     expect(stored?.agent?.initialPrompt).toBe('Summary: merge a worktree back')
+    expect(stored?.lastUserInputAt).toBe(stored?.createdAt)
     // And the launch carried it, last, where the CLI reads it as the thing to answer.
     const launch = callsNamed(context.host, 'runtime.create')[0]
     expect((launch.body as { launch: { args: string[] } }).launch.args.at(-1))
@@ -949,6 +950,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     const stored = context.store.get(successOf(created).sessionId)
     expect(stored?.flowId).toBeUndefined()
     expect(stored?.agent?.initialPrompt).toBeUndefined()
+    expect(stored?.lastUserInputAt).toBeUndefined()
   })
 
   /**
@@ -3447,6 +3449,35 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         providerActive,
       }
     }
+
+    it('forks an ended conversation when explicitly requested, preserving the parent', async () => {
+      for (const agentId of ['claude', 'codex'] as const) {
+        const context = await harness()
+        await context.store.put(record('parent', {
+          kind: 'agent', title: '014 - Existing task',
+          directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
+          agent: { agentId, launchMode: 'resume', nativeSessionId: 'native-1' },
+          life: 'ended', binding: null,
+        }))
+        const opened = successOf(await context.lifecycle.openHistory({ ...spec(agentId, 'native-1'), action: 'fork' }))
+        expect(opened.sessionId).not.toBe('parent')
+        expect(context.store.get('parent')?.life).toBe('ended')
+        expect(context.store.get(opened.sessionId)?.agent).toMatchObject({ agentId, launchMode: 'fork', forkParentId: 'native-1' })
+      }
+    })
+
+    it('refuses explicit rerun if the provider or a newly running record owns the conversation', async () => {
+      const provider = await harness()
+      expect(failureOf(await provider.lifecycle.openHistory({ ...spec('claude', 'native-1', true), action: 'rerun' })).code).toBe('invalid-spec')
+      expect(provider.store.list()).toHaveLength(0)
+      const local = await harness()
+      await local.store.put(record('running', {
+        kind: 'agent', directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
+        agent: { agentId: 'codex', launchMode: 'resume', nativeSessionId: 'native-1' }, life: 'live',
+      }))
+      expect(failureOf(await local.lifecycle.openHistory({ ...spec('codex', 'native-1'), action: 'rerun' })).code).toBe('invalid-spec')
+      expect(local.store.list()).toHaveLength(1)
+    })
 
     it('resumes an ended Claude or Codex conversation by its exact id', async () => {
       for (const agentId of ['claude', 'codex'] as const) {

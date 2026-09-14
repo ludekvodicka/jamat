@@ -6,13 +6,14 @@ import type {
 } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 
 /**
- * What a row is drawn as. Nine shapes, one per state a person reads differently: `starting` is not
+ * What a row is drawn as. One shape per state a person reads differently: `starting` is not
  * an early `idle`, and `lost` is not `ended` - a runtime nobody can find again and a runtime that
  * exited look the same in a list and mean opposite things to whoever decides what to do next.
  */
 export type SessionGlyph =
   | 'starting'
   | 'working'
+  | 'compacting'
   | 'background'
   | 'waiting'
   | 'idle'
@@ -63,11 +64,12 @@ export class SessionNodeState {
     kind: SessionInfo['kind'],
     activity: SessionActivity | null,
     activityDetail?: SessionInfo['activityDetail'],
+    compacting?: SessionInfo['compacting'],
   ): SessionGlyph {
     if (life === 'starting') return 'starting'
     else if (life === 'ended') return 'ended'
     else if (life === 'lost') return 'lost'
-    else if (life === 'live') return SessionNodeState.liveGlyphOf(kind, activity, activityDetail)
+    else if (life === 'live') return SessionNodeState.liveGlyphOf(kind, activity, activityDetail, compacting)
     else
       throw new Error(`Unknown session life: ${JSON.stringify(life)}`)
   }
@@ -181,6 +183,7 @@ export class SessionNodeState {
   static characterOf(glyph: SessionGlyph, marked: boolean): string {
     if (glyph === 'starting') return '◐'
     else if (glyph === 'working') return '●'
+    else if (glyph === 'compacting') return '🧹'
     else if (glyph === 'background') return '◉'
     else if (glyph === 'waiting') return '◆'
     else if (glyph === 'idle') return marked ? '■' : '□'
@@ -212,7 +215,7 @@ export class SessionNodeState {
     else if (glyph === 'waiting') return 'attention'
     else if (glyph === 'idle') return 'idle'
     else if (glyph === 'ended') return marked ? 'accent' : 'muted'
-    else if (glyph === 'working' || glyph === 'background') return 'ok'
+    else if (glyph === 'working' || glyph === 'background' || glyph === 'compacting') return 'ok'
     else if (glyph === 'starting') return 'accent'
     else if (glyph === 'shell' || glyph === 'unknown') return 'muted'
     else
@@ -227,6 +230,7 @@ export class SessionNodeState {
   static glyphTitleOf(glyph: SessionGlyph, marked: boolean): string {
     if (!marked) {
       if (glyph === 'background') return 'background work'
+      else if (glyph === 'compacting') return 'compacting context'
       else if (glyph === 'starting' || glyph === 'working' || glyph === 'waiting'
         || glyph === 'idle' || glyph === 'unknown' || glyph === 'shell'
         || glyph === 'ended' || glyph === 'lost') return glyph
@@ -235,6 +239,7 @@ export class SessionNodeState {
     if (glyph === 'ended') return 'ended - not seen since it ended'
     else if (glyph === 'lost') return 'lost - not seen since it was lost'
     else if (glyph === 'background') return 'background work - previous result not seen'
+    else if (glyph === 'compacting') return 'compacting context - previous result not seen'
     else if (glyph === 'starting' || glyph === 'working' || glyph === 'waiting'
       || glyph === 'idle' || glyph === 'unknown' || glyph === 'shell')
       return `${glyph} - not seen since the turn finished`
@@ -287,9 +292,10 @@ export class SessionNodeState {
     kind: SessionInfo['kind'],
     activity: SessionActivity | null,
     activityDetail: SessionInfo['activityDetail'],
+    compacting: SessionInfo['compacting'],
   ): SessionGlyph {
     if (kind === 'shell') return 'shell'
-    else if (kind === 'agent') return SessionNodeState.activityGlyphOf(activity, activityDetail)
+    else if (kind === 'agent') return SessionNodeState.activityGlyphOf(activity, activityDetail, compacting)
     else
       throw new Error(`Unknown session kind: ${JSON.stringify(kind)}`)
   }
@@ -297,7 +303,12 @@ export class SessionNodeState {
   private static activityGlyphOf(
     activity: SessionActivity | null,
     activityDetail: SessionInfo['activityDetail'],
+    compacting: SessionInfo['compacting'],
   ): SessionGlyph {
+    if (compacting === true) {
+      if (activity === 'working' && activityDetail === undefined) return 'compacting'
+      throw new Error('Compacting requires foreground working activity')
+    }
     if (activityDetail === 'background') {
       if (activity === 'working') return 'background'
       throw new Error(`Background activity detail requires working activity: ${JSON.stringify(activity)}`)

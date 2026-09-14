@@ -82,7 +82,7 @@ export interface LauncherIntent {
    * `Continue/Fork` is a session of the tree like any other. It belongs to the card and not to one
    * screen: Escape back to the projects and Enter again is still the tab card.
    */
-  purpose?: 'tabProfile' | 'remote'
+  purpose?: 'tabProfile' | 'remote' | 'history'
   /**
    * Valid only with `purpose: 'remote'`: the computer the card starts on. A right-click on a paired
    * computer in the tree already knows which one, so the launcher has no list to draw; Ctrl+N writes

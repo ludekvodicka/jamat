@@ -42,9 +42,10 @@ export class AgentWorkInspectorCodex {
    * terminal may clip that suffix with an ellipsis after its exact counter.
    * Visual gaps may be xterm cursor-forward commands and disappear when ANSI is stripped, so the
    * fixed words do not require whitespace between them.
+   * Compacting uses this same row and optional suffix, as both September 13 screenshots show.
    */
-  private static readonly workingScreenConst =
-    /(?:^|\n)\s*[›❯>◦•]\s*working\s*\(\s*(?:\d+\s*(?:h|m|s)\s*)+[•·]\s*esc\s*to\s*interrupt\s*\)(?:\s*[•·]\s*\d+\s*background\s*terminals?\s*running(?:\s*[•·]\s*\/ps\s*to\s*view\s*[•·]\s*\/stop\s*to\s*close|[^\n]*…))?\s*(?:\n|$)/i
+  private static readonly foregroundScreenConst =
+    /(?:^|\n)\s*[›❯>◦•]\s*(?:(?<compacting>compacting\s*context)|working)\s*\(\s*(?:\d+\s*(?:h|m|s)\s*)+[•·]\s*esc\s*to\s*interrupt\s*\)(?:\s*[•·]\s*\d+\s*background\s*terminals?\s*running(?:\s*[•·]\s*\/ps\s*to\s*view\s*[•·]\s*\/stop\s*to\s*close|[^\n]*…))?\s*(?:\n|$)/i
   /**
    * A foreground turn can finish while its yielded terminal continues. Codex then replaces
    * `Working` with this status, and the current screen remains authority for as long as it stands.
@@ -76,6 +77,10 @@ export class AgentWorkInspectorCodex {
     /[›❯>◦]\d+\.yes,proceed/,
     /pressentertoconfirmoresctocancel/,
   ]
+  // codex-queued-question-compacting.json: queued input alone is not a question, so require
+  // the positive question count and answer shortcut together in the current status region.
+  private static readonly queuedQuestionScreenConst =
+    /(?:^|\n)\s*[◦•]\s*queued\s*follow-up\s*inputs\s*\?\s*[1-9]\d*\s*questions?\s*alt\s*\+\s*↑\s*to\s*answer\s*(?:\n|$)/i
 
   static inspect(frame: AgentWorkFrame): AgentWorkInspection {
     const prompt: AgentWorkEvidence[] = []
@@ -93,6 +98,22 @@ export class AgentWorkInspectorCodex {
     // along as evidence; they just cannot be the whole case.
     if (prompt.some((item) => item.source === 'screen')) return { hint: 'blocked', evidence: prompt }
 
+    const question = ScreenTail.stripAnsiLower(frame.screenTail)
+      .match(AgentWorkInspectorCodex.queuedQuestionScreenConst)?.[0]
+    if (question)
+      return {
+        hint: 'waiting',
+        evidence: [{ source: 'screen', signal: 'questionPrompt', match: question.trim() }],
+      }
+
+    const foreground = ScreenTail.stripAnsiLower(frame.screenTail)
+      .match(AgentWorkInspectorCodex.foregroundScreenConst)
+    if (foreground?.groups?.compacting)
+      return {
+        hint: 'compacting',
+        evidence: [{ source: 'screen', signal: 'compactingRow', match: foreground[0].trim() }],
+      }
+
     const backgroundTerminal = ScreenTail.stripAnsiLower(frame.screenTail)
       .match(AgentWorkInspectorCodex.backgroundTerminalScreenConst)?.[0]
     if (backgroundTerminal)
@@ -101,16 +122,14 @@ export class AgentWorkInspectorCodex {
         evidence: [{ source: 'screen', signal: 'backgroundTerminal', match: backgroundTerminal.trim() }],
       }
 
-    const screen = ScreenTail.stripAnsiLower(frame.screenTail)
-      .match(AgentWorkInspectorCodex.workingScreenConst)?.[0]
-    if (screen)
-      return { hint: 'working', evidence: [{ source: 'screen', signal: 'workingRow', match: screen.trim() }] }
+    if (foreground)
+      return { hint: 'working', evidence: [{ source: 'screen', signal: 'workingRow', match: foreground[0].trim() }] }
     const wideScreen = ScreenTail.stripAnsiLower(frame.wideScreenTail)
-      .match(AgentWorkInspectorCodex.workingScreenConst)?.[0]
-    if (wideScreen)
+      .match(AgentWorkInspectorCodex.foregroundScreenConst)
+    if (wideScreen && !wideScreen.groups?.compacting)
       return {
         hint: 'working',
-        evidence: [{ source: 'wide-screen', signal: 'workingRow', match: wideScreen.trim() }],
+        evidence: [{ source: 'wide-screen', signal: 'workingRow', match: wideScreen[0].trim() }],
       }
 
     // After the background and working rows, never before them: Codex draws the input box under a

@@ -4,6 +4,8 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { FileChangesManager } from '../../lib-orchestrator/fileChangesManager/fileChangesManager.js'
+import { VcsStatusView } from '../../lib-orchestrator/fileChangesManager/vcsStatusView.js'
+import { VersioningCommitManager } from '../../app-client-ui/app/versioning/versioningCommitManager.js'
 import { FileDiffComputer } from '../../lib-orchestrator/fileChangesManager/diff/fileDiffComputer.js'
 import { GitCommitManager } from '../../lib-orchestrator/git/gitCommitManager.js'
 import { GitInvoker } from '../../lib-orchestrator/git/gitInvoker.js'
@@ -32,6 +34,8 @@ class SmokeVcsCommit extends SmokeHarness {
     await writeFile(message, 'Commit selected files\n\nPříliš žluťoučký kůň\n', 'utf8')
     await this.checkGit(message)
     await this.checkSvn(message)
+    await this.checkSvnExternalBatch(message)
+    await this.checkSvnUpdate(message)
     console.log(`\nsmoke-vcs-commit: ${this.passed} checks passed`)
   }
 
@@ -45,6 +49,127 @@ class SmokeVcsCommit extends SmokeHarness {
     const result = await this.svn.run(root, args)
     if (result.failure !== null || result.code !== 0) throw new Error(result.stderr || JSON.stringify(result))
     return result.stdout
+  }
+
+  private async checkSvnUpdate(message: string): Promise<void> {
+    const repository = join(this.root, 'update-repository')
+    const created = await new CommandInvoker().run({ command: 'svnadmin', args: ['create', repository], cwd: this.root, env: process.env })
+    if (created.failure !== null || created.code !== 0) throw new Error(created.stderr)
+    const root = join(this.root, 'update-working')
+    const other = join(this.root, 'update-other')
+    const scope = join(root, 'scope@name')
+    await this.svnRun(this.root, ['checkout', pathToFileURL(repository).href, root])
+    await mkdir(scope)
+    await mkdir(join(root, 'sibling'))
+    await writeFile(join(scope, 'local.txt'), 'before\n')
+    await writeFile(join(scope, 'remote.txt'), 'before\n')
+    await writeFile(join(root, 'sibling', 'file.txt'), 'before\n')
+    await this.svnRun(root, ['add', '--', 'scope@name@', 'sibling'])
+    await this.svnRun(root, ['propset', 'svn:externals', '^/sibling external', '--', 'scope@name@'])
+    await this.svnRun(root, ['commit', '--file', message])
+    await this.svnRun(root, ['update'])
+    await this.svnRun(this.root, ['checkout', '--ignore-externals', pathToFileURL(repository).href, other])
+    await this.svnRun(scope, ['propset', 'local-note', 'mine', '--', '.'])
+    await writeFile(join(scope, 'local.txt'), 'mine\n')
+    await this.svnRun(other, ['propset', 'remote-note', 'theirs', '--', 'scope@name@'])
+    await writeFile(join(other, 'scope@name', 'remote.txt'), 'remote change\n')
+    await writeFile(join(other, 'sibling', 'file.txt'), 'sibling change\n')
+    await this.svnRun(other, ['commit', '--file', message])
+    const rejected = await this.svnCommits.commit(scope, [
+      { absolutePath: scope, nodeKind: 'directory', status: 'modified' },
+      { absolutePath: join(scope, 'local.txt'), nodeKind: 'file', status: 'modified' },
+    ], message)
+    this.check('A real stale directory commit returns out-of-date', !rejected.ok && rejected.code === 'out-of-date')
+    const updated = await this.svnCommits.update(scope)
+    if (!updated.ok) throw new Error(updated.detail)
+    this.check('Scoped update merges remote changes and preserves local edits',
+      await readFile(join(scope, 'remote.txt'), 'utf8') === 'remote change\n' && await readFile(join(scope, 'local.txt'), 'utf8') === 'mine\n')
+    this.check('Scoped update leaves sibling projects and externals unchanged',
+      await readFile(join(root, 'sibling', 'file.txt'), 'utf8') === 'before\n' && await readFile(join(scope, 'external', 'file.txt'), 'utf8') === 'before\n')
+    await this.svnRun(scope, ['changelist', 'review', '--', 'local.txt'])
+    await writeFile(join(other, 'scope@name', 'local.txt'), 'theirs\n')
+    await this.svnRun(other, ['propset', 'local-note', 'theirs', '--', 'scope@name@'])
+    await this.svnRun(other, ['commit', '--file', message])
+    const conflicted = await this.svnCommits.update(scope)
+    this.check('Update reports text conflicts in changelists and directory property conflicts',
+      !conflicted.ok && conflicted.detail.includes('local.txt') && conflicted.detail.includes('scope@name'))
+    this.check('Update postpones conflict resolution for human review',
+      (await this.svnRun(scope, ['status', '--xml', '--ignore-externals'])).includes('conflicted'))
+  }
+
+  private async checkSvnExternalBatch(message: string): Promise<void> {
+    const mainRepository = join(this.root, 'batch-main-repository')
+    const externalRepository = join(this.root, 'batch-external-repository')
+    for (const repository of [mainRepository, externalRepository]) {
+      const created = await new CommandInvoker().run({ command: 'svnadmin', args: ['create', repository], cwd: this.root, env: process.env })
+      if (created.failure !== null || created.code !== 0) throw new Error(created.stderr)
+    }
+    const seed = join(this.root, 'batch-external-seed')
+    const externalUrl = pathToFileURL(externalRepository).href
+    await this.svnRun(this.root, ['checkout', externalUrl, seed])
+    for (const name of ['a', 'b']) {
+      await mkdir(join(seed, name))
+      await writeFile(join(seed, name, 'file@name.txt'), `${name} base\n`)
+    }
+    await this.svnRun(seed, ['add', 'a', 'b'])
+    await this.svnRun(seed, ['commit', '--file', message])
+    const working = join(this.root, 'batch-main-working')
+    const mainUrl = pathToFileURL(mainRepository).href
+    await this.svnRun(this.root, ['checkout', mainUrl, working])
+    const scope = join(working, 'project')
+    await mkdir(scope)
+    await writeFile(join(scope, 'main.txt'), 'main base\n')
+    await writeFile(join(working, 'sibling.txt'), 'sibling base\n')
+    await this.svnRun(working, ['add', 'project', 'sibling.txt'])
+    await this.svnRun(scope, ['propset', 'svn:externals', `${externalUrl}/a a\n${externalUrl}/b b`, '.'])
+    await this.svnRun(working, ['commit', '--file', message])
+    await this.svnRun(working, ['update'])
+    await writeFile(join(scope, 'main.txt'), 'main changed\n')
+    await writeFile(join(working, 'sibling.txt'), 'sibling uncommitted\n')
+    for (const name of ['a', 'b']) await writeFile(join(scope, name, 'file@name.txt'), `${name} changed\n`)
+    await mkdir(join(scope, 'b', 'new'))
+    await writeFile(join(scope, 'b', 'new', 'selected.txt'), 'selected new\n')
+    await writeFile(join(scope, 'b', 'new', 'unchecked.txt'), 'unselected new\n')
+    const preview = await this.files.workingTree({ sessionId: 'batch', cwd: scope, agent: null, worktree: null }, 'svn', true)
+    if (!preview.ok) throw new Error(preview.detail)
+    const snapshot = preview.value
+    this.check('SVN batch preview includes both external groups', snapshot.externalRoots.length === 2)
+    for (const name of ['a', 'b']) {
+      const entry = snapshot.entries.find((item) => item.displayPath === `${name}/file@name.txt`)!
+      const request = { snapshotId: snapshot.snapshotId, fileId: entry.fileId, baselineId: snapshot.defaultBaseline!.baselineId }
+      const baseline = await this.files.readBaseline(request)
+      const diff = await this.files.diff(request)
+      this.check(`External ${name} reads its own BASE through the parent snapshot`,
+        baseline.ok && baseline.kind === 'content' && baseline.content === `${name} base\n` && diff.ok)
+    }
+    const manager = new VersioningCommitManager({
+      sessions: { workingContext: async () => ({ ok: true, value: { sessionId: 'batch', cwd: scope, agent: null, worktree: null } }), settleVcs: () => {} },
+      vcsStatus: new VcsStatusView(), checkpointStore: { worktreeBelongsToStore: async () => false },
+      fileAccess: (_owner, snapshotId, fileId) => this.files.fileAccess(snapshotId, fileId),
+      snapshotOf: (_owner, snapshotId) => this.files.workingSnapshot(snapshotId),
+      git: this.commits, svn: this.svnCommits, tortoise: { open: async () => { throw new Error('Unexpected Tortoise') } }, onChanged: () => {},
+    })
+    const draft = await manager.prepare('batch', 'svn', scope, null)
+    if (!draft.ok) throw new Error(draft.detail)
+    manager.attach(draft.value.draftId, 'owner')
+    const selected = ['main.txt', 'a/file@name.txt', 'b/file@name.txt', 'b/new/selected.txt']
+    const result = await manager.run('owner', { draftId: draft.value.draftId, snapshotId: snapshot.snapshotId,
+      fileIds: snapshot.entries.filter((entry) => selected.includes(entry.displayPath)).map((entry) => entry.fileId),
+      message: await readFile(message, 'utf8'), includeExternals: true })
+    if (!result.ok) throw new Error(result.detail)
+    this.check('One reviewed request commits main and external working copies', result.revision.split(', ').length === 3
+      && await this.svnRun(scope, ['cat', '-r', 'BASE', 'main.txt']) === 'main changed\n'
+      && await this.svnRun(scope, ['cat', '-r', 'BASE', 'a/file@name.txt@']) === 'a changed\n'
+      && await this.svnRun(scope, ['cat', '-r', 'BASE', 'b/file@name.txt@']) === 'b changed\n')
+    this.check('Batch includes required external parents but leaves unchecked children and sibling projects untouched',
+      await this.svnRun(scope, ['cat', '-r', 'BASE', 'b/new/selected.txt']) === 'selected new\n'
+      && (await this.svnRun(scope, ['status', 'b/new/unchecked.txt'])).trim().startsWith('?')
+      && await this.svnRun(working, ['cat', '-r', 'BASE', 'sibling.txt']) === 'sibling base\n')
+    this.check('Batch reuses the reviewed UTF-8 message in both repositories',
+      (await this.svnRun(scope, ['log', '--xml', '-r', 'HEAD', mainUrl])).includes('Příliš')
+      && (await this.svnRun(scope, ['log', '--xml', '-r', 'HEAD', externalUrl])).includes('Příliš'))
+    manager.release(draft.value.draftId, 'owner')
+    this.check('Batch UUID retains completion after the pane closes', manager.status(draft.value.draftId)?.state === 'committed')
   }
 
   private async checkGit(message: string): Promise<void> {

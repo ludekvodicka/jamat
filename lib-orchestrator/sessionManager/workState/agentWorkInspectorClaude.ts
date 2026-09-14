@@ -49,6 +49,13 @@ import { ScreenTail } from './screenTail'
  * outranks a tool line, and only when none of them is on screen does the busy evidence decide.
  */
 export class AgentWorkInspectorClaude {
+  // Claude Code 2.1.269's compact_start override and spinner rendering, see the compacting fixture.
+  private static readonly compactingScreenConst = [
+    /(?:^|\n)[ \t]*[·*✦✧✶✷✸✹✺✻✼✽✢✣✤✥✱✲✳✴✵∗]\s*compacting\s*conversation\s*(?:…|\.\.\.)(?:\s*\([^)]*\))?[ \t]*(?:\r?\n|$)/i,
+    /(?:^|\n)[ \t]*[∴∷∵]\s*compacting\s*conversation[ \t]*(?:\r?\n|$)/i,
+    /(?:^|\n)[ \t]*compacting\s*conversation(?:…|\.{1,3})[ \t]*(?:\r?\n|$)/i,
+  ] as const
+
   private static readonly toolUseConst =
     /⏺(read|write|edit|multiedit|bash|glob|grep|task|notebookedit|webfetch|websearch|todowrite)\(/
   /**
@@ -148,6 +155,16 @@ export class AgentWorkInspectorClaude {
     const prompt = AgentWorkInspectorClaude.promptEvidence(frame)
     if (prompt.blocked.length) return { hint: 'blocked', evidence: prompt.blocked }
     if (prompt.waiting.length) return { hint: 'waiting', evidence: prompt.waiting }
+
+    const compactingScreen = ScreenTail.stripAnsiLower(frame.screenTail)
+    for (const pattern of AgentWorkInspectorClaude.compactingScreenConst) {
+      const compacting = compactingScreen.match(pattern)?.[0]
+      if (compacting)
+        return {
+          hint: 'compacting',
+          evidence: [{ source: 'screen', signal: 'compactingRow', match: compacting.trim() }],
+        }
+    }
 
     // Before tool-use and busy: the green families differ only in how they age, and a quiet tool
     // line or a dead busy marker beside a live footer must not be what decides the row.

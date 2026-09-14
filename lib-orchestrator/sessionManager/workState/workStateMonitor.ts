@@ -120,6 +120,11 @@ export class WorkStateMonitor {
     return this.states.get(runtimeSessionId)?.activityDetail ?? null
   }
 
+  compacting(runtimeSessionId: string): boolean {
+    const state = this.states.get(runtimeSessionId)
+    return state?.activity === 'working' && state.inspection.hint === 'compacting'
+  }
+
   /**
    * Why that activity: the hint and the evidence of the last screen actually rendered. Null for a
    * session never classified. Read by the Debug window through the session manager, and by nothing
@@ -199,11 +204,12 @@ export class WorkStateMonitor {
       }
     const previousActivity = state.activity
     const previousDetail = state.activityDetail
+    const previousCompacting = this.compacting(session.runtimeSessionId)
     state.inspection = inspection
     const mapped = WorkStateMonitor.activityOf(inspection.hint)
     // Claude can leave a dead busy row on screen, so its foreground evidence ages by output. Codex
     // replaces `Working` with its finished layout, so a currently sighted row is authoritative.
-    if (inspection.hint === 'background') state.workingEvidenceAt = now
+    if (inspection.hint === 'background' || inspection.hint === 'compacting') state.workingEvidenceAt = now
     else if (mapped === 'working') {
       if (agentId === 'claude') state.workingEvidenceAt = session.lastOutputAt ?? now
       else if (agentId === 'codex') state.workingEvidenceAt = now
@@ -221,6 +227,7 @@ export class WorkStateMonitor {
     state.outputSeq = session.outputSeq
     this.states.set(session.runtimeSessionId, state)
     return state.activity !== previousActivity || state.activityDetail !== previousDetail
+      || this.compacting(session.runtimeSessionId) !== previousCompacting
   }
 
   /**
@@ -248,6 +255,7 @@ export class WorkStateMonitor {
    */
   private static activityOf(hint: AgentWorkHint): SessionActivity {
     if (hint === 'working') return 'working'
+    else if (hint === 'compacting') return 'working'
     else if (hint === 'tool-use') return 'working'
     else if (hint === 'background') return 'working'
     else if (hint === 'blocked') return 'waiting'

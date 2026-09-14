@@ -27,6 +27,10 @@
   --color-warn: #f0a58a;
   --color-danger: #f14c4c;
 
+  --color-commit-modified: #6c9eff;
+  --color-commit-added: #ee87ef;
+  --color-commit-deleted: #ff8585;
+
   /* Window identity is data at runtime. The picker reads these computed values and stores the
      chosen hex; no renderer module carries a second copy of this palette. */
   --window-color-default: var(--color-surface-raised);

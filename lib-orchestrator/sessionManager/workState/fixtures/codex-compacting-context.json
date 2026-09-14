@@ -1,0 +1,18 @@
+{
+  "agent": "codex",
+  "expected": {
+    "hint": "compacting"
+  },
+  "provenance": {
+    "origin": "User screenshot 2026-09-13_10-15-44_electron.png",
+    "case": "active context compaction",
+    "capture": "Transcribed visible text from the user screenshot. This is not a captured Host frame; the screenshot does not identify the Codex build.",
+    "ported": "2026-09-13",
+    "identical": "No; see capture provenance"
+  },
+  "frame": {
+    "rawTail": "• Compacting context (40s • esc to interrupt)\n  └ Making room to continue.\n\n› Ask Codex to do anything",
+    "screenTail": "• Compacting context (40s • esc to interrupt)\n  └ Making room to continue.\n\n› Ask Codex to do anything",
+    "wideScreenTail": "• Compacting context (40s • esc to interrupt)\n  └ Making room to continue.\n\n› Ask Codex to do anything"
+  }
+}

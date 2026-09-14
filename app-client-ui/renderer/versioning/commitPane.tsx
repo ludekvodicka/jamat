@@ -34,7 +34,8 @@ export function CommitPane(props: {
     .filter((entry) => selection.get(entry.path) ?? true).map((entry) => entry.fileId))
   const selectedCount = snapshot === null ? 0 : CommitTargets.selected(CommitTargets.eligible(snapshot), checked).length
   const revertible = snapshot === null ? [] : CommitTargets.eligible(snapshot)
-    .filter((entry) => checked.has(entry.fileId) && VersioningRevert.allows(entry))
+    .filter((entry) => checked.has(entry.fileId) && VersioningRevert.allows(entry)
+      && !snapshot.externalRoots.some((root) => root.fileIds.includes(entry.fileId)))
   const setChecked = (ids: ReadonlySet<string>): void => {
     if (snapshot === null) return
     setSelection(new Map(snapshot.entries.map((entry) => [entry.path, ids.has(entry.fileId)])))
@@ -48,7 +49,42 @@ export function CommitPane(props: {
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
   const busy = running || draft?.phase.kind === 'running'
   const done = draft?.phase.kind === 'done'
-  const canCommit = !busy && !done && !working.loading && snapshot !== null && checked.size > 0 && !!draft?.message.trim()
+  const close = useRef(props.onClose)
+  close.current = props.onClose
+  const [closeEmpty, setCloseEmpty] = useState(false)
+  const reload = async (closeIfEmpty: boolean): Promise<void> => {
+    setCloseEmpty(closeIfEmpty)
+    await working.reload()
+  }
+  const populatedDraft = useRef<string | null>(null)
+  useEffect(() => {
+    if (draftId === undefined || snapshot === null || working.loading || working.requiredLoading
+      || working.error !== null || working.requiredError !== null || model.error !== null) return
+    if (snapshot.entries.some(CommitTargets.visible)) {
+      populatedDraft.current = draftId
+      return
+    }
+    if (!closeEmpty || busy || done || snapshot.warnings.length > 0 || populatedDraft.current !== draftId) return
+    populatedDraft.current = null
+    close.current()
+  }, [draftId, snapshot, closeEmpty, busy, done, working.loading, working.requiredLoading,
+    working.error, working.requiredError, model.error])
+  useEffect(() => {
+    const completed = draft?.phase
+    if (completed?.kind !== 'done') return
+    let disposed = false
+    const report = (detail: string): void => {
+      if (!disposed) setNote(`Committed ${completed.revision}\n${completed.output}\n\nCould not read automatic closing setting: ${detail}`)
+    }
+    void ports.versioning.getSettings().then((answer) => {
+      if (disposed) return
+      if (!answer.ok) { report(answer.error); return }
+      if (answer.value.closeCommitOnSuccess !== false) close.current()
+    }).catch((error: unknown) => report(String(error)))
+    return () => { disposed = true }
+  }, [done, draftId, ports])
+  const canCommit = !busy && !done && !working.loading && !working.requiredLoading
+    && working.error === null && working.requiredError === null && snapshot !== null && checked.size > 0 && !!draft?.message.trim()
   const refreshDiffSettings = async (): Promise<void> => {
     const revision = ++settingsRead.current
     setExternalConfigured(false)
@@ -65,7 +101,7 @@ export function CommitPane(props: {
       const answer = await ports.versioning.revertCommitFile({ draftId: draft.draftId, snapshotId: snapshot.snapshotId, fileIds })
       if (!mounted.current) return
       setNote(IpcFailure.of(answer))
-      if (!answer.ok || !answer.value.ok || answer.value.reverted) await working.reload()
+      if (!answer.ok || !answer.value.ok || answer.value.reverted) await reload(answer.ok && answer.value.ok)
     } finally { if (mounted.current) setRunning(false) }
   }
   const open = async (entry: FileChangeEntry): Promise<void> => {
@@ -100,10 +136,18 @@ export function CommitPane(props: {
     setRunning(true)
     setNote(null)
     try {
-      const answer = await ports.versioning.runCommit({ draftId: draft.draftId, snapshotId: snapshot.snapshotId, fileIds: [...checked], message: draft.message })
+      const answer = await ports.versioning.runCommit({ draftId: draft.draftId, snapshotId: snapshot.snapshotId, fileIds: [...checked], message: draft.message,
+        ...(draft.vcs === 'svn' ? { includeExternals: true } : {}) })
       if (!mounted.current) return
       setNote(IpcFailure.of(answer))
       model.refresh()
+      if (answer.ok && !answer.value.ok && answer.value.reloadRequired) {
+        const invalidList = answer.value.code === 'invalid-target'
+        if (invalidList) setNote('Reloading the file list...')
+        await reload(invalidList)
+        if (mounted.current && invalidList)
+          setNote('File list reloaded. Review the files and selection, then click Commit files again.')
+      }
     } finally { if (mounted.current) setRunning(false) }
   }
   const openTortoise = async (): Promise<void> => {
@@ -114,13 +158,13 @@ export function CommitPane(props: {
       const answer = await ports.versioning.openTortoise(draft.draftId, draft.message)
       if (!mounted.current) return
       setNote(IpcFailure.of(answer))
-      await working.reload()
+      await reload(answer.ok && answer.value.ok)
     } finally { if (mounted.current) setRunning(false) }
   }
   const phase = draft?.phase
   let status: string | null = null
   if (phase === undefined || phase.kind === 'editing') status = null
-  else if (phase.kind === 'running') status = 'Committing...'
+  else if (phase.kind === 'running') status = phase.detail ?? 'Committing...'
   else if (phase.kind === 'done') status = `Committed ${phase.revision}\n${phase.output}`
   else if (phase.kind === 'failed') status = phase.detail
   else throw new Error(`Unknown commit phase: ${JSON.stringify(phase)}`)
@@ -150,17 +194,17 @@ export function CommitPane(props: {
     {snapshot?.warnings.map((warning) => <p className="commit-warning" key={warning}>{warning}</p>)}
     <div className="commit-actions">
       <div className="commit-actions-left">
-        {!done && draft !== null && <button type="button" disabled={busy || working.loading} onClick={() => { setNote(null); void working.reload() }}>Reload</button>}
+        {!done && draft !== null && <button type="button" className="commit-submit" disabled={!canCommit} onClick={() => { void run() }}>Commit files</button>}
+        <button type="button" disabled={busy} onClick={props.onClose}>{done || model.error !== null ? 'Close' : 'Cancel'}</button>
+      </div>
+      <div className="commit-actions-right">
+        {!done && draft !== null && <button type="button" disabled={busy || working.loading} onClick={() => { setNote(null); void reload(true) }}>Reload</button>}
         {!done && draft !== null && <button type="button" disabled={busy || working.loading || revertible.length === 0}
           title="Revert checked modified, missing or deleted files. Added files, folders, moves and conflicts are excluded."
           onClick={() => { void revert(revertible.map((entry) => entry.fileId)) }}>Revert selected ({revertible.length})…</button>}
         {!done && draft !== null && <button type="button" disabled={busy}
           title={`Open this folder in the Tortoise${draft.vcs === 'svn' ? 'SVN' : 'Git'} commit dialog with the current message`}
           onClick={() => { void openTortoise() }}>Open in Tortoise</button>}
-      </div>
-      <div className="commit-actions-right">
-        {!done && draft !== null && <button type="button" className="commit-submit" disabled={!canCommit} onClick={() => { void run() }}>OK</button>}
-        <button type="button" disabled={busy} onClick={props.onClose}>{done || model.error !== null ? 'Close' : 'Cancel'}</button>
       </div>
     </div>
   </section>

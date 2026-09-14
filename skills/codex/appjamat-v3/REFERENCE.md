@@ -134,7 +134,7 @@ creation also accepts `--flow-id ID`, `--acknowledge-setup HASH`, `--open-tab`, 
 
 The user's own commit and autocommit instructions take precedence. These commands offer a human
 review dialog; they never perform an unattended commit, including docs-only changes. There is no
-`vcs.commit` operation. A person selects files, reviews the diff, edits the message and clicks OK.
+`vcs.commit` operation. A person selects files, reviews the diff, edits the message and clicks Commit files.
 
 Inside the session, use:
 
@@ -143,8 +143,10 @@ node "<skill>/scripts/jamat-v3.mjs" commit-svn-jamat --self --message-file "Q:/t
 ```
 
 Use `commit-git-jamat` for an ordinary human Git repository; checkpoint worktrees are refused.
-Git commits never push. `--path` narrows the session's scope to a nested directory. SVN externals
-commit separately. Without a path, Jamat uses the session's working directory, never an enclosing
+Git commits never push. `--path` narrows the session's scope to a nested directory. Checked SVN
+externals commit sequentially with the main selection and the same message after one human
+confirmation. For a different message, Commit separately unchecks that group in the parent and
+opens its own tab. Without a path, Jamat uses the session's working directory, never an enclosing
 SVN working-copy root.
 
 `--self` reads `JAMAT_V3_SESSION_ID` and the controller pair
@@ -176,8 +178,10 @@ recovering the connection; never infer completion from a clean working copy or s
 
 - `editing` or `running`: still pending.
 - `committed`: actual SVN revision or Git hash in `revision`, even before the result pane closes.
+  A batch reports comma-separated revisions after all selected groups succeed.
 - `cancelled`: closed without committing.
-- `failed`: the attempt failed; `detail` explains why. The human can retry in the still-open panel.
+- `failed`: the attempt failed; `detail` explains why and lists any already committed groups.
+  Earlier commits remain committed. The human reviews the refreshed remaining files before retrying.
 - `external-closed`: the person used Open in Tortoise and closed that window. Verify VCS history and
   status because an external process exit does not prove a commit.
 
@@ -185,7 +189,13 @@ Closed results stay available for 24 hours, limited to the latest 256 completed 
 and are lost on AppClientUI restart. A successful status read has exit 0 even for cancelled/failed;
 inspect `state`, not only `ok`. The shared commit helpers translate those outcomes into their exits.
 After a real commit, check remaining changes separately; a partial commit may leave a dirty scope.
-Enter confirms enabled OK, Shift+Enter adds a message line, and Escape closes before a write starts.
+Enter confirms enabled Commit files, Shift+Enter adds a message line, and Escape closes before a write starts.
+Versioning closes a successful native commit dialog automatically by default; its setting can keep
+the result pane open. The retained UUID still reports committed after automatic closing.
+An out-of-date SVN commit attempts one update of the failed group's scope without nested externals or automatic conflict
+resolution. Status stays running during that update, then reports failed with the update result and
+original error. The human reviews the refreshed diff and clicks Commit files again; a completed update is not
+a commit and never triggers automatic closing or a second commit attempt.
 
 If discovery finds no running controller, the requested session is absent or not live, or an explicit
 scope lies outside the session's known working directory, Windows

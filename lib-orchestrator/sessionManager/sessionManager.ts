@@ -35,6 +35,7 @@ import { SetupFamilies } from '../projectSetup/setupFamilies'
 import type { RuntimeChannel } from '../shared/configIdentity.types'
 import { ErrorText } from '../shared/errorText'
 import { OrchestratorPaths } from '../shared/orchestratorPaths'
+import { PathCompare } from '../shared/pathCompare'
 import { AgentPresets } from './launch/agentPresets'
 import { FinalizeSteps } from './lifecycle/finalizeSteps'
 import { LaunchBackoff } from './lifecycle/launchBackoff'
@@ -65,6 +66,7 @@ import type {
   SessionHistoryOpenSpec,
   SessionHistoryReference,
   SessionInfo,
+  SessionLocalHistoryEntry,
   SessionOperation,
   SessionSetupInfo,
   SessionsOpErrorCode,
@@ -351,6 +353,7 @@ export class SessionManager {
       leaseIdOf: () => this.client.controllerLeaseId(),
       refOf: (sessionId) => this.terminalRefOf(sessionId),
       onError: deps.onError,
+      onUserInput: (sessionId) => this.records?.noteUserInput(sessionId, Date.now()),
       socketFactory: deps.terminalSocketFactory
         ?? ((socketDeps) => new TerminalAttachSocket(socketDeps)),
     })
@@ -401,11 +404,56 @@ export class SessionManager {
     this.clearTimer()
     this.monitor.stop()
     this.terminals.closeAll()
+    await this.records?.flushUserInput()
     await this.client.stop()
   }
 
   snapshot(): SessionsSnapshot {
     return this.snapshotValue ?? this.recompose()
+  }
+
+  async localHistory(): Promise<SessionLocalHistoryEntry[]> {
+    await this.lifecycle()
+    const catalog = this.catalog.read()
+    const entries: SessionLocalHistoryEntry[] = []
+    for (const record of this.records?.list() ?? []) {
+      switch (record.kind) {
+        case 'shell': continue
+        case 'agent': break
+        default: throw new Error(`Unknown session kind: ${JSON.stringify(record.kind)}`)
+      }
+      if (!record.agent?.nativeSessionId) continue
+      const project = catalog.bind(SessionWorkingDirectory.ofRecord(record), record.worktree?.repositoryRoot)
+      switch (project.kind) {
+        case 'adHoc':
+        case 'none': continue
+        case 'project': break
+        default: throw new Error(`Unknown project binding: ${JSON.stringify(project)}`)
+      }
+      const category = catalog.categories.find((root) => root.id === project.categoryId)
+      if (!category) continue
+      switch (record.directory.mode) {
+        case 'project':
+          project.projectPath = record.directory.projectPath
+          project.projectName = PathCompare.normalized(record.directory.projectPath).slice(PathCompare.normalized(category.path).length + 1)
+          break
+        case 'adHoc':
+        case 'default': break
+        default: throw new Error(`Unknown session directory: ${JSON.stringify(record.directory)}`)
+      }
+      entries.push({
+        category: { id: category.id, label: category.label, path: category.path },
+        project,
+        agentId: record.agent.agentId,
+        nativeSessionId: record.agent.nativeSessionId,
+        title: record.title,
+        model: record.agent.model ?? null,
+        createdAt: record.createdAt,
+        lastActivity: this.records?.lastUserInputAt(record.sessionId) ?? null,
+        active: record.life === 'live' || record.life === 'starting',
+      })
+    }
+    return entries
   }
 
   async workingContext(sessionId: string): Promise<SessionWorkingContextResult> {
@@ -1103,6 +1151,7 @@ export class SessionManager {
   private async tick(): Promise<void> {
     this.lastTickAt = Date.now()
     try {
+      await this.records?.flushUserInput()
       this.detach(this.refreshWorktreeFacts(), 'The worktree facts')
       this.detach(this.refreshVcsFacts(), 'The VCS facts')
       await this.refresh('poll')
@@ -1323,6 +1372,7 @@ export class SessionManager {
     }
     const activityDetail = this.monitor.activityDetail(record.sessionId)
     if (activityDetail !== null) info.activityDetail = activityDetail
+    if (this.monitor.compacting(record.sessionId)) info.compacting = true
     if (record.agent)
       info.agent = {
         agentId: record.agent.agentId,

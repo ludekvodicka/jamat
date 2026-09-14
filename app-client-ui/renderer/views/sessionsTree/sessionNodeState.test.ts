@@ -69,6 +69,18 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionNodeState', () => {
     expect(SessionNodeState.paintOf('working', true)).toBe('ok')
   })
 
+  it('uses a broom for compaction without turning it into idle or a new result', () => {
+    expect(SessionNodeState.glyphOf('live', 'agent', 'working', undefined, true)).toBe('compacting')
+    expect(SessionNodeState.glyphOf('ended', 'agent', 'working', undefined, true)).toBe('ended')
+    expect(SessionNodeState.characterOf('compacting', false)).toBe('🧹')
+    expect(SessionNodeState.characterOf('compacting', true)).toBe('🧹')
+    expect(SessionNodeState.paintOf('compacting', true)).toBe('ok')
+    expect(SessionNodeState.glyphTitleOf('compacting', false)).toBe('compacting context')
+    expect(SessionNodeState.glyphTitleOf('compacting', true))
+      .toBe('compacting context - previous result not seen')
+    expect(() => SessionNodeState.glyphOf('live', 'agent', 'idle', undefined, true)).toThrow()
+  })
+
   it('offers finish while there is a step left, and rerun or remove once there is none', () => {
     expect(SessionNodeState.actionsOf({ life: 'live', admits: ['finalize'] }, false))
       .toEqual(['finalize'])

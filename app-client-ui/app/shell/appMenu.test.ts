@@ -107,7 +107,7 @@ describe('app-client-ui/app/shell/appMenu', () => {
       'Toggle DevTools',
     ])
     expect(readOut(submenuOf(template, 'File')))
-      .toEqual(['New Session', 'New Remote Session', 'Settings', 'separator', 'Quit'])
+      .toEqual(['New Session', 'Historic sessions', 'New Remote Session', 'Settings', 'separator', 'Quit'])
     expect(readOut(submenuOf(template, 'Tools')))
       .toEqual(['Remarkable', 'separator', 'Check for Updates…'])
     expect(readOut(submenuOf(template, 'Window'))).toEqual(['New Window', 'Window Settings'])
@@ -157,6 +157,7 @@ describe('app-client-ui/app/shell/appMenu', () => {
       .map((item) => [item.label, item.accelerator])
     expect(accelerators).toEqual([
       ['New Session', 'Ctrl+T'],
+      ['Historic sessions', 'Ctrl+H'],
       ['New Remote Session', 'Ctrl+N'],
       ['Settings', 'Ctrl+,'],
       ['New Tab', 'Ctrl+Shift+T'],
@@ -175,7 +176,6 @@ describe('app-client-ui/app/shell/appMenu', () => {
       ['Toggle Left Sidebar', 'Ctrl+B'],
       ['Toggle Right Sidebar', 'Ctrl+Alt+B'],
       ['Toggle File Tools', 'Ctrl+G'],
-      ['File Changes', 'Ctrl+H'],
       ['Maximize Group', 'F11'],
       ['New Window', 'Ctrl+Shift+N'],
       ['Debug Window', 'Ctrl+Shift+D'],
@@ -210,6 +210,7 @@ describe('app-client-ui/app/shell/appMenu', () => {
         click(item)
     expect(dispatched.renderer).toEqual([
       'session.new',
+      'session.history',
       'session.newRemote',
       'settings.open',
       'tab.new',

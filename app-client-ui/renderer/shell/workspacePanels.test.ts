@@ -25,6 +25,10 @@ class WorkspacePanelsTestController {
     return panelId === this.panelId ? this.key : null
   }
 
+  transferPayload(): { params: Record<string, unknown> } {
+    return { params: this.params }
+  }
+
   applyPanelParameters(
     panelId: string,
     merge: (params: Record<string, unknown>) => Record<string, unknown>,
@@ -53,6 +57,28 @@ class WorkspacePanelsTestController {
 }
 
 describe('app-client-ui/renderer/shell/workspacePanels', () => {
+  it('offers Escape only for a full file viewer or the active file in a terminal split', () => {
+    const controller = new WorkspacePanelsTestController()
+    const file = WorkspacePanelsTest.item('one')
+    const commit = { kind: 'commit' as const, key: 'commit', title: 'Commit', vcs: 'svn' as const, scopeRoot: 'Q:/app' }
+    controller.params = PanelSplitParams.merged(controller.params, {
+      ...PanelSplitParams.default(), items: [file, commit], active: file.key,
+    })
+    expect(WorkspacePanels.hasActiveFileViewer(controller.asController())).toBe(true)
+    controller.params = PanelSplitParams.merged(controller.params, {
+      ...PanelSplitParams.of(controller.params), active: commit.key,
+    })
+    expect(WorkspacePanels.hasActiveFileViewer(controller.asController())).toBe(false)
+    controller.params = {}
+    expect(WorkspacePanels.hasActiveFileViewer(controller.asController())).toBe(false)
+    controller.key = PanelKeysConst.fileViewer
+    expect(WorkspacePanels.hasActiveFileViewer(controller.asController())).toBe(true)
+    for (const key of [null, PanelKeysConst.welcome, PanelKeysConst.directoryViewer]) {
+      controller.key = key
+      expect(WorkspacePanels.hasActiveFileViewer(controller.asController())).toBe(false)
+    }
+  })
+
   it('focuses the selected commit after rendering only for an activating open', async () => {
     const c = new WorkspacePanelsTestController()
     const command: Extract<TabControlCommand, { kind: 'open-commit' }> = { kind: 'open-commit', requestId: 'open', panelId: c.panelId,

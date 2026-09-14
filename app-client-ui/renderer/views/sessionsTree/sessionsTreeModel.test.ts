@@ -78,6 +78,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
     const base = source.sessions.find((session) => session.sessionId === 's-working')!
     const cases: readonly [string, Partial<SessionInfo>][] = [
       ['working', {}], ['background', { activityDetail: 'background' }],
+      ['compacting', { compacting: true }],
       ['question', { activity: 'waiting' }], ['idle', { activity: 'idle' }],
       ['starting', { life: 'starting' }], ['unknown', { activity: 'unknown' }],
       ['ended', { life: 'ended' }], ['lost', { life: 'lost' }],
@@ -86,8 +87,8 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
     ]
     const snapshot = { ...source, sessions: cases.map(([sessionId, over]) => ({ ...base, sessionId, ...over })) }
     const wanted: Record<SessionFilterStatus, readonly string[]> = {
-      active: ['working', 'background', 'question', 'idle', 'starting', 'unknown', 'ended', 'lost', 'shell'],
-      attention: ['idle'], running: ['working', 'background', 'shell'], question: ['question'],
+      active: ['working', 'background', 'compacting', 'question', 'idle', 'starting', 'unknown', 'ended', 'lost', 'shell'],
+      attention: ['idle'], running: ['working', 'background', 'compacting', 'shell'], question: ['question'],
       idle: ['idle'], starting: ['starting'], background: ['background'], ended: ['ended', 'completed'],
       lost: ['lost'], completed: ['completed'], unknown: ['unknown'],
       // None of these carries an end time, and that is the answer: a record with no `endedAt` has
@@ -102,7 +103,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
     const grouped = {
       attention: ['question', 'unknown', 'ended', 'lost'],
       unread: ['idle'],
-      running: ['working', 'background', 'starting', 'shell'],
+      running: ['working', 'background', 'compacting', 'starting', 'shell'],
       read: ['completed'],
     }
     for (const group of SessionsTreeModel.groupsConst) {

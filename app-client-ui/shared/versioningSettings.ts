@@ -16,6 +16,7 @@ export interface VersioningSettingsValue {
   mode: VersioningMode
   diffTool: VersioningDiffTool
   activateSessionOnCommit?: boolean
+  closeCommitOnSuccess?: boolean
 }
 
 export type VersioningDiffTool = { kind: 'internal' } | { kind: 'external'; command: string; argumentTemplate: string }
@@ -65,7 +66,7 @@ export class VersioningSettings {
   }
 
   static defaultValue(): VersioningSettingsValue {
-    return { mode: VersioningSettings.defaultModeConst, diffTool: { kind: 'internal' }, activateSessionOnCommit: true }
+    return { mode: VersioningSettings.defaultModeConst, diffTool: { kind: 'internal' }, activateSessionOnCommit: true, closeCommitOnSuccess: true }
   }
 
   /**
@@ -92,7 +93,10 @@ export class VersioningSettings {
     const activateSessionOnCommit = typeof document.activateSessionOnCommit === 'boolean' ? document.activateSessionOnCommit : true
     if (document.activateSessionOnCommit !== undefined && typeof document.activateSessionOnCommit !== 'boolean')
       report('The commit activation setting is unusable; reading it as enabled')
-    return { ...document, mode, diffTool, activateSessionOnCommit }
+    const closeCommitOnSuccess = typeof document.closeCommitOnSuccess === 'boolean' ? document.closeCommitOnSuccess : true
+    if (document.closeCommitOnSuccess !== undefined && typeof document.closeCommitOnSuccess !== 'boolean')
+      report('The commit closing setting is unusable; reading it as enabled')
+    return { ...document, mode, diffTool, activateSessionOnCommit, closeCommitOnSuccess }
   }
 
   /** Writing is strict, which is what keeps the file readable by the next version that reads it. */
@@ -101,6 +105,7 @@ export class VersioningSettings {
     const document = value as Partial<Record<keyof VersioningSettingsValue, unknown>>
     return VersioningSettings.isMode(document.mode) && VersioningSettings.isDiffTool(document.diffTool)
       && (document.activateSessionOnCommit === undefined || typeof document.activateSessionOnCommit === 'boolean')
+      && (document.closeCommitOnSuccess === undefined || typeof document.closeCommitOnSuccess === 'boolean')
   }
 
   private static isMode(value: unknown): value is VersioningMode {

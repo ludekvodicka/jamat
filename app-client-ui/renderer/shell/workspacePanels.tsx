@@ -139,6 +139,16 @@ export class WorkspacePanels {
     return typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : null
   }
 
+  static hasActiveFileViewer(controller: TabsController): boolean {
+    const panelId = controller.activePanelId()
+    if (panelId === null) return false
+    const key = controller.keyOf(panelId)
+    if (key === PanelKeysConst.fileViewer) return true
+    if (key !== PanelKeysConst.terminal) return false
+    const split = PanelSplitParams.of(controller.transferPayload(panelId).params)
+    return split.items.some((item) => item.key === split.active && item.kind === 'file')
+  }
+
   static async closeActive(controller: TabsController): Promise<void> {
     const panelId = controller.activePanelId()
     if (panelId === null)

@@ -13,6 +13,7 @@ const ownersConst: Readonly<Record<string, string>> = {
   flows: 'flows',
   projects: 'projects',
   manage: 'projects',
+  history: 'history',
 }
 
 class LauncherStyles {
@@ -51,7 +52,7 @@ describe('app-client-ui/renderer/overlays/launcher/style ownership', () => {
    * Anything two screens need lives in `launcher.css` under `jamat-launcher__*`. This is what stops
    * the borrowing from coming back the next time a screen needs a note or an error line.
    */
-  for (const directory of ['computers', 'create', 'flows', 'projects'])
+  for (const directory of ['computers', 'create', 'flows', 'projects', 'history'])
     it(`draws ${directory}/ with its own classes and the overlay's, and no other screen's`, () => {
       const borrowed: string[] = []
       for (const path of LauncherStyles.sourcesOf(directory))
@@ -71,7 +72,7 @@ describe('app-client-ui/renderer/overlays/launcher/style ownership', () => {
     const shared = [...LauncherStyles.classesIn(join(hereConst, 'launcher.css'))]
       .filter((className) => LauncherStyles.ownerOf(className) === null)
     const readers = new Map<string, Set<string>>(shared.map((one) => [one, new Set()]))
-    for (const directory of ['computers', 'create', 'flows', 'projects'])
+    for (const directory of ['computers', 'create', 'flows', 'projects', 'history'])
       for (const path of LauncherStyles.sourcesOf(directory))
         for (const className of LauncherStyles.classesIn(path))
           readers.get(className)?.add(directory)

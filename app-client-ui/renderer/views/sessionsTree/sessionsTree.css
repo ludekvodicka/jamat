@@ -250,7 +250,7 @@
   align-items: center;
   gap: var(--space-1);
   padding: 2px var(--space-2);
-  border-left: 2px solid transparent;
+  border-left: 3px solid transparent;
   /* A stacking context, which is what the state tint below needs: at z-index auto its negative
      child would paint BEHIND this row's own background and never be seen at all. */
   position: relative;
@@ -274,16 +274,12 @@
 .jamat-sessions__row[data-session-color='violet'] { background: var(--session-color-violet); }
 .jamat-sessions__row[data-session-color='magenta'] { background: var(--session-color-magenta); }
 .jamat-sessions__row[data-session-color='rose'] { background: var(--session-color-rose); }
-/* The row of the session whose tab is in front: the one being worked in, told apart from the ones
-   merely listed above and below it.
-   A tint laid OVER the background rather than a background of its own, which is why it is a shadow
-   and not a colour. A background would have to beat the twelve rules above it to be seen on a
-   coloured row, and beating them means erasing the colour that session was given - two facts about
-   one row, and neither is allowed to cost the other. The left edge takes the accent the tab bar
-   draws its active tab with, so the two surfaces answer "which one" the same way. */
+/* Inset shadows preserve the session background and keep selection from changing the row size. */
 .jamat-sessions__row--in-front {
   border-left-color: var(--color-accent);
-  box-shadow: inset 0 0 0 100vmax color-mix(in srgb, var(--color-accent) 14%, transparent);
+  box-shadow:
+    inset 0 -1px 0 color-mix(in srgb, var(--color-accent) 65%, transparent),
+    inset 0 0 0 100vmax color-mix(in srgb, var(--color-accent) 14%, transparent);
 }
 /* This row's state changed: a swell of light that fades out on its own, so a person looking
    somewhere else catches the movement rather than the colour. Deliberately not the accent - that

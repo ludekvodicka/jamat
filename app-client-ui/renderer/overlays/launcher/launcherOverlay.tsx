@@ -21,7 +21,8 @@ import { FlowScreenModel, type FlowScreenState } from './flows/flowScreenModel'
 import './launcher.css'
 import { LauncherEffects, type LauncherPorts } from './launcherEffects'
 import type { LauncherBinding } from './launcherBinding'
-import type { LauncherIntentStore, LauncherPrefill } from './launcherIntentStore'
+import type { LauncherIntent, LauncherIntentStore, LauncherPrefill } from './launcherIntentStore'
+import { HistoricSessionsOverlay } from './history/historicSessionsOverlay'
 import type { LauncherRemoteTarget, LauncherTarget } from './launcherTarget'
 import { type LauncherInput, LauncherModel, type LauncherState } from './projects/launcherModel'
 import { LauncherProjectsScreen, NewProjectEdit } from './projects/launcherProjectsScreen'
@@ -113,7 +114,7 @@ interface LauncherScreenDescriptor<K extends LauncherScreenKind> {
 /** What a flow's own form is, from the model that owns it: this file never reads inside it. */
 type LauncherScreenFlowForm = FlowScreenState['form']
 
-export function LauncherOverlay(props: {
+interface LauncherOverlayProps {
   intents: LauncherIntentStore
   /**
    * What a created session is drawn in. The card closes right after, so this runs before it does.
@@ -128,14 +129,20 @@ export function LauncherOverlay(props: {
   /** Where a computer this card does not list is explained. It replaces this card. */
   onOpenRemoteSettings(): void
   onClose(): void
-}): React.JSX.Element {
+}
+
+export function LauncherOverlay(props: LauncherOverlayProps): React.JSX.Element {
+  const [intent] = useState(() => props.intents.consume())
+  if (intent?.purpose === 'history')
+    return <HistoricSessionsOverlay onOpenTerminal={props.onOpenTerminal} onClose={props.onClose} />
+  return <SessionLauncherOverlay {...props} intent={intent} />
+}
+
+function SessionLauncherOverlay(props: LauncherOverlayProps & { intent: LauncherIntent | null }): React.JSX.Element {
   const card = useRef<HTMLDivElement | null>(null)
   /** Set when a terminal was opened from here: focus belongs to that tab, not to whatever opened this. */
   const handedOff = useRef(false)
-  // One shot, read while the surface is being built: an intent is what ONE keystroke meant, and a
-  // launcher opened again later must not still be acting on it. Read BEFORE the machine below,
-  // which starts in the category the intent named.
-  const [intent] = useState(() => props.intents.consume())
+  const intent = props.intent
   // Read once and held for the life of the card, not for the life of one screen: Escape back to the
   // projects and Enter again is still the tab card, or still the network card.
   const tabProfile = intent?.purpose === 'tabProfile'

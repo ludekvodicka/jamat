@@ -8,6 +8,7 @@ import type { WindowRole } from './windowInfo'
 
 export type CommandId =
   | 'session.new'
+  | 'session.history'
   | 'session.newRemote'
   | 'settings.open'
   | 'app.quit'
@@ -247,6 +248,16 @@ export class AppCommands {
       menu: { section: 'file', group: 0 },
       surfaces: ['menu'],
       accelerator: 'Ctrl+T',
+      terminalSafe: true,
+    },
+    {
+      id: 'session.history',
+      title: 'Historic sessions',
+      target: 'renderer',
+      windowScope: 'any',
+      menu: { section: 'file', group: 0 },
+      surfaces: ['menu'],
+      accelerator: 'Ctrl+H',
       terminalSafe: true,
     },
     /*
@@ -698,7 +709,6 @@ export class AppCommands {
       windowScope: 'any',
       menu: { section: 'view', group: 0 },
       surfaces: ['menu'],
-      accelerator: 'Ctrl+H',
       terminalSafe: true,
     },
     {

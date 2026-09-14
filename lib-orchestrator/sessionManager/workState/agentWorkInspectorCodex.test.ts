@@ -18,6 +18,143 @@ describe('lib-orchestrator/sessionManager/workState/agentWorkInspectorCodex', ()
     expect(fixtures.length).toBeGreaterThanOrEqual(5)
   })
 
+  it('prioritizes queued questions over compaction, foreground work, background work, and idle', () => {
+    const frame = recorded('codex-queued-question-compacting.json').frame
+    for (const screenTail of [
+      frame.screenTail,
+      frame.screenTail.replace('Compacting context', 'Working'),
+      frame.screenTail.replace('Compacting context', 'Waiting for background terminal')
+        .replace('esc to interrupt)', 'esc to interrupt) · 1 background terminal running · /ps to view · /stop to close'),
+      frame.screenTail.slice(frame.screenTail.indexOf('• Queued')),
+    ]) {
+      const inspection = AgentWorkInspectorCodex.inspect({ ...frame, screenTail })
+      expect(inspection.hint).toBe('waiting')
+      expect(inspection.evidence).toEqual([expect.objectContaining({ source: 'screen', signal: 'questionPrompt' })])
+    }
+  })
+
+  it('recognizes queued questions through ANSI gaps, wrapping, and multiple questions', () => {
+    const frame = recorded('codex-queued-question-compacting.json').frame
+    for (const screen of [
+      frame.screenTail,
+      frame.screenTail.replaceAll(' ', '\x1b[1C'),
+      frame.screenTail.replace('1 question', '12 questions'),
+      frame.screenTail.replace('follow-up inputs', 'follow-up\ninputs'),
+    ])
+      for (const cols of [40, 80, 120]) {
+        const inspection = AgentWorkInspectorCodex.inspect(ScreenTail.frameOf({ raw: '', screen, cols }))
+        expect(inspection.hint, `${cols} columns: ${screen}`).toBe('waiting')
+      }
+  })
+
+  it('keeps the queued question in the shallow window above the model and directory footer', () => {
+    const frame = recorded('codex-queued-question-compacting.json').frame
+    const screen = `${frame.screenTail}\n\n  gpt-6-astra xhigh · Q:\\PROJECTS\\WebPortfolioAdmin · Prověř app/shared`
+    for (const cols of [103, 120, 259])
+      expect(AgentWorkInspectorCodex.inspect(ScreenTail.frameOf({ raw: '', screen, cols })).hint).toBe('waiting')
+  })
+
+  it('requires the queued-question structure and answer shortcut, not prose or queued messages', () => {
+    const frame = recorded('codex-queued-question-compacting.json').frame
+    const queued = frame.screenTail.slice(frame.screenTail.indexOf('• Queued'))
+    for (const screenTail of [
+      queued.replace('• Queued follow-up inputs\n', ''),
+      queued.replace('  ? 1 question\n', ''),
+      queued.replace('    alt + ↑ to answer\n', ''),
+      queued.replace('1 question', '0 questions'),
+      queued.replace('1 question', '1 message'),
+      `Previous status: ${queued}`,
+      queued.replace('1 question', '1 question was answered'),
+    ])
+      expect(AgentWorkInspectorCodex.inspect({ ...frame, screenTail }).hint).toBe('idle')
+  })
+
+  it('stops waiting once the question survives only in history', () => {
+    const question = recorded('codex-queued-question-compacting.json').frame
+    for (const [file, hint] of [
+      ['codex-live-working.json', 'working'],
+      ['codex-compacting-context.json', 'compacting'],
+      ['codex-live-background-terminal.json', 'background'],
+      ['codex-live-idle.json', 'idle'],
+    ] as const) {
+      const inspection = AgentWorkInspectorCodex.inspect({
+        rawTail: question.screenTail,
+        wideScreenTail: question.wideScreenTail,
+        screenTail: recorded(file).frame.screenTail,
+      })
+      expect(inspection.hint, file).toBe(hint)
+      expect(inspection.evidence.some((item) => item.signal === 'questionPrompt'), file).toBe(false)
+    }
+  })
+
+  it('keeps approval ahead of a queued question', () => {
+    const frame = recorded('codex-queued-question-compacting.json').frame
+    const approval = recorded('codex-live-approval.json').frame.screenTail
+    expect(AgentWorkInspectorCodex.inspect({ ...frame, screenTail: `${frame.screenTail}\n${approval}` }).hint)
+      .toBe('blocked')
+  })
+
+  it('recognizes compaction before the empty prompt, including ANSI gaps and wrapped status', () => {
+    const frame = recorded('codex-compacting-context.json').frame
+    for (const screenTail of [
+      frame.screenTail,
+      frame.screenTail.replaceAll(' ', '\x1b[1C'),
+      frame.screenTail.replace('context (40s', 'context\n(40s'),
+      frame.screenTail.replace('• Compacting', '◦ Compacting').replace('40s', '1m 40s'),
+    ]) {
+      const inspection = AgentWorkInspectorCodex.inspect({ ...frame, screenTail })
+      expect(inspection.hint).toBe('compacting')
+      expect(inspection.evidence.map((item) => item.signal)).toEqual(['compactingRow'])
+    }
+  })
+
+  it('does not infer compaction from history, completion text, or prose', () => {
+    const compacting = recorded('codex-compacting-context.json').frame
+    const idle = recorded('codex-live-idle.json').frame
+    for (const screenTail of [
+      idle.screenTail,
+      `Compacted context\n${idle.screenTail}`,
+      `The status was • Compacting context (40s • esc to interrupt)\n${idle.screenTail}`,
+      `• Compacting context\n${idle.screenTail}`,
+    ])
+      expect(AgentWorkInspectorCodex.inspect({ ...compacting, screenTail }).hint).toBe('idle')
+  })
+
+  it('recognizes compaction with the background-terminal suffix through rendering and wrapping', () => {
+    const frame = recorded('codex-compacting-context-background.json').frame
+    for (const screen of [
+      frame.screenTail,
+      frame.screenTail.replaceAll(' ', '\x1b[1C'),
+      frame.screenTail.replace('• Compacting', '◦ Compacting'),
+      frame.screenTail.replace('2 background terminals', '1 background terminal'),
+      frame.screenTail.replace('/ps to view · /stop to close', '/ps to vi…'),
+    ])
+      for (const cols of [103, 120, 160]) {
+        const inspection = AgentWorkInspectorCodex.inspect(ScreenTail.frameOf({ raw: screen, screen, cols }))
+        expect(inspection.hint, `${cols} columns: ${screen}`).toBe('compacting')
+        expect(inspection.evidence.map((item) => item.signal)).toEqual(['compactingRow'])
+      }
+  })
+
+  it('does not accept arbitrary suffixes or an old compact row above the current status region', () => {
+    const compacting = recorded('codex-compacting-context-background.json').frame
+    const idle = recorded('codex-live-idle.json').frame
+    for (const screenTail of [
+      idle.screenTail,
+      `Previous status: ${compacting.screenTail}`,
+      compacting.screenTail.replace('2 background terminals running · /ps to view · /stop to close', 'a note'),
+      compacting.screenTail.replace('2 background terminals', 'two background terminals'),
+    ])
+      expect(AgentWorkInspectorCodex.inspect({ ...compacting, screenTail }).hint).toBe('idle')
+  })
+
+  it('keeps an actual approval ahead of compaction', () => {
+    const frame = recorded('codex-live-approval.json').frame
+    const compacting = recorded('codex-compacting-context.json').frame.screenTail
+    expect(AgentWorkInspectorCodex.inspect({ ...frame, screenTail: `${compacting}\n${frame.screenTail}` }).hint)
+      .toBe('blocked')
+  })
+
   // The corpus this tree inherited was V1 text about a screen, never a screen, which is how the
   // marker glyph moved without a single test noticing. This is the rule that stops that repeating:
   // the verdicts that matter are answered over frames recorded HERE, from a named build.

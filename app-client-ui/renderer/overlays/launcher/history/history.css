@@ -1,0 +1,110 @@
+.jamat-launcher-history__toolbar {
+  display: flex;
+  gap: var(--space-3);
+  padding: var(--space-3);
+}
+.jamat-launcher-history__toolbar input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-text-1);
+  background: var(--color-surface-control);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  font: inherit;
+}
+.jamat-launcher-history__actions {
+  display: flex;
+  gap: var(--space-1);
+}
+.jamat-launcher-history button:not(.jamat-launcher__close) {
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-text-2);
+  background: var(--color-surface-control);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  font: inherit;
+}
+.jamat-launcher-history button[aria-pressed="true"] {
+  color: var(--color-text-1);
+  background: var(--color-surface-control-hover);
+  border-color: var(--color-accent);
+}
+.jamat-launcher-history button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.jamat-launcher-history__table {
+  min-height: 0;
+  overflow: auto;
+}
+.jamat-launcher-history__columns,
+.jamat-launcher-history__row {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.8fr) minmax(150px, 1.1fr) minmax(240px, 2.2fr) minmax(150px, 1fr) 145px 145px;
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-2) var(--space-3);
+  min-width: 1080px;
+}
+.jamat-launcher-history__columns {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--color-text-4);
+  background: var(--color-surface-control);
+  font-size: var(--fs-status);
+  border-block: 1px solid var(--color-border-hairline);
+}
+.jamat-launcher-history__row {
+  min-height: 38px;
+  padding-block: var(--space-1);
+  line-height: 1.2;
+  cursor: pointer;
+  border-bottom: 1px solid var(--color-border-hairline);
+  color: var(--color-text-2);
+  font-size: var(--fs-secondary);
+}
+.jamat-launcher-history__row > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jamat-launcher-history__row small {
+  display: block;
+  color: var(--color-text-4);
+}
+.jamat-launcher-history__row time {
+  color: var(--color-text-4);
+  font-size: var(--fs-status);
+  font-variant-numeric: tabular-nums;
+}
+.jamat-launcher-history__row:hover {
+  background: var(--color-surface-control-hover);
+}
+.jamat-launcher-history__row--selected,
+.jamat-launcher-history__row--selected:hover {
+  background: var(--color-surface-control-hover);
+  box-shadow: inset 3px 0 var(--color-accent);
+}
+.jamat-launcher-history__empty {
+  padding: var(--space-4);
+  text-align: center;
+  color: var(--color-text-4);
+}
+.jamat-launcher-history__count {
+  color: var(--color-text-4);
+  font-size: var(--fs-status);
+}
+.jamat-launcher-history__hint {
+  flex: 1;
+  text-align: right;
+}
+.jamat-launcher-history__errors {
+  color: var(--color-danger);
+  max-height: 90px;
+  overflow: auto;
+  padding-inline: var(--space-3);
+}

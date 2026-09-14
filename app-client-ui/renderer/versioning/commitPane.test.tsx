@@ -14,11 +14,11 @@ class CommitPaneTest {
       location: 'workspace', previousPath: null, previousDisplayPath: null, modifiedAt: 1, sources: ['vcs'], gitState: null }
   }
 
-  static fixture() {
-    let draft: VersioningCommitDraftDto = { draftId: 'draft', sessionId: 'session', vcs: 'svn', source: 'svn', scopeRoot: 'Q:/app',
+  static fixture(vcs: VersioningCommitDraftDto['vcs'] = 'svn') {
+    let draft: VersioningCommitDraftDto = { draftId: 'draft', sessionId: 'session', vcs, source: vcs, scopeRoot: 'Q:/app',
       scopeDisplay: 'Q:/app', message: 'Proposed message', proposedByAgent: true, editedByPerson: false, phase: { kind: 'editing' }, revision: 1 }
     const snapshot: FileChangesWorkingTreeSnapshot = { snapshotId: 'snapshot', sessionId: 'session', createdAt: 1,
-      source: { requested: 'svn', selected: 'svn', available: ['svn'], fallbackReason: null }, defaultBaseline: { kind: 'svn-base', revision: null, label: 'BASE', baselineId: 'base', createdAt: null },
+      source: { requested: vcs, selected: vcs, available: [vcs], fallbackReason: null }, defaultBaseline: { kind: vcs === 'svn' ? 'svn-base' : 'git-head', revision: null, label: 'BASE', baselineId: 'base', createdAt: null },
       entries: [CommitPaneTest.entry('a.txt'), CommitPaneTest.entry('b.txt'), CommitPaneTest.entry('conflict.txt', 'conflicted'), CommitPaneTest.entry('shared/external.txt')],
       externalRoots: [{ path: 'Q:/app/shared', displayPath: 'shared', fileIds: ['shared/external.txt'] }], warnings: [] }
     const subscribers = new Set<() => void>()
@@ -42,7 +42,7 @@ class CommitPaneTest {
       subscribe: (fn) => { subscribers.add(fn); return () => { subscribers.delete(fn) } },
       reportError: vi.fn(),
     }
-    return { ports, snapshot, item: { kind: 'commit' as const, key: 'svn-app', title: 'Commit SVN', vcs: 'svn' as const, scopeRoot: 'Q:/app' } }
+    return { ports, snapshot, item: { kind: 'commit' as const, key: `${vcs}-app`, title: `Commit ${vcs.toUpperCase()}`, vcs, scopeRoot: 'Q:/app' } }
   }
 }
 
@@ -61,10 +61,39 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     expect(f.ports.versioning.runCommit).not.toHaveBeenCalled()
     fireEvent.keyDown(message, { key: 'Enter' })
     await waitFor(() => expect(f.ports.versioning.runCommit).toHaveBeenCalledTimes(1))
-    expect(close).not.toHaveBeenCalled()
+    await waitFor(() => expect(close).toHaveBeenCalledOnce())
   })
 
-  it('Escape closes without committing and Enter obeys the disabled OK state', async () => {
+  it('keeps a successful commit open when automatic closing is disabled', async () => {
+    const f = CommitPaneTest.fixture()
+    const close = vi.fn()
+    vi.mocked(f.ports.versioning.getSettings).mockResolvedValue({ ok: true, value: {
+      mode: 'checkpoints', diffTool: { kind: 'internal' }, closeCommitOnSuccess: false,
+    } })
+    render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={close} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    await screen.findByLabelText('Include a.txt')
+    fireEvent.click(screen.getByRole('button', { name: 'Commit files' }))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Committed'))
+    await waitFor(() => expect(f.ports.versioning.getSettings).toHaveBeenCalled())
+    expect(close).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    expect(close).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the result visible if reading the automatic closing setting fails', async () => {
+    const f = CommitPaneTest.fixture()
+    const close = vi.fn()
+    vi.mocked(f.ports.versioning.getSettings).mockResolvedValue({ ok: false, error: 'Settings unavailable' })
+    render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={close} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    await screen.findByLabelText('Include a.txt')
+    fireEvent.click(screen.getByRole('button', { name: 'Commit files' }))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Settings unavailable'))
+    expect(screen.getByRole('status')).toHaveTextContent('Committed r4')
+    expect(close).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Close' })).toBeEnabled()
+  })
+
+  it('Escape closes without committing and Enter obeys the disabled Commit files state', async () => {
     const f = CommitPaneTest.fixture()
     const close = vi.fn()
     render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={close} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
@@ -94,21 +123,22 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     for (const path of ['src/a.txt', 'new', 'added', 'deleted', 'missing'])
       expect(screen.getByLabelText(`Include ${path}`)).toBeChecked()
     for (const path of ['shared/app/hub/app.ts', 'shared/app/new', 'shared/app/deleted'])
-      expect(screen.getByLabelText(`Include ${path}`)).toBeDisabled()
-    expect(screen.getAllByText('5 selected')).toHaveLength(2)
+      expect(screen.getByLabelText(`Include ${path}`)).toBeChecked()
+    expect(screen.getAllByText('8 selected')).toHaveLength(2)
     fireEvent.click(screen.getByRole('button', { name: 'Commit separately' }))
     expect(separately).toHaveBeenCalledWith('Q:/app/shared/app')
     fireEvent.click(screen.getByRole('button', { name: 'Select none' }))
-    expect(screen.getByRole('button', { name: 'OK' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Commit files' })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: 'Select all' }))
-    expect(screen.getAllByText('5 selected')).toHaveLength(2)
-    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
+    expect(screen.getAllByText('8 selected')).toHaveLength(2)
+    fireEvent.click(screen.getByRole('button', { name: 'Commit files' }))
     await waitFor(() => expect(f.ports.versioning.runCommit).toHaveBeenCalledWith(expect.objectContaining({
-      fileIds: ['src/a.txt', 'new', 'added', 'deleted', 'missing'],
+      fileIds: ['src/a.txt', 'new', 'added', 'deleted', 'missing', 'shared/app/hub/app.ts', 'shared/app/new', 'shared/app/deleted'],
+      includeExternals: true,
     })))
   })
 
-  it('keeps OK disabled when only modified directories remain', async () => {
+  it('keeps Commit files disabled when only modified directories remain', async () => {
     const f = CommitPaneTest.fixture()
     f.snapshot.entries = [CommitPaneTest.entry('src', 'modified', 'directory')]
     f.snapshot.externalRoots = []
@@ -116,7 +146,7 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     await screen.findByRole('button', { name: 'Select all' })
     fireEvent.click(screen.getByRole('button', { name: 'Select all' }))
     expect(screen.getAllByText('0 selected')).toHaveLength(2)
-    expect(screen.getByRole('button', { name: 'OK' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Commit files' })).toBeDisabled()
     expect(f.ports.versioning.runCommit).not.toHaveBeenCalled()
   })
 
@@ -142,26 +172,111 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     expect(screen.getByLabelText('Include b.txt')).toBeChecked()
   })
 
-  it('groups file actions on the left and reloads after Tortoise closes without running a Jamat commit', async () => {
+  it('groups file actions on the right and reloads after Tortoise closes without running a Jamat commit', async () => {
     const f = CommitPaneTest.fixture()
     let close!: () => void
     vi.mocked(f.ports.versioning.openTortoise).mockImplementation(() => new Promise((resolve) => { close = () => resolve({ ok: true, value: { ok: true } }) }))
     const view = render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={vi.fn()} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
     await screen.findByLabelText('Include a.txt')
     expect(within(view.container.querySelector<HTMLElement>('.commit-actions-left')!).getAllByRole('button').map((button) => button.textContent))
-      .toEqual(['Reload', 'Revert selected (2)…', 'Open in Tortoise'])
+      .toEqual(['Commit files', 'Cancel'])
     expect(within(view.container.querySelector<HTMLElement>('.commit-actions-right')!).getAllByRole('button').map((button) => button.textContent))
-      .toEqual(['OK', 'Cancel'])
+      .toEqual(['Reload', 'Revert selected (2)…', 'Open in Tortoise'])
     const reads = vi.mocked(f.ports.versioning.commitFiles).mock.calls.length
     fireEvent.click(screen.getByRole('button', { name: 'Open in Tortoise' }))
     expect(f.ports.versioning.openTortoise).toHaveBeenCalledExactlyOnceWith('draft', 'Proposed message')
-    expect(screen.getByRole('button', { name: 'OK' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Commit files' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Revert selected (2)…' })).toBeDisabled()
     expect(f.ports.versioning.commitFiles).toHaveBeenCalledTimes(reads)
     await act(async () => { close() })
     await waitFor(() => expect(f.ports.versioning.commitFiles).toHaveBeenCalledTimes(reads + 1))
-    expect(screen.getByRole('button', { name: 'OK' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Commit files' })).toBeEnabled()
     expect(f.ports.versioning.runCommit).not.toHaveBeenCalled()
+  })
+
+  it.each(['svn', 'git'] as const)('closes the %s pane after Tortoise closes and its refreshed list is empty', async (vcs) => {
+    const f = CommitPaneTest.fixture(vcs)
+    const close = vi.fn()
+    let finishTortoise!: () => void
+    let finishRead!: (answer: Awaited<ReturnType<CommitPanePorts['versioning']['commitFiles']>>) => void
+    vi.mocked(f.ports.versioning.openTortoise).mockImplementation(() => new Promise((resolve) => {
+      finishTortoise = () => resolve({ ok: true, value: { ok: true } })
+    }))
+    const view = render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={close} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Commit files' })).toBeEnabled())
+    vi.mocked(f.ports.versioning.commitFiles).mockImplementation(() => new Promise((resolve) => { finishRead = resolve }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open in Tortoise' }))
+    expect(close).not.toHaveBeenCalled()
+    await act(async () => { finishTortoise() })
+    expect(close).not.toHaveBeenCalled()
+    await act(async () => { finishRead({ ok: true, value: { ok: true, value: {
+      ...f.snapshot, snapshotId: 'empty', entries: [],
+    } } }) })
+    await waitFor(() => expect(close).toHaveBeenCalledOnce())
+    expect(f.ports.versioning.runCommit).not.toHaveBeenCalled()
+    view.unmount()
+    await waitFor(() => expect(f.ports.versioning.closeCommit).toHaveBeenCalledExactlyOnceWith('draft'))
+  })
+
+  it('keeps remaining external changes and closes after Reload removes the last visible row', async () => {
+    const f = CommitPaneTest.fixture()
+    const close = vi.fn()
+    render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={close} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Commit files' })).toBeEnabled())
+    vi.mocked(f.ports.versioning.commitFiles).mockResolvedValue({ ok: true, value: { ok: true, value: {
+      ...f.snapshot, snapshotId: 'external-only', entries: [CommitPaneTest.entry('shared/external.txt')],
+    } } })
+    fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
+    await waitFor(() => expect(screen.queryByLabelText('Include a.txt')).toBeNull())
+    expect(screen.getByRole('button', { name: 'Commit separately' })).toBeEnabled()
+    expect(close).not.toHaveBeenCalled()
+    vi.mocked(f.ports.versioning.commitFiles).mockResolvedValue({ ok: true, value: { ok: true, value: {
+      ...f.snapshot, snapshotId: 'hidden-only', entries: [CommitPaneTest.entry('shared', 'modified', 'directory')],
+    } } })
+    fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
+    await waitFor(() => expect(close).toHaveBeenCalledOnce())
+  })
+
+  it('does not close an initially empty list or treat a failed read as an empty refresh', async () => {
+    const f = CommitPaneTest.fixture()
+    const close = vi.fn()
+    vi.mocked(f.ports.versioning.commitFiles).mockResolvedValue({ ok: true, value: { ok: true, value: {
+      ...f.snapshot, entries: [],
+    } } })
+    render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={close} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Reload' })).toBeEnabled())
+    expect(close).not.toHaveBeenCalled()
+    vi.mocked(f.ports.versioning.commitFiles).mockResolvedValue({ ok: true, value: { ok: true, value: f.snapshot } })
+    fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
+    await screen.findByLabelText('Include a.txt')
+    vi.mocked(f.ports.versioning.commitFiles).mockResolvedValue({ ok: false, error: 'Cannot read the working copy' })
+    fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Cannot read the working copy'))
+    expect(close).not.toHaveBeenCalled()
+    vi.mocked(f.ports.versioning.commitFiles).mockResolvedValue({ ok: true, value: { ok: true, value: {
+      ...f.snapshot, snapshotId: 'empty', entries: [],
+    } } })
+    fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
+    await waitFor(() => expect(close).toHaveBeenCalledOnce())
+  })
+
+  it('keeps operation errors visible even if their automatic refresh has no visible rows', async () => {
+    const f = CommitPaneTest.fixture()
+    const close = vi.fn()
+    vi.mocked(f.ports.versioning.runCommit).mockResolvedValue({ ok: true, value: {
+      ok: false, code: 'vcs-failed', detail: 'SVN update failed', reloadRequired: true,
+    } })
+    render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={close} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Commit files' })).toBeEnabled())
+    vi.mocked(f.ports.versioning.commitFiles).mockResolvedValue({ ok: true, value: { ok: true, value: {
+      ...f.snapshot, snapshotId: 'empty', entries: [],
+    } } })
+    fireEvent.click(screen.getByRole('button', { name: 'Commit files' }))
+    await waitFor(() => expect(screen.queryByLabelText('Include a.txt')).toBeNull())
+    expect(screen.getByRole('status')).toHaveTextContent('SVN update failed')
+    expect(close).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
+    await waitFor(() => expect(close).toHaveBeenCalledOnce())
   })
 
   it('reverts only the context row and reloads after confirmation, keeping other checkboxes', async () => {
@@ -224,7 +339,7 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     for (const name of ['conflict.txt', 'shared/external.txt']) {
       fireEvent.contextMenu(screen.getByText(name))
       expect(screen.getByRole('menuitem', { name: 'Revert…' })).toBeDisabled()
-      if (name === 'shared/external.txt') expect(screen.getByRole('menuitem', { name: 'Show external diff' })).toBeDisabled()
+      expect(screen.getByRole('menuitem', { name: 'Show external diff' })).toBeEnabled()
       fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
     }
     rerender(<CommitTargetsList snapshot={f.snapshot} checked={new Set()} disabled
@@ -272,21 +387,84 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     await waitFor(() => expect(f.ports.versioning.getSettings).toHaveBeenCalledTimes(3))
     expect(screen.queryByRole('menuitem', { name: 'Show external diff' })).toBeNull()
   })
-  it('keeps conflicts and externals unchecked, sends only checked IDs with the edited message, then shows output', async () => {
+  it('keeps conflicts unchecked and commits checked main and external files with the edited message', async () => {
+    const f = CommitPaneTest.fixture()
+    render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={vi.fn()} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    await waitFor(() => expect(screen.getByLabelText('Include a.txt')).toBeChecked())
+    expect(screen.getByLabelText('Include conflict.txt')).toBeDisabled()
+    expect(screen.getByLabelText('Include shared/external.txt')).toBeChecked()
+    fireEvent.click(screen.getByLabelText('Include b.txt'))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Commit message' }), { target: { value: 'Human message\n\nDetails' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Commit files' }))
+    await waitFor(() => expect(f.ports.versioning.runCommit).toHaveBeenCalledWith({ draftId: 'draft', snapshotId: 'snapshot',
+      fileIds: ['a.txt', 'shared/external.txt'], message: 'Human message\n\nDetails', includeExternals: true }))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Committed revision 4.'))
+    expect(screen.getByRole('button', { name: 'Close' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Commit files' })).toBeNull()
+  })
+
+  it('removes an external from the shared selection when choosing a separate message tab', async () => {
     const f = CommitPaneTest.fixture()
     const separate = vi.fn()
     render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={vi.fn()} onOpenChanged={() => null} onOpenSeparately={separate} />)
-    await waitFor(() => expect(screen.getByLabelText('Include a.txt')).toBeChecked())
-    expect(screen.getByLabelText('Include conflict.txt')).toBeDisabled()
+    await screen.findByLabelText('Include shared/external.txt')
     fireEvent.click(screen.getByRole('button', { name: 'Commit separately' }))
-    expect(separate).toHaveBeenCalledWith('Q:/app/shared')
-    fireEvent.click(screen.getByLabelText('Include b.txt'))
-    fireEvent.change(screen.getByRole('textbox', { name: 'Commit message' }), { target: { value: 'Human message\n\nDetails' } })
-    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
-    await waitFor(() => expect(f.ports.versioning.runCommit).toHaveBeenCalledWith({ draftId: 'draft', snapshotId: 'snapshot', fileIds: ['a.txt'], message: 'Human message\n\nDetails' }))
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Committed revision 4.'))
-    expect(screen.getByRole('button', { name: 'Close' })).toBeEnabled()
-    expect(screen.queryByRole('button', { name: 'OK' })).toBeNull()
+    expect(separate).toHaveBeenCalledExactlyOnceWith('Q:/app/shared')
+    expect(screen.getByLabelText('Include shared/external.txt')).not.toBeChecked()
+    fireEvent.click(screen.getByRole('button', { name: 'Commit files' }))
+    await waitFor(() => expect(f.ports.versioning.runCommit).toHaveBeenCalledExactlyOnceWith({
+      draftId: 'draft', snapshotId: 'snapshot', fileIds: ['a.txt', 'b.txt'], message: 'Proposed message', includeExternals: true,
+    }))
+  })
+
+  it('opens external files by double-click, Show diff and the configured external viewer from the main pane', async () => {
+    const f = CommitPaneTest.fixture()
+    const open = vi.fn(() => null)
+    vi.mocked(f.ports.versioning.getSettings).mockResolvedValue({ ok: true, value: {
+      mode: 'checkpoints', diffTool: { kind: 'external', command: 'tool', argumentTemplate: '$1 $2' },
+    } })
+    render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={vi.fn()} onOpenChanged={open} onOpenSeparately={vi.fn()} />)
+    await screen.findByLabelText('Include shared/external.txt')
+    fireEvent.doubleClick(screen.getByText('shared/external.txt'))
+    await waitFor(() => expect(open).toHaveBeenCalledWith(expect.objectContaining({ fileId: 'shared/external.txt' })))
+    expect(f.ports.openFile).toHaveBeenCalledWith('snapshot', 'shared/external.txt')
+    fireEvent.contextMenu(screen.getByText('shared/external.txt'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Show diff' }))
+    await waitFor(() => expect(open).toHaveBeenCalledTimes(2))
+    fireEvent.contextMenu(screen.getByText('shared/external.txt'))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Show external diff' }))
+    await waitFor(() => expect(f.ports.versioning.externalDiff).toHaveBeenCalledExactlyOnceWith({
+      snapshotId: 'snapshot', fileId: 'shared/external.txt', baselineId: 'base',
+    }))
+    expect(f.ports.versioning.runCommit).not.toHaveBeenCalled()
+  })
+
+  it('refreshes a partially committed batch without retrying and retains the message and remaining choices', async () => {
+    const f = CommitPaneTest.fixture()
+    const close = vi.fn()
+    const detail = 'Committed: shared 42. Main scope failed. Review the remaining files.'
+    vi.mocked(f.ports.versioning.runCommit).mockResolvedValue({ ok: true, value: {
+      ok: false, code: 'vcs-failed', detail, reloadRequired: true,
+    } })
+    render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={close} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Commit files' })).toBeEnabled())
+    fireEvent.click(screen.getByLabelText('Include a.txt'))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Shared message' } })
+    vi.mocked(f.ports.versioning.commitFiles).mockResolvedValue({ ok: true, value: { ok: true, value: {
+      ...f.snapshot, snapshotId: 'remaining', entries: f.snapshot.entries.filter((entry) => entry.fileId !== 'shared/external.txt'),
+    } } })
+    fireEvent.click(screen.getByRole('button', { name: 'Commit files' }))
+    await waitFor(() => expect(screen.queryByLabelText('Include shared/external.txt')).toBeNull())
+    expect(screen.getByLabelText('Include a.txt')).not.toBeChecked()
+    expect(screen.getByLabelText('Include b.txt')).toBeChecked()
+    expect(screen.getByRole('textbox')).toHaveValue('Shared message')
+    expect(screen.getByRole('status')).toHaveTextContent(detail)
+    expect(f.ports.versioning.runCommit).toHaveBeenCalledTimes(1)
+    expect(close).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Commit files' }))
+    await waitFor(() => expect(f.ports.versioning.runCommit).toHaveBeenNthCalledWith(2, {
+      draftId: 'draft', snapshotId: 'remaining', fileIds: ['b.txt'], message: 'Shared message', includeExternals: true,
+    }))
   })
 
   it('shows the diff cap refusal and releases the temporary document grant', async () => {
@@ -306,7 +484,7 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={vi.fn()} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
     await screen.findByLabelText('Include a.txt')
     fireEvent.click(screen.getByLabelText('Include b.txt'))
-    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Commit files' }))
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('stale:'))
     const refreshed = { ...f.snapshot, snapshotId: 'snapshot2', entries: f.snapshot.entries.map((entry) => ({ ...entry, fileId: `${entry.fileId}-2` })),
       externalRoots: [{ ...f.snapshot.externalRoots[0], fileIds: ['shared/external.txt-2'] }] }
@@ -316,7 +494,108 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     expect(screen.getByLabelText('Include a.txt')).toBeChecked()
     expect(screen.getByLabelText('Include b.txt')).not.toBeChecked()
     fireEvent.click(screen.getByRole('button', { name: 'Select none' }))
-    expect(screen.getByRole('button', { name: 'OK' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Commit files' })).toBeDisabled()
+  })
+
+  it.each(['svn', 'git'] as const)('reloads an invalid %s list and waits for an explicit retry with the refreshed selection', async (vcs) => {
+    const f = CommitPaneTest.fixture(vcs)
+    const close = vi.fn()
+    vi.mocked(f.ports.versioning.runCommit).mockResolvedValueOnce({ ok: true,
+      value: { ok: false, code: 'invalid-target', detail: 'The file list does not belong to this dialog; reload it', reloadRequired: true } })
+    render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={close} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Commit files' })).toBeEnabled())
+    fireEvent.click(screen.getByLabelText('Include b.txt'))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Keep this review message' } })
+    const reads = vi.mocked(f.ports.versioning.commitFiles).mock.calls.length
+    let finish!: (value: Awaited<ReturnType<CommitPanePorts['versioning']['commitFiles']>>) => void
+    vi.mocked(f.ports.versioning.commitFiles).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    fireEvent.click(screen.getByRole('button', { name: 'Commit files' }))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Reloading the file list...'))
+    expect(screen.getByRole('button', { name: 'Commit files' })).toBeDisabled()
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
+    expect(f.ports.versioning.runCommit).toHaveBeenCalledTimes(1)
+    const refreshed = { ...f.snapshot, snapshotId: 'refreshed',
+      entries: [...f.snapshot.entries.map((entry) => ({ ...entry, fileId: `${entry.fileId}-2` })), CommitPaneTest.entry('new.txt', 'untracked')],
+      externalRoots: [{ ...f.snapshot.externalRoots[0], fileIds: ['shared/external.txt-2'] }] }
+    await act(async () => { finish({ ok: true, value: { ok: true, value: refreshed } }) })
+    expect(screen.getByRole('status')).toHaveTextContent('File list reloaded. Review the files and selection, then click Commit files again.')
+    expect(screen.getByRole('textbox')).toHaveValue('Keep this review message')
+    expect(screen.getByLabelText('Include a.txt')).toBeChecked()
+    expect(screen.getByLabelText('Include b.txt')).not.toBeChecked()
+    expect(screen.getByLabelText('Include new.txt')).toBeChecked()
+    expect(f.ports.versioning.commitFiles).toHaveBeenCalledTimes(reads + 1)
+    expect(f.ports.versioning.runCommit).toHaveBeenCalledTimes(1)
+    expect(close).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByLabelText('Include new.txt'))
+    fireEvent.click(screen.getByRole('button', { name: 'Commit files' }))
+    await waitFor(() => expect(f.ports.versioning.runCommit).toHaveBeenNthCalledWith(2, {
+      draftId: 'draft', snapshotId: 'refreshed', fileIds: ['a.txt-2', 'shared/external.txt-2'], message: 'Keep this review message',
+      ...(vcs === 'svn' ? { includeExternals: true } : {}),
+    }))
+  })
+
+  it('reports a failed automatic reload and blocks committing the old list until a reload succeeds', async () => {
+    const f = CommitPaneTest.fixture()
+    vi.mocked(f.ports.versioning.runCommit).mockResolvedValueOnce({ ok: true,
+      value: { ok: false, code: 'invalid-target', detail: 'Reload the list', reloadRequired: true } })
+    render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={vi.fn()} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Commit files' })).toBeEnabled())
+    vi.mocked(f.ports.versioning.commitFiles).mockResolvedValueOnce({ ok: false, error: 'Cannot read the working copy' })
+    fireEvent.click(screen.getByRole('button', { name: 'Commit files' }))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Cannot read the working copy'))
+    expect(screen.getByRole('status')).not.toHaveTextContent('File list reloaded')
+    expect(screen.getByRole('button', { name: 'Commit files' })).toBeDisabled()
+    expect(f.ports.versioning.runCommit).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Commit files' })).toBeEnabled())
+    expect(f.ports.versioning.runCommit).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not reload after an unrelated invalid target refusal', async () => {
+    const f = CommitPaneTest.fixture()
+    vi.mocked(f.ports.versioning.runCommit).mockResolvedValue({ ok: true,
+      value: { ok: false, code: 'invalid-target', detail: 'Too many commit targets' } })
+    render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={vi.fn()} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Commit files' })).toBeEnabled())
+    const reads = vi.mocked(f.ports.versioning.commitFiles).mock.calls.length
+    fireEvent.click(screen.getByRole('button', { name: 'Commit files' }))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Too many commit targets'))
+    expect(f.ports.versioning.commitFiles).toHaveBeenCalledTimes(reads)
+  })
+
+  it('reloads after SVN recovery, reports its result and preserves the message and unchecked paths', async () => {
+    const f = CommitPaneTest.fixture()
+    const close = vi.fn()
+    const detail = 'SVN update left conflicts in app/file.ts. Original commit error: E155011'
+    vi.mocked(f.ports.versioning.runCommit).mockResolvedValue({ ok: true, value: { ok: false, code: 'vcs-failed', detail, reloadRequired: true } })
+    render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={close} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    await screen.findByLabelText('Include a.txt')
+    fireEvent.click(screen.getByLabelText('Include b.txt'))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Keep my message' } })
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('Keep my message'))
+    const reads = vi.mocked(f.ports.versioning.commitFiles).mock.calls.length
+    vi.mocked(f.ports.versioning.commitFiles).mockResolvedValue({ ok: true, value: { ok: true, value: {
+      ...f.snapshot, snapshotId: 'new', entries: f.snapshot.entries.map((entry) => ({ ...entry, fileId: `${entry.fileId}-2` })),
+    } } })
+    fireEvent.click(screen.getByRole('button', { name: 'Commit files' }))
+    await waitFor(() => expect(f.ports.versioning.commitFiles).toHaveBeenCalledTimes(reads + 1))
+    expect(screen.getByRole('status')).toHaveTextContent(detail)
+    expect(screen.getByRole('textbox')).toHaveValue('Keep my message')
+    expect(screen.getByLabelText('Include b.txt')).not.toBeChecked()
+    expect(f.ports.versioning.runCommit).toHaveBeenCalledTimes(1)
+    expect(close).not.toHaveBeenCalled()
+  })
+
+  it('shows update progress and keeps commit and cancellation disabled while updating', async () => {
+    const f = CommitPaneTest.fixture()
+    const current = await f.ports.versioning.readCommit('draft')
+    if (!current.ok || current.value === null) throw new Error('No fixture draft')
+    vi.mocked(f.ports.versioning.readCommit).mockResolvedValue({ ok: true, value: { ...current.value,
+      phase: { kind: 'running', startedAt: 1, detail: 'SVN is out of date. Updating this commit scope...' } } })
+    render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={vi.fn()} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Updating this commit scope'))
+    expect(screen.getByRole('button', { name: 'Commit files' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()
   })
 
   it('shares a lease across StrictMode remount and two panes, closing it only after the last pane', async () => {
@@ -354,7 +633,7 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     expect(screen.getByText('2 selected', { selector: '.commit-selection span' })).toBeInTheDocument()
     fireEvent.doubleClick(screen.getByText('new/chosen.txt'))
     await waitFor(() => expect(f.ports.openFile).toHaveBeenCalledWith('snapshot', 'new/chosen.txt'))
-    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Commit files' }))
     await waitFor(() => expect(f.ports.versioning.runCommit).toHaveBeenCalledWith(expect.objectContaining({ fileIds: ['new', 'new/chosen.txt'] })))
   })
 })

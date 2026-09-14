@@ -83,12 +83,44 @@ export class SvnCommitManager {
     return reverted.ok ? { ok: true, value: undefined } : reverted
   }
 
+  async update(scope: string): Promise<SvnResult<{ output: string }>> {
+    let output = ''
+    try {
+      const updated = await this.run(scope, ['update', '--non-interactive', '--accept', 'postpone', '--ignore-externals', '--', `${scope}@`])
+      if (!updated.ok) return updated
+      output = updated.value.stdout + updated.value.stderr
+      const status = await this.run(scope, ['status', '--xml', '--non-interactive', '--ignore-externals', '--', `${scope}@`])
+      if (!status.ok) return { ...status, detail: `${output}\nCould not check update conflicts: ${status.detail}` }
+      const parsed = JsonShape.record(new XMLParser({ ignoreAttributes: false,
+        isArray: (name) => name === 'entry' || name === 'target' || name === 'changelist' }).parse(status.value.stdout))
+      const statusRoot = JsonShape.record(parsed?.status)
+      const targets = statusRoot?.target
+      if (!Array.isArray(targets)) return { ok: false, code: 'svn-failed', detail: `${output}\nSVN returned an invalid conflict status` }
+      const changelists = statusRoot?.changelist ?? []
+      if (!Array.isArray(changelists)) throw new Error('SVN returned invalid changelist status')
+      const conflicts: string[] = []
+      for (const target of [...targets, ...changelists]) {
+        const entries = JsonShape.record(target)?.entry ?? []
+        if (!Array.isArray(entries)) throw new Error('SVN returned invalid status entries')
+        for (const value of entries) {
+          const entry = JsonShape.record(value)
+          const working = JsonShape.record(entry?.['wc-status'])
+          if (working === null || typeof entry?.['@_path'] !== 'string') throw new Error('SVN returned an invalid status entry')
+          if (working['@_item'] === 'conflicted' || working['@_props'] === 'conflicted' || working['@_tree-conflicted'] === 'true')
+            conflicts.push(entry['@_path'])
+        }
+      }
+      return conflicts.length === 0 ? { ok: true, value: { output } }
+        : { ok: false, code: 'svn-failed', detail: `SVN update left unresolved conflicts:\n${conflicts.join('\n')}\n\n${output}` }
+    } catch (error) { return { ok: false, code: 'svn-failed', detail: `${output}\n${ErrorText.of(error)}`.trim() } }
+  }
+
   private async run(scope: string, args: string[]): Promise<SvnResult<CommandOutcome>> {
     const outcome = await this.svn.run(scope, args)
     if (outcome.failure === null && outcome.code === 0) return { ok: true, value: outcome }
-    const detail = outcome.stderr.trim() || outcome.stdout.trim() || `svn could not run (${outcome.failure ?? outcome.code})`
+    const detail = [outcome.stdout.trim(), outcome.stderr.trim()].filter(Boolean).join('\n') || `svn could not run (${outcome.failure ?? outcome.code})`
     const code = outcome.failure === 'command-missing' ? 'svn-missing'
-      : /E155011|E160028|out.of.date/i.test(detail) ? 'out-of-date'
+      : /E155011|E160028|E170004|out.of.date/i.test(detail) ? 'out-of-date'
       : /E155004|locked/i.test(detail) ? 'locked'
       : /E155007|not a working copy/i.test(detail) ? 'not-a-working-copy'
       : 'svn-failed'

@@ -9,6 +9,7 @@ import {
   type TerminalRefResolution,
   type TerminalSocketFactory,
 } from './terminalAttachment'
+import { TerminalInputActivity } from './terminalInputActivity'
 
 export type TerminalAttachSource = 'local' | 'remote'
 
@@ -33,6 +34,7 @@ export interface TerminalGatewayDeps {
   refOf: (sessionId: string) => TerminalRefResolution
   onError: (message: string) => void
   socketFactory: TerminalSocketFactory
+  onUserInput?(sessionId: string): void
 }
 
 interface ManagedTerminalAttachment {
@@ -108,7 +110,9 @@ export class TerminalGateway {
   input(attachId: string, data: string): TerminalInputResult {
     const managed = this.attachments.get(attachId)
     if (!managed) return { kind: 'unknown-attach' }
-    return managed.attachment.input(data) ? { kind: 'sent' } : { kind: 'not-writer' }
+    if (!managed.attachment.input(data)) return { kind: 'not-writer' }
+    if (TerminalInputActivity.isUserInput(data)) this.deps.onUserInput?.(managed.sessionId)
+    return { kind: 'sent' }
   }
 
   resize(attachId: string, cols: number, rows: number): TerminalResizeResult {

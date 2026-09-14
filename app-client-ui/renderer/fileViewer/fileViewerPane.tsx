@@ -21,6 +21,7 @@ import './fileViewerPanel.css'
 import './fileViewerPane.css'
 
 export function FileViewerPane(props: {
+  ref?: React.Ref<HTMLElement>
   item: PanelSplitFileItem
   changes: FileChangesViewModel
   workingTree: FileChangesWorkingTreeViewModel
@@ -64,6 +65,8 @@ export function FileViewerPane(props: {
     <section
       className="file-viewer file-viewer-pane"
       aria-label="Split file"
+      ref={props.ref}
+      tabIndex={-1}
       style={{ '--file-viewer-zoom': FileViewerZoom.scaleOf(zoomPercent) } as React.CSSProperties}
     >
       <div className="file-viewer-toolbar">

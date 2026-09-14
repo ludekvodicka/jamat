@@ -67,4 +67,9 @@ describe('app-client-ui/app/versioning/serviceVersioningSettingsIpc', () => {
     await invoke('versioning:settings-save', { mode: 'git', diffTool }, 'diffTool')
     expect(written).toEqual([{ mode: 'checkpoints', diffTool }])
   })
+
+  it('saves automatic closing without replacing another section from a stale settings buffer', async () => {
+    await invoke('versioning:settings-save', { mode: 'git', diffTool: { kind: 'internal' }, activateSessionOnCommit: false, closeCommitOnSuccess: false }, 'closeCommitOnSuccess')
+    expect(written).toEqual([{ ...storedConst, closeCommitOnSuccess: false }])
+  })
 })

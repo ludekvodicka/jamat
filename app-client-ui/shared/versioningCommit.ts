@@ -24,7 +24,7 @@ export class VersioningCommitLimits {
 
 export type VersioningCommitPhase =
   | { kind: 'editing' }
-  | { kind: 'running'; startedAt: number }
+  | { kind: 'running'; startedAt: number; detail?: string }
   | { kind: 'done'; revision: string; output: string; finishedAt: number }
   | { kind: 'failed'; detail: string; failedAt: number }
 
@@ -51,11 +51,12 @@ export interface VersioningCommitRunRequest {
   snapshotId: string
   fileIds: readonly string[]
   message: string
+  includeExternals?: true
 }
 
 export type VersioningCommitRunResult =
   | { ok: true; revision: string }
-  | { ok: false; code: 'unknown-draft' | 'busy' | 'stale' | 'no-targets' | 'invalid-target' | 'external-target' | 'message-too-long' | 'vcs-failed'; detail: string }
+  | { ok: false; code: 'unknown-draft' | 'busy' | 'stale' | 'no-targets' | 'invalid-target' | 'external-target' | 'message-too-long' | 'vcs-failed'; detail: string; reloadRequired?: true }
 
 export interface VersioningCommitOpenSessions {
   revision: number

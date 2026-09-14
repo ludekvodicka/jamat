@@ -53,9 +53,9 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/versioni
     const titles = [...view.container.querySelectorAll('.jamat-configuration__section-title')]
       .map((node) => node.textContent)
 
-    expect(titles).toEqual(['AI versioning', 'Commit review', 'External diff viewer', 'File changes'])
+    expect(titles).toEqual(['AI versioning', 'Commit review', 'Commit completion', 'External diff viewer', 'File changes'])
     expect(selectsOf(view.container).map((select) => select.value)).toEqual(['git', 'svn'])
-    expect(view.getAllByText('Save')).toHaveLength(4)
+    expect(view.getAllByText('Save')).toHaveLength(5)
   })
 
   it('saves and resets commit activation independently', async () => {
@@ -68,6 +68,21 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/versioni
     expect(saved).toEqual([expect.objectContaining({ activateSessionOnCommit: false })])
     expect(onDirtyChange).toHaveBeenLastCalledWith(false)
     fireEvent.click(view.getAllByText('Reset to default')[1]!)
+    expect(toggle).toBeChecked()
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true)
+  })
+
+  it('defaults closing on and saves or resets it independently of activation', async () => {
+    const { view, saved, onDirtyChange } = await mount()
+    const toggle = view.getByLabelText('Close commit dialog after a successful commit')
+    expect(toggle).toBeChecked()
+    fireEvent.click(toggle)
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true)
+    await act(async () => { fireEvent.click(view.getAllByText('Save')[2]!) })
+    expect(saved).toEqual([expect.objectContaining({ closeCommitOnSuccess: false })])
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false)
+    expect(view.getByLabelText('Activate session when an agent opens a commit dialog')).toBeChecked()
+    fireEvent.click(view.getAllByText('Reset to default')[2]!)
     expect(toggle).toBeChecked()
     expect(onDirtyChange).toHaveBeenLastCalledWith(true)
   })
@@ -90,7 +105,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/versioni
     expect(saved).toEqual([{ mode: 'checkpoints', diffTool: { kind: 'internal' } }])
     expect(onDirtyChange).toHaveBeenLastCalledWith(true)
 
-    await act(async () => { fireEvent.click(view.getAllByText('Save')[3]!) })
+    await act(async () => { fireEvent.click(view.getAllByText('Save')[4]!) })
     expect(saved).toEqual([{ mode: 'checkpoints', diffTool: { kind: 'internal' } }, { primaryVcs: 'git' }])
     expect(onDirtyChange).toHaveBeenLastCalledWith(false)
   })

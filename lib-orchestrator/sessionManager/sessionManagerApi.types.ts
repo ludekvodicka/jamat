@@ -92,6 +92,8 @@ export interface SessionHistoryOpenSpec {
   providerName: string
   /** Claude's provider can prove a live process; Codex activity is recovered from V3 records. */
   providerActive: boolean
+  /** Absent keeps the launcher's automatic resume/fork choice. */
+  action?: 'rerun' | 'fork'
 }
 
 /** The local half of one provider-history row, joined by agent and native conversation id. */
@@ -267,6 +269,18 @@ export interface SessionDetailsUpdate {
   color?: SessionColorName | null
 }
 
+export interface SessionLocalHistoryEntry {
+  category: SessionsSnapshot['categories'][number]
+  project: Extract<ProjectBinding, { kind: 'project' }>
+  agentId: SessionAgentId
+  nativeSessionId: string
+  title: string
+  model: string | null
+  createdAt: number
+  lastActivity: number | null
+  active: boolean
+}
+
 export interface SessionInfo {
   sessionId: string
   kind: 'shell' | 'agent'
@@ -300,6 +314,8 @@ export interface SessionInfo {
   activity: SessionActivity | null
   /** Absent unless `activity` is `working` specifically because work remains in the background. */
   activityDetail?: SessionActivityDetail
+  /** Separate optional field: older peers strictly validate the existing activityDetail values. */
+  compacting?: true
   /** Mandatory, and empty where nothing applies: "no operations" is an answer, absence is not. */
   admits: readonly SessionOperation[]
   /*
