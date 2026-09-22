@@ -44,8 +44,12 @@ export class FileFormatRegistry {
     mov: 'video/quicktime',
   }
 
-  private static readonly textExtensionsConst = new Set([
-    'txt', 'text', 'log', 'csv', 'tsv', 'env', 'properties', 'cfg', 'config', 'lock',
+  /**
+   * Which control bytes text itself uses: tab, newline, form feed, carriage return, and the escape
+   * that starts an ANSI sequence in a captured log.
+   */
+  private static readonly textControlBytesConst: ReadonlySet<number> = new Set([
+    0x09, 0x0a, 0x0c, 0x0d, 0x1b,
   ])
 
   static classify(probe: FileFormatProbe): FileViewerDocumentKind {
@@ -79,9 +83,13 @@ export class FileFormatRegistry {
       return FileFormatRegistry.looksTextual(probe.sample)
         ? { kind: 'code', language }
         : { kind: 'hex' }
-    if (FileFormatRegistry.textExtensionsConst.has(extension) || name.startsWith('.env'))
-      return FileFormatRegistry.looksTextual(probe.sample) ? { kind: 'text' } : { kind: 'hex' }
-    return { kind: 'hex' }
+    // Everything the tables above did not name is decided by its CONTENT, not by its extension.
+    // The leftover used to be a second list - `txt`, `log`, `csv`, `env` and six more - and a list
+    // of text extensions can only ever hold the ones somebody remembered: `.pri` is a qmake include
+    // and opened as a hex dump, and so did every `.gradle`, `.qrc`, `.rc`, `.tex` and `.cmake`
+    // beside it. `modes` refuses a file too large to be READ as text, so the size ceiling stays in
+    // the one place that owns it and this decides only the kind.
+    return FileFormatRegistry.bytesReadAsText(probe.sample) ? { kind: 'text' } : { kind: 'hex' }
   }
 
   static modes(
@@ -110,6 +118,21 @@ export class FileFormatRegistry {
       return supportsDiff ? ['diff'] : []
     else
       throw new Error(`Unknown file viewer document kind: ${JSON.stringify(kind)}`)
+  }
+
+  /**
+   * Whether the bytes alone say text, for a file whose NAME says nothing.
+   *
+   * Stricter than `looksTextual` on purpose. There an extension is the evidence and the bytes only
+   * have to not contradict it; here they ARE the evidence, and "no NUL, decodes as UTF-8" is far too
+   * weak to carry that on its own: 70 KiB of `0x07` passes both halves of it, so a payload of bells
+   * would have opened as an empty-looking text document with no hex mode left to show it.
+   */
+  private static bytesReadAsText(sample: Uint8Array): boolean {
+    for (const byte of sample)
+      if (byte === 0x7f || (byte < 0x20 && !FileFormatRegistry.textControlBytesConst.has(byte)))
+        return false
+    return FileFormatRegistry.looksTextual(sample)
   }
 
   private static looksTextual(sample: Uint8Array): boolean {

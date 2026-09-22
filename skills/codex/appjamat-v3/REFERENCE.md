@@ -125,6 +125,7 @@ a number may also take `--working-directory PATH` for exact disambiguation.
 | Worktree session | Add `--worktree SLUG [--base-ref REF]` |
 | Plain tab session | Add `--plain --open-tab` |
 | Reopen/finalize | `sessions reopen\|finalize <session selector> [--working-directory PATH]` |
+| Recolour, refile | `sessions color <session selector> --color NAME`, `sessions group <session selector> --group NAME` |
 | Tabs | `tabs list`, `tabs open <session selector>`, `tabs open-file <session selector> --path PATH`, `tabs focus\|close --panel-id ID` |
 | Review a commit | `commit-svn-jamat` or `commit-git-jamat`, with `--self` or `<session selector>`, optionally `--path PATH` or `--paths-file FILE`, and `--message TEXT` or `--message-file FILE` |
 | Commit result | `commit status --commit-session-id UUID [--wait] [--timeout-ms N]` |
@@ -137,7 +138,7 @@ a number may also take `--working-directory PATH` for exact disambiguation.
 | Import pairing bundle | `remote pairing import --file FILE` |
 
 Add `--computer <profileId|remoteComputerId|remoteEndpointId|displayName>` only to `status`,
-`projects list`, `sessions list|create|reopen|finalize`, or `terminal peek|send`. Prefer the exact
+`projects list`, `sessions list|create|reopen|finalize|color|group`, or `terminal peek|send`. Prefer the exact
 endpoint ID. Remote session creation does not accept `--open-tab` or `--plain`; tabs, events, and
 transcript are local-only. The local controller and the selected remote endpoint must be running.
 
@@ -170,6 +171,15 @@ machine whose build predates the option, which refuses the whole create.
 by hand: an agent creating sessions for somebody else's backlog gives every one of them the same
 colour, so the tree tells automatic work from a person's own without reading titles. Do not send it
 with `--computer` to a machine whose build predates the option, which refuses the whole create.
+
+`sessions color` and `sessions group` say those same two things about a session that already exists.
+Each NAMES the value rather than toggling it, so sending one twice changes nothing, and each requires
+the name: there is no form meaning "leave it alone", and there is no way to take a colour off again.
+Use them when a session changes what it is waiting for - a worker that has finished its automatic
+work and now needs a person belongs in `waiting`, painted to match - because a row still carrying
+what the session was born as says the wrong thing about it. Both are mutations and accept
+`--operation-id`. Over `--computer` the write lands on the computer that RUNS the session, and a
+machine whose build predates them refuses the request; nothing is half applied.
 
 ## Commit through Jamat
 

@@ -7,6 +7,7 @@ import type {
 } from '../projectManager/projectManagerApi.types'
 import type {
   SessionAgentId,
+  SessionColorName,
   SessionCreateSpec,
   SessionGroup,
   SessionInfo,
@@ -385,6 +386,25 @@ export interface RemoteControlOperationMap {
   'sessions.transcript': {
     request: { session: RemoteControlSessionSelector }
     response: RemoteControlSessionTranscriptDto
+  }
+  /**
+   * What a session LOOKS like after it exists, which a create could already say and nothing could
+   * say afterwards. The caller they are for is a scheduler: a worker that finishes its automatic
+   * work and starts waiting for a person has become a different kind of session, and the tree is
+   * where a person reads that. Naming it at birth and never again means the row goes on claiming
+   * what the session was.
+   *
+   * Both name the value rather than toggling it, so repeating a request is the same as sending it
+   * once. `color` has no way to say "no colour": clearing one is a person's gesture in the menu and
+   * no caller has asked for it.
+   */
+  'sessions.color': {
+    request: { session: RemoteControlSessionSelector; color: SessionColorName }
+    response: { sessionId: string; color: SessionColorName }
+  }
+  'sessions.group': {
+    request: { session: RemoteControlSessionSelector; group: SessionGroup }
+    response: { sessionId: string; group: SessionGroup }
   }
   'agents.describe': {
     request: Record<string, never>

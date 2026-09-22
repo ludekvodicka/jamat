@@ -156,7 +156,7 @@ export class AppClientCli {
         return await this.readCommitStatus(client, plan.id, plan.wait, plan.timeoutMs)
       }
       if (plan.kind === 'request') {
-        if ((plan.request.operation === 'sessions.transcript' || plan.request.operation === 'tabs.cancelCommit')
+        if (AppClientCli.capabilityGatedConst.includes(plan.request.operation)
           && !RemoteControlCapabilities.of(descriptor.value).includes(plan.request.operation))
           return this.finishFailure(plan, {
             code: 'unavailable',
@@ -275,6 +275,26 @@ export class AppClientCli {
       return this.requestPlan(args, this.request(
           'sessions.finalize',
           { session: this.selector(args) },
+          requestId,
+          this.operationId(args),
+        ))
+    else if (args.command === 'sessions color')
+      return this.requestPlan(args, this.request(
+          'sessions.color',
+          {
+            session: this.selector(args),
+            color: AppClientCli.colorNamed(args.required('--color')),
+          },
+          requestId,
+          this.operationId(args),
+        ))
+    else if (args.command === 'sessions group')
+      return this.requestPlan(args, this.request(
+          'sessions.group',
+          {
+            session: this.selector(args),
+            group: AppClientCli.groupNamed(args.required('--group')),
+          },
           requestId,
           this.operationId(args),
         ))
@@ -544,7 +564,11 @@ export class AppClientCli {
    * library's own, so the local refusal and the remote one can never name different colours.
    */
   private static colorOf(value: string | null): SessionColorName | null {
-    if (value === null) return null
+    return value === null ? null : AppClientCli.colorNamed(value)
+  }
+
+  /** The same list where the colour is the whole request rather than one field of a create. */
+  private static colorNamed(value: string): SessionColorName {
     if (!SessionColors.isName(value))
       throw new AppClientCliError(
         'invalid-request',
@@ -559,7 +583,10 @@ export class AppClientCli {
    * library's, so the local refusal and the remote one can never name different groups.
    */
   private static groupOf(value: string | null): SessionGroup | null {
-    if (value === null) return null
+    return value === null ? null : AppClientCli.groupNamed(value)
+  }
+
+  private static groupNamed(value: string): SessionGroup {
     if (!SessionGroups.isName(value))
       throw new AppClientCliError(
         'invalid-request',
@@ -602,6 +629,8 @@ export class AppClientCli {
   ): Promise<RemoteControlStepResult<RemoteControlRequestUnion>> {
     if (request.operation === 'sessions.reopen'
       || request.operation === 'sessions.finalize'
+      || request.operation === 'sessions.color'
+      || request.operation === 'sessions.group'
       || request.operation === 'sessions.transcript'
       || request.operation === 'tabs.open'
       || request.operation === 'tabs.openFile'
@@ -764,6 +793,19 @@ export class AppClientCli {
    * The stable exit codes the reference promises. A `Record` keyed by the error type, so a code
    * added to the protocol stops this file from compiling until somebody decides what it exits with.
    */
+  /**
+   * The optional operations this CLI refuses BEFORE the round trip, so a Jamat that predates one
+   * answers with a sentence naming it rather than a 404 the caller has to interpret. The wrapper is
+   * a junction into the repository while the Jamat it talks to may be an installed older build, so
+   * the two disagreeing is the ordinary case rather than the strange one.
+   */
+  private static readonly capabilityGatedConst: readonly RemoteControlOperation[] = [
+    'sessions.transcript',
+    'tabs.cancelCommit',
+    'sessions.color',
+    'sessions.group',
+  ]
+
   private static readonly exitCodesConst: Record<RemoteControlErrorCode, number> = {
     'invalid-request': 2,
     'not-found': 3,

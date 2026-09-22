@@ -529,6 +529,11 @@ describe('app-client-cli/app/app', () => {
       { args: ['sessions', 'reopen', '--session-id', 'session-1'], operation: 'sessions.reopen' },
       { args: ['sessions', 'finalize', '--number', '001'], operation: 'sessions.finalize' },
       { args: ['sessions', 'transcript', '--session-id', 'session-001'], operation: 'sessions.transcript' },
+      {
+        args: ['sessions', 'color', '--session-id', 'session-001', '--color', 'cyan'],
+        operation: 'sessions.color',
+      },
+      { args: ['sessions', 'group', '--number', '001', '--group', 'waiting'], operation: 'sessions.group' },
       { args: ['tabs', 'list'], operation: 'tabs.list' },
       { args: ['tabs', 'open', '--number', '001'], operation: 'tabs.open' },
       {
@@ -726,6 +731,81 @@ describe('app-client-cli/app/app', () => {
       body: { group: 'waiting', spec: { kind: 'shell' } },
     })
     expect(accepted.client.requests[0]?.body).not.toHaveProperty('spec.group')
+  })
+
+  /*
+   * What a create could already say, said again later. A worker that finishes its automatic work and
+   * starts waiting for a person has become a different kind of session, and a row still painted the
+   * colour it was born with says the wrong thing about it. Both commands carry a selector, so the
+   * canonical `sessions.list` runs first exactly as it does for reopen and finalize.
+   */
+  it('repaints and refiles a session that already exists, locally and over a computer', async () => {
+    const painted = new CliHarness()
+    expect(await new AppClientCli(
+      ['sessions', 'color', '--session-id', 'session-001', '--color', 'cyan', '--operation-id', 'caller-1'],
+      painted.deps(),
+    ).run()).toBe(0)
+    expect(painted.client.requests.at(-1)).toMatchObject({
+      operation: 'sessions.color',
+      operationId: 'caller-1',
+      body: { session: { kind: 'sessionId', sessionId: 'session-001' }, color: 'cyan' },
+    })
+
+    // By number, which is what a person reads off the tree, resolved to the one canonical id.
+    const filed = new CliHarness()
+    expect(await new AppClientCli(
+      ['sessions', 'group', '--number', '007', '--group', 'waiting'],
+      filed.deps(),
+    ).run()).toBe(0)
+    expect(filed.client.requests.at(-1)).toMatchObject({
+      operation: 'sessions.group',
+      body: { session: { kind: 'sessionId', sessionId: 'session-007' }, group: 'waiting' },
+    })
+
+    const routed = new CliHarness()
+    routed.client.computers = [CliHarness.computer()]
+    expect(await new AppClientCli(
+      ['sessions', 'group', '--session-id', 'session-001', '--group', 'automation', '--computer', 'Remote computer'],
+      routed.deps(),
+    ).run()).toBe(0)
+    expect(routed.client.requests).toEqual([])
+    expect(routed.client.remoteRequests.at(-1)).toMatchObject({
+      remoteEndpointId: 'endpoint-remote',
+      request: { operation: 'sessions.group', body: { group: 'automation' } },
+    })
+
+    // A Jamat that predates them answers before HTTP, naming the operation it does not expose.
+    const old = new CliHarness()
+    old.descriptor.optionalOperations = []
+    expect(await new AppClientCli(
+      ['sessions', 'color', '--session-id', 'session-001', '--color', 'cyan'],
+      old.deps(),
+    ).run()).toBe(6)
+    expect(old.client.requests).toEqual([])
+    expect(old.parsedOutput()).toMatchObject({
+      ok: false,
+      operation: 'sessions.color',
+      error: { code: 'unavailable' },
+    })
+  })
+
+  /*
+   * The same two closed sets a create is held to, and one more rule of their own: the value IS the
+   * request here, so naming none is refused rather than treated as "leave it alone".
+   */
+  it('refuses a repaint that names no colour or group, or one nobody can draw', async () => {
+    for (const args of [
+      ['sessions', 'color', '--session-id', 'session-001', '--color', 'chartreuse'],
+      ['sessions', 'group', '--session-id', 'session-001', '--group', 'robots'],
+      ['sessions', 'color', '--session-id', 'session-001'],
+      ['sessions', 'group', '--session-id', 'session-001'],
+      ['sessions', 'color', '--color', 'cyan'],
+    ]) {
+      const refused = new CliHarness()
+      expect(await new AppClientCli(args, refused.deps()).run()).toBe(2)
+      expect(refused.client.requests).toEqual([])
+      expect(refused.parsedOutput()).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+    }
   })
 
   it('builds the full create spec and reports the actual operation id on unavailable retry', async () => {

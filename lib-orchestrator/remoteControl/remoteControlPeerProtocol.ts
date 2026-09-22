@@ -19,6 +19,13 @@ export class RemoteControlPeerConst {
     'sessions.create',
     'sessions.reopen',
     'sessions.finalize',
+    /*
+     * Grantable for the reason `sessions.create` is: a create already names a colour and a group on
+     * the computer that will RUN the session, so being able to name them at birth and never again
+     * over the same link would be an asymmetry with no rule behind it. Neither reads anything back.
+     */
+    'sessions.color',
+    'sessions.group',
     'terminal.peek',
     'terminal.send',
     /*

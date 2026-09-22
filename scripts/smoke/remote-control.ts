@@ -214,6 +214,7 @@ class SmokeRemoteControl extends SmokeHarness {
     await this.checkStatusAndProjects()
     await this.checkDiscoveryConflict()
     const sessionId = await this.checkCreateReplayAndList()
+    await this.checkRepaint(sessionId)
     await this.checkForkTranscript()
     const panelId = await this.checkTabs(sessionId)
     await this.checkTerminal(sessionId)
@@ -417,6 +418,45 @@ class SmokeRemoteControl extends SmokeHarness {
     return sessionId
   }
 
+  /**
+   * The other half of what a create can already say, on a session that is running. The chain is the
+   * same one the create's colour takes and it ends in two different places: the colour on the
+   * session record the snapshot draws, and the group in the client's own state.
+   */
+  private async checkRepaint(sessionId: string): Promise<void> {
+    const repainted = CliClient.valueOf(
+      await this.cli(
+        'sessions', 'color', '--session-id', sessionId,
+        '--color', 'cyan', '--operation-id', 'smoke-color-1',
+      ),
+      'sessions.color',
+    )
+    this.check('a live session takes the colour a later request names',
+      repainted.sessionId === sessionId
+      && repainted.color === 'cyan'
+      && this.manager.snapshot().sessions
+        .find((session) => session.sessionId === sessionId)?.color === 'cyan')
+
+    const refiled = CliClient.valueOf(
+      await this.cli(
+        'sessions', 'group', '--session-id', sessionId,
+        '--group', 'waiting', '--operation-id', 'smoke-group-1',
+      ),
+      'sessions.group',
+    )
+    this.check('a live session moves to the section a later request names',
+      refiled.sessionId === sessionId
+      && refiled.group === 'waiting'
+      && this.groupAssigns.length === 2
+      && this.groupAssigns[1]?.sessionId === sessionId
+      && this.groupAssigns[1]?.group === 'waiting')
+
+    // Refused by the CLI parser, before any round trip: the list is the library's own.
+    const unknown = await this.cliFailure(2, 'sessions', 'color', '--session-id', sessionId, '--color', 'chartreuse')
+    this.check('an unknown colour is refused without reaching the controller',
+      unknown.ok === false && unknown.error?.code === 'invalid-request')
+  }
+
   private async checkForkTranscript(): Promise<void> {
     const value = CliClient.valueOf(
       await this.cli('sessions', 'transcript', '--number', '014-015'),
@@ -618,6 +658,7 @@ class SmokeRemoteControl extends SmokeHarness {
       reopenSession: (sessionId) => this.manager.reopenSession(sessionId),
       finalizeSession: (sessionId) => this.manager.finalizeSession(sessionId),
       discardPlainSession: (sessionId) => this.manager.discardPlainSession(sessionId),
+      setSessionColor: (sessionId, color) => this.manager.setSessionColor(sessionId, color),
     }
   }
 

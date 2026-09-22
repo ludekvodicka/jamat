@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest'
 
 import type { ProjectListResult } from '../projectManager/projectManagerApi.types'
 import type {
+  SessionColorName,
   SessionGroup,
   SessionInfo,
+  SessionsOpResult,
   SessionsSnapshot,
 } from '../sessionManager/sessionManagerApi.types'
 import {
@@ -27,6 +29,7 @@ interface World {
   control: RemoteControl
   sessions: SessionInfo[]
   creates: () => number
+  colored: { sessionId: string; color: SessionColorName }[]
   groupAssigns: { sessionId: string; group: SessionGroup }[]
   reopened: string[]
   finalized: string[]
@@ -90,9 +93,11 @@ function world(options?: {
   sessions?: SessionInfo[]
   tabOpen?: RemoteControlStepResult<RemoteControlTabCommandDto>
   groupAssign?: RemoteControlStepResult<{ group: SessionGroup }>
+  setColor?: SessionsOpResult
 }): World {
   const sessions = options?.sessions ?? [session('session-1', '001')]
   let creates = 0
+  const colored: { sessionId: string; color: SessionColorName }[] = []
   const groupAssigns: { sessionId: string; group: SessionGroup }[] = []
   const reopened: string[] = []
   const finalized: string[] = []
@@ -147,6 +152,10 @@ function world(options?: {
       discardPlainSession: async (sessionId) => {
         discarded.push(sessionId)
         return { ok: true, value: undefined }
+      },
+      setSessionColor: async (sessionId, color) => {
+        colored.push({ sessionId, color })
+        return options?.setColor ?? { ok: true, value: undefined }
       },
     },
     groups: {
@@ -283,6 +292,7 @@ function world(options?: {
     control: new RemoteControl(deps),
     sessions,
     creates: () => creates,
+    colored,
     groupAssigns,
     reopened,
     finalized,
@@ -341,6 +351,14 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
       request('sessions.transcript', {
         session: { kind: 'sessionId', sessionId: 'session-1' },
       }),
+      request('sessions.color', {
+        session: { kind: 'sessionId', sessionId: 'session-1' },
+        color: 'cyan',
+      }, 'op-color'),
+      request('sessions.group', {
+        session: { kind: 'sessionId', sessionId: 'session-1' },
+        group: 'waiting',
+      }, 'op-group'),
       request('agents.describe', {}),
       request('tabs.list', {}),
       request('tabs.open', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-4'),
@@ -381,6 +399,8 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     expect(found.reopened).toEqual(['session-1'])
     expect(found.finalized).toEqual(['session-1'])
     expect(found.transcriptReads).toEqual(['session-1'])
+    expect(found.colored).toEqual([{ sessionId: 'session-1', color: 'cyan' }])
+    expect(found.groupAssigns).toEqual([{ sessionId: 'session-1', group: 'waiting' }])
     expect(found.tabCalls.map((call) => call.method)).toEqual([
       'open',
       'openFile',
@@ -401,6 +421,72 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
       { plain: false },
     ])
     expect(found.terminalCalls.map((call) => call.method)).toEqual(['peek', 'send'])
+  })
+
+  /**
+   * The pair a scheduler repaints a running session with. Both name the value rather than toggling
+   * it, so what the request says is what the session ends up carrying, and the same request sent
+   * twice leaves it there.
+   */
+  it('repaints and refiles a session that already exists, by number as well as by id', async () => {
+    const found = world()
+
+    await expect(found.control.execute(request('sessions.color', {
+      session: { kind: 'number', number: '001' },
+      color: 'magenta',
+    }, 'paint-1'), context())).resolves.toMatchObject({
+      ok: true,
+      value: { sessionId: 'session-1', color: 'magenta' },
+    })
+    await expect(found.control.execute(request('sessions.group', {
+      session: { kind: 'sessionId', sessionId: 'session-1' },
+      group: 'automation',
+    }, 'file-1'), context())).resolves.toMatchObject({
+      ok: true,
+      value: { sessionId: 'session-1', group: 'automation' },
+    })
+
+    expect(found.colored).toEqual([{ sessionId: 'session-1', color: 'magenta' }])
+    expect(found.groupAssigns).toEqual([{ sessionId: 'session-1', group: 'automation' }])
+  })
+
+  /**
+   * A move is the WHOLE request here, unlike inside a create where a refused assignment leaves a
+   * session the caller still has to be told about. Nothing exists afterwards that the caller would
+   * be holding without knowing, so the refusal is the answer.
+   */
+  it('fails the move when the client state refuses the write, and names the session it cannot find', async () => {
+    const refusing = world({
+      groupAssign: { ok: false, error: { code: 'unavailable', detail: 'Client state is not accepting writes' } },
+    })
+
+    await expect(refusing.control.execute(request('sessions.group', {
+      session: { kind: 'sessionId', sessionId: 'session-1' },
+      group: 'waiting',
+    }, 'file-2'), context())).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'unavailable' },
+    })
+
+    const missing = world()
+    await expect(missing.control.execute(request('sessions.color', {
+      session: { kind: 'sessionId', sessionId: 'nobody' },
+      color: 'teal',
+    }, 'paint-2'), context())).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'not-found' },
+    })
+    expect(missing.colored).toEqual([])
+
+    // A colour the session manager itself refuses is the library's answer, not a redacted failure.
+    const refused = world({ setColor: { ok: false, code: 'not-found', detail: 'no such record' } })
+    await expect(refused.control.execute(request('sessions.color', {
+      session: { kind: 'sessionId', sessionId: 'session-1' },
+      color: 'teal',
+    }, 'paint-3'), context())).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'not-found' },
+    })
   })
 
   it('opens a file through the matching plain session presentation', async () => {
@@ -721,15 +807,25 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     expect(ambiguous).toMatchObject({ ok: false, error: { code: 'conflict' } })
     expect(forbidden).toMatchObject({ ok: false, error: { code: 'forbidden' } })
     /*
-     * A peer is offered `agents.describe` and nothing else optional: it may ask what that computer
-     * can start an agent on, and may still not read a transcript or open a file in a tab.
+     * What a peer is offered out of the optional set: what that computer can start an agent on, and
+     * the two mutations that repaint a session it runs. It may still not read a transcript or open
+     * a file in a tab.
      */
     expect(peerHello).toMatchObject({
       ok: true,
       value: {
-        operations: RemoteControlPeerConst.controlOperations
-          .filter((operation) => operation !== 'agents.describe'),
-        optionalOperations: ['agents.describe'],
+        operations: [
+          'system.hello',
+          'system.status',
+          'projects.list',
+          'sessions.list',
+          'sessions.create',
+          'sessions.reopen',
+          'sessions.finalize',
+          'terminal.peek',
+          'terminal.send',
+        ],
+        optionalOperations: ['agents.describe', 'sessions.color', 'sessions.group'],
       },
     })
     expect(found.transcriptReads).toEqual(['unique', 'unique'])
@@ -798,6 +894,7 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
         reopenSession: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         finalizeSession: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         discardPlainSession: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        setSessionColor: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
       },
       groups: { assign: (_sessionId, group) => ({ ok: true, value: { group } }) },
       tabs: {

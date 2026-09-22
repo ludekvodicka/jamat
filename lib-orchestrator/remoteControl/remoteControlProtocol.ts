@@ -34,6 +34,8 @@ export class RemoteControlConst {
     'tabs.openCommit',
     'sessions.transcript',
     'agents.describe',
+    'sessions.color',
+    'sessions.group',
   ] as const
   static readonly operations = RemoteControlConst.descriptorOperations
   static readonly mutatingOperations = [
@@ -41,6 +43,8 @@ export class RemoteControlConst {
     'sessions.create',
     'sessions.reopen',
     'sessions.finalize',
+    'sessions.color',
+    'sessions.group',
     'tabs.open',
     'tabs.openFile',
     'tabs.openCommit',

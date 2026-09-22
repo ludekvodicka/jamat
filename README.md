@@ -79,6 +79,14 @@ things in your life that are not software.
 - **Working, waiting, or done, per session.** Each session's state is read live from what the agent
   is actually doing, so the tree tells you where you are needed without opening anything.
 
+- **Sections you file work into.** Every session sits in one: Pinned, Priority, the ordinary
+  Sessions list, Automation, Waiting or Blocked. Choose it per session, or per project so new ones
+  land there by themselves. A fork takes its parent's section, and an agent starting work on your
+  behalf can file it under Automation from birth, so a wave of machine-started sessions never lands
+  in the list you read as your own.
+
+  ![The sessions tree in its six sections, with the Groups menu open](docs/images/07-groups.png)
+
 - **Diffs against the baseline that makes sense.** The working tree against a checkpoint, an SVN
   base, or the commit a worktree was cut from. Or history: a git commit, an SVN revision, or the
   state after one specific message in the conversation.
@@ -123,6 +131,7 @@ things in your life that are not software.
 | <img src="docs/images/01-workspace.png" alt="The workspace"><br>**The workspace** - sessions tree, tabs, and a live agent session in a terminal panel. | <img src="docs/images/02-launcher.png" alt="The launcher"><br>**The launcher** - pick a project, then the agent, the model, and whether the session gets its own worktree. |
 | <img src="docs/images/03-file-changes.png" alt="File changes"><br>**File changes** - what this session touched, diffed against the baseline you choose. | <img src="docs/images/04-mdext.png" alt="A rendered document"><br>**Rendered documents** - diagrams, tables and highlighted code in the file viewer. |
 | <img src="docs/images/05-remote.png" alt="A remote computer's sessions"><br>**Another computer's sessions** - a paired machine's sessions in your own tree. | <img src="docs/images/06-status-bar.png" alt="The status bar"><br>**The status bar** - model, effort, context used, and the rate meters. |
+| <img src="docs/images/07-groups.png" alt="Session groups"><br>**Session groups** - Pinned, Priority, Automation, Waiting and Blocked: which section a session sits in is yours to choose. | |
 
 ## Remote computers
 

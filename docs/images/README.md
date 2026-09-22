@@ -31,8 +31,8 @@ same sources, and a change to the brand has to be carried into both places by ha
 
 ## Screenshots
 
-Six shots, in the order the README uses them. Capture them from a running client and put them here
-under exactly these names.
+Seven shots, in the order the README uses them. Capture them from a running client and put them
+here under exactly these names.
 
 | # | File | Shows |
 | --- | --- | --- |
@@ -42,6 +42,7 @@ under exactly these names.
 | 04 | `04-mdext.png` | A document rendered by the file viewer: a diagram, a table and highlighted code on one page |
 | 05 | `05-remote.png` | A paired computer's sessions in the sessions tree, under the Remote section |
 | 06 | `06-status-bar.png` | The status bar in detail: Host, the model and context readout, and the rate meters |
+| 07 | `07-groups.png` | The sessions tree with all six group sections filled, and the Groups submenu open on a session row |
 
 ### Capture notes
 

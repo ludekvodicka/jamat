@@ -122,6 +122,20 @@ export class RemoteControlRequestValidation {
       }
     else if (operation === 'sessions.transcript')
       return { ...base, operation, body: RemoteControlRequestValidation.sessionBody(body, operation) }
+    else if (operation === 'sessions.color')
+      return {
+        ...base,
+        operation,
+        operationId: RemoteControlEnvelopeValidation.requiredOperationId(operationId),
+        body: RemoteControlRequestValidation.sessionColorBody(body),
+      }
+    else if (operation === 'sessions.group')
+      return {
+        ...base,
+        operation,
+        operationId: RemoteControlEnvelopeValidation.requiredOperationId(operationId),
+        body: RemoteControlRequestValidation.sessionGroupBody(body),
+      }
     else if (operation === 'agents.describe')
       return { ...base, operation, body: RemoteControlEnvelopeValidation.empty(body, operation) }
     else if (operation === 'tabs.list')
@@ -229,6 +243,34 @@ export class RemoteControlRequestValidation {
       spec,
       ...(openTab === undefined ? {} : { openTab }),
       ...(group === undefined ? {} : { group }),
+    }
+  }
+
+  /**
+   * Required here and optional on a create, which is the difference between painting a session at
+   * birth and repainting one: a create that names no colour leaves it unpainted, and a repaint that
+   * names none is a request that says nothing. A missing key therefore fails the same sentence an
+   * unknown name does, because both are the caller not naming one of the twelve.
+   */
+  private static sessionColorBody(
+    input: unknown,
+  ): { session: RemoteControlSessionSelector; color: SessionColorName } {
+    const value = RemoteControlEnvelopeValidation.object(input, 'sessions.color body')
+    RemoteControlEnvelopeValidation.keys(value, ['session', 'color'], 'sessions.color body')
+    return {
+      session: RemoteControlRequestValidation.sessionSelector(value.session),
+      color: RemoteControlRequestValidation.colorNamed(value.color),
+    }
+  }
+
+  private static sessionGroupBody(
+    input: unknown,
+  ): { session: RemoteControlSessionSelector; group: SessionGroup } {
+    const value = RemoteControlEnvelopeValidation.object(input, 'sessions.group body')
+    RemoteControlEnvelopeValidation.keys(value, ['session', 'group'], 'sessions.group body')
+    return {
+      session: RemoteControlRequestValidation.sessionSelector(value.session),
+      group: RemoteControlRequestValidation.groupNamed(value.group),
     }
   }
 
@@ -539,6 +581,11 @@ export class RemoteControlRequestValidation {
    */
   private static color(input: unknown): SessionColorName | undefined {
     if (input === undefined) return undefined
+    return RemoteControlRequestValidation.colorNamed(input)
+  }
+
+  /** The same list where a colour is the point of the request rather than a decoration on it. */
+  private static colorNamed(input: unknown): SessionColorName {
     if (!SessionColors.isName(input))
       throw new RemoteControlValidationError(
         `color must be one of ${SessionColors.namesConst.join(', ')}`,
@@ -553,6 +600,10 @@ export class RemoteControlRequestValidation {
    */
   private static group(input: unknown): SessionGroup | undefined {
     if (input === undefined) return undefined
+    return RemoteControlRequestValidation.groupNamed(input)
+  }
+
+  private static groupNamed(input: unknown): SessionGroup {
     if (!SessionGroups.isName(input))
       throw new RemoteControlValidationError(
         `group must be one of ${SessionGroups.namesConst.join(', ')}`,

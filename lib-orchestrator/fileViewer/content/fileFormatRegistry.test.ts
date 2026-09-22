@@ -4,6 +4,12 @@ import { FileFormatRegistry } from './fileFormatRegistry'
 
 describe('fileViewer/content/fileFormatRegistry', () => {
   const text = new TextEncoder().encode('const value = 1\n')
+  // What a real PDF opens with: `%PDF-1.7` and then the binary comment line every writer emits so
+  // that a transfer treats the file as binary.
+  const pdf = Uint8Array.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37, 0x0a, 0xe2, 0xe3, 0xcf, 0xd3])
+  const nulByte = Uint8Array.from([65, 0, 66])
+  // Text in a single-byte encoding, which is not UTF-8 and is not ours to guess at.
+  const latin1 = Uint8Array.from([0x50, 0xf8, 0xed, 0x6c, 0x69, 0x9a])
 
   it('classifies the supported document families', () => {
     expect(FileFormatRegistry.classify({ path: 'README.md', exists: true, sample: text }))
@@ -16,8 +22,44 @@ describe('fileViewer/content/fileFormatRegistry', () => {
       .to.deep.equal({ kind: 'image', mimeType: 'image/jpeg', animated: false })
     expect(FileFormatRegistry.classify({ path: 'clip.webm', exists: true, sample: text }))
       .to.deep.equal({ kind: 'video', mimeType: 'video/webm' })
-    expect(FileFormatRegistry.classify({ path: 'archive.pdf', exists: true, sample: text }))
+    expect(FileFormatRegistry.classify({ path: 'archive.pdf', exists: true, sample: pdf }))
       .to.deep.equal({ kind: 'hex' })
+  })
+
+  /**
+   * The extension tables name what gets a RENDERER; they never decided what is TEXT. They used to: a
+   * second list held `txt`, `log`, `csv`, `env` and six more, and everything outside it opened as a
+   * hex dump - `.pri`, `.gradle`, `.qrc`, `.rc`, `.tex`, and every extension nobody thought of.
+   */
+  it('reads an unlisted extension as text when its bytes are text', () => {
+    for (const path of ['Atlantic18.pri', 'build.gradle', 'app.qrc', 'paper.tex', 'notes.whatever'])
+      expect(FileFormatRegistry.classify({ path, exists: true, sample: text }), path)
+        .to.deep.equal({ kind: 'text' })
+    expect(FileFormatRegistry.classify({ path: '.env-production-eu', exists: true, sample: text }))
+      .to.deep.equal({ kind: 'text' })
+    expect(FileFormatRegistry.classify({ path: 'server.log', exists: true, sample: text }))
+      .to.deep.equal({ kind: 'text' })
+  })
+
+  it('still reads an unlisted extension as hex when its bytes are not text', () => {
+    expect(FileFormatRegistry.classify({ path: 'level.pak', exists: true, sample: nulByte }))
+      .to.deep.equal({ kind: 'hex' })
+    expect(FileFormatRegistry.classify({ path: 'notes.txt', exists: true, sample: latin1 }))
+      .to.deep.equal({ kind: 'hex' })
+    // No NUL and valid UTF-8, which is all a named extension is asked for. A nameless file is asked
+    // for more, because here the bytes are the only evidence there is.
+    expect(FileFormatRegistry.classify({
+      path: 'payload.bin',
+      exists: true,
+      sample: new Uint8Array(64).fill(7),
+    })).to.deep.equal({ kind: 'hex' })
+    // What text does use, so a captured log with ANSI colour still opens as one: escape, tab,
+    // carriage return and newline.
+    expect(FileFormatRegistry.classify({
+      path: 'capture.out',
+      exists: true,
+      sample: Uint8Array.from([0x1b, 0x5b, 0x33, 0x32, 0x6d, 0x6f, 0x6b, 0x09, 0x0d, 0x0a]),
+    })).to.deep.equal({ kind: 'text' })
   })
 
   /**
@@ -37,10 +79,9 @@ describe('fileViewer/content/fileFormatRegistry', () => {
   })
 
   it('uses content gates for formats that claim to be text', () => {
-    const binary = Uint8Array.from([65, 0, 66])
-    expect(FileFormatRegistry.classify({ path: 'main.ts', exists: true, sample: binary }))
+    expect(FileFormatRegistry.classify({ path: 'main.ts', exists: true, sample: nulByte }))
       .to.deep.equal({ kind: 'hex' })
-    expect(FileFormatRegistry.classify({ path: 'README.md', exists: true, sample: binary }))
+    expect(FileFormatRegistry.classify({ path: 'README.md', exists: true, sample: nulByte }))
       .to.deep.equal({ kind: 'hex' })
   })
 

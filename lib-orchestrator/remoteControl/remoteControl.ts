@@ -5,6 +5,7 @@ import type {
   ProjectsOpResult,
 } from '../projectManager/projectManagerApi.types'
 import type {
+  SessionColorName,
   SessionCreateSpec,
   SessionGroup,
   SessionInfo,
@@ -59,6 +60,12 @@ export interface RemoteControlSessionsPort {
   reopenSession(sessionId: string): Promise<SessionsOpResult>
   finalizeSession(sessionId: string): Promise<SessionsOpResult>
   discardPlainSession(sessionId: string): Promise<SessionsOpResult>
+  /**
+   * The same setter the details dialog uses. It is on the sessions port and the group beside it is
+   * not, because a colour lives on the session RECORD, which this library owns, while a group lives
+   * in the client's own state.
+   */
+  setSessionColor(sessionId: string, color: SessionColorName): Promise<SessionsOpResult>
 }
 
 /**
@@ -278,6 +285,28 @@ export class RemoteControl {
         sessionId: session.value.sessionId,
         transcriptContentUntrusted: true,
         reading: await this.deps.transcript.read(session.value.sessionId),
+      })
+    } else if (request.operation === 'sessions.color') {
+      const session = this.session(request.body.session)
+      if (!session.ok) return session
+      const color = request.body.color
+      const result = await this.deps.sessions.setSessionColor(session.value.sessionId, color)
+      if (!result.ok) return RemoteControl.sessionError(result)
+      return RemoteControl.success({ sessionId: session.value.sessionId, color })
+    } else if (request.operation === 'sessions.group') {
+      const session = this.session(request.body.session)
+      if (!session.ok) return session
+      /*
+       * The same port a create files a new session with, so a session moved after the fact lands in
+       * the same place and through the same broadcast as one born there. A refused write fails the
+       * whole request here, unlike inside a create: there the session exists whatever the state file
+       * says, and here the move is the entire request.
+       */
+      const assigned = this.deps.groups.assign(session.value.sessionId, request.body.group)
+      if (!assigned.ok) return assigned
+      return RemoteControl.success({
+        sessionId: session.value.sessionId,
+        group: assigned.value.group,
       })
     } else if (request.operation === 'agents.describe')
       return RemoteControl.success(this.deps.agents.describe())

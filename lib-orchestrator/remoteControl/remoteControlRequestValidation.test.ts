@@ -302,6 +302,45 @@ describe('lib-orchestrator/remoteControl/remoteControlRequestValidation', () => 
     }))).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
   })
 
+  /*
+   * The two mutations that repaint a session that already exists. Both prove the name against the
+   * same closed set a create does and REQUIRE one: a create naming no colour leaves the session
+   * unpainted, while a repaint naming none is a request that says nothing. Both are mutations, so a
+   * missing operationId is refused, which is what makes the same repaint sent twice one repaint.
+   */
+  it('requires a named colour and group when the session already exists', () => {
+    const session = { kind: 'sessionId', sessionId: 'session-1' }
+    const color = RemoteControlRequestValidation.parse(
+      RemoteControlRequestValidationTest.of('sessions.color', { session, color: 'cyan' }))
+    const group = RemoteControlRequestValidation.parse(
+      RemoteControlRequestValidationTest.of('sessions.group', { session, group: 'waiting' }))
+
+    expect(color).toMatchObject({
+      ok: true,
+      request: { operationId: 'operation-1', body: { session, color: 'cyan' } },
+    })
+    expect(group).toMatchObject({
+      ok: true,
+      request: { operationId: 'operation-1', body: { session, group: 'waiting' } },
+    })
+    expect(RemoteControlRequestValidation.isMutating('sessions.color')).toBe(true)
+    expect(RemoteControlRequestValidation.isMutating('sessions.group')).toBe(true)
+
+    const refused = [
+      RemoteControlRequestValidationTest.of('sessions.color', { session }),
+      RemoteControlRequestValidationTest.of('sessions.group', { session }),
+      RemoteControlRequestValidationTest.of('sessions.color', { session, color: 'chartreuse' }),
+      RemoteControlRequestValidationTest.of('sessions.group', { session, group: 'sessions' }),
+      // Each carries its own name and nothing beside it, and neither works without a session.
+      RemoteControlRequestValidationTest.of('sessions.group', { session, group: 'waiting', color: 'cyan' }),
+      RemoteControlRequestValidationTest.of('sessions.color', { color: 'cyan' }),
+      RemoteControlRequestValidationTest.of('sessions.color', { session, color: 'cyan' }, null),
+    ]
+    for (const request of refused)
+      expect(RemoteControlRequestValidation.parse(request))
+        .toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+  })
+
   it('refuses agent options without an agent and a base ref without a worktree', () => {
     const strayMode = RemoteControlRequestValidation.parse(RemoteControlRequestValidationTest.create({
       spec: { ...RemoteControlRequestValidationTest.shell, agent: { agentId: 'claude', mode: 'sideways' } },
@@ -420,11 +459,19 @@ class RemoteControlRequestValidationTest {
   static readonly shell = { kind: 'shell', directory: { mode: 'default' } }
 
   static create(body: Record<string, unknown>): Record<string, unknown> {
+    return RemoteControlRequestValidationTest.of('sessions.create', body)
+  }
+
+  static of(
+    operation: string,
+    body: Record<string, unknown>,
+    operationId: string | null = 'operation-1',
+  ): Record<string, unknown> {
     return {
       protocol: RemoteControlConst.protocol,
       requestId: 'request-1',
-      operation: 'sessions.create',
-      operationId: 'operation-1',
+      operation,
+      ...(operationId === null ? {} : { operationId }),
       body,
     }
   }

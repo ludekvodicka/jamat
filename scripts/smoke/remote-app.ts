@@ -74,6 +74,7 @@ import {
 } from '../../lib-orchestrator/remoteControl/remoteControlTerminal.js'
 import { SessionManager } from '../../lib-orchestrator/sessionManager/sessionManager.js'
 import type {
+  SessionColorName,
   SessionCreateSpec,
   SessionsOpResult,
   SessionsSnapshot,
@@ -1197,6 +1198,10 @@ class SmokeSessionsObserver implements RemoteControlSessionsPort {
   discardPlainSession(sessionId: string): Promise<SessionsOpResult> {
     return this.sessions.discardPlainSession(sessionId)
   }
+
+  setSessionColor(sessionId: string, color: SessionColorName): Promise<SessionsOpResult> {
+    return this.sessions.setSessionColor(sessionId, color)
+  }
 }
 
 class SmokeControllerApp {
@@ -1497,6 +1502,10 @@ class SmokeUnavailableSessions implements RemoteControlSessionsPort, RemoteContr
   }
 
   discardPlainSession(_sessionId: string): Promise<SessionsOpResult> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  setSessionColor(_sessionId: string, _color: SessionColorName): Promise<SessionsOpResult> {
     return Promise.resolve(SmokeUnavailableSessions.refused())
   }
 

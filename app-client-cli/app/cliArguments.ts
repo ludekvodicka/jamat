@@ -18,8 +18,9 @@ export class CliArguments {
   ] as const
   /**
    * Every command this CLI has, as an object rather than a Map, so the KEYS are a type: the
-   * dispatch that reads `args.command` is exhaustive only if the compiler knows
-   * what the sixteen are.
+   * dispatch that reads `args.command` is exhaustive only if the compiler knows what they are. No
+   * count is written here, because a count is a second statement of the list that ages on the next
+   * command.
    */
   private static readonly commandSpecsConst = {
     'commit-svn-jamat': { options: ['--session-id', '--number', '--working-directory', '--path', '--paths-file', '--message', '--message-file', '--fallback', '--timeout-ms'], flags: ['--self', '--wait'], mutation: true },
@@ -83,6 +84,28 @@ export class CliArguments {
       options: ['--session-id', '--number', '--working-directory'],
       flags: [],
       mutation: false,
+    },
+    'sessions color': {
+      options: [
+        '--session-id',
+        '--number',
+        '--working-directory',
+        '--color',
+        CliArguments.remoteComputerOptionConst,
+      ],
+      flags: [],
+      mutation: true,
+    },
+    'sessions group': {
+      options: [
+        '--session-id',
+        '--number',
+        '--working-directory',
+        '--group',
+        CliArguments.remoteComputerOptionConst,
+      ],
+      flags: [],
+      mutation: true,
     },
     'tabs list': { options: [], flags: [], mutation: false },
     'tabs open': {
