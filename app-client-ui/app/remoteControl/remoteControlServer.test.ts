@@ -205,6 +205,7 @@ class RemoteControlServerHarness {
         finalizeSession: async () => ({ ok: true, value: undefined }),
         discardPlainSession: async () => ({ ok: true, value: undefined }),
       },
+      groups: { assign: (_sessionId, group) => ({ ok: true, value: { group } }) },
       tabs: {
         list: async () => [],
         open: async () => ({

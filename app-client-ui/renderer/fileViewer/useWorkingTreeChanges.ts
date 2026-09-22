@@ -35,7 +35,8 @@ export function useWorkingTreeChanges(
 
   const read = useCallback(async (
     source: FileChangesWorkingTreeSource | null,
-  ): Promise<void> => {
+    refreshMatching = false,
+  ): Promise<FileChangesWorkingTreeSnapshot | null> => {
     const key = UseWorkingTreeChanges.keyOf(sessionId, source)
     const current = (generations.current.get(key) ?? 0) + 1
     generations.current.set(key, current)
@@ -52,7 +53,7 @@ export function useWorkingTreeChanges(
       },
     }))
     const answer = await (reader ?? window.appClient.fileChanges.workingTree)(sessionId, source)
-    if (generations.current.get(key) !== current || !desired.current.has(key)) return
+    if (generations.current.get(key) !== current || !desired.current.has(key)) return null
     const refusal = IpcFailure.of(answer)
     if (refusal !== null) {
       setReadings((value) => ({
@@ -64,9 +65,9 @@ export function useWorkingTreeChanges(
           error: refusal,
         },
       }))
-      return
+      return null
     }
-    if (!answer.ok) return
+    if (!answer.ok) return null
     const result = answer.value
     if (!result.ok) {
       const detail = result.detail
@@ -79,14 +80,19 @@ export function useWorkingTreeChanges(
           error: detail,
         },
       }))
-      return
+      return null
     }
     const snapshot = result.value
     latestSnapshot.current = { sessionId, snapshot }
     setReadings((value) => ({
-      ...value,
+      ...Object.fromEntries(Object.entries(value).map(([readingKey, reading]) => [readingKey,
+        refreshMatching && reading.sessionId === sessionId && !reading.loading
+          && reading.snapshot?.source.selected === snapshot.source.selected
+          && (reading.snapshot.source.requested === null || reading.snapshot.source.requested === snapshot.source.selected)
+          ? { ...reading, snapshot } : reading])),
       [key]: { sessionId, snapshot, loading: false, error: null },
     }))
+    return snapshot
   }, [sessionId, reader])
 
   const desiredKey = JSON.stringify({ sessionId, enabled, selected, requiredSource: requiredSource ?? null })
@@ -153,7 +159,7 @@ export function useWorkingTreeChanges(
         ? required?.snapshot?.source.fallbackReason ?? null
         : null),
     select: setSelected,
-    reload: () => read(selected),
+    reload: (source) => read(source === undefined || current?.snapshot?.source.selected === source ? selected : source, true),
     snapshotFor: (source) => snapshots.find((item) => item.source.selected === source) ?? null,
   }
 }

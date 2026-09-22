@@ -72,4 +72,25 @@ describe('app-client-ui/app/versioning/serviceVersioningSettingsIpc', () => {
     await invoke('versioning:settings-save', { mode: 'git', diffTool: { kind: 'internal' }, activateSessionOnCommit: false, closeCommitOnSuccess: false }, 'closeCommitOnSuccess')
     expect(written).toEqual([{ ...storedConst, closeCommitOnSuccess: false }])
   })
+
+  it('saves the commit split without replacing other versioning settings', async () => {
+    await invoke('versioning:settings-save', { mode: 'git', diffTool: { kind: 'internal' }, commitSplitRatio: 0.45 }, 'commitSplitRatio')
+    expect(written).toEqual([{ ...storedConst, commitSplitRatio: 0.45 }])
+  })
+
+  it('saves both review options atomically without replacing unrelated settings', async () => {
+    await invoke('versioning:settings-save', { mode: 'git', diffTool: { kind: 'internal' },
+      activateSessionOnCommit: true, returnToPreviousSessionAfterCommit: false, closeCommitOnSuccess: false }, 'commitReview')
+    expect(written).toEqual([{ ...storedConst, activateSessionOnCommit: true, returnToPreviousSessionAfterCommit: false }])
+  })
+
+  it('keeps legacy single-field saves independent and rejects an unknown field', async () => {
+    await invoke('versioning:settings-save', { ...storedConst, activateSessionOnCommit: false,
+      returnToPreviousSessionAfterCommit: false }, 'activateSessionOnCommit')
+    expect(written).toEqual([{ ...storedConst, activateSessionOnCommit: false }])
+    expect(await invoke('versioning:settings-save', storedConst, 'unknown')).toMatchObject({
+      ok: true, value: { ok: false, code: 'invalid-section' },
+    })
+    expect(written).toHaveLength(1)
+  })
 })

@@ -30,9 +30,9 @@ export class ServiceVersioningCommitIpc extends ServiceIpcBase<typeof ServiceVer
   initialize(): void {
     this.register('versioning:commit-external-diff', (event, request) => this.diff.launch(this.owner(event.sender), request))
     this.register('versioning:commit-open-tab', (event, sessionId, vcs, scope) => { this.owner(event.sender); return this.openTab(sessionId, vcs, scope) })
-    this.register('versioning:commit-open-draft', async (event, sessionId, vcs, scope) => {
+    this.register('versioning:commit-open-draft', async (event, sessionId, vcs, scope, paths) => {
       const ownerId = this.owner(event.sender)
-      const prepared = await this.manager.prepare(sessionId, vcs, scope, null)
+      const prepared = await this.manager.prepare(sessionId, vcs, scope, null, paths)
       if (prepared.ok) {
         if (event.sender.isDestroyed()) this.manager.releaseUnattached(prepared.value.draftId)
         else this.manager.attach(prepared.value.draftId, ownerId)
@@ -44,7 +44,8 @@ export class ServiceVersioningCommitIpc extends ServiceIpcBase<typeof ServiceVer
       const ownerId = this.owner(event.sender)
       const draft = this.manager.read(ownerId, draftId)
       if (draft === null) return { ok: false, code: 'invalid-context', detail: 'The commit dialog no longer exists' }
-      return this.files.workingTree(ownerId, draft.sessionId, draft.source, draft.scopeRoot, true)
+      const result = await this.files.workingTree(ownerId, draft.sessionId, draft.source, draft.scopeRoot, true)
+      return result.ok ? { ok: true, value: this.manager.files(ownerId, draftId, result.value) } : result
     })
     this.register('versioning:commit-set-message', (event, draftId, message) => this.manager.setMessage(this.owner(event.sender), draftId, message))
     this.register('versioning:commit-run', (event, request) => this.manager.run(this.owner(event.sender), request))

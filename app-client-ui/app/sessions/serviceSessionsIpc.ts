@@ -31,7 +31,15 @@ export class ServiceSessionsIpc extends ServiceIpcBase<typeof ServiceSessionsIpc
     'sessions:reference': true,
   } as const
 
-  constructor(private readonly sessions: SessionManager) {
+  constructor(
+    private readonly sessions: SessionManager,
+    /**
+     * Told after a fork has landed, with the session it was cut from first. It is what carries the
+     * group the parent was put in by hand over to the fork, and it lives outside this service
+     * because a group assignment is the client's own state rather than anything the library keeps.
+     */
+    private readonly onForked: (parentSessionId: string, sessionId: string) => void,
+  ) {
     super()
   }
 
@@ -50,8 +58,7 @@ export class ServiceSessionsIpc extends ServiceIpcBase<typeof ServiceSessionsIpc
       this.sessions.discardPlainSession(sessionId))
     this.register('sessions:promote-plain', (_event, sessionId) =>
       this.sessions.promotePlainSession(sessionId))
-    this.register('sessions:fork', (_event, sessionId, options) =>
-      this.sessions.forkSession(sessionId, options))
+    this.register('sessions:fork', (_event, sessionId, options) => this.fork(sessionId, options))
     this.register('sessions:restart', (_event, sessionId) =>
       this.sessions.restartSession(sessionId))
     this.register('sessions:set-color', (_event, sessionId, color) =>
@@ -72,5 +79,21 @@ export class ServiceSessionsIpc extends ServiceIpcBase<typeof ServiceSessionsIpc
     this.register('sessions:reference', (_event, sessionId) =>
       this.sessions.sessionReference(sessionId))
     this.assertComplete(ServiceSessionsIpc.channelsConst)
+  }
+
+  /**
+   * The one handler that is not a bare delegation. A fork is where a session BEGINS, and where it
+   * begins is the only moment anything can be inherited: the answer names the session that was
+   * created, and this call is the only place that holds both it and the one it came from.
+   *
+   * A refused fork inherits nothing, because nothing was created.
+   */
+  private async fork(
+    sessionId: string,
+    options: Parameters<SessionManager['forkSession']>[1],
+  ): Promise<Awaited<ReturnType<SessionManager['forkSession']>>> {
+    const forked = await this.sessions.forkSession(sessionId, options)
+    if (forked.ok) this.onForked(sessionId, forked.value.sessionId)
+    return forked
   }
 }

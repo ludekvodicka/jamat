@@ -13,9 +13,8 @@ import { UiSettingsEffects, type UiSettingsPorts } from './uiSettingsEffects'
 import { UiSettingsModel, type UiSettingsModelState } from './uiSettingsModel'
 
 /**
- * The three font scales, the two scroll speeds and the terminal's colours: how big this shell draws
- * its own text, how big a file viewer and a terminal draw theirs, how far one turn of the wheel
- * moves each of them, and which palette the terminal draws in.
+ * Appearance and document activation preferences share one saved UI section. Main reads document
+ * activation from the saved config; appearance changes also preview in this window before saving.
  *
  * It saves itself, and only when Save is pressed. Everything before that is a PREVIEW: the store
  * applies it to the live document so the answer to "is 115 % too big" is the window itself rather
@@ -129,6 +128,16 @@ export function UiSettingsTab(props: ConfigurationTabProps): React.JSX.Element {
       {buffer === null && (
         <p className="jamat-configuration-ui__note">Reading config.json…</p>
       )}
+      <ConfigurationSection title="Documents">
+        <label><input type="checkbox" checked={buffer?.activateSessionOnDocument === true}
+          disabled={buffer === null || saving}
+          onChange={(event) => {
+            ports.dispatch({ input: 'activate-session-on-document', value: event.currentTarget.checked })
+            UiSettingsPreview.of(stateRef.current)
+          }} />
+          Activate session when an agent opens a document</label>
+        <p className="jamat-configuration-ui__note">Bring the document's session and window to the foreground. Disabled by default, documents open in the background. Commit activation is configured separately under Versioning.</p>
+      </ConfigurationSection>
       <ConfigurationSection title="Text size">
         <UiSettingsSlider
           disabled={buffer === null || saving}

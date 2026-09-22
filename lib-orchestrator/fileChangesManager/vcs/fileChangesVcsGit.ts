@@ -80,6 +80,7 @@ export class FileChangesVcsGit extends FileChangesVcsBase implements FileChanges
 
   async status(
     detection: FileChangesVcsDetection,
+    filePath?: string,
   ): Promise<FileChangesVcsResult<FileChangesVcsStatus>> {
     const outcome = await this.run(detection.root, [
       'status',
@@ -88,7 +89,8 @@ export class FileChangesVcsGit extends FileChangesVcsBase implements FileChanges
       '--untracked-files=all',
       '--ignored=no',
       '--',
-      FileChangesVcsGit.pathspecOf(detection),
+      filePath === undefined ? FileChangesVcsGit.pathspecOf(detection)
+        : `:(literal)${FileChangesVcsGit.repositoryPath(relative(detection.root, filePath))}`,
     ])
     if (!FileChangesVcsGit.succeeded(outcome))
       return { ok: false, detail: this.detailOf(outcome) }

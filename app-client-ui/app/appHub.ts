@@ -43,10 +43,12 @@ import { AppCommands, type CommandId } from '../shared/commands'
 import { ErrorText } from '../shared/errorText'
 import { FileViewerProtocolUrl } from '../shared/fileViewerProtocol'
 import type { RemoteControlListenerSettings } from '../shared/remoteControlSettings'
+import { SessionsGroupsState } from '../shared/sessionsGroupsState'
 import { AgentSettingsSection } from './agents/agentSettingsSection'
 import { ServiceAgentSettingsIpc } from './agents/serviceAgentSettingsIpc'
 import type { AppContext } from './appContext'
 import { ClientStatePaths } from './clientState/clientStatePaths'
+import { VersioningCommitMessageStore } from './versioning/versioningCommitMessageStore'
 import { ClientStateStore } from './clientState/clientStateStore'
 import { ServiceContextCompactionIpc } from './contextCompaction/serviceContextCompactionIpc'
 import { HostPingLoop } from './debug/hostPingLoop'
@@ -59,6 +61,7 @@ import { ServiceVersioningCommitIpc } from './versioning/serviceVersioningCommit
 import { ExternalDiffLauncher } from './versioning/externalDiffLauncher'
 import { VersioningCommitManager } from './versioning/versioningCommitManager'
 import { ServiceWorktreeSettingsIpc } from './worktrees/serviceWorktreeSettingsIpc'
+import { VersioningSettings } from '../shared/versioningSettings'
 import { VersioningSettingsSection } from './versioning/versioningSettingsSection'
 import { WorktreeSettingsSection } from './worktrees/worktreeSettingsSection'
 import { ServiceFileChangesIpc } from './fileChanges/serviceFileChangesIpc'
@@ -101,6 +104,11 @@ import { AppRestart } from './shell/appRestart'
 import { DebugWindow } from './shell/debugWindow'
 import { ServiceClipboardIpc } from './shell/serviceClipboardIpc'
 import { ServiceDialogIpc } from './shell/serviceDialogIpc'
+import { EchoLatency } from './perf/echoLatency'
+import { LoopDelaySampler } from './perf/loopDelaySampler'
+import { MainWorkLedger } from './perf/mainWorkLedger'
+import { ServicePerfIpc } from './perf/servicePerfIpc'
+import { ServiceIpcTiming } from './shared/serviceIpcBase'
 import { ServiceShellIpc } from './shell/serviceShellIpc'
 import { ServiceWindowsIpc } from './shell/serviceWindowsIpc'
 import { WindowIcon } from './shell/windowIcon'
@@ -115,6 +123,7 @@ import { ServiceTerminalMenuIpc } from './terminals/serviceTerminalMenuIpc'
 import { KeyboardSettingsSection } from './keyboardSettings/keyboardSettingsSection'
 import { ServiceKeyboardSettingsIpc } from './keyboardSettings/serviceKeyboardSettingsIpc'
 import { ServiceUiSettingsIpc } from './uiSettings/serviceUiSettingsIpc'
+import { UiSettingsSection } from './uiSettings/uiSettingsSection'
 import { UpdateManager } from './update/updateManager'
 
 type TerminalDetectorPathHints = Awaited<ReturnType<TerminalDetectorDeps['changedPaths']>>
@@ -172,6 +181,7 @@ export class AppHub {
     ServiceRateMonitorIpc.channelsConst,
     ServiceSessionModelIpc.channelsConst,
     ServiceSessionTranscriptIpc.channelsConst,
+    ServicePerfIpc.channelsConst,
   ] as const) satisfies Record<keyof AppClientUiIpcInvokeMap, true>
 
   /**
@@ -209,6 +219,10 @@ export class AppHub {
   private readonly historicSessionsIpc: ServiceHistoricSessionsIpc
   private readonly tabsIpc: ServiceTabsIpc
   private readonly terminalsIpc: ServiceTerminalIpc
+  private readonly loopDelay = new LoopDelaySampler()
+  private readonly echoLatency = new EchoLatency()
+  private readonly workLedger = new MainWorkLedger()
+  private readonly perfIpc: ServicePerfIpc
   private readonly terminalDetector: TerminalDetector
   private readonly terminalMenuIpc: ServiceTerminalMenuIpc
   private readonly debugIpc: ServiceDebugIpc
@@ -385,7 +399,16 @@ export class AppHub {
       // rollout is not free, and a view of one's own has no memo behind its index.
       transcripts: this.projects.transcripts,
     })
-    this.sessionsIpc = new ServiceSessionsIpc(this.sessions)
+    // A fork keeps the section of the tree its parent was put in. Here rather than in the renderer
+    // that asked: the tree is drawn in the main window alone, and the tab menu of a holder window
+    // forks just as well. The event is what tells a tree that IS open about a write it did not make.
+    this.sessionsIpc = new ServiceSessionsIpc(this.sessions, (parentSessionId, sessionId) => {
+      if (this.store.inheritSessionGroup(
+        SessionsGroupsState.sessionKeyOf({ kind: 'local', sessionId: parentSessionId }),
+        SessionsGroupsState.sessionKeyOf({ kind: 'local', sessionId }),
+      ))
+        this.broadcast('state:session-groups-changed')
+    })
     const modelReader = new SessionModelReader({ transcripts: this.projects.transcripts })
     this.historicSessionsIpc = new ServiceHistoricSessionsIpc(new HistoricSessions(this.projects, this.sessions, modelReader))
     // Each reader is handed over rather than held: there is no timer to stop and no child to end.
@@ -448,6 +471,7 @@ export class AppHub {
     const commitGit = new GitInvoker()
     const checkpointStore = new GitCheckpointStore(commitGit)
     this.commits = new VersioningCommitManager({
+      messages: new VersioningCommitMessageStore(ClientStatePaths.commitMessagesFile(configIdentity, channel), (message) => this.report(message)),
       sessions: this.sessions,
       vcsStatus: new VcsStatusView(),
       checkpointStore,
@@ -456,7 +480,10 @@ export class AppHub {
       git: new GitCommitManager(commitGit),
       svn: new SvnCommitManager(new SvnInvoker()),
       tortoise: new TortoiseCommitDialog(),
-      onChanged: () => this.broadcast('versioning:commit-changed'),
+      onChanged: () => {
+        this.broadcast('versioning:commit-changed')
+        this.tabControlBroker.commitsChanged()
+      },
     })
     this.versioningCommitIpc = new ServiceVersioningCommitIpc(this.commits, workspaceOwnerIdOf, this.fileChangesIpc, async (sessionId, vcs, scope) => {
       const info = this.sessions.snapshot().sessions.find((session) => session.sessionId === sessionId)
@@ -479,7 +506,12 @@ export class AppHub {
       this.panelIndex,
       new TabFileOpenResolver(this.sessions, this.fileViewer, this.terminalDetector),
       this.commits,
-      { activateSessionOnCommit: () => configStore.readSection(VersioningSettingsSection.spec).activateSessionOnCommit !== false },
+      {
+        activateSessionOnCommit: () => configStore.readSection(VersioningSettingsSection.spec).activateSessionOnCommit !== false,
+        activateSessionOnDocument: () => configStore.readSection(UiSettingsSection.spec).activateSessionOnDocument === true,
+        returnToPreviousSessionAfterCommit: () => configStore.readSection(VersioningSettingsSection.spec).returnToPreviousSessionAfterCommit !== false,
+        returnWindowMilliseconds: () => VersioningSettings.returnWindowMilliseconds(configStore.readSection(VersioningSettingsSection.spec)),
+      },
     )
     this.fileViewerIpc = new ServiceFileViewerIpc(
       this.fileViewer,
@@ -499,6 +531,7 @@ export class AppHub {
             detail: DetectionRefusal.detailOf('file'),
           }),
       (path) => this.terminalDetector.wasOpened(path),
+      (ownerId, source) => this.fileChangesIpc.restoreWorkingTree(ownerId, source),
     )
     this.tabsIpc = new ServiceTabsIpc(
       this.workspaceWindows,
@@ -510,7 +543,18 @@ export class AppHub {
     this.terminalsIpc = new ServiceTerminalIpc(
       this.sessions,
       (sender) => this.workspaceWindows.acceptsRenderer(sender),
+      this.echoLatency,
     )
+    // The one reading nobody else can take: this process holds both ends of a keystroke, the byte
+    // going out to the Host and the first frame coming back, and the agent sits between them.
+    this.perfIpc = new ServicePerfIpc(
+      this.loopDelay,
+      this.echoLatency,
+      this.workLedger,
+      () => this.sessions.sampleSlowestHostCallMs(),
+    )
+    // Every IPC handler in this process reports through the one funnel they all register by.
+    ServiceIpcTiming.use(this.workLedger)
     this.terminalMenuIpc = new ServiceTerminalMenuIpc(
       this.terminalDetector,
       this.fileViewer,
@@ -566,6 +610,23 @@ export class AppHub {
       system: { identity: () => remoteIdentity },
       projects: this.projects,
       sessions: this.sessions,
+      // A create may name the section its session is filed under, and this is where that lands: the
+      // same store and the same key the tree's own menu writes, so a session started by a skill sits
+      // where a person would have dragged it. The broadcast is what tells a tree already open.
+      groups: {
+        assign: (sessionId, group) => {
+          if (!this.store.assignSessionGroup(
+            SessionsGroupsState.sessionKeyOf({ kind: 'local', sessionId }),
+            group,
+          ))
+            return {
+              ok: false,
+              error: { code: 'unavailable', detail: 'Client state is not accepting writes' },
+            }
+          this.broadcast('state:session-groups-changed')
+          return { ok: true, value: { group } }
+        },
+      },
       tabs: this.tabControlBroker,
       terminal: remoteTerminal,
       transcript: transcriptAccess,
@@ -775,6 +836,8 @@ export class AppHub {
     this.rateMonitorIpc.initialize()
     this.sessionModelIpc.initialize()
     this.sessionTranscriptIpc.initialize()
+    this.perfIpc.initialize()
+    this.loopDelay.start()
     this.menu.install()
     this.workspaceWindows.restoreAtStart()
     this.skillLinks.install()
@@ -814,6 +877,7 @@ export class AppHub {
     await this.settleStep('the reMarkable manager', () => this.remarkable.stop())
     await this.settleStep('the file diff worker', () => this.fileDiffWorker.stop())
     await this.settleStep('the rate monitor', () => { this.rateMonitor.stop() })
+    await this.settleStep('the loop delay sampler', () => { this.loopDelay.stop() })
     await this.settleStep('the control server', () => this.remoteControlServer.stop())
     await this.settleStep('the peer listener', () => this.remoteListener.stop())
     await this.settleStep('the inbound registry', () => { this.remoteInbound.stop() })
@@ -993,10 +1057,17 @@ export class AppHub {
     )
   }
 
+  /**
+   * Timed, because it is the one piece of work the LIBRARY starts on this loop rather than a window
+   * asking for it: a poll that found something composes a snapshot and wakes every window and every
+   * peer. If the loop is being held and no IPC channel owns the time, this is where to look next.
+   */
   private sessionsChanged(): void {
-    this.broadcast('sessions:changed')
-    this.remoteControlServer.publishEvent('sessions.changed')
-    this.remoteInbound.publishEvent('sessions.changed')
+    this.workLedger.run('sessions:changed', () => {
+      this.broadcast('sessions:changed')
+      this.remoteControlServer.publishEvent('sessions.changed')
+      this.remoteInbound.publishEvent('sessions.changed')
+    })
   }
 
   private remoteChanged(): void {
@@ -1025,6 +1096,13 @@ export class AppHub {
 
   private tabsPresenceChanged(): void {
     this.refreshVisibilityConsumers()
+    // To every workspace window, because the sessions tree keeps a row for as long as its session
+    // has a tab open somewhere and a holder's tabs count too. Finalizing a session does not close
+    // its tab, so without this the tree drops the row of a session the person can still see.
+    this.workspaceWindows.broadcast(
+      'tabs:open-terminal-targets',
+      this.panelIndex.openTerminalTargetKeys(),
+    )
     this.remoteControlServer.publishEvent('tabs.changed')
   }
 

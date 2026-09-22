@@ -65,7 +65,7 @@ describe('app-client-ui/renderer/fileViewer/fileChangesTreeWidget', () => {
       requiredLoading: false,
       requiredError: null,
       select: vi.fn(),
-      reload: vi.fn(async () => undefined),
+      reload: vi.fn(async () => null),
       snapshotFor: () => value,
     }
   }
@@ -116,6 +116,27 @@ describe('app-client-ui/renderer/fileViewer/fileChangesTreeWidget', () => {
     view.rerender(<FileChangesTreeWidget model={model(refreshed)} onOpen={vi.fn()} />)
 
     expect(screen.getByRole('treeitem', { name: /src/ })).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('opens a fresh token after its own renewal replaces the displayed snapshot', async () => {
+    const stale = model()
+    const fresh = { ...snapshot(), snapshotId: 'fresh', entries: snapshot().entries.map((entry) => ({ ...entry, fileId: `fresh-${entry.fileId}` })) }
+    const openFile = vi.fn<AppClientUiBridge['fileChanges']['openFile']>()
+      .mockResolvedValueOnce({ ok: true, value: { ok: false, code: 'snapshot-expired', detail: 'Expired' } })
+      .mockResolvedValue({ ok: true, value: { ok: true, value: documentConst } })
+    ;(window as unknown as { appClient: unknown }).appClient = { fileChanges: { openFile } }
+    const onOpen = vi.fn()
+    const view = render(<FileChangesTreeWidget model={stale} onOpen={onOpen} />)
+    vi.mocked(stale.reload).mockImplementation(async () => {
+      view.rerender(<FileChangesTreeWidget model={model(fresh)} onOpen={onOpen} />)
+      await Promise.resolve()
+      return fresh
+    })
+    fireEvent.click(screen.getByRole('treeitem', { name: /a\.ts/ }).querySelector('button')!)
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ snapshot: fresh, fileId: 'fresh-src/a.ts' })))
+    expect(stale.reload).toHaveBeenCalledExactlyOnceWith('checkpoint')
+    expect(openFile).toHaveBeenLastCalledWith('fresh', 'fresh-src/a.ts')
+    expect(screen.queryByText(/snapshot-expired/)).not.toBeInTheDocument()
   })
 
   it('releases a successful open superseded by a newer snapshot', async () => {

@@ -26,6 +26,7 @@ import { FileChangesSettingsSection } from './fileChangesSettingsSection'
 interface FileChangesSnapshotOwner {
   ownerIds: Set<string>
   sessionId: string
+  workingTree?: FileViewerDocumentSource['workingTree']
 }
 
 interface FileChangesDiffJob {
@@ -46,6 +47,7 @@ export class ServiceFileChangesIpc extends ServiceIpcBase<
   static readonly channelsConst = {
     'fileChanges:list': true,
     'fileChanges:working-tree': true,
+    'fileChanges:scoped-working-tree': true,
     'fileChanges:history': true,
     'fileChanges:diff': true,
     'fileChanges:open-file': true,
@@ -72,6 +74,8 @@ export class ServiceFileChangesIpc extends ServiceIpcBase<
       this.list(this.ownerId(event.sender), sessionId, preferredVcs))
     this.register('fileChanges:working-tree', (event, sessionId, source) =>
       this.workingTree(this.ownerId(event.sender), sessionId, source))
+    this.register('fileChanges:scoped-working-tree', (event, source) =>
+      this.scopedWorkingTree(this.ownerId(event.sender), source))
     this.register('fileChanges:history', (event, snapshotId, cursor) =>
       this.history(this.ownerId(event.sender), snapshotId, cursor))
     this.register('fileChanges:diff', (event, request) =>
@@ -132,6 +136,32 @@ export class ServiceFileChangesIpc extends ServiceIpcBase<
     return this.viewer.restoreExternal(ownerId, access.value, source.path, supportsDiff)
   }
 
+  async scopedWorkingTree(ownerId: string, source: FileViewerDocumentSource): Promise<FileChangesWorkingTreeSnapshotResult> {
+    const scope = source?.workingTree
+    if (scope === undefined || scope === null || (scope.source !== 'svn' && scope.source !== 'git')
+      || typeof scope.scopeRoot !== 'string' || !scope.scopeRoot.trim() || /[\0\r\n]/.test(scope.scopeRoot)
+      || typeof source.sessionId !== 'string' || typeof source.path !== 'string' || /[\0\r\n]/.test(source.path)
+      || !PathCompare.isInside(scope.scopeRoot, source.path))
+      return { ok: false, code: 'invalid-context', detail: 'Invalid scoped working-tree file' }
+    const result = await this.workingTree(ownerId, source.sessionId, scope.source, scope.scopeRoot, true, source.path)
+    if (!result.ok) return result
+    if (result.value.source.selected !== scope.source)
+      return { ok: false, code: 'invalid-context', detail: 'The file scope no longer has the requested version control source' }
+    const entries = result.value.entries.filter((entry) => PathCompare.comparable(entry.path) === PathCompare.comparable(source.path))
+    const ids = new Set(entries.map((entry) => entry.fileId))
+    return { ok: true, value: { ...result.value, entries, externalRoots: result.value.externalRoots.map((root) =>
+      ({ ...root, fileIds: root.fileIds.filter((id) => ids.has(id)) })).filter((root) => root.fileIds.length > 0) } }
+  }
+
+  async restoreWorkingTree(ownerId: string, source: FileViewerDocumentSource): Promise<FileViewerOpenResult> {
+    const snapshot = await this.scopedWorkingTree(ownerId, source)
+    if (!snapshot.ok) return { ok: false, code: 'invalid-source', detail: snapshot.detail }
+    const entry = snapshot.value.entries.find((entry) => entry.nodeKind === 'file')
+    if (entry === undefined) return { ok: false, code: 'invalid-source', detail: 'The file is no longer changed in this commit scope' }
+    const opened = await this.openFile(ownerId, snapshot.value.snapshotId, entry.fileId)
+    return opened.ok ? opened : { ok: false, code: 'invalid-source', detail: opened.detail }
+  }
+
   /**
    * One listing per session at a time, whoever asks.
    *
@@ -177,16 +207,20 @@ export class ServiceFileChangesIpc extends ServiceIpcBase<
     source: FileChangesWorkingTreeSource | null,
     scopeRoot?: string,
     forCommit = false,
+    filePath?: string,
   ): Promise<FileChangesWorkingTreeSnapshotResult> {
     const context = await this.sessions.workingContext(sessionId)
     if (!context.ok)
       return { ok: false, code: 'invalid-context', detail: context.detail }
-    if (scopeRoot !== undefined && !PathCompare.isInside(context.value.cwd, scopeRoot))
+    if (!forCommit && scopeRoot !== undefined && !PathCompare.isInside(context.value.cwd, scopeRoot))
       return { ok: false, code: 'invalid-context', detail: 'The scope is outside the session working directory' }
-    const key = `${sessionId}\u0000${source ?? ''}\u0000${scopeRoot ?? ''}\u0000${forCommit}`
+    const key = `${sessionId}\u0000${source ?? ''}\u0000${scopeRoot ?? ''}\u0000${forCommit}\u0000${filePath ?? ''}`
     const running = this.workingTrees.get(key)
-    const result = await (running ?? this.startWorkingTree(key, { ...context.value, cwd: scopeRoot ?? context.value.cwd }, source, forCommit))
-    if (result.ok) this.track(result.value.snapshotId, ownerId, sessionId)
+    const result = await (running ?? this.startWorkingTree(key, { ...context.value, cwd: scopeRoot ?? context.value.cwd,
+      ...(forCommit ? { worktree: null } : {}) }, source, forCommit, filePath))
+    if (result.ok) this.track(result.value.snapshotId, ownerId, sessionId,
+      forCommit && scopeRoot !== undefined && PathCompare.comparable(scopeRoot) !== PathCompare.comparable(context.value.cwd)
+        && (source === 'svn' || source === 'git') ? { scopeRoot, source } : undefined)
     return result
   }
 
@@ -195,8 +229,9 @@ export class ServiceFileChangesIpc extends ServiceIpcBase<
     context: Parameters<FileChangesManager['workingTree']>[0],
     source: FileChangesWorkingTreeSource | null,
     forCommit: boolean,
+    filePath?: string,
   ): Promise<FileChangesWorkingTreeSnapshotResult> {
-    const started = this.manager.workingTree(context, source, forCommit)
+    const started = this.manager.workingTree(context, source, forCommit, filePath)
       .finally(() => this.workingTrees.delete(key))
     this.workingTrees.set(key, started)
     return started
@@ -270,7 +305,7 @@ export class ServiceFileChangesIpc extends ServiceIpcBase<
       if (access.code === 'snapshot-expired') this.expireSnapshot(snapshotId)
       return access
     }
-    return this.viewer.openChanged(ownerId, access.value)
+    return this.viewer.openChanged(ownerId, { ...access.value, workingTree: this.snapshotOwners.get(snapshotId)?.workingTree })
   }
 
   private ownerId(sender: WebContents): string {
@@ -297,7 +332,7 @@ export class ServiceFileChangesIpc extends ServiceIpcBase<
     this.snapshotOwners.set(snapshotId, found)
   }
 
-  private track(snapshotId: string, ownerId: string, sessionId: string): void {
+  private track(snapshotId: string, ownerId: string, sessionId: string, workingTree?: FileViewerDocumentSource['workingTree']): void {
     const existing = this.snapshotOwners.get(snapshotId)
     if (existing !== undefined) {
       existing.ownerIds.add(ownerId)
@@ -309,7 +344,7 @@ export class ServiceFileChangesIpc extends ServiceIpcBase<
       this.snapshotOwners.delete(expired)
       this.cancelSnapshot(expired)
     }
-    this.snapshotOwners.set(snapshotId, { ownerIds: new Set([ownerId]), sessionId })
+    this.snapshotOwners.set(snapshotId, { ownerIds: new Set([ownerId]), sessionId, workingTree })
   }
 
   private ownerDiffJobs(ownerId: string): number {

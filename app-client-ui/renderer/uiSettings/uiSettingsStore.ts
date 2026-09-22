@@ -136,6 +136,7 @@ export class UiSettingsStore {
       && one.terminalTheme === other.terminalTheme
       && one.scrollSpeedPercent === other.scrollSpeedPercent
       && one.terminalScrollSpeedPercent === other.terminalScrollSpeedPercent
+      && (one.activateSessionOnDocument === true) === (other.activateSessionOnDocument === true)
   }
 
   private static apply(value: UiSettingsValue): void {

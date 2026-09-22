@@ -3,6 +3,7 @@ import { Suspense, startTransition, useLayoutEffect, type ReactNode } from 'reac
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { FileViewerDocument } from '../../../lib-orchestrator/fileViewer/fileViewerApi.types'
+import type { FileChangesWorkingTreeSnapshot } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import type { AppClientUiBridge } from '../../shared/appClientUiIpc'
 import type {
   FileChangesViewModel,
@@ -34,7 +35,7 @@ class FileViewerDocumentHarness {
       loading: false,
       loadingMore: false,
       error: null,
-      reload: vi.fn(async () => undefined),
+      reload: vi.fn(async () => null),
       loadMore: vi.fn(async () => undefined),
     }
   }
@@ -49,7 +50,7 @@ class FileViewerDocumentHarness {
       requiredLoading: false,
       requiredError: null,
       select: vi.fn(),
-      reload: vi.fn(async () => undefined),
+      reload: vi.fn(async () => null),
       snapshotFor: () => null,
     }
   }
@@ -66,7 +67,7 @@ class FileViewerDocumentHarness {
       })),
       release: vi.fn(async () => ({ ok: true as const, value: undefined })),
     }
-    const fileChanges = { diff: vi.fn() }
+    const fileChanges = { diff: vi.fn(), scopedWorkingTree: vi.fn() }
     ;(window as unknown as { appClient: AppClientUiBridge }).appClient = {
       fileViewer,
       fileChanges,
@@ -80,6 +81,59 @@ describe('app-client-ui/renderer/fileViewer/useFileViewerDocument', () => {
     cleanup()
     vi.restoreAllMocks()
     delete (window as unknown as { appClient?: unknown }).appClient
+  })
+
+  it('reads and reloads the commit scope baseline even when the session tree has no matching file', async () => {
+    const document: FileViewerDocument = { ...FileViewerDocumentHarness.document('outside.txt'), path: 'Q:/other/outside.txt',
+      source: { kind: 'workspace', sessionId: 'session-1', path: 'Q:/other/outside.txt', workingTree: { scopeRoot: 'Q:/other', source: 'svn' } }, modes: ['raw', 'diff'] }
+    const { fileChanges, fileViewer } = FileViewerDocumentHarness.install(document)
+    const snapshot: FileChangesWorkingTreeSnapshot = {
+      snapshotId: 'scoped-1', sessionId: 'session-1', createdAt: 1, externalRoots: [], warnings: [],
+      source: { requested: 'svn', selected: 'svn', available: ['svn'], fallbackReason: null },
+      defaultBaseline: { baselineId: 'base', kind: 'svn-base', label: 'BASE', revision: '5', createdAt: null },
+      entries: [{ fileId: 'file', path: document.path, displayPath: 'outside.txt', nodeKind: 'file', location: 'workspace', status: 'modified',
+        previousPath: null, previousDisplayPath: null, modifiedAt: null, sources: ['vcs'], gitState: null }],
+    }
+    fileChanges.scopedWorkingTree.mockImplementation(async () => ({ ok: true, value: { ok: true, value: { ...snapshot } } }))
+    fileChanges.diff.mockResolvedValue({ ok: true, value: { ok: true, kind: 'source-unavailable', detail: 'fixture' } })
+    const changes = FileViewerDocumentHarness.changes()
+    const sessionTree = FileViewerDocumentHarness.workingTree()
+    const { result } = renderHook(() => useFileViewerDocument(document.source,
+      { kind: 'svn-base', revision: '5', workingTreeSource: 'svn' }, changes, sessionTree))
+    await waitFor(() => expect(fileChanges.diff).toHaveBeenCalledWith({ snapshotId: 'scoped-1', fileId: 'file', baselineId: 'base' }))
+    expect(fileChanges.scopedWorkingTree).toHaveBeenCalledWith(document.source)
+    snapshot.snapshotId = 'scoped-2'
+    act(() => result.current.reload())
+    await waitFor(() => expect(fileChanges.diff).toHaveBeenCalledWith({ snapshotId: 'scoped-2', fileId: 'file', baselineId: 'base' }))
+    expect(fileViewer.restore).toHaveBeenLastCalledWith(document.source, true)
+    expect(result.current.error).toBeNull()
+  })
+
+  it.each([false, true])('renews an expired scoped diff once, including when the retry expires too (%s)', async (expiresAgain) => {
+    const document: FileViewerDocument = { ...FileViewerDocumentHarness.document('outside.txt'), path: 'Q:/other/outside.txt',
+      source: { kind: 'workspace', sessionId: 'session-1', path: 'Q:/other/outside.txt', workingTree: { scopeRoot: 'Q:/other', source: 'svn' } }, modes: ['raw', 'diff'] }
+    const { fileChanges } = FileViewerDocumentHarness.install(document)
+    let token = 'old'
+    fileChanges.scopedWorkingTree.mockImplementation(async () => ({ ok: true, value: { ok: true, value: {
+      snapshotId: token, sessionId: 'session-1', createdAt: 1, externalRoots: [], warnings: [],
+      source: { requested: 'svn', selected: 'svn', available: ['svn'], fallbackReason: null },
+      defaultBaseline: { baselineId: `${token}-base`, kind: 'svn-base', label: 'BASE', revision: '5', createdAt: null },
+      entries: [{ fileId: `${token}-file`, path: document.path, displayPath: 'outside.txt', nodeKind: 'file', location: 'workspace', status: 'modified',
+        previousPath: null, previousDisplayPath: null, modifiedAt: null, sources: ['vcs'], gitState: null }],
+    } } }))
+    const expired = { ok: true, value: { ok: false, code: 'snapshot-expired', detail: 'Expired' } }
+    fileChanges.diff.mockImplementationOnce(async () => { token = 'fresh'; return expired })
+      .mockResolvedValue(expiresAgain ? expired : { ok: true, value: { ok: true, kind: 'source-unavailable', detail: 'fixture result' } })
+    const changes = FileViewerDocumentHarness.changes()
+    const tree = FileViewerDocumentHarness.workingTree()
+    const { result } = renderHook(() => useFileViewerDocument(document.source,
+      { kind: 'svn-base', revision: '5', workingTreeSource: 'svn' }, changes, tree))
+    await waitFor(() => expect(fileChanges.diff).toHaveBeenLastCalledWith({ snapshotId: 'fresh', fileId: 'fresh-file', baselineId: 'fresh-base' }))
+    await waitFor(() => expect(result.current.diff).toEqual(expiresAgain ? expired.value : { ok: true, kind: 'source-unavailable', detail: 'fixture result' }))
+    expect(fileChanges.diff).toHaveBeenCalledTimes(2)
+    expect(changes.reload).not.toHaveBeenCalled()
+    expect(tree.reload).not.toHaveBeenCalled()
+    expect(fileChanges.scopedWorkingTree).toHaveBeenLastCalledWith(document.source)
   })
 
   it('keeps a proof-expired restore as text state instead of throwing', async () => {

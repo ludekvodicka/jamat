@@ -136,6 +136,19 @@ describe('app-client-ui/renderer/fileViewer/fileViewerControls', () => {
         ?.baseline.revision).toBe('abc123')
     })
 
+    it('renews current baselines after an expiry without substituting a missing historical revision', () => {
+      const first = listingOf('one')
+      const previous = FileViewerDiffTargets.of(first.snapshot, first.groups, 'C:/work/a.ts')
+      const second = listingOf('two')
+      const fresh = FileViewerDiffTargets.of(second.snapshot, [], 'C:/work/a.ts')
+      expect(FileViewerDiffTargets.afterExpiry(previous[1]!, fresh)).toBeNull()
+      const changedHead = { ...fresh[0]!, baseline: { ...fresh[0]!.baseline, revision: 'new-head' },
+        hint: { ...fresh[0]!.hint, revision: 'new-head' } }
+      expect(FileViewerDiffTargets.afterExpiry(previous[0]!, [changedHead])).toEqual(changedHead)
+      expect(FileViewerDiffTargets.afterExpiry(previous[0]!, [{ ...changedHead,
+        hint: { ...changedHead.hint, workingTreeSource: 'checkpoint' } }])).toBeNull()
+    })
+
     it('composes a working source with its own snapshot and durable source hint', () => {
       const listing = listingOf('one')
       const checkpoint = {

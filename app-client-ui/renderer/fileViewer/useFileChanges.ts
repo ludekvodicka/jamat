@@ -18,25 +18,40 @@ export function useFileChanges(sessionId: string, enabled = true): FileChangesVi
   const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const generation = useRef(0)
+  const loadedGroups = useRef(0)
 
-  const reload = useCallback(async (requested?: FileChangesVcsId | null): Promise<void> => {
+  const reload = useCallback(async (requested?: FileChangesVcsId | null): Promise<FileChangesSnapshot | null> => {
     const selected = requested === undefined ? preferredVcs : requested
+    const depth = requested === undefined ? loadedGroups.current : 0
     const current = ++generation.current
     if (requested !== undefined) setPreferredVcs(requested)
     setLoading(true)
+    setLoadingMore(false)
     setError(null)
     const answer = await window.appClient.fileChanges.list(sessionId, selected)
-    if (current !== generation.current) return
-    setLoading(false)
+    if (current !== generation.current) return null
     const refusal = IpcFailure.of(answer)
     if (refusal !== null) {
+      setLoading(false)
       setError(refusal)
-      return
+      return null
     }
-    if (!answer.ok || !answer.value.ok) return
-    setSnapshot(answer.value.value)
-    setGroups(answer.value.value.history.groups)
-    setNextCursor(answer.value.value.history.nextCursor)
+    if (!answer.ok || !answer.value.ok) { setLoading(false); return null }
+    let fresh = answer.value.value
+    while (fresh.history.groups.length < depth && fresh.history.nextCursor !== null) {
+      const page = await window.appClient.fileChanges.history(fresh.snapshotId, fresh.history.nextCursor)
+      if (current !== generation.current) return null
+      const failure = IpcFailure.of(page)
+      if (failure !== null) { setLoading(false); setError(failure); return null }
+      if (!page.ok || !page.value.ok) { setLoading(false); return null }
+      fresh = { ...fresh, history: { groups: [...fresh.history.groups, ...page.value.value.groups], nextCursor: page.value.value.nextCursor } }
+    }
+    loadedGroups.current = fresh.history.groups.length
+    setLoading(false)
+    setSnapshot(fresh)
+    setGroups(fresh.history.groups)
+    setNextCursor(fresh.history.nextCursor)
+    return fresh
   }, [preferredVcs, sessionId])
 
   useEffect(() => {
@@ -69,7 +84,9 @@ export function useFileChanges(sessionId: string, enabled = true): FileChangesVi
     const page = answer.value.value
     setGroups((current) => {
       const existing = new Set(current.map((group) => group.groupId))
-      return [...current, ...page.groups.filter((group) => !existing.has(group.groupId))]
+      const next = [...current, ...page.groups.filter((group) => !existing.has(group.groupId))]
+      loadedGroups.current = next.length
+      return next
     })
     setNextCursor(page.nextCursor)
   }, [loadingMore, nextCursor, snapshot])

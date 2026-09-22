@@ -1,4 +1,4 @@
-import type { SessionColorName } from '../sessionManagerApi.types'
+import type { SessionColorName } from './sessionManagerApi.types'
 
 /**
  * The closed set of colour names, and the one guard over it.
@@ -8,6 +8,11 @@ import type { SessionColorName } from '../sessionManagerApi.types'
  * mistake worth hearing about. A READ merely filters, because a record carrying a name this build
  * does not know is still a session somebody is working in, and dropping the record over its colour
  * would cost them the session to save the decoration.
+ *
+ * At the subsystem root since 2026-09-18, beside `sessionLimits.ts` and for its reason: a colour may
+ * now be named at CREATE, so the guard is read by the control-protocol validator and by the CLI
+ * parser as well as by the lifecycle, and no file inside `records/` is imported from outside. The
+ * three of them prove the same name against one list rather than each carrying twelve strings.
  */
 export class SessionColors {
   static readonly namesConst = [

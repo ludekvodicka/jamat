@@ -4,6 +4,7 @@ import { CommandInvoker, type InteractiveCommandResult } from './commandInvoker'
 export interface TortoiseCommitRequest {
   vcs: 'svn' | 'git'
   scope: string
+  paths?: readonly string[]
   messageFile: string | null
 }
 
@@ -27,8 +28,8 @@ export class TortoiseCommitDialog {
     const env: NodeJS.ProcessEnv = {}
     for (const [key, value] of Object.entries(process.env))
       if (!key.toUpperCase().startsWith('GIT_')) env[key] = value
-    return this.deps.commands.launchInteractive({ command, cwd: request.scope, env,
-      args: ['/command:commit', `/path:${request.scope}`,
+    return this.deps.commands.launchInteractive({ command, cwd: process.cwd(), env,
+      args: ['/command:commit', `/path:${request.paths?.join('*') ?? request.scope}`,
         ...(request.messageFile === null ? [] : [`/logmsgfile:${request.messageFile}`])] })
   }
 }

@@ -42,7 +42,7 @@ import { LaunchBackoff } from './lifecycle/launchBackoff'
 import type { ReconcileChange } from './lifecycle/reconciler'
 import { SessionLifecycle } from './lifecycle/sessionLifecycle'
 import { WorktreeMergeFlow } from './lifecycle/worktreeMergeFlow'
-import { SessionColors } from './records/sessionColors'
+import { SessionColors } from './sessionColors'
 import { SessionNumberStore } from './records/sessionNumberStore'
 import { SessionOutcomes } from './records/sessionOutcomes'
 import type {
@@ -241,6 +241,8 @@ export class SessionManager {
   /** Two git processes per worktree, so this is measured on its own clock and not on the poll's. */
   private static readonly worktreeFactsMillisecondsConst = 30_000
   /** How long a restart waits for the stopped process to actually be gone, and how often it looks. */
+  /** How many times `stop` re-reads the work still in flight before it gives up on it out loud. */
+  private static readonly settleRoundsConst = 8
   private static readonly exitBudgetMillisecondsConst = 5_000
   private static readonly exitPollMillisecondsConst = 250
   private static readonly realExitClockConst: ExitClock = {
@@ -291,6 +293,8 @@ export class SessionManager {
   private pendingRefresh: Promise<void> | null = null
   private timer: ReturnType<typeof setTimeout> | null = null
   private worktreeFactsInFlight = false
+  /** Every pass started without a caller, held until it settles so `stop` can wait for it. */
+  private readonly detached = new Set<Promise<void>>()
   private visible = true
   private started = false
   private lastReconcile: Omit<HostDebugStatus['reconcile'], 'refreshPending'> =
@@ -326,7 +330,10 @@ export class SessionManager {
     // lands and the checkpoint taken in between can never disagree about which repository they
     // are talking about. The callback itself is still read per operation.
     this.versioningModeOf = deps.versioningModeOf ?? (() => 'checkpoints')
-    this.checkpoints = new GitCheckpointStore(new GitInvoker())
+    // The reporter is what carries the one thing a checkpoint says that is not its own outcome: a
+    // store seeded before the byte-transparency rule is repaired here, and a worktree cut before
+    // that repair still holds converted files and has to be named.
+    this.checkpoints = new GitCheckpointStore(new GitInvoker(), deps.onError)
     const versioning = { modeOf: this.versioningModeOf, store: this.checkpoints }
     this.worktrees = new GitWorktreeManager(new GitInvoker(), versioning)
     this.merge = new GitMergeManager(new GitInvoker(), versioning)
@@ -406,6 +413,35 @@ export class SessionManager {
     this.terminals.closeAll()
     await this.records?.flushUserInput()
     await this.client.stop()
+    await this.settleWork()
+    await this.records?.settled()
+  }
+
+  /**
+   * Everything this manager started and nobody is waiting for: a git probe holding a session's
+   * directory, a worktree diff, a merge the reconciler resumed, a record write on its way out.
+   * "Stopped" has to mean that none of them is still running, or a caller that tears the workspace
+   * down next is racing this client's own children.
+   *
+   * ROUNDS rather than one wait, because a pass can start a pass: a reconcile ends by handing its
+   * listing to the work-state monitor, so the set is not empty when a wait over one copy of it
+   * settles. The operation queue is drained with them - a create already on it spawns git of its
+   * own - and its tail is re-read each round for the same reason.
+   *
+   * Bounded, and the bound is the point: git work here is allowed to run for minutes, so a queue
+   * that will not drain must not hold a quit open for ever. Past the rounds this returns with work
+   * still running and says so, which is the caller's cue that the directories are not theirs yet.
+   */
+  private async settleWork(): Promise<void> {
+    for (let round = 0; round < SessionManager.settleRoundsConst; round += 1) {
+      const queue = this.queue
+      await Promise.all([queue.catch(() => undefined), ...this.detached])
+      if (queue === this.queue && this.detached.size === 0) return
+    }
+    this.deps.onError(
+      'The session manager stopped with work still running: a queued operation or a detached pass '
+      + 'did not finish in time, so something of this client may still be reading its directories',
+    )
   }
 
   snapshot(): SessionsSnapshot {
@@ -450,6 +486,7 @@ export class SessionManager {
         model: record.agent.model ?? null,
         createdAt: record.createdAt,
         lastActivity: this.records?.lastUserInputAt(record.sessionId) ?? null,
+        endedAt: record.endedAt ?? null,
         active: record.life === 'live' || record.life === 'starting',
       })
     }
@@ -911,6 +948,14 @@ export class SessionManager {
    * Composed out of state that is already here: no I/O, no timer of its own, so the freshness of
    * these facts is the freshness of the single cadence above - which is itself one of the facts.
    */
+  /**
+   * The slowest Host call since the last ask, for whoever draws how fast this client is answering.
+   * It is the manager's to hand out because the manager owns the one Host client in this process.
+   */
+  sampleSlowestHostCallMs(): number | null {
+    return this.client.sampleSlowestCallMs()
+  }
+
   debugStatus(): HostDebugStatus {
     const descriptor = this.client.descriptor()
     const client = this.client.debugView()
@@ -1097,10 +1142,12 @@ export class SessionManager {
       host: this.client,
       worktrees: this.worktrees,
       setup: this.projectSetup,
-      // Deferred rather than the store itself: the numbers file is read on first use, and a
-      // promotion is the only thing in the lifecycle that ever asks for one.
+      // Deferred rather than the store itself: the numbers file is read on first use, and only a
+      // create, a promotion, a history resume or a fork ever asks it anything.
       numbers: {
         allocate: async (projectPath, list) => (await this.numbers()).allocate(projectPath, list),
+        highestIssued: async (projectPath, list) =>
+          (await this.numbers()).highestIssued(projectPath, list),
       },
       codexRollouts: CodexRolloutView.load({
         codexHome: this.deps.codexHome,
@@ -1118,10 +1165,10 @@ export class SessionManager {
     // Fired rather than awaited: the reconcile loop that produces it holds the one queue every
     // operation shares, and a merge does git work. The merge's own idempotence is what makes that
     // safe - it reads the disk, so a second run does whatever is still missing and nothing twice.
+    // Through `detach` rather than a bare `void`: it is the longest-running git pass there is, and
+    // `stop` has to be able to wait for it like every other pass nobody awaits.
     lifecycle.setResumeMerge((sessionId) => {
-      void this.mergeSession(sessionId).catch((thrown: unknown) => {
-        this.deps.onError(`Continuing the merge of ${sessionId} failed: ${ErrorText.of(thrown)}`)
-      })
+      this.detach(this.mergeSession(sessionId), `Continuing the merge of ${sessionId}`)
     })
     return lifecycle
   }
@@ -1163,11 +1210,19 @@ export class SessionManager {
   /**
    * The end of every promise nobody is waiting for. `start()` is the one path with a caller to
    * report to; a timer, an event and a detached pass have none, and an unhandled rejection out of
-   * one of them takes down the client's main process. The store's writes are synchronous `fs` and
-   * throw on EPERM, ENOSPC or a locked file, so this is not a hypothetical.
+   * one of them takes down the client's main process. A store write throws on EPERM, ENOSPC or a
+   * locked file, so this is not a hypothetical.
+   *
+   * Detached is not unowned. Each pass is held until it settles so that `stop` can wait for it: the
+   * VCS and worktree passes SPAWN git in a session's directory, and a stop that left one running
+   * left a child of this process reading a tree its caller believes nothing is touching any more.
    */
   private detach(work: Promise<unknown>, what: string): void {
-    void work.catch((error) => this.deps.onError(`${what} failed: ${ErrorText.of(error)}`))
+    const tracked: Promise<void> = work
+      .then(() => undefined)
+      .catch((error: unknown) => this.deps.onError(`${what} failed: ${ErrorText.of(error)}`))
+      .finally(() => { this.detached.delete(tracked) })
+    this.detached.add(tracked)
   }
 
   private async refreshWorktreeFacts(): Promise<void> {

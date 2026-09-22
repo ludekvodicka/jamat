@@ -193,6 +193,17 @@
   min-width: 100%;
   min-height: 1.5em;
 }
+/* Shiki writes a real newline BETWEEN its line spans and lets `pre` draw the break, so a line that
+   is also a block draws twice: once as its own box and once for the newline after it. Normal
+   white-space on the container drops whitespace that sits between block boxes; each line keeps
+   `pre` for its own indentation. Only the code view is affected - a markdown fence takes the same
+   HTML with inline lines, where that newline IS the break. */
+.file-viewer-code .shiki code {
+  white-space: normal;
+}
+.file-viewer-code .shiki .line {
+  white-space: pre;
+}
 .file-viewer-line-target {
   animation: file-viewer-line-target 1.8s ease-out;
 }
@@ -247,6 +258,11 @@
   max-height: var(--file-viewer-media-fit-height, 100%);
   object-fit: contain;
   transform: scale(var(--file-viewer-zoom));
+}
+
+.file-viewer-media img[draggable],
+.file-viewer-svg[draggable] {
+  cursor: grab;
 }
 .file-viewer-svg {
   display: flex;

@@ -74,8 +74,19 @@ describe('lib-orchestrator/fileViewer/directory/fileDirectoryReader', () => {
    * hand `readdir` back in name order already, so sorting first cannot be told from not sorting.
    * What this pins is the ceiling and the deterministic front of the list. Said plainly rather than
    * counted as coverage of the sort.
+   *
+   * It says its own budget because it is the one case here that is disk-bound rather than compute-
+   * bound: 5 005 files created, 5 000 of them stat-ed, and the same 5 005 removed again. The same
+   * work measured 1 567 ms on an idle machine, 23 309 ms under twenty-four concurrent disk workers
+   * and 39 658 ms under forty-eight - so the 20 s it used to carry timed out, and the package's own
+   * 30 s default would have timed out as well. That 20 s was written while the default was vitest's
+   * 5 s and quietly became a REDUCTION the day this package took 30 s. 120 s is the shape the
+   * real-git cases in this package already use, for the same reason: a budget is there to catch a
+   * case that is wedged, and a loaded machine does not wedge this one.
    */
-  it('cuts a long listing deterministically, from the front of the sorted names', async () => {
+  it('cuts a long listing deterministically, from the front of the sorted names', {
+    timeout: 120_000,
+  }, async () => {
     const cwd = await root()
     const count = FileViewerLimits.directoryEntries + 5
     // Written together rather than one after another: five thousand sequential writes are slower
@@ -90,5 +101,5 @@ describe('lib-orchestrator/fileViewer/directory/fileDirectoryReader', () => {
     expect(read.publicEntries[0]?.name).to.equal('file-000000.txt')
     expect(read.publicEntries.at(-1)?.name)
       .to.equal(`file-${String(FileViewerLimits.directoryEntries - 1).padStart(6, '0')}.txt`)
-  }, 20_000)
+  })
 })

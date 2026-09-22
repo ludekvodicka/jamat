@@ -117,7 +117,7 @@ describe('app-host/app/sessions/sessionManager', () => {
       hostInstanceId: 'host-2',
     }
 
-    await expect(harness.manager.inspect(foreign)).rejects.toThrow(/Expected Host instance/)
+    await expect(harness.manager.inspect(foreign, null)).rejects.toThrow(/Expected Host instance/)
     await expect(harness.manager.replace({
       controllerLeaseId: 'lease-1',
       operationId: 'replace-foreign',

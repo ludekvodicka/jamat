@@ -126,6 +126,25 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/ui/uiSettingsTab', 
     expect(viewerScale()).toBe('1.25')
   })
 
+  it('saves document activation independently and resets it to off', async () => {
+    const { stub, view, onDirtyChange } = await mount()
+    const checkbox = view.getByRole('checkbox', { name: 'Activate session when an agent opens a document' })
+    expect(checkbox).not.toBeChecked()
+    fireEvent.click(checkbox)
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true)
+    expect(stub.saved).toEqual([])
+    fireEvent.click(buttonNamed(view.container, 'Save'))
+    expect(checkbox).toBeDisabled()
+    await stub.answersSave()
+    expect(stub.saved).toEqual([{ ...storedConst, activateSessionOnDocument: true }])
+    expect(checkbox).toBeChecked()
+    fireEvent.click(buttonNamed(view.container, 'Reset to defaults'))
+    expect(checkbox).not.toBeChecked()
+    fireEvent.click(buttonNamed(view.container, 'Save'))
+    await stub.answersSave()
+    expect(stub.saved.at(-1)?.activateSessionOnDocument).toBe(false)
+  })
+
   /*
    * A speed is offered on its own grid, not the fonts': the two rows above it step by 5 inside
    * 70-150, and these step by 25 up to 400. A slider that offered a value the main process refuses

@@ -2,8 +2,9 @@ import type { WebContents } from 'electron'
 
 import type { SessionManager } from '../../../lib-orchestrator/sessionManager/sessionManager'
 import type { TerminalFrame } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
+import type { EchoLatency } from '../perf/echoLatency'
 import { ClipboardAccess } from '../shared/clipboardAccess'
-import { ServiceIpcBase } from '../shared/serviceIpcBase'
+import { ServiceIpcBase, ServiceIpcTiming } from '../shared/serviceIpcBase'
 
 /**
  * The terminal's share of the named allowlist, and the one service that owns state of its own.
@@ -38,6 +39,11 @@ export class ServiceTerminalIpc extends ServiceIpcBase<typeof ServiceTerminalIpc
   constructor(
     private readonly sessions: SessionManager,
     private readonly acceptsRenderer: (sender: WebContents) => boolean,
+    /**
+     * Told when a key went out and when the first byte came back, because this service is where
+     * both ends are visible. It is a reading and never a decision: nothing here waits on it.
+     */
+    private readonly echo: EchoLatency,
   ) {
     super()
   }
@@ -63,6 +69,7 @@ export class ServiceTerminalIpc extends ServiceIpcBase<typeof ServiceTerminalIpc
     })
     this.register('terminal:input', (event, attachId, data) => {
       this.assertOwner(event.sender, attachId)
+      this.echo.typed(attachId)
       this.sessions.terminalInput(attachId, data)
     })
     this.register('terminal:resize', (event, attachId, cols, rows) => {
@@ -96,9 +103,18 @@ export class ServiceTerminalIpc extends ServiceIpcBase<typeof ServiceTerminalIpc
     this.assertComplete(ServiceTerminalIpc.channelsConst)
   }
 
+  /**
+   * Timed like an IPC handler, because it is one in the other direction and it is the busiest path
+   * in this process: every byte of every attached terminal crosses it, and the structured clone
+   * that carries a frame to a window happens on the loop a keystroke leaves by.
+   */
   publishFrame(attachId: string, frame: TerminalFrame): void {
-    const sender = this.ownerByAttach.get(attachId)
-    if (sender && !sender.isDestroyed()) sender.send('terminal:frame', attachId, frame)
+    ServiceIpcTiming.run('terminal:frame', () => {
+      // Output, and only output: an ack or a status frame answers the attach rather than the key.
+      if (frame.type === 'terminal.data' || frame.type === 'terminal.delta') this.echo.answered(attachId)
+      const sender = this.ownerByAttach.get(attachId)
+      if (sender && !sender.isDestroyed()) sender.send('terminal:frame', attachId, frame)
+    })
   }
 
   ownsAttach(sender: WebContents, attachId: string): boolean {
@@ -125,6 +141,8 @@ export class ServiceTerminalIpc extends ServiceIpcBase<typeof ServiceTerminalIpc
     if (this.ownerByAttach.get(attachId) !== sender) return
     this.ownerByAttach.delete(attachId)
     this.sessionByAttach.delete(attachId)
+    // A key nobody will ever answer now: the attach it was typed into is gone.
+    this.echo.forget(attachId)
     const held = this.owned.get(sender)
     if (!held) return
     held.delete(attachId)
@@ -141,6 +159,9 @@ export class ServiceTerminalIpc extends ServiceIpcBase<typeof ServiceTerminalIpc
       if (this.ownerByAttach.get(attachId) !== sender) continue
       this.ownerByAttach.delete(attachId)
       this.sessionByAttach.delete(attachId)
+      // The same forget `release` does: a window closed or reloaded with a key unanswered would
+      // otherwise leave one entry per attach behind, under an id nothing can ever match again.
+      this.echo.forget(attachId)
     }
     this.sessions.terminalDetachAll([...held])
   }

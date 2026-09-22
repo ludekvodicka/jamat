@@ -146,12 +146,36 @@ export interface RuntimeSessionInfo {
   exitReason?: 'process-exit' | 'stopped' | 'host-lost' | 'spawn-failed'
 }
 
+/**
+ * How much of a projection the caller actually reads.
+ *
+ * Only the caller knows: the work-state classifier reads two thousand characters of the ring and
+ * sixteen rows off the bottom of the screen, and was handed half a megabyte of ring and a thousand
+ * rows of scrollback to find them in - per session, every two seconds, through one `JSON.stringify`
+ * on the Host's event loop and one `JSON.parse` on the loop that relays every keystroke.
+ *
+ * An older Host ignores the field and answers with everything, which is what it did before this
+ * existed, so a client may always send it.
+ */
+export interface TerminalProjectionView {
+  /** Characters of the output ring, counted from its end. */
+  rawTailChars: number
+  /** Scrollback rows above the viewport. The viewport itself is always serialized. */
+  screenScrollbackRows: number
+}
+
 export interface TerminalProjectionSnapshot {
   runtimeSessionId: string
   generation: number
   outputEpoch: number
   outputSeq: number
-  raw: string
+  /**
+   * The output ring. **Absent on an attach snapshot**, which nothing has ever read it from: the
+   * renderer writes `screen` into a reset terminal and the remote peek reads `screen` alone, so
+   * half a megabyte travelled the socket, the IPC structured clone and the peer channel to be
+   * dropped at each end. A `runtime.inspect` still carries it, whole or cut to the `view`.
+   */
+  raw?: string
   screen: string
   cols: number
   rows: number
@@ -179,7 +203,10 @@ export interface RuntimeReplaceReq extends RuntimeTargetMutationReq {
   launch: RuntimeLaunchSpec
 }
 
-export type RuntimeInspectReq = RuntimeTargetReq
+export interface RuntimeInspectReq extends RuntimeTargetReq {
+  /** Absent asks for the whole projection, which is what a Host that predates this field answers. */
+  view?: TerminalProjectionView
+}
 
 export interface RuntimeListResult {
   sessions: RuntimeSessionInfo[]

@@ -44,6 +44,8 @@ describe('app-client-ui/app/clientState/clientStatePaths', () => {
     const directory = ClientStatePaths.directory(identity, 'development')
     expect(ClientStatePaths.stateFile(identity, 'development'))
       .toBe(join(directory, 'client-state.json'))
+    expect(ClientStatePaths.commitMessagesFile(identity, 'development'))
+      .toBe(join(directory, 'commit-messages.json'))
     expect(ClientStatePaths.snapshotsDirectory(identity, 'development'))
       .toBe(join(directory, 'snapshots'))
     expect(ClientStatePaths.controlDescriptorFile(identity, 'development'))

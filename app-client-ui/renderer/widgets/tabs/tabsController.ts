@@ -23,6 +23,7 @@ import { PanelKeysConst, TabTransferDrag } from '../../../shared/tabTransfer'
 import { WorkspaceSaveLimits } from '../workspaceSaveLimits'
 import type { PanelOpenOutcome } from '../../shell/appShell.types'
 import type { PanelRegistry } from './panelRegistry'
+import { PanelSplitParams } from './panelSplit'
 import { type MoveDirection, type TabGroupBox, TabGroupNeighbour } from './tabGroupNeighbour'
 
 type LayoutWrite = { kind: 'save'; layout: string } | { kind: 'clear' }
@@ -82,6 +83,7 @@ export class TabsController {
    * panels, and the layout, the index and the transfer payload would all carry it back.
    */
   private previewPanelId: string | null = null
+  private previewParametersSubscription: DockviewIDisposable | null = null
   private readonly previewListeners = new Set<() => void>()
   /** User-closed panels can return with their last sidebar and inner split state in this window. */
   private readonly closedPanelParameters = new Map<string, Record<string, unknown>>()
@@ -101,6 +103,7 @@ export class TabsController {
     // layout change twice, and the second write would be the one nobody looked for.
     this.releaseSubscriptions()
     this.api = api
+    this.setPreviewPanelId(this.previewPanelId)
     this.subscriptions.push(api.onDidLayoutChange(() => this.scheduleSave()))
     // Its own event, though `onDidLayoutChange` carries it too: that one also fires for every
     // splitter drag and every panel added, and what hangs off this one redraws on the answer.
@@ -203,11 +206,23 @@ export class TabsController {
   }
 
   private setPreviewPanelId(next: string | null): void {
-    if (next === this.previewPanelId)
-      return
+    const panel = next === null ? undefined : this.api?.getPanel(next)
+    if (panel?.view.contentComponent === PanelKeysConst.terminal
+      && PanelSplitParams.of(panel.params).items.length > 0)
+      next = null
+    const changed = next !== this.previewPanelId
+    this.previewParametersSubscription?.dispose()
+    this.previewParametersSubscription = null
     this.previewPanelId = next
-    for (const listener of this.previewListeners)
-      listener()
+    // Parameter events are synchronous; the next preview must not replace a just-opened split.
+    if (next !== null && panel?.view.contentComponent === PanelKeysConst.terminal)
+      this.previewParametersSubscription = panel.api.onDidParametersChange(() => {
+        if (PanelSplitParams.of(panel.params).items.length > 0)
+          this.keepOpen(panel.id)
+      })
+    if (changed)
+      for (const listener of this.previewListeners)
+        listener()
   }
 
   async openPanel(
@@ -705,14 +720,16 @@ export class TabsController {
 
   dispose(): void {
     this.releaseSubscriptions()
-    if (this.saveTimer) {
-      this.cancelPendingSave()
-      this.persist()
-    }
+    this.cancelPendingSave()
+    // Dockview buffers layout events, so the final parameter change may precede our save timer.
+    this.persist()
+    this.api = null
   }
 
   /** Every subscription goes together, whichever way this controller lets go of its api. */
   private releaseSubscriptions(): void {
+    this.previewParametersSubscription?.dispose()
+    this.previewParametersSubscription = null
     for (const subscription of this.subscriptions)
       subscription.dispose()
     this.subscriptions = []

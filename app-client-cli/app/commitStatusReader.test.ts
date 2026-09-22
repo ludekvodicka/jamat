@@ -8,10 +8,12 @@ class CommitStatusFixture {
   time = 0
   reads = 0
   states: RemoteControlCommitStatusDto['state'][] = ['editing', 'running', 'committed']
+  closedStates = new Set<RemoteControlCommitStatusDto['state']>()
   answer(state: RemoteControlCommitStatusDto['state']): RemoteControlResponse {
     return { protocol: RemoteControlConst.protocol, requestId: 'read', operation: 'tabs.commitStatus', operationId: null, ok: true,
       value: { kind: 'commit-status', commitSessionId: CommitStatusFixture.id, sessionId: 'session', scopeRoot: 'Q:/app', vcs: 'svn',
-        state, closed: state === 'cancelled', revision: state === 'committed' ? '42' : null, detail: state === 'failed' ? 'out of date' : null } }
+        state, closed: state === 'cancelled' || this.closedStates.has(state),
+        revision: state === 'committed' ? '42' : null, detail: state === 'failed' ? 'out of date' : null } }
   }
   reader(): CommitStatusReader {
     return new CommitStatusReader({ read: async () => this.answer(this.states[Math.min(this.reads++, this.states.length - 1)]!),
@@ -26,11 +28,26 @@ describe('app-client-cli/app/commitStatusReader', () => {
     expect(f.reads).toBe(3)
     expect(f.time).toBe(2_000)
   })
-  it.each(['cancelled', 'failed', 'external-closed'] as const)('finishes on %s without declaring a commit', async (state) => {
+  it.each(['cancelled', 'external-closed'] as const)('finishes on %s without declaring a commit', async (state) => {
     const f = new CommitStatusFixture()
     f.states = ['editing', state]
     expect(await f.reader().read(CommitStatusFixture.id, true, 5_000)).toMatchObject({ ok: true, value: { state, revision: null } })
     expect(f.reads).toBe(2)
+  })
+  it('finishes on a failure the person closed', async () => {
+    const f = new CommitStatusFixture()
+    f.states = ['editing', 'failed']
+    f.closedStates.add('failed')
+    expect(await f.reader().read(CommitStatusFixture.id, true, 5_000))
+      .toMatchObject({ ok: true, value: { state: 'failed', closed: true, revision: null, detail: 'out of date' } })
+    expect(f.reads).toBe(2)
+  })
+  it('keeps waiting through a failure the same review then commits', async () => {
+    const f = new CommitStatusFixture()
+    f.states = ['running', 'failed', 'editing', 'running', 'committed']
+    expect(await f.reader().read(CommitStatusFixture.id, true, 30_000))
+      .toMatchObject({ ok: true, value: { state: 'committed', revision: '42' } })
+    expect(f.reads).toBe(5)
   })
   it('supports one read, bounded waiting and abort', async () => {
     const f = new CommitStatusFixture()

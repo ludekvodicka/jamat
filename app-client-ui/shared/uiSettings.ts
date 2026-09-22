@@ -41,6 +41,7 @@ export interface UiSettingsValue {
    * ours - and because a screen of output and a list of files are read at different speeds.
    */
   terminalScrollSpeedPercent: number
+  activateSessionOnDocument?: boolean
 }
 
 /**
@@ -52,7 +53,7 @@ export type UiSettingsSaveResult =
   | { ok: false; code: 'config-latched' | 'invalid-section'; detail: string }
 
 /**
- * The rules of the three font scales, the two scroll speeds and the terminal's palette, with no
+ * The rules of appearance and document activation preferences, with no
  * React, no DOM and no imports at all: this file compiles into the node program and the web one
  * alike, which is what lets the renderer take its slider bounds and the main process validate a
  * write from the same ranges, and the combobox its three names from the same list.
@@ -103,6 +104,7 @@ export class UiSettings {
       terminalTheme: UiSettings.defaultTerminalThemeConst,
       scrollSpeedPercent: UiSettings.scrollRangeConst.defaultPercent,
       terminalScrollSpeedPercent: UiSettings.scrollRangeConst.defaultPercent,
+      activateSessionOnDocument: false,
     }
   }
 
@@ -133,6 +135,9 @@ export class UiSettings {
     const document = value as Partial<Record<keyof UiSettingsValue, unknown>>
     const font = UiSettings.fontRangeConst
     const scroll = UiSettings.scrollRangeConst
+    const activateSessionOnDocument = document.activateSessionOnDocument === true
+    if (document.activateSessionOnDocument !== undefined && typeof document.activateSessionOnDocument !== 'boolean')
+      report('The document activation setting is unusable; reading it as disabled')
     // The RAW object first, because what a save writes back is what a read returned: `config.json`
     // is meant to be edited by hand and its own README promises that a key this build does not know
     // is preserved, so a note or a field of a later version written inside `ui` has to come back out
@@ -140,6 +145,7 @@ export class UiSettings {
     // carries whatever else is there, which rebuilding the section from those alone would delete.
     return {
       ...document,
+      activateSessionOnDocument,
       fontScalePercent:
         UiSettings.coercePercent(document.fontScalePercent, 'fontScalePercent', font, report),
       fileViewerFontScalePercent: UiSettings.coercePercent(
@@ -199,6 +205,7 @@ export class UiSettings {
       && UiSettings.isValidTerminalTheme(document.terminalTheme)
       && UiSettings.isValidPercent(document.scrollSpeedPercent, scroll)
       && UiSettings.isValidPercent(document.terminalScrollSpeedPercent, scroll)
+      && (document.activateSessionOnDocument === undefined || typeof document.activateSessionOnDocument === 'boolean')
   }
 
   /** Into the range first, then onto the step: both ends are multiples of it, so that order holds. */

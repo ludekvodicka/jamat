@@ -1,11 +1,13 @@
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type {
+  FileChangeGroup,
   FileChangeEntry,
   FileChangeStatus,
   FileChangesSnapshot,
 } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
+import type { AppClientUiBridge } from '../../shared/appClientUiIpc'
 import { FileChangesSort } from './fileChangesSort'
 import { FileChangesTime } from './fileChangesTime'
 import { FileChangesStatusMark } from './fileChangesStatusMark'
@@ -54,10 +56,33 @@ describe('app-client-ui/renderer/fileViewer/fileChangesWidget', () => {
       loading: false,
       loadingMore: false,
       error: null,
-      reload: () => Promise.resolve(),
+      reload: () => Promise.resolve(null),
       loadMore: () => Promise.resolve(),
     }
   }
+
+  it('renews an expired history open using the same revision rather than the current baseline', async () => {
+    const stale = snapshotOf()
+    const group: FileChangeGroup = { groupId: 'old-group', label: 'Older commit', message: null, author: null, createdAt: 1,
+      baseline: { baselineId: 'old-base', kind: 'git-commit', revision: 'abc', label: 'abc', createdAt: 1 },
+      entries: [{ ...entryOf('a.ts'), fileId: 'old-history-file' }] }
+    stale.history = { groups: [group], nextCursor: null }
+    const fresh = { ...stale, snapshotId: 'fresh', history: { groups: [{ ...group, groupId: 'fresh-group',
+      baseline: { ...group.baseline, baselineId: 'fresh-base' }, entries: [{ ...group.entries[0], fileId: 'fresh-history-file' }] }], nextCursor: null } }
+    const openFile = vi.fn<AppClientUiBridge['fileChanges']['openFile']>()
+      .mockResolvedValueOnce({ ok: true, value: { ok: false, code: 'snapshot-expired', detail: 'Expired' } })
+      .mockResolvedValue({ ok: true, value: { ok: true, value: { documentId: 'history-document' } } } as never)
+    ;(window as unknown as { appClient: unknown }).appClient = { fileChanges: { openFile } }
+    const onOpen = vi.fn()
+    const reload = vi.fn(async () => fresh)
+    const view = render(<FileChangesWidget model={{ ...modelOf(stale), groups: stale.history.groups, reload }} onOpen={onOpen} />)
+    fireEvent.click(view.container.querySelector<HTMLButtonElement>('details button')!)
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({
+      snapshot: fresh, fileId: 'fresh-history-file', baselineHint: { kind: 'git-commit', revision: 'abc' },
+    })))
+    expect(reload).toHaveBeenCalledOnce()
+    expect(openFile).toHaveBeenLastCalledWith('fresh', 'fresh-history-file')
+  })
 
   /*
    * It was `status.slice(0, 1)` over a ten-member union, so `modified`/`missing` both drew M,
@@ -146,6 +171,7 @@ describe('app-client-ui/renderer/fileViewer/fileChangesWidget', () => {
       new Promise((resolve) => answers.set(fileId, resolve)))
     ;(window as unknown as { appClient: unknown }).appClient = {
       fileChanges: { openFile },
+      fileViewer: { release: vi.fn(async () => ({ ok: true, value: undefined })) },
     }
     const onOpen = vi.fn()
     const view = render(
@@ -161,8 +187,7 @@ describe('app-client-ui/renderer/fileViewer/fileChangesWidget', () => {
     await waitFor(() => expect(onOpen).toHaveBeenCalledTimes(1))
 
     // The first click's answer arrives second, and is dropped.
-    answers.get('a.ts')?.({ ok: true, value: { ok: true, value: { documentId: 'document-a' } } })
-    await Promise.resolve()
+    await act(async () => { answers.get('a.ts')?.({ ok: true, value: { ok: true, value: { documentId: 'document-a' } } }) })
 
     expect(onOpen).toHaveBeenCalledTimes(1)
     expect(onOpen.mock.calls[0]?.[0]).toMatchObject({ fileId: 'b.ts' })
@@ -183,10 +208,9 @@ describe('app-client-ui/renderer/fileViewer/fileChangesWidget', () => {
 
     fireEvent.click(rows()[0]!)
     fireEvent.click(rows()[1]!)
-    answers.get('b.ts')?.({ ok: true, value: { ok: true, value: { documentId: 'document-b' } } })
+    await act(async () => { answers.get('b.ts')?.({ ok: true, value: { ok: true, value: { documentId: 'document-b' } } }) })
     await waitFor(() => expect(view.container.textContent).not.toContain('not-found'))
-    answers.get('a.ts')?.({ ok: true, value: { ok: false, code: 'not-found', detail: 'it moved' } })
-    await Promise.resolve()
+    await act(async () => { answers.get('a.ts')?.({ ok: true, value: { ok: false, code: 'not-found', detail: 'it moved' } }) })
 
     expect(view.container.textContent).not.toContain('not-found')
     delete (window as unknown as { appClient?: unknown }).appClient
@@ -229,7 +253,7 @@ describe('app-client-ui/renderer/fileViewer/fileChangesWidget', () => {
           loading: false,
           loadingMore: false,
           error: null,
-          reload: () => Promise.resolve(),
+          reload: () => Promise.resolve(null),
           loadMore: () => Promise.resolve(),
         }}
         onOpen={vi.fn()}

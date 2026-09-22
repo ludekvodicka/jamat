@@ -12,6 +12,12 @@ export interface SessionsMarksView {
   marks: ReadonlySet<string>
   /** The active terminal targets across visible workspace windows, which put marks out. */
   activeTargetKeys: ReadonlySet<string>
+  /**
+   * Every terminal target a workspace window holds a tab for, in front or not, and whether or not
+   * that window is on screen. The sessions tree keeps a row for as long as its session is in here,
+   * because finalizing a session does not close its tab and a tab with no row is unreachable.
+   */
+  openTargetKeys: ReadonlySet<string>
 }
 
 /**
@@ -32,9 +38,11 @@ export class SessionsMarksStore {
   private localMarks: ReadonlySet<string> = new Set()
   private readonly remoteMarks = new Map<string, ReadonlySet<string>>()
   private readonly listeners = new Set<() => void>()
+  private openTargetKeys: ReadonlySet<string> = new Set()
   private view: SessionsMarksView = {
     marks: new Set(),
     activeTargetKeys: new Set(),
+    openTargetKeys: new Set(),
   }
 
   constructor(
@@ -61,6 +69,15 @@ export class SessionsMarksStore {
    */
   setActiveTargets(targetKeys: ReadonlySet<string>): void {
     this.apply(targetKeys)
+  }
+
+  /**
+   * Which sessions have a tab anywhere, handed in by the same reader for the same reason: the panel
+   * index is the only thing that knows, and it lives in the main process.
+   */
+  setOpenTargets(targetKeys: ReadonlySet<string>): void {
+    this.openTargetKeys = targetKeys
+    this.apply(this.view.activeTargetKeys)
   }
 
   current(): SessionsMarksView {
@@ -97,7 +114,7 @@ export class SessionsMarksStore {
       // Published like every other change, not assigned quietly. `current()` is the `getSnapshot`
       // of a `useSyncExternalStore`, so handing out a new object nobody was told about leaves a
       // subscriber on the old value until something else happens to re-render it.
-      const pending = { marks: this.view.marks, activeTargetKeys }
+      const pending = { marks: this.view.marks, activeTargetKeys, openTargetKeys: this.openTargetKeys }
       if (SessionsMarksStore.same(this.view, pending)) return
       this.view = pending
       for (const listener of [...this.listeners]) listener()
@@ -105,8 +122,9 @@ export class SessionsMarksStore {
     }
     // The model builds a fresh set on every call, so an unchanged answer must keep the OLD view:
     // a new object every two seconds would re-render every subscriber for nothing.
-    if (SessionsMarksStore.same(this.view, { marks, activeTargetKeys })) return
-    this.view = { marks, activeTargetKeys }
+    const next = { marks, activeTargetKeys, openTargetKeys: this.openTargetKeys }
+    if (SessionsMarksStore.same(this.view, next)) return
+    this.view = next
     for (const listener of [...this.listeners]) listener()
   }
 
@@ -142,6 +160,7 @@ export class SessionsMarksStore {
 
   private static same(before: SessionsMarksView, after: SessionsMarksView): boolean {
     return SessionsMarksStore.sameKeys(before.activeTargetKeys, after.activeTargetKeys)
+      && SessionsMarksStore.sameKeys(before.openTargetKeys, after.openTargetKeys)
       && SessionsMarksStore.sameKeys(before.marks, after.marks)
   }
 

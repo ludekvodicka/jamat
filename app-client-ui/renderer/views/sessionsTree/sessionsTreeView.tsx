@@ -27,6 +27,7 @@ import type { IpcResult, LoadSessionsViewResult } from '../../../shared/appClien
 import { AppClientUiReport } from '../../../shared/appClientUiReport'
 import { AppCommands } from '../../../shared/commands'
 import { ErrorText } from '../../../shared/errorText'
+import { SessionsGroupsState, type SessionGroup } from '../../../shared/sessionsGroupsState'
 import { type SessionsTabsView, SessionsViewState } from '../../../shared/sessionsViewState'
 import { SessionsFilterState, type SessionsFilterValue } from '../../../shared/sessionsFilterState'
 import { type TerminalTarget, TerminalTargetCodec } from '../../../shared/terminalTarget'
@@ -41,7 +42,7 @@ import type { LauncherIntent } from '../../overlays/launcher/launcherIntentStore
 import type { ActiveTerminalStore } from '../../shell/activeTerminalStore'
 import { AgentGlyph } from '../../sessions/agentGlyph'
 import type { SessionsMarksStore } from '../../sessions/sessionsMarksStore'
-import type { ContextMenuPosition } from '../../widgets/contextMenu'
+import type { ContextMenuSubmenu, ContextMenuEntry, ContextMenuPosition } from '../../widgets/contextMenu'
 import { ContextMenu } from '../../widgets/contextMenu'
 import { ErrorBoundary } from '../../widgets/errorBoundary'
 import { SignalGlyph } from '../../widgets/signalGlyph'
@@ -53,6 +54,7 @@ import {
   RemoteSessionsTreeModel,
 } from './remoteSessionsTreeModel'
 import { FinalizeAwait } from './finalizeAwait'
+import { type QuestionRevealTree, SessionsQuestionReveal } from './sessionsQuestionReveal'
 import { SessionsTreeActionButton } from './sessionsTreeActionButton'
 import {
   type SessionAction,
@@ -84,9 +86,10 @@ import { type CommitOpenStore, useCommitOpen } from '../../versioning/commitOpen
 import { SessionsFilterMenu } from './sessionsFilterMenu'
 import { SessionsSavedFilters } from './sessionsSavedFilters'
 import { useSavedSessionsFilters, type SavedSessionsFiltersPorts } from './useSavedSessionsFilters'
+import { useSessionsGroups, type SessionsGroupsPorts } from './useSessionsGroups'
 
 /** Everything the tree changes in the main process, apart from the shared snapshot document. */
-export interface SessionsTreePorts extends SavedSessionsFiltersPorts {
+export interface SessionsTreePorts extends SavedSessionsFiltersPorts, SessionsGroupsPorts {
   reportError(message: string): void
   finalize(sessionId: string): Promise<IpcResult<SessionsOpResult>>
   remove(sessionId: string): Promise<IpcResult<SessionsOpResult>>
@@ -174,7 +177,14 @@ type GroupTreeNode = Extract<TreeNode, { kind: 'category' | 'project' }>
  * What the panel has to draw. The arrangement gets decided once, where the trees
  * are built, so the drawing reads it off this type instead of asking the same question again.
  */
-type SessionsTrees =
+interface AssignedGroupTree {
+  key: Exclude<SessionGroup, 'none'>
+  title: string
+  tree: TreeResult
+  remote: RemoteSessionsSections | null
+}
+
+type SessionsTrees = { assigned: readonly AssignedGroupTree[] } & (
   | { view: 'together'; both: TreeResult; remote: RemoteSessionsSections | null }
   | { view: 'separated'; sessions: TreeResult; tabs: TreeResult; remote: RemoteSessionsSections | null }
   | { view: 'states'; groups: readonly {
@@ -182,7 +192,7 @@ type SessionsTrees =
       title: string
       tree: TreeResult
       remote: RemoteSessionsSections | null
-    }[] }
+    }[] })
 
 interface PendingConfirm {
   targetKey: string
@@ -230,6 +240,7 @@ type RemoteRowMenu = (
 
 /** What every row below needs from the view, as one prop instead of six threaded through the tree. */
 interface SessionsTreeChrome {
+  groupItem(key: string, group: SessionGroup): ContextMenuSubmenu
   pending: PendingConfirm | null
   collapsed: ReadonlySet<string>
   /** The one target THIS workspace window has in front. */
@@ -286,6 +297,9 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
   const marks = marksView.marks
   const commitOpen = useCommitOpen(props.commitOpen)
   const visibleTargetKeys = marksView.activeTargetKeys
+  // Every session with a tab open in any workspace window, not only the one in front. The tree keeps
+  // such a row whatever the state filter says; see `TreeViewState.tabbed`.
+  const tabbedTargetKeys = marksView.openTargetKeys
   const activeTerminal = useSyncExternalStore(
     useCallback((listener) => props.activeTerminal.subscribe(listener), [props.activeTerminal]),
     useCallback(() => props.activeTerminal.current(), [props.activeTerminal]),
@@ -296,6 +310,8 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     : TerminalTargetCodec.key(activeTerminal.target)
   const [filters, setFilters] = useState<SessionsFilterValue>(SessionsFilterState.defaultConst)
   const savedFilters = useSavedSessionsFilters(ports)
+  const groupState = useSessionsGroups(ports)
+  const assignments = groupState.groups
   const [namingFilter, setNamingFilter] = useState(false)
   const [filterMenu, setFilterMenu] = useState<{ position: ContextMenuPosition; savedId: string | null } | null>(null)
   const [groupingMenu, setGroupingMenu] = useState<ContextMenuPosition | null>(null)
@@ -305,6 +321,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
   // project: folding it away is a statement about that project, not about the section it happens to
   // be in. Two sets would give one twisty two answers in one panel, and a third for `together`.
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set())
+  const questionReveal = useRef(new SessionsQuestionReveal())
   const [pending, setPending] = useState<PendingConfirm | null>(null)
   const [menu, setMenu] = useState<TreeMenuState | null>(null)
   const [orphansOpen, setOrphansOpen] = useState(false)
@@ -333,11 +350,13 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
    * tabs tree under one id, so a shared cursor would compare each tree's row against the other's and
    * hand back the node from the wrong one.
    */
-  const previous = useRef<Record<TreeContent | TreeStateGroup, TreeResult | null>>(
-    { sessions: null, tabs: null, both: null, attention: null, unread: null, running: null, read: null },
+  const previous = useRef<Record<TreeContent | TreeStateGroup | Exclude<SessionGroup, 'none'>, TreeResult | null>>(
+    { sessions: null, tabs: null, both: null, attention: null, unread: null, running: null, read: null,
+      pinned: null, priority: null, automation: null, waiting: null, blocked: null },
   )
-  const previousRemote = useRef<Record<'both' | TreeStateGroup, ReadonlyMap<string, TreeResult>>>({
+  const previousRemote = useRef<Record<'both' | Exclude<SessionGroup, 'none'> | TreeStateGroup, ReadonlyMap<string, TreeResult>>>({
     both: new Map(), attention: new Map(), unread: new Map(), running: new Map(), read: new Map(),
+    pinned: new Map(), priority: new Map(), automation: new Map(), waiting: new Map(), blocked: new Map(),
   })
   const currentSnapshots = useRef({ snapshot, remoteSnapshot })
 
@@ -346,31 +365,46 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       return null
     // Read once per build, so both trees answer "how long ago did this close" against one moment.
     const now = Date.now()
-    const build = (content: TreeContent, stateGroup?: TreeStateGroup): TreeResult => SessionsTreeModel.build(
+    const build = (content: TreeContent, stateGroup?: TreeStateGroup, group: SessionGroup = 'none'): TreeResult => SessionsTreeModel.build(
       snapshot,
-      { filters, content, filterText, now, inFront: visibleTargetKeys, stateGroup },
+      { filters, content, filterText, now, inFront: visibleTargetKeys, tabbed: tabbedTargetKeys, stateGroup,
+        assignments, group },
       marks,
-      previous.current[stateGroup ?? content],
+      previous.current[group === 'none' ? stateGroup ?? content : group],
       undefined,
       commitOpen,
     )
-    const remote = (stateGroup?: TreeStateGroup): RemoteSessionsSections | null => remoteSnapshot === null
+    const remote = (stateGroup?: TreeStateGroup, group: SessionGroup = 'none'): RemoteSessionsSections | null => remoteSnapshot === null
       ? null
       : RemoteSessionsTreeModel.build(
-          remoteSnapshot, snapshot, { filters, filterText, now, inFront: visibleTargetKeys, stateGroup },
-          marks, previousRemote.current[stateGroup ?? 'both'],
+          remoteSnapshot, snapshot,
+          { filters, filterText, now, inFront: visibleTargetKeys, tabbed: tabbedTargetKeys, stateGroup,
+            assignments, group },
+          marks, previousRemote.current[group === 'none' ? stateGroup ?? 'both' : group],
         )
+    /*
+     * A section nothing is assigned to is not built. Every revision used to build all four of them
+     * plus the current view's, five to eight whole trees over every session, to discover that four
+     * of them were empty - which is the ordinary case, because a group is a thing somebody has to
+     * choose. The map is the whole evidence: a session reaches a section only through a key that
+     * names it, so a section no key names can hold nothing.
+     */
+    const chosen = new Set(assignments.values())
+    const assigned = SessionsGroupsState.choicesConst.filter((group) => group.key !== 'none')
+      .map(({ key, title }) => chosen.has(key)
+        ? { key, title, tree: build('both', undefined, key), remote: remote(undefined, key) }
+        : { key, title, tree: SessionsTreeModel.emptyConst, remote: null })
     if (view === 'together')
-      return { view, both: build('both'), remote: remote() }
+      return { assigned, view, both: build('both'), remote: remote() }
     else if (view === 'separated')
-      return { view, sessions: build('sessions'), tabs: build('tabs'), remote: remote() }
+      return { assigned, view, sessions: build('sessions'), tabs: build('tabs'), remote: remote() }
     else if (view === 'states')
-      return { view, groups: SessionsTreeModel.groupsConst.map((group) => ({
+      return { assigned, view, groups: SessionsTreeModel.groupsConst.map((group) => ({
         ...group, tree: build('both', group.key), remote: remote(group.key),
       })) }
     else
       throw new Error(`Unknown sessions view: ${JSON.stringify(view)}`)
-  }, [snapshot, remoteSnapshot, filters, filterText, marks, view, visibleTargetKeys, commitOpen])
+  }, [snapshot, remoteSnapshot, filters, filterText, marks, view, visibleTargetKeys, tabbedTargetKeys, commitOpen, assignments])
 
   /*
    * The cursor moves AFTER the commit, never during the render that produced the tree. React may run
@@ -380,6 +414,10 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
    */
   useEffect(() => {
     if (trees === null) return
+    for (const group of trees.assigned) {
+      previous.current[group.key] = group.tree
+      if (group.remote !== null) previousRemote.current[group.key] = group.remote.previous
+    }
     if (trees.view === 'together') {
       previous.current.both = trees.both
       if (trees.remote !== null) previousRemote.current.both = trees.remote.previous
@@ -396,6 +434,18 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       }
     else
       throw new Error(`Unknown sessions view: ${JSON.stringify(trees)}`)
+  }, [trees])
+
+  /*
+   * A session that starts waiting for an answer opens whatever it is folded inside. After the
+   * commit rather than during the build, for the reason the cursor above is: a `useMemo` factory
+   * React throws away must not have moved anything, and this moves the person's own folding.
+   */
+  useEffect(() => {
+    if (trees === null) return
+    const open = questionReveal.current.groupsToOpen(SessionsTreeChoices.revealTreesOf(trees))
+    if (open.size === 0) return
+    setCollapsed((current) => SessionsTreeChoices.revealed(current, open))
   }, [trees])
 
   // The click callback stays stable across snapshot ticks, while its ask still reads the document
@@ -692,8 +742,6 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       throw new Error(`Unknown operation scope: ${JSON.stringify(node.operationScope)}`)
   }, [sessionFacts])
 
-  // A row that offers nothing opens nothing: the AD-HOC and NO PROJECT roots name no category and
-  // hold no path, and an empty box under the cursor is worse than a right-click that does nothing.
   const openGroupMenu = useCallback((facts: GroupRowFacts, position: ContextMenuPosition) => {
     if (SessionsTreeGroupItems.any(facts))
       setMenu({ kind: 'group', position, facts })
@@ -717,6 +765,14 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
    * collapses a row, brings a tab to the front - and not when a session prints a line.
    */
   const chrome: SessionsTreeChrome = useMemo(() => ({
+    groupItem: (key, group) => ({
+      key: 'groups', label: 'Groups', disabled: !groupState.ready || groupState.saving,
+      children: SessionsGroupsState.choicesConst.map((choice) => ({
+        key: choice.key, label: choice.label, checked: group === choice.key,
+        disabled: !groupState.ready || groupState.saving,
+        onSelect: () => groupState.assign(key, choice.key),
+      })),
+    }),
     pending,
     collapsed,
     inFront: activeTargetKey,
@@ -742,6 +798,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     pending, collapsed, activeTargetKey, inFlight, awaitingAsk,
     toggle, request, onLaunch, onOpenTerminal, openMenu, openGroupMenu, openRemoteMenu,
     onOpenSettings, remotePorts, remoteSnapshot, onCloseTerminal,
+    groupState.ready, groupState.saving, groupState.assign,
   ])
 
   const resetFilters = (): void => {
@@ -805,6 +862,10 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       {savedFilters.error !== null && <p className="jamat-sessions__error" role="alert">
         {savedFilters.error}
         {!savedFilters.ready && <button className="jamat-sessions__retry" type="button" onClick={savedFilters.reload}>Retry</button>}
+      </p>}
+      {groupState.error !== null && <p className="jamat-sessions__error" role="alert">
+        {groupState.error}
+        {!groupState.ready && <button className="jamat-sessions__retry" type="button" onClick={groupState.reload}>Retry</button>}
       </p>}
 
       {error !== null && (
@@ -947,6 +1008,7 @@ function TreeMenu(props: {
         facts={menu.facts}
         plainTab={menu.node.badges.plainTab}
         actions={menu.node.actions}
+        groupItem={props.chrome.groupItem(SessionsTreeModel.groupKeyOf(menu.node), menu.node.group)}
         onAction={(action) => props.chrome.request(menu.node, action)}
         onClose={onClose}
       />
@@ -957,6 +1019,7 @@ function TreeMenu(props: {
         position={menu.position}
         commands={commands}
         facts={menu.facts}
+        groupItem={menu.facts.groupKey === undefined ? undefined : props.chrome.groupItem(menu.facts.groupKey, menu.facts.group ?? 'none')}
         onClose={onClose}
       />
     )
@@ -984,13 +1047,40 @@ function TreeMenu(props: {
     throw new Error(`Unknown tree menu: ${JSON.stringify(menu)}`)
 }
 
+function AssignedGroupBody({ group, chrome }: { group: AssignedGroupTree; chrome: SessionsTreeChrome }): React.JSX.Element | null {
+  if (group.tree.nodes.length === 0
+    && (group.remote?.outbound.length ?? 0) + (group.remote?.inbound.length ?? 0) === 0)
+    return null
+  return (
+    <section className="jamat-sessions__assigned-group" aria-label={group.title}>
+      <h3 className="jamat-sessions__section">{group.title}</h3>
+      {group.tree.nodes.length > 0 && <TreeBody result={group.tree} chrome={chrome} />}
+      <RemoteBodies remote={group.remote} chrome={chrome} />
+    </section>
+  )
+}
+
 function TreeBodies(props: {
   trees: SessionsTrees
   chrome: SessionsTreeChrome
 }): React.JSX.Element {
   const { trees, chrome } = props
+  return <div className="jamat-sessions__stack">
+    {SessionsGroupsState.choicesConst.map((choice) => {
+      if (choice.key === 'none')
+        return <section key={choice.key} className="jamat-sessions__default-group" aria-label={choice.title}>
+          <h3 className="jamat-sessions__section">{choice.title}</h3>
+          <DefaultTreeBody trees={trees} chrome={chrome} />
+        </section>
+      const group = trees.assigned.find((entry) => entry.key === choice.key)!
+      return <AssignedGroupBody key={choice.key} group={group} chrome={chrome} />
+    })}
+  </div>
+}
+
+function DefaultTreeBody({ trees, chrome }: { trees: SessionsTrees; chrome: SessionsTreeChrome }): React.JSX.Element {
   if (trees.view === 'states')
-    return <div className="jamat-sessions__stack">
+    return <>
       {trees.groups.map((group) => <section key={group.key} aria-label={group.title}>
         <h3 className="jamat-sessions__section">{group.title}</h3>
         {(group.tree.nodes.length > 0
@@ -998,7 +1088,7 @@ function TreeBodies(props: {
           && <TreeBody result={group.tree} chrome={chrome} empty="No sessions in this group." />}
         <RemoteBodies remote={group.remote} chrome={chrome} />
       </section>)}
-    </div>
+    </>
   let local: React.JSX.Element
   if (trees.view === 'together') local = <TreeBody result={trees.both} chrome={chrome} />
   else if (trees.view === 'separated')
@@ -1026,10 +1116,10 @@ function TreeBodies(props: {
   else
     throw new Error(`Unknown sessions view: ${JSON.stringify(trees)}`)
   return (
-    <div className="jamat-sessions__stack">
+    <>
       {local}
       <RemoteBodies remote={trees.remote} chrome={chrome} />
-    </div>
+    </>
   )
 }
 
@@ -1145,6 +1235,30 @@ function RemoteEndpoint(props: {
   )
 }
 
+/**
+ * The one thing on a group row that folds it away. A button of its own rather than the whole row:
+ * the row is what a person points AT to read it, and while the name was part of the control every
+ * misaimed click cost the reader the tree they were looking at. The arrow is decoration, so the
+ * button takes its name from the group it belongs to.
+ */
+function TreeTwisty(props: {
+  open: boolean
+  label: string
+  onToggle(): void
+}): React.JSX.Element {
+  return (
+    <button
+      className="jamat-sessions__twisty"
+      type="button"
+      aria-expanded={props.open}
+      aria-label={`${props.open ? 'Collapse' : 'Expand'} ${props.label}`}
+      onClick={props.onToggle}
+    >
+      {props.open ? '▾' : '▸'}
+    </button>
+  )
+}
+
 function RemoteGroupRow(props: {
   id: string
   label: string
@@ -1164,13 +1278,12 @@ function RemoteGroupRow(props: {
             onContextMenu({ x: event.clientX, y: event.clientY })
           }}
     >
-      <button
-        className="jamat-sessions__group"
-        type="button"
-        aria-expanded={props.open}
-        onClick={() => props.onToggle(props.id)}
-      >
-        <span className="jamat-sessions__twisty" aria-hidden="true">{props.open ? '▾' : '▸'}</span>
+      <TreeTwisty
+        open={props.open}
+        label={props.label}
+        onToggle={() => props.onToggle(props.id)}
+      />
+      <span className="jamat-sessions__group">
         <span className="jamat-sessions__label">{props.label}</span>
         {props.status !== null && (
           <span
@@ -1179,7 +1292,7 @@ function RemoteGroupRow(props: {
             {props.status}
           </span>
         )}
-      </button>
+      </span>
     </div>
   )
 }
@@ -1260,8 +1373,9 @@ const TreeRow = memo(function TreeRow(
 /**
  * A root or a project: the same row, with only the name and the actions that belong to it.
  *
- * The twisty is a button and the launch action is a button, so it sits beside it rather than inside
- * it - a button within a button is not markup a browser keeps.
+ * The twisty, the name and the launch action are three things side by side, and only the first of
+ * them is a button: a button within a button is not markup a browser keeps, and a name that folded
+ * its own group away turned every missed click into a collapsed tree.
  */
 function GroupRow(props: {
   node: GroupTreeNode
@@ -1282,16 +1396,10 @@ function GroupRow(props: {
           chrome.openGroupMenu(GroupRowMenu.factsOf(node), { x: event.clientX, y: event.clientY })
         }}
       >
-        <button
-          className="jamat-sessions__group"
-          type="button"
-          title={props.title}
-          aria-expanded={open}
-          onClick={() => chrome.toggle(node.id)}
-        >
-          <span className="jamat-sessions__twisty" aria-hidden="true">{open ? '▾' : '▸'}</span>
+        <TreeTwisty open={open} label={node.label} onToggle={() => chrome.toggle(node.id)} />
+        <span className="jamat-sessions__group" title={props.title}>
           <span className="jamat-sessions__label">{node.label}</span>
-        </button>
+        </span>
         {launch !== null && (
           <span className="jamat-sessions__group-actions">
             <LaunchButton intent={launch} label={node.label} chrome={chrome} />
@@ -1317,11 +1425,13 @@ class GroupRowMenu {
     if (node.kind === 'category')
       return {
         place: node.categoryId === null ? null : { kind: 'category', categoryId: node.categoryId },
+        groupKey: SessionsTreeModel.groupKeyOf(node), group: node.group,
         folder: null,
       }
     else if (node.kind === 'project')
       return {
         place: node.launch === null ? null : { kind: 'project', project: node.launch },
+        groupKey: SessionsTreeModel.groupKeyOf(node), group: node.group,
         folder: node.folderSessionId === null
           ? null
           : { path: node.path, sessionId: node.folderSessionId },
@@ -1378,6 +1488,15 @@ function SessionRow(props: {
           confirming ? ' jamat-sessions__row--confirming' : ''}`}
         aria-current={inFront ? 'true' : undefined}
         data-session-color={node.color ?? undefined}
+        data-interactive={node.interactive}
+        onClick={(event) => {
+          if (node.interactive && event.target instanceof Element && !event.target.closest('button'))
+            chrome.openTerminal(node.target, node.tabTitle, 'preview')
+        }}
+        onDoubleClick={(event) => {
+          if (node.interactive && event.target instanceof Element && !event.target.closest('button'))
+            chrome.openTerminal(node.target, node.tabTitle, 'permanent')
+        }}
         onContextMenu={(event) => {
           event.preventDefault()
           chrome.openMenu(node, { x: event.clientX, y: event.clientY })
@@ -1682,6 +1801,38 @@ class SessionsTreeChoices {
       next.add(nodeId)
     return next
   }
+
+  /** The same set back when none of those groups was folded, so a tick that reveals nothing redraws nothing. */
+  static revealed(collapsed: ReadonlySet<string>, open: ReadonlySet<string>): ReadonlySet<string> {
+    const folded = [...open].filter((nodeId) => collapsed.has(nodeId))
+    if (folded.length === 0) return collapsed
+    const next = new Set(collapsed)
+    for (const nodeId of folded) next.delete(nodeId)
+    return next
+  }
+
+  /**
+   * Every tree on screen, each with the groups standing above it. Which trees exist is the view's
+   * choice, and the remote sections hang two group rows deeper than the local ones.
+   */
+  static revealTreesOf(trees: SessionsTrees): QuestionRevealTree[] {
+    const found: QuestionRevealTree[] = []
+    const local = (tree: TreeResult): void => { found.push({ above: [], nodes: tree.nodes }) }
+    const remote = (sections: RemoteSessionsSections | null): void => {
+      if (sections === null) return
+      for (const computer of [...sections.outbound, ...sections.inbound])
+        for (const endpoint of computer.endpoints)
+          found.push({ above: [computer.id, endpoint.id], nodes: endpoint.tree.nodes })
+    }
+    for (const group of trees.assigned) { local(group.tree); remote(group.remote) }
+    if (trees.view === 'together') { local(trees.both); remote(trees.remote) }
+    else if (trees.view === 'separated') { local(trees.sessions); local(trees.tabs); remote(trees.remote) }
+    else if (trees.view === 'states')
+      for (const group of trees.groups) { local(group.tree); remote(group.remote) }
+    else
+      throw new Error(`Unknown sessions view: ${JSON.stringify(trees)}`)
+    return found
+  }
 }
 
 class SessionsTreeActions {
@@ -1761,8 +1912,8 @@ class RemoteSessionMenu {
     node: SessionTreeNode,
     chrome: SessionsTreeChrome,
     commands: CommandRegistry,
-  ): readonly { key: string; label: string; onSelect(): void }[] {
-    const items = [{
+  ): readonly ContextMenuEntry[] {
+    const items: ContextMenuEntry[] = [{
       key: 'open',
       label: 'Open',
       onSelect: () => chrome.openTerminal(node.target, node.tabTitle, 'permanent'),
@@ -1791,6 +1942,7 @@ class RemoteSessionMenu {
           : SessionNodeState.actionLabelOf(action),
         onSelect: () => chrome.request(node, action),
       })
+    items.push({ kind: 'separator', key: 'tree-groups' }, chrome.groupItem(SessionsTreeModel.groupKeyOf(node), node.group))
     return items
   }
 }

@@ -46,7 +46,7 @@ export interface FileChangesWorkingTreeViewModel {
   requiredLoading: boolean
   requiredError: string | null
   select(source: FileChangesWorkingTreeSource): void
-  reload(): Promise<void>
+  reload(source?: FileChangesWorkingTreeSource): Promise<FileChangesWorkingTreeSnapshot | null>
   snapshotFor(source: FileChangesWorkingTreeSource): FileChangesWorkingTreeSnapshot | null
 }
 
@@ -58,6 +58,6 @@ export interface FileChangesViewModel {
   loading: boolean
   loadingMore: boolean
   error: string | null
-  reload(preferredVcs?: FileChangesVcsId | null): Promise<void>
+  reload(preferredVcs?: FileChangesVcsId | null): Promise<FileChangesSnapshot | null>
   loadMore(): Promise<void>
 }

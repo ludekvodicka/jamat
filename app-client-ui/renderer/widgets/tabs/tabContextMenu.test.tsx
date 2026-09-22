@@ -345,8 +345,7 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
         facts={factsOf()}
       />,
     )
-    // Appearance | session actions | folder actions | tab actions.
-    expect(MenuView.separators()).toHaveLength(3)
+    expect(MenuView.separators()).toHaveLength(4)
 
     cleanup()
     // A probe tab has no session block and no folder to copy, so only one line is left.

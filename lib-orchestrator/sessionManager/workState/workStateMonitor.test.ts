@@ -6,11 +6,13 @@ import type {
   RuntimeRef,
   RuntimeSessionInfo,
   TerminalProjectionSnapshot,
+  TerminalProjectionView,
 } from '../../../app-host/app/wire/hostWire.js'
 import type { HostCallResult } from '../../hostClient/hostClient.types'
 import type { SessionRecordAgent } from '../records/sessionRecord.types'
 import type { AgentWorkFrame } from './agentWorkInspector.types'
 import { WorkFixtures } from './fixtures/workFixtures'
+import { ScreenTail } from './screenTail'
 import type { HostRuntimeReader } from './workStateMonitor'
 import { WorkStateMonitor } from './workStateMonitor'
 
@@ -54,7 +56,7 @@ describe('lib-orchestrator/sessionManager/workState/workStateMonitor', () => {
 
   interface Harness {
     monitor: WorkStateMonitor
-    calls: { inspect: string[] }
+    calls: { inspect: string[]; views: (TerminalProjectionView | undefined)[] }
     changes: () => number
     add: (runtime: Partial<FakeRuntime> & Pick<FakeRuntime, 'runtimeSessionId' | 'agent'>) => void
     /** New output arrived: the sequence moves and the Host stamps the moment. */
@@ -72,7 +74,7 @@ describe('lib-orchestrator/sessionManager/workState/workStateMonitor', () => {
 
   function harness(): Harness {
     const runtimes: FakeRuntime[] = []
-    const calls = { inspect: [] as string[] }
+    const calls = { inspect: [] as string[], views: [] as (TerminalProjectionView | undefined)[] }
     let inspectOk = true
     let held: Promise<void> | null = null
     let changes = 0
@@ -105,8 +107,12 @@ describe('lib-orchestrator/sessionManager/workState/workStateMonitor', () => {
       cols: Math.max(120, ...runtime.screen.split(/\r?\n/).map((row) => row.length)),
     })
     const client: HostRuntimeReader = {
-      runtimeInspect: async (target: RuntimeRef): Promise<HostCallResult<RuntimeInspectResult>> => {
+      runtimeInspect: async (
+        target: RuntimeRef,
+        view?: TerminalProjectionView,
+      ): Promise<HostCallResult<RuntimeInspectResult>> => {
         calls.inspect.push(target.runtimeSessionId)
+        calls.views.push(view)
         if (held !== null) await held
         if (!inspectOk)
           return { ok: false, code: 'op-rejected', status: 409, detail: 'the fake Host refused' }
@@ -183,6 +189,20 @@ describe('lib-orchestrator/sessionManager/workState/workStateMonitor', () => {
     await context.observe()
     expect(context.calls.inspect).toEqual(['a'])
     expect(context.monitor.activity('a')).toBe('working')
+  })
+
+  /**
+   * The render behind `runtime.inspect` used to answer with half a megabyte of ring and a thousand
+   * rows of scrollback for three windows that are two thousand characters and sixteen rows. Every
+   * byte of the difference was serialized on the Host's loop and parsed on the loop that relays
+   * every keystroke, once per working session per poll.
+   */
+  it('asks the Host for the three windows it reads and not for the whole projection', async () => {
+    const context = harness()
+    context.add({ runtimeSessionId: 'a', agent: 'claude', screen: claudeWorkingScreenConst })
+    await context.observe()
+
+    expect(context.calls.views).toEqual([ScreenTail.viewConst])
   })
 
   // The listing already carries outputSeq, so noticing that a screen cannot have changed is free. The

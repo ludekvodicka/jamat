@@ -255,6 +255,18 @@ export class FileViewerDiffTargets {
       FileViewerDiffTargets.identityOf(target.hint) === identity) ?? null
   }
 
+  static afterExpiry(current: FileViewerDiffTarget, targets: readonly FileViewerDiffTarget[]): FileViewerDiffTarget | null {
+    const matched = FileViewerDiffTargets.sameAs(targets, current.hint)
+    if (matched !== null) return matched
+    const kind = current.baseline.kind
+    if (kind === 'git-head' || kind === 'svn-base')
+      return targets.find((target) => target.baseline.kind === kind
+        && target.hint.workingTreeSource === current.hint.workingTreeSource) ?? null
+    else if (kind === 'git-commit' || kind === 'svn-revision' || kind === 'chat-message')
+      return null
+    else throw new Error(`Unknown baseline kind: ${JSON.stringify(kind)}`)
+  }
+
   /**
    * What stays chosen when the listing is rebuilt: the same baseline under its fresh id, and only a
    * baseline that is genuinely gone falls back to the hint or to the first target.

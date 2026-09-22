@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -6,10 +6,12 @@ import { pathToFileURL } from 'node:url'
 import { FileChangesManager } from '../../lib-orchestrator/fileChangesManager/fileChangesManager.js'
 import { VcsStatusView } from '../../lib-orchestrator/fileChangesManager/vcsStatusView.js'
 import { VersioningCommitManager } from '../../app-client-ui/app/versioning/versioningCommitManager.js'
+import { VersioningCommitMessageStore } from '../../app-client-ui/app/versioning/versioningCommitMessageStore.js'
 import { FileDiffComputer } from '../../lib-orchestrator/fileChangesManager/diff/fileDiffComputer.js'
 import { GitCommitManager } from '../../lib-orchestrator/git/gitCommitManager.js'
 import { GitInvoker } from '../../lib-orchestrator/git/gitInvoker.js'
 import { CommandInvoker } from '../../lib-orchestrator/shared/commandInvoker.js'
+import type { CommitProgress } from '../../lib-orchestrator/shared/commitProgress.types.js'
 import { SvnCommitManager } from '../../lib-orchestrator/svn/svnCommitManager.js'
 import { SvnInvoker } from '../../lib-orchestrator/svn/svnInvoker.js'
 import { SmokeHarness, SmokeRun } from './smokeHarness.js'
@@ -36,6 +38,7 @@ class SmokeVcsCommit extends SmokeHarness {
     await this.checkSvn(message)
     await this.checkSvnExternalBatch(message)
     await this.checkSvnUpdate(message)
+    await this.checkExplicitScopes(message)
     console.log(`\nsmoke-vcs-commit: ${this.passed} checks passed`)
   }
 
@@ -49,6 +52,117 @@ class SmokeVcsCommit extends SmokeHarness {
     const result = await this.svn.run(root, args)
     if (result.failure !== null || result.code !== 0) throw new Error(result.stderr || JSON.stringify(result))
     return result.stdout
+  }
+
+  private async checkExplicitScopes(message: string): Promise<void> {
+    const repository = join(this.root, 'selection-repository')
+    const created = await new CommandInvoker().run({ command: 'svnadmin', args: ['create', repository], cwd: this.root, env: process.env })
+    if (created.failure !== null || created.code !== 0) throw new Error(created.stderr)
+    const working = join(this.root, 'selection-working')
+    const origin = join(this.root, 'session-origin')
+    await mkdir(origin)
+    await this.svnRun(this.root, ['checkout', pathToFileURL(repository).href, working])
+    for (const name of ['selected@file.txt', 'deleted.txt', 'unchecked.txt']) await writeFile(join(working, name), 'base\n')
+    for (const project of ['ProjectOne', 'ProjectTwo', 'ProjectThree']) {
+      await mkdir(join(working, project))
+      await writeFile(join(working, project, 'Dockerfile'), 'FROM base\n')
+      await writeFile(join(working, project, 'unselected.txt'), 'base\n')
+    }
+    await this.svnRun(working, ['add', '--', 'selected@file.txt@', 'deleted.txt', 'unchecked.txt', 'ProjectOne', 'ProjectTwo', 'ProjectThree'])
+    await this.svnRun(working, ['commit', '--file', message])
+    const selected = join(working, 'selected@file.txt')
+    await writeFile(selected, 'selected edit\n')
+    await writeFile(join(working, 'unchecked.txt'), 'unchecked edit\n')
+    const manager = new VersioningCommitManager({
+      messages: new VersioningCommitMessageStore(join(this.root, 'selection-messages.json'), (detail) => console.error(detail)),
+      sessions: { workingContext: async () => ({ ok: true, value: { sessionId: 'selection', cwd: origin, agent: null, worktree: null } }), settleVcs: () => {} },
+      vcsStatus: new VcsStatusView(), checkpointStore: { worktreeBelongsToStore: async () => false },
+      fileAccess: (_owner, snapshot, file) => this.files.fileAccess(snapshot, file),
+      snapshotOf: (_owner, snapshot) => this.files.workingSnapshot(snapshot),
+      git: this.commits, svn: this.svnCommits,
+      tortoise: { open: async () => { throw new Error('Unexpected Tortoise fallback') } }, onChanged: () => {},
+    })
+    const review = async (paths: readonly string[]): Promise<string> => {
+      const prepared = await manager.prepare('selection', 'svn', null, null, paths)
+      if (!prepared.ok) throw new Error(prepared.detail)
+      manager.attach(prepared.value.draftId, 'owner')
+      const read = await this.files.workingTree({ sessionId: 'selection', cwd: prepared.value.scopeRoot, agent: null, worktree: null }, 'svn', true)
+      if (!read.ok) throw new Error(read.detail)
+      const snapshot = manager.files('owner', prepared.value.draftId, read.value)
+      this.check('Explicit file preview excludes the modified sibling', !snapshot.entries.some((entry) => entry.path === join(working, 'unchecked.txt')))
+      for (const path of paths) {
+        const single = await this.files.workingTree({ sessionId: 'selection', cwd: prepared.value.scopeRoot,
+          agent: null, worktree: null }, 'svn', true, path)
+        if (!single.ok) throw new Error(single.detail)
+        if (single.value.entries.length !== 1) throw new Error(`Single-file snapshot for ${path}: ${JSON.stringify(single.value)}`)
+        this.check('A single-file SVN snapshot preserves the selected state and opens its own diff',
+          single.value.entries.length === 1 && single.value.entries[0].path === path
+          && single.value.entries[0].status === snapshot.entries.find((entry) => entry.path === path)?.status
+          && single.value.defaultBaseline !== null
+          && (await this.files.diff({ snapshotId: single.value.snapshotId, fileId: single.value.entries[0].fileId,
+            baselineId: single.value.defaultBaseline.baselineId })).ok)
+      }
+      const result = await manager.run('owner', { draftId: prepared.value.draftId, snapshotId: snapshot.snapshotId,
+        fileIds: snapshot.entries.map((entry) => entry.fileId), message: await readFile(message, 'utf8') })
+      if (!result.ok) throw new Error(result.detail)
+      const revision = manager.status(prepared.value.draftId)?.revision
+      if (revision === null || revision === undefined) throw new Error('The completed review has no revision')
+      manager.release(prepared.value.draftId, 'owner')
+      return revision
+    }
+    await review([selected])
+    this.check('A single file commits outside its session directory', await this.svnRun(working, ['cat', '-r', 'BASE', 'selected@file.txt@']) === 'selected edit\n')
+    const unchanged = await this.files.workingTree({ sessionId: 'selection', cwd: working, agent: null,
+      worktree: null }, 'svn', true, selected)
+    this.check('A single-file refresh drops committed files while siblings remain modified', unchanged.ok
+      && unchanged.value.entries.length === 0 && (await this.svnRun(working, ['status', 'unchecked.txt'])).trim().startsWith('M'))
+    const fresh = join(working, 'new', 'nested', 'selected.txt')
+    await mkdir(join(working, 'new', 'nested'), { recursive: true })
+    await writeFile(fresh, 'new selected\n')
+    await writeFile(join(working, 'new', 'nested', 'unchecked.txt'), 'new unchecked\n')
+    const deleted = join(working, 'deleted.txt')
+    await rm(deleted)
+    await review([fresh, deleted])
+    this.check('Explicit new and deleted files commit with only the required new parents',
+      await this.svnRun(working, ['cat', '-r', 'BASE', 'new/nested/selected.txt']) === 'new selected\n'
+      && !(await this.svnRun(working, ['list'])).includes('deleted.txt')
+      && (await this.svnRun(working, ['status', 'new/nested/unchecked.txt'])).trim().startsWith('?')
+      && await this.svnRun(working, ['cat', '-r', 'BASE', 'unchecked.txt']) === 'base\n')
+    const batch = ['ProjectOne', 'ProjectTwo'].map((project) => join(working, project, 'Dockerfile'))
+    for (const file of batch) await writeFile(file, 'FROM updated\n')
+    await writeFile(join(working, 'ProjectTwo', 'unselected.txt'), 'unrelated work\n')
+    const before = Number(await this.svnRun(working, ['info', '--show-item', 'revision', pathToFileURL(repository).href]))
+    const revision = await review(batch)
+    this.check('One native review commits exact files across projects in one SVN revision', Number(revision) === before + 1
+      && await this.svnRun(working, ['cat', '-r', 'BASE', 'ProjectOne/Dockerfile']) === 'FROM updated\n'
+      && await this.svnRun(working, ['cat', '-r', 'BASE', 'ProjectTwo/Dockerfile']) === 'FROM updated\n')
+    this.check('A multi-project review preserves unselected changes in participating projects',
+      await this.svnRun(working, ['cat', '-r', 'BASE', 'ProjectTwo/unselected.txt']) === 'base\n'
+      && await readFile(join(working, 'ProjectTwo', 'unselected.txt'), 'utf8') === 'unrelated work\n')
+    await rename(join(working, 'ProjectThree'), join(this.root, 'selection-original-project'))
+    const standalone = join(this.root, 'selection-standalone-project')
+    await this.svnRun(this.root, ['checkout', `${pathToFileURL(repository).href}/ProjectThree`, standalone])
+    await rename(standalone, join(working, 'ProjectThree'))
+    this.check('The nested fixture has its own SVN working copy',
+      (await this.svnRun(working, ['info', '--show-item', 'wc-root', 'ProjectThree'])).trim().replaceAll('\\', '/')
+        === join(working, 'ProjectThree').replaceAll('\\', '/'))
+    const nestedBatch = ['ProjectOne', 'ProjectThree'].map((project) => join(working, project, 'Dockerfile'))
+    for (const file of nestedBatch) await writeFile(file, 'FROM nested\n')
+    const nestedBefore = Number(await this.svnRun(working, ['info', '--show-item', 'revision', pathToFileURL(repository).href]))
+    const nestedRevision = await review(nestedBatch)
+    this.check('One native review commits a nested standalone checkout in the same repository atomically',
+      Number(nestedRevision) === nestedBefore + 1
+      && await this.svnRun(working, ['cat', '-r', 'BASE', 'ProjectOne/Dockerfile']) === 'FROM nested\n'
+      && await this.svnRun(working, ['cat', '-r', 'BASE', 'ProjectThree/Dockerfile']) === 'FROM nested\n')
+    const other = join(this.root, 'selection-other')
+    await this.svnRun(this.root, ['checkout', pathToFileURL(repository).href, other])
+    await writeFile(join(other, 'selected@file.txt'), 'remote selected\n')
+    await writeFile(join(other, 'unchecked.txt'), 'remote unchecked\n')
+    await this.svnRun(other, ['commit', '--file', message])
+    const update = await this.svnCommits.update(working, [selected])
+    this.check('A scoped update leaves sibling files at their original BASE', update.ok
+      && await readFile(selected, 'utf8') === 'remote selected\n'
+      && await this.svnRun(working, ['cat', '-r', 'BASE', 'unchecked.txt']) === 'base\n')
   }
 
   private async checkSvnUpdate(message: string): Promise<void> {
@@ -141,8 +255,15 @@ class SmokeVcsCommit extends SmokeHarness {
       const diff = await this.files.diff(request)
       this.check(`External ${name} reads its own BASE through the parent snapshot`,
         baseline.ok && baseline.kind === 'content' && baseline.content === `${name} base\n` && diff.ok)
+      const single = await this.files.workingTree({ sessionId: 'batch', cwd: scope, agent: null, worktree: null }, 'svn', true, entry.path)
+      if (!single.ok) throw new Error(single.detail)
+      const singleBase = await this.files.readBaseline({ snapshotId: single.value.snapshotId,
+        fileId: single.value.entries[0].fileId, baselineId: single.value.defaultBaseline!.baselineId })
+      this.check(`A single-file read resolves external ${name} against its own SVN BASE`,
+        single.value.entries.length === 1 && singleBase.ok && singleBase.kind === 'content' && singleBase.content === `${name} base\n`)
     }
     const manager = new VersioningCommitManager({
+      messages: new VersioningCommitMessageStore(join(this.root, 'batch-messages.json'), (detail) => console.error(detail)),
       sessions: { workingContext: async () => ({ ok: true, value: { sessionId: 'batch', cwd: scope, agent: null, worktree: null } }), settleVcs: () => {} },
       vcsStatus: new VcsStatusView(), checkpointStore: { worktreeBelongsToStore: async () => false },
       fileAccess: (_owner, snapshotId, fileId) => this.files.fileAccess(snapshotId, fileId),
@@ -170,6 +291,68 @@ class SmokeVcsCommit extends SmokeHarness {
       && (await this.svnRun(scope, ['log', '--xml', '-r', 'HEAD', externalUrl])).includes('Příliš'))
     manager.release(draft.value.draftId, 'owner')
     this.check('Batch UUID retains completion after the pane closes', manager.status(draft.value.draftId)?.state === 'committed')
+
+    await this.svnRun(working, ['update'])
+    await this.svnRun(scope, ['propset', 'svn:externals', `${externalUrl}/a a`, '.'])
+    await this.svnRun(scope, ['propset', 'review-note', 'external properties', 'a'])
+    await writeFile(join(scope, 'main.txt'), 'unchecked main edit\n')
+    await writeFile(join(scope, 'a', 'file@name.txt'), 'unchecked external edit\n')
+    const propertyPreview = await this.files.workingTree({ sessionId: 'batch', cwd: scope, agent: null, worktree: null }, 'svn', true)
+    if (!propertyPreview.ok) throw new Error(propertyPreview.detail)
+    const properties = propertyPreview.value.entries.filter((entry) => entry.nodeKind === 'directory' && entry.status === 'modified')
+    this.check('Commit preview retains property-only changes on the scope and external root', properties.length === 2
+      && properties.some((entry) => entry.path === scope) && properties.some((entry) => entry.path === join(scope, 'a')))
+    const propertyDraft = await manager.prepare('batch', 'svn', scope, null)
+    if (!propertyDraft.ok) throw new Error(propertyDraft.detail)
+    manager.attach(propertyDraft.value.draftId, 'owner')
+    const propertyCommit = await manager.run('owner', { draftId: propertyDraft.value.draftId,
+      snapshotId: propertyPreview.value.snapshotId, fileIds: properties.map((entry) => entry.fileId),
+      message: await readFile(message, 'utf8'), includeExternals: true })
+    if (!propertyCommit.ok) throw new Error(propertyCommit.detail)
+    this.check('Property-only selection commits svn:externals and external root properties', propertyCommit.revision.split(', ').length === 2
+      && (await this.svnRun(scope, ['propget', 'svn:externals', '-r', 'BASE', '.'])).trim() === `${externalUrl}/a a`
+      && (await this.svnRun(scope, ['propget', 'review-note', '-r', 'BASE', 'a'])).trim() === 'external properties')
+    this.check('Directory property commits leave unchecked main and external files uncommitted',
+      await this.svnRun(scope, ['cat', '-r', 'BASE', 'main.txt']) === 'main changed\n'
+      && await this.svnRun(scope, ['cat', '-r', 'BASE', 'a/file@name.txt@']) === 'a changed\n'
+      && await readFile(join(scope, 'main.txt'), 'utf8') === 'unchecked main edit\n'
+      && await readFile(join(scope, 'a', 'file@name.txt'), 'utf8') === 'unchecked external edit\n')
+    console.log(`Property-only fixture revisions: ${propertyCommit.revision}`)
+    manager.release(propertyDraft.value.draftId, 'owner')
+
+    await this.svnRun(scope, ['propset', 'svn:externals', `${externalUrl}/a a\n${externalUrl}/b b`, '.'])
+    await this.svnRun(scope, ['propset', 'review-note', 'mixed external properties', 'a'])
+    const mixedPreview = await this.files.workingTree({ sessionId: 'batch', cwd: scope, agent: null, worktree: null }, 'svn', true)
+    if (!mixedPreview.ok) throw new Error(mixedPreview.detail)
+    const mixedPaths = [scope, join(scope, 'main.txt'), join(scope, 'a'), join(scope, 'a', 'file@name.txt')]
+    const mixedEntries = mixedPreview.value.entries.filter((entry) => mixedPaths.includes(entry.path))
+    this.check('Mixed preview retains both property rows and both selected source files', mixedEntries.length === 4)
+    const mixedDraft = await manager.prepare('batch', 'svn', scope, null)
+    if (!mixedDraft.ok) throw new Error(mixedDraft.detail)
+    manager.attach(mixedDraft.value.draftId, 'owner')
+    const mixedCommit = await manager.run('owner', { draftId: mixedDraft.value.draftId,
+      snapshotId: mixedPreview.value.snapshotId, fileIds: mixedEntries.map((entry) => entry.fileId),
+      message: await readFile(message, 'utf8'), includeExternals: true })
+    if (!mixedCommit.ok) throw new Error(mixedCommit.detail)
+    this.check('Mixed selection publishes svn:externals in the main fixture repository',
+      (await this.svnRun(scope, ['propget', 'svn:externals', '-r', 'HEAD', `${mainUrl}/project`])).replace(/\r\n/g, '\n').trim()
+        === `${externalUrl}/a a\n${externalUrl}/b b`)
+    this.check('Mixed selection publishes the external directory property',
+      (await this.svnRun(scope, ['propget', 'review-note', '-r', 'HEAD', `${externalUrl}/a`])).trim() === 'mixed external properties')
+    this.check('Mixed selection publishes properties and source together in each fixture repository',
+      mixedCommit.revision.split(', ').length === 2
+      && await this.svnRun(scope, ['cat', '-r', 'HEAD', `${mainUrl}/project/main.txt`]) === 'unchecked main edit\n'
+      && await this.svnRun(scope, ['cat', '-r', 'HEAD', `${externalUrl}/a/file@name.txt@`]) === 'unchecked external edit\n'
+      && await this.svnRun(scope, ['info', '--show-item', 'last-changed-revision', scope])
+        === await this.svnRun(scope, ['info', '--show-item', 'last-changed-revision', join(scope, 'main.txt')])
+      && await this.svnRun(scope, ['info', '--show-item', 'last-changed-revision', join(scope, 'a')])
+        === await this.svnRun(scope, ['info', '--show-item', 'last-changed-revision', `${join(scope, 'a', 'file@name.txt')}@`]))
+    this.check('Mixed selection still leaves unchecked new children and sibling changes unpublished',
+      (await this.svnRun(scope, ['status', 'b/new/unchecked.txt'])).trim().startsWith('?')
+      && await this.svnRun(working, ['cat', '-r', 'HEAD', `${mainUrl}/sibling.txt`]) === 'sibling base\n'
+      && await readFile(join(working, 'sibling.txt'), 'utf8') === 'sibling uncommitted\n')
+    console.log(`Mixed fixture revisions: ${mixedCommit.revision}`)
+    manager.release(mixedDraft.value.draftId, 'owner')
   }
 
   private async checkGit(message: string): Promise<void> {
@@ -185,6 +368,14 @@ class SmokeVcsCommit extends SmokeHarness {
     await writeFile(selected, 'after\n')
     await writeFile(other, 'staged unrelated\n')
     await this.gitRun(root, ['add', '--', 'other.txt'])
+    const single = await this.files.workingTree({ sessionId: 'git-selection', cwd: root, agent: null,
+      worktree: null }, 'git', true, selected)
+    if (!single.ok) throw new Error(single.detail)
+    this.check('A single-file Git snapshot keeps literal brackets and excludes staged siblings',
+      single.value.entries.length === 1 && single.value.entries[0].path === selected
+      && single.value.defaultBaseline !== null
+      && (await this.files.diff({ snapshotId: single.value.snapshotId, fileId: single.value.entries[0].fileId,
+        baselineId: single.value.defaultBaseline.baselineId })).ok)
     const committed = await this.commits.commit(root, [selected], message)
     if (!committed.ok) throw new Error(committed.detail)
     this.check('Git commits only selected literal paths', (await this.gitRun(root, ['show', 'HEAD:chosen [file].txt'])) === 'after\n')
@@ -240,9 +431,14 @@ class SmokeVcsCommit extends SmokeHarness {
     const diff = await this.files.diff({ snapshotId: preview.value.snapshotId, fileId: newFile.fileId, baselineId: preview.value.defaultBaseline!.baselineId })
     this.check('An untracked child opens as a new-file diff before any SVN add', diff.ok && diff.kind === 'text')
     const selected = new Set(['modified.txt', 'new', 'new/nested', 'new/nested/file@name.txt', 'deleted'])
+    const progress: CommitProgress[] = []
     const result = await this.svnCommits.commit(root, preview.value.entries.filter((entry) => selected.has(entry.displayPath))
-      .map((entry) => ({ absolutePath: entry.path, nodeKind: entry.nodeKind, status: entry.status })), message)
+      .map((entry) => ({ absolutePath: entry.path, nodeKind: entry.nodeKind, status: entry.status })), message, (value) => progress.push(value))
     if (!result.ok) throw new Error(result.detail)
+    this.check('Real SVN output reports selected nodes and transmitted deltas before result verification',
+      progress.some((value) => value.stage === 'sending' && value.completed === selected.size)
+      && progress.some((value) => value.stage === 'transmitting' && value.completed === 2 && value.total === null)
+      && progress.at(-1)?.stage === 'verifying')
     const listing = await this.svnRun(root, ['list', '--recursive', pathToFileURL(repository).href])
     this.check('SVN adds Git-listed files and their parents, including literal @ paths', listing.includes('new/nested/file@name.txt'))
     this.check('SVN excludes ignored node_modules', !listing.includes('node_modules'))
@@ -263,6 +459,9 @@ class SmokeVcsCommit extends SmokeHarness {
       noGit.value.entries.some((entry) => entry.displayPath === 'recursive/child/plain.txt')
       && noGit.value.entries.some((entry) => entry.displayPath === 'recursive/child/unchecked.txt')
       && !noGit.value.entries.some((entry) => entry.displayPath.endsWith('ignored.skip')))
+    const ignored = await this.files.workingTree({ sessionId: 'smoke', cwd: root, agent: null, worktree: null },
+      'svn', true, join(root, 'recursive', 'child', 'ignored.skip'))
+    this.check('Single-file reads honor inherited ignores below unversioned SVN parents', ignored.ok && ignored.value.entries.length === 0)
     const recursive = await this.svnCommits.commit(root, noGit.value.entries
       .filter((entry) => ['recursive', 'recursive/child', 'recursive/child/plain.txt'].includes(entry.displayPath))
       .map((entry) => ({ absolutePath: entry.path, nodeKind: entry.nodeKind, status: entry.status })), message)

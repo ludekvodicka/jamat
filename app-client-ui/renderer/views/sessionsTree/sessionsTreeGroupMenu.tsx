@@ -5,6 +5,7 @@ import {
   type NewSessionPlace,
 } from '../../../shared/commands'
 import type { CommandRegistry } from '../../commands/commandRegistry'
+import type { SessionGroup } from '../../../shared/sessionsGroupsState'
 import { CommandMenuEntries } from '../../widgets/commandMenuEntries'
 import {
   ContextMenu,
@@ -21,6 +22,8 @@ import {
  * project row both, and the AD-HOC and NO PROJECT roots neither.
  */
 export interface GroupRowFacts {
+  groupKey?: string
+  group?: SessionGroup
   place: NewSessionPlace | null
   folder: { path: string; sessionId: string } | null
 }
@@ -36,14 +39,19 @@ export function SessionsTreeGroupMenu(props: {
   commands: CommandRegistry
   /** What the clicked row is, captured when the menu opened: a menu lives for a moment. */
   facts: GroupRowFacts
+  groupItem?: ContextMenuEntry
   onClose(): void
 }): React.JSX.Element {
+  const items = SessionsTreeGroupItems.forRow(props.commands, props.facts)
   return (
     <ContextMenu
       position={props.position}
       ariaLabel="Project actions"
       className="jamat-tab-menu"
-      items={SessionsTreeGroupItems.forRow(props.commands, props.facts)}
+      items={[...items, ...(props.groupItem === undefined ? [] : [
+        ...(items.length === 0 ? [] : [{ kind: 'separator' as const, key: 'tree-groups' }]),
+        props.groupItem,
+      ])]}
       onClose={props.onClose}
     />
   )
@@ -67,13 +75,8 @@ export class SessionsTreeGroupItems {
     )
   }
 
-  /**
-   * Whether a row offers anything at all, asked before the menu is opened: a right-click that draws
-   * an empty box is worse than one that draws nothing. That is the AD-HOC and NO PROJECT roots,
-   * which name no category and hold no path of their own.
-   */
   static any(facts: GroupRowFacts): boolean {
-    return SessionsTreeGroupItems.applicable(facts).length > 0
+    return facts.groupKey !== undefined || SessionsTreeGroupItems.applicable(facts).length > 0
   }
 
   private static applicable(facts: GroupRowFacts): readonly CommandDescriptor[] {

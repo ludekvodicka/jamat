@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { SidebarsState, type SidebarsStateValue } from '../../shared/sidebarsState'
 import { SessionsFilterState, type SavedSessionsFilter } from '../../shared/sessionsFilterState'
+import type { SessionGroupAssignment } from '../../shared/sessionsGroupsState'
 import {
   ClientStateStore,
   type ExtraWindowState,
@@ -69,6 +70,90 @@ describe('app-client-ui/app/clientState/clientStateStore', () => {
 
   const boundsFixtureConst: WindowBounds =
     { x: 120, y: 80, width: 1280, height: 800, maximized: false }
+
+  it.each([1, 2])('migrates schema %s pins to groups and preserves explicit None across restarts', (schemaVersion) => {
+    const { store, stateFile, reopen } = fixture()
+    writeFileSync(stateFile, JSON.stringify({ schemaVersion, sessionPins: ['session:one', 'category:nodejs'] }), 'utf8')
+    expect(store.loadSessionGroups()).toEqual([
+      { key: 'session:one', group: 'pinned' }, { key: 'category:nodejs', group: 'pinned' },
+    ])
+    const groups: SessionGroupAssignment[] = [
+      { key: 'session:one', group: 'none' }, { key: 'category:nodejs', group: 'priority' },
+      { key: 'session:two', group: 'waiting' }, { key: 'session:three', group: 'blocked' },
+    ]
+    expect(store.saveSessionGroups(groups)).toBe(true)
+    const expected = structuredClone(groups)
+    groups[0].group = 'pinned'
+    store.saveSessionsView('states')
+    expect(reopen().loadSessionGroups()).toEqual(expected)
+    expect(JSON.parse(readFileSync(stateFile, 'utf8'))).not.toHaveProperty('sessionPins')
+    expect(store.saveSessionGroups([])).toBe(true)
+    expect(reopen().loadSessionGroups()).toEqual([])
+  })
+
+  it('preserves non-pin groups through legacy IPC writes and validates group assignments', () => {
+    const { store, reopen } = fixture()
+    store.saveSessionGroups([{ key: 'session:one', group: 'blocked' }])
+    store.saveSessionPins(['session:two'])
+    expect(store.loadSessionPins()).toEqual(['session:two'])
+    store.saveSessionPins([])
+    expect(reopen().loadSessionGroups()).toEqual([{ key: 'session:one', group: 'blocked' }])
+    expect(() => store.saveSessionGroups([{ key: 'one', group: 'unknown' as never }])).toThrow('invalid session groups')
+    expect(() => store.saveSessionGroups([{ key: 'one', group: 'none' }, { key: 'one', group: 'pinned' }])).toThrow('invalid session groups')
+  })
+
+  /**
+   * What a fork takes from the session it was cut from, and what it deliberately does not: a parent
+   * standing in a group because its PROJECT was put there has nothing of its own to hand over, and
+   * the fork reaches the same section through the same project row.
+   */
+  it('copies the parent assignment to a fork and writes nothing where the parent has none', () => {
+    const { store, reopen } = fixture()
+    store.assignSessionGroup('session:parent', 'priority')
+    store.assignSessionGroup('project:category:nodejs/q:/work', 'blocked')
+
+    expect(store.inheritSessionGroup('session:parent', 'session:fork')).toBe(true)
+    expect(reopen().loadSessionGroups()).toEqual([
+      { key: 'session:parent', group: 'priority' },
+      { key: 'project:category:nodejs/q:/work', group: 'blocked' },
+      { key: 'session:fork', group: 'priority' },
+    ])
+
+    expect(store.inheritSessionGroup('session:unassigned', 'session:second-fork')).toBe(false)
+    expect(reopen().loadSessionGroups().map((entry) => entry.key)).not.toContain('session:second-fork')
+
+    // An assignment written twice is one row, not two: the fork of a fork keeps one key.
+    store.assignSessionGroup('session:fork', 'waiting')
+    expect(reopen().loadSessionGroups()).toEqual([
+      { key: 'session:parent', group: 'priority' },
+      { key: 'project:category:nodejs/q:/work', group: 'blocked' },
+      { key: 'session:fork', group: 'waiting' },
+    ])
+  })
+
+  it('persists pins through restarts and other state writes without accepting invalid or mutable input', () => {
+    const { store, reopen } = fixture()
+    expect(store.loadSessionPins()).toEqual([])
+    const pins = ['session:one', 'category:nodejs', 'project:category:nodejs/c:/work']
+    expect(store.saveSessionPins(pins)).toBe(true)
+    pins.push('session:foreign')
+    store.saveSessionsView('states')
+    store.saveSessionFilters([])
+    expect(reopen().loadSessionPins()).toEqual(pins.slice(0, -1))
+    expect(() => store.saveSessionPins(['same', 'same'])).toThrow('invalid session pins')
+    expect(() => store.saveSessionPins([null as never])).toThrow('invalid session pins')
+    expect(store.saveSessionPins([])).toBe(true)
+    expect(reopen().loadSessionPins()).toEqual([])
+  })
+
+  it('retains the disk read barrier when saving pins', () => {
+    const { store, stateFile } = fixture()
+    writeFileSync(stateFile, '{broken', 'utf8')
+    expect(store.loadSessionPins()).toEqual([])
+    expect(store.saveSessionPins(['session:one'])).toBe(false)
+    expect(store.saveSessionGroups([{ key: 'session:one', group: 'priority' }])).toBe(false)
+    expect(readFileSync(stateFile, 'utf8')).toBe('{broken')
+  })
 
   it('preserves saved filters across restarts and unrelated state writes, without accepting malformed filters', () => {
     const { store, reopen, snapshotsDirectory } = fixture()

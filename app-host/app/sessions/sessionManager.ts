@@ -7,6 +7,7 @@ import type {
   RuntimeReplaceReq,
   RuntimeSessionInfo,
   TerminalProjectionSnapshot,
+  TerminalProjectionView,
 } from '../wire/hostWire.js'
 import { EventHub } from '../events/eventHub.js'
 import type {
@@ -16,7 +17,10 @@ import type {
 } from '../terminal/terminal.types.js'
 import { TerminalInstanceManager } from '../terminal/terminalInstanceManager.js'
 import { TerminalLaunchError } from '../terminal/terminalLaunchError.js'
-import type { TerminalProjectionDelta } from '../terminal/terminalProjection.js'
+import {
+  TerminalProjection,
+  type TerminalProjectionDelta,
+} from '../terminal/terminalProjection.js'
 import { SessionError } from './sessionError.js'
 import { SessionRequestValidation } from './sessionRequestValidation.js'
 import { SessionStore } from './sessionStore.js'
@@ -183,13 +187,16 @@ export class SessionManager {
     return this.requireExact(target)
   }
 
-  async inspect(target: RuntimeRef): Promise<RuntimeInspectResult> {
+  async inspect(
+    target: RuntimeRef,
+    view: TerminalProjectionView | null,
+  ): Promise<RuntimeInspectResult> {
     const session = this.requireExact(target)
     const terminal = this.terminals.get(target.runtimeSessionId)
     return {
       session,
       projection: terminal?.generation === target.generation
-        ? await terminal.projection.snapshot(terminal.alive)
+        ? await terminal.projection.snapshot(terminal.alive, TerminalProjection.optionsOf(view))
         : null,
     }
   }
@@ -359,7 +366,7 @@ export class SessionManager {
     const terminal = this.terminals.get(target.runtimeSessionId)
     if (!terminal || terminal.generation !== target.generation)
       throw new SessionError('not-found', `No terminal projection: ${target.runtimeSessionId}`)
-    return terminal.projection.snapshot(terminal.alive)
+    return terminal.projection.snapshot(terminal.alive, TerminalProjection.attachOptionsConst)
   }
 
   destroy(): void {

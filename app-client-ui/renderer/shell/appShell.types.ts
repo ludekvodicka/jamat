@@ -35,6 +35,7 @@ import type { FinalizeAsk } from '../overlays/finalize/finalizeModel'
 import type { LauncherIntentStore } from '../overlays/launcher/launcherIntentStore'
 import type { ConfigurationTabId } from '../overlays/configuration/configurationTab.types'
 import type { ActiveTerminalStore } from './activeTerminalStore'
+import type { PerfStore } from '../perf/perfStore'
 import type { PanelFocusRegistry } from './panelFocusRegistry'
 import type { SessionRefreshRegistry } from './sessionRefreshRegistry'
 import type { SessionRestartChain } from './sessionRestartChain'
@@ -112,6 +113,8 @@ export interface WorkspaceShellWiring {
    */
   ratePorts: AppShellRatePorts
   rateSnapshot: SnapshotStore<RateMonitorSnapshot>
+  /** How fast this window is answering, sampled by the window itself. See `PerfStore`. */
+  perf: PerfStore
   /**
    * Which source-aware terminal target this document has in front, written by the wrap around the
    * active-panel port. Per document rather than per application: the cross-window answer clears

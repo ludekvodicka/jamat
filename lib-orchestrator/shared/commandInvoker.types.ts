@@ -14,10 +14,14 @@ export interface CommandOutcome {
 }
 
 export interface CommandRunner {
-  run(cwd: string, args: string[]): Promise<CommandOutcome>
+  run(cwd: string, args: string[], options?: CommandRunOptions): Promise<CommandOutcome>
 }
 
-export interface CommandInvocation {
+export interface CommandRunOptions {
+  onStdout?(chunk: string): void
+}
+
+export interface CommandInvocation extends CommandRunOptions {
   command: string
   args: readonly string[]
   cwd: string

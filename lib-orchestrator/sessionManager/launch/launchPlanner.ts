@@ -9,6 +9,23 @@ import type {
   SessionRecordSetupCommand,
 } from '../records/sessionRecord.types'
 import { AgentPresets } from './agentPresets'
+import { PowerShellHost } from './powershellHost'
+import { WindowsCommand } from './windowsCommand'
+
+/**
+ * How a bare agent name can be started on Windows with no cmd.exe in front of it, which is the only
+ * way an argument that spans lines survives. Either the name IS an executable image, or its shim has
+ * the PowerShell script its installer wrote beside it and a host that runs it without rewriting its
+ * arguments.
+ */
+export type Win32SpanningLaunch =
+  | { kind: 'image'; imagePath: string }
+  | { kind: 'powershellScript'; hostPath: string; scriptPath: string }
+
+/** One of the two, never both and never neither: there is a launch, or there is the reason. */
+type SpanningLaunchOutcome =
+  | { launch: { command: string; args: string[] }; problem: null }
+  | { launch: null; problem: string }
 
 export interface LaunchPlanOptions {
   controller?: { configIdentity: string; channel: RuntimeChannel }
@@ -44,6 +61,12 @@ export interface LaunchPlanOptions {
    */
   platform?: NodeJS.Platform
   environment?: NodeJS.ProcessEnv
+  /**
+   * How a bare agent name can be started on this machine with no cmd.exe in front of it, injected
+   * for the reason `platform` is: the answer is a property of what somebody installed, so a test has
+   * to be able to state it rather than assert whatever this machine happens to have.
+   */
+  spanningLaunch?: (command: string) => Win32SpanningLaunch | null
 }
 
 /**
@@ -105,18 +128,140 @@ export class LaunchPlanner {
           : LaunchPlanner.effortArgsOf(agent.agentId, options.effort)),
       ]
       const args = [...front, ...modeArgs]
-      // The agents install as `.cmd` shims on Windows, which no spawn can execute directly; the
-      // ComSpec wrap is what scripts/dev/probe-agent.ts proved against a real PTY.
       if (platform === 'win32')
-        return {
-          command: environment.ComSpec ?? 'cmd.exe',
-          args: ['/d', '/q', '/c', agent.agentId, ...args],
-          ...common,
-        }
+        return { ...LaunchPlanner.win32Agent(agent.agentId, args, environment, options), ...common }
       return { command: agent.agentId, args, ...common }
     }
     else
       throw new Error(`Unknown session kind: ${JSON.stringify(record.kind)}`)
+  }
+
+  /**
+   * The win32 launch. The agents install as `.cmd` shims on Windows, which no spawn can execute by
+   * NAME, so the ComSpec wrap is the ordinary answer and scripts/dev/probe-agent.ts proved it
+   * against a real PTY.
+   *
+   * **Nothing reaches a child through cmd.exe with a newline in it.** Measured 2026-09-20 through
+   * the Host's own node-pty against a process that printed its `process.argv` back: the command
+   * line is cut at the first line feed and the rest is dropped. CRLF cuts identically; a lone CR is
+   * swallowed and welds the two lines together; a caret before the feed leaves the caret and drops
+   * the rest; handing the text over in the environment and expanding `%VAR%` on the line cuts at
+   * its first SPACE as well. Spawning the `.cmd` shim directly by its full path cuts the same way,
+   * because the shim is itself run by cmd.exe. That is what made a multi-line `--prompt` arrive as
+   * its first line, with the agent answering an instruction that stopped mid-sentence.
+   *
+   * So a multi-line argument survives only where no cmd.exe stands between this class and the
+   * program, and that is the only case this leaves the wrap for. There are two such shapes and
+   * `Win32SpanningLaunch` holds both: an executable image, and the `.ps1` npm and pnpm write beside
+   * every `.cmd` shim, which calls `node.exe` itself and is run through `pwsh -NoProfile -File`.
+   * An ordinary launch keeps the wrap bit for bit: resolving `PATH` here is this library's guess at
+   * which of two installations cmd.exe would have picked, and a guess is only worth making where
+   * the answer today is already wrong.
+   */
+  private static win32Agent(
+    agentId: SessionRecordAgent['agentId'],
+    args: string[],
+    environment: NodeJS.ProcessEnv,
+    options: LaunchPlanOptions | undefined,
+  ): { command: string; args: string[] } {
+    if (!args.some((value) => LaunchPlanner.spansLines(value)))
+      return {
+        command: environment.ComSpec ?? 'cmd.exe',
+        args: ['/d', '/q', '/c', agentId, ...args],
+      }
+    const spanning = LaunchPlanner.spanningLaunchOf(agentId, args, environment, options)
+    // An invariant rather than a refusal a caller meets here: `SessionLifecycle` asks
+    // `argumentProblem` before it writes a record, and before the reconciler replays one.
+    if (spanning.problem !== null) throw new Error(spanning.problem)
+    return spanning.launch
+  }
+
+  /**
+   * Why an argument could not reach this agent whole on this machine, or null when it can. The
+   * gates that refuse a create and a replay both ask this, so a caller is told the limit instead of
+   * being handed a session whose first instruction stops at its first newline.
+   */
+  static argumentProblem(
+    agentId: SessionRecordAgent['agentId'],
+    value: string,
+    options?: Pick<LaunchPlanOptions, 'platform' | 'environment' | 'spanningLaunch'>,
+  ): string | null {
+    const platform = options?.platform ?? process.platform
+    const environment = options?.environment ?? process.env
+    if (platform !== 'win32' || !LaunchPlanner.spansLines(value)) return null
+    return LaunchPlanner.spanningLaunchOf(agentId, [value], environment, options).problem
+  }
+
+  /**
+   * The win32 launch for arguments that span lines, or the one reason there is none. The plan and
+   * the gates in front of it ask this same function, so a create is refused exactly where a plan
+   * would have thrown.
+   */
+  private static spanningLaunchOf(
+    agentId: SessionRecordAgent['agentId'],
+    args: string[],
+    environment: NodeJS.ProcessEnv,
+    options: Pick<LaunchPlanOptions, 'spanningLaunch'> | undefined,
+  ): SpanningLaunchOutcome {
+    const resolve = options?.spanningLaunch
+      ?? ((command: string) => LaunchPlanner.machineSpanningLaunch(command, environment))
+    const spanning = resolve(agentId)
+    if (spanning === null) return { launch: null, problem: LaunchPlanner.spanningProblemOf(agentId) }
+    if (spanning.kind === 'image')
+      return { launch: { command: spanning.imagePath, args }, problem: null }
+    else if (spanning.kind === 'powershellScript') {
+      if (args.some((value) => LaunchPlanner.powershellSplits(value)))
+        return { launch: null, problem: LaunchPlanner.powershellProblemOf(agentId) }
+      return {
+        launch: {
+          command: spanning.hostPath,
+          args: ['-NoProfile', '-File', spanning.scriptPath, ...args],
+        },
+        problem: null,
+      }
+    }
+    else
+      throw new Error(`Unknown spanning launch: ${JSON.stringify(spanning)}`)
+  }
+
+  /** What this machine has, which is what an injected `spanningLaunch` stands in for. */
+  private static machineSpanningLaunch(
+    command: string,
+    environment: NodeJS.ProcessEnv,
+  ): Win32SpanningLaunch | null {
+    const image = WindowsCommand.imageOf(command, environment)
+    if (image !== null) return { kind: 'image', imagePath: image }
+    const scriptPath = WindowsCommand.powershellScriptOf(command, environment)
+    if (scriptPath === null) return null
+    const hostPath = PowerShellHost.exactArgumentHostOf(environment)
+    return hostPath === null ? null : { kind: 'powershellScript', hostPath, scriptPath }
+  }
+
+  /** CR alone counts: cmd.exe swallows it, which silently welds two lines into one. */
+  private static spansLines(value: string): boolean {
+    return value.includes('\n') || value.includes('\r')
+  }
+
+  /**
+   * PowerShell parses the arguments of a `-File` script itself, and `-name:value` is its own syntax
+   * for a parameter and its value. Measured on 2026-09-21 through the Host's node-pty: `-x:y`
+   * arrives as the two arguments `-x` and `y`, `-x:` arrives as none at all, and `-:value` ends the
+   * run before the script. A colon anywhere in a dash-prefixed argument does it, while `/p:value`,
+   * `-x=y` and a colon later in the text are untouched.
+   */
+  private static powershellSplits(value: string): boolean {
+    return value.startsWith('-') && value.includes(':')
+  }
+
+  private static spanningProblemOf(agentId: SessionRecordAgent['agentId']): string {
+    return `this machine reaches ${agentId} only through cmd.exe, which cuts a command line at its `
+      + 'first newline, so a prompt that spans lines cannot be delivered to it'
+  }
+
+  private static powershellProblemOf(agentId: SessionRecordAgent['agentId']): string {
+    return `this machine reaches ${agentId} through PowerShell, which reads an argument that starts `
+      + 'with a dash and holds a colon as a parameter and its value, so a prompt of that shape '
+      + 'would arrive as two arguments'
   }
 
   /**

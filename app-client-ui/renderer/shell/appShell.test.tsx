@@ -16,6 +16,7 @@ import type {
 } from '../../shared/appClientUiIpc'
 import { AppClientUiReport } from '../../shared/appClientUiReport'
 import type { BareCommandId, CommandDescriptor } from '../../shared/commands'
+import type { PerfSample } from '../../shared/perfSample'
 import type { SessionsTabsView } from '../../shared/sessionsViewState'
 import { SidebarsState, type SidebarsStateValue } from '../../shared/sidebarsState'
 import type { TabControlAck, TabControlCommand } from '../../shared/tabControl'
@@ -143,6 +144,8 @@ class AppClientStub {
   sessionSnapshotReads = 0
   sessionSnapshotSubscriptions = 0
   rateSnapshotReads = 0
+  /** What `perf:sample` answers. Pending by default; a case that wants the readout resolves it. */
+  perfAnswer: Promise<IpcResult<PerfSample>> = new Promise(() => {})
   sidebarLoads = 0
   layoutFailed = false
   windowInfo: WindowInfo = {
@@ -235,6 +238,10 @@ class AppClientStub {
         loadSessionsView: () =>
           Promise.resolve({ ok: true as const, value: { sessionsView: null } }),
         loadSessionFilters: () => Promise.resolve({ ok: true as const, value: [] }),
+        loadSessionPins: () => Promise.resolve({ ok: true as const, value: [] }),
+        saveSessionPins: () => Promise.resolve({ ok: true as const, value: true }),
+        loadSessionGroups: () => Promise.resolve({ ok: true as const, value: [] }),
+        assignSessionGroup: () => Promise.resolve({ ok: true as const, value: true }),
         saveSessionFilters: () => Promise.resolve({ ok: true as const, value: true }),
         saveSessionsView: (view: SessionsTabsView) => {
           this.savedSessionsViews.push(view)
@@ -370,6 +377,9 @@ class AppClientStub {
         workingTree: () => {
           throw new Error('No test of the shell lists working tree changes')
         },
+        scopedWorkingTree: () => {
+          throw new Error('No test of the shell lists scoped working tree changes')
+        },
         history: () => {
           throw new Error('No test of the shell reads file changes history')
         },
@@ -446,6 +456,7 @@ class AppClientStub {
         mediaResource: () => { throw new Error('No test of the shell opens media') },
         relativeResource: () => { throw new Error('No test of the shell opens Markdown media') },
         copyPath: () => { throw new Error('No test of the shell copies a file path') },
+        startImageDrag: () => { throw new Error('No test of the shell drags an image') },
         openExternal: () => { throw new Error('No test of the shell opens an external URL') },
         release: () => { throw new Error('No test of the shell releases a file') },
       },
@@ -540,6 +551,12 @@ class AppClientStub {
             this.sessionSnapshotSubscriptions -= 1
         }
       },
+      perf: {
+        // Pending by default: the readout draws live numbers, and the assertions in this suite are
+        // about which ITEMS the bar holds. One case below answers it and asserts that it appears.
+        sample: () => this.perfAnswer,
+      },
+      onSessionGroupsChanged: () => () => undefined,
       onRemoteChanged: () => () => undefined,
       onTabsActivatePanel: (callback: (panelId: string) => void) => {
         this.tabsActivatePanel = callback
@@ -557,6 +574,9 @@ class AppClientStub {
         this.tabsVisibleSessions = callback
         return () => { this.tabsVisibleSessions = null }
       },
+      // Subscribed at mount and driven by nothing here: what the shell does with the value is one
+      // hand-off to the marks store, and that store's own test is where it is asserted.
+      onTabsOpenTerminalTargets: () => () => undefined,
       onTabsTransferIn: (callback: (token: string) => void) => {
         this.tabsTransferIn = callback
         return () => { this.tabsTransferIn = null }
@@ -1004,10 +1024,10 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     expect(Sidebars.hidden(view.container, 'Right Probe')).toBe(true)
   })
 
-  it.each(['svn', 'git'] as const)('focuses a double-clicked %s commit diff so Escape closes only the file', async (vcs) => {
+  it.each(['svn', 'git'] as const)('restores a %s commit diff after restart so Escape closes only the file', async (vcs) => {
     const { client, view } = await mount({ sidebars: null, failed: false })
     const draft: VersioningCommitDraftDto = { draftId: 'focus-review', sessionId: 's-working', vcs, source: vcs,
-      scopeRoot: 'C:/work', scopeDisplay: 'C:/work', message: 'Review this change', editedByPerson: false,
+      scopeRoot: 'C:/work', scopeTooltip: 'C:/work', message: 'Review this change', editedByPerson: false,
       proposedByAgent: true, phase: { kind: 'editing' }, revision: 1 }
     const snapshot: FileChangesWorkingTreeSnapshot = { snapshotId: 'focus-snapshot', sessionId: draft.sessionId, createdAt: 1,
       source: { requested: vcs, selected: vcs, available: [vcs], fallbackReason: null },
@@ -1037,20 +1057,36 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     vi.spyOn(window.appClient.fileViewer, 'version').mockResolvedValue({ ok: true, value: { ok: true, kind: 'unchanged' } })
     vi.spyOn(window.appClient.fileViewer, 'release').mockResolvedValue({ ok: true, value: undefined })
     AppShellTest.openSession(view.container, 'Alpha worktree')
-    const terminal = await view.findByLabelText('Terminal for session s-working')
+    await view.findByLabelText('Terminal for session s-working')
+    expect(AppShellTest.previewTabTitles(view.container)).toEqual(['AppJamatV3 - Alpha worktree'])
     client.controlTabs({ kind: 'open-commit', requestId: 'focus-commit', panelId: 'terminal:{"sessionId":"s-working"}',
       vcs, scopeRoot: draft.scopeRoot, title: 'Commit review', messageApplied: true })
     const row = (await view.findByLabelText('Include report.ts')).closest('[role="row"]')
     if (!(row instanceof HTMLElement)) throw new Error('Commit file row is missing')
+    expect(AppShellTest.previewTabTitles(view.container)).toEqual([])
     row.focus()
     fireEvent.doubleClick(row)
     const viewer = await view.findByLabelText('Split file')
     await waitFor(() => expect(viewer).toHaveFocus())
-    expect(fireEvent.keyDown(viewer.ownerDocument.activeElement!, { key: 'Escape' })).toBe(false)
-    await waitFor(() => expect(view.queryByLabelText('Split file')).toBeNull())
-    expect(view.getByRole('button', { name: 'Commit files' })).toBeVisible()
-    expect(view.getByRole('textbox', { name: 'Commit message' })).toHaveValue('Review this change')
-    expect(view.getByLabelText('Terminal for session s-working')).toBe(terminal)
+    act(() => void window.dispatchEvent(new Event('beforeunload')))
+    await waitFor(() => expect(client.savedLayouts.at(-1)).toContain('focus-file'))
+    const saved = client.savedLayouts.at(-1)!
+    view.unmount()
+    await waitFor(() => expect(close).toHaveBeenCalledOnce())
+    close.mockClear()
+    vi.spyOn(window.appClient.state, 'loadLayout').mockResolvedValue({ ok: true, value: { layout: saved, failed: false } })
+    const openDraft = vi.mocked(window.appClient.versioning.openDraft)
+    openDraft.mockClear()
+    const restored = render(<MainShell />)
+    const restoredViewer = await restored.findByLabelText('Split file')
+    const terminal = restored.getByLabelText('Terminal for session s-working')
+    await waitFor(() => expect(openDraft).toHaveBeenCalledWith('s-working', vcs, 'C:/work', undefined))
+    await waitFor(() => expect(restoredViewer).toHaveFocus())
+    expect(fireEvent.keyDown(restoredViewer.ownerDocument.activeElement!, { key: 'Escape' })).toBe(false)
+    await waitFor(() => expect(restored.queryByLabelText('Split file')).toBeNull())
+    expect(restored.getByRole('button', { name: 'Commit files' })).toBeVisible()
+    expect(restored.getByRole('textbox', { name: 'Commit message' })).toHaveValue('Review this change')
+    expect(restored.getByLabelText('Terminal for session s-working')).toBe(terminal)
     expect(run).not.toHaveBeenCalled()
     expect(close).not.toHaveBeenCalled()
   })
@@ -1970,6 +2006,40 @@ describe('app-client-ui/renderer/shell/appShell', () => {
    * about a Host neither of them owned. It is asserted here, in the same test, because it is the
    * same fact: the bar is where this is drawn, and nowhere else is.
    */
+  /**
+   * The readout that says how fast this client is answering. It is drawn whatever is in front,
+   * unlike the two widgets beside it, and only once there is something to say: an item that draws
+   * nothing still leaves a separator behind.
+   */
+  it('draws the responsiveness readout once a sample has landed, and not before', async () => {
+    const { client, view } = await mount({ sidebars: null, failed: false })
+    const bar = view.container.querySelector('[aria-label="Status"]')
+    if (!(bar instanceof HTMLElement))
+      throw new Error('The shell drew no status bar')
+    await waitFor(() => expect(AppShellTest.barText(bar)).toContain('development'))
+    expect(bar.querySelector('[aria-label="Responsiveness"]')).toBeNull()
+
+    client.perfAnswer = Promise.resolve({
+      ok: true,
+      value: {
+        mainLoopDelayP95Ms: 1,
+        mainLoopDelayMaxMs: 2,
+        hostCallMaxMs: 340,
+        echoMaxMs: null,
+        mainWorst: { label: 'fileChanges:working-tree', milliseconds: 900 },
+      },
+    })
+
+    const readout = await waitFor(() => {
+      const found = bar.querySelector('[aria-label="Responsiveness"]')
+      if (!(found instanceof HTMLElement)) throw new Error('no responsiveness readout yet')
+      return found
+    })
+    expect(readout.textContent).toContain('H 340')
+    // Nobody typed in that window, so the echo says so rather than claiming an instant answer.
+    expect(readout.textContent).toContain('echo -')
+  })
+
   it('reads the Host into the status bar beside the version, and nowhere else', async () => {
     const { view } = await mount({ sidebars: null, failed: false })
     const bar = view.container.querySelector('[aria-label="Status"]')
@@ -2373,11 +2443,38 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     expect(AppShellTest.launcherName(view.container)).toBe('Alpha worktree')
   })
 
-  /*
-   * The tree opens PROVISIONALLY, and the shell is what turns that intent into the controller's
-   * option. Read off the tab rather than off a spy, because the whole point is the chain: row click
-   * to intent to option to the mark the tab wears.
-   */
+  it.each([false, true])('opens a document without switching sessions when the target tab already exists: %s', async (existing) => {
+    const { client, view } = await mount({ sidebars: null, failed: false })
+    vi.spyOn(window.appClient.fileViewer, 'restore').mockResolvedValue({
+      ok: true, value: { ok: false, code: 'not-found', detail: 'File unavailable' },
+    })
+    vi.spyOn(window.appClient.fileChanges, 'list').mockResolvedValue({
+      ok: true, value: { ok: false, code: 'invalid-context', detail: 'File changes unavailable' },
+    })
+    if (existing) {
+      AppShellTest.keepSession(view.container, 'Beta worktree')
+      await view.findByLabelText('Terminal for session s-waiting')
+    }
+    AppShellTest.openSession(view.container, 'Alpha worktree')
+    await view.findByLabelText('Terminal for session s-working')
+    const activeTitle = (): string | null | undefined => view.container.querySelector('.jamat-tab.is-active .jamat-tab__title')?.textContent
+    expect(activeTitle()).toBe('AppJamatV3 - Alpha worktree')
+    const panelId = 'terminal:{"sessionId":"s-waiting"}'
+    client.controlTabs({ kind: 'open-session', requestId: 'background-session', sessionId: 's-waiting',
+      tabTitle: 'AppJamatV3 - Beta worktree', plain: false, activate: false })
+    await waitFor(() => expect(client.tabControlAcks).toContainEqual({ requestId: 'background-session', result: { kind: 'opened', panelId } }))
+    client.controlTabs({ kind: 'open-file', requestId: 'background-file', panelId,
+      source: { kind: 'workspace', sessionId: 's-waiting', path: 'C:/work/report.md' }, documentKey: 'background-file', title: 'report.md' })
+    await waitFor(() => expect(client.tabControlAcks).toContainEqual({ requestId: 'background-file', result: { kind: 'file-opened', panelId } }))
+    expect(activeTitle()).toBe('AppJamatV3 - Alpha worktree')
+    await waitFor(() => expect(client.savedLayouts.at(-1)).toContain('background-file'))
+    const layout = JSON.parse(client.savedLayouts.at(-1)!)
+    expect(layout.panels[panelId].params.split.items).toContainEqual(expect.objectContaining({ key: 'background-file' }))
+    AppShellTest.openSession(view.container, 'Beta worktree')
+    await view.findByLabelText('Split file')
+    expect(activeTitle()).toBe('AppJamatV3 - Beta worktree')
+  })
+
   it('opens a tab from the tree as a preview', async () => {
     const { view } = await mount({ sidebars: null, failed: false })
     await waitFor(() => expect(view.container.textContent).toContain('Alpha worktree'))

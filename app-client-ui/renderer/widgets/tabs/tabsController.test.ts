@@ -20,6 +20,7 @@ import type {
 import { TerminalTargetCodec } from '../../../shared/terminalTarget'
 import type { PanelOpenOutcome } from '../../shell/appShell.types'
 import { PanelRegistry } from './panelRegistry'
+import { PanelSplitParams, type PanelSplitItem } from './panelSplit'
 import { TabsController } from './tabsController'
 
 interface FakeGroup {
@@ -49,6 +50,7 @@ interface FakePanel {
     moveTo(options: { group?: FakeGroup; position?: string }): void
     /** The real one merges the parameters and reaches the group model, which fires a layout change. */
     updateParameters(params: Record<string, unknown>): void
+    onDidParametersChange(listener: () => void): DockviewIDisposable
   }
 }
 
@@ -428,6 +430,7 @@ class FakeDockview {
     component = 'probe',
     title = id,
   ): FakePanel {
+    const parameterListeners = new Set<() => void>()
     const panel: FakePanel = {
       id,
       title,
@@ -446,7 +449,12 @@ class FakeDockview {
         },
         updateParameters: (params) => {
           panel.params = { ...panel.params, ...params }
+          for (const listener of [...parameterListeners]) listener()
           this.emitLayoutChange()
+        },
+        onDidParametersChange: (listener) => {
+          parameterListeners.add(listener)
+          return { dispose: () => { parameterListeners.delete(listener) } }
         },
         moveTo: (options) => this.moved.push({
           panelId: id,
@@ -1001,9 +1009,10 @@ describe('app-client-ui/renderer/widgets/tabs/tabsController', () => {
   it('writes nothing on dispose when there is no pending change', async () => {
     const harness = TabsControllerHarness.fresh()
     harness.dockview.seed([['a']], 'a')
-    await harness.controller.restoreAndReconcile('{"grid":{}}', false)
+    await harness.controller.restoreAndReconcile(harness.dockview.serialized(), false)
 
     harness.controller.dispose()
+    await settleWrites()
 
     expect(harness.saved).toEqual([])
     expect(harness.errors).toEqual([])
@@ -1898,6 +1907,61 @@ describe('app-client-ui/renderer/widgets/tabs/tabsController', () => {
       expect(harness.dockview.added).toHaveLength(1)
       expect(harness.dockview.removed).toEqual([])
       expect(harness.controller.isPreview(sessionPanelId('s1'))).toBe(true)
+    })
+
+    const splitItems: readonly PanelSplitItem[] = [
+      { kind: 'file', key: 'file', title: 'Readme', source: { kind: 'workspace', sessionId: 's1', path: 'README.md' } },
+      { kind: 'commit', key: 'svn', title: 'Commit SVN', vcs: 'svn', scopeRoot: 'Q:/app' },
+      { kind: 'commit', key: 'git', title: 'Commit Git', vcs: 'git', scopeRoot: 'Q:/app' },
+    ]
+
+    it.each(splitItems)('keeps a preview permanently when its split opens $title', async (item) => {
+      const harness = TabsControllerHarness.fresh()
+      await openPreview(harness, 's1')
+      const panelId = sessionPanelId('s1')
+      const changed = vi.fn()
+      harness.controller.subscribePreview(changed)
+      harness.controller.applyPanelParameters(panelId, (params) => PanelSplitParams.merged(params, {
+        ...PanelSplitParams.default(), items: [item], active: item.key,
+      }))
+      expect(harness.controller.isPreview(panelId)).toBe(false)
+      expect(changed).toHaveBeenCalledOnce()
+
+      await openPreview(harness, 's2')
+      expect(harness.dockview.getPanel(panelId)?.params.split).toMatchObject({ items: [item] })
+      expect(harness.controller.isPreview(sessionPanelId('s2'))).toBe(true)
+      harness.controller.applyPanelParameters(panelId, (params) => PanelSplitParams.merged(params, PanelSplitParams.default()))
+      expect(harness.controller.isPreview(panelId)).toBe(false)
+      expect(harness.controller.isPreview(sessionPanelId('s2'))).toBe(true)
+    })
+
+    it('keeps a reopened split permanent even when the tree asks for a preview', async () => {
+      const harness = TabsControllerHarness.fresh()
+      await openPreview(harness, 's1')
+      const panelId = sessionPanelId('s1')
+      harness.controller.applyPanelParameters(panelId, (params) => PanelSplitParams.merged(params, {
+        ...PanelSplitParams.default(), items: [splitItems[0]], active: 'file',
+      }))
+      await harness.controller.hidePanel(panelId)
+      await openPreview(harness, 's1')
+      expect(harness.controller.isPreview(panelId)).toBe(false)
+      await openPreview(harness, 's2')
+      expect(harness.dockview.getPanel(panelId)?.params.split).toMatchObject({ items: [splitItems[0]] })
+    })
+
+    it('leaves sidebar and empty split changes provisional after reattaching', async () => {
+      const harness = TabsControllerHarness.fresh()
+      await openPreview(harness, 's1')
+      const panelId = sessionPanelId('s1')
+      harness.controller.attach(harness.dockview.asApi())
+      harness.controller.applyPanelParameters(panelId, (params) => ({ ...params,
+        sidebar: { visible: true }, split: { ...PanelSplitParams.default(), ratio: 0.6 },
+      }))
+      expect(harness.controller.isPreview(panelId)).toBe(true)
+      harness.controller.applyPanelParameters(panelId, (params) => PanelSplitParams.merged(params, {
+        ...PanelSplitParams.default(), items: [splitItems[0]], active: 'file',
+      }))
+      expect(harness.controller.isPreview(panelId)).toBe(false)
     })
 
     it('promotes the panel when the same thing is opened deliberately', async () => {

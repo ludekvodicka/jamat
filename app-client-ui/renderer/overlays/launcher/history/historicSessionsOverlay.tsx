@@ -32,7 +32,7 @@ export function HistoricSessionsOverlay(props: {
   const selectedElement = useRef<HTMLDivElement>(null)
   const filtered = useMemo(() => HistoricSessionsModel.filtered(rows, query), [rows, query])
   const selected = filtered.find((row) => row.key === selectedKey) ?? filtered[0]
-  const canOpen = selected !== undefined && (action === 'fork' || !selected.active) && !busy && !loading
+  const canOpen = selected !== undefined && !busy && !loading
 
   useEffect(() => {
     const restore = document.activeElement
@@ -65,7 +65,7 @@ export function HistoricSessionsOverlay(props: {
 
   const close = (): void => { if (!busyRef.current) props.onClose() }
   const open = async (row = selected): Promise<void> => {
-    if (!row || action === 'rerun' && row.active || busyRef.current || loading) return
+    if (!row || busyRef.current || loading) return
     busyRef.current = true
     setSelectedKey(row.key)
     setBusy(true)
@@ -110,7 +110,7 @@ export function HistoricSessionsOverlay(props: {
           <button className="jamat-launcher__close" type="button" aria-label="Close Historic sessions" disabled={busy} onClick={close}>×</button>
         </header>
         <div className="jamat-launcher-history__toolbar">
-          <input ref={filter} aria-label="Filter historic sessions" placeholder="Filter by root, directory, session or model…"
+          <input ref={filter} aria-label="Filter historic sessions" placeholder="Filter by root, directory, session, model or id…"
             value={query} disabled={busy || effects.hasStarted()} role="combobox" aria-expanded="true" aria-controls="historic-sessions-list"
             aria-autocomplete="list" aria-activedescendant={selected ? `historic-session-${filtered.indexOf(selected)}` : undefined}
             onChange={(event) => { setQuery(event.target.value); setSelectedKey(null) }} />
@@ -142,7 +142,7 @@ export function HistoricSessionsOverlay(props: {
         {errors.length > 0 && <div className="jamat-launcher-history__errors" role="status">{errors.map((error, i) => <p key={i}>{error}</p>)}</div>}
         <div className="jamat-launcher-history__table">
           <div className="jamat-launcher-history__columns" aria-hidden="true">
-            <span>Root</span><span>Directory</span><span>Session</span><span>Model</span><span>Created</span><span>Last used ↓</span>
+            <span>Root</span><span>Directory</span><span>Session</span><span>Model</span><span>Created</span><span>Last used</span><span>Ended ↓</span>
           </div>
           <div className="jamat-launcher-history__list" id="historic-sessions-list" role="listbox" aria-label="Historic sessions" aria-busy={loading}>
             {filtered.map((row, index) => (
@@ -153,10 +153,13 @@ export function HistoricSessionsOverlay(props: {
                 onDoubleClick={() => { if (!effects.hasStarted()) void open(row) }}>
                 <span title={row.root.path}>{row.root.label}</span>
                 <span title={row.project.path}>{row.project.name}</span>
-                <span title={row.label}>{row.label}{row.active && <small>Running</small>}</span>
+                {/* The id on the hover, because it is what a search by id was typed from: a row
+                    found that way has to be confirmable as the right one without opening it. */}
+                <span title={`${row.label}\n${row.nativeSessionId}`}>{row.label}</span>
                 <span title={displayedSource === 'AppJamat' ? `Model saved at launch: ${row.model ?? 'Unknown'}` : row.model ?? 'Model was not recorded'}>{row.model ?? 'Unknown'}<small>{row.agentId === 'claude' ? 'Claude' : 'Codex'}</small></span>
                 <time dateTime={new Date(row.createdAt).toISOString()}>{row.createdLabel}</time>
                 <time dateTime={row.lastActivity === null ? undefined : new Date(row.lastActivity).toISOString()} title={displayedSource === 'AppJamat' ? row.lastActivity === null ? 'User input time was not recorded. Older sessions are available with the all time range.' : 'Last user input recorded by AppJamat' : 'Transcript last modified'}>{row.lastUsedLabel}</time>
+                <time dateTime={row.endedInstant === null ? undefined : new Date(row.endedInstant).toISOString()} title={row.endedTitle}>{row.endedLabel}</time>
               </div>
             ))}
             {filtered.length === 0 && <p className="jamat-launcher-history__empty">{loading ? 'Loading sessions…' : rows.length === 0 ? displayedSource === 'AppJamat' && range !== 'all' ? 'No sessions with recorded user input in this range. Choose all to include older sessions with an unknown last-use time.' : 'No historic sessions found.' : 'No sessions match this filter.'}</p>}
@@ -165,7 +168,6 @@ export function HistoricSessionsOverlay(props: {
         {failure && <p className="jamat-launcher__error" role="alert">{failure}</p>}
         <footer className="jamat-launcher__foot">
           <span role="status">{loading ? progress.total > 0 ? `Loading history… (${progress.completed}/${progress.total} projects)` : 'Loading history…' : '↑ ↓ Select · Enter Open · Esc Close'}</span>
-          <span className="jamat-launcher-history__hint">{selected?.active && action === 'rerun' ? 'This session is running. Select Fork.' : ''}</span>
           <button type="button" className="jamat-launcher-history__submit" disabled={!canOpen} onClick={() => { void open() }}>
             {busy ? 'Opening…' : effects.hasStarted() ? 'Open started session' : action === 'rerun' ? 'Re-run session' : 'Fork session'}
           </button>

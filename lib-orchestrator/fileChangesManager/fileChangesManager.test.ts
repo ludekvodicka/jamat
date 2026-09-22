@@ -235,6 +235,15 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
     })).toEqual(expect.objectContaining({ ok: true, kind: 'text' }))
   })
 
+  it('rejects single-file reads outside their scope or without a commit VCS', async () => {
+    const root = cwd()
+    const instance = manager(root)
+    const context = { sessionId: 'session', cwd: root, agent: null, worktree: null }
+    expect(await instance.workingTree(context, 'svn', true, join(root, '..', 'outside.txt'))).toMatchObject({ ok: false })
+    expect(await instance.workingTree(context, 'svn', false, join(root, 'file.ts'))).toMatchObject({ ok: false })
+    expect(await instance.workingTree(context, 'checkpoint', true, join(root, 'file.ts'))).toMatchObject({ ok: false })
+  })
+
   it('groups external file ids in the working snapshot', async () => {
     const root = cwd()
     const adapter = vcs(root)

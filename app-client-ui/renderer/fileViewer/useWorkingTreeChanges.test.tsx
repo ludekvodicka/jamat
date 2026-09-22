@@ -116,6 +116,30 @@ describe('app-client-ui/renderer/fileViewer/useWorkingTreeChanges', () => {
     expect(read().requiredError).toBeNull()
   })
 
+  it('renews the required diff source without replacing a different sidebar source', async () => {
+    render(<Harness enabled required="svn" />)
+    await settle(0, answer(snapshot('checkpoint', 'sidebar')))
+    await settle(1, answer(snapshot('svn', 'expired')))
+    let renewed: Promise<FileChangesWorkingTreeSnapshot | null>
+    act(() => { renewed = read().reload('svn') })
+    expect(calls.at(-1)?.source).toBe('svn')
+    const fresh = snapshot('svn', 'fresh')
+    await settle(2, answer(fresh))
+    expect(await renewed!).toEqual(fresh)
+    expect(read().snapshot?.snapshotId).toBe('sidebar')
+    expect(read().snapshotFor('svn')?.snapshotId).toBe('fresh')
+  })
+
+  it('renews both holders when the contextual sidebar and required diff use the same source', async () => {
+    render(<Harness enabled required="svn" />)
+    await settle(0, answer(snapshot('svn', 'sidebar')))
+    await settle(1, answer(snapshot('svn', 'expired')))
+    act(() => { void read().reload('svn') })
+    await settle(2, answer(snapshot('svn', 'fresh')))
+    expect(read().snapshot?.snapshotId).toBe('fresh')
+    expect(read().snapshotFor('svn')?.snapshotId).toBe('fresh')
+  })
+
   it('keeps the active diff snapshot while its sidebar tab is switched', async () => {
     const view = render(<Harness enabled={false} required="checkpoint" />)
     expect(calls.map((call) => call.source)).toEqual(['checkpoint'])
@@ -147,6 +171,11 @@ describe('app-client-ui/renderer/fileViewer/useWorkingTreeChanges', () => {
     expect(calls).toHaveLength(2)
     expect(read().selectedSource).toBeNull()
     expect(read().requiredLoading).toBe(false)
+    expect(read().requiredError).toBe('Worktree base is not available; using Checkpoint')
+    await settle(0, answer(snapshot('checkpoint', 'sidebar')))
+    act(() => { void read().reload('checkpoint') })
+    await settle(2, answer(snapshot('checkpoint', 'fresh-sidebar')))
+    expect(read().snapshot?.snapshotId).toBe('fresh-sidebar')
     expect(read().requiredError).toBe('Worktree base is not available; using Checkpoint')
   })
 

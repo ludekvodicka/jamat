@@ -205,7 +205,8 @@ class SmokeHost extends SmokeHarness {
       const inspected = await SmokeHost.op<RuntimeInspectResult>(
         descriptor, 'runtime.inspect', { target },
       )
-      if (inspected.projection?.raw.includes(needle)) {
+      // No view is named above, so the whole ring comes back; `?.` covers the runtime without one.
+      if (inspected.projection?.raw?.includes(needle)) {
         SmokeHost.check(`projection captured ${JSON.stringify(needle)}`, true)
         return
       }

@@ -33,6 +33,7 @@ export interface PanelSplitCommitItem {
   title: string
   vcs: FileChangesVcsId
   scopeRoot: string
+  paths?: readonly string[]
 }
 
 export type PanelSplitItem = PanelSplitFileItem | PanelSplitCommitItem
@@ -89,8 +90,8 @@ export class PanelSplitParams {
     return { ratio: PanelSplitParams.ratioDefaultConst, active: null, preview: null, items: [], history: [] }
   }
 
-  static commitKeyOf(vcs: FileChangesVcsId, scopeRoot: string): string {
-    return `commit:${vcs}:${scopeRoot}`
+  static commitKeyOf(vcs: FileChangesVcsId, scopeRoot: string, paths?: readonly string[]): string {
+    return `commit:${vcs}:${scopeRoot}${paths === undefined ? '' : `:${JSON.stringify(paths)}`}`
   }
 
   static tooltipOf(item: PanelSplitItem): string {
@@ -280,7 +281,10 @@ export class PanelSplitParams {
     if (kind === 'commit') {
       if (typeof candidate.key !== 'string' || !candidate.key || typeof candidate.title !== 'string'
         || (candidate.vcs !== 'svn' && candidate.vcs !== 'git') || typeof candidate.scopeRoot !== 'string' || !candidate.scopeRoot) return null
-      return { kind, key: candidate.key, title: candidate.title, vcs: candidate.vcs, scopeRoot: candidate.scopeRoot }
+      if (candidate.paths !== undefined && (!Array.isArray(candidate.paths) || candidate.paths.length === 0
+        || candidate.paths.length > 2_000 || candidate.paths.some((path) => typeof path !== 'string' || !path.trim()))) return null
+      return { kind, key: candidate.key, title: candidate.title, vcs: candidate.vcs, scopeRoot: candidate.scopeRoot,
+        ...(candidate.paths === undefined ? {} : { paths: candidate.paths as string[] }) }
     }
     else if (kind !== 'file') return null
     const source = FileViewerSourceShape.read(candidate.source)

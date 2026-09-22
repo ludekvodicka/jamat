@@ -2,7 +2,7 @@ import { DetectionRefusal } from '../shared/detectionRefusal'
 import { realpath } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
-import { shell, type WebContents } from 'electron'
+import { app, shell, type WebContents } from 'electron'
 
 import { FileViewer } from '../../../lib-orchestrator/fileViewer/fileViewer'
 import type {
@@ -18,6 +18,7 @@ import { ServiceIpcBase } from '../shared/serviceIpcBase'
 export class ServiceFileViewerIpc extends ServiceIpcBase<
   typeof ServiceFileViewerIpc.channelsConst
 > {
+  private readonly restoreWorkingTree: (ownerId: string, source: FileViewerDocumentSource) => Promise<FileViewerOpenResult>
   static readonly channelsConst = {
     'fileViewer:open-workspace': true,
     'fileViewer:restore': true,
@@ -34,6 +35,7 @@ export class ServiceFileViewerIpc extends ServiceIpcBase<
     'fileViewer:media-resource': true,
     'fileViewer:relative-resource': true,
     'fileViewer:copy-path': true,
+    'fileViewer:start-image-drag': true,
     'fileViewer:open-external': true,
     'fileViewer:release': true,
   } as const
@@ -53,8 +55,10 @@ export class ServiceFileViewerIpc extends ServiceIpcBase<
       supportsDiff: boolean,
     ) => Promise<FileViewerOpenResult>,
     private readonly allowsDetected: (path: string) => boolean,
+    restoreWorkingTree: (ownerId: string, source: FileViewerDocumentSource) => Promise<FileViewerOpenResult>,
   ) {
     super()
+    this.restoreWorkingTree = restoreWorkingTree
   }
 
   initialize(): void {
@@ -88,6 +92,8 @@ export class ServiceFileViewerIpc extends ServiceIpcBase<
       this.viewer.relativeResource(this.ownerId(event.sender), documentId, reference))
     this.register('fileViewer:copy-path', (event, documentId) =>
       this.copyPath(this.ownerId(event.sender), documentId))
+    this.register('fileViewer:start-image-drag', (event, documentId) =>
+      this.startImageDrag(event.sender, documentId))
     this.register('fileViewer:open-external', (event, url) => {
       this.ownerId(event.sender)
       return this.openExternal(url)
@@ -114,6 +120,8 @@ export class ServiceFileViewerIpc extends ServiceIpcBase<
     source: FileViewerDocumentSource,
     supportsDiff: boolean,
   ): Promise<FileViewerOpenResult> {
+    if (source.workingTree !== undefined)
+      return this.restoreWorkingTree(ownerId, source)
     if (source.kind === 'workspace')
       return this.openWorkspace(ownerId, source.sessionId, source.path, supportsDiff)
     else if (source.kind === 'external')
@@ -230,6 +238,19 @@ export class ServiceFileViewerIpc extends ServiceIpcBase<
     catch { return false }
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
     await shell.openExternal(url.toString())
+    return true
+  }
+
+  private async startImageDrag(sender: WebContents, documentId: string): Promise<boolean> {
+    const ownerId = this.ownerId(sender)
+    const path = await this.viewer.imageDragPath(ownerId, documentId)
+    if (path === null) return false
+    const icon = await app.getFileIcon(path, { size: 'normal' })
+    // The window or grant can disappear while the OS retrieves the file icon.
+    if (sender.isDestroyed() || this.ownerIdOf(sender) !== ownerId || icon.isEmpty()) return false
+    if (await this.viewer.imageDragPath(ownerId, documentId) !== path) return false
+    if (sender.isDestroyed() || this.ownerIdOf(sender) !== ownerId) return false
+    sender.startDrag({ file: path, icon })
     return true
   }
 

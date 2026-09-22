@@ -18,6 +18,7 @@ import type {
   FileChangesWorkingTreeViewModel,
   FileViewerBaselineHint,
 } from './fileViewerPanel.types'
+import { useWorkingTreeChanges } from './useWorkingTreeChanges'
 
 export interface FileViewerDocumentModel {
   document: FileViewerDocument | null
@@ -51,7 +52,7 @@ export function useFileViewerDocument(
   source: FileViewerDocumentSource,
   sourceBaselineHint: FileViewerBaselineHint | undefined,
   changes: FileChangesViewModel,
-  workingTree: FileChangesWorkingTreeViewModel,
+  sessionWorkingTree: FileChangesWorkingTreeViewModel,
   onDocument?: (
     document: FileViewerDocument,
     hint: FileViewerBaselineHint | undefined,
@@ -59,6 +60,10 @@ export function useFileViewerDocument(
   ) => void,
 ): FileViewerDocumentModel {
   const sourceKey = JSON.stringify(source)
+  const readScoped = useCallback(() => window.appClient.fileChanges.scopedWorkingTree(source), [sourceKey])
+  const scopedTree = useWorkingTreeChanges(source.sessionId, source.workingTree !== undefined, source.workingTree?.source, readScoped)
+  useEffect(() => { if (source.workingTree !== undefined) scopedTree.select(source.workingTree.source) }, [sourceKey])
+  const workingTree = source.workingTree === undefined ? sessionWorkingTree : scopedTree
   const sourceBaselineHintKey = JSON.stringify(sourceBaselineHint ?? null)
   const [documentValue, setDocument] = useState<FileViewerDocument | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -73,6 +78,7 @@ export function useFileViewerDocument(
   const opening = useRef(0)
   const mounted = useRef(true)
   const ownedDocumentId = useRef<string | null>(null)
+  const recoveredDiff = useRef(false)
   /** A reload keeps the previous text on screen; the read below must not blank it first. */
   const keepingText = useRef(false)
   const sourceBaselineHintRef = useRef(sourceBaselineHint)
@@ -85,6 +91,7 @@ export function useFileViewerDocument(
 
   useLayoutEffect(() => {
     opening.current += 1
+    recoveredDiff.current = false
   }, [sourceKey])
 
   const release = useCallback((documentId: string): void => {
@@ -220,11 +227,14 @@ export function useFileViewerDocument(
   )
 
   useEffect(() => {
-    setDiffTargetValue((current) => FileViewerDiffTargets.keep(current, targets, baselineHint))
+    setDiffTargetValue((current) => recoveredDiff.current && current !== null
+      ? FileViewerDiffTargets.afterExpiry(current, targets)
+      : FileViewerDiffTargets.keep(current, targets, baselineHint))
   }, [baselineHint, targets])
 
   useEffect(() => {
     if (mode !== 'diff' || diffTarget === null) {
+      recoveredDiff.current = false
       setDiff(null)
       return
     }
@@ -234,8 +244,17 @@ export function useFileViewerDocument(
       snapshotId: diffTarget.snapshotId,
       fileId: diffTarget.fileId,
       baselineId: diffTarget.baseline.baselineId,
-    }).then((answer) => {
+    }).then(async (answer) => {
       if (!alive) return
+      if (answer.ok && !answer.value.ok && answer.value.code === 'snapshot-expired' && !recoveredDiff.current) {
+        recoveredDiff.current = true
+        const fresh = diffTarget.hint.workingTreeSource === undefined
+          ? await changes.reload()
+          : await workingTree.reload(diffTarget.hint.workingTreeSource)
+        if (fresh !== null && fresh.snapshotId !== diffTarget.snapshotId) return
+        if (!alive) return
+      }
+      if (answer.ok && answer.value.ok) recoveredDiff.current = false
       setDiff(answer.ok
         ? answer.value
         : { ok: false, code: 'snapshot-expired', detail: answer.error })
@@ -244,6 +263,7 @@ export function useFileViewerDocument(
   }, [diffTarget?.snapshotId, diffTarget?.baseline.baselineId, diffTarget?.fileId, mode])
 
   const setDiffTarget = useCallback((target: FileViewerDiffTarget | null): void => {
+    recoveredDiff.current = false
     setDiffTargetValue(target)
     setBaselineHint(target?.hint)
     if (target !== null)
@@ -257,13 +277,14 @@ export function useFileViewerDocument(
    */
   const reload = useCallback((): void => {
     if (documentValue === null) return
+    recoveredDiff.current = false
     request(documentValue.source, (next) => {
       accept(next, baselineHint, false, true)
       return true
     })
     if (mode !== 'diff') return
     if (diffTarget?.hint.workingTreeSource === undefined) void changes.reload()
-    else void workingTree.reload()
+    else void workingTree.reload(diffTarget.hint.workingTreeSource)
   }, [accept, baselineHint, changes, diffTarget, documentValue, mode, request, workingTree])
 
   const adopt = useCallback((

@@ -5,6 +5,7 @@ import type {
   FileChangesWorkingTreeSource,
 } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import { IpcFailure } from '../ipc/ipcFailure'
+import { FileChangesOpen } from './fileChangesOpen'
 import { FileChangesStatusMark } from './fileChangesStatusMark'
 import { FileChangesTree, type FileChangesTreeNode } from './fileChangesTree'
 import type {
@@ -22,13 +23,14 @@ export function FileChangesTreeWidget(props: {
   const [opening, setOpening] = useState<string | null>(null)
   const [openError, setOpenError] = useState<string | null>(null)
   const openings = useRef(0)
+  const latestSnapshot = useRef(snapshot)
 
   useEffect(() => {
-    openings.current += 1
+    latestSnapshot.current = snapshot
     setOpening(null)
     setOpenError(null)
-    return () => { openings.current += 1 }
   }, [snapshot?.snapshotId])
+  useEffect(() => () => { openings.current += 1 }, [])
 
   useEffect(() => {
     setCollapsed((current) => new Set(
@@ -48,11 +50,17 @@ export function FileChangesTreeWidget(props: {
   const open = async (entry: FileChangeEntry): Promise<void> => {
     if (snapshot === null || entry.nodeKind !== 'file') return
     const current = ++openings.current
-    const snapshotId = snapshot.snapshotId
     setOpening(entry.fileId)
     setOpenError(null)
-    const answer = await window.appClient.fileChanges.openFile(snapshotId, entry.fileId)
-    if (current !== openings.current) {
+    const baseline = snapshot.defaultBaseline
+    const source = snapshot.source.selected
+    const isCurrent = (fresh: FileViewerChangedOpen['snapshot']): boolean => current === openings.current
+      && (latestSnapshot.current?.snapshotId === snapshot.snapshotId || latestSnapshot.current?.snapshotId === fresh.snapshotId)
+    const opened = await FileChangesOpen.read({ snapshot, entry, openFile: window.appClient.fileChanges.openFile,
+      baselineHint: baseline === null || source === null ? null : { kind: baseline.kind, revision: baseline.revision, workingTreeSource: source },
+      refresh: () => props.model.reload(source ?? undefined), isCurrent })
+    const { answer } = opened
+    if (!isCurrent(opened.snapshot)) {
       if (answer.ok && answer.value.ok)
         await window.appClient.fileViewer.release(answer.value.value.documentId)
       return
@@ -64,19 +72,11 @@ export function FileChangesTreeWidget(props: {
       return
     }
     if (!answer.ok || !answer.value.ok) return
-    const baseline = snapshot.defaultBaseline
-    const source = snapshot.source.selected
     props.onOpen({
       document: answer.value.value,
-      snapshot,
-      fileId: entry.fileId,
-      baselineHint: baseline === null || source === null
-        ? null
-        : {
-          kind: baseline.kind,
-          revision: baseline.revision,
-          workingTreeSource: source,
-        },
+      snapshot: opened.snapshot,
+      fileId: opened.fileId,
+      baselineHint: opened.baselineHint,
     })
   }
 

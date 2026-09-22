@@ -45,7 +45,7 @@ class FileViewerPaneHarness {
       loading: false,
       loadingMore: false,
       error: null,
-      reload: vi.fn(async () => undefined),
+      reload: vi.fn(async () => null),
       loadMore: vi.fn(async () => undefined),
     }
   }
@@ -60,7 +60,7 @@ class FileViewerPaneHarness {
       requiredLoading: false,
       requiredError: null,
       select: vi.fn(),
-      reload: vi.fn(async () => undefined),
+      reload: vi.fn(async () => null),
       snapshotFor: () => snapshot ?? null,
     }
   }
@@ -159,6 +159,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
       <FileViewerPane
         backPath={null}
         onBack={vi.fn()}
+        onClose={vi.fn()}
         item={item}
         changes={FileViewerPaneHarness.changes()}
         workingTree={FileViewerPaneHarness.workingTree(snapshot)}
@@ -181,6 +182,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
       <FileViewerPane
         backPath={null}
         onBack={vi.fn()}
+        onClose={vi.fn()}
         item={FileViewerPaneHarness.item(document)}
         changes={FileViewerPaneHarness.changes()}
         workingTree={FileViewerPaneHarness.workingTree()}
@@ -201,6 +203,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
       <FileViewerPane
         backPath={null}
         onBack={vi.fn()}
+        onClose={vi.fn()}
         item={FileViewerPaneHarness.item(document)}
         changes={FileViewerPaneHarness.changes()}
         workingTree={FileViewerPaneHarness.workingTree()}
@@ -223,10 +226,12 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
     } as never)
 
     const onBack = vi.fn()
-    render(
+    const onClose = vi.fn()
+    const view = render(
       <FileViewerPane
         backPath="C:/work/previous.md"
         onBack={onBack}
+        onClose={onClose}
         item={FileViewerPaneHarness.item(document)}
         changes={FileViewerPaneHarness.changes()}
         workingTree={FileViewerPaneHarness.workingTree()}
@@ -238,6 +243,21 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
     expect(await screen.findByText('proof-expired: Open the path again.')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Back to previous document' }))
     expect(onBack).toHaveBeenCalledOnce()
+    expect(onClose).not.toHaveBeenCalled()
+    view.rerender(
+      <FileViewerPane
+        backPath={null}
+        onBack={onBack}
+        onClose={onClose}
+        item={FileViewerPaneHarness.item(document)}
+        changes={FileViewerPaneHarness.changes()}
+        workingTree={FileViewerPaneHarness.workingTree()}
+        onOpenItem={vi.fn(() => null)}
+        onRefused={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Close document' }))
+    expect(onClose).toHaveBeenCalledOnce()
   })
 
   it('returns to the document replaced by a Markdown link and releases both grants', async () => {
@@ -253,7 +273,8 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
 
     function Split(): React.JSX.Element {
       const [state, setState] = useState(initialState)
-      const item = state.items.find((candidate) => candidate.key === state.active)!
+      const item = state.items.find((candidate) => candidate.key === state.active)
+      if (item === undefined) return <p>Terminal</p>
       return (
         <FileViewerPane
           key={item.key}
@@ -266,6 +287,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
             if (!step.ok) throw new Error(step.refusal)
             setState(step.state)
           }}
+          onClose={() => setState(PanelSplitParams.closed(state, item.key))}
           onOpenItem={(next) => {
             const step = PanelSplitParams.opened(state, next)
             if (!step.ok) return step.refusal
@@ -278,7 +300,8 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
     }
 
     const view = render(<Split />)
-    expect(screen.getByRole('button', { name: 'Back to previous document' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Close document' })).toBeEnabled()
+    expect(screen.getByText('Opening file...')).toBeInTheDocument()
     fireEvent.click(await screen.findByRole('link', { name: 'Other' }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Back to previous document' })).toBeEnabled())
     const back = screen.getByRole('button', { name: 'Back to previous document' })
@@ -288,7 +311,9 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
     fireEvent.click(back)
 
     await waitFor(() => expect(fileViewer.restore).toHaveBeenLastCalledWith(current.source, true))
-    expect(screen.getByRole('button', { name: 'Back to previous document' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Close document' }))
+    expect(screen.getByText('Terminal')).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Split file' })).toBeNull()
     expect(fileViewer.release).toHaveBeenCalledWith('document-a')
     expect(fileViewer.release).toHaveBeenCalledWith('document-b')
     view.unmount()
@@ -311,6 +336,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
       <FileViewerPane
         backPath={null}
         onBack={vi.fn()}
+        onClose={vi.fn()}
         item={FileViewerPaneHarness.item(current)}
         changes={FileViewerPaneHarness.changes()}
         workingTree={FileViewerPaneHarness.workingTree()}

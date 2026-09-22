@@ -29,6 +29,7 @@ export function SessionsTreeContextMenu(props: {
   /** Whether the row is a plain tab's, which is the one row "Keep as a session" is for. */
   plainTab: boolean
   actions: readonly SessionAction[]
+  groupItem?: ContextMenuEntry
   onAction(action: SessionAction): void
   onClose(): void
 }): React.JSX.Element {
@@ -44,7 +45,8 @@ export function SessionsTreeContextMenu(props: {
         props.plainTab,
         props.actions,
         props.onAction,
-      )}
+      ).flatMap((item) => item.key === 'session.setColor' && props.groupItem !== undefined
+        ? [item, props.groupItem] : [item])}
       onClose={props.onClose}
     />
   )

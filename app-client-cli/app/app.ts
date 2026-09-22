@@ -26,10 +26,14 @@ import {
 import { RemoteControlClient } from '../../lib-orchestrator/remoteControl/remoteControlClient'
 import { RemoteControlPairing } from '../../lib-orchestrator/remoteControl/remoteControlPairing'
 import type { RemoteControlPeerPairingBundle } from '../../lib-orchestrator/remoteControl/remoteControlPeerApi.types'
-import type { SessionCreateSpec } from '../../lib-orchestrator/sessionManager/sessionManagerApi.types'
+import { SessionColors } from '../../lib-orchestrator/sessionManager/sessionColors'
+import { SessionGroups } from '../../lib-orchestrator/sessionManager/sessionGroups'
+import type {
+  SessionColorName,
+  SessionCreateSpec,
+  SessionGroup,
+} from '../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { SessionsSnapshotValidation } from '../../lib-orchestrator/sessionManager/sessionsSnapshotValidation'
-import { SessionWorkingDirectory } from '../../lib-orchestrator/sessionManager/sessionWorkingDirectory'
-import { PathCompare } from '../../lib-orchestrator/shared/pathCompare'
 import { ErrorText } from '../../lib-orchestrator/shared/errorText'
 import { AppClientCliError } from './appClientCliError'
 import { AppConfig } from './appConfig'
@@ -94,6 +98,7 @@ interface CommitPlan {
   vcs: 'svn' | 'git'
   selector: RemoteControlSessionSelector | null
   scope: string | null
+  paths?: readonly string[]
   workingDirectory: string | null
   message: string | null
   messageFile: string | null
@@ -151,11 +156,11 @@ export class AppClientCli {
         return await this.readCommitStatus(client, plan.id, plan.wait, plan.timeoutMs)
       }
       if (plan.kind === 'request') {
-        if (plan.request.operation === 'sessions.transcript'
-          && !RemoteControlCapabilities.of(descriptor.value).includes('sessions.transcript'))
+        if ((plan.request.operation === 'sessions.transcript' || plan.request.operation === 'tabs.cancelCommit')
+          && !RemoteControlCapabilities.of(descriptor.value).includes(plan.request.operation))
           return this.finishFailure(plan, {
             code: 'unavailable',
-            detail: 'sessions.transcript is not exposed by this AppClientUI',
+            detail: `${plan.request.operation} is not exposed by this AppClientUI`,
           })
         let remoteEndpointId: string | null = null
         if (plan.computer !== null) {
@@ -173,6 +178,10 @@ export class AppClientCli {
         const response: RemoteControlResponse = remoteEndpointId === null
           ? await client.execute(canonical.value)
           : await client.executeRemote(remoteEndpointId, canonical.value)
+        if (plan.request.operation === 'tabs.cancelCommit' && response.ok
+          && (!CommitStatusReader.valid(response.value, plan.request.body.commitSessionId)
+            || response.value.state !== 'cancelled' || !response.value.closed))
+          return this.finishFailure(plan, { code: 'operation-failed', detail: 'The response did not confirm a closed, cancelled review; check the same review before reopening' })
         this.write(response)
         return AppClientCli.exitCode(response.ok ? null : response.error.code)
       } else if (plan.kind === 'local') {
@@ -201,9 +210,7 @@ export class AppClientCli {
     if (args.command === 'commit-svn-jamat') return this.commitPlan(args, 'svn')
     else if (args.command === 'commit-git-jamat') return this.commitPlan(args, 'git')
     else if (args.command === 'commit status') {
-      const id = args.required('--commit-session-id')
-      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
-        throw new AppClientCliError('invalid-request', '--commit-session-id must be a UUID')
+      const id = this.commitId(args)
       return { kind: 'commit-status', id, wait: args.has('--wait'), timeoutMs: this.commitTimeout(args) }
     }
     if (args.command === 'events watch') {
@@ -245,14 +252,19 @@ export class AppClientCli {
         }, requestId))
     } else if (args.command === 'sessions list')
       return this.requestPlan(args, this.request('sessions.list', {}, requestId))
-    else if (args.command === 'sessions create')
+    else if (args.command === 'sessions create') {
+      const group = AppClientCli.groupOf(args.option('--group'))
       return this.requestPlan(args, this.request(
           'sessions.create',
-          { spec: this.sessionSpec(args), ...(args.has('--open-tab') ? { openTab: true } : {}) },
+          {
+            spec: this.sessionSpec(args),
+            ...(args.has('--open-tab') ? { openTab: true } : {}),
+            ...(group === null ? {} : { group }),
+          },
           requestId,
           this.operationId(args),
         ))
-    else if (args.command === 'sessions reopen')
+    } else if (args.command === 'sessions reopen')
       return this.requestPlan(args, this.request(
           'sessions.reopen',
           { session: this.selector(args) },
@@ -272,6 +284,9 @@ export class AppClientCli {
           { session: this.selector(args) },
           requestId,
         ))
+    else if (args.command === 'commit cancel')
+      return this.requestPlan(args, this.request('tabs.cancelCommit',
+        { commitSessionId: this.commitId(args) }, requestId, this.operationId(args)))
     else if (args.command === 'tabs list')
       return this.requestPlan(args, this.request('tabs.list', {}, requestId))
     else if (args.command === 'tabs open')
@@ -337,11 +352,31 @@ export class AppClientCli {
     if (message !== null) CommitMessageFile.validate(message)
     const scope = args.option('--path')
     if (scope !== null && !scope.trim()) throw new AppClientCliError('invalid-request', '--path cannot be empty')
+    const pathsFile = args.option('--paths-file')
+    let paths: string[] | undefined
+    if (pathsFile !== null) {
+      const input = this.deps.readJson(pathsFile)
+      if (scope !== null || !Array.isArray(input) || input.length === 0 || input.length > 2_000)
+        throw new AppClientCliError('invalid-request', '--paths-file must contain a JSON array of 1 to 2000 paths and cannot be combined with --path')
+      paths = input.map((path) => {
+        if (typeof path !== 'string' || !path.trim() || /[\0\r\n]/.test(path))
+          throw new AppClientCliError('invalid-request', '--paths-file contains an invalid literal path')
+        return resolve(this.deps.cwd(), path)
+      })
+    }
     const fallback = args.option('--fallback') ?? 'tortoise'
     if (fallback !== 'tortoise' && fallback !== 'report') throw new AppClientCliError('invalid-request', '--fallback must be tortoise or report')
     return { kind: 'commit', args, vcs, selector, scope, workingDirectory: args.option('--working-directory'), message, messageFile, fallback,
+      ...(paths === undefined ? {} : { paths }),
       wait: args.has('--wait'), timeoutMs: this.commitTimeout(args),
       requestId: this.deps.requestId(), operationId: this.operationId(args) }
+  }
+
+  private commitId(args: CliArguments): string {
+    const id = args.required('--commit-session-id')
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
+      throw new AppClientCliError('invalid-request', '--commit-session-id must be a UUID')
+    return id
   }
 
   private async runCommit(plan: CommitPlan): Promise<number> {
@@ -362,16 +397,12 @@ export class AppClientCli {
       ? this.finishAside(plan, 'session-not-open') : this.finishFailure(plan, canonical.error)
     const session = snapshot.sessions.find((info) => info.sessionId === canonical.value.sessionId)
     if (session?.life !== 'live') return this.finishAside(plan, 'session-not-open')
-    const cwd = SessionWorkingDirectory.of(session)
-    if (cwd !== null && plan.scope !== null) {
-      const scope = resolve(cwd, plan.scope)
-      if (!PathCompare.isInside(cwd, scope)) return this.finishAside(plan, 'outside-session', scope)
-    }
     if (plan.wait && !RemoteControlCapabilities.of(descriptor.value).includes('tabs.commitStatus'))
       return this.finishFailure(plan, { code: 'unavailable', detail: 'tabs.commitStatus is not exposed by this AppClientUI; update Jamat before waiting for native review' })
     const response = await client.execute(this.request('tabs.openCommit', {
       session: canonical.value, vcs: plan.vcs,
       ...(plan.scope === null ? {} : { scope: plan.scope }), ...(plan.message === null ? {} : { message: plan.message }),
+      ...(plan.paths === undefined ? {} : { paths: plan.paths }),
     }, plan.requestId, plan.operationId))
     if (response.ok && plan.wait) {
       const opened = JsonShape.record(response.value)
@@ -401,13 +432,15 @@ export class AppClientCli {
 
   private async finishAside(plan: CommitPlan, reason: CommitAsideRequest['reason'], scope = resolve(this.deps.cwd(), plan.scope ?? '.')): Promise<number> {
     if (plan.fallback === 'report') {
-      this.write({ ok: true, value: { kind: 'fallback-required', reason, scope } })
+      this.write({ ok: true, value: { kind: 'fallback-required', reason, scope,
+        ...(plan.paths === undefined ? {} : { paths: plan.paths }) } })
       return 0
     } else if (plan.fallback !== 'tortoise') throw new Error(`Unknown commit fallback: ${JSON.stringify(plan.fallback)}`)
     const messageFile = plan.messageFile === null
       ? plan.message === null ? null : await this.deps.writeMessageFile(plan.message)
       : resolve(this.deps.cwd(), plan.messageFile)
-    const result = await this.deps.aside.open({ vcs: plan.vcs, scope, messageFile, reason })
+    const result = await this.deps.aside.open({ vcs: plan.vcs, scope, messageFile, reason,
+      ...(plan.paths === undefined ? {} : { paths: plan.paths }) })
     this.write(result)
     return AppClientCli.exitCode(result.ok ? null : result.error.code)
   }
@@ -479,6 +512,7 @@ export class AppClientCli {
     if (baseRef !== null && worktree === null)
       throw new AppClientCliError('invalid-request', '--base-ref requires --worktree')
     const title = args.option('--title')
+    const color = AppClientCli.colorOf(args.option('--color'))
     const flowId = args.option('--flow-id')
     const acknowledgeSetup = args.option('--acknowledge-setup')
     return {
@@ -497,10 +531,41 @@ export class AppClientCli {
         worktree: { slug: worktree, ...(baseRef === null ? {} : { baseRef }) },
       }),
       ...(title === null ? {} : { title }),
+      ...(color === null ? {} : { color }),
       ...(flowId === null ? {} : { flowId }),
       ...(args.has('--plain') ? { presentation: 'tab' as const } : {}),
       ...(acknowledgeSetup === null ? {} : { acknowledgeSetup }),
     }
+  }
+
+  /**
+   * Refused here as well as at the target, for the reason `--agent` and `--mode` are: the spec this
+   * method returns is TYPED, so a name that reached it unproven would be a cast. The list is the
+   * library's own, so the local refusal and the remote one can never name different colours.
+   */
+  private static colorOf(value: string | null): SessionColorName | null {
+    if (value === null) return null
+    if (!SessionColors.isName(value))
+      throw new AppClientCliError(
+        'invalid-request',
+        `--color must be one of ${SessionColors.namesConst.join(', ')}`,
+      )
+    return value
+  }
+
+  /**
+   * Refused here as well as at the target, for the reason `colorOf` above is: the request this
+   * method feeds is TYPED, and a name that reached it unproven would be a cast. The list is the
+   * library's, so the local refusal and the remote one can never name different groups.
+   */
+  private static groupOf(value: string | null): SessionGroup | null {
+    if (value === null) return null
+    if (!SessionGroups.isName(value))
+      throw new AppClientCliError(
+        'invalid-request',
+        `--group must be one of ${SessionGroups.namesConst.join(', ')}`,
+      )
+    return value
   }
 
   private selector(args: CliArguments): RemoteControlSessionSelector {
@@ -572,6 +637,7 @@ export class AppClientCli {
       || request.operation === 'sessions.list'
       || request.operation === 'sessions.create'
       || request.operation === 'tabs.list'
+      || request.operation === 'tabs.cancelCommit'
       || request.operation === 'tabs.focus'
       || request.operation === 'tabs.close')
       return { ok: true, value: request }

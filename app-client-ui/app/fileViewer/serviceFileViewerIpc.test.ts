@@ -5,7 +5,11 @@ import { join, parse } from 'node:path'
 import type { IpcMainInvokeEvent, WebContents } from 'electron'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { FileViewer } from '../../../lib-orchestrator/fileViewer/fileViewer'
+import { FileViewer } from '../../../lib-orchestrator/fileViewer/fileViewer'
+import type { FileChangesManager } from '../../../lib-orchestrator/fileChangesManager/fileChangesManager'
+import type { FileChangesWorkingTreeSnapshot } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
+import type { ConfigStore } from '../../../lib-orchestrator/configStore/configStore'
+import { ServiceFileChangesIpc } from '../fileChanges/serviceFileChangesIpc'
 import type { SessionManager } from '../../../lib-orchestrator/sessionManager/sessionManager'
 import type { AppClientUiIpcInvokeMap } from '../../shared/appClientUiIpc'
 import { ServiceFileViewerIpc } from './serviceFileViewerIpc'
@@ -14,9 +18,11 @@ const electronMock = vi.hoisted(() => ({
   handlers: new Map<string, (event: unknown, ...args: unknown[]) => unknown>(),
   copied: [] as string[],
   opened: [] as string[],
+  getFileIcon: vi.fn(),
 }))
 
 vi.mock('electron', () => ({
+  app: { getFileIcon: electronMock.getFileIcon },
   ipcMain: {
     handle: (channel: string, handler: (event: unknown, ...args: unknown[]) => unknown) =>
       electronMock.handlers.set(channel, handler),
@@ -29,7 +35,11 @@ vi.mock('electron', () => ({
 }))
 
 describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
-  const sender = {} as WebContents
+  const startDrag = vi.fn()
+  const isDestroyed = vi.fn(() => false)
+  const sender = { startDrag, isDestroyed } as unknown as WebContents
+  const imageDragPath = vi.fn<FileViewer['imageDragPath']>()
+  const icon = { isEmpty: () => false }
   const rejected = {} as WebContents
   const document = {
     documentId: 'document-1',
@@ -56,6 +66,10 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
     electronMock.handlers.clear()
     electronMock.copied = []
     electronMock.opened = []
+    electronMock.getFileIcon.mockReset().mockResolvedValue(icon)
+    imageDragPath.mockReset().mockResolvedValue('C:/work/picture.png')
+    startDrag.mockReset()
+    isDestroyed.mockReset().mockReturnValue(false)
     calls = []
     sessionCwd = 'C:/work'
     openedByDetection = new Set()
@@ -79,6 +93,7 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
       mediaResource: record('mediaResource', Promise.resolve({ ok: false, code: 'not-found', detail: 'x' })),
       relativeResource: record('relativeResource', Promise.resolve({ ok: false, code: 'not-found', detail: 'x' })),
       path: record('path', { ok: true, path: 'C:/work/a.ts' }),
+      imageDragPath,
       release: record('release', undefined),
     } as unknown as FileViewer
     const sessions = {
@@ -104,6 +119,10 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
         return viewer.openDetected(ownerId, source.sessionId, null, source.path, supportsDiff)
       },
       (path) => openedByDetection.has(path),
+      async (ownerId, source) => {
+        calls.push({ method: 'restoreWorkingTree', args: [ownerId, source] })
+        return { ok: false, code: 'not-found', detail: 'fixture' }
+      },
     ).initialize()
   })
 
@@ -120,6 +139,48 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
     if (!handler) throw new Error(`No handler for ${channel}`)
     return handler({ sender: source } as IpcMainInvokeEvent, ...args)
   }
+
+  it.each([false, true])('reopens a scoped commit file through both IPC services, missing=%s', async (missing) => {
+    const cwd = await realpath(await mkdtemp(join(tmpdir(), 'jamat-viewer-origin-')))
+    const scopeRoot = await realpath(await mkdtemp(join(tmpdir(), 'jamat-viewer-scope-')))
+    roots.push(cwd, scopeRoot)
+    const path = join(scopeRoot, 'changed.txt')
+    if (!missing) await writeFile(path, 'outside content')
+    const snapshot: FileChangesWorkingTreeSnapshot = {
+      snapshotId: 'scoped-snapshot', sessionId: 'session-1', createdAt: 1, externalRoots: [], warnings: [],
+      source: { requested: 'svn', selected: 'svn', available: ['svn'], fallbackReason: null },
+      defaultBaseline: null,
+      entries: [{ fileId: 'changed', path, displayPath: 'changed.txt', nodeKind: 'file', location: 'workspace',
+        status: missing ? 'missing' : 'modified', previousPath: null, previousDisplayPath: null,
+        modifiedAt: null, sources: ['vcs'], gitState: null }],
+    }
+    const viewer = new FileViewer()
+    const sessions = { workingContext: async () => ({ ok: true, value: { sessionId: 'session-1', cwd, agent: null, worktree: null } }) } as unknown as SessionManager
+    const workingTree = vi.fn(async () => ({ ok: true, value: snapshot }))
+    const manager = { workingTree, fileAccess: () => ({ ok: true, value: { sessionId: 'session-1', cwd: scopeRoot, path, nodeKind: 'file' } }) } as unknown as FileChangesManager
+    const files = new ServiceFileChangesIpc(manager, viewer, sessions, {} as ConfigStore, () => 'window-1')
+    files.initialize()
+    new ServiceFileViewerIpc(viewer, sessions, () => 'window-1', vi.fn(), vi.fn(), () => false,
+      (owner, source) => files.restoreWorkingTree(owner, source)).initialize()
+    await files.workingTree('window-1', 'session-1', 'svn', scopeRoot, true)
+    const opened = await electronMock.handlers.get('fileChanges:open-file')!({ sender }, snapshot.snapshotId, 'changed') as {
+      ok: true; value: { ok: true; value: import('../../../lib-orchestrator/fileViewer/fileViewerApi.types').FileViewerDocument }
+    }
+    expect(opened).toMatchObject({ ok: true, value: { ok: true } })
+    const document = opened.value.value
+    expect(document.source.workingTree).toEqual({ scopeRoot, source: 'svn' })
+    viewer.release('window-1', document.documentId)
+    const restored = await invoke('fileViewer:restore', sender, JSON.parse(JSON.stringify(document.source)), true)
+    expect(restored).toMatchObject({ ok: true, value: { ok: true, value: {
+      path, kind: { kind: missing ? 'missing' : 'text' }, modes: expect.arrayContaining(['diff']),
+    } } })
+    // The fourth argument is r4361, "Read only the selected file when opening commit diffs": a scoped
+    // restore narrows the scan to the one file instead of rescanning the whole scope root. Named here
+    // rather than dropped, so the narrowing stays asserted.
+    expect(workingTree).toHaveBeenLastCalledWith({ sessionId: 'session-1', cwd: scopeRoot, agent: null, worktree: null }, 'svn', true, path)
+    expect(await invoke('fileViewer:open-workspace', sender, 'session-1', path, true)).toMatchObject({ ok: true, value: { ok: false } })
+    expect(await files.scopedWorkingTree('window-1', { ...document.source, path: join(cwd, 'unapproved.txt') })).toMatchObject({ ok: false })
+  })
 
   it('opens workspace files and directories only against the trusted session cwd', async () => {
     await invoke('fileViewer:open-workspace', sender, 'session-1', 'a.ts', true)
@@ -275,7 +336,7 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
   it('rejects every capability operation from an unknown workspace', async () => {
     const channels = Object.keys(ServiceFileViewerIpc.channelsConst) as
       (keyof AppClientUiIpcInvokeMap)[]
-    expect(channels.length).toBe(17)
+    expect(channels.length).toBe(18)
 
     for (const channel of channels)
       expect(await invoke(channel, rejected, 'https://example.test/a', 'second', true), channel)
@@ -285,6 +346,47 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
     expect(calls).toEqual([])
     expect(electronMock.opened).toEqual([])
     expect(electronMock.copied).toEqual([])
+    expect(imageDragPath).not.toHaveBeenCalled()
+    expect(startDrag).not.toHaveBeenCalled()
+  })
+
+  it('starts a native file drag with the granted image and OS file icon', async () => {
+    expect(await invoke('fileViewer:start-image-drag', sender, 'document-1'))
+      .toEqual({ ok: true, value: true })
+    expect(imageDragPath).toHaveBeenCalledWith('window-1', 'document-1')
+    expect(electronMock.getFileIcon).toHaveBeenCalledWith('C:/work/picture.png', { size: 'normal' })
+    expect(startDrag).toHaveBeenCalledWith({ file: 'C:/work/picture.png', icon })
+  })
+
+  it('refuses unavailable images before consulting the OS', async () => {
+    imageDragPath.mockResolvedValue(null)
+    expect(await invoke('fileViewer:start-image-drag', sender, 'document-1'))
+      .toEqual({ ok: true, value: false })
+    expect(electronMock.getFileIcon).not.toHaveBeenCalled()
+    expect(startDrag).not.toHaveBeenCalled()
+  })
+
+  it('rechecks the image after waiting for its OS icon', async () => {
+    imageDragPath.mockResolvedValueOnce('C:/work/picture.png').mockResolvedValue(null)
+    expect(await invoke('fileViewer:start-image-drag', sender, 'document-1'))
+      .toEqual({ ok: true, value: false })
+    expect(startDrag).not.toHaveBeenCalled()
+  })
+
+  it('does not start dragging after the window closes during icon retrieval', async () => {
+    electronMock.getFileIcon.mockImplementationOnce(async () => {
+      isDestroyed.mockReturnValue(true)
+      return icon
+    })
+    expect(await invoke('fileViewer:start-image-drag', sender, 'document-1'))
+      .toEqual({ ok: true, value: false })
+    expect(startDrag).not.toHaveBeenCalled()
+  })
+
+  it('reports a native drag failure through the IPC result', async () => {
+    startDrag.mockImplementationOnce(() => { throw new Error('Drag unavailable') })
+    expect(await invoke('fileViewer:start-image-drag', sender, 'document-1'))
+      .toEqual({ ok: false, error: 'Drag unavailable' })
   })
 
   /*

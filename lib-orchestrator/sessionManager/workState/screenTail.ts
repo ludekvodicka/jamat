@@ -1,4 +1,7 @@
-import type { TerminalProjectionSnapshot } from '../../../app-host/app/wire/hostWire.js'
+import type {
+  TerminalProjectionSnapshot,
+  TerminalProjectionView,
+} from '../../../app-host/app/wire/hostWire.js'
 import type { AgentWorkFrame } from './agentWorkInspector.types'
 
 /**
@@ -41,14 +44,31 @@ export class ScreenTail {
   private static readonly escapeAtConst =
     /\x1b(?:\][^\x07]*(?:\x07|\x1b\\)|\[([0-?]*)[ -/]*([@-~]))/y
 
+  /**
+   * What this classifier reads, as the Host's own vocabulary: the three windows above and nothing
+   * else. Named here rather than at the monitor that sends it, so the request and the reader cannot
+   * disagree about how much screen there is to find sixteen rows in.
+   */
+  static readonly viewConst: TerminalProjectionView = {
+    rawTailChars: ScreenTail.rawCharsConst,
+    // The viewport already holds the windows below; these are the margin for a terminal so short
+    // that sixteen rows reach above it.
+    screenScrollbackRows: ScreenTail.wideScreenRowsConst,
+  }
+
   static frameOf(
     projection: Pick<TerminalProjectionSnapshot, 'raw' | 'screen' | 'cols'>,
   ): AgentWorkFrame {
+    // One pass for both windows: they are two tails of the same rows, and counting the rows twice
+    // was the whole second walk over the screen.
+    const starts = ScreenTail.rowStarts(projection.screen, projection.cols)
+    const end = ScreenTail.lastContentRow(projection.screen, starts)
     return {
-      rawTail: ScreenTail.rawTail(projection.raw),
-      screenTail: ScreenTail.rows(projection.screen, ScreenTail.screenRowsConst, projection.cols),
-      wideScreenTail: ScreenTail.rows(
-        projection.screen, ScreenTail.wideScreenRowsConst, projection.cols),
+      rawTail: ScreenTail.rawTail(projection.raw ?? ''),
+      screenTail: ScreenTail.rowsWithin(
+        projection.screen, starts, end, ScreenTail.screenRowsConst),
+      wideScreenTail: ScreenTail.rowsWithin(
+        projection.screen, starts, end, ScreenTail.wideScreenRowsConst),
     }
   }
 
@@ -66,11 +86,28 @@ export class ScreenTail {
    */
   static rows(screen: string, count: number, cols: number): string {
     const starts = ScreenTail.rowStarts(screen, cols)
+    return ScreenTail.rowsWithin(screen, starts, ScreenTail.lastContentRow(screen, starts), count)
+  }
+
+  /**
+   * Where the rows a window may end at stop: an upward final move proves the blank rows below are
+   * empty viewport rather than a status that was cleared, so they are not part of any window.
+   */
+  private static lastContentRow(screen: string, starts: readonly number[]): number {
     let endRow = starts.length
-    if (ScreenTail.finalVerticalMove(screen) === 'A')
-      while (endRow > 0 && !ScreenTail.stripAnsiLower(
-        screen.slice(starts[endRow - 1], starts[endRow] ?? screen.length),
-      ).trim()) endRow -= 1
+    if (ScreenTail.finalVerticalMove(screen) !== 'A') return endRow
+    while (endRow > 0 && !ScreenTail.stripAnsiLower(
+      screen.slice(starts[endRow - 1], starts[endRow] ?? screen.length),
+    ).trim()) endRow -= 1
+    return endRow
+  }
+
+  private static rowsWithin(
+    screen: string,
+    starts: readonly number[],
+    endRow: number,
+    count: number,
+  ): string {
     const startRow = Math.max(0, endRow - count)
     return starts.slice(startRow, endRow).map((start, offset) => {
       const end = starts[startRow + offset + 1] ?? screen.length

@@ -6,16 +6,12 @@ import { FileChangesStatusMark } from '../fileViewer/fileChangesStatusMark'
 import { ContextMenu, type ContextMenuPosition } from '../widgets/contextMenu'
 
 export class CommitTargets {
-  static visible(entry: FileChangeEntry): boolean {
-    return entry.nodeKind !== 'directory' || entry.status !== 'modified'
-  }
-
   static blocked(entry: FileChangeEntry): boolean {
     return entry.status === 'conflicted' || entry.status === 'obstructed'
   }
 
   static eligible(snapshot: FileChangesWorkingTreeSnapshot): readonly FileChangeEntry[] {
-    return snapshot.entries.filter((entry) => CommitTargets.visible(entry) && !CommitTargets.blocked(entry))
+    return snapshot.entries.filter((entry) => !CommitTargets.blocked(entry))
   }
 
   static requiredParent(entry: FileChangeEntry, entries: readonly FileChangeEntry[], checked: ReadonlySet<string>): boolean {
@@ -46,7 +42,7 @@ export function CommitTargetsList(props: {
   const externalOf = new Map<string, FileChangesWorkingTreeSnapshot['externalRoots'][number]>()
   for (const root of [...props.snapshot.externalRoots].sort((left, right) => left.path.length - right.path.length))
     for (const id of root.fileIds) externalOf.set(id, root)
-  const entries = props.snapshot.entries.filter(CommitTargets.visible).sort((left, right) =>
+  const entries = [...props.snapshot.entries].sort((left, right) =>
     Number(right.nodeKind === 'directory') - Number(left.nodeKind === 'directory') || left.displayPath.localeCompare(right.displayPath))
   const mainEntries = entries.filter((entry) => !externalOf.has(entry.fileId))
   const menuEntry = entries.find((entry) => entry.path === menu?.path)
@@ -63,7 +59,8 @@ export function CommitTargetsList(props: {
   const row = (entry: FileChangeEntry): React.JSX.Element => {
     const requiredParent = CommitTargets.requiredParent(entry, entries, props.checked)
     const hint = requiredParent ? 'Required parent directory'
-      : entry.status === 'untracked' && entry.nodeKind === 'directory' ? 'Adds this directory only; select its files individually' : null
+      : entry.status === 'untracked' && entry.nodeKind === 'directory' ? 'Adds this directory only; select its files individually'
+      : entry.status === 'modified' && entry.nodeKind === 'directory' ? 'Commits directory properties only; select its files individually' : null
     return <div key={entry.path} role="row" aria-selected={entry.path === selectedPath}
       className="commit-target" tabIndex={entry.path === activePath ? 0 : -1}
       title={entry.path} onFocus={() => setSelectedPath(entry.path)}

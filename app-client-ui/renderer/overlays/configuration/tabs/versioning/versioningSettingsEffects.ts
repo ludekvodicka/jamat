@@ -6,7 +6,7 @@ import type {
   VersioningSettingsEffect,
   VersioningSettingsInput,
 } from './versioningSettingsModel'
-import type { VersioningSettingsValue } from '../../../../../shared/versioningSettings'
+import type { VersioningSettingsField } from '../../../../../shared/versioningSettings'
 
 export type VersioningSettingsPorts = SettingsCardPorts<VersioningSettingsInput>
 
@@ -15,7 +15,7 @@ export class VersioningSettingsEffects {
   static async run(
     effect: VersioningSettingsEffect,
     ports: VersioningSettingsPorts,
-    field: keyof VersioningSettingsValue = 'mode',
+    field: VersioningSettingsField = 'mode',
   ): Promise<void> {
     if (effect.effect === 'load')
       return SettingsCardEffects.load(

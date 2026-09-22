@@ -141,6 +141,10 @@ describe('lib-orchestrator/remoteControl/remoteControlRequestValidation', () => 
     expect(RemoteControlRequestValidation.parse(valid)).toEqual({ ok: true, request: valid })
     for (const body of [{ ...valid.body, vcs: undefined }, { ...valid.body, vcs: 'hg' }, { ...valid.body, commit: true }, { ...valid.body, message: 'x'.repeat(65_537) }])
       expect(RemoteControlRequestValidation.parse({ ...valid, body })).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+    const selected = { ...valid, body: { ...valid.body, paths: ['Q:/outside/one.txt', 'Q:/outside/two.txt'] } }
+    expect(RemoteControlRequestValidation.parse(selected)).toEqual({ ok: true, request: selected })
+    for (const paths of [[], [''], [1], null, 'file.txt', Array(2_001).fill('file.txt')])
+      expect(RemoteControlRequestValidation.parse({ ...valid, body: { ...valid.body, paths } }).ok).toBe(false)
     expect(RemoteControlConst.optionalOperations).toContain('tabs.openCommit')
     expect(RemoteControlConst.mutatingOperations).toContain('tabs.openCommit')
     expect(RemoteControlRequestValidation.parse({ ...valid, operation: 'vcs.commit' }).ok).toBe(false)
@@ -154,6 +158,17 @@ describe('lib-orchestrator/remoteControl/remoteControlRequestValidation', () => 
       { ...valid, body: { commitSessionId: 'wrong' } }, { ...valid, body: { ...valid.body, commit: true } }])
       expect(RemoteControlRequestValidation.parse(input)).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
     expect(RemoteControlConst.mutatingOperations).not.toContain('tabs.commitStatus')
+  })
+
+  it('requires a replay identity and exact UUID for commit cancellation', () => {
+    const valid = { protocol: RemoteControlConst.protocol, requestId: 'cancel', operation: 'tabs.cancelCommit', operationId: 'cancel-1',
+      body: { commitSessionId: '11111111-1111-4111-8111-111111111111' } }
+    expect(RemoteControlRequestValidation.parse(valid)).toEqual({ ok: true, request: valid })
+    for (const input of [{ ...valid, operationId: undefined }, { ...valid, body: {} },
+      { ...valid, body: { commitSessionId: 'wrong' } }, { ...valid, body: { ...valid.body, force: true } }])
+      expect(RemoteControlRequestValidation.parse(input)).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+    expect(RemoteControlConst.optionalOperations).toContain('tabs.cancelCommit')
+    expect(RemoteControlConst.mutatingOperations).toContain('tabs.cancelCommit')
   })
 
   it('accepts sessions.transcript only as an exact read-only session request', () => {
@@ -230,6 +245,61 @@ describe('lib-orchestrator/remoteControl/remoteControlRequestValidation', () => 
       operationId: 'operation-1',
       body: { session: { kind: 'number', number: '014-015' } },
     }).ok).toBe(true)
+  })
+
+  /*
+   * The colour a session is born with, and the same bargain the model field made: exact keys, so a
+   * target that predates the key refuses the whole create rather than dropping the colour. What is
+   * pinned here is that the key is proved against the library's own closed set - not merely read as
+   * a string and cast - and that a request without it parses exactly as it did before.
+   */
+  it('takes a session colour from the closed set and refuses any other name', () => {
+    const withColor = RemoteControlRequestValidation.parse(RemoteControlRequestValidationTest.create({
+      spec: { ...RemoteControlRequestValidationTest.shell, color: 'magenta' },
+    }))
+    const withoutColor = RemoteControlRequestValidation.parse(RemoteControlRequestValidationTest.create({
+      spec: RemoteControlRequestValidationTest.shell,
+    }))
+
+    expect(withColor).toMatchObject({ ok: true, request: { body: { spec: { color: 'magenta' } } } })
+    expect(withoutColor).toMatchObject({ ok: true })
+    if (!withoutColor.ok) throw new Error('The fixture must parse')
+    expect(withoutColor.request.body).toEqual({ spec: RemoteControlRequestValidationTest.shell })
+
+    for (const color of ['chartreuse', 'MAGENTA', '#ff00ff', '', 7, null])
+      expect(RemoteControlRequestValidation.parse(RemoteControlRequestValidationTest.create({
+        spec: { ...RemoteControlRequestValidationTest.shell, color },
+      }))).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+  })
+
+  /*
+   * The group is a key of the BODY rather than of the spec: the session manager stores no group, the
+   * client does. What is pinned here is the same thing the colour pins one test up - the name is
+   * proved against the library's closed set - and that the section is asked for beside the create
+   * rather than inside the thing that describes the session.
+   */
+  it('takes a session group from the closed set and refuses any other name', () => {
+    const withGroup = RemoteControlRequestValidation.parse(RemoteControlRequestValidationTest.create({
+      spec: RemoteControlRequestValidationTest.shell,
+      group: 'automation',
+    }))
+    const withoutGroup = RemoteControlRequestValidation.parse(RemoteControlRequestValidationTest.create({
+      spec: RemoteControlRequestValidationTest.shell,
+    }))
+
+    expect(withGroup).toMatchObject({ ok: true, request: { body: { group: 'automation' } } })
+    expect(withoutGroup).toMatchObject({ ok: true })
+    if (!withoutGroup.ok) throw new Error('The fixture must parse')
+    expect(withoutGroup.request.body).toEqual({ spec: RemoteControlRequestValidationTest.shell })
+
+    for (const group of ['Automation', 'sessions', '', 7, null])
+      expect(RemoteControlRequestValidation.parse(RemoteControlRequestValidationTest.create({
+        spec: RemoteControlRequestValidationTest.shell,
+        group,
+      }))).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+    expect(RemoteControlRequestValidation.parse(RemoteControlRequestValidationTest.create({
+      spec: { ...RemoteControlRequestValidationTest.shell, group: 'automation' },
+    }))).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
   })
 
   it('refuses agent options without an agent and a base ref without a worktree', () => {

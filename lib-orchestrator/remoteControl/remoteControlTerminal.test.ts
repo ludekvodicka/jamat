@@ -174,9 +174,12 @@ describe('lib-orchestrator/remoteControl/remoteControlTerminal', () => {
     expect(harness.sessions.detached).toEqual([attachId])
   })
 
-  it('waits for writer confirmation before sending text and Enter', async () => {
-    const harness = new RemoteTerminalHarness()
+  it('keeps the writer attached and separates Enter from the paste burst before accepting', async () => {
+    vi.useFakeTimers()
+    const harness = new RemoteTerminalHarness(1_000)
     const sent = harness.terminal.send('session-1', 'status', { enter: true })
+    const completed = vi.fn()
+    void sent.then(completed)
     const attachId = harness.sessions.onlyAttachId()
 
     harness.sessions.emit(attachId, {
@@ -187,6 +190,11 @@ describe('lib-orchestrator/remoteControl/remoteControlTerminal', () => {
     harness.sessions.emit(attachId, TerminalFrames.snapshot('old screen'))
     expect(harness.sessions.inputs).toEqual([])
     harness.sessions.emit(attachId, TerminalFrames.attached(true))
+    await vi.advanceTimersByTimeAsync(99)
+    expect(harness.sessions.inputs).toEqual([{ attachId, data: 'status' }])
+    expect(harness.sessions.detached).toEqual([])
+    expect(completed).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
 
     await expect(sent).resolves.toEqual({
       ok: true,
@@ -197,8 +205,83 @@ describe('lib-orchestrator/remoteControl/remoteControlTerminal', () => {
         enter: true,
       },
     })
-    expect(harness.sessions.inputs).toEqual([{ attachId, data: 'status\r' }])
+    expect(harness.sessions.inputs).toEqual([
+      { attachId, data: 'status' },
+      { attachId, data: '\r' },
+    ])
     expect(harness.sessions.detached).toEqual([attachId])
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('preserves multiline text and raw control input without an implicit Enter', async () => {
+    vi.useFakeTimers()
+    const harness = new RemoteTerminalHarness(1_000)
+    const text = '\x1b[200~První řádek\nsecond line\x1b[201~'
+    const sent = harness.terminal.send('session-1', text, { enter: false })
+    const attachId = harness.sessions.onlyAttachId()
+    harness.sessions.emit(attachId, TerminalFrames.attached(true))
+    await expect(sent).resolves.toMatchObject({ ok: true, value: { enter: false } })
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(harness.sessions.inputs).toEqual([{ attachId, data: text }])
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each([
+    { type: 'terminal.status', status: 'read-only', detail: null },
+    { type: 'terminal.status', status: 'connecting', detail: null },
+    TerminalFrames.attached(true),
+  ] satisfies TerminalFrame[])('cancels pending Enter after a writer transition: $type $status', async (frame) => {
+    vi.useFakeTimers()
+    const harness = new RemoteTerminalHarness(1_000)
+    const sent = harness.terminal.send('session-1', 'message', { enter: true })
+    const attachId = harness.sessions.onlyAttachId()
+    harness.sessions.emit(attachId, TerminalFrames.attached(true))
+    await vi.advanceTimersByTimeAsync(50)
+    harness.sessions.emit(attachId, frame)
+    await expect(sent).resolves.toMatchObject({ ok: false })
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(harness.sessions.inputs).toEqual([{ attachId, data: 'message' }])
+    expect(harness.sessions.detached).toEqual([attachId])
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('does not send a late Enter after the request times out', async () => {
+    vi.useFakeTimers()
+    const harness = new RemoteTerminalHarness(50)
+    const sent = harness.terminal.send('session-1', 'message', { enter: true })
+    const attachId = harness.sessions.onlyAttachId()
+    harness.sessions.emit(attachId, TerminalFrames.attached(true))
+    await vi.advanceTimersByTimeAsync(1_000)
+    await expect(sent).resolves.toMatchObject({ ok: false, error: { code: 'timeout' } })
+    expect(harness.sessions.inputs).toEqual([{ attachId, data: 'message' }])
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each(['not-writer', 'unknown-attach'] as const)('reports a refused Enter instead of accepted: %s', async (kind) => {
+    vi.useFakeTimers()
+    const harness = new RemoteTerminalHarness(1_000)
+    const sent = harness.terminal.send('session-1', 'message', { enter: true })
+    const attachId = harness.sessions.onlyAttachId()
+    harness.sessions.emit(attachId, TerminalFrames.attached(true))
+    harness.sessions.inputAnswer = { kind }
+    await vi.advanceTimersByTimeAsync(100)
+    await expect(sent).resolves.toMatchObject({ ok: false })
+    expect(harness.sessions.detached).toEqual([attachId])
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('cleans up and reports an input exception in the delayed Enter callback', async () => {
+    vi.useFakeTimers()
+    const harness = new RemoteTerminalHarness(1_000)
+    const sent = harness.terminal.send('session-1', 'message', { enter: true })
+    const attachId = harness.sessions.onlyAttachId()
+    harness.sessions.emit(attachId, TerminalFrames.attached(true))
+    vi.spyOn(harness.sessions, 'terminalInput').mockImplementation(() => { throw new Error('socket failed') })
+    await vi.advanceTimersByTimeAsync(100)
+    await expect(sent).resolves.toMatchObject({ ok: false, error: { code: 'operation-failed' } })
+    expect(harness.errors).toEqual(['Remote terminal send failed: socket failed'])
+    expect(harness.sessions.detached).toEqual([attachId])
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('refuses a read-only writer without buffering input', async () => {

@@ -66,6 +66,20 @@ export interface SessionCreateSpec {
   worktree?: { slug: string; baseRef?: string }
   title?: string
   /**
+   * The colour this session is BORN with, as a name from the closed set `SessionColors` keeps.
+   *
+   * Here rather than through a second call, because the caller that wants one is a scheduler: it
+   * creates a wave of sessions beside the person's own, and a colour set afterwards means every
+   * worker appears uncoloured first and costs a second round trip to repaint. What the colour is
+   * FOR is exactly that - telling automatic work from a person's at a glance in the tree - so a
+   * session that flashes uncoloured has already failed at it once.
+   *
+   * The create body is validated with exact keys, so a target that predates this field refuses the
+   * whole request as `invalid-request` rather than ignoring the colour. A caller that may be talking
+   * to an older computer therefore omits it, exactly as it does for `agent.model`.
+   */
+  color?: SessionColorName
+  /**
    * Which flow composed this session, if one did. Opaque here on purpose: the library stores it and
    * never branches on it, so a new flow is a change to the renderer's catalog and to nothing else.
    */
@@ -104,6 +118,8 @@ export interface SessionHistoryReference {
   title: string
   titleParts: SessionTitleParts
   life: SessionInfo['life']
+  /** When this record's runtime ended, null while it runs or where no ending was ever recorded. */
+  endedAt: number | null
 }
 
 /** `starting` is hostControl's overlay while a launch is in flight, not a transport fact. */
@@ -138,6 +154,22 @@ export type SessionActivityDetail = 'background'
 export type SessionColorName =
   | 'red' | 'orange' | 'amber' | 'green' | 'teal' | 'cyan'
   | 'sky' | 'blue' | 'indigo' | 'violet' | 'magenta' | 'rose'
+
+/**
+ * Which section of the sessions tree a session was put in BY HAND. It is the client that stores the
+ * assignment and the client that draws the sections, and the name is here for the reason
+ * `SessionColorName` is: a create may name one, so the control-protocol validator and the CLI parser
+ * have to refuse the same set the surface offers, and a vocabulary written twice is a group a caller
+ * can ask for and no tree has.
+ *
+ * `'none'` IS a member, unlike a colour's absence: a session put back into Sessions on purpose is a
+ * choice that outranks what its project says, so there has to be a way to say it.
+ *
+ * The ORDER of the sections is not here. That is what a person sees, it belongs to the surface that
+ * draws them, and this list is only ever asked whether a name is in it.
+ */
+export type SessionGroup =
+  | 'pinned' | 'priority' | 'none' | 'automation' | 'waiting' | 'blocked'
 
 /**
  * What may sensibly be done to a session right now, decided here rather than by whoever draws the
@@ -278,6 +310,8 @@ export interface SessionLocalHistoryEntry {
   model: string | null
   createdAt: number
   lastActivity: number | null
+  /** When the session ended, null while it runs or where no ending was ever recorded. */
+  endedAt: number | null
   active: boolean
 }
 

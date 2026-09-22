@@ -3,7 +3,7 @@ import type {
   RuntimeSessionInfo,
   TerminalProjectionSnapshot,
 } from '../wire/hostWire.js'
-import type { TerminalProjectionDelta } from './terminalProjection.js'
+import type { TerminalProjectionDelta, TerminalSnapshotOptions } from './terminalProjection.js'
 
 export type TerminalInstanceEvent =
   | {
@@ -36,7 +36,10 @@ export interface TerminalProjectionDriver {
   readonly lastOutputAt: number | null
   resize(cols: number, rows: number): void
   deltaSince(outputEpoch: number, sinceSeq: number): TerminalProjectionDelta
-  snapshot(alive: boolean): Promise<TerminalProjectionSnapshot>
+  snapshot(
+    alive: boolean,
+    options: TerminalSnapshotOptions,
+  ): Promise<TerminalProjectionSnapshot>
   dispose(): void
 }
 

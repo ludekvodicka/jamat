@@ -36,7 +36,8 @@ export class HistoricSessions {
       const row: HistoricSession = {
         agentId: entry.agentId, nativeSessionId: entry.nativeSessionId,
         title: entry.title, model: entry.model, firstUserMessage: null,
-        createdAt: entry.createdAt, lastActivity: entry.lastActivity, active: entry.active,
+        createdAt: entry.createdAt, lastActivity: entry.lastActivity, endedAt: entry.endedAt,
+        active: entry.active,
       }
       const previous = group.sessions.get(id)
       const preferred = previous && (previous.active && !row.active
@@ -45,12 +46,18 @@ export class HistoricSessions {
         ...preferred,
         createdAt: Math.min(row.createdAt, previous?.createdAt ?? row.createdAt),
         lastActivity: Math.max(row.lastActivity ?? 0, previous?.lastActivity ?? 0) || null,
+        // One native session can hold several records - a re-run makes a second one - so the
+        // ending is the last of them, and a run that is live again has not ended at all.
+        endedAt: preferred.active ? null : Math.max(row.endedAt ?? 0, previous?.endedAt ?? 0) || null,
       })
     }
     return [...groups.values()].map(({ root, project, sessions }) => ({
       root, project,
-      sessions: [...sessions.values()].filter((row) => lastUsedSince === null
-        || row.lastActivity !== null && row.lastActivity >= lastUsedSince),
+      // History is what ENDED. A session that is still running is in the sessions tree, where it can
+      // be forked from its own row; listing it here again offers to re-run something that never
+      // stopped, which is the one thing this card cannot do with it.
+      sessions: [...sessions.values()].filter((row) => !row.active && (lastUsedSince === null
+        || row.lastActivity !== null && row.lastActivity >= lastUsedSince)),
     })).filter((group) => group.sessions.length > 0)
   }
 
@@ -75,6 +82,10 @@ export class HistoricSessions {
     const rows: HistoricSession[] = []
     for (const summary of summaries) {
       const reference = references.get(`${summary.agentId}:${summary.nativeSessionId}`)
+      // Ended only, the same rule as the AppJamat source above. Here it also drops a conversation
+      // running outside Jamat, which this card could offer nothing but a fork of either. Judged
+      // before the model read, which is a file read per row and buys nothing for a row nobody sees.
+      if (summary.active || reference?.life === 'live' || reference?.life === 'starting') continue
       const model = await this.models.read({
         agentId: summary.agentId,
         cwd: project.path,
@@ -88,7 +99,8 @@ export class HistoricSessions {
       rows.push({
         ...summary,
         title: reference?.title ?? summary.title,
-        active: summary.active || reference?.life === 'live' || reference?.life === 'starting',
+        endedAt: reference?.endedAt ?? null,
+        active: false,
         model: modelName,
       })
     }

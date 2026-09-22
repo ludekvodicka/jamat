@@ -22,6 +22,10 @@ export class ServiceShellIpc extends ServiceIpcBase<typeof ServiceShellIpc.chann
     'state:save-sessions-view': true,
     'state:load-session-filters': true,
     'state:save-session-filters': true,
+    'state:load-session-pins': true,
+    'state:save-session-pins': true,
+    'state:load-session-groups': true,
+    'state:assign-session-group': true,
     'state:load-new-session-agent': true,
     'state:save-new-session-agent': true,
   } as const
@@ -64,10 +68,28 @@ export class ServiceShellIpc extends ServiceIpcBase<typeof ServiceShellIpc.chann
       this.requireWindowId(event.sender)
       return this.store.loadSessionFilters()
     })
+    this.register('state:load-session-pins', (event) => {
+      this.requireWindowId(event.sender)
+      return this.store.loadSessionPins()
+    })
+    this.register('state:save-session-pins', (event, pins) => {
+      if (this.requireWindowId(event.sender) !== 'main')
+        throw new Error('Only the main window can save session pins')
+      return this.store.saveSessionPins(pins)
+    })
     this.register('state:save-session-filters', (event, filters) => {
       if (this.requireWindowId(event.sender) !== 'main')
         throw new Error('Only the main window can save session filters')
       return this.store.saveSessionFilters(filters)
+    })
+    this.register('state:load-session-groups', (event) => {
+      this.requireWindowId(event.sender)
+      return this.store.loadSessionGroups()
+    })
+    this.register('state:assign-session-group', (event, key, group) => {
+      if (this.requireWindowId(event.sender) !== 'main')
+        throw new Error('Only the main window can save session groups')
+      return this.store.assignSessionGroup(key, group)
     })
     this.register('state:load-new-session-agent', () => this.store.loadNewSessionAgent())
     this.register('state:save-new-session-agent', (_event, agentId) =>

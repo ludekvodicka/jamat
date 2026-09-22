@@ -10,6 +10,6 @@ describe('app-client-ui/renderer/fileViewer/fileChangesStatusMark', () => {
       'conflicted', 'missing', 'obstructed',
     ]
     expect(statuses.map((status) => FileChangesStatusMark.of(status)))
-      .toEqual(['A', 'M', 'D', 'R', 'P', 'C', '?', '!', '_', 'X'])
+      .toEqual(['A', 'M', 'D', 'R', 'P', 'C', '?', '!', '−', 'X'])
   })
 })

@@ -76,6 +76,22 @@ describe('lib-orchestrator/fileChangesManager/vcs/fileChangesVcsSvn', () => {
     })
   })
 
+  it('reads a literal file at depth empty without scanning the scope', async () => {
+    const { root, cwd } = workingCopy()
+    const path = join(cwd, 'name@file.ts')
+    const commands: string[][] = []
+    const vcs = new FileChangesVcsSvn(new Runner((args) => {
+      commands.push(args)
+      return detectionAnswer(root, args) ?? ok(`<status><target path="${path}"><entry path="${path}">
+        <wc-status item="modified" props="none" revision="2"/></entry></target></status>`)
+    }))
+    const result = await vcs.status((await vcs.detect(cwd))!, path)
+    expect(result).toMatchObject({ ok: true, value: { entries: [{ absolutePath: path, repositoryPath: 'nested/name@file.ts' }] } })
+    expect(commands.find((args) => args[0] === 'status')).toEqual([
+      'status', '--xml', '--non-interactive', '--depth', 'empty', '--', `${path}@`,
+    ])
+  })
+
   it('filters verbose log paths to the cwd and preserves copy metadata', async () => {
     const { root, cwd } = workingCopy()
     const runner = new Runner((args) => detectionAnswer(root, args) ?? ok(`<?xml version="1.0"?>

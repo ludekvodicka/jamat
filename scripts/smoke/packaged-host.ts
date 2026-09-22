@@ -257,7 +257,7 @@ class SmokePackagedHost extends SmokeHarness {
         const inspected = await SmokePackagedHost.op<RuntimeInspectResult>(
           descriptor, 'runtime.inspect', { target },
         )
-        return inspected.projection?.raw.includes(SmokePackagedHost.markerConst) === true
+        return inspected.projection?.raw?.includes(SmokePackagedHost.markerConst) === true
       },
       `the PTY output never reached the projection (${SmokePackagedHost.markerConst})`,
     )

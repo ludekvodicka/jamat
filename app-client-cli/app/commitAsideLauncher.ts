@@ -5,6 +5,7 @@ import type { RemoteControlStepResult } from '../../lib-orchestrator/remoteContr
 export interface CommitAsideRequest {
   vcs: 'svn' | 'git'
   scope: string
+  paths?: readonly string[]
   messageFile: string | null
   reason: 'jamat-unavailable' | 'session-not-open' | 'outside-session'
 }

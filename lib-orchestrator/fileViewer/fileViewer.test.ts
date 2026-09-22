@@ -168,6 +168,41 @@ describe('fileViewer/fileViewer', () => {
     expect(await viewer.mediaResource('window-one', media.value.documentId))
       .to.deep.include({ ok: false, code: 'outside-root' })
     expect(await viewer.resourceAccess(resource.value.resourceId)).to.equal(null)
+    expect(await viewer.imageDragPath('window-one', media.value.documentId)).to.equal(null)
+  })
+
+  it('hands image paths only to the owning window while its grant remains valid', async () => {
+    const cwd = await root()
+    const viewer = new FileViewer()
+    for (const name of ['pixel.png', 'drawing.svg']) {
+      const path = join(cwd, name)
+      await writeFile(path, name.endsWith('.svg') ? '<svg xmlns="http://www.w3.org/2000/svg"/>' : 'image')
+      const opened = await viewer.openWorkspace('window-one', 'session-one', cwd, path)
+      if (!opened.ok) throw new Error(opened.detail)
+      const id = opened.value.documentId
+      expect(await viewer.imageDragPath('window-one', id)).to.equal(await realpath(path))
+      expect(await viewer.imageDragPath('window-two', id)).to.equal(null)
+      expect(await viewer.imageDragPath('window-one', path)).to.equal(null)
+      viewer.release('window-one', id)
+      expect(await viewer.imageDragPath('window-one', id)).to.equal(null)
+    }
+    await writeFile(join(cwd, 'notes.txt'), 'notes')
+    const text = await viewer.openWorkspace('window-one', 'session-one', cwd, 'notes.txt')
+    if (!text.ok) throw new Error(text.detail)
+    expect(await viewer.imageDragPath('window-one', text.value.documentId)).to.equal(null)
+  })
+
+  it('refuses dragging an image changed or deleted since it was opened', async () => {
+    const cwd = await root()
+    const path = join(cwd, 'pixel.png')
+    await writeFile(path, 'image')
+    const viewer = new FileViewer()
+    const opened = await viewer.openWorkspace('window-one', 'session-one', cwd, path)
+    if (!opened.ok) throw new Error(opened.detail)
+    await writeFile(path, 'changed image')
+    expect(await viewer.imageDragPath('window-one', opened.value.documentId)).to.equal(null)
+    await rm(path)
+    expect(await viewer.imageDragPath('window-one', opened.value.documentId)).to.equal(null)
   })
 
   /**

@@ -8,6 +8,11 @@
 .commit-pane-slots { display: contents; }
 .commit-pane-slot[hidden] { display: none; }
 .commit-scope { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+.commit-editor { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
+.commit-editor-files, .commit-editor-message { display: flex; flex-direction: column; flex-basis: 0; min-height: 0; min-width: 0; overflow: hidden; }
+.commit-editor-splitter { position: relative; flex: none; height: var(--space-2); cursor: row-resize; touch-action: none; user-select: none; }
+.commit-editor-splitter::after { content: ''; position: absolute; top: 50%; left: 0; right: 0; border-top: 1px solid var(--color-border-frame); }
+.commit-editor-splitter:hover, .commit-editor-splitter:focus-visible { outline: none; background: var(--color-accent-strong); }
 .commit-targets { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; gap: var(--space-1); }
 .commit-files { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--color-border-frame); background: var(--color-surface-sunken); font-size: var(--fs-base); }
 .commit-target, .commit-files-heading { display: grid; grid-template-columns: 1.5em 2em minmax(0, 1fr); align-items: center; gap: var(--space-1); padding: 0 var(--space-1); min-width: max-content; line-height: 1.7; box-sizing: border-box; white-space: nowrap; }
@@ -32,10 +37,14 @@
 .commit-actions-right { margin-left: auto; }
 .commit-external { border-top: 1px solid var(--color-border-frame); }
 .commit-external-heading { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1); white-space: nowrap; }
-.commit-message { display: flex; flex-direction: column; gap: var(--space-1); flex: 0 0 25%; min-height: 0; }
-.commit-message textarea { flex: 1; min-height: 0; resize: vertical; background: var(--color-surface-sunken); color: var(--color-text-1); border: 1px solid var(--color-border-frame); padding: var(--space-2); font: inherit; }
+.commit-message { display: flex; flex-direction: column; gap: var(--space-1); flex: 1; min-height: 0; }
+.commit-message textarea { flex: 1; min-height: 0; resize: none; background: var(--color-surface-sunken); color: var(--color-text-1); border: 1px solid var(--color-border-frame); padding: var(--space-2); font: inherit; }
 .commit-status { white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; max-height: 30%; }
 .commit-warning { color: var(--color-warn); margin: 0; }
+.commit-progress { display: flex; flex-direction: column; flex-shrink: 0; gap: var(--space-1); padding: var(--space-2); border: 1px solid var(--color-border-frame); border-radius: var(--radius-control); background: var(--color-surface-sunken); font-size: var(--fs-secondary); overflow-wrap: anywhere; }
+.commit-progress-heading, .commit-progress-metrics { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-1) var(--space-2); }
+.commit-progress-metrics { color: var(--color-text-2); font-variant-numeric: tabular-nums; }
+.commit-progress progress { display: block; width: 100%; height: var(--space-2); accent-color: var(--color-accent-strong); }
 .commit-groups-note {
   color: var(--color-text-2);
   font-size: var(--fs-secondary);

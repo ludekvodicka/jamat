@@ -7,8 +7,9 @@ import { LauncherIntentStore } from '../launcherIntentStore'
 import { LauncherOverlay } from '../launcherOverlay'
 
 describe('app-client-ui/renderer/overlays/launcher/history/historicSessionsOverlay', () => {
-  function session(nativeSessionId: string, lastActivity: number | null, title: string, agentId: 'claude' | 'codex' = 'claude'): HistoricSession {
-    return { nativeSessionId, lastActivity, title, agentId, firstUserMessage: null, createdAt: 1_000, active: false, model: `${agentId}-model` }
+  function session(nativeSessionId: string, lastActivity: number | null, title: string, agentId: 'claude' | 'codex' = 'claude',
+    endedAt: number | null = null): HistoricSession {
+    return { nativeSessionId, lastActivity, title, agentId, firstUserMessage: null, createdAt: 1_000, endedAt, active: false, model: `${agentId}-model` }
   }
 
   function mount(options?: {
@@ -55,6 +56,24 @@ describe('app-client-ui/renderer/overlays/launcher/history/historicSessionsOverl
     expect(lastUsed?.title).toContain('User input time was not recorded')
   })
 
+  /** The column the list is ordered by, drawn from the record rather than guessed from a transcript. */
+  it('draws the recorded end beside the last use and orders the list by it', async () => {
+    const view = mount({ rows: [
+      session('guessed', 9_000, 'Guessed end'),
+      session('recorded', 3_000, 'Recorded end', 'claude', 12_000),
+    ] })
+
+    const rows = await view.findAllByRole('option')
+
+    expect(rows[0]?.textContent).toContain('Recorded end')
+    const ended = rows[0]?.querySelectorAll('time')[2]
+    expect(ended?.getAttribute('datetime')).toBe(new Date(12_000).toISOString())
+    expect(ended?.title).toBe('End recorded by AppJamat')
+    const guessed = rows[1]?.querySelectorAll('time')[2]
+    expect(guessed?.textContent?.startsWith('~')).toBe(true)
+    expect(guessed?.title).toContain('No end was recorded')
+  })
+
   it('focuses the filter, sorts newest first and reruns the row chosen with arrows', async () => {
     const view = mount()
     const filter = view.getByRole('combobox')
@@ -83,13 +102,14 @@ describe('app-client-ui/renderer/overlays/launcher/history/historicSessionsOverl
     expect(view.openHistory).toHaveBeenCalledWith(expect.objectContaining({ nativeSessionId: 'old', action: 'fork' }))
   })
 
-  it('offers fork for an active conversation and opens a double-clicked row', async () => {
-    const active = { ...session('active', 4_000, 'Running task'), active: true }
-    const view = mount({ rows: [active] })
+  /**
+   * Every row here has ended - both sources drop what is still running - so both actions are open
+   * on every row, and the card no longer has an action it must refuse.
+   */
+  it('opens a double-clicked row with the chosen action', async () => {
+    const view = mount({ rows: [session('one', 4_000, 'One task')] })
     const row = await view.findByRole('option')
-    expect(view.getByRole('button', { name: 'Re-run session' }).hasAttribute('disabled')).toBe(true)
-    fireEvent.keyDown(view.getByRole('combobox'), { key: 'Enter' })
-    expect(view.openHistory).not.toHaveBeenCalled()
+    expect(view.getByRole('button', { name: 'Re-run session' }).hasAttribute('disabled')).toBe(false)
     fireEvent.click(view.getByRole('button', { name: 'Fork' }))
     fireEvent.doubleClick(row)
     await waitFor(() => expect(view.openHistory).toHaveBeenCalledOnce())

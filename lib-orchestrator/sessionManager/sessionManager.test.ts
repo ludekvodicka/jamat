@@ -97,6 +97,19 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
   }
 
   /**
+   * The precondition of acting on a runtime, and `writable` is NOT it. The reconcile inside `start()`
+   * runs before the descriptor watcher has read the file, so it lists nothing; what binds a seeded
+   * record to its runtime is the resync refresh the events socket fires when it subscribes. That
+   * subscribe turns `presence` to `running` FIRST and dispatches the refresh after it, so `writable`
+   * can return one listing early, and nothing else asks for one until the two second poll. Anything
+   * off the operation queue - `terminalAttach` is the one - then reads a snapshot with no runtimes
+   * and is refused `not-live`. A queued operation cannot: it lands behind that same refresh.
+   */
+  async function reconciled(client: Client): Promise<void> {
+    await vi.waitFor(() => expect(client.manager.snapshot().reconciled).toBe(true), { timeout: 5_000 })
+  }
+
+  /**
    * The exit budget measured without spending it. `wait` advances the clock instead of the process,
    * so the five second product value is proven rather than waited out, and the elapsed total is what
    * says the loop really reached its boundary.
@@ -365,7 +378,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       category: { id: 'code', label: 'Code', path: context.categoryRoot },
       project: { kind: 'project', categoryId: 'code', projectName: 'Alpha', projectPath: directory.projectPath },
       agentId: 'claude', nativeSessionId: 'native', title: 'Recorded title', model: 'saved-model',
-      createdAt: 1_000, lastActivity: null, active: false,
+      createdAt: 1_000, lastActivity: null, endedAt: 3_000, active: false,
     })
     expect(history.find((row) => row.nativeSessionId === 'lost-native')).toMatchObject({ lastActivity: null, model: null, active: false })
     expect(history.find((row) => row.nativeSessionId === 'nested-native')?.project).toMatchObject({
@@ -390,7 +403,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const client = clientOf(context)
     await client.manager.start()
     await writable(client)
-    await vi.waitFor(() => expect(client.manager.snapshot().reconciled).toBe(true))
+    await reconciled(client)
     const revision = client.manager.snapshot().revision
     expect(await client.manager.localHistory()).toEqual([expect.objectContaining({
       nativeSessionId: 'live-native', createdAt: 1_000, lastActivity: 2_000, active: true,
@@ -419,8 +432,14 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
         },
       }),
     })
+    // The first listing is held so the attach is asked for after `writable` and before anything has
+    // bound `history-input` to its runtime. That ordering used to arrive only under a loaded full
+    // suite, and failed there; held, it arrives on every run.
+    const listing = context.host.hold('runtime.list')
     await client.manager.start()
     await writable(client)
+    listing.release()
+    await reconciled(client)
     expect(client.manager.terminalAttach('history-panel', { sessionId: live.runtimeSessionId, size: null }, {
       source: 'local', onFrame: () => undefined,
     })).toEqual({ ok: true })
@@ -622,10 +641,14 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     await client.manager.start()
     await writable(client)
 
+    // Taken before the create, the way the create card takes it: a title may carry a number only
+    // once the counter has handed that number out.
+    const alpha = join(context.categoryRoot, 'Alpha')
+    const token = valueOf(await client.manager.allocateSessionNumber(alpha)).token
     const numbered = valueOf(await client.manager.createSession({
       kind: 'shell',
-      directory: { mode: 'project', categoryId: 'code', projectPath: join(context.categoryRoot, 'Alpha') },
-      title: '001',
+      directory: { mode: 'project', categoryId: 'code', projectPath: alpha },
+      title: token,
     }))
     const adHoc = valueOf(await client.manager.createSession({
       kind: 'shell',

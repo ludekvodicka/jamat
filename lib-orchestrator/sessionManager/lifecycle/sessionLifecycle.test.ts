@@ -92,6 +92,12 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
   interface FakeNumbers {
     /** What `allocate` hands out; null is the store saying it could not take one. */
     token: string | null
+    /**
+     * How far the project has already counted. High by default, so a case that says nothing about
+     * numbering hands in titles the counter would have given out; a case about a typed number sets
+     * it to what the project has really spent.
+     */
+    issued: number
     calls: { projectPath: string }[]
     port: SessionNumbersPort
   }
@@ -184,11 +190,15 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     const calls: FakeNumbers['calls'] = []
     const fake: FakeNumbers = {
       token: '007',
+      issued: 999,
       calls,
       port: {
         async allocate(projectPath) {
           calls.push({ projectPath })
           return fake.token
+        },
+        async highestIssued() {
+          return fake.issued
         },
       },
     }
@@ -991,6 +1001,254 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     ])
     for (const result of refusals)
       expect(failureOf(result).code).toBe('invalid-spec')
+  })
+
+  /*
+   * A colour named at create is the scheduler's mark on its own work: the wave it launches sits in
+   * the tree beside sessions a person opened, and painting them afterwards would show every worker
+   * uncoloured first. The refusal is the setter's own, because the two write the same field.
+   */
+  it('persists every accepted create colour across a store reload and refuses unknown names', async () => {
+    const context = await harness()
+
+    const colors = ['red', 'orange', 'amber', 'green', 'teal', 'cyan',
+      'sky', 'blue', 'indigo', 'violet', 'magenta', 'rose'] as const
+    const colored: { sessionId: string; color: SessionCreateSpec['color'] }[] = []
+    for (const color of colors) {
+      const created = await context.lifecycle.create({
+        kind: 'agent',
+        directory: { mode: 'adHoc', path: context.workDirectory },
+        agent: { agentId: 'claude', mode: 'new' },
+        color,
+      })
+      colored.push({ sessionId: successOf(created).sessionId, color })
+    }
+    const plain = await context.lifecycle.create({
+      kind: 'shell',
+      directory: { mode: 'adHoc', path: context.workDirectory },
+    })
+    const refused = await context.lifecycle.create({
+      kind: 'shell',
+      directory: { mode: 'adHoc', path: context.workDirectory },
+      color: 'chartreuse' as SessionCreateSpec['color'],
+    })
+
+    const reloaded = await SessionRecordsStore.load(context.recordsFile, {
+      snapshotsDirectory: context.snapshotsDirectory,
+    })
+    for (const { sessionId, color } of colored) {
+      expect(context.store.get(sessionId)?.color).toBe(color)
+      expect(reloaded.get(sessionId)?.color).toBe(color)
+    }
+    expect(reloaded.get(successOf(plain).sessionId)?.color).toBeUndefined()
+    expect(reloaded.list()).toHaveLength(colors.length + 1)
+    expect(failureOf(refused).code).toBe('invalid-spec')
+    expect(failureOf(refused).detail).toContain('is not a session colour')
+  })
+
+  /*
+   * The create door itself numbers, so a session is numbered by the machine that keeps the count
+   * whoever asked for it. Until 2026-09-18 only the create card did, by taking a number and
+   * composing the title before it submitted, and every other caller of `sessions.create` - the CLI,
+   * a paired computer, the skill - got a session the tree could not order and `--number` could not
+   * reach.
+   */
+  describe('numbering a create', () => {
+    it('numbers a create in a catalog project whose title carries no number', async () => {
+      const context = await harness()
+      context.numbers.token = '015'
+
+      const created = successOf(await context.lifecycle.create({
+        kind: 'agent',
+        directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
+        agent: { agentId: 'claude', mode: 'new' },
+        title: 'app#10 Unify the two server actions',
+      }))
+
+      expect(context.store.get(created.sessionId)?.title)
+        .toBe('015 - app#10 Unify the two server actions')
+      expect(context.numbers.calls).toEqual([{ projectPath: projectRoot }])
+    })
+
+    // The create card takes its number first, because the worktree slug is built from the same
+    // token. A second one taken here would name the session after a number the branch never got.
+    it('leaves a title that already carries its number alone', async () => {
+      const context = await harness()
+
+      const created = successOf(await context.lifecycle.create({
+        kind: 'shell',
+        directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
+        title: '014 - session wizard',
+      }))
+
+      expect(context.store.get(created.sessionId)?.title).toBe('014 - session wizard')
+      expect(context.numbers.calls).toEqual([])
+    })
+
+    // Named after the directory, and then numbered like any other: a title nobody typed is still a
+    // session of the tree, and the tree orders it by the same prefix.
+    it('numbers the fallback title of a create that carried none', async () => {
+      const context = await harness()
+      context.numbers.token = '015'
+
+      const created = successOf(await context.lifecycle.create({
+        kind: 'shell',
+        directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
+      }))
+
+      expect(context.store.get(created.sessionId)?.title).toBe('015 - one')
+    })
+
+    // A tab is not work the tree keeps, and `promotePlain` is where its number comes from. Taking
+    // one here would spend a number on a tab that is closed and forgotten, and the promotion would
+    // then write a second prefix in front of the first.
+    it('does not number a plain tab', async () => {
+      const context = await harness()
+
+      const created = successOf(await context.lifecycle.create({
+        kind: 'shell',
+        directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
+        title: 'a quick look',
+        presentation: 'tab',
+      }))
+
+      expect(context.store.get(created.sessionId)?.title).toBe('a quick look')
+      expect(context.numbers.calls).toEqual([])
+    })
+
+    // The count is a project's. The other two bindings name a directory, and there is nothing to
+    // count in - the same rule `forkConversation` and `promotePlain` already follow.
+    it('does not number a session outside a catalog project', async () => {
+      const context = await harness()
+
+      const created = successOf(await context.lifecycle.create(shellSpec(context.workDirectory)))
+
+      expect(context.store.get(created.sessionId)?.title).toBe(basename(context.workDirectory))
+      expect(context.numbers.calls).toEqual([])
+    })
+
+    // A refused create leaves nothing behind, and a number is part of that nothing: the counter is
+    // asked after the worktree is cut, so a create that never got one costs the project no number.
+    it('takes no number for a create the worktree refused', async () => {
+      const context = await harness()
+      context.worktrees.outcome = {
+        ok: false,
+        code: 'dirty',
+        detail: 'the base repository is dirty',
+      }
+
+      const refused = await context.lifecycle.create(worktreeSpec())
+
+      expect(failureOf(refused).code).toBe('dirty')
+      expect(context.numbers.calls).toEqual([])
+    })
+
+    // A number that could not be taken is not a reason to refuse, exactly as `promotePlain` has it:
+    // a session without a number is a session.
+    it('creates without a number when the counter could not answer', async () => {
+      const context = await harness()
+      context.numbers.token = null
+
+      const created = successOf(await context.lifecycle.create({
+        kind: 'shell',
+        directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
+        title: 'no counter today',
+      }))
+
+      expect(context.store.get(created.sessionId)?.title).toBe('no counter today')
+    })
+
+    /*
+     * A title beginning with three or more digits is a session number to everything that reads a
+     * record, whoever typed it. `SessionNumberStore` takes a project's count from the highest number
+     * its records are titled with, so `2026 plan` used to leave a record the counter then read as
+     * 2026 - the next session in that project was 2027, and a number is never counted back down.
+     */
+    it('refuses a title claiming a number the project never gave out', async () => {
+      const context = await harness()
+      context.numbers.issued = 14
+
+      const refused = await context.lifecycle.create({
+        kind: 'shell',
+        directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
+        title: '2026 plan',
+      })
+
+      expect(failureOf(refused).code).toBe('invalid-spec')
+      expect(failureOf(refused).detail).toBe('A title must not begin like a session number')
+      // Nothing behind it: no record for the seed to read the 2026 back out of, and no number spent.
+      expect(context.store.list()).toEqual([])
+      expect(context.numbers.calls).toEqual([])
+      expect(callsNamed(context.host, 'runtime.create')).toEqual([])
+    })
+
+    // Two digits are not a prefix, and neither is a number with something in front of it: both read
+    // back out of `partsOf` as the whole name, so neither can move the count.
+    it('creates a title that only looks numeric', async () => {
+      const context = await harness()
+      context.numbers.issued = 14
+      context.numbers.token = '015'
+
+      const created = successOf(await context.lifecycle.create({
+        kind: 'shell',
+        directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
+        title: '99 bottles',
+      }))
+
+      expect(context.store.get(created.sessionId)?.title).toBe('015 - 99 bottles')
+    })
+
+    // The create card takes its number before it submits, because the worktree slug is built from
+    // the same token, so the count is already at least as high as the prefix it composed.
+    it('creates a title carrying a number the counter has reached', async () => {
+      const context = await harness()
+      context.numbers.issued = 15
+
+      const created = successOf(await context.lifecycle.create({
+        kind: 'shell',
+        directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
+        title: '015 - session wizard',
+      }))
+
+      expect(context.store.get(created.sessionId)?.title).toBe('015 - session wizard')
+      expect(context.numbers.calls).toEqual([])
+    })
+
+    // A binding that names a directory has no count to move: the seed reads project records alone,
+    // which is also why a fork into one keeps the number of the session it came out of.
+    it('leaves a numeric title alone outside a catalog project', async () => {
+      const context = await harness()
+      context.numbers.issued = 14
+
+      const created = successOf(await context.lifecycle.create({
+        kind: 'shell',
+        directory: { mode: 'adHoc', path: context.workDirectory },
+        title: '2026 plan',
+      }))
+
+      expect(context.store.get(created.sessionId)?.title).toBe('2026 plan')
+    })
+
+    /*
+     * The two paths that compose their own title have already asked the counter, and a fork's title
+     * is the one this door could not rebuild: `014-015` says which session it came out of, and a
+     * plain `016` taken here would throw that away.
+     */
+    it('asks the counter once for a fork, and keeps the pair it composed', async () => {
+      const context = await harness()
+      context.numbers.token = '015'
+      await context.store.put(record('s1', {
+        kind: 'agent',
+        title: '014 - the wire',
+        agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'native-1' },
+        directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
+      }))
+
+      const forked = successOf(await context.lifecycle.forkFrom('s1'))
+
+      expect(context.store.get(forked.sessionId)?.title).toBe('014-015 - the wire')
+      expect(context.numbers.calls).toEqual([{ projectPath: projectRoot }])
+    })
   })
 
   // Neither of these two reached a decision, so the pending record is the evidence a replay needs.
@@ -1977,19 +2235,19 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
    * refusal says where the session stands instead of naming a leftover - and the reconcile pass at
    * the end is that sentence being true rather than reassuring.
    *
-   * The failure is staged at `AtomicJsonFile.write`, the seam the store really fails at, because that
-   * is the only way to fail the SECOND of two writes made inside one call - an unwritable path fails
-   * the first. Everything else is the real store: the same validation, the same commit, the same
-   * `false`.
+   * The failure is staged at `AtomicJsonFile.writeAsync`, the seam the store really fails at, because
+   * that is the only way to fail the SECOND of two writes made inside one call - an unwritable path
+   * fails the first. Everything else is the real store: the same validation, the same commit, the
+   * same `false`.
    */
   it('says where the session stands when only its install could not be written', async () => {
     const context = await harness()
     context.setup.resolution = installing([{ command: 'pnpm install', cwd: '' }])
-    const original = AtomicJsonFile.write
-    const write = vi.spyOn(AtomicJsonFile, 'write')
+    const original = AtomicJsonFile.writeAsync
+    const write = vi.spyOn(AtomicJsonFile, 'writeAsync')
     // The queue is read in call order: the waiting session's write lands, the install's does not.
     write.mockImplementationOnce(original)
-    write.mockImplementationOnce(() => { throw new Error('EBUSY: the records file is locked') })
+    write.mockImplementationOnce(() => Promise.reject(new Error('EBUSY: the records file is locked')))
 
     const refused = failureOf(await context.lifecycle.create(worktreeSpec())
       .finally(() => write.mockRestore()))
@@ -2618,11 +2876,11 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       async () => {
         const context = await harness()
         await context.store.put(record('t1', { presentation: 'tab' }))
-        const original = AtomicJsonFile.write
-        const write = vi.spyOn(AtomicJsonFile, 'write')
+        const original = AtomicJsonFile.writeAsync
+        const write = vi.spyOn(AtomicJsonFile, 'writeAsync')
         // The mark lands; the removal that should have followed it does not.
         write.mockImplementationOnce(original)
-        write.mockImplementationOnce(() => { throw new Error('EBUSY: the records file is locked') })
+        write.mockImplementationOnce(() => Promise.reject(new Error('EBUSY: the records file is locked')))
 
         await context.lifecycle.discardPlain('t1').finally(() => write.mockRestore())
 
@@ -3596,6 +3854,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         title: '014 - Existing Codex task',
         titleParts: { number: '014', name: 'Existing Codex task' },
         life: 'ended',
+        endedAt: null,
       }])
     })
 

@@ -156,7 +156,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
     (data: string) => { if (localTools) drafts.typed(sessionId, data) },
     [drafts, localTools, sessionId],
   )
-  const { state, focus, sendCommand, setActive } = useTerminalAttachment(
+  const { state, focus, sendCommand, setActive, setVisible } = useTerminalAttachment(
     target,
     holder,
     attachEpoch,
@@ -362,6 +362,30 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
     // panel was left holding a live terminal that owned no focus and typing went nowhere.
   }, [props.api, focusPanel, setActive, attachEpoch])
 
+  /*
+   * VISIBILITY, which is not activity: a split shows two panels and only one of them is active, and
+   * a terminal nobody is looking at is the one that may hold its output instead of parsing it. Read
+   * once as well as subscribed, for the same reason as the pair above - a panel that opens hidden,
+   * which is what restoring a saved layout does to every tab but one, fires no change.
+   *
+   * The target key is in the list although nothing moves it on a mounted panel: the attach effect
+   * inside `useTerminalAttachment` is keyed on it and starts each run believing it is visible, so a
+   * run of that effect without a run of this one would leave a hidden panel parsing again.
+   *
+   * **The panel's own flag, not its group's.** dockview can leave one panel reading `isVisible`
+   * while its group is hidden - close a tab in a group that a maximize put away, and the successor
+   * is opened without the group's state being consulted. Reading `api.group.api.isVisible` as well
+   * would catch that, and would also make a terminal in a floating or popped-out group depend on
+   * what dockview says about a group that is on screen in another window. Holding output is always
+   * safe and a frozen terminal never is, so the narrower signal wins and the cost of the corner
+   * case is one panel parsing off screen until its next visibility event.
+   */
+  useEffect(() => {
+    setVisible(props.api.isVisible)
+    const disposable = props.api.onDidVisibilityChange((event) => setVisible(event.isVisible))
+    return () => disposable.dispose()
+  }, [props.api, setVisible, attachEpoch, targetKey])
+
   const note = TerminalPanelState.noteOf(state, outcome)
   const recovery = TerminalPanelState.recoveryOf(state, info)
   const terminal = (
@@ -453,6 +477,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
             workingTree={workingTree}
             backPath={PanelSplitParams.backTargetOf(split.state)?.source.path ?? null}
             onBack={() => setMenuNote(splitRef.current.back())}
+            onClose={() => split.close(activeItem.key)}
             onOpenItem={openSplitItem}
             onRefused={setMenuNote}
           />}

@@ -4,6 +4,7 @@ import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import type { CommandOutcome, CommandRunner } from '../shared/commandInvoker.types'
+import type { CommitProgress } from '../shared/commitProgress.types'
 import { SvnCommitManager } from './svnCommitManager'
 
 describe('lib-orchestrator/svn/svnCommitManager', () => {
@@ -42,6 +43,60 @@ describe('lib-orchestrator/svn/svnCommitManager', () => {
     expect(calls[0]).toEqual(['add', '--parents', '--depth', 'empty', '--non-interactive', '--', `${directory}@`])
     expect(lists[0]).toBe(`${directory}@\n`)
     expect(calls).toHaveLength(2)
+  })
+
+  it('stages a path an earlier attempt already versioned, so the retry of that selection commits', async () => {
+    const scope = resolve('scope')
+    const path = resolve(scope, 'already.txt')
+    const calls: string[][] = []
+    const lists: string[] = []
+    const manager = new SvnCommitManager({ run: async (_cwd, args) => {
+      calls.push(args)
+      if (args[0] === 'add') return { code: 1, failure: null, stdout: '',
+        stderr: `svn: warning: W150002: '${path}' is already under version control\nsvn: E200009: Could not add all targets because some targets are already versioned` }
+      if (args[0] === 'info') return { code: 0, failure: null, stderr: '',
+        stdout: `<info><entry kind="file" path="${path}"><wc-info><schedule>add</schedule></wc-info></entry></info>` }
+      lists.push(await readFile(args[args.indexOf('--targets') + 1], 'utf8'))
+      return { code: 0, failure: null, stderr: '', stdout: 'Committed revision 42.\n' }
+    } })
+    expect(await manager.commit(scope, [{ absolutePath: path, nodeKind: 'file', status: 'untracked' }], 'message.txt'))
+      .toMatchObject({ ok: true, value: { revision: '42' } })
+    expect(calls[1]).toEqual(['info', '--xml', '--non-interactive', '--', `${path}@`])
+    expect(lists).toEqual([`${path}@\n`])
+  })
+
+  it('asks about the target itself and reports an add failure the path does not explain', async () => {
+    const scope = resolve('scope')
+    const path = resolve(scope, 'blocked.txt')
+    const calls: string[][] = []
+    const manager = new SvnCommitManager({ run: async (_cwd, args) => {
+      calls.push(args)
+      return args[0] === 'info'
+        ? { code: 1, failure: null, stdout: '<info>\n</info>', stderr: `svn: warning: W155010: The node '${path}' was not found.` }
+        : { code: 1, failure: null, stdout: '', stderr: 'svn: E155004: Working copy locked' }
+    } })
+    expect(await manager.commit(scope, [{ absolutePath: path, nodeKind: 'file', status: 'untracked' }], 'message.txt'))
+      .toMatchObject({ ok: false, code: 'locked' })
+    expect(calls.map(([command]) => command)).toEqual(['add', 'info'])
+  })
+
+  it('reports staging and streamed SVN progress while the command is still running', async () => {
+    const scope = resolve('scope')
+    const events: CommitProgress[] = []
+    const manager = new SvnCommitManager({ run: async (_cwd, args, options) => {
+      if (args[0] === 'commit') {
+        expect(events).toContainEqual({ stage: 'preparing', completed: 2, total: 2 })
+        options?.onStdout?.('Adding         file\nDeleting       old\nTransmitting file data .')
+        expect(events.at(-1)).toEqual({ stage: 'transmitting', completed: 1, total: null })
+        options?.onStdout?.('done\nCommitting transaction...\n')
+      }
+      return { code: 0, stdout: 'Committed revision 42.\n', stderr: '', failure: null }
+    } })
+    expect(await manager.commit(scope, [
+      { absolutePath: resolve(scope, 'file'), nodeKind: 'file', status: 'untracked' },
+      { absolutePath: resolve(scope, 'old'), nodeKind: 'file', status: 'missing' },
+    ], 'message.txt', (value) => events.push(value))).toMatchObject({ ok: true })
+    expect(events.at(-1)?.stage).toBe('committing')
   })
 
   it('refuses conflicts and outside targets before any write', async () => {

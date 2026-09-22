@@ -25,6 +25,10 @@ export class FileViewerSourceShape {
     const candidate = value as Partial<FileViewerDocumentSource>
     if (typeof candidate.sessionId !== 'string' || typeof candidate.path !== 'string')
       return null
+    if (candidate.workingTree !== undefined && (!JsonShape.isRecord(candidate.workingTree)
+      || typeof candidate.workingTree.scopeRoot !== 'string' || !candidate.workingTree.scopeRoot.trim()
+      || (candidate.workingTree.source !== 'svn' && candidate.workingTree.source !== 'git')))
+      return null
     if (candidate.kind === 'workspace')
       return candidate as Extract<FileViewerDocumentSource, { kind: 'workspace' }>
     else if (candidate.kind === 'external')

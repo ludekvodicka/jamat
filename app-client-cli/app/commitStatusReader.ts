@@ -30,6 +30,20 @@ export class CommitStatusReader {
     else return false
   }
 
+  /**
+   * A failed attempt leaves the review open and editable under the same UUID: the person fixes what
+   * it reported and commits the same selection again, so `failed` while the pane is open is a step
+   * of the review, not its outcome. Waiting ends on a review that closed, never on the first
+   * non-pending value. Tortoise is the exception, because its own window already took the review
+   * away and its exit proves neither a commit nor a cancellation.
+   */
+  private static finished(value: RemoteControlCommitStatusDto): boolean {
+    if (value.state === 'committed' || value.state === 'external-closed') return true
+    else if (value.state === 'failed' || value.state === 'cancelled') return value.closed
+    else if (value.state === 'editing' || value.state === 'running') return false
+    else throw new Error(`Unknown commit state: ${JSON.stringify(value.state)}`)
+  }
+
   async read(id: string, wait: boolean, timeoutMs: number, signal?: AbortSignal): Promise<RemoteControlResponse> {
     const deadline = this.deps.now() + timeoutMs
     for (;;) {
@@ -43,7 +57,7 @@ export class CommitStatusReader {
       if (!CommitStatusReader.valid(answer.value, id))
         throw new AppClientCliError('operation-failed', `Invalid status for commit ${id}; its outcome is unknown`)
       const value = answer.value
-      if (!wait || value.state === 'committed' || value.state === 'cancelled' || value.state === 'failed' || value.state === 'external-closed') return answer
+      if (!wait || CommitStatusReader.finished(value)) return answer
       const remaining = deadline - this.deps.now()
       if (remaining <= 0) throw new AppClientCliError('timeout', `Still waiting for commit ${id}; query this UUID again. No other dialog was opened`)
       await this.deps.pause(Math.min(1_000, remaining), signal).catch((error: unknown) => {

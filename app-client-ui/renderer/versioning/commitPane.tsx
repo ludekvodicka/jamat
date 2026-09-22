@@ -4,10 +4,13 @@ import type { FileChangeEntry } from '../../../lib-orchestrator/fileChangesManag
 import { VersioningSettings } from '../../shared/versioningSettings'
 import { VersioningRevert } from '../../shared/versioningCommit'
 import type { FileViewerChangedOpen } from '../fileViewer/fileViewerPanel.types'
+import { FileChangesOpen } from '../fileViewer/fileChangesOpen'
 import { useWorkingTreeChanges } from '../fileViewer/useWorkingTreeChanges'
 import { IpcFailure } from '../ipc/ipcFailure'
 import type { PanelSplitCommitItem } from '../widgets/tabs/panelSplit'
+import { CommitEditorLayout } from './commitEditorLayout'
 import { CommitMessageBox } from './commitMessageBox'
+import { CommitProgress } from './commitProgress'
 import { CommitPaneBridge, type CommitPanePorts } from './commitPanePorts'
 import { CommitTargets, CommitTargetsList } from './commitTargetsList'
 import { useCommitDraft } from './useCommitDraft'
@@ -29,6 +32,8 @@ export function CommitPane(props: {
   const working = useWorkingTreeChanges(props.sessionId, draft !== null, draft?.source, read)
   useEffect(() => { if (draft !== null) working.select(draft.source) }, [draft?.source])
   const snapshot = draft === null ? null : working.snapshotFor(draft.source)
+  const latestSnapshot = useRef(snapshot)
+  useEffect(() => { latestSnapshot.current = snapshot }, [snapshot])
   const [selection, setSelection] = useState<ReadonlyMap<string, boolean>>(new Map())
   const checked = new Set(snapshot === null ? [] : CommitTargets.eligible(snapshot)
     .filter((entry) => selection.get(entry.path) ?? true).map((entry) => entry.fileId))
@@ -42,15 +47,18 @@ export function CommitPane(props: {
   }
   const [note, setNote] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
+  const [commitStartedAt, setCommitStartedAt] = useState<number | null>(null)
   const [opening, setOpening] = useState(false)
   const [externalConfigured, setExternalConfigured] = useState(false)
   const settingsRead = useRef(0)
   const mounted = useRef(true)
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
-  const busy = running || draft?.phase.kind === 'running'
+  const cancelled = draft?.phase.kind === 'cancelled'
+  const busy = running || draft?.phase.kind === 'running' || cancelled
   const done = draft?.phase.kind === 'done'
   const close = useRef(props.onClose)
   close.current = props.onClose
+  useEffect(() => { if (cancelled) close.current() }, [cancelled, draftId])
   const [closeEmpty, setCloseEmpty] = useState(false)
   const reload = async (closeIfEmpty: boolean): Promise<void> => {
     setCloseEmpty(closeIfEmpty)
@@ -60,7 +68,7 @@ export function CommitPane(props: {
   useEffect(() => {
     if (draftId === undefined || snapshot === null || working.loading || working.requiredLoading
       || working.error !== null || working.requiredError !== null || model.error !== null) return
-    if (snapshot.entries.some(CommitTargets.visible)) {
+    if (snapshot.entries.length > 0) {
       populatedDraft.current = draftId
       return
     }
@@ -107,17 +115,23 @@ export function CommitPane(props: {
   const open = async (entry: FileChangeEntry): Promise<void> => {
     if (snapshot === null || opening || busy || done || entry.nodeKind !== 'file') return
     setOpening(true)
+    setNote(null)
     try {
-      const answer = await ports.openFile(snapshot.snapshotId, entry.fileId)
+      const baseline = snapshot.defaultBaseline
+      const isCurrent = (fresh: FileViewerChangedOpen['snapshot']): boolean => mounted.current
+        && (latestSnapshot.current?.snapshotId === snapshot.snapshotId || latestSnapshot.current?.snapshotId === fresh.snapshotId)
+      const opened = await FileChangesOpen.read({ snapshot, entry, openFile: ports.openFile,
+        baselineHint: baseline === null || snapshot.source.selected === null ? null
+          : { kind: baseline.kind, revision: baseline.revision, workingTreeSource: snapshot.source.selected },
+        refresh: () => working.reload(snapshot.source.selected ?? undefined), isCurrent })
+      const { answer } = opened
       const refusal = IpcFailure.of(answer)
-      if (refusal !== null) { if (mounted.current) setNote(refusal); return }
+      if (refusal !== null) { if (isCurrent(opened.snapshot)) setNote(refusal); return }
       if (!answer.ok || !answer.value.ok) return
       try {
-        if (!mounted.current) return
-        const baseline = snapshot.defaultBaseline
-        setNote(props.onOpenChanged({ document: answer.value.value, snapshot, fileId: entry.fileId,
-          baselineHint: baseline === null || snapshot.source.selected === null ? null
-            : { kind: baseline.kind, revision: baseline.revision, workingTreeSource: snapshot.source.selected } }))
+        if (!isCurrent(opened.snapshot)) return
+        setNote(props.onOpenChanged({ document: answer.value.value, snapshot: opened.snapshot,
+          fileId: opened.fileId, baselineHint: opened.baselineHint }))
       } finally { await ports.releaseFile(answer.value.value.documentId) }
     } finally { if (mounted.current) setOpening(false) }
   }
@@ -134,6 +148,7 @@ export function CommitPane(props: {
   const run = async (): Promise<void> => {
     if (draft === null || snapshot === null || !canCommit) return
     setRunning(true)
+    setCommitStartedAt(Date.now())
     setNote(null)
     try {
       const answer = await ports.versioning.runCommit({ draftId: draft.draftId, snapshotId: snapshot.snapshotId, fileIds: [...checked], message: draft.message,
@@ -148,7 +163,7 @@ export function CommitPane(props: {
         if (mounted.current && invalidList)
           setNote('File list reloaded. Review the files and selection, then click Commit files again.')
       }
-    } finally { if (mounted.current) setRunning(false) }
+    } finally { if (mounted.current) { setRunning(false); setCommitStartedAt(null) } }
   }
   const openTortoise = async (): Promise<void> => {
     if (draft === null || busy || done) return
@@ -167,6 +182,7 @@ export function CommitPane(props: {
   else if (phase.kind === 'running') status = phase.detail ?? 'Committing...'
   else if (phase.kind === 'done') status = `Committed ${phase.revision}\n${phase.output}`
   else if (phase.kind === 'failed') status = phase.detail
+  else if (phase.kind === 'cancelled') status = 'Review cancelled'
   else throw new Error(`Unknown commit phase: ${JSON.stringify(phase)}`)
   return <section className="commit-pane" tabIndex={-1} aria-label={`${props.item.vcs.toUpperCase()} commit dialog`}
     onKeyDownCapture={(event) => {
@@ -182,11 +198,16 @@ export function CommitPane(props: {
         if (canCommit) void run()
       }
     }}>
-    <strong className="commit-scope">{draft?.scopeDisplay ?? props.item.scopeRoot}</strong>
-    {snapshot !== null && !done && <CommitTargetsList snapshot={snapshot} checked={checked} disabled={busy}
+    {/* The working copy, and only that: the paths this commit was restricted to are listed in the
+        tooltip, because the heading is one line and the list under it already names every file. */}
+    <strong className="commit-scope" title={draft?.scopeTooltip ?? props.item.scopeRoot}>{draft?.scopeRoot ?? props.item.scopeRoot}</strong>
+    {draft !== null && <CommitEditorLayout settings={ports.versioning} reportError={ports.reportError} files={snapshot !== null && !done ? <CommitTargetsList snapshot={snapshot} checked={checked} disabled={busy}
       onMenuOpen={() => { void refreshDiffSettings() }} onOpenExternal={externalConfigured ? (entry) => { void openExternal(entry) } : null}
-      onChange={setChecked} onOpen={(entry) => { void open(entry) }} onRevert={(entry) => { void revert([entry.fileId]) }} onOpenSeparately={props.onOpenSeparately} />}
-    {draft !== null && <CommitMessageBox value={draft.message} disabled={busy || done} proposed={draft.proposedByAgent && !draft.editedByPerson} onChange={model.setMessage} />}
+      onChange={setChecked} onOpen={(entry) => { void open(entry) }} onRevert={(entry) => { void revert([entry.fileId]) }} onOpenSeparately={props.onOpenSeparately} /> : null}
+      message={<CommitMessageBox value={draft.message} disabled={busy || done} proposed={draft.proposedByAgent && !draft.editedByPerson} onChange={model.setMessage} />} />}
+    {phase?.kind === 'running' ? <CommitProgress phase={phase} />
+      : commitStartedAt !== null && !done
+        ? <CommitProgress phase={{ kind: 'running', startedAt: commitStartedAt }} /> : null}
     <div role="status" className="commit-status">
       {model.error ?? working.error ?? working.requiredError ?? note ?? status
         ?? (working.loading && draft !== null ? 'Reading changes...' : draft === null ? 'Opening commit dialog...' : `${selectedCount} selected`)}

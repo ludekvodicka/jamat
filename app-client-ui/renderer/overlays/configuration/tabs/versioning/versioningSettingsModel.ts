@@ -1,6 +1,7 @@
 import type { VersioningMode } from '../../../../../../lib-orchestrator/git/git.types'
 import {
   VersioningSettings,
+  type VersioningSettingsField,
   type VersioningSettingsValue,
 } from '../../../../../shared/versioningSettings'
 import {
@@ -18,6 +19,8 @@ export type VersioningSettingsInput =
   | { input: 'mode'; value: VersioningMode }
   | { input: 'diffTool'; value: VersioningSettingsValue['diffTool'] }
   | { input: 'activateSessionOnCommit'; value: boolean }
+  | { input: 'returnToPreviousSessionAfterCommit'; value: boolean }
+  | { input: 'returnToPreviousSessionWithinMinutes'; value: number }
   | { input: 'closeCommitOnSuccess'; value: boolean }
 
 export type VersioningSettingsEffect = SettingsCardEffect<VersioningSettingsValue>
@@ -36,22 +39,26 @@ export class VersioningSettingsModel {
     return SettingsCard.initial()
   }
 
-  static isModified(state: VersioningSettingsModelState, field: keyof VersioningSettingsValue = 'mode'): boolean {
-    return SettingsCard.isModified(state, (loaded, buffer) => JSON.stringify(loaded[field]) === JSON.stringify(buffer[field]))
+  static isModified(state: VersioningSettingsModelState, field: VersioningSettingsField = 'mode'): boolean {
+    return SettingsCard.isModified(state, (loaded, buffer) => VersioningSettings.fieldsOf(field)
+      .every((key) => JSON.stringify(loaded[key]) === JSON.stringify(buffer[key])))
   }
 
   static transition(
     state: VersioningSettingsModelState,
     input: VersioningSettingsInput,
-    field: keyof VersioningSettingsValue = 'mode',
+    field: VersioningSettingsField = 'mode',
   ): VersioningSettingsStep {
     const shared = SettingsCard.transition<VersioningSettingsValue, VersioningSettingsEffect>(
       state,
       input,
-      (buffer) => ({ ...buffer, [field]: VersioningSettings.defaultValue()[field] }),
+      (buffer) => ({ ...buffer, ...Object.fromEntries(VersioningSettings.fieldsOf(field)
+        .map((key) => [key, VersioningSettings.defaultValue()[key]])) }),
     )
     if (shared !== null) return shared
-    if (input.input === 'mode' || input.input === 'diffTool' || input.input === 'activateSessionOnCommit' || input.input === 'closeCommitOnSuccess')
+    if (input.input === 'mode' || input.input === 'diffTool' || input.input === 'activateSessionOnCommit'
+      || input.input === 'returnToPreviousSessionAfterCommit' || input.input === 'returnToPreviousSessionWithinMinutes'
+      || input.input === 'closeCommitOnSuccess')
       return state.buffer === null
         ? SettingsCard.step(state)
         : SettingsCard.step({ ...state, buffer: { ...state.buffer, [input.input]: input.value } })

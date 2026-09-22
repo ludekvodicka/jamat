@@ -8,6 +8,7 @@ import type {
 import type {
   SessionAgentId,
   SessionCreateSpec,
+  SessionGroup,
   SessionInfo,
   SessionsOpResult,
   SessionsSnapshot,
@@ -163,6 +164,7 @@ export interface RemoteControlProjectsDto {
 }
 
 export interface RemoteControlTabDto {
+  commitReviews?: readonly RemoteControlCommitStatusDto[]
   panelId: string
   windowId: string
   key: string
@@ -195,6 +197,7 @@ export interface RemoteControlTabOpenCommitDto {
 }
 
 export interface RemoteControlCommitStatusDto {
+  paths?: readonly string[]
   kind: 'commit-status'
   commitSessionId: string
   sessionId: string
@@ -222,6 +225,13 @@ export interface RemoteControlSessionCreateDto {
   session: { sessionId: string; tabTitle: string }
   tabOpen: RemoteControlStepResult<RemoteControlTabCommandDto> | null
   plainCleanup: SessionsOpResult | null
+  /**
+   * Null when no group was asked for. A group that was asked for and could not be written is a
+   * failure of its own step rather than of the create: the session exists, and refusing the call
+   * over the section it was filed under would leave the caller holding a session it thinks it does
+   * not have. The same shape and the same reason as `tabOpen` beside it.
+   */
+  groupAssign: RemoteControlStepResult<{ group: SessionGroup }> | null
 }
 
 export interface RemoteControlSessionTranscriptDto {
@@ -361,7 +371,7 @@ export interface RemoteControlOperationMap {
     response: SessionsSnapshot
   }
   'sessions.create': {
-    request: { spec: SessionCreateSpec; openTab?: boolean }
+    request: { spec: SessionCreateSpec; openTab?: boolean; group?: SessionGroup }
     response: RemoteControlSessionCreateDto
   }
   'sessions.reopen': {
@@ -393,10 +403,14 @@ export interface RemoteControlOperationMap {
     response: RemoteControlTabOpenFileDto
   }
   'tabs.openCommit': {
-    request: { session: RemoteControlSessionSelector; vcs: 'svn' | 'git'; scope?: string; message?: string }
+    request: { session: RemoteControlSessionSelector; vcs: 'svn' | 'git'; scope?: string; paths?: readonly string[]; message?: string }
     response: RemoteControlTabOpenCommitDto
   }
   'tabs.commitStatus': {
+    request: { commitSessionId: string }
+    response: RemoteControlCommitStatusDto
+  }
+  'tabs.cancelCommit': {
     request: { commitSessionId: string }
     response: RemoteControlCommitStatusDto
   }

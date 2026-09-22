@@ -1,3 +1,4 @@
+import { SessionsGroupsState, type SessionGroup, type SessionGroupAssignment } from '../../../shared/sessionsGroupsState'
 import { CommitOpenStore } from '../../versioning/commitOpenStore'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -30,6 +31,104 @@ import {
 } from './sessionsTreeView'
 
 describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
+  it.each(['together', 'separated', 'states'] as const)('orders assigned groups and the submenu equally in %s', async (view) => {
+    const source = SessionsFixtures.mixed()
+    const base = sessionOf(source, 's-working')
+    const snapshot = { ...source, sessions: ['pinned', 'priority', 'none', 'automation', 'waiting', 'blocked'].map((key) =>
+      ({ ...base, sessionId: key, title: key })) }
+    const groups: SessionGroupAssignment[] = [
+      { key: 'session:pinned', group: 'pinned' }, { key: 'session:priority', group: 'priority' },
+      { key: 'session:automation', group: 'automation' },
+      { key: 'session:waiting', group: 'waiting' }, { key: 'session:blocked', group: 'blocked' },
+    ]
+    const { container, ports } = await mount(snapshot, view, { revision: 1, outbound: [], inbound: [] }, [], [], groups)
+    const sections = (): string[] => [...container.querySelectorAll('.jamat-sessions__stack > section')]
+      .map((node) => node.getAttribute('aria-label')!)
+    expect(sections()).toEqual(['Pinned', 'Priority', 'Sessions', 'Automation', 'Waiting', 'Blocked'])
+    for (const title of ['Pinned', 'Priority', 'Sessions', 'Automation', 'Waiting', 'Blocked'])
+      expect(container.querySelector(`.jamat-sessions__stack > section[aria-label="${title}"]`)!.querySelector(`[data-session="${title === 'Sessions' ? 'none' : title.toLowerCase()}"]`)).not.toBeNull()
+    fireEvent.contextMenu(rowOf(container, 'none'))
+    expect(menuTitles().slice(0, 3)).toEqual(['Session Appearance', 'Groups', 'Session properties…'])
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Groups' }))
+    expect(screen.getAllByRole('menuitemcheckbox').map((item) => item.textContent?.replace('✓', '')))
+      .toEqual(['Pinned', 'Priority', 'None', 'Automation', 'Waiting', 'Blocked'])
+    expect(screen.getByRole('menuitemcheckbox', { name: 'None' })).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Blocked' }))
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Blocked' }).querySelector('[data-session="none"]')).not.toBeNull())
+    expect(ports.savedGroups).toContainEqual({ key: 'session:none', group: 'blocked' })
+    fireEvent.contextMenu(rowOf(container, 'priority'))
+    chooseGroup('None')
+    await waitFor(() => expect(sections()).toEqual(['Pinned', 'Sessions', 'Automation', 'Waiting', 'Blocked']))
+  })
+
+  it('shows inherited selection and lets a session override its root with None', async () => {
+    const { container, ports } = await mount(SessionsFixtures.mixed(), 'together',
+      { revision: 1, outbound: [], inbound: [] }, [], [], [{ key: 'category:nodejs', group: 'priority' }])
+    const priority = await screen.findByRole('region', { name: 'Priority' })
+    expect(priority.querySelector('[data-session="s-working"]')).not.toBeNull()
+    fireEvent.contextMenu(rowOf(container, 's-working'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Groups' }))
+    expect(screen.getByRole('menuitemcheckbox', { name: 'Priority' })).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'None' }))
+    await waitFor(() => expect(priority.querySelector('[data-session="s-working"]')).toBeNull())
+    expect(container.querySelector('.jamat-sessions__default-group')!.querySelector('[data-session="s-working"]')).not.toBeNull()
+    expect(priority.querySelector('[data-session="s-waiting"]')).not.toBeNull()
+    expect(ports.savedGroups).toContainEqual({ key: 'session:s-working', group: 'none' })
+    fireEvent.contextMenu(groupRowLabelled(priority, 'NodeJs'))
+    chooseGroup('Blocked')
+    const blocked = await screen.findByRole('region', { name: 'Blocked' })
+    expect(blocked.querySelector('[data-session="s-waiting"]')).not.toBeNull()
+    expect(blocked.querySelector('[data-session="s-working"]')).toBeNull()
+  })
+
+  it.each(['together', 'separated', 'states'] as const)('pins a session above the other groups in %s and removes the empty heading on unpin', async (view) => {
+    const { container, ports } = await mount(SessionsFixtures.mixed(), view)
+    expect(screen.queryByRole('region', { name: 'Pinned' })).toBeNull()
+    fireEvent.contextMenu(rowOf(container, 's-working'))
+    chooseGroup('Pinned')
+    const pinned = await screen.findByRole('region', { name: 'Pinned' })
+    expect(pinned.querySelector('[data-session="s-working"]')).not.toBeNull()
+    expect(pinned.querySelector('[data-session="s-waiting"]')).toBeNull()
+    expect(container.querySelectorAll('[data-session="s-working"]')).toHaveLength(1)
+    expect(container.querySelector('.jamat-sessions__stack')?.firstElementChild).toBe(pinned)
+    expect(ports.savedGroups.filter((entry) => entry.group === 'pinned')).toEqual([{ key: 'session:s-working', group: 'pinned' }])
+    fireEvent.contextMenu(rowOf(container, 's-working'))
+    chooseGroup('None')
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Pinned' })).toBeNull())
+    expect(ports.savedGroups).toEqual([{ key: 'session:s-working', group: 'none' }])
+    expect(container.querySelector('[data-session="s-working"]')).not.toBeNull()
+  })
+
+  it.each(['AppJamatV3', 'NodeJs'])('pins the whole %s group and preserves an individual pin after unpinning the group', async (label) => {
+    const { container, ports } = await mount(SessionsFixtures.mixed(), 'together',
+      { revision: 1, outbound: [], inbound: [] }, [], [], [{ key: 'session:s-working', group: 'pinned' }])
+    const pinned = await screen.findByRole('region', { name: 'Pinned' })
+    fireEvent.contextMenu(groupRowLabelled(pinned, label))
+    chooseGroup('Pinned')
+    await waitFor(() => expect(pinned.querySelector('[data-session="s-waiting"]')).not.toBeNull())
+    expect(pinned.querySelector('[data-session="s-tab"]')).not.toBeNull()
+    expect(container.querySelectorAll('[data-session="s-waiting"]')).toHaveLength(1)
+    fireEvent.contextMenu(groupRowLabelled(pinned, label))
+    chooseGroup('None')
+    await waitFor(() => expect(pinned.querySelector('[data-session="s-waiting"]')).toBeNull())
+    expect(pinned.querySelector('[data-session="s-working"]')).not.toBeNull()
+    expect(ports.savedGroups.filter((entry) => entry.group === 'pinned')).toEqual([{ key: 'session:s-working', group: 'pinned' }])
+  })
+
+  it('retains the current tree when storing a pin is refused and permits retry', async () => {
+    const { container, ports } = await mount(SessionsFixtures.mixed())
+    ports.groupsAnswer = { ok: true, value: false }
+    fireEvent.contextMenu(rowOf(container, 's-working'))
+    chooseGroup('Pinned')
+    expect(await screen.findByRole('alert')).toHaveTextContent('Groups could not be stored')
+    expect(screen.queryByRole('region', { name: 'Pinned' })).toBeNull()
+    ports.groupsAnswer = { ok: true, value: true }
+    fireEvent.contextMenu(rowOf(container, 's-working'))
+    chooseGroup('Pinned')
+    await screen.findByRole('region', { name: 'Pinned' })
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
   it('draws a red commit star for a clean session', async () => {
     const snapshot = SessionsFixtures.mixed()
     const sessionId = snapshot.sessions[0].sessionId
@@ -49,6 +148,22 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     readonly errors: string[] = []
     readonly savedViews: SessionsTabsView[] = []
     savedFilters: readonly SavedSessionsFilter[] = []
+    savedGroups: readonly SessionGroupAssignment[] = []
+    groupsAnswer: IpcResult<boolean> = { ok: true, value: true }
+
+    loadGroups(): Promise<IpcResult<readonly SessionGroupAssignment[]>> {
+      return Promise.resolve({ ok: true, value: this.savedGroups })
+    }
+
+    assignGroup(key: string, group: SessionGroup): Promise<IpcResult<boolean>> {
+      if (this.groupsAnswer.ok && this.groupsAnswer.value)
+        this.savedGroups = SessionsGroupsState.assigned(this.savedGroups, key, group)
+      return Promise.resolve(this.groupsAnswer)
+    }
+
+    subscribeGroups(): () => void {
+      return () => {}
+    }
     filtersAnswer: IpcResult<boolean> = { ok: true, value: true }
 
     loadFilters(): Promise<IpcResult<readonly SavedSessionsFilter[]>> {
@@ -153,10 +268,12 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     initialRemote: RemoteConnectionsSnapshot = { revision: 1, outbound: [], inbound: [] },
     storedFilters: readonly SavedSessionsFilter[] = [],
     commitSessionIds: string[] = [],
+    storedGroups: readonly SessionGroupAssignment[] = [],
   ) {
     const ports = new Ports(snapshot)
     ports.storedView = storedView
     ports.savedFilters = storedFilters
+    ports.savedGroups = storedGroups
     const onLaunch = vi.fn()
     const onOpenSettings = vi.fn()
     const onOpenTerminal = vi.fn()
@@ -411,7 +528,10 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     return [...root.querySelectorAll('button')]
       .flatMap((node) => {
         const name = node.getAttribute('aria-label')
-        return name === null ? [] : [[name, node] as [string, HTMLElement]]
+        // The twisties carry one too, naming the group they fold. They are not what anything in
+        // here looks up by name, and listing them would bury the actions that are.
+        if (name === null || node.classList.contains('jamat-sessions__twisty')) return []
+        return [[name, node] as [string, HTMLElement]]
       })
   }
 
@@ -584,12 +704,17 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
   })
 
   /** What the panel put in its body, by tag: one tree, or a tree, a heading and a second tree. */
+  function chooseGroup(label: string): void {
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Groups' }))
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: label }))
+  }
+
   function bodyPartsOf(container: HTMLElement): string[] {
-    return [...partsHostOf(container).children].map((node) => node.tagName.toLowerCase())
+    return [...partsHostOf(container).children].filter((node) => node.tagName !== 'H3').map((node) => node.tagName.toLowerCase())
   }
 
   function partOf(container: HTMLElement, index: number): HTMLElement {
-    const part = partsHostOf(container).children.item(index)
+    const part = [...partsHostOf(container).children].filter((node) => node.tagName !== 'H3')[index]
     if (!(part instanceof HTMLElement))
       throw new Error(`The panel drew no part ${index} in ${bodyOf(container).innerHTML}`)
     return part
@@ -597,7 +722,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
 
   /** Separated puts its three parts in a column inside the body; together has none, and draws one. */
   function partsHostOf(container: HTMLElement): HTMLElement {
-    const stack = bodyOf(container).querySelector('.jamat-sessions__stack')
+    const stack = bodyOf(container).querySelector('.jamat-sessions__default-group')
     return stack instanceof HTMLElement ? stack : bodyOf(container)
   }
 
@@ -628,6 +753,15 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
       .find((node) => node.querySelector('.jamat-sessions__label')?.textContent === label)
     if (!(found instanceof HTMLElement))
       throw new Error(`No group row reads ${JSON.stringify(label)} in ${root.textContent}`)
+    return found
+  }
+
+  /** The only thing on that row that folds it: the arrow, never the name beside it. */
+  function twistyNamed(root: ParentNode, label: string): HTMLElement {
+    const found = groupNamed(root, label).parentElement
+      ?.querySelector('.jamat-sessions__twisty')
+    if (!(found instanceof HTMLElement))
+      throw new Error(`The row named ${JSON.stringify(label)} carries no twisty`)
     return found
   }
 
@@ -897,7 +1031,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
         ),
       )
 
-      expect(sectionNames(container)).toEqual(expected)
+      expect(sectionNames(container)).toEqual(['Sessions', ...expected])
     },
   )
 
@@ -908,7 +1042,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
       null,
       remoteSnapshot([outboundEndpoint(mixed, 'endpoint-a')]),
     )
-    expect(sectionNames(container)).toEqual(['Tabs', 'Remote'])
+    expect(sectionNames(container)).toEqual(['Sessions', 'Tabs', 'Remote'])
     const remote = sectionAfter(container, 'Remote')
     expect(remote.textContent).toContain('Office PC')
     expect(remote.textContent).not.toContain('config-endpoint-a')
@@ -1014,7 +1148,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     })
     const { container } = await mount(mixed, null, remoteSnapshot([offline]))
 
-    expect(sectionNames(container)).toEqual(['Tabs', 'Remote'])
+    expect(sectionNames(container)).toEqual(['Sessions', 'Tabs', 'Remote'])
   })
 
   it('disconnects one remote session without running its finish action', async () => {
@@ -1122,7 +1256,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     fireEvent.click(buttonNamed(container, 'Grouping'))
     fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'States separated' }))
     expect(ports.savedViews).toEqual(['states'])
-    const groups = [...container.querySelectorAll('.jamat-sessions__stack > section')]
+    const groups = [...container.querySelectorAll('.jamat-sessions__default-group > section')]
     expect(groups.map((group) => group.getAttribute('aria-label'))).toEqual(['Needs attention', 'Idle unread', 'Running', 'Read'])
     expect(groups[0]!.querySelectorAll('[data-glyph="waiting"]')).toHaveLength(2)
     expect(groups[0]!.textContent).toContain('Office PC')
@@ -1148,7 +1282,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
 
   it('restores state grouping without writing it back', async () => {
     const { ports, container } = await mount(SessionsFixtures.mixed(), 'states')
-    expect([...container.querySelectorAll('.jamat-sessions__stack > section')]
+    expect([...container.querySelectorAll('.jamat-sessions__default-group > section')]
       .map((group) => group.getAttribute('aria-label'))).toEqual(['Needs attention', 'Idle unread', 'Running', 'Read'])
     expect(buttonNamed(container, 'Grouping').getAttribute('title')).toBe('States separated')
     expect(ports.savedViews).toEqual([])
@@ -1160,7 +1294,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     const initial = { ...source, sessions: [working] }
     const { ports, container, pushRemote, setVisibleTargets } = await mount(initial, 'states',
       remoteSnapshot([outboundEndpoint(initial, 'office')]))
-    const groups = [...container.querySelectorAll('.jamat-sessions__stack > section')]
+    const groups = [...container.querySelectorAll('.jamat-sessions__default-group > section')]
     const idle = { ...initial, revision: source.revision + 1, sessions: [{ ...working, activity: 'idle' as const }] }
     ports.push(idle)
     pushRemote(remoteSnapshot([outboundEndpoint(idle, 'office')], [], 2))
@@ -1188,12 +1322,49 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     const { container } = await mount(SessionsFixtures.mixed())
     expect(partOf(container, 2).querySelector('[data-session="s-tab"]')).toBeTruthy()
 
-    fireEvent.click(groupNamed(partOf(container, 0), 'AppJamatV3'))
+    fireEvent.click(twistyNamed(partOf(container, 0), 'AppJamatV3'))
 
     expect(container.querySelector('[data-session="s-working"]')).toBeNull()
     expect(container.querySelector('[data-session="s-tab"]')).toBeNull()
     // And nothing else folded with it: this is one project, not the whole tree.
     expect(container.querySelector('[data-session="s-ended"]')).toBeTruthy()
+  })
+
+  /**
+   * A folded group is where a question goes unanswered for an hour. The session that starts waiting
+   * opens whatever it is folded inside, and only then: the person may fold it straight back while
+   * the question stands, and the next tick leaves it folded.
+   */
+  it('opens a folded project when a session inside it starts waiting for an answer', async () => {
+    const { container, ports } = await mount(SessionsFixtures.mixed())
+    fireEvent.click(twistyNamed(partOf(container, 0), 'AppJamatV3'))
+    expect(container.querySelector('[data-session="s-working"]')).toBeNull()
+
+    await act(async () => {
+      ports.push(withActivity(SessionsFixtures.mixed(), ['s-working'], 'waiting'))
+    })
+
+    await waitFor(() => expect(container.querySelector('[data-session="s-working"]')).toBeTruthy())
+    fireEvent.click(twistyNamed(partOf(container, 0), 'AppJamatV3'))
+    await act(async () => {
+      ports.push(withActivity(SessionsFixtures.mixed(), ['s-working'], 'waiting'))
+    })
+    expect(container.querySelector('[data-session="s-working"]')).toBeNull()
+  })
+
+  /**
+   * A project name is read far more often than it is folded away, and the two used to be the same
+   * control: a click aimed at the row, or one pixel wide of the launch button, took the sessions
+   * under it off the screen. The arrow folds; everything beside it is text.
+   */
+  it('leaves a project open when its name is clicked', async () => {
+    const { container } = await mount(SessionsFixtures.mixed())
+
+    fireEvent.click(groupNamed(partOf(container, 0), 'AppJamatV3'))
+
+    expect(container.querySelector('[data-session="s-working"]')).toBeTruthy()
+    expect(twistyNamed(partOf(container, 0), 'AppJamatV3').getAttribute('aria-expanded'))
+      .toBe('true')
   })
 
   /** Secondary operations belong to the row menu; the row itself carries only its primary Finish. */
@@ -1658,7 +1829,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
       await waitFor(() => expect(container.querySelector('.jamat-sessions__remote-status--offline')).not.toBeNull())
       const ended = settled(snapshot, 's-working', 'ended', 'finished')
       pushRemote(remoteSnapshot([outboundEndpoint(ended, 'endpoint-a')], [], 3))
-      await waitFor(() => expect(sectionNames(container)).toEqual(['Tabs', 'Remote']))
+      await waitFor(() => expect(sectionNames(container)).toEqual(['Sessions', 'Tabs', 'Remote']))
 
       expect(onFinalizeAsk).not.toHaveBeenCalled()
     })
@@ -2079,6 +2250,33 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     ]])
   })
 
+  it.each(['.jamat-sessions__row', '.jamat-sessions__glyph', '.jamat-sessions__agent'])(
+    'activates from the whole session row, including %s', async (selector) => {
+      const { onOpenTerminal, container } = await mount(SessionsFixtures.mixed())
+      showAll(container)
+      const target = container.querySelector(`[data-session="s-working"] ${selector}`)
+      if (!target) throw new Error(`Missing session target: ${selector}`)
+      fireEvent.click(target)
+      expect(onOpenTerminal.mock.calls).toEqual([[
+        { kind: 'local', sessionId: 's-working' }, 'AppJamatV3 - Alpha worktree', 'preview',
+      ]])
+      fireEvent.doubleClick(target)
+      expect(onOpenTerminal.mock.calls.at(-1)).toEqual([
+        { kind: 'local', sessionId: 's-working' }, 'AppJamatV3 - Alpha worktree', 'permanent',
+      ])
+    },
+  )
+
+  it('does not double-open the session or pin it when an inline action is clicked', async () => {
+    const { onOpenTerminal, container } = await mount(SessionsFixtures.mixed())
+    showAll(container)
+    const action = actionNamed(container, 's-working', 'Finish')
+    fireEvent.click(action)
+    expect(onOpenTerminal).toHaveBeenCalledTimes(1)
+    fireEvent.doubleClick(action)
+    expect(onOpenTerminal).toHaveBeenCalledTimes(1)
+  })
+
   /**
    * The gesture that says "keep this one". The browser sends both clicks of a double-click first,
    * so the tab is opened provisionally twice and then asked for permanently; each step is right on
@@ -2154,7 +2352,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     showAll(container)
     const launch = labelled(container, '+ Session in AppJamatV3')
     const twisty = launch.closest('.jamat-sessions__group-row')
-      ?.querySelector('.jamat-sessions__group')
+      ?.querySelector('.jamat-sessions__twisty')
 
     fireEvent.click(launch)
 
@@ -2330,7 +2528,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
 
   it('collapses a root and takes its sessions off the screen with it', async () => {
     const { container } = await mount(SessionsFixtures.mixed())
-    const root = buttonNamed(container, '▾AD-HOC')
+    const root = twistyNamed(container, 'AD-HOC')
 
     fireEvent.click(root)
 
@@ -2454,17 +2652,13 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     }]])
   })
 
-  /**
-   * The two roots the catalog does not name hold no place and no path, so their menu would be empty
-   * - and an empty box under the cursor says less than a right-click that does nothing.
-   */
-  it('opens no menu at all on the AD-HOC root', async () => {
+  it('offers Groups on the AD-HOC root', async () => {
     const { container } = await mount(SessionsFixtures.mixed())
     showAll(container)
 
     fireEvent.contextMenu(groupRowLabelled(container, 'AD-HOC'))
 
-    expect(document.querySelector('.jamat-tab-menu')).toBeNull()
+    expect(menuTitles()).toEqual(['Groups'])
   })
 
   // An ad-hoc directory belongs to no category, so there is nothing for the launcher to pre-bind to.
@@ -2474,7 +2668,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
 
     fireEvent.contextMenu(groupRowLabelled(container, 'Scratch'))
 
-    expect(menuTitles()).toEqual(['Open project folder', 'Copy project folder'])
+    expect(menuTitles()).toEqual(['Open project folder', 'Copy project folder', 'Groups'])
   })
 
   /**

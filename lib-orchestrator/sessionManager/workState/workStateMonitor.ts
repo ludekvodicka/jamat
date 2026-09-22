@@ -3,6 +3,7 @@ import type {
   RuntimeListResult,
   RuntimeRef,
   RuntimeSessionInfo,
+  TerminalProjectionView,
 } from '../../../app-host/app/wire/hostWire.js'
 import type { HostCallResult } from '../../hostClient/hostClient.types'
 import type { SessionRecordAgent } from '../records/sessionRecord.types'
@@ -17,7 +18,10 @@ import { ScreenTail } from './screenTail'
  * holds and never opens another. `runtime.list` is not on it - the listing is handed in.
  */
 export interface HostRuntimeReader {
-  runtimeInspect(target: RuntimeRef): Promise<HostCallResult<RuntimeInspectResult>>
+  runtimeInspect(
+    target: RuntimeRef,
+    view?: TerminalProjectionView,
+  ): Promise<HostCallResult<RuntimeInspectResult>>
 }
 
 export interface WorkStateMonitorDeps {
@@ -177,11 +181,17 @@ export class WorkStateMonitor {
     session: RuntimeSessionInfo,
     agentId: SessionRecordAgent['agentId'],
   ): Promise<AgentWorkInspection> {
-    const inspected = await this.deps.client.runtimeInspect({
-      hostInstanceId,
-      runtimeSessionId: session.runtimeSessionId,
-      generation: session.generation,
-    })
+    const inspected = await this.deps.client.runtimeInspect(
+      {
+        hostInstanceId,
+        runtimeSessionId: session.runtimeSessionId,
+        generation: session.generation,
+      },
+      // The three windows below, and not the half megabyte of ring and thousand rows of scrollback
+      // they used to be found in. A Host too old to know the field answers with all of it, and this
+      // reads the same three windows out of that.
+      ScreenTail.viewConst,
+    )
     // A refused call or a runtime with no projection yet is an absence of evidence, and that is
     // exactly what `unknown` says. The settle rule below still decides on the age of the output.
     if (!inspected.ok || inspected.value.projection === null) return WorkStateMonitor.noEvidenceConst

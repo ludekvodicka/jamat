@@ -119,6 +119,7 @@ export class ComputersScreenModel {
       content: 'both',
       filterText: filter,
       inFront: new Set(),
+      tabbed: new Set(),
       now: 0,
     }, new Set(), null, {
       namespace: `connect:${row.remoteEndpointId}`,

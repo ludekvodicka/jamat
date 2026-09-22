@@ -48,7 +48,7 @@ export class ServiceSessions {
 
   private inspect(body: Record<string, unknown>): Promise<RuntimeInspectResult> {
     const request = body as unknown as RuntimeInspectReq
-    return this.mapErrors(() => this.sessions.inspect(request.target))
+    return this.mapErrors(() => this.sessions.inspect(request.target, request.view ?? null))
   }
 
   private async create(body: Record<string, unknown>): Promise<RuntimeResult> {

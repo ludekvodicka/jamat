@@ -31,6 +31,16 @@
   border: 1px solid var(--color-border-frame);
   border-radius: var(--radius-control);
 }
+/* One sentence with a field inside it, so the number reads as the words around it rather than as a
+   labelled box of its own. The checkbox rows above are laid out by configuration.css. */
+.jamat-configuration-versioning__minutes {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.jamat-configuration-versioning__minutes input {
+  width: 5em;
+}
 .jamat-configuration-diff-field {
   display: flex;
   flex-direction: column;

@@ -132,8 +132,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
     expect(MenuView.titles()).not.toContain(titleOf('tab.closeOthers'))
     expect(MenuView.titles()).not.toContain(titleOf('tab.splitRight'))
     expect(MenuView.titles()).not.toContain(titleOf('tab.moveToNewWindow'))
-    // Appearance | session actions | folder actions.
-    expect(MenuView.separators()).toHaveLength(2)
+    expect(MenuView.separators()).toHaveLength(3)
   })
 
   it('offers the other agent, whichever this one is', () => {

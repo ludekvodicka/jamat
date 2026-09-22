@@ -50,6 +50,8 @@ describe('app-client-ui/app/sessions/serviceSessionsIpc', () => {
   const updateConst: SessionDetailsUpdate = { name: 'renamed', color: 'sky' }
 
   const calls: { method: string; args: unknown[] }[] = []
+  /** What the fork told the client state, which is the one handler that says anything at all. */
+  const forks: { parentSessionId: string; sessionId: string }[] = []
   let service: ServiceSessionsIpc
 
   /** Records what each channel forwarded; what the answers mean is the library's own tests. */
@@ -85,7 +87,10 @@ describe('app-client-ui/app/sessions/serviceSessionsIpc', () => {
   beforeEach(() => {
     ipcMainMock.handlers.clear()
     calls.length = 0
-    service = new ServiceSessionsIpc(recordingManager())
+    forks.length = 0
+    service = new ServiceSessionsIpc(recordingManager(), (parentSessionId, sessionId) => {
+      forks.push({ parentSessionId, sessionId })
+    })
   })
 
   async function invoke(
@@ -172,7 +177,7 @@ describe('app-client-ui/app/sessions/serviceSessionsIpc', () => {
     service = new ServiceSessionsIpc({
       snapshot: () => snapshotConst,
       reopenSession: () => { throw new Error('the manager is gone') },
-    } as unknown as SessionManager)
+    } as unknown as SessionManager, () => {})
     service.initialize()
 
     expect(await invoke('sessions:reopen', 'session-1'))
@@ -196,6 +201,44 @@ describe('app-client-ui/app/sessions/serviceSessionsIpc', () => {
   })
 
   /**
+   * The group its parent was put in is the client's own state, so the library never hears of it:
+   * this channel is the only place that holds the parent and the session cut from it at once.
+   */
+  it('names the parent and the fork once a fork has landed', async () => {
+    const forking = {
+      forkSession: () =>
+        Promise.resolve({ ok: true, value: { sessionId: 'fork-1', tabTitle: 'AppJamatV3 - 014-015' } }),
+    } as unknown as SessionManager
+    const forkingService = new ServiceSessionsIpc(forking, (parentSessionId, sessionId) => {
+      forks.push({ parentSessionId, sessionId })
+    })
+    forkingService.initialize()
+
+    expect(await invoke('sessions:fork', 'session-1', { name: 'refactor' })).toEqual({
+      ok: true,
+      value: { ok: true, value: { sessionId: 'fork-1', tabTitle: 'AppJamatV3 - 014-015' } },
+    })
+    expect(forks).toEqual([{ parentSessionId: 'session-1', sessionId: 'fork-1' }])
+  })
+
+  it('inherits nothing from a fork that was refused, because nothing was created', async () => {
+    const refusing = {
+      forkSession: () =>
+        Promise.resolve({ ok: false, code: 'invalid-spec', detail: 'A shell holds no conversation' }),
+    } as unknown as SessionManager
+    const refusingService = new ServiceSessionsIpc(refusing, (parentSessionId, sessionId) => {
+      forks.push({ parentSessionId, sessionId })
+    })
+    refusingService.initialize()
+
+    expect(await invoke('sessions:fork', 'session-1', undefined)).toEqual({
+      ok: true,
+      value: { ok: false, code: 'invalid-spec', detail: 'A shell holds no conversation' },
+    })
+    expect(forks).toEqual([])
+  })
+
+  /**
    * A refusal is an answer: the renderer has to be able to say WHY a session would not go away, so
    * the domain result travels inside the transport's, and nothing here throws.
    */
@@ -204,7 +247,7 @@ describe('app-client-ui/app/sessions/serviceSessionsIpc', () => {
       removeSession: () =>
         Promise.resolve({ ok: false, code: 'live-refused', detail: 'The session is live' }),
     } as unknown as SessionManager
-    const refusingService = new ServiceSessionsIpc(refusing)
+    const refusingService = new ServiceSessionsIpc(refusing, () => {})
     refusingService.initialize()
 
     expect(await invoke('sessions:remove', 'session-1')).toEqual({

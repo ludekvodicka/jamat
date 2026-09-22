@@ -1,4 +1,4 @@
-import { relative, resolve } from 'node:path'
+import { dirname, relative, resolve } from 'node:path'
 
 import { XMLParser } from 'fast-xml-parser'
 
@@ -77,23 +77,36 @@ export class FileChangesVcsSvn extends FileChangesVcsBase implements FileChanges
 
   async status(
     detection: FileChangesVcsDetection,
+    filePath?: string,
   ): Promise<FileChangesVcsResult<FileChangesVcsStatus>> {
     // No `--verbose`: it prints an XML entry for every VERSIONED node, and `statusOf` throws all of
     // those away - a working copy of forty thousand files then overran the reader's output ceiling
     // and the panel said "0 changed" about a tree full of changes. Plain `--xml` still reports a
     // property-only change, which is the one thing `--verbose` was thought to be needed for, and
     // `--depth infinity` is what `status` does anyway.
-    const outcome = await this.runner.run(detection.cwd, [
-      'status',
-      '--xml',
-      '--non-interactive',
-      '--',
-      '.',
-    ])
-    if (!FileChangesVcsSvn.succeeded(outcome))
-      return { ok: false, detail: this.detailOf(outcome) }
-    try { return { ok: true, value: await this.parseStatus(detection, outcome.stdout) } }
-    catch (error) { return { ok: false, detail: ErrorText.of(error) } }
+    let target = filePath
+    while (true) {
+      const outcome = await this.runner.run(detection.cwd, [
+        'status', '--xml', '--non-interactive',
+        ...(target === undefined ? [] : ['--depth', 'empty']),
+        '--', target === undefined ? '.' : `${target}@`,
+      ])
+      if (!FileChangesVcsSvn.succeeded(outcome))
+        return { ok: false, detail: this.detailOf(outcome) }
+      try {
+        const value = await this.parseStatus(detection, outcome.stdout)
+        // SVN cannot address a child below an unversioned directory. Find that directory so the
+        // existing untracked reader can apply ignore rules without scanning the whole scope.
+        if (target !== undefined && value.entries.length === 0 && outcome.stderr.includes('W155010')
+          && PathCompare.isInside(detection.cwd, dirname(target))
+          && PathCompare.comparable(target) !== PathCompare.comparable(detection.cwd)) {
+          target = dirname(target)
+          continue
+        }
+        return { ok: true, value }
+      }
+      catch (error) { return { ok: false, detail: ErrorText.of(error) } }
+    }
   }
 
   /**
@@ -216,7 +229,7 @@ export class FileChangesVcsSvn extends FileChangesVcsBase implements FileChanges
       if (mapped === null) continue
       parsed.push({
         absolutePath,
-        repositoryPath: FileChangesVcsSvn.localRepositoryPath(detection, entryPath),
+        repositoryPath: FileChangesVcsSvn.repositoryPath(relative(detection.root, absolutePath)),
         nodeKind: await FileChangesVcsSvn.nodeKindOf(absolutePath),
         status: mapped,
         previousAbsolutePath: null,

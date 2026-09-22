@@ -63,7 +63,8 @@ export interface FileChangesVcs {
   readonly defaultBaselineRef: FileChangesVcsBaselineRef
   historyBaselineRef(revision: string): FileChangesVcsBaselineRef
   detect(cwd: string): Promise<FileChangesVcsDetection | null>
-  status(detection: FileChangesVcsDetection): Promise<FileChangesVcsResult<FileChangesVcsStatus>>
+  /** SVN may return an unversioned ancestor of the file for ignore-aware expansion. */
+  status(detection: FileChangesVcsDetection, filePath?: string): Promise<FileChangesVcsResult<FileChangesVcsStatus>>
   /** One cheap question - is the scope dirty - without parsing per-file entries. */
   dirty(detection: FileChangesVcsDetection): Promise<FileChangesVcsResult<boolean>>
   history(

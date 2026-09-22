@@ -1,4 +1,4 @@
-import { act, cleanup, render } from '@testing-library/react'
+import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type {
@@ -12,6 +12,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerContent', () => {
     cleanup()
     vi.useRealTimers()
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
   })
 
   function documentOf(kind: FileViewerDocument['kind'], path = 'C:/work/a.ts'): FileViewerDocument {
@@ -36,7 +37,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerContent', () => {
     document: FileViewerDocument,
     text: string,
     line: number,
-    mode: 'rendered' | 'raw',
+    mode: 'rendered' | 'raw' | 'preview',
   ): React.JSX.Element {
     return (
       <FileViewerContent
@@ -113,5 +114,48 @@ describe('app-client-ui/renderer/fileViewer/fileViewerContent', () => {
     expect(target?.textContent).toBe('Target paragraph')
     expect(target).toHaveAttribute('data-file-line-start', '6')
     expect(scroll).toHaveBeenCalled()
+  })
+
+  it.each(['png', 'svg'] as const)('drags a %s preview by document ID and cancels the browser URL drag', async (format) => {
+    const startImageDrag = vi.fn(async () => ({ ok: true, value: true }))
+    vi.stubGlobal('appClient', {
+      fileViewer: {
+        startImageDrag,
+        mediaResource: async () => ({
+          ok: true,
+          value: { ok: true, value: { resourceId: 'image-token' } },
+        }),
+      },
+    })
+    const imageDocument = documentOf(
+      format === 'png'
+        ? { kind: 'image', mimeType: 'image/png', animated: false }
+        : { kind: 'svg', mimeType: 'image/svg+xml' },
+      `C:/work/picture.${format}`,
+    )
+    const view = render(content(imageDocument, '<svg xmlns="http://www.w3.org/2000/svg"/>', 1,
+      format === 'png' ? 'preview' : 'rendered'))
+    const image = await view.findByRole('img')
+    expect(image).toHaveAttribute('draggable', 'true')
+    const event = new Event('dragstart', { bubbles: true, cancelable: true })
+    await act(async () => { fireEvent(image, event) })
+    expect(event.defaultPrevented).toBe(true)
+    expect(startImageDrag).toHaveBeenCalledExactlyOnceWith('document-1')
+    expect(view.queryByRole('alert')).toBeNull()
+  })
+
+  it('keeps the image available for another drag after a refusal', async () => {
+    const startImageDrag = vi.fn()
+      .mockResolvedValueOnce({ ok: true, value: false })
+      .mockResolvedValueOnce({ ok: true, value: true })
+    vi.stubGlobal('appClient', { fileViewer: { startImageDrag } })
+    const view = render(content(documentOf({ kind: 'svg', mimeType: 'image/svg+xml' }),
+      '<svg xmlns="http://www.w3.org/2000/svg"/>', 1, 'rendered'))
+    const image = view.getByRole('img')
+    await act(async () => { fireEvent.dragStart(image) })
+    expect(view.getByRole('alert')).toHaveTextContent('Reload it and try again')
+    expect(view.getByRole('img')).toBe(image)
+    await act(async () => { fireEvent.dragStart(image) })
+    expect(view.queryByRole('alert')).toBeNull()
   })
 })

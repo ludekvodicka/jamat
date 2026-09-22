@@ -139,6 +139,21 @@ export class WorkspacePanelIndex {
       .filter((sessionId): sessionId is string => sessionId !== null))]
   }
 
+  /**
+   * Every open terminal panel, keyed the way a sessions tree row is keyed, so the tree can ask
+   * whether a session is on screen anywhere. `openSessionIds` answers a different question: it
+   * names local sessions, while a remote session's row is keyed by its endpoint as well.
+   */
+  openTerminalTargetKeys(): readonly string[] {
+    const targetKeys = new Set<string>()
+    for (const owner of this.owners.values()) {
+      const targetKey = WorkspacePanelIndex.terminalTargetKeyOf(owner.panel)
+      if (targetKey !== null)
+        targetKeys.add(targetKey)
+    }
+    return [...targetKeys]
+  }
+
   plainSessionIds(windowId: string): readonly string[] {
     return [...new Set([...this.owners.values()]
       .filter((owner) =>

@@ -168,6 +168,35 @@ describe('app-client-ui/renderer/sessions/sessionsMarksStore', () => {
     expect(notified()).toBe(1)
   })
 
+  /**
+   * Which sessions have a tab is a different question from which are on screen, and the tree needs
+   * both: it keeps a row for as long as its session has a tab anywhere, so a finalized session the
+   * person can still see stays reachable from the list that owns it.
+   */
+  it('carries the sessions holding a tab, apart from the ones in front, and keeps them across snapshots', () => {
+    const { snapshots, store, notified } = storeOf()
+    snapshots.push([sessionOf()])
+    expect(store.current().openTargetKeys.has('s-1')).toBe(false)
+
+    const before = notified()
+    store.setOpenTargets(new Set(['s-1']))
+    expect(store.current().openTargetKeys.has('s-1')).toBe(true)
+    expect(store.current().activeTargetKeys.has('s-1')).toBe(false)
+    expect(notified()).toBeGreaterThan(before)
+
+    // A snapshot rebuilds the view, and the tabs it knows nothing about must survive that.
+    snapshots.push([sessionOf({ activity: 'idle' })])
+    expect(store.current().openTargetKeys.has('s-1')).toBe(true)
+  })
+  it('notifies nobody when the same set of tabs is handed in again', () => {
+    const { snapshots, store, notified } = storeOf()
+    snapshots.push([sessionOf()])
+    store.setOpenTargets(new Set(['s-1']))
+    const before = notified()
+
+    store.setOpenTargets(new Set(['s-1']))
+    expect(notified()).toBe(before)
+  })
   it('answers false for a session it has never heard of', () => {
     const { snapshots, store } = storeOf()
     snapshots.push([sessionOf()])

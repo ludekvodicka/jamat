@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import type { GitCommandRunner } from './git.types'
+import type { CommitProgress } from '../shared/commitProgress.types'
 import { GitCommitManager } from './gitCommitManager'
 
 describe('lib-orchestrator/git/gitCommitManager', () => {
@@ -39,6 +40,17 @@ describe('lib-orchestrator/git/gitCommitManager', () => {
     await writeFile(join(root, '.git', 'MERGE_HEAD'), 'head')
     expect(await manager.commit(root, [join(root, 'a')], 'message.txt')).toMatchObject({ ok: false, code: 'git-failed', detail: expect.stringContaining('merge is in progress') })
     expect(calls).toEqual([['rev-parse', '--show-toplevel']])
+  })
+
+  it('reports Git stages without inventing file counts during hooks', async () => {
+    const { root, manager } = await fixture()
+    const events: CommitProgress[] = []
+    await manager.commit(root, [join(root, 'file')], 'message.txt', (value) => events.push(value))
+    expect(events).toEqual([
+      { stage: 'preparing', completed: 0, total: null },
+      { stage: 'committing', completed: 0, total: null },
+      { stage: 'verifying', completed: 0, total: null },
+    ])
   })
 
   it('refuses a store or foreign linked worktree before staging', async () => {

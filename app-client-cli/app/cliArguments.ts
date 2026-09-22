@@ -22,9 +22,10 @@ export class CliArguments {
    * what the sixteen are.
    */
   private static readonly commandSpecsConst = {
-    'commit-svn-jamat': { options: ['--session-id', '--number', '--working-directory', '--path', '--message', '--message-file', '--fallback', '--timeout-ms'], flags: ['--self', '--wait'], mutation: true },
-    'commit-git-jamat': { options: ['--session-id', '--number', '--working-directory', '--path', '--message', '--message-file', '--fallback', '--timeout-ms'], flags: ['--self', '--wait'], mutation: true },
+    'commit-svn-jamat': { options: ['--session-id', '--number', '--working-directory', '--path', '--paths-file', '--message', '--message-file', '--fallback', '--timeout-ms'], flags: ['--self', '--wait'], mutation: true },
+    'commit-git-jamat': { options: ['--session-id', '--number', '--working-directory', '--path', '--paths-file', '--message', '--message-file', '--fallback', '--timeout-ms'], flags: ['--self', '--wait'], mutation: true },
     'commit status': { options: ['--commit-session-id', '--timeout-ms'], flags: ['--wait'], mutation: false },
+    'commit cancel': { options: ['--commit-session-id'], flags: [], mutation: true },
     'status': { options: [CliArguments.remoteComputerOptionConst], flags: [], mutation: false },
     'projects list': {
       options: ['--category-id', '--sort', CliArguments.remoteComputerOptionConst],
@@ -49,6 +50,8 @@ export class CliArguments {
         '--worktree',
         '--base-ref',
         '--title',
+        '--color',
+        '--group',
         '--flow-id',
         '--acknowledge-setup',
         CliArguments.remoteComputerOptionConst,

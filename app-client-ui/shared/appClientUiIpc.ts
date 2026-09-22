@@ -1,4 +1,6 @@
 import type { HistoricSession, HistoricSessionGroup } from './historicSessions'
+import type { PerfSample } from './perfSample'
+import type { SessionGroup, SessionGroupAssignment } from './sessionsGroupsState'
 import type {
   CatalogCategoryDto,
   CategoryInfo,
@@ -84,6 +86,7 @@ import type {
 import type {
   VersioningSettingsSaveResult,
   VersioningSettingsValue,
+  VersioningSettingsField,
 } from './versioningSettings'
 import type { VersioningCommitDraftDto, VersioningCommitOpenResult, VersioningCommitOpenSessions, VersioningCommitRunRequest, VersioningCommitRunResult } from './versioningCommit'
 import type {
@@ -191,6 +194,24 @@ export interface AppClientUiIpcInvokeMap {
   'state:save-sessions-view': (view: SessionsTabsView) => boolean
   'state:load-session-filters': () => readonly SavedSessionsFilter[]
   'state:save-session-filters': (filters: readonly SavedSessionsFilter[]) => boolean
+  /** @deprecated Use session groups. Retained for renderers using the pin-only IPC contract. */
+  'state:load-session-pins': () => readonly string[]
+  /** @deprecated Use session groups. A legacy write preserves assignments to other groups. */
+  'state:save-session-pins': (pins: readonly string[]) => boolean
+  'state:load-session-groups': () => readonly SessionGroupAssignment[]
+  /**
+   * ONE assignment, never the whole map: the tree is not the only writer any more. A fork inherits
+   * what its parent was put in by hand, written in the main process while the window that asked for
+   * it may have no tree at all, and a renderer handing back a map it read before that write would
+   * drop the fork's own row.
+   */
+  'state:assign-session-group': (key: string, group: SessionGroup) => boolean
+  /**
+   * How fast this client is answering, as four numbers that fail apart. Each is a maximum over the
+   * window since the previous call, so the caller's own cadence is the window; the round trip of
+   * this call is the fifth number and the caller times it itself.
+   */
+  'perf:sample': () => PerfSample
   'state:load-new-session-agent': () => SessionAgentId
   'state:save-new-session-agent': (agentId: SessionAgentId) => boolean
   /**
@@ -558,7 +579,7 @@ export interface AppClientUiIpcInvokeMap {
   /** Which section is on screen, so the main process can stop pinging for one that is not. */
   'debug:section-active': (section: DebugSectionId | null) => void
   'versioning:settings-get': () => VersioningSettingsValue
-  'versioning:commit-open-draft': (sessionId: string, vcs: FileChangesVcsId, scope: string | null) => VersioningCommitOpenResult
+  'versioning:commit-open-draft': (sessionId: string, vcs: FileChangesVcsId, scope: string | null, paths?: readonly string[]) => VersioningCommitOpenResult
   'versioning:commit-read': (draftId: string) => VersioningCommitDraftDto | null
   'versioning:commit-files': (draftId: string) => FileChangesWorkingTreeSnapshotResult
   'versioning:commit-external-diff': (request: FileDiffRequest) => import('./versioningCommit').VersioningExternalDiffResult
@@ -571,7 +592,7 @@ export interface AppClientUiIpcInvokeMap {
   'versioning:commit-open-sessions': () => VersioningCommitOpenSessions
   'versioning:settings-save': (
     value: VersioningSettingsValue,
-    field?: keyof VersioningSettingsValue,
+    field?: VersioningSettingsField,
   ) => VersioningSettingsSaveResult
   'worktrees:settings-get': () => WorktreeSettingsValue
   'worktrees:settings-save': (
@@ -592,6 +613,7 @@ export interface AppClientUiIpcInvokeMap {
     sessionId: string,
     source: FileChangesWorkingTreeSource | null,
   ) => FileChangesWorkingTreeSnapshotResult
+  'fileChanges:scoped-working-tree': (source: FileViewerDocumentSource) => FileChangesWorkingTreeSnapshotResult
   'fileChanges:history': (snapshotId: string, cursor: string) => FileChangesHistoryResult
   'fileChanges:diff': (request: FileDiffRequest) => FileDiffResult
   'fileChanges:open-file': (snapshotId: string, fileId: string) => FileChangesOpenFileResult
@@ -629,6 +651,7 @@ export interface AppClientUiIpcInvokeMap {
     reference: string,
   ) => FileViewerResourceResult
   'fileViewer:copy-path': (documentId: string) => boolean
+  'fileViewer:start-image-drag': (documentId: string) => boolean
   'fileViewer:open-external': (url: string) => boolean
   'fileViewer:release': (documentId: string) => void
   'remarkable:settings-get': () => RemarkableSettingsSnapshot
@@ -731,6 +754,13 @@ export interface AppClientUiIpcEventMap {
   'window:changed': () => void
   /** Parameter-less on purpose: the answer is the snapshot, and it is read through its own channel. */
   'sessions:changed': () => void
+  /**
+   * Parameter-less like the pair above it, and sent only when something OTHER than the tree wrote:
+   * today that is a fork taking the group its parent was put in by hand. The main window reads the
+   * assignments back through `state:load-session-groups`, so a window whose own write caused this
+   * would only find what it already holds.
+   */
+  'state:session-groups-changed': () => void
   'remote:changed': () => void
   'tabs:activate-panel': (
     panelId: string,
@@ -740,6 +770,8 @@ export interface AppClientUiIpcEventMap {
   'tabs:close-panel': (panelId: string) => void
   'tabs:terminal-restarted': (targetKey: string) => void
   'tabs:visible-terminal-targets': (targetKeys: readonly string[]) => void
+  /** Every session a workspace window has a tab open for, whether or not that tab is in front. */
+  'tabs:open-terminal-targets': (targetKeys: readonly string[]) => void
   'tabs:transfer-in': (token: string) => void
   'tabs:transfer-out': (panelId: string) => void
   'tabs:control-command': (command: TabControlCommand) => void
@@ -812,8 +844,15 @@ export const AppClientUiBridgeCallsConst = {
     saveSessionsView: 'state:save-sessions-view',
     loadSessionFilters: 'state:load-session-filters',
     saveSessionFilters: 'state:save-session-filters',
+    loadSessionPins: 'state:load-session-pins',
+    saveSessionPins: 'state:save-session-pins',
+    loadSessionGroups: 'state:load-session-groups',
+    assignSessionGroup: 'state:assign-session-group',
     loadNewSessionAgent: 'state:load-new-session-agent',
     saveNewSessionAgent: 'state:save-new-session-agent',
+  },
+  perf: {
+    sample: 'perf:sample',
   },
   dialog: {
     /** null = the user cancelled. */
@@ -951,6 +990,7 @@ export const AppClientUiBridgeCallsConst = {
     saveSettings: 'fileChanges:settings-save',
     list: 'fileChanges:list',
     workingTree: 'fileChanges:working-tree',
+    scopedWorkingTree: 'fileChanges:scoped-working-tree',
     history: 'fileChanges:history',
     diff: 'fileChanges:diff',
     openFile: 'fileChanges:open-file',
@@ -971,6 +1011,7 @@ export const AppClientUiBridgeCallsConst = {
     mediaResource: 'fileViewer:media-resource',
     relativeResource: 'fileViewer:relative-resource',
     copyPath: 'fileViewer:copy-path',
+    startImageDrag: 'fileViewer:start-image-drag',
     openExternal: 'fileViewer:open-external',
     release: 'fileViewer:release',
   },
@@ -1029,11 +1070,13 @@ export const AppClientUiBridgeEventsConst = {
   onAppError: 'app:error',
   onWindowChanged: 'window:changed',
   onSessionsChanged: 'sessions:changed',
+  onSessionGroupsChanged: 'state:session-groups-changed',
   onRemoteChanged: 'remote:changed',
   onTabsActivatePanel: 'tabs:activate-panel',
   onTabsClosePanel: 'tabs:close-panel',
   onTabsTerminalRestarted: 'tabs:terminal-restarted',
   onTabsVisibleTerminalTargets: 'tabs:visible-terminal-targets',
+  onTabsOpenTerminalTargets: 'tabs:open-terminal-targets',
   onTabsTransferIn: 'tabs:transfer-in',
   onTabsTransferOut: 'tabs:transfer-out',
   onTabsControlCommand: 'tabs:control-command',

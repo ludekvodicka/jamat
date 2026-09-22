@@ -7,6 +7,7 @@ import type {
   TerminalFrame,
 } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type { AppClientUiIpcInvokeMap } from '../../shared/appClientUiIpc'
+import { EchoLatency } from '../perf/echoLatency'
 import { ServiceTerminalIpc } from './serviceTerminalIpc'
 
 const ipcMainMock = vi.hoisted(() => ({
@@ -66,6 +67,9 @@ describe('app-client-ui/app/terminals/serviceTerminalIpc', () => {
   let detachError: Error | null
   let rejectedSenders: Set<WebContents>
   let service: ServiceTerminalIpc
+  let echo: EchoLatency
+  /** Read by the echo reading, so a test decides how long a key waited rather than the machine. */
+  let clock: number
 
   function recordingManager(): SessionManager {
     const record = (method: string) => (...args: unknown[]) => { calls.push({ method, args }) }
@@ -94,9 +98,12 @@ describe('app-client-ui/app/terminals/serviceTerminalIpc', () => {
     attachError = null
     detachError = null
     rejectedSenders = new Set()
+    clock = 1_000
+    echo = new EchoLatency(() => clock)
     service = new ServiceTerminalIpc(
       recordingManager(),
       (sender) => !rejectedSenders.has(sender),
+      echo,
     )
     service.initialize()
   })

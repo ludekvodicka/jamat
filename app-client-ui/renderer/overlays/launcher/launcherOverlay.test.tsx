@@ -1400,6 +1400,7 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
           title: '014 - Worktree cleanup',
           titleParts: { number: '014', name: 'Worktree cleanup' },
           life: 'ended',
+          endedAt: null,
         }])
       const { view, onOpenTerminal, onClose } = await openCreate(stub)
 

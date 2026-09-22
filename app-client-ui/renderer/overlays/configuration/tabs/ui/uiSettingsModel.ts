@@ -21,17 +21,18 @@ export type UiSettingsInput =
   | { input: 'terminal-theme'; name: TerminalThemeName }
   | { input: 'scroll-speed'; percent: number }
   | { input: 'terminal-scroll-speed'; percent: number }
+  | { input: 'activate-session-on-document'; value: boolean }
 
 export type UiSettingsEffect = SettingsCardEffect<UiSettingsValue>
 
 export type UiSettingsStep = SettingsCardStep<UiSettingsValue, UiSettingsEffect>
 
 /**
- * The UI tab as data: five percentages and a palette name being edited.
+ * The UI tab's appearance and document activation preferences being edited.
  *
  * There is deliberately no `staleOnDisk` here, the flag the projects tab carries. That flag exists
  * because a catalog is work - roots named, ordered and grouped by hand - and a file that moved under
- * it holds someone else's version of that work. This section is six fields with no history: the
+ * it holds someone else's version of that work. These preferences have no history: the
  * last write wins, which is what a font size means. Nothing is reconciled because nothing here can
  * be lost that is not on screen while it is being lost.
  *
@@ -58,7 +59,8 @@ export class UiSettingsModel {
       && buffer.terminalFontScalePercent === loaded.terminalFontScalePercent
       && buffer.terminalTheme === loaded.terminalTheme
       && buffer.scrollSpeedPercent === loaded.scrollSpeedPercent
-      && buffer.terminalScrollSpeedPercent === loaded.terminalScrollSpeedPercent)
+      && buffer.terminalScrollSpeedPercent === loaded.terminalScrollSpeedPercent
+      && (buffer.activateSessionOnDocument === true) === (loaded.activateSessionOnDocument === true))
   }
 
   static transition(state: UiSettingsModelState, input: UiSettingsInput): UiSettingsStep {
@@ -66,7 +68,7 @@ export class UiSettingsModel {
       state,
       input,
       // Over the buffer rather than in place of it: what the buffer also carries is whatever else
-      // was written inside the `ui` key, and Reset asks for the six fields back, not for a
+      // was written inside the `ui` key, and Reset asks for the known fields back, not for a
       // hand-written note beside them to be deleted by the save that follows.
       (buffer) => ({ ...buffer, ...UiSettings.defaultValue() }),
     )
@@ -101,6 +103,8 @@ export class UiSettingsModel {
         ...buffer,
         terminalScrollSpeedPercent: UiSettings.snap(input.percent, UiSettings.scrollRangeConst),
       }))
+    else if (input.input === 'activate-session-on-document')
+      return UiSettingsModel.edited(state, (buffer) => ({ ...buffer, activateSessionOnDocument: input.value }))
     else
       throw new Error(`Unknown ui settings input: ${JSON.stringify(input)}`)
   }

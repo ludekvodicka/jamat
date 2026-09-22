@@ -84,6 +84,38 @@ describe('lib-orchestrator/shared/commandInvoker', () => {
     expect(outcome).toEqual({ code: -1, stdout: '', stderr: '', failure: 'aborted' })
   })
 
+  it('streams bounded UTF-8 stdout before close, preserving the final output and ignoring late chunks', async () => {
+    const child = new FakeChild()
+    const spawnImpl = vi.fn(() => child) as unknown as typeof spawn
+    const onStdout = vi.fn()
+    const running = new CommandInvoker({ spawnImpl, maxOutputBytes: 6 }).run({
+      command: 'tool', args: [], cwd: import.meta.dirname, env: {}, onStdout,
+    })
+    await vi.waitFor(() => expect(spawnImpl).toHaveBeenCalled())
+    const data = Buffer.from('žluť')
+    child.stdout.emit('data', data.subarray(0, 1))
+    expect(onStdout).not.toHaveBeenCalled()
+    child.stdout.emit('data', data.subarray(1))
+    expect(onStdout).toHaveBeenCalledWith('žluť')
+    child.stdout.emit('data', Buffer.from('overflow'))
+    child.emit('close', 0)
+    expect(await running).toEqual({ code: 0, stdout: 'žluť', stderr: '', failure: 'output-limit' })
+    child.stdout.emit('data', Buffer.from('late'))
+    expect(onStdout).toHaveBeenCalledTimes(1)
+  })
+
+  it('preserves command completion when a progress observer throws', async () => {
+    const child = new FakeChild()
+    const spawnImpl = vi.fn(() => child) as unknown as typeof spawn
+    const running = new CommandInvoker({ spawnImpl }).run({ command: 'tool', args: [], cwd: import.meta.dirname, env: {},
+      onStdout: () => { throw new Error('observer failed') },
+    })
+    await vi.waitFor(() => expect(spawnImpl).toHaveBeenCalled())
+    child.stdout.emit('data', Buffer.from('Committed revision 42.'))
+    child.emit('close', 0)
+    expect(await running).toEqual({ code: 0, stdout: 'Committed revision 42.', stderr: '', failure: null })
+  })
+
   it('distinguishes a missing cwd from a missing command', async () => {
     const calls: string[] = []
     const spawnImpl = (() => { calls.push('spawned'); throw new Error('unexpected') }) as unknown as typeof spawn

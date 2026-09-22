@@ -48,6 +48,7 @@ export function useCommitDraft(sessionId: string, item: PanelSplitCommitItem, po
   const localMessage = useRef<string | null>(null)
   const reader = useRef<IpcSnapshotReader<VersioningCommitDraftDto | null> | null>(null)
   const { vcs, scopeRoot } = item
+  const pathsKey = JSON.stringify(item.paths)
   useEffect(() => {
     let disposed = false
     let stop: (() => void) | undefined
@@ -55,10 +56,10 @@ export function useCommitDraft(sessionId: string, item: PanelSplitCommitItem, po
     setDraft(null)
     setError(null)
     const open = async (): Promise<VersioningCommitOpenResult> => {
-      const result = await ports.versioning.openDraft(sessionId, vcs, scopeRoot || null)
+      const result = await ports.versioning.openDraft(sessionId, vcs, scopeRoot || null, item.paths)
       return result.ok ? result.value : { ok: false, code: 'unknown-session', detail: result.error }
     }
-    const lease = CommitDraftLeases.acquire(JSON.stringify([sessionId, vcs, scopeRoot]), open,
+    const lease = CommitDraftLeases.acquire(JSON.stringify([sessionId, vcs, scopeRoot, pathsKey]), open,
       (id) => { void ports.versioning.closeCommit(id) })
     void lease.opening.then((answer) => {
       if (disposed) return
@@ -93,7 +94,7 @@ export function useCommitDraft(sessionId: string, item: PanelSplitCommitItem, po
       reader.current = null
       lease.release()
     }
-  }, [sessionId, vcs, scopeRoot, ports])
+  }, [sessionId, vcs, scopeRoot, pathsKey, ports])
 
   const draftId = draft?.draftId
   const setMessage = useCallback((message: string) => {

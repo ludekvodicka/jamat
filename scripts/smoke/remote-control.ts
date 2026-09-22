@@ -20,6 +20,7 @@ import { HostDescriptorPaths } from '../../lib-orchestrator/hostClient/hostDescr
 import type { ProviderTranscriptRef } from '../../lib-orchestrator/projectManager/providerTranscriptView.js'
 import {
   RemoteControl,
+  type RemoteControlSessionGroupsPort,
   type RemoteControlSessionsPort,
   type RemoteControlTabsPort,
 } from '../../lib-orchestrator/remoteControl/remoteControl.js'
@@ -33,6 +34,7 @@ import type {
 import { RemoteControlInstanceRegistry } from '../../lib-orchestrator/remoteControl/remoteControlInstanceRegistry.js'
 import { RemoteControlTerminal } from '../../lib-orchestrator/remoteControl/remoteControlTerminal.js'
 import { SessionManager } from '../../lib-orchestrator/sessionManager/sessionManager.js'
+import type { SessionGroup } from '../../lib-orchestrator/sessionManager/sessionManagerApi.types.js'
 import type { SessionRecord } from '../../lib-orchestrator/sessionManager/records/sessionRecord.types.js'
 import {
   SessionTranscriptReader,
@@ -67,6 +69,7 @@ class SmokeRemoteControl extends SmokeHarness {
   private readonly transcriptBytes: number
   private readonly transcriptContexts: SessionTranscriptContext[] = []
   private readonly errors: string[] = []
+  private readonly groupAssigns: { sessionId: string; group: SessionGroup }[] = []
   private readonly tabs: RemoteControlTabDto[] = []
   private readonly manager: SessionManager
   private readonly transcriptAccess: SessionTranscriptAccess
@@ -364,6 +367,10 @@ class SmokeRemoteControl extends SmokeHarness {
       this.workDir,
       '--title',
       'Remote control smoke',
+      '--color',
+      'magenta',
+      '--group',
+      'automation',
       '--operation-id',
       'smoke-create-1',
     ]
@@ -391,9 +398,22 @@ class SmokeRemoteControl extends SmokeHarness {
       'sessions.list',
     )
     const sessions = CliClient.array(listed.sessions, 'listed sessions')
-    this.check('CLI sessions list contains one replay-safe live session',
-      sessions.filter((session) =>
-        CliClient.object(session, 'listed session').sessionId === sessionId).length === 1)
+    const mine = sessions
+      .map((session) => CliClient.object(session, 'listed session'))
+      .filter((session) => session.sessionId === sessionId)
+    this.check('CLI sessions list contains one replay-safe live session', mine.length === 1)
+    // The whole chain the colour has to survive: the CLI parser, the listener, the create validator
+    // that reads the body with exact keys, the record, and the snapshot that draws the tree.
+    this.check('the created session is painted the colour its create named',
+      mine[0]?.color === 'magenta')
+    // The group takes the same chain as the colour and lands somewhere else at the end of it: the
+    // client's own state rather than the session record, which is why the create reports the step.
+    const groupAssign = CliClient.object(created.groupAssign, 'group assignment')
+    this.check('the create reports the section it filed the session under',
+      groupAssign.ok === true
+      && this.groupAssigns.length === 1
+      && this.groupAssigns[0]?.sessionId === sessionId
+      && this.groupAssigns[0]?.group === 'automation')
     return sessionId
   }
 
@@ -563,6 +583,7 @@ class SmokeRemoteControl extends SmokeHarness {
         }),
       },
       sessions: this.sessionPort(),
+      groups: this.groupPort(),
       tabs: this.tabPort(),
       terminal: this.terminal,
       transcript: {
@@ -597,6 +618,21 @@ class SmokeRemoteControl extends SmokeHarness {
       reopenSession: (sessionId) => this.manager.reopenSession(sessionId),
       finalizeSession: (sessionId) => this.manager.finalizeSession(sessionId),
       discardPlainSession: (sessionId) => this.manager.discardPlainSession(sessionId),
+    }
+  }
+
+  /**
+   * What the client would write into its own state. The smoke keeps no client state, so it records
+   * the assignment instead: what is under test here is that a group named on the command line
+   * survives the parser, the listener and the create validator and arrives with the session it was
+   * named for.
+   */
+  private groupPort(): RemoteControlSessionGroupsPort {
+    return {
+      assign: (sessionId, group) => {
+        this.groupAssigns.push({ sessionId, group })
+        return { ok: true, value: { group } }
+      },
     }
   }
 

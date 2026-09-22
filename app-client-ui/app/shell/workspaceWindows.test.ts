@@ -630,6 +630,18 @@ describe('app-client-ui/app/shell/workspaceWindows', () => {
     expect(FakeWindow.created[0].focuses).toBe(1)
   })
 
+  it('remembers the last focused workspace while another application is in front', () => {
+    const context = harness()
+    context.registry.createMain()
+    context.registry.createHolder('holder')
+    expect(context.registry.lastFocusedWorkspace()).toBeNull()
+    for (const listener of FakeWindow.created[1].listeners.get('focus') ?? []) listener()
+    expect(context.registry.focusedWorkspace()).toBeNull()
+    expect(context.registry.lastFocusedWorkspace()?.windowId).toBe('holder')
+    FakeWindow.created[0].focused = true
+    expect(context.registry.lastFocusedWorkspace()?.windowId).toBe('main')
+  })
+
   it('recreates a closed named holder under the same id with its layout intact', () => {
     const context = harness()
     context.store.extraWindows.holder = { name: 'Review', layout: '{"review":1}' }

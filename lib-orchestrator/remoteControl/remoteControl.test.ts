@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ProjectListResult } from '../projectManager/projectManagerApi.types'
 import type {
+  SessionGroup,
   SessionInfo,
   SessionsSnapshot,
 } from '../sessionManager/sessionManagerApi.types'
@@ -26,6 +27,7 @@ interface World {
   control: RemoteControl
   sessions: SessionInfo[]
   creates: () => number
+  groupAssigns: { sessionId: string; group: SessionGroup }[]
   reopened: string[]
   finalized: string[]
   discarded: string[]
@@ -87,9 +89,11 @@ function successFile(path: string): RemoteControlStepResult<RemoteControlTabOpen
 function world(options?: {
   sessions?: SessionInfo[]
   tabOpen?: RemoteControlStepResult<RemoteControlTabCommandDto>
+  groupAssign?: RemoteControlStepResult<{ group: SessionGroup }>
 }): World {
   const sessions = options?.sessions ?? [session('session-1', '001')]
   let creates = 0
+  const groupAssigns: { sessionId: string; group: SessionGroup }[] = []
   const reopened: string[] = []
   const finalized: string[] = []
   const discarded: string[] = []
@@ -145,6 +149,12 @@ function world(options?: {
         return { ok: true, value: undefined }
       },
     },
+    groups: {
+      assign: (sessionId, group) => {
+        groupAssigns.push({ sessionId, group })
+        return options?.groupAssign ?? { ok: true, value: { group } }
+      },
+    },
     tabs: {
       list: async () => [{
         panelId: 'terminal:{}',
@@ -163,6 +173,11 @@ function world(options?: {
       openCommit: async (...args) => { tabCalls.push({ method: 'openCommit', args }); return { ok: true, value: { kind: 'commit-opened', panelId: 'commit-panel', windowId: 'main', scopeRoot: 'Q:/app', messageApplied: true } } },
       commitStatus: (commitSessionId) => ({ ok: true, value: { kind: 'commit-status', commitSessionId, sessionId: 'session-1', vcs: 'svn',
         scopeRoot: 'Q:/app', state: 'cancelled', closed: true, revision: null, detail: null } }),
+      cancelCommit: async (commitSessionId) => {
+        tabCalls.push({ method: 'cancelCommit', args: [commitSessionId] })
+        return { ok: true, value: { kind: 'commit-status', commitSessionId, sessionId: 'session-1', vcs: 'svn',
+          scopeRoot: 'Q:/app', state: 'cancelled', closed: true, revision: null, detail: null } }
+      },
       openFile: async (...args) => {
         tabCalls.push({ method: 'openFile', args })
         return successFile(args[2])
@@ -268,6 +283,7 @@ function world(options?: {
     control: new RemoteControl(deps),
     sessions,
     creates: () => creates,
+    groupAssigns,
     reopened,
     finalized,
     discarded,
@@ -303,6 +319,15 @@ function request<K extends RemoteControlOperation>(
 }
 
 describe('lib-orchestrator/remoteControl/remoteControl', () => {
+  it('replays cancellation once and refuses callers without its capability', async () => {
+    const found = world()
+    const cancel = request('tabs.cancelCommit', { commitSessionId: '11111111-1111-4111-8111-111111111111' }, 'cancel-review')
+    expect(await found.control.execute(cancel, context(['tabs.commitStatus']))).toMatchObject({ ok: false, error: { code: 'forbidden' } })
+    expect(found.tabCalls).toEqual([])
+    expect(await found.control.execute(cancel, context())).toMatchObject({ ok: true, value: { state: 'cancelled', closed: true } })
+    expect(await found.control.execute(cancel, context())).toMatchObject({ ok: true, value: { state: 'cancelled', closed: true } })
+    expect(found.tabCalls).toEqual([{ method: 'cancelCommit', args: [cancel.body.commitSessionId] }])
+  })
   it('dispatches every declared operation and exposes only the caller capabilities', async () => {
     const found = world()
     const requests: RemoteControlRequestUnion[] = [
@@ -325,6 +350,7 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
       }, 'op-5'),
       request('tabs.openCommit', { session: { kind: 'sessionId', sessionId: 'session-1' }, vcs: 'svn', message: 'Proposed' }, 'op-commit'),
       request('tabs.commitStatus', { commitSessionId: '11111111-1111-4111-8111-111111111111' }),
+      request('tabs.cancelCommit', { commitSessionId: '11111111-1111-4111-8111-111111111111' }, 'op-cancel-commit'),
       request('tabs.focus', { panelId: 'terminal:{}' }, 'op-6'),
       request('tabs.close', { panelId: 'terminal:{}' }, 'op-7'),
       request('terminal.peek', { session: { kind: 'sessionId', sessionId: 'session-1' } }),
@@ -359,6 +385,7 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
       'open',
       'openFile',
       'openCommit',
+      'cancelCommit',
       'focus',
       'close',
     ])
@@ -542,6 +569,59 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     expect(found.tabCalls.filter((call) => call.method === 'openFile')).toHaveLength(1)
   })
 
+  it('files a created session under the group the create named, before any tab is drawn', async () => {
+    const found = world()
+
+    const created = await found.control.execute(request('sessions.create', {
+      spec: { kind: 'shell', directory: { mode: 'default' } },
+      openTab: true,
+      group: 'automation',
+    }, 'grouped'), context())
+
+    expect(created).toMatchObject({
+      ok: true,
+      value: { groupAssign: { ok: true, value: { group: 'automation' } } },
+    })
+    expect(found.groupAssigns).toEqual([{ sessionId: 'created-1', group: 'automation' }])
+    expect(found.tabCalls.filter((call) => call.method === 'open')).toHaveLength(1)
+  })
+
+  /*
+   * The session is the thing that was asked for; the section it sits in is not. A store that refuses
+   * the write leaves a session the caller has to be TOLD about, so the step fails inside a create
+   * that succeeded rather than taking the create down with it.
+   */
+  it('reports a refused group assignment without failing the create', async () => {
+    const found = world({
+      groupAssign: { ok: false, error: { code: 'unavailable', detail: 'state is latched' } },
+    })
+
+    const created = await found.control.execute(request('sessions.create', {
+      spec: { kind: 'shell', directory: { mode: 'default' } },
+      group: 'blocked',
+    }, 'refused-group'), context())
+
+    expect(created).toMatchObject({
+      ok: true,
+      value: {
+        session: { sessionId: 'created-1' },
+        groupAssign: { ok: false, error: { code: 'unavailable' } },
+        tabOpen: null,
+      },
+    })
+  })
+
+  it('assigns no group when the create names none', async () => {
+    const found = world()
+
+    const created = await found.control.execute(request('sessions.create', {
+      spec: { kind: 'shell', directory: { mode: 'default' } },
+    }, 'plain-create'), context())
+
+    expect(created).toMatchObject({ ok: true, value: { groupAssign: null } })
+    expect(found.groupAssigns).toEqual([])
+  })
+
   it('keeps a tree session after a tab refusal and discards a failed plain session', async () => {
     const tabOpen: RemoteControlStepResult<RemoteControlTabCommandDto> = {
       ok: false,
@@ -719,6 +799,7 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
         finalizeSession: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         discardPlainSession: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
       },
+      groups: { assign: (_sessionId, group) => ({ ok: true, value: { group } }) },
       tabs: {
         list: async () => [],
         open: async () => successTab('opened'),

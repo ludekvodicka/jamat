@@ -127,7 +127,7 @@ export class RemoteSessionsTreeModel {
         },
       )
       next.set(key, tree)
-      if (view.stateGroup !== undefined && tree.nodes.length === 0) continue
+      if ((view.stateGroup !== undefined || view.group !== undefined) && tree.nodes.length === 0) continue
       RemoteSessionsTreeModel.push(computers, {
         id: `inbound-computer:${entry.identity.remoteComputerId}`,
         remoteComputerId: entry.identity.remoteComputerId,

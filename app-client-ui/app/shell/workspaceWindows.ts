@@ -49,6 +49,7 @@ export class WorkspaceWindows {
   private readonly lifecycle = new Map<string, WorkspaceWindowLifecycle>()
   private readonly allowNextClose = new Set<string>()
   private quitting = false
+  private lastFocusedWindowId: string | null = null
 
   constructor(
     private readonly context: AppContext,
@@ -124,6 +125,10 @@ export class WorkspaceWindows {
       if (window.focused())
         return window
     return null
+  }
+
+  lastFocusedWorkspace(): WorkspaceWindow | null {
+    return this.focusedWorkspace() ?? (this.lastFocusedWindowId === null ? null : this.windows.get(this.lastFocusedWindowId) ?? null)
   }
 
   publishTo<K extends keyof AppClientUiIpcEventMap>(
@@ -298,7 +303,10 @@ export class WorkspaceWindows {
     if (!workspaceWindow) {
       workspaceWindow = new WorkspaceWindow(this.context, windowId, {
         store: this.store,
-        onWindowCreated: (window) => this.windowCreated(windowId, window.webContents),
+        onWindowCreated: (window) => {
+          window.on('focus', () => { this.lastFocusedWindowId = windowId })
+          this.windowCreated(windowId, window.webContents)
+        },
         onCloseRequested: (event) => this.windowCloseRequested(windowId, event),
         onVisibilityChanged: (visible) => this.deps.onVisibilityChanged(windowId, visible),
         onClosed: () => this.windowClosed(windowId),

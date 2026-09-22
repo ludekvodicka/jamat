@@ -6,6 +6,7 @@ import type {
   FileChangeGroup,
 } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import { IpcFailure } from '../ipc/ipcFailure'
+import { FileChangesOpen } from './fileChangesOpen'
 import { FileChangesSort, type FileChangesSortKey } from './fileChangesSort'
 import { FileChangesTime } from './fileChangesTime'
 import { FileChangesStatusMark } from './fileChangesStatusMark'
@@ -22,6 +23,13 @@ export function FileChangesWidget(props: {
   const openings = useRef(0)
   const [sort, setSort] = useState<FileChangesSortKey>('recent')
   const snapshot = props.model.snapshot
+  const latestSnapshot = useRef(snapshot)
+  useEffect(() => {
+    latestSnapshot.current = snapshot
+    setOpening(null)
+    setOpenError(null)
+  }, [snapshot?.snapshotId])
+  useEffect(() => () => { openings.current += 1 }, [])
   // The newest thing on screen decides whether the clock is worth running at all.
   const youngest = useMemo(
     () => FileChangesAges.youngestOf(snapshot?.entries ?? [], props.model.groups),
@@ -41,8 +49,16 @@ export function FileChangesWidget(props: {
     const current = ++openings.current
     setOpening(entry.fileId)
     setOpenError(null)
-    const answer = await window.appClient.fileChanges.openFile(snapshot.snapshotId, entry.fileId)
-    if (current !== openings.current) return
+    const isCurrent = (fresh: FileViewerChangedOpen['snapshot']): boolean => current === openings.current
+      && (latestSnapshot.current?.snapshotId === snapshot.snapshotId || latestSnapshot.current?.snapshotId === fresh.snapshotId)
+    const opened = await FileChangesOpen.read({ snapshot, entry, openFile: window.appClient.fileChanges.openFile,
+      baselineHint: baseline === null ? null : { kind: baseline.kind, revision: baseline.revision },
+      refresh: () => props.model.reload(), isCurrent })
+    const { answer } = opened
+    if (!isCurrent(opened.snapshot)) {
+      if (answer.ok && answer.value.ok) await window.appClient.fileViewer.release(answer.value.value.documentId)
+      return
+    }
     setOpening(null)
     const refusal = IpcFailure.of(answer)
     if (refusal !== null) {
@@ -52,11 +68,9 @@ export function FileChangesWidget(props: {
     if (!answer.ok || !answer.value.ok) return
     props.onOpen({
       document: answer.value.value,
-      snapshot,
-      fileId: entry.fileId,
-      baselineHint: baseline === null
-        ? null
-        : { kind: baseline.kind, revision: baseline.revision },
+      snapshot: opened.snapshot,
+      fileId: opened.fileId,
+      baselineHint: opened.baselineHint,
     })
   }
 

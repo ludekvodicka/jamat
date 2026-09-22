@@ -1,5 +1,6 @@
 import { spawn, type SpawnOptions } from 'node:child_process'
 import { stat } from 'node:fs/promises'
+import { StringDecoder } from 'node:string_decoder'
 
 import type { CommandFailure, CommandInvocation, CommandOutcome } from './commandInvoker.types'
 import { ErrnoCode } from './errnoCode'
@@ -85,6 +86,7 @@ export class CommandInvoker {
       }
       const stdout: Buffer[] = []
       const stderr: Buffer[] = []
+      const decoder = new StringDecoder('utf8')
       let collected = 0
       let failure: CommandFailure | null = null
       let settled = false
@@ -125,6 +127,8 @@ export class CommandInvoker {
       const finish = (code: number | null): void => {
         if (settled) return
         settled = true
+        const tail = decoder.end()
+        if (tail) CommandInvoker.reportStdout(invocation, tail)
         if (timeoutTimer !== null) clearTimeout(timeoutTimer)
         if (settleTimer !== null) clearTimeout(settleTimer)
         if (abortListener !== null)
@@ -151,19 +155,20 @@ export class CommandInvoker {
         settleTimer.unref?.()
       }
       const collect = (target: Buffer[]) => (chunk: Buffer): void => {
+        if (settled) return
         const room = this.maxOutputBytes - collected
         if (room <= 0) {
           failure ??= 'output-limit'
           return
         }
-        if (chunk.length > room) {
-          failure ??= 'output-limit'
-          target.push(chunk.subarray(0, room))
-          collected = this.maxOutputBytes
-          return
+        if (chunk.length > room) failure ??= 'output-limit'
+        const accepted = chunk.subarray(0, room)
+        target.push(accepted)
+        collected += accepted.length
+        if (target === stdout && invocation.onStdout !== undefined) {
+          const text = decoder.write(accepted)
+          if (text) CommandInvoker.reportStdout(invocation, text)
         }
-        target.push(chunk)
-        collected += chunk.length
       }
       child.stdout?.on('data', collect(stdout))
       child.stderr?.on('data', collect(stderr))
@@ -204,5 +209,11 @@ export class CommandInvoker {
     } catch {
       child.kill()
     }
+  }
+
+  private static reportStdout(invocation: CommandInvocation, text: string): void {
+    // An observer cannot interrupt a VCS write or prevent its actual result from being returned.
+    try { invocation.onStdout?.(text) }
+    catch {}
   }
 }

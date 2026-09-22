@@ -10,6 +10,7 @@ import type {
   RuntimeMutationAck,
   RuntimeRef,
   RuntimeResult,
+  TerminalProjectionView,
 } from '../../app-host/app/wire/hostWire.js'
 import type { HostDebugStatus } from '../sessionManager/sessionManagerApi.types'
 import { ErrorText } from '../shared/errorText'
@@ -114,12 +115,28 @@ export class HostClient {
     }
   }
 
+  /**
+   * The slowest Host call since this was last asked, which is how the Host and the loopback are
+   * answering. Free: the session poll makes one every two seconds whatever anybody is watching.
+   */
+  sampleSlowestCallMs(): number | null {
+    return this.http.sampleSlowestCallMs()
+  }
+
   async runtimeList(): Promise<HostCallResult<RuntimeListResult>> {
     return this.http.call<RuntimeListResult>('runtime.list', {})
   }
 
-  async runtimeInspect(target: RuntimeRef): Promise<HostCallResult<RuntimeInspectResult>> {
-    return this.http.call<RuntimeInspectResult>('runtime.inspect', { target })
+  /**
+   * `view` says how much of the projection the caller reads; omitting it asks for all of it, which
+   * is also what a Host older than the field answers whatever is sent.
+   */
+  async runtimeInspect(
+    target: RuntimeRef,
+    view?: TerminalProjectionView,
+  ): Promise<HostCallResult<RuntimeInspectResult>> {
+    return this.http.call<RuntimeInspectResult>(
+      'runtime.inspect', view === undefined ? { target } : { target, view })
   }
 
   async runtimeCreate(request: {

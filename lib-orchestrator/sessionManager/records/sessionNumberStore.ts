@@ -103,7 +103,7 @@ export class SessionNumberStore extends JsonDocumentStore<Map<string, number>> {
     // A question rather than a write, and it still refuses: the number it would answer is one this
     // store cannot record, so handing it out would name a session after a number nothing spent.
     if (!this.mayWrite()) return null
-    return SessionNumberStore.tokenOf(await this.seedOf(projectPath, records) + 1)
+    return SessionNumberStore.tokenOf(await this.highestIssued(projectPath, records) + 1)
   }
 
   /** Every allocation, in the order it was asked for. Held per store, like the counters. */
@@ -133,7 +133,7 @@ export class SessionNumberStore extends JsonDocumentStore<Map<string, number>> {
     records: readonly SessionRecord[],
   ): Promise<string | null> {
     if (!this.mayWrite()) return null
-    const taken = await this.seedOf(projectPath, records) + 1
+    const taken = await this.highestIssued(projectPath, records) + 1
     const next = new Map(this.counters)
     next.set(SessionNumberStore.keyOf(projectPath), taken)
     const document: SessionNumbersDocument = {
@@ -147,11 +147,16 @@ export class SessionNumberStore extends JsonDocumentStore<Map<string, number>> {
   }
 
   /**
+   * The highest number this project has already spent, which is also the one thing a title claiming
+   * a number can be measured against: `allocate` records what it hands out before it answers, so a
+   * prefix composed from a real allocation is never above this, and digits somebody typed usually
+   * are. `SessionLifecycle` refuses a create on exactly that comparison.
+   *
    * Moving a project's directory orphans its counter, and the other two seeds are what makes that
    * survivable: `.worktrees/` travels with the directory, and the records still carry the titles the
    * numbers went into.
    */
-  private async seedOf(projectPath: string, records: readonly SessionRecord[]): Promise<number> {
+  async highestIssued(projectPath: string, records: readonly SessionRecord[]): Promise<number> {
     return Math.max(
       this.counters.get(SessionNumberStore.keyOf(projectPath)) ?? 0,
       await this.worktreeSeedOf(projectPath),

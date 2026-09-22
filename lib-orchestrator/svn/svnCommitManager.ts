@@ -5,11 +5,13 @@ import { join } from 'node:path'
 import { XMLParser } from 'fast-xml-parser'
 
 import type { FileChangeNodeKind, FileChangeStatus } from '../fileChangesManager/fileChangesManagerApi.types'
-import type { CommandOutcome, CommandRunner } from '../shared/commandInvoker.types'
+import type { CommandOutcome, CommandRunner, CommandRunOptions } from '../shared/commandInvoker.types'
+import type { CommitProgress } from '../shared/commitProgress.types'
 import { ErrorText } from '../shared/errorText'
 import { JsonShape } from '../shared/jsonShape'
 import { PathCompare } from '../shared/pathCompare'
 import type { SvnResult } from './svn.types'
+import { SvnCommitProgress } from './commit/svnCommitProgress'
 
 export interface SvnCommitTarget {
   absolutePath: string
@@ -20,7 +22,8 @@ export interface SvnCommitTarget {
 export class SvnCommitManager {
   constructor(private readonly svn: CommandRunner) {}
 
-  async commit(scope: string, targets: readonly SvnCommitTarget[], messageFile: string): Promise<SvnResult<{ revision: string; output: string }>> {
+  async commit(scope: string, targets: readonly SvnCommitTarget[], messageFile: string,
+    onProgress?: (progress: CommitProgress) => void): Promise<SvnResult<{ revision: string; output: string }>> {
     if (targets.length === 0 || targets.some((target) => !SvnCommitManager.inside(scope, target.absolutePath)))
       return { ok: false, code: 'svn-failed', detail: 'Select targets inside the commit scope' }
     if (targets.some((target) => target.status === 'conflicted' || target.status === 'obstructed'))
@@ -28,12 +31,17 @@ export class SvnCommitManager {
     const listed = new Set<string>()
     let temporary: string | null = null
     try {
+      onProgress?.({ stage: 'preparing', completed: 0, total: targets.length })
       for (const target of [...targets].sort((left, right) => left.absolutePath.length - right.absolutePath.length)) {
         if (listed.has(target.absolutePath)) continue
         if (target.status === 'untracked') {
           if (target.nodeKind === 'directory' || target.nodeKind === 'file') {
             const added = await this.run(scope, ['add', '--parents', '--depth', 'empty', '--non-interactive', '--', `${target.absolutePath}@`])
-            if (!added.ok) return added
+            // An attempt that fails after this sweep leaves the path versioned while the shown list
+            // still calls it untracked, so the next click sends `untracked` for a path `svn add` now
+            // refuses (W150002/E200009) - and every further one does, until somebody reloads. The
+            // state the add wanted already holds, so the sweep continues.
+            if (!added.ok && !await this.versioned(scope, target.absolutePath)) return added
             listed.add(target.absolutePath)
           }
           else throw new Error(`Unknown node kind: ${JSON.stringify(target.nodeKind)}`)
@@ -49,14 +57,17 @@ export class SvnCommitManager {
         else if (target.status === 'conflicted' || target.status === 'obstructed')
           throw new Error('A refused target reached staging')
         else throw new Error(`Unknown SVN target status: ${JSON.stringify(target.status)}`)
+        onProgress?.({ stage: 'preparing', completed: listed.size, total: targets.length })
       }
       temporary = await mkdtemp(join(tmpdir(), 'jamat-v3-svn-commit-'))
       const listFile = join(temporary, 'targets.txt')
       await writeFile(listFile, [...listed].map((path) => `${path}@`).join('\n') + '\n', 'utf8')
+      const progress = new SvnCommitProgress(listed.size, (value) => onProgress?.(value))
+      onProgress?.({ stage: 'sending', completed: 0, total: listed.size })
       const committed = await this.run(scope, [
         'commit', '--non-interactive', '--encoding', 'UTF-8', '--file', messageFile,
         '--targets', listFile, '--depth', 'empty',
-      ])
+      ], { onStdout: (chunk) => progress.accept(chunk) })
       if (!committed.ok) return committed
       const revision = /Committed revision (\d+)\./.exec(committed.value.stdout)?.[1]
       if (revision === undefined)
@@ -83,13 +94,17 @@ export class SvnCommitManager {
     return reverted.ok ? { ok: true, value: undefined } : reverted
   }
 
-  async update(scope: string): Promise<SvnResult<{ output: string }>> {
+  async update(scope: string, paths?: readonly string[]): Promise<SvnResult<{ output: string }>> {
+    if (paths !== undefined && (paths.length === 0 || paths.some((path) => !SvnCommitManager.inside(scope, path))))
+      return { ok: false, code: 'svn-failed', detail: 'Select update targets inside the commit scope' }
+    const updateTargets = (paths ?? [scope]).map((path) => `${path}@`)
+    const depth = paths === undefined ? [] : ['--depth', 'empty']
     let output = ''
     try {
-      const updated = await this.run(scope, ['update', '--non-interactive', '--accept', 'postpone', '--ignore-externals', '--', `${scope}@`])
+      const updated = await this.run(scope, ['update', '--non-interactive', '--accept', 'postpone', '--ignore-externals', ...depth, '--', ...updateTargets])
       if (!updated.ok) return updated
       output = updated.value.stdout + updated.value.stderr
-      const status = await this.run(scope, ['status', '--xml', '--non-interactive', '--ignore-externals', '--', `${scope}@`])
+      const status = await this.run(scope, ['status', '--xml', '--non-interactive', '--ignore-externals', ...depth, '--', ...updateTargets])
       if (!status.ok) return { ...status, detail: `${output}\nCould not check update conflicts: ${status.detail}` }
       const parsed = JsonShape.record(new XMLParser({ ignoreAttributes: false,
         isArray: (name) => name === 'entry' || name === 'target' || name === 'changelist' }).parse(status.value.stdout))
@@ -115,8 +130,20 @@ export class SvnCommitManager {
     } catch (error) { return { ok: false, code: 'svn-failed', detail: `${output}\n${ErrorText.of(error)}`.trim() } }
   }
 
-  private async run(scope: string, args: string[]): Promise<SvnResult<CommandOutcome>> {
-    const outcome = await this.svn.run(scope, args)
+  /**
+   * The target itself, never its parent: `svn add --parents` versions the parent of the first
+   * sibling it stages, so a parent that answers yes says nothing about this path, and a path left
+   * unversioned would go into the target list and fail the commit with a different message.
+   */
+  private async versioned(scope: string, path: string): Promise<boolean> {
+    const info = await this.run(scope, ['info', '--xml', '--non-interactive', '--', `${path}@`])
+    if (!info.ok) return false
+    const parsed = JsonShape.record(new XMLParser({ ignoreAttributes: false }).parse(info.value.stdout))
+    return JsonShape.record(JsonShape.record(JsonShape.record(parsed?.info)?.entry)?.['wc-info']) !== null
+  }
+
+  private async run(scope: string, args: string[], options?: CommandRunOptions): Promise<SvnResult<CommandOutcome>> {
+    const outcome = await this.svn.run(scope, args, options)
     if (outcome.failure === null && outcome.code === 0) return { ok: true, value: outcome }
     const detail = [outcome.stdout.trim(), outcome.stderr.trim()].filter(Boolean).join('\n') || `svn could not run (${outcome.failure ?? outcome.code})`
     const code = outcome.failure === 'command-missing' ? 'svn-missing'

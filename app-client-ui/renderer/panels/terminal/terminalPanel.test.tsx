@@ -45,6 +45,9 @@ import { TerminalPanel, type TerminalPanelProps } from './terminalPanel'
 
 const xtermMock = vi.hoisted(() => ({
   focuses: 0,
+  /** Every byte this surface handed the parser, which is the cost a hidden panel does not pay. */
+  writes: [] as string[],
+  resets: 0,
 }))
 
 vi.mock('@xterm/xterm', () => ({
@@ -67,9 +70,9 @@ vi.mock('@xterm/xterm', () => ({
     clearSelection(): void {}
     loadAddon(): void {}
     open(): void {}
-    reset(): void {}
+    reset(): void { xtermMock.resets += 1 }
     resize(): void {}
-    write(): void {}
+    write(data: string): void { xtermMock.writes.push(data) }
     dispose(): void {}
     focus(): void { xtermMock.focuses += 1 }
   },
@@ -80,6 +83,8 @@ vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} } }))
 /** The one dockview event this panel listens to, and the id its decorations are published under. */
 class PanelApiFake {
   private readonly active: ((event: { isActive: boolean }) => void)[] = []
+  /** Visibility is the other half of dockview's panel api: a split shows two, one of them active. */
+  private readonly visibility: ((event: { isVisible: boolean }) => void)[] = []
   private readonly parameterChanges: ((params: Record<string, unknown>) => void)[] = []
   private parameters: Record<string, unknown> = {}
 
@@ -92,6 +97,7 @@ class PanelApiFake {
       api: {
         id: this.panelId,
         isActive: this.startsActive,
+        isVisible: true,
         getParameters: () => this.parameters,
         updateParameters: (next: Record<string, unknown>) => this.writeParameters(next),
         onDidParametersChange: (listener: (params: Record<string, unknown>) => void) => {
@@ -112,6 +118,15 @@ class PanelApiFake {
             },
           }
         },
+        onDidVisibilityChange: (listener: (event: { isVisible: boolean }) => void) => {
+          this.visibility.push(listener)
+          return {
+            dispose: () => {
+              const at = this.visibility.indexOf(listener)
+              if (at >= 0) this.visibility.splice(at, 1)
+            },
+          }
+        },
       },
       containerApi: {},
       params,
@@ -121,6 +136,12 @@ class PanelApiFake {
   emitActive(isActive: boolean): void {
     act(() => {
       for (const listener of [...this.active]) listener({ isActive })
+    })
+  }
+
+  emitVisibility(isVisible: boolean): void {
+    act(() => {
+      for (const listener of [...this.visibility]) listener({ isVisible })
     })
   }
 
@@ -135,6 +156,21 @@ class PanelApiFake {
   writeParameters(next: Record<string, unknown>): void {
     this.parameters = next
     for (const listener of [...this.parameterChanges]) listener(next)
+  }
+}
+
+class TerminalPanelTest {
+  /** One frame of output, which is all a held-output case needs to be about. */
+  static data(delta: string): TerminalFrame {
+    return {
+      type: 'terminal.data',
+      runtimeSessionId: 'session-1',
+      generation: 1,
+      outputEpoch: 1,
+      delta,
+      outputSeq: delta.length,
+      lastOutputAt: 0,
+    }
   }
 }
 
@@ -598,6 +634,8 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
 
   beforeEach(() => {
     xtermMock.focuses = 0
+    xtermMock.writes = []
+    xtermMock.resets = 0
     serve = null
     listeners = []
     remoteListeners = []
@@ -691,6 +729,40 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
     expect(view.container.querySelector('.jamat-terminal__screen')).toBeTruthy()
     expect(noteOf(view)).toBe('Connecting.')
     expect(store.get('terminal:1').primary).toMatchObject({ glyph: '·', tone: 'muted' })
+  })
+
+  /**
+   * A hidden xterm draws nothing, but `write` still parses every byte on the thread that handles
+   * every keystroke. Twenty tabs of working agents therefore parsed twenty screens to show one, and
+   * the cost landed where typing happens.
+   */
+  it('parses nothing while it is hidden and writes the held output when it is shown', async () => {
+    const api = new PanelApiFake('terminal:held')
+    mount(api)
+    await act(async () => { await Promise.resolve() })
+    push({
+      type: 'terminal.snapshot',
+      projection: {
+        runtimeSessionId: 'session-1',
+        generation: 1,
+        outputEpoch: 1,
+        outputSeq: 6,
+        screen: 'opened',
+        cols: 80,
+        rows: 24,
+        alive: true,
+        lastOutputAt: null,
+      },
+    })
+    expect(xtermMock.writes).toEqual(['opened'])
+
+    api.emitVisibility(false)
+    push(TerminalPanelTest.data('hidden one'))
+    push(TerminalPanelTest.data(' and two'))
+    expect(xtermMock.writes).toEqual(['opened'])
+
+    api.emitVisibility(true)
+    expect(xtermMock.writes).toEqual(['opened', 'hidden one and two'])
   })
 
   it('draws the context warning over a local agent terminal', async () => {

@@ -16,7 +16,7 @@ describe('app-client-ui/renderer/fileViewer/fileToolsSidebar', () => {
     loading: false,
     loadingMore: false,
     error: null,
-    reload: vi.fn(async () => undefined),
+    reload: vi.fn(async () => null),
     loadMore: vi.fn(async () => undefined),
   }
   const workingConst: FileChangesWorkingTreeViewModel = {
@@ -28,7 +28,7 @@ describe('app-client-ui/renderer/fileViewer/fileToolsSidebar', () => {
     requiredLoading: false,
     requiredError: null,
     select: vi.fn(),
-    reload: vi.fn(async () => undefined),
+    reload: vi.fn(async () => null),
     snapshotFor: () => null,
   }
 

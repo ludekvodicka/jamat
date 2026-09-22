@@ -64,6 +64,8 @@ interface LiveTerminalAttachment {
 export class RemoteControlTerminal implements RemoteControlTerminalPort {
   private static readonly timeoutMillisecondsConst = 5_000
   private static readonly screenCharacterLimitConst = 32_768
+  // Match the renderer's synthetic-submit pause: Enter inside the text burst is pasted by Codex.
+  private static readonly enterDelayMillisecondsConst = 100
 
   private readonly internalAttachId: () => string
   private readonly timeoutMilliseconds: number
@@ -145,6 +147,8 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
     text: string,
     options: { enter: boolean; timeoutMs?: number },
   ): Promise<RemoteControlStepResult<RemoteControlTerminalSendDto>> {
+    let enterTimer: ReturnType<typeof setTimeout> | null = null
+    let textSent = false
     return this.once(
       'send',
       sessionId,
@@ -159,27 +163,38 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
             ))
             return
           }
-          const input = this.sessions.terminalInput(
-            attachId,
-            options.enter ? `${text}\r` : text,
-          )
-          if (input.kind === 'sent')
-            finish(RemoteControlTerminal.success({
-              sessionId,
-              accepted: true,
-              characterCount: text.length,
-              enter: options.enter,
-            }))
-          else if (input.kind === 'not-writer')
-            finish(RemoteControlTerminal.error('conflict', 'The terminal attach is read-only'))
-          else if (input.kind === 'unknown-attach')
-            finish(RemoteControlTerminal.error('unavailable', 'The terminal attach disappeared'))
-          else
-            throw new Error(`Unknown terminal input result: ${JSON.stringify(input)}`)
-        } else if (frame.type === 'terminal.status') {
-          if (frame.status === 'connecting')
+          // A reconnect must never replay the text or submit a draft in a replacement runtime.
+          if (textSent) {
+            finish(RemoteControlTerminal.error('unavailable', 'The terminal reattached before Enter'))
             return
-          else if (frame.status === 'read-only')
+          }
+          const complete = (): void => finish(RemoteControlTerminal.success({
+            sessionId,
+            accepted: true,
+            characterCount: text.length,
+            enter: options.enter,
+          }))
+          const written = this.writeInput(attachId, text)
+          if (!written.ok) {
+            finish(written)
+            return
+          }
+          textSent = true
+          if (!options.enter) {
+            complete()
+            return
+          }
+          enterTimer = setTimeout(() => {
+            const entered = this.writeInput(attachId, '\r')
+            if (entered.ok) complete()
+            else finish(entered)
+          }, RemoteControlTerminal.enterDelayMillisecondsConst)
+        } else if (frame.type === 'terminal.status') {
+          if (frame.status === 'connecting') {
+            if (textSent)
+              finish(RemoteControlTerminal.error('unavailable', 'The terminal disconnected before Enter'))
+            return
+          } else if (frame.status === 'read-only')
             finish(RemoteControlTerminal.error('conflict', 'The terminal attach is read-only'))
           else if (frame.status === 'lost')
             finish(RemoteControlTerminal.statusError(frame))
@@ -195,7 +210,25 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
         else
           throw new Error(`Unknown terminal frame: ${JSON.stringify(frame)}`)
       },
+      () => { if (enterTimer !== null) clearTimeout(enterTimer) },
     )
+  }
+
+  private writeInput(attachId: string, data: string): RemoteControlStepResult<null> {
+    try {
+      const input = this.sessions.terminalInput(attachId, data)
+      if (input.kind === 'sent')
+        return RemoteControlTerminal.success(null)
+      else if (input.kind === 'not-writer')
+        return RemoteControlTerminal.error('conflict', 'The terminal attach is read-only')
+      else if (input.kind === 'unknown-attach')
+        return RemoteControlTerminal.error('unavailable', 'The terminal attach disappeared')
+      else
+        throw new Error(`Unknown terminal input result: ${JSON.stringify(input)}`)
+    } catch (error) {
+      this.deps.onError(`Remote terminal send failed: ${ErrorText.of(error)}`)
+      return RemoteControlTerminal.error('operation-failed', 'The terminal send operation failed')
+    }
   }
 
   attachLive(
@@ -325,6 +358,7 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
       frame: TerminalFrame,
       finish: (result: RemoteControlStepResult<T>) => void,
     ) => void,
+    onFinish: () => void = () => {},
   ): Promise<RemoteControlStepResult<T>> {
     const attachId = `control-${kind}:${this.internalAttachId()}`
     return new Promise((resolve) => {
@@ -340,6 +374,7 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
         if (settled) return
         settled = true
         clearTimeout(timer)
+        onFinish()
         if (attached)
           this.sessions.terminalDetach(attachId)
         else if (!attachComplete)

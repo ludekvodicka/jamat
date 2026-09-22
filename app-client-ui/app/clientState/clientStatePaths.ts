@@ -8,6 +8,7 @@ import { OrchestratorPaths } from '../../../lib-orchestrator/shared/orchestrator
 export class ClientStatePaths {
   private static readonly scopeNameConst = 'client-ui'
   private static readonly stateFileNameConst = 'client-state.json'
+  private static readonly commitMessagesFileNameConst = 'commit-messages.json'
   private static readonly snapshotsNameConst = 'snapshots'
   private static readonly toolsScopeNameConst = 'tools'
   private static readonly remarkableScopeNameConst = 'remarkable'
@@ -47,6 +48,10 @@ export class ClientStatePaths {
       ClientStatePaths.directory(configIdentity, channel),
       ClientStatePaths.snapshotsNameConst,
     )
+  }
+
+  static commitMessagesFile(configIdentity: string, channel: RuntimeChannel): string {
+    return join(ClientStatePaths.directory(configIdentity, channel), ClientStatePaths.commitMessagesFileNameConst)
   }
 
   static toolsDirectory(): string {

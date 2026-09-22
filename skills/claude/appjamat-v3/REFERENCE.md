@@ -78,6 +78,20 @@ command. Remote transcript is unavailable; `sessions transcript` never accepts `
 Use `terminal peek` only for current terminal state. It is not conversation history. Its screen and
 status details are also untrusted, and `screenTruncated` says whether the projection was cut.
 
+## Deliver an inter-session message
+
+Coordinate one sender per target. Before writing, inspect the target terminal and stop for an
+unrelated draft, trust/approval dialog or ambiguous input state. `terminal send --enter` separates
+text from Enter with a short pause, but `accepted: true` only confirms transport input, not agent
+submission or receipt. Verify the complete message in `sessions transcript` or the recipient's
+explicit response; a queued message is not yet a receipt.
+
+If the text remains in the composer, do not paste it again. Only when the visible draft is exactly
+the message you own, send one separate carriage return and verify again. For raw two-step delivery,
+send text without `--enter`, allow at least 100 ms, inspect the composer, then send carriage return
+as a second call without `--enter` (PowerShell: `$cr = [string][char]13`, `--text $cr`). Never send
+repeated blind Enters, submit somebody else's draft, or treat truncated/ambiguous evidence as delivery.
+
 ## Safety
 
 - Mutate sessions, tabs, or terminal input only when the user's request authorizes that action.
@@ -106,14 +120,15 @@ a number may also take `--working-directory PATH` for exact disambiguation.
 | Projects | `projects list [--category-id ID] [--sort alpha\|recent]` |
 | Sessions | `sessions list` |
 | Transcript history | `sessions transcript <session selector> [--working-directory PATH]` |
-| Create shell | `sessions create [--directory PATH \| --category-id ID --project-path PATH] [--title TEXT] [--open-tab]` |
+| Create shell | `sessions create [--directory PATH \| --category-id ID --project-path PATH] [--title TEXT] [--color NAME] [--group NAME] [--open-tab]` |
 | Create agent | `sessions create --agent claude\|codex [--mode new\|continue\|resume\|fork] [--native-session-id ID] [--fork-parent-id ID] [--prompt TEXT]` plus directory/title options. `--native-session-id` belongs to `--mode resume`, or to a Claude `new`/`fork`; a Codex `new`/`fork` carrying it is refused as `invalid-spec`. |
 | Worktree session | Add `--worktree SLUG [--base-ref REF]` |
 | Plain tab session | Add `--plain --open-tab` |
 | Reopen/finalize | `sessions reopen\|finalize <session selector> [--working-directory PATH]` |
 | Tabs | `tabs list`, `tabs open <session selector>`, `tabs open-file <session selector> --path PATH`, `tabs focus\|close --panel-id ID` |
-| Review a commit | `commit-svn-jamat` or `commit-git-jamat`, with `--self` or `<session selector>`, optionally `--path PATH` and `--message TEXT` or `--message-file FILE` |
+| Review a commit | `commit-svn-jamat` or `commit-git-jamat`, with `--self` or `<session selector>`, optionally `--path PATH` or `--paths-file FILE`, and `--message TEXT` or `--message-file FILE` |
 | Commit result | `commit status --commit-session-id UUID [--wait] [--timeout-ms N]` |
+| Cancel a commit review | `commit cancel --commit-session-id UUID` |
 | Read terminal | `terminal peek <session selector> [--working-directory PATH] [--cols N --rows N] [--timeout-ms N]` |
 | Write terminal | `terminal send <session selector> [--working-directory PATH] --text TEXT [--enter] [--timeout-ms N]` |
 | Watch changes | `events watch [--after-revision N]` until interrupted |
@@ -130,6 +145,32 @@ Mutations accept `--operation-id ID`; the CLI generates one when omitted and ret
 creation also accepts `--flow-id ID`, `--acknowledge-setup HASH`, `--open-tab`, and `--plain`.
 `--plain` requires `--open-tab` because no other surface draws a plain session.
 
+`--title` is the session's NAME, not its whole title. A session created in a catalog project is
+numbered by the computer that keeps that project's count: the number is prefixed as `NNN - `, and
+that is the number `--number` then selects it by. A title that already begins with `NNN` or
+`NNN-MMM` is kept verbatim, but only when that project has already given the number out; one that
+has not is refused as `operation-failed` with the source code `invalid-spec`, because everything
+reading the record would count it as a number the project spent. `--title "2026 plan"` is the shape
+that fails: three or more leading digits are a number to every reader, and such a title left the
+project counting on from 2026. A plain tab is not numbered until it is promoted in the UI.
+
+`--group NAME` files the session in a section of the sessions tree at birth, as if a person had
+chosen it in the Groups submenu. The names are `pinned`, `priority`, `none`, `automation`, `waiting`,
+`blocked`; any other name is refused as `invalid-request`. Use `automation` for work you start on
+somebody's behalf: it is the section directly under Sessions, above Waiting and Blocked, and it keeps
+a wave of agent-started sessions out of the list a person reads as their own. The group is written on
+the computer that RUNS the session, so with `--computer` it appears in that computer's tree. The
+create value carries `groupAssign`: `null` when no group was asked for, otherwise an `ok` step, or a
+failure of that step alone inside a create that succeeded. Do not send it with `--computer` to a
+machine whose build predates the option, which refuses the whole create.
+
+`--color NAME` paints the session at birth, so it is never drawn uncoloured first. The names are
+`red`, `orange`, `amber`, `green`, `teal`, `cyan`, `sky`, `blue`, `indigo`, `violet`, `magenta`,
+`rose`; any other name is refused as `invalid-request`. Use it to mark work a person did not start
+by hand: an agent creating sessions for somebody else's backlog gives every one of them the same
+colour, so the tree tells automatic work from a person's own without reading titles. Do not send it
+with `--computer` to a machine whose build predates the option, which refuses the whole create.
+
 ## Commit through Jamat
 
 The user's own commit and autocommit instructions take precedence. These commands offer a human
@@ -143,7 +184,10 @@ node "<skill>/scripts/jamat-v3.mjs" commit-svn-jamat --self --message-file "Q:/t
 ```
 
 Use `commit-git-jamat` for an ordinary human Git repository; checkpoint worktrees are refused.
-Git commits never push. `--path` narrows the session's scope to a nested directory. Checked SVN
+Git commits never push. `--path` selects one file or directory, including outside the session cwd.
+Relative paths resolve against the session cwd. `--paths-file` accepts a JSON array of 1 to 2,000
+literal paths, resolved against the CLI cwd; it cannot be combined with `--path`. File selections
+remain exact through review, reload and Tortoise fallback, including required new parents. Checked SVN
 externals commit sequentially with the main selection and the same message after one human
 confirmation. For a different message, Commit separately unchecks that group in the parent and
 opens its own tab. Without a path, Jamat uses the session's working directory, never an enclosing
@@ -166,6 +210,22 @@ returns the same UUID; a new review after close receives a new one. `commit stat
 without requiring the originating session to stay live. Keep the original controller selectors.
 An expired or unknown UUID means unknown outcome, never cancellation.
 
+When your pending review needs more work, cancel it before editing and open a new review after
+the changes are ready. Use its `commitSessionId` from the open response, or find it in `tabs list`
+under the matching local tab's `commitReviews`. Match the session, VCS, scope and exact `paths`
+selection when present. Resolve multiple matches before acting; do not cancel
+another session's review or select one just because its tab is active. Keep the original controller
+selectors. `commit cancel --commit-session-id UUID` requires the `tabs.cancelCommit` capability and
+returns success only with `state: "cancelled"` and `closed: true`. It closes that review in all its
+panes, leaves the session and files intact, and preserves its saved message and person edits.
+Reopening creates a new UUID. An existing waiter for the old UUID finishes as cancelled.
+
+Cancellation refuses a running commit, revert, update or Tortoise handoff and never undoes a
+published revision. Missing capability, conflict, timeout or an unknown UUID never permits a
+fallback dialog or closing the entire session tab. If closure times out, query the same UUID and
+wait for confirmed cancellation before reopening. A retry of the cancel mutation keeps its
+original operation ID under the mutation rules above.
+
 Add `--wait` to either native open command to wait on that UUID using the same controller, or use
 `commit status --commit-session-id UUID --wait` for an existing review. The CLI polls once per second
 and returns one final JSON envelope; await that original execution, never launch a second waiter.
@@ -182,6 +242,8 @@ recovering the connection; never infer completion from a clean working copy or s
 - `cancelled`: closed without committing.
 - `failed`: the attempt failed; `detail` explains why and lists any already committed groups.
   Earlier commits remain committed. The human reviews the refreshed remaining files before retrying.
+  A retry commits under the same UUID, so `--wait` reads on through a failure while `closed` is
+  false and reports it only once the person closed that review without committing.
 - `external-closed`: the person used Open in Tortoise and closed that window. Verify VCS history and
   status because an external process exit does not prove a commit.
 
@@ -192,13 +254,12 @@ After a real commit, check remaining changes separately; a partial commit may le
 Enter confirms enabled Commit files, Shift+Enter adds a message line, and Escape closes before a write starts.
 Versioning closes a successful native commit dialog automatically by default; its setting can keep
 the result pane open. The retained UUID still reports committed after automatic closing.
-An out-of-date SVN commit attempts one update of the failed group's scope without nested externals or automatic conflict
+An out-of-date SVN commit attempts one update of the failed group's scope, restricted to exact targets at depth empty for a file selection, without nested externals or automatic conflict
 resolution. Status stays running during that update, then reports failed with the update result and
 original error. The human reviews the refreshed diff and clicks Commit files again; a completed update is not
 a commit and never triggers automatic closing or a second commit attempt.
 
-If discovery finds no running controller, the requested session is absent or not live, or an explicit
-scope lies outside the session's known working directory, Windows
+If discovery finds no running controller or the requested session is absent or not live, Windows
 opens TortoiseSVN or TortoiseGit and returns `kind: "opened-aside"` with the reason. Its scope is
 `--path` resolved from the CLI working directory, or that working directory itself. This response
 means a dialog was opened, never that a commit happened. Conflict, invalid request, forbidden,
@@ -207,16 +268,11 @@ capability do not fall back. Report them without guessing another controller. Re
 not supported. Messages handed to Tortoise remain available until a later sweep of files older than
 one day, since the detached dialog may still be reading them.
 
-The `outside-session` fallback is decided from the session snapshot before sending `tabs.openCommit`,
-using the effective worktree when present. Relative native paths resolve against the session directory;
-an outside-session fallback keeps that resolved scope. A different project does not create a new
-Jamat session or bypass the native scope restriction. This preflight also works against older clients
-without status support. A native refusal after preflight, including symlink escape, still does not
-fall back. A default-directory session without a known snapshot path leaves scope validation to Jamat.
+Explicit paths outside the session are reviewed in Jamat under the original session and window. Main validates the requested scope and exact selection. No new session is created. A native refusal still stops without fallback; older clients must be updated for file-list or outside-session review.
 
 Automation that already owns a Tortoise launcher may pass `--fallback report` (default: `tortoise`).
 On the same eligible fallback conditions the CLI returns `ok: true` with
-`value: { kind: "fallback-required", reason, scope }`, without opening a dialog or writing a message
+`value: { kind: "fallback-required", reason, scope, paths? }`, without opening a dialog or writing a message
 file. The caller then launches its existing fallback. `--wait` waits only on the native branch;
 the composing helper owns waiting on Tortoise. An open or fallback acknowledgement never confirms
 a completed commit.
@@ -227,8 +283,9 @@ Every non-watch invocation writes exactly one JSON envelope. Check `ok` before u
 `events watch` writes one versioned response or event per line. A subscribe response with
 `truncated: true` requires fresh session and tab lists.
 
-A `sessions create --open-tab` value contains `session`, `tabOpen`, and `plainCleanup`. The last is
-non-null only when a plain session's tab failed and the invisible session was discarded again.
+A `sessions create --open-tab` value contains `session`, `tabOpen`, `plainCleanup`, and
+`groupAssign`. `plainCleanup` is non-null only when a plain session's tab failed and the invisible
+session was discarded again.
 
 Exit codes are `0` success, `2` invalid request, `3` not found, `4` conflict, `5` timeout,
 `6` unavailable, `7` operation failed/incompatible/forbidden, and `141` closed stdout pipe. Any

@@ -28,7 +28,7 @@ import type {
   SessionRecordAgent,
   SessionRecordSetupCommand,
 } from '../records/sessionRecord.types'
-import { SessionColors } from '../records/sessionColors'
+import { SessionColors } from '../sessionColors'
 import { SessionLimits } from '../sessionLimits'
 import { SessionOutcomes } from '../records/sessionOutcomes'
 import type { SessionRecordsStore } from '../records/sessionRecordsStore'
@@ -96,12 +96,14 @@ export interface SessionSetupPort {
 }
 
 /**
- * Taking a session's number, and nothing else the number store can do. The store stays lazy until a
- * promotion, provider-history open or fork needs it.
+ * Taking a session's number and reading how far the count has got, and nothing else the number store
+ * can do. The store stays lazy until a create, promotion, provider-history open or fork needs it.
  */
 export interface SessionNumbersPort {
   /** Null when the number could not be taken: a session without a number, not a refused promotion. */
   allocate(projectPath: string, records: readonly SessionRecord[]): Promise<string | null>
+  /** The highest number this project has already spent, which is what a title may claim. */
+  highestIssued(projectPath: string, records: readonly SessionRecord[]): Promise<number>
 }
 
 /**
@@ -353,7 +355,7 @@ export class SessionLifecycle {
     spec: SessionCreateSpec,
     marks: { sessionId: string; oneShot: true; resolveFor: string },
   ): Promise<SessionsOpResult<{ sessionId: string }>> {
-    return this.createWith(spec, marks)
+    return this.createWith(spec, { marks })
   }
 
   /**
@@ -364,6 +366,19 @@ export class SessionLifecycle {
    */
   async create(spec: SessionCreateSpec): Promise<SessionsOpResult<{ sessionId: string }>> {
     return this.createWith(spec)
+  }
+
+  /**
+   * The third door: a create whose title has already been through the counter. The two history
+   * paths beside it compose `NNN - name` and `NNN-MMM - name` out of the parent's number and the one
+   * they take, and only they can - a fork's pair says which session it came out of, and this class
+   * cannot rebuild it from a spec. Asking the counter again in `createWith` would spend a second
+   * number and hand the fork a plain one.
+   */
+  private async createComposed(
+    spec: SessionCreateSpec,
+  ): Promise<SessionsOpResult<{ sessionId: string }>> {
+    return this.createWith(spec, { titleFinal: true })
   }
 
   async historyReferences(
@@ -386,6 +401,7 @@ export class SessionLifecycle {
         title: record.title,
         titleParts: SessionTitle.partsOf(record.title),
         life: record.life,
+        endedAt: record.endedAt ?? null,
       })
     }
     return { ok: true, value: { references } }
@@ -426,7 +442,7 @@ export class SessionLifecycle {
       : SessionTitle.partsOf(parent.title)
     if (mode === 'resume') {
       const token = await this.numbers.allocate(spec.directory.projectPath, this.records.list())
-      return this.create({
+      return this.createComposed({
         kind: 'agent',
         directory: spec.directory,
         agent: { agentId: spec.agentId, mode, nativeSessionId: spec.nativeSessionId },
@@ -447,8 +463,13 @@ export class SessionLifecycle {
 
   private async createWith(
     spec: SessionCreateSpec,
-    marks?: { sessionId: string; oneShot: true; resolveFor: string },
+    options?: {
+      marks?: { sessionId: string; oneShot: true; resolveFor: string }
+      /** Set by `createComposed` alone: the title has already been through the counter. */
+      titleFinal?: true
+    },
   ): Promise<SessionsOpResult<{ sessionId: string }>> {
+    const marks = options?.marks
     const problem = SessionLifecycle.specProblem(spec)
     if (problem) return { ok: false, code: 'invalid-spec', detail: problem }
     // The READ latch, and only that: a file that could not be read refuses every write for the rest
@@ -457,6 +478,10 @@ export class SessionLifecycle {
     // one is only visible when the write itself comes back false, and it is answered where it
     // happens, by naming what the worktree left behind.
     if (this.records.latched) return OperationOutcomes.latched()
+    // Before the worktree for the same reason as the agreement below: a refused create leaves
+    // nothing behind, neither a checkout nor a number.
+    const claim = await this.numberClaimProblem(spec)
+    if (claim) return { ok: false, code: 'invalid-spec', detail: claim }
     // Before the worktree, not after: a refusal here has to leave nothing behind, and what it asks
     // about is readable at the project root alone.
     const agreement = await this.setupFlow.setupAgreement(spec)
@@ -472,7 +497,8 @@ export class SessionLifecycle {
     const facts = worktree.value
     const sessionId = marks?.sessionId ?? this.newId()
     const operationId = this.newId()
-    const record = this.recordOf(spec, sessionId, facts, operationId, marks)
+    const token = options?.titleFinal === true ? null : await this.numberFor(spec)
+    const record = this.recordOf(spec, sessionId, facts, operationId, token, marks)
     /*
      * Only a worktree is empty enough to need this, and only a worktree create can name the
      * repository the steps come back relative to. The resolution itself is a couple of file reads,
@@ -962,7 +988,7 @@ export class SessionLifecycle {
       title = unnumberedTitle
     else
       throw new Error(`Unknown session directory: ${JSON.stringify(directory)}`)
-    return this.create({
+    return this.createComposed({
       kind: 'agent',
       directory,
       agent: { agentId, mode: 'fork', forkParentId: parentId },
@@ -1437,8 +1463,14 @@ export class SessionLifecycle {
     agent: SessionRecordAgent,
     operation: 'create' | 'reopen',
   ): string | null {
-    // A create repeats what the record already stored, so there is nothing left to be unable to name.
-    if (operation === 'create') return null
+    // A create repeats what the record already stored, so there is nothing left to be unable to
+    // name. What it can still meet is a machine that answers differently than it did at create
+    // time - an agent reinstalled as a shim cannot be handed the prompt this record kept - and
+    // that has to be lost here rather than thrown at every pass for the rest of the run.
+    if (operation === 'create')
+      return agent.initialPrompt === undefined
+        ? null
+        : LaunchPlanner.argumentProblem(agent.agentId, agent.initialPrompt)
     else if (operation === 'reopen') return AgentPresets.reopenProblem(agent)
     else throw new Error(`Unknown pending operation: ${JSON.stringify(operation)}`)
   }
@@ -1484,11 +1516,62 @@ export class SessionLifecycle {
     )
   }
 
+  /**
+   * The number a create takes, and the one thing that used to be the caller's to supply. The create
+   * card still composes its own title, because the worktree slug is built from the same token and
+   * the counter is asked once; every OTHER caller of `create` - the CLI, a paired computer, the
+   * skill - said nothing about a number and got the one session in the project that the tree could
+   * not order and `--number` could not reach.
+   *
+   * Asked after the worktree is cut, so a create that is refused before that costs the project no
+   * number. Null is every case that is not counted: a title that already carries one, a plain tab -
+   * a tab is not work the tree keeps, and `promotePlain` takes its number if it ever becomes work
+   * that is - a binding that names a directory rather than a project, and a counter that could not
+   * answer, which is never a reason to refuse a session, exactly as it is not for a promotion.
+   */
+  private async numberFor(spec: SessionCreateSpec): Promise<string | null> {
+    if (spec.directory.mode !== 'project' || spec.presentation === 'tab') return null
+    if (SessionTitle.partsOf(spec.title?.trim() ?? '').number !== null) return null
+    return this.numbers.allocate(spec.directory.projectPath, this.records.list())
+  }
+
+  /**
+   * The half of a create spec that cannot be judged from the spec alone: a title may carry a session
+   * number only when the project's counter has already handed that number out.
+   *
+   * `SessionNumberStore` recovers a project's count from the highest number its records are titled
+   * with, so a title nobody allocated moves that count for good - `sessions create --title
+   * "2026 plan"` left a record reading `2026` and the next session in the project was `2027`, and a
+   * number is never counted back down. What is compared here is the number that seed reads, the
+   * rightmost segment of a fork pair, because that is exactly the value a title can move the count
+   * with.
+   *
+   * The create card is not caught by it: it takes its number from this same counter before it
+   * submits, because the worktree slug is built from the same token, so the count is already at
+   * least as high as the prefix it composed. Neither is a fork or a history resume, whose titles
+   * `createComposed` builds around a number the counter has just answered with. What is left is a
+   * caller that typed digits, which is the caller the sentence is for - the one `setDetails` already
+   * refuses a rename with, for the same reason on the other side of the record's life.
+   *
+   * Only a catalog project is asked, because only a project has a count: the seed ignores every
+   * other binding, and a fork into an ad-hoc directory deliberately keeps the number of the session
+   * it came out of.
+   */
+  private async numberClaimProblem(spec: SessionCreateSpec): Promise<string | null> {
+    if (spec.directory.mode !== 'project') return null
+    const claimed = SessionTitle.allocatedNumberOf(spec.title?.trim() ?? '')
+    if (claimed === null) return null
+    const issued = await this.numbers.highestIssued(spec.directory.projectPath, this.records.list())
+    if (claimed <= issued) return null
+    return 'A title must not begin like a session number'
+  }
+
   private recordOf(
     spec: SessionCreateSpec,
     sessionId: string,
     worktree: WorktreeFacts | null,
     operationId: string,
+    token: string | null,
     marks?: { oneShot: true; resolveFor: string },
   ): SessionRecord {
     const agent = spec.agent ? this.recordAgentOf(spec.agent, sessionId, marks?.oneShot) : undefined
@@ -1496,7 +1579,10 @@ export class SessionLifecycle {
     const record: SessionRecord = {
       sessionId,
       kind: spec.kind,
-      title: spec.title?.trim() || SessionLifecycle.defaultTitle(cwd, agent),
+      title: SessionTitle.compose(
+        token,
+        spec.title?.trim() || SessionLifecycle.defaultTitle(cwd, agent),
+      ),
       directory: spec.directory,
       binding: null,
       life: 'starting',
@@ -1512,6 +1598,7 @@ export class SessionLifecycle {
     if (marks) record.resolveFor = marks.resolveFor
     if (spec.flowId) record.flowId = spec.flowId
     if (spec.presentation) record.presentation = spec.presentation
+    if (spec.color) record.color = spec.color
     if (worktree) record.worktree = worktree
     return record
   }
@@ -1563,6 +1650,11 @@ export class SessionLifecycle {
     }
     const presentation = SessionLifecycle.presentationProblem(spec)
     if (presentation) return presentation
+    // The same guard `setColor` writes through, and the same sentence: a name nobody can draw is a
+    // caller's mistake wherever it arrives, and a create is not the place to start being lenient
+    // about it - the record would keep the word and every reader would quietly filter it away.
+    if (spec.color !== undefined && !SessionColors.isName(spec.color))
+      return `${JSON.stringify(spec.color)} is not a session colour`
     if (spec.kind === 'shell') {
       if (spec.agent) return 'a shell session carries no agent'
       // A flow composes a first instruction, and a shell has nobody to give one to. The prompt
@@ -1605,6 +1697,12 @@ export class SessionLifecycle {
       && (agent.mode === 'new' || agent.mode === 'fork')
       && agent.nativeSessionId !== undefined)
       return 'a codex session started as new or fork cannot be given a conversation id; Codex reports it afterwards'
+    // Before anything is written, because the alternative is what this refusal replaces: a record
+    // whose agent was started on the first line of its instruction and answered that instead.
+    // `LaunchPlanner` owns the reason, so the caller reads the same sentence the launch would
+    // have thrown.
+    if (agent.initialPrompt !== undefined)
+      return LaunchPlanner.argumentProblem(agent.agentId, agent.initialPrompt)
     return null
   }
 

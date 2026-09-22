@@ -39,6 +39,7 @@ import { ContextCompactionController } from '../contextCompaction/contextCompact
 import { SessionCompact } from '../contextCompaction/sessionCompact'
 import { PanelFileToolsRegistry } from '../fileViewer/panelFileToolsRegistry'
 import { SnapshotStore } from '../ipc/snapshotStore'
+import { PerfStore } from '../perf/perfStore'
 import { KeyboardSettingsStore } from '../keyboardSettings/keyboardSettingsStore'
 import { ConfigurationOverlay } from '../overlays/configuration/configurationOverlay'
 import type {
@@ -69,6 +70,7 @@ import { SessionsMarksStore } from '../sessions/sessionsMarksStore'
 import { useSessionModel } from '../statusBar/sessionModelItem'
 import { type SessionModelPorts, SessionModelStore } from '../sessionModel/sessionModelStore'
 import { AppShellItems } from '../statusBar/appShellItems'
+import { usePerfReading } from '../statusBar/perfStatusItem'
 import { useCurrentProject } from '../statusBar/currentProjectItem'
 import { StatusBar } from '../statusBar/statusBar'
 import { ActiveAgentTerminals, useActiveAgentTerminal } from '../statusBar/useActiveAgentTerminal'
@@ -153,6 +155,7 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
     wiring.activeTerminal, wiring.sessionsSnapshot, wiring.remoteSnapshot,
   )
   const sessionModel = useSessionModel(wiring.sessionModel, focus)
+  const perfReading = usePerfReading(wiring.perf)
 
   // Started here rather than in the main shell: a holder window draws session tabs too, and each
   // document has one reader of its own.
@@ -167,9 +170,15 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
   useEffect(() => window.appClient.onTabsVisibleTerminalTargets(
     (targetKeys) => wiring.sessionsMarks.setActiveTargets(new Set(targetKeys)),
   ), [wiring])
+  // Beside it, and to every workspace for the same reason: the sessions tree keeps a row for as long
+  // as its session has a tab somewhere, and the tabs of a holder count towards that too.
+  useEffect(() => window.appClient.onTabsOpenTerminalTargets(
+    (targetKeys) => wiring.sessionsMarks.setOpenTargets(new Set(targetKeys)),
+  ), [wiring])
   // Beside it for the same reason: the bar of every workspace draws the rate limits, and one
   // document has one reader of them.
   useEffect(() => wiring.rateSnapshot.start(), [wiring])
+  useEffect(() => wiring.perf.start(), [wiring])
   // The model poll is armed once per document and re-keyed whenever the tab in front changes; with
   // nothing in front it holds its timer down, so a window looking at a file asks nobody anything.
   useEffect(() => wiring.sessionModel.start(), [wiring])
@@ -387,6 +396,7 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
           sessionModel,
           compact: wiring.contextCompact,
           rate: { ports: wiring.ratePorts, store: wiring.rateSnapshot },
+          perf: perfReading,
         })}
       />
       {launcherOpen && (
@@ -582,6 +592,10 @@ class AppShellComposition {
       subscribe: (onChanged) => window.appClient.onCommitChanged(onChanged), reportError: AppClientUiReport.error })
     const ratePorts = AppShellComposition.ratePorts()
     const rateSnapshot = new SnapshotStore<RateMonitorSnapshot>('The rate limits', ratePorts)
+    const perf = new PerfStore({
+      sample: () => window.appClient.perf.sample(),
+      reportError: (message) => AppClientUiReport.error(message),
+    })
     const activeTerminal = new ActiveTerminalStore()
     const sessionModel = new SessionModelStore(AppShellComposition.sessionModelPorts())
     const agentSettings = new AgentSettingsStore({
@@ -721,6 +735,7 @@ class AppShellComposition {
       commitOpen,
       ratePorts,
       rateSnapshot,
+      perf,
       activeTerminal,
       sessionModel,
       agentSettings,
@@ -776,6 +791,9 @@ class AppShellComposition {
       saveView: (view) => window.appClient.state.saveSessionsView(view),
       loadFilters: () => window.appClient.state.loadSessionFilters(),
       saveFilters: (filters) => window.appClient.state.saveSessionFilters(filters),
+      loadGroups: () => window.appClient.state.loadSessionGroups(),
+      assignGroup: (key, group) => window.appClient.state.assignSessionGroup(key, group),
+      subscribeGroups: (onChanged) => window.appClient.onSessionGroupsChanged(onChanged),
     }
   }
 

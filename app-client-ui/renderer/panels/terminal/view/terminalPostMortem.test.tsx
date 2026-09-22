@@ -27,7 +27,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPostMortem', () => {
     loading: false,
     loadingMore: false,
     error: null,
-    reload: () => Promise.resolve(),
+    reload: () => Promise.resolve(null),
     loadMore: () => Promise.resolve(),
   }
 

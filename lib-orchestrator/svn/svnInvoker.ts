@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 
 import { CommandInvoker } from '../shared/commandInvoker'
-import type { CommandOutcome, CommandRunner } from '../shared/commandInvoker.types'
+import type { CommandOutcome, CommandRunner, CommandRunOptions } from '../shared/commandInvoker.types'
 
 export interface SvnInvokerOptions {
   /** As for git: `svn log` and `svn cat` reach the repository server, so the default is far too long. */
@@ -29,8 +29,8 @@ export class SvnInvoker implements CommandRunner {
     })
   }
 
-  run(cwd: string, args: string[]): Promise<CommandOutcome> {
-    return this.invoker.run({ command: 'svn', args, cwd, env: SvnInvoker.childEnv() })
+  run(cwd: string, args: string[], options?: CommandRunOptions): Promise<CommandOutcome> {
+    return this.invoker.run({ command: 'svn', args, cwd, env: SvnInvoker.childEnv(), ...options })
   }
 
   private static childEnv(): NodeJS.ProcessEnv {

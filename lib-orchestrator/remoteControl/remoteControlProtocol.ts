@@ -29,6 +29,7 @@ export class RemoteControlConst {
   ] as const
   static readonly optionalOperations = [
     'tabs.commitStatus',
+    'tabs.cancelCommit',
     'tabs.openFile',
     'tabs.openCommit',
     'sessions.transcript',
@@ -36,6 +37,7 @@ export class RemoteControlConst {
   ] as const
   static readonly operations = RemoteControlConst.descriptorOperations
   static readonly mutatingOperations = [
+    'tabs.cancelCommit',
     'sessions.create',
     'sessions.reopen',
     'sessions.finalize',

@@ -81,6 +81,14 @@ describe('lib-orchestrator/fileChangesManager/vcs/fileChangesVcsGit', () => {
     expect(runner.calls[1].args.at(-1)).toBe(':(literal)nested')
   })
 
+  it('uses an exact literal pathspec for a single-file read', async () => {
+    const { root, cwd } = repository()
+    const runner = new Runner((args) => args[0] === 'rev-parse' ? ok(`${root}\n`) : ok())
+    const vcs = new FileChangesVcsGit(runner)
+    await vcs.status((await vcs.detect(cwd))!, join(cwd, '[selected].ts'))
+    expect(runner.calls.find((call) => call.args[0] === 'status')?.args.at(-1)).toBe(':(literal)nested/[selected].ts')
+  })
+
   it('combines an explicit base diff with index, worktree, conflicts and untracked files', async () => {
     const { root, cwd } = repository()
     for (const name of ['committed.ts', 'untracked.ts', 'conflict.ts'])

@@ -2,6 +2,11 @@ import type { CategoryInfo, ProjectEntry, ProviderSessionSummary } from '../../l
 
 export interface HistoricSession extends Omit<ProviderSessionSummary, 'lastActivity'> {
   lastActivity: number | null
+  /**
+   * When the session ended, as AppJamat recorded it. Null while it runs, and null for a session
+   * nobody here ever ran: a foreign transcript carries no ending, only the time it last changed.
+   */
+  endedAt: number | null
   model: string | null
 }
 

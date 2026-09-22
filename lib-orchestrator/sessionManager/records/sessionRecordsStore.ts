@@ -94,6 +94,19 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       this.pendingUserInput.set(sessionId, at)
   }
 
+  /**
+   * Resolves once every write queued so far has landed on disk.
+   *
+   * It exists for shutdown. The write went off the event loop on 2026-09-21, so a poll that was
+   * still in flight when `stop()` ran can queue a record write AFTER the flush that stop awaits -
+   * and a caller that removes the state directory next, which is what every integration test does,
+   * meets a file still being written. The queue is the evidence: a turn that does nothing is
+   * behind every turn that does.
+   */
+  async settled(): Promise<void> {
+    await this.inTurn(() => Promise.resolve(true))
+  }
+
   async flushUserInput(): Promise<boolean> {
     return this.inTurn(() => this.pendingUserInput.size === 0
       ? Promise.resolve(true) : this.commit(this.records, false))

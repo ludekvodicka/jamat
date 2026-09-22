@@ -91,6 +91,55 @@ describe('app-client-ui/renderer/shell/workspacePanels', () => {
     await vi.waitFor(() => expect(c.focused).toEqual([c.panelId]))
     expect(PanelSplitParams.of(c.params).active).toBe(PanelSplitParams.commitKeyOf('svn', 'Q:/app'))
   })
+
+  it('persists different file selections as separate commits beside the directory review', async () => {
+    const controller = new WorkspacePanelsTestController()
+    const command: Extract<TabControlCommand, { kind: 'open-commit' }> = { kind: 'open-commit', requestId: 'commit', panelId: controller.panelId,
+      vcs: 'svn', scopeRoot: 'Q:/app', title: 'Commit SVN', messageApplied: true }
+    for (const paths of [undefined, ['Q:/app/one.txt'], ['Q:/app/two.txt']])
+      await WorkspacePanels.tabControlResult(controller.asController(), { ...command, paths })
+    const items = PanelSplitParams.of(JSON.parse(JSON.stringify(controller.params))).items
+    expect(items).toHaveLength(3)
+    expect(items[1]).toMatchObject({ paths: ['Q:/app/one.txt'], key: PanelSplitParams.commitKeyOf('svn', 'Q:/app', ['Q:/app/one.txt']) })
+    expect(items[2]).toMatchObject({ paths: ['Q:/app/two.txt'] })
+  })
+
+  it('keeps the current commit or diff visible when another review arrives in the background', async () => {
+    const c = new WorkspacePanelsTestController()
+    const command: Extract<TabControlCommand, { kind: 'open-commit' }> = { kind: 'open-commit', requestId: 'open', panelId: c.panelId,
+      vcs: 'svn', scopeRoot: 'Q:/app/first', title: 'Commit SVN', messageApplied: true, activate: false }
+    await WorkspacePanels.tabControlResult(c.asController(), command)
+    const first = PanelSplitParams.of(c.params)
+    await WorkspacePanels.tabControlResult(c.asController(), { ...command, scopeRoot: 'Q:/app/second' })
+    expect(PanelSplitParams.of(c.params)).toMatchObject({ active: first.active, history: first.history })
+    expect(PanelSplitParams.of(c.params).items).toHaveLength(2)
+
+    await WorkspacePanels.tabControlResult(c.asController(), WorkspacePanelsTest.command())
+    const diff = PanelSplitParams.of(c.params)
+    await WorkspacePanels.tabControlResult(c.asController(), { ...command, scopeRoot: 'Q:/app/third' })
+    expect(PanelSplitParams.of(c.params)).toMatchObject({ active: diff.active, history: diff.history, preview: diff.preview })
+    expect(c.activated).toEqual([])
+
+    await WorkspacePanels.tabControlResult(c.asController(), { ...command, scopeRoot: 'Q:/app/second', activate: true })
+    expect(PanelSplitParams.of(c.params).active).toBe(PanelSplitParams.commitKeyOf('svn', 'Q:/app/second'))
+    expect(PanelSplitParams.of(c.params).items).toHaveLength(4)
+  })
+
+  it('does not recreate a queued commit closed before its activation reaches the renderer', async () => {
+    const c = new WorkspacePanelsTestController()
+    const command: Extract<TabControlCommand, { kind: 'open-commit' }> = { kind: 'open-commit', requestId: 'open', panelId: c.panelId,
+      vcs: 'svn', scopeRoot: 'Q:/app', title: 'Commit SVN', messageApplied: false }
+    await WorkspacePanels.tabControlResult(c.asController(), { ...command, activate: false })
+    expect(await WorkspacePanels.tabControlResult(c.asController(), { ...command, activate: true, existingOnly: true }))
+      .toMatchObject({ kind: 'commit-opened' })
+    const state = PanelSplitParams.of(c.params)
+    c.params = PanelSplitParams.merged(c.params, PanelSplitParams.closed(state, state.active!))
+    const closed = structuredClone(c.params)
+    expect(await WorkspacePanels.tabControlResult(c.asController(), { ...command, activate: true, existingOnly: true }))
+      .toEqual({ kind: 'failed', detail: 'The commit dialog is no longer open' })
+    expect(c.params).toEqual(closed)
+    expect(c.activated).toHaveLength(1)
+  })
   it('adds a permanent commit to the terminal split and returns the independent cap refusal', async () => {
     const controller = new WorkspacePanelsTestController()
     const command: Extract<TabControlCommand, { kind: 'open-commit' }> = { kind: 'open-commit', requestId: 'commit', panelId: controller.panelId,

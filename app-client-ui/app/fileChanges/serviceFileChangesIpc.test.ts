@@ -155,6 +155,32 @@ describe('app-client-ui/app/fileChanges/serviceFileChangesIpc', () => {
     return handler({ sender: source } as IpcMainInvokeEvent, ...args)
   }
 
+  it('allows an owned commit read outside the session while ordinary reads stay scoped', async () => {
+    expect(await service.workingTree('window-1', 'session-1', 'svn', 'C:/outside', true)).toMatchObject({ ok: true })
+    expect(calls.find((call) => call.method === 'workingTree')?.args).toEqual([
+      { sessionId: 'session-1', cwd: 'C:/outside', agent: null, worktree: null }, 'svn', true, undefined,
+    ])
+    calls.length = 0
+    expect(await service.workingTree('window-1', 'session-1', 'svn', 'C:/outside')).toMatchObject({ ok: false })
+    expect(calls).toEqual([])
+  })
+
+  it('narrows restored commit diffs to the file and only coalesces reads of that file', async () => {
+    const first = { ...document.source, workingTree: { scopeRoot: 'C:/', source: 'git' as const } }
+    const second = { ...first, path: 'C:/work/b.ts' }
+    await Promise.all([
+      service.scopedWorkingTree('window-1', first),
+      service.scopedWorkingTree('window-1', first),
+      service.scopedWorkingTree('window-1', second),
+      service.workingTree('window-1', 'session-1', 'git', 'C:/', true),
+    ])
+    const reads = calls.filter((call) => call.method === 'workingTree')
+    expect(reads).toHaveLength(3)
+    expect(reads.map((call) => call.args[3])).toEqual(['C:/work/a.ts', 'C:/work/b.ts', undefined])
+    expect(await service.scopedWorkingTree('window-1', { ...first, path: 'D:/outside.ts' })).toMatchObject({ ok: false })
+    expect(calls.filter((call) => call.method === 'workingTree')).toHaveLength(3)
+  })
+
   it('derives the context and configured VCS in the main process', async () => {
     expect(await invoke('fileChanges:list', sender, 'session-1', null))
       .toEqual({ ok: true, value: { ok: true, value: snapshot } })
@@ -188,6 +214,7 @@ describe('app-client-ui/app/fileChanges/serviceFileChangesIpc', () => {
       { sessionId: 'session-1', cwd: 'C:/work', agent: null, worktree: null },
       'checkpoint',
       false,
+      undefined,
     ])
     for (const answer of answers)
       expect(answer).toEqual({ ok: true, value: { ok: true, value: workingSnapshot } })

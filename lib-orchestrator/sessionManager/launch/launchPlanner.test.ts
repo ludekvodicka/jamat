@@ -14,6 +14,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import type { SessionRecord } from '../records/sessionRecord.types'
 import { AgentPresets } from './agentPresets'
+import type { Win32SpanningLaunch } from './launchPlanner'
 import { LaunchPlanner } from './launchPlanner'
 
 describe('lib-orchestrator/sessionManager/launch/launchPlanner', () => {
@@ -714,6 +715,144 @@ describe('lib-orchestrator/sessionManager/launch/launchPlanner', () => {
 
     it('ignores an effort on a shell session', () => {
       expect(effortPlan(record(), 'linux', 'high')).toEqual(plan(record(), 'linux'))
+    })
+  })
+
+  /**
+   * Measured on 2026-09-20 through the Host's own node-pty, against a Node process that printed its
+   * `process.argv` back: an argument carrying a newline arrives WHOLE when the target is spawned
+   * directly, and is cut at the first line feed when anything puts cmd.exe in front of it. Every
+   * encoding was tried and none survives - CRLF cuts the same way, a lone CR is swallowed and
+   * rejoins the two lines, a caret before the feed leaves the caret and drops the rest, and handing
+   * the text over as an environment variable expanded on the line cuts at its first SPACE as well.
+   * A `.cmd` shim spawned directly by its full path is the same cut, because the shim is itself run
+   * by cmd.exe.
+   *
+   * So a multi-line prompt reaches an agent only when no cmd.exe stands between them, which is what
+   * these tests are about.
+   */
+  describe('a prompt that spans lines', () => {
+    const promptConst = 'You own one ticket.\nWork alone.\n\nTicket: nodejs/AppJamatV3#6'
+
+    function promptRecord(agentId: 'claude' | 'codex'): SessionRecord {
+      return record({
+        kind: 'agent',
+        agent: { agentId, launchMode: 'new', nativeSessionId: 'n1' },
+      })
+    }
+
+    const hostConst = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
+    const scriptConst = 'C:\\nvm4w\\nodejs\\codex.ps1'
+
+    function promptPlan(
+      agentId: 'claude' | 'codex',
+      spanning: Win32SpanningLaunch | null,
+      prompt = promptConst,
+    ) {
+      return LaunchPlanner.plan(promptRecord(agentId), {
+        platform: 'win32',
+        environment: environmentConst,
+        agentArgs: AgentPresets.createArgs(
+          { agentId, mode: 'new', nativeSessionId: 'n1', initialPrompt: prompt },
+          'n1',
+        ),
+        spanningLaunch: () => spanning,
+      })
+    }
+
+    it('spawns a win32 agent installed as an executable directly, so its prompt arrives whole', () => {
+      const image: Win32SpanningLaunch = { kind: 'image', imagePath: 'C:\\Users\\u\\.local\\bin\\claude.exe' }
+      const launch = promptPlan('claude', image)
+      expect(launch.command).toBe('C:\\Users\\u\\.local\\bin\\claude.exe')
+      expect(launch.args).toEqual(['--session-id', 'n1', promptConst])
+    })
+
+    /*
+     * The other shape that keeps a newline, measured on 2026-09-21 the same way: npm and pnpm write
+     * `<name>.ps1` beside every `<name>.cmd`, that script calls `node.exe` itself, and
+     * `pwsh -NoProfile -File` on it delivered every test prompt whole - quotes, backslashes, CRLF
+     * and non-ASCII included - because no cmd.exe is left in the chain.
+     */
+    it('starts a shim-installed agent through the PowerShell script its installer wrote', () => {
+      const launch = promptPlan('codex', {
+        kind: 'powershellScript', hostPath: hostConst, scriptPath: scriptConst,
+      })
+      expect(launch.command).toBe(hostConst)
+      expect(launch.args.slice(0, 3)).toEqual(['-NoProfile', '-File', scriptConst])
+      expect(launch.args.at(-1)).toBe(promptConst)
+    })
+
+    it('refuses a multi-line prompt it could only deliver through cmd.exe, instead of cutting it', () => {
+      expect(() => promptPlan('codex', null)).toThrow(/newline/)
+    })
+
+    /*
+     * PowerShell parses the arguments of a `-File` script itself, and `-name:value` is its own
+     * syntax for a parameter and its value: measured, `-x:y` arrives as two arguments and `-x:`
+     * arrives as none at all. A prompt of that shape is refused rather than taken apart.
+     */
+    it('refuses a prompt PowerShell would read as a parameter and its value', () => {
+      const route: Win32SpanningLaunch = {
+        kind: 'powershellScript', hostPath: hostConst, scriptPath: scriptConst,
+      }
+      expect(() => promptPlan('codex', route, '-fix: the thing\nand the other')).toThrow(/parameter/)
+    })
+
+    // The wrap is still the right launch for a shim; only an argument it would cut is refused.
+    it('still wraps a shim-installed agent when nothing it launches spans lines', () => {
+      const launch = LaunchPlanner.plan(promptRecord('codex'), {
+        platform: 'win32',
+        environment: environmentConst,
+        agentArgs: ['one line'],
+        spanningLaunch: () => null,
+      })
+      expect(launch.command).toBe('C:\\Windows\\system32\\cmd.exe')
+      expect(launch.args).toEqual(['/d', '/q', '/c', 'codex', 'one line'])
+    })
+
+    /*
+     * `SessionLifecycle` asks this before it writes a record, and the reconciler before it replays
+     * one, so the gate answers with the rules the plan will use rather than with rules of its own.
+     */
+    describe('the gate in front of the plan', () => {
+      function problem(prompt: string, spanning: Win32SpanningLaunch | null): string | null {
+        return LaunchPlanner.argumentProblem('codex', prompt, {
+          platform: 'win32',
+          environment: environmentConst,
+          spanningLaunch: () => spanning,
+        })
+      }
+
+      const routeConst: Win32SpanningLaunch = {
+        kind: 'powershellScript', hostPath: hostConst, scriptPath: scriptConst,
+      }
+
+      it('lets through a prompt the PowerShell script can carry', () => {
+        expect(problem(promptConst, routeConst)).toBeNull()
+      })
+
+      it('names the parameter the PowerShell route would read the prompt as', () => {
+        expect(problem('-fix: the thing\nand the other', routeConst)).toMatch(/parameter/)
+      })
+
+      it('names cmd.exe when the machine has no route at all', () => {
+        expect(problem(promptConst, null)).toMatch(/newline/)
+      })
+
+      it('says nothing about a prompt that stays on one line', () => {
+        expect(problem('one line', null)).toBeNull()
+      })
+    })
+
+    // Nothing puts cmd.exe in the way off win32, so the same prompt needs no resolution at all.
+    it('hands a multi-line prompt straight to the agent everywhere else', () => {
+      const launch = LaunchPlanner.plan(promptRecord('claude'), {
+        platform: 'linux',
+        environment: environmentConst,
+        agentArgs: ['--session-id', 'n1', promptConst],
+      })
+      expect(launch.command).toBe('claude')
+      expect(launch.args.at(-1)).toBe(promptConst)
     })
   })
 })

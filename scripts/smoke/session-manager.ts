@@ -267,7 +267,16 @@ class SmokeSessionManager extends SmokeHarness {
         controllerLeaseId: await this.acquireLease(),
         operationId: SmokeSessionManager.crashedOperationIdConst,
         runtimeSessionId: sessionId,
-        launch: LaunchPlanner.plan(this.crashedRecord),
+        // The controller has to be named here exactly as `SessionLifecycle.plannedLaunch` names it:
+        // it puts two variables into the child's environment, and the Host compares the whole
+        // request. Without it this probe is a DIFFERENT request under the same operationId, which
+        // the replay store answers with a 409 rather than with the runtime it already made.
+        launch: LaunchPlanner.plan(this.crashedRecord, {
+          controller: {
+            configIdentity: this.configIdentity,
+            channel: SmokeSessionManager.channelConst,
+          },
+        }),
       },
     )
     this.check('replaying that operationId answers with the runtime it already made',
@@ -497,6 +506,10 @@ class SmokeSessionManager extends SmokeHarness {
       throw new Error('FAILED: the session created with a worktree names none')
     this.check('a worktree create whose project declares a setup answers with the session id while '
       + `the install is still running (life ${waiting?.life})`, waiting?.life === 'starting')
+    // The create took its own number: this spec named no title at all, and the one path that used
+    // to number a session was the create card composing the title before it submitted.
+    this.check(`the create numbered itself from the project's count (${waiting?.title})`,
+      waiting?.titleParts.number !== null)
     this.check(`the install is a session of its own, live on the Host (${install?.sessionId})`,
       install !== undefined && install.kind === 'shell' && install.life === 'live')
     this.check('the waiting session says an install is running and names the session running it',
@@ -970,17 +983,41 @@ class SmokeSessionManager extends SmokeHarness {
     this.versioningMode = 'checkpoints'
   }
 
+  /**
+   * Relative to what the count already stands at rather than to `001`: every project create earlier
+   * in this run now takes a number of its own, so the absolute value is a statement about how many
+   * sessions the checks above happen to start. What has to hold is the relation - a peek costs
+   * nothing, a claim hands out exactly what the peek promised, and the next claim is one after it.
+   */
   private async checkSessionNumbers(): Promise<void> {
     const first = SmokeSessionManager.valueOf(
       await this.manager.nextSessionNumber(this.projectRoot), 'nextSessionNumber')
-    this.check(`a project nobody has numbered starts at 001 (${first.token})`, first.token === '001')
+    const peeked = SmokeSessionManager.valueOf(
+      await this.manager.nextSessionNumber(this.projectRoot), 'nextSessionNumber')
+    this.check(`peeking twice spends nothing (${first.token}, ${peeked.token})`,
+      peeked.token === first.token)
 
     const taken = SmokeSessionManager.valueOf(
       await this.manager.allocateSessionNumber(this.projectRoot), 'allocateSessionNumber')
     const second = SmokeSessionManager.valueOf(
       await this.manager.allocateSessionNumber(this.projectRoot), 'allocateSessionNumber')
-    this.check(`allocating twice hands out two numbers (${taken.token}, ${second.token})`,
-      taken.token === '001' && second.token === '002')
+    this.check(`allocating twice hands out the peeked number and the one after it (${
+      taken.token}, ${second.token})`,
+      taken.token === first.token && Number(second.token) === Number(first.token) + 1)
+
+    // Three or more leading digits are a session number to everything that reads a record, so a
+    // create that typed one the project never gave out would leave the count standing at it.
+    const claimed = await this.manager.createSession({
+      kind: 'shell',
+      directory: { mode: 'project', categoryId: 'smoke', projectPath: this.projectRoot },
+      title: '2026 plan',
+    })
+    this.check(`a title claiming a number the project never gave out is refused (${
+      claimed.ok ? 'created' : claimed.code})`, !claimed.ok && claimed.code === 'invalid-spec')
+    const after = SmokeSessionManager.valueOf(
+      await this.manager.nextSessionNumber(this.projectRoot), 'nextSessionNumber')
+    this.check(`and the count stands where it stood (${after.token})`,
+      Number(after.token) === Number(second.token) + 1)
 
     const file = OrchestratorPaths.sessionNumbersFile(
       this.configIdentity, SmokeSessionManager.channelConst)

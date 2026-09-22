@@ -286,12 +286,20 @@ export class WorkspacePanels {
         return { kind: 'failed', detail: `Not a terminal panel: ${command.panelId}` }
       let refusal: string | null = null
       const applied = controller.applyPanelParameters(command.panelId, (params) => {
-        const result = PanelSplitParams.opened(PanelSplitParams.of(params), {
-          kind: 'commit', key: PanelSplitParams.commitKeyOf(command.vcs, command.scopeRoot), title: command.title,
+        const previous = PanelSplitParams.of(params)
+        const key = PanelSplitParams.commitKeyOf(command.vcs, command.scopeRoot, command.paths)
+        if (command.existingOnly && !previous.items.some((item) => item.key === key)) {
+          refusal = 'The commit dialog is no longer open'
+          return params
+        }
+        const result = PanelSplitParams.opened(previous, {
+          kind: 'commit', key, title: command.title,
           vcs: command.vcs, scopeRoot: command.scopeRoot,
+          ...(command.paths === undefined ? {} : { paths: command.paths }),
         })
         if (!result.ok) { refusal = result.refusal; return params }
-        return PanelSplitParams.merged(params, result.state)
+        return PanelSplitParams.merged(params, command.activate === false && previous.active !== null
+          ? { ...result.state, active: previous.active, history: previous.history } : result.state)
       })
       if (applied && refusal === null && command.activate !== false) {
         controller.activatePanel(command.panelId)

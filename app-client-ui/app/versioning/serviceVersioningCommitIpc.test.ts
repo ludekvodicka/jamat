@@ -9,15 +9,19 @@ const handlers = vi.hoisted(() => new Map<string, (event: unknown, ...args: unkn
 vi.mock('electron', () => ({ ipcMain: { handle: (name: string, handler: (event: unknown, ...args: unknown[]) => Promise<unknown>) => handlers.set(name, handler) } }))
 
 describe('app-client-ui/app/versioning/serviceVersioningCommitIpc', () => {
-  it('requests the complete commit list for the owned scope', async () => {
+  it('filters the owned commit list to the requested paths', async () => {
     handlers.clear()
     const sender = Object.assign(new EventEmitter(), { isDestroyed: () => false })
-    const manager = { read: vi.fn(() => ({ sessionId: 'session', source: 'svn', scopeRoot: 'scope' })) } as unknown as VersioningCommitManager
-    const files = { workingTree: vi.fn() }
+    const snapshot = { snapshotId: 'snapshot' }
+    const filtered = { ...snapshot, entries: [] }
+    const manager = { read: vi.fn(() => ({ sessionId: 'session', source: 'svn', scopeRoot: 'scope' })),
+      files: vi.fn(() => filtered) } as unknown as VersioningCommitManager
+    const files = { workingTree: vi.fn(async () => ({ ok: true as const, value: snapshot as never })) }
     new ServiceVersioningCommitIpc(manager, () => 'window', files, vi.fn(), { launch: vi.fn() }, vi.fn()).initialize()
-    await handlers.get('versioning:commit-files')!({ sender }, 'draft')
+    expect(await handlers.get('versioning:commit-files')!({ sender }, 'draft')).toEqual({ ok: true, value: { ok: true, value: filtered } })
     expect(manager.read).toHaveBeenCalledWith('window', 'draft')
     expect(files.workingTree).toHaveBeenCalledWith('window', 'session', 'svn', 'scope', true)
+    expect(manager.files).toHaveBeenCalledWith('window', 'draft', snapshot)
   })
 
   it('registers every channel and preserves owners over reload while releasing a dead window', async () => {

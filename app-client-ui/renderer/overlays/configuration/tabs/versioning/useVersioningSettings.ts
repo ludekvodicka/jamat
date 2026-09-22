@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import type { VersioningSettingsValue } from '../../../../../shared/versioningSettings'
+import type { VersioningSettingsField } from '../../../../../shared/versioningSettings'
 import { VersioningSettingsEffects, type VersioningSettingsPorts } from './versioningSettingsEffects'
 import { VersioningSettingsModel, type VersioningSettingsModelState } from './versioningSettingsModel'
 
-export function useVersioningSettings(field: keyof VersioningSettingsValue, onDirtyChange: (dirty: boolean) => void) {
+export function useVersioningSettings(field: VersioningSettingsField, onDirtyChange: (dirty: boolean) => void) {
   const [start] = useState(() => VersioningSettingsModel.initial())
   const [state, setState] = useState<VersioningSettingsModelState>(start.state)
   const stateRef = useRef(start.state)

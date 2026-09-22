@@ -14,6 +14,7 @@ import {
   useHighlightedHtml,
 } from '../../../mdext-renderer/renderer'
 import { FileViewerProtocolUrl } from '../../shared/fileViewerProtocol'
+import { ErrorText } from '../../shared/errorText'
 import { FileDiffView } from './fileDiffView'
 import { FileHexView } from './fileHexView'
 import { FileHtmlView } from './fileHtmlView'
@@ -83,6 +84,7 @@ function FileRenderedContent(props: {
    * The renders are not rare. Dragging the sidebar splitter commits one per pointer move.
    */
   const documentId = props.document.documentId
+  const drag = useFileViewerImageDrag(documentId)
   const documentPath = props.document.path
   const documentSource = props.document.source
   const onOpenSource = props.onOpenSource
@@ -122,12 +124,18 @@ function FileRenderedContent(props: {
     return <FileHighlightedCode source={source} language={kind.language} location={props.location} />
   if (kind.kind === 'svg')
     return (
-      <div
-        className="file-viewer-svg"
-        role="img"
-        aria-label={props.document.name}
-        dangerouslySetInnerHTML={{ __html: MdExtSecurity.svg(source) }}
-      />
+      <>
+        {drag.error}
+        <div
+          className="file-viewer-svg"
+          role="img"
+          aria-label={props.document.name}
+          draggable
+          title="Drag image to another application"
+          onDragStart={drag.onDragStart}
+          dangerouslySetInnerHTML={{ __html: MdExtSecurity.svg(source) }}
+        />
+      </>
     )
   if (kind.kind === 'text')
     return props.location === undefined
@@ -312,6 +320,7 @@ function FileMediaPreview(props: { document: FileViewerDocument }): React.JSX.El
   const [url, setUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const fit = useFileViewerMediaFit(url)
+  const drag = useFileViewerImageDrag(props.document.documentId)
   useEffect(() => {
     let alive = true
     setUrl(null)
@@ -328,17 +337,23 @@ function FileMediaPreview(props: { document: FileViewerDocument }): React.JSX.El
   if (url === null) return <p className="file-viewer-note">Loading media...</p>
   if (props.document.kind.kind === 'image')
     return (
-      <div className="file-viewer-media">
-        <div className="file-viewer-media-frame" style={fit.style}>
-          <img
-            ref={fit.media as React.RefObject<HTMLImageElement | null>}
-            src={url}
-            alt={props.document.name}
-            onLoad={fit.remeasure}
-            onError={() => setError('The image cannot be decoded. Use Hex to inspect it.')}
-          />
+      <>
+        {drag.error}
+        <div className="file-viewer-media">
+          <div className="file-viewer-media-frame" style={fit.style}>
+            <img
+              ref={fit.media as React.RefObject<HTMLImageElement | null>}
+              src={url}
+              alt={props.document.name}
+              draggable
+              title="Drag image to another application"
+              onDragStart={drag.onDragStart}
+              onLoad={fit.remeasure}
+              onError={() => setError('The image cannot be decoded. Use Hex to inspect it.')}
+            />
+          </div>
         </div>
-      </div>
+      </>
     )
   else if (props.document.kind.kind === 'video')
     return (
@@ -356,6 +371,29 @@ function FileMediaPreview(props: { document: FileViewerDocument }): React.JSX.El
       </div>
     )
   else throw new Error(`Document cannot use preview mode: ${JSON.stringify(props.document.kind)}`)
+}
+
+function useFileViewerImageDrag(documentId: string): {
+  onDragStart(event: React.DragEvent): void
+  error: React.JSX.Element | null
+} {
+  const [failure, setFailure] = useState<{ documentId: string; detail: string } | null>(null)
+  const onDragStart = (event: React.DragEvent): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    setFailure(null)
+    void window.appClient.fileViewer.startImageDrag(documentId).then((answer) => {
+      if (!answer.ok) setFailure({ documentId, detail: answer.error })
+      else if (!answer.value)
+        setFailure({ documentId, detail: 'The image is no longer available for dragging. Reload it and try again.' })
+    }).catch((error: unknown) => setFailure({ documentId, detail: ErrorText.of(error) }))
+  }
+  return {
+    onDragStart,
+    error: failure?.documentId === documentId
+      ? <p className="file-viewer-error" role="alert">{failure.detail}</p>
+      : null,
+  }
 }
 
 /**

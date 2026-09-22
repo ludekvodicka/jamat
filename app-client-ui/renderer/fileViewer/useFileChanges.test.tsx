@@ -130,6 +130,7 @@ describe('app-client-ui/renderer/fileViewer/useFileChanges', () => {
 
     expect(read().groups.map((group) => group.groupId)).to.deep.equal(['group-2'])
     expect(read().nextCursor).to.equal('cursor-2')
+    expect(read().loadingMore).toBe(false)
   })
 
   it('appends a page that still belongs to the snapshot on screen', async () => {
@@ -144,6 +145,21 @@ describe('app-client-ui/renderer/fileViewer/useFileChanges', () => {
 
     expect(read().groups.map((group) => group.groupId)).to.deep.equal(['group-1', 'group-2'])
     expect(read().nextCursor).to.equal(null)
+  })
+
+  it('renews already loaded history pages with tokens from the fresh snapshot', async () => {
+    render(<Harness />)
+    await settle(lists[0], listAnswer(snapshotOf('stale', 'first', 'old-cursor')))
+    act(() => { void read().loadMore() })
+    await settle(histories[0], { ok: true, value: { ok: true, value: { groups: [groupOf('older')], nextCursor: null } } })
+    let renewed: Promise<FileChangesSnapshot | null>
+    act(() => { renewed = read().reload() })
+    await settle(lists[1], listAnswer(snapshotOf('fresh', 'new-first', 'fresh-cursor')))
+    expect(read().loading).toBe(true)
+    await settle(histories[1], { ok: true, value: { ok: true, value: { groups: [groupOf('new-older')], nextCursor: null } } })
+    expect((await renewed!)?.history.groups.map((group) => group.groupId)).toEqual(['new-first', 'new-older'])
+    expect(read().groups.map((group) => group.groupId)).toEqual(['new-first', 'new-older'])
+    expect(read().loading).toBe(false)
   })
 
   /**

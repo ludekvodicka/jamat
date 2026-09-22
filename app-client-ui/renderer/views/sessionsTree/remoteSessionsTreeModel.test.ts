@@ -12,9 +12,29 @@ import type {
 } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { TerminalTargetCodec } from '../../../shared/terminalTarget'
 import { RemoteSessionsTreeModel } from './remoteSessionsTreeModel'
-import type { TreeNode } from './sessionsTreeModel'
+import { SessionsTreeModel, type TreeNode } from './sessionsTreeModel'
 
 describe('app-client-ui/renderer/views/sessionsTree/remoteSessionsTreeModel', () => {
+  it.each(['pinned', 'priority', 'waiting', 'blocked'] as const)('scopes %s assignments to one remote endpoint', (group) => {
+    const sessions = RemoteSessionsTreeFixtures.snapshot([
+      RemoteSessionsTreeFixtures.session('same-session', 'Alpha'),
+    ])
+    const remote = RemoteSessionsTreeFixtures.remote([
+      RemoteSessionsTreeFixtures.outbound('a', 'a', 'endpoint-a', 'A', sessions),
+      RemoteSessionsTreeFixtures.outbound('b', 'b', 'endpoint-b', 'B', sessions),
+    ])
+    const all = RemoteSessionsTreeModel.build(remote, sessions, RemoteSessionsTreeFixtures.view(), new Set(), new Map())
+    const root = all.outbound[0].endpoints[0].tree.nodes[0]
+    const session = RemoteSessionsTreeFixtures.sessionNode([root])
+    for (const key of [SessionsTreeModel.groupKeyOf(session), root.id]) {
+      const view = { ...RemoteSessionsTreeFixtures.view(), assignments: new Map([[key, group]]), group }
+      const pinned = RemoteSessionsTreeModel.build(remote, sessions, view, new Set(), new Map())
+      expect(pinned.outbound.map((computer) => computer.remoteComputerId)).toEqual(['a'])
+      const rest = RemoteSessionsTreeModel.build(remote, sessions, { ...view, group: 'none' }, new Set(), new Map())
+      expect(rest.outbound.map((computer) => computer.remoteComputerId)).toEqual(['b'])
+    }
+  })
+
   it('groups connected outbound endpoints by stable computer identity and omits offline profiles', () => {
     const remote = RemoteSessionsTreeFixtures.remote([
       RemoteSessionsTreeFixtures.outbound('profile-b', 'computer-a', 'endpoint-b', 'Workstation', null,
@@ -254,6 +274,7 @@ class RemoteSessionsTreeFixtures {
       filters: SessionsFilterState.allConst,
       filterText: '',
       inFront: new Set<string>(),
+      tabbed: new Set<string>(),
       now: RemoteSessionsTreeFixtures.nowConst,
     }
   }

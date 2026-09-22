@@ -7,8 +7,76 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { FileChangesWorkingTreeSnapshot } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import { VersioningCommitLimits } from '../../shared/versioningCommit'
 import { VersioningCommitManager, type VersioningCommitManagerDeps } from './versioningCommitManager'
+import { VersioningCommitMessageStore } from './versioningCommitMessageStore'
 
 describe('app-client-ui/app/versioning/versioningCommitManager', () => {
+  it('cancels one review, waits for every pane to close and reopens with a new identity and the saved message', async () => {
+    const f = await fixture()
+    f.manager.attach(f.draftId, 'second')
+    f.manager.setMessage('window', f.draftId, 'Person-edited message')
+    const sibling = await f.manager.prepare('session', 'svn', f.path, 'Single-file review')
+    if (!sibling.ok) throw new Error(sibling.detail)
+    f.manager.attach(sibling.value.draftId, 'window')
+    expect(f.manager.reviews('session', 'window').map((review) => review.commitSessionId)).toEqual([f.draftId, sibling.value.draftId])
+    expect(f.manager.reviews('session', 'window')[1]?.paths).toEqual([f.path])
+    expect(f.manager.reviews('other', 'window')).toEqual([])
+    expect(f.manager.reviews('session', 'other')).toEqual([])
+    const cancelled = f.manager.cancel(f.draftId)
+    expect(f.manager.cancel(f.draftId)).toBe(cancelled)
+    expect(f.manager.read('window', f.draftId)?.phase.kind).toBe('cancelled')
+    expect(f.manager.setMessage('window', f.draftId, 'Late edit')).toBe(false)
+    expect(await f.manager.run('window', f.request)).toMatchObject({ ok: false, code: 'unknown-draft' })
+    expect(await f.manager.openTortoise('window', f.draftId, 'Late handoff')).toMatchObject({ ok: false, code: 'unknown-draft' })
+    expect(await f.manager.revert('window', { draftId: f.draftId, snapshotId: 'snapshot', fileId: 'file' }, async () => true))
+      .toMatchObject({ ok: false, code: 'unknown-draft' })
+    f.manager.release(f.draftId, 'window')
+    expect(f.manager.status(f.draftId)?.closed).toBe(false)
+    f.manager.release(f.draftId, 'second')
+    expect(await cancelled).toMatchObject({ ok: true, value: { state: 'cancelled', closed: true, revision: null } })
+    expect(await f.manager.cancel(f.draftId)).toMatchObject({ ok: true, value: { state: 'cancelled', closed: true } })
+    const next = await f.manager.prepare('session', 'svn', null, 'New proposal')
+    if (!next.ok) throw new Error(next.detail)
+    f.manager.attach(next.value.draftId, 'window')
+    expect(next.value.draftId).not.toBe(f.draftId)
+    expect(f.manager.read('window', next.value.draftId)?.message).toBe('Person-edited message')
+    expect(f.manager.read('window', sibling.value.draftId)?.message).toBe('Single-file review')
+    expect(f.writes).toEqual([])
+  })
+
+  it.each(['commit', 'revert', 'tortoise'] as const)('refuses cancellation during %s preflight or execution', async (operation) => {
+    const f = await fixture()
+    f.deps.tortoise.open = async () => ({ ok: true, closed: Promise.resolve() })
+    const running = operation === 'commit' ? f.manager.run('window', f.request)
+      : operation === 'revert' ? f.manager.revert('window', { draftId: f.draftId, snapshotId: 'snapshot', fileId: 'file' }, async () => true)
+        : f.manager.openTortoise('window', f.draftId, 'Message')
+    expect(await f.manager.cancel(f.draftId)).toMatchObject({ ok: false, error: { code: 'conflict' } })
+    expect(await running).toMatchObject({ ok: true })
+    expect(f.manager.read('window', f.draftId)?.phase.kind).not.toBe('cancelled')
+  })
+
+  it('does not turn a committed or unknown review into a cancellation', async () => {
+    const f = await fixture()
+    await f.manager.run('window', f.request)
+    expect(await f.manager.cancel(f.draftId)).toMatchObject({ ok: false, error: { code: 'conflict' } })
+    expect(f.manager.status(f.draftId)).toMatchObject({ state: 'committed', revision: '42' })
+    expect(await f.manager.cancel('missing')).toMatchObject({ ok: false, error: { code: 'not-found' } })
+  })
+
+  it('bounds waiting for a frozen renderer without making the cancelled review writable again', async () => {
+    const f = await fixture()
+    vi.useFakeTimers()
+    try {
+      const cancelled = f.manager.cancel(f.draftId)
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(await cancelled).toMatchObject({ ok: false, error: { code: 'timeout' } })
+      expect(f.manager.setMessage('window', f.draftId, 'Late edit')).toBe(false)
+      expect(f.manager.status(f.draftId)?.closed).toBe(false)
+      f.manager.release(f.draftId, 'window')
+      expect(f.manager.status(f.draftId)).toMatchObject({ state: 'cancelled', closed: true })
+      expect(vi.getTimerCount()).toBe(0)
+    } finally { vi.useRealTimers() }
+  })
+
   it.each(['svn', 'git'] as const)('retains the %s result after close and gives the next review a different identity', async (vcs) => {
     const f = await fixture(vcs)
     if (vcs === 'git') f.deps.git.commit = async () => ({ ok: true, value: { hash: 'abc123', output: 'Committed' } })
@@ -75,8 +143,11 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     const writes: string[] = []
     const phases: string[] = []
     const settled: string[] = []
+    const messageFile = join(root, 'state', 'commit-messages.json')
+    const report = vi.fn()
     let serial = 0
     const deps: VersioningCommitManagerDeps = {
+      messages: new VersioningCommitMessageStore(messageFile, report),
       sessions: { workingContext: async (sessionId) => ({ ok: true, value: { sessionId, cwd: root, agent: null, worktree: null } }), settleVcs: (cwd) => { settled.push(cwd) } },
       vcsStatus: { detect: async (cwd, id) => ({ id, root, cwd, scopeRelativePath: '.', scopeUrl: null, repositoryPathPrefix: null }) },
       checkpointStore: { worktreeBelongsToStore: async () => false },
@@ -99,10 +170,116 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     if (!prepared.ok) throw new Error(prepared.detail)
     const draftId = prepared.value.draftId
     manager.attach(draftId, 'window')
-    return { manager, deps, root, path, snapshot, draftId, writes, phases, settled,
+    return { manager, deps, root, path, snapshot, draftId, writes, phases, settled, messageFile, report,
       request: { draftId, snapshotId: snapshot.snapshotId, fileIds: ['file'], message: 'Reviewed\n\nPříliš' },
     }
   }
+
+  function restart(f: Awaited<ReturnType<typeof fixture>>) {
+    return new VersioningCommitManager({ ...f.deps,
+      messages: new VersioningCommitMessageStore(f.messageFile, f.report),
+    })
+  }
+
+  it.each(['svn', 'git'] as const)('restores the %s proposal after an application restart', async (vcs) => {
+    const f = await fixture(vcs)
+    f.manager.revokeOwner('window')
+    const manager = restart(f)
+    const opened = await manager.prepare('session', vcs, null, null)
+    if (!opened.ok) throw new Error(opened.detail)
+    manager.attach(opened.value.draftId, 'new-window')
+    expect(opened.value.draftId).not.toBe(f.draftId)
+    expect(manager.read('new-window', opened.value.draftId)).toMatchObject({
+      message: 'proposal', editedByPerson: false, proposedByAgent: true, phase: { kind: 'editing' },
+    })
+    expect(await manager.prepare('session', vcs, null, 'Updated proposal')).toMatchObject({ messageApplied: true })
+    expect(manager.read('new-window', opened.value.draftId)?.message).toBe('Updated proposal')
+    expect(manager.status(f.draftId)).toBeNull()
+  })
+
+  it.each(['Reviewed\n\nPříliš žluťoučký kůň', ''])('preserves person-edited text %j and its precedence after restart', async (message) => {
+    const f = await fixture()
+    expect(f.manager.setMessage('window', f.draftId, message)).toBe(true)
+    const manager = restart(f)
+    const opened = await manager.prepare('session', 'svn', null, 'Replacement proposal')
+    if (!opened.ok) throw new Error(opened.detail)
+    manager.attach(opened.value.draftId, 'window')
+    expect(opened.messageApplied).toBe(false)
+    expect(manager.read('window', opened.value.draftId)).toMatchObject({ message, editedByPerson: true })
+  })
+
+  it('keeps directory, single-file, multi-file, session and VCS messages separate after restart', async () => {
+    const f = await fixture()
+    const second = await addSecondFile(f)
+    await f.manager.prepare('session', 'svn', f.path, 'single file')
+    await f.manager.prepare('session', 'svn', null, 'multiple files', [second.path, f.path])
+    await f.manager.prepare('other-session', 'svn', null, 'other session')
+    await f.manager.prepare('session', 'git', null, 'Git proposal')
+    const nested = join(f.root, 'nested')
+    await mkdir(nested)
+    await f.manager.prepare('session', 'svn', nested, 'other directory')
+    const manager = restart(f)
+    for (const [sessionId, vcs, scope, paths, message] of [
+      ['session', 'svn', null, undefined, 'proposal'],
+      ['session', 'svn', f.path, undefined, 'single file'],
+      ['session', 'svn', null, [f.path, second.path, f.path], 'multiple files'],
+      ['other-session', 'svn', null, undefined, 'other session'],
+      ['session', 'git', null, undefined, 'Git proposal'],
+      ['session', 'svn', nested, undefined, 'other directory'],
+    ] as const) {
+      const opened = await manager.prepare(sessionId, vcs, scope, null, paths)
+      if (!opened.ok) throw new Error(opened.detail)
+      manager.attach(opened.value.draftId, 'window')
+      expect(manager.read('window', opened.value.draftId)?.message).toBe(message)
+    }
+  })
+
+  it.each(['svn', 'git'] as const)('removes a successfully committed %s message without discarding another scope', async (vcs) => {
+    const f = await fixture(vcs)
+    f.deps.git.commit = async () => ({ ok: true, value: { hash: 'abc123', output: 'Committed' } })
+    await f.manager.prepare('session', vcs, f.path, 'Separate review')
+    expect(await f.manager.run('window', f.request)).toMatchObject({ ok: true })
+    const manager = restart(f)
+    const opened = await manager.prepare('session', vcs, null, null)
+    if (!opened.ok) throw new Error(opened.detail)
+    manager.attach(opened.value.draftId, 'window')
+    expect(manager.read('window', opened.value.draftId)).toMatchObject({ message: '', editedByPerson: false })
+    const separate = await manager.prepare('session', vcs, f.path, null)
+    if (!separate.ok) throw new Error(separate.detail)
+    manager.attach(separate.value.draftId, 'window')
+    expect(manager.read('window', separate.value.draftId)?.message).toBe('Separate review')
+  })
+
+  it('restores the submitted message after a failed commit without replaying the operation', async () => {
+    const f = await fixture()
+    f.deps.svn.commit = vi.fn(async () => ({ ok: false as const, code: 'locked' as const, detail: 'locked' }))
+    await f.manager.run('window', f.request)
+    const manager = restart(f)
+    const opened = await manager.prepare('session', 'svn', null, null)
+    if (!opened.ok) throw new Error(opened.detail)
+    manager.attach(opened.value.draftId, 'window')
+    expect(manager.read('window', opened.value.draftId)).toMatchObject({
+      message: f.request.message, editedByPerson: true, phase: { kind: 'editing' },
+    })
+    expect(f.deps.svn.commit).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports failed saves and preserves an unreadable message file', async () => {
+    const f = await fixture()
+    await writeFile(f.messageFile, '{unreadable')
+    const manager = restart(f)
+    const opened = await manager.prepare('session', 'svn', null, null)
+    if (!opened.ok) throw new Error(opened.detail)
+    manager.attach(opened.value.draftId, 'window')
+    expect(manager.setMessage('window', opened.value.draftId, 'Keep locally')).toBe(false)
+    expect(manager.read('window', opened.value.draftId)?.message).toBe('Keep locally')
+    expect(await manager.run('window', { ...f.request, draftId: opened.value.draftId })).toMatchObject({
+      ok: false, detail: 'The commit message could not be saved',
+    })
+    expect(f.writes).toEqual([])
+    expect(await readFile(f.messageFile, 'utf8')).toBe('{unreadable')
+    expect(f.report).toHaveBeenCalled()
+  })
 
   async function addSecondFile(f: Awaited<ReturnType<typeof fixture>>) {
     const path = join(f.root, 'second.txt')
@@ -125,6 +302,124 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(again).toMatchObject({ ok: true, value: { draftId: f.draftId }, messageApplied: false })
     expect(f.manager.read('window', f.draftId)?.message).toBe('human')
     expect(f.manager.read('other', f.draftId)).toBeNull()
+  })
+
+  it('keeps a single-file draft distinct and rejects sibling ids from a wider snapshot', async () => {
+    const f = await fixture()
+    const sibling = await addSecondFile(f)
+    const opened = await f.manager.prepare('session', 'svn', f.path, 'one file')
+    if (!opened.ok) throw new Error(opened.detail)
+    expect(opened.value).toMatchObject({ scopeRoot: f.root, paths: [f.path] })
+    expect(opened.value.draftId).not.toBe(f.draftId)
+    f.manager.attach(opened.value.draftId, 'window')
+    expect(f.manager.files('window', opened.value.draftId, f.snapshot).entries.map((entry) => entry.fileId)).toEqual(['file'])
+    const commit = vi.spyOn(f.deps.svn, 'commit')
+    const request = { ...f.request, draftId: opened.value.draftId }
+    expect(await f.manager.run('window', { ...request, fileIds: [sibling.fileId] })).toMatchObject({ ok: false, code: 'invalid-target' })
+    expect(commit).not.toHaveBeenCalled()
+    expect(await f.manager.run('window', request)).toMatchObject({ ok: true })
+    expect(commit.mock.calls[0][1].map((target) => target.absolutePath)).toEqual([f.path])
+  })
+
+  it('deduplicates explicit file lists and keeps them when the same review is reopened', async () => {
+    const f = await fixture()
+    const second = await addSecondFile(f)
+    const first = await f.manager.prepare('session', 'svn', null, 'two files', [second.path, f.path, f.path])
+    if (!first.ok) throw new Error(first.detail)
+    const again = await f.manager.prepare('session', 'svn', first.value.scopeRoot, null, first.value.paths)
+    expect(again).toMatchObject({ ok: true, value: { draftId: first.value.draftId, paths: [f.path, second.path].sort() } })
+    f.manager.attach(first.value.draftId, 'window')
+    expect(await f.manager.run('window', { ...f.request, draftId: first.value.draftId, fileIds: ['file', second.fileId] })).toMatchObject({ ok: true })
+  })
+
+  /**
+   * The heading is one line. A restricted selection used to be that line - every absolute path of
+   * it, joined by a newline the heading's `nowrap` folded into a space - so the pane titled itself
+   * with the same directory printed once per file.
+   */
+  it('names the working copy in the heading and lists a restricted selection on hover', async () => {
+    const f = await fixture()
+    const second = await addSecondFile(f)
+
+    const opened = await f.manager.prepare('session', 'svn', null, null, [second.path, f.path])
+
+    if (!opened.ok) throw new Error(opened.detail)
+    f.manager.attach(opened.value.draftId, 'window')
+    const draft = f.manager.read('window', opened.value.draftId)
+    expect(draft?.scopeRoot).toBe(f.root)
+    expect(draft?.scopeTooltip).toBe([f.root, '  file.txt', '  second.txt'].join('\n'))
+    // The whole working copy is its own heading: there is nothing a second line would add.
+    expect(f.manager.read('window', f.draftId)?.scopeTooltip).toBe(f.root)
+  })
+
+  it('reviews and commits an explicit outside directory under the originating session ownership', async () => {
+    const f = await fixture()
+    const origin = join(f.root, 'session-origin')
+    await mkdir(origin)
+    f.manager.release(f.draftId, 'window')
+    f.deps.sessions.workingContext = async () => ({ ok: true, value: { sessionId: 'session', cwd: origin, agent: null, worktree: null } })
+    const opened = await f.manager.prepare('session', 'svn', f.root, 'outside project')
+    if (!opened.ok) throw new Error(opened.detail)
+    f.manager.attach(opened.value.draftId, 'window')
+    expect(f.manager.read('other-window', opened.value.draftId)).toBeNull()
+    expect(opened.value.scopeRoot).toBe(f.root)
+    expect(await f.manager.run('window', { ...f.request, draftId: opened.value.draftId })).toMatchObject({ ok: true })
+    expect(f.settled).toEqual([origin, f.root])
+  })
+
+  it('keeps a file grant narrow when that path becomes a directory before reopening', async () => {
+    const f = await fixture()
+    const opened = await f.manager.prepare('session', 'svn', f.path, null)
+    if (!opened.ok) throw new Error(opened.detail)
+    await rm(f.path)
+    await mkdir(f.path)
+    const reopened = await f.manager.prepare('session', 'svn', opened.value.scopeRoot, null, opened.value.paths)
+    expect(reopened).toMatchObject({ ok: true, value: { draftId: opened.value.draftId, paths: [f.path] } })
+    f.manager.attach(opened.value.draftId, 'window')
+    const child = { ...f.snapshot.entries[0], path: join(f.path, 'child.txt') }
+    expect(f.manager.files('window', opened.value.draftId, { ...f.snapshot, entries: [child] }).entries).toEqual([])
+  })
+
+  it('updates only the reviewed file after an out-of-date single-file commit', async () => {
+    const f = await fixture()
+    const opened = await f.manager.prepare('session', 'svn', f.path, null)
+    if (!opened.ok) throw new Error(opened.detail)
+    f.manager.attach(opened.value.draftId, 'window')
+    f.deps.svn.commit = async () => ({ ok: false, code: 'out-of-date', detail: 'E155011' })
+    f.deps.svn.update = vi.fn(async () => ({ ok: true as const, value: { output: 'Updated' } }))
+    expect(await f.manager.run('window', { ...f.request, draftId: opened.value.draftId })).toMatchObject({ ok: false, reloadRequired: true })
+    expect(f.deps.svn.update).toHaveBeenCalledWith(f.root, [f.path])
+    expect(f.settled).toEqual([f.root])
+  })
+
+  it('publishes bounded progress, preserves the batch clock and resets each group measurement', async () => {
+    const f = await fixture()
+    const external = await addExternal(f, 'external')
+    let now = 10_000
+    f.deps.now = () => now
+    const changed = vi.fn()
+    f.deps.onChanged = changed
+    let groupIndex = 0
+    f.deps.svn.commit = async (_scope, _targets, _message, report) => {
+      groupIndex++
+      const stageStartedAt = now
+      report?.({ stage: 'sending', completed: 0, total: 100 })
+      const calls = changed.mock.calls.length
+      for (let completed = 1; completed < 20; completed++) {
+        now++
+        report?.({ stage: 'sending', completed, total: 100 })
+      }
+      expect(changed).toHaveBeenCalledTimes(calls)
+      now += 1_000
+      report?.({ stage: 'sending', completed: 50, total: 100 })
+      expect(f.manager.read('window', f.draftId)?.phase).toMatchObject({ kind: 'running', startedAt: 10_000,
+        progress: { stage: 'sending', completed: 50, total: 100, stageStartedAt, updatedAt: now, groupIndex, groupCount: 2 } })
+      expect(changed).toHaveBeenCalledTimes(calls + 1)
+      return { ok: true, value: { revision: String(groupIndex), output: 'done' } }
+    }
+    const result = await f.manager.run('window', { ...f.request, fileIds: ['file', external.entry.fileId], includeExternals: true })
+    expect(result).toMatchObject({ ok: true })
+    expect(f.manager.read('window', f.draftId)?.phase.kind).toBe('done')
   })
 
   async function addExternal(f: Awaited<ReturnType<typeof fixture>>, name: string) {
@@ -177,7 +472,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     const external = await addExternal(f, 'shared/lib')
     const commit = vi.spyOn(f.deps.svn, 'commit')
     expect(await f.manager.run('window', { ...f.request, fileIds: [external.entry.fileId], includeExternals: true })).toMatchObject({ ok: true })
-    expect(commit).toHaveBeenCalledExactlyOnceWith(external.root, [expect.objectContaining({ absolutePath: external.entry.path })], expect.any(String))
+    expect(commit).toHaveBeenCalledExactlyOnceWith(external.root, [expect.objectContaining({ absolutePath: external.entry.path })], expect.any(String), expect.any(Function))
   })
 
   it('checks every group before the first write and refuses changed external roots', async () => {
@@ -253,7 +548,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     const result = await f.manager.run('window', { ...f.request, fileIds: ['file', a.entry.fileId, b.entry.fileId], includeExternals: true })
     expect(result).toMatchObject({ ok: false, reloadRequired: true, detail: expect.stringContaining(`${a.root}: 60`) })
     expect(f.deps.svn.update).toHaveBeenCalledExactlyOnceWith(b.root)
-    expect(f.deps.svn.commit).toHaveBeenCalledTimes(2)
+    expect(f.deps.svn.commit).toHaveBeenCalledTimes(3)
     expect(f.manager.status(f.draftId)?.state).toBe('failed')
   })
 
@@ -300,7 +595,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(commit).toHaveBeenCalledWith(f.root, [
       { absolutePath: entries[1].path, nodeKind: 'file', status: 'untracked' },
       { absolutePath: directory, nodeKind: 'directory', status: 'untracked' },
-    ], expect.any(String))
+    ], expect.any(String), expect.any(Function))
   })
 
   it.each(['svn', 'git'] as const)('opens the owned %s scope in Tortoise and keeps the message file and lock until it closes', async (vcs) => {
@@ -479,6 +774,18 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(f.writes).toEqual([])
   })
 
+  it('commits an SVN deletion that kept its file on disk, and keeps refusing that for Git', async () => {
+    const f = await fixture()
+    f.snapshot.entries[0].status = 'deleted'
+    await utimes(f.path, new Date(), new Date(Date.now() + 10_000))
+    expect(await f.manager.run('window', f.request)).toEqual({ ok: true, revision: '42' })
+    expect(f.writes).toHaveLength(1)
+    const git = await fixture('git')
+    git.snapshot.entries[0].status = 'deleted'
+    expect(await git.manager.run('window', git.request)).toMatchObject({ ok: false, code: 'stale' })
+    expect(git.writes).toEqual([])
+  })
+
   it('refuses a rename whose old path was recreated, before staging that unintended file', async () => {
     const f = await fixture()
     const previous = join(f.root, 'old.txt')
@@ -549,7 +856,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(f.manager.openSessions().sessionIds).toEqual([])
   })
 
-  it('updates an outdated scope once under the commit lock and requires a fresh human review', async () => {
+  it('updates an outdated scope once under the commit lock and gives up on a second out-of-date', async () => {
     const f = await fixture()
     f.deps.svn.commit = vi.fn(async () => ({ ok: false as const, code: 'out-of-date' as const, detail: 'E155011: out of date' }))
     f.deps.svn.update = vi.fn(async (scope: string) => {
@@ -560,12 +867,37 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
       return { ok: true as const, value: { output: 'Updated to revision 43.' } }
     })
     expect(await f.manager.run('window', f.request)).toMatchObject({ ok: false, reloadRequired: true,
-      detail: expect.stringContaining('Review the refreshed changes') })
-    expect(f.deps.svn.commit).toHaveBeenCalledTimes(1)
+      detail: expect.stringContaining('E155011') })
+    expect(f.deps.svn.commit).toHaveBeenCalledTimes(2)
     expect(f.deps.svn.update).toHaveBeenCalledTimes(1)
     expect(f.settled).toEqual([f.root])
     expect(f.manager.status(f.draftId)).toMatchObject({ state: 'failed', revision: null, detail: expect.stringContaining('E155011') })
     expect(f.manager.read('window', f.draftId)?.message).toBe(f.request.message)
+  })
+
+  it('commits the reviewed selection itself after an update that left it alone', async () => {
+    const f = await fixture()
+    const commit = vi.fn<VersioningCommitManagerDeps['svn']['commit']>()
+      .mockResolvedValueOnce({ ok: false, code: 'out-of-date', detail: 'E155011: out of date' })
+      .mockResolvedValue({ ok: true, value: { revision: '45', output: 'Committed revision 45.' } })
+    f.deps.svn.commit = commit
+    f.deps.svn.update = vi.fn(async () => ({ ok: true as const, value: { output: 'Updated to revision 44.' } }))
+    expect(await f.manager.run('window', f.request)).toEqual({ ok: true, revision: '45' })
+    expect(commit).toHaveBeenCalledTimes(2)
+    expect(f.manager.read('window', f.draftId)?.phase).toMatchObject({ kind: 'done', revision: '45',
+      output: expect.stringContaining('Updated to revision 44.') })
+  })
+
+  it('stops the retry when the update wrote into a file this commit holds', async () => {
+    const f = await fixture()
+    f.deps.svn.commit = vi.fn(async () => ({ ok: false as const, code: 'out-of-date' as const, detail: 'E155011: out of date' }))
+    f.deps.svn.update = vi.fn(async () => {
+      await utimes(f.path, new Date(), new Date(Date.now() + 10_000))
+      return { ok: true as const, value: { output: 'U    file.txt' } }
+    })
+    expect(await f.manager.run('window', f.request)).toMatchObject({ ok: false, reloadRequired: true,
+      detail: expect.stringContaining('The update changed a file this commit holds') })
+    expect(f.deps.svn.commit).toHaveBeenCalledTimes(1)
   })
 
   it.each(['conflicts', 'exception'])('reports update %s with the original commit error and refreshes VCS facts', async (kind) => {
@@ -592,9 +924,9 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(f.deps.svn.update).not.toHaveBeenCalled()
   })
 
-  it('refuses outside scope, missing VCS and checkpoint worktrees while preparing', async () => {
+  it('allows explicit outside scopes and still refuses missing VCS and checkpoint worktrees', async () => {
     const f = await fixture()
-    expect(await f.manager.prepare('session', 'svn', '..', null)).toMatchObject({ ok: false, code: 'outside-session' })
+    expect(await f.manager.prepare('session', 'svn', '..', null)).toMatchObject({ ok: true })
     f.deps.vcsStatus.detect = async () => null
     expect(await f.manager.prepare('session', 'svn', null, null)).toMatchObject({ ok: false, code: 'no-working-copy' })
     f.deps.vcsStatus.detect = async (cwd, id) => ({ id, cwd, root: f.root, scopeRelativePath: '.', scopeUrl: null, repositoryPathPrefix: null })

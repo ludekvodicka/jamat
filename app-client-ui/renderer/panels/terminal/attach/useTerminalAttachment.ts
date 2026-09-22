@@ -15,6 +15,7 @@ import { TerminalClipboard } from '../input/terminalClipboard'
 import { TerminalInterrupt } from '../input/terminalInterrupt'
 import { TerminalKeyGate } from '../input/terminalKeyGate'
 import { TerminalWheelRepeat } from '../input/terminalWheelRepeat'
+import { TerminalHeldOutput } from './terminalHeldOutput'
 import { type TerminalRefusalCode, TerminalTransports } from './terminalTransport'
 import { type TerminalAgentId, TerminalPromptNewline } from '../input/terminalPromptNewline'
 import { TerminalLinks } from '../view/terminalLinks'
@@ -73,6 +74,12 @@ export interface TerminalAttachmentHandle {
    */
   sendCommand(data: string): boolean
   setActive(active: boolean): void
+  /**
+   * Whether anybody can see this panel, which is a different question from whether it is the active
+   * one: a split holds two visible panels and only one of them is active. A panel nobody can see
+   * holds its output instead of parsing it, and is handed the whole of it when it comes back.
+   */
+  setVisible(visible: boolean): void
 }
 
 class TerminalSurfaceConst {
@@ -138,6 +145,7 @@ export function useTerminalAttachment(
    */
   const senderRef = useRef<((data: string) => void) | null>(null)
   const activeRef = useRef<((active: boolean) => void) | null>(null)
+  const visibleRef = useRef<((visible: boolean) => void) | null>(null)
   const readAgentRef = useRef(readAgent)
   const onMenuRef = useRef(onMenu)
   const onTypedRef = useRef(onTyped)
@@ -398,16 +406,53 @@ export function useTerminalAttachment(
 
     terminalRef.current = terminal
 
+    /*
+     * Held while nobody is looking at this panel, and written in one go when somebody is. A hidden
+     * xterm does not DRAW, but it parses every byte on the thread that also handles `keydown`, so a
+     * window of twenty working agents paid for twenty screens to show one. See `TerminalHeldOutput`.
+     *
+     * Visible until told otherwise: a panel that opens in front never fires a visibility change.
+     */
+    const held = new TerminalHeldOutput()
+    let visible = true
+    const show = (): void => {
+      const flush = held.take()
+      if (flush === null) return
+      if (flush.reset) terminal.reset()
+      if (flush.size !== null) terminal.resize(flush.size.cols, flush.size.rows)
+      terminal.write(flush.data)
+    }
+    visibleRef.current = (next) => {
+      visible = next
+      if (next) show()
+    }
+
     const onFrame = (frame: TerminalFrame): void => {
       if (frame.type === 'terminal.snapshot') {
+        if (!visible) {
+          held.holdSnapshot(
+            frame.projection.cols, frame.projection.rows, frame.projection.screen)
+          return
+        }
         // In this order: a write into a terminal of the wrong width wraps where the Host did not.
         terminal.reset()
         terminal.resize(frame.projection.cols, frame.projection.rows)
         terminal.write(frame.projection.screen)
       }
-      else if (frame.type === 'terminal.data') terminal.write(frame.delta)
-      else if (frame.type === 'terminal.delta') terminal.write(frame.data)
-      else if (frame.type === 'terminal.resize') terminal.resize(frame.cols, frame.rows)
+      else if (frame.type === 'terminal.data') {
+        if (visible) terminal.write(frame.delta)
+        else held.holdData(frame.delta)
+      }
+      else if (frame.type === 'terminal.delta') {
+        if (visible) terminal.write(frame.data)
+        else held.holdData(frame.data)
+      }
+      else if (frame.type === 'terminal.resize') {
+        // Written first whatever is holding: what arrived before a resize wrapped at the old width,
+        // so a flush after it would wrap the same characters somewhere else.
+        show()
+        terminal.resize(frame.cols, frame.rows)
+      }
       else if (frame.type === 'terminal.attached')
         // A runtime the Host still has and no longer runs answers an attach with the screen it died
         // on. There is no exit event coming - that already happened - so what it says about itself
@@ -527,6 +572,7 @@ export function useTerminalAttachment(
       disposed = true
       senderRef.current = null
       activeRef.current = null
+      visibleRef.current = null
       offFrames()
       offSettings()
       observer.disconnect()
@@ -562,5 +608,9 @@ export function useTerminalAttachment(
     activeRef.current?.(active)
   }, [])
 
-  return { state, focus, sendCommand, setActive }
+  const setVisible = useCallback((visible: boolean): void => {
+    visibleRef.current?.(visible)
+  }, [])
+
+  return { state, focus, sendCommand, setActive, setVisible }
 }

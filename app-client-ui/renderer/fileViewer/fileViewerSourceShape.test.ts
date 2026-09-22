@@ -24,6 +24,13 @@ describe('app-client-ui/renderer/fileViewer/fileViewerSourceShape', () => {
     expect(FileViewerSourceShape.read({ kind: 'workspace', sessionId: 's1' })).toBe(null)
   })
 
+  it('preserves scoped commit sources in a saved layout and refuses damaged metadata', () => {
+    const source = { kind: 'workspace', sessionId: 'session', path: 'Q:/outside/file.txt', workingTree: { scopeRoot: 'Q:/outside', source: 'svn' } }
+    expect(FileViewerSourceShape.read(JSON.parse(JSON.stringify(source)))).toEqual(source)
+    for (const workingTree of [null, {}, { scopeRoot: '', source: 'svn' }, { scopeRoot: 'Q:/outside', source: 'checkpoint' }])
+      expect(FileViewerSourceShape.read({ ...source, workingTree })).toBeNull()
+  })
+
   it('refuses an external source without its anchor, which is the field that bounds it', () => {
     expect(FileViewerSourceShape.read({ kind: 'external', sessionId: 's1', path: 'a.md' }))
       .toBe(null)

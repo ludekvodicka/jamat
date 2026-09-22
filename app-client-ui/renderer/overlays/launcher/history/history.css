@@ -42,11 +42,11 @@
 .jamat-launcher-history__columns,
 .jamat-launcher-history__row {
   display: grid;
-  grid-template-columns: minmax(110px, 0.8fr) minmax(150px, 1.1fr) minmax(240px, 2.2fr) minmax(150px, 1fr) 145px 145px;
+  grid-template-columns: minmax(110px, 0.8fr) minmax(150px, 1.1fr) minmax(240px, 2.2fr) minmax(150px, 1fr) 145px 145px 145px;
   gap: var(--space-3);
   align-items: center;
   padding: var(--space-2) var(--space-3);
-  min-width: 1080px;
+  min-width: 1240px;
 }
 .jamat-launcher-history__columns {
   position: sticky;
@@ -98,9 +98,10 @@
   color: var(--color-text-4);
   font-size: var(--fs-status);
 }
-.jamat-launcher-history__hint {
+/* The status takes the whole row so the button keeps the right edge. It was the running-session
+   hint beside it that used to do this, and that hint went with the running rows. */
+.jamat-launcher-history .jamat-launcher__foot [role="status"] {
   flex: 1;
-  text-align: right;
 }
 .jamat-launcher-history__errors {
   color: var(--color-danger);

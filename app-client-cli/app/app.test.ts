@@ -39,6 +39,8 @@ class FakeCliClient implements AppClientCliClientPort {
     FakeCliClient.session('session-014-015', '014-015', 'Q:/Apps/Fork'),
   ]
   invalidSessionsSnapshot = false
+  cancelResponse: unknown = { kind: 'commit-status', commitSessionId: '11111111-1111-4111-8111-111111111111',
+    sessionId: 'session-001', vcs: 'svn', scopeRoot: 'Q:/Apps/One', state: 'cancelled', closed: true, revision: null, detail: null }
 
   execute(request: RemoteControlRequestUnion): Promise<RemoteControlResponse> {
     this.requests.push(request)
@@ -95,6 +97,7 @@ class FakeCliClient implements AppClientCliClientPort {
       panelId: 'panel', windowId: 'main', scopeRoot: 'Q:/Apps/One', messageApplied: true }
     if (operation === 'tabs.commitStatus') return { kind: 'commit-status', commitSessionId: '11111111-1111-4111-8111-111111111111',
       sessionId: 'session-001', vcs: 'svn', scopeRoot: 'Q:/Apps/One', state: 'committed', closed: false, revision: '42', detail: null }
+    if (operation === 'tabs.cancelCommit') return this.cancelResponse
     if (operation === 'sessions.list')
       return this.invalidSessionsSnapshot ? { sessions: [null] } : FakeCliClient.snapshot(this.sessions)
     if (operation === 'sessions.transcript')
@@ -286,6 +289,45 @@ class CliHarness {
 }
 
 describe('app-client-cli/app/app', () => {
+  it('cancels a review by UUID without closing its session or launching Tortoise', async () => {
+    const h = new CliHarness()
+    h.client.sessions = []
+    expect(await new AppClientCli(['commit', 'cancel', '--commit-session-id', '11111111-1111-4111-8111-111111111111', '--operation-id', 'cancel-review'], h.deps()).run()).toBe(0)
+    expect(h.client.requests).toMatchObject([{ operation: 'tabs.cancelCommit', operationId: 'cancel-review',
+      body: { commitSessionId: '11111111-1111-4111-8111-111111111111' } }])
+    expect(h.parsedOutput()).toMatchObject({ ok: true, value: { state: 'cancelled', closed: true } })
+    expect(h.client.requests).toHaveLength(1)
+    expect(h.asideCalls).toEqual([])
+  })
+
+  it('refuses cancellation on older controllers without issuing another operation', async () => {
+    const h = new CliHarness()
+    h.descriptor.optionalOperations = ['tabs.openCommit', 'tabs.commitStatus']
+    expect(await new AppClientCli(['commit', 'cancel', '--commit-session-id', '11111111-1111-4111-8111-111111111111'], h.deps()).run()).toBe(6)
+    expect(h.client.requests).toEqual([])
+    expect(h.asideCalls).toEqual([])
+  })
+
+  it('does not accept an acknowledgement without confirmed cancellation and closure', async () => {
+    for (const value of [{ accepted: true }, { kind: 'commit-status', commitSessionId: '11111111-1111-4111-8111-111111111111',
+      sessionId: 'session-001', vcs: 'svn', scopeRoot: 'Q:/Apps/One', state: 'editing', closed: false, revision: null, detail: null }]) {
+      const h = new CliHarness()
+      h.client.cancelResponse = value
+      expect(await new AppClientCli(['commit', 'cancel', '--commit-session-id', '11111111-1111-4111-8111-111111111111'], h.deps()).run()).toBe(7)
+      expect(h.parsedOutput()).toMatchObject({ ok: false, error: { code: 'operation-failed' } })
+      expect(h.asideCalls).toEqual([])
+    }
+  })
+
+  it('rejects malformed cancellation arguments before discovery', async () => {
+    for (const args of [['commit', 'cancel'], ['commit', 'cancel', '--commit-session-id', 'wrong'],
+      ['commit', 'cancel', '--commit-session-id', '11111111-1111-4111-8111-111111111111', '--force']]) {
+      const h = new CliHarness()
+      expect(await new AppClientCli(args, h.deps()).run()).toBe(2)
+      expect(h.discoveries).toBe(0)
+    }
+  })
+
   it.each(['svn', 'git'])('waits through the %s open into the returned commit UUID on the same controller', async (vcs) => {
     const h = new CliHarness()
     h.env.JAMAT_V3_SESSION_ID = 'session-001'
@@ -321,24 +363,23 @@ describe('app-client-cli/app/app', () => {
     expect(h.client.requests.map((request) => request.operation)).toEqual(['sessions.list'])
     expect(h.asideCalls).toEqual([])
   })
-  it.each(['svn', 'git'])('routes a different %s project to Tortoise before opening, including older Jamat clients', async (vcs) => {
+  it.each(['svn', 'git'])('opens a different %s project in the originating session without falling back', async (vcs) => {
     const h = new CliHarness()
     h.env.JAMAT_V3_SESSION_ID = 'session-001'
     h.client.sessions[0] = { ...h.client.sessions[0]!, life: 'live' }
-    h.descriptor.optionalOperations = ['tabs.openCommit']
     const scope = 'Q:/Other/Project'
-    expect(await new AppClientCli([`commit-${vcs}-jamat`, '--self', '--path', scope, '--wait', '--fallback', 'report'], h.deps()).run()).toBe(0)
-    expect(h.parsedOutput()).toEqual({ ok: true, value: { kind: 'fallback-required', reason: 'outside-session', scope: resolve(scope) } })
-    expect(h.client.requests.map((request) => request.operation)).toEqual(['sessions.list'])
+    expect(await new AppClientCli([`commit-${vcs}-jamat`, '--self', '--path', scope, '--fallback', 'report'], h.deps()).run()).toBe(0)
+    expect(h.parsedOutput()).toMatchObject({ ok: true, value: { kind: 'commit-opened' } })
+    expect(h.client.requests).toMatchObject([{ operation: 'sessions.list' }, { operation: 'tabs.openCommit', body: { scope } }])
     expect(h.asideCalls).toEqual([])
     expect(h.writtenMessages).toEqual([])
   })
-  it('opens the exact sibling scope in Tortoise with the message file', async () => {
+  it('passes the exact sibling scope and message to native review', async () => {
     const h = new CliHarness()
     h.client.sessions[0] = { ...h.client.sessions[0]!, life: 'live' }
     expect(await new AppClientCli(['commit-git-jamat', '--session-id', 'session-001', '--path', '../OneMore', '--message-file', 'proposal.txt'], h.deps()).run()).toBe(0)
-    expect(h.asideCalls).toEqual([{ vcs: 'git', scope: resolve('Q:/Apps/OneMore'), messageFile: resolve('Q:/Apps/One/proposal.txt'), reason: 'outside-session' }])
-    expect(h.client.requests.map((request) => request.operation)).toEqual(['sessions.list'])
+    expect(h.asideCalls).toEqual([])
+    expect(h.client.requests).toMatchObject([{ operation: 'sessions.list' }, { operation: 'tabs.openCommit', body: { scope: '../OneMore', message: h.messageInput } }])
   })
   it('keeps a nested scope inside the session in Jamat', async () => {
     const h = new CliHarness()
@@ -347,14 +388,30 @@ describe('app-client-cli/app/app', () => {
     expect(h.client.requests).toMatchObject([{ operation: 'sessions.list' }, { operation: 'tabs.openCommit', body: { scope: 'nested' } }])
     expect(h.asideCalls).toEqual([])
   })
-  it('compares against the effective worktree, not its original project', async () => {
+
+  it('forwards a literal file list and rejects malformed lists before discovery', async () => {
+    const h = new CliHarness()
+    h.client.sessions[0] = { ...h.client.sessions[0]!, life: 'live' }
+    const paths = ['Q:/Outside/first @.txt', 'Q:/Outside/second.txt']
+    expect(await new AppClientCli(['commit-svn-jamat', '--session-id', 'session-001', '--paths-file', 'paths.json'],
+      { ...h.deps(), readJson: () => paths }).run()).toBe(0)
+    expect(h.client.requests).toMatchObject([{ operation: 'sessions.list' }, { operation: 'tabs.openCommit', body: { paths: paths.map((path) => resolve(path)) } }])
+    expect(h.asideCalls).toEqual([])
+    for (const input of [[], [''], ['a\nb'], [42], {}, ['a', null]]) {
+      const invalid = new CliHarness()
+      expect(await new AppClientCli(['commit-svn-jamat', '--self', '--paths-file', 'paths.json'],
+        { ...invalid.deps(), readJson: () => input }).run()).toBe(2)
+      expect(invalid.client.requests).toEqual([])
+    }
+  })
+  it('lets a worktree session request a review of its main project', async () => {
     const h = new CliHarness()
     h.client.sessions[0] = { ...h.client.sessions[0]!, life: 'live', worktree: {
       worktreePath: 'Q:/Apps/One/.worktrees/task', branch: 'jamat/task', baseCommit: 'abc', diff: null, baseMoved: false,
     } }
     expect(await new AppClientCli(['commit-svn-jamat', '--session-id', 'session-001', '--path', 'Q:/Apps/One', '--fallback', 'report'], h.deps()).run()).toBe(0)
-    expect(h.parsedOutput()).toMatchObject({ value: { kind: 'fallback-required', reason: 'outside-session' } })
-    expect(h.client.requests.map((request) => request.operation)).toEqual(['sessions.list'])
+    expect(h.parsedOutput()).toMatchObject({ value: { kind: 'commit-opened' } })
+    expect(h.client.requests).toMatchObject([{ operation: 'sessions.list' }, { operation: 'tabs.openCommit', body: { scope: 'Q:/Apps/One' } }])
   })
   it('opens a native SVN dialog for --self with the proposed message, without invoking the fallback', async () => {
     const harness = new CliHarness()
@@ -620,6 +677,57 @@ describe('app-client-cli/app/app', () => {
     })
   })
 
+  /*
+   * A scheduler passes the same colour on every worker it launches, so a typo in it would be a typo
+   * on the whole wave. Refusing it here costs no round trip and names the twelve; the target refuses
+   * the same set, so a caller cannot get a colour past one of them and not the other.
+   */
+  it('refuses a colour that is not one of the twelve before it reaches the server', async () => {
+    const harness = new CliHarness()
+
+    expect(await new AppClientCli(
+      ['sessions', 'create', '--directory', 'Q:\One', '--color', 'chartreuse'],
+      harness.deps(),
+    ).run()).toBe(2)
+
+    expect(harness.client.requests).toEqual([])
+    expect(harness.parsedOutput()).toMatchObject({
+      ok: false,
+      error: { code: 'invalid-request', detail: expect.stringContaining('magenta') },
+    })
+  })
+
+  /*
+   * The section a skill files its work under, refused here for the reason the colour is: the request
+   * body is typed, and a group nobody draws would otherwise travel as far as the target. The name is
+   * NOT part of the spec - the session manager stores no group - so this also pins where it sits.
+   */
+  it('refuses a group that is not one of the six and keeps it out of the spec', async () => {
+    const harness = new CliHarness()
+
+    expect(await new AppClientCli(
+      ['sessions', 'create', '--directory', 'Q:\One', '--group', 'robots'],
+      harness.deps(),
+    ).run()).toBe(2)
+
+    expect(harness.client.requests).toEqual([])
+    expect(harness.parsedOutput()).toMatchObject({
+      ok: false,
+      error: { code: 'invalid-request', detail: expect.stringContaining('automation') },
+    })
+
+    const accepted = new CliHarness()
+    expect(await new AppClientCli(
+      ['sessions', 'create', '--directory', 'Q:\One', '--group', 'waiting'],
+      accepted.deps(),
+    ).run()).toBe(0)
+    expect(accepted.client.requests[0]).toMatchObject({
+      operation: 'sessions.create',
+      body: { group: 'waiting', spec: { kind: 'shell' } },
+    })
+    expect(accepted.client.requests[0]?.body).not.toHaveProperty('spec.group')
+  })
+
   it('builds the full create spec and reports the actual operation id on unavailable retry', async () => {
     const args = [
       'sessions', 'create',
@@ -632,6 +740,8 @@ describe('app-client-cli/app/app', () => {
       '--worktree', 'task-1',
       '--base-ref', 'main',
       '--title', 'Work',
+      '--color', 'magenta',
+      '--group', 'automation',
       '--flow-id', 'flow-1',
       '--plain',
       '--open-tab',
@@ -644,6 +754,7 @@ describe('app-client-cli/app/app', () => {
       operationId: 'caller-operation',
       body: {
         openTab: true,
+        group: 'automation',
         spec: {
           kind: 'agent',
           directory: {
@@ -659,6 +770,7 @@ describe('app-client-cli/app/app', () => {
           },
           worktree: { slug: 'task-1', baseRef: 'main' },
           title: 'Work',
+          color: 'magenta',
           flowId: 'flow-1',
           presentation: 'tab',
         },

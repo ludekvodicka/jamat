@@ -32,6 +32,7 @@ export interface FileViewerChangedFileAccess {
   cwd: string
   path: string
   nodeKind: 'file' | 'directory'
+  workingTree?: FileViewerDocumentSource['workingTree']
 }
 
 export interface FileViewerDeps {
@@ -158,7 +159,7 @@ export class FileViewer {
         ownerId,
         grantRoot,
         realPath,
-        source,
+        { ...source, ...(access.workingTree === undefined ? {} : { workingTree: access.workingTree }) },
         true,
         true,
       )
@@ -539,6 +540,17 @@ export class FileViewer {
 
   path(ownerId: string, documentId: string): FileViewerPathResult {
     return this.grants.path(documentId, ownerId)
+  }
+
+  async imageDragPath(ownerId: string, documentId: string): Promise<string | null> {
+    const found = this.grants.document(documentId, ownerId)
+    if (!found.ok) return null
+    const document = found.value.document
+    if (document.kind.kind !== 'image' && document.kind.kind !== 'svg') return null
+    const version = await this.version(ownerId, documentId)
+    if (!version.ok || version.kind !== 'unchanged') return null
+    if (!this.grants.document(documentId, ownerId).ok) return null
+    return document.path
   }
 
   async resourceAccess(resourceId: string): Promise<FileViewerGrantedFile | null> {

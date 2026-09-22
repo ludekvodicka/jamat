@@ -62,9 +62,13 @@ export class FileChangesWorkingTreeSources {
   async read(
     context: FileChangesWorkingTreeContext,
     requested: FileChangesWorkingTreeSource | null,
+    filePath?: string,
+    forCommit = false,
   ): Promise<FileChangesWorkingTreeRead> {
     const warnings: string[] = []
-    const candidates = await this.candidates(context, warnings)
+    const candidates = forCommit && requested === 'svn' ? await this.svnCandidates(context)
+      : forCommit && requested === 'git' ? await this.ownGitCandidate(context)
+        : await this.candidates(context, warnings)
     const selected = requested === null
       ? candidates[0] ?? null
       : candidates.find((candidate) => candidate.source === requested) ?? candidates[0] ?? null
@@ -104,7 +108,7 @@ export class FileChangesWorkingTreeSources {
     }
     else if (selected.source === 'checkpoint' || selected.source === 'svn' || selected.source === 'git') {
       const status = await selected.adapter
-        .status(selected.detection)
+        .status(selected.detection, filePath)
         .catch((error) => ({ ok: false as const, detail: ErrorText.of(error) }))
       if (!status.ok) {
         warnings.push(`${FileChangesWorkingTreeSources.labelOf(selected.source)}: ${status.detail}`)
@@ -132,12 +136,14 @@ export class FileChangesWorkingTreeSources {
     warnings: string[],
   ): Promise<FileChangesWorkingTreeCandidate[]> {
     const git = await this.gitCandidates(context, warnings)
-    const svnDetection = await this.svn.detect(context.cwd).catch(() => null)
-    const svn = svnDetection === null
-      ? []
-      : [{ source: 'svn' as const, adapter: this.svn, detection: svnDetection, baseRef: null }]
+    const svn = await this.svnCandidates(context)
     if (context.worktree !== null) return [...git, ...svn]
     return [...svn, ...git, ...await this.ownGitCandidate(context)]
+  }
+
+  private async svnCandidates(context: FileChangesWorkingTreeContext): Promise<FileChangesWorkingTreeCandidate[]> {
+    const detection = await this.svn.detect(context.cwd).catch(() => null)
+    return detection === null ? [] : [{ source: 'svn', adapter: this.svn, detection, baseRef: null }]
   }
 
   private async ownGitCandidate(context: FileChangesWorkingTreeContext): Promise<FileChangesWorkingTreeCandidate[]> {

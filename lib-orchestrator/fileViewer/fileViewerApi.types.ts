@@ -13,11 +13,12 @@ export type FileViewerDocumentKind =
   | { kind: 'hex' }
   | { kind: 'missing' }
 
-export type FileViewerDocumentSource =
+export type FileViewerDocumentSource = (
   | { kind: 'workspace'; sessionId: string; path: string }
   | { kind: 'external'; sessionId: string; path: string; anchorPath: string }
   | { kind: 'filesystem'; sessionId: string; path: string }
   | { kind: 'detected'; sessionId: string; path: string }
+) & { workingTree?: { scopeRoot: string; source: 'svn' | 'git' } }
 
 export interface FileViewerLocation {
   line: number

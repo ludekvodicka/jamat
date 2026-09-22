@@ -98,6 +98,11 @@ export abstract class JsonDocumentStore<TDocument> {
    * `before` is for a store that must do something first and abandon the write if it fails -
    * `SessionRecordsStore` takes a recovery point ahead of a destructive write, and a destructive
    * write with no undo behind it is refused rather than made.
+   *
+   * The file work is asynchronous, which `writeDocumentSync` beside it is not. It was synchronous
+   * inside this async method until 2026-09-21: every caller already awaited, and what the await
+   * bought was nothing at all, because the write blocked the loop it was awaited on. The records
+   * store writes from the session poll, and that loop is the one relaying every keystroke.
    */
   protected async writeDocument(
     document: unknown,
@@ -105,9 +110,9 @@ export abstract class JsonDocumentStore<TDocument> {
   ): Promise<boolean> {
     if (!this.mayWrite()) return false
     try {
-      AtomicJsonFile.ensureDirectory(dirname(this.file))
+      await AtomicJsonFile.ensureDirectoryAsync(dirname(this.file))
       if (before && !await before()) return false
-      AtomicJsonFile.write(this.file, document)
+      await AtomicJsonFile.writeAsync(this.file, document)
     } catch (error) {
       this.report(this.writeFailureMessage(ErrorText.of(error)))
       return false

@@ -290,6 +290,11 @@ vi.mock('../../lib-orchestrator/sessionManager/sessionManager', () => ({
       return Promise.resolve({ ok: false, code: 'unknown-session', detail: 'no session under test' })
     }
 
+    /** The one operation whose answer the hub reads rather than forwards; see the fork case below. */
+    forkSession(): Promise<{ ok: true; value: { sessionId: string; tabTitle: string } }> {
+      return Promise.resolve({ ok: true, value: { sessionId: 'fork-1', tabTitle: 'Work - 014-015' } })
+    }
+
     async start(): Promise<void> {}
     async stop(): Promise<void> {
       captured.disposeOrder.push('sessions')
@@ -689,8 +694,8 @@ describe('app-client-ui/app/appHub', () => {
   })
 
   it('holds the final IPC parity counts', () => {
-    expect(Object.keys(AppHub.ipcChannelsConst)).toHaveLength(175)
-    expect(Object.keys(AppClientUiBridgeEventsConst)).toHaveLength(20)
+    expect(Object.keys(AppHub.ipcChannelsConst)).toHaveLength(182)
+    expect(Object.keys(AppClientUiBridgeEventsConst)).toHaveLength(22)
     expect(Object.keys(ServiceTabsIpc.channelsConst)).toHaveLength(13)
     expect(Object.keys(ServiceRemarkableIpc.channelsConst)).toHaveLength(16)
   })
@@ -830,6 +835,7 @@ describe('app-client-ui/app/appHub', () => {
       panelIndex: {
         releaseWindow: (windowId: string) => order.push(`index:${windowId}`),
         visibleTerminalTargetKeys: () => [],
+        openTerminalTargetKeys: () => [],
       },
       workspaceWindows: { publishTo: () => undefined, broadcast: () => undefined },
       sessions: { setWindowVisible: () => undefined },
@@ -1082,6 +1088,55 @@ describe('app-client-ui/app/appHub', () => {
    * project's now, in vitest.node.config.ts, because a cold disk and a slow runner are not this
    * one case's problem - `scripts/tokensGate` hit the same wall on its own.
    */
+  /**
+   * The seam between the library and the client's own state. What group a session was put in is
+   * never the library's to know, and the tree that holds the assignments is drawn in the main
+   * window alone - so a fork asked for from a holder window's tab menu has only this wiring to
+   * inherit through, and the event is the only way a tree that IS open hears about the write.
+   */
+  it('gives a fork the group its parent was put in and tells the windows', async () => {
+    const hub = hubUnderTest()
+    hub.initialize()
+    const sender = FakeWindow.created[0].webContents
+    const assign = captured.ipcHandlers.get('state:assign-session-group')
+    const fork = captured.ipcHandlers.get('sessions:fork')
+    const load = captured.ipcHandlers.get('state:load-session-groups')
+    if (!assign || !fork || !load)
+      throw new Error('The hub registered no session group or fork handler')
+
+    await assign({ sender }, 'session:parent-1', 'priority')
+    FakeWindow.created[0].sent.length = 0
+    expect(await fork({ sender }, 'parent-1', { name: 'refactor' })).toEqual({
+      ok: true,
+      value: { ok: true, value: { sessionId: 'fork-1', tabTitle: 'Work - 014-015' } },
+    })
+
+    expect(await load({ sender })).toEqual({
+      ok: true,
+      value: [
+        { key: 'session:parent-1', group: 'priority' },
+        { key: 'session:fork-1', group: 'priority' },
+      ],
+    })
+    expect(FakeWindow.created[0].sent).toContainEqual(['state:session-groups-changed'])
+  })
+
+  /** A parent with no assignment of its own hands nothing over, and nobody is woken for it. */
+  it('writes nothing and says nothing when the forked session was never assigned', async () => {
+    const hub = hubUnderTest()
+    hub.initialize()
+    const sender = FakeWindow.created[0].webContents
+    const fork = captured.ipcHandlers.get('sessions:fork')
+    const load = captured.ipcHandlers.get('state:load-session-groups')
+    if (!fork || !load) throw new Error('The hub registered no session group or fork handler')
+
+    FakeWindow.created[0].sent.length = 0
+    await fork({ sender }, 'parent-1', undefined)
+
+    expect(await load({ sender })).toEqual({ ok: true, value: [] })
+    expect(FakeWindow.created[0].sent).not.toContainEqual(['state:session-groups-changed'])
+  })
+
   it('rebuilds the Window menu for name changes but not color-only saves', async () => {
     const hub = hubUnderTest()
     hub.initialize()

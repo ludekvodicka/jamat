@@ -21,6 +21,20 @@ describe('lib-orchestrator/sessionManager/workState/screenTail', () => {
       .toBe('row 25')
   })
 
+  /**
+   * Both windows are tails of the SAME rows, so the rows are counted once. The equality is the whole
+   * point of the refactor: `frameOf` walked the screen cell by cell twice, per session, per poll.
+   */
+  it('builds both windows from one pass and reads an absent ring as no output', () => {
+    const screen = screenOf(40)
+    const frame = ScreenTail.frameOf({ screen, cols: colsConst })
+
+    expect(frame.screenTail).toBe(ScreenTail.rows(screen, ScreenTail.screenRowsConst, colsConst))
+    expect(frame.wideScreenTail)
+      .toBe(ScreenTail.rows(screen, ScreenTail.wideScreenRowsConst, colsConst))
+    expect(frame.rawTail).toBe('')
+  })
+
   it('returns the whole screen when it is shorter than the window', () => {
     expect(ScreenTail.rows('one\ntwo', ScreenTail.screenRowsConst, colsConst)).toBe('one\ntwo')
   })

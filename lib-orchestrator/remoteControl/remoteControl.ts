@@ -6,6 +6,7 @@ import type {
 } from '../projectManager/projectManagerApi.types'
 import type {
   SessionCreateSpec,
+  SessionGroup,
   SessionInfo,
   SessionSetupAgreement,
   SessionsOpResult,
@@ -60,10 +61,24 @@ export interface RemoteControlSessionsPort {
   discardPlainSession(sessionId: string): Promise<SessionsOpResult>
 }
 
+/**
+ * Where a created session is filed in the sessions tree. A port rather than a method on the sessions
+ * port beside it, because the assignment is not the session manager's: the client keeps it in its
+ * own state, keyed by terminal target, and keys projects and categories the same way. The library
+ * knows only that a group can be named at create and has to land somewhere.
+ *
+ * Synchronous for the reason `tabs.commitStatus` is: the one implementation reads and writes a file
+ * the client already holds open, and a promise would only be a promise.
+ */
+export interface RemoteControlSessionGroupsPort {
+  assign(sessionId: string, group: SessionGroup): RemoteControlStepResult<{ group: SessionGroup }>
+}
+
 export interface RemoteControlTabsPort {
   commitStatus?(commitSessionId: string): RemoteControlStepResult<RemoteControlCommitStatusDto>
+  cancelCommit?(commitSessionId: string): Promise<RemoteControlStepResult<RemoteControlCommitStatusDto>>
   openCommit(sessionId: string, tabTitle: string, vcs: 'svn' | 'git', scope: string | null,
-    proposal: string | null, options: { plain: boolean }): Promise<RemoteControlStepResult<RemoteControlTabOpenCommitDto>>
+    proposal: string | null, options: { plain: boolean; paths?: readonly string[] }): Promise<RemoteControlStepResult<RemoteControlTabOpenCommitDto>>
   list(): Promise<readonly RemoteControlTabDto[]>
   open(
     sessionId: string,
@@ -116,6 +131,7 @@ export interface RemoteControlDeps {
   system: RemoteControlSystemPort
   projects: RemoteControlProjectsPort
   sessions: RemoteControlSessionsPort
+  groups: RemoteControlSessionGroupsPort
   tabs: RemoteControlTabsPort
   terminal: RemoteControlTerminalPort
   transcript: RemoteControlTranscriptPort
@@ -244,7 +260,7 @@ export class RemoteControl {
           'forbidden',
           `tabs.open is not allowed for ${context.callerKind}`,
         )
-      return this.sessionCreate(request.body.spec, openTab)
+      return this.sessionCreate(request.body.spec, openTab, request.body.group)
     } else if (request.operation === 'sessions.reopen') {
       const session = this.session(request.body.session)
       if (!session.ok) return session
@@ -289,10 +305,14 @@ export class RemoteControl {
       if (!session.ok) return session
       if (session.value.life !== 'live') return { ok: false, error: { code: 'not-found', detail: 'The session is not live' } }
       return this.deps.tabs.openCommit(session.value.sessionId, session.value.tabTitle, request.body.vcs,
-        request.body.scope ?? null, request.body.message ?? null, { plain: session.value.presentation === 'tab' })
+        request.body.scope ?? null, request.body.message ?? null, { plain: session.value.presentation === 'tab',
+          ...(request.body.paths === undefined ? {} : { paths: request.body.paths }) })
     } else if (request.operation === 'tabs.commitStatus')
       return this.deps.tabs.commitStatus?.(request.body.commitSessionId)
         ?? { ok: false, error: { code: 'unavailable', detail: 'Commit status is unavailable' } }
+    else if (request.operation === 'tabs.cancelCommit')
+      return this.deps.tabs.cancelCommit?.(request.body.commitSessionId)
+        ?? { ok: false, error: { code: 'unavailable', detail: 'Commit cancellation is unavailable' } }
     else if (request.operation === 'tabs.focus')
       return this.deps.tabs.focus(request.body.panelId)
     else if (request.operation === 'tabs.close')
@@ -341,6 +361,7 @@ export class RemoteControl {
   private async sessionCreate(
     spec: SessionCreateSpec,
     openTab: boolean,
+    group: SessionGroup | undefined,
   ): Promise<RemoteControlDispatchResult> {
     const created = await this.deps.sessions.createSession(spec)
     if (!created.ok) return RemoteControl.sessionError(created)
@@ -348,7 +369,14 @@ export class RemoteControl {
       session: created.value,
       tabOpen: null,
       plainCleanup: null,
+      groupAssign: null,
     }
+    /*
+     * Before the tab, so the first tree the session appears in already has it in its section. The
+     * other order draws it under Sessions for a tick and moves it, which is the flicker `color` at
+     * create exists to avoid one field over.
+     */
+    if (group !== undefined) value.groupAssign = this.deps.groups.assign(created.value.sessionId, group)
     if (!openTab) return RemoteControl.success(value)
     value.tabOpen = await this.deps.tabs.open(
       created.value.sessionId,

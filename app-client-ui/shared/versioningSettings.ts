@@ -16,8 +16,19 @@ export interface VersioningSettingsValue {
   mode: VersioningMode
   diffTool: VersioningDiffTool
   activateSessionOnCommit?: boolean
+  returnToPreviousSessionAfterCommit?: boolean
+  /**
+   * How long after the review opened the return still happens, in minutes; 0 means no limit.
+   * A review answered in seconds is an interruption and the person wants their own tab back. One
+   * they sat in for half an hour is where they now WORK, and taking them out of it is the
+   * interruption, so the return expires rather than waiting for however long the commit took.
+   */
+  returnToPreviousSessionWithinMinutes?: number
   closeCommitOnSuccess?: boolean
+  commitSplitRatio?: number
 }
+
+export type VersioningSettingsField = keyof VersioningSettingsValue | 'commitReview'
 
 export type VersioningDiffTool = { kind: 'internal' } | { kind: 'external'; command: string; argumentTemplate: string }
 
@@ -28,6 +39,16 @@ export type VersioningSettingsSaveResult =
 export class VersioningSettings {
   static readonly modeOptionsConst: readonly VersioningMode[] = ['checkpoints', 'git']
   static readonly defaultModeConst: VersioningMode = 'checkpoints'
+  static readonly defaultReturnWithinMinutesConst = 5
+  static readonly maxReturnWithinMinutesConst = 1_440
+  static readonly defaultCommitSplitRatioConst = 0.75
+  static readonly minCommitSplitRatioConst = 0.15
+  static readonly maxCommitSplitRatioConst = 0.85
+
+  static isCommitSplitRatio(value: unknown): value is number {
+    return typeof value === 'number' && Number.isFinite(value)
+      && value >= VersioningSettings.minCommitSplitRatioConst && value <= VersioningSettings.maxCommitSplitRatioConst
+  }
 
   static tortoiseMerge(): VersioningDiffTool {
     return { kind: 'external', command: 'C:\\Program Files\\TortoiseSVN\\bin\\TortoiseMerge.exe',
@@ -66,7 +87,18 @@ export class VersioningSettings {
   }
 
   static defaultValue(): VersioningSettingsValue {
-    return { mode: VersioningSettings.defaultModeConst, diffTool: { kind: 'internal' }, activateSessionOnCommit: true, closeCommitOnSuccess: true }
+    return { mode: VersioningSettings.defaultModeConst, diffTool: { kind: 'internal' }, activateSessionOnCommit: true,
+      returnToPreviousSessionAfterCommit: true, returnToPreviousSessionWithinMinutes: VersioningSettings.defaultReturnWithinMinutesConst,
+      closeCommitOnSuccess: true }
+  }
+
+  static fieldsOf(field: VersioningSettingsField): readonly (keyof VersioningSettingsValue)[] {
+    if (field === 'commitReview')
+      return ['activateSessionOnCommit', 'returnToPreviousSessionAfterCommit', 'returnToPreviousSessionWithinMinutes']
+    else if (field === 'mode' || field === 'diffTool' || field === 'activateSessionOnCommit'
+      || field === 'returnToPreviousSessionAfterCommit' || field === 'returnToPreviousSessionWithinMinutes'
+      || field === 'closeCommitOnSuccess' || field === 'commitSplitRatio') return [field]
+    else throw new Error(`Unknown versioning setting: ${String(field)}`)
   }
 
   /**
@@ -93,10 +125,24 @@ export class VersioningSettings {
     const activateSessionOnCommit = typeof document.activateSessionOnCommit === 'boolean' ? document.activateSessionOnCommit : true
     if (document.activateSessionOnCommit !== undefined && typeof document.activateSessionOnCommit !== 'boolean')
       report('The commit activation setting is unusable; reading it as enabled')
+    const returnToPreviousSessionAfterCommit = typeof document.returnToPreviousSessionAfterCommit === 'boolean'
+      ? document.returnToPreviousSessionAfterCommit : true
+    if (document.returnToPreviousSessionAfterCommit !== undefined && typeof document.returnToPreviousSessionAfterCommit !== 'boolean')
+      report('The commit session return setting is unusable; reading it as enabled')
+    const returnToPreviousSessionWithinMinutes = VersioningSettings.isReturnWithin(document.returnToPreviousSessionWithinMinutes)
+      ? document.returnToPreviousSessionWithinMinutes : VersioningSettings.defaultReturnWithinMinutesConst
+    if (document.returnToPreviousSessionWithinMinutes !== undefined && !VersioningSettings.isReturnWithin(document.returnToPreviousSessionWithinMinutes))
+      report(`The commit return window is unusable; reading it as ${VersioningSettings.defaultReturnWithinMinutesConst} minutes`)
     const closeCommitOnSuccess = typeof document.closeCommitOnSuccess === 'boolean' ? document.closeCommitOnSuccess : true
     if (document.closeCommitOnSuccess !== undefined && typeof document.closeCommitOnSuccess !== 'boolean')
       report('The commit closing setting is unusable; reading it as enabled')
-    return { ...document, mode, diffTool, activateSessionOnCommit, closeCommitOnSuccess }
+    const commitSplitRatio = VersioningSettings.isCommitSplitRatio(document.commitSplitRatio)
+      ? document.commitSplitRatio : VersioningSettings.defaultCommitSplitRatioConst
+    if (document.commitSplitRatio !== undefined && !VersioningSettings.isCommitSplitRatio(document.commitSplitRatio))
+      report('The commit split ratio is unusable; reading it as 75%')
+    return { ...document, mode, diffTool, activateSessionOnCommit, returnToPreviousSessionAfterCommit,
+      returnToPreviousSessionWithinMinutes, closeCommitOnSuccess,
+      commitSplitRatio: document.commitSplitRatio === undefined ? undefined : commitSplitRatio }
   }
 
   /** Writing is strict, which is what keeps the file readable by the next version that reads it. */
@@ -105,7 +151,24 @@ export class VersioningSettings {
     const document = value as Partial<Record<keyof VersioningSettingsValue, unknown>>
     return VersioningSettings.isMode(document.mode) && VersioningSettings.isDiffTool(document.diffTool)
       && (document.activateSessionOnCommit === undefined || typeof document.activateSessionOnCommit === 'boolean')
+      && (document.returnToPreviousSessionAfterCommit === undefined || typeof document.returnToPreviousSessionAfterCommit === 'boolean')
+      && (document.returnToPreviousSessionWithinMinutes === undefined || VersioningSettings.isReturnWithin(document.returnToPreviousSessionWithinMinutes))
       && (document.closeCommitOnSuccess === undefined || typeof document.closeCommitOnSuccess === 'boolean')
+      && (document.commitSplitRatio === undefined || VersioningSettings.isCommitSplitRatio(document.commitSplitRatio))
+  }
+
+  /**
+   * The return window as the tab broker takes it: milliseconds, or null when the person asked for
+   * no limit at all, which is what this did before the window existed.
+   */
+  static returnWindowMilliseconds(value: VersioningSettingsValue): number | null {
+    const minutes = value.returnToPreviousSessionWithinMinutes ?? VersioningSettings.defaultReturnWithinMinutesConst
+    return minutes === 0 ? null : minutes * 60_000
+  }
+
+  private static isReturnWithin(value: unknown): value is number {
+    return typeof value === 'number' && Number.isInteger(value) && value >= 0
+      && value <= VersioningSettings.maxReturnWithinMinutesConst
   }
 
   private static isMode(value: unknown): value is VersioningMode {

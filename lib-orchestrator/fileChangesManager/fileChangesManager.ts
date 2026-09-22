@@ -131,15 +131,21 @@ export class FileChangesManager {
     context: FileChangesWorkingTreeContext,
     requested: FileChangesWorkingTreeSource | null,
     forCommit = false,
+    filePath?: string,
   ): Promise<FileChangesWorkingTreeSnapshotResult> {
     const invalid = await FileChangesManager.invalidContext(context)
     if (invalid !== null) return { ok: false, code: 'invalid-context', detail: invalid }
-    const read = await this.workingSources.read(context, requested)
+    if (filePath !== undefined && (!forCommit || !PathCompare.isInside(context.cwd, filePath)
+      || requested !== 'svn' && requested !== 'git'))
+      return { ok: false, code: 'invalid-context', detail: 'A file read requires an SVN or Git commit path inside its scope' }
+    const read = await this.workingSources.read(context, requested, filePath, forCommit)
     let vcsEntries = read.entries
     if (forCommit && read.selection.selected === 'svn') {
       try { vcsEntries = await this.svnUntracked.expand(vcsEntries) }
       catch (error) { return { ok: false, code: 'invalid-context', detail: ErrorText.of(error) } }
     }
+    if (filePath !== undefined) vcsEntries = vcsEntries.filter((entry) =>
+      entry.nodeKind === 'file' && PathCompare.comparable(entry.absolutePath) === PathCompare.comparable(filePath))
     const warnings = [...read.warnings]
     const items = await this.listing.build({
       cwd: context.cwd,

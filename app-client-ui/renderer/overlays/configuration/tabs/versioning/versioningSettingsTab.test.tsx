@@ -22,11 +22,13 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/versioni
 
   async function mount() {
     const saved: unknown[] = []
+    const fields: unknown[] = []
     ;(window as unknown as { appClient: BridgeStub }).appClient = {
       versioning: {
         getSettings: () => Promise.resolve({ ok: true, value: { mode: 'git', diffTool: { kind: 'internal' } } }),
-        saveSettings: (value) => {
+        saveSettings: (value, field) => {
           saved.push(value)
+          fields.push(field)
           return Promise.resolve({ ok: true, value: { ok: true } })
         },
       },
@@ -41,7 +43,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/versioni
     const onDirtyChange = vi.fn()
     const view = render(<VersioningSettingsTab onDirtyChange={onDirtyChange} />)
     await act(async () => Promise.resolve())
-    return { onDirtyChange, saved, view }
+    return { onDirtyChange, saved, fields, view }
   }
 
   function selectsOf(container: HTMLElement): HTMLSelectElement[] {
@@ -70,6 +72,45 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/versioni
     fireEvent.click(view.getAllByText('Reset to default')[1]!)
     expect(toggle).toBeChecked()
     expect(onDirtyChange).toHaveBeenLastCalledWith(true)
+  })
+
+  it('saves both review options together and preserves return preference while activation is disabled', async () => {
+    const { view, saved, fields, onDirtyChange } = await mount()
+    const activate = view.getByLabelText('Activate session when an agent opens a commit dialog')
+    const returning = view.getByLabelText('Return to the previous session after the commit')
+    expect(returning).toBeChecked()
+    expect(returning).toBeEnabled()
+    fireEvent.click(returning)
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true)
+    fireEvent.click(activate)
+    expect(returning).toBeDisabled()
+    expect(returning).not.toBeChecked()
+    await act(async () => { fireEvent.click(view.getAllByText('Save')[1]!) })
+    expect(fields).toEqual(['commitReview'])
+    expect(saved).toEqual([expect.objectContaining({ activateSessionOnCommit: false, returnToPreviousSessionAfterCommit: false })])
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false)
+    fireEvent.click(view.getAllByText('Reset to default')[1]!)
+    expect(activate).toBeChecked()
+    expect(returning).toBeChecked()
+    expect(returning).toBeEnabled()
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true)
+  })
+
+  /** The window travels with the two switches it qualifies, and dies with either of them. */
+  it('saves the return window with the review switches and greys it out when returning is off', async () => {
+    const { view, saved } = await mount()
+    const within = view.getByLabelText(/Only within/)
+    expect(within).toHaveValue(5)
+
+    fireEvent.change(within, { target: { value: '20' } })
+    await act(async () => { fireEvent.click(view.getAllByText('Save')[1]!) })
+
+    expect(saved).toEqual([expect.objectContaining({ returnToPreviousSessionWithinMinutes: 20 })])
+    fireEvent.click(view.getByLabelText('Return to the previous session after the commit'))
+    expect(within).toBeDisabled()
+    fireEvent.click(view.getAllByText('Reset to default')[1]!)
+    expect(within).toHaveValue(5)
+    expect(within).toBeEnabled()
   })
 
   it('defaults closing on and saves or resets it independently of activation', async () => {

@@ -17,6 +17,7 @@ export class UiSettingsSection {
         + `${UiSettings.fontRangeConst.minPercent} and ${UiSettings.fontRangeConst.maxPercent}, `
         + `scroll speeds multiples of ${UiSettings.scrollRangeConst.stepPercent} between `
         + `${UiSettings.scrollRangeConst.minPercent} and ${UiSettings.scrollRangeConst.maxPercent}, `
-        + `and terminalTheme one of ${UiSettings.terminalThemesConst.join(', ')}`),
+        + `terminalTheme one of ${UiSettings.terminalThemesConst.join(', ')}, `
+        + 'and activateSessionOnDocument a boolean'),
   }
 }

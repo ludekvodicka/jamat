@@ -36,6 +36,7 @@ export function ContextCompactionPanel(props: {
   const settings = useSyncExternalStore(subscribeSettings, currentSettings, currentSettings)
   const [saving, setSaving] = useState(false)
   const [hintOpen, setHintOpen] = useState(false)
+  const [dismissed, setDismissed] = useState(false)
   const hintId = useId()
   const [error, setError] = useState<string | null>(null)
   const [, setAgeRevision] = useState(0)
@@ -43,6 +44,7 @@ export function ContextCompactionPanel(props: {
     setSaving(false)
     setError(null)
     setHintOpen(false)
+    setDismissed(false)
   }, [sessionId])
   useEffect(() => {
     if (props.now !== undefined || reading === null) return
@@ -57,7 +59,7 @@ export function ContextCompactionPanel(props: {
     settings.value,
     props.now,
   )
-  if (panel === null || sessionId === null) return null
+  if (panel === null || sessionId === null || dismissed) return null
 
   const setAutoCompact = async (enabled: boolean): Promise<void> => {
     setSaving(true)
@@ -106,6 +108,15 @@ export function ContextCompactionPanel(props: {
         </span>
       </div>
       {error !== null && <p className="jamat-context-compaction__error">{error}</p>}
+      <button
+        className="jamat-context-compaction__close"
+        type="button"
+        aria-label="Close context usage warning"
+        title="Close panel"
+        onClick={() => setDismissed(true)}
+      >
+        ×
+      </button>
     </aside>
   )
 }

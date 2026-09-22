@@ -9,6 +9,27 @@ describe('app-client-ui/shared/uiSettings', () => {
     return { messages, report: (message) => messages.push(message) }
   }
 
+  it('defaults document activation off for old configs and preserves an explicit choice', () => {
+    const { messages, report } = reported()
+    expect(UiSettings.coerce({}, report).activateSessionOnDocument).toBe(false)
+    for (const value of [true, false]) {
+      const read = UiSettings.coerce({ activateSessionOnDocument: value }, report)
+      expect(read.activateSessionOnDocument).toBe(value)
+      expect(UiSettings.isValid(read)).toBe(true)
+    }
+    const legacy = { ...UiSettings.defaultValue() }
+    delete legacy.activateSessionOnDocument
+    expect(UiSettings.isValid(legacy)).toBe(true)
+    expect(messages).toEqual([])
+  })
+
+  it('reports invalid document activation on read and refuses it on write', () => {
+    const { messages, report } = reported()
+    expect(UiSettings.coerce({ activateSessionOnDocument: 'yes' }, report).activateSessionOnDocument).toBe(false)
+    expect(messages).toHaveLength(1)
+    expect(UiSettings.isValid({ ...UiSettings.defaultValue(), activateSessionOnDocument: 'yes' })).toBe(false)
+  })
+
   it('reads 100 % for every scale and speed, and today\'s palette, when nothing is stored', () => {
     expect(UiSettings.defaultValue()).toEqual({
       fontScalePercent: 100,
@@ -17,6 +38,7 @@ describe('app-client-ui/shared/uiSettings', () => {
       terminalTheme: 'original',
       scrollSpeedPercent: 100,
       terminalScrollSpeedPercent: 100,
+      activateSessionOnDocument: false,
     })
   })
 
@@ -48,6 +70,7 @@ describe('app-client-ui/shared/uiSettings', () => {
       terminalTheme: 'original',
       scrollSpeedPercent: 100,
       terminalScrollSpeedPercent: 100,
+      activateSessionOnDocument: false,
     })
     expect(messages).toHaveLength(1)
     expect(messages[0]).toContain('fontScalePercent')
@@ -73,6 +96,7 @@ describe('app-client-ui/shared/uiSettings', () => {
         terminalTheme: 'original',
         scrollSpeedPercent: 100,
         terminalScrollSpeedPercent: 100,
+        activateSessionOnDocument: false,
       })
       expect(messages).toHaveLength(3)
     }
@@ -103,6 +127,7 @@ describe('app-client-ui/shared/uiSettings', () => {
       terminalTheme: 'soft',
       scrollSpeedPercent: 250,
       terminalScrollSpeedPercent: 50,
+      activateSessionOnDocument: false,
     }
     expect(UiSettings.coerce(stored, report)).toEqual(stored)
     expect(messages).toEqual([])
@@ -211,6 +236,7 @@ describe('app-client-ui/shared/uiSettings', () => {
       terminalTheme: 'vscodeDark',
       scrollSpeedPercent: 175,
       terminalScrollSpeedPercent: 300,
+      activateSessionOnDocument: false,
       _note: 'hand written',
     }
 
@@ -238,6 +264,7 @@ describe('app-client-ui/shared/uiSettings', () => {
       terminalTheme: 'original',
       scrollSpeedPercent: 100,
       terminalScrollSpeedPercent: 100,
+      activateSessionOnDocument: false,
       _note: 'hand written',
     })
   })
@@ -251,6 +278,7 @@ describe('app-client-ui/shared/uiSettings', () => {
       terminalTheme,
       scrollSpeedPercent: 100,
       terminalScrollSpeedPercent: 100,
+      activateSessionOnDocument: false,
     }
   }
 
@@ -262,6 +290,7 @@ describe('app-client-ui/shared/uiSettings', () => {
       fileViewerFontScalePercent: 100,
       fontScalePercent: 100,
       terminalScrollSpeedPercent: 100,
+      activateSessionOnDocument: false,
       scrollSpeedPercent: 100,
     })).toBe(true)
     expect(UiSettings.isValid({ fontScalePercent: 100 })).toBe(false)

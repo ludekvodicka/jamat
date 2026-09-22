@@ -11,6 +11,8 @@ import type {
 import { ErrorText } from '../../shared/errorText'
 import { type SessionsTabsView, SessionsViewState } from '../../shared/sessionsViewState'
 import { type SavedSessionsFilter, SessionsFilterState } from '../../shared/sessionsFilterState'
+import { SessionsPinsState } from '../../shared/sessionsPinsState'
+import { SessionsGroupsState, type SessionGroup, type SessionGroupAssignment } from '../../shared/sessionsGroupsState'
 import { type SidebarsStateValue, SidebarsState } from '../../shared/sidebarsState'
 import type { WindowAppearance } from '../../shared/windowInfo'
 import { WindowAppearanceRules } from '../shell/windowAppearance'
@@ -44,6 +46,7 @@ interface ClientStateFields {
   sidebars?: SidebarsStateValue
   sessionsView?: SessionsTabsView
   sessionFilters?: readonly SavedSessionsFilter[]
+  sessionGroups?: readonly SessionGroupAssignment[]
   newSessionAgent?: SessionAgentId
 }
 
@@ -147,6 +150,61 @@ export class ClientStateStore {
 
   loadSessionFilters(): readonly SavedSessionsFilter[] {
     return structuredClone(this.documentOnDisk().sessionFilters ?? [])
+  }
+
+  /** Pin-only IPC remains compatible while the durable state migrates to group assignments. */
+  loadSessionPins(): readonly string[] {
+    return this.loadSessionGroups().filter((entry) => entry.group === 'pinned').map((entry) => entry.key)
+  }
+
+  saveSessionPins(pins: readonly string[]): boolean {
+    if (!SessionsPinsState.isValid(pins))
+      throw new Error('Refusing to store invalid session pins')
+    return this.saveSessionGroups([
+      ...this.loadSessionGroups().filter((entry) => entry.group !== 'pinned' && !pins.includes(entry.key)),
+      ...pins.map((key) => ({ key, group: 'pinned' as const })),
+    ])
+  }
+
+  loadSessionGroups(): readonly SessionGroupAssignment[] {
+    return structuredClone(this.documentOnDisk().sessionGroups ?? [])
+  }
+
+  saveSessionGroups(groups: readonly SessionGroupAssignment[]): boolean {
+    if (!SessionsGroupsState.isValid(groups))
+      throw new Error('Refusing to store invalid session groups')
+    return this.write(
+      { ...this.documentOnDisk(), sessionGroups: structuredClone(groups) },
+      { snapshotLayout: false },
+    )
+  }
+
+  /**
+   * One assignment, read and written here rather than composed by a caller: the tree is no longer
+   * the only writer, and a caller handing back a whole map it read a moment earlier would undo
+   * whatever landed in between.
+   */
+  assignSessionGroup(key: string, group: SessionGroup): boolean {
+    return this.saveSessionGroups(
+      SessionsGroupsState.assigned(this.loadSessionGroups(), key, group),
+    )
+  }
+
+  /**
+   * Give a session the group the session it was cut from was put in.
+   *
+   * Only an OWN assignment travels. A parent drawn under Priority because its PROJECT is assigned
+   * there has nothing of its own to hand over, and the child reaches the same section through the
+   * same project row anyway; writing it out would instead nail the child to Priority for as long as
+   * the project's own assignment later moves.
+   *
+   * False means nothing changed for anybody - either the parent carried no assignment of its own,
+   * or the write was refused - which is exactly when nobody needs telling.
+   */
+  inheritSessionGroup(fromKey: string, toKey: string): boolean {
+    const group = SessionsGroupsState.ownGroupOf(this.loadSessionGroups(), fromKey)
+    if (group === null) return false
+    return this.assignSessionGroup(toKey, group)
   }
 
   saveSessionFilters(filters: readonly SavedSessionsFilter[]): boolean {
@@ -372,6 +430,8 @@ export class ClientStateStore {
       sidebars?: unknown
       sessionsView?: unknown
       sessionFilters?: unknown
+      sessionPins?: unknown
+      sessionGroups?: unknown
       newSessionAgent?: unknown
     }
     if (document.layout !== undefined && typeof document.layout !== 'string')
@@ -386,6 +446,11 @@ export class ClientStateStore {
       .coerceNewSessionAgent(document.newSessionAgent, report)
     return {
       ...(document.layout === undefined ? {} : { layout: document.layout }),
+      ...(document.sessionGroups === undefined && document.sessionPins === undefined ? {} : {
+        sessionGroups: document.sessionGroups === undefined
+          ? SessionsPinsState.coerce(document.sessionPins, report).map((key) => ({ key, group: 'pinned' as const }))
+          : SessionsGroupsState.coerce(document.sessionGroups, report),
+      }),
       ...(document.sessionFilters === undefined ? {} : {
         sessionFilters: SessionsFilterState.coerceSaved(document.sessionFilters, report),
       }),

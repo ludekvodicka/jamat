@@ -108,6 +108,52 @@ describe('lib-orchestrator/fileChangesManager/working/fileChangesWorkingTreeSour
     expect(selectedCheckpoint.selected?.baseline).toEqual({ kind: 'git-head', revision: 'HEAD' })
   })
 
+  it('does not discover checkpoint or Git sources for an SVN commit at a group root', async () => {
+    const calls: string[] = []
+    const sources = new FileChangesWorkingTreeSources({
+      checkpointStore: {
+        existingContextOf: async () => { calls.push('checkpoint'); throw new Error('group root is not a project') },
+        worktreeBelongsToStore: async () => { calls.push('store worktree'); return false },
+      },
+      gitOf: () => { calls.push('git'); throw new Error('unexpected Git discovery') },
+      svn: svn(calls),
+    })
+    const result = await sources.read({ ...context(), cwd: 'Q:/ApplicationsWeb' }, 'svn', undefined, true)
+    expect(calls).toEqual(['Q:/ApplicationsWeb'])
+    expect(result.selection).toEqual({ requested: 'svn', selected: 'svn', available: ['svn'], fallbackReason: null })
+    expect(result.warnings).toEqual([])
+  })
+
+  it('keeps SVN failures visible without falling back to a checkpoint for commit reads', async () => {
+    const adapter = svn([])
+    const sources = new FileChangesWorkingTreeSources({ checkpointStore: store(null, false), svn: adapter })
+    adapter.status = async () => ({ ok: false, detail: 'working copy is locked' })
+    const failed = await sources.read(context(), 'svn', undefined, true)
+    expect(failed.selected).toBeNull()
+    expect(failed.warnings).toEqual(['SVN BASE: working copy is locked'])
+    adapter.detect = async () => null
+    const missing = await sources.read(context(), 'svn', undefined, true)
+    expect(missing.selected).toBeNull()
+    expect(missing.selection.available).toEqual([])
+    expect(missing.selection.fallbackReason).toContain('SVN BASE is not available')
+  })
+
+  it('reads human Git commits without discovering SVN or checkpoint baselines', async () => {
+    const calls: string[] = []
+    const adapter = svn(calls)
+    const sources = new FileChangesWorkingTreeSources({
+      checkpointStore: {
+        existingContextOf: async () => { calls.push('checkpoint'); throw new Error('unexpected checkpoint discovery') },
+        worktreeBelongsToStore: async () => false,
+      },
+      gitOf: (args) => new FileChangesVcsGit(new Runner(), args), svn: adapter,
+    })
+    const result = await sources.read(context(), 'git', undefined, true)
+    expect(calls).toEqual([])
+    expect(result.selection.available).toEqual(['git'])
+    expect(result.warnings).toEqual([])
+  })
+
   it('prefers the persisted creation base in a checkpoint worktree', async () => {
     const asked: string[] = []
     const sources = subject({ existing: null, belongs: true, svnAsked: asked })

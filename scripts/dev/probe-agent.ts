@@ -99,8 +99,10 @@ class ProbeAgent {
         'no snapshot after attach')
       const snapshot = frames.find((f) => f.type === 'terminal.snapshot')
       if (snapshot?.type === 'terminal.snapshot')
-        console.log(`   snapshot: raw ${snapshot.projection.raw.length} chars, `
-          + `screen ${snapshot.projection.screen.length} chars, seq ${snapshot.projection.outputSeq}`)
+        // No ring here on purpose: an attach snapshot carries the screen alone, because that is the
+        // only part of it any client has ever written into a terminal.
+        console.log(`   snapshot: screen ${snapshot.projection.screen.length} chars, `
+          + `seq ${snapshot.projection.outputSeq}`)
 
       const before = frames.length
       socket.send(JSON.stringify({ type: 'terminal.input', data: 'say the word pineapple\r' }))
@@ -176,7 +178,8 @@ class ProbeAgent {
       console.log(`   ${label}: NO PROJECTION`)
       return
     }
-    const raw = projection.raw
+    // This probe inspects without naming a view, so the Host answers with the whole ring.
+    const raw = projection.raw ?? ''
     const screen = projection.screen
     console.log(`   ${label}: alive ${inspected.session.alive}, seq ${projection.outputSeq}, `
       + `raw ${raw.length} chars, screen ${screen.length} chars`)

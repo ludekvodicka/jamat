@@ -2,7 +2,7 @@ import type { FileViewerDocumentSource } from '../../lib-orchestrator/fileViewer
 import type { FileChangesVcsId } from '../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 
 export type TabControlCommand =
-  | { kind: 'open-commit'; requestId: string; panelId: string; vcs: FileChangesVcsId; scopeRoot: string; title: string; messageApplied: boolean; activate?: boolean }
+  | { kind: 'open-commit'; requestId: string; panelId: string; vcs: FileChangesVcsId; scopeRoot: string; paths?: readonly string[]; title: string; messageApplied: boolean; activate?: boolean; existingOnly?: true }
   | {
       kind: 'open-session'
       requestId: string

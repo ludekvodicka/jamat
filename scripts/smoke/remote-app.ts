@@ -40,6 +40,7 @@ import {
   RemoteControl,
   type RemoteControlAgentsPort,
   type RemoteControlProjectsPort,
+  type RemoteControlSessionGroupsPort,
   type RemoteControlSessionsPort,
   type RemoteControlTabsPort,
   type RemoteControlTranscriptPort,
@@ -1013,6 +1014,7 @@ class SmokeTargetApp {
       system: { identity: () => identity },
       projects: SmokeRemoteAppPorts.projects(),
       sessions: this.remoteSessions,
+      groups: SmokeRemoteAppPorts.groups(),
       tabs: SmokeRemoteAppPorts.tabs(),
       terminal,
       transcript: SmokeRemoteAppPorts.transcript(),
@@ -1285,6 +1287,7 @@ class SmokeControllerApp {
       system: { identity: () => identity },
       projects: SmokeRemoteAppPorts.projects(),
       sessions: unavailableSessions,
+      groups: SmokeRemoteAppPorts.groups(),
       tabs: SmokeRemoteAppPorts.tabs(),
       terminal,
       transcript: SmokeRemoteAppPorts.transcript(),
@@ -1677,6 +1680,15 @@ class SmokeRemoteAppPorts {
         },
       }),
     }
+  }
+
+  /**
+   * Where a create's named group would land. Neither side of this smoke keeps client state, and the
+   * smoke is a client of the two control layers rather than of the section a session sits in, so the
+   * assignment is accepted and forgotten.
+   */
+  static groups(): RemoteControlSessionGroupsPort {
+    return { assign: (_sessionId, group) => ({ ok: true, value: { group } }) }
   }
 
   static tabs(): RemoteControlTabsPort {

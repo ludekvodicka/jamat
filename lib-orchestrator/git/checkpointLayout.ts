@@ -37,8 +37,33 @@ export class CheckpointLayout {
    * What a store ignores no matter what. Without the first line it would stage its own object
    * database on every checkpoint; the mirror of the global gitignore is added at init on top of
    * these, because a bare repository reads no `core.excludesFile` of its own.
+   *
+   * The SVN rule carries no leading slash, unlike the two beside it. A leading slash anchors a git
+   * exclude to the work tree root, so an anchored one covered the project's own `.svn` and nothing
+   * below it: a project with mounted `svn:externals` and no `.gitignore` supplying the recursive
+   * rule checkpointed each mount's administrative files as ordinary content. Unanchored it holds at
+   * every depth, and the source below a mount is still captured.
    */
-  static readonly selfExcludesConst: readonly string[] = ['/.checkpoints/', '/.worktrees/', '/.svn/']
+  static readonly selfExcludesConst: readonly string[] = ['/.checkpoints/', '/.worktrees/', '.svn/']
+
+  /**
+   * Closes the mirrored global list, so a later pass can replace exactly that block. Without it
+   * nothing says where the copy stops and a line the store added below it begins, and the refresh
+   * (`commit-git.sh refresh-excludes`) can only compare prefixes and give up on the rest.
+   */
+  static readonly copyEndMarkerConst = '# --- end of the copy above; the lines below belong to this store ---'
+
+  /**
+   * What the store converts: nothing. Git for Windows ships `core.autocrlf=true` in its SYSTEM
+   * config and a bare store reads it like any other repository, so without a rule a worktree is
+   * checked out as CRLF whatever the project holds, and landing that worktree writes the converted
+   * bytes back: a 59-line addition arrived for review as a 1733-line `svn diff`.
+   *
+   * `$GIT_DIR/info/attributes` has the highest attribute precedence there is, so this one line
+   * beats `core.autocrlf` AND any `.gitattributes` a project carries, in both directions. `info/`
+   * is shared with every linked worktree, so it covers the store and everything cut from it.
+   */
+  static readonly eolAttributeConst = '* -text'
 
   /** What a human `.git` beside the store must ignore, so neither shows up in the human's status. */
   static readonly humanExcludesConst: readonly string[] = ['/.checkpoints/', '/.worktrees/']

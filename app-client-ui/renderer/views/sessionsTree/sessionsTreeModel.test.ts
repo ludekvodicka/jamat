@@ -1,3 +1,4 @@
+import type { SessionGroup } from '../../../shared/sessionsGroupsState'
 import { SessionsFilterState, type SessionFilterStatus } from '../../../shared/sessionsFilterState'
 import { describe, expect, it } from 'vitest'
 
@@ -16,8 +17,10 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
   const noMarks: ReadonlySet<string> = new Set()
   /** Nothing is in front unless a test says so; only the `attention` filter reads it. */
   const noneInFront: ReadonlySet<string> = new Set()
+  const noneTabbed: ReadonlySet<string> = new Set()
   type ViewUnderTest =
-    Omit<TreeViewState, 'inFront' | 'now'> & { inFront?: ReadonlySet<string>; now?: number }
+    Omit<TreeViewState, 'inFront' | 'tabbed' | 'now'>
+    & { inFront?: ReadonlySet<string>; tabbed?: ReadonlySet<string>; now?: number }
   /** The moment every build happens at unless a test names another one. */
   const nowConst = 1_754_400_000_000
   const hourConst = 60 * 60 * 1_000
@@ -32,7 +35,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
   ): TreeResult {
     return SessionsTreeModel.build(
       snapshot,
-      { inFront: noneInFront, now: nowConst, ...view },
+      { inFront: noneInFront, tabbed: noneTabbed, now: nowConst, ...view },
       marks,
       previous,
       options,
@@ -72,6 +75,77 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
   function titles(node: TreeNode): string[] {
     return node.children.map((child) => child.kind === 'session' ? child.title : child.label)
   }
+
+  it('partitions sessions and retains their shared project in both groups', () => {
+    const snapshot = SessionsFixtures.mixed()
+    const assignments = new Map<string, SessionGroup>([['session:s-working', 'pinned']])
+    const pinned = build(snapshot, { ...all, assignments, group: 'pinned' })
+    const rest = build(snapshot, { ...all, assignments, group: 'none' })
+    expect(everyId(pinned.nodes).filter((id) => id.startsWith('session:'))).toEqual(['session:s-working'])
+    expect(lookup(rest.nodes, 'session:s-working')).toBeNull()
+    expect(lookup(rest.nodes, 'session:s-waiting')).not.toBeNull()
+    expect(pinned.nodes[0].children[0].id).toBe(rest.nodes[0].children[0].id)
+    expect(build(snapshot, { ...all, assignments: new Map(), group: 'pinned' }).nodes).toEqual([])
+  })
+
+  it('pins whole roots and normalized directories, including new sessions and plain tabs', () => {
+    const snapshot = SessionsFixtures.mixed()
+    const project = build(snapshot).nodes[0].children[0]
+    for (const key of [project.id, 'category:nodejs']) {
+      const assignments = new Map<string, SessionGroup>([[key, 'pinned']])
+      const next = { ...snapshot, sessions: [...snapshot.sessions,
+        { ...snapshot.sessions.find((session) => session.sessionId === 's-working')!, sessionId: 'new' }] }
+      const pinned = build(next, { ...all, content: 'both', assignments, group: 'pinned' })
+      expect(everyId(pinned.nodes)).toContain('session:new')
+      expect(everyId(pinned.nodes)).toContain('session:s-tab')
+      expect(pinned.nodes.map((node) => node.id)).toEqual(['category:nodejs'])
+      expect(build(next, { ...all, assignments, group: 'none' }).nodes.map((node) => node.id))
+        .not.toContain('category:nodejs')
+    }
+    const pinned = build(snapshot, { ...all, assignments: new Map([['project:root:adhoc/q:/scratch', 'pinned']]), group: 'pinned' })
+    expect(everyId(pinned.nodes).filter((id) => id.startsWith('session:')))
+      .toEqual(['session:s-adhoc', 'session:s-adhoc-cased'])
+  })
+
+  it('keeps a child in its own pin group when its parent is elsewhere and still applies filters', () => {
+    const source = SessionsFixtures.mixed()
+    const parent = source.sessions.find((session) => session.sessionId === 's-working')!
+    const snapshot = { ...source, sessions: [parent, { ...parent, sessionId: 'child', setupFor: parent.sessionId }] }
+    const assignments = new Map<string, SessionGroup>([['session:child', 'pinned']])
+    const pinned = build(snapshot, { ...all, assignments, group: 'pinned' })
+    expect(everyId(pinned.nodes)).toContain('session:child')
+    expect(everyId(pinned.nodes)).not.toContain('session:s-working')
+    expect(everyId(build(snapshot, { ...all, assignments, group: 'none' }).nodes)).not.toContain('session:child')
+    expect(build(snapshot, { ...all, assignments, group: 'pinned', filterText: 'missing' }).nodes).toEqual([])
+    const byProject = new Map<string, SessionGroup>([[pinned.nodes[0].children[0].id, 'pinned']])
+    const together = build(snapshot, { ...all, assignments: byProject, group: 'pinned' })
+    expect(find(together.nodes, 'session:s-working').children.map((node) => node.id)).toEqual(['session:child'])
+  })
+
+  it('uses session then project then root assignments, including explicit None and new sessions', () => {
+    const source = SessionsFixtures.mixed()
+    const base = source.sessions.find((session) => session.sessionId === 's-working')!
+    const projectKey = build(source).nodes[0].children[0].id
+    const snapshot = { ...source, sessions: [base, { ...base, sessionId: 'new' }, { ...base, sessionId: 'exception' }] }
+    const assignments = new Map<string, SessionGroup>([
+      ['category:nodejs', 'blocked'], [projectKey, 'priority'],
+      ['session:s-working', 'none'], ['session:exception', 'waiting'],
+    ])
+    const members = (group: SessionGroup): string[] => everyId(build(snapshot, { ...all, assignments, group }).nodes)
+      .filter((id) => id.startsWith('session:'))
+    expect(members('priority')).toEqual(['session:new'])
+    expect(members('none')).toEqual(['session:s-working'])
+    expect(members('waiting')).toEqual(['session:exception'])
+    expect(members('blocked')).toEqual([])
+    const tree = build(snapshot, { ...all, assignments })
+    expect(find(tree.nodes, 'category:nodejs').group).toBe('blocked')
+    expect(find(tree.nodes, projectKey).group).toBe('priority')
+    expect(find(tree.nodes, 'session:s-working').group).toBe('none')
+    assignments.delete(projectKey)
+    expect(members('blocked')).toEqual(['session:new'])
+    expect(members('none')).toEqual(['session:s-working'])
+    expect(build(snapshot, { ...all, assignments, group: 'waiting', filterText: 'missing' }).nodes).toEqual([])
+  })
 
   it('matches lifecycle and work state independently of stale activity on ended sessions', () => {
     const source = SessionsFixtures.mixed()
@@ -306,6 +380,26 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
     expect(everyId(active.nodes)).not.toContain('session:s-done')
     // And `all` is the archive: the finished one is there too.
     expect(everyId(build(SessionsFixtures.mixed()).nodes)).toContain('session:s-done')
+  })
+
+  /**
+   * The rule that keeps the tab bar and the tree agreeing. Finalizing a session does not close its
+   * tab, so a completed session the person can still see has to keep a row to be reachable from.
+   */
+  it('keeps a session with an open tab whatever the state filter says, and only against that filter', () => {
+    const activeOnly = { ...SessionsFilterState.allConst, states: ['active'] as const }
+    const hidden = build(SessionsFixtures.mixed(), { filters: activeOnly, content: 'sessions', filterText: '' })
+    expect(everyId(hidden.nodes)).not.toContain('session:s-done')
+
+    // A local row is keyed by its session id, which is what the panel index reports for an open tab.
+    const shown = build(SessionsFixtures.mixed(),
+      { filters: activeOnly, content: 'sessions', filterText: '', tabbed: new Set(['s-done']) })
+    expect(everyId(shown.nodes)).toContain('session:s-done')
+
+    // Narrowing by text is the person asking to see less, and an open tab does not overrule it.
+    const searched = build(SessionsFixtures.mixed(),
+      { filters: activeOnly, content: 'sessions', filterText: 'zzz-matches-nothing', tabbed: new Set(['s-done']) })
+    expect(everyId(searched.nodes)).not.toContain('session:s-done')
   })
 
   it('shows plain tabs only in a tree whose content asks for them', () => {

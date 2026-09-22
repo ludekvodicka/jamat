@@ -193,6 +193,20 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
     return { code: result.code, detail: result.detail }
   }
 
+  /**
+   * Until a merge in flight has reached the step this test releases it from. A fixed wait of one
+   * macrotask was enough while the records store wrote synchronously; the write went off the loop
+   * on 2026-09-21 and the flow now needs several turns to get there, so a test that released after
+   * a fixed wait released a merge that had not started and then waited on it for ever.
+   */
+  async function until(predicate: () => boolean): Promise<void> {
+    for (let attempt = 0; attempt < 500; attempt += 1) {
+      if (predicate()) return
+      await new Promise((resolve) => setTimeout(resolve, 1))
+    }
+    throw new Error('the merge never reached the state this test waits for')
+  }
+
   it('merges base into the worktree first, then the branch into the main copy', async () => {
     const it_ = await harness()
 
@@ -499,16 +513,16 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
   /** Two worktrees of one repository merging into the same HEAD is what git does not guard. */
   it('refuses a second merge into the same repository while one is running', async () => {
     const it_ = await harness()
-    let release = (): void => {}
+    const releases: (() => void)[] = []
     it_.merge.mergeToMain = () => new Promise((resolve) => {
-      release = () => resolve({ ok: true, value: { conflict: false } })
+      releases.push(() => resolve({ ok: true, value: { conflict: false } }))
     })
 
     const first = it_.flow.mergeSession('s1')
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    await until(() => releases.length > 0)
     expect(refusalOf(await it_.flow.mergeSession('s1')).code).toBe('merge-pending')
 
-    release()
+    releases[0]?.()
     expect((await first).ok).toBe(true)
     // The lock is given back rather than held for ever: the next call gets past it and is refused
     // for the honest reason, which is that the merge it just finished took the worktree away.

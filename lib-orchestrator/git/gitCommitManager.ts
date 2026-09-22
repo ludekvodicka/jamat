@@ -2,13 +2,16 @@ import { lstat } from 'node:fs/promises'
 import { join, relative, resolve } from 'node:path'
 
 import { PathCompare } from '../shared/pathCompare'
+import type { CommitProgress } from '../shared/commitProgress.types'
 import type { GitResult } from './git.types'
 import { GitManager } from './gitManager'
 
 export class GitCommitManager extends GitManager {
-  async commit(scope: string, paths: readonly string[], messageFile: string): Promise<GitResult<{ hash: string; output: string }>> {
+  async commit(scope: string, paths: readonly string[], messageFile: string,
+    onProgress?: (progress: CommitProgress) => void): Promise<GitResult<{ hash: string; output: string }>> {
     if (paths.length === 0 || paths.some((path) => !PathCompare.isInside(scope, path) || /[\0\r\n]/.test(path)))
       return { ok: false, code: 'git-failed', detail: 'Select files inside the commit scope' }
+    onProgress?.({ stage: 'preparing', completed: 0, total: null })
     const checked = await this.rootOf(scope)
     if (!checked.ok) return checked
     const root = checked.value
@@ -16,9 +19,11 @@ export class GitCommitManager extends GitManager {
     const added = await this.invoker.run(root, ['add', '-A', '--', ...selected])
     const addFailure = GitManager.failureOf(added, 'git-failed')
     if (addFailure) return addFailure
+    onProgress?.({ stage: 'committing', completed: 0, total: null })
     const committed = await this.invoker.run(root, ['commit', '--only', '-F', messageFile, '--', ...selected])
     const failure = GitManager.failureOf(committed, 'git-failed')
     if (failure) return failure
+    onProgress?.({ stage: 'verifying', completed: 0, total: null })
     const hash = await this.invoker.run(root, ['rev-parse', '--verify', 'HEAD'])
     const hashFailure = GitManager.failureOf(hash, 'git-failed')
     if (hashFailure) return hashFailure

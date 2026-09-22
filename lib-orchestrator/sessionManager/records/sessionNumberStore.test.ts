@@ -299,6 +299,26 @@ describe('lib-orchestrator/sessionManager/records/sessionNumberStore', () => {
   })
 
   /**
+   * The read `SessionLifecycle` measures a title against before it creates a record from it. It is
+   * the same seed `next` and `allocate` sit on, so a prefix composed from a real allocation is never
+   * above it - `allocate` records the number before it answers - while digits somebody typed are.
+   */
+  it('reports the highest number a project has spent, over all three seeds', async () => {
+    const it_ = harness()
+    it_.seed({ [it_.projectPath]: 4 })
+    it_.worktree('006-the-wire')
+    const store = await it_.load()
+
+    expect(await store.highestIssued(it_.projectPath, [])).toBe(6)
+    expect(await store.highestIssued(it_.projectPath, [record('014-015 - fork', it_.projectPath)]))
+      .toBe(15)
+    expect(await store.highestIssued(join(it_.projectPath, '..', 'untouched'), [])).toBe(0)
+    // And what the guard exists for: a record nobody allocated is read back as a spent number.
+    expect(await store.highestIssued(it_.projectPath, [record('2026 plan', it_.projectPath)]))
+      .toBe(2026)
+  })
+
+  /**
    * One unusable counter is not a damaged file: the seed rebuilds that project's count from its
    * worktrees and titles, so dropping it costs nothing while latching would cost every project.
    */

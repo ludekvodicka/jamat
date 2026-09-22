@@ -1,7 +1,9 @@
 import type { ConfigStore } from '../../../lib-orchestrator/configStore/configStore'
-import type {
-  VersioningSettingsSaveResult,
-  VersioningSettingsValue,
+import {
+  VersioningSettings,
+  type VersioningSettingsField,
+  type VersioningSettingsSaveResult,
+  type VersioningSettingsValue,
 } from '../../shared/versioningSettings'
 import { ServiceIpcBase } from '../shared/serviceIpcBase'
 import { VersioningSettingsSection } from './versioningSettingsSection'
@@ -27,11 +29,14 @@ export class ServiceVersioningSettingsIpc extends ServiceIpcBase<
     this.assertComplete(ServiceVersioningSettingsIpc.channelsConst)
   }
 
-  private save(value: VersioningSettingsValue, field: keyof VersioningSettingsValue = 'mode'): VersioningSettingsSaveResult {
-    if (field !== 'mode' && field !== 'diffTool' && field !== 'activateSessionOnCommit' && field !== 'closeCommitOnSuccess')
+  private save(value: VersioningSettingsValue, field: VersioningSettingsField = 'mode'): VersioningSettingsSaveResult {
+    if (field !== 'mode' && field !== 'diffTool' && field !== 'activateSessionOnCommit'
+      && field !== 'returnToPreviousSessionAfterCommit' && field !== 'returnToPreviousSessionWithinMinutes'
+      && field !== 'closeCommitOnSuccess' && field !== 'commitReview' && field !== 'commitSplitRatio')
       return { ok: false, code: 'invalid-section', detail: 'Unknown versioning setting' }
     const current = this.configStore.readSection(VersioningSettingsSection.spec)
-    const saved = this.configStore.saveSection(VersioningSettingsSection.spec, { ...current, [field]: value[field] })
+    const saved = this.configStore.saveSection(VersioningSettingsSection.spec, { ...current,
+      ...Object.fromEntries(VersioningSettings.fieldsOf(field).map((key) => [key, value[key]])) })
     if (saved.ok) return saved
     else if (saved.code === 'config-latched' || saved.code === 'invalid-section')
       return { ok: false, code: saved.code, detail: saved.detail }

@@ -27,6 +27,7 @@ export function FileViewerPane(props: {
   workingTree: FileChangesWorkingTreeViewModel
   backPath: string | null
   onBack(): void
+  onClose(): void
   onOpenItem(item: PanelSplitFileItem): string | null
   onRefused(reason: string): void
 }): React.JSX.Element {
@@ -73,12 +74,11 @@ export function FileViewerPane(props: {
         <button
           type="button"
           className="file-viewer-back"
-          aria-label="Back to previous document"
-          title={props.backPath === null ? 'No previous document' : `Back to ${props.backPath}`}
-          disabled={props.backPath === null}
-          onClick={props.onBack}
+          aria-label={props.backPath === null ? 'Close document' : 'Back to previous document'}
+          title={props.backPath === null ? 'Close document' : `Back to ${props.backPath}`}
+          onClick={props.backPath === null ? props.onClose : props.onBack}
         >
-          ← Back
+          {props.backPath === null ? '× Close' : '← Back'}
         </button>
         {model.document && (
           <>

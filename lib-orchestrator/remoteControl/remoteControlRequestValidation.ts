@@ -1,4 +1,10 @@
-import type { SessionCreateSpec } from '../sessionManager/sessionManagerApi.types'
+import { SessionColors } from '../sessionManager/sessionColors'
+import { SessionGroups } from '../sessionManager/sessionGroups'
+import type {
+  SessionColorName,
+  SessionCreateSpec,
+  SessionGroup,
+} from '../sessionManager/sessionManagerApi.types'
 import type {
   RemoteControlError,
   RemoteControlMutatingOperation,
@@ -140,12 +146,14 @@ export class RemoteControlRequestValidation {
         operationId: RemoteControlEnvelopeValidation.requiredOperationId(operationId),
         body: RemoteControlRequestValidation.tabCommitBody(body),
       }
-    else if (operation === 'tabs.commitStatus') {
-      const value = RemoteControlEnvelopeValidation.object(body, 'tabs.commitStatus body')
-      RemoteControlEnvelopeValidation.keys(value, ['commitSessionId'], 'tabs.commitStatus body')
+    else if (operation === 'tabs.commitStatus' || operation === 'tabs.cancelCommit') {
+      const value = RemoteControlEnvelopeValidation.object(body, `${operation} body`)
+      RemoteControlEnvelopeValidation.keys(value, ['commitSessionId'], `${operation} body`)
       if (typeof value.commitSessionId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.commitSessionId))
         throw new RemoteControlValidationError('commitSessionId must be a UUID')
-      return { ...base, operation, body: { commitSessionId: value.commitSessionId } }
+      return { ...base, operation,
+        ...(operation === 'tabs.cancelCommit' ? { operationId: RemoteControlEnvelopeValidation.requiredOperationId(operationId) } : {}),
+        body: { commitSessionId: value.commitSessionId } }
     }
     else if (operation === 'tabs.focus')
       return {
@@ -198,13 +206,14 @@ export class RemoteControlRequestValidation {
 
   private static sessionsCreate(
     input: unknown,
-  ): { spec: SessionCreateSpec; openTab?: boolean } {
+  ): { spec: SessionCreateSpec; openTab?: boolean; group?: SessionGroup } {
     const value = RemoteControlEnvelopeValidation.object(input, 'sessions.create body')
-    RemoteControlEnvelopeValidation.keys(value, ['spec', 'openTab'], 'sessions.create body')
+    RemoteControlEnvelopeValidation.keys(value, ['spec', 'openTab', 'group'], 'sessions.create body')
     const spec = RemoteControlRequestValidation.sessionSpec(value.spec)
     const openTab = value.openTab === undefined
       ? undefined
       : RemoteControlRequestValidation.boolean(value.openTab, 'openTab')
+    const group = RemoteControlRequestValidation.group(value.group)
     /*
      * A session of the tab is drawn by that tab and by nothing else - the tree does not carry it -
      * so asking for one without asking for the tab makes a session nobody can see and nobody will
@@ -216,7 +225,11 @@ export class RemoteControlRequestValidation {
       throw new RemoteControlValidationError(
         'A session with presentation tab needs openTab: nothing else draws one',
       )
-    return { spec, ...(openTab === undefined ? {} : { openTab }) }
+    return {
+      spec,
+      ...(openTab === undefined ? {} : { openTab }),
+      ...(group === undefined ? {} : { group }),
+    }
   }
 
   private static sessionBody(
@@ -256,16 +269,23 @@ export class RemoteControlRequestValidation {
   }
 
   private static tabCommitBody(input: unknown): {
-    session: RemoteControlSessionSelector; vcs: 'svn' | 'git'; scope?: string; message?: string
+    session: RemoteControlSessionSelector; vcs: 'svn' | 'git'; scope?: string; paths?: readonly string[]; message?: string
   } {
     const value = RemoteControlEnvelopeValidation.object(input, 'tabs.openCommit body')
-    RemoteControlEnvelopeValidation.keys(value, ['session', 'vcs', 'scope', 'message'], 'tabs.openCommit body')
+    RemoteControlEnvelopeValidation.keys(value, ['session', 'vcs', 'scope', 'paths', 'message'], 'tabs.openCommit body')
     if (value.vcs !== 'svn' && value.vcs !== 'git') throw new RemoteControlValidationError('vcs must be svn or git')
     if (value.message !== undefined && (typeof value.message !== 'string' || value.message.length > RemoteControlRequestValidation.messageLengthConst))
       throw new RemoteControlValidationError('message must be text of at most 65536 characters')
+    let paths: string[] | undefined
+    if (value.paths !== undefined) {
+      if (!Array.isArray(value.paths) || value.paths.length === 0 || value.paths.length > 2_000)
+        throw new RemoteControlValidationError('paths must contain between 1 and 2000 literal paths')
+      paths = value.paths.map((path) => RemoteControlEnvelopeValidation.text(path, 'commit path', RemoteControlRequestValidation.pathLengthConst))
+    }
     return {
       session: RemoteControlRequestValidation.sessionSelector(value.session), vcs: value.vcs,
       ...(value.scope === undefined ? {} : { scope: RemoteControlEnvelopeValidation.text(value.scope, 'scope', RemoteControlRequestValidation.pathLengthConst) }),
+      ...(paths === undefined ? {} : { paths }),
       ...(value.message === undefined ? {} : { message: value.message }),
     }
   }
@@ -368,6 +388,7 @@ export class RemoteControlRequestValidation {
         'agent',
         'worktree',
         'title',
+        'color',
         'flowId',
         'presentation',
         'acknowledgeSetup',
@@ -388,6 +409,7 @@ export class RemoteControlRequestValidation {
       ? undefined
       : RemoteControlRequestValidation.worktree(value.worktree)
     const title = RemoteControlRequestValidation.optionalString(value.title, 'title', 512)
+    const color = RemoteControlRequestValidation.color(value.color)
     const flowId = RemoteControlRequestValidation.optionalText(
       value.flowId,
       'flowId',
@@ -406,6 +428,7 @@ export class RemoteControlRequestValidation {
       ...(agent === undefined ? {} : { agent }),
       ...(worktree === undefined ? {} : { worktree }),
       ...(title === undefined ? {} : { title }),
+      ...(color === undefined ? {} : { color }),
       ...(flowId === undefined ? {} : { flowId }),
       ...(value.presentation === undefined ? {} : { presentation: value.presentation }),
       ...(acknowledgeSetup === undefined ? {} : { acknowledgeSetup }),
@@ -506,6 +529,34 @@ export class RemoteControlRequestValidation {
       throw new RemoteControlValidationError(`${name} must be a string`)
     if (input.length > maximumLength)
       throw new RemoteControlValidationError(`${name} exceeds ${maximumLength} characters`)
+    return input
+  }
+
+  /**
+   * Proved against the library's own list rather than against twelve strings written out here, which
+   * is the whole reason `SessionColors` sits at its subsystem's root: the validator, the CLI parser
+   * and the lifecycle each refuse the same set, and a colour added to the union is added once.
+   */
+  private static color(input: unknown): SessionColorName | undefined {
+    if (input === undefined) return undefined
+    if (!SessionColors.isName(input))
+      throw new RemoteControlValidationError(
+        `color must be one of ${SessionColors.namesConst.join(', ')}`,
+      )
+    return input
+  }
+
+  /**
+   * The group a create may file its session under, proved against the library's own list for the
+   * reason `color` is: the surface that draws the sections, this validator and the CLI parser refuse
+   * the same six names, so a group can never be asked for that no tree has.
+   */
+  private static group(input: unknown): SessionGroup | undefined {
+    if (input === undefined) return undefined
+    if (!SessionGroups.isName(input))
+      throw new RemoteControlValidationError(
+        `group must be one of ${SessionGroups.namesConst.join(', ')}`,
+      )
     return input
   }
 
