@@ -22,8 +22,15 @@ export type SessionGlyph =
   | 'ended'
   | 'lost'
 
+/**
+ * `close` is the odd one and deliberately so: the other four are library operations the row asks
+ * for, and this one closes the session's TAB, which is the client's alone. It is here rather than as
+ * a button of its own because everything a row action already has - the label, the in-flight rule,
+ * the menu - would otherwise be written a second time for one word.
+ */
 export type SessionAction =
   | 'finalize'
+  | 'close'
   | 'reopen'
   | 'remove'
   | 'retrySetup'
@@ -86,6 +93,7 @@ export class SessionNodeState {
   static actionsOf(session: {
     life: SessionInfo['life']
     admits: SessionInfo['admits']
+    completed?: SessionInfo['completed']
   }, finalizeOffered: boolean): readonly SessionAction[] {
     const life = session.life
     if (life !== 'live' && life !== 'starting' && life !== 'ended' && life !== 'lost')
@@ -97,11 +105,16 @@ export class SessionNodeState {
     // launch the Host kept refusing ended up with Finish as its only button - and Finish on that
     // shape is the one operation that cannot work, because there is nothing to stop.
     const order: readonly SessionAction[] = running
-      ? ['finalize', 'remove']
-      : ['finalize', 'retrySetup', 'reopen', 'remove']
-    return order.filter((action) => action === 'finalize' && !running
-      ? finalizeOffered
-      : session.admits.includes(SessionNodeState.operationOf(action)))
+      ? ['finalize', 'close', 'remove']
+      : ['finalize', 'close', 'retrySetup', 'reopen', 'remove']
+    return order.filter((action) => {
+      // The person's verdict, not the runtime's: a session they have called finished is one they
+      // are done reading, whatever its life says. `admits` has nothing to say about it, because
+      // closing a tab asks the library for nothing.
+      if (action === 'close') return session.completed === true
+      if (action === 'finalize' && !running) return finalizeOffered
+      return session.admits.includes(SessionNodeState.operationOf(action))
+    })
   }
 
   /**
@@ -113,12 +126,17 @@ export class SessionNodeState {
     if (action === 'reopen') return 'restart'
     else if (action === 'finalize' || action === 'remove' || action === 'retrySetup')
       return action
+    // Named rather than swallowed by the throw below: this one HAS no library operation, and a
+    // caller that reaches here has filtered the tab action through the admits gate by mistake.
+    else if (action === 'close')
+      throw new Error('Close acts on the tab, so it has no session operation')
     else
       throw new Error(`Unknown session action: ${JSON.stringify(action)}`)
   }
 
   static actionLabelOf(action: SessionAction): string {
     if (action === 'finalize') return 'Finish'
+    else if (action === 'close') return 'Close'
     else if (action === 'reopen') return 'Rerun'
     else if (action === 'remove') return 'Remove'
     else if (action === 'retrySetup') return 'Retry setup'

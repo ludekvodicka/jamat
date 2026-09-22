@@ -405,6 +405,8 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
       )),
       setVisibleTargets: (targetKeys: readonly string[]) => act(() =>
         marks.setActiveTargets(new Set(targetKeys))),
+      setOpenTargets: (targetKeys: readonly string[]) => act(() =>
+        marks.setOpenTargets(new Set(targetKeys))),
       pushRemote: (next: RemoteConnectionsSnapshot) => {
         remote = next
         remoteChanged?.()
@@ -1373,6 +1375,42 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
 
     expect(labelsOf(container, 's-working')).toEqual(['Finish'])
     expect(labelsOf(container, 's-lost')).toEqual([])
+    expect(labelsOf(container, 's-ended')).toEqual([])
+  })
+
+  /**
+   * What Finish is to a running session, Close is to a finished one: the row it is read from is the
+   * row it is put away from. It closes the TAB and nothing else - the record stays where the
+   * archive can find it, which is what Remove in the menu is for.
+   */
+  it('closes the tab of a completed session from its own row', async () => {
+    const { container, onCloseTerminal, setOpenTargets } = await mount(SessionsFixtures.mixed())
+    setOpenTargets(['s-done'])
+
+    await waitFor(() => expect(labelsOf(container, 's-done')).toEqual(['Close']))
+    fireEvent.click(actionNamed(container, 's-done', 'Close'))
+
+    expect(onCloseTerminal).toHaveBeenCalledWith({ kind: 'local', sessionId: 's-done' })
+    // One click, unlike Finish: nothing is stopped and nothing is lost, so nothing is asked twice.
+    expect(onCloseTerminal).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * Drawn on every completed row rather than only on the ones with a tab, so the buttons beside it
+   * do not move under the pointer as tabs come and go. A dead button says what it is waiting for.
+   */
+  it('keeps a dead Close on a completed session whose tab is already gone', async () => {
+    const { container, onCloseTerminal } = await mount(SessionsFixtures.mixed())
+    showAll(container)
+
+    const close = actionNamed(container, 's-done', 'Close') as HTMLButtonElement
+    expect(close.disabled).toBe(true)
+    expect(close.title).toBe('This session has no tab open')
+
+    fireEvent.click(close)
+
+    expect(onCloseTerminal).not.toHaveBeenCalled()
+    // And no row the person has not finished grows one.
     expect(labelsOf(container, 's-ended')).toEqual([])
   })
 

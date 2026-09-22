@@ -89,9 +89,9 @@ class SessionsTreeMenuItems {
   ): readonly ContextMenuEntry[] {
     const items: ContextMenuEntry[] = []
     for (const action of actions) {
-      // Finish is the row's own button, and Rerun is `Resume session` in the block above since
-      // 2026-09-10: the catalog item opens the card that says what it will bring back.
-      if (action === 'finalize' || action === 'reopen') continue
+      // Finish and Close are the row's own buttons, and Rerun is `Resume session` in the block above
+      // since 2026-09-10: the catalog item opens the card that says what it will bring back.
+      if (action === 'finalize' || action === 'close' || action === 'reopen') continue
       else if (action === 'retrySetup' || action === 'remove')
         items.push({
           key: `tree-${action}`,

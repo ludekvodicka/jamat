@@ -140,6 +140,29 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionNodeState', () => {
   })
 
   /**
+   * The one action the library is never asked about: closing a tab is this client's own, so
+   * `admits` has no say in it and an empty one still draws it. What decides is the person's
+   * verdict, which is why it appears beside Finish on a running session somebody already marked
+   * finished rather than only after the runtime stopped.
+   */
+  it('offers close where the person marked the session completed, and nowhere else', () => {
+    expect(SessionNodeState.actionsOf({
+      life: 'ended', admits: ['restart', 'remove'], completed: true,
+    }, false)).toEqual(['close', 'reopen', 'remove'])
+    expect(SessionNodeState.actionsOf({ life: 'ended', admits: ['restart', 'remove'] }, false))
+      .toEqual(['reopen', 'remove'])
+    expect(SessionNodeState.actionsOf({ life: 'lost', admits: [], completed: true }, false))
+      .toEqual(['close'])
+    expect(SessionNodeState.actionsOf({
+      life: 'live', admits: ['finalize'], completed: true,
+    }, false)).toEqual(['finalize', 'close'])
+    // Second in both orders, so the row reads Finish then Close wherever both are drawn.
+    expect(SessionNodeState.actionsOf({
+      life: 'ended', admits: ['finalize', 'retrySetup', 'restart', 'remove'], completed: true,
+    }, true)).toEqual(['finalize', 'close', 'retrySetup', 'reopen', 'remove'])
+  })
+
+  /**
    * The second sentence beside the glyph, and only once the library says the wait is worth one:
    * below its threshold the row says `starting`, which is what a launch going through looks like.
    */
@@ -161,9 +184,10 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionNodeState', () => {
   })
 
   it('uses one label for each action across the row and its menu', () => {
-    const actions: readonly SessionAction[] = ['finalize', 'retrySetup', 'reopen', 'remove']
+    const actions: readonly SessionAction[] =
+      ['finalize', 'close', 'retrySetup', 'reopen', 'remove']
     expect(actions.map((action) => SessionNodeState.actionLabelOf(action)))
-      .toEqual(['Finish', 'Retry setup', 'Rerun', 'Remove'])
+      .toEqual(['Finish', 'Close', 'Retry setup', 'Rerun', 'Remove'])
     expect(() => SessionNodeState.actionLabelOf('discardWorktree' as SessionAction))
       .toThrow('Unknown session action: "discardWorktree"')
   })

@@ -180,11 +180,13 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
     render(<MenuHost
       commands={new CommandRegistry()}
       facts={{ ended: true }}
-      actions={['finalize', 'retrySetup', 'reopen', 'remove']}
+      actions={['finalize', 'close', 'retrySetup', 'reopen', 'remove']}
       onAction={onAction}
     />)
 
     expect(MenuView.titles()).not.toContain('Finish')
+    // Close is the row's own button too, for the same reason Finish is: one click, no question.
+    expect(MenuView.titles()).not.toContain('Close')
     expect(MenuView.titles()).not.toContain('Restart session')
     // Rerun left this block on 2026-09-10: bringing a stopped session back is `Resume session` in
     // the catalog block above, and one operation under two names on one menu is what that block's

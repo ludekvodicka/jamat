@@ -16,6 +16,8 @@ export function SessionsTreeActionButton(props: {
   onClick: () => void
   /** Read by screen readers where the visible word alone does not say which row it belongs to. */
   ariaLabel?: string
+  /** Why a button is dead, where the word alone does not say it. Absent on an ordinary one. */
+  title?: string
   /** The armed step of a two-click action, which reads as the question it is. */
   armed?: boolean
   /** Dead while its own call is out, so a second click cannot fire a second call. */
@@ -32,6 +34,7 @@ export function SessionsTreeActionButton(props: {
       className={`jamat-sessions__action${armed ? ' jamat-sessions__action--armed' : ''}`}
       type="button"
       aria-label={props.ariaLabel}
+      title={props.title}
       disabled={props.disabled}
       data-confirm={props.confirm}
       onClick={props.onClick}

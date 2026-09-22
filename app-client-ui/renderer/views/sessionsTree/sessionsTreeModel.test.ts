@@ -402,6 +402,48 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
     expect(everyId(searched.nodes)).not.toContain('session:s-done')
   })
 
+  /**
+   * The same open-tab fact the filter reads, carried on the row as well: Close is drawn on every
+   * completed session, and only the badge says whether it has anything to close.
+   */
+  it('carries the open tab on the badge and offers close on a completed row alone', () => {
+    const shown = build(SessionsFixtures.mixed(), { ...all, tabbed: new Set(['s-done']) })
+    const done = find(shown.nodes, 'session:s-done')
+    const working = find(shown.nodes, 'session:s-working')
+    if (done.kind !== 'session' || working.kind !== 'session')
+      throw new Error('the fixture sessions are not session nodes')
+
+    expect(done.badges.tabbed).toBe(true)
+    expect(done.badges.completed).toBe(true)
+    expect(done.actions).toContain('close')
+    expect(working.badges.tabbed).toBe(false)
+    expect(working.actions).not.toContain('close')
+
+    const withoutTab = find(build(SessionsFixtures.mixed()).nodes, 'session:s-done')
+    if (withoutTab.kind !== 'session') throw new Error('s-done is not a session node')
+    expect(withoutTab.badges.tabbed).toBe(false)
+    expect(withoutTab.actions).toEqual(done.actions)
+  })
+
+  /** A remote session's tab is this computer's, so the remote narrowing has no reason to drop it. */
+  it('keeps close on a remote completed row, where every library operation is narrowed away', () => {
+    const options: SessionsTreeBuildOptions = {
+      namespace: '',
+      target: { kind: 'remote', remoteEndpointId: 'endpoint-a' },
+      operationScope: 'remote',
+      interactive: true,
+      allowLocalPaths: false,
+    }
+    const remote = find(
+      build(SessionsFixtures.mixed(), all, noMarks, null, options).nodes,
+      'session:s-done',
+    )
+    if (remote.kind !== 'session') throw new Error('the remote finished session drew no row')
+
+    expect(remote.actions).toContain('close')
+    expect(remote.actions).not.toContain('remove')
+  })
+
   it('shows plain tabs only in a tree whose content asks for them', () => {
     const sessions = build(SessionsFixtures.mixed(), { filters: SessionsFilterState.allConst, content: 'sessions', filterText: '' })
     const tabs = build(SessionsFixtures.mixed(), { filters: SessionsFilterState.allConst, content: 'tabs', filterText: '' })

@@ -58,6 +58,12 @@ export interface SessionBadges {
   /** Drawn only where a tree carries tabs, and there a row's kind is the thing to tell apart. */
   plainTab: boolean
   completed: boolean
+  /**
+   * Whether this session has a terminal tab open in any workspace window. It is already what keeps
+   * a completed row in the tree at all; the row reads it a second time to know whether its Close
+   * button has anything to close.
+   */
+  tabbed: boolean
 }
 
 export type TreeNode = { group: SessionGroup } & (
@@ -253,7 +259,8 @@ export class SessionsTreeModel {
   ): TreeResult {
     if (snapshot.sessions.length === 0)
       return { nodes: [], emptyState: 'noSessions', fingerprints: new Map() }
-    const entries = snapshot.sessions.map((info) => SessionsTreeModel.entryOf(info, marks, options, commitOpen, view.assignments))
+    const entries = snapshot.sessions.map((info) =>
+      SessionsTreeModel.entryOf(info, marks, options, commitOpen, view.assignments, view.tabbed))
     const matching = entries.filter((entry) => SessionsTreeModel.matches(entry, view))
     if (matching.length === 0)
       return { nodes: [], emptyState: 'noMatch', fingerprints: new Map() }
@@ -279,6 +286,7 @@ export class SessionsTreeModel {
     options: SessionsTreeBuildOptions,
     commitOpen: ReadonlySet<string>,
     assignments: TreeViewState['assignments'],
+    tabbed: TreeViewState['tabbed'],
   ): SessionEntry {
     const target = SessionsTreeModel.targetOf(info.sessionId, options)
     const targetKey = TerminalTargetCodec.key(target)
@@ -301,6 +309,7 @@ export class SessionsTreeModel {
       attention: marks.has(targetKey),
       plainTab: info.presentation === 'tab',
       completed: info.completed === true,
+      tabbed: tabbed.has(targetKey),
     }
     const searchText = [
       info.title,
@@ -689,7 +698,11 @@ export class SessionsTreeModel {
       throw new Error(`Unknown sessions tree target: ${JSON.stringify(options.target)}`)
   }
 
-  /** Remote control exposes only rerun and finalize; the catalog still decides remote finalize. */
+  /**
+   * Remote control exposes only rerun and finalize; the catalog still decides remote finalize.
+   * `close` survives the narrowing because it is not a remote operation at all: the tab it closes is
+   * this computer's, and a remote row that has one can be put away exactly like a local one.
+   */
   private static scopedActions(
     actions: readonly SessionAction[],
     options: SessionsTreeBuildOptions,
@@ -697,7 +710,8 @@ export class SessionsTreeModel {
     if (!options.interactive) return []
     if (options.operationScope === 'local') return actions
     else if (options.operationScope === 'remote')
-      return actions.filter((action) => action === 'reopen' || action === 'finalize')
+      return actions.filter((action) => action === 'reopen' || action === 'finalize'
+        || action === 'close')
     else
       throw new Error(`Unknown operation scope: ${JSON.stringify(options.operationScope)}`)
   }

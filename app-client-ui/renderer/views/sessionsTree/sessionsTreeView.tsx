@@ -603,6 +603,13 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     // Only the running form of Finish reaches this operation path, so an accepted Finish takes its
     // terminal with it. Ended Finish is a dialog request and returns before `perform`.
     const targetKey = TerminalTargetCodec.key(node.target)
+    // Before the scope split, because it does not belong to either side of it: the tab is this
+    // computer's whether the session runs here or on a paired one, and nothing is asked of a
+    // library, so there is no call to track in flight and nothing that can be refused.
+    if (action === 'close') {
+      onCloseTerminal(node.target)
+      return
+    }
     const key = SessionsTreeActions.keyOf(targetKey, action)
     const onStopped = node.live
       ? () => {
@@ -1742,6 +1749,10 @@ function ActionButton(props: {
   const targetKey = TerminalTargetCodec.key(node.target)
   const confirms = SessionsTreeActions.confirms(node, action)
   const armed = SessionsTreeActions.isArmed(node, action, chrome.pending)
+  // Close is drawn on every completed row, so a row whose tab is already gone keeps its place in
+  // the line rather than shifting the buttons beside it - and says what it is waiting for instead
+  // of doing nothing when clicked.
+  const nothingToClose = action === 'close' && !node.badges.tabbed
   const busy = chrome.inFlight.has(SessionsTreeActions.keyOf(targetKey, action))
     || (action === 'finalize' && chrome.awaitingAsk.has(targetKey))
   return (
@@ -1749,11 +1760,12 @@ function ActionButton(props: {
       label={armed
         ? SessionsTreeActions.confirmLabelOf(action, label)
         : label ?? SessionNodeState.actionLabelOf(action)}
+      title={nothingToClose ? 'This session has no tab open' : undefined}
       armed={armed}
       // Dead while its own call is out. `reopen`, `retrySetup` and `adoptOrphan` act on the FIRST
       // click, so without this a second one fires a second call, and the library - which runs one
       // operation at a time - refuses it for an action that had already worked.
-      disabled={busy}
+      disabled={busy || nothingToClose}
       // The marker is on both steps of a two-click action: the click that ARMS it must not be the
       // click that cancels it.
       confirm={confirms ? action : undefined}
@@ -1872,7 +1884,7 @@ class SessionsTreeActions {
     const targetKey = TerminalTargetCodec.key(node.target)
     if (pending?.targetKey === targetKey && pending.action === 'remove') return ['remove']
     return node.actions.filter((action) => {
-      if (action === 'finalize') return true
+      if (action === 'finalize' || action === 'close') return true
       else if (action === 'reopen' || action === 'remove' || action === 'retrySetup') return false
       else
         throw new Error(`Unknown session action: ${JSON.stringify(action)}`)
