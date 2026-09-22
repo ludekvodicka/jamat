@@ -118,8 +118,8 @@ describe('lib-orchestrator/fileChangesManager/working/fileChangesWorkingTreeSour
       gitOf: () => { calls.push('git'); throw new Error('unexpected Git discovery') },
       svn: svn(calls),
     })
-    const result = await sources.read({ ...context(), cwd: 'Q:/ApplicationsWeb' }, 'svn', undefined, true)
-    expect(calls).toEqual(['Q:/ApplicationsWeb'])
+    const result = await sources.read({ ...context(), cwd: 'Q:/Projects' }, 'svn', undefined, true)
+    expect(calls).toEqual(['Q:/Projects'])
     expect(result.selection).toEqual({ requested: 'svn', selected: 'svn', available: ['svn'], fallbackReason: null })
     expect(result.warnings).toEqual([])
   })

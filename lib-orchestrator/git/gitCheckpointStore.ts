@@ -459,7 +459,7 @@ export class GitCheckpointStore extends GitManager {
 
   /**
    * Where a store must never live: the user's home, a volume root, or a group directory sitting
-   * directly below one, such as `Q:/ApplicationsNodeJs`. A checkpoint belongs to the project being
+   * directly below one, such as `Q:/Projects`. A checkpoint belongs to the project being
    * worked in, never to the group that happens to contain it. The same rule is `is_unsafe_root` in
    * commit-git.sh; the contract both implement is in versioning-full.md.
    */
