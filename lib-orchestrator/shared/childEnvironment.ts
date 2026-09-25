@@ -10,6 +10,8 @@
  * `NODE_PATH` is worse because it says nothing: it points into electron-vite's own dependency tree,
  * so an import that should have failed can succeed and a different version of a package can load.
  *
+ * The same holds for the agent session the client was started from, see `agentSessionNamesConst`.
+ *
  * What the two methods differ about is Jamat's own variables, and the difference is who the child is:
  * the Host is ours and is TOLD which state root to serve, while everything else is a stranger that
  * must not find another generation's configuration.
@@ -34,6 +36,70 @@ export class ChildEnvironment {
   private static readonly privateIntegrationPrefixesConst = ['RMCLI_'] as const
 
   private static readonly jamatPrefixConst = 'JAMAT'
+
+  /**
+   * Written by the agent session a client was STARTED from, never by a user's profile. A client
+   * launched from a shell inside a Claude Code or Codex session must not hand that session's
+   * identity, transcript switch, colour switch and bot git identity to every session it starts:
+   * measured 2026-09-23, an inherited `CLAUDE_CODE_CHILD_SESSION` turned transcript saving off in
+   * every Claude child, `NO_COLOR` took every TUI's colour, and the checkpoint bot's
+   * `GIT_AUTHOR_*` would have signed the user's own commits. The Codex names were read off the
+   * codex-cli 0.149 binary: the sandbox and network-proxy markers it sets for its child shells and
+   * its session ids. `JAMAT_V3_SESSION_*` is listed for the Host, which keeps Jamat's own variables
+   * but has no session of its own. User configuration stays: `ANTHROPIC_API_KEY`,
+   * `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PATH` and the `CLAUDE_CODE_*` switches a user sets.
+   * Exact names, compared case-folded like the dev runtime's.
+   */
+  private static readonly agentSessionNamesConst = [
+    'CLAUDECODE',
+    'CLAUDE_PID',
+    'AI_AGENT',
+    'CLAUDE_CODE_CHILD_SESSION',
+    'CLAUDE_CODE_SESSION_ID',
+    'CLAUDE_CODE_ENTRYPOINT',
+    'CLAUDE_CODE_EXECPATH',
+    'CLAUDE_CODE_BRIDGE_SESSION_ID',
+    'CLAUDE_CODE_MESSAGING_SOCKET',
+    'CLAUDE_CODE_MESSAGING_TOKEN',
+    'CLAUDE_CODE_SESSION_ATTENDED',
+    'CLAUDE_CODE_STOP_HOOK_BLOCK_CAP',
+    'CODEX_SANDBOX',
+    'CODEX_SANDBOX_NETWORK_DISABLED',
+    'CODEX_SESSION_ID',
+    'CODEX_THREAD_ID',
+    'CODEX_NETWORK_PROXY_ACTIVE',
+    'JAMAT_V3_SESSION_ID',
+    'JAMAT_V3_SESSION_CONTROLLER',
+    'JAMAT_V3_SESSION_CHANNEL',
+    'NO_COLOR',
+    'FORCE_COLOR',
+    'GIT_AUTHOR_NAME',
+    'GIT_AUTHOR_EMAIL',
+    'GIT_COMMITTER_NAME',
+    'GIT_COMMITTER_EMAIL',
+    'GIT_EDITOR',
+    'GIT_TERMINAL_PROMPT',
+    'GIT_ASKPASS',
+    'GCM_INTERACTIVE',
+  ] as const
+
+  /** The Codex companion plugin's per-session transcript and id. */
+  private static readonly agentSessionPrefixesConst = ['CODEX_COMPANION_'] as const
+
+  /** Any one of these says the process runs inside an agent session. */
+  private static readonly agentSessionMarkersConst = [
+    'CLAUDECODE',
+    'CLAUDE_CODE_SESSION_ID',
+    'CODEX_SANDBOX',
+    'CODEX_SESSION_ID',
+    'CODEX_THREAD_ID',
+  ] as const
+
+  /** The marker that says this environment belongs to an agent session, or null when none does. */
+  static agentSessionMarkerOf(environment: NodeJS.ProcessEnv): string | null {
+    return ChildEnvironment.agentSessionMarkersConst
+      .find((name) => typeof environment[name] === 'string') ?? null
+  }
 
   /** A child that is not Jamat's: a terminal, an agent, a CLI asked one question, a project hook. */
   static withoutJamat(environment: NodeJS.ProcessEnv): Record<string, string> {
@@ -60,6 +126,7 @@ export class ChildEnvironment {
       if (typeof value !== 'string') continue
       if (ChildEnvironment.isDevRuntime(key)) continue
       if (ChildEnvironment.isPrivateIntegration(key)) continue
+      if (ChildEnvironment.isAgentSession(key)) continue
       // Case-SENSITIVE, unlike the line above, and on purpose: this clause is the rule that already
       // stood at every one of these call sites, moved rather than rewritten. The filter is `JAMAT`,
       // wider than the `JAMAT_V3_` prefix this tree reads, because a terminal opened inside V1 or V2
@@ -74,6 +141,12 @@ export class ChildEnvironment {
     const name = key.toUpperCase()
     return ChildEnvironment.devRuntimeNamesConst.some((each) => each === name)
       || ChildEnvironment.devRuntimePrefixesConst.some((each) => name.startsWith(each))
+  }
+
+  private static isAgentSession(key: string): boolean {
+    const name = key.toUpperCase()
+    return ChildEnvironment.agentSessionNamesConst.some((each) => each === name)
+      || ChildEnvironment.agentSessionPrefixesConst.some((each) => name.startsWith(each))
   }
 
   private static isPrivateIntegration(key: string): boolean {

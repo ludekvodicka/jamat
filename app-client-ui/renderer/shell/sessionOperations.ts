@@ -11,8 +11,6 @@ import type { SessionCompact } from '../contextCompaction/sessionCompact'
 import type { SnapshotStore } from '../ipc/snapshotStore'
 import { SessionFolder } from '../sessions/sessionFolder'
 import type { TabSessionFacts } from '../widgets/tabs/tabContextMenu'
-import type { OpenTerminalPort } from './sessionTabOpener'
-import { SessionTabOpener } from './sessionTabOpener'
 
 /**
  * What the commands DO to a session, once something has decided which session they are about.
@@ -57,42 +55,6 @@ export class SessionOperations {
       ended: info.life === 'ended' || info.life === 'lost',
       admits: info.admits,
     }
-  }
-
-  /**
-   * One operation on the target session that answers with a session to show, and the tab for it.
-   * A `null` from the call is "there was nothing to ask for", which is not a failure and is silent.
-   * The new tab lands where the layout's default puts it, so a target with no panel of its own - a
-   * tree row whose session has no open tab here - needs nothing more than its id.
-   */
-  static async createFrom(
-    session: { snapshot: SnapshotStore<SessionsSnapshot>; openTerminal: OpenTerminalPort },
-    target: { sessionId: string } | null,
-    call: (
-      sessionId: string,
-      info: SessionInfo,
-    ) => Promise<IpcResult<SessionsOpResult<{ sessionId: string; tabTitle: string }>>> | null,
-    options: { plain: boolean },
-  ): Promise<void> {
-    const info = SessionOperations.sessionInfoOf(session.snapshot, target)
-    if (info === null) return
-    const asked = call(info.sessionId, info)
-    if (asked === null) return
-    const answer = await asked
-    const refusal = IpcFailure.of(answer, 'The session operation')
-    if (refusal !== null) {
-      AppClientUiReport.error(`${refusal}`)
-      return
-    }
-    if (!answer.ok || !answer.value.ok) return
-    const created = answer.value.value
-    const failure = await SessionTabOpener.open(
-      session.openTerminal,
-      created.sessionId,
-      created.tabTitle,
-      { plain: options.plain, closePlain: (sessionId) => SessionTabOpener.closePlain(sessionId) },
-    )
-    if (failure !== null) AppClientUiReport.error(`${failure}`)
   }
 
   /** An operation on the target session that shows nothing new, so there is no tab to open. */

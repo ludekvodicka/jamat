@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useEffect } from 'react'
 
 import type { FileViewerDocumentSource } from '../../../lib-orchestrator/fileViewer/fileViewerApi.types'
 import type { PanelSplitFileItem } from '../widgets/tabs/panelSplit'
@@ -38,6 +38,9 @@ export function FileViewerPane(props: {
     props.workingTree,
   )
   const freshness = useFileViewerFreshness(model.document?.documentId ?? null, model.reload)
+  // A file that is gone has nothing left to show; a refusal of any other kind stays readable.
+  const onClose = props.onClose
+  useEffect(() => { if (model.sourceMissing) onClose() }, [model.sourceMissing, onClose])
   const onOpenItem = props.onOpenItem
   const onRefused = props.onRefused
   const zoomPercent = FileViewerZoom.read(props.item.zoomPercent)

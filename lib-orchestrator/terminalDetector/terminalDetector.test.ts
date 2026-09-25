@@ -2,7 +2,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { OpenedPathsStore } from './register/openedPathsStore'
 
 import { TerminalDetector, type TerminalDetectorDeps } from './terminalDetector'
 import { TerminalDetectorLimits } from './terminalDetectorLimits'
@@ -268,6 +270,44 @@ describe('lib-orchestrator/terminalDetector/terminalDetector', () => {
         subject.markOpened(`Q:\\Proj\\f${index}.ts`, 'file')
 
       expect(subject.wasOpened('Q:\\Proj\\first.ts')).to.equal(false)
+    })
+
+    it('forgets a path nothing asked for within the time limit', () => {
+      const subject = detector(null)
+      subject.markOpened('Q:\\Proj\\a.ts', 'file')
+
+      clock += TerminalDetectorLimits.openedPathTtlMilliseconds - 1
+      expect(subject.wasOpened('Q:\\Proj\\a.ts')).to.equal(true)
+      clock += TerminalDetectorLimits.openedPathTtlMilliseconds - 1
+      expect(subject.wasOpened('Q:\\Proj\\a.ts')).to.equal(true)
+      clock += TerminalDetectorLimits.openedPathTtlMilliseconds
+      expect(subject.wasOpened('Q:\\Proj\\a.ts')).to.equal(false)
+    })
+
+    it('carries a proven open into the next process through its register', async () => {
+      const file = join(workspace([]), 'terminal-opened-paths.json')
+      const first = detector(null, { register: OpenedPathsStore.load(file, () => undefined) })
+      first.markOpened('E:\\Reports\\a.md', 'file')
+      first.markOpened('E:\\Logs', 'directory')
+
+      await vi.waitFor(() => {
+        const next = detector(null, { register: OpenedPathsStore.load(file, () => undefined) })
+        expect(next.wasOpened('E:\\Reports\\a.md')).to.equal(true)
+        expect(next.wasOpened('E:\\Logs\\today.log')).to.equal(true)
+      })
+      const next = detector(null, { register: OpenedPathsStore.load(file, () => undefined) })
+      expect(next.wasOpened('E:\\Reports\\b.md')).to.equal(false)
+    })
+
+    it('drops a stored open that expired while no process was running', async () => {
+      const file = join(workspace([]), 'terminal-opened-paths.json')
+      detector(null, { register: OpenedPathsStore.load(file, () => undefined) })
+        .markOpened('E:\\Reports\\a.md', 'file')
+      await vi.waitFor(() => expect(OpenedPathsStore.load(file, () => undefined).entries()).to.have.length(1))
+
+      clock += TerminalDetectorLimits.openedPathTtlMilliseconds
+      const next = detector(null, { register: OpenedPathsStore.load(file, () => undefined) })
+      expect(next.wasOpened('E:\\Reports\\a.md')).to.equal(false)
     })
   })
 })

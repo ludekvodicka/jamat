@@ -308,6 +308,31 @@ describe('lib-orchestrator/sessionManager/workState/agentWorkInspectorCodex', ()
 
   // And it still does not fire on a screen that is merely talking. An empty prompt is not a prompt
   // waiting for a person.
+  it('reads the launch menus Codex waits on as waiting for a person', () => {
+    for (const file of ['codex-live-booting.json', 'codex-live-trust-dialog.json']) {
+      const inspection = AgentWorkInspectorCodex.inspect(recorded(file).frame)
+      expect(inspection.hint, file).toBe('waiting')
+      expect(inspection.evidence.map((item) => item.signal), file).toEqual(['menuPrompt'])
+    }
+  })
+
+  it('requires the marked numbered row, a second option and the footer at the bottom of the screen', () => {
+    const frame = recorded('codex-live-trust-dialog.json').frame
+    for (const screenTail of [
+      frame.screenTail.replace('› 1.', '  1.'),
+      frame.screenTail.replace('  2. No, quit', '  No, quit'),
+      frame.screenTail.replace('Press enter to continue', 'Press enter to confirm'),
+      `${frame.screenTail}\n\nsome later output`,
+    ]) {
+      expect(screenTail).not.toBe(frame.screenTail)
+      expect(AgentWorkInspectorCodex.inspect({ ...frame, screenTail }).hint).not.toBe('waiting')
+    }
+    for (const cols of [60, 120])
+      expect(AgentWorkInspectorCodex.inspect(
+        ScreenTail.frameOf({ raw: '', screen: frame.screenTail.replaceAll(' ', '\x1b[1C'), cols })).hint)
+        .toBe('waiting')
+  })
+
   it('stays unknown where there is no approval to read', () => {
     for (const file of ['codex-unknown-prompt.json', 'codex-unknown-prose-collision.json']) {
       const inspection = AgentWorkInspectorCodex.inspect(recorded(file).frame)

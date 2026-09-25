@@ -23,6 +23,17 @@ export class VersioningCommitLimits {
   static readonly targetsMaxConst = 2_000
 }
 
+/**
+ * SVN normalizes a log message to LF and REFUSES one that mixes styles: `E135000: Inconsistent line
+ * ending style`, raised after the person has already approved the review and the files are staged.
+ * A message an agent wrote into a `--message-file` on Windows arrives with CRLF, and the newline
+ * the commit appends when the text lacks one is a bare LF, which is all it takes to mix them. The
+ * message therefore becomes LF wherever it enters, not only in the file write that happens to break.
+ */
+export class VersioningCommitMessage {
+  static normalize(message: string): string { return message.replace(/\r\n?/g, '\n') }
+}
+
 export type VersioningCommitPhase =
   | { kind: 'editing' }
   | { kind: 'cancelled' }

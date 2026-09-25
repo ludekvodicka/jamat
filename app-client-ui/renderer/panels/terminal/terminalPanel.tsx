@@ -184,11 +184,22 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
     filePane.current = element
     if (element !== null && props.api.isActive) element.focus()
   }, [props.api])
+  const visibleCommitPane = useCallback(
+    () => commitPanes.current?.querySelector<HTMLElement>('.commit-pane-slot:not([hidden]) .commit-pane') ?? null,
+    [],
+  )
+  // Switching to a session is going back to work in it: a commit waiting for its message takes the
+  // caret, and a file open beside the terminal does not, because it is read rather than typed into.
   const focusPanel = useCallback(() => {
-    const pane = filePane.current ?? commitPanes.current?.querySelector<HTMLElement>('.commit-pane-slot:not([hidden]) .commit-pane')
+    const commit = visibleCommitPane()
+    if (commit) commit.focus()
+    else focus()
+  }, [focus, visibleCommitPane])
+  const focusSplitPane = useCallback(() => {
+    const pane = filePane.current ?? visibleCommitPane()
     if (pane) pane.focus()
     else focus()
-  }, [focus])
+  }, [focus, visibleCommitPane])
   useLayoutEffect(() => { splitRef.current = split }, [split])
   const toolsTab = PanelFileToolsRegistry.tab(sidebar.state.activeView)
   const activeItem = split.state.items.find((item) => item.key === split.state.active) ?? null
@@ -460,7 +471,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
           items={split.state.items}
           active={split.state.active}
           preview={split.state.preview}
-          onActivate={(key) => { split.activate(key); requestAnimationFrame(focusPanel) }}
+          onActivate={(key) => { split.activate(key); requestAnimationFrame(focusSplitPane) }}
           onKeepOpen={split.keepOpen}
           onClose={split.close}
           onDetach={(key) => { void detach(key) }}

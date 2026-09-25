@@ -355,6 +355,38 @@
   cursor: default;
 }
 
+/* Portalled to the body, so none of the tree's own rules reach it: it restates the font it needs,
+   which is the tree's own, so the card reads as part of the app rather than as a second typeface.
+   It ignores the pointer, so it can never take a hover or a click from the row it describes. */
+.jamat-sessions__tooltip {
+  position: fixed;
+  z-index: 30;
+  max-width: min(360px, calc(100vw - 2 * var(--space-1)));
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-surface);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-overlay);
+  color: var(--color-text-2);
+  font-family: var(--font-ui);
+  font-size: var(--fs-secondary);
+  line-height: 1.4;
+  pointer-events: none;
+}
+.jamat-sessions__tooltip-title {
+  color: var(--color-text-1);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+/* A note is prose somebody wrote, so its own line breaks are kept and a long one wraps. */
+.jamat-sessions__tooltip-note {
+  margin: var(--space-1) 0 0;
+  padding-top: var(--space-1);
+  border-top: 1px solid var(--color-border-hairline);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* A glyph is a state, so it is a colour AND a shape: the two live-agent states must stay apart on
    a screen where the colour is the first thing lost.
 

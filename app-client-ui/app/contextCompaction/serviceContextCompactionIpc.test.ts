@@ -1,6 +1,8 @@
 import type { IpcMainInvokeEvent } from 'electron'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { RemoteControlStepResult, RemoteControlTerminalDeliverDto } from '../../../lib-orchestrator/remoteControl/remoteControlApi.types'
+import type { RemoteControlTerminal } from '../../../lib-orchestrator/remoteControl/remoteControlTerminal'
 import type { AppClientUiIpcInvokeMap } from '../../shared/appClientUiIpc'
 import { ServiceContextCompactionIpc } from './serviceContextCompactionIpc'
 
@@ -17,11 +19,46 @@ vi.mock('electron', () => ({
 
 describe('app-client-ui/app/contextCompaction/serviceContextCompactionIpc', () => {
   let now: number
+  let deliverAnswer: RemoteControlStepResult<RemoteControlTerminalDeliverDto>
+  let deliverCalls: Parameters<RemoteControlTerminal['deliver']>[]
+  let transcriptReads: string[]
 
   beforeEach(() => {
     ipcMainMock.handlers.clear()
     now = 1_000_000
-    new ServiceContextCompactionIpc(() => now).initialize()
+    deliverCalls = []
+    transcriptReads = []
+    deliverAnswer = {
+      ok: true,
+      value: {
+        sessionId: 's-a',
+        accepted: true,
+        characterCount: 8,
+        delivered: true,
+        input: 'typed',
+        composeProof: 'text',
+        proof: 'working',
+        submitKey: 'enter',
+        readyAfterMs: 0,
+        submittedAfterMs: 400,
+      },
+    }
+    new ServiceContextCompactionIpc(
+      {
+        deliver: async (...args) => {
+          deliverCalls.push(args)
+          await args[3].transcript()
+          return deliverAnswer
+        },
+      },
+      {
+        read: (sessionId) => {
+          transcriptReads.push(sessionId)
+          return Promise.resolve({ kind: 'none', code: 'transcript-not-found', reason: 'test' })
+        },
+      },
+      () => now,
+    ).initialize()
   })
 
   async function invoke(
@@ -74,5 +111,33 @@ describe('app-client-ui/app/contextCompaction/serviceContextCompactionIpc', () =
     now = requestedAt + 10 * 60_000
     expect(await invoke('contextCompaction:cooldown', 's-a')).toEqual({ ok: true, value: null })
     expect(await invoke('contextCompaction:claim-auto', 's-a')).toEqual({ ok: true, value: true })
+  })
+
+  it('types /compact through the verified delivery and returns its proof', async () => {
+    expect(await invoke('contextCompaction:deliver', 's-a'))
+      .toEqual({ ok: true, value: { kind: 'delivered', proof: 'working' } })
+
+    expect(deliverCalls.map(([sessionId, text, options]) => ({ sessionId, text, options }))).toEqual([{
+      sessionId: 's-a',
+      text: '/compact',
+      options: { input: 'typed', readyTimeoutMs: 45_000, submitTimeoutMs: 10_000 },
+    }])
+    expect(transcriptReads).toEqual(['s-a'])
+  })
+
+  it('passes a refusal on with its stage and reason', async () => {
+    deliverAnswer = {
+      ok: false,
+      error: {
+        code: 'conflict',
+        detail: 'The agent is showing a dialog',
+        data: { stage: 'ready', reason: 'dialog', typed: false, entered: 0, hint: 'blocked', composer: null },
+      },
+    }
+
+    expect(await invoke('contextCompaction:deliver', 's-a')).toEqual({
+      ok: true,
+      value: { kind: 'refused', stage: 'ready', reason: 'dialog', detail: 'The agent is showing a dialog' },
+    })
   })
 })

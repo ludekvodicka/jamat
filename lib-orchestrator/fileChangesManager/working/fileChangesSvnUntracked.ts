@@ -102,9 +102,8 @@ export class FileChangesSvnUntracked {
     const section = /^\[miscellany\][\s\S]*?(?=^\[|$(?![\s\S]))/mi.exec(config)?.[0] ?? ''
     const configured = /^global-ignores\s*=([^\r\n]*)/mi.exec(section)?.[1]
     const ignores = (configured ?? FileChangesSvnUntracked.defaultIgnoresConst).split(/\s+/).filter(Boolean)
-    const inherited = await this.deps.svn.run(dirname(directory), ['propget', 'svn:global-ignores', '--show-inherited-props', '--xml', '--non-interactive', '--', `${dirname(directory)}@`])
-    if (inherited.failure !== null || inherited.code !== 0) throw new Error(inherited.stderr || 'SVN could not read inherited ignore rules')
-    const properties = JsonShape.record(new XMLParser({ ignoreAttributes: false, parseTagValue: false }).parse(inherited.stdout))?.properties
+    const inherited = await this.inheritedIgnores(dirname(directory))
+    const properties = JsonShape.record(new XMLParser({ ignoreAttributes: false, parseTagValue: false }).parse(inherited))?.properties
     for (const value of Object.values(JsonShape.record(properties) ?? {}))
       for (const target of Array.isArray(value) ? value : [value]) {
         for (const property of Object.values(JsonShape.record(target) ?? {}))
@@ -124,6 +123,26 @@ export class FileChangesSvnUntracked {
         if (node.isDirectory()) pending.push(path)
       }
     return paths
+  }
+
+  /**
+   * The ignore rules of the nearest ancestor SVN will answer for, as its `propget` XML.
+   *
+   * `propget --show-inherited-props` refuses a directory scheduled for deletion with E200005, and
+   * `svn delete --keep-local` is precisely what leaves untracked files inside one, so asking the
+   * direct parent would end the whole listing there. What such a directory sets itself leaves the
+   * repository with it; the rules that still decide anything are the inherited ones above it.
+   */
+  private async inheritedIgnores(start: string): Promise<string> {
+    let path = start
+    while (true) {
+      const outcome = await this.deps.svn.run(path, ['propget', 'svn:global-ignores', '--show-inherited-props', '--xml', '--non-interactive', '--', `${path}@`])
+      if (outcome.failure === null && outcome.code === 0) return outcome.stdout
+      const parent = dirname(path)
+      if (parent === path || !outcome.stderr.includes('E200005'))
+        throw new Error(outcome.stderr || 'SVN could not read inherited ignore rules')
+      path = parent
+    }
   }
 
   private static checkLimit(count: number): void {

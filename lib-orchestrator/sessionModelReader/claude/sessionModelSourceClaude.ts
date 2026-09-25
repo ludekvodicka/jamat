@@ -13,6 +13,13 @@ import { ClaudeSettingsCascade } from './claudeSettingsCascade'
 interface ClaudeTurn {
   model: string
   tokens: number
+  /**
+   * What the newest `/model` switch in the read tail said about the tier of this turn's model, or
+   * null when the tail holds no switch naming it. A switch is newer evidence than the launch and the
+   * settings files: `/model` moves a running session onto another model AND tier, and the transcript
+   * records only the bare id either way.
+   */
+  switchedToMillion: boolean | null
 }
 
 export class SessionModelSourceClaude extends SessionModelSource {
@@ -25,6 +32,9 @@ export class SessionModelSourceClaude extends SessionModelSource {
    * guessed window, inflate the context percentage several times over.
    */
   private static readonly realModelConst = /^claude-/i
+  private static readonly modelSwitchConst = /^<local-command-stdout>Set model to (.*)/s
+  private static readonly ansiConst = /\u001b\[\d+m/g
+  private static readonly millionTierConst = /1M context/i
 
   readonly agentId = 'claude' as const
 
@@ -56,7 +66,8 @@ export class SessionModelSourceClaude extends SessionModelSource {
       turn = SessionModelSourceClaude.scan(
         await FileTail.read(ref.file, ref.size, SessionModelSourceClaude.firstPassBytesConst),
       )
-      if (turn === null && ref.size > SessionModelSourceClaude.firstPassBytesConst)
+      if ((turn === null || turn.switchedToMillion === null)
+        && ref.size > SessionModelSourceClaude.firstPassBytesConst)
         turn = SessionModelSourceClaude.scan(
           await FileTail.read(ref.file, ref.size, SessionModelSourceClaude.secondPassBytesConst),
         )
@@ -76,8 +87,11 @@ export class SessionModelSourceClaude extends SessionModelSource {
       // evidence that the settings file's tier is not what this session runs on. It is also the only
       // source there is on a machine that configures the model in this app instead of in Claude's
       // own settings, which is where a million-token session was drawn as a fifth of itself.
-      contextWindow: ClaudeContextWindows.windowOf(
-        turn.model, context.launchModel ?? settings.model),
+      contextWindow: turn.switchedToMillion === true
+        ? ClaudeContextWindows.windowOf(`${turn.model}[1m]`)
+        : ClaudeContextWindows.windowOf(
+          turn.model,
+          turn.switchedToMillion === false ? turn.model : context.launchModel ?? settings.model),
     } }
   }
 
@@ -93,9 +107,15 @@ export class SessionModelSourceClaude extends SessionModelSource {
   private static scan(content: string): ClaudeTurn | null {
     const records = JsonlRecords.of(content)
     let postCompactTokens: number | null = null
+    let turn: ClaudeTurn | null = null
     for (let index = records.length - 1; index >= 0; index -= 1) {
       const record = JsonShape.record(records[index])
       if (record === null) continue
+      if (turn !== null) {
+        const switched = SessionModelSourceClaude.switchOf(record, turn.model)
+        if (switched !== null) return { ...turn, switchedToMillion: switched }
+        continue
+      }
       if (postCompactTokens === null && record['subtype'] === 'compact_boundary') {
         const metadata = JsonShape.record(record['compactMetadata'])
         postCompactTokens = JsonNumber.wholeCount(metadata?.['postTokens'])
@@ -107,9 +127,27 @@ export class SessionModelSourceClaude extends SessionModelSource {
       const usage = JsonShape.record(message?.['usage'])
       if (model === null || usage === null) continue
       if (!SessionModelSourceClaude.realModelConst.test(model)) continue
-      return { model, tokens: postCompactTokens ?? SessionModelSourceClaude.tokensIn(usage) }
+      const tokens = postCompactTokens ?? SessionModelSourceClaude.tokensIn(usage)
+      turn = { model, tokens, switchedToMillion: null }
     }
-    return null
+    return turn
+  }
+
+  /**
+   * The tier a `/model` confirmation gives, when it names the model the turn ran on: `Set model to
+   * Opus 5.5 (1M context)`. One naming another model says nothing about this one, so a later
+   * switch made some other way is not overruled by it.
+   */
+  private static switchOf(record: Record<string, unknown>, model: string): boolean | null {
+    if (record['type'] !== 'user') return null
+    const content = JsonShape.record(record['message'])?.['content']
+    if (typeof content !== 'string') return null
+    const text = SessionModelSourceClaude.modelSwitchConst
+      .exec(content.replace(SessionModelSourceClaude.ansiConst, ''))?.[1]
+    if (text === undefined) return null
+    const label = ClaudeContextWindows.labelOf(model).replace('.', '\\.')
+    if (!new RegExp(`\\b${label}(?![.\\d])`, 'i').test(text)) return null
+    return SessionModelSourceClaude.millionTierConst.test(text)
   }
 
   /** What the next turn will be handed back: the fresh input plus everything read out of cache. */

@@ -1,12 +1,14 @@
 import { CodexRolloutIndex } from './providers/codex/codexRolloutIndex'
 import { CodexSessionSource } from './providers/codex/codexSessionSource'
 
-/** One rollout, reduced to the three things a caller outside this subsystem can act on. */
+/** One rollout, reduced to the four things a caller outside this subsystem can act on. */
 export interface CodexRolloutMatch {
   sessionId: string
   createdAt: number
   /** The conversation this one was forked from, per its own header; null for a fresh one. */
   forkedFromId: string | null
+  /** First user message, whitespace collapsed and cut to a fixed head; null while none is written. */
+  firstUserMessage: string | null
 }
 
 /**
@@ -46,10 +48,11 @@ export class CodexRolloutView {
     until: number,
   ): Promise<readonly CodexRolloutMatch[]> {
     const found = await this.index.rolloutsBetween(directory, from, until)
-    return found.map((ref) => ({
+    return await Promise.all(found.map(async (ref) => ({
       sessionId: ref.sessionId,
       createdAt: ref.createdAt,
       forkedFromId: ref.forkedFromId,
-    }))
+      firstUserMessage: await CodexSessionSource.firstUserMessageOf(ref.file),
+    })))
   }
 }

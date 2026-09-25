@@ -260,6 +260,31 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
     expect(onClose).toHaveBeenCalledOnce()
   })
 
+  it('closes its item when the file it restores is gone from disk', async () => {
+    const document = FileViewerPaneHarness.document()
+    const { fileViewer } = FileViewerPaneHarness.install([document])
+    fileViewer.restore.mockResolvedValue({
+      ok: true,
+      value: { ok: false, code: 'not-found', detail: 'The file does not exist' },
+    } as never)
+
+    const onClose = vi.fn()
+    render(
+      <FileViewerPane
+        backPath={null}
+        onBack={vi.fn()}
+        onClose={onClose}
+        item={FileViewerPaneHarness.item(document)}
+        changes={FileViewerPaneHarness.changes()}
+        workingTree={FileViewerPaneHarness.workingTree()}
+        onOpenItem={vi.fn(() => null)}
+        onRefused={vi.fn()}
+      />,
+    )
+
+    await vi.waitFor(() => expect(onClose).toHaveBeenCalledOnce())
+  })
+
   it('returns to the document replaced by a Markdown link and releases both grants', async () => {
     const current = FileViewerPaneHarness.document()
     const linked = FileViewerPaneHarness.document({

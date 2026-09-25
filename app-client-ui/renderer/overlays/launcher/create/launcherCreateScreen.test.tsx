@@ -68,7 +68,7 @@ describe('app-client-ui/renderer/overlays/launcher/create/launcherCreateScreen',
   })
 
   it('replaces Name and Isolation with Existing sessions and adds All to Agent', () => {
-    const index = CreateScreenModel.typesOf({ tabProfile: false, target: { kind: 'local' }, source: null }).findIndex((type) => type.kind === 'existing')
+    const index = CreateScreenModel.typesOf({ target: { kind: 'local' }, source: null }).findIndex((type) => type.kind === 'existing')
     const state = CreateScreenModel.transition(opened(), { input: 'chooseType', index }).state
     const view = draw(state)
     const labels = [...view.container.querySelectorAll('.jamat-choice__label')]

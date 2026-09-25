@@ -26,6 +26,7 @@ export class RemoteControlResponseValidation {
     'no-messages-in-scanned-tail',
     'transcript-unreadable',
   ] as const
+  private static readonly deliverProofsConst = ['transcript', 'queued', 'working', 'echo'] as const
   private static readonly frameTypesConst = [
     'terminal.attached',
     'terminal.snapshot',
@@ -47,6 +48,10 @@ export class RemoteControlResponseValidation {
     if (value.operation === 'sessions.transcript'
       && value.ok === true
       && !RemoteControlResponseValidation.transcript(value.value))
+      return null
+    if (value.operation === 'terminal.deliver'
+      && value.ok === true
+      && !RemoteControlResponseValidation.deliver(value.value))
       return null
     return input as RemoteControlResponse
   }
@@ -143,6 +148,34 @@ export class RemoteControlResponseValidation {
     return false
   }
 
+  static deliver(input: unknown): boolean {
+    const value = JsonShape.record(input)
+    return value !== null
+      && RemoteControlResponseValidation.exactKeys(value, [
+        'sessionId',
+        'accepted',
+        'characterCount',
+        'delivered',
+        'input',
+        'composeProof',
+        'proof',
+        'readyAfterMs',
+        'submittedAfterMs',
+      ], ['submitKey'])
+      && typeof value.sessionId === 'string'
+      && value.sessionId.length > 0
+      && value.accepted === true
+      && value.delivered === true
+      && Number.isSafeInteger(value.characterCount)
+      && Number.isSafeInteger(value.readyAfterMs)
+      && Number.isSafeInteger(value.submittedAfterMs)
+      && (value.input === 'paste' || value.input === 'typed')
+      && (value.composeProof === 'text' || value.composeProof === 'placeholder')
+      && (RemoteControlResponseValidation.deliverProofsConst as readonly unknown[]).includes(value.proof)
+      // Optional on read: a Jamat that predates `queue` answers without it and always pressed Enter.
+      && (value.submitKey === undefined || value.submitKey === 'enter' || value.submitKey === 'tab')
+  }
+
   private static envelope(input: unknown): Record<string, unknown> | null {
     const value = JsonShape.record(input)
     if (value === null || value.protocol !== RemoteControlConst.protocol) return null
@@ -175,9 +208,14 @@ export class RemoteControlResponseValidation {
     return input === null || typeof input === 'string'
   }
 
-  private static exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  private static exactKeys(
+    value: Record<string, unknown>,
+    keys: readonly string[],
+    optional: readonly string[] = [],
+  ): boolean {
     const actual = Object.keys(value)
-    return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key))
+    return keys.every((key) => Object.hasOwn(value, key))
+      && actual.every((key) => keys.includes(key) || optional.includes(key))
   }
 
 }

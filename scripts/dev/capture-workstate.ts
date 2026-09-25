@@ -34,6 +34,7 @@ import type {
 } from '../../app-host/app/wire/hostWire.js'
 import { HostDescriptorPaths } from '../../lib-orchestrator/hostClient/hostDescriptorPaths.js'
 import { PathCompare } from '../../lib-orchestrator/shared/pathCompare.js'
+import { AgentComposerReader } from '../../lib-orchestrator/sessionManager/workState/agentComposerReader.js'
 import { AgentWorkInspectorClaude } from '../../lib-orchestrator/sessionManager/workState/agentWorkInspectorClaude.js'
 import { AgentWorkInspectorCodex } from '../../lib-orchestrator/sessionManager/workState/agentWorkInspectorCodex.js'
 import { ScreenTail } from '../../lib-orchestrator/sessionManager/workState/screenTail.js'
@@ -60,7 +61,9 @@ class CaptureWorkstate {
   private static written = 0
 
   static async run(): Promise<void> {
-    const outDir = CaptureWorkstate.outputDirectory(process.argv[2])
+    // pnpm 11 forwards the `--` of `pnpm <script> -- <args>` to the script.
+    const args = process.argv.slice(process.argv[2] === '--' ? 3 : 2)
+    const outDir = CaptureWorkstate.outputDirectory(args[0])
     const hosts = CaptureWorkstate.hosts()
     if (hosts.length === 0) console.log('no Host descriptor on this machine')
     for (const host of hosts) await CaptureWorkstate.captureHost(host, outDir)
@@ -148,6 +151,14 @@ class CaptureWorkstate {
       console.log(`   ${session.runtimeSessionId}: claude=${verdicts.claude.hint} `
         + `codex=${verdicts.codex.hint} lastOutput=${age}`)
       console.log(`     ${CaptureWorkstate.signalsOf(verdicts.claude, verdicts.codex)}`)
+      // The composer is read as both agents for the same reason; the one that matches the TUI on
+      // screen is the one to believe.
+      const composers = {
+        claude: AgentComposerReader.read('claude', frame),
+        codex: AgentComposerReader.read('codex', frame),
+      }
+      console.log(`     composer claude=${JSON.stringify(composers.claude)}`)
+      console.log(`     composer codex=${JSON.stringify(composers.codex)}`)
       writeFileSync(
         join(outDir, `frame-${session.runtimeSessionId}.json`),
         JSON.stringify({
@@ -156,6 +167,7 @@ class CaptureWorkstate {
           channel: host.channel,
           session,
           verdicts,
+          composers,
           frame,
         }, null, 2),
       )

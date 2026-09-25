@@ -153,7 +153,45 @@ describe('app-client-ui/renderer/fileViewer/useFileViewerDocument', () => {
     await waitFor(() => expect(result.current.error)
       .toBe('proof-expired: Open the path again.'))
     expect(result.current.document).toBeNull()
+    expect(result.current.sourceMissing).toBe(false)
     expect(fileViewer.text).not.toHaveBeenCalled()
+  })
+
+  it('reports its own source as missing only when restoring it answered not-found', async () => {
+    const { fileViewer } = FileViewerDocumentHarness.install()
+    fileViewer.restore.mockResolvedValue({
+      ok: true,
+      value: { ok: false, code: 'not-found', detail: 'The file does not exist' },
+    } as never)
+
+    const { result } = renderHook(() => useFileViewerDocument(
+      FileViewerDocumentHarness.document('a.ts').source,
+      undefined,
+      FileViewerDocumentHarness.changes(),
+      FileViewerDocumentHarness.workingTree(),
+    ))
+
+    await waitFor(() => expect(result.current.sourceMissing).toBe(true))
+  })
+
+  it('does not call its own source missing when a followed link is not found', async () => {
+    const { fileViewer } = FileViewerDocumentHarness.install()
+    const { result } = renderHook(() => useFileViewerDocument(
+      FileViewerDocumentHarness.document('a.ts').source,
+      undefined,
+      FileViewerDocumentHarness.changes(),
+      FileViewerDocumentHarness.workingTree(),
+    ))
+    await waitFor(() => expect(result.current.document?.name).toBe('a.ts'))
+    fileViewer.restore.mockResolvedValue({
+      ok: true,
+      value: { ok: false, code: 'not-found', detail: 'The file does not exist' },
+    } as never)
+
+    act(() => result.current.openSource(FileViewerDocumentHarness.document('gone.md').source))
+
+    await waitFor(() => expect(result.current.error).toBe('not-found: The file does not exist'))
+    expect(result.current.sourceMissing).toBe(false)
   })
 
   it('reloads the same file without dropping the view or blanking the document', async () => {

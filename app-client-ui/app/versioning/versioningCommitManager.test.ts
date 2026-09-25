@@ -208,6 +208,23 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(manager.read('window', opened.value.draftId)).toMatchObject({ message, editedByPerson: true })
   })
 
+  /**
+   * SVN refuses a log message that mixes line endings: `E135000: Inconsistent line ending style`,
+   * after the review is approved and the targets are staged. The pane used to make that mixture
+   * itself - an agent's `--message-file` written on Windows arrives with CRLF, and the trailing
+   * newline the commit appends when the text has none is a bare LF.
+   */
+  it('commits a message that arrived with Windows line endings, and stores it in one style', async () => {
+    const f = await fixture()
+    const prepared = await f.manager.prepare('session', 'svn', null, 'Proposed\r\n\r\nBody')
+    expect(prepared).toMatchObject({ ok: true, messageApplied: true })
+    expect(f.manager.read('window', f.draftId)?.message).toBe('Proposed\n\nBody')
+    expect(f.manager.setMessage('window', f.draftId, 'Line one\r\nLine two')).toBe(true)
+    expect(f.manager.read('window', f.draftId)?.message).toBe('Line one\nLine two')
+    expect(await f.manager.run('window', { ...f.request, message: 'Line one\r\nLine two' })).toMatchObject({ ok: true })
+    expect(f.writes).toEqual(['Line one\nLine two\n'])
+  })
+
   it('keeps directory, single-file, multi-file, session and VCS messages separate after restart', async () => {
     const f = await fixture()
     const second = await addSecondFile(f)
@@ -675,6 +692,72 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
       return true
     })).toMatchObject({ ok: false, code: 'stale' })
     expect(f.writes).toEqual([])
+  })
+
+  /**
+   * A copy is published as one node, from its copyfrom source, so the files under it have no commit
+   * of their own. Sending one as a target would run `svn commit --depth empty` on a path whose
+   * parent add is still unpublished, which SVN refuses - and narrowing the copy is not something a
+   * person can ask for in the first place.
+   */
+  it('commits a copied directory whole and never one of the files it carries', async () => {
+    const f = await fixture()
+    const directory = join(f.root, 'react')
+    await mkdir(directory, { recursive: true })
+    const carried = join(directory, 'axClientOnly.tsx')
+    await writeFile(carried, 'body')
+    const stamp = Math.round((await lstat(directory)).mtimeMs)
+    const base = f.snapshot.entries[0]!
+    f.snapshot.entries = [
+      { ...base, fileId: 'react', path: directory, displayPath: 'react', nodeKind: 'directory', status: 'added', modifiedAt: stamp },
+      { ...base, fileId: 'carried', path: carried, displayPath: 'react/axClientOnly.tsx', status: 'copied', modifiedAt: stamp },
+    ]
+    const access = f.deps.fileAccess
+    f.deps.fileAccess = (owner, id, fileId) => {
+      const result = access(owner, id, 'file')
+      if (!result.ok) return result
+      if (fileId === 'react') return { ok: true, value: { ...result.value, path: directory, nodeKind: 'directory', status: 'added', workingState: { modifiedAt: stamp, vcsEntry: true } } }
+      if (fileId === 'carried') return { ok: true, value: { ...result.value, path: carried, status: 'copied', workingState: { modifiedAt: stamp, vcsEntry: true } } }
+      return result
+    }
+    const calls: string[][] = []
+    f.deps.svn.commit = async (_scope, targets, _message) => {
+      calls.push(targets.map((target) => target.absolutePath))
+      return { ok: true, value: { revision: '42', output: 'Committed revision 42.' } }
+    }
+    expect(await f.manager.run('window', { ...f.request, fileIds: ['react', 'carried'] })).toMatchObject({ ok: true })
+    expect(calls).toEqual([[directory]])
+  })
+
+  /**
+   * `svn delete --keep-local` publishes the removal and leaves the files behind, so each one comes
+   * back as an untracked row inside the deleted directory. Staging one runs `svn add --parents`,
+   * which replaces that directory and publishes the subtree again, so the pane draws those rows
+   * disabled: a selection that still carries one is a stale snapshot, not a decision.
+   */
+  it('refuses an untracked path inside a directory the same commit deletes', async () => {
+    const f = await fixture()
+    const directory = join(f.root, 'data')
+    await mkdir(join(directory, 'records'), { recursive: true })
+    const kept = join(directory, 'records', 'run.json')
+    await writeFile(kept, '{}')
+    const stamp = Math.round((await lstat(kept)).mtimeMs)
+    const base = f.snapshot.entries[0]!
+    f.snapshot.entries = [
+      { ...base, fileId: 'data', path: directory, displayPath: 'data', nodeKind: 'directory', status: 'deleted', modifiedAt: null },
+      { ...base, fileId: 'kept', path: kept, displayPath: 'data/records/run.json', status: 'untracked', modifiedAt: stamp },
+    ]
+    const access = f.deps.fileAccess
+    f.deps.fileAccess = (owner, id, fileId) => {
+      const result = access(owner, id, 'file')
+      if (!result.ok) return result
+      if (fileId === 'data') return { ok: true, value: { ...result.value, path: directory, nodeKind: 'directory', status: 'deleted', workingState: { modifiedAt: null, vcsEntry: true } } }
+      if (fileId === 'kept') return { ok: true, value: { ...result.value, path: kept, status: 'untracked', workingState: { modifiedAt: stamp, vcsEntry: true } } }
+      return result
+    }
+    f.deps.svn.commit = async () => { throw new Error('Unexpected SVN commit') }
+    expect(await f.manager.run('window', { ...f.request, fileIds: ['data', 'kept'] }))
+      .toMatchObject({ ok: false, code: 'invalid-target', detail: expect.stringContaining('a directory this commit deletes') })
   })
 
   it('rejects unsupported, empty and oversized batches before confirmation or any write', async () => {

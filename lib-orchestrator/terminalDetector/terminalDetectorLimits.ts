@@ -5,6 +5,8 @@ export class TerminalDetectorLimits {
   static readonly requestTtlMilliseconds = 120_000
   static readonly requestsMax = 16
   static readonly openedPathsMax = 256
+  /** How long a proven open reopens its panel without being asked for, across restarts too. */
+  static readonly openedPathTtlMilliseconds = 7 * 24 * 60 * 60 * 1_000
   static readonly captureTokenCharactersMax = 1_024
   static readonly captureContextCharactersMax = 4_096
   /**

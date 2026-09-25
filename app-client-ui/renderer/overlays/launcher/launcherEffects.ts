@@ -604,12 +604,7 @@ export class LauncherEffects {
     ports: LauncherPorts,
   ): Promise<void> {
     const answer = await window.appClient.sessions.create(spec)
-    return LauncherEffects.openSessionResult(
-      answer,
-      spec.presentation === 'tab',
-      onFailure,
-      ports,
-    )
+    return LauncherEffects.openSessionResult(answer, onFailure, ports)
   }
 
   private static async openHistory(
@@ -619,7 +614,6 @@ export class LauncherEffects {
     const answer = await window.appClient.sessions.openHistory(spec)
     return LauncherEffects.openSessionResult(
       answer,
-      false,
       (code, detail) => ports.create({ input: 'submitFailed', code, detail }),
       ports,
     )
@@ -638,7 +632,6 @@ export class LauncherEffects {
     const answer = await window.appClient.sessions.fork(sessionId, { name })
     return LauncherEffects.openSessionResult(
       answer,
-      false,
       (code, detail) => ports.create({ input: 'submitFailed', code, detail }),
       ports,
     )
@@ -669,7 +662,6 @@ export class LauncherEffects {
       (id, title, options) => ports.openTerminal({ kind: 'local', sessionId: id }, title, options),
       sessionId,
       tabTitle,
-      { plain: false, closePlain: (id) => SessionTabOpener.closePlain(id) },
     )
     if (failure !== null) return onFailure('panel-open', failure)
     ports.markHandedOff()
@@ -678,7 +670,6 @@ export class LauncherEffects {
 
   private static async openSessionResult(
     answer: IpcResult<SessionsOpResult<{ sessionId: string; tabTitle: string }>>,
-    plain: boolean,
     onFailure: (
       code: string,
       detail: string,
@@ -690,18 +681,13 @@ export class LauncherEffects {
       return onFailure('transport', answer.error)
     if (!answer.value.ok)
       return onFailure(answer.value.code, answer.value.detail, answer.value.setup)
-    // What KIND of tab is derived from the spec: every screen goes through this one create, so what
-    // was asked for decides it and nothing else. What the tab is CALLED comes back with the create,
-    // because the place a session runs in is the library's to say and not this screen's.
+    // What the tab is CALLED comes back with the create, because the place a session runs in is
+    // the library's to say and not this screen's.
     const failure = await SessionTabOpener.open(
       (sessionId, title, options) =>
         ports.openTerminal({ kind: 'local', sessionId }, title, options),
       answer.value.value.sessionId,
       answer.value.value.tabTitle,
-      {
-        plain,
-        closePlain: (sessionId) => SessionTabOpener.closePlain(sessionId),
-      },
     )
     if (failure !== null) return onFailure('panel-open', failure)
     ports.markHandedOff()
@@ -859,9 +845,7 @@ export class LauncherEffects {
   ): readonly RemoteExistingSession[] {
     return sessions
       .filter((session) => session.project.kind === 'project'
-        && session.project.projectPath === projectPath
-        // A plain tab is not a session of that computer's tree, and Continue only offers those.
-        && session.presentation === undefined)
+        && session.project.projectPath === projectPath)
       .map((session) => ({
         sessionId: session.sessionId,
         tabTitle: session.tabTitle,

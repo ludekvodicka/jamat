@@ -33,7 +33,6 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
     readonly deleted: string[] = []
     readonly started: SessionCreateSpec[] = []
     readonly openedHistory: SessionHistoryOpenSpec[] = []
-    readonly closedPlain: string[] = []
     readonly peeked: string[] = []
     readonly allocated: string[] = []
     readonly savedNewSessionAgents: SessionAgentId[] = []
@@ -159,14 +158,6 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
         reopen: ProjectsStub.unused('reopen'),
         finalize: ProjectsStub.unused('finalize'),
         remove: ProjectsStub.unused('remove'),
-        closePlain: (sessionId: string) => {
-          this.closedPlain.push(sessionId)
-          return Promise.resolve({
-            ok: true as const,
-            value: { ok: true as const, value: undefined },
-          })
-        },
-        promotePlain: ProjectsStub.unused('promotePlain'),
         discardWorktree: ProjectsStub.unused('discardWorktree'),
         retrySetup: ProjectsStub.unused('retrySetup'),
         fork: ProjectsStub.unused('fork'),
@@ -399,11 +390,10 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
     return { stub, view, onClose, onOpenTerminal, onOpenRemoteSettings }
   }
 
-  /** Ctrl+T: the card starts on its project screen, and every screen of it starts a plain tab. */
+  /** The card as Ctrl+T opens it, on its project screen. */
   async function mountForTabCard(stub = new ProjectsStub()) {
     stub.install()
     const intents = new LauncherIntentStore()
-    intents.set({ purpose: 'tabProfile' })
     const onClose = vi.fn()
     const onOpenTerminal = vi.fn().mockResolvedValue({ kind: 'opened', panelId: 'terminal' })
     const onOpenRemoteSettings = vi.fn()
@@ -538,7 +528,7 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
       JSON.stringify(selected(container))}`)
   }
 
-  it('focuses the search when the Ctrl+T card opens', async () => {
+  it('focuses the search when the card opens', async () => {
     const { view } = await mountForTabCard()
 
     expect(document.activeElement).toBe(view.getByRole('textbox', { name: 'Filter projects' }))
@@ -1342,7 +1332,6 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
         .querySelector('.jamat-launcher__error')?.textContent)
         .toBe('panel-open the workspace is closing'))
       expect(context.onClose).not.toHaveBeenCalled()
-      expect(context.stub.closedPlain).toEqual([])
     })
 
     /**
@@ -1742,83 +1731,6 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
     fireEvent.keyDown(card(view.container), { key: 'F4' })
     await waitFor(() => expect(stub.listed).toEqual(['nodejs', 'web', 'ai', 'nodejs', 'web', 'ai']))
     expect(view.container.querySelector('.jamat-launcher__foot')?.textContent).toContain('alpha')
-  })
-
-  /**
-   * The card the New Tab key opens. It is the same two screens, asking a shorter question on the
-   * second one, and the purpose belongs to the card rather than to one screen.
-   */
-  describe('a card opened on the tab profile', () => {
-    async function toCreateScreen(context: Awaited<ReturnType<typeof mountForTabCard>>) {
-      fireEvent.keyDown(card(context.view.container), { key: 'Enter' })
-      await waitFor(() =>
-        expect(context.view.container.querySelector('.jamat-launcher-create')).toBeTruthy())
-    }
-
-    it('asks for a name, a short type list and an agent, and starts a tab', async () => {
-      const context = await mountForTabCard()
-      expect(foot(context.view.container)).not.toContain('History')
-      await toCreateScreen(context)
-
-      expect(context.view.container.querySelector('.jamat-launcher__title')?.textContent)
-        .toBe('New tab')
-      // Isolation is the one row this card has no use for, so it is not drawn at all.
-      const labels = [...context.view.container.querySelectorAll('.jamat-choice__label')]
-        .map((element) => element.textContent)
-      expect(labels).toEqual(['Project', 'Name', 'Type', 'Agent'])
-      // The types it offers, and the one it does not: a flow composes work the tree keeps.
-      expect(context.view.container.textContent).toContain('Continue/Fork')
-      expect(context.view.container.textContent).toContain('Shell')
-      expect(context.view.container.textContent).not.toContain('Feature request')
-      // `W` belongs to a row this card does not draw.
-      expect(foot(context.view.container)).not.toContain('Worktree')
-
-      fireEvent.keyDown(card(context.view.container), { key: 'Enter' })
-      await waitFor(() => expect(context.stub.started).toHaveLength(1))
-
-      expect(context.stub.started[0]).toMatchObject({
-        kind: 'agent',
-        agent: { agentId: 'claude', mode: 'new' },
-        presentation: 'tab',
-      })
-      expect(context.stub.started[0]?.worktree).toBeUndefined()
-      // A tab is not counted against its project, so no number was peeked or claimed.
-      expect(context.stub.peeked).toEqual([])
-      expect(context.stub.allocated).toEqual([])
-      await waitFor(() => expect(context.onOpenTerminal.mock.calls)
-        .toEqual([[{ kind: 'local', sessionId: 'session-1' }, 'AppJamat - 015', { plain: true }]]))
-    })
-
-    it('closes a fresh plain runtime when its panel handoff fails', async () => {
-      const context = await mountForTabCard()
-      context.onOpenTerminal.mockResolvedValueOnce({
-        kind: 'failed',
-        detail: 'the workspace is closing',
-      })
-      await toCreateScreen(context)
-
-      fireEvent.keyDown(card(context.view.container), { key: 'Enter' })
-
-      await waitFor(() => expect(context.stub.closedPlain).toEqual(['session-1']))
-      expect(context.onClose).not.toHaveBeenCalled()
-      expect(context.view.container.querySelector('.jamat-launcher__error')?.textContent)
-        .toBe('panel-open the workspace is closing')
-    })
-
-    // The purpose belongs to the card: going back a screen does not turn it into a session.
-    it('is still a plain tab after Escape back to the projects', async () => {
-      const context = await mountForTabCard()
-      await toCreateScreen(context)
-
-      fireEvent.keyDown(card(context.view.container), { key: 'Escape' })
-      await waitFor(() =>
-        expect(context.view.container.querySelector('.jamat-launcher-projects')).toBeTruthy())
-      await toCreateScreen(context)
-
-      fireEvent.keyDown(card(context.view.container), { key: 'Enter' })
-      await waitFor(() => expect(context.stub.started).toHaveLength(1))
-      expect(context.stub.started[0]?.presentation).toBe('tab')
-    })
   })
 
   /*

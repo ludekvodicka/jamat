@@ -318,6 +318,26 @@ describe('lib-orchestrator/sessionManager/records/sessionNumberStore', () => {
       .toBe(2026)
   })
 
+  /*
+   * The whole of why a custom number is safe, in one assertion each way: the store reads straight
+   * past `i34` however many sessions carry it, and still reads the 15 that the FORK of one spent.
+   * Nothing here was taught to skip it - the letters make `Number()` answer `NaN`, which is the
+   * same thing `allocatedNumberOf` already returned for a title with no prefix at all.
+   */
+  it('counts no custom number, and still counts the fork of one', async () => {
+    const it_ = harness()
+    const store = await it_.load()
+
+    expect(await store.highestIssued(it_.projectPath, [
+      record('i34 - issue work', it_.projectPath),
+      record('pr1200 - review', it_.projectPath),
+    ])).toBe(0)
+    expect(await store.highestIssued(it_.projectPath, [record('i34-015 - fork', it_.projectPath)]))
+      .toBe(15)
+    expect(await store.allocate(it_.projectPath, [record('i34 - issue work', it_.projectPath)]))
+      .toBe('001')
+  })
+
   /**
    * One unusable counter is not a damaged file: the seed rebuilds that project's count from its
    * worktrees and titles, so dropping it costs nothing while latching would cost every project.

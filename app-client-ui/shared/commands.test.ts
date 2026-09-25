@@ -52,7 +52,6 @@ describe('app-client-ui/shared/commands', () => {
       ['session.newRemote', 'Ctrl+N'],
       ['settings.open', 'Ctrl+,'],
       ['app.quit', 'Ctrl+Q'],
-      ['tab.new', 'Ctrl+Shift+T'],
       ['session.setColor', null],
       ['session.details', 'F2'],
       ['session.newHere', null],
@@ -71,7 +70,6 @@ describe('app-client-ui/shared/commands', () => {
       ['project.openFolder', null],
       ['project.copyFolderPath', null],
       ['project.worktreeSetup', null],
-      ['tab.promote', null],
       ['tab.keepOpen', null],
       ['tab.close', 'Ctrl+W'],
       ['tab.closeOthers', null],
@@ -110,53 +108,15 @@ describe('app-client-ui/shared/commands', () => {
   })
 
   /*
-   * The launcher pair. What is checked here is not that the two swap - the next test is - but that
-   * the swap changes nothing else about keys: the same set is claimed under both answers, which is
-   * what lets the reserved-key rule, the uniqueness rule above and `TerminalKeyGate`'s map keep
-   * reading the catalog alone.
+   * Ctrl+N belongs to the network card and to nothing else. It was freed by the launcher pair that
+   * the plain tab's card was half of, and both the pair and the preference that swapped its two
+   * keys went with that card on 2026-09-23; Ctrl+Shift+T is claimed by nothing now.
    */
-  it('claims the same keys under both launcher preferences', () => {
-    const claimedUnder = (preference: 'session-first' | 'tab-first'): Set<string> =>
-      new Set(AppCommands.all()
-        .map((descriptor) => AppCommands.acceleratorOf(descriptor, preference))
-        .filter((accelerator): accelerator is string => accelerator !== undefined))
-
-    expect(claimedUnder('tab-first')).toEqual(claimedUnder('session-first'))
-  })
-
-  /**
-   * The key the pair freed, and the one command outside it that a preference must not move: the
-   * network card is the third profile of the same launcher, and a swap that reached it would make
-   * Ctrl+N mean two things depending on a setting about the other two cards.
-   */
-  it('gives Ctrl+N to session.newRemote under both launcher preferences', () => {
-    for (const preference of ['session-first', 'tab-first'] as const)
-      expect(AppCommands.acceleratorOf(AppCommands.byId('session.newRemote'), preference))
-        .toBe('Ctrl+N')
-    expect(AppCommands.acceleratorOf(AppCommands.byId('session.newRemote'))).toBe('Ctrl+N')
-  })
-
-  it('swaps only the two launcher commands, and only when asked', () => {
-    const keyOf = (id: 'session.new' | 'tab.new', preference: 'session-first' | 'tab-first') =>
-      AppCommands.acceleratorOf(AppCommands.byId(id), preference)
-
-    expect(keyOf('session.new', 'session-first')).toBe('Ctrl+T')
-    expect(keyOf('tab.new', 'session-first')).toBe('Ctrl+Shift+T')
-    expect(keyOf('session.new', 'tab-first')).toBe('Ctrl+Shift+T')
-    expect(keyOf('tab.new', 'tab-first')).toBe('Ctrl+T')
-    // Any other command answers with its own key under either value, and the default is the
-    // catalog's own reading of itself.
-    for (const preference of ['session-first', 'tab-first'] as const)
-      for (const descriptor of AppCommands.all())
-        if (descriptor.id !== 'session.new' && descriptor.id !== 'tab.new')
-          expect(AppCommands.acceleratorOf(descriptor, preference), descriptor.id)
-            .toBe(descriptor.accelerator)
-    expect(AppCommands.acceleratorOf(AppCommands.byId('tab.new'))).toBe('Ctrl+Shift+T')
-  })
-
-  it('throws on a launcher preference it does not know', () => {
-    expect(() => AppCommands.acceleratorOf(AppCommands.byId('tab.new'), 'ctrl-p' as never))
-      .toThrow(/Unknown launcher key preference/)
+  it('gives Ctrl+T to the launcher, Ctrl+N to the network card and Ctrl+Shift+T to nobody', () => {
+    expect(AppCommands.byId('session.new').accelerator).toBe('Ctrl+T')
+    expect(AppCommands.byId('session.newRemote').accelerator).toBe('Ctrl+N')
+    expect(AppCommands.all().map((descriptor) => descriptor.accelerator))
+      .not.toContain('Ctrl+Shift+T')
   })
 
   it('has a unique id per command', () => {
@@ -250,7 +210,6 @@ describe('app-client-ui/shared/commands', () => {
         'tab.openProjectFolder',
         'tab.copyProjectFolder',
         'session.copyReference',
-        'tab.promote',
         'tab.keepOpen',
         'tab.close',
         'tab.closeOthers',
@@ -330,7 +289,6 @@ describe('app-client-ui/shared/commands', () => {
       .filter((descriptor) => descriptor.menu?.section === 'tab')
       .map((descriptor) => descriptor.id))
       .toEqual([
-        'tab.new',
         'session.details',
         'tab.close',
         'tab.splitRight',
@@ -363,7 +321,6 @@ describe('app-client-ui/shared/commands', () => {
         'tab.openProjectFolder',
         'tab.copyProjectFolder',
         'session.copyReference',
-        'tab.promote',
       ])
   })
 

@@ -475,7 +475,6 @@ describe('app-client-ui/renderer/overlays/launcher/launcherEffects', () => {
                     tabTitle: 'AppJamatV3 - tab',
                     title: 'a tab',
                     life: 'live',
-                    presentation: 'tab',
                     project: { kind: 'project', projectPath: bindingConst.projectPath },
                   },
                 ],
@@ -499,13 +498,22 @@ describe('app-client-ui/renderer/overlays/launcher/launcherEffects', () => {
       expect(reported).toEqual([{
         input: 'remoteSessionsLoaded',
         projectPath: bindingConst.projectPath,
-        sessions: [{
-          sessionId: 'remote-1',
-          tabTitle: 'AppJamatV3 - 007',
-          title: '007 - the wire',
-          agentId: 'claude',
-          running: false,
-        }],
+        sessions: [
+          {
+            sessionId: 'remote-1',
+            tabTitle: 'AppJamatV3 - 007',
+            title: '007 - the wire',
+            agentId: 'claude',
+            running: false,
+          },
+          {
+            sessionId: 'tab-1',
+            tabTitle: 'AppJamatV3 - tab',
+            title: 'a tab',
+            agentId: null,
+            running: true,
+          },
+        ],
       }])
     })
 

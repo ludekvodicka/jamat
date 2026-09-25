@@ -9,7 +9,7 @@ import type { WorktreeSetupIntentStore } from './worktreeSetupIntentStore'
 export type ConfigurationTabId =
   | 'projects'
   | 'ui'
-  | 'keyboard'
+  | 'sessionGroups'
   | 'agents'
   | 'versioning'
   | 'worktrees'

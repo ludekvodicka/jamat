@@ -185,7 +185,6 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
       'Split Down',
       'Move to New Window',
     ])
-    expect(MenuView.titles()).not.toContain(titleOf('tab.new'))
     expect(MenuView.titles()).not.toContain(titleOf('tab.resetLayout'))
   })
 
@@ -297,21 +296,6 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
     )
 
     expect(MenuView.titles()).not.toContain(titleOf('tab.copyProjectFolder'))
-  })
-
-  /**
-   * The catalog says which commands a tab menu can hold; which of them apply is the tab's own
-   * parameters. Keeping a tab as a session is meaningless on a session of the tree.
-   */
-  it('offers keeping the tab only on a plain tab', () => {
-    render(<MenuHost commands={new CommandRegistry()} params={{ presentation: 'tab' }} />)
-    expect(MenuView.titles()).toContain(titleOf('tab.promote'))
-
-    cleanup()
-    render(<MenuHost commands={new CommandRegistry()} params={{ sessionId: 's1' }} />)
-    expect(MenuView.titles()).not.toContain(titleOf('tab.promote'))
-    // Everything else the menu offers is unaffected.
-    expect(MenuView.titles()).toContain(titleOf('tab.close'))
   })
 
   it('offers the project folder only on a tab bound to a session', () => {
@@ -570,7 +554,6 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
       'session.restart',
       'session.fork',
       'session.compact',
-      'tab.promote',
       'tab.copyProjectFolder',
     ]
     for (const id of ids) {

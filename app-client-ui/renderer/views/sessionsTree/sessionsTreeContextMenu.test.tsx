@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render } from '@testing-library/react'
+import { fireEvent, render } from '@testing-library/react'
 import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -38,7 +38,6 @@ function factsOf(over: Partial<TabSessionFacts> = {}): TabSessionFacts {
 function MenuHost(props: {
   commands: CommandRegistry
   facts?: Partial<TabSessionFacts>
-  plainTab?: boolean
   actions?: readonly SessionAction[]
   onAction?(action: SessionAction): void
 }): React.JSX.Element {
@@ -51,7 +50,6 @@ function MenuHost(props: {
       commands={props.commands}
       sessionId="s1"
       facts={factsOf(props.facts)}
-      plainTab={props.plainTab ?? false}
       actions={props.actions ?? []}
       onAction={props.onAction ?? vi.fn()}
       onClose={() => setOpen(false)}
@@ -232,15 +230,6 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
 
     expect(MenuView.titles()).not.toContain(titleOf('session.newHere'))
     expect(MenuView.titles()).toContain(titleOf('session.newBeside'))
-  })
-
-  it('offers keeping the tab only on a plain-tab row', () => {
-    render(<MenuHost commands={new CommandRegistry()} plainTab />)
-    expect(MenuView.titles()).toContain(titleOf('tab.promote'))
-
-    cleanup()
-    render(<MenuHost commands={new CommandRegistry()} />)
-    expect(MenuView.titles()).not.toContain(titleOf('tab.promote'))
   })
 
   // The whole reason this menu exists: the command acts on the CLICKED row's session, which may

@@ -116,7 +116,6 @@ export class ComputersScreenModel {
     if (!row?.sessions) return []
     return SessionsTreeModel.build(row.sessions, {
       filters: SessionsFilterState.allConst,
-      content: 'both',
       filterText: filter,
       inFront: new Set(),
       tabbed: new Set(),

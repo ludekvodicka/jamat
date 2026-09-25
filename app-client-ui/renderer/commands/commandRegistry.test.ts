@@ -18,15 +18,15 @@ describe('app-client-ui/renderer/commands/commandRegistry', () => {
 
   it('refuses a second handler for the same command', () => {
     const registry = new CommandRegistry()
-    registry.register('tab.new', () => {})
-    expect(() => registry.register('tab.new', () => {})).toThrow(/already registered/)
+    registry.register('tab.close', () => {})
+    expect(() => registry.register('tab.close', () => {})).toThrow(/already registered/)
   })
 
   it('runs a registered handler exactly once and reports it handled', () => {
     const registry = new CommandRegistry()
     const handler = vi.fn()
-    registry.register('tab.new', handler)
-    expect(registry.execute('tab.new')).toBe('handled')
+    registry.register('tab.close', handler)
+    expect(registry.execute('tab.close')).toBe('handled')
     expect(handler).toHaveBeenCalledTimes(1)
   })
 

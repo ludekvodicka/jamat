@@ -75,7 +75,7 @@ describe('lib-orchestrator/projectManager/codexRolloutView', () => {
     const view = CodexRolloutView.load({ codexHome, report: () => undefined })
     const { from, until } = window()
     expect(await view.rolloutsBetween(fixtureProjectDir, from, until))
-      .toEqual([{ sessionId: mineConst, createdAt: expect.any(Number), forkedFromId: null }])
+      .toEqual([{ sessionId: mineConst, createdAt: expect.any(Number), forkedFromId: null, firstUserMessage: expect.anything() }])
     expect((await view.rolloutsBetween(otherProjectDir, from, until)).map((match) => match.sessionId))
       .toEqual([theirsConst])
   })
@@ -88,7 +88,7 @@ describe('lib-orchestrator/projectManager/codexRolloutView', () => {
     const view = CodexRolloutView.load({ codexHome, report: () => undefined })
     const { from, until } = window()
     expect(await view.rolloutsBetween(fixtureProjectDir, from, until))
-      .toEqual([{ sessionId: forkedConst, createdAt: expect.any(Number), forkedFromId: parentConst }])
+      .toEqual([{ sessionId: forkedConst, createdAt: expect.any(Number), forkedFromId: parentConst, firstUserMessage: expect.anything() }])
   })
 
   // Codex writes the field as `null` for a session nobody forked; an absent field means the same.

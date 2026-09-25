@@ -28,6 +28,7 @@ import { SessionModelReader } from '../../lib-orchestrator/sessionModelReader/se
 import { SessionTranscriptReader } from '../../lib-orchestrator/sessionTranscriptReader/sessionTranscriptReader'
 import { OrchestratorPaths } from '../../lib-orchestrator/shared/orchestratorPaths'
 import { TortoiseCommitDialog } from '../../lib-orchestrator/shared/tortoiseCommitDialog'
+import { OpenedPathsStore } from '../../lib-orchestrator/terminalDetector/register/openedPathsStore'
 import {
   TerminalDetector,
   type TerminalDetectorDeps,
@@ -104,11 +105,6 @@ import { AppRestart } from './shell/appRestart'
 import { DebugWindow } from './shell/debugWindow'
 import { ServiceClipboardIpc } from './shell/serviceClipboardIpc'
 import { ServiceDialogIpc } from './shell/serviceDialogIpc'
-import { EchoLatency } from './perf/echoLatency'
-import { LoopDelaySampler } from './perf/loopDelaySampler'
-import { MainWorkLedger } from './perf/mainWorkLedger'
-import { ServicePerfIpc } from './perf/servicePerfIpc'
-import { ServiceIpcTiming } from './shared/serviceIpcBase'
 import { ServiceShellIpc } from './shell/serviceShellIpc'
 import { ServiceWindowsIpc } from './shell/serviceWindowsIpc'
 import { WindowIcon } from './shell/windowIcon'
@@ -120,8 +116,9 @@ import { TabTransferBroker } from './tabs/tabTransferBroker'
 import { WorkspacePanelIndex } from './tabs/workspacePanelIndex'
 import { ServiceTerminalIpc } from './terminals/serviceTerminalIpc'
 import { ServiceTerminalMenuIpc } from './terminals/serviceTerminalMenuIpc'
-import { KeyboardSettingsSection } from './keyboardSettings/keyboardSettingsSection'
-import { ServiceKeyboardSettingsIpc } from './keyboardSettings/serviceKeyboardSettingsIpc'
+import { RemoteSessionGroups } from './sessionGroups/remoteSessionGroups'
+import { ServiceSessionGroupsIpc } from './sessionGroups/serviceSessionGroupsIpc'
+import { SessionGroupsSection } from './sessionGroups/sessionGroupsSection'
 import { ServiceUiSettingsIpc } from './uiSettings/serviceUiSettingsIpc'
 import { UiSettingsSection } from './uiSettings/uiSettingsSection'
 import { UpdateManager } from './update/updateManager'
@@ -175,13 +172,12 @@ export class AppHub {
     ServiceFileViewerIpc.channelsConst,
     ServiceRemarkableIpc.channelsConst,
     ServiceUiSettingsIpc.channelsConst,
-    ServiceKeyboardSettingsIpc.channelsConst,
+    ServiceSessionGroupsIpc.channelsConst,
     ServiceAgentSettingsIpc.channelsConst,
     ServiceContextCompactionIpc.channelsConst,
     ServiceRateMonitorIpc.channelsConst,
     ServiceSessionModelIpc.channelsConst,
     ServiceSessionTranscriptIpc.channelsConst,
-    ServicePerfIpc.channelsConst,
   ] as const) satisfies Record<keyof AppClientUiIpcInvokeMap, true>
 
   /**
@@ -219,10 +215,6 @@ export class AppHub {
   private readonly historicSessionsIpc: ServiceHistoricSessionsIpc
   private readonly tabsIpc: ServiceTabsIpc
   private readonly terminalsIpc: ServiceTerminalIpc
-  private readonly loopDelay = new LoopDelaySampler()
-  private readonly echoLatency = new EchoLatency()
-  private readonly workLedger = new MainWorkLedger()
-  private readonly perfIpc: ServicePerfIpc
   private readonly terminalDetector: TerminalDetector
   private readonly terminalMenuIpc: ServiceTerminalMenuIpc
   private readonly debugIpc: ServiceDebugIpc
@@ -240,9 +232,9 @@ export class AppHub {
   private readonly remarkable: RemarkableManager
   private readonly remarkableIpc: ServiceRemarkableIpc
   private readonly uiSettingsIpc: ServiceUiSettingsIpc
-  private readonly keyboardSettingsIpc: ServiceKeyboardSettingsIpc
+  private readonly sessionGroupsIpc: ServiceSessionGroupsIpc
   private readonly agentSettingsIpc: ServiceAgentSettingsIpc
-  private readonly contextCompactionIpc = new ServiceContextCompactionIpc()
+  private readonly contextCompactionIpc: ServiceContextCompactionIpc
   private readonly rateMonitor: RateMonitor
   private readonly rateMonitorIpc: ServiceRateMonitorIpc
   private readonly sessionModelIpc: ServiceSessionModelIpc
@@ -277,8 +269,6 @@ export class AppHub {
       onClosed: (windowId) => this.workspaceWindowClosed(windowId),
       confirmMainWindowClose: (parent, holderCount) =>
         this.dialogIpc.confirmMainWindowClose(parent, holderCount),
-      plainSessionIds: (windowId) => this.panelIndex.plainSessionIds(windowId),
-      closePlainSessions: (sessionIds) => this.closePlainSessions(sessionIds),
       requestQuit: () => app.quit(),
       explicitlyClosing: (windowId) => this.transferBroker.cancelClosingWindow(windowId),
       report: (message) => this.report(message),
@@ -342,14 +332,13 @@ export class AppHub {
       configStore,
       () => this.broadcast('ui:settings-changed'),
     )
-    // The menu is the only surface whose keys are BUILT rather than drawn, so a save has to rebuild
-    // it here; every window that prints a key reads the section back over the event.
-    this.keyboardSettingsIpc = new ServiceKeyboardSettingsIpc(
+    // The same event an assignment sends, because a tree reads both back together: which sections
+    // exist and which session is in one are two halves of one picture, and a window that learned
+    // about the first alone would redraw with rows still filed under a section it just lost.
+    this.sessionGroupsIpc = new ServiceSessionGroupsIpc(
       configStore,
-      () => {
-        this.menu.install()
-        this.broadcast('keyboard:settings-changed')
-      },
+      this.store,
+      () => this.broadcast('state:session-groups-changed'),
     )
     this.rateMonitor = new RateMonitor({
       configIdentity,
@@ -488,7 +477,7 @@ export class AppHub {
     this.versioningCommitIpc = new ServiceVersioningCommitIpc(this.commits, workspaceOwnerIdOf, this.fileChangesIpc, async (sessionId, vcs, scope) => {
       const info = this.sessions.snapshot().sessions.find((session) => session.sessionId === sessionId)
       if (info?.life !== 'live') return { ok: false, error: { code: 'not-found', detail: 'The session is not live' } }
-      return this.tabControlBroker.openCommit(sessionId, info.tabTitle, vcs, scope ?? null, null, { plain: info.presentation === 'tab', showRefusal: true })
+      return this.tabControlBroker.openCommit(sessionId, info.tabTitle, vcs, scope ?? null, null, { showRefusal: true })
     }, new ExternalDiffLauncher({
       readBaseline: (request) => this.fileChanges.readBaseline(request),
       fileAccess: (owner, snapshot, file) => this.fileChangesIpc.ownedFileAccess(owner, snapshot, file),
@@ -500,6 +489,10 @@ export class AppHub {
       // Names only. What an agent wrote about narrows which file a half-written token means, and it
       // authorizes opening none of them: every open still goes the file viewer's proven way.
       changedPaths: (context) => this.changedPathHints(context),
+      register: OpenedPathsStore.load(
+        OrchestratorPaths.terminalOpenedPathsFile(configIdentity, channel),
+        (message) => this.report(message),
+      ),
     })
     this.tabControlBroker = new TabControlBroker(
       this.workspaceWindows,
@@ -519,9 +512,9 @@ export class AppHub {
       workspaceOwnerIdOf,
       (ownerId, source, supportsDiff) =>
         this.fileChangesIpc.restoreExternal(ownerId, source, supportsDiff),
-      // A detected panel proves itself again out of the register of opens, which lives as long as
-      // this process and no longer: after a restart nothing proves it and the refusal says so
-      // rather than letting a stored path reopen itself unchecked.
+      // A detected panel proves itself again out of the register of opens, which main alone writes
+      // and keeps across restarts for a week: a stored layout path that it never proved still
+      // refuses rather than reopening itself unchecked.
       (ownerId, source, supportsDiff) =>
         this.terminalDetector.wasOpened(source.path)
           ? this.fileViewer.openDetected(ownerId, source.sessionId, null, source.path, supportsDiff)
@@ -543,18 +536,7 @@ export class AppHub {
     this.terminalsIpc = new ServiceTerminalIpc(
       this.sessions,
       (sender) => this.workspaceWindows.acceptsRenderer(sender),
-      this.echoLatency,
     )
-    // The one reading nobody else can take: this process holds both ends of a keystroke, the byte
-    // going out to the Host and the first frame coming back, and the agent sits between them.
-    this.perfIpc = new ServicePerfIpc(
-      this.loopDelay,
-      this.echoLatency,
-      this.workLedger,
-      () => this.sessions.sampleSlowestHostCallMs(),
-    )
-    // Every IPC handler in this process reports through the one funnel they all register by.
-    ServiceIpcTiming.use(this.workLedger)
     this.terminalMenuIpc = new ServiceTerminalMenuIpc(
       this.terminalDetector,
       this.fileViewer,
@@ -576,7 +558,6 @@ export class AppHub {
       (id) => this.runMainCommand(id),
       (id) => this.publishRendererCommand(id),
       (windowId) => this.workspaceWindows.focusOrRecreate(windowId),
-      () => configStore.readSection(KeyboardSettingsSection.spec).launcherKeys,
     )
     this.appRestart = new AppRestart({
       devRendererUrl: context.rendererDevUrl,
@@ -606,27 +587,20 @@ export class AppHub {
     const remoteTerminal = new RemoteControlTerminal(this.sessions, {
       onError: (message) => this.report(message),
     })
+    // The same terminal the control API delivers through, so a compact and a remote deliver to one
+    // session share its one-delivery-at-a-time guard.
+    this.contextCompactionIpc = new ServiceContextCompactionIpc(remoteTerminal, transcriptAccess)
     const remoteControl = new RemoteControl({
       system: { identity: () => remoteIdentity },
       projects: this.projects,
       sessions: this.sessions,
-      // A create may name the section its session is filed under, and this is where that lands: the
-      // same store and the same key the tree's own menu writes, so a session started by a skill sits
-      // where a person would have dragged it. The broadcast is what tells a tree already open.
-      groups: {
-        assign: (sessionId, group) => {
-          if (!this.store.assignSessionGroup(
-            SessionsGroupsState.sessionKeyOf({ kind: 'local', sessionId }),
-            group,
-          ))
-            return {
-              ok: false,
-              error: { code: 'unavailable', detail: 'Client state is not accepting writes' },
-            }
-          this.broadcast('state:session-groups-changed')
-          return { ok: true, value: { group } }
-        },
-      },
+      // A create or a repaint may name the section its session is filed under. Read per call, like
+      // every other section of the config this object takes: a person may have just edited it.
+      groups: new RemoteSessionGroups(
+        () => configStore.readSection(SessionGroupsSection.spec),
+        this.store,
+        () => this.broadcast('state:session-groups-changed'),
+      ),
       tabs: this.tabControlBroker,
       terminal: remoteTerminal,
       transcript: transcriptAccess,
@@ -830,14 +804,12 @@ export class AppHub {
     this.fileViewerProtocol.initialize()
     this.remarkableIpc.initialize()
     this.uiSettingsIpc.initialize()
-    this.keyboardSettingsIpc.initialize()
+    this.sessionGroupsIpc.initialize()
     this.agentSettingsIpc.initialize()
     this.contextCompactionIpc.initialize()
     this.rateMonitorIpc.initialize()
     this.sessionModelIpc.initialize()
     this.sessionTranscriptIpc.initialize()
-    this.perfIpc.initialize()
-    this.loopDelay.start()
     this.menu.install()
     this.workspaceWindows.restoreAtStart()
     this.skillLinks.install()
@@ -877,7 +849,6 @@ export class AppHub {
     await this.settleStep('the reMarkable manager', () => this.remarkable.stop())
     await this.settleStep('the file diff worker', () => this.fileDiffWorker.stop())
     await this.settleStep('the rate monitor', () => { this.rateMonitor.stop() })
-    await this.settleStep('the loop delay sampler', () => { this.loopDelay.stop() })
     await this.settleStep('the control server', () => this.remoteControlServer.stop())
     await this.settleStep('the peer listener', () => this.remoteListener.stop())
     await this.settleStep('the inbound registry', () => { this.remoteInbound.stop() })
@@ -1057,17 +1028,10 @@ export class AppHub {
     )
   }
 
-  /**
-   * Timed, because it is the one piece of work the LIBRARY starts on this loop rather than a window
-   * asking for it: a poll that found something composes a snapshot and wakes every window and every
-   * peer. If the loop is being held and no IPC channel owns the time, this is where to look next.
-   */
   private sessionsChanged(): void {
-    this.workLedger.run('sessions:changed', () => {
-      this.broadcast('sessions:changed')
-      this.remoteControlServer.publishEvent('sessions.changed')
-      this.remoteInbound.publishEvent('sessions.changed')
-    })
+    this.broadcast('sessions:changed')
+    this.remoteControlServer.publishEvent('sessions.changed')
+    this.remoteInbound.publishEvent('sessions.changed')
   }
 
   private remoteChanged(): void {
@@ -1363,29 +1327,5 @@ export class AppHub {
       void this.updateManager.checkInteractive()
     else
       throw new Error(`Command has no main-process handler: ${id}`)
-  }
-
-  /**
-   * Every session is attempted, and the refusals are collected rather than stopping the run.
-   *
-   * Stopping at the first one left the ones before it destroyed and the window open, showing tabs
-   * for sessions that no longer exist - a state nothing can undo, because a discard is final. The
-   * close goes ahead when anything at all was discarded: what could not be discarded is still the
-   * Host's and can be reattached, which is the recoverable half of the two.
-   */
-  private async closePlainSessions(sessionIds: readonly string[]): Promise<boolean> {
-    const refused: string[] = []
-    for (const sessionId of sessionIds) {
-      const answer = await this.sessions.discardPlainSession(sessionId)
-      if (!answer.ok)
-        refused.push(answer.detail)
-    }
-    if (refused.length === 0)
-      return true
-    this.report(refused.length === sessionIds.length
-      ? refused[0]!
-      : `${refused.length} of ${sessionIds.length} sessions could not be discarded: ${refused.join('; ')}`)
-    // Nothing was discarded, so nothing is lost by leaving the window where it is.
-    return refused.length !== sessionIds.length
   }
 }

@@ -528,12 +528,19 @@ describe('app-client-cli/app/app', () => {
       { args: ['sessions', 'create', '--directory', 'Q:\\One'], operation: 'sessions.create' },
       { args: ['sessions', 'reopen', '--session-id', 'session-1'], operation: 'sessions.reopen' },
       { args: ['sessions', 'finalize', '--number', '001'], operation: 'sessions.finalize' },
+      { args: ['sessions', 'remove', '--number', '001'], operation: 'sessions.remove' },
       { args: ['sessions', 'transcript', '--session-id', 'session-001'], operation: 'sessions.transcript' },
       {
         args: ['sessions', 'color', '--session-id', 'session-001', '--color', 'cyan'],
         operation: 'sessions.color',
       },
       { args: ['sessions', 'group', '--number', '001', '--group', 'waiting'], operation: 'sessions.group' },
+      { args: ['sessions', 'note', '--number', '001'], operation: 'sessions.note' },
+      {
+        args: ['sessions', 'note', '--number', '001', '--note', 'waiting for the review'],
+        operation: 'sessions.setNote',
+      },
+      { args: ['sessions', 'note', '--number', '001', '--clear'], operation: 'sessions.setNote' },
       { args: ['tabs', 'list'], operation: 'tabs.list' },
       { args: ['tabs', 'open', '--number', '001'], operation: 'tabs.open' },
       {
@@ -662,27 +669,6 @@ describe('app-client-cli/app/app', () => {
   })
 
   /*
-   * A plain session lives in its tab: the tree does not carry one, so a plain session created
-   * without a tab is invisible from the moment it starts and nothing ever cleans it up. The create
-   * path already knew this - it discards the session when the tab fails to open - but asking for
-   * exactly that state up front went through.
-   */
-  it('refuses --plain without --open-tab before it reaches the server', async () => {
-    const harness = new CliHarness()
-
-    expect(await new AppClientCli(
-      ['sessions', 'create', '--directory', 'Q:\One', '--plain'],
-      harness.deps(),
-    ).run()).toBe(2)
-
-    expect(harness.client.requests).toEqual([])
-    expect(harness.parsedOutput()).toMatchObject({
-      ok: false,
-      error: { code: 'invalid-request', detail: '--plain requires --open-tab' },
-    })
-  })
-
-  /*
    * A scheduler passes the same colour on every worker it launches, so a typo in it would be a typo
    * on the whole wave. Refusing it here costs no round trip and names the twelve; the target refuses
    * the same set, so a caller cannot get a colour past one of them and not the other.
@@ -703,23 +689,33 @@ describe('app-client-cli/app/app', () => {
   })
 
   /*
-   * The section a skill files its work under, refused here for the reason the colour is: the request
-   * body is typed, and a group nobody draws would otherwise travel as far as the target. The name is
-   * NOT part of the spec - the session manager stores no group - so this also pins where it sits.
+   * The section a skill files its work under. Only the SHAPE is refused here, and that is the whole
+   * difference from the colour above: the palette is fixed, while the sections are made on the
+   * computer that will answer, so a parser listing them would be listing somebody else's. A
+   * well-formed id nothing here knows travels, and the target refuses it naming what it does have.
+   *
+   * The name is NOT part of the spec - the session manager stores no group - so this pins that too.
    */
-  it('refuses a group that is not one of the six and keeps it out of the spec', async () => {
+  it('refuses a group id no computer could have and lets an unknown one travel', async () => {
     const harness = new CliHarness()
 
     expect(await new AppClientCli(
-      ['sessions', 'create', '--directory', 'Q:\One', '--group', 'robots'],
+      ['sessions', 'create', '--directory', 'Q:\One', '--group', 'Robots Here'],
       harness.deps(),
     ).run()).toBe(2)
 
     expect(harness.client.requests).toEqual([])
     expect(harness.parsedOutput()).toMatchObject({
       ok: false,
-      error: { code: 'invalid-request', detail: expect.stringContaining('automation') },
+      error: { code: 'invalid-request', detail: expect.stringContaining('lowercase letters') },
     })
+
+    const unknown = new CliHarness()
+    expect(await new AppClientCli(
+      ['sessions', 'create', '--directory', 'Q:\One', '--group', 'robots'],
+      unknown.deps(),
+    ).run()).toBe(0)
+    expect(unknown.client.requests[0]).toMatchObject({ body: { group: 'robots' } })
 
     const accepted = new CliHarness()
     expect(await new AppClientCli(
@@ -789,14 +785,44 @@ describe('app-client-cli/app/app', () => {
     })
   })
 
+  it('removes a session by number, carries the operation id and refuses before HTTP on an old Jamat', async () => {
+    const harness = new CliHarness()
+    expect(await new AppClientCli(
+      ['sessions', 'remove', '--number', '001', '--operation-id', 'remove-1'],
+      harness.deps(),
+    ).run()).toBe(0)
+    expect(harness.client.requests.at(-1)).toMatchObject({
+      operation: 'sessions.remove',
+      operationId: 'remove-1',
+      body: { session: { kind: 'sessionId' } },
+    })
+
+    // Local only, like the peer negotiation: the CLI does not offer it through --computer.
+    expect(await new AppClientCli(
+      ['sessions', 'remove', '--number', '001', '--computer', 'Remote computer'],
+      new CliHarness().deps(),
+    ).run()).toBe(2)
+
+    const old = new CliHarness()
+    old.descriptor.optionalOperations = []
+    expect(await new AppClientCli(['sessions', 'remove', '--number', '001'], old.deps()).run()).toBe(6)
+    expect(old.client.requests).toEqual([])
+    expect(old.parsedOutput()).toMatchObject({
+      ok: false,
+      operation: 'sessions.remove',
+      error: { code: 'unavailable' },
+    })
+  })
+
   /*
-   * The same two closed sets a create is held to, and one more rule of their own: the value IS the
-   * request here, so naming none is refused rather than treated as "leave it alone".
+   * The same rules a create is held to, and one more of their own: the value IS the request here, so
+   * naming none is refused rather than treated as "leave it alone". A colour dies on the name and a
+   * group only on the shape, for the reason the create test above states.
    */
   it('refuses a repaint that names no colour or group, or one nobody can draw', async () => {
     for (const args of [
       ['sessions', 'color', '--session-id', 'session-001', '--color', 'chartreuse'],
-      ['sessions', 'group', '--session-id', 'session-001', '--group', 'robots'],
+      ['sessions', 'group', '--session-id', 'session-001', '--group', 'Robots Here'],
       ['sessions', 'color', '--session-id', 'session-001'],
       ['sessions', 'group', '--session-id', 'session-001'],
       ['sessions', 'color', '--color', 'cyan'],
@@ -806,6 +832,52 @@ describe('app-client-cli/app/app', () => {
       expect(refused.client.requests).toEqual([])
       expect(refused.parsedOutput()).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
     }
+  })
+
+  /*
+   * One command, three forms, and the flags are what tell them apart: no flag asks, `--note` says,
+   * `--clear` takes it away. Both flags together is a caller saying two things about one field.
+   */
+  it('reads, writes and clears a note, and refuses both flags at once', async () => {
+    const read = new CliHarness()
+    expect(await new AppClientCli(['sessions', 'note', '--number', '001'], read.deps()).run()).toBe(0)
+    // The number was resolved to one canonical id before the round trip, as every selector is.
+    expect(read.client.requests.at(-1)).toMatchObject({
+      operation: 'sessions.note',
+      body: { session: { kind: 'sessionId' } },
+    })
+    expect(read.client.requests.at(-1)?.operationId).toBeUndefined()
+
+    const written = new CliHarness()
+    expect(await new AppClientCli(
+      ['sessions', 'note', '--session-id', 'session-001', '--note', 'waiting for the SVN review'],
+      written.deps(),
+    ).run()).toBe(0)
+    expect(written.client.requests.at(-1)).toMatchObject({
+      operation: 'sessions.setNote',
+      body: { session: { kind: 'sessionId', sessionId: 'session-001' }, note: 'waiting for the SVN review' },
+    })
+
+    const cleared = new CliHarness()
+    expect(await new AppClientCli(
+      ['sessions', 'note', '--session-id', 'session-001', '--clear'],
+      cleared.deps(),
+    ).run()).toBe(0)
+    expect(cleared.client.requests.at(-1)).toMatchObject({
+      operation: 'sessions.setNote',
+      body: { session: { kind: 'sessionId', sessionId: 'session-001' }, note: null },
+    })
+
+    const both = new CliHarness()
+    expect(await new AppClientCli(
+      ['sessions', 'note', '--session-id', 'session-001', '--note', 'text', '--clear'],
+      both.deps(),
+    ).run()).toBe(2)
+    expect(both.client.requests).toEqual([])
+    expect(both.parsedOutput()).toMatchObject({
+      ok: false,
+      error: { code: 'invalid-request', detail: '--note and --clear cannot be used together' },
+    })
   })
 
   it('builds the full create spec and reports the actual operation id on unavailable retry', async () => {
@@ -820,10 +892,10 @@ describe('app-client-cli/app/app', () => {
       '--worktree', 'task-1',
       '--base-ref', 'main',
       '--title', 'Work',
+      '--number', 'i34',
       '--color', 'magenta',
       '--group', 'automation',
       '--flow-id', 'flow-1',
-      '--plain',
       '--open-tab',
       '--operation-id', 'caller-operation',
     ]
@@ -850,9 +922,9 @@ describe('app-client-cli/app/app', () => {
           },
           worktree: { slug: 'task-1', baseRef: 'main' },
           title: 'Work',
+          number: 'i34',
           color: 'magenta',
           flowId: 'flow-1',
-          presentation: 'tab',
         },
       },
     })
@@ -869,6 +941,32 @@ describe('app-client-cli/app/app', () => {
       error: { code: 'unavailable' },
     })
     expect(harness.client.requests).toEqual([])
+  })
+
+  /*
+   * `--number` names a session on a create and picks one everywhere else, and the two grammars are
+   * deliberately different: the answering computer hands out `014`, so a create may only bring the
+   * custom shape. Refused in the parser, before any discovery, exactly as `--color` is.
+   */
+  it('takes a custom number on a create and refuses an allocated one', async () => {
+    const built = new CliHarness()
+    expect(await new AppClientCli(
+      ['sessions', 'create', '--directory', 'Q:\Apps\One', '--number', 'i34'],
+      built.deps(),
+    ).run()).toBe(0)
+    expect(built.client.requests[0]).toMatchObject({
+      operation: 'sessions.create',
+      body: { spec: { number: 'i34' } },
+    })
+
+    for (const number of ['014', 'hotfix', 'i1234567']) {
+      const refused = new CliHarness()
+      expect(await new AppClientCli(
+        ['sessions', 'create', '--directory', 'Q:\Apps\One', '--number', number],
+        refused.deps(),
+      ).run()).toBe(2)
+      expect(refused.configLoads).toBe(0)
+    }
   })
 
   it('mints a mutation id once and validates exact three-digit session numbers', async () => {
@@ -1172,5 +1270,67 @@ describe('app-client-cli/app/app', () => {
       { protocol: RemoteControlConst.protocol, type: 'response', ok: true },
       { protocol: RemoteControlConst.protocol, type: 'event', event: { revision: 5 } },
     ])
+  })
+  it('plans terminal deliver with its defaults, derives the client timeout and gates it on the descriptor', async () => {
+    const h = new CliHarness()
+    const timeouts: ({ timeoutMilliseconds?: number } | undefined)[] = []
+    const deps = { ...h.deps(), client: (_: RemoteControlDescriptor, options?: { timeoutMilliseconds?: number }) => {
+      timeouts.push(options)
+      return h.client
+    } }
+    expect(await new AppClientCli(['terminal', 'deliver', '--number', '001', '--text', 'Read x.md'], deps).run()).toBe(0)
+    expect(h.client.requests.at(-1)).toMatchObject({
+      operation: 'terminal.deliver',
+      operationId: 'operation-1',
+      body: { session: { kind: 'sessionId' }, text: 'Read x.md', readyTimeoutMs: 45_000, submitTimeoutMs: 10_000 },
+    })
+    expect(h.client.requests.at(-1)?.body).not.toHaveProperty('input')
+    expect(h.client.requests.at(-1)?.body).not.toHaveProperty('queue')
+    expect(timeouts).toEqual([{ timeoutMilliseconds: 65_000 }])
+
+    const max = new CliHarness()
+    const maxTimeouts: ({ timeoutMilliseconds?: number } | undefined)[] = []
+    expect(await new AppClientCli(
+      ['terminal', 'deliver', '--session-id', 'session-001', '--text', 'status', '--typed',
+        '--ready-timeout-ms', '120000', '--submit-timeout-ms', '60000', '--queue'],
+      { ...max.deps(), client: (_: RemoteControlDescriptor, options?: { timeoutMilliseconds?: number }) => {
+        maxTimeouts.push(options)
+        return max.client
+      } },
+    ).run()).toBe(0)
+    expect(max.client.requests.at(-1)).toMatchObject({
+      operation: 'terminal.deliver',
+      body: { input: 'typed', readyTimeoutMs: 120_000, submitTimeoutMs: 60_000, queue: true },
+    })
+    expect(maxTimeouts).toEqual([{ timeoutMilliseconds: 190_000 }])
+
+    const other = new CliHarness()
+    const otherTimeouts: unknown[] = []
+    expect(await new AppClientCli(['terminal', 'send', '--number', '001', '--text', 'x'],
+      { ...other.deps(), client: (_: RemoteControlDescriptor, options?: { timeoutMilliseconds?: number }) => {
+        otherTimeouts.push(options)
+        return other.client
+      } }).run()).toBe(0)
+    expect(otherTimeouts).toEqual([undefined])
+
+    for (const argv of [
+      ['terminal', 'deliver', '--number', '001', '--text', 'x', '--ready-timeout-ms', '999'],
+      ['terminal', 'deliver', '--number', '001', '--text', 'x', '--submit-timeout-ms', '60001'],
+      ['terminal', 'deliver', '--number', '001', '--text', 'x', '--computer', 'Remote computer'],
+    ]) {
+      const refused = new CliHarness()
+      expect(await new AppClientCli(argv, refused.deps()).run()).toBe(2)
+      expect(refused.discoveries).toBe(0)
+      expect(refused.parsedOutput()).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+    }
+
+    const old = new CliHarness()
+    old.descriptor.optionalOperations = []
+    expect(await new AppClientCli(['terminal', 'deliver', '--number', '001', '--text', 'x'], old.deps()).run()).toBe(6)
+    expect(old.client.requests).toEqual([])
+    expect(old.parsedOutput()).toMatchObject({
+      ok: false,
+      error: { code: 'unavailable', detail: 'terminal.deliver is not exposed by this AppClientUI' },
+    })
   })
 })

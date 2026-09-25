@@ -125,8 +125,6 @@ describe('app-client-ui/app/sessions/serviceSessionsIpc', () => {
     await invoke('sessions:reopen', 'session-1')
     await invoke('sessions:finalize', 'session-1')
     await invoke('sessions:remove', 'session-1')
-    await invoke('sessions:close-plain', 'session-1')
-    await invoke('sessions:promote-plain', 'session-1')
     await invoke('sessions:fork', 'session-1')
     // The two-argument ones, which are the whole reason a forwarding test is worth writing: a
     // swapped pair or a dropped second argument is invisible everywhere else.
@@ -149,8 +147,6 @@ describe('app-client-ui/app/sessions/serviceSessionsIpc', () => {
       { method: 'reopenSession', args: ['session-1'] },
       { method: 'finalizeSession', args: ['session-1'] },
       { method: 'removeSession', args: ['session-1'] },
-      { method: 'discardPlainSession', args: ['session-1'] },
-      { method: 'promotePlainSession', args: ['session-1'] },
       { method: 'forkSession', args: ['session-1', undefined] },
       { method: 'forkSession', args: ['session-1', { name: 'renamed' }] },
       { method: 'restartSession', args: ['session-1'] },

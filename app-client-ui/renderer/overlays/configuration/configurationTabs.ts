@@ -1,13 +1,13 @@
 import { CatalogEntries } from '../../../shared/catalogEntries'
 import type { ConfigurationTabDescriptor, ConfigurationTabId } from './configurationTab.types'
 import { AgentSettingsTab } from './tabs/agents/agentSettingsTab'
-import { KeyboardSettingsTab } from './tabs/keyboard/keyboardSettingsTab'
 import { ProjectsSettingsTab } from './tabs/projects/projectsSettingsTab'
 import { RemarkableSettingsTab } from './tabs/remarkable/remarkableSettingsTab'
 import { RemarkableStorageSettingsTab } from './tabs/remarkableStorage/remarkableStorageSettingsTab'
 import { RemoteControlConnectTab } from './tabs/remoteControl/remoteControlConnectTab'
 import { RemoteControlConnectionsTab } from './tabs/remoteControl/remoteControlConnectionsTab'
 import { RemoteControlThisComputerTab } from './tabs/remoteControl/remoteControlThisComputerTab'
+import { SessionGroupsSettingsTab } from './tabs/sessionGroups/sessionGroupsSettingsTab'
 import { UiSettingsTab } from './tabs/ui/uiSettingsTab'
 import { VersioningSettingsTab } from './tabs/versioning/versioningSettingsTab'
 import { WindowSettingsTab } from './tabs/window/windowSettingsTab'
@@ -28,14 +28,14 @@ export class ConfigurationTabs {
   private static readonly catalogConst: readonly ConfigurationTabDescriptor[] = [
     { id: 'projects', title: 'Projects', order: 0, Component: ProjectsSettingsTab },
     { id: 'ui', title: 'UI', order: 1, Component: UiSettingsTab },
-    { id: 'keyboard', title: 'Keyboard', order: 2, Component: KeyboardSettingsTab },
-    { id: 'agents', title: 'AI agents', order: 3, Component: AgentSettingsTab },
-    { id: 'versioning', title: 'Versioning', order: 4, Component: VersioningSettingsTab },
-    { id: 'worktrees', title: 'Worktrees', order: 5, Component: WorktreesSettingsTab },
+    { id: 'sessionGroups', title: 'Session groups', order: 2, Component: SessionGroupsSettingsTab },
+    { id: 'agents', title: 'AI agents', order: 4, Component: AgentSettingsTab },
+    { id: 'versioning', title: 'Versioning', order: 5, Component: VersioningSettingsTab },
+    { id: 'worktrees', title: 'Worktrees', order: 6, Component: WorktreesSettingsTab },
     {
       id: 'remarkable',
       title: 'reMarkable',
-      order: 6,
+      order: 7,
       children: [
         {
           id: 'remarkableConnection',
@@ -60,7 +60,7 @@ export class ConfigurationTabs {
     {
       id: 'remoteControl',
       title: 'Network',
-      order: 7,
+      order: 8,
       children: [
         {
           id: 'remoteControlThisComputer',
@@ -82,7 +82,7 @@ export class ConfigurationTabs {
         },
       ],
     },
-    { id: 'window', title: 'Window', order: 8, Component: WindowSettingsTab },
+    { id: 'window', title: 'Window', order: 9, Component: WindowSettingsTab },
   ]
 
   /**

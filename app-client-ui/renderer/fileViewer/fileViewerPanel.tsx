@@ -92,6 +92,8 @@ function FileViewerPanelBody(
     onDocument,
   )
   const freshness = useFileViewerFreshness(model.document?.documentId ?? null, model.reload)
+  // A file that is gone has nothing left to show; a refusal of any other kind stays readable.
+  useEffect(() => { if (model.sourceMissing) props.api.close() }, [model.sourceMissing, props.api])
   // Held here as well as written, the way the split beside it holds its own: the parameters are
   // where a zoom SURVIVES, and a panel that waited for them to come back would redraw one round
   // trip after the press. The effect is what carries a zoom that arrives from anywhere else - a

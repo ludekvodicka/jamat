@@ -9,6 +9,13 @@ export class ClaudeContextWindows {
   private static readonly millionTokensConst = 1_000_000
   private static readonly twoHundredThousandTokensConst = 200_000
   private static readonly oneMillionSuffixConst = /\[1m\]$/i
+  /**
+   * Models whose account DEFAULT is the million tier: `/model` lists `Opus 5.5 (1M context)
+   * (default)`, and a session started with no model named anywhere runs on it, while no file records
+   * that tier. Believed only when nothing names a model at all; the day the default moves, this list
+   * is wrong until it is edited.
+   */
+  private static readonly defaultMillionModelsConst = ['claude-opus-5-5']
   private static readonly familyPatternConst = /^claude-([a-z]+)-/i
   /**
    * The minor is optional because the ids lost it: V1 read `claude-opus-4-7` and this generation
@@ -44,6 +51,10 @@ export class ClaudeContextWindows {
       && ClaudeContextWindows.oneMillionSuffixConst.test(configured)
       && ClaudeContextWindows.names(model, configured))
       return ClaudeContextWindows.millionTokensConst
+    if ((configured === undefined || configured === null || configured === '')
+      && ClaudeContextWindows.defaultMillionModelsConst
+        .some((id) => ClaudeContextWindows.names(model, id)))
+      return ClaudeContextWindows.millionTokensConst
     const family = ClaudeContextWindows.familyPatternConst.exec(model)?.[1]?.toLowerCase()
     // `fable` was missing until 2026-08-24, so a bare `claude-fable-5` session drew no window at
     // all while `claude-fable-5[1m]` drew a million. The families come off `GET /v1/models`.
@@ -55,12 +66,13 @@ export class ClaudeContextWindows {
   /**
    * Whether a configured model names the model a transcript recorded. An alias (`opus`) names its
    * whole family, because it resolves to whichever member is newest; a full id names that release
-   * and the dated ids under it (`claude-opus-5` covers `claude-opus-5-20260101`), and nothing else.
+   * and the dated ids under it (`claude-opus-5` covers `claude-opus-5-20260101`), and nothing else:
+   * a plain prefix made `claude-opus-5[1m]` name `claude-opus-5-5`, another release.
    */
   private static names(model: string, configured: string): boolean {
     const bare = configured.replace(ClaudeContextWindows.oneMillionSuffixConst, '').toLowerCase()
     const id = model.toLowerCase()
-    if (bare.startsWith('claude-')) return id === bare || id.startsWith(`${bare}-`)
+    if (bare.startsWith('claude-')) return id === bare || new RegExp(`^${bare}-\\d{8}$`).test(id)
     return ClaudeContextWindows.familyPatternConst.exec(id)?.[1]?.toLowerCase() === bare
   }
 

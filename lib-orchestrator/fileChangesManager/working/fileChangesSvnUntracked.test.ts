@@ -55,6 +55,32 @@ describe('lib-orchestrator/fileChangesManager/working/fileChangesSvnUntracked', 
     expect(entries).toHaveLength(5)
   })
 
+  /**
+   * `svn delete --keep-local` publishes the removal and leaves the files on disk, so the directory
+   * that holds an untracked one is itself scheduled for deletion, and SVN answers no property
+   * question about it. Ending the listing there leaves the pane with nothing to review.
+   */
+  it('reads the ignore rules above a parent scheduled for deletion', async () => {
+    const f = await fixture()
+    await writeFile(join(f.directory, 'nested', 'inherited.log'), 'ignored')
+    const asked: string[] = []
+    f.deps.svn.run = vi.fn(async (cwd, args) => {
+      asked.push(cwd)
+      return cwd === f.root
+        ? { code: 0, failure: null, stderr: '', stdout: '<properties><target path="root"><inherited_property name="svn:global-ignores">*.log</inherited_property></target></properties>' }
+        : { code: 1, failure: null, stdout: '<properties>', stderr: `svn: E200005: '${args[args.length - 1].slice(0, -1)}' is not under version control` }
+    })
+    const entries = await f.reader.expand([{ ...f.entry, absolutePath: join(f.directory, 'nested'), repositoryPath: 'new/nested' }])
+    expect(asked).toEqual([f.directory, f.root])
+    expect(entries.map((entry) => entry.repositoryPath)).toEqual(['new/nested', 'new/nested/chosen.txt', 'new/nested/unchecked.txt'])
+  })
+
+  it('reports an ignore-rule failure that is not a deleted parent', async () => {
+    const f = await fixture()
+    f.deps.svn.run = vi.fn(async () => ({ code: 1, failure: null, stdout: '', stderr: 'svn: E155007: not a working copy' }))
+    await expect(f.reader.expand([f.entry])).rejects.toThrow('E155007')
+  })
+
   it.each([false, true])('uses the Git file list and required parents (checkpoint: %s)', async (checkpoint) => {
     const f = await fixture()
     f.deps.git.run = vi.fn(async (_cwd, args) => args.includes('--show-toplevel')

@@ -76,9 +76,12 @@ import { SessionManager } from '../../lib-orchestrator/sessionManager/sessionMan
 import type {
   SessionColorName,
   SessionCreateSpec,
+  SessionDetailsSaved,
+  SessionDetailsUpdate,
   SessionsOpResult,
   SessionsSnapshot,
   TerminalAttachResult,
+  TerminalComposerResult,
   TerminalFrame,
 } from '../../lib-orchestrator/sessionManager/sessionManagerApi.types.js'
 import type {
@@ -1195,12 +1198,19 @@ class SmokeSessionsObserver implements RemoteControlSessionsPort {
     return this.sessions.finalizeSession(sessionId)
   }
 
-  discardPlainSession(sessionId: string): Promise<SessionsOpResult> {
-    return this.sessions.discardPlainSession(sessionId)
+  removeSession(sessionId: string): Promise<SessionsOpResult> {
+    return this.sessions.removeSession(sessionId)
   }
 
   setSessionColor(sessionId: string, color: SessionColorName): Promise<SessionsOpResult> {
     return this.sessions.setSessionColor(sessionId, color)
+  }
+
+  setSessionDetails(
+    sessionId: string,
+    update: SessionDetailsUpdate,
+  ): Promise<SessionsOpResult<SessionDetailsSaved>> {
+    return this.sessions.setSessionDetails(sessionId, update)
   }
 }
 
@@ -1501,11 +1511,18 @@ class SmokeUnavailableSessions implements RemoteControlSessionsPort, RemoteContr
     return Promise.resolve(SmokeUnavailableSessions.refused())
   }
 
-  discardPlainSession(_sessionId: string): Promise<SessionsOpResult> {
+  removeSession(_sessionId: string): Promise<SessionsOpResult> {
     return Promise.resolve(SmokeUnavailableSessions.refused())
   }
 
   setSessionColor(_sessionId: string, _color: SessionColorName): Promise<SessionsOpResult> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  setSessionDetails(
+    _sessionId: string,
+    _update: SessionDetailsUpdate,
+  ): Promise<SessionsOpResult<SessionDetailsSaved>> {
     return Promise.resolve(SmokeUnavailableSessions.refused())
   }
 
@@ -1532,6 +1549,10 @@ class SmokeUnavailableSessions implements RemoteControlSessionsPort, RemoteContr
   terminalDetach(_attachId: string): void {}
 
   terminalDetachAll(_attachIds: readonly string[]): void {}
+
+  terminalComposer(_sessionId: string): Promise<TerminalComposerResult> {
+    return Promise.resolve({ ok: false, code: 'unknown-session' })
+  }
 
   private static refused<T>(): SessionsOpResult<T> {
     return { ok: false, code: 'not-found', detail: 'controller smoke has no local sessions' }
@@ -1697,17 +1718,17 @@ class SmokeRemoteAppPorts {
    * assignment is accepted and forgotten.
    */
   static groups(): RemoteControlSessionGroupsPort {
-    return { assign: (_sessionId, group) => ({ ok: true, value: { group } }) }
+    return { read: () => new Map(), assign: (_sessionId, group) => ({ ok: true, value: { group } }) }
   }
 
   static tabs(): RemoteControlTabsPort {
     return {
       list: () => Promise.resolve([]),
-      open: (_sessionId, _tabTitle, _options) => Promise.resolve(
+      open: (_sessionId, _tabTitle) => Promise.resolve(
         SmokeRemoteAppPorts.tabRefusal(),
       ),
       openCommit: async () => ({ ok: true, value: { kind: 'commit-opened', panelId: 'commit-panel', windowId: 'main', scopeRoot: 'Q:/app', messageApplied: true } }),
-      openFile: (_sessionId, _tabTitle, _path, _options) => Promise.resolve(
+      openFile: (_sessionId, _tabTitle, _path) => Promise.resolve(
         SmokeRemoteAppPorts.tabFileRefusal(),
       ),
       focus: (_panelId) => Promise.resolve(SmokeRemoteAppPorts.tabRefusal()),

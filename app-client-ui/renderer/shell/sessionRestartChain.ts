@@ -119,18 +119,6 @@ export class SessionRestartChain {
   private async restartable(info: SessionInfo): Promise<boolean> {
     if (info.life !== 'lost' || info.completed === true) return false
     if (!info.admits.includes('restart')) return false
-    // A plain tab with no tab is a closed tab, which is an ended tab. Such a record can only be the
-    // remains of a crash mid-close, and reviving it would put back what closing meant to end.
-    if (info.presentation === 'tab') {
-      try {
-        return (await this.ports.openSessionIds()).includes(info.sessionId)
-      } catch (error) {
-        this.ports.reportError(
-          `Reading open panels for ${info.sessionId} failed: ${ErrorText.of(error)}`,
-        )
-        return false
-      }
-    }
     return true
   }
 

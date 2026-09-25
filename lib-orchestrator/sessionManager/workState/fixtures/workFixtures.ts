@@ -3,6 +3,7 @@ import { join } from 'node:path'
 
 import type { AgentWorkFrame, AgentWorkHint } from '../agentWorkInspector.types'
 import type { SessionRecordAgent } from '../../records/sessionRecord.types'
+import type { TerminalComposerReading } from '../../sessionManagerApi.types'
 
 export interface WorkFixtureProvenance {
   /** The corpus this frame came from, named so a reader can go and look at it. */
@@ -30,7 +31,17 @@ export interface WorkFixtureRecording {
 export interface WorkFixture {
   file: string
   agent: SessionRecordAgent['agentId']
-  expected: { hint: AgentWorkHint }
+  expected: {
+    hint: AgentWorkHint
+    /**
+     * Present on the frames recorded for `AgentComposerReader`, all four together. A frame without
+     * them is still classified by the inspector tests and skipped by the reader's.
+     */
+    composer?: TerminalComposerReading['composer']
+    queuedRow?: boolean
+    echoHead?: string | null
+    pastePlaceholders?: number
+  }
   provenance: WorkFixtureProvenance
   recorded?: WorkFixtureRecording
   frame: AgentWorkFrame

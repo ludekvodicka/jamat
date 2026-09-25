@@ -7,6 +7,8 @@ import type {
 import type {
   SessionColorName,
   SessionCreateSpec,
+  SessionDetailsSaved,
+  SessionDetailsUpdate,
   SessionGroup,
   SessionInfo,
   SessionSetupAgreement,
@@ -36,9 +38,12 @@ import type {
   RemoteControlCommitStatusDto,
   RemoteControlTerminalPeekDto,
   RemoteControlTerminalSendDto,
+  RemoteControlTerminalDeliverDto,
+  RemoteControlTerminalDeliverFailureData,
+  RemoteControlTerminalDeliverInput,
   RemoteControlSessionTranscriptDto,
 } from './remoteControlApi.types'
-import { RemoteControlConst } from './remoteControlProtocol'
+import { RemoteControlConst, RemoteControlDeliverConst } from './remoteControlProtocol'
 
 export interface RemoteControlSystemPort {
   identity(): RemoteControlSystemIdentity
@@ -59,13 +64,22 @@ export interface RemoteControlSessionsPort {
   ): Promise<SessionsOpResult<{ sessionId: string; tabTitle: string }>>
   reopenSession(sessionId: string): Promise<SessionsOpResult>
   finalizeSession(sessionId: string): Promise<SessionsOpResult>
-  discardPlainSession(sessionId: string): Promise<SessionsOpResult>
+  removeSession(sessionId: string): Promise<SessionsOpResult>
   /**
    * The same setter the details dialog uses. It is on the sessions port and the group beside it is
    * not, because a colour lives on the session RECORD, which this library owns, while a group lives
    * in the client's own state.
    */
   setSessionColor(sessionId: string, color: SessionColorName): Promise<SessionsOpResult>
+  /**
+   * The details dialog's Save, of which this library asks for one field: the note. The whole method
+   * rather than a note-only one, because it is the production contract the client already holds and
+   * a second entry point into the same record write would be a second set of rules about it.
+   */
+  setSessionDetails(
+    sessionId: string,
+    update: SessionDetailsUpdate,
+  ): Promise<SessionsOpResult<SessionDetailsSaved>>
 }
 
 /**
@@ -78,6 +92,7 @@ export interface RemoteControlSessionsPort {
  * the client already holds open, and a promise would only be a promise.
  */
 export interface RemoteControlSessionGroupsPort {
+  read(sessions: readonly SessionInfo[]): ReadonlyMap<string, SessionGroup | null>
   assign(sessionId: string, group: SessionGroup): RemoteControlStepResult<{ group: SessionGroup }>
 }
 
@@ -85,18 +100,13 @@ export interface RemoteControlTabsPort {
   commitStatus?(commitSessionId: string): RemoteControlStepResult<RemoteControlCommitStatusDto>
   cancelCommit?(commitSessionId: string): Promise<RemoteControlStepResult<RemoteControlCommitStatusDto>>
   openCommit(sessionId: string, tabTitle: string, vcs: 'svn' | 'git', scope: string | null,
-    proposal: string | null, options: { plain: boolean; paths?: readonly string[] }): Promise<RemoteControlStepResult<RemoteControlTabOpenCommitDto>>
+    proposal: string | null, options: { paths?: readonly string[] }): Promise<RemoteControlStepResult<RemoteControlTabOpenCommitDto>>
   list(): Promise<readonly RemoteControlTabDto[]>
-  open(
-    sessionId: string,
-    tabTitle: string,
-    options: { plain: boolean },
-  ): Promise<RemoteControlStepResult<RemoteControlTabCommandDto>>
+  open(sessionId: string, tabTitle: string): Promise<RemoteControlStepResult<RemoteControlTabCommandDto>>
   openFile(
     sessionId: string,
     tabTitle: string,
     path: string,
-    options: { plain: boolean },
   ): Promise<RemoteControlStepResult<RemoteControlTabOpenFileDto>>
   focus(panelId: string): Promise<RemoteControlStepResult<RemoteControlTabCommandDto>>
   close(panelId: string): Promise<RemoteControlStepResult<RemoteControlTabCommandDto>>
@@ -112,6 +122,25 @@ export interface RemoteControlTerminalPort {
     text: string,
     options: { enter: boolean; timeoutMs?: number },
   ): Promise<RemoteControlStepResult<RemoteControlTerminalSendDto>>
+  deliver(
+    sessionId: string,
+    text: string,
+    options: RemoteControlTerminalDeliverOptions,
+    proof: RemoteControlTerminalDeliverProofPort,
+  ): Promise<RemoteControlStepResult<RemoteControlTerminalDeliverDto>>
+}
+
+export interface RemoteControlTerminalDeliverOptions {
+  input: RemoteControlTerminalDeliverInput
+  readyTimeoutMs: number
+  submitTimeoutMs: number
+  /** Absent means false: Enter, exactly as before the option existed. */
+  queue?: boolean
+}
+
+/** The target session's transcript, which the submit phase reads for its strongest proof. */
+export interface RemoteControlTerminalDeliverProofPort {
+  transcript(): Promise<RemoteControlSessionTranscriptDto['reading']>
 }
 
 export interface RemoteControlTranscriptPort {
@@ -252,9 +281,17 @@ export class RemoteControl {
       })
     } else if (request.operation === 'projects.list')
       return this.projectsList(request.body.categoryId, request.body.sort)
-    else if (request.operation === 'sessions.list')
-      return RemoteControl.success(this.deps.sessions.snapshot())
-    else if (request.operation === 'sessions.create') {
+    else if (request.operation === 'sessions.list') {
+      const snapshot = this.deps.sessions.snapshot()
+      const groups = this.deps.groups.read(snapshot.sessions)
+      return RemoteControl.success({
+        ...snapshot,
+        sessions: snapshot.sessions.map((session) => ({
+          ...session,
+          group: groups.get(session.sessionId) ?? null,
+        })),
+      })
+    } else if (request.operation === 'sessions.create') {
       const openTab = request.body.openTab === true
       /*
        * Opening the tab IS `tabs.open`, whoever asks for it. A peer granted `control:sessions.create`
@@ -278,6 +315,18 @@ export class RemoteControl {
       if (!session.ok) return session
       return this.sessionMutation(session.value.sessionId, () =>
         this.deps.sessions.finalizeSession(session.value.sessionId))
+    } else if (request.operation === 'sessions.remove') {
+      const session = this.session(request.body.session)
+      if (!session.ok) return session
+      const result = await this.deps.sessions.removeSession(session.value.sessionId)
+      /*
+       * A live runtime is a conflict with the caller's request, not a failure of it: the caller
+       * stops or finalizes the session first. It is never stopped here on the caller's behalf.
+       */
+      if (!result.ok && result.code === 'live-refused')
+        return RemoteControl.error('conflict', result.detail, { sourceCode: result.code })
+      if (!result.ok) return RemoteControl.sessionError(result)
+      return RemoteControl.success({ sessionId: session.value.sessionId })
     } else if (request.operation === 'sessions.transcript') {
       const session = this.session(request.body.session)
       if (!session.ok) return session
@@ -308,6 +357,31 @@ export class RemoteControl {
         sessionId: session.value.sessionId,
         group: assigned.value.group,
       })
+    } else if (request.operation === 'sessions.note') {
+      const session = this.session(request.body.session)
+      if (!session.ok) return session
+      return RemoteControl.success({
+        sessionId: session.value.sessionId,
+        note: session.value.note ?? null,
+      })
+    } else if (request.operation === 'sessions.setNote') {
+      const session = this.session(request.body.session)
+      if (!session.ok) return session
+      const written = await this.deps.sessions.setSessionDetails(
+        session.value.sessionId,
+        { note: request.body.note },
+      )
+      if (!written.ok) return RemoteControl.sessionError(written)
+      /*
+       * Answered from the snapshot rather than from the request, so the caller is told what the
+       * record HOLDS: the library trims a note and keeps no empty one, and a caller that sent
+       * spaces would otherwise be told they are there.
+       */
+      const stored = this.session({ kind: 'sessionId', sessionId: session.value.sessionId })
+      return RemoteControl.success({
+        sessionId: session.value.sessionId,
+        note: stored.ok ? stored.value.note ?? null : null,
+      })
     } else if (request.operation === 'agents.describe')
       return RemoteControl.success(this.deps.agents.describe())
     else if (request.operation === 'tabs.list')
@@ -315,11 +389,7 @@ export class RemoteControl {
     else if (request.operation === 'tabs.open') {
       const session = this.session(request.body.session)
       if (!session.ok) return session
-      return this.deps.tabs.open(
-        session.value.sessionId,
-        session.value.tabTitle,
-        { plain: session.value.presentation === 'tab' },
-      )
+      return this.deps.tabs.open(session.value.sessionId, session.value.tabTitle)
     } else if (request.operation === 'tabs.openFile') {
       const session = this.session(request.body.session)
       if (!session.ok) return session
@@ -327,15 +397,14 @@ export class RemoteControl {
         session.value.sessionId,
         session.value.tabTitle,
         request.body.path,
-        { plain: session.value.presentation === 'tab' },
       )
     } else if (request.operation === 'tabs.openCommit') {
       const session = this.session(request.body.session)
       if (!session.ok) return session
       if (session.value.life !== 'live') return { ok: false, error: { code: 'not-found', detail: 'The session is not live' } }
       return this.deps.tabs.openCommit(session.value.sessionId, session.value.tabTitle, request.body.vcs,
-        request.body.scope ?? null, request.body.message ?? null, { plain: session.value.presentation === 'tab',
-          ...(request.body.paths === undefined ? {} : { paths: request.body.paths }) })
+        request.body.scope ?? null, request.body.message ?? null,
+        request.body.paths === undefined ? {} : { paths: request.body.paths })
     } else if (request.operation === 'tabs.commitStatus')
       return this.deps.tabs.commitStatus?.(request.body.commitSessionId)
         ?? { ok: false, error: { code: 'unavailable', detail: 'Commit status is unavailable' } }
@@ -361,6 +430,28 @@ export class RemoteControl {
         enter: request.body.enter === true,
         ...(request.body.timeoutMs === undefined ? {} : { timeoutMs: request.body.timeoutMs }),
       })
+    } else if (request.operation === 'terminal.deliver') {
+      const session = this.session(request.body.session)
+      if (!session.ok) return session
+      if (session.value.kind !== 'agent' || session.value.agent === undefined)
+        return RemoteControl.error(
+          'invalid-request',
+          'terminal.deliver needs an agent session',
+          RemoteControl.deliverRefusal('validate', 'shell-session'),
+        )
+      if (session.value.life !== 'live' && session.value.life !== 'starting')
+        return RemoteControl.error(
+          'not-found',
+          'The session is not live',
+          RemoteControl.deliverRefusal('attach', 'not-live'),
+        )
+      const sessionId = session.value.sessionId
+      return this.deps.terminal.deliver(sessionId, request.body.text, {
+        input: request.body.input ?? 'paste',
+        readyTimeoutMs: request.body.readyTimeoutMs ?? RemoteControlDeliverConst.readyTimeoutMillisecondsConst,
+        submitTimeoutMs: request.body.submitTimeoutMs ?? RemoteControlDeliverConst.submitTimeoutMillisecondsConst,
+        queue: request.body.queue === true,
+      }, { transcript: () => this.deps.transcript.read(sessionId) })
     } else
       throw new Error(`Unknown remote control operation: ${JSON.stringify(request)}`)
   }
@@ -397,7 +488,6 @@ export class RemoteControl {
     const value: RemoteControlSessionCreateDto = {
       session: created.value,
       tabOpen: null,
-      plainCleanup: null,
       groupAssign: null,
     }
     /*
@@ -407,13 +497,7 @@ export class RemoteControl {
      */
     if (group !== undefined) value.groupAssign = this.deps.groups.assign(created.value.sessionId, group)
     if (!openTab) return RemoteControl.success(value)
-    value.tabOpen = await this.deps.tabs.open(
-      created.value.sessionId,
-      created.value.tabTitle,
-      { plain: spec.presentation === 'tab' },
-    )
-    if (!value.tabOpen.ok && spec.presentation === 'tab')
-      value.plainCleanup = await this.deps.sessions.discardPlainSession(created.value.sessionId)
+    value.tabOpen = await this.deps.tabs.open(created.value.sessionId, created.value.tabTitle)
     return RemoteControl.success(value)
   }
 
@@ -466,6 +550,21 @@ export class RemoteControl {
         ...(result.setup === undefined ? {} : { setup: result.setup }),
       },
     )
+  }
+
+  private static deliverRefusal(
+    stage: RemoteControlTerminalDeliverFailureData['stage'],
+    reason: RemoteControlTerminalDeliverFailureData['reason'],
+  ): Record<string, unknown> {
+    const data: RemoteControlTerminalDeliverFailureData = {
+      stage,
+      reason,
+      typed: false,
+      entered: 0,
+      hint: null,
+      composer: null,
+    }
+    return { ...data }
   }
 
   private static success<T>(value: T): RemoteControlStepResult<T> {

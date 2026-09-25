@@ -1,5 +1,7 @@
+import { SessionTitle } from '../sessionManager/records/sessionTitle'
 import { SessionColors } from '../sessionManager/sessionColors'
 import { SessionGroups } from '../sessionManager/sessionGroups'
+import { SessionLimits } from '../sessionManager/sessionLimits'
 import type {
   SessionColorName,
   SessionCreateSpec,
@@ -11,12 +13,13 @@ import type {
   RemoteControlOperation,
   RemoteControlRequestUnion,
   RemoteControlSessionSelector,
+  RemoteControlTerminalDeliverInput,
 } from './remoteControlApi.types'
 import {
   RemoteControlEnvelopeValidation,
   RemoteControlValidationError,
 } from './remoteControlEnvelopeValidation'
-import { RemoteControlConst } from './remoteControlProtocol'
+import { RemoteControlConst, RemoteControlDeliverConst } from './remoteControlProtocol'
 
 export type RemoteControlRequestValidationResult =
   | { ok: true; request: RemoteControlRequestUnion }
@@ -113,7 +116,7 @@ export class RemoteControlRequestValidation {
         operationId: RemoteControlEnvelopeValidation.requiredOperationId(operationId),
         body: RemoteControlRequestValidation.sessionBody(body, operation),
       }
-    else if (operation === 'sessions.finalize')
+    else if (operation === 'sessions.finalize' || operation === 'sessions.remove')
       return {
         ...base,
         operation,
@@ -135,6 +138,15 @@ export class RemoteControlRequestValidation {
         operation,
         operationId: RemoteControlEnvelopeValidation.requiredOperationId(operationId),
         body: RemoteControlRequestValidation.sessionGroupBody(body),
+      }
+    else if (operation === 'sessions.note')
+      return { ...base, operation, body: RemoteControlRequestValidation.sessionBody(body, operation) }
+    else if (operation === 'sessions.setNote')
+      return {
+        ...base,
+        operation,
+        operationId: RemoteControlEnvelopeValidation.requiredOperationId(operationId),
+        body: RemoteControlRequestValidation.sessionNoteBody(body),
       }
     else if (operation === 'agents.describe')
       return { ...base, operation, body: RemoteControlEnvelopeValidation.empty(body, operation) }
@@ -192,6 +204,13 @@ export class RemoteControlRequestValidation {
         operationId: RemoteControlEnvelopeValidation.requiredOperationId(operationId),
         body: RemoteControlRequestValidation.terminalSend(body),
       }
+    else if (operation === 'terminal.deliver')
+      return {
+        ...base,
+        operation,
+        operationId: RemoteControlEnvelopeValidation.requiredOperationId(operationId),
+        body: RemoteControlRequestValidation.terminalDeliver(body),
+      }
     else
       throw new Error(`Unknown remote control operation: ${JSON.stringify(operation)}`)
   }
@@ -228,17 +247,6 @@ export class RemoteControlRequestValidation {
       ? undefined
       : RemoteControlRequestValidation.boolean(value.openTab, 'openTab')
     const group = RemoteControlRequestValidation.group(value.group)
-    /*
-     * A session of the tab is drawn by that tab and by nothing else - the tree does not carry it -
-     * so asking for one without asking for the tab makes a session nobody can see and nobody will
-     * clean up. The create path already knows this: when the tab fails to open it discards the
-     * session it just made. Refused here rather than in the CLI parser, because a peer never goes
-     * through one.
-     */
-    if (spec.presentation === 'tab' && openTab !== true)
-      throw new RemoteControlValidationError(
-        'A session with presentation tab needs openTab: nothing else draws one',
-      )
     return {
       spec,
       ...(openTab === undefined ? {} : { openTab }),
@@ -271,6 +279,29 @@ export class RemoteControlRequestValidation {
     return {
       session: RemoteControlRequestValidation.sessionSelector(value.session),
       group: RemoteControlRequestValidation.groupNamed(value.group),
+    }
+  }
+
+  /**
+   * `null` is the caller clearing the note and is not the same as an absent key, which is a caller
+   * who forgot to say what to write: exact keys refuse that one. Empty text clears it too, because
+   * the record holds a note trimmed and a note of nothing is no note - the library's own rule, not
+   * a second one written here.
+   */
+  private static sessionNoteBody(
+    input: unknown,
+  ): { session: RemoteControlSessionSelector; note: string | null } {
+    const value = RemoteControlEnvelopeValidation.object(input, 'sessions.setNote body')
+    RemoteControlEnvelopeValidation.keys(value, ['session', 'note'], 'sessions.setNote body')
+    if (value.note !== null && typeof value.note !== 'string')
+      throw new RemoteControlValidationError('note must be a string or null')
+    if (typeof value.note === 'string' && value.note.length > SessionLimits.noteCharacters)
+      throw new RemoteControlValidationError(
+        `note must be at most ${SessionLimits.noteCharacters} characters`,
+      )
+    return {
+      session: RemoteControlRequestValidation.sessionSelector(value.session),
+      note: value.note,
     }
   }
 
@@ -410,10 +441,15 @@ export class RemoteControlRequestValidation {
         ),
       }
     else if (value.kind === 'number') {
-      const number = RemoteControlEnvelopeValidation.text(value.number, 'number', 7)
-      if (!/^\d{3}(?:-\d{3})?$/.test(number))
+      const number = RemoteControlEnvelopeValidation.text(
+        value.number,
+        'number',
+        SessionTitle.numberCharactersConst,
+      )
+      if (!SessionTitle.isSelectorNumber(number))
         throw new RemoteControlValidationError(
-          'number must contain three digits or two three-digit parts separated by a hyphen',
+          'number must be a session number, a custom number such as "i34", or two such parts '
+          + 'separated by a hyphen',
         )
       return { kind: value.kind, number }
     } else
@@ -430,9 +466,9 @@ export class RemoteControlRequestValidation {
         'agent',
         'worktree',
         'title',
+        'number',
         'color',
         'flowId',
-        'presentation',
         'acknowledgeSetup',
       ],
       'session spec',
@@ -451,14 +487,23 @@ export class RemoteControlRequestValidation {
       ? undefined
       : RemoteControlRequestValidation.worktree(value.worktree)
     const title = RemoteControlRequestValidation.optionalString(value.title, 'title', 512)
+    const number = RemoteControlRequestValidation.optionalText(
+      value.number,
+      'number',
+      SessionTitle.numberCharactersConst,
+    )
+    // The shape alone, here and in the library both: this one is a wire contract and the library's
+    // is the write, and neither may be the only place a malformed number is stopped.
+    if (number !== undefined && !SessionTitle.isCustomNumber(number))
+      throw new RemoteControlValidationError(
+        'number must be one to three letters then up to six digits, such as "i34"',
+      )
     const color = RemoteControlRequestValidation.color(value.color)
     const flowId = RemoteControlRequestValidation.optionalText(
       value.flowId,
       'flowId',
       RemoteControlRequestValidation.idLengthConst,
     )
-    if (value.presentation !== undefined && value.presentation !== 'tab')
-      throw new RemoteControlValidationError('presentation must be tab')
     const acknowledgeSetup = RemoteControlRequestValidation.optionalText(
       value.acknowledgeSetup,
       'acknowledgeSetup',
@@ -470,9 +515,9 @@ export class RemoteControlRequestValidation {
       ...(agent === undefined ? {} : { agent }),
       ...(worktree === undefined ? {} : { worktree }),
       ...(title === undefined ? {} : { title }),
+      ...(number === undefined ? {} : { number }),
       ...(color === undefined ? {} : { color }),
       ...(flowId === undefined ? {} : { flowId }),
-      ...(value.presentation === undefined ? {} : { presentation: value.presentation }),
       ...(acknowledgeSetup === undefined ? {} : { acknowledgeSetup }),
     }
   }
@@ -558,6 +603,69 @@ export class RemoteControlRequestValidation {
     }
   }
 
+  /**
+   * `typed` stays one line: a raw `\r` or `\n` would submit the text early. A paste carries its line
+   * breaks inside the bracketed-paste markers, so line breaks and tabs are the only control
+   * characters it may carry.
+   */
+  private static terminalDeliver(input: unknown): {
+    session: RemoteControlSessionSelector
+    text: string
+    input?: RemoteControlTerminalDeliverInput
+    readyTimeoutMs?: number
+    submitTimeoutMs?: number
+    queue?: boolean
+  } {
+    const value = RemoteControlEnvelopeValidation.object(input, 'terminal.deliver body')
+    RemoteControlEnvelopeValidation.keys(
+      value,
+      ['session', 'text', 'input', 'readyTimeoutMs', 'submitTimeoutMs', 'queue'],
+      'terminal.deliver body',
+    )
+    const session = RemoteControlRequestValidation.sessionSelector(value.session)
+    let mode: RemoteControlTerminalDeliverInput | undefined
+    if (value.input === undefined) mode = undefined
+    else if (value.input === 'paste' || value.input === 'typed') mode = value.input
+    else throw new RemoteControlValidationError('input must be paste or typed')
+    const typed = mode === 'typed'
+    const text = RemoteControlRequestValidation.string(
+      value.text,
+      'text',
+      typed ? RemoteControlDeliverConst.textLengthConst : RemoteControlRequestValidation.terminalTextLengthConst,
+    )
+    if (text.length === 0)
+      throw new RemoteControlValidationError('text must not be empty')
+    if (typed && /[\r\n]/.test(text))
+      throw new RemoteControlValidationError('typed text must be one line: deliver it as a paste instead')
+    if (typed && /[\x00-\x1f\x7f]/.test(text))
+      throw new RemoteControlValidationError('typed text must not contain control characters')
+    // An ESC would let the text close the bracketed paste itself (`\x1b[201~\r`) and submit early.
+    if (!typed && /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text))
+      throw new RemoteControlValidationError('pasted text must not contain control characters other than line breaks and tabs')
+    const readyTimeoutMs = RemoteControlRequestValidation.optionalInteger(
+      value.readyTimeoutMs,
+      'readyTimeoutMs',
+      RemoteControlDeliverConst.readyTimeoutMinimumMillisecondsConst,
+      RemoteControlDeliverConst.readyTimeoutMaximumMillisecondsConst,
+    )
+    const submitTimeoutMs = RemoteControlRequestValidation.optionalInteger(
+      value.submitTimeoutMs,
+      'submitTimeoutMs',
+      RemoteControlDeliverConst.submitTimeoutMinimumMillisecondsConst,
+      RemoteControlDeliverConst.submitTimeoutMaximumMillisecondsConst,
+    )
+    return {
+      session,
+      text,
+      ...(mode === undefined ? {} : { input: mode }),
+      ...(readyTimeoutMs === undefined ? {} : { readyTimeoutMs }),
+      ...(submitTimeoutMs === undefined ? {} : { submitTimeoutMs }),
+      ...(value.queue === undefined
+        ? {}
+        : { queue: RemoteControlRequestValidation.boolean(value.queue, 'queue') }),
+    }
+  }
+
   private static worktree(input: unknown): NonNullable<SessionCreateSpec['worktree']> {
     const value = RemoteControlEnvelopeValidation.object(input, 'worktree')
     RemoteControlEnvelopeValidation.keys(value, ['slug', 'baseRef'], 'worktree')
@@ -594,9 +702,11 @@ export class RemoteControlRequestValidation {
   }
 
   /**
-   * The group a create may file its session under, proved against the library's own list for the
-   * reason `color` is: the surface that draws the sections, this validator and the CLI parser refuse
-   * the same six names, so a group can never be asked for that no tree has.
+   * The group a create may file its session under, and here the asymmetry with `color` beside it
+   * begins *(2026-09-22)*. A colour is drawn from a fixed palette and this validator can refuse an
+   * unknown one outright. A group is a section a person made, so what is provable HERE is only that
+   * the id could be a group at all; whether this computer has one is the client's answer, and it
+   * comes back naming the groups it does have.
    */
   private static group(input: unknown): SessionGroup | undefined {
     if (input === undefined) return undefined
@@ -604,10 +714,8 @@ export class RemoteControlRequestValidation {
   }
 
   private static groupNamed(input: unknown): SessionGroup {
-    if (!SessionGroups.isName(input))
-      throw new RemoteControlValidationError(
-        `group must be one of ${SessionGroups.namesConst.join(', ')}`,
-      )
+    if (!SessionGroups.isId(input))
+      throw new RemoteControlValidationError(`group is invalid: ${SessionGroups.idRuleConst}`)
     return input
   }
 

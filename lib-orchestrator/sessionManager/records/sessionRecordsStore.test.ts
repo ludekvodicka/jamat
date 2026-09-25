@@ -458,24 +458,37 @@ describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
     expect(store.list()).toEqual([])
   })
 
-  // Absence is the answer for both: a record of the tree, and a session nobody has finished with.
-  // Storing `false` would be a second way to say nothing, and two ways is how a reader starts guessing.
-  it('takes presentation and completed only in the shapes that mean something', async () => {
+  // Absence is the answer: a session nobody has finished with. Storing `false` would be a second
+  // way to say nothing, and two ways is how a reader starts guessing.
+  it('takes completed only in the shapes that mean something', async () => {
     const context = harness()
     const store = await context.load()
-    await store.put(record('a', { presentation: 'tab' }))
     await store.put(record('b', { completed: true }))
     await store.put(record('c'))
-    expect(store.list().map((entry) => entry.sessionId)).toEqual(['a', 'b', 'c'])
-    await expect(store.put({
-      ...record('d'),
-      presentation: 'window' as SessionRecord['presentation'],
-    })).rejects.toThrow(/unknown presentation/)
+    expect(store.list().map((entry) => entry.sessionId)).toEqual(['b', 'c'])
     await expect(store.put({
       ...record('d'),
       completed: false as unknown as SessionRecord['completed'],
     })).rejects.toThrow(/completed must be true or absent/)
     expect(store.get('d')).toBeNull()
+  })
+
+  /**
+   * The migration of 2026-09-23. `presentation: "tab"` said a session was drawn by its tab alone,
+   * and nothing draws sessions that way any more, so a record that still carries it is an ordinary
+   * session of the tree. It is dropped on READ rather than left to ride through, which is what
+   * takes it out of the file the next time anything is written.
+   */
+  it('drops the retired presentation field out of a record it reads', async () => {
+    const context = harness({
+      schemaVersion: 1,
+      records: [{ ...record('a'), presentation: 'tab' }, record('b')],
+    })
+    const store = await context.load()
+
+    expect(store.list().map((entry) => entry.sessionId)).toEqual(['a', 'b'])
+    expect(store.list().every((entry) => !Object.hasOwn(entry, 'presentation'))).toBe(true)
+    expect(context.reports).toEqual([])
   })
 
   /**

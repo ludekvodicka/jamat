@@ -20,12 +20,25 @@ export class RemoteControlPeerConst {
     'sessions.reopen',
     'sessions.finalize',
     /*
+     * `sessions.remove` is deliberately NOT here. Finalize is offered because it ends work the way
+     * the session's owner set it up; a remove deletes the record and its history from the list, which
+     * cannot be undone, and nothing on the controller needs it: throwaway sessions are cleaned up by
+     * whoever sits at that computer.
+     */
+    /*
      * Grantable for the reason `sessions.create` is: a create already names a colour and a group on
      * the computer that will RUN the session, so being able to name them at birth and never again
      * over the same link would be an asymmetry with no rule behind it. Neither reads anything back.
      */
     'sessions.color',
     'sessions.group',
+    /*
+     * The note is the one field with a READ of its own, because it is the one a caller WRITES in
+     * order to be read back: a scheduler leaves the sentence saying what its session is waiting
+     * for, and the next pass over the same session has to see what it left there.
+     */
+    'sessions.note',
+    'sessions.setNote',
     'terminal.peek',
     'terminal.send',
     /*

@@ -10,25 +10,6 @@ import { registerAppClientUiHandler } from '../../shared/typedIpc'
 export type IpcChannelSet = Partial<Record<keyof AppClientUiIpcInvokeMap, true>>
 
 /**
- * Where the time every IPC handler spends on the loop is recorded. One ledger for the whole process,
- * set once at boot: a service is constructed before AppHub has finished building itself, and a
- * constructor parameter on all twenty-seven of them would be a parameter nobody reads.
- *
- * Absent until it is set, and absent is not an error: the tests build services on their own.
- */
-export class ServiceIpcTiming {
-  private static ledger: { run<T>(label: string, work: () => T): T } | null = null
-
-  static use(ledger: { run<T>(label: string, work: () => T): T }): void {
-    ServiceIpcTiming.ledger = ledger
-  }
-
-  static run<T>(label: string, work: () => T): T {
-    return ServiceIpcTiming.ledger === null ? work() : ServiceIpcTiming.ledger.run(label, work)
-  }
-}
-
-/**
  * The register-and-assert half every IPC service shares. Each service owns a subset of the contract
  * and proves at boot that it registered all of its own; AppHub is where the subsets are proved to
  * cover the whole contract between them, because no single service can know that any more.
@@ -46,10 +27,7 @@ export abstract class ServiceIpcBase<TChannels extends IpcChannelSet> {
   ): void {
     if (this.registered.has(channel))
       throw new Error(`IPC channel is already registered: ${channel}`)
-    // Timed through the funnel rather than at each of the hundred and eighty handlers: what is
-    // measured is the synchronous part, which is the part that can hold a keystroke up.
-    registerAppClientUiHandler(channel, (event, ...args) =>
-      ServiceIpcTiming.run(channel, () => handler(event, ...args)))
+    registerAppClientUiHandler(channel, handler)
     this.registered.add(channel)
   }
 

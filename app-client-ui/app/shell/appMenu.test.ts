@@ -4,7 +4,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   AppCommands,
   type CommandId,
-  type LauncherKeyPreference,
 } from '../../shared/commands'
 import { AppMenu } from './appMenu'
 
@@ -23,7 +22,7 @@ describe('app-client-ui/app/shell/appMenu', () => {
     renderer: CommandId[]
   }
 
-  function build(launcherKeys: LauncherKeyPreference = 'session-first'): {
+  function build(): {
     menu: AppMenu
     template: MenuItemConstructorOptions[]
     dispatched: Dispatched
@@ -35,7 +34,6 @@ describe('app-client-ui/app/shell/appMenu', () => {
       (id) => dispatched.main.push(id),
       (id) => dispatched.renderer.push(id),
       (windowId) => focused.push(windowId),
-      () => launcherKeys,
     )
     return { menu, template: menu.buildTemplate(), dispatched, focused }
   }
@@ -81,7 +79,6 @@ describe('app-client-ui/app/shell/appMenu', () => {
   it('separates the groups of a section and nothing else', () => {
     const { template } = build()
     expect(readOut(submenuOf(template, 'Tab'))).toEqual([
-      'New Tab',
       'Session properties…',
       'Close Tab',
       'separator',
@@ -160,7 +157,6 @@ describe('app-client-ui/app/shell/appMenu', () => {
       ['Historic sessions', 'Ctrl+H'],
       ['New Remote Session', 'Ctrl+N'],
       ['Settings', 'Ctrl+,'],
-      ['New Tab', 'Ctrl+Shift+T'],
       // The item is what registers the key: nothing else in this client can, which is the whole
       // reason a dialog reached from two context menus declares a native menu entry as well.
       ['Session properties…', 'F2'],
@@ -182,27 +178,6 @@ describe('app-client-ui/app/shell/appMenu', () => {
     ])
   })
 
-  /*
-   * The preference reaches exactly two items and swaps their keys between them. Everything else is
-   * checked here too, by the same list: the set of keys the menu registers is identical under both
-   * values, which is what lets the reserved-key rule and the terminal's gate read the catalog alone.
-   */
-  it('swaps the two launcher keys when the preference says tab first, and moves nothing else', () => {
-    const sessionFirst = commandItemsOf(build('session-first').template)
-      .filter((item) => item.accelerator)
-      .map((item) => [item.label, item.accelerator])
-    const tabFirst = commandItemsOf(build('tab-first').template)
-      .filter((item) => item.accelerator)
-      .map((item) => [item.label, item.accelerator])
-
-    expect(tabFirst.filter(([label]) => label === 'New Session' || label === 'New Tab'))
-      .toEqual([['New Session', 'Ctrl+Shift+T'], ['New Tab', 'Ctrl+T']])
-    expect(tabFirst.filter(([label]) => label !== 'New Session' && label !== 'New Tab'))
-      .toEqual(sessionFirst.filter(([label]) => label !== 'New Session' && label !== 'New Tab'))
-    expect(new Set(tabFirst.map(([, key]) => key)))
-      .toEqual(new Set(sessionFirst.map(([, key]) => key)))
-  })
-
   it('sends a renderer command to the renderer and a main command to the main process', () => {
     const { template, dispatched } = build()
     for (const item of commandItemsOf(template))
@@ -213,7 +188,6 @@ describe('app-client-ui/app/shell/appMenu', () => {
       'session.history',
       'session.newRemote',
       'settings.open',
-      'tab.new',
       'session.details',
       'tab.close',
       'tab.splitRight',

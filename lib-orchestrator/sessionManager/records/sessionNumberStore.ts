@@ -118,7 +118,7 @@ export class SessionNumberStore extends JsonDocumentStore<Map<string, number>> {
    * with an `await` in between, so two allocations in flight over one project both read the same
    * seed and both hand back the same token - which becomes a worktree directory name and a branch
    * name. Nothing outside serialises them: `SessionManager.number()` is deliberately off the
-   * operation queue, and `promotePlain` takes a number from ON it, so the two can meet.
+   * operation queue, and a create takes a number from ON it, so the two can meet.
    */
   async allocate(projectPath: string, records: readonly SessionRecord[]): Promise<string | null> {
     const run = this.queue.then(() => this.allocateNext(projectPath, records))

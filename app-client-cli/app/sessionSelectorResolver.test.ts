@@ -19,6 +19,32 @@ describe('app-client-cli/app/sessionSelectorResolver', () => {
     })
   })
 
+  /*
+   * A custom number is matched the same way an allocated one is, because the resolver compares the
+   * slot rather than parsing it. Two sessions may carry `i34` - nothing hands a ticket out once -
+   * and that is the conflict path below, answered with candidates rather than a guess.
+   */
+  it('resolves a custom number, and conflicts when two sessions carry one', async () => {
+    const resolver = SessionSelectorResolverTest.resolver([
+      SessionSelectorResolverTest.session('session-1', 'i34', 'Q:/Apps/One'),
+      SessionSelectorResolverTest.session('session-2', '014', 'Q:/Apps/Two'),
+    ])
+
+    await expect(resolver.canonical({ kind: 'number', number: 'i34' })).resolves.toEqual({
+      ok: true,
+      value: { kind: 'sessionId', sessionId: 'session-1' },
+    })
+
+    const shared = SessionSelectorResolverTest.resolver([
+      SessionSelectorResolverTest.session('session-1', 'i34', 'Q:/Apps/One'),
+      SessionSelectorResolverTest.session('session-2', 'i34', 'Q:/Apps/Two'),
+    ])
+    expect(await shared.canonical({ kind: 'number', number: 'i34' }))
+      .toMatchObject({ ok: false, error: { code: 'conflict' } })
+    await expect(shared.canonical({ kind: 'number', number: 'i34' }, 'Q:/Apps/Two')).resolves
+      .toEqual({ ok: true, value: { kind: 'sessionId', sessionId: 'session-2' } })
+  })
+
   it('returns safe conflicts without choosing by life or list order', async () => {
     const resolver = SessionSelectorResolverTest.resolver(Array.from(
       { length: 26 },

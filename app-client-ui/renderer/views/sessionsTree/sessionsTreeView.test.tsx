@@ -1,4 +1,9 @@
-import { SessionsGroupsState, type SessionGroup, type SessionGroupAssignment } from '../../../shared/sessionsGroupsState'
+import {
+  SessionsGroupsState,
+  type SessionGroup,
+  type SessionGroupAssignment,
+  type SessionGroupDefinition,
+} from '../../../shared/sessionsGroupsState'
 import { CommitOpenStore } from '../../versioning/commitOpenStore'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -31,34 +36,86 @@ import {
 } from './sessionsTreeView'
 
 describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
-  it.each(['together', 'separated', 'states'] as const)('orders assigned groups and the submenu equally in %s', async (view) => {
+  it.each(['together', 'states'] as const)('orders assigned groups and the submenu equally in %s', async (view) => {
     const source = SessionsFixtures.mixed()
     const base = sessionOf(source, 's-working')
-    const snapshot = { ...source, sessions: ['pinned', 'priority', 'none', 'automation', 'waiting', 'blocked'].map((key) =>
-      ({ ...base, sessionId: key, title: key })) }
-    const groups: SessionGroupAssignment[] = [
-      { key: 'session:pinned', group: 'pinned' }, { key: 'session:priority', group: 'priority' },
-      { key: 'session:automation', group: 'automation' },
-      { key: 'session:waiting', group: 'waiting' }, { key: 'session:blocked', group: 'blocked' },
-    ]
+    const seeded = ['pinned', 'priority', 'none', 'automation', 'waiting', 'completed', 'blocked']
+    const snapshot = { ...source, sessions: seeded.map((key) => ({ ...base, sessionId: key, title: key })) }
+    const groups: SessionGroupAssignment[] = seeded.filter((key) => key !== 'none')
+      .map((key) => ({ key: `session:${key}`, group: key }))
     const { container, ports } = await mount(snapshot, view, { revision: 1, outbound: [], inbound: [] }, [], [], groups)
     const sections = (): string[] => [...container.querySelectorAll('.jamat-sessions__stack > section')]
       .map((node) => node.getAttribute('aria-label')!)
-    expect(sections()).toEqual(['Pinned', 'Priority', 'Sessions', 'Automation', 'Waiting', 'Blocked'])
-    for (const title of ['Pinned', 'Priority', 'Sessions', 'Automation', 'Waiting', 'Blocked'])
+    const titles = ['Pinned', 'Priority', 'Sessions', 'Automation', 'Waiting', 'Completed', 'Blocked']
+    expect(sections()).toEqual(titles)
+    for (const title of titles)
       expect(container.querySelector(`.jamat-sessions__stack > section[aria-label="${title}"]`)!.querySelector(`[data-session="${title === 'Sessions' ? 'none' : title.toLowerCase()}"]`)).not.toBeNull()
     fireEvent.contextMenu(rowOf(container, 'none'))
     expect(menuTitles().slice(0, 3)).toEqual(['Session Appearance', 'Groups', 'Session properties…'])
     fireEvent.click(screen.getByRole('menuitem', { name: 'Groups' }))
     expect(screen.getAllByRole('menuitemcheckbox').map((item) => item.textContent?.replace('✓', '')))
-      .toEqual(['Pinned', 'Priority', 'None', 'Automation', 'Waiting', 'Blocked'])
+      .toEqual(['Pinned', 'Priority', 'None', 'Automation', 'Waiting', 'Completed', 'Blocked'])
     expect(screen.getByRole('menuitemcheckbox', { name: 'None' })).toHaveAttribute('aria-checked', 'true')
     fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Blocked' }))
     await waitFor(() => expect(screen.getByRole('region', { name: 'Blocked' }).querySelector('[data-session="none"]')).not.toBeNull())
     expect(ports.savedGroups).toContainEqual({ key: 'session:none', group: 'blocked' })
     fireEvent.contextMenu(rowOf(container, 'priority'))
     chooseGroup('None')
-    await waitFor(() => expect(sections()).toEqual(['Pinned', 'Sessions', 'Automation', 'Waiting', 'Blocked']))
+    await waitFor(() => expect(sections())
+      .toEqual(['Pinned', 'Sessions', 'Automation', 'Waiting', 'Completed', 'Blocked']))
+  })
+
+  /*
+   * The sections are the person's own list, not a literal in this file. What is pinned here is that
+   * ONE list decides both surfaces: an order they chose stacks the panel that way and offers the
+   * submenu in the same order, and a section they invented takes a session like any other.
+   */
+  it('stacks the panel and the submenu in the order the settings hold, invented sections included', async () => {
+    const source = SessionsFixtures.mixed()
+    const base = sessionOf(source, 's-working')
+    const snapshot = { ...source, sessions: [{ ...base, sessionId: 'one', title: 'one' }] }
+    const { container, ports } = await mount(
+      snapshot, 'together', { revision: 1, outbound: [], inbound: [] }, [], [],
+      [{ key: 'session:one', group: 'ship-it' }],
+      [
+        { id: 'ship-it', title: 'Ship it' },
+        { id: 'none', title: 'Sessions' },
+        { id: 'pinned', title: 'Kept' },
+      ],
+    )
+    const sections = (): string[] => [...container.querySelectorAll('.jamat-sessions__stack > section')]
+      .map((node) => node.getAttribute('aria-label')!)
+
+    expect(sections()).toEqual(['Ship it', 'Sessions'])
+    expect(container.querySelector('section[aria-label="Ship it"] [data-session="one"]')).not.toBeNull()
+    fireEvent.contextMenu(rowOf(container, 'one'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Groups' }))
+    expect(screen.getAllByRole('menuitemcheckbox').map((item) => item.textContent?.replace('✓', '')))
+      .toEqual(['Ship it', 'None', 'Kept'])
+    expect(screen.getByRole('menuitemcheckbox', { name: 'Ship it' })).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Kept' }))
+    await waitFor(() => expect(sections()).toEqual(['Sessions', 'Kept']))
+    expect(ports.savedGroups).toContainEqual({ key: 'session:one', group: 'pinned' })
+  })
+
+  /*
+   * A section somebody removed leaves keys naming it. The tree drops them as it reads, because the
+   * two files are written apart: a session left filed under a section nothing draws would be
+   * filtered out of every section, including the one it falls back to, and simply not appear.
+   */
+  it('draws a session whose section was removed under Sessions again', async () => {
+    const source = SessionsFixtures.mixed()
+    const base = sessionOf(source, 's-working')
+    const snapshot = { ...source, sessions: [{ ...base, sessionId: 'one', title: 'one' }] }
+    const { container } = await mount(
+      snapshot, 'together', { revision: 1, outbound: [], inbound: [] }, [], [],
+      [{ key: 'session:one', group: 'gone-yesterday' }],
+      [{ id: 'none', title: 'Sessions' }, { id: 'pinned', title: 'Pinned' }],
+    )
+
+    expect([...container.querySelectorAll('.jamat-sessions__stack > section')]
+      .map((node) => node.getAttribute('aria-label')!)).toEqual(['Sessions'])
+    expect(container.querySelector('section[aria-label="Sessions"] [data-session="one"]')).not.toBeNull()
   })
 
   it('shows inherited selection and lets a session override its root with None', async () => {
@@ -81,7 +138,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(blocked.querySelector('[data-session="s-working"]')).toBeNull()
   })
 
-  it.each(['together', 'separated', 'states'] as const)('pins a session above the other groups in %s and removes the empty heading on unpin', async (view) => {
+  it.each(['together', 'states'] as const)('pins a session above the other groups in %s and removes the empty heading on unpin', async (view) => {
     const { container, ports } = await mount(SessionsFixtures.mixed(), view)
     expect(screen.queryByRole('region', { name: 'Pinned' })).toBeNull()
     fireEvent.contextMenu(rowOf(container, 's-working'))
@@ -149,7 +206,13 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     readonly savedViews: SessionsTabsView[] = []
     savedFilters: readonly SavedSessionsFilter[] = []
     savedGroups: readonly SessionGroupAssignment[] = []
+    /** The seeded sections, so a test that says nothing draws the panel a fresh install draws. */
+    sections: readonly SessionGroupDefinition[] = SessionsGroupsState.defaultsConst
     groupsAnswer: IpcResult<boolean> = { ok: true, value: true }
+
+    loadGroupDefinitions(): Promise<IpcResult<readonly SessionGroupDefinition[]>> {
+      return Promise.resolve({ ok: true, value: this.sections })
+    }
 
     loadGroups(): Promise<IpcResult<readonly SessionGroupAssignment[]>> {
       return Promise.resolve({ ok: true, value: this.savedGroups })
@@ -269,11 +332,13 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     storedFilters: readonly SavedSessionsFilter[] = [],
     commitSessionIds: string[] = [],
     storedGroups: readonly SessionGroupAssignment[] = [],
+    sections: readonly SessionGroupDefinition[] = SessionsGroupsState.defaultsConst,
   ) {
     const ports = new Ports(snapshot)
     ports.storedView = storedView
     ports.savedFilters = storedFilters
     ports.savedGroups = storedGroups
+    ports.sections = sections
     const onLaunch = vi.fn()
     const onOpenSettings = vi.fn()
     const onOpenTerminal = vi.fn()
@@ -904,8 +969,9 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(flashOf(container, 's-working')).toBeTruthy()
   })
 
-  // The note is never a label (that is the V2 anti-pattern): the row offers it as its tooltip, and
-  // a row without one says just its title there.
+  // The note is never a label (that is the V2 anti-pattern): the row offers it in its own hover
+  // card, and a row without one says just its title there. The native `title` is gone from the
+  // row, or Chromium would draw its own grey box on top of the card a moment later.
   it('offers title and note as the row tooltip, and just the title without a note', async () => {
     const mixed = SessionsFixtures.mixed()
     const { container } = await mount({
@@ -915,11 +981,22 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
         : session),
     })
 
-    const noted = container.querySelector('[data-session="s-working"] .jamat-sessions__title')
-    expect(noted?.getAttribute('title')).toBe('Alpha worktree\n\nWaiting for the review')
-    expect(noted?.textContent).toBe('Alpha worktree')
-    const bare = container.querySelector('[data-session="s-waiting"] .jamat-sessions__title')
-    expect(bare?.getAttribute('title')).toBe('Beta worktree')
+    const noted = container.querySelector('[data-session="s-working"] .jamat-sessions__title')!
+    expect(noted.hasAttribute('title')).toBe(false)
+    expect(noted.textContent).toBe('Alpha worktree')
+    fireEvent.pointerEnter(noted)
+    const card = await screen.findByRole('tooltip')
+    expect(card.querySelector('.jamat-sessions__tooltip-title')?.textContent).toBe('Alpha worktree')
+    expect(card.querySelector('.jamat-sessions__tooltip-note')?.textContent).toBe('Waiting for the review')
+    fireEvent.pointerLeave(noted)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+
+    const bare = container.querySelector('[data-session="s-waiting"] .jamat-sessions__title')!
+    expect(bare.hasAttribute('title')).toBe(false)
+    fireEvent.pointerEnter(bare)
+    const plain = await screen.findByRole('tooltip')
+    expect(plain.querySelector('.jamat-sessions__tooltip-title')?.textContent).toBe('Beta worktree')
+    expect(plain.querySelector('.jamat-sessions__tooltip-note')).toBeNull()
   })
 
   // What the daily view leaves out is what somebody has finished with, not what stopped running.
@@ -1002,24 +1079,19 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(exitPillOf(container, 's-failed-install')?.textContent).toBe('exit 1')
   })
 
-  it('draws the sessions and then the tabs, as two trees under one heading', async () => {
+  it('draws every session of the panel in one tree', async () => {
     const { container } = await mount(SessionsFixtures.mixed())
 
-    // The middle part is the Tabs heading ROW: the heading plus the one action the section owns.
-    expect(bodyPartsOf(container)).toEqual(['div', 'div', 'div'])
-    expect(partOf(container, 1).querySelector('.jamat-sessions__section')?.textContent)
-      .toBe('Tabs')
+    expect(bodyPartsOf(container)).toEqual(['div'])
     expect(partOf(container, 0).querySelector('[data-session="s-working"]')).toBeTruthy()
-    expect(partOf(container, 0).querySelector('[data-session="s-tab"]')).toBeNull()
-    expect(partOf(container, 2).querySelector('[data-session="s-tab"]')).toBeTruthy()
-    expect(partOf(container, 2).querySelector('[data-session="s-working"]')).toBeNull()
+    expect(partOf(container, 0).querySelector('[data-session="s-tab"]')).toBeTruthy()
   })
 
   it.each([
-    ['neither direction', false, false, ['Tabs']],
-    ['outbound only', true, false, ['Tabs', 'Remote']],
-    ['inbound only', false, true, ['Tabs', 'Remote connections']],
-    ['both directions', true, true, ['Tabs', 'Remote', 'Remote connections']],
+    ['neither direction', false, false, []],
+    ['outbound only', true, false, ['Remote']],
+    ['inbound only', false, true, ['Remote connections']],
+    ['both directions', true, true, ['Remote', 'Remote connections']],
   ] as const)(
     'shows remote sections only for connected peers: %s',
     async (_name, outbound, inbound, expected) => {
@@ -1037,14 +1109,36 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     },
   )
 
-  it('draws connected remote computers after local tabs and omits the only endpoint level', async () => {
+  /*
+   * A remote computer is a PLACE, not a stage of this person's work, so it belongs after every
+   * section they composed. Drawn at the end of Sessions it sat above each one of them instead.
+   */
+  it('draws the remote sections below every section the person composed', async () => {
+    const mixed = SessionsFixtures.mixed()
+    const { container } = await mount(
+      mixed,
+      'together',
+      remoteSnapshot([outboundEndpoint(mixed, 'endpoint-a')]),
+      [],
+      [],
+      [{ key: 'session:s-working', group: 'automation' }],
+      [
+        { id: 'none', title: 'Sessions' },
+        { id: 'automation', title: 'Automation' },
+        { id: 'pinned', title: 'Pinned' },
+      ],
+    )
+    expect(sectionNames(container)).toEqual(['Sessions', 'Automation', 'Remote'])
+  })
+
+  it('draws connected remote computers after the local tree and omits the only endpoint level', async () => {
     const mixed = SessionsFixtures.mixed()
     const { container, onOpenTerminal } = await mount(
       mixed,
       null,
       remoteSnapshot([outboundEndpoint(mixed, 'endpoint-a')]),
     )
-    expect(sectionNames(container)).toEqual(['Sessions', 'Tabs', 'Remote'])
+    expect(sectionNames(container)).toEqual(['Sessions', 'Remote'])
     const remote = sectionAfter(container, 'Remote')
     expect(remote.textContent).toContain('Office PC')
     expect(remote.textContent).not.toContain('config-endpoint-a')
@@ -1150,7 +1244,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     })
     const { container } = await mount(mixed, null, remoteSnapshot([offline]))
 
-    expect(sectionNames(container)).toEqual(['Sessions', 'Tabs', 'Remote'])
+    expect(sectionNames(container)).toEqual(['Sessions', 'Remote'])
   })
 
   it('disconnects one remote session without running its finish action', async () => {
@@ -1196,17 +1290,6 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     })
   })
 
-  // A section that came and went with its contents would make the toggle unreadable: nothing on
-  // screen would say whether the arrangement was switched or whether there is simply nothing there.
-  it('keeps the Tabs heading when there are no tabs, and says so under it', async () => {
-    const { container } = await mount(SessionsFixtures.setupPending())
-
-    expect(bodyPartsOf(container)).toEqual(['div', 'div', 'p'])
-    expect(partOf(container, 1).querySelector('.jamat-sessions__section')?.textContent)
-      .toBe('Tabs')
-    expect(partOf(container, 2).textContent).toBe('No tabs.')
-  })
-
   /*
    * The two trees scroll separately, and that is the whole of this view working: sharing the body's
    * one scroller pushed the heading below the fold once the sessions list was long enough, and the
@@ -1218,27 +1301,16 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
    * space lands between the two lists and runs out exactly when the sessions fill the panel. jsdom
    * lays nothing out, so what is asserted here is the structure those two rules need.
    */
-  it('draws the two trees as one column, so the tabs can sit at its foot', async () => {
+  it('draws one tree as one column', async () => {
     const { container } = await mount(SessionsFixtures.mixed())
 
     const stack = bodyOf(container).querySelector('.jamat-sessions__stack')
     expect(stack).toBeTruthy()
     expect(bodyOf(container).children).toHaveLength(1)
-    expect(partOf(container, 2).querySelector('[data-session="s-tab"]')).toBeTruthy()
-  })
-
-  it('draws one tree carrying both kinds once the arrangement is switched, and stores it', async () => {
-    const { ports, container } = await mount(SessionsFixtures.mixed())
-
-    fireEvent.click(buttonNamed(container, 'Grouping'))
-    expect(screen.getByRole('menuitemcheckbox', { name: 'Tabs separated' }).getAttribute('aria-checked')).toBe('true')
-    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'All together' }))
-
     expect(bodyPartsOf(container)).toEqual(['div'])
     expect(partOf(container, 0).querySelector('[data-session="s-tab"]')).toBeTruthy()
     expect(partOf(container, 0).querySelector('[data-session="s-working"]')).toBeTruthy()
     expect(buttonNamed(container, 'Grouping').getAttribute('title')).toBe('All together')
-    expect(ports.savedViews).toEqual(['together'])
   })
 
   it('opens in the arrangement the last run was left in', async () => {
@@ -1277,9 +1349,9 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     fireEvent.click(buttonNamed(container, 'Grouping'))
     fireEvent.contextMenu(buttonNamed(container, 'Grouping'))
     expect(screen.queryByRole('menu', { name: 'Session grouping' })).toBeNull()
-    expect(bodyPartsOf(container).slice(0, 3)).toEqual(['div', 'div', 'div'])
+    expect(bodyPartsOf(container)).toEqual(['div'])
     expect(container.querySelector('[data-session="s-working"]')).toBeNull()
-    expect(ports.savedViews).toEqual(['states', 'separated'])
+    expect(ports.savedViews).toEqual(['states', 'together'])
   })
 
   it('restores state grouping without writing it back', async () => {
@@ -1315,14 +1387,12 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
   })
 
   /**
-   * ONE collapsed set for both trees. A project node keeps its id wherever it is drawn, because it is
-   * the same project: folding it away is a statement about that project rather than about the section
-   * it happens to be in. Two sets would give one twisty two answers inside one panel, and `together`
-   * would then need a third.
+   * A project node keeps its id wherever it is drawn, because it is the same project: folding it
+   * away is a statement about that project rather than about the section it happens to be in.
    */
-  it('folds a project away in both trees at once', async () => {
+  it('folds a project away, and takes every session of it with it', async () => {
     const { container } = await mount(SessionsFixtures.mixed())
-    expect(partOf(container, 2).querySelector('[data-session="s-tab"]')).toBeTruthy()
+    expect(partOf(container, 0).querySelector('[data-session="s-tab"]')).toBeTruthy()
 
     fireEvent.click(twistyNamed(partOf(container, 0), 'AppJamatV3'))
 
@@ -1867,7 +1937,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
       await waitFor(() => expect(container.querySelector('.jamat-sessions__remote-status--offline')).not.toBeNull())
       const ended = settled(snapshot, 's-working', 'ended', 'finished')
       pushRemote(remoteSnapshot([outboundEndpoint(ended, 'endpoint-a')], [], 3))
-      await waitFor(() => expect(sectionNames(container)).toEqual(['Sessions', 'Tabs', 'Remote']))
+      await waitFor(() => expect(sectionNames(container)).toEqual(['Sessions', 'Remote']))
 
       expect(onFinalizeAsk).not.toHaveBeenCalled()
     })
@@ -2236,35 +2306,6 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     fireEvent.click(labelled(container, '+ Session in NodeJs'))
 
     expect(onLaunch.mock.calls).toEqual([[{ category: 'nodejs' }]])
-  })
-
-  /*
-   * The section's own action: a tab belongs to no project row, so it names no place and the card
-   * asks which one. It is the pointer's half of the same thing the keyboard does.
-   */
-  it('opens the tab card from the Tabs heading, naming no project', async () => {
-    const { onLaunch, container } = await mount(SessionsFixtures.mixed())
-
-    fireEvent.click(labelled(container, 'New tab'))
-
-    expect(onLaunch.mock.calls).toEqual([[{ purpose: 'tabProfile' }]])
-  })
-
-  /*
-   * Drawn the way every other action in this panel is drawn, which is the whole point of there being
-   * one button component: the same class, and inside the container that only appears under the
-   * pointer. It arrived outside that container once, and was then the single button in the panel
-   * that was always on screen.
-   */
-  it('draws the Tabs action like every other row action', async () => {
-    const { container } = await mount(SessionsFixtures.mixed())
-    showAll(container)
-    const tabAction = labelled(container, 'New tab')
-    const sessionAction = labelled(container, '+ Session in AppJamatV3')
-
-    expect(tabAction.className).toBe(sessionAction.className)
-    expect(tabAction.closest('.jamat-sessions__group-actions')).toBeTruthy()
-    expect(sessionAction.closest('.jamat-sessions__group-actions')).toBeTruthy()
   })
 
   /**
@@ -2799,18 +2840,13 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(titleOf('s-dirty', '.jamat-sessions__glyph')).toBe('ended')
   })
 
-  it('explains the base chip, the pills and the merge word', async () => {
+  it('explains the base chip, the completed pill and the merge word', async () => {
     const { container } = await mount(SessionsFixtures.mixed())
     showAll(container)
     const titlesOf = (selector: string): (string | null)[] =>
       [...container.querySelectorAll(selector)].map((mark) => mark.getAttribute('title'))
 
     // Counted, not just iterated: an empty result would pass a loop over nothing.
-    const tabPills = titlesOf('.jamat-sessions__pill--tab')
-    expect(tabPills.length).toBeGreaterThan(0)
-    for (const title of tabPills)
-      expect(title).toBe("Lives only as a tab; not part of the tree's flows")
-
     const completed = titlesOf('.jamat-sessions__pill--completed')
     expect(completed.length).toBeGreaterThan(0)
     for (const title of completed)

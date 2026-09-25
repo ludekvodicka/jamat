@@ -490,9 +490,6 @@ class TabsControllerHarness {
   clearOperation: (() => Promise<boolean>) | null = null
   transferLease: TabTransferLease | null = null
   transferCommitError: Error | null = null
-  /** What the close hook was asked about, and what it answers. */
-  readonly asked: { key: string; params: Record<string, unknown> }[] = []
-  allowsClose = true
   readonly controller: TabsController
 
   constructor(readonly dockview: FakeDockview) {
@@ -554,10 +551,6 @@ class TabsControllerHarness {
         return Promise.resolve()
       },
       reportError: (message) => this.errors.push(message),
-      onWillUserClose: (key, params) => {
-        this.asked.push({ key, params })
-        return Promise.resolve(this.allowsClose)
-      },
     })
     this.controller.attach(dockview.asApi())
   }
@@ -625,7 +618,6 @@ describe('app-client-ui/renderer/widgets/tabs/tabsController', () => {
       title: 'Transferred Probe',
       params,
       sessionId: null,
-      presentation: null,
     }
   }
 
@@ -785,7 +777,6 @@ describe('app-client-ui/renderer/widgets/tabs/tabsController', () => {
     await harness.controller.restoreAndReconcile(null, false)
     harness.saved.length = 0
     harness.cleared.length = 0
-    harness.asked.length = 0
     harness.transferSequence.length = 0
     harness.storeAccepts = false
     const payload = transferredPanel()
@@ -803,7 +794,6 @@ describe('app-client-ui/renderer/widgets/tabs/tabsController', () => {
     expect(harness.cleared).toEqual(['clear'])
     expect(harness.saved[0]).not.toContain('welcome:{}')
     expect(harness.saved).toHaveLength(1)
-    expect(harness.asked).toEqual([])
   })
 
   it('rolls back a durable target copy when commit rejects a closing target', async () => {
@@ -824,18 +814,12 @@ describe('app-client-ui/renderer/widgets/tabs/tabsController', () => {
     expect(harness.cleared).toEqual(['clear'])
   })
 
-  it('removes a transferred plain tab silently without invoking its user-close hook', async () => {
+  it('removes a transferred panel without remembering what it held', async () => {
     const harness = TabsControllerHarness.fresh()
-    harness.dockview.seedPanel(
-      'terminal:plain',
-      'terminal',
-      'Plain',
-      { sessionId: 'session-1', presentation: 'tab' },
-    )
+    harness.dockview.seedPanel('terminal:one', 'terminal', 'Alpha', { sessionId: 'session-1' })
 
-    await harness.controller.removeTransferred('terminal:plain')
+    await harness.controller.removeTransferred('terminal:one')
 
-    expect(harness.asked).toEqual([])
     expect(harness.dockview.panels).toEqual([])
   })
 
@@ -933,7 +917,6 @@ describe('app-client-ui/renderer/widgets/tabs/tabsController', () => {
         title: 'Session One',
         params: { sessionId: 's1', sidebar: { width: 280 } },
         sessionId: 's1',
-        presentation: 'session',
       },
     ]])
     expect(harness.active).toEqual([panelId])
@@ -1460,7 +1443,6 @@ describe('app-client-ui/renderer/widgets/tabs/tabsController', () => {
       title: 'One',
       params: { sessionId: 's1' },
       sessionId: 's1',
-      presentation: 'session',
     }])
 
     const owned = TabsControllerHarness.fresh()
@@ -1497,14 +1479,11 @@ describe('app-client-ui/renderer/widgets/tabs/tabsController', () => {
     if (openedFirst.kind !== 'opened' || openedSecond.kind !== 'opened')
       throw new Error('Remote panels were not opened')
     expect(openedFirst.panelId).not.toBe(openedSecond.panelId)
-    expect(harness.claimed.map((panel) => ({
-      params: panel.params,
-      sessionId: panel.sessionId,
-      presentation: panel.presentation,
-    }))).toEqual([
-      { params: TerminalTargetCodec.params(first), sessionId: null, presentation: null },
-      { params: TerminalTargetCodec.params(second), sessionId: null, presentation: null },
-    ])
+    expect(harness.claimed.map((panel) => ({ params: panel.params, sessionId: panel.sessionId })))
+      .toEqual([
+        { params: TerminalTargetCodec.params(first), sessionId: null },
+        { params: TerminalTargetCodec.params(second), sessionId: null },
+      ])
   })
 
   it('releases only a granted claim when adding the panel fails', async () => {
@@ -1733,76 +1712,29 @@ describe('app-client-ui/renderer/widgets/tabs/tabsController', () => {
   })
 
   /**
-   * The one close that can end what is behind it. It hangs on the four paths a person can reach and
-   * on nothing else: the window tearing down empties dockview without passing through any of them,
-   * which is what keeps "closing a client detaches" true.
+   * Closing a tab detaches and nothing more, on every path a person can reach and in every window.
+   * A plain tab was the one exception until 2026-09-23, and it is gone: a session is drawn by its
+   * row in the tree whatever happens to its tab.
    */
-  describe('the question asked before a user closes a panel', () => {
-    it('asks about the panel being closed, with its key and its parameters', async () => {
+  describe('closing a panel', () => {
+    it('removes the panel it was given', async () => {
       const harness = TabsControllerHarness.fresh()
-      await harness.controller.openPanel('probe', 'Probe', {
-        sessionId: 's1',
-        presentation: 'tab',
-      })
+      await harness.controller.openPanel('probe', 'Probe', { sessionId: 's1' })
 
-      await harness.controller.hidePanel(TabsController.panelIdOf(
-        'probe',
-        { sessionId: 's1', presentation: 'tab' },
-      ))
+      await harness.controller.hidePanel(TabsController.panelIdOf('probe', { sessionId: 's1' }))
 
-      expect(harness.asked).toEqual([
-        { key: 'probe', params: { sessionId: 's1', presentation: 'tab' } },
-      ])
-      expect(harness.dockview.removed).toEqual(['probe:{"sessionId":"s1","presentation":"tab"}'])
+      expect(harness.dockview.removed).toEqual(['probe:{"sessionId":"s1"}'])
     })
 
-    it('leaves the panel where it is when the answer is no', async () => {
-      const harness = TabsControllerHarness.fresh()
-      await harness.controller.openPanel('probe', 'Probe', { serial: 1 })
-      harness.allowsClose = false
-
-      await harness.controller.hidePanel(TabsController.panelIdOf('probe', { serial: 1 }))
-
-      expect(harness.dockview.removed).toEqual([])
-    })
-
-    // Re-keying a promoted tab is this client closing a panel to itself, and ending the session is
-    // exactly what must not happen there.
-    it('asks nothing at all for a silent close', async () => {
-      const harness = TabsControllerHarness.fresh()
-      await harness.controller.openPanel('probe', 'Probe', { serial: 1 })
-      harness.allowsClose = false
-
-      await harness.controller.hidePanel(
-        TabsController.panelIdOf('probe', { serial: 1 }),
-        { silent: true },
-      )
-
-      expect(harness.asked).toEqual([])
-      expect(harness.dockview.removed).toEqual(['probe:{"serial":1}'])
-    })
-
-    it('asks once per panel when closing the others, and keeps the ones that refused', async () => {
+    it('closes the others and keeps the one it was told to keep', async () => {
       const harness = TabsControllerHarness.fresh()
       await harness.controller.openPanel('probe', 'A', { serial: 1 })
       await harness.controller.openPanel('probe', 'B', { serial: 2 })
       await harness.controller.openPanel('probe', 'C', { serial: 3 })
-      harness.allowsClose = false
 
       await harness.controller.closeOtherPanels(TabsController.panelIdOf('probe', { serial: 2 }))
 
-      expect(harness.asked).toHaveLength(2)
-      expect(harness.dockview.removed).toEqual([])
-    })
-
-    // The teardown path: dockview empties itself, and the controller is only told to stop listening.
-    it('is not asked when the window is torn down', async () => {
-      const harness = TabsControllerHarness.fresh()
-      await harness.controller.openPanel('probe', 'A', { serial: 1 })
-
-      harness.controller.dispose()
-
-      expect(harness.asked).toEqual([])
+      expect(harness.dockview.panels.map((panel) => panel.id)).toEqual(['probe:{"serial":2}'])
     })
   })
 
@@ -1848,8 +1780,7 @@ describe('app-client-ui/renderer/widgets/tabs/tabsController', () => {
       expect(replacementWasThere).toBe(true)
       expect(harness.dockview.removed).toEqual([sessionPanelId('s1')])
       // Silent: the session behind a preview keeps running, so nothing is asked and nothing is ended.
-      expect(harness.asked).toEqual([])
-      expect(harness.controller.isPreview(sessionPanelId('s2'))).toBe(true)
+        expect(harness.controller.isPreview(sessionPanelId('s2'))).toBe(true)
       expect(harness.controller.isPreview(sessionPanelId('s1'))).toBe(false)
     })
 
@@ -2008,21 +1939,6 @@ describe('app-client-ui/renderer/widgets/tabs/tabsController', () => {
       expect(harness.controller.isPreview(sessionPanelId('s1'))).toBe(false)
     })
 
-    it('refuses to make a plain tab a preview, before it asks for the panel', async () => {
-      const harness = TabsControllerHarness.fresh()
-
-      const outcome = await harness.controller.openPanel(
-        'terminal',
-        'Plain',
-        { sessionId: 's1', presentation: 'tab' },
-        undefined,
-        { preview: true },
-      )
-
-      expect(outcome.kind).toBe('failed')
-      expect(harness.claimed).toEqual([])
-      expect(harness.dockview.added).toEqual([])
-    })
 
     it('keeps open only the panel it was given', async () => {
       const harness = TabsControllerHarness.fresh()

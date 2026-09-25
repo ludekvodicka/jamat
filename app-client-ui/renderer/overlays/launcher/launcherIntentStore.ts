@@ -76,13 +76,8 @@ export interface LauncherIntent {
    * - a project already names its category, so reading both would be two answers to one question.
    */
   category?: string
-  /**
-   * `tabProfile` = this card asks the short question: a type list without the flows, and no
-   * isolation. It names the FORM, not the result - `New` and `Shell` from it are plain tabs, while
-   * `Continue/Fork` is a session of the tree like any other. It belongs to the card and not to one
-   * screen: Escape back to the projects and Enter again is still the tab card.
-   */
-  purpose?: 'tabProfile' | 'remote' | 'history'
+  /** Which card this open wants: the network one, the historic-sessions one, or the ordinary one. */
+  purpose?: 'remote' | 'history'
   /**
    * Valid only with `purpose: 'remote'`: the computer the card starts on. A right-click on a paired
    * computer in the tree already knows which one, so the launcher has no list to draw; Ctrl+N writes

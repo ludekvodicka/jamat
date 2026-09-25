@@ -1,4 +1,4 @@
-import type { SessionGroupAssignment } from '../../../shared/sessionsGroupsState'
+import { SessionsGroupsState, type SessionGroupAssignment } from '../../../shared/sessionsGroupsState'
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { IpcResult } from '../../../shared/appClientUiIpc'
@@ -9,6 +9,7 @@ describe('app-client-ui/renderer/views/sessionsTree/useSessionsGroups', () => {
 
   it('refuses changes after a failed initial read and restores saved groups on retry', async () => {
     const ports = {
+      loadGroupDefinitions: async () => ({ ok: true as const, value: SessionsGroupsState.defaultsConst }),
       loadGroups: vi.fn<() => Promise<IpcResult<readonly SessionGroupAssignment[]>>>()
         .mockRejectedValueOnce(new Error('Offline'))
         .mockResolvedValue({ ok: true, value: [{ key: 'category:work', group: 'pinned' as const }] }),
@@ -28,6 +29,7 @@ describe('app-client-ui/renderer/views/sessionsTree/useSessionsGroups', () => {
   it('prevents overlapping writes and keeps the saved groups after a rejected write', async () => {
     let settle!: (answer: IpcResult<boolean>) => void
     const ports = {
+      loadGroupDefinitions: async () => ({ ok: true as const, value: SessionsGroupsState.defaultsConst }),
       loadGroups: async () => ({ ok: true as const, value: [{ key: 'category:work', group: 'pinned' as const }] }),
       assignGroup: vi.fn(() => new Promise<IpcResult<boolean>>((resolve) => { settle = resolve })),
       subscribeGroups: () => () => {},
@@ -63,6 +65,7 @@ describe('app-client-ui/renderer/views/sessionsTree/useSessionsGroups', () => {
     let notify!: () => void
     let reads = 0
     const ports = {
+      loadGroupDefinitions: async () => ({ ok: true as const, value: SessionsGroupsState.defaultsConst }),
       loadGroups: async () => ({ ok: true as const, value: loaded[Math.min(reads++, 1)]! }),
       assignGroup: async () => ({ ok: true as const, value: true }),
       subscribeGroups: (onChanged: () => void) => {

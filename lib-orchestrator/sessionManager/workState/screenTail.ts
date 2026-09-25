@@ -116,7 +116,12 @@ export class ScreenTail {
   }
 
   static stripAnsiLower(text: string): string {
-    return text.replace(ScreenTail.ansiPatternConst, '').toLowerCase()
+    return ScreenTail.stripAnsi(text).toLowerCase()
+  }
+
+  /** Case kept: the composer reader hands a draft back as the person typed it. */
+  static stripAnsi(text: string): string {
+    return text.replace(ScreenTail.ansiPatternConst, '')
   }
 
   /**

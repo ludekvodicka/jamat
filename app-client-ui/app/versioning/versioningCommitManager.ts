@@ -15,7 +15,7 @@ import type { CommitProgress } from '../../../lib-orchestrator/shared/commitProg
 import { PathCompare } from '../../../lib-orchestrator/shared/pathCompare'
 import type { TortoiseCommitDialog } from '../../../lib-orchestrator/shared/tortoiseCommitDialog'
 import type { SvnCommitManager } from '../../../lib-orchestrator/svn/svnCommitManager'
-import { VersioningCommitLimits, VersioningRevert } from '../../shared/versioningCommit'
+import { VersioningCommitLimits, VersioningCommitMessage, VersioningRevert } from '../../shared/versioningCommit'
 import type { VersioningRevertRequest, VersioningRevertResult, VersioningTortoiseResult } from '../../shared/versioningCommit'
 import type { VersioningCommitDraftDto, VersioningCommitOpenResult, VersioningCommitOpenSessions, VersioningCommitRunRequest, VersioningCommitRunResult } from '../../shared/versioningCommit'
 import type { VersioningCommitMessageStore } from './versioningCommitMessageStore'
@@ -71,7 +71,8 @@ export class VersioningCommitManager {
   async prepare(sessionId: string, vcs: FileChangesVcsId, scope: string | null, proposal: string | null,
     paths?: readonly string[]): Promise<VersioningCommitOpenResult> {
     if (vcs !== 'svn' && vcs !== 'git') throw new Error(`Unknown commit VCS: ${JSON.stringify(vcs)}`)
-    if (proposal !== null && proposal.length > VersioningCommitLimits.messageMaxCharactersConst)
+    const proposed = proposal === null ? null : VersioningCommitMessage.normalize(proposal)
+    if (proposed !== null && proposed.length > VersioningCommitLimits.messageMaxCharactersConst)
       return { ok: false, code: 'message-too-long', detail: `The commit message is limited to ${VersioningCommitLimits.messageMaxCharactersConst} characters` }
     const context = await this.deps.sessions.workingContext(sessionId)
     if (!context.ok) return { ok: false, code: 'unknown-session', detail: context.detail }
@@ -122,9 +123,9 @@ export class VersioningCommitManager {
       },
       owners: new Set(), cwd, lockRoot: PathCompare.comparable(detection.root), ...(restricted ? { targets } : {}),
     }
-    const messageApplied = proposal !== null && !draft.dto.editedByPerson && draft.dto.phase.kind === 'editing'
+    const messageApplied = proposed !== null && !draft.dto.editedByPerson && draft.dto.phase.kind === 'editing'
     if (messageApplied) {
-      draft.dto.message = proposal
+      draft.dto.message = proposed
       draft.dto.proposedByAgent = true
       if (!this.deps.messages.save(draft.dto)) throw new Error('The commit message could not be saved')
     }
@@ -254,7 +255,7 @@ export class VersioningCommitManager {
     const draft = this.owned(ownerId, draftId)
     if (draft === null || typeof message !== 'string' || message.length > VersioningCommitLimits.messageMaxCharactersConst
       || draft.dto.phase.kind === 'running' || draft.dto.phase.kind === 'done') return false
-    draft.dto.message = message
+    draft.dto.message = VersioningCommitMessage.normalize(message)
     draft.dto.editedByPerson = true
     const saved = this.deps.messages.save(draft.dto)
     this.bump(draft)
@@ -266,6 +267,7 @@ export class VersioningCommitManager {
     if (draft === null) return { ok: false, code: 'unknown-draft', detail: 'The commit dialog no longer exists' }
     if (typeof request.message !== 'string' || request.message.length > VersioningCommitLimits.messageMaxCharactersConst)
       return { ok: false, code: 'message-too-long', detail: `The commit message is limited to ${VersioningCommitLimits.messageMaxCharactersConst} characters` }
+    const message = VersioningCommitMessage.normalize(request.message)
     if (this.running.has(draft.lockRoot) || draft.dto.phase.kind === 'running' || draft.dto.phase.kind === 'done')
       return { ok: false, code: 'busy', detail: 'A commit is already running or this dialog has already committed' }
     const snapshot = this.deps.snapshotOf(ownerId, request.snapshotId)
@@ -321,14 +323,14 @@ export class VersioningCommitManager {
       }
       if (this.owned(ownerId, request.draftId) !== draft)
         return { ok: false, code: 'unknown-draft', detail: 'The commit dialog closed before the commit started' }
-      if (!this.setMessage(ownerId, request.draftId, request.message))
+      if (!this.setMessage(ownerId, request.draftId, message))
         return fail('The commit message could not be saved')
       draft.dto.phase = { kind: 'running', startedAt }
       delete draft.externalReview
       this.bump(draft)
       temporary = await mkdtemp(join(tmpdir(), 'jamat-v3-commit-'))
       const messageFile = join(temporary, 'message.txt')
-      await writeFile(messageFile, request.message.replace(/\n?$/, '\n'), 'utf8')
+      await writeFile(messageFile, message.replace(/\n?$/, '\n'), 'utf8')
       for (const [scope, entries] of groups) {
         if (completed.length > 0 && this.owned(ownerId, request.draftId) !== draft)
           return fail('The commit dialog closed before the remaining groups were committed')
@@ -471,7 +473,7 @@ export class VersioningCommitManager {
         return { ok: false, code: 'vcs-failed', detail: 'The commit message could not be saved' }
       temporary = await mkdtemp(join(tmpdir(), 'jamat-v3-commit-'))
       const messageFile = join(temporary, 'message.txt')
-      await writeFile(messageFile, message, 'utf8')
+      await writeFile(messageFile, VersioningCommitMessage.normalize(message), 'utf8')
       if (this.owned(ownerId, draftId) !== draft)
         return { ok: false, code: 'unknown-draft', detail: 'The commit dialog closed before opening Tortoise' }
       draft.externalReview = 'running'
@@ -506,6 +508,23 @@ export class VersioningCommitManager {
     for (const entry of snapshot.entries)
       if (entry.nodeKind === 'directory' && (entry.status === 'added' || entry.status === 'untracked')
         && snapshot.entries.some((child) => selected.has(child.fileId) && PathCompare.isInside(entry.path, child.path))) selected.add(entry.fileId)
+    // What a copied directory carries is never a target of its own: the copy publishes the whole
+    // subtree from its copyfrom source, and `svn commit --depth empty` on such a child fails,
+    // because its parent add has not been published yet. The loop above already put that parent in,
+    // so dropping the child here keeps the copy whole rather than narrowing it.
+    for (const entry of snapshot.entries)
+      if (entry.status === 'copied' && snapshot.entries.some((parent) => parent.nodeKind === 'directory'
+        && parent.status === 'added' && selected.has(parent.fileId) && PathCompare.isInside(parent.path, entry.path)))
+        selected.delete(entry.fileId)
+    // What `svn delete --keep-local` leaves on disk comes back as an untracked row inside a
+    // `deleted` directory, and adding one REPLACES that directory instead of deleting it. The pane
+    // leaves those rows unchecked and disabled, so a selection that still carries one is stale
+    // rather than a decision, and publishing a subtree the dialog says it removes is not a recovery.
+    for (const entry of snapshot.entries)
+      if (entry.status === 'untracked' && selected.has(entry.fileId)
+        && snapshot.entries.some((parent) => parent.nodeKind === 'directory' && parent.status === 'deleted'
+          && PathCompare.isInside(parent.path, entry.path)))
+        return { ok: false, code: 'invalid-target', detail: 'A selected path sits inside a directory this commit deletes; reload the list' }
     const targets: CommitTarget[] = []
     if (selected.size > VersioningCommitLimits.targetsMaxConst)
       return { ok: false, code: 'invalid-target', detail: 'Too many commit targets including required parent directories' }

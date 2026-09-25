@@ -39,6 +39,7 @@ class SmokeVcsCommit extends SmokeHarness {
     await this.checkSvnExternalBatch(message)
     await this.checkSvnUpdate(message)
     await this.checkExplicitScopes(message)
+    await this.checkSvnKeptLocalDeletion(message)
     console.log(`\nsmoke-vcs-commit: ${this.passed} checks passed`)
   }
 
@@ -54,6 +55,65 @@ class SmokeVcsCommit extends SmokeHarness {
     return result.stdout
   }
 
+  /**
+   * `svn delete --keep-local` is how a runtime directory stops being versioned: the removal is
+   * published and the files stay on disk, where they come back as untracked rows INSIDE the deleted
+   * directory. Staging one of them runs `svn add --parents`, which REPLACES that directory and
+   * publishes the whole tree again under a review that says it deletes it. Every eligible row is
+   * checked by default, so that reversal was one confirmation away, and applications_web r2994 is
+   * the revision where it happened.
+   */
+  private async checkSvnKeptLocalDeletion(message: string): Promise<void> {
+    const repository = join(this.root, 'kept-repository')
+    const created = await new CommandInvoker().run({ command: 'svnadmin', args: ['create', repository], cwd: this.root, env: process.env })
+    if (created.failure !== null || created.code !== 0) throw new Error(created.stderr)
+    const working = join(this.root, 'kept-working')
+    await this.svnRun(this.root, ['checkout', pathToFileURL(repository).href, working])
+    const data = join(working, 'data')
+    await mkdir(join(data, 'records'), { recursive: true })
+    await writeFile(join(data, 'records', 'published.json'), 'published\n')
+    await writeFile(join(working, 'keep.txt'), 'base\n')
+    await this.svnRun(working, ['add', '--', 'data', 'keep.txt'])
+    await this.svnRun(working, ['commit', '--file', message])
+    // What the application wrote after that commit: never versioned, and below the deleted root.
+    await mkdir(join(data, 'records', 'fresh'), { recursive: true })
+    await writeFile(join(data, 'records', 'fresh', 'run.json'), 'local\n')
+    await this.svnRun(working, ['delete', '--keep-local', '--', `${data}@`])
+    const manager = new VersioningCommitManager({
+      messages: new VersioningCommitMessageStore(join(this.root, 'kept-messages.json'), (detail) => console.error(detail)),
+      sessions: { workingContext: async () => ({ ok: true, value: { sessionId: 'kept', cwd: working, agent: null, worktree: null } }), settleVcs: () => {} },
+      vcsStatus: new VcsStatusView(), checkpointStore: { worktreeBelongsToStore: async () => false },
+      fileAccess: (_owner, snapshot, file) => this.files.fileAccess(snapshot, file),
+      snapshotOf: (_owner, snapshot) => this.files.workingSnapshot(snapshot),
+      git: this.commits, svn: this.svnCommits,
+      tortoise: { open: async () => { throw new Error('Unexpected Tortoise fallback') } }, onChanged: () => {},
+    })
+    const prepared = await manager.prepare('kept', 'svn', null, null, [data])
+    if (!prepared.ok) throw new Error(prepared.detail)
+    manager.attach(prepared.value.draftId, 'owner')
+    const read = await this.files.workingTree({ sessionId: 'kept', cwd: working, agent: null, worktree: null }, 'svn', true)
+    if (!read.ok) throw new Error(read.detail)
+    const snapshot = manager.files('owner', prepared.value.draftId, read.value)
+    const deletion = snapshot.entries.filter((entry) => entry.status === 'deleted')
+    this.check('A kept-local deletion is one deleted row beside the untracked files it leaves behind',
+      deletion.length === 1 && deletion[0].path === data
+      && snapshot.entries.some((entry) => entry.status === 'untracked'))
+    const text = await readFile(message, 'utf8')
+    const everything = await manager.run('owner', { draftId: prepared.value.draftId, snapshotId: snapshot.snapshotId,
+      fileIds: snapshot.entries.map((entry) => entry.fileId), message: text })
+    this.check('No selection turns a kept-local deletion into a replacement',
+      !everything.ok && everything.code === 'invalid-target')
+    const result = await manager.run('owner', { draftId: prepared.value.draftId, snapshotId: snapshot.snapshotId,
+      fileIds: deletion.map((entry) => entry.fileId), message: text })
+    if (!result.ok) throw new Error(result.detail)
+    this.check('The review publishes the deletion alone and leaves every file unversioned on disk',
+      !(await this.svnRun(this.root, ['list', pathToFileURL(repository).href])).includes('data')
+      && await readFile(join(data, 'records', 'published.json'), 'utf8') === 'published\n'
+      && await readFile(join(data, 'records', 'fresh', 'run.json'), 'utf8') === 'local\n'
+      && (await this.svnRun(working, ['status', '--', `${data}@`])).trim().startsWith('?'))
+    manager.release(prepared.value.draftId, 'owner')
+  }
+
   private async checkExplicitScopes(message: string): Promise<void> {
     const repository = join(this.root, 'selection-repository')
     const created = await new CommandInvoker().run({ command: 'svnadmin', args: ['create', repository], cwd: this.root, env: process.env })
@@ -63,12 +123,12 @@ class SmokeVcsCommit extends SmokeHarness {
     await mkdir(origin)
     await this.svnRun(this.root, ['checkout', pathToFileURL(repository).href, working])
     for (const name of ['selected@file.txt', 'deleted.txt', 'unchecked.txt']) await writeFile(join(working, name), 'base\n')
-    for (const project of ['ProjectOne', 'ProjectTwo', 'ProjectThree']) {
+    for (const project of ['ProjectOne', 'ProjectTwo', 'ProjectThree', 'ProjectFour']) {
       await mkdir(join(working, project))
       await writeFile(join(working, project, 'Dockerfile'), 'FROM base\n')
       await writeFile(join(working, project, 'unselected.txt'), 'base\n')
     }
-    await this.svnRun(working, ['add', '--', 'selected@file.txt@', 'deleted.txt', 'unchecked.txt', 'ProjectOne', 'ProjectTwo', 'ProjectThree'])
+    await this.svnRun(working, ['add', '--', 'selected@file.txt@', 'deleted.txt', 'unchecked.txt', 'ProjectOne', 'ProjectTwo', 'ProjectThree', 'ProjectFour'])
     await this.svnRun(working, ['commit', '--file', message])
     const selected = join(working, 'selected@file.txt')
     await writeFile(selected, 'selected edit\n')
@@ -154,6 +214,19 @@ class SmokeVcsCommit extends SmokeHarness {
       Number(nestedRevision) === nestedBefore + 1
       && await this.svnRun(working, ['cat', '-r', 'BASE', 'ProjectOne/Dockerfile']) === 'FROM nested\n'
       && await this.svnRun(working, ['cat', '-r', 'BASE', 'ProjectThree/Dockerfile']) === 'FROM nested\n')
+    // How the group working copy holds a project it leaves to its own checkout: the node is excluded
+    // and the project is checked out in its place. SVN status of the group never walks into it, and
+    // the review committed the group's files and reported the project's as committed too (#28).
+    await this.svnRun(working, ['update', '--set-depth', 'exclude', '--', 'ProjectFour'])
+    await this.svnRun(this.root, ['checkout', `${pathToFileURL(repository).href}/ProjectFour`, join(working, 'ProjectFour')])
+    const excludedBatch = [join(working, 'ProjectOne', 'Dockerfile'), join(working, 'ProjectFour', 'Dockerfile'),
+      join(working, 'ProjectFour', 'added.txt')]
+    for (const file of excludedBatch) await writeFile(file, 'FROM excluded\n')
+    const excludedRevision = await review(excludedBatch)
+    const excludedLog = await this.svnRun(working, ['log', '--verbose', '-r', excludedRevision, pathToFileURL(repository).href])
+    this.check('One native review commits a project checked out over its excluded node in the same revision',
+      ['/ProjectOne/Dockerfile', '/ProjectFour/Dockerfile', '/ProjectFour/added.txt'].every((path) => excludedLog.includes(path))
+      && (await this.svnRun(join(working, 'ProjectFour'), ['status'])).trim() === '')
     const other = join(this.root, 'selection-other')
     await this.svnRun(this.root, ['checkout', pathToFileURL(repository).href, other])
     await writeFile(join(other, 'selected@file.txt'), 'remote selected\n')

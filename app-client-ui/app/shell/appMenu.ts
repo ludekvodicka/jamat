@@ -5,7 +5,6 @@ import {
   type CommandDescriptor,
   type CommandId,
   type CommandMenuSection,
-  type LauncherKeyPreference,
 } from '../../shared/commands'
 
 export interface WindowMenuEntry {
@@ -36,15 +35,10 @@ export class AppMenu {
   } as const satisfies Record<CommandMenuSection, string>
   private windowEntries: readonly WindowMenuEntry[] = []
 
-  /**
-   * `launcherKeysOf` is read at every build rather than held: a save rebuilds the menu, and a value
-   * captured once would be the state of the config when this object was made.
-   */
   constructor(
     private readonly runMainCommand: (id: CommandId) => void,
     private readonly publishRendererCommand: (id: CommandId) => void,
     private readonly focusOrRecreate: (windowId: string) => void,
-    private readonly launcherKeysOf: () => LauncherKeyPreference,
   ) {}
 
   install(): void {
@@ -109,11 +103,8 @@ export class AppMenu {
       label: descriptor.title,
       click: this.dispatcherOf(descriptor),
     }
-    // The one place a menu item's key is not simply what its descriptor declares: the two launcher
-    // commands answer with each other's when the preference says so.
-    const accelerator = AppCommands.acceleratorOf(descriptor, this.launcherKeysOf())
-    if (accelerator)
-      item.accelerator = accelerator
+    if (descriptor.accelerator)
+      item.accelerator = descriptor.accelerator
     // A chord goes in the same field because printing a key is all this field can do for one:
     // Electron holds a single combination per item, so it is told not to register what it prints
     // and the window delivers the strokes itself.

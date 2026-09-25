@@ -458,6 +458,68 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(client.errors).toEqual([])
   })
 
+  it('reads an agent session\'s input box off the Host projection and refuses what has none', async () => {
+    const context = await world()
+    context.publishDescriptor()
+    const binding = { hostInstanceId: context.host.descriptor().hostInstanceId, generation: 1 }
+    const directory = { mode: 'project' as const, categoryId: 'code', projectPath: join(context.categoryRoot, 'Alpha') }
+    for (const id of ['composer-agent', 'composer-shell', 'composer-blind'])
+      context.runtimes.set(id, runtime(id))
+    seedRecords(context, [
+      recordOf(context, 'composer-agent', {
+        kind: 'agent', life: 'live', binding, directory,
+        agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'composer-native' },
+      }),
+      recordOf(context, 'composer-shell', { kind: 'shell', life: 'live', binding, directory }),
+      recordOf(context, 'composer-blind', {
+        kind: 'agent', life: 'live', binding, directory,
+        agent: { agentId: 'codex', launchMode: 'new' },
+      }),
+      recordOf(context, 'composer-gone', {
+        kind: 'agent', life: 'lost', binding: null, directory,
+        agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'composer-gone-native' },
+      }),
+    ])
+    const fixture = WorkFixtures.all().find((candidate) => candidate.file === 'claude-live-composer-text.json')
+    if (fixture === undefined) throw new Error('missing work fixture claude-live-composer-text.json')
+    context.screens.set('composer-agent', fixture.frame.wideScreenTail)
+    const client = clientOf(context)
+    await client.manager.start()
+    await writable(client)
+    await reconciled(client)
+    // The listing keeps the runtime; only `runtime.inspect` refuses it.
+    context.host.handle('runtime.inspect', (body) => {
+      const target = body.target as RuntimeRef
+      const session = context.runtimes.get(target.runtimeSessionId)
+      if (session === undefined || target.runtimeSessionId === 'composer-blind')
+        return { status: 404, body: { error: 'no such runtime' } }
+      return {
+        body: {
+          session,
+          projection: { ...session, raw: '', screen: context.screens.get(target.runtimeSessionId) ?? '' },
+        } satisfies RuntimeInspectResult,
+      }
+    })
+
+    expect(await client.manager.terminalComposer('composer-agent')).toEqual({
+      ok: true,
+      reading: {
+        agentId: 'claude',
+        alive: true,
+        hint: 'idle',
+        composer: { state: 'text', text: 'Reply with the single word pong and nothing else.' },
+        queuedRow: false,
+        echoHead: null,
+        pastePlaceholders: 0,
+        onlyPlaceholders: false,
+      },
+    })
+    expect(await client.manager.terminalComposer('nobody')).toEqual({ ok: false, code: 'unknown-session' })
+    expect(await client.manager.terminalComposer('composer-gone')).toEqual({ ok: false, code: 'not-live' })
+    expect(await client.manager.terminalComposer('composer-shell')).toEqual({ ok: false, code: 'not-agent' })
+    expect(await client.manager.terminalComposer('composer-blind')).toEqual({ ok: false, code: 'no-projection' })
+  })
+
   it('names the Host, the catalog and where every session belongs', async () => {
     const context = await world()
     context.publishDescriptor()
@@ -708,42 +770,16 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       expect(client.errors).toEqual([])
     }, 20_000)
 
-  /** A promotion is where the number arrives, so the tab it re-opens under is a new name. */
-  it('answers a promoted tab with the name it now takes', async () => {
+  // Nothing is finished the moment it is created, and a session that is still running has no
+  // ending to read either.
+  it('answers a fresh session with a reconciled snapshot and no ending', async () => {
     const context = await world()
     context.publishDescriptor()
     const client = clientOf(context)
     await client.manager.start()
     await writable(client)
 
-    const plain = valueOf(await client.manager.createSession({
-      kind: 'shell',
-      directory: { mode: 'project', categoryId: 'code', projectPath: join(context.categoryRoot, 'Alpha') },
-      title: 'a look around',
-      presentation: 'tab',
-    }))
-    expect(plain.tabTitle).toBe('Alpha - a look around')
-
-    expect(valueOf(await client.manager.promotePlainSession(plain.sessionId)).tabTitle)
-      .toBe('Alpha - 001 - a look around')
-    expect(client.errors).toEqual([])
-  }, 20_000)
-
-  // A plain tab is a session like any other on the wire; only where it is drawn differs, and the
-  // renderer cannot leave it out of the tree without being told which one it is.
-  it('carries the plain tab mark into the snapshot', async () => {
-    const context = await world()
-    context.publishDescriptor()
-    const client = clientOf(context)
-    await client.manager.start()
-    await writable(client)
-
-    const plain = valueOf(await client.manager.createSession({
-      kind: 'shell',
-      directory: { mode: 'adHoc', path: join(context.root, 'elsewhere') },
-      presentation: 'tab',
-    }))
-    const inTree = valueOf(await client.manager.createSession({
+    const created = valueOf(await client.manager.createSession({
       kind: 'shell',
       directory: { mode: 'adHoc', path: join(context.root, 'elsewhere') },
     }))
@@ -751,12 +787,8 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     // Nobody has looked yet is a different answer from nothing is running, and one surface acts on
     // the difference: before the first answered listing this is false.
     expect(client.manager.snapshot().reconciled).toBe(true)
-    expect(sessionOf(client, plain.sessionId)?.presentation).toBe('tab')
-    expect(sessionOf(client, inTree.sessionId)?.presentation).toBeUndefined()
-    // Nothing is finished the moment it is created, and a session that is still running has no
-    // ending to read either.
-    expect(sessionOf(client, plain.sessionId)?.completed).toBeUndefined()
-    expect(sessionOf(client, plain.sessionId)?.outcome).toBeUndefined()
+    expect(sessionOf(client, created.sessionId)?.completed).toBeUndefined()
+    expect(sessionOf(client, created.sessionId)?.outcome).toBeUndefined()
     expect(client.errors).toEqual([])
   }, 20_000)
 

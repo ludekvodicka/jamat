@@ -21,6 +21,7 @@ describe('app-client-ui/renderer/contextCompaction/contextCompactionPanel', () =
   let sessionModel: SessionModelStore
   let compact: SessionCompact
   let commands: string[]
+  let delivered: string[]
   let settingsChanged: [string, boolean][]
   let status: ContextCompactionStatus
   let controller: Pick<ContextCompactionController, 'inspect'>
@@ -72,6 +73,7 @@ describe('app-client-ui/renderer/contextCompaction/contextCompactionPanel', () =
     }, () => nowConst)
     await sessionModel.readNow(session.sessionId)
     commands = []
+    delivered = []
     const inputs = new TerminalInputRegistry()
     inputs.register(session.sessionId, {
       writable: () => true,
@@ -85,6 +87,10 @@ describe('app-client-ui/renderer/contextCompaction/contextCompactionPanel', () =
       claimAutomatic: () => Promise.resolve({ ok: true, value: true }),
       cooldown: () => Promise.resolve({ ok: true, value: null }),
       noteManual: () => Promise.resolve({ ok: true, value: undefined }),
+      deliver: (sessionId) => {
+        delivered.push(sessionId)
+        return Promise.resolve({ ok: true, value: { kind: 'delivered', proof: 'working' } })
+      },
       reportError: () => undefined,
     })
     await vi.advanceTimersByTimeAsync(0)
@@ -126,7 +132,8 @@ describe('app-client-ui/renderer/contextCompaction/contextCompactionPanel', () =
     fireEvent.click(button)
     await vi.advanceTimersByTimeAsync(100)
 
-    expect(commands).toEqual(['/compact', '\r'])
+    expect(delivered).toEqual([session.sessionId])
+    expect(commands).toEqual([])
   })
 
   it('updates only this provider auto-compact switch', async () => {

@@ -10,7 +10,7 @@ export interface CliEnvelope {
   operation: string | null
   ok: boolean
   value?: unknown
-  error?: { code?: unknown; detail?: unknown }
+  error?: { code?: unknown; detail?: unknown; data?: unknown }
 }
 
 export interface CliClientOptions {

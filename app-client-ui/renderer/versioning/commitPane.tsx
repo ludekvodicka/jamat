@@ -184,6 +184,10 @@ export function CommitPane(props: {
   else if (phase.kind === 'failed') status = phase.detail
   else if (phase.kind === 'cancelled') status = 'Review cancelled'
   else throw new Error(`Unknown commit phase: ${JSON.stringify(phase)}`)
+  // A clean scope drawn as a bare empty list read as a list that failed to load (#24). A read that
+  // came back with warnings may be empty because it failed, so only a clean read may say this.
+  const nothingToCommit = snapshot !== null && !working.loading && snapshot.entries.length === 0
+    && snapshot.warnings.length === 0 && snapshot.source.selected !== null
   return <section className="commit-pane" tabIndex={-1} aria-label={`${props.item.vcs.toUpperCase()} commit dialog`}
     onKeyDownCapture={(event) => {
       if (event.nativeEvent.isComposing || event.repeat || event.altKey || event.ctrlKey || event.metaKey
@@ -210,7 +214,8 @@ export function CommitPane(props: {
         ? <CommitProgress phase={{ kind: 'running', startedAt: commitStartedAt }} /> : null}
     <div role="status" className="commit-status">
       {model.error ?? working.error ?? working.requiredError ?? note ?? status
-        ?? (working.loading && draft !== null ? 'Reading changes...' : draft === null ? 'Opening commit dialog...' : `${selectedCount} selected`)}
+        ?? (working.loading && draft !== null ? 'Reading changes...' : draft === null ? 'Opening commit dialog...'
+          : nothingToCommit ? 'Nothing to commit: this scope has no changes' : `${selectedCount} selected`)}
     </div>
     {snapshot?.warnings.map((warning) => <p className="commit-warning" key={warning}>{warning}</p>)}
     <div className="commit-actions">

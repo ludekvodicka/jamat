@@ -418,6 +418,7 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={close} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Reload' })).toBeEnabled())
     expect(close).not.toHaveBeenCalled()
+    expect(screen.getByRole('status')).toHaveTextContent('Nothing to commit: this scope has no changes')
     vi.mocked(f.ports.versioning.commitFiles).mockResolvedValue({ ok: true, value: { ok: true, value: f.snapshot } })
     fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
     await screen.findByLabelText('Include a.txt')
@@ -430,6 +431,16 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     } } })
     fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
     await waitFor(() => expect(close).toHaveBeenCalledOnce())
+  })
+
+  it('does not call a list that its read could not complete empty', async () => {
+    const f = CommitPaneTest.fixture()
+    vi.mocked(f.ports.versioning.commitFiles).mockResolvedValue({ ok: true, value: { ok: true, value: {
+      ...f.snapshot, entries: [], warnings: ['SVN BASE: svn: E155007: not a working copy'],
+    } } })
+    render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={vi.fn()} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    await screen.findByText('SVN BASE: svn: E155007: not a working copy')
+    expect(screen.getByRole('status')).not.toHaveTextContent('Nothing to commit')
   })
 
   it('keeps operation errors visible even if their automatic refresh has no visible rows', async () => {
@@ -793,6 +804,68 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     expect(screen.getByLabelText('Include new/nested')).toBeChecked()
     expect(screen.getByLabelText('Include new/nested')).toBeDisabled()
     expect(screen.getByText('3 selected')).toBeInTheDocument()
+  })
+
+  /**
+   * A copy publishes its whole subtree from the copyfrom source, so these rows exist to be READ.
+   * Offering a checkbox that SVN would ignore is the one thing the pane must not do.
+   */
+  it('draws what a copied directory carries and locks those rows to it', () => {
+    const f = CommitPaneTest.fixture()
+    const snapshot = { ...f.snapshot, externalRoots: [], entries: [
+      CommitPaneTest.entry('react', 'added', 'directory'),
+      CommitPaneTest.entry('react/axClientOnly.tsx', 'copied'),
+      CommitPaneTest.entry('react/axReactTypes.ts', 'copied'),
+    ] }
+    const onChange = vi.fn()
+    render(<CommitTargetsList snapshot={snapshot} checked={new Set(['react'])} disabled={false} onChange={onChange} onOpen={vi.fn()} onMenuOpen={vi.fn()} onOpenExternal={null} onRevert={vi.fn()} onOpenSeparately={vi.fn()} />)
+    for (const name of ['Include react/axClientOnly.tsx', 'Include react/axReactTypes.ts']) {
+      expect(screen.getByLabelText(name)).toBeChecked()
+      expect(screen.getByLabelText(name)).toBeDisabled()
+    }
+    // One target, not three: the directory is what gets committed.
+    expect(screen.getByText('1 selected')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Select all' }))
+    expect(onChange).toHaveBeenCalledWith(new Set(['react']))
+  })
+
+  it('unchecks a copied directory and its carried rows together', () => {
+    const f = CommitPaneTest.fixture()
+    const snapshot = { ...f.snapshot, externalRoots: [], entries: [
+      CommitPaneTest.entry('react', 'added', 'directory'),
+      CommitPaneTest.entry('react/axClientOnly.tsx', 'copied'),
+    ] }
+    render(<CommitTargetsList snapshot={snapshot} checked={new Set()} disabled={false} onChange={vi.fn()} onOpen={vi.fn()} onMenuOpen={vi.fn()} onOpenExternal={null} onRevert={vi.fn()} onOpenSeparately={vi.fn()} />)
+    expect(screen.getByLabelText('Include react')).not.toBeChecked()
+    expect(screen.getByLabelText('Include react/axClientOnly.tsx')).not.toBeChecked()
+    expect(screen.getByText('0 selected')).toBeInTheDocument()
+  })
+
+  /**
+   * A runtime directory stops being versioned through `svn delete --keep-local`, which leaves its
+   * files on disk. They return as untracked rows inside the deleted one, and adding any of them
+   * replaces the directory instead of deleting it. Checked by default, that was one click away.
+   */
+  it('leaves what a deleted directory keeps on disk out of the commit and out of Select all', async () => {
+    const f = CommitPaneTest.fixture()
+    f.snapshot.externalRoots = []
+    f.snapshot.entries = [
+      CommitPaneTest.entry('data', 'deleted', 'directory'),
+      CommitPaneTest.entry('data/records', 'untracked', 'directory'),
+      CommitPaneTest.entry('data/records/run.json', 'untracked'),
+    ]
+    render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={vi.fn()} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    await screen.findByLabelText('Include data/records')
+    for (const name of ['Include data/records', 'Include data/records/run.json']) {
+      expect(screen.getByLabelText(name)).not.toBeChecked()
+      expect(screen.getByLabelText(name)).toBeDisabled()
+    }
+    expect(screen.getByLabelText('Include data')).toBeChecked()
+    expect(screen.getByText('1 selected', { selector: '.commit-selection span' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Select all' }))
+    expect(screen.getByText('1 selected', { selector: '.commit-selection span' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Commit files' }))
+    await waitFor(() => expect(f.ports.versioning.runCommit).toHaveBeenCalledWith(expect.objectContaining({ fileIds: ['data'] })))
   })
 
   it('opens a new child diff and excludes an unchecked sibling from the commit request', async () => {

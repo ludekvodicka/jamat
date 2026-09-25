@@ -77,6 +77,15 @@ export class AgentWorkInspectorCodex {
     /[›❯>◦]\d+\.yes,proceed/,
     /pressentertoconfirmoresctocancel/,
   ]
+  /**
+   * A numbered menu Codex draws before its input box and waits on: the update prompt
+   * (`codex-live-booting.json`, `› 1. Update now` ... `Press enter to continue`) and the directory
+   * trust dialog (`codex-live-trust-dialog.json`, `› 1. Yes, continue` ... the same footer). Both
+   * are matched by structure rather than by their options: the selection marker on a numbered row,
+   * a second numbered row under it, and the confirm footer below, all on the shallow screen.
+   */
+  private static readonly launchMenuScreenConst =
+    /(?:^|\n)\s*[›❯>]\s*\d+\.[^\n]*\n(?:[^\n]*\n)*?\s*\d+\.[^\n]*\n(?:[^\n]*\n)*?\s*press\s*enter\s*to\s*continue\s*$/i
   // codex-queued-question-compacting.json: queued input alone is not a question, so require
   // the positive question count and answer shortcut together in the current status region.
   private static readonly queuedQuestionScreenConst =
@@ -97,6 +106,11 @@ export class AgentWorkInspectorCodex {
     // `working`, and an answered prompt has stopped producing output. The wider windows still ride
     // along as evidence; they just cannot be the whole case.
     if (prompt.some((item) => item.source === 'screen')) return { hint: 'blocked', evidence: prompt }
+
+    const menu = ScreenTail.stripAnsiLower(frame.screenTail)
+      .match(AgentWorkInspectorCodex.launchMenuScreenConst)?.[0]
+    if (menu)
+      return { hint: 'waiting', evidence: [{ source: 'screen', signal: 'menuPrompt', match: menu.trim() }] }
 
     const question = ScreenTail.stripAnsiLower(frame.screenTail)
       .match(AgentWorkInspectorCodex.queuedQuestionScreenConst)?.[0]

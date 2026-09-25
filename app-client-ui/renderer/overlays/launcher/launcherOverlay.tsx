@@ -144,8 +144,7 @@ function SessionLauncherOverlay(props: LauncherOverlayProps & { intent: Launcher
   const handedOff = useRef(false)
   const intent = props.intent
   // Read once and held for the life of the card, not for the life of one screen: Escape back to the
-  // projects and Enter again is still the tab card, or still the network card.
-  const tabProfile = intent?.purpose === 'tabProfile'
+  // projects and Enter again is still the network card.
   const remoteProfile = intent?.purpose === 'remote'
   useEffect(() => () => {
     if (remoteProfile) void window.appClient.remote.release('launcher-computers')
@@ -263,7 +262,6 @@ function SessionLauncherOverlay(props: LauncherOverlayProps & { intent: Launcher
         }
         pendingBinding.current = null
         const step = CreateScreenModel.opened(binding, {
-          tabProfile: tabProfile ? true : undefined,
           // What the clicked session runs beats what was last started from the launcher: the
           // preference answers "which agent do I usually start", and this card was opened on one
           // that has already answered it.
@@ -595,17 +593,13 @@ class LauncherScreens {
     } satisfies LauncherScreenDescriptor<'projects'>,
 
     create: {
-      titleOf: (screen, state) => {
-        if (screen.state.tabProfile) return 'New tab'
-        return state.remote === null
-          ? 'New session'
-          : `New session on ${state.remote.displayName}`
-      },
+      titleOf: (_screen, state) => (state.remote === null
+        ? 'New session'
+        : `New session on ${state.remote.displayName}`),
       /*
-       * Type-driven in both profiles, because both now draw the type row. The last hint follows the
-       * choice rather than naming both: what Enter does here is exactly one of them, and a footer
-       * that says otherwise is a footer nobody trusts. The tab card drops `W`, the one key its rows
-       * do not carry.
+       * Type-driven, because the card draws the type row. The last hint follows the choice rather
+       * than naming both: what Enter does here is exactly one of them, and a footer that says
+       * otherwise is a footer nobody trusts.
        */
       footKeysOf: (screen) => {
         const type = CreateScreenModel.typeOf(screen.state)
@@ -629,9 +623,7 @@ class LauncherScreens {
             ['←→', 'Choose'],
             ['Enter', type.kind === 'flow' ? 'Configure' : 'Start'],
             ['Tab', screen.state.target.kind === 'remote' ? 'Focus' : 'Agent'],
-            ...(screen.state.tabProfile || screen.state.target.kind === 'remote'
-              ? []
-              : [['W', 'Worktree'] as const]),
+            ...(screen.state.target.kind === 'remote' ? [] : [['W', 'Worktree'] as const]),
             ['N', 'Name'],
           ])
         else

@@ -19,17 +19,12 @@ import type {
 import { CreateScreenModel } from './createScreenModel'
 
 describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', () => {
-  /** The three profiles the type list is asked about, spelled once. */
+  /** The two profiles the type list is asked about, spelled once. */
   const CreateProfilesConst: Readonly<
-    Record<
-      'local' | 'tab' | 'remote',
-      { tabProfile: boolean; target: LauncherTarget; source: CreateSessionTarget | null }
-    >
+    Record<'local' | 'remote', { target: LauncherTarget; source: CreateSessionTarget | null }>
   > = {
-    local: { tabProfile: false, target: { kind: 'local' }, source: null },
-    tab: { tabProfile: true, target: { kind: 'local' }, source: null },
+    local: { target: { kind: 'local' }, source: null },
     remote: {
-      tabProfile: false,
       target: { kind: 'remote', remoteEndpointId: 'endpoint-a', displayName: 'Studio' },
       source: null,
     },
@@ -193,10 +188,6 @@ describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', ()
 
     static opened(binding: LauncherBinding = projectConst): Run {
       return new Run(CreateScreenModel.opened(binding))
-    }
-
-    static tabProfile(binding: LauncherBinding = projectConst): Run {
-      return new Run(CreateScreenModel.opened(binding, { tabProfile: true }))
     }
 
     static remote(binding: LauncherBinding = projectConst): Run {
@@ -823,115 +814,13 @@ describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', ()
     )).toThrow(/Unknown create screen input/)
   })
 
-  /**
-   * The same screen asking a shorter question: the same types minus the flows, and no isolation.
-   * The profile names the FORM and not the result, which is the whole reason `New` and `Shell` from
-   * it are plain tabs while `Continue/Fork` from it is a session of the tree.
-   */
-  describe('the tab profile', () => {
-    it('offers the session types minus the flows', () => {
-      expect(CreateScreenModel.typesOf(CreateProfilesConst.tab)).toEqual([
-        { kind: 'raw' },
-        { kind: 'existing' },
-        { kind: 'shell' },
-      ])
-    })
-
-    it('walks the name, the type and the agent, starting on the name', () => {
-      const run = Run.tabProfile()
-      expect(run.state.field).toBe('name')
-      expect(CreateScreenModel.fieldsOf(run.state)).toEqual(['name', 'type', 'agent'])
-      // Down from the name reaches the type and then the agent, and stops: isolation is not drawn.
-      expect(run.on({ input: 'moveField', delta: 1 }).state.field).toBe('type')
-      expect(run.on(
-        { input: 'moveField', delta: 1 },
-        { input: 'moveField', delta: 1 },
-      ).state.field).toBe('agent')
-      expect(run.on(
-        { input: 'moveField', delta: 1 },
-        { input: 'moveField', delta: 1 },
-        { input: 'moveField', delta: 1 },
-      ).state.field).toBe('agent')
-    })
-
-    it('takes no number, so a tab is never counted against its project', () => {
-      const run = Run.tabProfile()
-      expect(run.step.effects).toEqual([])
-      expect(run.state.token).toBeNull()
-    })
-
-    it('answers the type but never the isolation', () => {
-      const run = Run.tabProfile()
-        .on({ input: 'chooseType', index: 99 }, { input: 'toggleWorktree' })
-      // The list clamps at Shell, which is the last of the three.
-      expect(CreateScreenModel.typeOf(run.state)).toEqual({ kind: 'shell' })
-      expect(run.state.worktree).toBe(false)
-      expect(CreateScreenModel.worktreeRefusal(run.state))
-        .toBe('a tab runs without isolation')
-    })
-
-    it('builds a raw agent tab, with the name it was given and nothing else', () => {
-      const run = Run.tabProfile()
-        .on({ input: 'nameChanged', name: 'scratch' }, { input: 'cycleAgent' })
-
-      expect(CreateScreenModel.specOf(run.state, null)).toEqual({
-        kind: 'agent',
-        directory: { mode: 'project', categoryId: 'nodejs', projectPath: projectConst.projectPath },
-        title: 'scratch',
-        agent: { agentId: 'codex', mode: 'new' },
-        presentation: 'tab',
-      })
-    })
-
-    it('builds a shell tab, which runs no agent', () => {
-      const run = Run.tabProfile().on({ input: 'chooseType', index: 2 })
-
-      expect(CreateScreenModel.specOf(run.state, null)).toEqual({
-        kind: 'shell',
-        directory: { mode: 'project', categoryId: 'nodejs', projectPath: projectConst.projectPath },
-        presentation: 'tab',
-      })
-      expect(CreateScreenModel.agentRefusal(run.state)).toBe('a shell runs no agent')
-    })
-
-    /*
-     * The one place the profile does NOT decide the result. Closing a plain tab discards its record,
-     * so the library refuses to hold a fork in one: Continue/Fork opens through the history spec,
-     * which has no presentation at all, and lands in the tree like every other kept session.
-     */
-    it('opens Continue/Fork as a session of the tree rather than as a tab', () => {
-      const run = Run.tabProfile().on(
-        { input: 'chooseType', index: 1 },
-        {
-          input: 'existingSessionsLoaded',
-          categoryId: 'nodejs',
-          projectName: projectConst.projectName,
-          summaries: existingConst,
-        },
-      )
-      expect(CreateScreenModel.typeOf(run.state)).toEqual({ kind: 'existing' })
-      expect(CreateScreenModel.fieldsOf(run.state))
-        .toEqual(['type', 'agent', 'existingSessions'])
-
-      const opened = run.on({ input: 'activate' })
-      const effect = opened.step.effects[0]
-      if (effect?.effect !== 'openHistory') throw new Error('Continue/Fork did not open history')
-      expect(effect.spec).not.toHaveProperty('presentation')
-    })
-
-    // No title at all rather than an empty one: the library names it after the directory.
-    it('leaves the title to the library when nothing was typed', () => {
-      expect(CreateScreenModel.specOf(Run.tabProfile().state, null).title).toBeUndefined()
-    })
-  })
-
   /*
    * The third profile. It is the SAME form asked of another computer, so what differs is only the
    * data source, the channel and the rows that mean nothing over there - and every one of the last
    * is said out loud rather than simply absent.
    */
   describe('the remote profile', () => {
-    it('offers the session types minus the flows, the same short list the tab card asks', () => {
+    it('offers the session types minus the flows', () => {
       expect(CreateScreenModel.typesOf(CreateProfilesConst.remote)).toEqual([
         { kind: 'raw' },
         { kind: 'existing' },

@@ -1,0 +1,29 @@
+{
+  "agent": "claude",
+  "expected": {
+    "hint": "idle",
+    "composer": {
+      "state": "text",
+      "text": "[Pasted text #1 +14 lines]"
+    },
+    "queuedRow": false,
+    "echoHead": null,
+    "pastePlaceholders": 1
+  },
+  "provenance": {
+    "origin": "captured from this tree's live Host by scripts/dev/capture-workstate.ts",
+    "case": "a bracketed paste of a fifteen-line draft, collapsed to its placeholder",
+    "capture": "written as ESC[200~ text ESC[201~ with `terminal send`; Claude shows `[Pasted text #1 +14 lines]` and the footer `paste again to expand`. A three-line paste was shown literally instead; sanitized per V1 recipe: the scratch directory is replaced by Q:\\PROJECT. ANSI is left intact",
+    "ported": "nothing - recorded in this tree",
+    "identical": "not present in the V1 or V2 corpus"
+  },
+  "recorded": {
+    "build": "claude-code 2.1.280",
+    "capturedAt": "2026-09-23"
+  },
+  "frame": {
+    "rawTail": "───────────────────\u001b[m> Reply\u001b[1Cwith\u001b[1Cthe\u001b[1Csingle\u001b[1Cword\u001b[1Cpong\u001b[1Cand\u001b[1Cnothing\u001b[1Celse.\u001b[1CThen\u001b[1Cread\r\n  E:/Temp/claude/fixture-notes/an-intentionally-long-pointer-path/that-keeps-going/until-it-wraps.md completely,          fol\u001b[1Cow every step it lists, a\u001b[1Cd\u001b[1Creport back\u001b[1Cin one\u001b[1Cshort\u001b[1Cparagraph\u001b[1Cwhen\u001b[1Cyou\u001b[1Care\u001b[1Cdone\u001b[1Cwith\u001b[1Cit.\u001b[?25h\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?25l\u001b[25;1H                                                                                                                        \r\n\u001b[K\u001b[38;2;136;136;136m\r\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[m> \u001b[K\u001b[38;2;153;153;153m\u001b[30;3HPress Ctrl-C again to exit\u001b[K\u001b[28;3H\u001b[?25h\u001b[?25l\u001b[m\u001b[38;2;255;107;128m\u001b[30;3H⏵⏵ bypass permissions on \u001b[38;2;153;153;153m(shift+tab to cycle) · ← 1 agent\u001b[28;3H\u001b[?25h\u001b[m\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?25l\u001b[38;2;153;153;153m\u001b[24;94Hctrl+g to edit in Notepad\u001b[38;2;136;136;136m\r\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[m> Reply\u001b[1Cwith\u001b[1Cthe\u001b[1Csingle\u001b[1Cword\u001b[1Cpong.\r\n  This second line is part of the pasted draft.                                                                           And\u001b[1Ca\u001b[1Cthird\u001b[1Cline.\u001b[30;48H\u001b[K\u001b[28;20H\u001b[?25h\u001b[?25l\u001b[24;94H\u001b[K\u001b[28;20H\u001b[?25h\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?25l\u001b[25;1H                                                                                                                        \r\n\u001b[K\u001b[38;2;136;136;136m\r\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[m> \u001b[K\u001b[38;2;153;153;153m\u001b[30;3HPress Ctrl-C again to exit\u001b[K\u001b[28;3H\u001b[?25h\u001b[?25l\u001b[m\u001b[38;2;255;107;128m\u001b[30;3H⏵⏵ bypass permissions on \u001b[38;2;153;153;153m(shift+tab to cycle) · ← 1 agent\u001b[28;3H\u001b[?25h\u001b[m\u001b[?25l[Pasted\u001b[1Ctext\u001b[1C#1\u001b[1C+14\u001b[1Clines]\u001b[38;2;153;153;153m\u001b[30;3Hpaste again to expand\u001b[K\u001b[28;29H\u001b[?25h\u001b[m",
+    "screenTail": "\n\n\u001b[0m                                                                                                                        \n\n\u001b[38;2;136;136;136m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[0m> [Pasted\u001b[1Ctext\u001b[1C#1\u001b[1C+14\u001b[1Clines]\n\u001b[38;2;136;136;136m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[2C\u001b[38;2;153;153;153mpaste again to expand\u001b[2A\u001b[5C\u001b[0m\u001b[?2004h\u001b[?1004h\u001b[?1003h",
+    "wideScreenTail": "\n\n\n\n\n\n\n\n\n\n\u001b[0m                                                                                                                        \n\n\u001b[38;2;136;136;136m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[0m> [Pasted\u001b[1Ctext\u001b[1C#1\u001b[1C+14\u001b[1Clines]\n\u001b[38;2;136;136;136m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[2C\u001b[38;2;153;153;153mpaste again to expand\u001b[2A\u001b[5C\u001b[0m\u001b[?2004h\u001b[?1004h\u001b[?1003h"
+  }
+}

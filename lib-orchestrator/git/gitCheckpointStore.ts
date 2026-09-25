@@ -1,7 +1,9 @@
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 
+import type { CommandRunner } from '../shared/commandInvoker.types'
+import { SvnInvoker } from '../svn/svnInvoker'
 import { CheckpointLayout } from './checkpointLayout'
 import { GitManager } from './gitManager'
 import type {
@@ -37,6 +39,9 @@ export interface CheckpointModeContext {
  * lives with that contract rather than being repeated here.
  */
 export class GitCheckpointStore extends GitManager {
+  /** The group directories below a volume that no SVN answer can turn into a project. */
+  private static readonly groupNamePatternConst = /^(applications.*|tooling)$/i
+
   /**
    * Where the repair says what it did. It is a report and not a returned value because the repair
    * happens inside somebody else's operation - a checkpoint taken before a worktree is cut - and
@@ -44,10 +49,13 @@ export class GitCheckpointStore extends GitManager {
    * the same way, for the same reason.
    */
   private readonly report: (message: string) => void
+  /** Asked only whether a directory directly below a volume is an SVN repository root. */
+  private readonly svn: CommandRunner
 
-  constructor(invoker: GitCommandRunner, report?: (message: string) => void) {
+  constructor(invoker: GitCommandRunner, report?: (message: string) => void, svn?: CommandRunner) {
     super(invoker)
     this.report = report ?? ((message) => console.warn(message))
+    this.svn = svn ?? new SvnInvoker()
   }
 
   /**
@@ -77,15 +85,9 @@ export class GitCheckpointStore extends GitManager {
       if (!top.failure && top.code === 0 && top.stdout.trim()) boundary = resolve(top.stdout.trim())
     }
 
-    const marker = await GitCheckpointStore.markerAbove(start, boundary)
+    const marker = await this.markerAbove(start, boundary)
     const root = marker ?? boundary ?? start
-    if (GitCheckpointStore.isUnsafeRoot(root)) {
-      return {
-        ok: false,
-        code: 'not-a-repo',
-        detail: `${root} is a group directory or a volume root, not a project`,
-      }
-    }
+    if (await this.isUnsafeRoot(root)) return GitCheckpointStore.refusalOf(root)
     return GitCheckpointStore.answer(root, marker !== null)
   }
 
@@ -95,6 +97,9 @@ export class GitCheckpointStore extends GitManager {
    * cheap and covers a `.git` that appeared after the store did.
    */
   async ensure(root: string): Promise<GitResult<{ storeDir: string }>> {
+    // The same predicate as `rootOf`, so a caller holding a root from anywhere else cannot put a
+    // store where discovery would never look for one.
+    if (await this.isUnsafeRoot(root)) return GitCheckpointStore.refusalOf(root)
     const storeDir = join(root, CheckpointLayout.storeRelativeConst)
     if (!(await GitManager.exists(storeDir))) {
       const init = await this.invoker.run(root, [
@@ -444,11 +449,15 @@ export class GitCheckpointStore extends GitManager {
    * The walk stops at `boundary` when there is one, and never accepts a root a store may not live
    * at, so a group store cannot claim a project below it.
    */
-  private static async markerAbove(start: string, boundary: string | null): Promise<string | null> {
+  private async markerAbove(start: string, boundary: string | null): Promise<string | null> {
     let current = start
     for (;;) {
-      if (!GitCheckpointStore.isUnsafeRoot(current)
-        && await GitManager.exists(join(current, CheckpointLayout.storeRelativeConst)))
+      // The string rule comes before the disk, and SVN only after a store was found: the walk
+      // passes the volume child of every project, and one process per step would be paid for
+      // nothing.
+      if (!GitCheckpointStore.isRefusedRoot(current)
+        && await GitManager.exists(join(current, CheckpointLayout.storeRelativeConst))
+        && !await this.isUnsafeRoot(current))
         return current
       if (boundary !== null && current === boundary) return null
       const parent = dirname(current)
@@ -460,14 +469,43 @@ export class GitCheckpointStore extends GitManager {
   /**
    * Where a store must never live: the user's home, a volume root, or a group directory sitting
    * directly below one, such as `Q:/Projects`. A checkpoint belongs to the project being
-   * worked in, never to the group that happens to contain it. The same rule is `is_unsafe_root` in
-   * commit-git.sh; the contract both implement is in versioning-full.md.
+   * worked in, never to the group that happens to contain it. Another directory directly below a
+   * volume is a project only when SVN says it is a repository root, which is what `Q:/Docker` is:
+   * a store there proves nothing, because group stores predate this guard. The same rule is
+   * `is_unsafe_root` in commit-git.sh; the contract both implement is in versioning-full.md.
    */
-  private static isUnsafeRoot(path: string): boolean {
+  private async isUnsafeRoot(path: string): Promise<boolean> {
     const abs = resolve(path)
+    if (GitCheckpointStore.isRefusedRoot(abs)) return true
+    const parent = dirname(abs)
+    return dirname(parent) === parent && !await this.isSvnRepositoryRoot(abs)
+  }
+
+  /** The part of the rule no metadata can change: home, a volume root and a known group. */
+  private static isRefusedRoot(abs: string): boolean {
     if (abs === resolve(homedir())) return true
     const parent = dirname(abs)
-    return parent === abs || dirname(parent) === parent
+    if (parent === abs) return true
+    return dirname(parent) === parent && GitCheckpointStore.groupNamePatternConst.test(basename(abs))
+  }
+
+  /**
+   * The local relative URL is `^/` only at a repository root; a checkout of a subtree answers with
+   * its path. Anything svn cannot answer, a missing directory included, is not a proof.
+   */
+  private async isSvnRepositoryRoot(abs: string): Promise<boolean> {
+    const outcome = await this.svn.run(dirname(abs), [
+      'info', '--show-item', 'relative-url', '--non-interactive', '--', `${abs}@`,
+    ])
+    return outcome.failure === null && outcome.code === 0 && outcome.stdout.trim() === '^/'
+  }
+
+  private static refusalOf(root: string): GitResult<never> {
+    return {
+      ok: false,
+      code: 'not-a-repo',
+      detail: `${root} is a group directory, a volume root or an unverified directory below one, not a project`,
+    }
   }
 
   private static async answer(

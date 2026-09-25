@@ -14,8 +14,8 @@ import type { ActiveAgentTerminal } from './useActiveAgentTerminal'
 describe('app-client-ui/renderer/statusBar/sessionModelItem', () => {
   let inputs: TerminalInputRegistry
   let sessionCompact: SessionCompact
-  /** Every submit the button made, so the session it named is read rather than assumed. */
-  let submitted: { sessionId: string; text: string }[]
+  /** Every delivery the button asked for, so the session it named is read rather than assumed. */
+  let delivered: string[]
   /** What the registry answers: false is the state where no live terminal holds that session. */
   let accepts = true
   function infoOf(overrides: Partial<SessionModelInfo> = {}): SessionModelInfo {
@@ -74,17 +74,18 @@ describe('app-client-ui/renderer/statusBar/sessionModelItem', () => {
   }
 
   beforeEach(() => {
-    submitted = []
+    delivered = []
     accepts = true
     inputs = new TerminalInputRegistry()
-    vi.spyOn(inputs, 'submit').mockImplementation((sessionId: string, text: string) => {
-      submitted.push({ sessionId, text })
-      return accepts
-    })
+    vi.spyOn(inputs, 'focus').mockImplementation(() => accepts)
     sessionCompact = new SessionCompact(inputs, {
       claimAutomatic: () => Promise.resolve({ ok: true, value: true }),
       cooldown: () => Promise.resolve({ ok: true, value: null }),
       noteManual: () => Promise.resolve({ ok: true, value: undefined }),
+      deliver: (sessionId) => {
+        delivered.push(sessionId)
+        return Promise.resolve({ ok: true, value: { kind: 'delivered', proof: 'working' } })
+      },
       reportError: (message) => AppClientUiReport.error(message),
     })
   })
@@ -181,14 +182,14 @@ describe('app-client-ui/renderer/statusBar/sessionModelItem', () => {
       expect(compact(draw(reading))).not.toBeNull()
     })
 
-    it('writes the command into the session the line is about, and no other', () => {
+    it('delivers the command to the session the line is about, and no other', async () => {
       const reading = readingOf(infoOf(), { sessionId: 's-in-front' })
       const button = compact(draw(reading))
       if (button === null) throw new Error('the widget drew no Compact button')
 
       fireEvent.click(button)
 
-      expect(submitted).toEqual([{ sessionId: 's-in-front', text: '/compact' }])
+      await vi.waitFor(() => expect(delivered).toEqual(['s-in-front']))
     })
 
     /** A click that reaches nobody is a line in the console: the bar has no room for a sentence. */

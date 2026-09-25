@@ -98,8 +98,12 @@ describe('app-client-ui/app/clientState/clientStateStore', () => {
     expect(store.loadSessionPins()).toEqual(['session:two'])
     store.saveSessionPins([])
     expect(reopen().loadSessionGroups()).toEqual([{ key: 'session:one', group: 'blocked' }])
-    expect(() => store.saveSessionGroups([{ key: 'one', group: 'unknown' as never }])).toThrow('invalid session groups')
+    expect(() => store.saveSessionGroups([{ key: 'one', group: 'Not An Id' }])).toThrow('invalid session groups')
     expect(() => store.saveSessionGroups([{ key: 'one', group: 'none' }, { key: 'one', group: 'pinned' }])).toThrow('invalid session groups')
+    // A section this build never heard of is stored, because the sections are a thing a person
+    // edits in another file and a window writing this one may be older than that list. What drops
+    // such a key is whoever removed the section, and the tree drops it again as it reads.
+    expect(store.saveSessionGroups([{ key: 'one', group: 'invented-yesterday' }])).toBe(true)
   })
 
   /**
@@ -190,7 +194,7 @@ describe('app-client-ui/app/clientState/clientStateStore', () => {
         windowBounds: boundsFixtureConst,
         debugWindowBounds: { ...boundsFixtureConst, x: 40 },
         sidebars: SidebarsState.default(),
-        sessionsView: 'separated',
+        sessionsView: 'states',
       },
       {
         schemaVersion: 1,
@@ -694,11 +698,11 @@ describe('app-client-ui/app/clientState/clientStateStore', () => {
 
   it('refuses a sessions view it was never taught, like its sibling writers', () => {
     const { store, stateFile } = fixture()
-    store.saveSessionsView('separated')
+    store.saveSessionsView('states')
 
     expect(() => store.saveSessionsView('sideways' as never))
       .toThrow(/Refusing to store the sessions view/)
-    expect(documentIn(stateFile).sessionsView).toBe('separated')
+    expect(documentIn(stateFile).sessionsView).toBe('states')
   })
 
   // How the panel LOOKS, not what it holds: a value nothing recognises costs one press of a button,
@@ -711,7 +715,7 @@ describe('app-client-ui/app/clientState/clientStateStore', () => {
       'utf8',
     )
 
-    expect(store.loadSessionsView()).toEqual({ sessionsView: 'separated' })
+    expect(store.loadSessionsView()).toEqual({ sessionsView: 'together' })
     expect(store.loadLayout('main')).toEqual({ layout: '{"generation":1}', failed: false })
     expect(reports.filter((message) => /is not a view/.test(message))).toHaveLength(1)
   })

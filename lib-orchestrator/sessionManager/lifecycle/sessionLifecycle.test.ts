@@ -183,7 +183,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     createdAt: number,
     forkedFromId: string | null = null,
   ): CodexRolloutMatch {
-    return { sessionId, createdAt, forkedFromId }
+    return { sessionId, createdAt, forkedFromId, firstUserMessage: null }
   }
 
   function fakeNumbers(): FakeNumbers {
@@ -520,7 +520,9 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     return {
       sessionId,
       kind: 'shell',
-      title: sessionId,
+      // Not the bare id: `s1` is a letter then a digit, which is exactly the shape of a custom
+      // session number, so a default title spelled that way would hand every fixture a number.
+      title: `session ${sessionId}`,
       directory: { mode: 'default' },
       binding: { hostInstanceId: 'host-1', generation: 1 },
       life: 'live',
@@ -963,46 +965,6 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     expect(stored?.lastUserInputAt).toBeUndefined()
   })
 
-  /**
-   * A plain tab is a raw terminal in a directory, and the two shapes refused here are the two that
-   * would make it something else. Refusing them at the spec is what keeps the field meaning one thing.
-   */
-  it('creates a plain tab, and refuses the two shapes a plain tab cannot be', async () => {
-    const context = await harness()
-
-    const created = await context.lifecycle.create({
-      kind: 'agent',
-      directory: { mode: 'adHoc', path: context.workDirectory },
-      agent: { agentId: 'claude', mode: 'new' },
-      presentation: 'tab',
-    })
-    expect(context.store.get(successOf(created).sessionId)?.presentation).toBe('tab')
-
-    const refusals = await Promise.all([
-      context.lifecycle.create({
-        kind: 'agent',
-        directory: { mode: 'project', categoryId: 'c', projectPath: context.workDirectory },
-        agent: { agentId: 'claude', mode: 'new' },
-        presentation: 'tab',
-        worktree: { slug: 'isolated' },
-      }),
-      context.lifecycle.create({
-        kind: 'agent',
-        directory: { mode: 'adHoc', path: context.workDirectory },
-        agent: { agentId: 'claude', mode: 'new' },
-        presentation: 'tab',
-        flowId: 'feature-request',
-      }),
-      context.lifecycle.create({
-        kind: 'shell',
-        directory: { mode: 'default' },
-        presentation: 'window' as SessionCreateSpec['presentation'],
-      }),
-    ])
-    for (const result of refusals)
-      expect(failureOf(result).code).toBe('invalid-spec')
-  })
-
   /*
    * A colour named at create is the scheduler's mark on its own work: the wave it launches sits in
    * the tree beside sessions a person opened, and painting them afterwards would show every worker
@@ -1099,25 +1061,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(context.store.get(created.sessionId)?.title).toBe('015 - one')
     })
 
-    // A tab is not work the tree keeps, and `promotePlain` is where its number comes from. Taking
-    // one here would spend a number on a tab that is closed and forgotten, and the promotion would
-    // then write a second prefix in front of the first.
-    it('does not number a plain tab', async () => {
-      const context = await harness()
-
-      const created = successOf(await context.lifecycle.create({
-        kind: 'shell',
-        directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
-        title: 'a quick look',
-        presentation: 'tab',
-      }))
-
-      expect(context.store.get(created.sessionId)?.title).toBe('a quick look')
-      expect(context.numbers.calls).toEqual([])
-    })
-
     // The count is a project's. The other two bindings name a directory, and there is nothing to
-    // count in - the same rule `forkConversation` and `promotePlain` already follow.
+    // count in - the same rule `forkConversation` already follows.
     it('does not number a session outside a catalog project', async () => {
       const context = await harness()
 
@@ -1143,8 +1088,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(context.numbers.calls).toEqual([])
     })
 
-    // A number that could not be taken is not a reason to refuse, exactly as `promotePlain` has it:
-    // a session without a number is a session.
+    // A number that could not be taken is not a reason to refuse: a session without a number is
+    // still a session.
     it('creates without a number when the counter could not answer', async () => {
       const context = await harness()
       context.numbers.token = null
@@ -1211,6 +1156,74 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       }))
 
       expect(context.store.get(created.sessionId)?.title).toBe('015 - session wizard')
+      expect(context.numbers.calls).toEqual([])
+    })
+
+    /*
+     * The number a caller BRINGS, which is the whole point of the letters: a skill opening a session
+     * per ticket wants the ticket's number on it, and the project's count must not move because of
+     * one. The counter is never even asked, so the next session in the project is still 015.
+     */
+    it('takes a custom number without spending one', async () => {
+      const context = await harness()
+      context.numbers.issued = 14
+      context.numbers.token = '015'
+
+      const created = successOf(await context.lifecycle.create({
+        kind: 'shell',
+        directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
+        title: 'fix the parser',
+        number: 'i34',
+      }))
+
+      expect(context.store.get(created.sessionId)?.title).toBe('i34 - fix the parser')
+      expect(context.numbers.calls).toEqual([])
+    })
+
+    // Neither of the two reasons the counter's number is withheld applies to one nothing counts.
+    it('takes a custom number for a titled session and for an ad-hoc directory', async () => {
+      const context = await harness()
+
+      const tab = successOf(await context.lifecycle.create({
+        kind: 'shell',
+        directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
+        title: 'watch the build',
+        number: 'i34',
+      }))
+      const adHoc = successOf(await context.lifecycle.create({
+        kind: 'shell',
+        directory: { mode: 'adHoc', path: projectRoot },
+        title: 'look around',
+        number: 'i35',
+      }))
+
+      expect(context.store.get(tab.sessionId)?.title).toBe('i34 - watch the build')
+      expect(context.store.get(adHoc.sessionId)?.title).toBe('i35 - look around')
+      expect(context.numbers.calls).toEqual([])
+    })
+
+    /*
+     * Digits are refused by SHAPE here rather than by comparison, which is what separates this from
+     * the claim above: `014` is the answering computer's to hand out, and a caller that typed it
+     * into this field meant the title, so the sentence has to say which mechanism it wanted.
+     */
+    it('refuses a number that is not the custom shape, and one given twice', async () => {
+      const context = await harness()
+      context.numbers.issued = 99
+
+      for (const spec of [
+        { number: '014' },
+        { number: 'hotfix' },
+        { number: 'i1234567' },
+        { number: 'i34', title: '014 - already numbered' },
+      ])
+        expect(failureOf(await context.lifecycle.create({
+          kind: 'shell',
+          directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
+          title: 'work',
+          ...spec,
+        })).code).toBe('invalid-spec')
+      expect(context.store.list()).toEqual([])
       expect(context.numbers.calls).toEqual([])
     })
 
@@ -2854,130 +2867,10 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
   })
 
   /**
-   * A plain tab is presented by its tab and by nothing else, which is what makes closing it different
-   * from closing any other tab, and what makes promoting it the one way to keep it.
+   * Stopping a session is the one ending the person asks for, and the mark it leaves is what every
+   * reading of that ending rests on.
    */
-  describe('plain tabs, promotion and the completed mark', () => {
-    it('stops the runtime and takes the record with it when a plain tab is closed', async () => {
-      const context = await harness()
-      await context.store.put(record('t1', { presentation: 'tab' }))
-
-      expect(await context.lifecycle.discardPlain('t1')).toEqual({ ok: true, value: undefined })
-      expect(callsNamed(context.host, 'runtime.stop')).toHaveLength(1)
-      expect(context.store.get('t1')).toBeNull()
-    })
-
-    /**
-     * Marked before the stop rather than after it: what this has to survive is a crash between the
-     * stop and the removal, and a record left behind by that reads as a session that fell over
-     * unless the mark got there first.
-     */
-    it('marks the stop as asked for before it asks, so a half-closed tab still reads finished',
-      async () => {
-        const context = await harness()
-        await context.store.put(record('t1', { presentation: 'tab' }))
-        const original = AtomicJsonFile.writeAsync
-        const write = vi.spyOn(AtomicJsonFile, 'writeAsync')
-        // The mark lands; the removal that should have followed it does not.
-        write.mockImplementationOnce(original)
-        write.mockImplementationOnce(() => Promise.reject(new Error('EBUSY: the records file is locked')))
-
-        await context.lifecycle.discardPlain('t1').finally(() => write.mockRestore())
-
-        expect(context.store.get('t1')?.stopRequested).toBe(true)
-      })
-
-    // Closing the tab of a session of the tree still only detaches, which is the rule this one
-    // narrow exception is written beside.
-    it('refuses a session of the tree, so closing its tab ends nothing', async () => {
-      const context = await harness()
-      await context.store.put(record('s1'))
-
-      expect(failureOf(await context.lifecycle.discardPlain('s1')).code).toBe('invalid-spec')
-      expect(context.store.get('s1')).not.toBeNull()
-      expect(callsNamed(context.host, 'runtime.stop')).toEqual([])
-    })
-
-    // The tab must not disappear while something may still be running behind it.
-    it('keeps the record when the Host could not be asked to stop', async () => {
-      const context = await harness()
-      await context.store.put(record('t1', { presentation: 'tab' }))
-      context.host.failure = { ok: false, code: 'host-unreachable', detail: 'no descriptor' }
-
-      expect(failureOf(await context.lifecycle.discardPlain('t1')).code).toBe('host-unreachable')
-      expect(context.store.get('t1')).not.toBeNull()
-    })
-
-    // 404 is the runtime having finished by itself, which is not a reason to keep the record.
-    it('removes the record when the Host no longer has that runtime', async () => {
-      const context = await harness()
-      await context.store.put(record('t1', { presentation: 'tab' }))
-      context.host.failure = {
-        ok: false,
-        code: 'op-rejected',
-        status: 404,
-        detail: 'no such runtime',
-      }
-
-      expect(await context.lifecycle.discardPlain('t1')).toEqual({ ok: true, value: undefined })
-      expect(context.store.get('t1')).toBeNull()
-    })
-
-    it('asks the Host for nothing when the plain tab was already dead', async () => {
-      const context = await harness()
-      await context.store.put(record('t1', { presentation: 'tab', life: 'lost', binding: null }))
-
-      expect(await context.lifecycle.discardPlain('t1')).toEqual({ ok: true, value: undefined })
-      expect(callsNamed(context.host, 'runtime.stop')).toEqual([])
-      expect(context.store.get('t1')).toBeNull()
-    })
-
-    it('numbers a promoted tab from its project and takes the mark away', async () => {
-      const context = await harness()
-      await context.store.put(record('t1', {
-        presentation: 'tab',
-        title: 'AppJamatV3',
-        directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
-      }))
-
-      expect(await context.lifecycle.promotePlain('t1')).toEqual({ ok: true, value: undefined })
-      expect(context.numbers.calls).toEqual([{ projectPath: projectRoot }])
-      expect(context.store.get('t1')?.presentation).toBeUndefined()
-      expect(context.store.get('t1')?.title).toBe('007 - AppJamatV3')
-    })
-
-    // Exactly what the create card does with the same two directories: a session without a number.
-    it('promotes a tab that belongs to no project without asking for a number', async () => {
-      const context = await harness()
-      await context.store.put(record('t1', { presentation: 'tab', title: 'home' }))
-
-      expect(await context.lifecycle.promotePlain('t1')).toEqual({ ok: true, value: undefined })
-      expect(context.store.get('t1')?.title).toBe('home')
-      expect(context.numbers.calls).toEqual([])
-    })
-
-    // A number nobody could take is not a reason to leave the session where it cannot be kept.
-    it('promotes without a number when the numbers could not be taken', async () => {
-      const context = await harness()
-      context.numbers.token = null
-      await context.store.put(record('t1', {
-        presentation: 'tab',
-        title: 'AppJamatV3',
-        directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
-      }))
-
-      expect(await context.lifecycle.promotePlain('t1')).toEqual({ ok: true, value: undefined })
-      expect(context.store.get('t1')?.title).toBe('AppJamatV3')
-      expect(context.store.get('t1')?.presentation).toBeUndefined()
-    })
-
-    it('refuses to promote what is already a session of the tree', async () => {
-      const context = await harness()
-      await context.store.put(record('s1'))
-
-      expect(failureOf(await context.lifecycle.promotePlain('s1')).code).toBe('invalid-spec')
-    })
-
+  describe('the completed mark', () => {
     /**
      * Stopping a session IS finishing with it: two clicks for one thought was the thing this
      * replaced. The exception is a session with after-steps still waiting on it.
@@ -2997,13 +2890,13 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     it('records that the stop was asked for, whatever kind of session it was', async () => {
       const context = await harness()
       await context.store.put(record('s1'))
-      await context.store.put(record('t1', { presentation: 'tab' }))
+      await context.store.put(record('a1', { kind: 'agent', agent: { agentId: 'claude', launchMode: 'new' } }))
 
       await context.lifecycle.stop('s1')
-      await context.lifecycle.stop('t1')
+      await context.lifecycle.stop('a1')
 
       expect(context.store.get('s1')?.stopRequested).toBe(true)
-      expect(context.store.get('t1')?.stopRequested).toBe(true)
+      expect(context.store.get('a1')?.stopRequested).toBe(true)
     })
 
     /**
@@ -3476,8 +3369,6 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       })
       expect(argsOf(context).slice(-2))
         .toEqual(['--session-id', child?.agent?.nativeSessionId])
-      // A fork is the tree's, never a plain tab: closing a plain tab discards its record.
-      expect(child?.presentation).toBeUndefined()
       expect(child?.directory)
         .toEqual({ mode: 'project', categoryId: 'c1', projectPath: projectRoot })
       expect(child?.title).toBe('007-015 - AppJamatV3')
@@ -4056,7 +3947,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         name: '2026 planning notes',
       }))
       expect(refused.code).toBe('invalid-spec')
-      expect(refused.detail).toBe('A name must not begin like a session number')
+      expect(refused.detail)
+        .toBe('A name must not begin like a session number, and "2026" reads as one')
       expect(context.store.get('s1')?.title).toBe('plain shell')
 
       expect(successOf(await context.lifecycle.setDetails('s2', { name: '2026 planning notes' })))
@@ -4094,8 +3986,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       await context.store.put(record('s1', { note: 'old', color: 'teal' }))
       await context.store.put(record('s2', { note: 'old', color: 'rose' }))
 
-      successOf(await context.lifecycle.setDetails('s1', { name: 's1', note: null, color: null }))
-      successOf(await context.lifecycle.setDetails('s2', { name: 's2', note: '', color: null }))
+      successOf(await context.lifecycle.setDetails('s1', { name: 'session s1', note: null, color: null }))
+      successOf(await context.lifecycle.setDetails('s2', { name: 'session s2', note: '', color: null }))
       expect(context.store.get('s1')).not.toHaveProperty('note')
       expect(context.store.get('s1')).not.toHaveProperty('color')
       expect(context.store.get('s2')).not.toHaveProperty('note')
@@ -4110,7 +4002,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         note: null,
         color: 'chartreuse' as never,
       })).code).toBe('invalid-spec')
-      expect(context.store.get('s1')?.title).toBe('s1')
+      expect(context.store.get('s1')?.title).toBe('session s1')
       expect(context.store.get('s1')?.color).toBe('teal')
     })
 
@@ -4123,7 +4015,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         note: 'x'.repeat(4001),
         color: null,
       })).code).toBe('invalid-spec')
-      expect(context.store.get('s1')?.title).toBe('s1')
+      expect(context.store.get('s1')?.title).toBe('session s1')
     })
 
     it('answers not-found for a session that does not exist', async () => {

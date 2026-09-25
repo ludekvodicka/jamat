@@ -46,6 +46,7 @@ import { FileChangesVcsDetector } from './vcs/fileChangesVcsDetector'
 import { FileChangesVcsGit } from './vcs/fileChangesVcsGit'
 import { FileChangesVcsSvn } from './vcs/fileChangesVcsSvn'
 import { FileChangesWorkingTreeSources } from './working/fileChangesWorkingTreeSources'
+import { FileChangesSvnCopied } from './working/fileChangesSvnCopied'
 import { FileChangesSvnUntracked } from './working/fileChangesSvnUntracked'
 
 export interface FileChangesTranscriptResolver {
@@ -69,6 +70,7 @@ export interface FileChangesManagerDeps {
   snapshotStore?: FileChangesSnapshotStore
   workingSources?: FileChangesWorkingTreeSources
   svnUntracked?: Pick<FileChangesSvnUntracked, 'expand'>
+  svnCopied?: Pick<FileChangesSvnCopied, 'expand'>
 }
 
 export type FileChangesBaselineContentResult =
@@ -112,6 +114,7 @@ export class FileChangesManager {
   private readonly diffBuilder: FileDiffBuilder
   private readonly workingSources: FileChangesWorkingTreeSources
   private readonly svnUntracked: Pick<FileChangesSvnUntracked, 'expand'>
+  private readonly svnCopied: Pick<FileChangesSvnCopied, 'expand'>
 
   constructor(deps: FileChangesManagerDeps) {
     this.detector = new FileChangesVcsDetector(
@@ -125,6 +128,7 @@ export class FileChangesManager {
     this.diffBuilder = new FileDiffBuilder(deps.diffExecutor)
     this.workingSources = deps.workingSources ?? new FileChangesWorkingTreeSources()
     this.svnUntracked = deps.svnUntracked ?? new FileChangesSvnUntracked()
+    this.svnCopied = deps.svnCopied ?? new FileChangesSvnCopied()
   }
 
   async workingTree(
@@ -141,7 +145,9 @@ export class FileChangesManager {
     const read = await this.workingSources.read(context, requested, filePath, forCommit)
     let vcsEntries = read.entries
     if (forCommit && read.selection.selected === 'svn') {
-      try { vcsEntries = await this.svnUntracked.expand(vcsEntries) }
+      // Untracked first: it can turn a new directory into the files under it, and a copied one
+      // that is ALSO new to SVN must be walked as a copy rather than off disk.
+      try { vcsEntries = await this.svnCopied.expand(await this.svnUntracked.expand(vcsEntries)) }
       catch (error) { return { ok: false, code: 'invalid-context', detail: ErrorText.of(error) } }
     }
     if (filePath !== undefined) vcsEntries = vcsEntries.filter((entry) =>

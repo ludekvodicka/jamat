@@ -97,6 +97,14 @@ describe('lib-orchestrator/sessionManager/workState/agentWorkInspectorClaude', (
     },
   )
 
+  // The footer alone used to read `waiting`; nothing may be typed into this screen, so it blocks.
+  it('reads the workspace trust dialog as blocked by its own option wording', () => {
+    const inspection = AgentWorkInspectorClaude.inspect(recorded('claude-live-trust-dialog.json').frame)
+    expect(inspection.hint).toBe('blocked')
+    expect(inspection.evidence.map((item) => item.signal)).toContain('blockedPrompt')
+    expect(inspection.evidence.map((item) => item.match)).toContain('itrustthisfolder')
+  })
+
   // Containment, not equality: the prompt pass reads three windows, so one wording on screen is
   // three pieces of evidence. What a test may pin is which signals a verdict rests on, never how
   // many windows happened to be carrying them.

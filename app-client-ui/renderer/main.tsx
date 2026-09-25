@@ -4,7 +4,6 @@ import './styles/tokens.css'
 import './styles/app.css'
 
 import { HolderShell, MainShell } from './shell/appShell'
-import { KeyboardSettingsStore } from './keyboardSettings/keyboardSettingsStore'
 import { WindowInfoStore } from './shell/windowInfoStore'
 import { UiSettingsStore } from './uiSettings/uiSettingsStore'
 import { WheelSpeed } from './uiSettings/wheelSpeed'
@@ -22,7 +21,6 @@ await UiSettingsStore.startSettled()
 WheelSpeed.install()
 // Not awaited: nothing is laid out from it. It decides what ONE tooltip says about a key, and a
 // window that paints before the first read prints the default pair and corrects itself.
-KeyboardSettingsStore.start()
 const info = await WindowInfoStore.start()
 
 // No StrictMode on purpose: its dev-only double mount would double every lifecycle probe reading.

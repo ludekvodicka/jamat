@@ -27,7 +27,11 @@ import type { IpcResult, LoadSessionsViewResult } from '../../../shared/appClien
 import { AppClientUiReport } from '../../../shared/appClientUiReport'
 import { AppCommands } from '../../../shared/commands'
 import { ErrorText } from '../../../shared/errorText'
-import { SessionsGroupsState, type SessionGroup } from '../../../shared/sessionsGroupsState'
+import {
+  SessionsGroupsState,
+  type SessionGroup,
+  type SessionGroupDefinition,
+} from '../../../shared/sessionsGroupsState'
 import { type SessionsTabsView, SessionsViewState } from '../../../shared/sessionsViewState'
 import { SessionsFilterState, type SessionsFilterValue } from '../../../shared/sessionsFilterState'
 import { type TerminalTarget, TerminalTargetCodec } from '../../../shared/terminalTarget'
@@ -55,6 +59,7 @@ import {
 } from './remoteSessionsTreeModel'
 import { FinalizeAwait } from './finalizeAwait'
 import { type QuestionRevealTree, SessionsQuestionReveal } from './sessionsQuestionReveal'
+import { SessionRowTooltip, useSessionRowTooltip } from './sessionRowTooltip'
 import { SessionsTreeActionButton } from './sessionsTreeActionButton'
 import {
   type SessionAction,
@@ -74,7 +79,6 @@ import {
 import {
   type SessionBadges,
   SessionsTreeModel,
-  type TreeContent,
   type TreeNode,
   type TreeResult,
   type TreeStateGroup,
@@ -86,6 +90,7 @@ import { type CommitOpenStore, useCommitOpen } from '../../versioning/commitOpen
 import { SessionsFilterMenu } from './sessionsFilterMenu'
 import { SessionsSavedFilters } from './sessionsSavedFilters'
 import { useSavedSessionsFilters, type SavedSessionsFiltersPorts } from './useSavedSessionsFilters'
+import { SessionsTreeCursors } from './sessionsTreeCursors'
 import { useSessionsGroups, type SessionsGroupsPorts } from './useSessionsGroups'
 
 /** Everything the tree changes in the main process, apart from the shared snapshot document. */
@@ -178,15 +183,23 @@ type GroupTreeNode = Extract<TreeNode, { kind: 'category' | 'project' }>
  * are built, so the drawing reads it off this type instead of asking the same question again.
  */
 interface AssignedGroupTree {
-  key: Exclude<SessionGroup, 'none'>
+  key: SessionGroup
   title: string
   tree: TreeResult
   remote: RemoteSessionsSections | null
 }
 
-type SessionsTrees = { assigned: readonly AssignedGroupTree[] } & (
+/**
+ * `sections` is the order the panel stacks in, `none` included, because where Sessions sits among
+ * the others is one of the things a person sets. `assigned` holds a built tree for each of the
+ * others; the two are separate because the default section is not one tree but whichever
+ * arrangement the view chose.
+ */
+type SessionsTrees = {
+  sections: readonly SessionGroupDefinition[]
+  assigned: readonly AssignedGroupTree[]
+} & (
   | { view: 'together'; both: TreeResult; remote: RemoteSessionsSections | null }
-  | { view: 'separated'; sessions: TreeResult; tabs: TreeResult; remote: RemoteSessionsSections | null }
   | { view: 'states'; groups: readonly {
       key: TreeStateGroup
       title: string
@@ -312,6 +325,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
   const savedFilters = useSavedSessionsFilters(ports)
   const groupState = useSessionsGroups(ports)
   const assignments = groupState.groups
+  const sections = groupState.definitions
   const [namingFilter, setNamingFilter] = useState(false)
   const [filterMenu, setFilterMenu] = useState<{ position: ContextMenuPosition; savedId: string | null } | null>(null)
   const [groupingMenu, setGroupingMenu] = useState<ContextMenuPosition | null>(null)
@@ -345,19 +359,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     FinalizeAwait.reduce,
     new Map<string, TerminalTarget>(),
   )
-  /**
-   * One per content, not one for the panel: the same project node is in the sessions tree and in the
-   * tabs tree under one id, so a shared cursor would compare each tree's row against the other's and
-   * hand back the node from the wrong one.
-   */
-  const previous = useRef<Record<TreeContent | TreeStateGroup | Exclude<SessionGroup, 'none'>, TreeResult | null>>(
-    { sessions: null, tabs: null, both: null, attention: null, unread: null, running: null, read: null,
-      pinned: null, priority: null, automation: null, waiting: null, blocked: null },
-  )
-  const previousRemote = useRef<Record<'both' | Exclude<SessionGroup, 'none'> | TreeStateGroup, ReadonlyMap<string, TreeResult>>>({
-    both: new Map(), attention: new Map(), unread: new Map(), running: new Map(), read: new Map(),
-    pinned: new Map(), priority: new Map(), automation: new Map(), waiting: new Map(), blocked: new Map(),
-  })
+  const cursors = useRef(new SessionsTreeCursors())
   const currentSnapshots = useRef({ snapshot, remoteSnapshot })
 
   const trees = useMemo((): SessionsTrees | null => {
@@ -365,12 +367,19 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       return null
     // Read once per build, so both trees answer "how long ago did this close" against one moment.
     const now = Date.now()
-    const build = (content: TreeContent, stateGroup?: TreeStateGroup, group: SessionGroup = 'none'): TreeResult => SessionsTreeModel.build(
+    /*
+     * Which cursor a build compares against. A group's is keyed by its id under a prefix, because an
+     * id is now whatever a person typed and `waiting` could otherwise name both a section of the
+     * tree and one of the four state groups beside it.
+     */
+    const cursorOf = (stateGroup?: TreeStateGroup, group: SessionGroup = 'none'): string =>
+      group === 'none' ? stateGroup ?? 'both' : `group:${group}`
+    const build = (stateGroup?: TreeStateGroup, group: SessionGroup = 'none'): TreeResult => SessionsTreeModel.build(
       snapshot,
-      { filters, content, filterText, now, inFront: visibleTargetKeys, tabbed: tabbedTargetKeys, stateGroup,
+      { filters, filterText, now, inFront: visibleTargetKeys, tabbed: tabbedTargetKeys, stateGroup,
         assignments, group },
       marks,
-      previous.current[group === 'none' ? stateGroup ?? content : group],
+      cursors.current.localOf(cursorOf(stateGroup, group)),
       undefined,
       commitOpen,
     )
@@ -380,7 +389,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
           remoteSnapshot, snapshot,
           { filters, filterText, now, inFront: visibleTargetKeys, tabbed: tabbedTargetKeys, stateGroup,
             assignments, group },
-          marks, previousRemote.current[group === 'none' ? stateGroup ?? 'both' : group],
+          marks, cursors.current.remoteOf(cursorOf(stateGroup, group)),
         )
     /*
      * A section nothing is assigned to is not built. Every revision used to build all four of them
@@ -390,21 +399,19 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
      * names it, so a section no key names can hold nothing.
      */
     const chosen = new Set(assignments.values())
-    const assigned = SessionsGroupsState.choicesConst.filter((group) => group.key !== 'none')
-      .map(({ key, title }) => chosen.has(key)
-        ? { key, title, tree: build('both', undefined, key), remote: remote(undefined, key) }
-        : { key, title, tree: SessionsTreeModel.emptyConst, remote: null })
+    const assigned = sections.filter((section) => section.id !== 'none')
+      .map(({ id, title }) => chosen.has(id)
+        ? { key: id, title, tree: build(undefined, id), remote: remote(undefined, id) }
+        : { key: id, title, tree: SessionsTreeModel.emptyConst, remote: null })
     if (view === 'together')
-      return { assigned, view, both: build('both'), remote: remote() }
-    else if (view === 'separated')
-      return { assigned, view, sessions: build('sessions'), tabs: build('tabs'), remote: remote() }
+      return { sections, assigned, view, both: build(), remote: remote() }
     else if (view === 'states')
-      return { assigned, view, groups: SessionsTreeModel.groupsConst.map((group) => ({
-        ...group, tree: build('both', group.key), remote: remote(group.key),
+      return { sections, assigned, view, groups: SessionsTreeModel.groupsConst.map((group) => ({
+        ...group, tree: build(group.key), remote: remote(group.key),
       })) }
     else
       throw new Error(`Unknown sessions view: ${JSON.stringify(view)}`)
-  }, [snapshot, remoteSnapshot, filters, filterText, marks, view, visibleTargetKeys, tabbedTargetKeys, commitOpen, assignments])
+  }, [snapshot, remoteSnapshot, filters, filterText, marks, view, visibleTargetKeys, tabbedTargetKeys, commitOpen, assignments, sections])
 
   /*
    * The cursor moves AFTER the commit, never during the render that produced the tree. React may run
@@ -414,24 +421,13 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
    */
   useEffect(() => {
     if (trees === null) return
-    for (const group of trees.assigned) {
-      previous.current[group.key] = group.tree
-      if (group.remote !== null) previousRemote.current[group.key] = group.remote.previous
-    }
-    if (trees.view === 'together') {
-      previous.current.both = trees.both
-      if (trees.remote !== null) previousRemote.current.both = trees.remote.previous
-    }
-    else if (trees.view === 'separated') {
-      previous.current.sessions = trees.sessions
-      previous.current.tabs = trees.tabs
-      if (trees.remote !== null) previousRemote.current.both = trees.remote.previous
-    }
+    for (const group of trees.assigned)
+      cursors.current.record(`group:${group.key}`, group.tree, group.remote?.previous ?? null)
+    if (trees.view === 'together')
+      cursors.current.record('both', trees.both, trees.remote?.previous ?? null)
     else if (trees.view === 'states')
-      for (const group of trees.groups) {
-        previous.current[group.key] = group.tree
-        if (group.remote !== null) previousRemote.current[group.key] = group.remote.previous
-      }
+      for (const group of trees.groups)
+        cursors.current.record(group.key, group.tree, group.remote?.previous ?? null)
     else
       throw new Error(`Unknown sessions view: ${JSON.stringify(trees)}`)
   }, [trees])
@@ -774,10 +770,10 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
   const chrome: SessionsTreeChrome = useMemo(() => ({
     groupItem: (key, group) => ({
       key: 'groups', label: 'Groups', disabled: !groupState.ready || groupState.saving,
-      children: SessionsGroupsState.choicesConst.map((choice) => ({
-        key: choice.key, label: choice.label, checked: group === choice.key,
+      children: sections.map((section) => ({
+        key: section.id, label: SessionsGroupsState.labelOf(section), checked: group === section.id,
         disabled: !groupState.ready || groupState.saving,
-        onSelect: () => groupState.assign(key, choice.key),
+        onSelect: () => groupState.assign(key, section.id),
       })),
     }),
     pending,
@@ -805,7 +801,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     pending, collapsed, activeTargetKey, inFlight, awaitingAsk,
     toggle, request, onLaunch, onOpenTerminal, openMenu, openGroupMenu, openRemoteMenu,
     onOpenSettings, remotePorts, remoteSnapshot, onCloseTerminal,
-    groupState.ready, groupState.saving, groupState.assign,
+    groupState.ready, groupState.saving, groupState.assign, sections,
   ])
 
   const resetFilters = (): void => {
@@ -1013,7 +1009,6 @@ function TreeMenu(props: {
         commands={commands}
         sessionId={menu.node.sessionId}
         facts={menu.facts}
-        plainTab={menu.node.badges.plainTab}
         actions={menu.node.actions}
         groupItem={props.chrome.groupItem(SessionsTreeModel.groupKeyOf(menu.node), menu.node.group)}
         onAction={(action) => props.chrome.request(menu.node, action)}
@@ -1073,15 +1068,20 @@ function TreeBodies(props: {
 }): React.JSX.Element {
   const { trees, chrome } = props
   return <div className="jamat-sessions__stack">
-    {SessionsGroupsState.choicesConst.map((choice) => {
-      if (choice.key === 'none')
-        return <section key={choice.key} className="jamat-sessions__default-group" aria-label={choice.title}>
-          <h3 className="jamat-sessions__section">{choice.title}</h3>
+    {trees.sections.map((section) => {
+      if (section.id === 'none')
+        return <section key={section.id} className="jamat-sessions__default-group" aria-label={section.title}>
+          <h3 className="jamat-sessions__section">{section.title}</h3>
           <DefaultTreeBody trees={trees} chrome={chrome} />
         </section>
-      const group = trees.assigned.find((entry) => entry.key === choice.key)!
-      return <AssignedGroupBody key={choice.key} group={group} chrome={chrome} />
+      const group = trees.assigned.find((entry) => entry.key === section.id)!
+      return <AssignedGroupBody key={section.id} group={group} chrome={chrome} />
     })}
+    {/* Another computer is a PLACE, not a section of this person's work, so it sits after every
+        section they composed rather than inside the one that happens to be first. It was drawn at
+        the end of Sessions, which put it above a group added later. In `states` there is no block
+        to move: those rows are inside the state group their work state puts them in. */}
+    {trees.view !== 'states' && <RemoteBodies remote={trees.remote} chrome={chrome} />}
   </div>
 }
 
@@ -1096,38 +1096,10 @@ function DefaultTreeBody({ trees, chrome }: { trees: SessionsTrees; chrome: Sess
         <RemoteBodies remote={group.remote} chrome={chrome} />
       </section>)}
     </>
-  let local: React.JSX.Element
-  if (trees.view === 'together') local = <TreeBody result={trees.both} chrome={chrome} />
-  else if (trees.view === 'separated')
-    local = (
-      <>
-        <TreeBody result={trees.sessions} chrome={chrome} />
-        {/* The one action that belongs to a SECTION rather than to a node, and the only reason this
-            heading is a row: a tab has no project to be started from, so the affordance for it has
-            nowhere else to sit. It arrives on hover in the same container every other row action
-            uses, because a panel where one button is always on screen and the rest are not reads as
-            a mistake rather than as emphasis. */}
-        <div className="jamat-sessions__section-row jamat-sessions__section-row--tabs">
-          <h3 className="jamat-sessions__section">Tabs</h3>
-          <span className="jamat-sessions__group-actions">
-            <SessionsTreeActionButton
-              label="+ Tab"
-              ariaLabel="New tab"
-              onClick={() => chrome.launch({ purpose: 'tabProfile' })}
-            />
-          </span>
-        </div>
-        <TreeBody result={trees.tabs} chrome={chrome} empty="No tabs." />
-      </>
-    )
+  if (trees.view === 'together')
+    return <TreeBody result={trees.both} chrome={chrome} />
   else
     throw new Error(`Unknown sessions view: ${JSON.stringify(trees)}`)
-  return (
-    <>
-      {local}
-      <RemoteBodies remote={trees.remote} chrome={chrome} />
-    </>
-  )
 }
 
 function RemoteBodies(props: {
@@ -1486,6 +1458,7 @@ function SessionRow(props: {
   const confirming = inlineActions.some((action) =>
     SessionsTreeActions.isArmed(node, action, chrome.pending))
   const flash = useSessionStateFlash(node.glyph)
+  const tooltip = useSessionRowTooltip()
   return (
     <div className="jamat-sessions__session" data-session={targetKey}>
       {/* On the row rather than on this container, so a right-click on a nested install lands on
@@ -1530,12 +1503,15 @@ function SessionRow(props: {
           type="button"
           className="jamat-sessions__title"
           disabled={!node.interactive}
-          title={node.note === null ? node.title : `${node.title}\n\n${node.note}`}
+          {...tooltip.anchorProps}
           onClick={() => chrome.openTerminal(node.target, node.tabTitle, 'preview')}
           onDoubleClick={() => chrome.openTerminal(node.target, node.tabTitle, 'permanent')}
         >
           {node.title}
         </button>
+        {tooltip.open && (
+          <SessionRowTooltip id={tooltip.id} anchor={tooltip.anchor} title={node.title} note={node.note} />
+        )}
         <Badges badges={node.badges} />
         <Pills glyph={node.glyph} badges={node.badges} />
         {node.glyph === 'ended' && (
@@ -1649,15 +1625,6 @@ function Pills(props: { glyph: SessionGlyph; badges: SessionBadges }): React.JSX
   return (
     <>
       {glyph === 'lost' && <InterruptedPill unseen={badges.attention} />}
-      {badges.plainTab && (
-        <span
-          className="jamat-sessions__pill jamat-sessions__pill--tab"
-          title="Lives only as a tab; not part of the tree's flows"
-          aria-label="Lives only as a tab; not part of the tree's flows"
-        >
-          tab
-        </span>
-      )}
       {badges.completed && (
         <span
           className="jamat-sessions__pill jamat-sessions__pill--completed"
@@ -1838,7 +1805,6 @@ class SessionsTreeChoices {
     }
     for (const group of trees.assigned) { local(group.tree); remote(group.remote) }
     if (trees.view === 'together') { local(trees.both); remote(trees.remote) }
-    else if (trees.view === 'separated') { local(trees.sessions); local(trees.tabs); remote(trees.remote) }
     else if (trees.view === 'states')
       for (const group of trees.groups) { local(group.tree); remote(group.remote) }
     else

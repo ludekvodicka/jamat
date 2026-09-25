@@ -23,6 +23,11 @@ import { useWorkingTreeChanges } from './useWorkingTreeChanges'
 export interface FileViewerDocumentModel {
   document: FileViewerDocument | null
   error: string | null
+  /**
+   * The item's own source answered `not-found` when it was restored: the path is gone from disk.
+   * Only that restore sets it - a followed link or a reload of a file that vanished does not.
+   */
+  sourceMissing: boolean
   mode: FileViewerViewMode
   setMode(mode: FileViewerViewMode): void
   text: FileViewerTextResult | null
@@ -67,6 +72,7 @@ export function useFileViewerDocument(
   const sourceBaselineHintKey = JSON.stringify(sourceBaselineHint ?? null)
   const [documentValue, setDocument] = useState<FileViewerDocument | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [sourceMissing, setSourceMissing] = useState(false)
   const [mode, setMode] = useState<FileViewerViewMode>('raw')
   const [text, setText] = useState<FileViewerTextResult | null>(null)
   const [diff, setDiff] = useState<FileDiffResult | null>(null)
@@ -139,6 +145,7 @@ export function useFileViewerDocument(
   const request = useCallback((
     nextSource: FileViewerDocumentSource,
     consume: (document: FileViewerDocument) => boolean,
+    restoring = false,
   ): void => {
     const current = ++opening.current
     setError(null)
@@ -154,6 +161,7 @@ export function useFileViewerDocument(
       }
       if (!answer.value.ok) {
         setError(`${answer.value.code}: ${answer.value.detail}`)
+        if (restoring && answer.value.code === 'not-found') setSourceMissing(true)
         return
       }
       const document = answer.value.value
@@ -175,10 +183,11 @@ export function useFileViewerDocument(
       return
     }
     writtenSource.current = null
+    setSourceMissing(false)
     request(source, (next) => {
       accept(next, sourceBaselineHintRef.current, false)
       return true
-    })
+    }, true)
   }, [accept, request, sourceKey])
 
   useLayoutEffect(() => {
@@ -309,6 +318,7 @@ export function useFileViewerDocument(
   return {
     document: documentValue,
     error,
+    sourceMissing,
     mode,
     setMode,
     text,

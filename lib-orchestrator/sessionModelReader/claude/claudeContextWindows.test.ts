@@ -35,6 +35,7 @@ describe('lib-orchestrator/sessionModelReader/claude/claudeContextWindows', () =
   it('ignores a configured model that does not name the model in the transcript', () => {
     expect(ClaudeContextWindows.windowOf('claude-sonnet-5', 'opus[1m]')).toBe(200_000)
     expect(ClaudeContextWindows.windowOf('claude-opus-4-8', 'claude-opus-5[1m]')).toBe(200_000)
+    expect(ClaudeContextWindows.windowOf('claude-opus-5-5', 'claude-opus-5[1m]')).toBe(200_000)
     expect(ClaudeContextWindows.windowOf('claude-opus-5', 'opusplan[1m]')).toBe(200_000)
   })
 
@@ -42,6 +43,14 @@ describe('lib-orchestrator/sessionModelReader/claude/claudeContextWindows', () =
     expect(ClaudeContextWindows.windowOf('claude-opus-5', 'opus')).toBe(200_000)
     expect(ClaudeContextWindows.windowOf('claude-opus-5', null)).toBe(200_000)
     expect(ClaudeContextWindows.windowOf('claude-opus-5', '')).toBe(200_000)
+  })
+
+  it('reads the million for a model whose account default is that tier, only when nothing is named', () => {
+    expect(ClaudeContextWindows.windowOf('claude-opus-5-5')).toBe(1_000_000)
+    expect(ClaudeContextWindows.windowOf('claude-opus-5-5', null)).toBe(1_000_000)
+    expect(ClaudeContextWindows.windowOf('claude-opus-5-5-20260901', '')).toBe(1_000_000)
+    expect(ClaudeContextWindows.windowOf('claude-opus-5-5', 'claude-opus-5-5')).toBe(200_000)
+    expect(ClaudeContextWindows.windowOf('claude-opus-5-5', 'opus')).toBe(200_000)
   })
 
   // A tier stated for a family the table does not list is still a stated tier: the window is known

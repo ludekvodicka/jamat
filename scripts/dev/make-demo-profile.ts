@@ -172,6 +172,9 @@ class MakeDemoProfile {
     let force = false
     for (let index = 0; index < argv.length; index++) {
       const argument = argv[index]
+      // pnpm 11 forwards the `--` of `pnpm <script> -- <args>` to the script.
+      if (argument === '--' && index === 0)
+        continue
       if (argument === '--force') {
         force = true
         continue

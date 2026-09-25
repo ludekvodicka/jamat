@@ -153,8 +153,6 @@ describe('app-client-ui/renderer/shell/sessionRestartChain', () => {
       session('merging', { ...held, merge: { phase: 'base-merging', startedAt: 1 } }),
       session('installer', { admits: [], setupFor: 'other' }),
       session('resolver', { admits: [], resolveFor: 'other' }),
-      // A closed tab is an ended tab, so a plain tab with no panel is not revived.
-      session('orphanTab', { presentation: 'tab' }),
       session('ordinary'),
     ]))
 
@@ -178,8 +176,8 @@ describe('app-client-ui/renderer/shell/sessionRestartChain', () => {
     expect(world.reopened).toEqual(['ordinary'])
   })
 
-  it('restarts a plain tab whose panel is open, and tells it to attach again', async () => {
-    const world = new World(snapshotOf([session('t', { presentation: 'tab' })]))
+  it('restarts a lost session whose panel is open, and tells it to attach again', async () => {
+    const world = new World(snapshotOf([session('t')]))
     const chain = new SessionRestartChain(world.ports())
     world.openIds.add('t')
 

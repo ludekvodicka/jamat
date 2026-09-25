@@ -1,6 +1,10 @@
 import type { HistoricSession, HistoricSessionGroup } from './historicSessions'
-import type { PerfSample } from './perfSample'
-import type { SessionGroup, SessionGroupAssignment } from './sessionsGroupsState'
+import type {
+  SessionGroup,
+  SessionGroupAssignment,
+  SessionGroupDefinition,
+  SessionGroupsSaveResult,
+} from './sessionsGroupsState'
 import type {
   CatalogCategoryDto,
   CategoryInfo,
@@ -72,6 +76,7 @@ import type {
 } from './agentSettings'
 import type { BareCommandId } from './commands'
 import type { ContextCompactionCooldown } from './contextCompactionCooldown'
+import type { ContextCompactionDelivery } from './contextCompactionDelivery'
 import type { DebugSectionId } from './debugSections.types'
 import type {
   FileChangesSettingsSaveResult,
@@ -120,7 +125,6 @@ import type {
   TabTransferPayload,
   WorkspacePanelPresence,
 } from './tabTransfer'
-import type { KeyboardSettingsSaveResult, KeyboardSettingsValue } from './keyboardSettings'
 import type { UiSettingsSaveResult, UiSettingsValue } from './uiSettings'
 import type { WindowAppearance, WindowInfo } from './windowInfo'
 
@@ -206,12 +210,6 @@ export interface AppClientUiIpcInvokeMap {
    * drop the fork's own row.
    */
   'state:assign-session-group': (key: string, group: SessionGroup) => boolean
-  /**
-   * How fast this client is answering, as four numbers that fail apart. Each is a maximum over the
-   * window since the previous call, so the caller's own cadence is the window; the round trip of
-   * this call is the fifth number and the caller times it itself.
-   */
-  'perf:sample': () => PerfSample
   'state:load-new-session-agent': () => SessionAgentId
   'state:save-new-session-agent': (agentId: SessionAgentId) => boolean
   /**
@@ -306,13 +304,6 @@ export interface AppClientUiIpcInvokeMap {
   'sessions:finalize': (sessionId: string) => SessionsOpResult
   /** Refused with `live-refused` while the session runs: removing a record is not stopping a runtime. */
   'sessions:remove': (sessionId: string) => SessionsOpResult
-  /**
-   * Closing a plain tab, which is the one close that ends what is behind it: the tab is the only
-   * place such a session is drawn. Refused with `invalid-spec` for a session of the tree.
-   */
-  'sessions:close-plain': (sessionId: string) => SessionsOpResult
-  /** A plain tab becomes a session of the tree, and answers with the name its tab now takes. */
-  'sessions:promote-plain': (sessionId: string) => SessionsOpResult<{ tabTitle: string }>
   /**
    * The operations derived from an existing session rather than described by the caller. The
    * renderer names the session and nothing else: what forking or restarting MEANS is the library's,
@@ -692,12 +683,12 @@ export interface AppClientUiIpcInvokeMap {
   'ui:settings-get': () => UiSettingsValue
   'ui:settings-save': (value: UiSettingsValue) => UiSettingsSaveResult
   /**
-   * Which of the two launcher cards Ctrl+T opens. Read by the settings tab and by the one tooltip
-   * that prints a key; the main process reads the same section straight from the store to build the
-   * menu, so what the accelerators ARE never crosses this bridge.
+   * The sections of the sessions tree, which a person edits. A read always answers a list, because a
+   * tree has to draw whatever state the config is in; a save is where a list this build cannot draw
+   * is refused, and where the assignments a removed section left behind are dropped.
    */
-  'keyboard:settings-get': () => KeyboardSettingsValue
-  'keyboard:settings-save': (value: KeyboardSettingsValue) => KeyboardSettingsSaveResult
+  'session-groups:get': () => readonly SessionGroupDefinition[]
+  'session-groups:save': (groups: readonly SessionGroupDefinition[]) => SessionGroupsSaveResult
   /**
    * Whether each agent runs without being asked anything. The read is only the tab's: what a launch
    * is planned from never crosses this bridge, because the main process reads the same section
@@ -740,6 +731,11 @@ export interface AppClientUiIpcInvokeMap {
   'contextCompaction:note-manual': (sessionId: string) => void
   'contextCompaction:cooldown': (sessionId: string) => ContextCompactionCooldown | null
   /**
+   * Types `/compact` into the session through the verified `terminal.deliver` loop in the main
+   * process: wait for an empty composer, type, see it, press Enter, prove the submit.
+   */
+  'contextCompaction:deliver': (sessionId: string) => ContextCompactionDelivery
+  /**
    * The last words of a session that has ended, for the post-mortem block of a panel whose runtime
    * the Host no longer has. Taken as strictly as the model above it and answered the same way: a
    * session nobody knows, a shell and an agent with no native session id all answer `none`.
@@ -781,7 +777,6 @@ export interface AppClientUiIpcEventMap {
    * is on disk.
    */
   'ui:settings-changed': () => void
-  'keyboard:settings-changed': () => void
   'agents:settings-changed': () => void
   /**
    * Parameter-less as well, to every workspace plus Debug, and only when the content actually moved:
@@ -851,9 +846,6 @@ export const AppClientUiBridgeCallsConst = {
     loadNewSessionAgent: 'state:load-new-session-agent',
     saveNewSessionAgent: 'state:save-new-session-agent',
   },
-  perf: {
-    sample: 'perf:sample',
-  },
   dialog: {
     /** null = the user cancelled. */
     pickDirectory: 'dialog:pick-directory',
@@ -885,8 +877,6 @@ export const AppClientUiBridgeCallsConst = {
     reopen: 'sessions:reopen',
     finalize: 'sessions:finalize',
     remove: 'sessions:remove',
-    closePlain: 'sessions:close-plain',
-    promotePlain: 'sessions:promote-plain',
     fork: 'sessions:fork',
     restart: 'sessions:restart',
     setColor: 'sessions:set-color',
@@ -1037,9 +1027,9 @@ export const AppClientUiBridgeCallsConst = {
     getSettings: 'ui:settings-get',
     saveSettings: 'ui:settings-save',
   },
-  keyboard: {
-    getSettings: 'keyboard:settings-get',
-    saveSettings: 'keyboard:settings-save',
+  sessionGroups: {
+    getGroups: 'session-groups:get',
+    saveGroups: 'session-groups:save',
   },
   agents: {
     getSettings: 'agents:settings-get',
@@ -1058,6 +1048,7 @@ export const AppClientUiBridgeCallsConst = {
     claimAutomatic: 'contextCompaction:claim-auto',
     noteManual: 'contextCompaction:note-manual',
     cooldown: 'contextCompaction:cooldown',
+    deliver: 'contextCompaction:deliver',
   },
   sessionTranscript: {
     get: 'sessionTranscript:get',
@@ -1082,7 +1073,6 @@ export const AppClientUiBridgeEventsConst = {
   onTabsControlCommand: 'tabs:control-command',
   onUiSettingsChanged: 'ui:settings-changed',
   onCommitChanged: 'versioning:commit-changed',
-  onKeyboardSettingsChanged: 'keyboard:settings-changed',
   onAgentSettingsChanged: 'agents:settings-changed',
   onRateChanged: 'rate:changed',
   onHostPingResult: 'debug:host-ping-result',

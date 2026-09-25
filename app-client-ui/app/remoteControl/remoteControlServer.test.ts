@@ -203,10 +203,11 @@ class RemoteControlServerHarness {
         },
         reopenSession: async () => ({ ok: true, value: undefined }),
         finalizeSession: async () => ({ ok: true, value: undefined }),
-        discardPlainSession: async () => ({ ok: true, value: undefined }),
+        removeSession: async () => ({ ok: true, value: undefined }),
         setSessionColor: async () => ({ ok: true, value: undefined }),
+        setSessionDetails: async () => ({ ok: true, value: { titleChanged: false, notifyAgent: null } }),
       },
-      groups: { assign: (_sessionId, group) => ({ ok: true, value: { group } }) },
+      groups: { read: () => new Map(), assign: (_sessionId, group) => ({ ok: true, value: { group } }) },
       tabs: {
         list: async () => [],
         open: async () => ({
@@ -264,6 +265,24 @@ class RemoteControlServerHarness {
               accepted: true,
               characterCount: text.length,
               enter: options.enter,
+            },
+          }
+        },
+        deliver: async (sessionId, text, options) => {
+          this.sentText.push(text)
+          return {
+            ok: true,
+            value: {
+              sessionId,
+              accepted: true,
+              characterCount: text.length,
+              delivered: true,
+              input: options.input,
+              composeProof: 'text',
+              proof: 'transcript',
+              submitKey: 'enter',
+              readyAfterMs: 0,
+              submittedAfterMs: 0,
             },
           }
         },

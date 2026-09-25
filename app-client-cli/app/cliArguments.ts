@@ -51,13 +51,14 @@ export class CliArguments {
         '--worktree',
         '--base-ref',
         '--title',
+        '--number',
         '--color',
         '--group',
         '--flow-id',
         '--acknowledge-setup',
         CliArguments.remoteComputerOptionConst,
       ],
-      flags: ['--plain', '--open-tab'],
+      flags: ['--open-tab'],
       mutation: true,
     },
     'sessions reopen': {
@@ -77,6 +78,11 @@ export class CliArguments {
         '--working-directory',
         CliArguments.remoteComputerOptionConst,
       ],
+      flags: [],
+      mutation: true,
+    },
+    'sessions remove': {
+      options: ['--session-id', '--number', '--working-directory'],
       flags: [],
       mutation: true,
     },
@@ -105,6 +111,22 @@ export class CliArguments {
         CliArguments.remoteComputerOptionConst,
       ],
       flags: [],
+      mutation: true,
+    },
+    /*
+     * Three forms in one command, because they are one question about one field: with neither flag
+     * it READS the note, `--note` writes it and `--clear` takes it away. It is declared a mutation
+     * so `--operation-id` is accepted; the read form sends none, the way every other read does.
+     */
+    'sessions note': {
+      options: [
+        '--session-id',
+        '--number',
+        '--working-directory',
+        '--note',
+        CliArguments.remoteComputerOptionConst,
+      ],
+      flags: ['--clear'],
       mutation: true,
     },
     'tabs list': { options: [], flags: [], mutation: false },
@@ -143,6 +165,18 @@ export class CliArguments {
         CliArguments.remoteComputerOptionConst,
       ],
       flags: ['--enter'],
+      mutation: true,
+    },
+    'terminal deliver': {
+      options: [
+        '--session-id',
+        '--number',
+        '--working-directory',
+        '--text',
+        '--ready-timeout-ms',
+        '--submit-timeout-ms',
+      ],
+      flags: ['--typed', '--queue'],
       mutation: true,
     },
     'events watch': { options: ['--after-revision'], flags: [], mutation: false },

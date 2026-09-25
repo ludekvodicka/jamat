@@ -31,7 +31,6 @@ export class SessionCommandRun {
     'tab.openProjectFolder',
     'tab.copyProjectFolder',
     'session.copyReference',
-    'tab.promote',
   ])
 
   static targets(id: CommandId): boolean {
@@ -53,7 +52,6 @@ export class SessionCommandRun {
       case 'tab.openProjectFolder':
       case 'tab.copyProjectFolder':
       case 'session.copyReference':
-      case 'tab.promote':
         commands.execute(id, { sessionId })
         return
       default:

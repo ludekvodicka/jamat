@@ -106,15 +106,18 @@ class PanelHarness {
     props: FileViewerPanelProps
     emit(patch: Record<string, unknown>): void
     updateParameters: ReturnType<typeof vi.fn>
+    close: ReturnType<typeof vi.fn>
   } {
     const listeners: ((next: Record<string, unknown>) => void)[] = []
     const updateParameters = vi.fn((next: Record<string, unknown>) => {
       for (const listener of [...listeners]) listener(next)
     })
+    const close = vi.fn()
     const props = {
       params,
       api: {
         id: 'panel-1',
+        close,
         setTitle: vi.fn(),
         getParameters: () => ({}),
         updateParameters,
@@ -133,6 +136,7 @@ class PanelHarness {
     return {
       props,
       updateParameters,
+      close,
       emit: (patch) => {
         for (const listener of [...listeners]) listener(patch)
       },
@@ -240,17 +244,32 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPanel', () => {
     expect(screen.getByText(/Unknown file viewer source/)).toBeInTheDocument()
   })
 
-  it('says why the restore was refused and asks for no text', async () => {
+  it('says why the restore was refused, asks for no text and stays open', async () => {
     const { fileViewer } = PanelHarness.install()
     fileViewer.restore.mockResolvedValue({
       ok: true as const,
-      value: { ok: false as const, code: 'not-found' as const, detail: 'it moved' },
+      value: { ok: false as const, code: 'proof-expired' as const, detail: 'open it again' },
     } as never)
+    const panel = PanelHarness.panel(PanelHarness.workspaceParams())
 
-    render(<FileViewerPanel {...PanelHarness.props(PanelHarness.workspaceParams())} />)
+    render(<FileViewerPanel {...panel.props} />)
 
-    expect(await screen.findByText('not-found: it moved')).toBeInTheDocument()
+    expect(await screen.findByText('proof-expired: open it again')).toBeInTheDocument()
     expect(fileViewer.text).not.toHaveBeenCalled()
+    expect(panel.close).not.toHaveBeenCalled()
+  })
+
+  it('closes itself when the file it restores is gone from disk', async () => {
+    const { fileViewer } = PanelHarness.install()
+    fileViewer.restore.mockResolvedValue({
+      ok: true as const,
+      value: { ok: false as const, code: 'not-found' as const, detail: 'The file does not exist' },
+    } as never)
+    const panel = PanelHarness.panel(PanelHarness.workspaceParams())
+
+    render(<FileViewerPanel {...panel.props} />)
+
+    await vi.waitFor(() => expect(panel.close).toHaveBeenCalledTimes(1))
   })
 
   /*

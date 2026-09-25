@@ -169,8 +169,8 @@ export class ServiceFileViewerIpc extends ServiceIpcBase<
    * The one path this contract takes from a renderer, so it takes two proofs for it: the same one a
    * restored filesystem panel gives - the target sits inside the session's own filesystem root,
    * which `project-directory` already grants whole - or a hit in the register of detected opens,
-   * which is what carries a panel on another drive across a remount. The register dies with the
-   * process, so after a restart this refuses rather than quietly widening what a path may reach.
+   * which is what carries a panel on another drive across a remount and a restart. Only main writes
+   * that register, so a path no click proved still refuses rather than widening what it may reach.
    *
    * Both are taken on the REAL path and the viewer is handed that path with the root they proved:
    * the grant root comes from where the target actually lives, so a lexical proof would pass on one

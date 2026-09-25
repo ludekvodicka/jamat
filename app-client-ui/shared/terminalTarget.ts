@@ -2,11 +2,8 @@ export type TerminalTarget =
   | { kind: 'local'; sessionId: string }
   | { kind: 'remote'; remoteEndpointId: string; sessionId: string }
 
-export type TerminalPresentation = 'session' | 'tab'
-
 export interface TerminalPanelReading {
   target: TerminalTarget
-  presentation: TerminalPresentation
 }
 
 export class TerminalTargetCodec {
@@ -34,17 +31,10 @@ export class TerminalTargetCodec {
       throw new Error(`Unknown terminal target: ${JSON.stringify(target)}`)
   }
 
-  static params(
-    target: TerminalTarget,
-    presentation: TerminalPresentation = 'session',
-  ): Record<string, unknown> {
+  static params(target: TerminalTarget): Record<string, unknown> {
     if (target.kind === 'local')
-      return presentation === 'tab'
-        ? { sessionId: target.sessionId, presentation: 'tab' }
-        : { sessionId: target.sessionId }
+      return { sessionId: target.sessionId }
     else if (target.kind === 'remote') {
-      if (presentation === 'tab')
-        throw new Error('A remote terminal cannot use plain-tab presentation')
       return {
         target: {
           kind: 'remote',
@@ -56,23 +46,23 @@ export class TerminalTargetCodec {
       throw new Error(`Unknown terminal target: ${JSON.stringify(target)}`)
   }
 
+  /**
+   * A saved layout is the one reader this codec cannot change under: a window restored from one
+   * written before 2026-09-23 still carries `presentation: "tab"` on its terminal panels. That
+   * panel is an ordinary terminal now, so the key is READ and ignored rather than refused, which
+   * would have left the tab out of the restored window without a word.
+   */
   static read(params: unknown): TerminalPanelReading | null {
     if (!TerminalTargetCodec.record(params)) return null
-    if (typeof params.sessionId === 'string' && params.sessionId.length > 0) {
-      if (params.presentation === undefined)
-        return { target: { kind: 'local', sessionId: params.sessionId }, presentation: 'session' }
-      else if (params.presentation === 'tab')
-        return { target: { kind: 'local', sessionId: params.sessionId }, presentation: 'tab' }
-      else return null
-    }
+    if (typeof params.sessionId === 'string' && params.sessionId.length > 0)
+      return { target: { kind: 'local', sessionId: params.sessionId } }
     const target = params.target
     if (!TerminalTargetCodec.record(target)
       || target.kind !== 'remote'
       || typeof target.remoteEndpointId !== 'string'
       || target.remoteEndpointId.length === 0
       || typeof target.sessionId !== 'string'
-      || target.sessionId.length === 0
-      || params.presentation !== undefined)
+      || target.sessionId.length === 0)
       return null
     return {
       target: {
@@ -80,7 +70,6 @@ export class TerminalTargetCodec {
         remoteEndpointId: target.remoteEndpointId,
         sessionId: target.sessionId,
       },
-      presentation: 'session',
     }
   }
 

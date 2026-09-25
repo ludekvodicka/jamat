@@ -1,0 +1,28 @@
+{
+  "agent": "claude",
+  "expected": {
+    "hint": "blocked",
+    "composer": {
+      "state": "absent"
+    },
+    "queuedRow": false,
+    "echoHead": null,
+    "pastePlaceholders": 0
+  },
+  "provenance": {
+    "origin": "captured from this tree's live Host by scripts/dev/capture-workstate.ts",
+    "case": "the workspace trust dialog in a folder Claude has never trusted",
+    "capture": "a shell session in a fresh scratch folder ran plain `claude` (no yolo, so ClaudeTrustSeed did not answer the dialog first); the dialog replaces the input box; sanitized per V1 recipe: the scratch directory is replaced by Q:\\PROJECT. ANSI is left intact",
+    "ported": "nothing - recorded in this tree",
+    "identical": "not present in the V1 or V2 corpus"
+  },
+  "recorded": {
+    "build": "claude-code 2.1.280",
+    "capturedAt": "2026-09-23"
+  },
+  "frame": {
+    "rawTail": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[HMicrosoft Windows [Version 10.0.26200.9457]\u001b]0;C:\\WINDOWS\\system32\\cmd.exe\u0007\u001b[?25h\u001b[?25l\r\n(c) Microsoft Corporation. All rights reserved.\u001b[4;1HQ:\\PROJECT>\u001b[?25hclaude\r\n\u001b]0;C:\\WINDOWS\\system32\\cmd.exe - claude\u0007\u001b[?25l\u001b[?2004h\u001b[?2031h\u001b[?1004h\u001b[>0q\u001b[?u\u001b[38;2;255;193;7m\r\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[1m\u001b[7;2HAccessing\u001b[1Cworkspace:\u001b[m\u001b[1m\u001b[9;2HQ:\\PROJECT\u001b[22m\u001b[11;2HQuick\u001b[1Csafety\u001b[1Ccheck:\u001b[1CIs\u001b[1Cthis\u001b[1Ca\u001b[1Cproject\u001b[1Cyou\u001b[1Ccreated\u001b[1Cor\u001b[1Cone\u001b[1Cyou\u001b[1Ctrust?\u001b[1C(Like\u001b[1Cyour\u001b[1Cown\u001b[1Ccode,\u001b[1Ca\u001b[1Cwell-known\u001b[1Copen\u001b[1Csource\u001b[12;2Hproject,\u001b[1Cor\u001b[1Cwork\u001b[1Cfrom\u001b[1Cyour\u001b[1Cteam).\u001b[1CIf\u001b[1Cnot,\u001b[1Ctake\u001b[1Ca\u001b[1Cmoment\u001b[1Cto\u001b[1Creview\u001b[1Cwhat's\u001b[1Cin\u001b[1Cthis\u001b[1Cfolder\u001b[1Cfirst.\u001b[14;2HClaude\u001b[1CCode'll\u001b[1Cbe\u001b[1Cable\u001b[1Cto\u001b[1Cread,\u001b[1Cedit,\u001b[1Cand\u001b[1Cexecute\u001b[1Cfiles\u001b[1Chere.\u001b[38;2;153;153;153m\u001b[16;2HSecurity\u001b[1Cguide\u001b[38;2;177;185;249m\u001b[18;2H>\u001b[1CNo,\u001b[1Cexit\u001b[m\u001b[19;4HYes,\u001b[1CI\u001b[1Ctrust\u001b[1Cthis\u001b[1Cfolder\u001b[38;2;153;153;153m\u001b[21;2HEnter\u001b[1Cto\u001b[1Cconfirm\u001b[1C·\u001b[1CEsc\u001b[1Cto\u001b[1Ccancel",
+    "screenTail": "\u001b[1CClaude\u001b[1CCode'll\u001b[1Cbe\u001b[1Cable\u001b[1Cto\u001b[1Cread,\u001b[1Cedit,\u001b[1Cand\u001b[1Cexecute\u001b[1Cfiles\u001b[1Chere.\n\n\u001b[1C\u001b[38;2;153;153;153mSecurity\u001b[1Cguide\n\n\u001b[1C\u001b[38;2;177;185;249m>\u001b[1CNo,\u001b[1Cexit\n\u001b[3C\u001b[0mYes,\u001b[1CI\u001b[1Ctrust\u001b[1Cthis\u001b[1Cfolder\n\n\u001b[1C\u001b[38;2;153;153;153mEnter\u001b[1Cto\u001b[1Cconfirm\u001b[1C·\u001b[1CEsc\u001b[1Cto\u001b[1Ccancel\u001b[?2004h\u001b[?1004h",
+    "wideScreenTail": "\u001b[38;2;255;193;7m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[1C\u001b[1mAccessing\u001b[1Cworkspace:\n\n\u001b[1C\u001b[39mQ:\\PROJECT\n\n\u001b[1C\u001b[0mQuick\u001b[1Csafety\u001b[1Ccheck:\u001b[1CIs\u001b[1Cthis\u001b[1Ca\u001b[1Cproject\u001b[1Cyou\u001b[1Ccreated\u001b[1Cor\u001b[1Cone\u001b[1Cyou\u001b[1Ctrust?\u001b[1C(Like\u001b[1Cyour\u001b[1Cown\u001b[1Ccode,\u001b[1Ca\u001b[1Cwell-known\u001b[1Copen\u001b[1Csource\n\u001b[1Cproject,\u001b[1Cor\u001b[1Cwork\u001b[1Cfrom\u001b[1Cyour\u001b[1Cteam).\u001b[1CIf\u001b[1Cnot,\u001b[1Ctake\u001b[1Ca\u001b[1Cmoment\u001b[1Cto\u001b[1Creview\u001b[1Cwhat's\u001b[1Cin\u001b[1Cthis\u001b[1Cfolder\u001b[1Cfirst.\n\n\u001b[1CClaude\u001b[1CCode'll\u001b[1Cbe\u001b[1Cable\u001b[1Cto\u001b[1Cread,\u001b[1Cedit,\u001b[1Cand\u001b[1Cexecute\u001b[1Cfiles\u001b[1Chere.\n\n\u001b[1C\u001b[38;2;153;153;153mSecurity\u001b[1Cguide\n\n\u001b[1C\u001b[38;2;177;185;249m>\u001b[1CNo,\u001b[1Cexit\n\u001b[3C\u001b[0mYes,\u001b[1CI\u001b[1Ctrust\u001b[1Cthis\u001b[1Cfolder\n\n\u001b[1C\u001b[38;2;153;153;153mEnter\u001b[1Cto\u001b[1Cconfirm\u001b[1C·\u001b[1CEsc\u001b[1Cto\u001b[1Ccancel\u001b[?2004h\u001b[?1004h"
+  }
+}

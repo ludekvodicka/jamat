@@ -1,4 +1,5 @@
-import { dirname, relative, resolve } from 'node:path'
+import { stat } from 'node:fs/promises'
+import { dirname, join, relative, resolve } from 'node:path'
 
 import { XMLParser } from 'fast-xml-parser'
 
@@ -94,7 +95,7 @@ export class FileChangesVcsSvn extends FileChangesVcsBase implements FileChanges
       if (!FileChangesVcsSvn.succeeded(outcome))
         return { ok: false, detail: this.detailOf(outcome) }
       try {
-        const value = await this.parseStatus(detection, outcome.stdout)
+        const { nested, ...value } = await this.parseStatus(detection, outcome.stdout)
         // SVN cannot address a child below an unversioned directory. Find that directory so the
         // existing untracked reader can apply ignore rules without scanning the whole scope.
         if (target !== undefined && value.entries.length === 0 && outcome.stderr.includes('W155010')
@@ -103,7 +104,7 @@ export class FileChangesVcsSvn extends FileChangesVcsBase implements FileChanges
           target = dirname(target)
           continue
         }
-        return { ok: true, value }
+        return nested.length === 0 ? { ok: true, value } : await this.withNested(detection, value, nested)
       }
       catch (error) { return { ok: false, detail: ErrorText.of(error) } }
     }
@@ -200,19 +201,87 @@ export class FileChangesVcsSvn extends FileChangesVcsBase implements FileChanges
     ])
   }
 
+  /**
+   * Reads the working copies SVN status stepped over and adds their changes.
+   *
+   * A group working copy holds projects that are their own checkouts of the same repository, and
+   * SVN reports such a project as `?` or, when its node is excluded and externals are registered
+   * below it, as an `X` it never walks. Its changes were then absent from the list, and a review
+   * that selected them committed the rest and reported every path as committed
+   * (`nodejs/AppJamatV3#28`). One `svn commit` publishes targets of several working copies of one
+   * repository in one revision, so a nested checkout of that repository joins the main group; one
+   * of another repository becomes its own group, exactly like an external. An `X` counts only when
+   * it is checked out at its own path: a registered external has already been walked, and a clean
+   * one has no target of its own in the XML to say so.
+   */
+  private async withNested(
+    detection: FileChangesVcsDetection,
+    value: FileChangesVcsStatus,
+    nested: readonly { path: string; external: boolean }[],
+  ): Promise<FileChangesVcsResult<FileChangesVcsStatus>> {
+    const outcome = await this.runner.run(detection.cwd, [
+      'info', '--xml', '--non-interactive', '--', '.@', ...nested.map((candidate) => `${candidate.path}@`),
+    ])
+    if (!FileChangesVcsSvn.succeeded(outcome))
+      return { ok: false, detail: `Could not read a nested working copy: ${this.detailOf(outcome)}` }
+    const infos = new Map<string, { url: string; relativeUrl: string; root: string; wcRoot: string }>()
+    for (const raw of FileChangesVcsSvn.arrayOf(FileChangesVcsSvn.objectOf(
+      (this.parser.parse(outcome.stdout) as XmlNode).info).entry)) {
+      const entry = FileChangesVcsSvn.objectOf(raw)
+      infos.set(PathCompare.comparable(resolve(detection.cwd, String(entry['@_path'] ?? ''))), {
+        url: FileChangesVcsSvn.textOf(entry.url),
+        relativeUrl: FileChangesVcsSvn.textOf(entry['relative-url']),
+        root: FileChangesVcsSvn.textOf(FileChangesVcsSvn.objectOf(entry.repository).root),
+        wcRoot: FileChangesVcsSvn.textOf(FileChangesVcsSvn.objectOf(entry['wc-info'])['wcroot-abspath']),
+      })
+    }
+    const own = infos.get(PathCompare.comparable(detection.cwd))
+    if (own === undefined) throw new Error('SVN info did not describe the requested scope')
+    const entries = new Map(value.entries.map((entry) => [PathCompare.comparable(entry.absolutePath), entry]))
+    const externalRoots = new Set(value.externalRoots)
+    for (const candidate of nested) {
+      const info = infos.get(PathCompare.comparable(candidate.path))
+      if (info === undefined || PathCompare.comparable(info.wcRoot) !== PathCompare.comparable(candidate.path)) continue
+      const sameRepository = info.root === own.root
+      const atOwnPath = sameRepository && FileChangesVcsSvn.decodedUrl(info.relativeUrl)
+        === `${FileChangesVcsSvn.decodedUrl(own.relativeUrl)}/${FileChangesVcsSvn.repositoryPath(relative(detection.cwd, candidate.path))}`
+      if (candidate.external && !atOwnPath) continue
+      const status = await this.status({
+        id: this.id,
+        root: candidate.path,
+        cwd: candidate.path,
+        scopeRelativePath: '.',
+        scopeUrl: info.url.replace(/\/$/, ''),
+        repositoryPathPrefix: info.relativeUrl.replace(/^\^/, '').replace(/\/$/, ''),
+      })
+      if (!status.ok) return { ok: false, detail: `${candidate.path}: ${status.detail}` }
+      if (sameRepository) externalRoots.delete(candidate.path)
+      else externalRoots.add(candidate.path)
+      for (const root of status.value.externalRoots) externalRoots.add(root)
+      for (const entry of status.value.entries)
+        if (!entries.has(PathCompare.comparable(entry.absolutePath)))
+          entries.set(PathCompare.comparable(entry.absolutePath), { ...entry,
+            repositoryPath: FileChangesVcsSvn.repositoryPath(relative(detection.root, entry.absolutePath)) })
+    }
+    return { ok: true, value: { entries: [...entries.values()], externalRoots: [...externalRoots] } }
+  }
+
   private async parseStatus(
     detection: FileChangesVcsDetection,
     xml: string,
-  ): Promise<FileChangesVcsStatus> {
+  ): Promise<FileChangesVcsStatus & { nested: { path: string; external: boolean }[] }> {
     const document = this.parser.parse(xml) as XmlNode
     const status = FileChangesVcsSvn.objectOf(document.status)
     const entries: XmlNode[] = []
+    const walked = new Set<string>()
     for (const target of FileChangesVcsSvn.arrayOf(status.target)) {
       const targetNode = FileChangesVcsSvn.objectOf(target)
+      walked.add(PathCompare.comparable(resolve(detection.cwd, String(targetNode['@_path'] ?? '.'))))
       entries.push(...FileChangesVcsSvn.arrayOf(targetNode.entry).map(FileChangesVcsSvn.objectOf))
     }
     const parsed: FileChangesVcsEntry[] = []
     const externalRoots = new Set<string>()
+    const nested: { path: string; external: boolean }[] = []
     for (const entry of entries) {
       const wcStatus = FileChangesVcsSvn.objectOf(entry['wc-status'])
       const item = String(wcStatus['@_item'] ?? '')
@@ -225,19 +294,37 @@ export class FileChangesVcsSvn extends FileChangesVcsBase implements FileChanges
       const absolutePath = resolve(detection.cwd, entryPath)
       if (!PathCompare.isInside(detection.cwd, absolutePath))
         throw new Error(`SVN returned a path outside its requested scope: ${entryPath}`)
-      if (item === 'external') externalRoots.add(absolutePath)
+      if (item === 'external') {
+        externalRoots.add(absolutePath)
+        if (!walked.has(PathCompare.comparable(absolutePath)) && await FileChangesVcsSvn.workingCopyRoot(absolutePath))
+          nested.push({ path: absolutePath, external: true })
+      }
       if (mapped === null) continue
+      const nodeKind = await FileChangesVcsSvn.nodeKindOf(absolutePath)
+      if (mapped === 'untracked' && nodeKind === 'directory' && await FileChangesVcsSvn.workingCopyRoot(absolutePath)) {
+        nested.push({ path: absolutePath, external: false })
+        continue
+      }
       parsed.push({
         absolutePath,
         repositoryPath: FileChangesVcsSvn.repositoryPath(relative(detection.root, absolutePath)),
-        nodeKind: await FileChangesVcsSvn.nodeKindOf(absolutePath),
+        nodeKind,
         status: mapped,
         previousAbsolutePath: null,
         previousRepositoryPath: null,
         gitState: null,
       })
     }
-    return { entries: parsed, externalRoots: [...externalRoots] }
+    return { entries: parsed, externalRoots: [...externalRoots], nested }
+  }
+
+  private static async workingCopyRoot(path: string): Promise<boolean> {
+    return await stat(join(path, '.svn')).then((value) => value.isDirectory(), () => false)
+  }
+
+  private static decodedUrl(url: string): string {
+    try { return decodeURIComponent(url).replace(/\/$/, '') }
+    catch { return url }
   }
 
   private async parseHistory(

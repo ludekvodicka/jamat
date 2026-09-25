@@ -1,20 +1,31 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { IpcResult } from '../../../shared/appClientUiIpc'
 import { ErrorText } from '../../../shared/errorText'
-import type { SessionGroup, SessionGroupAssignment } from '../../../shared/sessionsGroupsState'
+import {
+  SessionsGroupsState,
+  type SessionGroup,
+  type SessionGroupAssignment,
+  type SessionGroupDefinition,
+} from '../../../shared/sessionsGroupsState'
 
 export interface SessionsGroupsPorts {
+  /** Which sections this computer has, in the order they are drawn. A person edits them. */
+  loadGroupDefinitions(): Promise<IpcResult<readonly SessionGroupDefinition[]>>
   loadGroups(): Promise<IpcResult<readonly SessionGroupAssignment[]>>
   assignGroup(key: string, group: SessionGroup): Promise<IpcResult<boolean>>
   /**
-   * Somebody other than this tree wrote an assignment - today a fork taking its parent's group,
-   * written in the main process. The whole map is read back rather than patched from the event: a
-   * window that missed one still ends up holding what is on disk.
+   * Somebody other than this tree wrote an assignment or changed the sections themselves - a fork
+   * taking its parent's group, written in the main process, or a save in the settings window. The
+   * whole picture is read back rather than patched from the event: a window that missed one still
+   * ends up holding what is on disk.
    */
   subscribeGroups(onChanged: () => void): () => void
 }
 
 export function useSessionsGroups(ports: SessionsGroupsPorts) {
+  const [definitions, setDefinitions] = useState<readonly SessionGroupDefinition[]>(
+    () => SessionsGroupsState.defaultsConst,
+  )
   const [groups, setGroups] = useState<ReadonlyMap<string, SessionGroup>>(() => new Map())
   const [ready, setReady] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -31,10 +42,19 @@ export function useSessionsGroups(ports: SessionsGroupsPorts) {
   useEffect(() => {
     let disposed = false
     setReady(false)
-    void ports.loadGroups().then((answer) => {
+    void Promise.all([ports.loadGroupDefinitions(), ports.loadGroups()]).then(([known, assigned]) => {
       if (disposed) return
-      if (!answer.ok) throw new Error(answer.error)
-      setGroups(new Map(answer.value.map(({ key, group }) => [key, group])))
+      if (!known.ok) throw new Error(known.error)
+      if (!assigned.ok) throw new Error(assigned.error)
+      /*
+       * An assignment naming a section that no longer exists is dropped HERE as well as by whoever
+       * removed the section. The two files are written separately, so a tree that trusted the map
+       * would filter such a session out of every section, including the one it falls back to, and
+       * the session would simply not be drawn.
+       */
+      setDefinitions(known.value)
+      setGroups(new Map(SessionsGroupsState.pruned(assigned.value, known.value)
+        .map(({ key, group }) => [key, group])))
       setReady(true)
       setError(null)
     }).catch((thrown: unknown) => {
@@ -66,5 +86,5 @@ export function useSessionsGroups(ports: SessionsGroupsPorts) {
     })
   }, [ports, groups, ready])
 
-  return { groups, ready, saving, error, assign, reload }
+  return { definitions, groups, ready, saving, error, assign, reload }
 }

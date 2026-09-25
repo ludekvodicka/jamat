@@ -694,8 +694,8 @@ describe('app-client-ui/app/appHub', () => {
   })
 
   it('holds the final IPC parity counts', () => {
-    expect(Object.keys(AppHub.ipcChannelsConst)).toHaveLength(182)
-    expect(Object.keys(AppClientUiBridgeEventsConst)).toHaveLength(22)
+    expect(Object.keys(AppHub.ipcChannelsConst)).toHaveLength(180)
+    expect(Object.keys(AppClientUiBridgeEventsConst)).toHaveLength(21)
     expect(Object.keys(ServiceTabsIpc.channelsConst)).toHaveLength(13)
     expect(Object.keys(ServiceRemarkableIpc.channelsConst)).toHaveLength(16)
   })
@@ -800,7 +800,6 @@ describe('app-client-ui/app/appHub', () => {
           title: string
           params: Record<string, unknown>
           sessionId: string | null
-          presentation: 'session' | 'plain' | null
         }): unknown
         setActivePanel(windowId: string, panelId: string | null): void
       }
@@ -812,7 +811,6 @@ describe('app-client-ui/app/appHub', () => {
       title: 'Session One',
       params: { sessionId: 's1' },
       sessionId: 's1',
-      presentation: 'session',
     })
     internals.panelIndex.setActivePanel('main', 'terminal:{"sessionId":"s1"}')
 
@@ -845,56 +843,6 @@ describe('app-client-ui/app/appHub', () => {
     lifecycle.workspaceRendererGone('holder')
 
     expect(order).toEqual(['broker:holder', 'index:holder'])
-  })
-
-  /**
-   * A discard is final, so stopping at the first refusal left the sessions before it destroyed
-   * AND the window open, drawing tabs for sessions that no longer exist. Every id is attempted
-   * now: the close goes ahead when anything was discarded, and is refused only when nothing was,
-   * because that is the one case where leaving the window alone costs nothing.
-   */
-  it('attempts every plain session of a closing holder and reports the ones that refused', async () => {
-    const hub = hubUnderTest()
-    const reports: string[] = []
-    const refuse = new Set(['s-2'])
-    const attempted: string[] = []
-    Object.assign(hub, {
-      sessions: {
-        discardPlainSession: (sessionId: string) => {
-          attempted.push(sessionId)
-          return Promise.resolve(refuse.has(sessionId)
-            ? { ok: false, code: 'host-unreachable', detail: `no answer for ${sessionId}` }
-            : { ok: true, value: undefined })
-        },
-      },
-      report: (message: string) => reports.push(message),
-    })
-    const close = hub as unknown as {
-      closePlainSessions(ids: readonly string[]): Promise<boolean>
-    }
-
-    expect(await close.closePlainSessions(['s-1', 's-2', 's-3'])).toBe(true)
-
-    expect(attempted).toEqual(['s-1', 's-2', 's-3'])
-    expect(reports).toEqual(['1 of 3 sessions could not be discarded: no answer for s-2'])
-  })
-
-  it('keeps a holder open when not one of its plain sessions could be discarded', async () => {
-    const hub = hubUnderTest()
-    const reports: string[] = []
-    Object.assign(hub, {
-      sessions: {
-        discardPlainSession: () =>
-          Promise.resolve({ ok: false, code: 'host-unreachable', detail: 'the Host did not answer' }),
-      },
-      report: (message: string) => reports.push(message),
-    })
-    const close = hub as unknown as {
-      closePlainSessions(ids: readonly string[]): Promise<boolean>
-    }
-
-    expect(await close.closePlainSessions(['s-1', 's-2'])).toBe(false)
-    expect(reports).toEqual(['the Host did not answer'])
   })
 
   // An exception out of an Electron menu handler has no owner: this package installs no

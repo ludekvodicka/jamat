@@ -82,7 +82,7 @@ describe('app-client-ui/renderer/contextCompaction/contextCompactionController',
         hasTarget: () => attached,
         automatic: (sessionId) => {
           automatic.push(sessionId)
-          return Promise.resolve({ kind: 'sent' })
+          return Promise.resolve({ kind: 'delivered', proof: 'working' })
         },
       },
       {
@@ -374,7 +374,7 @@ describe('app-client-ui/renderer/contextCompaction/contextCompactionController',
         hasTarget: () => true,
         automatic: (sessionId) => {
           automatic.push(sessionId)
-          return Promise.resolve({ kind: 'sent' })
+          return Promise.resolve({ kind: 'delivered', proof: 'working' })
         },
       },
       {
@@ -435,7 +435,7 @@ describe('app-client-ui/renderer/contextCompaction/contextCompactionController',
         hasTarget: () => true,
         automatic: (sessionId) => {
           automatic.push(sessionId)
-          return Promise.resolve({ kind: 'sent' })
+          return Promise.resolve({ kind: 'delivered', proof: 'working' })
         },
       },
       {

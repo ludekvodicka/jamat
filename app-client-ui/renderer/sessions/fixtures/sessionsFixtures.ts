@@ -67,14 +67,12 @@ export class SessionsFixtures {
           completed: true,
         },
         {
-          // Drawn by its tab alone: the tree shows it only under a scope that asks for tabs.
           sessionId: 's-tab',
           kind: 'agent',
           ...SessionsFixtures.titled('Scratch tab'),
           tabTitle: 'AppJamatV3 - Scratch tab',
           ...SessionsFixtures.inProject('nodejs', 'AppJamatV3', SessionsFixtures.jamatConst),
           agent: { agentId: 'codex' },
-          presentation: 'tab',
           life: 'live',
           activity: 'idle',
           // No id of its own yet, so nothing to fork and nothing a reopen could name.

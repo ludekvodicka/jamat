@@ -5,18 +5,13 @@ import { TerminalTargetCodec } from '../../shared/terminalTarget'
 import { WorkspacePanelIndex } from './workspacePanelIndex'
 
 describe('app-client-ui/app/tabs/workspacePanelIndex', () => {
-  function panel(
-    panelId: string,
-    sessionId: string | null = null,
-    presentation: WorkspacePanelPresence['presentation'] = null,
-  ): WorkspacePanelPresence {
+  function panel(panelId: string, sessionId: string | null = null): WorkspacePanelPresence {
     return {
       panelId,
       key: sessionId === null ? 'probe' : 'terminal',
       title: panelId,
       params: sessionId === null ? {} : { sessionId },
       sessionId,
-      presentation,
     }
   }
 
@@ -31,7 +26,6 @@ describe('app-client-ui/app/tabs/workspacePanelIndex', () => {
       title: panelId,
       params: { target: { kind: 'remote', remoteEndpointId, sessionId } },
       sessionId: null,
-      presentation: null,
     }
   }
 
@@ -58,16 +52,14 @@ describe('app-client-ui/app/tabs/workspacePanelIndex', () => {
     expect(index.snapshot().map((entry) => entry.title)).toEqual(['Renamed'])
   })
 
-  it('allows only one session presentation while plain panels collide only by panel id', () => {
+  it('keeps one session to one panel, whichever window asks for the second', () => {
     const index = new WorkspacePanelIndex()
-    index.claimOpen('one', panel('terminal:regular-1', 'session-1', 'session'))
+    index.claimOpen('one', panel('terminal:regular-1', 'session-1'))
 
-    expect(index.claimOpen('two', panel('terminal:regular-2', 'session-1', 'session')))
+    expect(index.claimOpen('two', panel('terminal:regular-2', 'session-1')))
       .toEqual({ kind: 'owned', windowId: 'one', panelId: 'terminal:regular-1' })
-    expect(index.claimOpen('two', panel('terminal:plain-1', 'session-1', 'plain')))
-      .toEqual({ kind: 'granted' })
-    expect(index.claimOpen('three', panel('terminal:plain-2', 'session-1', 'plain')))
-      .toEqual({ kind: 'granted' })
+    expect(index.claimOpen('three', panel('terminal:regular-3', 'session-1')))
+      .toEqual({ kind: 'owned', windowId: 'one', panelId: 'terminal:regular-1' })
   })
 
   it('deduplicates a remote target while keeping the same session id distinct across endpoints', () => {
@@ -98,7 +90,7 @@ describe('app-client-ui/app/tabs/workspacePanelIndex', () => {
     const index = new WorkspacePanelIndex()
     expect(index.reconcile('one', [
       panel('probe:1'),
-      panel('terminal:1', 'session-1', 'session'),
+      panel('terminal:1', 'session-1'),
     ])).toEqual({
       acceptedPanelIds: ['probe:1', 'terminal:1'],
       rejectedPanelIds: [],
@@ -106,7 +98,7 @@ describe('app-client-ui/app/tabs/workspacePanelIndex', () => {
 
     expect(index.reconcile('two', [
       panel('probe:1'),
-      panel('terminal:2', 'session-1', 'session'),
+      panel('terminal:2', 'session-1'),
       panel('probe:2'),
     ])).toEqual({
       acceptedPanelIds: ['probe:2'],
@@ -142,7 +134,7 @@ describe('app-client-ui/app/tabs/workspacePanelIndex', () => {
 
   it('keeps the transferred id while replacing its indexed payload with live parameters', () => {
     const index = new WorkspacePanelIndex()
-    const original = panel('terminal:stable-id', 'session-1', 'session')
+    const original = panel('terminal:stable-id', 'session-1')
     index.claimOpen('one', original)
     const transferred = {
       ...original,
@@ -158,19 +150,18 @@ describe('app-client-ui/app/tabs/workspacePanelIndex', () => {
     expect(index.ownerOf('terminal:stable-id')).toBe('two')
   })
 
-  it('reports session presence, plain sessions and active sessions in visible windows', () => {
+  it('reports session presence and the active sessions of visible windows', () => {
     const index = new WorkspacePanelIndex()
-    index.claimOpen('main', panel('regular', 'session-1', 'session'))
-    index.claimOpen('holder', panel('plain', 'session-2', 'plain'))
-    index.claimOpen('hidden', panel('other', 'session-3', 'session'))
+    index.claimOpen('main', panel('regular', 'session-1'))
+    index.claimOpen('holder', panel('second', 'session-2'))
+    index.claimOpen('hidden', panel('other', 'session-3'))
     index.setActivePanel('main', 'regular')
-    index.setActivePanel('holder', 'plain')
+    index.setActivePanel('holder', 'second')
     index.setActivePanel('hidden', 'other')
 
     expect(index.openSessionIds()).toEqual(['session-1', 'session-2', 'session-3'])
-    expect(index.plainSessionIds('holder')).toEqual(['session-2'])
     expect(index.panelsOfSession('session-1')).toEqual([
-      { windowId: 'main', panel: panel('regular', 'session-1', 'session') },
+      { windowId: 'main', panel: panel('regular', 'session-1') },
     ])
     expect(index.visibleTerminalTargetKeys(new Set(['main', 'holder']))).toEqual([
       'session-1',
@@ -189,7 +180,7 @@ describe('app-client-ui/app/tabs/workspacePanelIndex', () => {
   it('returns every panel field with its owner and active flag', () => {
     const index = new WorkspacePanelIndex()
     const terminal = {
-      ...panel('terminal:session-1', 'session-1', 'session'),
+      ...panel('terminal:session-1', 'session-1'),
       title: 'Project - 001',
       params: { sessionId: 'session-1', nested: { value: 1 } },
     }
@@ -205,7 +196,6 @@ describe('app-client-ui/app/tabs/workspacePanelIndex', () => {
         title: 'Project - 001',
         params: { sessionId: 'session-1', nested: { value: 1 } },
         sessionId: 'session-1',
-        presentation: 'session',
         active: true,
       },
       {
@@ -215,8 +205,7 @@ describe('app-client-ui/app/tabs/workspacePanelIndex', () => {
         title: 'probe:1',
         params: {},
         sessionId: null,
-        presentation: null,
-        active: false,
+          active: false,
       },
     ])
     expect(index.snapshot()[0]?.params).not.toBe(terminal.params)

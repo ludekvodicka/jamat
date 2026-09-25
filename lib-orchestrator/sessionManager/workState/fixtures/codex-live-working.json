@@ -1,7 +1,13 @@
 {
   "agent": "codex",
   "expected": {
-    "hint": "working"
+    "hint": "working",
+    "composer": {
+      "state": "empty"
+    },
+    "queuedRow": false,
+    "echoHead": null,
+    "pastePlaceholders": 0
   },
   "provenance": {
     "origin": "captured from this tree's live Host by scripts/dev/capture-workstate.ts",

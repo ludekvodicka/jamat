@@ -115,14 +115,6 @@ export class HostClient {
     }
   }
 
-  /**
-   * The slowest Host call since this was last asked, which is how the Host and the loopback are
-   * answering. Free: the session poll makes one every two seconds whatever anybody is watching.
-   */
-  sampleSlowestCallMs(): number | null {
-    return this.http.sampleSlowestCallMs()
-  }
-
   async runtimeList(): Promise<HostCallResult<RuntimeListResult>> {
     return this.http.call<RuntimeListResult>('runtime.list', {})
   }

@@ -22,10 +22,12 @@ import type {
 import {
   RemoteControlCapabilities,
   RemoteControlConst,
+  RemoteControlDeliverConst,
 } from '../../lib-orchestrator/remoteControl/remoteControlProtocol'
 import { RemoteControlClient } from '../../lib-orchestrator/remoteControl/remoteControlClient'
 import { RemoteControlPairing } from '../../lib-orchestrator/remoteControl/remoteControlPairing'
 import type { RemoteControlPeerPairingBundle } from '../../lib-orchestrator/remoteControl/remoteControlPeerApi.types'
+import { SessionTitle } from '../../lib-orchestrator/sessionManager/records/sessionTitle'
 import { SessionColors } from '../../lib-orchestrator/sessionManager/sessionColors'
 import { SessionGroups } from '../../lib-orchestrator/sessionManager/sessionGroups'
 import type {
@@ -70,7 +72,7 @@ export interface AppClientCliDeps {
   loadConfig(args: CliArguments): AppConfig
   discover(config: AppConfig): Promise<RemoteControlStepResult<RemoteControlDescriptor>>
     | RemoteControlStepResult<RemoteControlDescriptor>
-  client(descriptor: RemoteControlDescriptor): AppClientCliClientPort
+  client(descriptor: RemoteControlDescriptor, options?: { timeoutMilliseconds?: number }): AppClientCliClientPort
   operationId(): string
   requestId(): string
   write(value: string): void
@@ -88,6 +90,7 @@ type AppClientCliPlan =
       request: RemoteControlRequestUnion
       computer: string | null
       workingDirectory: string | null
+      clientTimeoutMs?: number
     }
   | { kind: 'local'; request: RemoteControlLocalRequestUnion }
   | { kind: 'events'; afterRevision?: number }
@@ -128,7 +131,7 @@ export class AppClientCli {
         ...(config.configIdentity === null ? {} : { configIdentity: config.configIdentity }),
         ...(config.runtimeChannel === null ? {} : { channel: config.runtimeChannel }),
       })),
-      client: deps?.client ?? ((descriptor) => new RemoteControlClient(descriptor)),
+      client: deps?.client ?? ((descriptor, options) => new RemoteControlClient(descriptor, options)),
       operationId: deps?.operationId ?? randomUUID,
       requestId: deps?.requestId ?? randomUUID,
       write: deps?.write ?? ((value) => process.stdout.write(`${value}\n`)),
@@ -149,7 +152,9 @@ export class AppClientCli {
       const descriptor = await this.deps.discover(config)
       if (!descriptor.ok)
         return this.finishFailure(plan, descriptor.error)
-      const client = this.deps.client(descriptor.value)
+      const client = plan.kind === 'request' && plan.clientTimeoutMs !== undefined
+        ? this.deps.client(descriptor.value, { timeoutMilliseconds: plan.clientTimeoutMs })
+        : this.deps.client(descriptor.value)
       if (plan.kind === 'commit-status') {
         if (!RemoteControlCapabilities.of(descriptor.value).includes('tabs.commitStatus'))
           return this.finishFailure(plan, { code: 'unavailable', detail: 'tabs.commitStatus is not exposed by this AppClientUI' })
@@ -278,6 +283,13 @@ export class AppClientCli {
           requestId,
           this.operationId(args),
         ))
+    else if (args.command === 'sessions remove')
+      return this.requestPlan(args, this.request(
+          'sessions.remove',
+          { session: this.selector(args) },
+          requestId,
+          this.operationId(args),
+        ))
     else if (args.command === 'sessions color')
       return this.requestPlan(args, this.request(
           'sessions.color',
@@ -298,6 +310,24 @@ export class AppClientCli {
           requestId,
           this.operationId(args),
         ))
+    else if (args.command === 'sessions note') {
+      const note = args.option('--note')
+      const clear = args.has('--clear')
+      if (note !== null && clear)
+        throw new AppClientCliError('invalid-request', '--note and --clear cannot be used together')
+      if (note === null && !clear)
+        return this.requestPlan(args, this.request(
+          'sessions.note',
+          { session: this.selector(args) },
+          requestId,
+        ))
+      return this.requestPlan(args, this.request(
+        'sessions.setNote',
+        { session: this.selector(args), note: clear ? null : note },
+        requestId,
+        this.operationId(args),
+      ))
+    }
     else if (args.command === 'sessions transcript')
       return this.requestPlan(args, this.request(
           'sessions.transcript',
@@ -360,6 +390,31 @@ export class AppClientCli {
           ...(args.has('--enter') ? { enter: true } : {}),
           ...(timeoutMs === undefined ? {} : { timeoutMs }),
         }, requestId, this.operationId(args)))
+    } else if (args.command === 'terminal deliver') {
+      const readyTimeoutMs = args.integer(
+        '--ready-timeout-ms',
+        RemoteControlDeliverConst.readyTimeoutMinimumMillisecondsConst,
+        RemoteControlDeliverConst.readyTimeoutMaximumMillisecondsConst,
+      ) ?? RemoteControlDeliverConst.readyTimeoutMillisecondsConst
+      const submitTimeoutMs = args.integer(
+        '--submit-timeout-ms',
+        RemoteControlDeliverConst.submitTimeoutMinimumMillisecondsConst,
+        RemoteControlDeliverConst.submitTimeoutMaximumMillisecondsConst,
+      ) ?? RemoteControlDeliverConst.submitTimeoutMillisecondsConst
+      return {
+        ...this.requestPlan(args, this.request('terminal.deliver', {
+          session: this.selector(args),
+          text: args.required('--text'),
+          ...(args.has('--typed') ? { input: 'typed' as const } : {}),
+          readyTimeoutMs,
+          submitTimeoutMs,
+          ...(args.has('--queue') ? { queue: true } : {}),
+        }, requestId, this.operationId(args))),
+        // The host may spend ready + compose + submit before it answers, which can outlast the
+        // client's 65 s default; 5 s covers the round trip itself.
+        clientTimeoutMs: readyTimeoutMs + RemoteControlDeliverConst.composeTimeoutMillisecondsConst
+          + submitTimeoutMs + AppClientCli.deliverMarginMillisecondsConst,
+      }
     } else
       throw new Error(`Unknown parsed CLI command: ${JSON.stringify(args.command)}`)
   }
@@ -474,17 +529,11 @@ export class AppClientCli {
       throw new AppClientCliError('invalid-request', '--computer must not be empty')
     if (computer !== null
       && request.operation === 'sessions.create'
-      && (args.has('--open-tab') || args.has('--plain')))
+      && args.has('--open-tab'))
       throw new AppClientCliError(
         'invalid-request',
-        '--open-tab and --plain are local UI options and cannot be used with --computer',
+        '--open-tab is a local UI option and cannot be used with --computer',
       )
-    // A session of the tab is drawn by that tab alone, so one without a tab is invisible and stays
-    // behind. The library refuses it either way; this says so before the round trip.
-    if (request.operation === 'sessions.create'
-      && args.has('--plain')
-      && !args.has('--open-tab'))
-      throw new AppClientCliError('invalid-request', '--plain requires --open-tab')
     return {
       kind: 'request',
       request,
@@ -532,6 +581,7 @@ export class AppClientCli {
     if (baseRef !== null && worktree === null)
       throw new AppClientCliError('invalid-request', '--base-ref requires --worktree')
     const title = args.option('--title')
+    const number = AppClientCli.customNumberOf(args.option('--number'))
     const color = AppClientCli.colorOf(args.option('--color'))
     const flowId = args.option('--flow-id')
     const acknowledgeSetup = args.option('--acknowledge-setup')
@@ -551,9 +601,9 @@ export class AppClientCli {
         worktree: { slug: worktree, ...(baseRef === null ? {} : { baseRef }) },
       }),
       ...(title === null ? {} : { title }),
+      ...(number === null ? {} : { number }),
       ...(color === null ? {} : { color }),
       ...(flowId === null ? {} : { flowId }),
-      ...(args.has('--plain') ? { presentation: 'tab' as const } : {}),
       ...(acknowledgeSetup === null ? {} : { acknowledgeSetup }),
     }
   }
@@ -567,6 +617,25 @@ export class AppClientCli {
     return value === null ? null : AppClientCli.colorNamed(value)
   }
 
+  /**
+   * The number a create may BRING, which is not the number a selector says: `--number` picks a
+   * session everywhere else and names one here, and the two grammars differ on purpose. Selecting
+   * matches whatever is in the slot, including the `014` the answering computer handed out;
+   * bringing one may only be the custom shape, because an allocated number is that computer's to
+   * give. Refused here as well as at the target, for the reason `--color` is: the spec this
+   * method feeds is TYPED, and a shape that reached it unproven would be a cast.
+   */
+  private static customNumberOf(value: string | null): string | null {
+    if (value === null) return null
+    if (!SessionTitle.isCustomNumber(value))
+      throw new AppClientCliError(
+        'invalid-request',
+        '--number on a create must be one to three letters then up to six digits, such as i34. '
+        + "A session's own number is given by the computer that keeps the project's count",
+      )
+    return value
+  }
+
   /** The same list where the colour is the whole request rather than one field of a create. */
   private static colorNamed(value: string): SessionColorName {
     if (!SessionColors.isName(value))
@@ -578,20 +647,19 @@ export class AppClientCli {
   }
 
   /**
-   * Refused here as well as at the target, for the reason `colorOf` above is: the request this
-   * method feeds is TYPED, and a name that reached it unproven would be a cast. The list is the
-   * library's, so the local refusal and the remote one can never name different groups.
+   * Only the SHAPE, unlike `colorOf` above, and the difference is the whole of what changed on
+   * 2026-09-22. The palette is fixed, so this parser can name every colour it will take. The groups
+   * are sections a person made on the computer that will answer, and that computer may not be this
+   * one, so a parser listing groups here would be listing somebody else's. A well-formed id that the
+   * target does not have comes back as `invalid-request` naming the groups it does have.
    */
   private static groupOf(value: string | null): SessionGroup | null {
     return value === null ? null : AppClientCli.groupNamed(value)
   }
 
   private static groupNamed(value: string): SessionGroup {
-    if (!SessionGroups.isName(value))
-      throw new AppClientCliError(
-        'invalid-request',
-        `--group must be one of ${SessionGroups.namesConst.join(', ')}`,
-      )
+    if (!SessionGroups.isId(value))
+      throw new AppClientCliError('invalid-request', `--group is invalid: ${SessionGroups.idRuleConst}`)
     return value
   }
 
@@ -614,10 +682,11 @@ export class AppClientCli {
         )
       return { kind: 'sessionId', sessionId }
     }
-    if (number !== null && /^\d{3}(?:-\d{3})?$/.test(number)) return { kind: 'number', number }
+    if (number !== null && SessionTitle.isSelectorNumber(number)) return { kind: 'number', number }
     throw new AppClientCliError(
       'invalid-request',
-      '--number must contain three digits or two three-digit parts separated by a hyphen',
+      '--number must be a session number such as 014, a custom number such as i34, or two such '
+      + 'parts separated by a hyphen',
     )
   }
 
@@ -629,14 +698,18 @@ export class AppClientCli {
   ): Promise<RemoteControlStepResult<RemoteControlRequestUnion>> {
     if (request.operation === 'sessions.reopen'
       || request.operation === 'sessions.finalize'
+      || request.operation === 'sessions.remove'
       || request.operation === 'sessions.color'
       || request.operation === 'sessions.group'
+      || request.operation === 'sessions.note'
+      || request.operation === 'sessions.setNote'
       || request.operation === 'sessions.transcript'
       || request.operation === 'tabs.open'
       || request.operation === 'tabs.openFile'
       || request.operation === 'tabs.openCommit'
       || request.operation === 'terminal.peek'
-      || request.operation === 'terminal.send') {
+      || request.operation === 'terminal.send'
+      || request.operation === 'terminal.deliver') {
       const resolver = new SessionSelectorResolver({
         list: async () => {
           const listRequest = this.request('sessions.list', {}, this.deps.requestId())
@@ -804,7 +877,13 @@ export class AppClientCli {
     'tabs.cancelCommit',
     'sessions.color',
     'sessions.group',
+    'sessions.note',
+    'sessions.setNote',
+    'terminal.deliver',
+    'sessions.remove',
   ]
+
+  private static readonly deliverMarginMillisecondsConst = 5_000
 
   private static readonly exitCodesConst: Record<RemoteControlErrorCode, number> = {
     'invalid-request': 2,

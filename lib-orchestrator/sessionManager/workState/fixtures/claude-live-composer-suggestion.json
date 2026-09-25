@@ -1,0 +1,28 @@
+{
+  "agent": "claude",
+  "expected": {
+    "hint": "idle",
+    "composer": {
+      "state": "empty"
+    },
+    "queuedRow": false,
+    "echoHead": null,
+    "pastePlaceholders": 0
+  },
+  "provenance": {
+    "origin": "captured from this tree's live Host by a 50 ms poll of runtime.inspect for one new session, building the frame with ScreenTail.frameOf exactly as scripts/dev/capture-workstate.ts does",
+    "case": "a freshly booted Claude whose empty input box shows the suggestion hint `Try \"refactor <filepath>\"` for about a second",
+    "capture": "polled from `sessions create` until the screen held the hint: the full capture script needs 2.3 s per pass and the hint was always erased before it. This session drew no SGR at all (the ring holds one `ESC[m`), so the hint is plain text and no style separates it from a typed draft; sanitized per V1 recipe: the scratch directory is replaced by Q:\\PROJECT. ANSI is left intact",
+    "ported": "nothing - recorded in this tree",
+    "identical": "not present in the V1 or V2 corpus"
+  },
+  "recorded": {
+    "build": "claude-code 2.1.280",
+    "capturedAt": "2026-09-23"
+  },
+  "frame": {
+    "rawTail": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H\u001b]0;C:\\WINDOWS\\system32\\cmd.exe\u0007\u001b[?25h\u001b[?25l\u001b[?2004h\u001b[?2031h\u001b[?1004h\u001b[>0q\u001b[?u\u001b[>4m\u001b[?2031l\u001b[?2004l\u001b[?2004h\u001b[?2031h\u001b[?1004h\u001b[?1049h\u001b[2J\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\u001b[120C\u001b[2;2H▐▛███▛█\u001b[3CClaude\u001b[1CCode\u001b[1Cv2.1.280\r\n▝▜██████▀\u001b[2COpus\u001b[1C5.5\u001b[1C(1M\u001b[1Ccontext)\u001b[1Cwith\u001b[1Clow\u001b[1Ceffort\u001b[1C·\u001b[1CClaude\u001b[1CMax\u001b[4;3H▝▝\u001b[1C▝▝\u001b[4CQ:\\PROJECT…\u001b[1C·\u001b[1C/rc\u001b[1Cconnecting…\u001b[26;104H○\u001b[1Clow\u001b[1C·\u001b[1C/effort\r\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────> Try\u001b[1C\"refactor\u001b[1C<filepath>\"\r\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[30;3H⏵⏵\u001b[1Cbypass\u001b[1Cpermissions\u001b[1Con\u001b[1C(shift+tab\u001b[1Cto\u001b[1Ccycle)\u001b[1C·\u001b[1C←\u001b[1Cfor\u001b[1Cagents\u001b[28;3H\u001b[?25h",
+    "screenTail": "\n\n\n\u001b[103C○\u001b[1Clow\u001b[1C·\u001b[1C/effort\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n> Try\u001b[1C\"refactor\u001b[1C<filepath>\"\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[2C⏵⏵\u001b[1Cbypass\u001b[1Cpermissions\u001b[1Con\u001b[1C(shift+tab\u001b[1Cto\u001b[1Ccycle)\u001b[1C·\u001b[1C←\u001b[1Cfor\u001b[1Cagents\u001b[2A\u001b[60D\u001b[?2004h\u001b[?1004h\u001b[?1003h",
+    "wideScreenTail": "\n\n\n\n\n\n\n\n\n\n\n\u001b[103C○\u001b[1Clow\u001b[1C·\u001b[1C/effort\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n> Try\u001b[1C\"refactor\u001b[1C<filepath>\"\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[2C⏵⏵\u001b[1Cbypass\u001b[1Cpermissions\u001b[1Con\u001b[1C(shift+tab\u001b[1Cto\u001b[1Ccycle)\u001b[1C·\u001b[1C←\u001b[1Cfor\u001b[1Cagents\u001b[2A\u001b[60D\u001b[?2004h\u001b[?1004h\u001b[?1003h"
+  }
+}

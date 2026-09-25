@@ -32,7 +32,6 @@ describe('app-client-ui/app/tabs/tabTransferBroker', () => {
       title: 'Probe',
       params: { serial: 1 },
       sessionId: null,
-      presentation: null,
     }
   }
 

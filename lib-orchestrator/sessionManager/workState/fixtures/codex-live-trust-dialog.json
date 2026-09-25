@@ -1,0 +1,28 @@
+{
+  "agent": "codex",
+  "expected": {
+    "hint": "waiting",
+    "composer": {
+      "state": "absent"
+    },
+    "queuedRow": false,
+    "echoHead": null,
+    "pastePlaceholders": 0
+  },
+  "provenance": {
+    "origin": "captured from this tree's live Host by scripts/dev/capture-workstate.ts",
+    "case": "a freshly launched Codex in a directory it has never trusted: the trust dialog it shows before its input box",
+    "capture": "`sessions create --agent codex` in a new scratch folder; the update prompt was answered with `2` (Skip) through `terminal send`, which brought up this dialog. It draws `› 1. Yes, continue` with the marker the input box uses and ends in `Press enter to continue`; sanitized per V1 recipe: the scratch directory is replaced by Q:\\PROJECT. ANSI is left intact",
+    "ported": "nothing - recorded in this tree",
+    "identical": "not present in the V1 or V2 corpus"
+  },
+  "recorded": {
+    "build": "codex-cli 0.155.1",
+    "capturedAt": "2026-09-23"
+  },
+  "frame": {
+    "rawTail": "\n\u001b[K\r\n\u001b[K\r\n\u001b[K\u001b[10;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[K\r\n  ✨ Update available! \u001b[2m0.155.1 -> 0.156.1\u001b[22m\u001b[K\r\n\u001b[K\r\n  \u001b[2mRelease notes: \u001b]8;id=86728-1;https://github.com/openai/codex/releases/latest\u001b\\\u001b[4mhttps://github.com/openai/codex/releases/latest\u001b]8;;\u001b\\\u001b[22m\u001b[24m\u001b[K\r\n\u001b[K\r\n› 1. Update now (runs `npm install -g @openai/codex`)\u001b[K\r\n  2. Skip\u001b[K\r\n  3. Skip until next version\u001b[K\r\n\u001b[K\r\n  \u001b[2mPress enter to continue\u001b[22m\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\u001b[?25l\u001b[120C\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[2m\u001b[H╭─────────────────────────────────────────────────────────╮\u001b[22m\u001b[K\u001b[2m\r\n│ >_ \u001b[22m\u001b[1mOpenAI Codex\u001b[22m\u001b[2m (v0.155.1)                              │\u001b[22m\u001b[K\u001b[2m\r\n│                                                         │\u001b[22m\u001b[K\u001b[2m\r\n│ model:       \u001b[3mloading\u001b[23m   \u001b[22m/model to change                 │\u001b[K\r\n│ directory:   Q:\\PROJECT\u001b[2m │\u001b[22m\u001b[K\u001b[2m\r\n│ permissions: \u001b[22mYOLO mode                                  │\u001b[K\r\n╰─────────────────────────────────────────────────────────╯\u001b[K\r\n\u001b[K\r\n\u001b[K\u001b[1m\r\n›\u001b[22m \u001b[2mAsk Codex to do anything\u001b[22m\u001b[K\r\n\u001b[K\r\n  \u001b[2m? for shortcuts\u001b[22m\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\u001b[10;3H\u001b[?25h\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[2m\u001b[H╭\u001b[10;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[22m\u001b[H\u001b[?25h\u001b[?2026l> \u001b[1mYou are in \u001b[22mQ:\\PROJECT\r\n\u001b[K\r\n  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt\u001b[K\r\n  injection. Trusting the directory allows project-local config, hooks, and exec policies to load.\u001b[K\r\n\u001b[K\r\n› 1. Yes, continue\u001b[K\r\n  2. No, quit\u001b[K\r\n\u001b[K\r\n  \u001b[2mPress enter to continue\u001b[22m\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\u001b[?25l\u001b[120C",
+    "screenTail": "\n  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt\n  injection. Trusting the directory allows project-local config, hooks, and exec policies to load.\n\n› 1. Yes, continue\n  2. No, quit\n\n  \u001b[2mPress enter to continue\u001b[21B\u001b[94C\u001b[0m\u001b[?2004h\u001b[?1004h",
+    "wideScreenTail": "> \u001b[1mYou are in \u001b[0mQ:\\PROJECT\n\n  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt\n  injection. Trusting the directory allows project-local config, hooks, and exec policies to load.\n\n› 1. Yes, continue\n  2. No, quit\n\n  \u001b[2mPress enter to continue\u001b[21B\u001b[94C\u001b[0m\u001b[?2004h\u001b[?1004h"
+  }
+}

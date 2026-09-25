@@ -67,8 +67,13 @@ export class AgentWorkInspectorClaude {
    * The remaining three are still V1's, still normalized, and still carry their retire trigger:
    * that frame neither showed them nor contradicted them, so they keep their sanitized wording
    * cases until one does.
+   *
+   * `itrustthisfolder` is the workspace trust dialog's own option, recorded in
+   * `claude-live-trust-dialog.json` (Claude Code 2.1.280). Its footer alone read `waiting`; it is
+   * `blocked` because nothing may be typed into a session until a person has answered it.
    */
   private static readonly blockedWordingConst = [
+    /itrustthisfolder/,
     /doyouwantto(proceed|continue)/,
     /wouldyouliketoproceed/,
     /\[y\/n\]/,

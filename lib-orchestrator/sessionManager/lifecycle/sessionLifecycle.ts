@@ -10,10 +10,7 @@ import type {
   RuntimeSessionInfo,
 } from '../../../app-host/app/wire/hostWire.js'
 import type { GitResult, WorktreeFacts } from '../../git/git.types'
-import type {
-  HostCallFailure,
-  HostCallResult,
-} from '../../hostClient/hostClient.types'
+import type { HostCallResult } from '../../hostClient/hostClient.types'
 import type { DeclaredSetup, SetupResolution } from '../../projectSetup/projectSetup.types'
 import type { CodexRolloutMatch } from '../../projectManager/codexRolloutView'
 import { AgentPresets, type SessionAgentSpec } from '../launch/agentPresets'
@@ -840,71 +837,6 @@ export class SessionLifecycle {
   }
 
   /**
-   * The one place where closing a surface ends what is behind it, and it is narrow on purpose: a
-   * plain tab is presented by its tab alone, so a tab closed without this would leave a runtime
-   * nothing can ever show again. Everywhere else closing a tab still only detaches.
-   *
-   * The stop and the removal are one operation rather than two calls, because between them the
-   * record would name a runtime that is already gone.
-   */
-  async discardPlain(sessionId: string): Promise<SessionsOpResult> {
-    const record = this.records.get(sessionId)
-    if (!record) return OperationOutcomes.notFound(sessionId)
-    if (record.presentation !== 'tab')
-      return {
-        ok: false,
-        code: 'invalid-spec',
-        detail: `Session ${sessionId} is not a plain tab, so closing its tab ends nothing`,
-      }
-    if (this.records.latched) return OperationOutcomes.latched()
-    const target = OperationOutcomes.targetOf(record)
-    if (target !== null && (record.life === 'live' || record.life === 'starting')) {
-      // Marked BEFORE the stop, the opposite way round from `stop()`. Nothing is waiting on this
-      // session's exit code the way an install's caller waits, and the record is on its way out; the
-      // only thing the marker has to survive is a crash between the stop and the removal, where it
-      // is what keeps a closed tab from reading as a session that fell over.
-      if (!record.stopRequested && !await this.records.put({ ...record, stopRequested: true }))
-        return OperationOutcomes.latched()
-      const stopped = await this.host.runtimeStop(target)
-      if (!stopped.ok && !SessionLifecycle.alreadyGone(stopped))
-        return OperationOutcomes.failureOf(stopped)
-    }
-    if (!await this.records.remove(sessionId)) return OperationOutcomes.latched()
-    // Best effort for the same reason `remove` does it: a dead entry on the Host is a diagnostic
-    // once the record is gone, and it does not survive the Host's next start anyway.
-    if (target !== null) await this.host.runtimeRemove(target)
-    return { ok: true, value: undefined }
-  }
-
-  /**
-   * A plain tab becomes a session of the tree. One direction only: a session of the tree has a
-   * number and a place in the tree, and there is nowhere for those to go back to.
-   *
-   * A number is taken only for a project directory, exactly as the create card does it, and failing
-   * to take one is not a reason to refuse: a session without a number is a session, and refusing
-   * would leave the tab as the only thing holding a session the person asked to keep.
-   */
-  async promotePlain(sessionId: string): Promise<SessionsOpResult> {
-    const record = this.records.get(sessionId)
-    if (!record) return OperationOutcomes.notFound(sessionId)
-    if (record.presentation !== 'tab')
-      return {
-        ok: false,
-        code: 'invalid-spec',
-        detail: `Session ${sessionId} is already a session of the tree`,
-      }
-    if (this.records.latched) return OperationOutcomes.latched()
-    const token = record.directory.mode === 'project'
-      ? await this.numbers.allocate(record.directory.projectPath, this.records.list())
-      : null
-    const title = token === null ? record.title : `${token} - ${record.title}`
-    const promoted: SessionRecord = { ...record, title }
-    delete promoted.presentation
-    if (!await this.records.put(promoted)) return OperationOutcomes.latched()
-    return { ok: true, value: undefined }
-  }
-
-  /**
    * Fork the conversation this session is holding into one of its own.
    *
    * The spec is composed HERE rather than by whoever asked, because everything it needs is on the
@@ -1068,11 +1000,14 @@ export class SessionLifecycle {
       // On a record with no prefix the name IS the whole title, and a name shaped like a session
       // number would come back out of `partsOf` as one: the next save would edit `planning notes`
       // behind a chip reading `2026`. Refused here, where the shape is still the caller's choice.
+      // The number that would be read is named, because a custom one is not obviously a number to
+      // whoever typed it: `x64 build` is refused for its `x64`, and the sentence has to say so.
       if (parts.number === null && SessionTitle.titlePrefixConst.test(name))
         return {
           ok: false,
           code: 'invalid-spec',
-          detail: 'A name must not begin like a session number',
+          detail: 'A name must not begin like a session number, and '
+            + `${JSON.stringify(SessionTitle.partsOf(name).number)} reads as one`,
         }
       const composed = SessionTitle.compose(parts.number, name)
       if (composed.trim().length === 0)
@@ -1188,15 +1123,6 @@ export class SessionLifecycle {
     if (captured === null) return record
     const named: SessionRecord = { ...record, agent: { ...agent, nativeSessionId: captured } }
     return await this.records.put(named) ? named : record
-  }
-
-  /**
-   * A stop the Host answered with "no such runtime", which is the runtime having already finished on
-   * its own. Only 404 counts: every other refusal leaves it possible that something is still running,
-   * and a caller about to throw the record away has to be sure it is not.
-   */
-  private static alreadyGone(failure: HostCallFailure): boolean {
-    return failure.code === 'op-rejected' && failure.status === 404
   }
 
   /**
@@ -1524,13 +1450,17 @@ export class SessionLifecycle {
    * not order and `--number` could not reach.
    *
    * Asked after the worktree is cut, so a create that is refused before that costs the project no
-   * number. Null is every case that is not counted: a title that already carries one, a plain tab -
-   * a tab is not work the tree keeps, and `promotePlain` takes its number if it ever becomes work
-   * that is - a binding that names a directory rather than a project, and a counter that could not
-   * answer, which is never a reason to refuse a session, exactly as it is not for a promotion.
+   * number. Null is every case that is not counted: a title that already carries one, a binding that
+   * names a directory rather than a project, and a counter that could not answer, which is never a
+   * reason to refuse a session.
+   *
+   * A custom number short-circuits every one of those, because none of them is about it: they all
+   * ask whether this session should SPEND a number, and `i34` spends nothing. It is taken for an
+   * ad-hoc directory too, and `specProblem` has already proved its shape.
    */
   private async numberFor(spec: SessionCreateSpec): Promise<string | null> {
-    if (spec.directory.mode !== 'project' || spec.presentation === 'tab') return null
+    if (spec.number !== undefined) return spec.number
+    if (spec.directory.mode !== 'project') return null
     if (SessionTitle.partsOf(spec.title?.trim() ?? '').number !== null) return null
     return this.numbers.allocate(spec.directory.projectPath, this.records.list())
   }
@@ -1597,7 +1527,6 @@ export class SessionLifecycle {
     }
     if (marks) record.resolveFor = marks.resolveFor
     if (spec.flowId) record.flowId = spec.flowId
-    if (spec.presentation) record.presentation = spec.presentation
     if (spec.color) record.color = spec.color
     if (worktree) record.worktree = worktree
     return record
@@ -1648,8 +1577,8 @@ export class SessionLifecycle {
         return 'a worktree can only be created for a project directory'
       if (!SessionLifecycle.filled(spec.worktree.slug)) return 'a worktree needs a slug'
     }
-    const presentation = SessionLifecycle.presentationProblem(spec)
-    if (presentation) return presentation
+    const number = SessionLifecycle.numberProblem(spec)
+    if (number) return number
     // The same guard `setColor` writes through, and the same sentence: a name nobody can draw is a
     // caller's mistake wherever it arrives, and a create is not the place to start being lenient
     // about it - the record would keep the word and every reader would quietly filter it away.
@@ -1668,13 +1597,25 @@ export class SessionLifecycle {
       return `unknown session kind ${JSON.stringify(spec.kind)}`
   }
 
-  /** A plain tab is a raw terminal in a directory: the two things it cannot be are isolated and composed. */
-  private static presentationProblem(spec: SessionCreateSpec): string | null {
-    if (spec.presentation === undefined) return null
-    if (spec.presentation !== 'tab')
-      return `unknown presentation ${JSON.stringify(spec.presentation)}`
-    if (spec.worktree) return 'a plain tab runs without isolation, so it cannot carry a worktree'
-    if (spec.flowId) return 'a plain tab is not composed by a flow'
+  /**
+   * The number a caller may bring, and the two ways of bringing one that cannot both be meant.
+   *
+   * Digits are refused by shape rather than by comparison, which is what separates this from
+   * `numberClaimProblem`: a claim on `014` is a question about how far the project has counted, and
+   * only that method can ask it. `i34` is not a claim at all, so there is nothing to ask - the
+   * shape is the whole of what makes it safe, and a caller that typed digits into this field meant
+   * the other mechanism and should be told which one.
+   */
+  private static numberProblem(spec: SessionCreateSpec): string | null {
+    if (spec.number === undefined) return null
+    if (!SessionTitle.isCustomNumber(spec.number))
+      return `${JSON.stringify(spec.number)} is not a custom session number: one to three letters `
+        + 'then up to six digits, such as "i34". A number of digits alone is the project\'s to hand '
+        + 'out, and a title may claim one the project has already issued'
+    // Both say what the prefix is, and the title wins wherever it is parsed back. Refused rather
+    // than ordered, because a caller holding two answers has not decided which one it meant.
+    if (SessionTitle.partsOf(spec.title?.trim() ?? '').number !== null)
+      return 'a title that already begins with a number cannot also be given one'
     return null
   }
 

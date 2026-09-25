@@ -72,7 +72,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalKeyGate', () => {
     // property the swappable pair rests on: the gate answers off the catalog, and the catalog claims
     // the same two keys whichever card each of them opens.
     expect(claimed.map((command) => command.accelerator))
-      .to.include.members(['Ctrl+T', 'Ctrl+Shift+T', 'Ctrl+W', 'Ctrl+Shift+D', 'F11', 'F2'])
+      .to.include.members(['Ctrl+T', 'Ctrl+W', 'Ctrl+Shift+D', 'F11', 'F2'])
   })
 
   /**

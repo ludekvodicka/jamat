@@ -2,6 +2,8 @@ import { mkdirSync } from 'node:fs'
 
 import { app } from 'electron'
 
+import { ChildEnvironment } from '../../lib-orchestrator/shared/childEnvironment'
+import { AppClientUiReport } from '../shared/appClientUiReport'
 import { AppConfig } from './appConfig'
 import { AppContext } from './appContext'
 import { AppHub } from './appHub'
@@ -13,6 +15,10 @@ export class AppClientUi {
   static async run(mainModuleUrl: string): Promise<void> {
     FileViewerProtocol.registerScheme()
     const config = AppConfig.load(app.isPackaged)
+    const agentMarker = ChildEnvironment.agentSessionMarkerOf(process.env)
+    if (agentMarker !== null)
+      AppClientUiReport.warning(`started inside an agent session (${agentMarker} is set); `
+        + 'its session variables are stripped from every session this client starts')
     // Electron resolves userData while it becomes ready, and caches it. An override applied after
     // `whenReady` moves the directory for later readers while the caches stay in the shared default
     // profile, which is keyed by neither config identity nor channel.

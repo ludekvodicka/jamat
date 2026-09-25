@@ -45,6 +45,13 @@ export class TerminalInputRegistry {
     return this.targets.get(sessionId)?.writable() === true
   }
 
+  focus(sessionId: string): boolean {
+    const target = this.targets.get(sessionId)
+    if (target === undefined || !target.writable()) return false
+    target.focus()
+    return true
+  }
+
   insert(sessionId: string, text: string, options: TerminalInputOptions = {}): boolean {
     const target = this.targets.get(sessionId)
     if (target === undefined || !target.writable()) return false

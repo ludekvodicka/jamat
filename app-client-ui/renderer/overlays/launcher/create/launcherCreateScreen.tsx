@@ -98,8 +98,8 @@ export function LauncherCreateScreen(props: {
           {CreateScreenModel.typesOf(state).map((type, index) => (
             <ChoiceCard
               key={CreateTypes.keyOf(type)}
-              title={CreateTypes.titleOf(type, state.tabProfile, remote)}
-              note={CreateTypes.noteOf(type, state.tabProfile, remote)}
+              title={CreateTypes.titleOf(type, remote)}
+              note={CreateTypes.noteOf(type, remote)}
               glyph={CreateTypes.glyphOf(type)}
               chosen={index === state.typeIndex}
               refusal={CreateScreenModel.typeRefusal(state, type)}
@@ -109,11 +109,10 @@ export function LauncherCreateScreen(props: {
         </div>
       </ChoiceRow>
 
-      {/* A tab has no isolation by definition and a worktree on another computer is set up there,
-          so the row that would ask is not drawn at all rather than drawn and refused. Both cards
-          say what they left out - the tab card in its own words below, the remote card in the list
-          under the form. */}
-      {!state.tabProfile && !remote && !existing && (
+      {/* A worktree on another computer is set up there, so the row that would ask is not drawn at
+          all rather than drawn and refused; the remote card says what it left out in the list under
+          the form. */}
+      {!remote && !existing && (
       <ChoiceRow label="Isolation" current={state.field === 'isolation'}>
         <div className="jamat-choice__cards">
           <ChoiceCard
@@ -337,12 +336,11 @@ export class CreateTypes {
   }
 
   /**
-   * `Raw` is the session card's word for it; the tab card, which asks less, calls it `New`.
    * `Continue/Fork` becomes `Continue` on a remote card, because a fork is not what the target does
    * with a reopen and a label that promised one would be promising the target's behaviour.
    */
-  static titleOf(type: CreateType, tabProfile: boolean, remote: boolean): string {
-    if (type.kind === 'raw') return tabProfile ? 'New' : 'Raw'
+  static titleOf(type: CreateType, remote: boolean): string {
+    if (type.kind === 'raw') return 'Raw'
     else if (type.kind === 'shell') return 'Shell'
     else if (type.kind === 'flow') return FlowCatalog.byId(type.flowId).title
     else if (type.kind === 'existing') return remote ? 'Continue' : 'Continue/Fork'
@@ -350,21 +348,14 @@ export class CreateTypes {
       throw new Error(`Unknown create type: ${JSON.stringify(type)}`)
   }
 
-  /**
-   * Continue/Fork says what it lands in when the card around it is called `New tab`: a fork can never
-   * be reopened by id, so the library refuses to hold one in a tab, and the card has to say that
-   * rather than let the title promise a tab the result will not be.
-   */
-  static noteOf(type: CreateType, tabProfile: boolean, remote: boolean): string {
+  static noteOf(type: CreateType, remote: boolean): string {
     if (type.kind === 'raw') return 'start the agent, type in the terminal'
     else if (type.kind === 'shell') return 'a plain terminal, no agent'
     else if (type.kind === 'flow') return FlowCatalog.byId(type.flowId).description
     else if (type.kind === 'existing')
       return remote
         ? 'reopen a session that computer already keeps'
-        : tabProfile
-          ? 'resume or fork, opens as a kept session'
-          : 'resume ended sessions, fork running ones'
+        : 'resume ended sessions, fork running ones'
     else
       throw new Error(`Unknown create type: ${JSON.stringify(type)}`)
   }

@@ -1,0 +1,28 @@
+{
+  "agent": "codex",
+  "expected": {
+    "hint": "working",
+    "composer": {
+      "state": "empty"
+    },
+    "queuedRow": false,
+    "echoHead": null,
+    "pastePlaceholders": 0
+  },
+  "provenance": {
+    "origin": "captured from this tree's live Host by scripts/dev/capture-workstate.ts",
+    "case": "the screen right after Enter submitted a draft to an idle agent",
+    "capture": "captured immediately after `terminal send --enter`; the message is echoed as `› text`, the working row is drawn and the box shows its dimmed placeholder again; sanitized per V1 recipe: the scratch directory is replaced by Q:\\PROJECT. ANSI is left intact",
+    "ported": "nothing - recorded in this tree",
+    "identical": "not present in the V1 or V2 corpus"
+  },
+  "recorded": {
+    "build": "codex-cli 0.155.1",
+    "capturedAt": "2026-09-23"
+  },
+  "frame": {
+    "rawTail": "5l\u001b[24;1H \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[24;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[28;3H\u001b[?25h\u001b]0;⠼ cx\u0007\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[24;1H \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[24;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[24;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[28;3H\u001b[?25h\u001b]0;⠴ cx\u0007\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[24;1H \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[24;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[28;3H\u001b[?25h\u001b]0;⠦ cx\u0007\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[24;1H \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[24;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[24;1H \u001b[28;3H\u001b[?25h\u001b]0;⠧ cx\u0007\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[24;1H \u001b[2m\r\n◦\u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[22m\u001b[24;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[28;3H\u001b[?25h\u001b]0;⠇ cx\u0007\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[24;1H \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[24;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[28;3H\u001b[?25h\u001b]0;⠏ cx\u0007\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[24;1H \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[24;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[2m\u001b[25;34H · Loading directory instructions\u001b[24;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[22m \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[24;1H \u001b[28;3H\u001b]0;⠋ cx\u0007\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[24;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[25;34H\u001b[K\u001b[28;3H\u001b[?25h\u001b]0;⠙ cx\u0007\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[24;1H \u001b[2m\u001b[25;12H1\u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[22m\u001b[24;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[38;2;171;223;167m\u001b[30;120H…\u001b[28;3H\u001b]0;⠙ renaming... ⠙ | cx\u0007\u001b[?25h\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[m\u001b[24;1H \u001b[28;3H\u001b[?25h\u001b]0;⠹ renaming... ⠹ | cx\u0007\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[24;1H \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[24;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[28;3H\u001b[?25h\u001b]0;⠸ renaming... ⠸ | cx\u0007\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[24;1H \r\n•\u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[24;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[24;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[28;3H\u001b[?25h\u001b]0;⠼ renaming... ⠼ | cx\u0007\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[24;1H \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[24;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[28;3H\u001b[?25h\u001b]0;⠴ renaming... ⠴ | cx\u0007\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[24;1H \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[24;1H\u001b[?25h\u001b[0 q\u001b[?2026l",
+    "screenTail": "\n \n• \u001b[2mWorking\u001b[0m \u001b[2m(1s • esc to interrupt)\n\n\n\u001b[1;22m›\u001b[0m \u001b[2mAsk Codex to do anything\n\n\u001b[0m  \u001b[38;2;246;226;183mgpt-6-astra xhigh\u001b[39;2m · \u001b[38;2;171;223;167;22mQ:\\PROJECT\u001b[6A\u001b[120D\u001b[0m\u001b[?2004h\u001b[?1004h",
+    "wideScreenTail": "\u001b[0m  \u001b[1mTip:\u001b[0m \u001b[3mNew\u001b[0m Use \u001b[1m/fast\u001b[0m to enable our fastest inference with increased plan usage.\n\n\u001b[33;2m⚠ 1 MCP startup issue · ctrl + t for details\n\n\u001b[39m• \u001b[0mYou have 1 usage limit reset available. Run /usage to use one.\n\n\n\u001b[1;2m› \u001b[0mWithout using any tools, write a 1500-word essay about the history of lighthouses.\n\n \n• \u001b[2mWorking\u001b[0m \u001b[2m(1s • esc to interrupt)\n\n\n\u001b[1;22m›\u001b[0m \u001b[2mAsk Codex to do anything\n\n\u001b[0m  \u001b[38;2;246;226;183mgpt-6-astra xhigh\u001b[39;2m · \u001b[38;2;171;223;167;22mQ:\\PROJECT\u001b[6A\u001b[120D\u001b[0m\u001b[?2004h\u001b[?1004h"
+  }
+}

@@ -202,6 +202,45 @@ describe('lib-orchestrator/sessionModelReader/claude/sessionModelSourceClaude', 
       .toMatchObject({ kind: 'ok', info: { contextWindow: 200_000 } })
   })
 
+  // A session launched on `claude-opus-5` and moved by `/model` onto `Opus 5.5 (1M context)` drew
+  // 200k: only the switch confirmation in the transcript says which tier it landed on.
+  it('takes the tier from the /model switch that named the model in the transcript', async () => {
+    const { ref, launchedOn, home } = world(
+      ClaudeTranscriptFixtures.modelSwitch('Opus 5.5 (1M context) (default)')
+      + ClaudeTranscriptFixtures.padding(300_000)
+      + ClaudeTranscriptFixtures.assistantTurn('claude-opus-5-5', { input_tokens: 250_000 }),
+    )
+    expect(await new SessionModelSourceClaude(home).read(ref, launchedOn('claude-opus-5')))
+      .toMatchObject({ kind: 'ok', info: { contextWindow: 1_000_000, modelLabel: 'Opus 5.5' } })
+  })
+
+  it('lets a /model switch without a tier override a launch that named one', async () => {
+    const { ref, launchedOn, home } = world(
+      ClaudeTranscriptFixtures.modelSwitch('Opus 5')
+      + ClaudeTranscriptFixtures.assistantTurn('claude-opus-5', { input_tokens: 1_000 }),
+    )
+    expect(await new SessionModelSourceClaude(home).read(ref, launchedOn('claude-opus-5[1m]')))
+      .toMatchObject({ kind: 'ok', info: { contextWindow: 200_000 } })
+  })
+
+  it('lets a /model switch without a tier override the default million of Opus 5.5', async () => {
+    const { ref, context, home } = world(
+      ClaudeTranscriptFixtures.modelSwitch('Opus 5.5')
+      + ClaudeTranscriptFixtures.assistantTurn('claude-opus-5-5', { input_tokens: 1_000 }),
+    )
+    expect(await new SessionModelSourceClaude(home).read(ref, context))
+      .toMatchObject({ kind: 'ok', info: { contextWindow: 200_000 } })
+  })
+
+  it('ignores a /model switch that named another model', async () => {
+    const { ref, context, home } = world(
+      ClaudeTranscriptFixtures.modelSwitch('Opus 5.5 (1M context)')
+      + ClaudeTranscriptFixtures.assistantTurn('claude-opus-5', { input_tokens: 1_000 }),
+    )
+    expect(await new SessionModelSourceClaude(home).read(ref, context))
+      .toMatchObject({ kind: 'ok', info: { contextWindow: 200_000 } })
+  })
+
   it('leaves the window alone when the settings name a different model', async () => {
     const { ref, context, home } = world(
       ClaudeTranscriptFixtures.assistantTurn(sonnet, { input_tokens: 91_262 }),

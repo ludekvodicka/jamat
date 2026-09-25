@@ -25,16 +25,16 @@ describe('app-client-ui/renderer/overlays/configuration/configurationTabs', () =
       .toEqual([
         ['projects', 0],
         ['ui', 1],
-        ['keyboard', 2],
-        ['agents', 3],
-        ['versioning', 4],
-        ['worktrees', 5],
-        ['remarkable', 6],
-        ['remoteControl', 7],
-        ['window', 8],
+        ['sessionGroups', 2],
+        ['agents', 4],
+        ['versioning', 5],
+        ['worktrees', 6],
+        ['remarkable', 7],
+        ['remoteControl', 8],
+        ['window', 9],
       ])
     expect(ConfigurationTabs.flatten().map((descriptor) => descriptor.id)).toEqual([
-      'projects', 'ui', 'keyboard', 'agents', 'versioning', 'worktrees',
+      'projects', 'ui', 'sessionGroups', 'agents', 'versioning', 'worktrees',
       'remarkable', 'remarkableConnection', 'remarkableStorage',
       'remoteControl', 'remoteControlThisComputer', 'remoteControlConnect',
       'remoteControlConnections',
@@ -74,7 +74,7 @@ describe('app-client-ui/renderer/overlays/configuration/configurationTabs', () =
    */
   it('answers a group with its first screen and a screen with itself', () => {
     expect(ConfigurationTabs.screens().map((screen) => screen.id)).toEqual([
-      'projects', 'ui', 'keyboard', 'agents', 'versioning', 'worktrees',
+      'projects', 'ui', 'sessionGroups', 'agents', 'versioning', 'worktrees',
       'remarkableConnection', 'remarkableStorage',
       'remoteControlThisComputer', 'remoteControlConnect', 'remoteControlConnections',
       'window',

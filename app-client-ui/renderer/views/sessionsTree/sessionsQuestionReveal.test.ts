@@ -13,7 +13,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsQuestionReveal', () 
   function treeOf(snapshot: SessionsSnapshot): readonly TreeNode[] {
     return SessionsTreeModel.build(
       snapshot,
-      { filters: SessionsFilterState.allConst, content: 'both', filterText: '', now: 1_754_400_000_000, inFront: new Set(), tabbed: new Set() },
+      { filters: SessionsFilterState.allConst, filterText: '', now: 1_754_400_000_000, inFront: new Set(), tabbed: new Set() },
       new Set(),
       null,
     ).nodes

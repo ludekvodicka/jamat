@@ -59,7 +59,6 @@ export interface TabsControllerPorts {
    * It exists for the one panel whose tab is the only place its session is drawn - closing that IS
    * ending it - and every other panel answers `true` without being asked anything.
    */
-  onWillUserClose?(key: string, params: Record<string, unknown>): Promise<boolean>
 }
 
 /**
@@ -234,13 +233,6 @@ export class TabsController {
   ): Promise<PanelOpenOutcome> {
     let granted: string | null = null
     try {
-      // A plain tab is the one panel whose close ENDS its session, and a preview is closed silently
-      // for the next one. Loud here, rather than a dropped flag that would only be noticed the day
-      // a replacement killed a running agent.
-      if (options?.preview === true
-        && key === PanelKeysConst.terminal
-        && params.presentation === 'tab')
-        throw new Error(`A plain tab is never a preview: ${JSON.stringify(params)}`)
       this.ports.registry.assertComponent(key)
       const resolvedPanelId = panelId ?? TabsController.panelIdOf(key, params)
       const remembered = this.closedPanelParameters.get(resolvedPanelId)
@@ -415,21 +407,17 @@ export class TabsController {
   }
 
   /**
-   * The tab cross. It removes a panel and, for all but one kind, touches no runtime: closing a tab
-   * is not a decision about a PTY. The exception is asked for through `onWillUserClose`.
+   * The tab cross. It removes a panel and touches no runtime: closing a tab is not a decision about
+   * a PTY, in any window and for any kind of panel.
    *
-   * `silent` skips that question, for a close this client is doing to itself - re-keying a promoted
-   * tab - where ending the session is exactly what must not happen.
+   * `silent` is a close this client is doing to itself - replacing a preview, handing a panel to
+   * another window, dropping one the index refused - and those parameters are not remembered for a
+   * re-open, because nobody closed that tab meaning to come back to it.
    */
   async hidePanel(panelId: string, options?: { silent?: true }): Promise<void> {
     const api = this.api
     const panel = api?.getPanel(panelId)
     if (!api || !panel)
-      return
-    if (options?.silent !== true && !await this.mayUserClose(panel))
-      return
-    // The panel may have gone while the question was being answered.
-    if (!api.getPanel(panelId))
       return
     // The neighbour is read BEFORE the removal, because the group's panel list shrinks on remove.
     // Dockview's own answer is the group's LAST tab, which is not the tab next to the closed one.
@@ -443,17 +431,6 @@ export class TabsController {
       this.closedPanelParameters.set(panelId, remembered)
     if (wasActive && neighbour && api.getPanel(neighbour.id))
       neighbour.api.setActive()
-  }
-
-  /**
-   * Whether this panel may go. Panels the shell asks nothing about answer `true` at once, so the
-   * ordinary close stays synchronous in everything but its type.
-   */
-  private async mayUserClose(panel: IDockviewPanel): Promise<boolean> {
-    const ask = this.ports.onWillUserClose
-    if (ask === undefined)
-      return true
-    return ask(panel.view.contentComponent, { ...panel.params })
   }
 
   /** What every surface that names no panel means: the menu, the accelerators, the context menu. */
@@ -827,29 +804,23 @@ export class TabsController {
     panelId = TabsController.panelIdOf(key, params),
   ): WorkspacePanelPresence {
     let sessionId: string | null = null
-    let presentation: WorkspacePanelPresence['presentation'] = null
     if (key === PanelKeysConst.terminal) {
       const reading = TerminalTargetCodec.read(params)
       if (reading === null)
         throw new Error(`A terminal panel requires a valid target: ${JSON.stringify(params)}`)
-      if (reading.target.kind === 'local') {
+      if (reading.target.kind === 'local')
         sessionId = reading.target.sessionId
-        if (reading.presentation === 'session') presentation = 'session'
-        else if (reading.presentation === 'tab') presentation = 'plain'
-        else
-          throw new Error(`Unknown terminal presentation: ${JSON.stringify(reading.presentation)}`)
-      } else if (reading.target.kind === 'remote') return {
+      else if (reading.target.kind === 'remote') return {
         panelId,
         key,
         title,
         params: { ...params },
         sessionId: null,
-        presentation: null,
       }
       else
         throw new Error(`Unknown terminal target: ${JSON.stringify(reading.target)}`)
     }
-    return { panelId, key, title, params: { ...params }, sessionId, presentation }
+    return { panelId, key, title, params: { ...params }, sessionId }
   }
 
   private indexedActivePanelId(): string | null {

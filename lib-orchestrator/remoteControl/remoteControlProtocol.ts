@@ -36,6 +36,10 @@ export class RemoteControlConst {
     'agents.describe',
     'sessions.color',
     'sessions.group',
+    'sessions.note',
+    'sessions.setNote',
+    'terminal.deliver',
+    'sessions.remove',
   ] as const
   static readonly operations = RemoteControlConst.descriptorOperations
   static readonly mutatingOperations = [
@@ -43,14 +47,17 @@ export class RemoteControlConst {
     'sessions.create',
     'sessions.reopen',
     'sessions.finalize',
+    'sessions.remove',
     'sessions.color',
     'sessions.group',
+    'sessions.setNote',
     'tabs.open',
     'tabs.openFile',
     'tabs.openCommit',
     'tabs.focus',
     'tabs.close',
     'terminal.send',
+    'terminal.deliver',
   ] as const
   static readonly socketOperations = [
     'events.subscribe',
@@ -75,6 +82,21 @@ export class RemoteControlConst {
     'timeout',
     'operation-failed',
   ] as const
+}
+
+/**
+ * The bounds of one `terminal.deliver`. The typed cap keeps a wrapped draft inside the composer
+ * reader's 16-row window at 80 columns; a paste collapses to a placeholder and has no such limit.
+ */
+export class RemoteControlDeliverConst {
+  static readonly textLengthConst = 800
+  static readonly readyTimeoutMillisecondsConst = 45_000
+  static readonly readyTimeoutMinimumMillisecondsConst = 1_000
+  static readonly readyTimeoutMaximumMillisecondsConst = 120_000
+  static readonly submitTimeoutMillisecondsConst = 10_000
+  static readonly submitTimeoutMinimumMillisecondsConst = 1_000
+  static readonly submitTimeoutMaximumMillisecondsConst = 60_000
+  static readonly composeTimeoutMillisecondsConst = 5_000
 }
 
 export class RemoteControlCapabilities {

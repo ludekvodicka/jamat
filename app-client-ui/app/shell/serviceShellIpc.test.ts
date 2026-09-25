@@ -119,7 +119,7 @@ describe('app-client-ui/app/shell/serviceShellIpc', () => {
     expect(await invokeFrom(holderSender, 'state:load-session-groups')).toEqual({ ok: true, value: groups })
     expect(await invokeFrom(holderSender, 'state:assign-session-group', 'session:one', 'pinned')).toMatchObject({ ok: false })
     expect(await invokeFrom(unknownSender, 'state:load-session-groups')).toMatchObject({ ok: false })
-    expect(await invoke('state:assign-session-group', 'session:one', 'unknown')).toMatchObject({ ok: false })
+    expect(await invoke('state:assign-session-group', 'session:one', 'Not An Id')).toMatchObject({ ok: false })
     expect(store.loadSessionGroups()).toEqual(groups)
   })
 

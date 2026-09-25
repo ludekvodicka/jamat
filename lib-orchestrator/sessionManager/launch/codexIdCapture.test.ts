@@ -24,8 +24,9 @@ describe('lib-orchestrator/sessionManager/launch/codexIdCapture', () => {
     sessionId: string,
     createdAt: number,
     forkedFromId: string | null = null,
+    firstUserMessage: string | null = null,
   ): CodexRolloutMatch {
-    return { sessionId, createdAt, forkedFromId }
+    return { sessionId, createdAt, forkedFromId, firstUserMessage }
   }
 
   it('claims the one rollout written in the launch window', () => {
@@ -67,6 +68,92 @@ describe('lib-orchestrator/sessionManager/launch/codexIdCapture', () => {
     const refused = record({ endedReason: 'the Host said no' })
     expect(CodexIdCapture.matchOf([rollout('conv-1', 5_100)], refused, [refused]))
       .toBeNull()
+  })
+
+  // Seen live 2026-09-23: two sessions a minute or two apart in one directory, both parked in Codex's
+  // update menu. The later one's rollout appeared first and the earlier record, seeing exactly one
+  // candidate, took it; the other rollout then went to the later record, and the two were swapped.
+  describe('two unnamed sessions in one directory', () => {
+    const directory = { mode: 'adHoc', path: 'E:\\work\\bind' } as const
+    const first = record({ sessionId: 'first', directory, createdAt: 5_000 })
+    const second = record({ sessionId: 'second', directory, createdAt: 125_000 })
+
+    it('claims nothing while the only rollout could be either session', () => {
+      const secondsRollout = [rollout('conv-second', 130_000)]
+      expect(CodexIdCapture.matchOf(secondsRollout, first, [first, second])).toBeNull()
+      expect(CodexIdCapture.matchOf(secondsRollout, second, [first, second])).toBeNull()
+    })
+
+    it('never ends swapped once both rollouts are on disk', () => {
+      const both = [rollout('conv-second', 130_000), rollout('conv-first', 132_000)]
+      expect(CodexIdCapture.matchOf(both, first, [first, second])).toBeNull()
+      expect(CodexIdCapture.matchOf(both, second, [first, second])).toBeNull()
+    })
+
+    it('claims a rollout the rival window cannot hold', () => {
+      const early = [rollout('conv-first', 5_500)]
+      expect(CodexIdCapture.matchOf(early, first, [first, second])).toBe('conv-first')
+    })
+
+    it('ignores a rival in another directory, a named rival and a refused rival', () => {
+      const found = [rollout('conv-second', 130_000)]
+      const elsewhere = { ...second, directory: { mode: 'adHoc', path: 'E:\\other' } as const }
+      const named = record({ ...second, agent: { agentId: 'codex', launchMode: 'new', nativeSessionId: 'conv-x' } })
+      const refused = { ...second, endedReason: 'the Host said no' }
+      expect(CodexIdCapture.matchOf(found, first, [first, elsewhere])).toBe('conv-second')
+      expect(CodexIdCapture.matchOf(found, first, [first, named])).toBe('conv-second')
+      expect(CodexIdCapture.matchOf(found, first, [first, refused])).toBe('conv-second')
+    })
+
+    function prompted(base: SessionRecord, initialPrompt: string): SessionRecord {
+      return { ...base, agent: { agentId: 'codex', launchMode: 'new', initialPrompt } }
+    }
+
+    // parallel-issue-fixer launches several sessions in one folder, each with its own prompt.
+    it('binds both by their prompts whichever rollout lands first', () => {
+      const a = prompted(first, 'Fix  ticket #12\n')
+      const b = prompted(second, 'Fix ticket #13')
+      const bOnly = [rollout('conv-b', 130_000, null, 'Fix ticket #13')]
+      expect(CodexIdCapture.matchOf(bOnly, a, [a, b])).toBeNull()
+      expect(CodexIdCapture.matchOf(bOnly, b, [a, b])).toBe('conv-b')
+      const both = [rollout('conv-b', 130_000, null, 'Fix ticket #13'), rollout('conv-a', 131_000, null, 'Fix ticket #12')]
+      expect(CodexIdCapture.matchOf(both, a, [a, b])).toBe('conv-a')
+      expect(CodexIdCapture.matchOf(both, b, [a, b])).toBe('conv-b')
+    })
+
+    it('leaves both unnamed when they share one prompt', () => {
+      const a = prompted(first, 'Same work')
+      const b = prompted(second, 'Same work')
+      const both = [rollout('conv-b', 130_000, null, 'Same work'), rollout('conv-a', 131_000, null, 'Same work')]
+      expect(CodexIdCapture.matchOf(both, a, [a, b])).toBeNull()
+      expect(CodexIdCapture.matchOf(both, b, [a, b])).toBeNull()
+    })
+
+    it('waits while the rollout has written no first message yet', () => {
+      const a = prompted(first, 'Fix ticket #12')
+      expect(CodexIdCapture.matchOf([rollout('conv-a', 6_000)], a, [a])).toBeNull()
+    })
+
+    it('matches a long prompt by the head the rollout keeps', () => {
+      const long = 'x'.repeat(150)
+      const a = prompted(first, long)
+      expect(CodexIdCapture.matchOf([rollout('conv-a', 6_000, null, long.slice(0, 120))], a, [a]))
+        .toBe('conv-a')
+      expect(CodexIdCapture.matchOf([rollout('conv-a', 6_000, null, long.slice(0, 20))], a, [a]))
+        .toBeNull()
+    })
+
+    it('still lets a prompt-less rival block a prompted candidate', () => {
+      const a = prompted(first, 'Fix ticket #12')
+      const found = [rollout('conv-a', 130_000, null, 'Fix ticket #12')]
+      expect(CodexIdCapture.matchOf(found, a, [a, second])).toBeNull()
+    })
+
+    it('matches the directory regardless of case and trailing separator', () => {
+      const same = { ...second, directory: { mode: 'adHoc', path: 'e:/WORK/bind/' } as const }
+      expect(CodexIdCapture.matchOf([rollout('conv-second', 130_000)], first, [first, same]))
+        .toBeNull()
+    })
   })
 
   it('claims nothing when the directory holds no rollouts at all', () => {

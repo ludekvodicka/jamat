@@ -88,7 +88,7 @@ export class TabControlBroker implements RemoteControlTabsPort {
   }
 
   async openCommit(sessionId: string, tabTitle: string, vcs: 'svn' | 'git', scope: string | null,
-    proposal: string | null, options: { plain: boolean; showRefusal?: true; paths?: readonly string[] }): Promise<RemoteControlStepResult<RemoteControlTabOpenCommitDto>> {
+    proposal: string | null, options: { showRefusal?: true; paths?: readonly string[] }): Promise<RemoteControlStepResult<RemoteControlTabOpenCommitDto>> {
     return this.withCommitTurn(() => this.openCommitNow(sessionId, tabTitle, vcs, scope, proposal, options))
   }
 
@@ -216,10 +216,10 @@ export class TabControlBroker implements RemoteControlTabsPort {
   async open(
     sessionId: string,
     tabTitle: string,
-    options: { plain: boolean; activate?: boolean },
+    options?: { activate?: boolean },
   ): Promise<RemoteControlStepResult<RemoteControlTabCommandDto>> {
     try {
-      if (options.activate !== false) this.windows.focusOrRecreate('main')
+      if (options?.activate !== false) this.windows.focusOrRecreate('main')
     } catch {
       return TabControlBroker.error('unavailable', 'The main workspace window is unavailable')
     }
@@ -228,8 +228,7 @@ export class TabControlBroker implements RemoteControlTabsPort {
       requestId: this.requestId(),
       sessionId,
       tabTitle,
-      plain: options.plain,
-      ...(options.activate === undefined ? {} : { activate: options.activate }),
+      ...(options?.activate === undefined ? {} : { activate: options.activate }),
     })
   }
 
@@ -253,13 +252,12 @@ export class TabControlBroker implements RemoteControlTabsPort {
     sessionId: string,
     tabTitle: string,
     path: string,
-    options: { plain: boolean },
   ): Promise<RemoteControlStepResult<RemoteControlTabOpenFileDto>> {
     const proven = await this.fileOpenResolver.resolve(sessionId, path)
     if (!proven.ok)
       return TabControlBroker.error(proven.code, proven.detail)
     const activate = this.deps?.activateSessionOnDocument?.() ?? false
-    const opened = await this.open(sessionId, tabTitle, { ...options, activate })
+    const opened = await this.open(sessionId, tabTitle, { activate })
     if (!opened.ok)
       return { ok: false, error: opened.error }
     return this.request(opened.value.windowId, {

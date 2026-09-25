@@ -153,6 +153,7 @@ describe('lib-orchestrator/remoteControl/remoteControlPeerCodec', () => {
     expect(RemoteControlPeerConst.controlOperations).not.toContain('tabs.open')
     expect(RemoteControlPeerConst.controlOperations).not.toContain('tabs.openFile')
     expect(RemoteControlPeerConst.controlOperations).not.toContain('tabs.close')
+    expect(RemoteControlPeerConst.controlOperations).not.toContain('terminal.deliver')
     expect(RemoteControlPeerConst.capabilities.some((capability) =>
       capability.startsWith('control:tabs.'))).toBe(false)
 

@@ -8,14 +8,16 @@ import { CliClient, type CliEnvelope } from './cliClient.js'
 import { randomUUID } from 'node:crypto'
 import { SmokeHarness, SmokeRun } from './smokeHarness.js'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
 import { ClientStatePaths } from '../../app-client-ui/app/clientState/clientStatePaths.js'
 import { RemoteControlInstanceStore } from '../../app-client-ui/app/remoteControl/remoteControlInstanceStore.js'
 import { RemoteControlServer } from '../../app-client-ui/app/remoteControl/remoteControlServer.js'
+import { RemoteSessionGroups } from '../../app-client-ui/app/sessionGroups/remoteSessionGroups.js'
 import { SessionTranscriptAccess } from '../../app-client-ui/app/sessionTranscript/sessionTranscriptAccess.js'
+import { SessionsGroupsState } from '../../app-client-ui/shared/sessionsGroupsState.js'
 import { HostDescriptorPaths } from '../../lib-orchestrator/hostClient/hostDescriptorPaths.js'
 import type { ProviderTranscriptRef } from '../../lib-orchestrator/projectManager/providerTranscriptView.js'
 import {
@@ -24,7 +26,10 @@ import {
   type RemoteControlSessionsPort,
   type RemoteControlTabsPort,
 } from '../../lib-orchestrator/remoteControl/remoteControl.js'
+import { RemoteControlClient } from '../../lib-orchestrator/remoteControl/remoteControlClient.js'
+import { RemoteControlConst } from '../../lib-orchestrator/remoteControl/remoteControlProtocol.js'
 import type {
+  RemoteControlDescriptor,
   RemoteControlStepResult,
   RemoteControlSystemIdentity,
   RemoteControlTabCommandDto,
@@ -69,7 +74,7 @@ class SmokeRemoteControl extends SmokeHarness {
   private readonly transcriptBytes: number
   private readonly transcriptContexts: SessionTranscriptContext[] = []
   private readonly errors: string[] = []
-  private readonly groupAssigns: { sessionId: string; group: SessionGroup }[] = []
+  private readonly groupAssigns: { key: string; group: SessionGroup }[] = []
   private readonly tabs: RemoteControlTabDto[] = []
   private readonly manager: SessionManager
   private readonly transcriptAccess: SessionTranscriptAccess
@@ -215,9 +220,11 @@ class SmokeRemoteControl extends SmokeHarness {
     await this.checkDiscoveryConflict()
     const sessionId = await this.checkCreateReplayAndList()
     await this.checkRepaint(sessionId)
+    await this.checkCustomNumber()
     await this.checkForkTranscript()
     const panelId = await this.checkTabs(sessionId)
     await this.checkTerminal(sessionId)
+    await this.checkDeliver(sessionId)
     await this.checkFinalize(sessionId)
     this.check('the fake renderer tab was closed', !this.tabs.some((tab) => tab.panelId === panelId))
 
@@ -413,9 +420,45 @@ class SmokeRemoteControl extends SmokeHarness {
     this.check('the create reports the section it filed the session under',
       groupAssign.ok === true
       && this.groupAssigns.length === 1
-      && this.groupAssigns[0]?.sessionId === sessionId
+      && this.groupAssigns[0]?.key === SmokeRemoteControl.groupKeyOf(sessionId)
       && this.groupAssigns[0]?.group === 'automation')
     return sessionId
+  }
+
+  /**
+   * The number a caller brings, end to end through the real wrapper: the CLI parser, the listener,
+   * the create validator reading the body with exact keys, the composed title, and then the
+   * selector finding the session again by the very thing the create named it. The last check is
+   * the one the feature exists for - a number nobody counted is still a number you can address.
+   */
+  private async checkCustomNumber(): Promise<void> {
+    const created = CliClient.valueOf(
+      await this.cli(
+        'sessions', 'create', '--directory', this.workDir,
+        '--title', 'Issue work', '--number', 'i34',
+        '--operation-id', 'smoke-create-custom-number',
+      ),
+      'sessions.create',
+    )
+    const session = CliClient.object(created.session, 'created session')
+    const sessionId = CliClient.text(session.sessionId, 'created sessionId')
+    const record = this.manager.snapshot().sessions.find((one) => one.sessionId === sessionId)
+    this.check('a create composes the title around the number it was given',
+      record?.title === 'i34 - Issue work' && record.titleParts.number === 'i34')
+
+    const selected = CliClient.valueOf(
+      await this.cli('sessions', 'transcript', '--number', 'i34'),
+      'sessions.transcript',
+    )
+    this.check('a custom number resolves to the canonical Jamat session id it named',
+      selected.sessionId === sessionId)
+
+    // Refused in the parser, before discovery: an allocated number is the answering computer's.
+    const refused = await this.cliFailure(
+      2, 'sessions', 'create', '--directory', this.workDir, '--number', '014',
+    )
+    this.check('a create bringing an allocated number never reaches the controller',
+      refused.ok === false && refused.error?.code === 'invalid-request')
   }
 
   /**
@@ -448,13 +491,87 @@ class SmokeRemoteControl extends SmokeHarness {
       refiled.sessionId === sessionId
       && refiled.group === 'waiting'
       && this.groupAssigns.length === 2
-      && this.groupAssigns[1]?.sessionId === sessionId
+      && this.groupAssigns[1]?.key === SmokeRemoteControl.groupKeyOf(sessionId)
       && this.groupAssigns[1]?.group === 'waiting')
 
-    // Refused by the CLI parser, before any round trip: the list is the library's own.
+    const listed = CliClient.valueOf(await this.cli('sessions', 'list'), 'sessions.list')
+    this.check('sessions list reads back the assigned group',
+      CliClient.array(listed.sessions, 'sessions').some((entry) => {
+        const session = CliClient.object(entry, 'session')
+        return session.sessionId === sessionId && session.group === 'waiting'
+      }))
+
+    /*
+     * The note is the one session field with a read of its own, so the three forms of one command
+     * are proven as one chain: what a write stores is what the read answers, and a clear leaves
+     * nothing behind rather than an empty string nobody can tell from a note.
+     */
+    const written = CliClient.valueOf(
+      await this.cli(
+        'sessions', 'note', '--session-id', sessionId,
+        '--note', '  Waiting for the SVN review of r4599.  ', '--operation-id', 'smoke-note-1',
+      ),
+      'sessions.setNote',
+    )
+    const read = CliClient.valueOf(await this.cli('sessions', 'note', '--session-id', sessionId), 'sessions.note')
+    this.check('a note is stored trimmed and read back by the command that wrote it',
+      written.note === 'Waiting for the SVN review of r4599.'
+      && read.note === written.note
+      && this.manager.snapshot().sessions
+        .find((session) => session.sessionId === sessionId)?.note === written.note)
+
+    const cleared = CliClient.valueOf(
+      await this.cli('sessions', 'note', '--session-id', sessionId, '--clear', '--operation-id', 'smoke-note-2'),
+      'sessions.setNote',
+    )
+    this.check('a cleared note leaves the record with none at all',
+      cleared.note === null
+      && CliClient.valueOf(await this.cli('sessions', 'note', '--session-id', sessionId), 'sessions.note').note === null
+      && this.manager.snapshot().sessions
+        .find((session) => session.sessionId === sessionId)?.note === undefined)
+
+    const bothFlags = await this.cliFailure(2, 'sessions', 'note', '--session-id', sessionId,
+      '--note', 'one thing', '--clear')
+    this.check('a note that says two things at once is refused without reaching the controller',
+      bothFlags.ok === false && bothFlags.error?.code === 'invalid-request')
+
+    // Refused by the CLI parser, before any round trip: the palette is fixed and both sides have it.
     const unknown = await this.cliFailure(2, 'sessions', 'color', '--session-id', sessionId, '--color', 'chartreuse')
     this.check('an unknown colour is refused without reaching the controller',
       unknown.ok === false && unknown.error?.code === 'invalid-request')
+
+    /*
+     * A group goes the other way, and this is the whole chain that proves it. The sections are made
+     * on the computer that answers, so a well-formed id this one has never had travels the parser,
+     * the listener and the validator, and dies at the only place that knows - which says what this
+     * computer does have, so the caller has something to try next.
+     */
+    const missing = await this.cliFailure(2, 'sessions', 'group', '--session-id', sessionId,
+      '--group', 'invented-yesterday', '--operation-id', 'smoke-group-2')
+    this.check('a group the controller has no section for is refused by the controller, by name',
+      missing.ok === false
+      && missing.error?.code === 'invalid-request'
+      && String(missing.error?.detail).includes('invented-yesterday')
+      && String(missing.error?.detail).includes('automation')
+      && this.groupAssigns.length === 2)
+
+    const malformed = await this.cliFailure(2, 'sessions', 'group', '--session-id', sessionId, '--group', 'Not An Id')
+    this.check('a group id no computer could have is refused without reaching the controller',
+      malformed.ok === false && malformed.error?.code === 'invalid-request')
+
+    CliClient.valueOf(await this.cli('sessions', 'group', '--session-id', sessionId,
+      '--group', 'none', '--operation-id', 'smoke-group-clear'), 'sessions.group')
+    const ungrouped = CliClient.valueOf(await this.cli('sessions', 'list'), 'sessions.list')
+    this.check('sessions list reports null after an explicit None assignment',
+      CliClient.array(ungrouped.sessions, 'sessions').some((entry) => {
+        const session = CliClient.object(entry, 'session')
+        return session.sessionId === sessionId && session.group === null
+      }))
+  }
+
+  /** The key the client files a local session under, spelled by the rule both sides read. */
+  private static groupKeyOf(sessionId: string): string {
+    return SessionsGroupsState.sessionKeyOf({ kind: 'local', sessionId })
   }
 
   private async checkForkTranscript(): Promise<void> {
@@ -589,6 +706,34 @@ class SmokeRemoteControl extends SmokeHarness {
     this.check('terminal output is marked as untrusted', untrusted)
   }
 
+  /**
+   * The smoke has no agent to deliver to, so this proves the seams around the loop: the capability
+   * is advertised twice, and a refusal with its `data` travels the listener and the wrapper intact.
+   */
+  private async checkDeliver(sessionId: string): Promise<void> {
+    const descriptor = JSON.parse(readFileSync(this.controlDescriptorFile, 'utf8')) as RemoteControlDescriptor
+    this.check('the control descriptor lists terminal.deliver',
+      descriptor.optionalOperations?.includes('terminal.deliver') === true)
+    const hello = await new RemoteControlClient(descriptor).execute({
+      protocol: RemoteControlConst.protocol,
+      requestId: randomUUID(),
+      operation: 'system.hello',
+      body: {},
+    })
+    this.check('system.hello lists terminal.deliver',
+      hello.ok && hello.value.optionalOperations?.includes('terminal.deliver') === true)
+
+    const refused = await this.cliFailure(2, 'terminal', 'deliver', '--session-id', sessionId,
+      '--text', 'never typed', '--operation-id', 'smoke-terminal-deliver-1')
+    const data = CliClient.object(refused.error?.data, 'terminal.deliver failure data')
+    this.check('terminal deliver on a shell session is refused through the wrapper with its reason',
+      refused.ok === false
+      && refused.error?.code === 'invalid-request'
+      && data.stage === 'validate'
+      && data.reason === 'shell-session'
+      && data.typed === false)
+  }
+
   private async checkFinalize(sessionId: string): Promise<void> {
     await this.cli(
       'sessions',
@@ -657,24 +802,30 @@ class SmokeRemoteControl extends SmokeHarness {
       createSession: (spec) => this.manager.createSession(spec),
       reopenSession: (sessionId) => this.manager.reopenSession(sessionId),
       finalizeSession: (sessionId) => this.manager.finalizeSession(sessionId),
-      discardPlainSession: (sessionId) => this.manager.discardPlainSession(sessionId),
+      removeSession: (sessionId) => this.manager.removeSession(sessionId),
       setSessionColor: (sessionId, color) => this.manager.setSessionColor(sessionId, color),
+      setSessionDetails: (sessionId, update) => this.manager.setSessionDetails(sessionId, update),
     }
   }
 
   /**
-   * What the client would write into its own state. The smoke keeps no client state, so it records
-   * the assignment instead: what is under test here is that a group named on the command line
-   * survives the parser, the listener and the create validator and arrives with the session it was
-   * named for.
+   * The client's REAL adapter over a state store that records instead of writing. The smoke keeps no
+   * client state, and the thing worth driving here is not the file - it is that the adapter is the
+   * only place that knows which sections exist, so a group named on a command line survives the
+   * parser, the listener and the validator and is then either filed or refused by name.
    */
   private groupPort(): RemoteControlSessionGroupsPort {
-    return {
-      assign: (sessionId, group) => {
-        this.groupAssigns.push({ sessionId, group })
-        return { ok: true, value: { group } }
+    return new RemoteSessionGroups(
+      () => SessionsGroupsState.defaultsConst,
+      {
+        loadSessionGroups: () => [...new Map(this.groupAssigns.map((entry) => [entry.key, entry])).values()],
+        assignSessionGroup: (key, group) => {
+          this.groupAssigns.push({ key, group })
+          return true
+        },
       },
-    }
+      () => {},
+    )
   }
 
   private instanceStore(
@@ -696,10 +847,9 @@ class SmokeRemoteControl extends SmokeHarness {
         ...tab,
         params: { ...tab.params },
       }))),
-      open: (sessionId, tabTitle, options) =>
-        Promise.resolve(this.openTab(sessionId, tabTitle, options.plain)),
-      openCommit: async (sessionId, title, _vcs, scope, proposal, options) => {
-        const opened = this.openTab(sessionId, title, options.plain)
+      open: (sessionId, tabTitle) => Promise.resolve(this.openTab(sessionId, tabTitle)),
+      openCommit: async (sessionId, title, _vcs, scope, proposal) => {
+        const opened = this.openTab(sessionId, title)
         if (!opened.ok) return opened
         this.commitSessionOwner = sessionId
         this.commitReads = 0
@@ -714,8 +864,8 @@ class SmokeRemoteControl extends SmokeHarness {
           vcs: 'svn', scopeRoot: this.workDir, state: completed ? 'committed' : 'editing', closed: false,
           revision: completed ? '42' : null, detail: null } }
       },
-      openFile: (sessionId, tabTitle, path, options) =>
-        Promise.resolve(this.openFile(sessionId, tabTitle, path, options)),
+      openFile: (sessionId, tabTitle, path) =>
+        Promise.resolve(this.openFile(sessionId, tabTitle, path)),
       focus: (panelId) => Promise.resolve(this.focusTab(panelId)),
       close: (panelId) => Promise.resolve(this.closeTab(panelId)),
     }
@@ -724,7 +874,6 @@ class SmokeRemoteControl extends SmokeHarness {
   private openTab(
     sessionId: string,
     tabTitle: string,
-    plain: boolean,
   ): RemoteControlStepResult<RemoteControlTabCommandDto> {
     const existing = this.tabs.find((tab) => tab.sessionId === sessionId)
     if (existing) {
@@ -745,7 +894,6 @@ class SmokeRemoteControl extends SmokeHarness {
       title: tabTitle,
       params: { sessionId },
       sessionId,
-      presentation: plain ? 'plain' : 'session',
       active: true,
     })
     this.server.publishEvent('tabs.changed')
@@ -756,9 +904,8 @@ class SmokeRemoteControl extends SmokeHarness {
     sessionId: string,
     tabTitle: string,
     path: string,
-    options: { plain: boolean },
   ): RemoteControlStepResult<RemoteControlTabOpenFileDto> {
-    const opened = this.openTab(sessionId, tabTitle, options.plain)
+    const opened = this.openTab(sessionId, tabTitle)
     if (!opened.ok) return opened
     return {
       ok: true,

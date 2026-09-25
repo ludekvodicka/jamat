@@ -66,6 +66,25 @@ export interface SessionCreateSpec {
   worktree?: { slug: string; baseRef?: string }
   title?: string
   /**
+   * The number this session is to carry INSTEAD of one from the project's counter: `i34` for issue
+   * 34. `SessionTitle.customNumberConst` is the shape, one to three letters then up to six digits,
+   * and the letters are the whole of the mechanism - they make the token unreadable as a count, so
+   * nothing the project counts moves and no session is numbered twice because of one.
+   *
+   * **Digits alone are refused here.** An allocated number is the answering computer's to hand out,
+   * and a title claiming one is still judged against what that project has already issued; this
+   * field is for the token the counter will never produce.
+   *
+   * It is the caller for whom the number MEANS something that wants this - a skill opening a
+   * session per ticket - so unlike the counter's number it applies to a plain tab and to an ad-hoc
+   * directory too: neither of those has a count for it to disturb.
+   *
+   * The create body is validated with exact keys, so a target that predates this field refuses the
+   * whole request as `invalid-request` rather than dropping the number. A caller that may be
+   * talking to an older computer therefore omits it, exactly as it does for `color`.
+   */
+  number?: string
+  /**
    * The colour this session is BORN with, as a name from the closed set `SessionColors` keeps.
    *
    * Here rather than through a second call, because the caller that wants one is a scheduler: it
@@ -84,12 +103,6 @@ export interface SessionCreateSpec {
    * never branches on it, so a new flow is a change to the renderer's catalog and to nothing else.
    */
   flowId?: string
-  /**
-   * Ask for a plain tab: a session the tree does not draw, which its tab alone presents. It runs
-   * without isolation and outside any flow, so those two are refused alongside it. There is no
-   * `completed` here on purpose - a session is not born finished.
-   */
-  presentation?: 'tab'
   /**
    * The hash of the setup commands the person was shown and agreed to run. Present only on the second
    * attempt, after a create came back `setup-not-acknowledged` carrying that hash: the first attempt
@@ -156,20 +169,25 @@ export type SessionColorName =
   | 'sky' | 'blue' | 'indigo' | 'violet' | 'magenta' | 'rose'
 
 /**
- * Which section of the sessions tree a session was put in BY HAND. It is the client that stores the
- * assignment and the client that draws the sections, and the name is here for the reason
- * `SessionColorName` is: a create may name one, so the control-protocol validator and the CLI parser
- * have to refuse the same set the surface offers, and a vocabulary written twice is a group a caller
- * can ask for and no tree has.
+ * Which section of the sessions tree a session was put in BY HAND, as the id of one of the groups
+ * that computer has.
  *
- * `'none'` IS a member, unlike a colour's absence: a session put back into Sessions on purpose is a
- * choice that outranks what its project says, so there has to be a way to say it.
+ * It was a union of six names until 2026-09-22, when the sections became something a person adds to,
+ * renames and reorders in the settings window. A union cannot survive that: the list is now a value
+ * in the client's config, and a type that only the six seeded names satisfied would refuse the
+ * section the tree beside it is drawing. So what travels is an id, and what an id may LOOK like is
+ * `SessionGroups`, which every package can answer alike; whether one EXISTS is a question only the
+ * client holding the list can answer, and it answers it by refusing the write.
  *
- * The ORDER of the sections is not here. That is what a person sees, it belongs to the surface that
- * draws them, and this list is only ever asked whether a name is in it.
+ * Two ids are structural and always present. `'none'` is the absence of a group, which is itself a
+ * choice - a session put back into Sessions on purpose outranks what its project says - and
+ * `'pinned'` is what the older pin-only surfaces write. Both can be MOVED, which is how a person
+ * decides where the other sections sit around Sessions; neither can be removed or renamed.
+ *
+ * The ORDER is not here either. That is what a person sees and now edits, and it belongs with the
+ * list itself, in the config section the client owns.
  */
-export type SessionGroup =
-  | 'pinned' | 'priority' | 'none' | 'automation' | 'waiting' | 'blocked'
+export type SessionGroup = string
 
 /**
  * What may sensibly be done to a session right now, decided here rather than by whoever draws the
@@ -333,8 +351,6 @@ export interface SessionInfo {
   worktree?: SessionWorktreeInfo
   /** Absent = unmeasured, or no VCS governs the directory. Absence is not a measurement. */
   vcs?: SessionVcsInfo
-  /** Absent = a session of the tree. See the record's field. */
-  presentation?: 'tab'
   /** Absent = None. A name only; what it looks like is the renderer's to decide. */
   color?: SessionColorName
   /** The person's note about this session. Absent = none. */
@@ -651,3 +667,36 @@ export type HostPingResult =
       }
     }
   | { at: number; ok: false; detail: string }
+
+/**
+ * What an agent's input box holds, read off the Host's screen projection. `absent` is no input box
+ * at all: the agent is still booting, or a dialog has replaced it. `empty` is the marker with
+ * nothing after it or only the agent's dimmed placeholder. `text` is a draft, ANSI stripped, its
+ * wrapped continuation rows joined with `\n`.
+ */
+export type TerminalComposerState =
+  | { state: 'absent' }
+  | { state: 'empty' }
+  | { state: 'text'; text: string }
+
+export interface TerminalComposerReading {
+  agentId: SessionAgentId
+  alive: boolean
+  hint: AgentWorkHint
+  composer: TerminalComposerState
+  /** A fixture-proven "queued" row is on screen: a busy agent took an Enter and holds the message. */
+  queuedRow: boolean
+  /**
+   * Claude: `normalizeTty` of the first row of the newest user message echoed above the input box,
+   * marker removed. A prefix of the message when the echo wraps. Null for Codex and without a box.
+   */
+  echoHead: string | null
+  /** How many collapsed-paste placeholders the draft shows (`[Pasted text #1 +14 lines]`). */
+  pastePlaceholders: number
+  /** The draft holds placeholders and nothing else once they are removed. */
+  onlyPlaceholders: boolean
+}
+
+export type TerminalComposerResult =
+  | { ok: true; reading: TerminalComposerReading }
+  | { ok: false; code: 'unknown-session' | 'not-live' | 'not-agent' | 'no-projection' }

@@ -146,7 +146,6 @@ class TabContextMenuItems {
       // A session and nothing else, the same gate the details dialog takes: a file viewer carries a
       // `sessionId` too, and no admits gate either - an ended session is still worth naming.
       .filter((descriptor) => descriptor.id !== 'session.copyReference' || onSession)
-      .filter((descriptor) => descriptor.id !== 'tab.promote' || params.presentation === 'tab')
       .filter((descriptor) => descriptor.id !== 'tab.keepOpen' || preview)
       .filter((descriptor) => descriptor.id !== 'tab.openProjectFolder'
         || typeof params.sessionId === 'string' && params.sessionId.length > 0)

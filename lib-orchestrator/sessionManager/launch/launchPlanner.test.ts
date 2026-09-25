@@ -70,6 +70,25 @@ describe('lib-orchestrator/sessionManager/launch/launchPlanner', () => {
     }
   })
 
+  it('hands no shell, agent or scripted shell the agent session the client was started from', () => {
+    const scripted = record({ commands: [{ cwd: 'D:\\work', command: 'pnpm install' }] })
+    const claude = record({ kind: 'agent', agent: { agentId: 'claude', launchMode: 'new' } })
+    for (const value of [record(), scripted, claude]) {
+      const launch = LaunchPlanner.plan(value, {
+        agentArgs: [],
+        environment: {
+          PATH: 'x', ANTHROPIC_API_KEY: 'k', CLAUDECODE: '1', CLAUDE_CODE_CHILD_SESSION: '1',
+          CODEX_THREAD_ID: 't', NO_COLOR: '1', GIT_AUTHOR_NAME: 'bot', JAMAT_V3_SESSION_ID: 'parent',
+        },
+        controller: { configIdentity: 'cfg-1', channel: 'development' },
+      })
+      expect(launch.env).toEqual({
+        PATH: 'x', ANTHROPIC_API_KEY: 'k', JAMAT_V3_SESSION_ID: 's1',
+        JAMAT_V3_SESSION_CONTROLLER: 'cfg-1', JAMAT_V3_SESSION_CHANNEL: 'development',
+      })
+    }
+  })
+
   it('falls back to a shell that exists when the environment names none', () => {
     expect(LaunchPlanner.plan(record(), { platform: 'win32', environment: {} }).command)
       .toBe('cmd.exe')

@@ -1,9 +1,10 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
+import type { CommandOutcome, CommandRunner } from '../shared/commandInvoker.types'
 import { CheckpointLayout } from './checkpointLayout'
 import { GitCheckpointStore } from './gitCheckpointStore'
 import type { GitCommandOutcome, GitCommandRunner, GitResult } from './git.types'
@@ -48,6 +49,23 @@ describe('lib-orchestrator/git/gitCheckpointStore', () => {
       run: async (cwd, args) => {
         calls.push({ cwd, args })
         return { code: 0, stdout: '', stderr: '', failure: null, ...(overrides(args) ?? {}) }
+      },
+    }
+  }
+
+  function outsideGit(): ScriptedRunner {
+    return scripted((args) =>
+      args.join(' ') === 'rev-parse --show-toplevel' ? { code: 128, stderr: 'fatal: not a git repository' } : null)
+  }
+
+  /** An `svn` answering every question the same way, so a volume child can be proved without one. */
+  function svnAnswering(outcome: Partial<CommandOutcome>): CommandRunner & { calls: Invocation[] } {
+    const calls: Invocation[] = []
+    return {
+      calls,
+      run: async (cwd, args) => {
+        calls.push({ cwd, args })
+        return { code: 0, stdout: '', stderr: '', failure: null, ...outcome }
       },
     }
   }
@@ -186,6 +204,55 @@ describe('lib-orchestrator/git/gitCheckpointStore', () => {
       expect(answer.detail).toContain('not a project')
     })
 
+    it('admits an SVN repository root directly below a volume, the shape of Q:/Docker', async () => {
+      const repository = resolve('/JamatV3ProbeRepository')
+      const svn = svnAnswering({ stdout: '^/\n' })
+
+      const answer = await new GitCheckpointStore(outsideGit(), undefined, svn).rootOf(repository)
+
+      expect(answer.ok).toBe(true)
+      if (!answer.ok) return
+      expect(answer.value.root).toBe(repository)
+      expect(svn.calls).toContainEqual({
+        cwd: resolve('/'),
+        args: ['info', '--show-item', 'relative-url', '--non-interactive', '--', `${repository}@`],
+      })
+    })
+
+    it('refuses a direct volume child that SVN places below its repository root', async () => {
+      const subtree = resolve('/JamatV3ProbeSubtree')
+
+      const answer = await new GitCheckpointStore(outsideGit(), undefined, svnAnswering({ stdout: '^/trunk\n' }))
+        .rootOf(subtree)
+
+      expect(answer.ok).toBe(false)
+      if (answer.ok) return
+      expect(answer.code).toBe('not-a-repo')
+    })
+
+    it('refuses a direct volume child SVN cannot answer for', async () => {
+      const unverified = resolve('/JamatV3ProbeUnverified')
+      const svn = svnAnswering({ code: 1, stderr: "svn: E155007: '/x' is not a working copy" })
+
+      const answer = await new GitCheckpointStore(outsideGit(), undefined, svn).rootOf(unverified)
+
+      expect(answer.ok).toBe(false)
+      if (answer.ok) return
+      expect(answer.code).toBe('not-a-repo')
+    })
+
+    it('refuses a known group, home and a volume root without asking SVN at all', async () => {
+      // A group once carried a store and may carry SVN metadata too, so neither may admit it.
+      const svn = svnAnswering({ stdout: '^/\n' })
+      const store = new GitCheckpointStore(outsideGit(), undefined, svn)
+
+      for (const refused of [resolve('/ApplicationsWeb'), resolve('/Tooling'), homedir(), resolve('/')]) {
+        const answer = await store.rootOf(refused)
+        expect(answer.ok, refused).toBe(false)
+      }
+      expect(svn.calls).toHaveLength(0)
+    })
+
     it('falls back to the git toplevel, so a monorepo package checkpoints the whole tree', async () => {
       const top = temporaryDirectory('jamat-v3-store-')
       const nested = join(top, 'packages', 'inner')
@@ -229,6 +296,21 @@ describe('lib-orchestrator/git/gitCheckpointStore', () => {
   })
 
   describe('ensure', () => {
+    it('refuses to create a store at a root discovery would refuse', async () => {
+      // `init` fails here only so that code without the guard cannot write at a drive root.
+      const runner = scripted((args) => args[0] === 'init' ? { code: 1, stderr: 'refused by the test' } : null)
+      const svn = svnAnswering({ stdout: '^/trunk\n' })
+      const store = new GitCheckpointStore(runner, undefined, svn)
+
+      for (const refused of [resolve('/ApplicationsNodeJs'), resolve('/JamatV3ProbeSubtree')]) {
+        const result = await store.ensure(refused)
+        expect(result.ok, refused).toBe(false)
+        if (result.ok) continue
+        expect(result.code).toBe('not-a-repo')
+      }
+      expect(runner.calls).toHaveLength(0)
+    })
+
     it('creates the bare store on the checkpoint branch and seeds the three self-excludes', async () => {
       const root = temporaryDirectory('jamat-v3-store-')
       const runner = scripted((args) =>

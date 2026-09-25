@@ -1,0 +1,81 @@
+/* The session groups card's own styles, beside its component like every card added since. */
+.jamat-configuration-session-groups {
+  /* One number for both arrow columns and the arrow buttons in them, so a square stays square.
+     Local rather than a token: nothing outside this card draws a row of this shape. */
+  --group-move-size: 2rem;
+  position: relative;
+  min-height: 100%;
+}
+.jamat-configuration-session-groups__note {
+  margin: 0 0 var(--space-3);
+  font-size: var(--fs-status);
+  color: var(--color-text-5);
+}
+/* Why Save is refused, which is an ordinary state while a name is being retyped rather than a
+   failure: it reads as a note, not as the alert a refused write gets. */
+.jamat-configuration-session-groups__refusal {
+  margin: 0 0 var(--space-3);
+  font-size: var(--fs-status);
+  color: var(--color-attention);
+}
+.jamat-configuration-session-groups__rows {
+  padding: 0;
+  margin: 0 0 var(--space-3);
+  list-style: none;
+}
+/*
+ * One column template for every row, the add row included, so the arrows and the last button stand
+ * in one line down the card. The two variable things are what forced it: an id is as long as
+ * somebody's word for it, and the last button changes its label when it is armed. Both get a column
+ * of their own with a width of its own, and the name field takes what is left - which is also what
+ * makes every field the same length rather than each one ending where its own id starts.
+ */
+.jamat-configuration-session-groups__entry,
+.jamat-configuration-session-groups__add {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 7rem var(--group-move-size) var(--group-move-size) 6.5rem;
+  gap: var(--space-2);
+  align-items: center;
+  padding: 3px 0;
+}
+.jamat-configuration-session-groups__add {
+  margin-top: var(--space-2);
+}
+/* The new-group field takes the name and the id columns: nothing is typed into an id. */
+.jamat-configuration-session-groups__add-field {
+  grid-column: 1 / span 4;
+}
+/* The same field as the projects card's, so two lists of named rows do not look like two apps. */
+.jamat-configuration-session-groups__title {
+  min-width: 0;
+  padding: 2px var(--space-2);
+  font: inherit;
+  color: var(--color-text-1);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+/* Sessions and Pinned: the name is there and cannot be retyped, which is what disabled says. A
+   field that looked ordinary and swallowed every keystroke would read as broken instead. */
+.jamat-configuration-session-groups__title:disabled {
+  color: var(--color-text-4);
+  background: transparent;
+  border-color: transparent;
+}
+/* The name a command line uses. Dimmed because it is read when writing a script and ignored the
+   rest of the time, and it is never typed here: a group's id is fixed when the group is made. */
+.jamat-configuration-session-groups__id {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--fs-secondary);
+  color: var(--color-text-4);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Square, so the two arrow columns are the same width whatever glyph a platform draws. Written as a
+   descendant so it beats the frame's own button padding whichever stylesheet the bundle puts last. */
+.jamat-configuration-session-groups .jamat-configuration-session-groups__move {
+  width: var(--group-move-size);
+  padding-inline: 0;
+  text-align: center;
+}

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { ProjectListResult } from '../projectManager/projectManagerApi.types'
 import type {
   SessionColorName,
+  SessionDetailsSaved,
   SessionGroup,
   SessionInfo,
   SessionsOpResult,
@@ -24,16 +25,18 @@ import type {
 } from './remoteControlApi.types'
 import { RemoteControlConst } from './remoteControlProtocol'
 import { RemoteControlPeerConst } from './remoteControlPeerProtocol'
+import { SessionsSnapshotValidation } from '../sessionManager/sessionsSnapshotValidation'
 
 interface World {
   control: RemoteControl
   sessions: SessionInfo[]
   creates: () => number
   colored: { sessionId: string; color: SessionColorName }[]
+  noted: { sessionId: string; note: string | null }[]
   groupAssigns: { sessionId: string; group: SessionGroup }[]
   reopened: string[]
   finalized: string[]
-  discarded: string[]
+  removed: string[]
   tabCalls: { method: string; args: unknown[] }[]
   terminalCalls: { method: string; args: unknown[] }[]
   transcriptReads: string[]
@@ -94,14 +97,17 @@ function world(options?: {
   tabOpen?: RemoteControlStepResult<RemoteControlTabCommandDto>
   groupAssign?: RemoteControlStepResult<{ group: SessionGroup }>
   setColor?: SessionsOpResult
+  setNote?: SessionsOpResult<SessionDetailsSaved>
+  remove?: SessionsOpResult
 }): World {
   const sessions = options?.sessions ?? [session('session-1', '001')]
   let creates = 0
   const colored: { sessionId: string; color: SessionColorName }[] = []
+  const noted: { sessionId: string; note: string | null }[] = []
   const groupAssigns: { sessionId: string; group: SessionGroup }[] = []
   const reopened: string[] = []
   const finalized: string[] = []
-  const discarded: string[] = []
+  const removed: string[] = []
   const tabCalls: { method: string; args: unknown[] }[] = []
   const terminalCalls: { method: string; args: unknown[] }[] = []
   const transcriptReads: string[] = []
@@ -134,10 +140,9 @@ function world(options?: {
     },
     sessions: {
       snapshot: () => snapshot(sessions),
-      createSession: async (spec) => {
+      createSession: async () => {
         creates += 1
         const created = session(`created-${creates}`, '002')
-        if (spec.presentation === 'tab') created.presentation = 'tab'
         sessions.push(created)
         return { ok: true, value: { sessionId: created.sessionId, tabTitle: created.tabTitle } }
       },
@@ -149,16 +154,29 @@ function world(options?: {
         finalized.push(sessionId)
         return { ok: true, value: undefined }
       },
-      discardPlainSession: async (sessionId) => {
-        discarded.push(sessionId)
-        return { ok: true, value: undefined }
+      removeSession: async (sessionId) => {
+        removed.push(sessionId)
+        return options?.remove ?? { ok: true, value: undefined }
       },
       setSessionColor: async (sessionId, color) => {
         colored.push({ sessionId, color })
         return options?.setColor ?? { ok: true, value: undefined }
       },
+      // The record's own rule, kept here so the answer is what a real save would have stored.
+      setSessionDetails: async (sessionId, update) => {
+        if (update.note === undefined) throw new Error('The note is the only detail this library writes')
+        const note = update.note?.trim() ?? ''
+        noted.push({ sessionId, note: note === '' ? null : note })
+        const found = sessions.find((candidate) => candidate.sessionId === sessionId)
+        if (found !== undefined) {
+          if (note === '') delete found.note
+          else found.note = note
+        }
+        return options?.setNote ?? { ok: true, value: { titleChanged: false, notifyAgent: null } }
+      },
     },
     groups: {
+      read: () => new Map(groupAssigns.map(({ sessionId, group }) => [sessionId, group === 'none' ? null : group])),
       assign: (sessionId, group) => {
         groupAssigns.push({ sessionId, group })
         return options?.groupAssign ?? { ok: true, value: { group } }
@@ -238,6 +256,25 @@ function world(options?: {
           },
         }
       },
+      deliver: async (...args) => {
+        terminalCalls.push({ method: 'deliver', args: args.slice(0, 3) })
+        const reading = await args[3].transcript()
+        return {
+          ok: true,
+          value: {
+            sessionId: args[0],
+            accepted: true,
+            characterCount: args[1].length,
+            delivered: true,
+            input: args[2].input,
+            composeProof: 'text',
+            proof: reading.kind === 'messages' ? 'transcript' : 'working',
+            submitKey: 'enter',
+            readyAfterMs: 1,
+            submittedAfterMs: 1,
+          },
+        }
+      },
     },
     transcript: {
       read: async (sessionId) => {
@@ -293,10 +330,11 @@ function world(options?: {
     sessions,
     creates: () => creates,
     colored,
+    noted,
     groupAssigns,
     reopened,
     finalized,
-    discarded,
+    removed,
     tabCalls,
     terminalCalls,
     transcriptReads,
@@ -339,7 +377,10 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     expect(found.tabCalls).toEqual([{ method: 'cancelCommit', args: [cancel.body.commitSessionId] }])
   })
   it('dispatches every declared operation and exposes only the caller capabilities', async () => {
-    const found = world()
+    const found = world({ sessions: [
+      session('session-1', '001'),
+      { ...session('agent-9', '009'), kind: 'agent', agent: { agentId: 'codex' } },
+    ] })
     const requests: RemoteControlRequestUnion[] = [
       request('system.hello', {}),
       request('system.status', {}),
@@ -348,6 +389,7 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
       request('sessions.create', { spec: { kind: 'shell', directory: { mode: 'default' } } }, 'op-1'),
       request('sessions.reopen', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-2'),
       request('sessions.finalize', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-3'),
+      request('sessions.remove', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-remove'),
       request('sessions.transcript', {
         session: { kind: 'sessionId', sessionId: 'session-1' },
       }),
@@ -359,6 +401,11 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
         session: { kind: 'sessionId', sessionId: 'session-1' },
         group: 'waiting',
       }, 'op-group'),
+      request('sessions.note', { session: { kind: 'sessionId', sessionId: 'session-1' } }),
+      request('sessions.setNote', {
+        session: { kind: 'sessionId', sessionId: 'session-1' },
+        note: 'waiting for the review',
+      }, 'op-note'),
       request('agents.describe', {}),
       request('tabs.list', {}),
       request('tabs.open', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-4'),
@@ -377,6 +424,11 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
         text: 'hello',
         enter: true,
       }, 'op-8'),
+      request('terminal.deliver', {
+        session: { kind: 'sessionId', sessionId: 'agent-9' },
+        text: 'hello',
+        input: 'typed',
+      }, 'op-9'),
     ]
     expect(requests.map((item) => item.operation).sort()).toEqual([
       ...RemoteControlConst.operations,
@@ -398,9 +450,10 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     })
     expect(found.reopened).toEqual(['session-1'])
     expect(found.finalized).toEqual(['session-1'])
-    expect(found.transcriptReads).toEqual(['session-1'])
+    expect(found.transcriptReads).toEqual(['session-1', 'agent-9'])
     expect(found.colored).toEqual([{ sessionId: 'session-1', color: 'cyan' }])
     expect(found.groupAssigns).toEqual([{ sessionId: 'session-1', group: 'waiting' }])
+    expect(found.noted).toEqual([{ sessionId: 'session-1', note: 'waiting for the review' }])
     expect(found.tabCalls.map((call) => call.method)).toEqual([
       'open',
       'openFile',
@@ -409,18 +462,13 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
       'focus',
       'close',
     ])
-    expect(found.tabCalls[0]?.args).toEqual([
-      'session-1',
-      'One - 001 - session-1',
-      { plain: false },
-    ])
+    expect(found.tabCalls[0]?.args).toEqual(['session-1', 'One - 001 - session-1'])
     expect(found.tabCalls[1]?.args).toEqual([
       'session-1',
       'One - 001 - session-1',
       'reports/report.md',
-      { plain: false },
     ])
-    expect(found.terminalCalls.map((call) => call.method)).toEqual(['peek', 'send'])
+    expect(found.terminalCalls.map((call) => call.method)).toEqual(['peek', 'send', 'deliver'])
   })
 
   /**
@@ -448,6 +496,62 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
 
     expect(found.colored).toEqual([{ sessionId: 'session-1', color: 'magenta' }])
     expect(found.groupAssigns).toEqual([{ sessionId: 'session-1', group: 'automation' }])
+  })
+
+  /**
+   * The note is the one session field a caller writes in order to READ it back: a scheduler leaves
+   * the sentence saying what the session waits for, and its next pass has to see what it left.
+   * Both halves answer the stored value, which is why the write is answered out of the snapshot
+   * rather than out of the request - the record trims, and keeps no note of nothing.
+   */
+  it('writes, reads back and clears the note of a session, by number as well as by id', async () => {
+    const found = world()
+
+    await expect(found.control.execute(request('sessions.note', {
+      session: { kind: 'number', number: '001' },
+    }), context())).resolves.toMatchObject({
+      ok: true,
+      value: { sessionId: 'session-1', note: null },
+    })
+    await expect(found.control.execute(request('sessions.setNote', {
+      session: { kind: 'number', number: '001' },
+      note: '  waiting for the SVN review  ',
+    }, 'write-1'), context())).resolves.toMatchObject({
+      ok: true,
+      value: { sessionId: 'session-1', note: 'waiting for the SVN review' },
+    })
+    await expect(found.control.execute(request('sessions.note', {
+      session: { kind: 'sessionId', sessionId: 'session-1' },
+    }), context())).resolves.toMatchObject({
+      ok: true,
+      value: { sessionId: 'session-1', note: 'waiting for the SVN review' },
+    })
+    await expect(found.control.execute(request('sessions.setNote', {
+      session: { kind: 'sessionId', sessionId: 'session-1' },
+      note: null,
+    }, 'clear-1'), context())).resolves.toMatchObject({
+      ok: true,
+      value: { sessionId: 'session-1', note: null },
+    })
+
+    expect(found.noted).toEqual([
+      { sessionId: 'session-1', note: 'waiting for the SVN review' },
+      { sessionId: 'session-1', note: null },
+    ])
+  })
+
+  it('reports a note the records store refused, and writes nothing to the session', async () => {
+    const refusing = world({
+      setNote: { ok: false, code: 'records-latched', detail: 'Session records are not accepting writes' },
+    })
+
+    await expect(refusing.control.execute(request('sessions.setNote', {
+      session: { kind: 'sessionId', sessionId: 'session-1' },
+      note: 'blocked on the other computer',
+    }, 'write-2'), context())).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'operation-failed' },
+    })
   })
 
   /**
@@ -489,10 +593,50 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     })
   })
 
-  it('opens a file through the matching plain session presentation', async () => {
-    const plain = session('session-1', '001')
-    plain.presentation = 'tab'
-    const found = world({ sessions: [plain] })
+  it('removes an ended record and refuses a live one as a conflict without stopping it', async () => {
+    const ended = world()
+    await expect(ended.control.execute(request('sessions.remove', {
+      session: { kind: 'number', number: '001' },
+    }, 'remove-1'), context())).resolves.toMatchObject({
+      ok: true,
+      value: { sessionId: 'session-1' },
+    })
+    expect(ended.removed).toEqual(['session-1'])
+
+    const live = world({ remove: {
+      ok: false,
+      code: 'live-refused',
+      detail: 'Session session-1 is live; stop it before removing it',
+    } })
+    await expect(live.control.execute(request('sessions.remove', {
+      session: { kind: 'sessionId', sessionId: 'session-1' },
+    }, 'remove-2'), context())).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'conflict', data: { sourceCode: 'live-refused' } },
+    })
+    expect(live.terminalCalls).toEqual([])
+
+    const missing = world()
+    await expect(missing.control.execute(request('sessions.remove', {
+      session: { kind: 'sessionId', sessionId: 'nobody' },
+    }, 'remove-3'), context())).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'not-found' },
+    })
+    expect(missing.removed).toEqual([])
+
+    // Deleting a record is local-only: a peer is never offered it, so a peer request is refused.
+    const peer = context(RemoteControlPeerConst.controlOperations)
+    peer.callerKind = 'remote-peer'
+    await expect(ended.control.execute(request('sessions.remove', {
+      session: { kind: 'sessionId', sessionId: 'session-1' },
+    }, 'remove-4'), peer)).resolves.toMatchObject({ ok: false, error: { code: 'forbidden' } })
+    expect(RemoteControlPeerConst.controlOperations).not.toContain('sessions.remove')
+    expect(ended.removed).toEqual(['session-1'])
+  })
+
+  it('opens a file on the tab of the session it names', async () => {
+    const found = world({ sessions: [session('session-1', '001')] })
 
     await expect(found.control.execute(request('tabs.openFile', {
       session: { kind: 'sessionId', sessionId: 'session-1' },
@@ -503,12 +647,7 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     })
     expect(found.tabCalls).toEqual([{
       method: 'openFile',
-      args: [
-        'session-1',
-        'One - 001 - session-1',
-        'reports/report.md',
-        { plain: true },
-      ],
+      args: ['session-1', 'One - 001 - session-1', 'reports/report.md'],
     }])
   })
 
@@ -655,6 +794,29 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     expect(found.tabCalls.filter((call) => call.method === 'openFile')).toHaveLength(1)
   })
 
+  it('lists the current group after a move and null for sessions in no group', async () => {
+    const found = world({ sessions: [session('session-1', '001'), session('session-2', '002')] })
+    await expect(found.control.execute(request('sessions.group', {
+      session: { kind: 'sessionId', sessionId: 'session-1' }, group: 'waiting',
+    }, 'move'), context())).resolves.toMatchObject({ ok: true })
+    await expect(found.control.execute(request('sessions.list', {}), context())).resolves.toMatchObject({
+      ok: true,
+      value: { sessions: [{ sessionId: 'session-1', group: 'waiting' }, { sessionId: 'session-2', group: null }] },
+    })
+    await found.control.execute(request('sessions.group', {
+      session: { kind: 'sessionId', sessionId: 'session-1' }, group: 'none',
+    }, 'clear'), context())
+    await expect(found.control.execute(request('sessions.list', {}), context())).resolves.toMatchObject({
+      ok: true, value: { sessions: [{ group: null }, { group: null }] },
+    })
+    const listed = await found.control.execute(request('sessions.list', {}), context())
+    if (!listed.ok) throw new Error(listed.error.detail)
+    const legacy = SessionsSnapshotValidation.parse(listed.value)
+    expect(legacy?.sessions.map(({ sessionId, title }) => ({ sessionId, title })))
+      .toEqual(found.sessions.map(({ sessionId, title }) => ({ sessionId, title })))
+    expect(found.sessions.every((entry) => !Object.hasOwn(entry, 'group'))).toBe(true)
+  })
+
   it('files a created session under the group the create named, before any tab is drawn', async () => {
     const found = world()
 
@@ -708,34 +870,19 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     expect(found.groupAssigns).toEqual([])
   })
 
-  it('keeps a tree session after a tab refusal and discards a failed plain session', async () => {
+  it('keeps the session after a tab refusal, and says which step failed', async () => {
     const tabOpen: RemoteControlStepResult<RemoteControlTabCommandDto> = {
       ok: false,
       error: { code: 'unavailable', detail: 'renderer unavailable' },
     }
     const found = world({ tabOpen })
-    const tree = await found.control.execute(request('sessions.create', {
+    const created = await found.control.execute(request('sessions.create', {
       spec: { kind: 'shell', directory: { mode: 'default' } },
       openTab: true,
     }, 'tree'), context())
-    const plain = await found.control.execute(request('sessions.create', {
-      spec: { kind: 'shell', directory: { mode: 'default' }, presentation: 'tab' },
-      openTab: true,
-    }, 'plain'), context())
 
-    expect(tree).toMatchObject({
-      ok: true,
-      value: { tabOpen: { ok: false }, plainCleanup: null },
-    })
-    expect(plain).toMatchObject({
-      ok: true,
-      value: { tabOpen: { ok: false }, plainCleanup: { ok: true } },
-    })
-    expect(found.tabCalls.map((call) => call.args[2])).toEqual([
-      { plain: false },
-      { plain: true },
-    ])
-    expect(found.discarded).toEqual(['created-2'])
+    expect(created).toMatchObject({ ok: true, value: { tabOpen: { ok: false } } })
+    expect(found.tabCalls.map((call) => call.args.length)).toEqual([2])
   })
 
   it('applies category filters, canonical terminal options and capability refusals', async () => {
@@ -807,9 +954,9 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     expect(ambiguous).toMatchObject({ ok: false, error: { code: 'conflict' } })
     expect(forbidden).toMatchObject({ ok: false, error: { code: 'forbidden' } })
     /*
-     * What a peer is offered out of the optional set: what that computer can start an agent on, and
-     * the two mutations that repaint a session it runs. It may still not read a transcript or open
-     * a file in a tab.
+     * What a peer is offered out of the optional set: what that computer can start an agent on, the
+     * two mutations that repaint a session it runs, and the note it writes and reads back. It may
+     * still not read a transcript or open a file in a tab.
      */
     expect(peerHello).toMatchObject({
       ok: true,
@@ -825,7 +972,13 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
           'terminal.peek',
           'terminal.send',
         ],
-        optionalOperations: ['agents.describe', 'sessions.color', 'sessions.group'],
+        optionalOperations: [
+          'agents.describe',
+          'sessions.color',
+          'sessions.group',
+          'sessions.note',
+          'sessions.setNote',
+        ],
       },
     })
     expect(found.transcriptReads).toEqual(['unique', 'unique'])
@@ -836,6 +989,58 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
    * the configured value describe THIS computer's CLIs, and the asking side's own list would name
    * versions that machine never had.
    */
+  it('delivers only to a live agent session, with defaults, once per operation id, and never for a peer', async () => {
+    const agent = (sessionId: string, number: string, life: SessionInfo['life']): SessionInfo => ({
+      ...session(sessionId, number),
+      kind: 'agent',
+      agent: { agentId: 'claude' },
+      life,
+    })
+    const found = world({ sessions: [
+      agent('agent-1', '010', 'live'),
+      agent('ended-1', '011', 'ended'),
+      session('shell-1', '012'),
+      agent('twin-a', '013', 'live'),
+      { ...agent('twin-b', '013', 'live'), directory: { mode: 'project', categoryId: 'code', projectPath: 'Q:\\Apps\\Two' } },
+    ] })
+    const deliver = (selector: RemoteControlRequest<'terminal.deliver'>['body']['session'], operationId: string) =>
+      request('terminal.deliver', { session: selector, text: 'Read the file.' }, operationId)
+
+    const delivered = await found.control.execute(deliver({ kind: 'sessionId', sessionId: 'agent-1' }, 'd-1'), context())
+    const replayed = await found.control.execute(deliver({ kind: 'sessionId', sessionId: 'agent-1' }, 'd-1'), context())
+    const shell = await found.control.execute(deliver({ kind: 'sessionId', sessionId: 'shell-1' }, 'd-2'), context())
+    const ended = await found.control.execute(deliver({ kind: 'sessionId', sessionId: 'ended-1' }, 'd-3'), context())
+    const ambiguous = await found.control.execute(deliver({ kind: 'number', number: '013' }, 'd-4'), context())
+    const queued = await found.control.execute(request('terminal.deliver', {
+      session: { kind: 'sessionId', sessionId: 'agent-1' },
+      text: 'Next task.',
+      queue: true,
+    }, 'd-6'), context())
+    const peer = context(RemoteControlPeerConst.controlOperations)
+    peer.callerKind = 'remote-peer'
+    const forbidden = await found.control.execute(deliver({ kind: 'sessionId', sessionId: 'agent-1' }, 'd-5'), peer)
+
+    expect(delivered).toMatchObject({ ok: true, value: { sessionId: 'agent-1', delivered: true, input: 'paste', proof: 'transcript' } })
+    expect(replayed).toMatchObject({ ok: true, value: { sessionId: 'agent-1' } })
+    expect(shell).toMatchObject({
+      ok: false,
+      error: { code: 'invalid-request', data: { stage: 'validate', reason: 'shell-session', typed: false, entered: 0, hint: null, composer: null } },
+    })
+    expect(ended).toMatchObject({ ok: false, error: { code: 'not-found', data: { stage: 'attach', reason: 'not-live' } } })
+    expect(ambiguous).toMatchObject({ ok: false, error: { code: 'conflict', data: { candidates: expect.any(Array) } } })
+    expect(forbidden).toMatchObject({ ok: false, error: { code: 'forbidden' } })
+    expect(RemoteControlPeerConst.controlOperations).not.toContain('terminal.deliver')
+    expect(found.terminalCalls.filter((call) => call.method === 'deliver')).toEqual([{
+      method: 'deliver',
+      args: ['agent-1', 'Read the file.', { input: 'paste', readyTimeoutMs: 45_000, submitTimeoutMs: 10_000, queue: false }],
+    }, {
+      method: 'deliver',
+      args: ['agent-1', 'Next task.', { input: 'paste', readyTimeoutMs: 45_000, submitTimeoutMs: 10_000, queue: true }],
+    }])
+    expect(queued).toMatchObject({ ok: true })
+    expect(found.transcriptReads).toEqual(['agent-1', 'agent-1'])
+  })
+
   it('describes this computer’s own agents and carries nothing but the offer', async () => {
     const found = world()
 
@@ -893,21 +1098,23 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
         createSession: async () => ({ ok: false, code: 'invalid-spec', detail: 'unused' }),
         reopenSession: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         finalizeSession: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
-        discardPlainSession: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        removeSession: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         setSessionColor: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        setSessionDetails: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
       },
-      groups: { assign: (_sessionId, group) => ({ ok: true, value: { group } }) },
+      groups: { read: () => new Map(), assign: (_sessionId, group) => ({ ok: true, value: { group } }) },
       tabs: {
         list: async () => [],
         open: async () => successTab('opened'),
         openCommit: async () => ({ ok: true, value: { kind: 'commit-opened', panelId: 'commit-panel', windowId: 'main', scopeRoot: 'Q:/app', messageApplied: true } }),
-      openFile: async (_sessionId, _tabTitle, path, _options) => successFile(path),
+        openFile: async (_sessionId, _tabTitle, path) => successFile(path),
         focus: async () => successTab('focused-existing'),
         close: async () => successTab('closed'),
       },
       terminal: {
         peek: async () => ({ ok: false, error: { code: 'timeout', detail: 'unused' } }),
         send: async () => ({ ok: false, error: { code: 'timeout', detail: 'unused' } }),
+        deliver: async () => ({ ok: false, error: { code: 'timeout', detail: 'unused' } }),
       },
       transcript: {
         read: async () => ({ kind: 'none', code: 'not-agent', reason: 'unused' }),

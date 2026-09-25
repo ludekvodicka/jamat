@@ -72,7 +72,7 @@ export class RemoteSessionsTreeModel {
       const key = `remote:${entry.remoteEndpointId}`
       const tree = SessionsTreeModel.build(
         { ...entry.sessions, sessions: entry.sessions.sessions.filter((session) => selected.has(session.sessionId)), orphans: [] },
-        { ...view, content: 'both' },
+        view,
         marks,
         previous.get(key) ?? null,
         {
@@ -115,7 +115,7 @@ export class RemoteSessionsTreeModel {
       const active = new Set(entry.activeSessionIds)
       const tree = SessionsTreeModel.build(
         { ...local, sessions: local.sessions.filter((session) => active.has(session.sessionId)) },
-        { ...view, content: 'both' },
+        view,
         marks,
         previous.get(key) ?? null,
         {

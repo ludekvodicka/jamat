@@ -177,13 +177,10 @@ describe('app-client-ui/app/shell/workspaceWindows', () => {
 
   class CloseControl {
     readonly confirmations: { parent: unknown; holderCount: number }[] = []
-    readonly plainCalls: (readonly string[])[] = []
     readonly explicitClose: string[] = []
     readonly acceptingDuringExplicit: boolean[] = []
     readonly reports: string[] = []
-    readonly plainByWindow = new Map<string, readonly string[]>()
     confirmationResult: Promise<boolean> = Promise.resolve(true)
-    plainResult: Promise<boolean> = Promise.resolve(true)
     quitRequests = 0
   }
 
@@ -268,11 +265,6 @@ describe('app-client-ui/app/shell/workspaceWindows', () => {
         confirmMainWindowClose: async (parent, holderCount) => {
           close.confirmations.push({ parent, holderCount })
           return close.confirmationResult
-        },
-        plainSessionIds: (windowId) => close.plainByWindow.get(windowId) ?? [],
-        closePlainSessions: async (sessionIds) => {
-          close.plainCalls.push([...sessionIds])
-          return close.plainResult
         },
         requestQuit: () => { close.quitRequests += 1 },
         explicitlyClosing: (windowId) => {
@@ -725,28 +717,26 @@ describe('app-client-ui/app/shell/workspaceWindows', () => {
 
     expect(context.close.explicitClose).toEqual(['named'])
     expect(context.close.acceptingDuringExplicit).toEqual([false])
-    expect(context.close.plainCalls).toEqual([])
     expect(context.store.extraWindows.named).toEqual({
       name: 'Logs',
       layout: '{"logs":1}',
       closed: true,
     })
     expect(FakeWindow.created[0].destroyed).toBe(true)
-    expect(FakeWindow.created[0].closeAttempts).toBe(2)
+    // One attempt: the close is taken where it is asked for, so nothing prevents and re-closes it.
+    expect(FakeWindow.created[0].closeAttempts).toBe(1)
   })
 
-  it('closes plain sessions before garbage-collecting an unnamed holder', async () => {
+  it('garbage-collects an unnamed holder and announces the close it took', async () => {
     const context = harness()
-    context.close.plainByWindow.set('holder', ['plain-1', 'plain-2'])
     context.registry.createHolder('holder')
     const sender = senderOf(0)
 
     FakeWindow.created[0].close()
 
     expect(context.registry.acceptsRenderer(sender)).toBe(false)
-    expect(context.close.plainCalls).toEqual([['plain-1', 'plain-2']])
-    // Announced when the close is TAKEN - after the cleanup answered - and not before it. The
-    // window has stopped accepting its renderer by then, which is what this asserts.
+    // Announced when the close is TAKEN, and not before it. The window has stopped accepting its
+    // renderer by then, which is what this asserts.
     await vi.waitFor(() => expect(FakeWindow.created[0].destroyed).toBe(true))
     expect(context.close.explicitClose).toEqual(['holder'])
     expect(context.close.acceptingDuringExplicit).toEqual([false])
@@ -775,50 +765,6 @@ describe('app-client-ui/app/shell/workspaceWindows', () => {
     // And a second holder does not inherit anything from the first.
     context.registry.createHolder('holder-2')
     expect(context.registry.window('holder-2')).not.toBeNull()
-  })
-
-  it('announces nothing for a close the cleanup refused', async () => {
-    const context = harness()
-    context.close.plainByWindow.set('holder', ['plain-1'])
-    context.close.plainResult = Promise.resolve(false)
-    context.registry.createHolder('holder')
-    const sender = senderOf(0)
-
-    FakeWindow.created[0].close()
-
-    // The window comes back, and nothing was ever announced about it: the announcement is what
-    // throws away the transfer tokens this window is part of.
-    await vi.waitFor(() => expect(context.registry.acceptsRenderer(sender)).toBe(true))
-    expect(context.close.explicitClose).toEqual([])
-    expect(FakeWindow.created[0].destroyed).toBe(false)
-  })
-
-  it('cancels an unnamed holder close when plain cleanup is refused', async () => {
-    const context = harness()
-    context.close.plainByWindow.set('holder', ['plain-1'])
-    context.close.plainResult = Promise.resolve(false)
-    context.registry.createHolder('holder')
-    const sender = senderOf(0)
-
-    FakeWindow.created[0].close()
-
-    expect(context.registry.acceptsRenderer(sender)).toBe(false)
-    await vi.waitFor(() => expect(context.registry.acceptsRenderer(sender)).toBe(true))
-    expect(FakeWindow.created[0].destroyed).toBe(false)
-    expect(context.store.extraWindows.holder).toEqual({})
-  })
-
-  it('reports a failed plain cleanup and returns the holder gate to ready', async () => {
-    const context = harness()
-    context.close.plainResult = Promise.reject(new Error('Host unavailable'))
-    context.registry.createHolder('holder')
-    const sender = senderOf(0)
-
-    FakeWindow.created[0].close()
-
-    await vi.waitFor(() => expect(context.close.reports).toEqual(['Host unavailable']))
-    expect(context.registry.acceptsRenderer(sender)).toBe(true)
-    expect(FakeWindow.created[0].destroyed).toBe(false)
   })
 
   it('asks before closing main with holders and restores the gate on Cancel', async () => {
@@ -869,7 +815,6 @@ describe('app-client-ui/app/shell/workspaceWindows', () => {
     expect(context.store.markedClosed).toEqual([])
     expect(context.store.extraWindows.named).toEqual({ name: 'Logs', layout: '{"named":1}' })
     expect(context.store.extraWindows.plain).toEqual({})
-    expect(context.close.plainCalls).toEqual([])
     expect(FakeWindow.created.every((window) => window.destroyed)).toBe(true)
   })
 
@@ -883,7 +828,6 @@ describe('app-client-ui/app/shell/workspaceWindows', () => {
       window.close()
 
     expect(context.close.confirmations).toEqual([])
-    expect(context.close.plainCalls).toEqual([])
     expect(context.close.explicitClose).toEqual([])
     expect(context.store.extraWindows.holder).toEqual({})
   })

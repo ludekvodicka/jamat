@@ -39,8 +39,10 @@ class ProbeAgent {
   private static readonly replyMsConst = 20_000
 
   static async run(): Promise<void> {
-    const agent = process.argv[2] ?? 'claude'
-    const agentArgs = process.argv.slice(3)
+    // pnpm 11 forwards the `--` of `pnpm <script> -- <args>` to the script.
+    const args = process.argv.slice(process.argv[2] === '--' ? 3 : 2)
+    const agent = args[0] ?? 'claude'
+    const agentArgs = args.slice(1)
     const stateRoot = mkdtempSync(join(tmpdir(), 'jamat-v3-probe-state-'))
     const configDir = mkdtempSync(join(tmpdir(), 'jamat-v3-probe-config-'))
     const workDir = mkdtempSync(join(tmpdir(), 'jamat-v3-probe-work-'))

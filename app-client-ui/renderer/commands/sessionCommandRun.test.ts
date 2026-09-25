@@ -30,7 +30,6 @@ describe('app-client-ui/renderer/commands/sessionCommandRun', () => {
       'tab.openProjectFolder',
       'tab.copyProjectFolder',
       'session.copyReference',
-      'tab.promote',
     ]
     for (const id of ids) {
       const { commands, execute } = registry()

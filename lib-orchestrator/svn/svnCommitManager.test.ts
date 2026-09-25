@@ -14,10 +14,31 @@ describe('lib-orchestrator/svn/svnCommitManager', () => {
     const lists: string[] = []
     const svn: CommandRunner = { run: async (_cwd, args): Promise<CommandOutcome> => {
       calls.push(args)
+      if (args[0] === 'info') return { code: 0, failure: null, stderr: '',
+        stdout: '<info><entry kind="dir"><wc-info><schedule>normal</schedule></wc-info></entry></info>' }
       if (args[0] === 'commit') lists.push(await readFile(args[args.indexOf('--targets') + 1], 'utf8'))
       return { code: failure === undefined ? 0 : 1, stdout: 'Committed revision 42.\n', stderr: failure ?? '', failure: null }
     } }
     const manager = new SvnCommitManager(svn)
+    return { manager, scope, calls, lists }
+  }
+
+  /** An `svn info` answer per path: an absent path is the unversioned one `--parents` creates. */
+  function schedules(scope: string, known: ReadonlyMap<string, string>) {
+    const calls: string[][] = []
+    const lists: string[] = []
+    const manager = new SvnCommitManager({ run: async (_cwd, args) => {
+      calls.push(args)
+      const path = args[args.length - 1].slice(0, -1)
+      if (args[0] === 'info') {
+        const schedule = known.get(path)
+        return schedule === undefined
+          ? { code: 1, failure: null, stdout: '<info>\n</info>', stderr: `svn: warning: W155010: The node '${path}' was not found.` }
+          : { code: 0, failure: null, stderr: '', stdout: `<info><entry kind="dir" path="${path}"><wc-info><schedule>${schedule}</schedule></wc-info></entry></info>` }
+      }
+      if (args[0] === 'commit') lists.push(await readFile(args[args.indexOf('--targets') + 1], 'utf8'))
+      return { code: 0, failure: null, stderr: '', stdout: 'Committed revision 42.\n' }
+    } })
     return { manager, scope, calls, lists }
   }
 
@@ -29,20 +50,48 @@ describe('lib-orchestrator/svn/svnCommitManager', () => {
       { absolutePath: a, nodeKind: 'file', status: 'untracked' },
       { absolutePath: b, nodeKind: 'file', status: 'missing' },
     ], 'message.txt')).toEqual({ ok: true, value: { revision: '42', output: 'Committed revision 42.\n' } })
-    expect(calls[0]).toEqual(['add', '--parents', '--depth', 'empty', '--non-interactive', '--', `${a}@`])
-    expect(calls[1]).toEqual(['delete', '--non-interactive', '--', `${b}@`])
-    expect(calls[2]).toEqual(['commit', '--non-interactive', '--encoding', 'UTF-8', '--file', 'message.txt', '--targets', expect.any(String), '--depth', 'empty'])
+    expect(calls[0]).toEqual(['info', '--xml', '--non-interactive', '--', `${scope}@`])
+    expect(calls[1]).toEqual(['add', '--parents', '--depth', 'empty', '--non-interactive', '--', `${a}@`])
+    expect(calls[2]).toEqual(['delete', '--non-interactive', '--', `${b}@`])
+    expect(calls[3]).toEqual(['commit', '--non-interactive', '--encoding', 'UTF-8', '--file', 'message.txt', '--targets', expect.any(String), '--depth', 'empty'])
     expect(lists).toEqual([`${a}@\n${b}@\n`])
-    await expect(readFile(calls[2][7], 'utf8')).rejects.toThrow()
+    await expect(readFile(calls[3][7], 'utf8')).rejects.toThrow()
   })
 
   it('adds a selected directory at depth empty without discovering or staging its children', async () => {
     const { manager, scope, calls, lists } = fixture()
     const directory = resolve(scope, 'new')
     expect(await manager.commit(scope, [{ absolutePath: directory, nodeKind: 'directory', status: 'untracked' }], 'message.txt')).toMatchObject({ ok: true })
-    expect(calls[0]).toEqual(['add', '--parents', '--depth', 'empty', '--non-interactive', '--', `${directory}@`])
+    expect(calls[1]).toEqual(['add', '--parents', '--depth', 'empty', '--non-interactive', '--', `${directory}@`])
     expect(lists[0]).toBe(`${directory}@\n`)
-    expect(calls).toHaveLength(2)
+    expect(calls).toHaveLength(3)
+  })
+
+  it('commits the parent directories the add versions, asking about each one once', async () => {
+    const scope = resolve('scope')
+    const { manager, calls, lists } = schedules(scope, new Map([[scope, 'normal']]))
+    const one = resolve(scope, 'a', 'b', 'one.txt')
+    const two = resolve(scope, 'a', 'b', 'two.txt')
+    expect(await manager.commit(scope, [
+      { absolutePath: one, nodeKind: 'file', status: 'untracked' },
+      { absolutePath: two, nodeKind: 'file', status: 'untracked' },
+    ], 'message.txt')).toMatchObject({ ok: true })
+    // Without the parents the commit stops at E200009: SVN refuses a child whose parent add it
+    // does not have. The second target asks nothing, the first answer already covers its chain.
+    expect(lists).toEqual([`${resolve(scope, 'a')}@\n${resolve(scope, 'a', 'b')}@\n${one}@\n${two}@\n`])
+    expect(calls.filter(([command]) => command === 'info').map(([, , , , path]) => path)).toEqual([
+      `${resolve(scope, 'a', 'b')}@`, `${resolve(scope, 'a')}@`, `${scope}@`,
+    ])
+  })
+
+  it('refuses to add inside a directory scheduled for deletion, before any write', async () => {
+    const scope = resolve('scope')
+    const deleted = resolve(scope, 'data')
+    const { manager, calls } = schedules(scope, new Map([[scope, 'normal'], [deleted, 'delete']]))
+    const kept = resolve(deleted, 'run.json')
+    expect(await manager.commit(scope, [{ absolutePath: kept, nodeKind: 'file', status: 'untracked' }], 'message.txt'))
+      .toEqual({ ok: false, code: 'svn-failed', detail: expect.stringContaining(`${deleted} is scheduled for deletion`) })
+    expect(calls.map(([command]) => command)).toEqual(['info'])
   })
 
   it('stages a path an earlier attempt already versioned, so the retry of that selection commits', async () => {
@@ -55,13 +104,13 @@ describe('lib-orchestrator/svn/svnCommitManager', () => {
       if (args[0] === 'add') return { code: 1, failure: null, stdout: '',
         stderr: `svn: warning: W150002: '${path}' is already under version control\nsvn: E200009: Could not add all targets because some targets are already versioned` }
       if (args[0] === 'info') return { code: 0, failure: null, stderr: '',
-        stdout: `<info><entry kind="file" path="${path}"><wc-info><schedule>add</schedule></wc-info></entry></info>` }
+        stdout: `<info><entry kind="file" path="${path}"><wc-info><schedule>${args[5] === `${path}@` ? 'add' : 'normal'}</schedule></wc-info></entry></info>` }
       lists.push(await readFile(args[args.indexOf('--targets') + 1], 'utf8'))
       return { code: 0, failure: null, stderr: '', stdout: 'Committed revision 42.\n' }
     } })
     expect(await manager.commit(scope, [{ absolutePath: path, nodeKind: 'file', status: 'untracked' }], 'message.txt'))
       .toMatchObject({ ok: true, value: { revision: '42' } })
-    expect(calls[1]).toEqual(['info', '--xml', '--non-interactive', '--', `${path}@`])
+    expect(calls[2]).toEqual(['info', '--xml', '--non-interactive', '--', `${path}@`])
     expect(lists).toEqual([`${path}@\n`])
   })
 
@@ -71,13 +120,15 @@ describe('lib-orchestrator/svn/svnCommitManager', () => {
     const calls: string[][] = []
     const manager = new SvnCommitManager({ run: async (_cwd, args) => {
       calls.push(args)
+      if (args[0] === 'info' && args[5] === `${scope}@`) return { code: 0, failure: null, stderr: '',
+        stdout: '<info><entry kind="dir"><wc-info><schedule>normal</schedule></wc-info></entry></info>' }
       return args[0] === 'info'
         ? { code: 1, failure: null, stdout: '<info>\n</info>', stderr: `svn: warning: W155010: The node '${path}' was not found.` }
         : { code: 1, failure: null, stdout: '', stderr: 'svn: E155004: Working copy locked' }
     } })
     expect(await manager.commit(scope, [{ absolutePath: path, nodeKind: 'file', status: 'untracked' }], 'message.txt'))
       .toMatchObject({ ok: false, code: 'locked' })
-    expect(calls.map(([command]) => command)).toEqual(['add', 'info'])
+    expect(calls.map(([command]) => command)).toEqual(['info', 'add', 'info'])
   })
 
   it('reports staging and streamed SVN progress while the command is still running', async () => {

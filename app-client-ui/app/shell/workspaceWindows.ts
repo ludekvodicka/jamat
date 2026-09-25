@@ -28,8 +28,6 @@ export interface WorkspaceWindowsDeps {
   onRendererGone(windowId: string): void
   onClosed(windowId: string): void
   confirmMainWindowClose(parent: BrowserWindow | null, holderCount: number): Promise<boolean>
-  plainSessionIds(windowId: string): readonly string[]
-  closePlainSessions(sessionIds: readonly string[]): Promise<boolean>
   requestQuit(): void
   /**
    * This window is closing for good, so what it was part of can be given up.
@@ -47,7 +45,6 @@ export class WorkspaceWindows {
   private readonly senders = new Map<WebContents, string>()
   private readonly readyByWindow = new Map<string, ReadinessSignal>()
   private readonly lifecycle = new Map<string, WorkspaceWindowLifecycle>()
-  private readonly allowNextClose = new Set<string>()
   private quitting = false
   private lastFocusedWindowId: string | null = null
 
@@ -374,42 +371,23 @@ export class WorkspaceWindows {
       })
   }
 
+  /**
+   * A holder's close is TAKEN here, and that is where its transfers are given up: the announcement
+   * clears every transfer token whose source or target is this window.
+   *
+   * Nothing waits between the X and the close any more. It used to: the close was prevented, the
+   * plain sessions of the window were discarded, and only then was it closed again - which is why
+   * `cancelClosing` had to be able to put the window back. Preventing a close nothing is waiting
+   * for and closing again saves the window's bounds twice, once per close event.
+   */
   private holderCloseRequested(windowId: string, event: ElectronEvent): void {
-    if (this.quitting || this.allowNextClose.delete(windowId))
+    if (this.quitting)
       return
-    event.preventDefault()
-    if (!this.beginClosing(windowId))
-      return
-    if (this.store.isNamed(windowId)) {
-      this.closeAllowedHolder(windowId)
+    if (!this.beginClosing(windowId)) {
+      event.preventDefault()
       return
     }
-    void this.deps.closePlainSessions(this.deps.plainSessionIds(windowId))
-      .then((closed) => {
-        if (closed)
-          this.closeAllowedHolder(windowId)
-        else
-          this.cancelClosing(windowId)
-      })
-      .catch((error: unknown) => {
-        this.cancelClosing(windowId)
-        this.deps.report(ErrorText.of(error))
-      })
-  }
-
-  /**
-   * The one place a holder's close is TAKEN, which is where its transfers are given up.
-   *
-   * Both close paths used to announce the close before their asynchronous confirmation - and that
-   * announcement clears every transfer token whose source or target is this window. Answer Cancel,
-   * or have the plain-session cleanup refused, and `cancelClosing` puts the window back while
-   * nothing puts the tokens back: drag a tab out of main, press main's X, answer Cancel, and the
-   * drop silently does nothing.
-   */
-  private closeAllowedHolder(windowId: string): void {
     this.deps.explicitlyClosing(windowId)
-    this.allowNextClose.add(windowId)
-    this.windows.get(windowId)?.close()
   }
 
   private rendererNavigated(windowId: string): void {

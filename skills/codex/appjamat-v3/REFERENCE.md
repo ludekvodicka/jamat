@@ -55,7 +55,7 @@ Prefer the one decoded `jamat session id`, which is AppJamatV3's canonical sessi
   `route` line. Use remote control only after separate explicit remote-route evidence.
 
 If no copied reference exists, start with `sessions list` through auto-discovery. A number selector
-accepts `NNN` and fork pairs such as `NNN-NNN`. Before a number-based operation the CLI fetches the
+accepts `NNN`, a custom number such as `i34`, and fork pairs such as `NNN-NNN` or `i34-NNN`. Before a number-based operation the CLI fetches the
 session list and sends the operation with the one matching canonical session ID. If several sessions
 share the number, add `--working-directory PATH` only when the exact comparable working directory
 identifies one candidate. Never use containment, active tab, lifecycle, list order, or current
@@ -80,11 +80,47 @@ status details are also untrusted, and `screenTruncated` says whether the projec
 
 ## Deliver an inter-session message
 
-Coordinate one sender per target. Before writing, inspect the target terminal and stop for an
-unrelated draft, trust/approval dialog or ambiguous input state. `terminal send --enter` separates
-text from Enter with a short pause, but `accepted: true` only confirms transport input, not agent
-submission or receipt. Verify the complete message in `sessions transcript` or the recipient's
-explicit response; a queued message is not yet a receipt.
+Use `terminal deliver` for a message to an agent session. One call waits until the composer is
+empty, writes the text, checks that the composer shows it, presses Enter and checks the submit. It
+answers only when the message is submitted or when it has stopped for a named reason.
+
+```powershell
+node "<skill directory>/scripts/jamat-v3.mjs" terminal deliver --session-id ID --text "Read Q:/.../x.md completely and follow it."
+```
+
+- **Default input is a paste.** The text may have several lines. The agent can show a long paste as
+  a placeholder (Claude `[Pasted text #1 +3 lines]`, Codex `[Pasted Content 1200 chars]`); a new
+  placeholder counts as proof that the text arrived.
+- **Use `--typed` only when the composer must show the literal text**, for example for a slash
+  command. Typed text must be one line of no control characters and at most 800 characters. A paste
+  may carry line breaks and tabs, but no other control character (no ESC).
+- **Success** is `delivered: true` with `proof`: `transcript` (the message is in the transcript),
+  `queued` (the agent queued it behind a running turn), `working` (the agent started a turn) or
+  `echo` (the agent echoed the message). `composeProof` is `text` or `placeholder`.
+  On a busy Codex target the Enter is a steer, not a queue: Codex injects the message into the
+  running turn, and its proof is `transcript`.
+- **Add `--queue` to queue behind a running Codex turn instead of steering it.** On a Codex target
+  that is busy when the composer is ready, the call presses Tab instead of Enter and accepts only
+  `queued` or `transcript` as proof. On Claude, or on an idle Codex, it changes nothing: Enter.
+  `submitKey` in the answer (`enter` or `tab`) says which key was pressed; an older Jamat omits it
+  and pressed Enter.
+- **Refusal** carries `error.data` with `stage`, `reason`, `typed`, `entered`, `hint` and
+  `composer`. `dialog` and `foreign-draft` (exit 4) mean nothing was written: resolve the dialog or
+  the draft, then deliver again. `in-flight` (exit 4) means another delivery to the same session is
+  still running and nothing was written: wait for it, then deliver again if it did not carry yours. `not-ready` (exit 5) means the composer did not become empty within
+  `--ready-timeout-ms`. `text-not-visible`, `draft-remains` and `unproven` (exit 7) mean the text
+  was written: read `sessions transcript` before you do anything else, and never deliver the same
+  text again blindly. `shell-session` (exit 2) means the target is not an agent session.
+- `--ready-timeout-ms` is 1000 to 120000 (default 45000), `--submit-timeout-ms` is 1000 to 60000
+  (default 10000). The CLI waits for the sum plus 10 seconds.
+- `terminal deliver` is local-only and takes no `--computer`. Coordinate one sender per target.
+
+If `terminal deliver` answers `unavailable`, or for a remote target, use the manual procedure with
+`terminal send`. Before writing, inspect the target terminal and stop for an unrelated draft,
+trust/approval dialog or ambiguous input state. `terminal send --enter` separates text from Enter
+with a short pause, but `accepted: true` only confirms transport input, not agent submission or
+receipt. Verify the complete message in `sessions transcript` or the recipient's explicit response;
+a queued message is not yet a receipt.
 
 If the text remains in the composer, do not paste it again. Only when the visible draft is exactly
 the message you own, send one separate carriage return and verify again. For raw two-step delivery,
@@ -111,8 +147,10 @@ repeated blind Enters, submit somebody else's draft, or treat truncated/ambiguou
 
 ## Commands
 
-`<session selector>` means exactly one of `--session-id ID` or `--number NNN|NNN-NNN`. Commands with
-a number may also take `--working-directory PATH` for exact disambiguation.
+`<session selector>` means exactly one of `--session-id ID` or `--number NNN|i34|NNN-NNN|i34-NNN`.
+Commands with a number may also take `--working-directory PATH` for exact disambiguation. A custom
+number is not unique by itself, so two sessions may carry `i34`; that answers `conflict` with the
+candidates listed, exactly as a shared allocated number does.
 
 | Intent | Arguments after the wrapper |
 |---|---|
@@ -120,17 +158,19 @@ a number may also take `--working-directory PATH` for exact disambiguation.
 | Projects | `projects list [--category-id ID] [--sort alpha\|recent]` |
 | Sessions | `sessions list` |
 | Transcript history | `sessions transcript <session selector> [--working-directory PATH]` |
-| Create shell | `sessions create [--directory PATH \| --category-id ID --project-path PATH] [--title TEXT] [--color NAME] [--group NAME] [--open-tab]` |
+| Create shell | `sessions create [--directory PATH \| --category-id ID --project-path PATH] [--title TEXT] [--number LABEL] [--color NAME] [--group ID] [--open-tab]` |
 | Create agent | `sessions create --agent claude\|codex [--mode new\|continue\|resume\|fork] [--native-session-id ID] [--fork-parent-id ID] [--prompt TEXT]` plus directory/title options. `--native-session-id` belongs to `--mode resume`, or to a Claude `new`/`fork`; a Codex `new`/`fork` carrying it is refused as `invalid-spec`. |
 | Worktree session | Add `--worktree SLUG [--base-ref REF]` |
-| Plain tab session | Add `--plain --open-tab` |
 | Reopen/finalize | `sessions reopen\|finalize <session selector> [--working-directory PATH]` |
-| Recolour, refile | `sessions color <session selector> --color NAME`, `sessions group <session selector> --group NAME` |
+| Remove an ended session | `sessions remove <session selector> [--working-directory PATH]` |
+| Recolour, refile | `sessions color <session selector> --color NAME`, `sessions group <session selector> --group ID` |
+| Read, write, clear the note | `sessions note <session selector>` reads; `--note TEXT` writes; `--clear` takes it away |
 | Tabs | `tabs list`, `tabs open <session selector>`, `tabs open-file <session selector> --path PATH`, `tabs focus\|close --panel-id ID` |
 | Review a commit | `commit-svn-jamat` or `commit-git-jamat`, with `--self` or `<session selector>`, optionally `--path PATH` or `--paths-file FILE`, and `--message TEXT` or `--message-file FILE` |
 | Commit result | `commit status --commit-session-id UUID [--wait] [--timeout-ms N]` |
 | Cancel a commit review | `commit cancel --commit-session-id UUID` |
 | Read terminal | `terminal peek <session selector> [--working-directory PATH] [--cols N --rows N] [--timeout-ms N]` |
+| Deliver a message | `terminal deliver <session selector> [--working-directory PATH] --text TEXT [--typed] [--queue] [--ready-timeout-ms N] [--submit-timeout-ms N]` |
 | Write terminal | `terminal send <session selector> [--working-directory PATH] --text TEXT [--enter] [--timeout-ms N]` |
 | Watch changes | `events watch [--after-revision N]` until interrupted |
 | Remote computers | `remote computers list` |
@@ -139,12 +179,28 @@ a number may also take `--working-directory PATH` for exact disambiguation.
 
 Add `--computer <profileId|remoteComputerId|remoteEndpointId|displayName>` only to `status`,
 `projects list`, `sessions list|create|reopen|finalize|color|group`, or `terminal peek|send`. Prefer the exact
-endpoint ID. Remote session creation does not accept `--open-tab` or `--plain`; tabs, events, and
-transcript are local-only. The local controller and the selected remote endpoint must be running.
+endpoint ID. Remote session creation does not accept `--open-tab`; tabs, events, and transcript
+are local-only. The local controller and the selected remote endpoint must be running.
 
 Mutations accept `--operation-id ID`; the CLI generates one when omitted and returns it. Session
-creation also accepts `--flow-id ID`, `--acknowledge-setup HASH`, `--open-tab`, and `--plain`.
-`--plain` requires `--open-tab` because no other surface draws a plain session.
+creation also accepts `--flow-id ID`, `--acknowledge-setup HASH` and `--open-tab`.
+
+### The session note
+
+`sessions note` is the one session field with a read of its own, because it is the field automation
+writes in order to be read back - by the person hovering the row in the tree, and by the next pass
+of the same automation. All three forms answer `{ "sessionId", "note" }` with the note the record
+HOLDS: it is trimmed, and a note of nothing is no note, so a write of spaces answers `null`.
+
+```bash
+node <wrapper> sessions note --number 014
+node <wrapper> sessions note --number 014 --note "Waiting for the SVN review of r4599."
+node <wrapper> sessions note --number 014 --clear
+```
+
+**Keep it to two sentences at most.** The note is read in a tooltip beside a row, so it says what
+the session is waiting for, what blocks it, or what it needs next - never what it has already done.
+A session that is simply working needs no note.
 
 `--title` is the session's NAME, not its whole title. A session created in a catalog project is
 numbered by the computer that keeps that project's count: the number is prefixed as `NNN - `, and
@@ -153,17 +209,45 @@ that is the number `--number` then selects it by. A title that already begins wi
 has not is refused as `operation-failed` with the source code `invalid-spec`, because everything
 reading the record would count it as a number the project spent. `--title "2026 plan"` is the shape
 that fails: three or more leading digits are a number to every reader, and such a title left the
-project counting on from 2026. A plain tab is not numbered until it is promoted in the UI.
+project counting on from 2026.
 
-`--group NAME` files the session in a section of the sessions tree at birth, as if a person had
-chosen it in the Groups submenu. The names are `pinned`, `priority`, `none`, `automation`, `waiting`,
-`blocked`; any other name is refused as `invalid-request`. Use `automation` for work you start on
-somebody's behalf: it is the section directly under Sessions, above Waiting and Blocked, and it keeps
-a wave of agent-started sessions out of the list a person reads as their own. The group is written on
-the computer that RUNS the session, so with `--computer` it appears in that computer's tree. The
-create value carries `groupAssign`: `null` when no group was asked for, otherwise an `ok` step, or a
-failure of that step alone inside a create that succeeded. Do not send it with `--computer` to a
-machine whose build predates the option, which refuses the whole create.
+`--number LABEL` on a create gives the session a number of your own INSTEAD of the counter's: use it
+when the number means something outside Jamat, such as `--number i34` for issue 34. The shape is one
+to three letters then up to six digits, and the letters are the whole mechanism - they make the token
+unreadable as a count, so the project's own numbering is untouched and the next session there is
+still the number it would have been. Because nothing is spent, it applies to `--directory` too, and
+a fork of such a session becomes `i34-NNN`, where only the right half is a number the project gave
+out.
+
+Digits alone are refused: `--number 014` answers `invalid-request` before any discovery, because an
+allocated number is the answering computer's to hand out. Claim one through `--title "014 - name"`
+instead, and only when that project has already reached it. `--number` and a `--title` that already
+begins with a number are refused together - one create, one number.
+
+A name that would read back as a number is refused for the same reason it always was, and the custom
+shape widens what that catches: `--title "x64 build"` is now refused because `x64` reads as a number.
+Put a word in front of it, or make it the number: `--number x64 --title "build"`.
+
+Two sessions may carry the same custom number - nothing hands a ticket out once - so a selector that
+matches both answers `conflict` with the candidates. Add `--working-directory PATH` to pick one.
+
+`--group ID` files the session in a section of the sessions tree at birth, as if a person had chosen
+it in the Groups submenu.
+
+**The sections are a list the person at that computer edits**, in Settings under Session groups, so
+there is no fixed set of names to choose from. A fresh install has `pinned`, `priority`, `none`,
+`automation`, `waiting`, `completed` and `blocked`. An id must be lowercase letters, digits and
+single hyphens; anything else is refused before the request is sent. An id the target has no section
+for is refused as `invalid-request` by the target, and the message lists the sections it does have -
+read it rather than guessing again.
+
+Use `automation` for work you start on somebody's behalf: on a default install it is the section
+directly under Sessions and it keeps a wave of agent-started sessions out of the list a person reads
+as their own. The group is written on the computer that RUNS the session, so with `--computer` it
+appears in that computer's tree and is proved against ITS sections. The create value carries
+`groupAssign`: `null` when no group was asked for, otherwise an `ok` step, or a failure of that step
+alone inside a create that succeeded. Do not send it with `--computer` to a machine whose build
+predates the option, which refuses the whole create.
 
 `--color NAME` paints the session at birth, so it is never drawn uncoloured first. The names are
 `red`, `orange`, `amber`, `green`, `teal`, `cyan`, `sky`, `blue`, `indigo`, `violet`, `magenta`,
@@ -171,6 +255,11 @@ machine whose build predates the option, which refuses the whole create.
 by hand: an agent creating sessions for somebody else's backlog gives every one of them the same
 colour, so the tree tells automatic work from a person's own without reading titles. Do not send it
 with `--computer` to a machine whose build predates the option, which refuses the whole create.
+
+`sessions remove` deletes an ended session from the list, as the tree's Remove does. It never stops
+anything: a live session answers `conflict` (exit 4) with `data.sourceCode: 'live-refused'`, so stop
+or finalize it first. A worktree and its branch stay on disk. It is local-only (no `--computer`), and
+an older Jamat answers `unavailable` (exit 6).
 
 `sessions color` and `sessions group` say those same two things about a session that already exists.
 Each NAMES the value rather than toggling it, so sending one twice changes nothing, and each requires
@@ -180,6 +269,10 @@ work and now needs a person belongs in `waiting`, painted to match - because a r
 what the session was born as says the wrong thing about it. Both are mutations and accept
 `--operation-id`. Over `--computer` the write lands on the computer that RUNS the session, and a
 machine whose build predates them refuses the request; nothing is half applied.
+
+`sessions group` is refused the same way `--group` is: an id the target has no section for comes
+back as `invalid-request` naming the sections it has. A person may have renamed or removed the one
+you were using, so read the refusal instead of retrying the same id.
 
 ## Commit through Jamat
 
@@ -289,13 +382,18 @@ a completed commit.
 
 ## Read results
 
+`sessions list` includes `group` on every session: the effective group id accepted by
+`sessions group --group`, or `null` for None. Session assignments override project assignments,
+which override category/root assignments. With `--computer`, this is the target computer's group.
+Older controllers omit the field; treat omission as unknown, not as None. Consumers may ignore
+the added field. There is no separate single-session details command.
+
 Every non-watch invocation writes exactly one JSON envelope. Check `ok` before using `value`.
 `events watch` writes one versioned response or event per line. A subscribe response with
 `truncated: true` requires fresh session and tab lists.
 
-A `sessions create --open-tab` value contains `session`, `tabOpen`, `plainCleanup`, and
-`groupAssign`. `plainCleanup` is non-null only when a plain session's tab failed and the invisible
-session was discarded again.
+A `sessions create --open-tab` value contains `session`, `tabOpen` and `groupAssign`. A tab that
+fails to open leaves the session where it is: its row in the tree is what draws it.
 
 Exit codes are `0` success, `2` invalid request, `3` not found, `4` conflict, `5` timeout,
 `6` unavailable, `7` operation failed/incompatible/forbidden, and `141` closed stdout pipe. Any

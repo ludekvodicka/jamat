@@ -6,7 +6,6 @@ import {
   useEffect,
   useRef,
   useState,
-  useSyncExternalStore,
 } from 'react'
 
 import type {
@@ -25,7 +24,6 @@ import { AppClientUiReport } from '../../shared/appClientUiReport'
 import {
   AppCommands,
   type CommandId,
-  type LauncherKeyPreference,
   type NewSessionPlace,
 } from '../../shared/commands'
 import type { SidebarSide, SidebarsStateValue } from '../../shared/sidebarsState'
@@ -39,8 +37,6 @@ import { ContextCompactionController } from '../contextCompaction/contextCompact
 import { SessionCompact } from '../contextCompaction/sessionCompact'
 import { PanelFileToolsRegistry } from '../fileViewer/panelFileToolsRegistry'
 import { SnapshotStore } from '../ipc/snapshotStore'
-import { PerfStore } from '../perf/perfStore'
-import { KeyboardSettingsStore } from '../keyboardSettings/keyboardSettingsStore'
 import { ConfigurationOverlay } from '../overlays/configuration/configurationOverlay'
 import type {
   ConfigurationOpenRequest,
@@ -64,13 +60,11 @@ import { TerminalPanel } from '../panels/terminal/terminalPanel'
 import { WelcomePanel } from '../panels/welcomePanel'
 import { SessionOperations } from './sessionOperations'
 import { WorkspacePanels } from './workspacePanels'
-import { TabClosePolicy } from './tabClosePolicy'
 import { WorkspaceChannels } from './workspaceChannels'
 import { SessionsMarksStore } from '../sessions/sessionsMarksStore'
 import { useSessionModel } from '../statusBar/sessionModelItem'
 import { type SessionModelPorts, SessionModelStore } from '../sessionModel/sessionModelStore'
 import { AppShellItems } from '../statusBar/appShellItems'
-import { usePerfReading } from '../statusBar/perfStatusItem'
 import { useCurrentProject } from '../statusBar/currentProjectItem'
 import { StatusBar } from '../statusBar/statusBar'
 import { ActiveAgentTerminals, useActiveAgentTerminal } from '../statusBar/useActiveAgentTerminal'
@@ -155,7 +149,6 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
     wiring.activeTerminal, wiring.sessionsSnapshot, wiring.remoteSnapshot,
   )
   const sessionModel = useSessionModel(wiring.sessionModel, focus)
-  const perfReading = usePerfReading(wiring.perf)
 
   // Started here rather than in the main shell: a holder window draws session tabs too, and each
   // document has one reader of its own.
@@ -178,7 +171,6 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
   // Beside it for the same reason: the bar of every workspace draws the rate limits, and one
   // document has one reader of them.
   useEffect(() => wiring.rateSnapshot.start(), [wiring])
-  useEffect(() => wiring.perf.start(), [wiring])
   // The model poll is armed once per document and re-keyed whenever the tab in front changes; with
   // nothing in front it holds its timer down, so a window looking at a file asks nobody anything.
   useEffect(() => wiring.sessionModel.start(), [wiring])
@@ -396,7 +388,6 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
           sessionModel,
           compact: wiring.contextCompact,
           rate: { ports: wiring.ratePorts, store: wiring.rateSnapshot },
-          perf: perfReading,
         })}
       />
       {launcherOpen && (
@@ -450,22 +441,13 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
   )
 }
 
-/**
- * The sidebar's own launcher button. It is a component rather than the element the wiring used to
- * build once, for one reason: the key it names can be swapped in the settings of another window,
- * and a title built at wiring time would go on naming the key it was born with.
- */
+/** The sidebar's own launcher button, naming the key that does the same thing. */
 function NewSessionAction(props: { onClick: () => void }): React.JSX.Element {
-  const launcherKeys = useSyncExternalStore(
-    KeyboardSettingsStore.subscribe,
-    KeyboardSettingsStore.current,
-    KeyboardSettingsStore.current,
-  )
   return (
     <button
       className="jamat-sidebar__action"
       type="button"
-      title={AppShellComposition.hintOf('session.new', launcherKeys)}
+      title={AppShellComposition.hintOf('session.new')}
       onClick={props.onClick}
     >
       New session
@@ -592,10 +574,6 @@ class AppShellComposition {
       subscribe: (onChanged) => window.appClient.onCommitChanged(onChanged), reportError: AppClientUiReport.error })
     const ratePorts = AppShellComposition.ratePorts()
     const rateSnapshot = new SnapshotStore<RateMonitorSnapshot>('The rate limits', ratePorts)
-    const perf = new PerfStore({
-      sample: () => window.appClient.perf.sample(),
-      reportError: (message) => AppClientUiReport.error(message),
-    })
     const activeTerminal = new ActiveTerminalStore()
     const sessionModel = new SessionModelStore(AppShellComposition.sessionModelPorts())
     const agentSettings = new AgentSettingsStore({
@@ -619,6 +597,7 @@ class AppShellComposition {
       claimAutomatic: (sessionId) => window.appClient.contextCompaction.claimAutomatic(sessionId),
       noteManual: (sessionId) => window.appClient.contextCompaction.noteManual(sessionId),
       cooldown: (sessionId) => window.appClient.contextCompaction.cooldown(sessionId),
+      deliver: (sessionId) => window.appClient.contextCompaction.deliver(sessionId),
       reportError: (message) => AppClientUiReport.error(message),
     })
     const contextCompaction = new ContextCompactionController(
@@ -722,7 +701,6 @@ class AppShellComposition {
       transferAbort: (token) => WorkspaceChannels.transferAbort(token),
       movePanel: (panel, target) => WorkspaceChannels.movePanel(panel, target),
       reportError: (message) => AppClientUiReport.error(`${message}`),
-      onWillUserClose: (key, params) => TabClosePolicy.mayClose(key, params),
     })
     return {
       panels,
@@ -735,7 +713,6 @@ class AppShellComposition {
       commitOpen,
       ratePorts,
       rateSnapshot,
-      perf,
       activeTerminal,
       sessionModel,
       agentSettings,
@@ -791,6 +768,7 @@ class AppShellComposition {
       saveView: (view) => window.appClient.state.saveSessionsView(view),
       loadFilters: () => window.appClient.state.loadSessionFilters(),
       saveFilters: (filters) => window.appClient.state.saveSessionFilters(filters),
+      loadGroupDefinitions: () => window.appClient.sessionGroups.getGroups(),
       loadGroups: () => window.appClient.state.loadSessionGroups(),
       assignGroup: (key, group) => window.appClient.state.assignSessionGroup(key, group),
       subscribeGroups: (onChanged) => window.appClient.onSessionGroupsChanged(onChanged),
@@ -845,19 +823,12 @@ class AppShellComposition {
     }
   }
 
-  /**
-   * What a button says when the pointer rests on it: what it does, and the key that does it too.
-   *
-   * The key comes through the preference rather than off the descriptor, because the two launcher
-   * commands can be swapped and a tooltip naming the key the menu no longer registers is worse than
-   * no tooltip at all.
-   */
-  static hintOf(id: CommandId, launcherKeys: LauncherKeyPreference): string {
+  /** What a button says when the pointer rests on it: what it does, and the key that does it too. */
+  static hintOf(id: CommandId): string {
     const command = AppCommands.byId(id)
-    const accelerator = AppCommands.acceleratorOf(command, launcherKeys)
-    if (accelerator === undefined)
+    if (command.accelerator === undefined)
       return command.title
-    return `${command.title} (${accelerator})`
+    return `${command.title} (${command.accelerator})`
   }
 
   /**
@@ -1027,16 +998,11 @@ class AppShellComposition {
         throw new Error('A holder shell received a sidebar command target')
     } else
       throw new Error(`Unknown workspace role: ${JSON.stringify(role)}`)
-    commands.register('tab.new', () =>
-      AppShellComposition.launch(intents, launcherCommands, { purpose: 'tabProfile' }))
     // The same launcher again, asking which computer first. The tree's action on a connected one
     // writes the same intent with that answer already in it.
     commands.register('session.newRemote', () =>
       AppShellComposition.launch(intents, launcherCommands, { purpose: 'remote' }))
     commands.register('debug.newProbe', () => WorkspacePanels.openProbe(controller))
-    commands.register('tab.promote', (arg) =>
-      WorkspacePanels.started('tab.promote',
-        WorkspacePanels.promoteTab(controller, arg?.sessionId ?? null)))
     // The menu named no panel: it made its tab active before opening, so the active one IS the one
     // the item was clicked on.
     commands.register('tab.keepOpen', () => {

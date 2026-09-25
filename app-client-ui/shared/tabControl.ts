@@ -8,7 +8,6 @@ export type TabControlCommand =
       requestId: string
       sessionId: string
       tabTitle: string
-      plain: boolean
       activate?: boolean
     }
   | {

@@ -16,4 +16,8 @@ export class AppClientUiReport {
   static error(message: string): void {
     console.error(`${AppClientUiReport.prefixConst} ${message}`)
   }
+
+  static warning(message: string): void {
+    console.warn(`${AppClientUiReport.prefixConst} ${message}`)
+  }
 }

@@ -75,6 +75,7 @@ import type {
   SessionWorktreeInfo,
   TerminalAttachResult,
   TerminalAttachSpec,
+  TerminalComposerResult,
 } from './sessionManagerApi.types'
 import { SessionReference } from './sessionReference'
 import { SessionWorkingDirectory } from './sessionWorkingDirectory'
@@ -86,6 +87,8 @@ import {
   type TerminalResizeResult,
 } from './terminals/terminalGateway'
 import { VcsFactsCache } from './vcsFacts/vcsFactsCache'
+import { AgentComposerReader } from './workState/agentComposerReader'
+import { ScreenTail } from './workState/screenTail'
 import { WorkStateMonitor } from './workState/workStateMonitor'
 
 export interface SessionManagerDeps {
@@ -747,18 +750,6 @@ export class SessionManager {
     return this.operate((lifecycle) => lifecycle.remove(sessionId))
   }
 
-  /** Closing a plain tab: the one close that ends what is behind it. */
-  async discardPlainSession(sessionId: string): Promise<SessionsOpResult> {
-    return this.operate((lifecycle) => lifecycle.discardPlain(sessionId))
-  }
-
-  /** Answers with the name the tab takes once it is a session of the tree: the number is new. */
-  async promotePlainSession(sessionId: string): Promise<SessionsOpResult<{ tabTitle: string }>> {
-    const promoted = await this.operate((lifecycle) => lifecycle.promotePlain(sessionId))
-    if (!promoted.ok) return promoted
-    return { ok: true, value: { tabTitle: this.tabTitleFor(sessionId) } }
-  }
-
   /**
    * Paint a session, or take its colour away with `null`.
    *
@@ -944,18 +935,35 @@ export class SessionManager {
   }
 
   /**
+   * What one agent session's input box holds right now, with the work hint beside it, read from the
+   * same `runtime.inspect` projection the work-state monitor classifies. One Host call, no attach.
+   * Not on the operation queue, for the reason `terminalAttach` is not: it reads nothing the queue
+   * protects, and a delivery polling it must not wait behind a worktree install.
+   */
+  async terminalComposer(sessionId: string): Promise<TerminalComposerResult> {
+    const resolution = this.terminalRefOf(sessionId)
+    if (!resolution.ok) return { ok: false, code: resolution.code }
+    const agentId = this.agentOf(sessionId)
+    if (agentId === null) return { ok: false, code: 'not-agent' }
+    const inspected = await this.client.runtimeInspect(resolution.ref, ScreenTail.viewConst)
+    if (!inspected.ok || inspected.value.projection === null) return { ok: false, code: 'no-projection' }
+    const frame = ScreenTail.frameOf(inspected.value.projection)
+    return {
+      ok: true,
+      reading: {
+        agentId,
+        alive: inspected.value.session.alive,
+        hint: WorkStateMonitor.inspect(agentId, frame).hint,
+        ...AgentComposerReader.read(agentId, frame),
+      },
+    }
+  }
+
+  /**
    * Everything this subsystem is holding about the Host, for the one surface built to look at it.
    * Composed out of state that is already here: no I/O, no timer of its own, so the freshness of
    * these facts is the freshness of the single cadence above - which is itself one of the facts.
    */
-  /**
-   * The slowest Host call since the last ask, for whoever draws how fast this client is answering.
-   * It is the manager's to hand out because the manager owns the one Host client in this process.
-   */
-  sampleSlowestHostCallMs(): number | null {
-    return this.client.sampleSlowestCallMs()
-  }
-
   debugStatus(): HostDebugStatus {
     const descriptor = this.client.descriptor()
     const client = this.client.debugView()
@@ -1457,7 +1465,6 @@ export class SessionManager {
         reason: record.launchWait.reason,
         attempts: record.launchWait.attempts,
       }
-    if (record.presentation !== undefined) info.presentation = record.presentation
     if (record.completed !== undefined) info.completed = record.completed
     // Derived here rather than drawn from the exit code by whoever shows the row: what a kill code
     // means is this library's to say, and a surface that re-read the number would say it differently.

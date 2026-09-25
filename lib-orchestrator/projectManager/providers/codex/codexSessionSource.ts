@@ -65,7 +65,7 @@ export class CodexSessionSource implements ProviderSessionSource {
         agentId: this.agentId,
         nativeSessionId: ref.sessionId,
         title: await this.threadNames.titleOf(ref.sessionId),
-        firstUserMessage: await CodexSessionSource.firstUserMessage(ref.file),
+        firstUserMessage: await CodexSessionSource.firstUserMessageOf(ref.file),
         createdAt: ref.createdAt,
         lastActivity,
         // Codex tracks no pid, so a rollout on disk says nothing about a running session.
@@ -94,7 +94,11 @@ export class CodexSessionSource implements ProviderSessionSource {
     catch { return null }
   }
 
-  private static async firstUserMessage(file: string): Promise<string | null> {
+  /**
+   * The rollout's first user message, whitespace collapsed and cut to the preview length; null when
+   * none was written yet. Also what names a Codex session by the prompt it was launched with.
+   */
+  static async firstUserMessageOf(file: string): Promise<string | null> {
     let head: string
     try { head = await CodexRolloutIndex.readPrefix(file, CodexSessionSource.previewReadBytesConst) }
     catch {

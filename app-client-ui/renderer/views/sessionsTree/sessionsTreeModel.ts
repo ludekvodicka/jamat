@@ -55,8 +55,6 @@ export interface SessionBadges {
    * an unmeasured directory draws nothing rather than claiming to be clean.
    */
   vcs: FileChangesVcsId | null
-  /** Drawn only where a tree carries tabs, and there a row's kind is the thing to tell apart. */
-  plainTab: boolean
   completed: boolean
   /**
    * Whether this session has a terminal tab open in any workspace window. It is already what keeps
@@ -149,19 +147,12 @@ export type TreeNode = { group: SessionGroup } & (
     }
 )
 
-/**
- * Which rows this tree is built out of. It is an argument rather than a stored choice: the panel
- * draws either one tree of both kinds or two trees of one kind each, so what a tree contains is a
- * property of that build and not a state anything switches.
- */
-export type TreeContent = 'sessions' | 'tabs' | 'both'
 export type TreeStateGroup = 'attention' | 'unread' | 'running' | 'read'
 
 export interface TreeViewState {
   assignments?: ReadonlyMap<string, SessionGroup>
   group?: SessionGroup
   filters: SessionsFilterValue
-  content: TreeContent
   filterText: string
   stateGroup?: TreeStateGroup
   /**
@@ -237,8 +228,6 @@ export class SessionsTreeModel {
     { key: 'running', title: 'Running' },
     { key: 'read', title: 'Read' },
   ] as const satisfies readonly { key: TreeStateGroup; title: string }[]
-  private static readonly adHocRootConst = 'root:adhoc'
-  private static readonly noProjectRootConst = 'root:none'
   /**
    * A tree that was never built, for a section nothing can be in. Shared rather than made per call:
    * it holds no node, so nothing about it can differ between two of them.
@@ -307,7 +296,6 @@ export class SessionsTreeModel {
         : null,
       vcs: info.vcs?.dirty === true ? info.vcs.vcsId : null,
       attention: marks.has(targetKey),
-      plainTab: info.presentation === 'tab',
       completed: info.completed === true,
       tabbed: tabbed.has(targetKey),
     }
@@ -316,14 +304,7 @@ export class SessionsTreeModel {
       info.agent?.agentId ?? '',
       SessionsTreeModel.projectTextOf(info.project),
     ].join(' ').toLowerCase()
-    const group = SessionsTreeModel.groupOf(info.project)
-    const groupKeys = [
-      SessionsGroupsState.sessionKeyOf(target),
-      ...(group.path === null ? [] : [SessionsTreeModel.namespaced(
-        SessionsTreeModel.projectIdOf(group.rootId, group.path), options,
-      )]),
-      SessionsTreeModel.namespaced(group.rootId, options),
-    ]
+    const groupKeys = SessionsGroupsState.keysOf(target, info.project, options.namespace)
     return { info, badges, searchText, targetKey, group: SessionsGroupsState.groupOf(groupKeys, assignments) }
   }
 
@@ -333,32 +314,12 @@ export class SessionsTreeModel {
     else throw new Error(`Unknown tree node: ${JSON.stringify(node)}`)
   }
 
-  private static groupOf(binding: ProjectBinding): { rootId: string; path: string | null } {
-    if (binding.kind === 'project') return { rootId: `category:${binding.categoryId}`, path: binding.projectPath }
-    else if (binding.kind === 'adHoc') return { rootId: SessionsTreeModel.adHocRootConst, path: binding.path }
-    else if (binding.kind === 'none') return { rootId: SessionsTreeModel.noProjectRootConst, path: null }
-    else throw new Error(`Unknown project binding: ${JSON.stringify(binding)}`)
-  }
-
-  private static projectIdOf(rootId: string, path: string): string {
-    return `project:${rootId}/${PathText.comparable(path)}`
-  }
-
   private static namespaced(id: string, options: SessionsTreeBuildOptions): string {
     return options.namespace.length === 0 ? id : `${options.namespace}/${id}`
   }
 
-  private static inContent(entry: SessionEntry, content: TreeContent): boolean {
-    if (content === 'sessions') return !entry.badges.plainTab
-    else if (content === 'tabs') return entry.badges.plainTab
-    else if (content === 'both') return true
-    else
-      throw new Error(`Unknown tree content: ${JSON.stringify(content)}`)
-  }
-
   private static matches(entry: SessionEntry, view: TreeViewState): boolean {
     if (view.group !== undefined && entry.group !== view.group) return false
-    if (!SessionsTreeModel.inContent(entry, view.content)) return false
     if (view.stateGroup !== undefined && SessionsTreeModel.stateGroupOf(entry) !== view.stateGroup) return false
     const text = view.filterText.trim().toLowerCase()
     if (text.length > 0 && !entry.searchText.includes(text))
@@ -463,7 +424,7 @@ export class SessionsTreeModel {
 
     for (const entry of roots) {
       const binding = entry.info.project
-      const group = SessionsTreeModel.groupOf(binding)
+      const group = SessionsGroupsState.projectGroupOf(binding)
       if (binding.kind === 'project')
         SessionsTreeModel.push(
           SessionsTreeModel.categoryOf(categories, binding.categoryId, snapshot).projects,
@@ -496,14 +457,14 @@ export class SessionsTreeModel {
       ))
     if (adHoc.size > 0)
       nodes.push(SessionsTreeModel.categoryNode(
-        SessionsTreeModel.adHocRootConst,
+        SessionsGroupsState.adHocRootConst,
         'AD-HOC',
         null,
         SessionsTreeModel.projectNodes(adHoc, installs, options),
       ))
     if (loose.length > 0)
       nodes.push(SessionsTreeModel.categoryNode(
-        SessionsTreeModel.noProjectRootConst,
+        SessionsGroupsState.noProjectRootConst,
         'NO PROJECT',
         null,
         SessionsTreeModel.sessionNodes(loose, installs, options),
@@ -540,7 +501,7 @@ export class SessionsTreeModel {
       found.entries.push(entry)
       return
     }
-    projects.set(key, { ...seed, id: SessionsTreeModel.projectIdOf(rootId, seed.path), entries: [entry] })
+    projects.set(key, { ...seed, id: SessionsGroupsState.projectKeyOf(rootId, seed.path), entries: [entry] })
   }
 
   /**

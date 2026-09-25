@@ -20,7 +20,6 @@ export type CommandId =
   | 'window.settings'
   | 'debug.open'
   | 'debug.newProbe'
-  | 'tab.new'
   | 'session.details'
   | 'session.setColor'
   | 'session.newHere'
@@ -39,7 +38,6 @@ export type CommandId =
   | 'project.openFolder'
   | 'project.copyFolderPath'
   | 'project.worktreeSetup'
-  | 'tab.promote'
   | 'tab.keepOpen'
   | 'tab.close'
   | 'tab.closeOthers'
@@ -122,7 +120,6 @@ export interface CommandArgById {
   'project.copyFolderPath': { path: string }
   /** The whole project, because the settings card names it as well as reads its file. */
   'project.worktreeSetup': { project: Extract<ProjectBinding, { kind: 'project' }> }
-  'tab.promote': { sessionId?: string } | undefined
 }
 
 export type CommandArgOf<K extends CommandId> =
@@ -142,18 +139,6 @@ export type ValueCarryingCommandId = {
 
 /** Everything else: meaningful with no argument, which is all the native menu can ever send. */
 export type BareCommandId = Exclude<CommandId, ValueCarryingCommandId>
-
-/**
- * Which of the two launcher cards the more reachable key opens. `session-first` is what the catalog
- * declares - Ctrl+T opens New Session and Ctrl+Shift+T opens New Tab - and `tab-first` is the two of
- * them the other way round.
- *
- * It exists because two people share this application and want opposite answers, which is the one
- * thing a fixed decision cannot give either of them. It is deliberately not a key editor: a pair of
- * fixed keys that can be swapped keeps every rule the catalog holds about keys true under both
- * values, and a free remap would not.
- */
-export type LauncherKeyPreference = 'session-first' | 'tab-first'
 
 export interface CommandDescriptor {
   id: CommandId
@@ -302,19 +287,6 @@ export class AppCommands {
       accelerator: 'Ctrl+Q',
       terminalSafe: true,
       role: 'quit',
-    },
-    // The other half of the swappable pair. Ctrl+Shift+T shadows nothing a terminal answers: xterm
-    // encodes no `Ctrl+Shift+<letter>`, which is the same ground Ctrl+Shift+D and Ctrl+Shift+I
-    // already stand on.
-    {
-      id: 'tab.new',
-      title: 'New Tab',
-      target: 'renderer',
-      windowScope: 'any',
-      menu: { section: 'tab', group: 0 },
-      surfaces: ['menu'],
-      accelerator: 'Ctrl+Shift+T',
-      terminalSafe: true,
     },
     /*
      * The session block of the tab menu and of the sessions tree's menu. Every one of these acts on
@@ -532,18 +504,6 @@ export class AppCommands {
       surfaces: ['sessionsTreeGroup'],
       contextMenuGroup: 3,
       carriesValue: true,
-      terminalSafe: true,
-    },
-    // Only ever FOR a plain tab - on its own tab, and on its tree row - which is why both menus
-    // filter on what the tab or row is rather than the catalog: a session of the tree has nothing
-    // to be promoted into.
-    {
-      id: 'tab.promote',
-      title: 'Keep as a session',
-      target: 'renderer',
-      windowScope: 'any',
-      surfaces: ['contextMenu', 'sessionsTree'],
-      contextMenuGroup: 4,
       terminalSafe: true,
     },
     // Only ever for the ONE provisional tab, so the tab menu filters on what that tab is. It says
@@ -828,44 +788,6 @@ export class AppCommands {
 
   static all(): readonly CommandDescriptor[] {
     return AppCommands.catalogConst
-  }
-
-  /** What the catalog declares, and therefore what a surface shows when nobody has said otherwise. */
-  static readonly launcherKeyDefaultConst: LauncherKeyPreference = 'session-first'
-
-  /**
-   * The two launcher commands, as a pair rather than as two ids spelled out by every consumer.
-   * `swappedConst` is the whole of what the preference does, which is why it lives beside the
-   * catalog that declares both keys.
-   */
-  private static readonly launcherPairConst = {
-    'session.new': 'tab.new',
-    'tab.new': 'session.new',
-  } as const satisfies Partial<Record<CommandId, CommandId>>
-
-  /**
-   * The accelerator a menu item registers and a tooltip prints, given the preference.
-   *
-   * It is a SWAP and never a remap, which is the property everything else depends on: the same two
-   * keys are claimed under either value, so the reserved-key rule, the one-command-per-accelerator
-   * rule and `TerminalKeyGate`'s map are unchanged by it and read the catalog directly. What moves
-   * is only which of the two cards a key opens.
-   */
-  static acceleratorOf(
-    descriptor: CommandDescriptor,
-    preference: LauncherKeyPreference = AppCommands.launcherKeyDefaultConst,
-  ): string | undefined {
-    if (preference === 'session-first') return descriptor.accelerator
-    else if (preference === 'tab-first') {
-      const partner = AppCommands.launcherPairConst[
-        descriptor.id as keyof typeof AppCommands.launcherPairConst
-      ]
-      return partner === undefined
-        ? descriptor.accelerator
-        : AppCommands.byId(partner).accelerator
-    }
-    else
-      throw new Error(`Unknown launcher key preference: ${JSON.stringify(preference)}`)
   }
 
   /**

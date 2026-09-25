@@ -7,7 +7,6 @@ import { SessionsFixtures } from '../../sessions/fixtures/sessionsFixtures'
 import {
   SessionsTreeModel,
   type SessionsTreeBuildOptions,
-  type TreeContent,
   type TreeNode,
   type TreeResult,
   type TreeViewState,
@@ -24,7 +23,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
   /** The moment every build happens at unless a test names another one. */
   const nowConst = 1_754_400_000_000
   const hourConst = 60 * 60 * 1_000
-  const all: ViewUnderTest = { filters: SessionsFilterState.allConst, content: 'sessions', filterText: '' }
+  const all: ViewUnderTest = { filters: SessionsFilterState.allConst, filterText: '' }
 
   function build(
     snapshot: SessionsSnapshot,
@@ -95,7 +94,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
       const assignments = new Map<string, SessionGroup>([[key, 'pinned']])
       const next = { ...snapshot, sessions: [...snapshot.sessions,
         { ...snapshot.sessions.find((session) => session.sessionId === 's-working')!, sessionId: 'new' }] }
-      const pinned = build(next, { ...all, content: 'both', assignments, group: 'pinned' })
+      const pinned = build(next, { ...all, assignments, group: 'pinned' })
       expect(everyId(pinned.nodes)).toContain('session:new')
       expect(everyId(pinned.nodes)).toContain('session:s-tab')
       expect(pinned.nodes.map((node) => node.id)).toEqual(['category:nodejs'])
@@ -372,7 +371,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
    * are marked finished, and a session still running that somebody marked finished is gone from it.
    */
   it('keeps everything unfinished in active, whatever its life, and only that', () => {
-    const active = build(SessionsFixtures.mixed(), { filters: { ...SessionsFilterState.allConst, states: ['active'] }, content: 'sessions', filterText: '' })
+    const active = build(SessionsFixtures.mixed(), { filters: { ...SessionsFilterState.allConst, states: ['active'] }, filterText: '' })
 
     expect(everyId(active.nodes)).toContain('session:s-ended')
     expect(everyId(active.nodes)).toContain('session:s-lost')
@@ -388,17 +387,17 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
    */
   it('keeps a session with an open tab whatever the state filter says, and only against that filter', () => {
     const activeOnly = { ...SessionsFilterState.allConst, states: ['active'] as const }
-    const hidden = build(SessionsFixtures.mixed(), { filters: activeOnly, content: 'sessions', filterText: '' })
+    const hidden = build(SessionsFixtures.mixed(), { filters: activeOnly, filterText: '' })
     expect(everyId(hidden.nodes)).not.toContain('session:s-done')
 
     // A local row is keyed by its session id, which is what the panel index reports for an open tab.
     const shown = build(SessionsFixtures.mixed(),
-      { filters: activeOnly, content: 'sessions', filterText: '', tabbed: new Set(['s-done']) })
+      { filters: activeOnly, filterText: '', tabbed: new Set(['s-done']) })
     expect(everyId(shown.nodes)).toContain('session:s-done')
 
     // Narrowing by text is the person asking to see less, and an open tab does not overrule it.
     const searched = build(SessionsFixtures.mixed(),
-      { filters: activeOnly, content: 'sessions', filterText: 'zzz-matches-nothing', tabbed: new Set(['s-done']) })
+      { filters: activeOnly, filterText: 'zzz-matches-nothing', tabbed: new Set(['s-done']) })
     expect(everyId(searched.nodes)).not.toContain('session:s-done')
   })
 
@@ -444,62 +443,39 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
     expect(remote.actions).not.toContain('remove')
   })
 
-  it('shows plain tabs only in a tree whose content asks for them', () => {
-    const sessions = build(SessionsFixtures.mixed(), { filters: SessionsFilterState.allConst, content: 'sessions', filterText: '' })
-    const tabs = build(SessionsFixtures.mixed(), { filters: SessionsFilterState.allConst, content: 'tabs', filterText: '' })
-    const both = build(SessionsFixtures.mixed(), { filters: SessionsFilterState.allConst, content: 'both', filterText: '' })
-
-    // Not even under `all`: the content picks the set, and the mode filters inside it.
-    expect(everyId(sessions.nodes)).not.toContain('session:s-tab')
-    expect(everyId(tabs.nodes).filter((id) => id.startsWith('session:'))).toEqual(['session:s-tab'])
-    expect(everyId(both.nodes)).toContain('session:s-tab')
-    expect(everyId(both.nodes)).toContain('session:s-working')
-  })
-
-  /** The one filter path, read three times: what a mode hides cannot depend on which tree asked. */
-  it('applies the filter mode the same way whatever the tree contains', () => {
-    const contents: readonly TreeContent[] = ['sessions', 'tabs', 'both']
-    const active = contents.map((content) =>
-      everyId(build(SessionsFixtures.mixed(), { filters: { ...SessionsFilterState.allConst, states: ['active'] }, content, filterText: '' }).nodes)
-        .filter((id) => id.startsWith('session:')))
-    const byText = contents.map((content) =>
-      everyId(build(SessionsFixtures.mixed(), { filters: SessionsFilterState.allConst, content, filterText: 'scratch tab' }).nodes)
-        .filter((id) => id.startsWith('session:')))
-
-    // `s-done` is finished business and `s-tab` is a plain tab: the mode takes the first out of all
-    // three trees, and the content decides which of them the second is in at all.
-    for (const ids of active)
-      expect(ids).not.toContain('session:s-done')
-    expect(active[0]).not.toContain('session:s-tab')
-    expect(active[1]).toEqual(['session:s-tab'])
-    expect(active[2]).toContain('session:s-tab')
-    expect(byText).toEqual([[], ['session:s-tab'], ['session:s-tab']])
-  })
-
-  it('throws on a content it does not know, rather than showing an arbitrary set', () => {
-    expect(() => build(SessionsFixtures.mixed(), {
-      filters: SessionsFilterState.allConst,
-      content: 'windows' as never,
+  /** The one filter path: what a mode hides is the same wherever the row is drawn. */
+  it('applies the filter mode to every row of the tree', () => {
+    const active = everyId(build(SessionsFixtures.mixed(), {
+      filters: { ...SessionsFilterState.allConst, states: ['active'] },
       filterText: '',
-    })).toThrow('Unknown tree content: "windows"')
+    }).nodes).filter((id) => id.startsWith('session:'))
+    const byText = everyId(build(SessionsFixtures.mixed(), {
+      filters: SessionsFilterState.allConst,
+      filterText: 'scratch tab',
+    }).nodes).filter((id) => id.startsWith('session:'))
+
+    // `s-done` is finished business, so the mode takes it out; the text narrows to the one row.
+    expect(active).not.toContain('session:s-done')
+    expect(active).toContain('session:s-tab')
+    expect(byText).toEqual(['session:s-tab'])
   })
 
   it('filters by text over the title, the agent and the project', () => {
-    const byTitle = build(SessionsFixtures.mixed(), { filters: SessionsFilterState.allConst, content: 'sessions', filterText: 'gamma' })
-    const byProject = build(SessionsFixtures.mixed(), { filters: SessionsFilterState.allConst, content: 'sessions', filterText: 'WebJamatAdmin' })
-    const byAgent = build(SessionsFixtures.mixed(), { filters: SessionsFilterState.allConst, content: 'sessions', filterText: 'codex' })
+    const byTitle = build(SessionsFixtures.mixed(), { filters: SessionsFilterState.allConst, filterText: 'gamma' })
+    const byProject = build(SessionsFixtures.mixed(), { filters: SessionsFilterState.allConst, filterText: 'WebJamatAdmin' })
+    const byAgent = build(SessionsFixtures.mixed(), { filters: SessionsFilterState.allConst, filterText: 'codex' })
 
     expect(everyId(byTitle.nodes).filter((id) => id.startsWith('session:')))
       .toEqual(['session:s-shell'])
     expect(everyId(byProject.nodes).filter((id) => id.startsWith('session:')).sort())
       .toEqual(['session:s-done', 'session:s-ended', 'session:s-lost'])
     expect(everyId(byAgent.nodes).filter((id) => id.startsWith('session:')).sort())
-      .toEqual(['session:s-ended', 'session:s-waiting'])
+      .toEqual(['session:s-ended', 'session:s-tab', 'session:s-waiting'])
   })
 
   it('shows only what is marked in attention, and nothing else', () => {
     const marks: ReadonlySet<string> = new Set(['s-waiting'])
-    const result = build(SessionsFixtures.mixed(), { filters: { ...SessionsFilterState.allConst, states: ['attention'] }, content: 'sessions', filterText: '' }, marks)
+    const result = build(SessionsFixtures.mixed(), { filters: { ...SessionsFilterState.allConst, states: ['attention'] }, filterText: '' }, marks)
     const waiting = find(result.nodes, 'session:s-waiting')
     if (waiting.kind !== 'session')
       throw new Error('s-waiting is not a session node')
@@ -518,7 +494,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
    */
   it('keeps the session this window is looking at, whose mark opening it just took', () => {
     const marks: ReadonlySet<string> = new Set(['s-waiting'])
-    const looking = { filters: { ...SessionsFilterState.allConst, states: ['attention' as const] }, content: 'sessions' as const, filterText: '' }
+    const looking = { filters: { ...SessionsFilterState.allConst, states: ['attention' as const] }, filterText: '' }
 
     // The mark is gone, which is what opening it did, and nothing else is marked either.
     const dropped = build(SessionsFixtures.mixed(), looking, new Set())
@@ -553,7 +529,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
 
     expect(build({ ...mixed, sessions: [] }))
       .toEqual({ nodes: [], emptyState: 'noSessions', fingerprints: new Map() })
-    expect(build(mixed, { filters: SessionsFilterState.allConst, content: 'sessions', filterText: 'nothing matches this' }).emptyState)
+    expect(build(mixed, { filters: SessionsFilterState.allConst, filterText: 'nothing matches this' }).emptyState)
       .toBe('noMatch')
   })
 
@@ -642,7 +618,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
   it('keeps a stopped worktree session in the daily view until its ending is chosen', () => {
     const result = build(
       SessionsFixtures.stoppedWorktree(),
-      { filters: { ...SessionsFilterState.allConst, states: ['active'] }, content: 'sessions', filterText: '' },
+      { filters: { ...SessionsFilterState.allConst, states: ['active'] }, filterText: '' },
     )
 
     expect(find(result.nodes, 'session:s-dirty').kind).toBe('session')
@@ -671,7 +647,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
   })
 
   it('draws an install on its own once its session is filtered away', () => {
-    const result = build(SessionsFixtures.setupPending(), { filters: SessionsFilterState.allConst, content: 'sessions', filterText: 'setup' })
+    const result = build(SessionsFixtures.setupPending(), { filters: SessionsFilterState.allConst, filterText: 'setup' })
     const install = find(result.nodes, 'session:s-install')
 
     expect(everyId(result.nodes).filter((id) => id.startsWith('session:')))

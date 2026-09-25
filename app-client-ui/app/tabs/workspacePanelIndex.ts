@@ -154,14 +154,6 @@ export class WorkspacePanelIndex {
     return [...targetKeys]
   }
 
-  plainSessionIds(windowId: string): readonly string[] {
-    return [...new Set([...this.owners.values()]
-      .filter((owner) =>
-        owner.windowId === windowId && owner.panel.presentation === 'plain')
-      .map((owner) => owner.panel.sessionId)
-      .filter((sessionId): sessionId is string => sessionId !== null))]
-  }
-
   visibleTerminalTargetKeys(visible: ReadonlySet<string>): readonly string[] {
     const targetKeys = new Set<string>()
     for (const windowId of visible) {
@@ -193,11 +185,9 @@ export class WorkspacePanelIndex {
 
   private sessionOwnerOf(panel: WorkspacePanelPresence): OwnedPanel | null {
     const targetKey = WorkspacePanelIndex.terminalTargetKeyOf(panel)
-    if (targetKey === null || panel.presentation === 'plain')
-      return null
+    if (targetKey === null) return null
     return [...this.owners.values()].find((owner) =>
-      owner.panel.presentation !== 'plain'
-      && WorkspacePanelIndex.terminalTargetKeyOf(owner.panel) === targetKey) ?? null
+      WorkspacePanelIndex.terminalTargetKeyOf(owner.panel) === targetKey) ?? null
   }
 
   private static terminalTargetKeyOf(panel: WorkspacePanelPresence): string | null {

@@ -37,7 +37,9 @@ class FakeRemoteControlEndpoint {
               operation: parsed.operation,
               operationId: parsed.operationId ?? null,
               ok: true,
-              value: parsed.operation === 'sessions.transcript'
+              value: parsed.operation === 'terminal.deliver'
+                ? value.response
+                : parsed.operation === 'sessions.transcript'
                 ? Object.hasOwn(value, 'response')
                   ? value.response
                   : {
@@ -323,6 +325,51 @@ describe('lib-orchestrator/remoteControl/remoteControlClient', () => {
       })
     }
     expect(endpoint.paths).toEqual(malformed.map(() => '/api/v3/op/sessions.transcript'))
+  })
+
+  it('takes a well-formed delivery answer and refuses an extra key or an unknown proof as incompatible', async () => {
+    const endpoint = await FakeRemoteControlEndpoint.start()
+    endpoints.push(endpoint)
+    const descriptor = endpoint.descriptor()
+    descriptor.optionalOperations = RemoteControlConst.optionalOperations
+    const client = new RemoteControlClient(descriptor)
+    const valid = {
+      sessionId: 'session-1',
+      accepted: true,
+      characterCount: 5,
+      delivered: true,
+      input: 'paste',
+      composeProof: 'placeholder',
+      proof: 'queued',
+      submitKey: 'enter',
+      readyAfterMs: 250,
+      submittedAfterMs: 1_100,
+    }
+    const deliver = (response: unknown, index: number) => ({
+      protocol: RemoteControlConst.protocol,
+      requestId: `deliver-${index}`,
+      operation: 'terminal.deliver',
+      operationId: `deliver-operation-${index}`,
+      body: { session: { kind: 'sessionId', sessionId: 'session-1' }, text: 'hello', response },
+    }) as unknown as RemoteControlRequest<'terminal.deliver'>
+
+    await expect(client.execute(deliver(valid, 0))).resolves.toMatchObject({ ok: true, value: valid })
+    // A Jamat that predates `queue` answers without a submit key, and that answer still reads.
+    const { submitKey: _submitKey, ...older } = valid
+    await expect(client.execute(deliver(older, 10))).resolves.toMatchObject({ ok: true, value: older })
+    const malformed = [
+      { ...valid, extra: true },
+      { ...valid, proof: 'guessed' },
+      { ...valid, composeProof: 'hope' },
+      { ...valid, input: 'keys' },
+      { ...valid, delivered: false },
+      { ...valid, submitKey: 'space' },
+    ]
+    for (const [index, response] of malformed.entries())
+      await expect(client.execute(deliver(response, index + 1))).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'operation-failed', detail: 'AppClientUI returned an incompatible control response' },
+      })
   })
 
   it('subscribes from a cursor, emits versioned messages and closes cleanly on abort', async () => {

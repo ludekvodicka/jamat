@@ -126,12 +126,6 @@ export interface SessionRecord {
   /** Which flow composed this session. Stored and never read by this library; see the spec's field. */
   flowId?: string
   /**
-   * `tab` = this session is presented by its tab alone, so the tree draws it only under the tabs
-   * scope. Mutable in one direction: promoting a plain tab clears it, and nothing ever sets it on a
-   * session that was created for the tree.
-   */
-  presentation?: 'tab'
-  /**
    * The colour somebody gave this session. It rides on the record rather than in the client's own
    * state because it follows the session: a tab closed and reopened, a session drawn in the tree and
    * on a tab at once, and a second window all have to show the same one, and the snapshot is what

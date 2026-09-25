@@ -6,6 +6,7 @@ import type { FileChangesContext } from '../fileChangesManager/fileChangesManage
 import type { SessionWorkingContextResult } from '../sessionManager/sessionManager'
 import { PathCompare } from '../shared/pathCompare'
 import { UrlDetector } from './detect/urlDetector'
+import type { OpenedPath, OpenedPathsStore } from './register/openedPathsStore'
 import { TerminalPathEvaluator, type ResolvedPath } from './resolve/terminalPathEvaluator'
 import type {
   ChangedPathHint,
@@ -19,12 +20,12 @@ import { TerminalDetectorLimits } from './terminalDetectorLimits'
 export interface TerminalDetectorDeps {
   workingContext(sessionId: string): Promise<SessionWorkingContextResult>
   changedPaths(context: FileChangesContext): Promise<readonly ChangedPathHint[]>
+  /** Where the register of proven opens outlives the process. Without one it dies with it. */
+  register?: OpenedPathsStore
 }
 
 /** The kinds are the wire type's, never a second copy: a new one has to break this file to be added. */
 type TerminalDetectionKind = TerminalDetection['kind']
-/** The two that name something on disk, which is all `markOpened` and `OpenedPath` ever hold. */
-type TerminalOpenableKind = Extract<TerminalDetection, { kind: 'file' | 'directory' }>['kind']
 
 interface StoredDetection {
   path: string
@@ -47,11 +48,6 @@ export interface TerminalDetectionHit {
   opensExternally: boolean
 }
 
-interface OpenedPath {
-  path: string
-  kind: TerminalOpenableKind
-}
-
 /**
  * What one right-click in a terminal means. The renderer hands over the raw text it scanned off the
  * screen and gets back opaque detection ids; every action afterwards names an id, never a path, so
@@ -68,7 +64,11 @@ export class TerminalDetector {
   constructor(
     private readonly deps: TerminalDetectorDeps,
     private readonly now: () => number = Date.now,
-  ) {}
+  ) {
+    for (const opened of deps.register?.entries() ?? [])
+      this.openedPaths.set(PathCompare.comparable(opened.path), opened)
+    this.pruneOpened()
+  }
 
   async detect(sessionId: string, capture: TerminalMenuCapture): Promise<TerminalDetectResult> {
     const context = await this.deps.workingContext(sessionId)
@@ -115,22 +115,46 @@ export class TerminalDetector {
   }
 
   /** Main records every proven open here, so a later remount of the same panel can be answered
-   *  without a detection. The register dies with the process; restoring after a restart refuses. */
-  markOpened(path: string, kind: 'file' | 'directory'): void {
+   *  without a detection. With a `register` it survives a restart for `openedPathTtlMilliseconds`. */
+  markOpened(path: string, kind: OpenedPath['kind']): void {
+    this.remember(path, kind)
+  }
+
+  /**
+   * A proof that answers restarts its clock: a panel restored every day keeps its file, and only a
+   * path nothing has asked for in a week is forgotten.
+   */
+  wasOpened(path: string): boolean {
+    const proof = this.proofOf(path)
+    if (proof === null) return false
+    this.remember(proof.path, proof.kind)
+    return true
+  }
+
+  private proofOf(path: string): OpenedPath | null {
+    this.pruneOpened()
+    const exact = this.openedPaths.get(PathCompare.comparable(path))
+    if (exact !== undefined) return exact
+    for (const opened of this.openedPaths.values())
+      if (opened.kind === 'directory' && PathCompare.isInside(opened.path, path)) return opened
+    return null
+  }
+
+  private remember(path: string, kind: OpenedPath['kind']): void {
     const comparable = PathCompare.comparable(path)
     this.openedPaths.delete(comparable)
-    this.openedPaths.set(comparable, { path, kind })
+    this.openedPaths.set(comparable, { path, kind, openedAt: this.now() })
     for (const oldest of this.openedPaths.keys()) {
       if (this.openedPaths.size <= TerminalDetectorLimits.openedPathsMax) break
       this.openedPaths.delete(oldest)
     }
+    this.deps.register?.save([...this.openedPaths.values()])
   }
 
-  wasOpened(path: string): boolean {
-    if (this.openedPaths.has(PathCompare.comparable(path))) return true
-    for (const opened of this.openedPaths.values())
-      if (opened.kind === 'directory' && PathCompare.isInside(opened.path, path)) return true
-    return false
+  private pruneOpened(): void {
+    const oldest = this.now() - TerminalDetectorLimits.openedPathTtlMilliseconds
+    for (const [comparable, opened] of this.openedPaths)
+      if (opened.openedAt <= oldest) this.openedPaths.delete(comparable)
   }
 
   private async detectionOf(item: ResolvedPath, entries: Map<string, StoredDetection>): Promise<TerminalDetection> {

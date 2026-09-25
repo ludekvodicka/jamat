@@ -26,8 +26,6 @@ export function SessionsTreeContextMenu(props: {
   sessionId: string
   /** What that session is, captured when the menu opened: a menu lives for a moment. */
   facts: TabSessionFacts
-  /** Whether the row is a plain tab's, which is the one row "Keep as a session" is for. */
-  plainTab: boolean
   actions: readonly SessionAction[]
   groupItem?: ContextMenuEntry
   onAction(action: SessionAction): void
@@ -42,7 +40,6 @@ export function SessionsTreeContextMenu(props: {
         props.commands,
         props.sessionId,
         props.facts,
-        props.plainTab,
         props.actions,
         props.onAction,
       ).flatMap((item) => item.key === 'session.setColor' && props.groupItem !== undefined
@@ -62,12 +59,11 @@ class SessionsTreeMenuItems {
     commands: CommandRegistry,
     sessionId: string,
     facts: TabSessionFacts,
-    plainTab: boolean,
     actions: readonly SessionAction[],
     onAction: (action: SessionAction) => void,
   ): readonly ContextMenuEntry[] {
     const commandItems = CommandMenuEntries.of(
-      SessionsTreeMenuItems.applicable(facts, plainTab),
+      SessionsTreeMenuItems.applicable(facts),
       facts.color,
       {
         run: (id) => SessionsTreeMenuItems.run(commands, id, sessionId),
@@ -104,10 +100,7 @@ class SessionsTreeMenuItems {
     return items
   }
 
-  private static applicable(
-    facts: TabSessionFacts,
-    plainTab: boolean,
-  ): readonly CommandDescriptor[] {
+  private static applicable(facts: TabSessionFacts): readonly CommandDescriptor[] {
     const admits = (operation: SessionOperation): boolean => facts.admits.includes(operation)
     // The four that open the create card need a place to open it on, which a session founded with no
     // directory at all does not have.
@@ -135,7 +128,6 @@ class SessionsTreeMenuItems {
       .filter((descriptor) => (descriptor.id !== 'session.commitSvn' && descriptor.id !== 'session.commitGit') || facts.live)
       .filter((descriptor) => descriptor.id !== 'tab.copyProjectFolder'
         || facts.directoryPath !== null)
-      .filter((descriptor) => descriptor.id !== 'tab.promote' || plainTab)
   }
 
   /**

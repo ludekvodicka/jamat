@@ -143,18 +143,13 @@ describe('app-client-ui/app/tabs/serviceTabsIpc', () => {
   let presenceChanges: number
   let presenceFails: boolean
 
-  function panel(
-    panelId: string,
-    sessionId: string | null = null,
-    presentation: WorkspacePanelPresence['presentation'] = null,
-  ): WorkspacePanelPresence {
+  function panel(panelId: string, sessionId: string | null = null): WorkspacePanelPresence {
     return {
       panelId,
       key: sessionId === null ? 'probe' : 'terminal',
       title: panelId,
       params: sessionId === null ? {} : { sessionId },
       sessionId,
-      presentation,
     }
   }
 
@@ -233,7 +228,6 @@ describe('app-client-ui/app/tabs/serviceTabsIpc', () => {
       title: 'Session 001',
       params: TerminalTargetCodec.params(target),
       sessionId: 'session-1',
-      presentation: 'session',
     }
     expect(await invoke(windows.holderSender, 'tabs:claim-panel', terminal))
       .toMatchObject({ ok: true, value: { kind: 'granted' } })
@@ -298,17 +292,17 @@ describe('app-client-ui/app/tabs/serviceTabsIpc', () => {
   })
 
   it('routes close and restart events to the panel owners', async () => {
-    index.claimOpen('main', panel('regular', 'session-1', 'session'))
-    index.claimOpen('holder', panel('plain', 'session-1', 'plain'))
+    index.claimOpen('main', panel('regular', 'session-1'))
+    index.claimOpen('holder', panel('other', 'session-2'))
 
     await invoke(windows.mainSender, 'tabs:close-terminal-panel', 'session-1')
+    await invoke(windows.mainSender, 'tabs:close-terminal-panel', 'session-2')
     await invoke(windows.mainSender, 'tabs:publish-terminal-restarted', 'session-1')
 
     expect(windows.published).toEqual([
       { windowId: 'main', channel: 'tabs:close-panel', args: ['regular'] },
-      { windowId: 'holder', channel: 'tabs:close-panel', args: ['plain'] },
+      { windowId: 'holder', channel: 'tabs:close-panel', args: ['other'] },
       { windowId: 'main', channel: 'tabs:terminal-restarted', args: ['session-1'] },
-      { windowId: 'holder', channel: 'tabs:terminal-restarted', args: ['session-1'] },
     ])
   })
 
@@ -321,7 +315,6 @@ describe('app-client-ui/app/tabs/serviceTabsIpc', () => {
       title: 'Remote session',
       params: TerminalTargetCodec.params(target),
       sessionId: null,
-      presentation: null,
     })
     const targetKey = TerminalTargetCodec.key(target)
 
@@ -335,7 +328,7 @@ describe('app-client-ui/app/tabs/serviceTabsIpc', () => {
   })
 
   it('allows only main to read global sessions or route a close', async () => {
-    index.claimOpen('holder', panel('plain', 'session-1', 'plain'))
+    index.claimOpen('holder', panel('drawn', 'session-1'))
 
     expect(await invoke(windows.mainSender, 'tabs:open-session-ids'))
       .toEqual({ ok: true, value: ['session-1'] })
@@ -351,7 +344,7 @@ describe('app-client-ui/app/tabs/serviceTabsIpc', () => {
   // like any other window. Refusing the announcement after the restart already happened left
   // every panel of that session attached to a runtime that had just been replaced.
   it('lets a holder announce a restart of a session it draws', async () => {
-    index.claimOpen('holder', panel('plain', 'session-1', 'plain'))
+    index.claimOpen('holder', panel('drawn', 'session-1'))
 
     expect(await invoke(windows.holderSender, 'tabs:publish-terminal-restarted', 'session-1'))
       .toEqual({ ok: true, value: undefined })

@@ -115,4 +115,78 @@ describe('lib-orchestrator/shared/childEnvironment', () => {
     expect(ChildEnvironment.withoutJamat({})).toEqual({})
     expect(ChildEnvironment.keepingJamat({})).toEqual({})
   })
+
+  // Measured 2026-09-23: a development client started from a shell inside a Claude Code session.
+  describe('the agent session the client was started from', () => {
+    const agentSessionConst: NodeJS.ProcessEnv = {
+      PATH: '/usr/bin',
+      ANTHROPIC_API_KEY: 'user-key',
+      CLAUDE_CONFIG_DIR: 'Q:/claude',
+      CODEX_HOME: 'Q:/codex',
+      CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING: '1',
+      JAMAT_V3_LOCAL_STATE_DIR: 'Q:/state',
+      CLAUDECODE: '1',
+      CLAUDE_PID: '4242',
+      AI_AGENT: 'claude-code',
+      CLAUDE_CODE_CHILD_SESSION: '1',
+      CLAUDE_CODE_SESSION_ID: 'parent',
+      CLAUDE_CODE_ENTRYPOINT: 'cli',
+      CLAUDE_CODE_EXECPATH: 'Q:/claude.exe',
+      CLAUDE_CODE_BRIDGE_SESSION_ID: 'bridge',
+      CLAUDE_CODE_MESSAGING_SOCKET: 'pipe',
+      CLAUDE_CODE_MESSAGING_TOKEN: 'token',
+      CLAUDE_CODE_SESSION_ATTENDED: '1',
+      CLAUDE_CODE_STOP_HOOK_BLOCK_CAP: '3',
+      CODEX_SANDBOX: 'seatbelt',
+      CODEX_SANDBOX_NETWORK_DISABLED: '1',
+      CODEX_SESSION_ID: 'codex-parent',
+      CODEX_THREAD_ID: 'thread',
+      CODEX_NETWORK_PROXY_ACTIVE: '1',
+      CODEX_COMPANION_SESSION_ID: 'companion',
+      JAMAT_V3_SESSION_ID: 'parent-session',
+      JAMAT_V3_SESSION_CONTROLLER: 'parent-controller',
+      JAMAT_V3_SESSION_CHANNEL: 'dev',
+      NO_COLOR: '1',
+      FORCE_COLOR: '0',
+      GIT_AUTHOR_NAME: 'bot',
+      GIT_AUTHOR_EMAIL: 'bot@example',
+      GIT_COMMITTER_NAME: 'bot',
+      GIT_COMMITTER_EMAIL: 'bot@example',
+      GIT_EDITOR: 'true',
+      GIT_TERMINAL_PROMPT: '0',
+      GIT_ASKPASS: '',
+      GCM_INTERACTIVE: 'never',
+    }
+
+    it('drops every session marker from a stranger and keeps the user configuration', () => {
+      expect(Object.keys(ChildEnvironment.withoutJamat(agentSessionConst)).sort()).toEqual([
+        'ANTHROPIC_API_KEY',
+        'CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING',
+        'CLAUDE_CONFIG_DIR',
+        'CODEX_HOME',
+        'PATH',
+      ])
+    })
+
+    it('drops the same markers from the Host and keeps its Jamat configuration', () => {
+      expect(Object.keys(ChildEnvironment.keepingJamat(agentSessionConst)).sort()).toEqual([
+        'ANTHROPIC_API_KEY',
+        'CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING',
+        'CLAUDE_CONFIG_DIR',
+        'CODEX_HOME',
+        'JAMAT_V3_LOCAL_STATE_DIR',
+        'PATH',
+      ])
+    })
+
+    it('matches the names whatever case they arrive in', () => {
+      expect(ChildEnvironment.withoutJamat({ no_color: '1', ClaudeCode: '1' })).toEqual({})
+    })
+
+    it('names the marker that gives an agent session away, or null', () => {
+      expect(ChildEnvironment.agentSessionMarkerOf({ CLAUDECODE: '1' })).toBe('CLAUDECODE')
+      expect(ChildEnvironment.agentSessionMarkerOf({ CODEX_THREAD_ID: 't' })).toBe('CODEX_THREAD_ID')
+      expect(ChildEnvironment.agentSessionMarkerOf({ PATH: '/usr/bin', NO_COLOR: '1' })).toBeNull()
+    })
+  })
 })

@@ -1,0 +1,28 @@
+{
+  "agent": "codex",
+  "expected": {
+    "hint": "working",
+    "composer": {
+      "state": "empty"
+    },
+    "queuedRow": true,
+    "echoHead": null,
+    "pastePlaceholders": 0
+  },
+  "provenance": {
+    "origin": "captured from this tree's live Host by scripts/dev/capture-workstate.ts",
+    "case": "a message queued with Tab while a turn was running",
+    "capture": "a turn running a 90-second shell sleep was started; a first follow-up sent with Enter was taken as a steer and echoed as `› text` above the working row, not queued; a second one typed and sent with Tab is drawn under `• Queued follow-up inputs` as `↳ text` with `alt + ↑ edit last queued message`, above an empty box. Sanitized per V1 recipe: the scratch directory is replaced by Q:\\PROJECT. ANSI is left intact",
+    "ported": "nothing - recorded in this tree",
+    "identical": "not present in the V1 or V2 corpus"
+  },
+  "recorded": {
+    "build": "codex-cli 0.155.1",
+    "capturedAt": "2026-09-23"
+  },
+  "frame": {
+    "rawTail": "l\u001b[2m\u001b[22;1H◦\u001b[21;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[22m \u001b[28;3H\u001b[?25h\u001b]0;⠋ Run sleep command | codexq\u0007\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[21;1H \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[21;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[28;3H\u001b[?25h\u001b]0;⠙ Run sleep command | codexq\u0007\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[21;1H \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[21;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[28;3H\u001b[?25h\u001b]0;⠹ Run sleep command | codexq\u0007\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[21;1H \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[21;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[28;3H\u001b[?25h\u001b]0;⠸ Run sleep command | codexq\u0007\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[21;1H \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[21;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[28;3H\u001b[?25h\u001b]0;⠼ Run sleep command | codexq\u0007\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[21;1H \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[21;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[28;3H\u001b[?25h\u001b]0;⠴ Run sleep command | codexq\u0007\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[21;1H \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[21;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[22;1H•\u001b[21;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[28;3H\u001b[?25h\u001b]0;⠦ Run sleep command | codexq\u0007\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[21;1H \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[21;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[28;3H\u001b[?25h\u001b]0;⠧ Run sleep command | codexq\u0007\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[21;1H \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[2m\u001b[22;13H7\u001b[21;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[22m \u001b[28;3H\u001b[?25h\u001b]0;⠇ Run sleep command | codexq\u0007\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[21;1H \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[21;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[28;3H\u001b[?25h\u001b]0;⠏ Run sleep command | codexq\u0007\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[21;1H \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[21;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[28;3H\u001b[?25h\u001b]0;⠋ Run sleep command | codexq\u0007\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[21;1H \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[21;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[28;3H\u001b[?25h\u001b]0;⠙ Run sleep command | codexq\u0007\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[21;1H \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[21;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[28;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[2m\u001b[22;1H◦\u001b[21;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[22m \u001b[28;3H\u001b[?25h\u001b]0;⠹ Run sleep command | codexq\u0007\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[21;1H \u001b[28;3H\u001b[?25h",
+    "screenTail": "\n• \u001b[0mQueued follow-up inputs\n\u001b[2m  ↳ \u001b[3mThen also reply with the word tab-probe.\n\u001b[23m    alt + ↑ edit last queued message\n\n\u001b[1;22m›\u001b[0m \u001b[2mAsk Codex to do anything\n\n\u001b[0m  \u001b[38;2;246;226;183mgpt-6-astra xhigh\u001b[39;2m · \u001b[38;2;171;223;167;22mQ:\\PROJECT…\u001b[2A\u001b[118D\u001b[0m\u001b[?2004h\u001b[?1004h",
+    "wideScreenTail": "\n⚠ MCP startup incomplete (failed: screenmcp)\n\n\n\u001b[39;1;2m› \u001b[0mAfterwards also reply with the word queued-probe.\n\n \n\u001b[2m◦\u001b[0m \u001b[2mWorking\u001b[0m \u001b[2m(47s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close\n\n• \u001b[0mQueued follow-up inputs\n\u001b[2m  ↳ \u001b[3mThen also reply with the word tab-probe.\n\u001b[23m    alt + ↑ edit last queued message\n\n\u001b[1;22m›\u001b[0m \u001b[2mAsk Codex to do anything\n\n\u001b[0m  \u001b[38;2;246;226;183mgpt-6-astra xhigh\u001b[39;2m · \u001b[38;2;171;223;167;22mQ:\\PROJECT…\u001b[2A\u001b[118D\u001b[0m\u001b[?2004h\u001b[?1004h"
+  }
+}

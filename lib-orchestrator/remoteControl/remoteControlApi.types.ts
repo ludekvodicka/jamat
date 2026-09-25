@@ -11,10 +11,11 @@ import type {
   SessionCreateSpec,
   SessionGroup,
   SessionInfo,
-  SessionsOpResult,
   SessionsSnapshot,
+  TerminalComposerState,
   TerminalFrame,
 } from '../sessionManager/sessionManagerApi.types'
+import type { AgentWorkHint } from '../sessionManager/workState/agentWorkInspector.types'
 import type { RuntimeChannel } from '../shared/configIdentity.types'
 import type { SessionTranscriptReading } from '../sessionTranscriptReader/sessionTranscriptReaderApi.types'
 import type {
@@ -33,6 +34,11 @@ export type RemoteControlLocalOperation = typeof RemoteControlLocalConst.operati
 export type RemoteControlLocalMutatingOperation =
   typeof RemoteControlLocalConst.mutatingOperations[number]
 
+/**
+ * `number` is whatever sits in the session's number slot and is matched against it verbatim: an
+ * allocated `014`, a custom `i34`, or a fork pair of either. `SessionTitle.selectorConst` is the
+ * one rule, so what a session can be CALLED and what it can be selected by cannot drift apart.
+ */
 export type RemoteControlSessionSelector =
   | { kind: 'sessionId'; sessionId: string }
   | { kind: 'number'; number: string }
@@ -172,7 +178,6 @@ export interface RemoteControlTabDto {
   title: string
   params: Record<string, unknown>
   sessionId: string | null
-  presentation: 'session' | 'plain' | null
   active: boolean
 }
 
@@ -225,7 +230,6 @@ export type RemoteControlStepResult<T> =
 export interface RemoteControlSessionCreateDto {
   session: { sessionId: string; tabTitle: string }
   tabOpen: RemoteControlStepResult<RemoteControlTabCommandDto> | null
-  plainCleanup: SessionsOpResult | null
   /**
    * Null when no group was asked for. A group that was asked for and could not be written is a
    * failure of its own step rather than of the create: the session exists, and refusing the call
@@ -261,6 +265,55 @@ export interface RemoteControlTerminalSendDto {
   accepted: true
   characterCount: number
   enter: boolean
+}
+
+/** `paste` wraps the text in bracketed-paste markers as one write; `typed` writes it raw. */
+export type RemoteControlTerminalDeliverInput = 'paste' | 'typed'
+
+/** What proved the submit: the user turn in the transcript, a queued row, a new busy hint, or Claude's echo. */
+export type RemoteControlTerminalDeliverProof = 'transcript' | 'queued' | 'working' | 'echo'
+
+/** What proved the composer took the text: the text itself, or a new collapsed-paste placeholder. */
+export type RemoteControlTerminalDeliverComposeProof = 'text' | 'placeholder'
+
+/**
+ * The key that submitted the draft. `tab` only for `queue: true` on a Codex target that was busy at
+ * ready time: Codex treats Enter during a running turn as a steer into that turn, and Tab queues.
+ */
+export type RemoteControlTerminalDeliverSubmitKey = 'enter' | 'tab'
+
+export interface RemoteControlTerminalDeliverDto {
+  sessionId: string
+  accepted: true
+  characterCount: number
+  delivered: true
+  input: RemoteControlTerminalDeliverInput
+  composeProof: RemoteControlTerminalDeliverComposeProof
+  proof: RemoteControlTerminalDeliverProof
+  submitKey: RemoteControlTerminalDeliverSubmitKey
+  readyAfterMs: number
+  submittedAfterMs: number
+}
+
+export type RemoteControlTerminalDeliverStage = 'validate' | 'attach' | 'ready' | 'compose' | 'submit'
+
+export type RemoteControlTerminalDeliverReason =
+  | 'shell-session' | 'not-live'
+  | 'dialog' | 'foreign-draft' | 'read-only' | 'in-flight'
+  | 'not-ready'
+  | 'text-not-visible'
+  | 'draft-remains' | 'unproven'
+  | 'disconnected' | 'reattached' | 'exited'
+  | 'failed'
+
+/** What `RemoteControlError.data` holds on a refused or failed delivery. Codes are the existing ones. */
+export interface RemoteControlTerminalDeliverFailureData {
+  stage: RemoteControlTerminalDeliverStage
+  reason: RemoteControlTerminalDeliverReason
+  typed: boolean
+  entered: 0 | 1 | 2
+  hint: AgentWorkHint | null
+  composer: TerminalComposerState | null
 }
 
 export type RemoteControlEventKind = 'sessions.changed' | 'tabs.changed'
@@ -369,7 +422,10 @@ export interface RemoteControlOperationMap {
   }
   'sessions.list': {
     request: Record<string, never>
-    response: SessionsSnapshot
+    response: Omit<SessionsSnapshot, 'sessions'> & {
+      // Older controllers omit group; current controllers always send the effective id or null.
+      sessions: readonly (SessionInfo & { group?: SessionGroup | null })[]
+    }
   }
   'sessions.create': {
     request: { spec: SessionCreateSpec; openTab?: boolean; group?: SessionGroup }
@@ -380,6 +436,15 @@ export interface RemoteControlOperationMap {
     response: { sessionId: string }
   }
   'sessions.finalize': {
+    request: { session: RemoteControlSessionSelector }
+    response: { sessionId: string }
+  }
+  /**
+   * Delete an ended record from the list, the tree's Remove. A live runtime is refused with
+   * `conflict` rather than stopped: ending work is a separate decision this operation never takes.
+   * A worktree is left on disk, as the tree's Remove leaves it.
+   */
+  'sessions.remove': {
     request: { session: RemoteControlSessionSelector }
     response: { sessionId: string }
   }
@@ -405,6 +470,25 @@ export interface RemoteControlOperationMap {
   'sessions.group': {
     request: { session: RemoteControlSessionSelector; group: SessionGroup }
     response: { sessionId: string; group: SessionGroup }
+  }
+  /**
+   * The person's note about a session, and the one field of a session with a read of its own.
+   *
+   * It is what a caller writes in order to be READ - by the person hovering the row, and by the
+   * next pass of the same automation - so it is the one field where "what does it say now" is a
+   * question worth a round trip of its own rather than a filter over `sessions.list`.
+   *
+   * `null` in `setNote` clears it, which `color` deliberately has no way to say: a colour is a mark
+   * somebody chose and takes away by hand, while a note that is no longer true is worse than no
+   * note. The stored value is answered back by both, trimmed the way the record holds it.
+   */
+  'sessions.note': {
+    request: { session: RemoteControlSessionSelector }
+    response: { sessionId: string; note: string | null }
+  }
+  'sessions.setNote': {
+    request: { session: RemoteControlSessionSelector; note: string | null }
+    response: { sessionId: string; note: string | null }
   }
   'agents.describe': {
     request: Record<string, never>
@@ -454,6 +538,18 @@ export interface RemoteControlOperationMap {
       timeoutMs?: number
     }
     response: RemoteControlTerminalSendDto
+  }
+  'terminal.deliver': {
+    request: {
+      session: RemoteControlSessionSelector
+      text: string
+      input?: RemoteControlTerminalDeliverInput
+      readyTimeoutMs?: number
+      submitTimeoutMs?: number
+      /** Queue behind a busy Codex turn with Tab instead of steering it with Enter. Default false. */
+      queue?: boolean
+    }
+    response: RemoteControlTerminalDeliverDto
   }
 }
 

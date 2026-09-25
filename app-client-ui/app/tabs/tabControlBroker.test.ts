@@ -102,7 +102,7 @@ class TabControlHarness {
 
   session(panelId: string, windowId = 'main'): void {
     this.index.claimOpen(windowId, { panelId, key: 'terminal', title: panelId,
-      sessionId: panelId, params: { sessionId: panelId }, presentation: 'session' })
+      sessionId: panelId, params: { sessionId: panelId } })
     this.index.setActivePanel(windowId, panelId)
   }
 
@@ -111,7 +111,7 @@ class TabControlHarness {
       vcs: 'svn', scopeRoot: 'Q:/app/shared', state, closed, revision: state === 'committed' ? '123' : null, detail: null })
   }
 
-  async openReview(options: { plain: boolean; showRefusal?: true } = { plain: false }): Promise<void> {
+  async openReview(options: { showRefusal?: true } = {}): Promise<void> {
     const commandIndex = this.windows.published.length
     const pending = this.broker.openCommit('commit', 'Commit', 'svn', null, null, options)
     const command = await this.command(commandIndex)
@@ -130,7 +130,7 @@ class TabControlHarness {
         state: 'editing', closed: false, revision: null, detail: null })
     this.commits.status.mockImplementation((id) => this.drafts.get(id) ?? null)
     const commandIndex = this.windows.published.length
-    const pending = this.broker.openCommit(sessionId, sessionId, 'svn', scopeRoot, null, { plain: false, paths })
+    const pending = this.broker.openCommit(sessionId, sessionId, 'svn', scopeRoot, null, { paths })
     this.acceptReview(await this.command(commandIndex))
     expect(await pending).toMatchObject({ ok: true, value: { commitSessionId: draftId } })
   }
@@ -185,7 +185,7 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     let finish!: (value: Awaited<ReturnType<VersioningCommitManager['cancel']>>) => void
     h.commits.cancel.mockReturnValue(new Promise((resolve) => { finish = resolve }))
     const cancel = h.broker.cancelCommit('draft')
-    const reopen = h.broker.openCommit('commit', 'Commit', 'svn', null, null, { plain: false })
+    const reopen = h.broker.openCommit('commit', 'Commit', 'svn', null, null, {})
     await h.settled()
     expect(h.commits.cancel).toHaveBeenCalledWith('draft')
     expect(h.commits.prepare).not.toHaveBeenCalled()
@@ -360,8 +360,8 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     h.commits.prepare.mockImplementation(async (sessionId) => ({ ok: true,
       value: { draftId: sessionId, scopeRoot: `Q:/app/${sessionId}`, title: sessionId }, messageApplied: false }))
     h.status('editing')
-    const first = h.broker.openCommit('first', 'First', 'svn', null, null, { plain: false })
-    const second = h.broker.openCommit('second', 'Second', 'svn', null, null, { plain: false })
+    const first = h.broker.openCommit('first', 'First', 'svn', null, null, {})
+    const second = h.broker.openCommit('second', 'Second', 'svn', null, null, {})
     const command = await h.command()
     expect(command).toMatchObject({ panelId: 'first', activate: true })
     expect(h.commits.prepare).toHaveBeenCalledTimes(1)
@@ -379,8 +379,8 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     h.session('first')
     h.session('second')
     h.status('editing')
-    const first = h.broker.openCommit('first', 'First', 'svn', null, null, { plain: false })
-    const second = h.broker.openCommit('second', 'Second', 'svn', null, null, { plain: false })
+    const first = h.broker.openCommit('first', 'First', 'svn', null, null, {})
+    const second = h.broker.openCommit('second', 'Second', 'svn', null, null, {})
     await h.command()
     h.broker.cancelAll()
     expect(await first).toMatchObject({ ok: false, error: { code: 'unavailable' } })
@@ -392,7 +392,7 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
   it('can return to an original file tab after the review sequence', async () => {
     const h = new TabControlHarness()
     h.session('commit')
-    h.index.claimOpen('main', { panelId: 'document', key: 'fileViewer', title: 'Document', params: {}, sessionId: null, presentation: null })
+    h.index.claimOpen('main', { panelId: 'document', key: 'fileViewer', title: 'Document', params: {}, sessionId: null })
     h.index.setActivePanel('main', 'document')
     await h.queueReview('commit', 'one')
     h.finishReview('one')
@@ -479,7 +479,7 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
       h.session('commit')
       if (mode !== 'same-session') h.index.setActivePanel('main', 'original')
       h.status('editing')
-      await h.openReview(mode === 'manual' ? { plain: false, showRefusal: true } : { plain: false })
+      await h.openReview(mode === 'manual' ? { showRefusal: true } : {})
       h.index.setActivePanel('main', 'commit')
       h.status('committed')
       h.broker.commitsChanged()
@@ -562,7 +562,7 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     const h = new TabControlHarness()
     h.session('original')
     h.status('editing')
-    const pending = h.broker.openCommit('commit', 'Commit', 'git', null, null, { plain: false })
+    const pending = h.broker.openCommit('commit', 'Commit', 'git', null, null, {})
     const opening = await h.command()
     expect(opening).toMatchObject({ kind: 'open-session', activate: true })
     h.session('commit')
@@ -594,8 +594,8 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
 
   it('opens in the existing holder without activating a window when the setting is disabled', async () => {
     const h = new TabControlHarness(1_000, false)
-    h.index.claimOpen('holder', { panelId: 'panel', key: 'terminal', title: 'App', sessionId: 'session', params: { sessionId: 'session' }, presentation: 'session' })
-    const pending = h.broker.openCommit('session', 'App', 'svn', null, null, { plain: false })
+    h.index.claimOpen('holder', { panelId: 'panel', key: 'terminal', title: 'App', sessionId: 'session', params: { sessionId: 'session' } })
+    const pending = h.broker.openCommit('session', 'App', 'svn', null, null, {})
     const command = await h.command()
     expect(command).toMatchObject({ kind: 'open-commit', activate: false, panelId: 'panel' })
     h.acknowledge('holder', command, { kind: 'commit-opened', panelId: 'panel' })
@@ -605,7 +605,7 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
 
   it('requests an inactive new session tab before opening a background commit', async () => {
     const h = new TabControlHarness(1_000, false)
-    const pending = h.broker.openCommit('session', 'App', 'git', null, null, { plain: false })
+    const pending = h.broker.openCommit('session', 'App', 'git', null, null, {})
     const session = await h.command()
     expect(session).toMatchObject({ kind: 'open-session', activate: false })
     h.acknowledge('main', session, { kind: 'opened', panelId: 'panel' })
@@ -619,7 +619,7 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
 
   it('opens a prepared commit in the existing owner window and reports an unapplied proposal', async () => {
     const harness = new TabControlHarness()
-    const pending = harness.broker.openCommit('session-1', 'App', 'svn', 'shared', 'Proposal', { plain: false })
+    const pending = harness.broker.openCommit('session-1', 'App', 'svn', 'shared', 'Proposal', {})
     const first = await harness.command()
     harness.acknowledge('main', first, { kind: 'focused-existing', panelId: 'session-panel', windowId: 'holder' })
     const second = await harness.command(1)
@@ -633,9 +633,9 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
   it('does not open a tab after prepare refuses, but a person can see the missing-working-copy pane', async () => {
     const harness = new TabControlHarness()
     harness.commits.prepare.mockResolvedValue({ ok: false, code: 'no-working-copy', detail: 'No SVN here' })
-    expect(await harness.broker.openCommit('session-1', 'App', 'svn', null, null, { plain: false })).toMatchObject({ ok: false, error: { code: 'operation-failed' } })
+    expect(await harness.broker.openCommit('session-1', 'App', 'svn', null, null, {})).toMatchObject({ ok: false, error: { code: 'operation-failed' } })
     expect(harness.windows.published).toEqual([])
-    const pending = harness.broker.openCommit('session-1', 'App', 'svn', null, null, { plain: false, showRefusal: true })
+    const pending = harness.broker.openCommit('session-1', 'App', 'svn', null, null, { showRefusal: true })
     harness.acknowledge('main', await harness.command(), { kind: 'opened', panelId: 'panel' })
     harness.acknowledge('main', await harness.command(1), { kind: 'commit-opened', panelId: 'panel' })
     expect(await pending).toMatchObject({ ok: true, value: { kind: 'commit-opened' } })
@@ -643,17 +643,17 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
 
   it('releases an unattached draft after a tab failure or a renderer timeout', async () => {
     const harness = new TabControlHarness(50)
-    const pending = harness.broker.openCommit('session-1', 'App', 'svn', null, null, { plain: true })
+    const pending = harness.broker.openCommit('session-1', 'App', 'svn', null, null, {})
     harness.acknowledge('main', await harness.command(), { kind: 'failed', detail: 'File cap' })
     expect(await pending).toMatchObject({ ok: false, error: { code: 'operation-failed' } })
     expect(harness.commits.releaseUnattached).toHaveBeenCalledWith('draft')
-    const timed = harness.broker.openCommit('session-1', 'App', 'svn', null, null, { plain: true })
+    const timed = harness.broker.openCommit('session-1', 'App', 'svn', null, null, {})
     expect(await timed).toMatchObject({ ok: false, error: { code: 'timeout' } })
     expect(harness.commits.releaseUnattached).toHaveBeenCalledTimes(2)
     expect(harness.commits.attach).not.toHaveBeenCalled()
   })
 
-  it('lists the full panel snapshot and requests a plain terminal open from the main renderer', async () => {
+  it('lists the full panel snapshot and requests a terminal open from the main renderer', async () => {
     const harness = new TabControlHarness()
     harness.index.claimOpen('holder', {
       panelId: 'probe:1',
@@ -661,7 +661,6 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
       title: 'Probe',
       params: { serial: 1 },
       sessionId: null,
-      presentation: null,
     })
     harness.index.setActivePanel('holder', 'probe:1')
 
@@ -672,28 +671,26 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
       title: 'Probe',
       params: { serial: 1 },
       sessionId: null,
-      presentation: null,
       active: true,
     }])
 
-    const resultPromise = harness.broker.open('session-1', 'Project - 001', { plain: true })
+    const resultPromise = harness.broker.open('session-1', 'Project - 001', {})
     const command = await harness.command()
     expect(command).toEqual({
       kind: 'open-session',
       requestId: 'request-1',
       sessionId: 'session-1',
       tabTitle: 'Project - 001',
-      plain: true,
     })
     harness.acknowledge('main', command, {
       kind: 'opened',
-      panelId: 'terminal:{"sessionId":"session-1","presentation":"tab"}',
+      panelId: 'terminal:{"sessionId":"session-1"}',
     })
     await expect(resultPromise).resolves.toEqual({
       ok: true,
       value: {
         kind: 'opened',
-        panelId: 'terminal:{"sessionId":"session-1","presentation":"tab"}',
+        panelId: 'terminal:{"sessionId":"session-1"}',
         windowId: 'main',
       },
     })
@@ -708,7 +705,6 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
       title: 'Project - 001',
       params: { sessionId: 'session-1' },
       sessionId: 'session-1',
-      presentation: 'session',
     })
 
     const focusPromise = harness.broker.focus('terminal:session-1')
@@ -751,7 +747,7 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
       ok: false,
       error: { code: 'not-found', detail: 'No tab "missing"' },
     })
-    const openPromise = harness.broker.open('session-1', 'Project - 001', { plain: false })
+    const openPromise = harness.broker.open('session-1', 'Project - 001', {})
     await vi.advanceTimersByTimeAsync(50)
     await expect(openPromise).resolves.toEqual({
       ok: false,
@@ -768,7 +764,7 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     harness.windows.blocked.set('main', new Promise<void>((resolve) => {
       release = resolve
     }))
-    const first = harness.broker.open('session-1', 'Project - 001', { plain: false })
+    const first = harness.broker.open('session-1', 'Project - 001', {})
 
     harness.broker.rendererGone('main')
     await expect(first).resolves.toEqual({
@@ -780,7 +776,7 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     await Promise.resolve()
     expect(harness.windows.published).toEqual([])
 
-    const second = harness.broker.open('session-1', 'Project - 001', { plain: false })
+    const second = harness.broker.open('session-1', 'Project - 001', {})
     const command = await harness.command()
     harness.acknowledge('main', command, {
       kind: 'opened',
@@ -801,7 +797,7 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     harness.windows.blocked.set('main', new Promise<void>((resolve) => {
       release = resolve
     }))
-    const opened = harness.broker.open('session-1', 'Project - 001', { plain: false })
+    const opened = harness.broker.open('session-1', 'Project - 001', {})
 
     harness.windows.accepted.delete('main')
     release()
@@ -820,7 +816,7 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
    */
   it('refuses an acknowledgement from a window the command was not sent to', async () => {
     const harness = new TabControlHarness()
-    const opened = harness.broker.open('session-1', 'Project - 001', { plain: false })
+    const opened = harness.broker.open('session-1', 'Project - 001', {})
     const command = await harness.command()
 
     expect(() => harness.acknowledge('holder', command, {
@@ -844,9 +840,8 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
       title: 'Project - 001',
       params: { sessionId: 'session-1' },
       sessionId: 'session-1',
-      presentation: 'session',
     })
-    const opened = harness.broker.open('session-1', 'Project - 001', { plain: false })
+    const opened = harness.broker.open('session-1', 'Project - 001', {})
     const command = await harness.command()
     harness.acknowledge('main', command, {
       kind: 'focused-existing',
@@ -865,14 +860,13 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     expect(harness.index.panelsOfSession('session-1')).toHaveLength(1)
   })
 
-  it.each([false, true])('preserves a plain session and uses document activation %s independently of commits', async (activate) => {
+  it.each([false, true])('uses document activation %s independently of commits', async (activate) => {
     const harness = new TabControlHarness(1_000, !activate)
     harness.activateDocuments = activate
     const opened = harness.broker.openFile(
       'session-1',
       'Project - 001',
       'reports/report.md',
-      { plain: true },
     )
 
     const sessionCommand = await harness.command(0)
@@ -881,7 +875,6 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
       requestId: 'request-1',
       sessionId: 'session-1',
       tabTitle: 'Project - 001',
-      plain: true,
       activate,
     })
     harness.acknowledge('main', sessionCommand, {
@@ -930,7 +923,6 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
       'session-1',
       'Project - 001',
       'reports/report.md',
-      { plain: false },
     )
     const sessionCommand = await harness.command()
     harness.acknowledge('main', sessionCommand, {
@@ -951,7 +943,6 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
       'session-1',
       'Project - 001',
       'reports/report.md',
-      { plain: false },
     )
     const sessionCommand = await harness.command()
     harness.acknowledge('main', sessionCommand, {

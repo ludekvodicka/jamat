@@ -42,6 +42,19 @@ export class ClaudeTranscriptFixtures {
     })}\n`
   }
 
+  /** The confirmation `/model` leaves, e.g. `Opus 5.5 (1M context) (default)`. */
+  static modelSwitch(label: string): string {
+    return `${JSON.stringify({
+      type: 'user',
+      timestamp: '2026-08-17T10:00:00.000Z',
+      message: {
+        role: 'user',
+        content: `<local-command-stdout>Set model to [1m${label}[22m and saved as your default for new sessions</local-command-stdout>`,
+      },
+    })}
+`
+  }
+
   /** Bulk no parser cares about, used to push the interesting records out of a narrow tail. */
   static padding(bytes: number): string {
     const line = `${JSON.stringify({

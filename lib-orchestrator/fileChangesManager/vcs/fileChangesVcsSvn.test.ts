@@ -22,10 +22,10 @@ describe('lib-orchestrator/fileChangesManager/vcs/fileChangesVcsSvn', () => {
   const created: string[] = []
 
   class Runner implements CommandRunner {
-    constructor(private readonly answer: (args: string[]) => CommandOutcome) {}
+    constructor(private readonly answer: (args: string[], cwd: string) => CommandOutcome) {}
 
-    async run(_cwd: string, args: string[]): Promise<CommandOutcome> {
-      return this.answer(args)
+    async run(cwd: string, args: string[]): Promise<CommandOutcome> {
+      return this.answer(args, cwd)
     }
   }
 
@@ -138,6 +138,80 @@ describe('lib-orchestrator/fileChangesManager/vcs/fileChangesVcsSvn', () => {
       entries: [
         expect.objectContaining({ absolutePath: join(cwd, 'shared/a.ts'), status: 'modified' }),
         expect.objectContaining({ absolutePath: join(cwd, 'shared/b.ts'), status: 'modified' }),
+      ],
+    } })
+  })
+
+  function infoAnswer(entries: readonly { path: string; url: string; root?: string; wcRoot: string }[]): CommandOutcome {
+    return ok(`<info>${entries.map((entry) => `<entry path="${entry.path}" kind="dir">
+      <url>${entry.url}</url><relative-url>^${entry.url.slice((entry.root ?? 'https://svn.example/repo').length)}</relative-url>
+      <repository><root>${entry.root ?? 'https://svn.example/repo'}</root></repository>
+      <wc-info><wcroot-abspath>${entry.wcRoot.replace(/\\/g, '/')}</wcroot-abspath></wc-info></entry>`).join('')}</info>`)
+  }
+
+  it('reads a checkout at its own path that SVN reports as an external it never walks', async () => {
+    const { root, cwd } = workingCopy()
+    const project = join(cwd, 'project')
+    const external = join(cwd, 'shared', 'lib')
+    for (const path of [project, external]) mkdirSync(join(path, '.svn'), { recursive: true })
+    const vcs = new FileChangesVcsSvn(new Runner((args, runCwd) => {
+      if (args[0] === 'info' && args[1] === '--xml') return infoAnswer([
+        { path: '.', url: 'https://svn.example/repo/trunk/nested', wcRoot: root },
+        { path: project, url: 'https://svn.example/repo/trunk/nested/project', wcRoot: project },
+        { path: external, url: 'https://svn.example/repo/libraries/lib', wcRoot: external },
+      ])
+      const detected = detectionAnswer(root, args)
+      if (detected) return detected
+      if (runCwd === project) return ok(`<status><target path=".">
+        <entry path="a.ts"><wc-status item="modified" props="none"/></entry>
+        <entry path="new.ts"><wc-status item="unversioned" props="none"/></entry>
+      </target></status>`)
+      return ok(`<status><target path=".">
+        <entry path="project"><wc-status item="external" props="none"/></entry>
+        <entry path="shared/lib"><wc-status item="external" props="none"/></entry>
+      </target></status>`)
+    }))
+
+    const result = await vcs.status((await vcs.detect(cwd))!)
+
+    expect(result).toEqual({ ok: true, value: {
+      externalRoots: [external],
+      entries: [
+        expect.objectContaining({ absolutePath: join(project, 'a.ts'), repositoryPath: 'nested/project/a.ts', status: 'modified' }),
+        expect.objectContaining({ absolutePath: join(project, 'new.ts'), repositoryPath: 'nested/project/new.ts', status: 'untracked' }),
+      ],
+    } })
+  })
+
+  it('joins an unversioned checkout of the same repository and groups one of another repository', async () => {
+    const { root, cwd } = workingCopy()
+    const same = join(cwd, 'same')
+    const foreign = join(cwd, 'foreign')
+    for (const path of [same, foreign]) mkdirSync(join(path, '.svn'), { recursive: true })
+    const vcs = new FileChangesVcsSvn(new Runner((args, runCwd) => {
+      if (args[0] === 'info' && args[1] === '--xml') return infoAnswer([
+        { path: '.', url: 'https://svn.example/repo/trunk/nested', wcRoot: root },
+        { path: same, url: 'https://svn.example/repo/branches/same', wcRoot: same },
+        { path: foreign, url: 'https://svn.example/other/trunk', root: 'https://svn.example/other', wcRoot: foreign },
+      ])
+      const detected = detectionAnswer(root, args)
+      if (detected) return detected
+      if (runCwd === same || runCwd === foreign) return ok(`<status><target path=".">
+        <entry path="x.ts"><wc-status item="modified" props="none"/></entry>
+      </target></status>`)
+      return ok(`<status><target path=".">
+        <entry path="same"><wc-status item="unversioned" props="none"/></entry>
+        <entry path="foreign"><wc-status item="unversioned" props="none"/></entry>
+      </target></status>`)
+    }))
+
+    const result = await vcs.status((await vcs.detect(cwd))!)
+
+    expect(result).toEqual({ ok: true, value: {
+      externalRoots: [foreign],
+      entries: [
+        expect.objectContaining({ absolutePath: join(same, 'x.ts'), repositoryPath: 'nested/same/x.ts', status: 'modified' }),
+        expect.objectContaining({ absolutePath: join(foreign, 'x.ts'), repositoryPath: 'nested/foreign/x.ts', status: 'modified' }),
       ],
     } })
   })

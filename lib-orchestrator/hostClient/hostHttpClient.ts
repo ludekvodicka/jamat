@@ -20,24 +20,7 @@ export class HostHttpClient {
    */
   private static readonly helloTimeoutMillisecondsConst = 3_000
 
-  /**
-   * The slowest operation since it was last read, in milliseconds. Null once read and until the
-   * next call: an empty window is not a measurement of zero.
-   *
-   * It is here because the measurement is free: this client calls the Host every two seconds for
-   * the session listing whether anybody asks or not, so timing the call it already makes says how
-   * the Host and the loopback are answering without adding a single request. A separate ping would
-   * have measured the ping.
-   */
-  private slowestCallMs: number | null = null
-
   constructor(private readonly descriptorOf: () => HostDescriptor | null) {}
-
-  sampleSlowestCallMs(): number | null {
-    const slowest = this.slowestCallMs
-    this.slowestCallMs = null
-    return slowest
-  }
 
   /**
    * A refused or timed-out connection is `host-unreachable`; anything the Host answered is
@@ -51,7 +34,6 @@ export class HostHttpClient {
     const descriptor = this.descriptorOf()
     if (descriptor === null)
       return { ok: false, code: 'host-unreachable', detail: `${name}: no Host descriptor is published` }
-    const begun = performance.now()
     const answered = await HostHttpClient.send(
       name,
       `http://127.0.0.1:${descriptor.port}/op/${name}`,
@@ -65,9 +47,6 @@ export class HostHttpClient {
       },
       HostHttpClient.requestTimeoutMillisecondsConst,
     )
-    // Reading the body is part of it: a megabyte of projection is slow in exactly the place this
-    // reading exists to expose, and a timing that stopped at the headers would have missed it.
-    this.slowestCallMs = Math.max(this.slowestCallMs ?? 0, Math.round(performance.now() - begun))
     if (!answered.ok) return answered
     return HostHttpClient.parsed<T>(name, answered.status, answered.text)
   }

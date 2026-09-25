@@ -195,7 +195,7 @@ export class WorkStateMonitor {
     // A refused call or a runtime with no projection yet is an absence of evidence, and that is
     // exactly what `unknown` says. The settle rule below still decides on the age of the output.
     if (!inspected.ok || inspected.value.projection === null) return WorkStateMonitor.noEvidenceConst
-    return WorkStateMonitor.inspectorFor(agentId)(ScreenTail.frameOf(inspected.value.projection))
+    return WorkStateMonitor.inspect(agentId, ScreenTail.frameOf(inspected.value.projection))
   }
 
   private apply(
@@ -276,11 +276,10 @@ export class WorkStateMonitor {
       throw new Error(`Unknown work hint: ${JSON.stringify(hint)}`)
   }
 
-  private static inspectorFor(
-    agentId: SessionRecordAgent['agentId'],
-  ): (frame: AgentWorkFrame) => AgentWorkInspection {
-    if (agentId === 'claude') return (frame) => AgentWorkInspectorClaude.inspect(frame)
-    else if (agentId === 'codex') return (frame) => AgentWorkInspectorCodex.inspect(frame)
+  /** Public for `SessionManager.terminalComposer`, which reads the hint off its own projection. */
+  static inspect(agentId: SessionRecordAgent['agentId'], frame: AgentWorkFrame): AgentWorkInspection {
+    if (agentId === 'claude') return AgentWorkInspectorClaude.inspect(frame)
+    else if (agentId === 'codex') return AgentWorkInspectorCodex.inspect(frame)
     else
       throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
   }

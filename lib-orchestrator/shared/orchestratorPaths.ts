@@ -20,6 +20,7 @@ export class OrchestratorPaths {
   private static readonly setupTrustFileNameConst = 'setup-trust.json'
   private static readonly codexRolloutCwdFileNameConst = 'codex-rollout-cwd.json'
   private static readonly rateMonitorCacheFileNameConst = 'rate-monitor-cache.json'
+  private static readonly terminalOpenedPathsFileNameConst = 'terminal-opened-paths.json'
 
   // The override names the state ROOT, never one channel's directory: consuming it verbatim
   // collapses two channels into one state directory.
@@ -128,6 +129,17 @@ export class OrchestratorPaths {
     return join(
       OrchestratorPaths.directory(configIdentity, channel),
       OrchestratorPaths.rateMonitorCacheFileNameConst,
+    )
+  }
+
+  /**
+   * Which terminal paths this machine proved by a click, so their panels reopen after a restart.
+   * Machine state and main-process only: a renderer that could write it could open any file.
+   */
+  static terminalOpenedPathsFile(configIdentity: string, channel: RuntimeChannel): string {
+    return join(
+      OrchestratorPaths.directory(configIdentity, channel),
+      OrchestratorPaths.terminalOpenedPathsFileNameConst,
     )
   }
 

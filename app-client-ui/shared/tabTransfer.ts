@@ -26,7 +26,6 @@ export interface WorkspacePanelPresence {
   title: string
   params: Record<string, unknown>
   sessionId: string | null
-  presentation: 'session' | 'plain' | null
 }
 
 export interface WorkspacePanelSnapshot extends WorkspacePanelPresence {

@@ -80,6 +80,12 @@ vi.mock('@xterm/xterm', () => ({
 
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} } }))
 
+/** The focus target and nothing else: the dialog's own reads have their own test. */
+vi.mock('../../versioning/commitPane', () => ({
+  CommitPane: (props: { item: { vcs: string } }) =>
+    <section className="commit-pane" tabIndex={-1} aria-label={`${props.item.vcs.toUpperCase()} commit dialog`} />,
+}))
+
 /** The one dockview event this panel listens to, and the id its decorations are published under. */
 class PanelApiFake {
   private readonly active: ((event: { isActive: boolean }) => void)[] = []
@@ -666,6 +672,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
       claimAutomatic: () => Promise.resolve({ ok: true, value: true }),
       cooldown: () => Promise.resolve({ ok: true, value: null }),
       noteManual: () => Promise.resolve({ ok: true, value: undefined }),
+      deliver: () => Promise.resolve({ ok: true, value: { kind: 'delivered', proof: 'working' } }),
       reportError: () => undefined,
     })
     attachAnswer = { ok: true }
@@ -1389,20 +1396,55 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
     expect(xtermMock.focuses).toBe(1)
   })
 
-  it.each([true, false])('focuses a restored file only when its session is active (%s)', async (active) => {
+  /** A file beside the terminal is read, not typed into, so going back to the session is the prompt. */
+  it.each([true, false])('gives a switch to the terminal and not to a file in the split (%s)', async (active) => {
     const outside = render(<button type="button">Other panel</button>).getByRole('button')
     outside.focus()
     const item = TerminalPanelFixtures.splitItem(1)
-    const view = mount(new PanelApiFake('terminal:file-focus', active), 'session-1', {
+    const api = new PanelApiFake('terminal:file-focus', active)
+    const view = mount(api, 'session-1', {
       params: { split: { ratio: 0.5, active: item.key, items: [item] } },
     })
-    const viewer = await view.findByLabelText('Split file')
-    expect(active ? viewer : outside).toHaveFocus()
-    expect(xtermMock.focuses).toBe(0)
-    outside.focus()
+    await view.findByLabelText('Split file')
+    expect(xtermMock.focuses).toBe(active ? 1 : 0)
+    if (!active) expect(outside).toHaveFocus()
+
+    api.emitActive(true)
+    expect(xtermMock.focuses).toBe(active ? 2 : 1)
     act(() => { panelFocus.focus('terminal:file-focus') })
-    expect(viewer).toHaveFocus()
+    expect(xtermMock.focuses).toBe(active ? 3 : 2)
+  })
+
+  it('gives a switch to the commit shown in the split', async () => {
+    const outside = render(<button type="button">Other panel</button>).getByRole('button')
+    const commit = { kind: 'commit', key: PanelSplitParams.commitKeyOf('svn', '.'), title: 'Commit', vcs: 'svn', scopeRoot: '.' }
+    const api = new PanelApiFake('terminal:commit-focus', true)
+    const view = mount(api, 'session-1', {
+      params: { split: { ratio: 0.5, active: commit.key, items: [commit] } },
+    })
+    const dialog = await view.findByLabelText('SVN commit dialog')
+    expect(dialog).toHaveFocus()
+
+    outside.focus()
+    act(() => { panelFocus.focus('terminal:commit-focus') })
+    expect(dialog).toHaveFocus()
+    outside.focus()
+    api.emitActive(true)
+    expect(dialog).toHaveFocus()
     expect(xtermMock.focuses).toBe(0)
+  })
+
+  it('gives a switch to the terminal while the commit waits behind a file', async () => {
+    const file = TerminalPanelFixtures.splitItem(1)
+    const commit = { kind: 'commit', key: PanelSplitParams.commitKeyOf('svn', '.'), title: 'Commit', vcs: 'svn', scopeRoot: '.' }
+    const view = mount(new PanelApiFake('terminal:hidden-commit', true), 'session-1', {
+      params: { split: { ratio: 0.5, active: file.key, items: [commit, file] } },
+    })
+    await view.findByLabelText('Split file')
+    expect(xtermMock.focuses).toBe(1)
+
+    act(() => { panelFocus.focus('terminal:hidden-commit') })
+    expect(xtermMock.focuses).toBe(2)
   })
 
   /**

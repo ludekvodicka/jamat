@@ -1,0 +1,29 @@
+{
+  "agent": "codex",
+  "expected": {
+    "hint": "unknown",
+    "composer": {
+      "state": "text",
+      "text": "Reply with the single word pong and nothing else."
+    },
+    "queuedRow": false,
+    "echoHead": null,
+    "pastePlaceholders": 0
+  },
+  "provenance": {
+    "origin": "captured from this tree's live Host by scripts/dev/capture-workstate.ts",
+    "case": "a one-line draft typed into the input box and not submitted",
+    "capture": "the text was written with `terminal send` without Enter; sanitized per V1 recipe: the scratch directory is replaced by Q:\\PROJECT. ANSI is left intact",
+    "ported": "nothing - recorded in this tree",
+    "identical": "not present in the V1 or V2 corpus"
+  },
+  "recorded": {
+    "build": "codex-cli 0.155.1",
+    "capturedAt": "2026-09-23"
+  },
+  "frame": {
+    "rawTail": "tra xhigh\u001b[2m   \u001b[38;5;6m\u001b[22m/model\u001b[m\u001b[2m to change │\u001b[22m\u001b[K\u001b[2m\r\n│ directory:   \u001b[22mQ:\\PROJECT\u001b[2m       │\u001b[22m\u001b[K\u001b[2m\r\n│ permissions: \u001b[38;5;5m\u001b[22m\u001b[1mYOLO mode\u001b[m\u001b[2m                            │\u001b[22m\u001b[K\u001b[2m\r\n╰───────────────────────────────────────────────────╯\u001b[22m\u001b[K\r\n\u001b[K\r\n  \u001b[1mTip:\u001b[22m \u001b[3mNew\u001b[23m Use \u001b[1m/fast\u001b[22m to enable our fastest inference with increased plan usage.\u001b[K\r\n\u001b[K\u001b[38;5;3m\u001b[2m\r\n⚠ 1 MCP startup issue · ctrl + t for details\u001b[m\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\u001b[21;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[30;1H\n\u001b[2m\u001b[21;1H• \u001b[22mYou have 1 usage limit reset available. Run /usage to use one.                                                        \r\n                                                                                                                        \r\n                                                                                                                        \u001b[1m\r\n›\u001b[22m \u001b[2mAsk Codex to do anything\u001b[22m                                                                                              \r\n                                                                                                                        \r\n  \u001b[38;2;246;226;183mgpt-6-astra xhigh\u001b[m\u001b[2m · \u001b[38;2;171;223;167m\u001b[22mQ:\\PROJECT\u001b[m                                                                                                                        \r\n                                                                                                                        \r\n                                                                                                                        \r\n\u001b[24;3H\u001b[?25h\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[22;1H \u001b[24;3H\u001b[?25h\u001b[?2026h\u001b[?25l\u001b[22;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[24;3H\u001b[?25h\u001b[?2026h\u001b[?25lReply with the single word\u001b[1Cpong\u001b[1Cand\u001b[1Cnothing\u001b[1Celse.\u001b[22;1H\u001b[?25h\u001b[0 q\u001b[?2026l\u001b[?25l \u001b[24;52H\u001b[?25h",
+    "screenTail": "\u001b[33;2m⚠ 1 MCP startup issue · ctrl + t for details\n\n\u001b[39m• \u001b[0mYou have 1 usage limit reset available. Run /usage to use one.                                                        \n                                                                                                                        \n                                                                                                                        \n\u001b[1m›\u001b[0m Reply with the single word pong and nothing else.                                                                     \n                                                                                                                        \n  \u001b[38;2;246;226;183mgpt-6-astra xhigh\u001b[39;2m · \u001b[38;2;171;223;167;22mQ:\\PROJECT",
+    "wideScreenTail": "│                                                   │\n│ model:       \u001b[0mgpt-6-astra xhigh\u001b[2m   \u001b[36;22m/model\u001b[39;2m to change │\n│ directory:   \u001b[0mQ:\\PROJECT\u001b[2m       │\n│ permissions: \u001b[35;1;22mYOLO mode\u001b[39;22;2m                            │\n╰───────────────────────────────────────────────────╯\n\n\u001b[0m  \u001b[1mTip:\u001b[0m \u001b[3mNew\u001b[0m Use \u001b[1m/fast\u001b[0m to enable our fastest inference with increased plan usage.\n\n\u001b[33;2m⚠ 1 MCP startup issue · ctrl + t for details\n\n\u001b[39m• \u001b[0mYou have 1 usage limit reset available. Run /usage to use one.                                                        \n                                                                                                                        \n                                                                                                                        \n\u001b[1m›\u001b[0m Reply with the single word pong and nothing else.                                                                     \n                                                                                                                        \n  \u001b[38;2;246;226;183mgpt-6-astra xhigh\u001b[39;2m · \u001b[38;2;171;223;167;22mQ:\\PROJECT"
+  }
+}

@@ -10,7 +10,6 @@ import { PanelKeysConst } from '../../shared/tabTransfer'
 import { type TerminalTarget, TerminalTargetCodec } from '../../shared/terminalTarget'
 import { ErrorText } from '../../shared/errorText'
 import type { FileViewerBaselineHint } from '../fileViewer/fileViewerPanel.types'
-import { IpcFailure } from '../ipc/ipcFailure'
 import type { SnapshotStore } from '../ipc/snapshotStore'
 import type { SessionOpenIntent } from '../views/sessionsTree/sessionsTreeView'
 import { TabsController } from '../widgets/tabs/tabsController'
@@ -191,29 +190,12 @@ export class WorkspacePanels {
     controller: TabsController,
     target: TerminalTarget,
     title: string,
-    options?: { plain?: true; preview?: true; activate?: boolean },
+    options?: { preview?: true; activate?: boolean },
   ): Promise<PanelOpenOutcome> {
-    // A session already on screen as a plain tab is shown THERE. The two presentations derive
-    // different panel ids from the same session, so opening the other one would put one session in
-    // two tabs - which every row action can now reach, not just a click on the name.
-    if (target.kind === 'local') {
-      const plainPanelId = TabsController.panelIdOf(
-        PanelKeysConst.terminal,
-        TerminalTargetCodec.params(target, 'tab'),
-      )
-      if (options?.plain !== true && controller.keyOf(plainPanelId) !== null) {
-        if (options?.activate !== false) controller.activatePanel(plainPanelId)
-        return Promise.resolve({ kind: 'opened', panelId: plainPanelId })
-      }
-    } else if (target.kind === 'remote') {
-      if (options?.plain === true)
-        throw new Error('A remote terminal cannot be opened as a plain tab')
-    } else
-      throw new Error(`Unknown terminal target: ${JSON.stringify(target)}`)
     return controller.openPanel(
       PanelKeysConst.terminal,
       title,
-      TerminalTargetCodec.params(target, options?.plain === true ? 'tab' : 'session'),
+      TerminalTargetCodec.params(target),
       undefined,
       options,
     )
@@ -246,7 +228,7 @@ export class WorkspacePanels {
         controller,
         { kind: 'local', sessionId: command.sessionId },
         command.tabTitle,
-        { ...(command.plain ? { plain: true } : {}), ...(command.activate === undefined ? {} : { activate: command.activate }) },
+        command.activate === undefined ? undefined : { activate: command.activate },
       )
       if (outcome.kind === 'opened')
         return { kind: 'opened', panelId: outcome.panelId }
@@ -335,79 +317,7 @@ export class WorkspacePanels {
       throw new Error(`Unknown session open intent: ${JSON.stringify(intent)}`)
   }
 
-  /**
-   * A plain tab becomes a session of the tree. The panel id is derived from the parameters, and the
-   * parameters are what say which of the two a tab is, so the tab is re-keyed rather than updated:
-   * closed silently, so nothing ends what was just kept, and opened again under the tree's shape
-   * with the title the promotion gave it.
-   *
-   * The re-key is why this one target genuinely needs a panel: a named session resolves to the
-   * plain panel this window would derive for it, and a window that does not hold that panel refuses
-   * with a log rather than promoting a record whose tab it cannot re-key.
-   */
-  static async promoteTab(
-    controller: TabsController,
-    sessionId: string | null,
-  ): Promise<void> {
-    const plain = sessionId === null
-      ? WorkspacePanels.plainTabOf(controller.activePanelId())
-      : WorkspacePanels.plainPanelFor(controller, sessionId)
-    if (plain === null) {
-      if (sessionId !== null)
-        AppClientUiReport.error(
-          `promote: no plain tab in this window for session ${sessionId}`,
-        )
-      return
-    }
-    const answer = await window.appClient.sessions.promotePlain(plain.sessionId)
-    const refusal = IpcFailure.of(answer, 'Keeping the tab as a session')
-    if (refusal !== null) {
-      AppClientUiReport.error(`${refusal}`)
-      return
-    }
-    if (!answer.ok || !answer.value.ok)
-      return
-    await controller.hidePanel(plain.panelId, { silent: true })
-    const outcome = await WorkspacePanels.openTerminal(
-      controller,
-      { kind: 'local', sessionId: plain.sessionId },
-      answer.value.value.tabTitle,
-    )
-    if (outcome.kind === 'failed')
-      AppClientUiReport.error(`${outcome.detail}`)
-    else if (outcome.kind !== 'opened' && outcome.kind !== 'focusedExisting')
-      throw new Error(`Unknown panel open outcome: ${JSON.stringify(outcome)}`)
-  }
-
-  /** The plain tab a named session is drawn by, where THIS window holds it. Null anywhere else. */
-  static plainPanelFor(
-    controller: TabsController,
-    sessionId: string,
-  ): { panelId: string; sessionId: string } | null {
-    const panelId = TabsController.panelIdOf(
-      PanelKeysConst.terminal,
-      TerminalTargetCodec.params({ kind: 'local', sessionId }, 'tab'),
-    )
-    return controller.keyOf(panelId) === null ? null : { panelId, sessionId }
-  }
-
-  /** The session behind the active tab, where that tab is a plain one. Null for anything else. */
-  static plainTabOf(panelId: string | null): { panelId: string; sessionId: string } | null {
-    const read = TerminalTargetCodec.read(WorkspacePanels.terminalParamsIn(panelId))
-    if (panelId === null || read === null || read.presentation !== 'tab')
-      return null
-    if (read.target.kind === 'local')
-      return { panelId, sessionId: read.target.sessionId }
-    else if (read.target.kind === 'remote')
-      return null
-    else
-      throw new Error(`Unknown terminal target: ${JSON.stringify(read.target)}`)
-  }
-
-  /**
-   * The terminal behind the active tab, whichever of the two presentations it is: both draw a
-   * session, and the widgets that read this are about the session rather than about the tab.
-   */
+  /** The terminal behind the active tab: what the widgets that read this are about is its session. */
   static activeTerminalOf(panelId: string | null): ActiveTerminalReading | null {
     const read = TerminalTargetCodec.read(WorkspacePanels.terminalParamsIn(panelId))
     if (panelId === null || read === null)

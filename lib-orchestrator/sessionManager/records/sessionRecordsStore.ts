@@ -244,6 +244,11 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
         continue
       }
       const record = candidate as SessionRecord
+      // The one field this store does NOT let ride through, because it is gone rather than unknown:
+      // a record written before 2026-09-23 may still say `presentation: "tab"`, and such a session
+      // is an ordinary session of the tree now. Dropping it on read is what clears it from the file
+      // - the next write of any record writes the whole document - so this line retires itself.
+      delete (record as { presentation?: unknown }).presentation
       seen.add(record.sessionId)
       records.push(record)
     }
@@ -289,7 +294,7 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       if (agent) return `record ${record.sessionId}: ${agent}`
     }
     // Named for what it is rather than for the four setup checks it began as: it now carries
-    // flowId, presentation, completed, stopRequested and note, none of which is a setup field.
+    // flowId, completed, stopRequested and note, none of which is a setup field.
     const problem = SessionRecordsStore.pendingSetupProblem(record.pendingSetup)
       ?? SessionRecordsStore.transcriptCwdProblem(record.transcriptCwd, record.kind)
       ?? SessionRecordsStore.setupSkippedProblem(record.setupSkipped)
@@ -299,7 +304,6 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       ?? SessionRecordsStore.worktreeMergeProblem(record.worktreeMerge)
       ?? SessionRecordsStore.resolveForProblem(record.resolveFor)
       ?? SessionRecordsStore.flowIdProblem(record.flowId)
-      ?? SessionRecordsStore.presentationProblem(record.presentation)
       ?? SessionRecordsStore.completedProblem(record.completed)
       ?? SessionRecordsStore.stopRequestedProblem(record.stopRequested)
       ?? SessionRecordsStore.noteProblem(record.note)
@@ -330,11 +334,6 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     if (value === undefined) return null
     if (typeof value !== 'string') return 'note must be a string'
     return null
-  }
-
-  private static presentationProblem(value: SessionRecord['presentation']): string | null {
-    if (value === undefined || value === 'tab') return null
-    return `unknown presentation ${JSON.stringify(value)}`
   }
 
   /** Absent or true; `false` is how a record says nothing, and it says it by leaving the field out. */

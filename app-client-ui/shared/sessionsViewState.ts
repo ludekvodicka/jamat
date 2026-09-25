@@ -1,4 +1,4 @@
-export type SessionsTabsView = 'separated' | 'together' | 'states'
+export type SessionsTabsView = 'together' | 'states'
 
 /**
  * The rules of the sessions panel's grouping choice, with no React and no DOM. It lives in `shared/`
@@ -8,19 +8,23 @@ export type SessionsTabsView = 'separated' | 'together' | 'states'
  * of the splitter, and this lands when somebody presses the button.
  */
 export class SessionsViewState {
-  /** Two trees, because that is the arrangement that shows both kinds without a second click. */
-  static readonly defaultConst: SessionsTabsView = 'separated'
+  /** One tree, which is what the panel holds now that a session is a session wherever it is drawn. */
+  static readonly defaultConst: SessionsTabsView = 'together'
   static readonly labelsConst: Record<SessionsTabsView, string> = {
-    together: 'All together', separated: 'Tabs separated', states: 'States separated',
+    together: 'All together', states: 'States separated',
   }
 
   /**
    * Read leniently: this is how the panel looks, not what it holds, so anything unreadable costs one
    * press of a button. A value nobody wrote is silent - it is the first start - and a value somebody
    * wrote wrong is reported, because that one says the file was written by something.
+   *
+   * `separated` was the third value and the default until 2026-09-23: it drew the plain tabs in a
+   * tree of their own. It is silent as well, because a file that still says it was written by the
+   * build before that one rather than by something that cannot write this file.
    */
   static coerce(value: unknown, report: (message: string) => void): SessionsTabsView {
-    if (value === undefined || value === null)
+    if (value === undefined || value === null || value === 'separated')
       return SessionsViewState.defaultConst
     if (SessionsViewState.isValid(value))
       return value

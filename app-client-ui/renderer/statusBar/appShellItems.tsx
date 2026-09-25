@@ -7,8 +7,6 @@ import type { AppShellHostStatus } from '../shell/appShell.types'
 import { HostStatusItem } from './hostStatusItem'
 import { CurrentProjectItem, type CurrentProject } from './currentProjectItem'
 import { RateStatusItem, type RateStatusPorts } from './rateStatusItem'
-import type { PerfReading } from '../../shared/perfSample'
-import { PerfStatusItem } from './perfStatusItem'
 import { SessionModelItem } from './sessionModelItem'
 import type { SessionModelCurrent } from '../sessionModel/sessionModelStore'
 import type { StatusBarItem } from './statusBar'
@@ -71,17 +69,9 @@ export class AppShellItems {
        */
       compact: SessionCompact
       rate: { ports: RateStatusPorts; store: SnapshotStore<RateMonitorSnapshot> }
-      /**
-       * Drawn whatever is in front, unlike the two beside it: a window that is not answering has no
-       * tab in front either. Null until the first sample lands, which is why the slot is decided
-       * here - an item that draws nothing still leaves a separator.
-       */
-      perf: PerfReading | null
     },
   ): readonly StatusBarItem[] {
     const items: StatusBarItem[] = []
-    if (widgets.perf !== null)
-      items.push({ key: 'perf', node: <PerfStatusItem reading={widgets.perf} /> })
     if (windowInfo?.name !== null && windowInfo?.name !== undefined)
       items.push({ key: 'window', node: <span>{windowInfo.name}</span> })
     if (focus !== null) {

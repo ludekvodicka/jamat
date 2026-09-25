@@ -183,7 +183,8 @@ export class ContextCompactionController {
     if (this.generation !== generation) return
     let reason: string
     switch (result.kind) {
-      case 'sent': reason = 'Compact was requested. Its result is not confirmed by Jamat.'; break
+      case 'delivered': reason = `The agent accepted /compact (proof: ${result.proof}). Compaction has started, not finished.`; break
+      case 'refused': reason = `/compact was not delivered: ${result.detail}`; break
       case 'cooldown': reason = 'Another compact request holds the automatic cooldown.'; break
       case 'unavailable': reason = 'The compact command could not reach a writable terminal.'; break
       case 'failed': reason = result.detail; break

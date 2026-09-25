@@ -96,7 +96,7 @@ export class HistoricSessionsEffects {
     if (!published.ok) AppClientUiReport.error(`terminal restart not published: ${published.error}`)
     const failure = await SessionTabOpener.open(
       (id, title) => openTerminal({ kind: 'local', sessionId: id }, title),
-      sessionId, tabTitle, { plain: false, closePlain: SessionTabOpener.closePlain },
+      sessionId, tabTitle,
     )
     if (failure !== null) throw new Error(failure)
   }

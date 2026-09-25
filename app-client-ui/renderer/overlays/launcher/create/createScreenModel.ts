@@ -127,12 +127,6 @@ export interface CreateScreenState {
    * by it, and every branch over it throws on a kind nobody has decided about.
    */
   target: LauncherTarget
-  /**
-   * The same screen asking a shorter question: a short type list and no isolation. It names the FORM
-   * and not the result, which is why it is not called `plainTab` any more - `New` and `Shell` from
-   * this profile are plain tabs, while `Continue/Fork` is a session of the tree like any other.
-   */
-  tabProfile: boolean
   field: CreateField
   /** Into `CreateScreenModel.typesOf`, which grows with the flow catalog and not with this file. */
   typeIndex: number
@@ -334,7 +328,6 @@ export class CreateScreenModel {
   static opened(
     binding: LauncherBinding,
     options?: {
-      tabProfile?: true
       agentId?: SessionAgentId
       target?: LauncherTarget
       /** What the name field opens holding, from the session this card was opened beside. */
@@ -342,13 +335,11 @@ export class CreateScreenModel {
       source?: CreateSessionTarget
     },
   ): CreateScreenStep {
-    const tabProfile = options?.tabProfile === true
     const target: LauncherTarget = options?.target ?? { kind: 'local' }
     const source = options?.source ?? null
     const state: CreateScreenState = {
       binding,
       target,
-      tabProfile,
       // The name is the one answer nobody else can give: every other row opens on what is wanted
       // most of the time, so the card opens ready to be typed into and `↓` leaves the field. A
       // resume asks for no name, so there the cursor opens on the list, standing on its session.
@@ -381,11 +372,9 @@ export class CreateScreenModel {
         { effect: 'describeAgents', remoteEndpointId: endpoint },
       )
     const effects: CreateScreenEffect[] = []
-    // A tab is not counted: a number is a project's running count of the work done in it, and a tab
-    // is not work the tree is keeping. Continue/Fork from this profile does land in the tree, but it
-    // takes the number the conversation already has rather than one peeked here. Only a catalog
-    // project is counted at all: the other two bindings name a directory, not a project.
-    if (!tabProfile && binding.mode === 'project')
+    // Only a catalog project is counted at all: the other two bindings name a directory, not a
+    // project.
+    if (binding.mode === 'project')
       effects.push({ effect: 'fetchNumber', projectPath: binding.projectPath })
     // Opened on a session: Continue/Fork leads and opens chosen, so its list is read now rather
     // than when somebody walks onto the type.
@@ -418,12 +407,11 @@ export class CreateScreenModel {
    * withheld - the list is shorter, never a different vocabulary.
    */
   static typesOf(profile: {
-    tabProfile: boolean
     target: LauncherTarget
     source: CreateSessionTarget | null
   }): readonly CreateType[] {
     const types: readonly CreateType[] =
-      profile.tabProfile || CreateScreenModel.endpointOf(profile.target) !== null
+      CreateScreenModel.endpointOf(profile.target) !== null
         ? CreateScreenModel.shortTypesConst
         : [
             { kind: 'raw' },
@@ -567,14 +555,7 @@ export class CreateScreenModel {
     const type = CreateScreenModel.typeOf(state)
     const worktree = state.worktree && title !== undefined ? { slug: title } : undefined
     const acknowledgeSetup = state.acknowledgeSetup ?? undefined
-    /*
-     * The PROFILE decides the presentation and the TYPE decides the rest. Both types that reach this
-     * method from the tab card - `raw` and `shell` - are drawn by their tab alone; Continue/Fork
-     * never arrives here, because an existing conversation is opened through `openHistorySpecOf` and
-     * stays a session of the tree. An empty name leaves the title to the library, which names it
-     * after the directory.
-     */
-    const presentation = state.tabProfile ? ('tab' as const) : undefined
+    // An empty name leaves the title to the library, which names it after the directory.
     if (type.kind === 'shell')
       return {
         kind: 'shell',
@@ -582,7 +563,6 @@ export class CreateScreenModel {
         title,
         worktree,
         acknowledgeSetup,
-        presentation,
       }
     else if (type.kind === 'raw' || type.kind === 'flow') {
       const model = CreateScreenModel.chosenModelOf(state)
@@ -597,7 +577,6 @@ export class CreateScreenModel {
         },
         worktree,
         acknowledgeSetup,
-        presentation,
       }
     }
     else if (type.kind === 'existing')
@@ -788,7 +767,6 @@ export class CreateScreenModel {
   static worktreeRefusal(state: CreateScreenState): string | null {
     if (CreateScreenModel.endpointOf(state.target) !== null)
       return 'worktree isolation is set up on the target computer'
-    if (state.tabProfile) return 'a tab runs without isolation'
     // The same rule the library keeps: a session opened out of this list runs where it already
     // runs, and a worktree belongs to the one session it was cut for.
     if (CreateScreenModel.typeOf(state).kind === 'existing')
@@ -958,11 +936,10 @@ export class CreateScreenModel {
 
   private static readonly fieldsConst: readonly CreateField[] =
     ['name', 'type', 'isolation', 'agent']
-  /** The same rows minus isolation, which neither reduced profile asks and both refuse in words. */
-  private static readonly shortFieldsConst: readonly CreateField[] = ['name', 'type', 'agent']
   /**
-   * The remote rows: the tab card's, plus the model. It comes AFTER the agent because it is the
-   * agent's - the target answers per agent, and switching agents drops whatever was chosen.
+   * The remote rows: name, type and agent - a worktree is set up on the target - plus the model. It
+   * comes AFTER the agent because it is the agent's: the target answers per agent, and switching
+   * agents drops whatever was chosen.
    */
   private static readonly remoteFieldsConst: readonly CreateField[] =
     ['name', 'type', 'agent', 'model']
@@ -984,7 +961,6 @@ export class CreateScreenModel {
         : CreateScreenModel.existingFieldsConst
     if (CreateScreenModel.endpointOf(state.target) !== null)
       return CreateScreenModel.remoteFieldsConst
-    if (state.tabProfile) return CreateScreenModel.shortFieldsConst
     return CreateScreenModel.fieldsConst
   }
 
