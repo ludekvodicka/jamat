@@ -15,6 +15,15 @@ export class FileChangesLimits {
   static readonly readTimeoutMilliseconds = 20_000
 
   /**
+   * The same, for the SVN reads a commit review makes.
+   *
+   * A group working copy such as `Q:\Projects` holds a hundred externals, and its whole-scope
+   * `svn status` runs for minutes, so the panel limit above made the review impossible to open there.
+   * A review is opened on purpose and can be cancelled; the panel is read on every refresh.
+   */
+  static readonly commitReadTimeoutMilliseconds = 10 * 60_000
+
+  /**
    * How many child processes one history read may have in flight.
    *
    * A hundred commits meant a hundred concurrent `git diff-tree`, and on Windows a spawn costs tens
@@ -33,6 +42,15 @@ export class FileChangesLimits {
    * rather than growing into a snapshot of tens of megabytes crossing the IPC boundary.
    */
   static readonly listingEntriesMax = 5_000
+
+  /**
+   * How many untouched nodes a copied directory may carry and still be listed one row each.
+   *
+   * Moving a whole project into `xObsolete/` is one copy of tens of thousands of files, and listing
+   * them ran into `listingEntriesMax` and refused the review. Past this the directory stays one row
+   * with a count, which is what the commit publishes anyway: one copy node.
+   */
+  static readonly copiedListingEntriesMax = 200
 
   /** How much of a tool's own output may become the text of a warning. */
   static readonly failureDetailCharactersMax = 2_000

@@ -109,7 +109,7 @@ describe('lib-orchestrator/sessionManager/launch/codexIdCapture', () => {
       return { ...base, agent: { agentId: 'codex', launchMode: 'new', initialPrompt } }
     }
 
-    // parallel-issue-fixer launches several sessions in one folder, each with its own prompt.
+    // The ticket scheduler launches several sessions in one folder, each with its own prompt.
     it('binds both by their prompts whichever rollout lands first', () => {
       const a = prompted(first, 'Fix  ticket #12\n')
       const b = prompted(second, 'Fix ticket #13')

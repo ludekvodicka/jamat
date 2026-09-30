@@ -80,6 +80,7 @@ describe('app-client-ui/app/sessions/serviceSessionsIpc', () => {
       nextSessionNumber: record('nextSessionNumber'),
       allocateSessionNumber: record('allocateSessionNumber'),
       startHost: record('startHost'),
+      restartHost: record('restartHost'),
       sessionReference: record('sessionReference'),
     } as unknown as SessionManager
   }
@@ -138,6 +139,7 @@ describe('app-client-ui/app/sessions/serviceSessionsIpc', () => {
     await invoke('sessions:next-number', 'Q:/x/AppJamatV3')
     await invoke('sessions:allocate-number', 'Q:/x/AppJamatV3')
     await invoke('sessions:start-host')
+    await invoke('sessions:restart-host', 'host-1')
     await invoke('sessions:reference', 'session-1')
 
     expect(calls).toEqual([
@@ -158,6 +160,7 @@ describe('app-client-ui/app/sessions/serviceSessionsIpc', () => {
       { method: 'nextSessionNumber', args: ['Q:/x/AppJamatV3'] },
       { method: 'allocateSessionNumber', args: ['Q:/x/AppJamatV3'] },
       { method: 'startHost', args: [] },
+      { method: 'restartHost', args: ['host-1'] },
       { method: 'sessionReference', args: ['session-1'] },
     ])
   })

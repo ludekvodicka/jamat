@@ -133,6 +133,13 @@ describe('app-client-ui/app/clientState/clientStateStore', () => {
       { key: 'project:category:nodejs/q:/work', group: 'blocked' },
       { key: 'session:fork', group: 'waiting' },
     ])
+
+    // None is no group of its own: the key goes, and the fork inherits from its project again.
+    store.assignSessionGroup('session:fork', 'none')
+    expect(reopen().loadSessionGroups()).toEqual([
+      { key: 'session:parent', group: 'priority' },
+      { key: 'project:category:nodejs/q:/work', group: 'blocked' },
+    ])
   })
 
   it('persists pins through restarts and other state writes without accepting invalid or mutable input', () => {

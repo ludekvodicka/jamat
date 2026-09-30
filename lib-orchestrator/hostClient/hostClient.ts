@@ -167,6 +167,12 @@ export class HostClient {
     )
   }
 
+  async stopHost(expectedHostInstanceId: string): Promise<HostCallResult<{ stopping: true; live: number }>> {
+    if (this.watcher.current()?.hostInstanceId !== expectedHostInstanceId)
+      return { ok: false, code: 'host-unreachable', detail: 'The Host changed before the restart. Try again.' }
+    return this.mutate('host.stop', (controllerLeaseId) => ({ controllerLeaseId, force: true }))
+  }
+
   /** No lease means the call is refused here rather than queued: authority is not something to wait for. */
   private async mutate<T>(
     name: HostOpName,

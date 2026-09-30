@@ -596,6 +596,25 @@ export class SessionLifecycle {
     return this.setupFlow.retrySetup(sessionId, acknowledgeSetup)
   }
 
+  async prepareHostRestart(listing: RuntimeListResult): Promise<SessionsOpResult<string[]>> {
+    if (this.records.latched) return OperationOutcomes.latched()
+    const sessions: string[] = []
+    for (const runtime of listing.sessions) {
+      if (!runtime.alive) continue
+      const stored = this.records.get(runtime.runtimeSessionId)
+      if (!stored)
+        return { ok: false, code: 'invalid-spec', detail: `Adopt or stop runtime ${runtime.runtimeSessionId} before restarting the Host.` }
+      const record = await this.withCapturedCodexId(stored)
+      const problem = record.pendingSetup || record.setupFor || record.commands || record.resolveFor || record.agent?.oneShot
+        ? 'a setup or one-shot task is still running; let it finish before restarting the Host'
+        : record.agent ? AgentPresets.reopenProblem(record.agent) : null
+      if (problem)
+        return { ok: false, code: 'invalid-spec', detail: `Cannot restore ${record.title} after a Host restart: ${problem}` }
+      sessions.push(record.sessionId)
+    }
+    return { ok: true, value: sessions }
+  }
+
   async reopen(sessionId: string): Promise<SessionsOpResult> {
     let record = this.records.get(sessionId)
     if (!record) return OperationOutcomes.notFound(sessionId)

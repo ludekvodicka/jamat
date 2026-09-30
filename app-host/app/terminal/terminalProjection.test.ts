@@ -1,8 +1,55 @@
 import { describe, expect, it } from 'vitest'
+import xtermHeadless from '@xterm/headless'
 
 import { TerminalProjection } from './terminalProjection.js'
 
 describe('app-host/app/terminal/terminalProjection', () => {
+  it.each([
+    ['SGR cells', '\u001b[?1006h', 1, 2],
+    ['SGR pixels', '\u001b[?1016h', 2, 1],
+    ['combined modes', '\u001b[?1003;1006h', 1, 2],
+    ['last encoding wins', '\u001b[?1016;1006h', 1, 2],
+    ['pixel encoding wins', '\u001b[?1006;1016h', 2, 1],
+    ['disabled SGR', '\u001b[?1006h\u001b[?1006l', 2, 2],
+    ['reset other encoding', '\u001b[?1016h\u001b[?1006l', 2, 2],
+    ['full reset', '\u001b[?1006h\u001bc\u001b[?1049h\u001b[?1003h', 2, 2],
+    ['soft reset retains encoding', '\u001b[?1006h\u001b[!p', 1, 2],
+    ['tracking toggled', '\u001b[?1006h\u001b[?1003l\u001b[?1003h', 1, 2],
+  ])('preserves mouse encoding through an attach snapshot: %s', async (_, sequence, cells, pixels) => {
+    const projection = new TerminalProjection('runtime-mouse', 1, 1, 259, 72)
+    try {
+      projection.append(`\u001b[?1049h\u001b[?1003h${sequence}`)
+      const snapshot = await projection.snapshot(true, TerminalProjection.attachOptionsConst)
+      expect(await TerminalProjectionTest.mouseModes(snapshot.screen)).to.deep.equal([
+        `\u001b[?1006;${cells}$y`, `\u001b[?1016;${pixels}$y`,
+      ])
+    } finally {
+      projection.dispose()
+    }
+  })
+
+  it('retains split mouse mode sequences across repeated snapshots and a queued mode change', async () => {
+    const projection = new TerminalProjection('runtime-mouse-split', 1, 1, 259, 72)
+    try {
+      projection.append('\u001b[?1049h\u001b[?1003h\u001b[?10')
+      projection.append('06h')
+      for (let attach = 0; attach < 2; attach += 1) {
+        const snapshot = await projection.snapshot(true, TerminalProjection.attachOptionsConst)
+        expect(await TerminalProjectionTest.mouseModes(snapshot.screen)).to.deep.equal([
+          '\u001b[?1006;1$y', '\u001b[?1016;2$y',
+        ])
+      }
+      projection.append('output')
+      const pending = projection.snapshot(true, TerminalProjection.attachOptionsConst)
+      projection.append('\u001b[?1006l\u001b[?1016h')
+      expect(await TerminalProjectionTest.mouseModes((await pending).screen)).to.deep.equal([
+        '\u001b[?1006;2$y', '\u001b[?1016;1$y',
+      ])
+    } finally {
+      projection.dispose()
+    }
+  })
+
   /**
    * The width table this projection measures with, which is the only thing here a client can
    * disagree with: the screen serialized out of this buffer is written into the client's.
@@ -106,6 +153,21 @@ describe('app-host/app/terminal/terminalProjection', () => {
 
 /** What a screen looks like once a terminal has drawn it, which is the only thing a client sees. */
 class TerminalProjectionTest {
+  static async mouseModes(screen: string): Promise<string[]> {
+    const terminal = new xtermHeadless.Terminal({ cols: 259, rows: 72, allowProposedApi: true })
+    const replies: string[] = []
+    terminal.onData((data) => replies.push(data))
+    try {
+      await new Promise<void>((resolve) => terminal.write(
+        `${screen}\u001b[?1006$p\u001b[?1016$p`, resolve))
+      expect(terminal.buffer.active.type).to.equal('alternate')
+      expect(terminal.modes.mouseTrackingMode).to.equal('any')
+      return replies
+    } finally {
+      terminal.dispose()
+    }
+  }
+
   static async drawn(screen: string): Promise<string> {
     const terminal = new TerminalProjection('runtime-drawn', 1, 1, 20, 4)
     terminal.append(screen)

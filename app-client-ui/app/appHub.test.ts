@@ -694,7 +694,7 @@ describe('app-client-ui/app/appHub', () => {
   })
 
   it('holds the final IPC parity counts', () => {
-    expect(Object.keys(AppHub.ipcChannelsConst)).toHaveLength(180)
+    expect(Object.keys(AppHub.ipcChannelsConst)).toHaveLength(182)
     expect(Object.keys(AppClientUiBridgeEventsConst)).toHaveLength(21)
     expect(Object.keys(ServiceTabsIpc.channelsConst)).toHaveLength(13)
     expect(Object.keys(ServiceRemarkableIpc.channelsConst)).toHaveLength(16)

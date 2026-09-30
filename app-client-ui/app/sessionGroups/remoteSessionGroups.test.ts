@@ -29,8 +29,11 @@ describe('app-client-ui/app/sessionGroups/remoteSessionGroups', () => {
     expect(port.read([session]).get('session-1')).toBe('automation')
     expect(port.assign('session-1', 'waiting').ok).toBe(true)
     expect(port.read([session]).get('session-1')).toBe('waiting')
+    // None removes the session's own assignment, so the project's group shows through again.
     expect(port.assign('session-1', 'none').ok).toBe(true)
-    expect(port.read([session]).get('session-1')).toBeNull()
+    expect(port.read([session]).get('session-1')).toBe('automation')
+    assignments.push({ key: SessionsGroupsState.sessionKeyOf({ kind: 'local', sessionId: 'session-1' }), group: 'none' })
+    expect(port.read([session]).get('session-1')).toBe('automation')
     assignments = [{ key: SessionsGroupsState.sessionKeyOf({ kind: 'local', sessionId: 'session-1' }), group: 'removed-section' }]
     expect(port.read([session]).get('session-1')).toBeNull()
     assignments = [{ key: 'root:adhoc', group: 'blocked' }, { key: 'root:none', group: 'completed' }]

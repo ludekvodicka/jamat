@@ -1,4 +1,7 @@
 import type { DisplayEntry, ProjectEntry, VirtualFolderDef } from '../projectManagerApi.types'
+import type { ContainerEntry } from './projectScanner'
+
+type GroupEntry = Extract<DisplayEntry, { kind: 'group' }>
 
 /**
  * Virtual folders: a display grouping over project names, with no directory behind it. Ported from
@@ -18,25 +21,51 @@ export class DisplayGrouping {
     return DisplayGrouping.isUpperCase(name[prefix.length])
   }
 
-  /** Non-empty virtual folders first, sorted by title, then every project that matched none. */
+  /**
+   * Folders first, sorted by title, then every project that is in none. A folder is a virtual folder
+   * that matched something or a container, the empty ones included, since a session can start in a
+   * container before it holds a project. A project inside a container goes into that container's
+   * entries in the order it was handed over; only a project at the root is matched against the
+   * virtual folders, whose prefixes name directories of the root. The entry kind stays `group`, the
+   * name it has on the wire since containers were first drawn as folders.
+   */
   static buildDisplayEntries(
     projects: readonly ProjectEntry[],
     virtualFolders: readonly VirtualFolderDef[],
+    containers: readonly ContainerEntry[] = [],
   ): DisplayEntry[] {
+    const groups = new Map<string, GroupEntry>(containers.map((container) => [container.name, {
+      kind: 'group',
+      name: container.name,
+      title: container.name,
+      path: container.path,
+      entries: [],
+    }]))
+    const loose: ProjectEntry[] = []
+    for (const project of projects) {
+      const separator = project.name.indexOf('/')
+      const owner = separator < 0 ? undefined : groups.get(project.name.slice(0, separator))
+      if (owner === undefined) loose.push(project)
+      else owner.entries.push({ kind: 'project', project })
+    }
+
     const grouped = new Set<ProjectEntry>()
-    const folders: Extract<DisplayEntry, { kind: 'virtualFolder' }>[] = []
+    const folders: Extract<DisplayEntry, { kind: 'virtualFolder' | 'group' }>[] = [...groups.values()]
     for (const folder of virtualFolders) {
-      const children = projects.filter((project) =>
+      const children = loose.filter((project) =>
         DisplayGrouping.matchesVirtualPrefix(project.name, folder.prefix))
       for (const child of children) grouped.add(child)
       if (children.length > 0)
         folders.push({ kind: 'virtualFolder', prefix: folder.prefix, title: folder.title, children })
     }
-    folders.sort((left, right) => left.title.localeCompare(right.title))
-    const loose: DisplayEntry[] = projects
+    const rest: DisplayEntry[] = loose
       .filter((project) => !grouped.has(project))
       .map((project) => ({ kind: 'project', project }))
-    return [...folders, ...loose]
+    return [...DisplayGrouping.byTitle(folders), ...rest]
+  }
+
+  private static byTitle<T extends { title: string }>(folders: readonly T[]): T[] {
+    return [...folders].sort((left, right) => left.title.localeCompare(right.title))
   }
 
   /**

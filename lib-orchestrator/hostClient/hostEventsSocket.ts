@@ -34,8 +34,11 @@ export class HostEventsSocket {
   private attempt = 0
   private connectedValue = false
   private lastSubscribed: HostDebugStatus['eventsSocket']['lastSubscribed'] = null
+  private stopping: boolean
 
-  constructor(private readonly deps: HostEventsSocketDeps) {}
+  constructor(private readonly deps: HostEventsSocketDeps) {
+    this.stopping = false
+  }
 
   /**
    * A different Host process invalidates the cursor: revisions restart at zero there, so resuming
@@ -48,6 +51,7 @@ export class HostEventsSocket {
       this.hostInstanceId = descriptor.hostInstanceId
       this.cursor = null
       this.resyncOwed = true
+      this.stopping = false
     }
     this.descriptor = descriptor
     this.attempt = 0
@@ -154,6 +158,7 @@ export class HostEventsSocket {
   private onHostEvent(event: HostEvent): void {
     if (this.cursor !== null && event.revision <= this.cursor) return
     this.cursor = event.revision
+    if (event.kind === 'host-stopping') this.stopping = true
     this.deps.onEvent(event)
   }
 
@@ -164,7 +169,7 @@ export class HostEventsSocket {
     const wasConnected = this.connectedValue
     this.setConnected(false)
     if (this.descriptor === null) return
-    if (wasConnected) this.deps.onError(`The Host events socket dropped: ${detail}`)
+    if (wasConnected && !this.stopping) this.deps.onError(`The Host events socket dropped: ${detail}`)
     const ladder = HostEventsSocket.backoffMillisecondsConst
     const delay = ladder[Math.min(this.attempt, ladder.length - 1)]
     this.attempt += 1

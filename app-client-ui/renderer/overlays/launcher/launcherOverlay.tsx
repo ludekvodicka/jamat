@@ -871,7 +871,7 @@ class LauncherFootKeys {
   private static escapeLabelOf(state: LauncherState): string {
     if (state.search.text.length > 0)
       return 'Clear the filter'
-    if (state.virtualFolderPrefix !== null)
+    if (state.virtualFolderPrefix !== null || state.groupName !== null)
       return 'Leave folder'
     // The rung below a remote catalog is the computer list, not the way out.
     return state.remote === null ? 'Close' : 'Computers'

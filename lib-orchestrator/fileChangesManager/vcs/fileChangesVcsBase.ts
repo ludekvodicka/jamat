@@ -50,12 +50,16 @@ export abstract class FileChangesVcsBase implements Pick<FileChangesVcs, 'id'> {
    * Why a command did not work, in one paragraph the renderer draws.
    *
    * Cut, because the output it reads from is capped in megabytes rather than characters.
+   *
+   * stdout counts only when the tool itself exited. A child this process stopped left a partial
+   * ANSWER there, not a reason: a timed-out `svn status --xml` put its XML in the commit pane.
    */
   protected detailOf(outcome: VcsCommandOutcome): string {
-    const message = (outcome.stderr.trim() || outcome.stdout.trim())
+    const message = (outcome.stderr.trim() || (outcome.failure === null ? outcome.stdout.trim() : ''))
       .slice(0, FileChangesLimits.failureDetailCharactersMax)
-    return message || (outcome.failure
-      ? `${this.toolName} could not run (${outcome.failure})`
-      : `${this.toolName} exited with ${outcome.code}`)
+    if (message) return message
+    else if (outcome.failure === 'timeout') return `${this.toolName} did not finish in time`
+    else if (outcome.failure !== null) return `${this.toolName} could not run (${outcome.failure})`
+    else return `${this.toolName} exited with ${outcome.code}`
   }
 }

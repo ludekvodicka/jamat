@@ -116,8 +116,9 @@ class SmokeProjectManager extends SmokeHarness {
 
   /** The disk as it is before anything is asked of the library. */
   private seed(): void {
-    for (const name of ['node_modules', 'Archived', 'temporaryThing', join('Plugins', 'foo')])
+    for (const name of ['node_modules', 'Archived', 'temporaryThing', join('Plugins', 'foo'), join('Product', 'WebProductAdmin')])
       mkdirSync(join(this.projectsRoot, name), { recursive: true })
+    writeFileSync(join(this.projectsRoot, 'Product', '.appgroup'), '', 'utf8')
     mkdirSync(join(this.claudeHome, 'projects'), { recursive: true })
     mkdirSync(join(this.codexHome, 'sessions'), { recursive: true })
 
@@ -182,6 +183,8 @@ class SmokeProjectManager extends SmokeHarness {
     )
     const names = listed.projects.map((project) => project.name)
     this.check('a flattened container is listed as container/child', names.includes('Plugins/foo'))
+    this.check('a product group the Subfolders setting does not name is one project',
+      names.includes('Product') && !names.includes('Product/WebProductAdmin'))
     this.check('hiddenFolders, Archived and the container itself are not projects',
       !names.includes('node_modules') && !names.includes('Archived') && !names.includes('Plugins'))
     const virtual = SmokeProjectManager.virtualFolderOf(listed.entries, 'temporary')

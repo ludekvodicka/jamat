@@ -37,6 +37,7 @@ export interface VersioningCommitManagerDeps {
 
 interface Draft {
   dto: VersioningCommitDraftDto
+  committedPaths?: readonly string[]
   owners: Set<string>
   cwd: string
   lockRoot: string
@@ -201,6 +202,7 @@ export class VersioningCommitManager {
     else throw new Error(`Unknown commit phase: ${JSON.stringify(phase)}`)
     return { kind: 'commit-status', commitSessionId, sessionId, vcs, scopeRoot, state, closed,
       ...(draft.dto.paths === undefined ? {} : { paths: [...draft.dto.paths] }),
+      ...(draft.committedPaths === undefined ? {} : { committedPaths: [...draft.committedPaths] }),
       revision: phase.kind === 'done' ? phase.revision : null, detail: state === 'failed' && phase.kind === 'failed' ? phase.detail : null }
   }
 
@@ -326,6 +328,7 @@ export class VersioningCommitManager {
       if (!this.setMessage(ownerId, request.draftId, message))
         return fail('The commit message could not be saved')
       draft.dto.phase = { kind: 'running', startedAt }
+      if (draft.dto.vcs === 'svn') draft.committedPaths = []
       delete draft.externalReview
       this.bump(draft)
       temporary = await mkdtemp(join(tmpdir(), 'jamat-v3-commit-'))
@@ -374,6 +377,7 @@ export class VersioningCommitManager {
           }
           // An update that happened leaves the shown list behind whatever the retry did.
           if (!result.ok) return fail(result.detail, updateOutput !== null)
+          draft.committedPaths = [...new Set([...(draft.committedPaths ?? []), ...result.value.committedPaths])]
           completed.push({ scope, revision: result.value.revision,
             output: updateOutput === null ? result.value.output : `${updateOutput}\n${result.value.output}` })
         }

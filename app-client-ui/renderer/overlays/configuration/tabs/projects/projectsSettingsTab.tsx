@@ -89,6 +89,7 @@ export function ProjectsSettingsTab(props: ConfigurationTabProps): React.JSX.Ele
                     <ProjectsSettingsRow
                       category={category}
                       expanded={state.expanded.has(category.id)}
+                      subfoldersExpanded={state.subfoldersExpanded.has(category.id)}
                       first={index === 0}
                       key={category.id}
                       last={index === categories.length - 1}
@@ -200,6 +201,7 @@ class ProjectsSettingsAsk {
 function ProjectsSettingsRow(props: {
   category: CatalogCategoryDto
   expanded: boolean
+  subfoldersExpanded: boolean
   first: boolean
   last: boolean
   ports: ProjectsSettingsPorts
@@ -250,6 +252,11 @@ function ProjectsSettingsRow(props: {
         expanded={props.expanded}
         ports={ports}
       />
+      <ProjectsSettingsSubfolders
+        category={category}
+        expanded={props.subfoldersExpanded}
+        ports={ports}
+      />
     </li>
   )
 }
@@ -269,9 +276,9 @@ function ProjectsSettingsFolders(props: {
   const folders = ProjectsSettingsModel.foldersOf(category)
   const problems = ProjectsSettingsModel.folderProblemsOf(category)
   return (
-    <div className="jamat-configuration-projects__folders">
+    <div className="jamat-configuration-projects__block">
       <button
-        className="jamat-configuration-projects__folders-toggle"
+        className="jamat-configuration-projects__block-toggle"
         type="button"
         aria-expanded={props.expanded}
         onClick={() => ports.dispatch({ input: 'folders-toggled', id: category.id })}
@@ -352,6 +359,85 @@ function ProjectsSettingsFolders(props: {
             onClick={() => ports.dispatch({ input: 'folder-added', id: category.id })}
           >
             {`Add folder to ${category.label}`}
+          </button>
+        </>
+      )}
+    </div>
+  )
+}
+
+/**
+ * The subfolders of one root: real directories directly below it that the launcher opens like a
+ * folder, listing each directory inside as its own project. Every other directory, a product group
+ * holding `.appgroup` included, is one project. Stored as `flattenFolders`.
+ */
+function ProjectsSettingsSubfolders(props: {
+  category: CatalogCategoryDto
+  expanded: boolean
+  ports: ProjectsSettingsPorts
+}): React.JSX.Element {
+  const { category, ports } = props
+  const subfolders = ProjectsSettingsModel.subfoldersOf(category)
+  const problems = ProjectsSettingsModel.subfolderProblemsOf(category)
+  return (
+    <div className="jamat-configuration-projects__block">
+      <button
+        className="jamat-configuration-projects__block-toggle"
+        type="button"
+        aria-expanded={props.expanded}
+        onClick={() => ports.dispatch({ input: 'subfolders-toggled', id: category.id })}
+      >
+        {`${props.expanded ? '▾' : '▸'} Subfolders (${subfolders.length})`}
+      </button>
+      {props.expanded && (
+        <>
+          {subfolders.length === 0 && (
+            <p className="jamat-configuration-projects__note">
+              A subfolder is a directory directly below this root that holds several projects. The
+              launcher opens it like a folder and lists each directory inside it as a project. Any
+              other directory is one project, even when it holds more.
+            </p>
+          )}
+          {subfolders.map((subfolder, index) => (
+            <div className="jamat-configuration-projects__folder" key={index}>
+              <input
+                className="jamat-configuration-projects__subfolder"
+                value={subfolder}
+                placeholder="directory"
+                aria-label={`Subfolder ${index + 1} in ${category.label}`}
+                onChange={(event) => ports.dispatch({
+                  input: 'subfolder-changed',
+                  id: category.id,
+                  index,
+                  value: event.target.value,
+                })}
+              />
+              {/* Keyed by position and blurred before it goes, for the reason the folder rows
+                  above give. */}
+              <button
+                className="jamat-configuration__button"
+                type="button"
+                aria-label={`Remove subfolder ${index + 1} from ${category.label}`}
+                onClick={(event) => {
+                  event.currentTarget.blur()
+                  ports.dispatch({ input: 'subfolder-removed', id: category.id, index })
+                }}
+              >
+                Remove
+              </button>
+              {problems.has(index) && (
+                <span className="jamat-configuration-projects__warn" role="status">
+                  {problems.get(index)}
+                </span>
+              )}
+            </div>
+          ))}
+          <button
+            className="jamat-configuration__button"
+            type="button"
+            onClick={() => ports.dispatch({ input: 'subfolder-added', id: category.id })}
+          >
+            {`Add subfolder to ${category.label}`}
           </button>
         </>
       )}

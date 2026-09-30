@@ -5,6 +5,7 @@ import { join, relative } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { FileChangesVcsEntry } from '../vcs/fileChangesVcs.types'
+import { FileChangesLimits } from '../fileChangesLimits'
 import { FileChangesSvnCopied, type FileChangesSvnCopiedDeps } from './fileChangesSvnCopied'
 
 describe('lib-orchestrator/fileChangesManager/working/fileChangesSvnCopied', () => {
@@ -74,6 +75,14 @@ describe('lib-orchestrator/fileChangesManager/working/fileChangesSvnCopied', () 
     const entries = await f.reader.expand([f.entry, untracked, modified])
     expect(f.run).toHaveBeenCalledTimes(1)
     expect(entries.find((entry) => entry.repositoryPath === 'react/nested/deep.ts')).toMatchObject({ status: 'copied', nodeKind: 'file' })
+  })
+
+  /** A project moved into `xObsolete/` carries thousands of files; listing them refused the review. */
+  it('keeps a copy carrying more than the listing limit as one row with its count', async () => {
+    const children = Array.from({ length: FileChangesLimits.copiedListingEntriesMax + 1 }, (_, index) => ({ path: `f${index}.ts`, item: 'normal' }))
+    const f = await fixture(children)
+    const entries = await f.reader.expand([f.entry])
+    expect(entries).toEqual([{ ...f.entry, carriedItems: children.length }])
   })
 
   it('reports an SVN failure instead of pretending the copy is empty', async () => {

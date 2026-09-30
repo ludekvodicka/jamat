@@ -325,6 +325,7 @@ export class SessionManager {
       channel: deps.channel,
       presenceOf: () => this.client.presence(),
       descriptorOf: () => this.client.descriptor(),
+      stopHost: (expectedHostInstanceId) => this.client.stopHost(expectedHostInstanceId),
       onError: deps.onError,
       spawnImpl: deps.spawnImpl,
     })
@@ -889,12 +890,58 @@ export class SessionManager {
     return this.numbersLoad
   }
 
-  /** The manual attempt. There is no stopHost on purpose: `host.stop` kills every PTY. */
+  /** The manual start attempt. Client shutdown never calls a Host lifecycle operation. */
   async startHost(): Promise<SessionsOpResult> {
     const started = await this.controller.start()
     this.changed()
     if (started.ok) return { ok: true, value: undefined }
     return { ok: false, code: SessionManager.startCodeOf(started.code), detail: started.detail }
+  }
+
+  /**
+   * The manual stop. Live sessions end with the Host and are not reopened by a later start; the
+   * reconcile in `operate` finds them gone once a Host answers again.
+   */
+  stopHost(expectedHostInstanceId: string): Promise<SessionsOpResult> {
+    return this.operate(async () => {
+      const listed = await this.client.runtimeList()
+      if (!listed.ok) return listed
+      if (listed.value.hostInstanceId !== expectedHostInstanceId)
+        return { ok: false, code: 'host-unreachable', detail: 'The Host changed before the stop. Try again.' }
+      return this.controller.stop(expectedHostInstanceId)
+    })
+  }
+
+  restartHost(expectedHostInstanceId: string): Promise<SessionsOpResult> {
+    return this.operate(async (lifecycle) => {
+      const listed = await this.client.runtimeList()
+      if (!listed.ok) return listed
+      if (listed.value.hostInstanceId !== expectedHostInstanceId)
+        return { ok: false, code: 'host-unreachable', detail: 'The Host changed before the restart. Try again.' }
+      const prepared = await lifecycle.prepareHostRestart(listed.value)
+      if (!prepared.ok) return prepared
+      const restarted = await this.controller.restart(expectedHostInstanceId)
+      if (!restarted.ok) return restarted
+      // The event socket can be ready before controller authority on the replacement Host.
+      const clock = this.deps.exitClock ?? SessionManager.realExitClockConst
+      const until = clock.now() + SessionManager.exitBudgetMillisecondsConst
+      while (this.client.controllerLeaseId() === null && clock.now() < until)
+        await clock.wait(SessionManager.exitPollMillisecondsConst)
+      await this.reconcileNow(lifecycle, 'operation')
+      const failures: string[] = []
+      for (const sessionId of prepared.value) {
+        try {
+          const reopened = await lifecycle.reopen(sessionId)
+          if (!reopened.ok && reopened.code !== 'live-refused')
+            failures.push(`${sessionId}: ${reopened.detail}`)
+        } catch (error) {
+          failures.push(`${sessionId}: ${ErrorText.of(error)}`)
+        }
+      }
+      return failures.length === 0
+        ? { ok: true, value: undefined }
+        : { ok: false, code: 'op-rejected', detail: `The Host restarted, but some sessions could not be restored: ${failures.join('; ')}` }
+    })
   }
 
   /**

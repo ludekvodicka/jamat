@@ -1,6 +1,6 @@
 {
   "name": "jamat-v3-host",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "Detached generic process and PTY host. Runs on standalone Node, not Electron.",

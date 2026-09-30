@@ -34,10 +34,22 @@ export class LauncherLabels {
    * `housebazen`, a project the grouping deliberately left outside it. Drawn as `bazen` it read as a
    * member of a folder that refused it, and type-to-jump followed that made-up name.
    */
-  static projectLabelOf(name: string, virtualFolderPrefix: string | null): string {
+  static projectLabelOf(
+    name: string,
+    virtualFolderPrefix: string | null,
+    groupName: string | null = null,
+  ): string {
+    // Inside a group the group is the line above too, and every name in it starts with it.
+    if (groupName !== null && name.startsWith(`${groupName}/`))
+      return name.slice(groupName.length + 1)
     if (virtualFolderPrefix === null || !LauncherLabels.matchesVirtualPrefix(name, virtualFolderPrefix))
       return name
     return name.slice(virtualFolderPrefix.length)
+  }
+
+  /** `Complex` for `Atlas/Complex`: a group is named after its own directory. */
+  static groupTitleOf(groupName: string): string {
+    return groupName.slice(groupName.lastIndexOf('/') + 1)
   }
 
   /**
@@ -67,7 +79,10 @@ export class LauncherLabels {
     categoryLabel: string,
     folders: readonly VirtualFolderDef[],
     virtualFolderPrefix: string | null,
+    groupName: string | null = null,
   ): string {
+    if (groupName !== null)
+      return [categoryLabel, ...groupName.split('/')].join(' › ')
     const folder = LauncherLabels.folderTitleOf(folders, virtualFolderPrefix)
     return folder === null ? categoryLabel : `${categoryLabel} › ${folder}`
   }

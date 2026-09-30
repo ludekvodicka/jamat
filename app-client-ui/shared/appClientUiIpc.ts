@@ -354,11 +354,10 @@ export interface AppClientUiIpcInvokeMap {
    */
   'sessions:next-number': (projectPath: string) => SessionsOpResult<{ token: string }>
   'sessions:allocate-number': (projectPath: string) => SessionsOpResult<{ token: string }>
-  /**
-   * The manual attempt at starting a Host. There is deliberately no channel to stop one: `host.stop`
-   * kills every PTY, which is the opposite of what closing a client means here.
-   */
+  /** Explicit Host actions. Closing a client still only detaches. */
   'sessions:start-host': () => SessionsOpResult
+  'sessions:restart-host': (expectedHostInstanceId: string) => SessionsOpResult
+  'sessions:stop-host': (expectedHostInstanceId: string) => SessionsOpResult
   /**
    * One session written down for a SECOND agent: the machine, the agent and its own conversation id,
    * the directory and the transcript file. Composed in the library rather than here, and asked for
@@ -887,6 +886,8 @@ export const AppClientUiBridgeCallsConst = {
     nextNumber: 'sessions:next-number',
     allocateNumber: 'sessions:allocate-number',
     startHost: 'sessions:start-host',
+    restartHost: 'sessions:restart-host',
+    stopHost: 'sessions:stop-host',
     reference: 'sessions:reference',
   },
   remote: {

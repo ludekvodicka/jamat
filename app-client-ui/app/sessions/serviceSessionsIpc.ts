@@ -26,6 +26,8 @@ export class ServiceSessionsIpc extends ServiceIpcBase<typeof ServiceSessionsIpc
     'sessions:next-number': true,
     'sessions:allocate-number': true,
     'sessions:start-host': true,
+    'sessions:restart-host': true,
+    'sessions:stop-host': true,
     'sessions:reference': true,
   } as const
 
@@ -70,6 +72,10 @@ export class ServiceSessionsIpc extends ServiceIpcBase<typeof ServiceSessionsIpc
     this.register('sessions:allocate-number', (_event, projectPath) =>
       this.sessions.allocateSessionNumber(projectPath))
     this.register('sessions:start-host', () => this.sessions.startHost())
+    this.register('sessions:restart-host', (_event, expectedHostInstanceId) =>
+      this.sessions.restartHost(expectedHostInstanceId))
+    this.register('sessions:stop-host', (_event, expectedHostInstanceId) =>
+      this.sessions.stopHost(expectedHostInstanceId))
     this.register('sessions:reference', (_event, sessionId) =>
       this.sessions.sessionReference(sessionId))
     this.assertComplete(ServiceSessionsIpc.channelsConst)

@@ -10,6 +10,22 @@ import { VersioningCommitManager, type VersioningCommitManagerDeps } from './ver
 import { VersioningCommitMessageStore } from './versioningCommitMessageStore'
 
 describe('app-client-ui/app/versioning/versioningCommitManager', () => {
+  it('keeps requested paths separate from actual SVN paths after the review closes', async () => {
+    const f = await fixture()
+    const unchanged = join(f.root, 'unchanged.txt')
+    await writeFile(unchanged, 'already committed')
+    const prepared = await f.manager.prepare('session', 'svn', null, null, [f.path, unchanged])
+    if (!prepared.ok) throw new Error(prepared.detail)
+    const draftId = prepared.value.draftId
+    f.manager.attach(draftId, 'window')
+    expect(f.manager.files('window', draftId, f.snapshot).warnings).toEqual([])
+    f.deps.svn.commit = async () => ({ ok: true, value: { revision: '42', output: 'Committed', committedPaths: [f.path] } })
+    expect(await f.manager.run('window', { ...f.request, draftId })).toMatchObject({ ok: true })
+    f.manager.release(draftId, 'window')
+    expect(f.manager.status(draftId)).toMatchObject({ state: 'committed', closed: true,
+      paths: [f.path, unchanged].sort(), committedPaths: [f.path] })
+  })
+
   it('cancels one review, waits for every pane to close and reopens with a new identity and the saved message', async () => {
     const f = await fixture()
     f.manager.attach(f.draftId, 'second')
@@ -111,7 +127,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     f.deps.svn.commit = async () => {
       f.manager.revokeOwner('window')
       expect(f.manager.status(f.draftId)).toMatchObject({ state: 'running', closed: true })
-      return { ok: true, value: { revision: '43', output: 'Committed' } }
+      return { ok: true, value: { committedPaths: [], revision: '43', output: 'Committed' } }
     }
     await f.manager.run('window', f.request)
     expect(f.manager.status(f.draftId)).toMatchObject({ state: 'committed', closed: true, revision: '43' })
@@ -161,7 +177,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
         revertFile: async () => { writes.push('reverted'); return { ok: true, value: undefined } }, commit: async (_scope, _targets, message) => {
         phases.push(manager.read('window', draftId)?.phase.kind ?? 'absent')
         writes.push(await readFile(message, 'utf8'))
-        return { ok: true, value: { revision: '42', output: 'Committed revision 42.' } }
+        return { ok: true, value: { committedPaths: [], revision: '42', output: 'Committed revision 42.' } }
       } },
       onChanged: () => {}, newId: () => `draft-${++serial}`,
     }
@@ -432,7 +448,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
       expect(f.manager.read('window', f.draftId)?.phase).toMatchObject({ kind: 'running', startedAt: 10_000,
         progress: { stage: 'sending', completed: 50, total: 100, stageStartedAt, updatedAt: now, groupIndex, groupCount: 2 } })
       expect(changed).toHaveBeenCalledTimes(calls + 1)
-      return { ok: true, value: { revision: String(groupIndex), output: 'done' } }
+      return { ok: true, value: { committedPaths: [], revision: String(groupIndex), output: 'done' } }
     }
     const result = await f.manager.run('window', { ...f.request, fileIds: ['file', external.entry.fileId], includeExternals: true })
     expect(result).toMatchObject({ ok: true })
@@ -471,7 +487,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     f.deps.svn.commit = async (scope, targets, message) => {
       calls.push({ scope, paths: targets.map((target) => target.absolutePath), message: await readFile(message, 'utf8') })
       expect(f.manager.status(f.draftId)?.state).toBe('running')
-      return { ok: true, value: { revision: String(40 + calls.length), output: `Committed ${scope}` } }
+      return { ok: true, value: { committedPaths: [], revision: String(40 + calls.length), output: `Committed ${scope}` } }
     }
     expect(await f.manager.run('window', { ...f.request, fileIds: ['file', b.entry.fileId, a.entry.fileId], includeExternals: true }))
       .toEqual({ ok: true, revision: '41, 42, 43' })
@@ -527,7 +543,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(await f.manager.run('window', request)).toMatchObject({ ok: false, code: 'busy' })
     finish()
     await run
-    f.deps.svn.commit = async () => ({ ok: true, value: { revision: '50', output: 'done' } })
+    f.deps.svn.commit = async () => ({ ok: true, value: { committedPaths: [], revision: '50', output: 'done' } })
     expect(await f.manager.run('window', request)).toMatchObject({ ok: true })
   })
 
@@ -536,9 +552,11 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     const a = await addExternal(f, 'shared/a')
     const b = await addExternal(f, 'shared/b')
     const commit = vi.fn<VersioningCommitManagerDeps['svn']['commit']>()
-      .mockResolvedValueOnce({ ok: true, value: { revision: '51', output: 'first committed' } })
+      .mockResolvedValueOnce({ ok: true, value: { committedPaths: [a.entry.path], revision: '51', output: 'first committed' } })
       .mockResolvedValueOnce({ ok: false, code: 'locked', detail: 'second is locked' })
-      .mockResolvedValue({ ok: true, value: { revision: '52', output: 'committed' } })
+      .mockImplementation(async (_scope, targets) => ({ ok: true, value: {
+        committedPaths: targets.map((target) => target.absolutePath), revision: '52', output: 'committed',
+      } }))
     f.deps.svn.commit = commit
     const request = { ...f.request, fileIds: ['file', a.entry.fileId, b.entry.fileId], includeExternals: true as const }
     const result = await f.manager.run('window', request)
@@ -552,6 +570,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     f.snapshot.entries = f.snapshot.entries.filter((entry) => entry.fileId !== a.entry.fileId)
     expect(await f.manager.run('window', { ...request, snapshotId: 'refreshed', fileIds: ['file', b.entry.fileId] })).toMatchObject({ ok: true })
     expect(commit.mock.calls.map(([scope]) => scope)).toEqual([a.root, b.root, b.root, f.root])
+    expect(f.manager.status(f.draftId)?.committedPaths).toEqual([b.entry.path, f.path])
   })
 
   it('updates only the outdated external, reports earlier commits and stops before the main commit', async () => {
@@ -559,7 +578,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     const a = await addExternal(f, 'shared/a')
     const b = await addExternal(f, 'shared/b')
     f.deps.svn.commit = vi.fn<VersioningCommitManagerDeps['svn']['commit']>()
-      .mockResolvedValueOnce({ ok: true, value: { revision: '60', output: 'done' } })
+      .mockResolvedValueOnce({ ok: true, value: { committedPaths: [], revision: '60', output: 'done' } })
       .mockResolvedValue({ ok: false, code: 'out-of-date', detail: 'E155011' })
     f.deps.svn.update = vi.fn(async () => ({ ok: true as const, value: { output: 'Updated' } }))
     const result = await f.manager.run('window', { ...f.request, fileIds: ['file', a.entry.fileId, b.entry.fileId], includeExternals: true })
@@ -576,7 +595,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
       if (kind === 'changed') await utimes(f.path, new Date(0), new Date(0))
       else if (kind === 'closed') f.manager.release(f.draftId, 'window')
       else throw new Error(`Unknown test case: ${kind}`)
-      return { ok: true, value: { revision: '61', output: 'done' } }
+      return { ok: true, value: { committedPaths: [], revision: '61', output: 'done' } }
     })
     f.deps.svn.commit = commit
     expect(await f.manager.run('window', { ...f.request, fileIds: ['file', external.entry.fileId], includeExternals: true }))
@@ -601,7 +620,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
       return entry === undefined ? { ok: false, code: 'unknown-file', detail: 'unknown' }
         : { ok: true, value: { sessionId: 'session', cwd: f.root, path: entry.path, nodeKind: entry.nodeKind, status: entry.status, workingState: { vcsEntry: true, modifiedAt: entry.modifiedAt } } }
     }
-    const commit = vi.fn(async () => ({ ok: true as const, value: { revision: '42', output: 'committed' } }))
+    const commit = vi.fn(async () => ({ ok: true as const, value: { committedPaths: [], revision: '42', output: 'committed' } }))
     f.deps.svn.commit = commit
     const request = { ...f.request, fileIds: ['new/chosen.txt'] }
     await utimes(entries[1].path, new Date(), new Date(Date.now() + 20_000))
@@ -723,7 +742,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     const calls: string[][] = []
     f.deps.svn.commit = async (_scope, targets, _message) => {
       calls.push(targets.map((target) => target.absolutePath))
-      return { ok: true, value: { revision: '42', output: 'Committed revision 42.' } }
+      return { ok: true, value: { committedPaths: [], revision: '42', output: 'Committed revision 42.' } }
     }
     expect(await f.manager.run('window', { ...f.request, fileIds: ['react', 'carried'] })).toMatchObject({ ok: true })
     expect(calls).toEqual([[directory]])
@@ -918,7 +937,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     f.deps.svn.commit = async () => {
       started()
       await new Promise<void>((resolve) => { finish = resolve })
-      return { ok: true, value: { revision: '42', output: 'done' } }
+      return { ok: true, value: { committedPaths: [], revision: '42', output: 'done' } }
     }
     const run = f.manager.run('window', f.request)
     await entered
@@ -962,7 +981,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     const f = await fixture()
     const commit = vi.fn<VersioningCommitManagerDeps['svn']['commit']>()
       .mockResolvedValueOnce({ ok: false, code: 'out-of-date', detail: 'E155011: out of date' })
-      .mockResolvedValue({ ok: true, value: { revision: '45', output: 'Committed revision 45.' } })
+      .mockResolvedValue({ ok: true, value: { committedPaths: [], revision: '45', output: 'Committed revision 45.' } })
     f.deps.svn.commit = commit
     f.deps.svn.update = vi.fn(async () => ({ ok: true as const, value: { output: 'Updated to revision 44.' } }))
     expect(await f.manager.run('window', f.request)).toEqual({ ok: true, revision: '45' })
@@ -994,7 +1013,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(result).toMatchObject({ ok: false, reloadRequired: true, detail: expect.stringContaining('E170004') })
     expect(result).toMatchObject({ detail: expect.stringContaining(kind === 'exception' ? 'Connection lost' : 'app/file.ts') })
     expect(f.settled).toEqual([f.root])
-    f.deps.svn.commit = async () => ({ ok: true, value: { revision: '44', output: 'Committed' } })
+    f.deps.svn.commit = async () => ({ ok: true, value: { committedPaths: [], revision: '44', output: 'Committed' } })
     expect(await f.manager.run('window', f.request)).toEqual({ ok: true, revision: '44' })
   })
 

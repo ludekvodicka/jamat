@@ -69,8 +69,9 @@ export function useSessionsGroups(ports: SessionsGroupsPorts) {
 
   const assign = useCallback((key: string, group: SessionGroup): void => {
     if (!ready || busy.current) return
-    const next = new Map(groups)
-    next.set(key, group)
+    const current = [...groups].map(([held, heldGroup]) => ({ key: held, group: heldGroup }))
+    const next = new Map(SessionsGroupsState.assigned(current, key, group)
+      .map((assignment) => [assignment.key, assignment.group]))
     busy.current = true
     setSaving(true)
     setError(null)

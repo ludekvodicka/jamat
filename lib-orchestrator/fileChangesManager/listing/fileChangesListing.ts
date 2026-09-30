@@ -142,6 +142,7 @@ export class FileChangesListing {
         modifiedAt: null,
         sources: ['vcs'],
         gitState: vcs.gitState,
+        ...(vcs.carriedItems === undefined ? {} : { carriedItems: vcs.carriedItems }),
       },
     }
   }

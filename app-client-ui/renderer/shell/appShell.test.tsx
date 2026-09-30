@@ -834,8 +834,7 @@ class AppClientStub {
         return Promise.resolve({ ok: true as const, value: this.sessionsSnapshot })
       },
       create: refuse('create'),
-      // Read whenever a card opens on Continue/Fork, which the two commands acting on a session
-      // now do: this project has nothing recorded, so the session's own row is the whole list.
+      // This project has no recorded history, so the fork card contains only its source row.
       historyReferences: () => Promise.resolve({
         ok: true as const,
         value: { ok: true as const, value: { references: [] } },
@@ -878,6 +877,11 @@ class AppClientStub {
       }),
       allocateNumber: refuse('allocateNumber'),
       startHost: refuse('startHost'),
+      stopHost: refuse('stopHost'),
+      restartHost: () => {
+        this.sessionsSnapshot.host.hostInstanceId = 'replacement-host'
+        return Promise.resolve({ ok: true as const, value: { ok: true as const, value: undefined } })
+      },
       reference: (sessionId: string) => {
         this.referenced.push(sessionId)
         return Promise.resolve({
@@ -2002,6 +2006,23 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     expect(Sidebars.of(view.container, 'Sessions').textContent).not.toContain('Host')
   })
 
+  it('reattaches every restored live session after restarting the Host from the status bar', async () => {
+    const { client, view } = await mount({ sidebars: null, failed: false })
+    const item = await waitFor(() => {
+      const found = view.container.querySelector('.jamat-host-status')
+      expect(found?.textContent).toContain('live')
+      return found as HTMLElement
+    })
+    client.restartsPublished.length = 0
+    fireEvent.contextMenu(item)
+    fireEvent.click(document.querySelector('[role="menuitem"]') as HTMLElement)
+    await waitFor(() => expect(client.asked).toHaveLength(1))
+    expect(client.asked[0]?.detail).toContain('automatically reopen')
+    await waitFor(() => expect(client.restartsPublished).toEqual(
+      SessionsFixtures.mixed().sessions.filter((session) => session.life === 'live').map((session) => session.sessionId),
+    ))
+  })
+
   /**
    * Both terminal widgets are about the tab in front, so both arrive with it and both leave with it:
    * the right group reflows once per switch rather than twice. This is the supersession of the
@@ -2339,34 +2360,69 @@ describe('app-client-ui/renderer/shell/appShell', () => {
       .querySelector('[aria-label="Terminal for session forked-1"]')).toBeTruthy())
   })
 
-  /*
-   * The ended half of the same pair. It brings THAT session back rather than founding one, so what
-   * the card sends is an id: the session keeps its number, its name and its colour, and the tab that
-   * was left holding a dead screen is told to attach again before it is put in front.
-   */
-  it('opens the resume card on a stopped session and brings that session back', async () => {
+  it('resumes the named stopped session directly while another session has the active tab', async () => {
     const commandsOf = AppShellTest.captureCommands()
     const { client, view } = await mount({ sidebars: null, failed: false })
     await waitFor(() => expect(view.container.textContent).toContain('Lost claude'))
+    AppShellTest.openSession(view.container, 'Alpha worktree')
+    await view.findByLabelText('Terminal for session s-working')
 
     // The restart chain reopens lost sessions of its own accord, so what this test reads is what
-    // the CARD added: everything before the click belongs to the shell's own startup.
+    // the command added: everything before the click belongs to the shell's own startup.
     const before = { reopened: client.reopened.length, published: client.restartsPublished.length }
     act(() => void commandsOf().execute('session.resume', { sessionId: 's-lost' }))
 
-    await waitFor(() =>
-      expect(view.container.querySelector('.jamat-launcher-create')).toBeTruthy())
-    expect(client.reopened.slice(before.reopened)).toEqual([])
-    // No name to type over: the card stands on the session it would bring back and asks nothing.
-    expect(view.container.querySelector('[aria-label="Session name"]')).toBeNull()
-    expect(AppShellTest.launcherRow(view.container)).toBe('Lost claudethis sessionC')
-
-    fireEvent.click(AppShellTest.launcherStart(view.container))
-
     await waitFor(() => expect(client.reopened.slice(before.reopened)).toEqual(['s-lost']))
+    expect(view.container.querySelector('.jamat-launcher')).toBeNull()
+    expect(client.asked).toEqual([])
     expect(client.restartsPublished.slice(before.published)).toEqual(['s-lost'])
     await waitFor(() => expect(view.container
       .querySelector('[aria-label="Terminal for session s-lost"]')).toBeTruthy())
+  })
+
+  it.each(['claude', 'codex'] as const)('resumes an exited %s session from its active tab without a picker', async (agentId) => {
+    const snapshot = SessionsFixtures.mixed()
+    const ended = snapshot.sessions.find((session) => session.sessionId === 's-ended')!
+    ended.agent = { agentId, nativeSessionId: 'native-ended' }
+    expect(ended.exitCode).toBe(1)
+    const client = new AppClientStub({ sidebars: null, failed: false }, false, snapshot)
+    client.install()
+    const view = render(<MainShell />)
+    await waitFor(() => expect(view.container.textContent).toContain('Ended codex'))
+    AppShellTest.openSession(view.container, 'Ended codex')
+    await view.findByLabelText('Terminal for session s-ended')
+    const published = vi.spyOn(window.appClient.tabs, 'publishTerminalRestarted')
+    const reopened = vi.spyOn(window.appClient.sessions, 'reopen')
+
+    client.run('session.resume')
+
+    await waitFor(() => expect(reopened).toHaveBeenCalledWith('s-ended'))
+    await waitFor(() => expect(published).toHaveBeenCalledWith('s-ended'))
+    expect(reopened.mock.invocationCallOrder[0]).toBeLessThan(published.mock.invocationCallOrder[0]!)
+    expect(view.container.querySelector('.jamat-launcher')).toBeNull()
+    expect(client.asked).toEqual([])
+    expect(view.getAllByLabelText('Terminal for session s-ended')).toHaveLength(1)
+  })
+
+  it('reports a refused resume without publishing a restart or opening its terminal', async () => {
+    const commandsOf = AppShellTest.captureCommands()
+    const { view } = await mount({ sidebars: null, failed: false })
+    await waitFor(() => expect(view.container.textContent).toContain('Ended codex'))
+    const reopened = vi.spyOn(window.appClient.sessions, 'reopen').mockResolvedValue({
+      ok: true, value: { ok: false, code: 'live-refused', detail: 'The session is already running.' },
+    })
+    const published = vi.spyOn(window.appClient.tabs, 'publishTerminalRestarted')
+    const errors = vi.spyOn(AppClientUiReport, 'error').mockImplementation(() => {})
+
+    act(() => void commandsOf().execute('session.resume', { sessionId: 's-ended' }))
+
+    await waitFor(() => expect(errors).toHaveBeenCalledWith(
+      'Resuming the session failed: live-refused: The session is already running.',
+    ))
+    expect(reopened).toHaveBeenCalledWith('s-ended')
+    expect(published).not.toHaveBeenCalledWith('s-ended')
+    expect(view.queryByLabelText('Terminal for session s-ended')).toBeNull()
+    expect(view.container.querySelector('.jamat-launcher')).toBeNull()
   })
 
   /*

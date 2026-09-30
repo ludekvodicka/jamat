@@ -118,24 +118,27 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(container.querySelector('section[aria-label="Sessions"] [data-session="one"]')).not.toBeNull()
   })
 
-  it('shows inherited selection and lets a session override its root with None', async () => {
+  it('shows inherited selection and returns a session to its root group with None', async () => {
     const { container, ports } = await mount(SessionsFixtures.mixed(), 'together',
-      { revision: 1, outbound: [], inbound: [] }, [], [], [{ key: 'category:nodejs', group: 'priority' }])
+      { revision: 1, outbound: [], inbound: [] }, [], [], [
+        { key: 'category:nodejs', group: 'priority' }, { key: 'session:s-working', group: 'waiting' },
+      ])
     const priority = await screen.findByRole('region', { name: 'Priority' })
-    expect(priority.querySelector('[data-session="s-working"]')).not.toBeNull()
-    fireEvent.contextMenu(rowOf(container, 's-working'))
+    expect(priority.querySelector('[data-session="s-waiting"]')).not.toBeNull()
+    fireEvent.contextMenu(rowOf(container, 's-waiting'))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Groups' }))
     expect(screen.getByRole('menuitemcheckbox', { name: 'Priority' })).toHaveAttribute('aria-checked', 'true')
-    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'None' }))
-    await waitFor(() => expect(priority.querySelector('[data-session="s-working"]')).toBeNull())
-    expect(container.querySelector('.jamat-sessions__default-group')!.querySelector('[data-session="s-working"]')).not.toBeNull()
-    expect(priority.querySelector('[data-session="s-waiting"]')).not.toBeNull()
-    expect(ports.savedGroups).toContainEqual({ key: 'session:s-working', group: 'none' })
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(priority.querySelector('[data-session="s-working"]')).toBeNull()
+    fireEvent.contextMenu(rowOf(container, 's-working'))
+    chooseGroup('None')
+    await waitFor(() => expect(priority.querySelector('[data-session="s-working"]')).not.toBeNull())
+    expect(ports.savedGroups).toEqual([{ key: 'category:nodejs', group: 'priority' }])
     fireEvent.contextMenu(groupRowLabelled(priority, 'NodeJs'))
     chooseGroup('Blocked')
     const blocked = await screen.findByRole('region', { name: 'Blocked' })
     expect(blocked.querySelector('[data-session="s-waiting"]')).not.toBeNull()
-    expect(blocked.querySelector('[data-session="s-working"]')).toBeNull()
+    expect(blocked.querySelector('[data-session="s-working"]')).not.toBeNull()
   })
 
   it.each(['together', 'states'] as const)('pins a session above the other groups in %s and removes the empty heading on unpin', async (view) => {
@@ -152,7 +155,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     fireEvent.contextMenu(rowOf(container, 's-working'))
     chooseGroup('None')
     await waitFor(() => expect(screen.queryByRole('region', { name: 'Pinned' })).toBeNull())
-    expect(ports.savedGroups).toEqual([{ key: 'session:s-working', group: 'none' }])
+    expect(ports.savedGroups).toEqual([])
     expect(container.querySelector('[data-session="s-working"]')).not.toBeNull()
   })
 
@@ -1457,7 +1460,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     const { container, onCloseTerminal, setOpenTargets } = await mount(SessionsFixtures.mixed())
     setOpenTargets(['s-done'])
 
-    await waitFor(() => expect(labelsOf(container, 's-done')).toEqual(['Close']))
+    await waitFor(() => expect(labelsOf(container, 's-done')).toEqual(['Close', 'Remove']))
     fireEvent.click(actionNamed(container, 's-done', 'Close'))
 
     expect(onCloseTerminal).toHaveBeenCalledWith({ kind: 'local', sessionId: 's-done' })
@@ -1493,6 +1496,22 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     fireEvent.click(actionNamed(container, 's-working', 'Finish?'))
 
     expect(ports.calls).toEqual(['finalize:s-working'])
+  })
+
+  it('offers Remove inline for a finished session without a completed mark or open tab', async () => {
+    const snapshot = SessionsFixtures.mixed()
+    const finished = sessionOf(snapshot, 's-done')
+    delete finished.completed
+    finished.project = { kind: 'adHoc', path: 'C:/Projects/ApplicationsAi' }
+    const { ports, container, onCloseTerminal } = await mount({ ...snapshot, sessions: [finished] })
+
+    expect(labelsOf(container, 's-done')).toEqual(['Remove'])
+    fireEvent.click(actionNamed(container, 's-done', 'Remove'))
+    expect(ports.calls).toEqual([])
+    fireEvent.click(actionNamed(container, 's-done', 'Remove?'))
+
+    await waitFor(() => expect(ports.calls).toEqual(['remove:s-done']))
+    expect(onCloseTerminal).toHaveBeenCalledWith({ kind: 'local', sessionId: 's-done' })
   })
 
   it('drops an armed live Finish when the committed session stops', async () => {
@@ -2232,8 +2251,8 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
 
   /*
    * Bringing a stopped session back is `Resume session` since 2026-09-10, and it is a CATALOG
-   * command: this row names the session and stops there, and the card that command opens is what
-   * calls the library and tells the tab to attach again. The row's own operations - Finish, Remove,
+   * command: this row names the session and the shell calls the library and tells its tab to
+   * attach again. The row's own operations - Finish, Remove,
    * Retry setup - still act from here, which is why the tests above use one of those.
    */
   it('hands a stopped row to the resume command and calls the library for none of it', async () => {

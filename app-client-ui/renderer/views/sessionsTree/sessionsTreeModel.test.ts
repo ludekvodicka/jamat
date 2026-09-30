@@ -121,28 +121,27 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
     expect(find(together.nodes, 'session:s-working').children.map((node) => node.id)).toEqual(['session:child'])
   })
 
-  it('uses session then project then root assignments, including explicit None and new sessions', () => {
+  it('uses session then project then root assignments, including new sessions', () => {
     const source = SessionsFixtures.mixed()
     const base = source.sessions.find((session) => session.sessionId === 's-working')!
     const projectKey = build(source).nodes[0].children[0].id
     const snapshot = { ...source, sessions: [base, { ...base, sessionId: 'new' }, { ...base, sessionId: 'exception' }] }
     const assignments = new Map<string, SessionGroup>([
-      ['category:nodejs', 'blocked'], [projectKey, 'priority'],
-      ['session:s-working', 'none'], ['session:exception', 'waiting'],
+      ['category:nodejs', 'blocked'], [projectKey, 'priority'], ['session:exception', 'waiting'],
     ])
     const members = (group: SessionGroup): string[] => everyId(build(snapshot, { ...all, assignments, group }).nodes)
       .filter((id) => id.startsWith('session:'))
-    expect(members('priority')).toEqual(['session:new'])
-    expect(members('none')).toEqual(['session:s-working'])
+    expect(members('priority')).toEqual(['session:new', 'session:s-working'])
+    expect(members('none')).toEqual([])
     expect(members('waiting')).toEqual(['session:exception'])
     expect(members('blocked')).toEqual([])
     const tree = build(snapshot, { ...all, assignments })
     expect(find(tree.nodes, 'category:nodejs').group).toBe('blocked')
     expect(find(tree.nodes, projectKey).group).toBe('priority')
-    expect(find(tree.nodes, 'session:s-working').group).toBe('none')
+    expect(find(tree.nodes, 'session:s-working').group).toBe('priority')
     assignments.delete(projectKey)
-    expect(members('blocked')).toEqual(['session:new'])
-    expect(members('none')).toEqual(['session:s-working'])
+    expect(members('blocked')).toEqual(['session:new', 'session:s-working'])
+    expect(members('none')).toEqual([])
     expect(build(snapshot, { ...all, assignments, group: 'waiting', filterText: 'missing' }).nodes).toEqual([])
   })
 

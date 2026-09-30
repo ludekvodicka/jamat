@@ -26,11 +26,11 @@ export class FileChangesSvnUntracked {
   private readonly deps: FileChangesSvnUntrackedDeps
 
   constructor(deps?: FileChangesSvnUntrackedDeps) {
-    const git = new GitInvoker({ timeoutMilliseconds: FileChangesLimits.readTimeoutMilliseconds })
+    const git = new GitInvoker({ timeoutMilliseconds: FileChangesLimits.commitReadTimeoutMilliseconds })
     this.deps = deps ?? {
       git,
       checkpointStore: new GitCheckpointStore(git),
-      svn: new SvnInvoker({ timeoutMilliseconds: FileChangesLimits.readTimeoutMilliseconds }),
+      svn: new SvnInvoker({ timeoutMilliseconds: FileChangesLimits.commitReadTimeoutMilliseconds }),
       configFile: process.platform === 'win32'
         ? join(process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming'), 'Subversion', 'config')
         : join(homedir(), '.subversion', 'config'),

@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useRef, useState } from 'react'
 
 import type {
   HostStatusInfo,
@@ -10,10 +10,39 @@ import { ErrorText } from '../../shared/errorText'
 import { IpcFailure } from '../ipc/ipcFailure'
 import type { SnapshotStore } from '../ipc/snapshotStore'
 import { useSessionsSnapshot } from '../views/sessionsTree/useSessionsSnapshot'
+import { ContextMenu, type ContextMenuPosition } from '../widgets/contextMenu'
 
 export interface HostStatusPorts {
   reportError(message: string): void
   startHost(): Promise<IpcResult<SessionsOpResult>>
+  restartHost(hostInstanceId: string): Promise<IpcResult<SessionsOpResult>>
+  stopHost(hostInstanceId: string): Promise<IpcResult<SessionsOpResult>>
+  confirmHostRestart(liveCount: number): Promise<IpcResult<boolean>>
+  confirmHostStop(liveCount: number): Promise<IpcResult<boolean>>
+}
+
+type HostAction = 'restart' | 'stop'
+
+interface HostActionSpec {
+  verb: string
+  busyText: string
+  confirm(ports: HostStatusPorts, liveCount: number): Promise<IpcResult<boolean>>
+  run(ports: HostStatusPorts, hostInstanceId: string): Promise<IpcResult<SessionsOpResult>>
+}
+
+const hostActionsConst: Record<HostAction, HostActionSpec> = {
+  restart: {
+    verb: 'restarted',
+    busyText: 'Host restarting…',
+    confirm: (ports, liveCount) => ports.confirmHostRestart(liveCount),
+    run: (ports, hostInstanceId) => ports.restartHost(hostInstanceId),
+  },
+  stop: {
+    verb: 'stopped',
+    busyText: 'Host stopping…',
+    confirm: (ports, liveCount) => ports.confirmHostStop(liveCount),
+    run: (ports, hostInstanceId) => ports.stopHost(hostInstanceId),
+  },
 }
 
 /** What a surface draws about the Host: one line of text, and whether it may offer to start one. */
@@ -58,6 +87,9 @@ export function HostStatusItem(props: {
 }): React.JSX.Element {
   const { ports, snapshotStore } = props
   const { snapshot, error, refresh } = useSessionsSnapshot(snapshotStore)
+  const [menu, setMenu] = useState<{ position: ContextMenuPosition; hostInstanceId: string | null; liveCount: number } | null>(null)
+  const [busy, setBusy] = useState<HostAction | null>(null)
+  const actionPending = useRef(false)
   const host = snapshot?.host ?? null
   const presence = host?.presence ?? null
   const hostVersion = host?.hostVersion ?? null
@@ -80,6 +112,59 @@ export function HostStatusItem(props: {
         ports.reportError(`The Host could not be started: ${ErrorText.of(thrown)}`))
   }
 
+  const act = async (action: HostAction): Promise<void> => {
+    if (menu === null || menu.hostInstanceId === null || actionPending.current) return
+    const hostInstanceId = menu.hostInstanceId
+    const spec = hostActionsConst[action]
+    actionPending.current = true
+    try {
+      const confirmed = await spec.confirm(ports, menu.liveCount)
+      if (!confirmed.ok) {
+        ports.reportError(`The Host could not be ${spec.verb}: ${confirmed.error}`)
+        return
+      }
+      if (!confirmed.value) return
+      setBusy(action)
+      const failure = IpcFailure.of(await spec.run(ports, hostInstanceId))
+      if (failure) ports.reportError(`The Host could not be ${spec.verb}: ${failure}`)
+    } catch (thrown) {
+      ports.reportError(`The Host could not be ${spec.verb}: ${ErrorText.of(thrown)}`)
+    } finally {
+      actionPending.current = false
+      setBusy(null)
+    }
+  }
+
+  const openMenu = (event: React.MouseEvent): void => {
+    event.preventDefault()
+    if (host === null || actionPending.current) return
+    const position = { x: event.clientX, y: event.clientY }
+    if (host.presence === 'running')
+      setMenu(host.hostInstanceId ? { position, hostInstanceId: host.hostInstanceId, liveCount: host.liveCount } : null)
+    else if (host.presence === 'unreachable')
+      setMenu({ position, hostInstanceId: null, liveCount: 0 })
+    // Nothing to offer while a launch is in flight: Start would be a second Host, and Stop has no Host yet.
+    else if (host.presence === 'starting')
+      setMenu(null)
+    else
+      throw new Error(`Unknown host presence: ${JSON.stringify(host.presence)}`)
+  }
+
+  const menuItems = menu === null ? [] : menu.hostInstanceId === null
+    ? [{ key: 'start-host', label: 'Start apphost', onSelect: start }]
+    : [
+        { key: 'restart-host', label: 'Restart apphost', onSelect: () => { void act('restart') } },
+        { key: 'stop-host', label: 'Stop apphost', onSelect: () => { void act('stop') } },
+      ]
+  const contextMenu = menu !== null && busy === null && (
+    <ContextMenu
+      position={menu.position}
+      ariaLabel="AppHost actions"
+      items={menuItems}
+      onClose={() => setMenu(null)}
+    />
+  )
+
   if (error !== null)
     return (
       <span className="jamat-host-status" title={error}>
@@ -91,12 +176,22 @@ export function HostStatusItem(props: {
   // would offer a Start for a Host that may well be running.
   if (reading === null)
     return <span className="jamat-host-status">Host …</span>
-  if (!reading.startable)
-    return <span className="jamat-host-status">{reading.text}</span>
+  if (!reading.startable || busy !== null)
+    return (
+      <>
+        <span className="jamat-host-status" onContextMenu={openMenu}>
+          {busy === null ? reading.text : hostActionsConst[busy].busyText}
+        </span>
+        {contextMenu}
+      </>
+    )
   return (
-    <span className="jamat-host-status">
-      {reading.text}
-      <button className="jamat-host-status__start" type="button" onClick={start}>Start Host</button>
-    </span>
+    <>
+      <span className="jamat-host-status" onContextMenu={openMenu}>
+        {reading.text}
+        <button className="jamat-host-status__start" type="button" onClick={start}>Start Host</button>
+      </span>
+      {contextMenu}
+    </>
   )
 }

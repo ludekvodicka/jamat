@@ -68,6 +68,11 @@ export interface FileChangeEntry {
   modifiedAt: number | null
   sources: readonly FileChangeSource[]
   gitState: FileChangeGitState | null
+  /**
+   * Set only on an SVN directory copied whole whose untouched nodes are too many to list: how many
+   * it carries. The commit publishes them with the directory as one copy.
+   */
+  carriedItems?: number
 }
 
 export type FileChangeBaselineKind =

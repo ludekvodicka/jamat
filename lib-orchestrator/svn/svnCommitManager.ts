@@ -1,6 +1,6 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 
 import { XMLParser } from 'fast-xml-parser'
 
@@ -20,10 +20,12 @@ export interface SvnCommitTarget {
 }
 
 export class SvnCommitManager {
-  constructor(private readonly svn: CommandRunner) {}
+  private readonly svn: CommandRunner
+
+  constructor(svn: CommandRunner) { this.svn = svn }
 
   async commit(scope: string, targets: readonly SvnCommitTarget[], messageFile: string,
-    onProgress?: (progress: CommitProgress) => void): Promise<SvnResult<{ revision: string; output: string }>> {
+    onProgress?: (progress: CommitProgress) => void): Promise<SvnResult<{ revision: string; output: string; committedPaths: readonly string[] }>> {
     if (targets.length === 0 || targets.some((target) => !SvnCommitManager.inside(scope, target.absolutePath)))
       return { ok: false, code: 'svn-failed', detail: 'Select targets inside the commit scope' }
     if (targets.some((target) => target.status === 'conflicted' || target.status === 'obstructed'))
@@ -78,7 +80,12 @@ export class SvnCommitManager {
       const revision = /Committed revision (\d+)\./.exec(committed.value.stdout)?.[1]
       if (revision === undefined)
         return { ok: false, code: 'svn-failed', detail: committed.value.stdout || 'SVN did not report a committed revision' }
-      return { ok: true, value: { revision, output: committed.value.stdout + committed.value.stderr } }
+      // SVN's C-locale notifications have a 15-character prefix. Trimming it would lose
+      // leading spaces in literal filenames and could claim an unchanged sibling was sent.
+      const committedPaths = [...new Set(committed.value.stdout.split(/\r?\n/).flatMap((line) =>
+        /^(Sending {8}|Adding {9}|Adding {2}\(bin\) {2}|Deleting {7}|Replacing {6}).+$/.test(line)
+          ? [resolve(scope, line.slice(15))] : []))]
+      return { ok: true, value: { revision, output: committed.value.stdout + committed.value.stderr, committedPaths } }
     }
     catch (error) { return { ok: false, code: 'svn-failed', detail: ErrorText.of(error) } }
     finally { if (temporary !== null) await rm(temporary, { recursive: true, force: true }) }

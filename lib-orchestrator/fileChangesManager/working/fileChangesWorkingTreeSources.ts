@@ -16,11 +16,15 @@ import type {
 } from '../vcs/fileChangesVcs.types'
 import { FileChangesVcsGit } from '../vcs/fileChangesVcsGit'
 import { FileChangesVcsSvn } from '../vcs/fileChangesVcsSvn'
+import { FileChangesLimits } from '../fileChangesLimits'
+import { SvnInvoker } from '../../svn/svnInvoker'
 
 export interface FileChangesWorkingTreeSourcesDeps {
   checkpointStore?: Pick<GitCheckpointStore, 'existingContextOf' | 'worktreeBelongsToStore'>
   gitOf?: (commandArgs: readonly string[]) => FileChangesVcsGit
   svn?: FileChangesVcs
+  /** The adapter a commit review reads through; its only difference is the longer timeout. */
+  commitSvn?: FileChangesVcs
 }
 
 interface FileChangesWorkingTreeCandidate {
@@ -50,6 +54,7 @@ export class FileChangesWorkingTreeSources {
   >
   private readonly gitOf: (commandArgs: readonly string[]) => FileChangesVcsGit
   private readonly svn: FileChangesVcs
+  private readonly commitSvn: FileChangesVcs
 
   constructor(deps?: FileChangesWorkingTreeSourcesDeps) {
     this.checkpointStore = deps?.checkpointStore
@@ -57,6 +62,8 @@ export class FileChangesWorkingTreeSources {
     this.gitOf = deps?.gitOf
       ?? ((commandArgs) => new FileChangesVcsGit(undefined, commandArgs))
     this.svn = deps?.svn ?? new FileChangesVcsSvn()
+    this.commitSvn = deps?.commitSvn ?? new FileChangesVcsSvn(
+      new SvnInvoker({ timeoutMilliseconds: FileChangesLimits.commitReadTimeoutMilliseconds }))
   }
 
   async read(
@@ -66,7 +73,7 @@ export class FileChangesWorkingTreeSources {
     forCommit = false,
   ): Promise<FileChangesWorkingTreeRead> {
     const warnings: string[] = []
-    const candidates = forCommit && requested === 'svn' ? await this.svnCandidates(context)
+    const candidates = forCommit && requested === 'svn' ? await this.svnCandidates(context, this.commitSvn)
       : forCommit && requested === 'git' ? await this.ownGitCandidate(context)
         : await this.candidates(context, warnings)
     const selected = requested === null
@@ -136,14 +143,17 @@ export class FileChangesWorkingTreeSources {
     warnings: string[],
   ): Promise<FileChangesWorkingTreeCandidate[]> {
     const git = await this.gitCandidates(context, warnings)
-    const svn = await this.svnCandidates(context)
+    const svn = await this.svnCandidates(context, this.svn)
     if (context.worktree !== null) return [...git, ...svn]
     return [...svn, ...git, ...await this.ownGitCandidate(context)]
   }
 
-  private async svnCandidates(context: FileChangesWorkingTreeContext): Promise<FileChangesWorkingTreeCandidate[]> {
-    const detection = await this.svn.detect(context.cwd).catch(() => null)
-    return detection === null ? [] : [{ source: 'svn', adapter: this.svn, detection, baseRef: null }]
+  private async svnCandidates(
+    context: FileChangesWorkingTreeContext,
+    adapter: FileChangesVcs,
+  ): Promise<FileChangesWorkingTreeCandidate[]> {
+    const detection = await adapter.detect(context.cwd).catch(() => null)
+    return detection === null ? [] : [{ source: 'svn', adapter, detection, baseRef: null }]
   }
 
   private async ownGitCandidate(context: FileChangesWorkingTreeContext): Promise<FileChangesWorkingTreeCandidate[]> {

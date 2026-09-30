@@ -18,6 +18,11 @@ describe('app-client-ui/renderer/statusBar/hostStatusItem', () => {
     readonly errors: string[] = []
     reads = 0
     starts = 0
+    restarts: string[] = []
+    stops: string[] = []
+    confirmations: number[] = []
+    stopConfirmations: number[] = []
+    confirmed = true
     answer: IpcResult<SessionsOpResult> = { ok: true, value: { ok: true, value: undefined } }
 
     constructor(
@@ -44,6 +49,26 @@ describe('app-client-ui/renderer/statusBar/hostStatusItem', () => {
 
     startHost(): Promise<IpcResult<SessionsOpResult>> {
       this.starts += 1
+      return Promise.resolve(this.answer)
+    }
+
+    confirmHostRestart(liveCount: number): Promise<IpcResult<boolean>> {
+      this.confirmations.push(liveCount)
+      return Promise.resolve({ ok: true, value: this.confirmed })
+    }
+
+    restartHost(hostInstanceId: string): Promise<IpcResult<SessionsOpResult>> {
+      this.restarts.push(hostInstanceId)
+      return Promise.resolve(this.answer)
+    }
+
+    confirmHostStop(liveCount: number): Promise<IpcResult<boolean>> {
+      this.stopConfirmations.push(liveCount)
+      return Promise.resolve({ ok: true, value: this.confirmed })
+    }
+
+    stopHost(hostInstanceId: string): Promise<IpcResult<SessionsOpResult>> {
+      this.stops.push(hostInstanceId)
       return Promise.resolve(this.answer)
     }
   }
@@ -117,6 +142,86 @@ describe('app-client-ui/renderer/statusBar/hostStatusItem', () => {
     const { container } = mount(new Ports(SessionsFixtures.mixed()))
 
     await waitFor(() => expect(container.textContent).toBe('Host v2026.08.04.09.30 · 4 live'))
+  })
+
+  it('offers Restart apphost on right click and restarts the confirmed Host', async () => {
+    const snapshot = SessionsFixtures.mixed()
+    const ports = new Ports(snapshot)
+    const view = mount(ports)
+    const item = await view.findByText('Host v2026.08.04.09.30 · 4 live')
+    fireEvent.contextMenu(item, { clientX: 10, clientY: 700 })
+    fireEvent.click(view.getByRole('menuitem', { name: 'Restart apphost' }))
+    await waitFor(() => expect(ports.restarts).toEqual([snapshot.host.hostInstanceId]))
+    expect(ports.confirmations).toEqual([4])
+    expect(view.queryByRole('menu')).toBeNull()
+  })
+
+  it('leaves the Host running when restart confirmation is cancelled', async () => {
+    const ports = new Ports(SessionsFixtures.mixed())
+    ports.confirmed = false
+    const view = mount(ports)
+    fireEvent.contextMenu(await view.findByText('Host v2026.08.04.09.30 · 4 live'))
+    fireEvent.click(view.getByRole('menuitem', { name: 'Restart apphost' }))
+    await waitFor(() => expect(ports.confirmations).toEqual([4]))
+    expect(ports.restarts).toEqual([])
+  })
+
+  it('reports a failed restart', async () => {
+    const ports = new Ports(SessionsFixtures.mixed())
+    ports.answer = { ok: true, value: { ok: false, code: 'no-lease', detail: 'Controller lease expired' } }
+    const view = mount(ports)
+    fireEvent.contextMenu(await view.findByText('Host v2026.08.04.09.30 · 4 live'))
+    fireEvent.click(view.getByRole('menuitem', { name: 'Restart apphost' }))
+    await waitFor(() => expect(ports.errors).toEqual(['The Host could not be restarted: no-lease: Controller lease expired']))
+  })
+
+  it('offers Stop apphost on right click and stops the confirmed Host', async () => {
+    const snapshot = SessionsFixtures.mixed()
+    const ports = new Ports(snapshot)
+    const view = mount(ports)
+    fireEvent.contextMenu(await view.findByText('Host v2026.08.04.09.30 · 4 live'))
+    fireEvent.click(view.getByRole('menuitem', { name: 'Stop apphost' }))
+    await waitFor(() => expect(ports.stops).toEqual([snapshot.host.hostInstanceId]))
+    expect(ports.stopConfirmations).toEqual([4])
+    expect(ports.restarts).toEqual([])
+  })
+
+  it('leaves the Host running when stop confirmation is cancelled', async () => {
+    const ports = new Ports(SessionsFixtures.mixed())
+    ports.confirmed = false
+    const view = mount(ports)
+    fireEvent.contextMenu(await view.findByText('Host v2026.08.04.09.30 · 4 live'))
+    fireEvent.click(view.getByRole('menuitem', { name: 'Stop apphost' }))
+    await waitFor(() => expect(ports.stopConfirmations).toEqual([4]))
+    expect(ports.stops).toEqual([])
+  })
+
+  it('reports a failed stop', async () => {
+    const ports = new Ports(SessionsFixtures.mixed())
+    ports.answer = { ok: true, value: { ok: false, code: 'no-lease', detail: 'Controller lease expired' } }
+    const view = mount(ports)
+    fireEvent.contextMenu(await view.findByText('Host v2026.08.04.09.30 · 4 live'))
+    fireEvent.click(view.getByRole('menuitem', { name: 'Stop apphost' }))
+    await waitFor(() => expect(ports.errors).toEqual(['The Host could not be stopped: no-lease: Controller lease expired']))
+  })
+
+  it('offers no menu for a Host that is starting', async () => {
+    const view = mount(new Ports(withPresence('starting')))
+    await waitFor(() => expect(view.container.textContent).toBe('Host starting…'))
+    fireEvent.contextMenu(view.container.querySelector('.jamat-host-status')!)
+    expect(view.queryByRole('menu')).toBeNull()
+  })
+
+  it('offers only Start apphost on right click when nobody can reach the Host, and starts one', async () => {
+    const ports = new Ports(SessionsFixtures.hostUnreachable())
+    const view = mount(ports)
+    await waitFor(() => expect(view.container.textContent).toContain('Host unreachable'))
+    fireEvent.contextMenu(view.container.querySelector('.jamat-host-status')!)
+    expect(view.getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['Start apphost'])
+    fireEvent.click(view.getByRole('menuitem', { name: 'Start apphost' }))
+    await waitFor(() => expect(ports.starts).toBe(1))
+    expect(ports.restarts).toEqual([])
+    expect(ports.stops).toEqual([])
   })
 
   // A Start offered while a launch is in flight is a second Host, not a retry.

@@ -764,6 +764,24 @@ class AppShellComposition {
         window.appClient.sessions.retrySetup(sessionId, acknowledgeSetup),
       adoptOrphan: (runtimeSessionId) => window.appClient.sessions.adoptOrphan(runtimeSessionId),
       startHost: () => window.appClient.sessions.startHost(),
+      restartHost: async (hostInstanceId) => {
+        const answer = await window.appClient.sessions.restartHost(hostInstanceId)
+        const snapshot = await window.appClient.sessions.snapshot()
+        if (snapshot.ok && snapshot.value.host.hostInstanceId !== hostInstanceId)
+          for (const session of snapshot.value.sessions)
+            if (session.life === 'live')
+              await WorkspaceChannels.publishTerminalRestarted(session.sessionId)
+        return answer
+      },
+      stopHost: (hostInstanceId) => window.appClient.sessions.stopHost(hostInstanceId),
+      confirmHostStop: (liveCount) => window.appClient.dialog.confirm(
+        'Stop AppHost?',
+        `This will end all ${liveCount} running terminal${liveCount === 1 ? '' : 's'}. Running commands will be interrupted and the sessions will not be reopened. Start the AppHost again from the status bar menu.`,
+      ),
+      confirmHostRestart: (liveCount) => window.appClient.dialog.confirm(
+        'Restart AppHost?',
+        `This will restart all ${liveCount} running terminal${liveCount === 1 ? '' : 's'} and automatically reopen their sessions. Agent conversations will resume by their saved IDs. Running commands will be interrupted.`,
+      ),
       loadView: () => window.appClient.state.loadSessionsView(),
       saveView: (view) => window.appClient.state.saveSessionsView(view),
       loadFilters: () => window.appClient.state.loadSessionFilters(),
@@ -853,13 +871,8 @@ class AppShellComposition {
   }
 
   /**
-   * The five commands aimed at ONE session: another session in the same place, the same thing in
-   * the other agent, a fork of the conversation it holds, and that session back on its feet.
-   *
-   * None of them starts anything. Each opens the create card holding what that session already
-   * answers - where it runs, what it is called, which agent - so the thing that arrives is a named
-   * session of the tree rather than the unnamed plain tab three of them used to make. The two that
-   * act ON the session hand it over as the row Continue/Fork opens standing on.
+   * Creation commands collect the new session's settings. A fork pins the source conversation
+   * as the selected row in Continue/Fork.
    */
   private static launchBeside(
     sessions: SnapshotStore<SessionsSnapshot>,
@@ -867,7 +880,7 @@ class AppShellComposition {
     intents: LauncherIntentStore,
     launcherCommands: LateBoundCommandPort<void>,
     arg: { sessionId?: string } | undefined,
-    options: { agentId: SessionAgentId | null; act: 'fork' | 'resume' | null },
+    options: { agentId: SessionAgentId | null; act: 'fork' | null },
   ): void {
     const info = SessionOperations.sessionInfoOf(
       sessions, WorkspacePanels.commandTargetOf(controller, arg))
@@ -888,9 +901,6 @@ class AppShellComposition {
               session: {
                 mode: options.act,
                 sessionId: info.sessionId,
-                // Both absent for a shell, which holds no conversation and is deduped against
-                // nothing: the row still stands for the session, and only a resume ever aims at
-                // one.
                 agentId: info.agent?.agentId ?? null,
                 nativeSessionId: info.agent?.nativeSessionId ?? null,
                 number: info.titleParts.number,
@@ -1058,10 +1068,10 @@ class AppShellComposition {
     commands.register('session.fork', (arg) =>
       AppShellComposition.launchBeside(session.snapshot, controller, intents, launcherCommands, arg,
         { agentId: null, act: 'fork' }))
-    // The card again, on the one thing an ENDED session can still be asked for: itself, back.
     commands.register('session.resume', (arg) =>
-      AppShellComposition.launchBeside(session.snapshot, controller, intents, launcherCommands, arg,
-        { agentId: null, act: 'resume' }))
+      WorkspacePanels.started('session.resume',
+        SessionOperations.resumeSession(session.snapshot,
+          WorkspacePanels.commandTargetOf(controller, arg), session.openTerminal)))
     commands.register('session.restart', (arg) =>
       WorkspacePanels.started('session.restart',
         SessionOperations.restartSession(session.snapshot,

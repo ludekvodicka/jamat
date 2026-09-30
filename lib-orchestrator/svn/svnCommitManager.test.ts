@@ -8,6 +8,18 @@ import type { CommitProgress } from '../shared/commitProgress.types'
 import { SvnCommitManager } from './svnCommitManager'
 
 describe('lib-orchestrator/svn/svnCommitManager', () => {
+  it('reports only paths SVN actually sent, including added parents and binary files', async () => {
+    const scope = resolve('scope')
+    const output = 'Sending        changed.txt\r\nAdding         parent\r\nAdding  (bin)  parent/žluť @.png\r\nDeleting       old\r\nReplacing      replaced\r\nSending         leading.txt\r\nCommitted revision 42.\r\n'
+    const manager = new SvnCommitManager({ run: async () => ({ code: 0, failure: null, stderr: '', stdout: output }) })
+    const result = await manager.commit(scope, ['changed.txt', 'unchanged.txt'].map((name) => ({
+      absolutePath: resolve(scope, name), nodeKind: 'file', status: 'modified',
+    })), 'message.txt')
+    expect(result).toMatchObject({ ok: true, value: { committedPaths: [
+      'changed.txt', 'parent', 'parent/žluť @.png', 'old', 'replaced', ' leading.txt',
+    ].map((name) => resolve(scope, name)) } })
+  })
+
   function fixture(failure?: string) {
     const scope = resolve('scope')
     const calls: string[][] = []
@@ -49,7 +61,7 @@ describe('lib-orchestrator/svn/svnCommitManager', () => {
     expect(await manager.commit(scope, [
       { absolutePath: a, nodeKind: 'file', status: 'untracked' },
       { absolutePath: b, nodeKind: 'file', status: 'missing' },
-    ], 'message.txt')).toEqual({ ok: true, value: { revision: '42', output: 'Committed revision 42.\n' } })
+    ], 'message.txt')).toEqual({ ok: true, value: { revision: '42', output: 'Committed revision 42.\n', committedPaths: [] } })
     expect(calls[0]).toEqual(['info', '--xml', '--non-interactive', '--', `${scope}@`])
     expect(calls[1]).toEqual(['add', '--parents', '--depth', 'empty', '--non-interactive', '--', `${a}@`])
     expect(calls[2]).toEqual(['delete', '--non-interactive', '--', `${b}@`])

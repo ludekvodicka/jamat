@@ -89,6 +89,54 @@ describe('lib-orchestrator/projectManager/projects/displayGrouping', () => {
     })
   })
 
+  describe('buildDisplayEntries with containers', () => {
+    function container(name: string): { name: string; path: string } {
+      return { name, path: `Q:/root/${name}` }
+    }
+
+    it('puts a container among the folders and its projects inside it, in the order handed over', () => {
+      const entries = DisplayGrouping.buildDisplayEntries(
+        [project('Zeta'), project('Bots/SrvB'), project('temporaryFoo'), project('Bots/SrvA')],
+        folders,
+        [container('Bots')],
+      )
+
+      expect(entries).toEqual([
+        {
+          kind: 'group',
+          name: 'Bots',
+          title: 'Bots',
+          path: 'Q:/root/Bots',
+          entries: [
+            { kind: 'project', project: project('Bots/SrvB') },
+            { kind: 'project', project: project('Bots/SrvA') },
+          ],
+        },
+        { kind: 'virtualFolder', prefix: 'temporary', title: 'Temporary', children: [project('temporaryFoo')] },
+        { kind: 'project', project: project('Zeta') },
+      ])
+    })
+
+    it('keeps an empty container and sorts containers by title', () => {
+      const entries = DisplayGrouping.buildDisplayEntries(
+        [project('Atlas/SrvTemplate')],
+        [],
+        [container('Fresh'), container('Atlas')],
+      )
+
+      expect(entries).toEqual([
+        {
+          kind: 'group',
+          name: 'Atlas',
+          title: 'Atlas',
+          path: 'Q:/root/Atlas',
+          entries: [{ kind: 'project', project: project('Atlas/SrvTemplate') }],
+        },
+        { kind: 'group', name: 'Fresh', title: 'Fresh', path: 'Q:/root/Fresh', entries: [] },
+      ])
+    })
+  })
+
   describe('applyPrefix', () => {
     it('moves a project into a folder, capitalising the first letter', () => {
       expect(DisplayGrouping.applyPrefix('foo', folders, 'temporary')).toBe('temporaryFoo')

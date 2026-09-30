@@ -83,6 +83,7 @@ export class TerminalProjection {
   private static readonly unicodeVersionConst = '11'
   private readonly terminal: XtermTerminal
   private readonly serializer = new SerializeAddon()
+  private mouseEncodingSequence: string
   private ring = ''
   private outputSeqValue = 0
   /**
@@ -116,6 +117,17 @@ export class TerminalProjection {
     this.terminal.loadAddon(this.serializer)
     this.terminal.loadAddon(new Unicode11Addon())
     this.terminal.unicode.activeVersion = TerminalProjection.unicodeVersionConst
+    this.mouseEncodingSequence = ''
+    // SerializeAddon preserves mouse tracking but omits its encoding. Observe the same parser
+    // that builds the screen so split writes and a not-yet-parsed tail cannot move the mode ahead.
+    this.terminal.parser.registerCsiHandler({ prefix: '?', final: 'h' },
+      (params) => this.trackMouseEncoding(params, true))
+    this.terminal.parser.registerCsiHandler({ prefix: '?', final: 'l' },
+      (params) => this.trackMouseEncoding(params, false))
+    this.terminal.parser.registerEscHandler({ final: 'c' }, () => {
+      this.mouseEncodingSequence = ''
+      return false
+    })
   }
 
   get outputSeq(): number {
@@ -217,7 +229,7 @@ export class TerminalProjection {
       // normal buffer, in the wrong place, until the agent repaints.
       screen: tail.truncated
         ? TerminalProjection.tailOf(this.ring, options.maxScreenChars)
-        : screen + tail.data,
+        : screen + this.mouseEncodingSequence + tail.data,
       cols: this.colsValue,
       rows: this.rowsValue,
       alive,
@@ -257,6 +269,7 @@ export class TerminalProjection {
   private rebuild(): void {
     this.screenStale = false
     this.terminal.reset()
+    this.mouseEncodingSequence = ''
     if (!this.ring) {
       this.resolveWaiters()
       return
@@ -290,6 +303,13 @@ export class TerminalProjection {
 
   private resolveWaiters(): void {
     for (const resolve of this.syncWaiters.splice(0)) resolve()
+  }
+
+  private trackMouseEncoding(params: (number | number[])[], enabled: boolean): false {
+    for (const mode of params)
+      if (mode === 1006 || mode === 1016)
+        this.mouseEncodingSequence = enabled ? `\u001b[?${mode}h` : ''
+    return false
   }
 
   private trimRing(): void {

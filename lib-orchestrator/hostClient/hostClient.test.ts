@@ -147,6 +147,23 @@ describe('lib-orchestrator/hostClient/hostClient', () => {
     expect(call?.body.operationId).toBe('op-1')
   })
 
+  it('stops only the expected Host under the existing controller lease', async () => {
+    const host = await startHost('restart-host')
+    const requests: Record<string, unknown>[] = []
+    host.handle('host.stop', (body) => {
+      requests.push(body)
+      return { body: { stopping: true, live: 2 } }
+    })
+    const context = harness()
+    context.publish(host)
+    context.client.start()
+    await vi.waitFor(() => expect(context.client.controllerLeaseId()).not.toBeNull(), { timeout: 3_000 })
+    expect(await context.client.stopHost('stale-host')).toMatchObject({ ok: false, code: 'host-unreachable' })
+    expect(requests).toHaveLength(0)
+    expect(await context.client.stopHost('restart-host')).toEqual({ ok: true, value: { stopping: true, live: 2 } })
+    expect(requests).toEqual([{ controllerLeaseId: host.currentLeaseId(), force: true }])
+  })
+
   // A mutation without authority is refused here rather than queued: the caller is told to try again,
   // it is not left believing the Host was asked.
   it('refuses a mutation with no-lease while the Host grants no lease', async () => {

@@ -1,5 +1,6 @@
 import type {
   FileChangeBaselineKind,
+  FileChangeEntry,
   FileChangeGitState,
   FileChangeNodeKind,
   FileChangeStatus,
@@ -16,6 +17,7 @@ export interface FileChangesVcsEntry {
   previousAbsolutePath: string | null
   previousRepositoryPath: string | null
   gitState: FileChangeGitState | null
+  carriedItems?: FileChangeEntry['carriedItems']
 }
 
 export interface FileChangesVcsHistoryGroup {

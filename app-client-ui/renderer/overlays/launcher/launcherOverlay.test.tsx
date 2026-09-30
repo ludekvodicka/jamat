@@ -174,6 +174,8 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
           return ProjectsStub.number(this.allocatedToken)
         },
         startHost: ProjectsStub.unused('startHost'),
+        restartHost: ProjectsStub.unused('restartHost'),
+        stopHost: ProjectsStub.unused('stopHost'),
         reference: ProjectsStub.unused('reference'),
       } satisfies AppClientUiBridge['sessions']
       const dialog = {

@@ -253,6 +253,37 @@ describe('lib-orchestrator/git/gitCheckpointStore', () => {
       expect(svn.calls).toHaveLength(0)
     })
 
+    // Q:/Projects/AutomationBots holds several projects and no repository of its own. A store
+    // there would stage every project below it, which the volume-child rule never catches because
+    // the group sits one level deeper.
+    it('refuses a product group marked by .appgroup, at any depth', async () => {
+      const group = join(temporaryDirectory('jamat-v3-store-'), 'AutomationBots')
+      mkdirSync(group)
+      writeFileSync(join(group, '.appgroup'), '', 'utf8')
+
+      const answer = await new GitCheckpointStore(outsideGit()).rootOf(group)
+
+      expect(answer.ok).toBe(false)
+      if (answer.ok) return
+      expect(answer.code).toBe('not-a-repo')
+      expect(answer.detail).toContain('product group')
+    })
+
+    it('never lets a store in a product group claim a project inside it', async () => {
+      const group = temporaryDirectory('jamat-v3-store-')
+      writeFileSync(join(group, '.appgroup'), '', 'utf8')
+      storeMarker(group)
+      const project = join(group, 'SrvTaskBot')
+      mkdirSync(project)
+
+      const answer = await new GitCheckpointStore(outsideGit()).rootOf(project)
+
+      expect(answer.ok).toBe(true)
+      if (!answer.ok) return
+      expect(answer.value.root).toBe(project)
+      expect(answer.value.exists).toBe(false)
+    })
+
     it('falls back to the git toplevel, so a monorepo package checkpoints the whole tree', async () => {
       const top = temporaryDirectory('jamat-v3-store-')
       const nested = join(top, 'packages', 'inner')
@@ -309,6 +340,18 @@ describe('lib-orchestrator/git/gitCheckpointStore', () => {
         expect(result.code).toBe('not-a-repo')
       }
       expect(runner.calls).toHaveLength(0)
+    })
+
+    it('refuses to create a store in a product group', async () => {
+      const group = temporaryDirectory('jamat-v3-store-')
+      writeFileSync(join(group, '.appgroup'), '', 'utf8')
+      const runner = scripted()
+
+      const result = await new GitCheckpointStore(runner).ensure(group)
+
+      expect(result.ok).toBe(false)
+      expect(runner.calls).toHaveLength(0)
+      expect(existsSync(join(group, CheckpointLayout.storeRelativeConst))).toBe(false)
     })
 
     it('creates the bare store on the checkpoint branch and seeds the three self-excludes', async () => {

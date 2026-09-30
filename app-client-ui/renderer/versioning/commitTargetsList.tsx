@@ -100,7 +100,8 @@ export function CommitTargetsList(props: {
     const requiredParent = CommitTargets.requiredParent(entry, entries, props.checked)
     const carrier = CommitTargets.carrier(entry, entries)
     const removedBy = CommitTargets.removedBy(entry, entries)
-    const hint = requiredParent ? 'Required parent directory'
+    const hint = entry.carriedItems !== undefined ? `Copied whole: its ${entry.carriedItems} items commit with this directory and are not listed`
+      : requiredParent ? 'Required parent directory'
       : carrier !== null ? `Commits with ${carrier.displayPath}/, which was copied whole`
       : removedBy !== null ? `Stays on disk unversioned: this commit deletes ${removedBy.displayPath}/`
       : entry.status === 'untracked' && entry.nodeKind === 'directory' ? 'Adds this directory only; select its files individually'
@@ -143,6 +144,7 @@ export function CommitTargetsList(props: {
         onChange={(event) => change(entry, event.target.checked)} /></span>
       <span role="gridcell" className={`file-tools-status file-tools-status--${entry.status}`} title={entry.status} aria-label={entry.status}>{FileChangesStatusMark.of(entry.status)}</span>
       <span role="gridcell" className={`commit-target-path commit-target-path--${entry.status}`}>{entry.displayPath}{entry.nodeKind === 'directory' ? '/' : ''}
+        {entry.carriedItems !== undefined && <span className="commit-target-previous"> ({entry.carriedItems} items)</span>}
         {entry.previousDisplayPath !== null && <span className="commit-target-previous"> (from {entry.previousDisplayPath})</span>}
         {hint !== null && <span className="commit-target-hint" title={hint} aria-label={hint}>ⓘ</span>}
       </span>

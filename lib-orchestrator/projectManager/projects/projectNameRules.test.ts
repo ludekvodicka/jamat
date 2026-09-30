@@ -36,13 +36,13 @@ describe('lib-orchestrator/projectManager/projects/projectNameRules', () => {
     expect(rejects('..')).toMatch(/walks the directory tree/)
     expect(rejects('.')).toMatch(/walks the directory tree/)
     expect(rejects('Plugins/..', ['Plugins'])).toMatch(/walks the directory tree/)
-    expect(rejects('../sibling')).toMatch(/"\/"/)
+    expect(rejects('../sibling')).toMatch(/walks the directory tree/)
   })
 
   it('rejects path separators', () => {
     expect(rejects('foo\\bar')).toMatch(/path separator/)
-    expect(rejects('foo/bar')).toMatch(/not a flattened container/)
-    expect(rejects('a/b/c', ['a'])).toMatch(/more than one "\/"/)
+    expect(rejects('foo/bar')).toMatch(/cannot contain "\/"/)
+    expect(rejects('a/b/c', ['a'])).toMatch(/"a\/b" is not a subfolder/)
   })
 
   it('rejects absolute and drive-relative paths', () => {
@@ -73,8 +73,31 @@ describe('lib-orchestrator/projectManager/projects/projectNameRules', () => {
 
   it('allows one "/" only under a flattened container', () => {
     expect(ProjectNameRules.validate('Plugins/foo', category(['Plugins']))).toEqual({ ok: true })
-    expect(rejects('Plugins/foo')).toMatch(/not a flattened container/)
+    expect(rejects('Plugins/foo')).toMatch(/cannot contain "\/"/)
     expect(rejects('/foo')).toMatch(/is a path/)
     expect(rejects('Plugins/', ['Plugins'])).toMatch(/empty path segment/)
+  })
+
+  describe('inside a subfolder', () => {
+    function check(name: string): ReturnType<typeof ProjectNameRules.validate> {
+      return ProjectNameRules.validate(name, category(['AutomationBots', 'Atlas']))
+    }
+
+    it('accepts a project in a subfolder and nothing deeper', () => {
+      expect(check('AutomationBots/SrvTaskBot')).toEqual({ ok: true })
+      expect(check('Atlas/Complex/WebAdmin')).toMatchObject({
+        ok: false,
+        detail: expect.stringMatching(/"Atlas\/Complex" is not a subfolder/),
+      })
+    })
+
+    it('refuses a level that is no subfolder, and what a subfolder keeps for itself', () => {
+      expect(check('SvnTea/app')).toMatchObject({ ok: false, detail: expect.stringMatching(/"SvnTea" is not a subfolder/) })
+      expect(check('AutomationBots/components')).toMatchObject({
+        ok: false,
+        detail: expect.stringMatching(/belongs to its container/),
+      })
+      expect(check('AutomationBots/.private')).toMatchObject({ ok: false })
+    })
   })
 })

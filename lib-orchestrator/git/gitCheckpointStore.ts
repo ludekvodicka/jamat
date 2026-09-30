@@ -3,6 +3,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 
 import type { CommandRunner } from '../shared/commandInvoker.types'
+import { ProductGroup } from '../shared/productGroup'
 import { SvnInvoker } from '../svn/svnInvoker'
 import { CheckpointLayout } from './checkpointLayout'
 import { GitManager } from './gitManager'
@@ -467,8 +468,9 @@ export class GitCheckpointStore extends GitManager {
   }
 
   /**
-   * Where a store must never live: the user's home, a volume root, or a group directory sitting
-   * directly below one, such as `Q:/Projects`. A checkpoint belongs to the project being
+   * Where a store must never live: the user's home, a volume root, a group directory sitting
+   * directly below one, such as `Q:/Projects`, or a product group at any depth, marked by
+   * `.appgroup`, such as `Q:/Projects/AutomationBots`. A checkpoint belongs to the project being
    * worked in, never to the group that happens to contain it. Another directory directly below a
    * volume is a project only when SVN says it is a repository root, which is what `Q:/Docker` is:
    * a store there proves nothing, because group stores predate this guard. The same rule is
@@ -477,6 +479,7 @@ export class GitCheckpointStore extends GitManager {
   private async isUnsafeRoot(path: string): Promise<boolean> {
     const abs = resolve(path)
     if (GitCheckpointStore.isRefusedRoot(abs)) return true
+    if (await GitManager.exists(join(abs, ProductGroup.markerConst))) return true
     const parent = dirname(abs)
     return dirname(parent) === parent && !await this.isSvnRepositoryRoot(abs)
   }
@@ -504,7 +507,7 @@ export class GitCheckpointStore extends GitManager {
     return {
       ok: false,
       code: 'not-a-repo',
-      detail: `${root} is a group directory, a volume root or an unverified directory below one, not a project`,
+      detail: `${root} is a group directory, a product group, a volume root or an unverified directory below one, not a project`,
     }
   }
 

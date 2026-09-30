@@ -155,13 +155,16 @@ export class SessionsGroupsState {
    * SAVES the list calls it, so the file stops carrying the name of a section nobody can see;
    * whoever READS it calls it, so a tree drawn from a file another window wrote cannot hide a
    * session in a section that is not drawn.
+   *
+   * A stored `none` is dropped too. Builds before 2026-09-30 wrote it when a person picked None, and
+   * it then outranked the project and root above it, so pinning a root left those sessions behind.
    */
   static pruned(
     assignments: readonly SessionGroupAssignment[],
     definitions: readonly SessionGroupDefinition[],
   ): readonly SessionGroupAssignment[] {
-    return assignments.filter((assignment) =>
-      SessionsGroupsState.isGroup(assignment.group, definitions))
+    return assignments.filter((assignment) => assignment.group !== SessionGroups.noneConst
+      && SessionsGroupsState.isGroup(assignment.group, definitions))
   }
 
   static groupOf(keys: readonly string[], assignments: ReadonlyMap<string, SessionGroup> | undefined): SessionGroup {
@@ -212,12 +215,16 @@ export class SessionsGroupsState {
     return assignments.find((assignment) => assignment.key === key)?.group ?? null
   }
 
-  /** One assignment written over the list, replacing whatever that key held. */
+  /**
+   * One assignment written over the list, replacing whatever that key held. `none` removes the key,
+   * so the row inherits from its project and root again rather than being held out of them.
+   */
   static assigned(
     assignments: readonly SessionGroupAssignment[],
     key: string,
     group: SessionGroup,
   ): readonly SessionGroupAssignment[] {
-    return [...assignments.filter((assignment) => assignment.key !== key), { key, group }]
+    const others = assignments.filter((assignment) => assignment.key !== key)
+    return group === SessionGroups.noneConst ? others : [...others, { key, group }]
   }
 }

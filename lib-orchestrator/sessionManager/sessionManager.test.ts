@@ -252,6 +252,127 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     return result.value
   }
 
+  async function replacementHost(context: World): Promise<FakeHost> {
+    const replacement = await FakeHost.start({ hostInstanceId: 'replacement-host' })
+    hosts.push(replacement)
+    const runtimes = new Map<string, RuntimeSessionInfo>()
+    replacement.handle('runtime.list', () => ({ body: {
+      sessions: [...runtimes.values()], throughRevision: 0, hostInstanceId: 'replacement-host',
+    } satisfies RuntimeListResult }))
+    replacement.handle('runtime.create', (body) => {
+      const session = runtime(String(body.runtimeSessionId))
+      runtimes.set(session.runtimeSessionId, session)
+      return { body: { session, hostInstanceId: 'replacement-host' } satisfies RuntimeResult }
+    })
+    const file = HostDescriptorPaths.descriptorFile(context.configIdentity, 'development')
+    context.host.handle('host.stop', () => {
+      context.host.publish({ kind: 'host-stopping' })
+      rmSync(file)
+      return { body: { stopping: true, live: context.runtimes.size } }
+    })
+    context.publishDescriptor = () => writeFileSync(file, JSON.stringify(replacement.descriptor()), 'utf8')
+    return replacement
+  }
+
+  it('stops the Host on request, refuses a Host that changed and launches no replacement', async () => {
+    const context = await world()
+    seedRecords(context, [recordOf(context, 'shell', { life: 'live' })])
+    context.runtimes.set('shell', runtime('shell'))
+    context.publishDescriptor()
+    const client = clientOf(context, { spawnPublishes: true })
+    await client.manager.start()
+    await writable(client)
+    const file = HostDescriptorPaths.descriptorFile(context.configIdentity, 'development')
+    context.host.handle('host.stop', () => {
+      context.host.publish({ kind: 'host-stopping' })
+      rmSync(file)
+      return { body: { stopping: true, live: context.runtimes.size } }
+    })
+    expect(await client.manager.stopHost('other-host')).toMatchObject({ ok: false, code: 'host-unreachable' })
+    expect(context.host.calls.some((call) => call.name === 'host.stop')).toBe(false)
+    expect(await client.manager.stopHost('fake-host-1')).toEqual({ ok: true, value: undefined })
+    expect(context.host.calls.filter((call) => call.name === 'host.stop')).toHaveLength(1)
+    await vi.waitFor(() => expect(client.manager.snapshot().host.presence).toBe('unreachable'))
+    expect(client.spawns()).toBe(0)
+  }, 20_000)
+
+  it('restores only runtimes alive before an explicit Host restart, using the same agent conversations', async () => {
+    const context = await world()
+    seedRecords(context, [
+      recordOf(context, 'claude', { kind: 'agent', life: 'live', agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'claude-conversation', initialPrompt: 'do not replay this' } }),
+      recordOf(context, 'codex', { kind: 'agent', life: 'live', agent: { agentId: 'codex', launchMode: 'fork', nativeSessionId: 'codex-conversation' } }),
+      recordOf(context, 'shell', { life: 'live', color: 'green', note: 'keep me' }),
+      recordOf(context, 'ended', {}),
+      recordOf(context, 'lost', { life: 'lost' }),
+    ])
+    for (const id of ['claude', 'codex', 'shell']) context.runtimes.set(id, runtime(id))
+    context.runtimes.set('ended', runtime('ended', { alive: false }))
+    context.publishDescriptor()
+    const client = clientOf(context, { spawnPublishes: true })
+    await client.manager.start()
+    await writable(client)
+    const replacement = await replacementHost(context)
+    const held = replacement.hold('controller.acquire')
+    const restarting = client.manager.restartHost('fake-host-1')
+    try {
+      await vi.waitFor(() => expect(client.manager.snapshot().host.hostInstanceId).toBe('replacement-host'), { timeout: 5_000 })
+      expect(replacement.calls.filter((call) => call.name === 'runtime.create')).toEqual([])
+    } finally {
+      held.release()
+    }
+    expect(await restarting).toEqual({ ok: true, value: undefined })
+    const launches = replacement.calls.filter((call) => call.name === 'runtime.create')
+    expect(launches.map((call) => call.body.runtimeSessionId)).toEqual(['claude', 'codex', 'shell'])
+    expect(JSON.stringify(launches[0]?.body.launch)).toContain('claude-conversation')
+    expect(JSON.stringify(launches[1]?.body.launch)).toContain('codex-conversation')
+    expect(JSON.stringify(launches)).not.toContain('do not replay this')
+    for (const id of ['claude', 'codex', 'shell']) expect(sessionOf(client, id)?.life).toBe('live')
+    expect(sessionOf(client, 'ended')?.life).toBe('ended')
+    expect(sessionOf(client, 'lost')?.life).toBe('lost')
+    expect(sessionOf(client, 'shell')).toMatchObject({ color: 'green', note: 'keep me' })
+    expect(await client.manager.restartHost('fake-host-1')).toMatchObject({ ok: false, code: 'host-unreachable' })
+    expect(client.spawns()).toBe(1)
+  }, 20_000)
+
+  it('continues restoring other sessions when one replacement launch is refused', async () => {
+    const context = await world()
+    seedRecords(context, ['bad', 'good'].map((id) => recordOf(context, id, { life: 'live' })))
+    for (const id of ['bad', 'good']) context.runtimes.set(id, runtime(id))
+    context.publishDescriptor()
+    const client = clientOf(context, { spawnPublishes: true })
+    await client.manager.start()
+    await writable(client)
+    const replacement = await replacementHost(context)
+    const runtimes: RuntimeSessionInfo[] = []
+    replacement.handle('runtime.create', (body) => {
+      if (body.runtimeSessionId === 'bad') return { status: 400, body: { error: 'launch rejected' } }
+      const session = runtime(String(body.runtimeSessionId))
+      runtimes.push(session)
+      return { body: { session, hostInstanceId: 'replacement-host' } satisfies RuntimeResult }
+    })
+    replacement.handle('runtime.list', () => ({ body: { sessions: runtimes, throughRevision: 0, hostInstanceId: 'replacement-host' } }))
+    expect(await client.manager.restartHost('fake-host-1')).toMatchObject({ ok: false, code: 'op-rejected', detail: expect.stringContaining('bad') })
+    expect(sessionOf(client, 'good')?.life).toBe('live')
+    expect(sessionOf(client, 'bad')?.life).toBe('lost')
+  }, 20_000)
+
+  it.each([
+    { kind: 'agent' as const, agent: { agentId: 'codex' as const, launchMode: 'new' as const } },
+    { commands: [{ command: 'install', cwd: 'unused' }], setupFor: 'parent' },
+  ])('keeps the old Host alive if a running session cannot be restored: %j', async (overrides) => {
+    const context = await world()
+    seedRecords(context, [recordOf(context, 's1', { life: 'live', ...overrides })])
+    context.runtimes.set('s1', runtime('s1'))
+    context.publishDescriptor()
+    const client = clientOf(context, { codexHome: join(context.root, 'empty-codex') })
+    await client.manager.start()
+    await writable(client)
+    expect(await client.manager.restartHost('fake-host-1')).toMatchObject({ ok: false, code: 'invalid-spec' })
+    expect(context.host.calls.some((call) => call.name === 'host.stop')).toBe(false)
+    expect(sessionOf(client, 's1')?.life).toBe('live')
+    expect(client.spawns()).toBe(0)
+  })
+
   function sessionOf(client: Client, sessionId: string): SessionInfo | undefined {
     return client.manager.snapshot().sessions.find((session) => session.sessionId === sessionId)
   }

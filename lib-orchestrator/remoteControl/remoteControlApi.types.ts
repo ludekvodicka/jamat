@@ -204,6 +204,8 @@ export interface RemoteControlTabOpenCommitDto {
 
 export interface RemoteControlCommitStatusDto {
   paths?: readonly string[]
+  /** Actual SVN change notifications from successful revisions; absent on older clients and Git. */
+  committedPaths?: readonly string[]
   kind: 'commit-status'
   commitSessionId: string
   sessionId: string

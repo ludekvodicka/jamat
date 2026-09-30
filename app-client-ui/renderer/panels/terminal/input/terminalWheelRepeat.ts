@@ -7,9 +7,8 @@ import type { Terminal } from '@xterm/xterm'
  * its own scrollback. An agent that takes the mouse does not scroll that way. Claude Code enters the
  * alternate screen and turns on mouse reporting (`?1049h`, `?1000h`, `?1002h`, `?1003h`, `?1006h`),
  * so one notch of the wheel becomes ONE mouse report on the pipe and the agent moves its own
- * transcript by its own step; the option never enters the arithmetic. Codex stays in the normal
- * buffer, so the same option works there - which is exactly how this arrived: the setting moved one
- * agent's screen and not the other's.
+ * transcript by its own step; the option never enters the arithmetic. Codex's inline mode uses the
+ * normal buffer; its fullscreen transcript uses the same mouse-reporting path as Claude Code.
  *
  * What is multiplied here is therefore the NOTCH, not the distance: one wheel event becomes as many
  * as the speed asks for, and each is encoded, sent and acted on by the agent as if the wheel had

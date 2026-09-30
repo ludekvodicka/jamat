@@ -5,9 +5,18 @@ import { describe, expect, it } from 'vitest'
 import { ProjectMatcher } from './projectMatcher'
 
 describe('lib-orchestrator/projectManager/catalog/projectMatcher', () => {
-  const nodejs = { id: 'nodejs', label: 'NodeJs', path: resolve('C:/Projects/NodeJs') }
-  const nested = { id: 'nested', label: 'Nested', path: resolve('C:/Projects/NodeJs/Sandbox') }
-  const matcher = new ProjectMatcher([nodejs, nested])
+  const nodejs = {
+    id: 'nodejs',
+    path: resolve('C:/Projects/NodeJs'),
+    flattenFolders: new Set(['Plugins']),
+  }
+  const nested = { id: 'nested', path: resolve('C:/Projects/NodeJs/Sandbox'), flattenFolders: new Set<string>() }
+  const applications = {
+    id: 'applications',
+    path: resolve('Q:/Projects'),
+    flattenFolders: new Set(['AutomationBots', 'Atlas']),
+  }
+  const matcher = new ProjectMatcher([nodejs, nested, applications])
 
   it('binds a cwd to the project directly under the category root', () => {
     expect(matcher.bind(resolve('C:/Projects/NodeJs/AppJamatV3/app-host'))).toEqual({
@@ -63,5 +72,59 @@ describe('lib-orchestrator/projectManager/catalog/projectMatcher', () => {
     const binding = matcher.bind(resolve('c:/projects/nodejs/AppJamatV3'))
     if (process.platform === 'win32') expect(binding.kind).toBe('project')
     else expect(binding.kind).toBe('adHoc')
+  })
+
+  // The scanner lists `Plugins/foo`, so a session inside it has to land on that same entry rather
+  // than on `Plugins`, or the launcher and the sessions tree disagree about what the project is.
+  it('binds a cwd inside a flattened container to the child the scanner lists', () => {
+    expect(matcher.bind(resolve('C:/Projects/NodeJs/Plugins/foo/src'))).toEqual({
+      kind: 'project',
+      categoryId: 'nodejs',
+      projectName: 'Plugins/foo',
+      projectPath: join(nodejs.path, 'Plugins', 'foo'),
+    })
+  })
+
+  it('binds a cwd inside a listed subfolder to the project one level below it', () => {
+    expect(matcher.bind(resolve('Q:/Projects/AutomationBots/SrvTaskBot/app'))).toEqual({
+      kind: 'project',
+      categoryId: 'applications',
+      projectName: 'AutomationBots/SrvTaskBot',
+      projectPath: join(applications.path, 'AutomationBots', 'SrvTaskBot'),
+    })
+  })
+
+  // SecretKeeper holds `.appgroup` on the disk, but only the Subfolders setting unfolds a directory,
+  // so a session in one of its members works on the whole product.
+  it('binds a cwd inside a product group the setting does not list to the group', () => {
+    expect(matcher.bind(resolve('Q:/Projects/SecretKeeper/WebSecretKeeperAdmin/app'))).toEqual({
+      kind: 'project',
+      categoryId: 'applications',
+      projectName: 'SecretKeeper',
+      projectPath: join(applications.path, 'SecretKeeper'),
+    })
+  })
+
+  it('unfolds a subfolder one level only', () => {
+    expect(matcher.bind(resolve('Q:/Projects/Atlas/Complex/WebAdmin/app'))).toEqual({
+      kind: 'project',
+      categoryId: 'applications',
+      projectName: 'Atlas/Complex',
+      projectPath: join(applications.path, 'Atlas', 'Complex'),
+    })
+  })
+
+  // A coordinated change across a subfolder's projects runs in the subfolder itself, and the tree
+  // needs a place for it: the subfolder's own entry.
+  it('binds the subfolder, and what it keeps for itself, to the subfolder', () => {
+    const group = {
+      kind: 'project',
+      categoryId: 'applications',
+      projectName: 'AutomationBots',
+      projectPath: join(applications.path, 'AutomationBots'),
+    }
+    expect(matcher.bind(resolve('Q:/Projects/AutomationBots'))).toEqual(group)
+    expect(matcher.bind(resolve('Q:/Projects/AutomationBots/components/logger'))).toEqual(group)
+    expect(matcher.bind(resolve('Q:/Projects/AutomationBots/.private/notes'))).toEqual(group)
   })
 })

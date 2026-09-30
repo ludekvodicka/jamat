@@ -117,11 +117,9 @@ class SessionsTreeMenuItems {
       .filter((descriptor) => descriptor.id !== 'session.newInCodex'
         || placed && admits('newBeside') && facts.agentId === 'claude')
       .filter((descriptor) => descriptor.id !== 'session.fork' || placed && admits('fork'))
-      // A live row gets the stop-and-reopen command; an ended row gets the card that brings it back.
-      // Never both: it is one operation asked at two moments, and Rerun - the row action that used
-      // to be the ended half - left the block below when Resume arrived.
+      // Resume uses the selected record directly; only creation commands need a launcher binding.
       .filter((descriptor) => descriptor.id !== 'session.resume'
-        || placed && admits('restart') && facts.ended)
+        || admits('restart') && facts.ended)
       .filter((descriptor) => descriptor.id !== 'session.restart'
         || admits('restart') && !facts.ended)
       .filter((descriptor) => descriptor.id !== 'session.compact' || admits('compact'))

@@ -23,6 +23,7 @@ export function LauncherProjectsScreen(props: {
   const rows = LauncherModel.rowsOf(state)
   const searchResults = LauncherModel.searchResultsOf(state)
   const labelPrefix = LauncherModel.labelPrefixOf(state)
+  const groupLabel = LauncherModel.groupLabelOf(state)
   const listing = state.activeCategoryId === null
     ? null
     : state.search.text.length > 0
@@ -100,12 +101,13 @@ export function LauncherProjectsScreen(props: {
       {/* Drawn only inside a folder: at the root the tab above already says where the list is. A
           filter takes it off the screen with it, because the list under it is then flat over every
           category and standing in no folder. */}
-      {labelPrefix !== null && state.activeCategoryId !== null && (
+      {(labelPrefix !== null || groupLabel !== null) && state.activeCategoryId !== null && (
         <p className="jamat-launcher-projects__breadcrumb">
           {LauncherLabels.breadcrumbOf(
             LauncherRows.categoryLabel(state, state.activeCategoryId),
             LauncherModel.foldersOf(state),
             labelPrefix,
+            groupLabel,
           )}
           <span className="jamat-launcher-projects__breadcrumb-hint">Backspace leaves</span>
         </p>
@@ -224,7 +226,7 @@ function RowContent(props: {
 }): React.JSX.Element {
   const { row, state } = props
 
-  if (row.kind === 'pickFolder' || row.kind === 'categoryRoot')
+  if (row.kind === 'pickFolder' || row.kind === 'categoryRoot' || row.kind === 'groupRoot')
     return (
       <span className="jamat-launcher-projects__label">
         <span className="jamat-launcher__name jamat-launcher__name--tail">
@@ -232,7 +234,7 @@ function RowContent(props: {
         </span>
       </span>
     )
-  else if (row.kind === 'virtualFolder')
+  else if (row.kind === 'virtualFolder' || row.kind === 'group')
     return (
       <>
         <span className="jamat-launcher-projects__label">
@@ -248,10 +250,13 @@ function RowContent(props: {
         <span className="jamat-launcher-projects__label">
           {/* Inside a folder the prefix is the folder, and the folder is the line above the list. */}
           <span className="jamat-launcher__name">
-            {LauncherLabels.projectLabelOf(
-              row.project.name,
-              row.categoryId === state.activeCategoryId ? LauncherModel.labelPrefixOf(state) : null,
-            )}
+            {row.categoryId === state.activeCategoryId
+              ? LauncherLabels.projectLabelOf(
+                row.project.name,
+                LauncherModel.labelPrefixOf(state),
+                LauncherModel.groupLabelOf(state),
+              )
+              : row.project.name}
           </span>
           {row.categoryId !== state.activeCategoryId && (
             <span className="jamat-launcher-projects__foreign">
@@ -313,6 +318,10 @@ class LauncherRows {
       return `project:${row.categoryId}/${row.project.name}`
     else if (row.kind === 'virtualFolder')
       return `folder:${index}:${row.prefix}`
+    else if (row.kind === 'group')
+      return `group:${row.name}`
+    else if (row.kind === 'groupRoot')
+      return 'groupRoot'
     else if (row.kind === 'pickFolder')
       return 'pickFolder'
     else if (row.kind === 'categoryRoot')
@@ -322,11 +331,13 @@ class LauncherRows {
   }
 
   /** The root row names the category it belongs to: under a filter the list is flat over all of them. */
-  static tailLabelOf(row: Extract<LauncherRow, { kind: 'pickFolder' | 'categoryRoot' }>): string {
+  static tailLabelOf(row: Extract<LauncherRow, { kind: 'pickFolder' | 'categoryRoot' | 'groupRoot' }>): string {
     if (row.kind === 'pickFolder')
       return 'Pick folder…'
     else if (row.kind === 'categoryRoot')
       return `Root project (${row.label})`
+    else if (row.kind === 'groupRoot')
+      return `Whole group (${LauncherLabels.groupTitleOf(row.name)})`
     else
       throw new Error(`Unknown tail row: ${JSON.stringify(row)}`)
   }

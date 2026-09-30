@@ -829,6 +829,19 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     expect(onChange).toHaveBeenCalledWith(new Set(['react']))
   })
 
+  it('draws a directory copied whole with too many items as one checkable row with its count', () => {
+    const f = CommitPaneTest.fixture()
+    const snapshot = { ...f.snapshot, externalRoots: [], entries: [
+      { ...CommitPaneTest.entry('xObsolete/Atlantic18', 'added', 'directory'), carriedItems: 5_807 },
+    ] }
+    render(<CommitTargetsList snapshot={snapshot} checked={new Set(['xObsolete/Atlantic18'])} disabled={false} onChange={vi.fn()} onOpen={vi.fn()} onMenuOpen={vi.fn()} onOpenExternal={null} onRevert={vi.fn()} onOpenSeparately={vi.fn()} />)
+    expect(screen.getByLabelText('Include xObsolete/Atlantic18')).toBeChecked()
+    expect(screen.getByLabelText('Include xObsolete/Atlantic18')).toBeEnabled()
+    expect(screen.getByText('(5807 items)')).toBeInTheDocument()
+    expect(screen.getByLabelText('Copied whole: its 5807 items commit with this directory and are not listed')).toBeInTheDocument()
+    expect(screen.getByText('1 selected')).toBeInTheDocument()
+  })
+
   it('unchecks a copied directory and its carried rows together', () => {
     const f = CommitPaneTest.fixture()
     const snapshot = { ...f.snapshot, externalRoots: [], entries: [

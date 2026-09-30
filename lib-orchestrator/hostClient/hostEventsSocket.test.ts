@@ -168,6 +168,27 @@ describe('lib-orchestrator/hostClient/hostEventsSocket', () => {
     expect(host.subscribes).toEqual([0])
   })
 
+  it('does not report an announced shutdown as a socket failure, but reports a new Host crash', async () => {
+    const host = await startHost('stopping-host')
+    const context = harness()
+    context.socket.connect(host.descriptor())
+    await vi.waitFor(() => expect(context.socket.connected()).toBe(true))
+    host.publish({ kind: 'host-stopping' })
+    await vi.waitFor(() => expect(context.events).toHaveLength(1))
+    await host.stop()
+    hosts.splice(hosts.indexOf(host), 1)
+    await vi.waitFor(() => expect(context.socket.connected()).toBe(false))
+    expect(context.errors).toEqual([])
+
+    const replacement = await startHost('replacement-host')
+    context.socket.connect(replacement.descriptor())
+    await vi.waitFor(() => expect(context.socket.connected()).toBe(true))
+    await replacement.stop()
+    hosts.splice(hosts.indexOf(replacement), 1)
+    await vi.waitFor(() => expect(context.errors).toHaveLength(1))
+    expect(context.errors[0]).toContain('The Host events socket dropped')
+  })
+
   it('reports a Host that cannot be reached without throwing, and keeps trying', async () => {
     const host = await startHost()
     const descriptor = host.descriptor()

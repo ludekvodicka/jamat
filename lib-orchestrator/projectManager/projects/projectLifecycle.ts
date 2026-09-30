@@ -191,8 +191,7 @@ export class ProjectLifecycle {
    * The first two refusals are about `applyPrefix` being willing to compute a name for anything it is
    * handed. The UI offers only the folders the category defines, but the channel behind it takes
    * whatever a caller sends, and a prefix that is in no config would name a folder that cannot be
-   * entered or left again. A flattened `container/child` has no name in the root to carry a prefix at
-   * all.
+   * entered or left again. A `container/child` has no name in the root to carry a prefix at all.
    */
   async moveProjectPrefix(
     category: RuntimeCategory,
@@ -203,11 +202,11 @@ export class ProjectLifecycle {
       const unknown = ProjectLifecycle.unknownFolder(category, targetPrefix)
       if (unknown) return unknown
     }
-    if (ProjectNameRules.isFlattenedChild(name))
+    if (ProjectNameRules.isContainerChild(name))
       return {
         ok: false,
         code: 'invalid-name',
-        detail: `${name} sits inside a flattened container and cannot move between virtual folders`,
+        detail: `${name} sits inside a container and cannot move between virtual folders`,
       }
     const newName = DisplayGrouping.applyPrefix(name, category.virtualFolders, targetPrefix)
     // Choosing the folder a project is already in is the one move that computes its own name back,

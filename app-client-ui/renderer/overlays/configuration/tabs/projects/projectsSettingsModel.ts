@@ -35,6 +35,8 @@ export interface ProjectsSettingsState {
    * file, so opening a block must not make the tab look modified.
    */
   expanded: ReadonlySet<string>
+  /** Which roots have their Subfolders block open; the same kind of view state as `expanded`. */
+  subfoldersExpanded: ReadonlySet<string>
 }
 
 export type ProjectsSettingsQuestion =
@@ -57,6 +59,11 @@ export type ProjectsSettingsInput =
   | { input: 'folder-added'; id: string }
   | { input: 'folder-changed'; id: string; index: number; field: 'prefix' | 'title'; value: string }
   | { input: 'folder-removed'; id: string; index: number }
+  /** View only: which root's Subfolders block is open. */
+  | { input: 'subfolders-toggled'; id: string }
+  | { input: 'subfolder-added'; id: string }
+  | { input: 'subfolder-changed'; id: string; index: number; value: string }
+  | { input: 'subfolder-removed'; id: string; index: number }
   /** The answer to whichever question stands; only the question knows what "yes" costs. */
   | { input: 'answered'; yes: boolean }
   | { input: 'save' }
@@ -98,6 +105,7 @@ export class ProjectsSettingsModel {
         asking: null,
         problem: null,
         expanded: new Set(),
+        subfoldersExpanded: new Set(),
       },
       effects: [{ effect: 'load' }],
     }
@@ -116,6 +124,14 @@ export class ProjectsSettingsModel {
 
   static foldersOf(category: CatalogCategoryDto): readonly VirtualFolderDef[] {
     return category.virtualFolders ?? []
+  }
+
+  /**
+   * The directories directly below the root that the launcher opens like a folder, each child of
+   * one listed as its own project. Stored as `flattenFolders`, the key's name since V1.
+   */
+  static subfoldersOf(category: CatalogCategoryDto): readonly string[] {
+    return category.flattenFolders ?? []
   }
 
   /**
@@ -148,11 +164,32 @@ export class ProjectsSettingsModel {
     return problems
   }
 
+  /**
+   * The same two answers for Subfolders. An empty name mirrors `CatalogSection.nameListProblem`,
+   * which refuses it; a repeated one is harmless and only pointed at.
+   */
+  static subfolderProblemsOf(category: CatalogCategoryDto): ReadonlyMap<number, string> {
+    const problems = new Map<number, string>()
+    const seen = new Map<string, number>()
+    ProjectsSettingsModel.subfoldersOf(category).forEach((subfolder, index) => {
+      const name = subfolder.trim()
+      if (name.length === 0) {
+        problems.set(index, 'A subfolder needs a directory name; this one cannot be saved.')
+        return
+      }
+      const first = seen.get(name)
+      if (first === undefined) seen.set(name, index)
+      else problems.set(index, `The same directory as subfolder ${first + 1}.`)
+    })
+    return problems
+  }
+
   /** Every folder of every root has to be savable, because a save writes the whole section. */
   static isSavable(state: ProjectsSettingsState): boolean {
     if (state.buffer === null) return false
     return ProjectsSettingsModel.categoriesOf(state).every((category) =>
-      ProjectsSettingsModel.foldersOf(category).every(ProjectsSettingsModel.isComplete))
+      ProjectsSettingsModel.foldersOf(category).every(ProjectsSettingsModel.isComplete)
+      && ProjectsSettingsModel.subfoldersOf(category).every((name) => name.trim().length > 0))
   }
 
   /** The one spelling of the store's rule, so what disables Save and what marks the row cannot part. */
@@ -185,6 +222,22 @@ export class ProjectsSettingsModel {
       return ProjectsSettingsModel.folderChanged(state, input)
     else if (input.input === 'folder-removed')
       return ProjectsSettingsModel.folderRemoved(state, input.id, input.index)
+    else if (input.input === 'subfolders-toggled')
+      return ProjectsSettingsModel.subfoldersToggled(state, input.id)
+    else if (input.input === 'subfolder-added')
+      return ProjectsSettingsModel.subfolderAdded(state, input.id)
+    else if (input.input === 'subfolder-changed')
+      return ProjectsSettingsModel.step(ProjectsSettingsModel.withSubfolders(
+        state,
+        input.id,
+        (names) => names.map((name, index) => (index === input.index ? input.value : name)),
+      ))
+    else if (input.input === 'subfolder-removed')
+      return ProjectsSettingsModel.step(ProjectsSettingsModel.withSubfolders(
+        state,
+        input.id,
+        (names) => names.filter((_name, at) => at !== input.index),
+      ))
     else if (input.input === 'answered') return ProjectsSettingsModel.answered(state, input.yes)
     else if (input.input === 'save') return ProjectsSettingsModel.saveRequested(state)
     else if (input.input === 'saved') return ProjectsSettingsModel.saved(state, input.ok, input.detail)
@@ -213,10 +266,16 @@ export class ProjectsSettingsModel {
     return ProjectsSettingsModel.step({ ...state, loaded: categories, staleOnDisk: true })
   }
 
-  private static added(state: ProjectsSettingsState, path: string): ProjectsSettingsStep {
+  /**
+   * The path arrives from the OS picker, which on Windows answers with backslashes. Stored with
+   * forward slashes, the spelling every hand-written root in `config.json` uses, so a root added
+   * here does not read differently from the ones beside it. A path typed into the file is left alone.
+   */
+  private static added(state: ProjectsSettingsState, picked: string): ProjectsSettingsStep {
     const buffer = state.buffer
     if (!buffer)
       return ProjectsSettingsModel.step(state)
+    const path = picked.replaceAll('\\', '/')
     const category: CatalogCategoryDto = {
       id: ProjectsSettingsModel.idFor(path, new Set(buffer.map((entry) => entry.id))),
       label: ProjectsSettingsModel.labelFor(path),
@@ -333,6 +392,45 @@ export class ProjectsSettingsModel {
     }
   }
 
+  private static subfoldersToggled(state: ProjectsSettingsState, id: string): ProjectsSettingsStep {
+    const subfoldersExpanded = new Set(state.subfoldersExpanded)
+    if (!subfoldersExpanded.delete(id)) subfoldersExpanded.add(id)
+    return ProjectsSettingsModel.step({ ...state, subfoldersExpanded })
+  }
+
+  /** An empty name for the row to fill in, and the block opened so the row can be seen. */
+  private static subfolderAdded(state: ProjectsSettingsState, id: string): ProjectsSettingsStep {
+    const subfoldersExpanded = new Set(state.subfoldersExpanded).add(id)
+    return ProjectsSettingsModel.step({
+      ...ProjectsSettingsModel.withSubfolders(state, id, (names) => [...names, '']),
+      subfoldersExpanded,
+    })
+  }
+
+  /**
+   * The key is written only while there is a name to hold, as `virtualFolders` is. A name is not
+   * trimmed while it is typed, because a directory name can hold a space between two words; the
+   * save trims it.
+   */
+  private static withSubfolders(
+    state: ProjectsSettingsState,
+    id: string,
+    change: (names: readonly string[]) => readonly string[],
+  ): ProjectsSettingsState {
+    const buffer = state.buffer
+    if (!buffer) return state
+    return {
+      ...state,
+      buffer: buffer.map((category) => {
+        if (category.id !== id) return category
+        const names = change(ProjectsSettingsModel.subfoldersOf(category))
+        if (names.length > 0) return { ...category, flattenFolders: [...names] }
+        const { flattenFolders: _dropped, ...rest } = category
+        return rest
+      }),
+    }
+  }
+
   /** An index in the array and nothing else; at either end there is nowhere to go, so nothing moves. */
   private static moved(
     state: ProjectsSettingsState,
@@ -414,19 +512,22 @@ export class ProjectsSettingsModel {
   /**
    * A folder's two halves as the store will read them. The prefix is already trimmed on write, and
    * the title is trimmed here for the same reason: `"House projects "` names the same folder as
-   * `"House projects"`, and a trailing space is invisible in the field that produced it.
+   * `"House projects"`, and a trailing space is invisible in the field that produced it. A subfolder
+   * name is trimmed here for the same reason.
    */
   private static normalised(categories: readonly CatalogCategoryDto[]): CatalogCategoryDto[] {
     return categories.map((category) => {
       const folders = ProjectsSettingsModel.foldersOf(category)
-      if (folders.length === 0)
-        return category
+      const subfolders = ProjectsSettingsModel.subfoldersOf(category)
       return {
         ...category,
-        virtualFolders: folders.map((folder) => ({
-          prefix: folder.prefix.trim(),
-          title: folder.title.trim(),
-        })),
+        ...(folders.length === 0 ? {} : {
+          virtualFolders: folders.map((folder) => ({
+            prefix: folder.prefix.trim(),
+            title: folder.title.trim(),
+          })),
+        }),
+        ...(subfolders.length === 0 ? {} : { flattenFolders: subfolders.map((name) => name.trim()) }),
       }
     })
   }

@@ -93,6 +93,15 @@ describe('app-client-ui/shared/sessionsGroupsState', () => {
     expect(SessionsGroupsState.isGroup('pinned', sections)).toBe(true)
   })
 
+  /** A stored None used to outrank the root above it, so pinning a root left those sessions behind. */
+  it('treats None as no assignment when writing and when reading', () => {
+    const held = [{ key: 'category:cvut', group: 'pinned' }, { key: 'session:one', group: 'waiting' }]
+    expect(SessionsGroupsState.assigned(held, 'session:one', 'none')).toEqual([held[0]])
+    expect(SessionsGroupsState.assigned(held, 'session:two', 'none')).toEqual(held)
+    const legacy = [...held, { key: 'session:two', group: 'none' }]
+    expect(SessionsGroupsState.pruned(legacy, SessionsGroupsState.defaultsConst)).toEqual(held)
+  })
+
   it.each([null, {}, [null], [{ key: '', group: 'pinned' }], [{ key: 'one', group: 'Not An Id' }],
     [{ key: 'one', group: 'pinned' }, { key: 'one', group: 'none' }], [{ key: 'x'.repeat(4097), group: 'waiting' }]])(
     'rejects invalid assignments %j', (value) => {

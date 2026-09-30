@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 
 import type { HostDescriptor } from '../../app-host/app/wire/hostWire.js'
-import type { HostConnectionPresence } from '../hostClient/hostClient.types'
+import type { HostClient } from '../hostClient/hostClient'
+import type { HostCallResult, HostConnectionPresence } from '../hostClient/hostClient.types'
 import type { RuntimeChannel } from '../shared/configIdentity.types'
 import { ErrorText } from '../shared/errorText'
 import type { HostDebugStatus, HostPresence } from '../sessionManager/sessionManagerApi.types'
@@ -12,6 +13,10 @@ export type HostStartErrorCode = 'already-running' | 'spawn-failed' | 'boot-time
 export type HostStartResult =
   | { ok: true }
   | { ok: false; code: HostStartErrorCode; detail: string }
+
+export type HostRestartResult = HostCallResult<void> | Extract<HostStartResult, { ok: false }>
+
+export type HostStopResult = HostCallResult<void> | { ok: false; code: 'already-running'; detail: string }
 
 export interface HostControllerDeps {
   /**
@@ -30,6 +35,7 @@ export interface HostControllerDeps {
   /** The transport fact, from `HostClient`. The `starting` overlay on top of it is this class's. */
   presenceOf: () => HostConnectionPresence
   descriptorOf: () => HostDescriptor | null
+  stopHost: HostClient['stopHost']
   onError: (message: string) => void
   /** The tests script every launch through this; nothing in production passes it. */
   spawnImpl?: typeof spawn
@@ -43,17 +49,14 @@ interface LaunchEvidence {
 }
 
 /**
- * Whether a Host is out there, what it is, and the one thing a client may do about it: start one.
- *
- * There is deliberately no stop. `host.stop` kills every PTY the Host owns, which is the opposite of
- * the invariant that closing a client only detaches - so this class does not offer one, not even
- * privately.
+ * Host presence and explicit launches or restarts. Client shutdown still only detaches.
  */
 export class HostController {
   private static readonly bootTimeoutMillisecondsConst = 15_000
   private static readonly presencePollMillisecondsConst = 100
 
   private launching = false
+  private stopping = false
   private attempted = false
   private lastStartErrorValue: string | null = null
 
@@ -73,6 +76,46 @@ export class HostController {
   /** Refused while a Host is running and while a launch is in flight. Never throws. */
   async start(): Promise<HostStartResult> {
     return this.record(await this.attempt())
+  }
+
+  async restart(expectedHostInstanceId: string): Promise<HostRestartResult> {
+    if (this.launching || this.stopping)
+      return { ok: false, code: 'already-running', detail: 'A Host launch, stop or restart is already in flight' }
+    if (this.deps.presenceOf() !== 'running'
+      || this.deps.descriptorOf()?.hostInstanceId !== expectedHostInstanceId)
+      return { ok: false, code: 'host-unreachable', detail: 'The Host changed before the restart. Try again.' }
+    const located = HostLaunchLocator.launch(
+      { applicationRoot: this.deps.applicationRoot, resourcesRoot: this.deps.resourcesRoot },
+      this.deps.configDir,
+      this.deps.channel,
+    )
+    if (!located.ok) return HostController.spawnFailed(located.reason)
+    this.launching = true
+    try {
+      const stopped = await this.stopAndWait(expectedHostInstanceId)
+      if (!stopped.ok) return stopped
+      const started = this.record(await (this.deps.descriptorOf() === null
+        ? this.launch()
+        : this.awaitRunning({ spawnError: null, exited: null })))
+      return started.ok ? { ok: true, value: undefined } : started
+    } finally {
+      this.launching = false
+    }
+  }
+
+  /** Stops the running Host without a replacement; a later `start` launches one from this client's tree. */
+  async stop(expectedHostInstanceId: string): Promise<HostStopResult> {
+    if (this.launching || this.stopping)
+      return { ok: false, code: 'already-running', detail: 'A Host launch, stop or restart is already in flight' }
+    if (this.deps.presenceOf() !== 'running'
+      || this.deps.descriptorOf()?.hostInstanceId !== expectedHostInstanceId)
+      return { ok: false, code: 'host-unreachable', detail: 'The Host changed before the stop. Try again.' }
+    this.stopping = true
+    try {
+      return await this.stopAndWait(expectedHostInstanceId)
+    } finally {
+      this.stopping = false
+    }
   }
 
   presence(): HostPresence {
@@ -107,9 +150,26 @@ export class HostController {
     }
   }
 
+  private async stopAndWait(expectedHostInstanceId: string): Promise<HostCallResult<void>> {
+    const stopped = await this.deps.stopHost(expectedHostInstanceId)
+    if (!stopped.ok) return stopped
+    const timeout = this.deps.bootTimeoutMilliseconds ?? HostController.bootTimeoutMillisecondsConst
+    const deadline = Date.now() + timeout
+    // A disconnected socket alone does not prove shutdown. Wait for the old descriptor to go.
+    while (this.deps.descriptorOf()?.hostInstanceId === expectedHostInstanceId) {
+      if (Date.now() >= deadline)
+        return { ok: false, code: 'host-unreachable', detail: `The old Host did not finish stopping within ${timeout} ms` }
+      await HostController.delay(this.deps.presencePollMilliseconds ?? HostController.presencePollMillisecondsConst)
+    }
+    return { ok: true, value: undefined }
+  }
+
   private async attempt(): Promise<HostStartResult> {
     if (this.launching)
       return { ok: false, code: 'already-running', detail: 'A Host launch is already in flight' }
+    // The old Host may still hold its descriptor; a spawn now would be refused by its process lock.
+    if (this.stopping)
+      return { ok: false, code: 'already-running', detail: 'A Host stop is still in flight' }
     if (this.deps.presenceOf() === 'running')
       return { ok: false, code: 'already-running', detail: 'The Host is already running' }
     this.launching = true
@@ -203,7 +263,7 @@ export class HostController {
     return result
   }
 
-  private static spawnFailed(reason: string): HostStartResult {
+  private static spawnFailed(reason: string): Extract<HostStartResult, { ok: false }> {
     return { ok: false, code: 'spawn-failed', detail: `The Host could not be started: ${reason}` }
   }
 

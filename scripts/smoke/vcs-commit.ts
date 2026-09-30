@@ -142,7 +142,7 @@ class SmokeVcsCommit extends SmokeHarness {
       git: this.commits, svn: this.svnCommits,
       tortoise: { open: async () => { throw new Error('Unexpected Tortoise fallback') } }, onChanged: () => {},
     })
-    const review = async (paths: readonly string[]): Promise<string> => {
+    const review = async (paths: readonly string[], absent: readonly string[] = []): Promise<string> => {
       const prepared = await manager.prepare('selection', 'svn', null, null, paths)
       if (!prepared.ok) throw new Error(prepared.detail)
       manager.attach(prepared.value.draftId, 'owner')
@@ -151,6 +151,7 @@ class SmokeVcsCommit extends SmokeHarness {
       const snapshot = manager.files('owner', prepared.value.draftId, read.value)
       this.check('Explicit file preview excludes the modified sibling', !snapshot.entries.some((entry) => entry.path === join(working, 'unchecked.txt')))
       for (const path of paths) {
+        if (absent.includes(path)) continue
         const single = await this.files.workingTree({ sessionId: 'selection', cwd: prepared.value.scopeRoot,
           agent: null, worktree: null }, 'svn', true, path)
         if (!single.ok) throw new Error(single.detail)
@@ -168,6 +169,10 @@ class SmokeVcsCommit extends SmokeHarness {
       const revision = manager.status(prepared.value.draftId)?.revision
       if (revision === null || revision === undefined) throw new Error('The completed review has no revision')
       manager.release(prepared.value.draftId, 'owner')
+      const status = manager.status(prepared.value.draftId)
+      this.check('Closed SVN review reports actual paths separately from every requested path',
+        status?.committedPaths !== undefined && paths.every((path) => status.paths?.includes(path))
+        && paths.every((path) => status.committedPaths?.includes(path) === !absent.includes(path)))
       return revision
     }
     await review([selected])
@@ -199,6 +204,12 @@ class SmokeVcsCommit extends SmokeHarness {
     this.check('A multi-project review preserves unselected changes in participating projects',
       await this.svnRun(working, ['cat', '-r', 'BASE', 'ProjectTwo/unselected.txt']) === 'base\n'
       && await readFile(join(working, 'ProjectTwo', 'unselected.txt'), 'utf8') === 'unrelated work\n')
+    await writeFile(selected, 'second selected edit\n')
+    const partialRevision = await review([selected, batch[0]], [batch[0]])
+    const changedPaths = await this.svnRun(working, ['log', '--xml', '--verbose', '-r', partialRevision,
+      pathToFileURL(repository).href])
+    this.check('A requested unchanged file is absent from both committedPaths and the real SVN revision',
+      changedPaths.includes('/selected@file.txt') && !changedPaths.includes('/ProjectOne/Dockerfile'))
     await rename(join(working, 'ProjectThree'), join(this.root, 'selection-original-project'))
     const standalone = join(this.root, 'selection-standalone-project')
     await this.svnRun(this.root, ['checkout', `${pathToFileURL(repository).href}/ProjectThree`, standalone])

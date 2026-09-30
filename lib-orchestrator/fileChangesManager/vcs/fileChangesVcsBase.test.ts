@@ -92,5 +92,16 @@ describe('lib-orchestrator/fileChangesManager/vcs/fileChangesVcsBase', () => {
       expect(probe.reason(outcomeOf({ code: 128 })))
         .to.equal('testvcs exited with 128')
     })
+
+    it('never reports the partial output of a child it stopped as the reason', () => {
+      const probe = new Probe()
+
+      expect(probe.reason(outcomeOf({ code: -1, failure: 'timeout', stdout: '<?xml version="1.0"?><status>' })))
+        .to.equal('testvcs did not finish in time')
+      expect(probe.reason(outcomeOf({ code: -1, failure: 'output-limit', stdout: '<status>' })))
+        .to.equal('testvcs could not run (output-limit)')
+      expect(probe.reason(outcomeOf({ code: -1, failure: 'timeout', stderr: 'svn: E170013: Unable to connect' })))
+        .to.equal('svn: E170013: Unable to connect')
+    })
   })
 })

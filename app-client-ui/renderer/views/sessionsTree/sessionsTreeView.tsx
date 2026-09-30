@@ -624,9 +624,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
           () => ports.finalize(sessionId),
           onStopped,
         )
-      // `reopen` is `Resume session` here since 2026-09-10: the catalog item opens the create card
-      // on this session, and the card is what calls the library. It cannot reach this branch, and a
-      // local row that sent one anyway would be drawing an item nothing in this file draws.
+      // Local resume runs through the shell's session command, outside this row action handler.
       else if (action === 'remove')
         run(key, 'Remove', () => ports.remove(sessionId), () => onCloseTerminal(node.target))
       else if (action === 'retrySetup')
@@ -1815,8 +1813,7 @@ class SessionsTreeChoices {
 
 class SessionsTreeActions {
   /**
-   * A running Finish takes a runtime away. Remove starts in the context menu and temporarily becomes
-   * the row's sole button; ended Finish opens a dialog on its first click.
+   * A running Finish and Remove require a second click; ended Finish opens its decision dialog.
    */
   private static readonly confirmedConst: readonly SessionAction[] =
     ['finalize', 'remove']
@@ -1851,7 +1848,10 @@ class SessionsTreeActions {
     if (pending?.targetKey === targetKey && pending.action === 'remove') return ['remove']
     return node.actions.filter((action) => {
       if (action === 'finalize' || action === 'close') return true
-      else if (action === 'reopen' || action === 'remove' || action === 'retrySetup') return false
+      else if (action === 'remove')
+        return !node.live && !node.actions.includes('finalize')
+          && (node.outcome === 'finished' || node.badges.completed)
+      else if (action === 'reopen' || action === 'retrySetup') return false
       else
         throw new Error(`Unknown session action: ${JSON.stringify(action)}`)
     })

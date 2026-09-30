@@ -11,6 +11,7 @@ import type { SessionCompact } from '../contextCompaction/sessionCompact'
 import type { SnapshotStore } from '../ipc/snapshotStore'
 import { SessionFolder } from '../sessions/sessionFolder'
 import type { TabSessionFacts } from '../widgets/tabs/tabContextMenu'
+import { SessionTabOpener, type OpenTerminalPort } from './sessionTabOpener'
 
 /**
  * What the commands DO to a session, once something has decided which session they are about.
@@ -92,6 +93,26 @@ export class SessionOperations {
     }
     // The same path the restart chain uses: every panel holding this session reattaches.
     await window.appClient.tabs.publishTerminalRestarted(info.sessionId)
+  }
+
+  static async resumeSession(
+    sessions: SnapshotStore<SessionsSnapshot>,
+    target: { sessionId: string } | null,
+    openTerminal: OpenTerminalPort,
+  ): Promise<void> {
+    const info = SessionOperations.sessionInfoOf(sessions, target)
+    if (info === null) return
+    const answer = await window.appClient.sessions.reopen(info.sessionId)
+    const refusal = IpcFailure.of(answer, 'Resuming the session')
+    if (refusal !== null) {
+      AppClientUiReport.error(refusal)
+      return
+    }
+    // Existing panels must reattach before opening or focusing this session's terminal.
+    const published = await window.appClient.tabs.publishTerminalRestarted(info.sessionId)
+    if (!published.ok) AppClientUiReport.error(`terminal restart not published: ${published.error}`)
+    const failure = await SessionTabOpener.open(openTerminal, info.sessionId, info.tabTitle)
+    if (failure !== null) AppClientUiReport.error(failure)
   }
 
   /** Typed into the session's terminal in this window, exactly as a person would type it. */

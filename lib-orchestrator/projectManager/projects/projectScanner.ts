@@ -2,6 +2,7 @@ import { readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import type { RuntimeCategory } from '../catalog/catalog.types'
+import { ProjectContainers } from '../catalog/projectContainers'
 import type { ProjectEntry } from '../projectManagerApi.types'
 
 /** The three members of a `Dirent` this walk uses, and all a test has to provide. */
@@ -16,8 +17,19 @@ export interface ScannerFileSystem {
   stat(path: string): Promise<{ isDirectory(): boolean }>
 }
 
+/** A directory that holds projects instead of being one, spelled like a `ProjectEntry`. */
+export interface ContainerEntry {
+  name: string
+  path: string
+}
+
 export interface ScanResult {
   entries: ProjectEntry[]
+  /**
+   * Every container the walk went into, the empty ones included: a container is drawn, and a
+   * session can start in it, before it holds a project.
+   */
+  containers: ContainerEntry[]
   /** The listing is incomplete: the cap, the per-root deadline or an abort stopped the walk. */
   truncated: boolean
   /** False when the root could not be read; the category itself stays listed either way. */
@@ -32,6 +44,7 @@ interface CacheEntry {
 
 interface WalkOutcome {
   entries: ProjectEntry[]
+  containers: ContainerEntry[]
   truncated: boolean
   /** Stopped by time or by the caller, so the result is not the root's contents and is not cached. */
   cutShort: boolean
@@ -40,8 +53,9 @@ interface WalkOutcome {
 type DeadlineOutcome<T> = { done: true; value: T } | { done: false }
 
 /**
- * The projects of one category root: every directory one level down, plus one extra level inside the
- * containers named in `flattenFolders`.
+ * The projects of one category root: every directory one level down, and inside every container
+ * `ProjectContainers` recognises - a `flattenFolders` name - its own directories instead of the
+ * container itself.
  *
  * The semantics come from V1 `core/menu-core/projects.ts`; the guards do not. A root here can be a
  * network share with thousands of directories, so the walk is asynchronous, does one `readdir` per
@@ -118,47 +132,55 @@ export class ProjectScanner {
     const deadline = Date.now() + ProjectScanner.timeoutMillisecondsConst
     const root = await ProjectScanner.withinDeadline(this.readDirectory(category.path), deadline)
     if (!root.done)
-      return { result: { entries: [], truncated: true, available: true }, cutShort: true }
+      return { result: { entries: [], containers: [], truncated: true, available: true }, cutShort: true }
     // An unreachable root leaves the category listed and unavailable. V1 dropped it from the menu
     // instead, which read as "the category is gone" whenever a share was slow to mount.
     if (root.value === null)
-      return { result: { entries: [], truncated: false, available: false }, cutShort: false }
-    const walked = await this.walk(category, root.value, deadline, signal)
+      return { result: { entries: [], containers: [], truncated: false, available: false }, cutShort: false }
+    const outcome: WalkOutcome = { entries: [], containers: [], truncated: false, cutShort: false }
+    await this.walk(category, [], root.value, deadline, outcome, signal)
     return {
-      result: { entries: walked.entries, truncated: walked.truncated, available: true },
-      cutShort: walked.cutShort,
+      result: {
+        entries: outcome.entries,
+        containers: outcome.containers,
+        truncated: outcome.truncated,
+        available: true,
+      },
+      cutShort: outcome.cutShort,
     }
   }
 
+  /**
+   * One directory level, entered again for every container found in it. False when the walk has to
+   * end, with the reason already written into `outcome`.
+   */
   private async walk(
     category: RuntimeCategory,
-    rootEntries: readonly ScanDirectoryEntry[],
+    parent: readonly string[],
+    children: readonly ScanDirectoryEntry[],
     deadline: number,
+    outcome: WalkOutcome,
     signal?: AbortSignal,
-  ): Promise<WalkOutcome> {
-    const outcome: WalkOutcome = { entries: [], truncated: false, cutShort: false }
-    for (const entry of rootEntries) {
+  ): Promise<boolean> {
+    for (const child of children) {
       if (ProjectScanner.stopped(deadline, signal)) return ProjectScanner.cutShort(outcome)
-      if (!ProjectScanner.isCandidate(entry.name, category)) continue
-      const path = join(category.path, entry.name)
-      if (!await this.isDirectory(entry, path, deadline)) continue
-      if (!category.flattenFolders.has(entry.name)) {
-        if (!ProjectScanner.push(outcome.entries, entry.name, path)) return ProjectScanner.capped(outcome)
+      if (!ProjectScanner.isCandidate(child.name, category)) continue
+      if (parent.length > 0 && ProjectContainers.isOwnedBy(child.name)) continue
+      const relative = [...parent, child.name]
+      const path = join(category.path, ...relative)
+      if (!await this.isDirectory(child, path, deadline)) continue
+      const name = relative.join('/')
+      if (!ProjectContainers.isContainer(category, relative)) {
+        if (!ProjectScanner.push(outcome.entries, name, path)) return ProjectScanner.capped(outcome)
         continue
       }
-      const children = await ProjectScanner.withinDeadline(this.readDirectory(path), deadline)
-      if (!children.done) return ProjectScanner.cutShort(outcome)
-      if (children.value === null) continue
-      for (const child of children.value) {
-        if (ProjectScanner.stopped(deadline, signal)) return ProjectScanner.cutShort(outcome)
-        if (child.name.startsWith('.')) continue
-        const childPath = join(path, child.name)
-        if (!await this.isDirectory(child, childPath, deadline)) continue
-        if (!ProjectScanner.push(outcome.entries, `${entry.name}/${child.name}`, childPath))
-          return ProjectScanner.capped(outcome)
-      }
+      outcome.containers.push({ name, path })
+      const inside = await ProjectScanner.withinDeadline(this.readDirectory(path), deadline)
+      if (!inside.done) return ProjectScanner.cutShort(outcome)
+      if (inside.value === null) continue
+      if (!await this.walk(category, relative, inside.value, deadline, outcome, signal)) return false
     }
-    return outcome
+    return true
   }
 
   private static isCandidate(name: string, category: RuntimeCategory): boolean {
@@ -175,15 +197,15 @@ export class ProjectScanner {
     return true
   }
 
-  private static capped(outcome: WalkOutcome): WalkOutcome {
+  private static capped(outcome: WalkOutcome): false {
     outcome.truncated = true
-    return outcome
+    return false
   }
 
-  private static cutShort(outcome: WalkOutcome): WalkOutcome {
+  private static cutShort(outcome: WalkOutcome): false {
     outcome.truncated = true
     outcome.cutShort = true
-    return outcome
+    return false
   }
 
   private static stopped(deadline: number, signal?: AbortSignal): boolean {

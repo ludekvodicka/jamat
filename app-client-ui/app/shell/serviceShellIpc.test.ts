@@ -113,8 +113,8 @@ describe('app-client-ui/app/shell/serviceShellIpc', () => {
 
   it('assigns groups one key at a time, for main alone, and keeps what stands after a refusal', async () => {
     service.initialize()
-    const groups = [{ key: 'session:one', group: 'none' }, { key: 'category:nodejs', group: 'blocked' }]
-    expect(await invoke('state:assign-session-group', 'session:one', 'none')).toEqual({ ok: true, value: true })
+    const groups = [{ key: 'session:one', group: 'waiting' }, { key: 'category:nodejs', group: 'blocked' }]
+    expect(await invoke('state:assign-session-group', 'session:one', 'waiting')).toEqual({ ok: true, value: true })
     expect(await invoke('state:assign-session-group', 'category:nodejs', 'blocked')).toEqual({ ok: true, value: true })
     expect(await invokeFrom(holderSender, 'state:load-session-groups')).toEqual({ ok: true, value: groups })
     expect(await invokeFrom(holderSender, 'state:assign-session-group', 'session:one', 'pinned')).toMatchObject({ ok: false })

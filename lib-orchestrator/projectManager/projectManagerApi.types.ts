@@ -35,7 +35,10 @@ export interface CategoryInfo {
 }
 
 export interface ProjectEntry {
-  /** `foo`, or `container/foo` when the container is one of the category's flattenFolders. */
+  /**
+   * `foo`, or `container/foo` inside a container: one of the category's flattenFolders, which the
+   * settings call Subfolders.
+   */
   name: string
   path: string
   /** Newest activity across every provider; null when it was not asked for. */
@@ -45,6 +48,14 @@ export interface ProjectEntry {
 export type DisplayEntry =
   | { kind: 'project'; project: ProjectEntry }
   | { kind: 'virtualFolder'; prefix: string; title: string; children: ProjectEntry[] }
+  /**
+   * A real directory holding projects: `name` is its path below the root, the prefix of every
+   * project inside it, and `title` its own directory name. It is not a project, but a session may
+   * run in it, bound to `name` and `path` exactly as a project would be. Never sent to another
+   * computer: `RemoteControl` unfolds it, because a peer on an older build throws on a kind it does
+   * not know.
+   */
+  | { kind: 'group'; name: string; title: string; path: string; entries: DisplayEntry[] }
 
 export interface ProjectListResult {
   /** Grouping already applied; a consumer renders this, it does not re-derive it. */

@@ -262,10 +262,14 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/projects/projectsSe
         .toContain('No roots yet'))
   })
 
+  function toggles(container: HTMLElement, block: string): HTMLButtonElement[] {
+    return [...container.querySelectorAll<HTMLButtonElement>('.jamat-configuration-projects__block-toggle')]
+      .filter((node) => node.textContent?.includes(block))
+  }
+
   describe('virtual folders', () => {
     function openFolders(container: HTMLElement, label: string): void {
-      fireEvent.click([...container.querySelectorAll('button')]
-        .filter((node) => node.className.includes('folders-toggle'))[label === 'nodejs' ? 0 : 1])
+      fireEvent.click(toggles(container, 'Virtual folders')[label === 'nodejs' ? 0 : 1])
     }
 
     function folderInputs(container: HTMLElement): { prefixes: string[]; titles: string[] } {
@@ -280,9 +284,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/projects/projectsSe
     it('counts the folders of each root without being opened', async () => {
       const { view } = await mount()
 
-      expect([...view.container.querySelectorAll('button')]
-        .filter((node) => node.className.includes('folders-toggle'))
-        .map((node) => node.textContent))
+      expect(toggles(view.container, 'Virtual folders').map((node) => node.textContent))
         .toEqual(['▸ Virtual folders (0)', '▸ Virtual folders (0)'])
       expect(folderInputs(view.container).prefixes).toEqual([])
     })
@@ -368,6 +370,51 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/projects/projectsSe
       )
 
       expect(labels(view.container)).toEqual(['NodeJs', 'Web'])
+    })
+  })
+
+  describe('subfolders', () => {
+    function subfolderInputs(container: HTMLElement): HTMLInputElement[] {
+      return [...container.querySelectorAll<HTMLInputElement>('.jamat-configuration-projects__subfolder')]
+    }
+
+    it('counts the subfolders of each root without being opened', async () => {
+      const { view } = await mount()
+
+      expect(toggles(view.container, 'Subfolders').map((node) => node.textContent))
+        .toEqual(['▸ Subfolders (0)', '▸ Subfolders (0)'])
+      expect(subfolderInputs(view.container)).toEqual([])
+    })
+
+    it('adds a subfolder to one root and saves it as flattenFolders', async () => {
+      const { stub, view } = await mount()
+      fireEvent.click(toggles(view.container, 'Subfolders')[0])
+
+      fireEvent.click(buttonNamed(view.container, 'Add subfolder to NodeJs'))
+      expect(buttonNamed(view.container, 'Save').disabled).toBe(true)
+      expect(view.container.querySelector('.jamat-configuration-projects__warn')?.textContent)
+        .toContain('cannot be saved')
+
+      fireEvent.change(subfolderInputs(view.container)[0], { target: { value: 'AutomationBots ' } })
+      fireEvent.click(buttonNamed(view.container, 'Save'))
+
+      await waitFor(() => expect(stub.saved).toHaveLength(1))
+      expect(stub.saved[0][0].flattenFolders).toEqual(['AutomationBots'])
+      expect('flattenFolders' in stub.saved[0][1]).toBe(false)
+      expect(stub.saved[0][0]['futureCategoryKey']).toBe('kept')
+    })
+
+    it('removes a subfolder without asking, because nothing on disk changes', async () => {
+      const { view } = await mount()
+      fireEvent.click(toggles(view.container, 'Subfolders')[1])
+      fireEvent.click(buttonNamed(view.container, 'Add subfolder to Web'))
+      fireEvent.change(subfolderInputs(view.container)[0], { target: { value: 'Plugins' } })
+
+      fireEvent.click(buttonNamed(view.container, 'Remove subfolder 1 from Web'))
+
+      expect(view.container.querySelector('[role="alertdialog"]')).toBeNull()
+      expect(subfolderInputs(view.container)).toEqual([])
+      expect(buttonNamed(view.container, 'Save').disabled).toBe(true)
     })
   })
 

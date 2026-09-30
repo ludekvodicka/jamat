@@ -47,9 +47,12 @@ describe('app-client-ui/renderer/views/sessionsTree/useSessionsGroups', () => {
     expect(result.current.saving).toBe(false)
     expect([...result.current.groups]).toEqual([['category:work', 'pinned']])
     expect(result.current.error).toContain('Write failed')
+    act(() => result.current.assign('session:two', 'waiting'))
+    await act(async () => settle({ ok: true, value: true }))
+    expect([...result.current.groups]).toEqual([['category:work', 'pinned'], ['session:two', 'waiting']])
     act(() => result.current.assign('session:two', 'none'))
     await act(async () => settle({ ok: true, value: true }))
-    expect([...result.current.groups]).toEqual([['category:work', 'pinned'], ['session:two', 'none']])
+    expect([...result.current.groups]).toEqual([['category:work', 'pinned']])
   })
 
   /**

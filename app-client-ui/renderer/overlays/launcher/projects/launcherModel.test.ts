@@ -79,12 +79,14 @@ describe('app-client-ui/renderer/overlays/launcher/launcherModel', () => {
         throw new Error(`The cursor stands on nothing: ${this.state.cursor}`)
       if (row.kind === 'project')
         return row.project.name
-      else if (row.kind === 'virtualFolder')
+      else if (row.kind === 'virtualFolder' || row.kind === 'group')
         return row.title
       else if (row.kind === 'pickFolder')
         return 'Pick folder'
       else if (row.kind === 'categoryRoot')
         return row.label
+      else if (row.kind === 'groupRoot')
+        return `group ${row.name}`
       else
         throw new Error(`Unknown launcher row: ${JSON.stringify(row)}`)
     }
@@ -887,6 +889,129 @@ describe('app-client-ui/renderer/overlays/launcher/launcherModel', () => {
           projectName: 'AppJamat',
           projectPath: 'C:\\Projects\\NodeJs\\AppJamat',
         },
+      }])
+    })
+  })
+
+  describe('a product group', () => {
+    function project(name: string): ProjectListResult['projects'][number] {
+      return { name, path: `Q:/Projects/${name}`, lastActivity: null }
+    }
+
+    function applications(): ProjectListResult {
+      const projects = [
+        project('AutomationBots/SrvTaskBot'),
+        project('Atlas/Complex/WebAdmin'),
+        project('SvnTea'),
+        project('Atlas/SrvTemplate'),
+      ]
+      return {
+        entries: [
+          {
+            kind: 'group',
+            name: 'Atlas',
+            title: 'Atlas',
+            path: 'Q:/Projects/Atlas',
+            entries: [
+              {
+                kind: 'group',
+                name: 'Atlas/Complex',
+                title: 'Complex',
+                path: 'Q:/Projects/Atlas/Complex',
+                entries: [{ kind: 'project', project: projects[1] }],
+              },
+              { kind: 'project', project: projects[3] },
+            ],
+          },
+          {
+            kind: 'group',
+            name: 'AutomationBots',
+            title: 'AutomationBots',
+            path: 'Q:/Projects/AutomationBots',
+            entries: [{ kind: 'project', project: projects[0] }],
+          },
+          { kind: 'project', project: projects[2] },
+        ],
+        projects,
+        virtualFolders: [],
+        truncated: false,
+        available: true,
+      }
+    }
+
+    function grouped(): Run {
+      return Run.loaded().then({ input: 'projectsLoaded', categoryId: 'nodejs', sort: 'recent', listing: applications() })
+    }
+
+    it('draws a group as a folder counting every project below it', () => {
+      const rows = grouped().rows()
+
+      expect(rows.slice(0, 3)).toEqual([
+        { kind: 'group', name: 'Atlas', title: 'Atlas', count: 2 },
+        { kind: 'group', name: 'AutomationBots', title: 'AutomationBots', count: 1 },
+        { kind: 'project', categoryId: 'nodejs', project: project('SvnTea') },
+      ])
+    })
+
+    it('opens a group, offers the group itself, and binds a project inside it by its full name', () => {
+      const inside = grouped().on('group').then({ input: 'activate' })
+
+      expect(inside.state.groupName).toBe('Atlas')
+      expect(inside.rows().map((row) => row.kind))
+        .toEqual(['group', 'project', 'groupRoot', 'pickFolder', 'categoryRoot'])
+
+      const chosen = inside.on('project').then({ input: 'activate' })
+      expect(chosen.effects).toEqual([{
+        effect: 'bindingChosen',
+        binding: {
+          mode: 'project',
+          categoryId: 'nodejs',
+          projectName: 'Atlas/SrvTemplate',
+          projectPath: 'Q:/Projects/Atlas/SrvTemplate',
+        },
+      }])
+    })
+
+    // A coordinated change across the group's projects: the session is bound where the matcher
+    // files the group's own directory, so the tree and the launcher agree about it.
+    it('starts a session in the group itself from its root row', () => {
+      const chosen = grouped().on('group').then({ input: 'activate' }).on('groupRoot').then({ input: 'activate' })
+
+      expect(chosen.effects).toEqual([{
+        effect: 'bindingChosen',
+        binding: {
+          mode: 'project',
+          categoryId: 'nodejs',
+          projectName: 'Atlas',
+          projectPath: 'Q:/Projects/Atlas',
+        },
+      }])
+    })
+
+    it('walks into a nested group and back out one level at a time', () => {
+      const nested = grouped().on('group').then({ input: 'activate' }).on('group').then({ input: 'activate' })
+
+      expect(nested.state.groupName).toBe('Atlas/Complex')
+      expect(nested.at()).toBe('Atlas/Complex/WebAdmin')
+
+      const parent = nested.then({ input: 'backspace' })
+      expect(parent.state.groupName).toBe('Atlas')
+      const root = parent.then({ input: 'escape' })
+      expect(root.state.groupName).toBeNull()
+      expect(root.effects).toEqual([])
+    })
+
+    it('creates a project inside the group it stands in', () => {
+      const created = grouped()
+        .on('group')
+        .then({ input: 'activate' }, { input: 'newProjectStart' }, { input: 'newProjectChanged', name: 'SrvNew' })
+        .then({ input: 'activate' })
+
+      expect(created.effects).toEqual([{
+        effect: 'createProject',
+        categoryId: 'nodejs',
+        name: 'Atlas/SrvNew',
+        virtualFolderPrefix: null,
       }])
     })
   })

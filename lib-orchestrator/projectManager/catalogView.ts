@@ -20,16 +20,18 @@ export interface CatalogReading {
  * a third consumer or friction between the two readers, and neither has arrived.
  */
 export class CatalogView {
-  private constructor(private readonly store: CatalogStore) {}
+  private readonly store: CatalogStore
+
+  private constructor(store: CatalogStore) {
+    this.store = store
+  }
 
   /** Read-only by construction: with no snapshots directory the store refuses every save. */
   static load(configDir: string, options?: { report?: (message: string) => void }): CatalogView {
     // No `legacySnapshotSection` here on purpose: with no snapshots directory this store refuses
     // every save, so it never rotates a ring and has nothing to claim. Whoever builds the WRITING
     // store says whose the key-less names are - `appHub.ts` and `scripts/smoke/project-manager.ts`.
-    return new CatalogView(new CatalogStore(ConfigStore.load(configDir, {
-      report: options?.report,
-    })))
+    return new CatalogView(new CatalogStore(ConfigStore.load(configDir, { report: options?.report })))
   }
 
   /**
@@ -39,10 +41,10 @@ export class CatalogView {
    * standing beside it.
    */
   read(): CatalogReading {
-    const categories = this.store.categories()
-    const matcher = new ProjectMatcher(categories)
+    const runtime = this.store.runtimeCategories()
+    const matcher = new ProjectMatcher(runtime)
     return {
-      categories,
+      categories: runtime.map(({ id, label, path }) => ({ id, label, path })),
       bind: (cwd, worktreeRepositoryRoot) => matcher.bind(cwd, worktreeRepositoryRoot),
     }
   }

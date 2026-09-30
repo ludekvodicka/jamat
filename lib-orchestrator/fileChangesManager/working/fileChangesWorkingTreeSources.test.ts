@@ -110,23 +110,27 @@ describe('lib-orchestrator/fileChangesManager/working/fileChangesWorkingTreeSour
 
   it('does not discover checkpoint or Git sources for an SVN commit at a group root', async () => {
     const calls: string[] = []
+    const panelCalls: string[] = []
     const sources = new FileChangesWorkingTreeSources({
       checkpointStore: {
         existingContextOf: async () => { calls.push('checkpoint'); throw new Error('group root is not a project') },
         worktreeBelongsToStore: async () => { calls.push('store worktree'); return false },
       },
       gitOf: () => { calls.push('git'); throw new Error('unexpected Git discovery') },
-      svn: svn(calls),
+      svn: svn(panelCalls),
+      commitSvn: svn(calls),
     })
     const result = await sources.read({ ...context(), cwd: 'Q:/Projects' }, 'svn', undefined, true)
     expect(calls).toEqual(['Q:/Projects'])
+    // The panel adapter keeps the short timeout; a group root's status outlasts it.
+    expect(panelCalls).toEqual([])
     expect(result.selection).toEqual({ requested: 'svn', selected: 'svn', available: ['svn'], fallbackReason: null })
     expect(result.warnings).toEqual([])
   })
 
   it('keeps SVN failures visible without falling back to a checkpoint for commit reads', async () => {
     const adapter = svn([])
-    const sources = new FileChangesWorkingTreeSources({ checkpointStore: store(null, false), svn: adapter })
+    const sources = new FileChangesWorkingTreeSources({ checkpointStore: store(null, false), svn: svn([]), commitSvn: adapter })
     adapter.status = async () => ({ ok: false, detail: 'working copy is locked' })
     const failed = await sources.read(context(), 'svn', undefined, true)
     expect(failed.selected).toBeNull()

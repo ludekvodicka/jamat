@@ -75,6 +75,7 @@ describe('lib-orchestrator/projectManager/projects/projectScanner', () => {
       .scan(category(root, { flattenFolders: new Set(['Plugins']) }))
 
     expect(namesOf(result)).toEqual(['AppOne', 'Plugins/foo'])
+    expect(result.containers).toEqual([{ name: 'Plugins', path: join(root, 'Plugins') }])
     const flattened = result.entries.find((entry) => entry.name === 'Plugins/foo')
     expect(flattened?.path).toBe(join(root, 'Plugins', 'foo'))
     // The facade fills this in from provider history; the scanner opens no provider store.
@@ -100,6 +101,7 @@ describe('lib-orchestrator/projectManager/projects/projectScanner', () => {
 
     expect(await scanner.scan(category(root))).toEqual({
       entries: [],
+      containers: [],
       truncated: false,
       available: false,
     })
@@ -189,5 +191,54 @@ describe('lib-orchestrator/projectManager/projects/projectScanner', () => {
     scanner.invalidate()
     await scanner.scan(category('Q:/root'))
     expect(calls).toBe(2)
+  })
+
+  function makeGroup(root: string, ...segments: string[]): string {
+    const group = join(root, ...segments)
+    mkdirSync(group, { recursive: true })
+    writeFileSync(join(group, '.appgroup'), '', 'utf8')
+    return group
+  }
+
+  // Q:/Projects: `.appgroup` describes the repository layout; whether Jamat unfolds a directory
+  // is the Subfolders setting alone.
+  it('lists a product group the setting does not name as one project', async () => {
+    const root = makeRoot()
+    mkdirSync(join(makeGroup(root, 'SecretKeeper'), 'WebSecretKeeperAdmin'))
+
+    const result = await new ProjectScanner().scan(category(root))
+
+    expect(namesOf(result)).toEqual(['SecretKeeper'])
+    expect(result.containers).toEqual([])
+  })
+
+  it('unfolds a listed subfolder without any marker and skips what it keeps for itself', async () => {
+    const root = makeRoot()
+    mkdirSync(join(root, 'SvnTea'))
+    const group = join(root, 'AutomationBots')
+    for (const name of ['SrvTaskBot', 'SrvTelegramCrypto', 'components', '.private', 'Archived'])
+      mkdirSync(join(group, name), { recursive: true })
+    writeFileSync(join(group, 'CLAUDE.md'), 'x', 'utf8')
+
+    const result = await new ProjectScanner()
+      .scan(category(root, { flattenFolders: new Set(['AutomationBots']) }))
+
+    expect(namesOf(result)).toEqual(['AutomationBots/SrvTaskBot', 'AutomationBots/SrvTelegramCrypto', 'SvnTea'])
+    expect(result.entries.find((entry) => entry.name === 'AutomationBots/SrvTaskBot')?.path)
+      .toBe(join(group, 'SrvTaskBot'))
+    expect(result.containers).toEqual([{ name: 'AutomationBots', path: group }])
+  })
+
+  it('unfolds one level only, and lists an empty subfolder', async () => {
+    const root = makeRoot()
+    mkdirSync(join(root, 'Atlas', 'SrvTemplateBackend'), { recursive: true })
+    mkdirSync(join(makeGroup(root, 'Atlas', 'MultiTemplateComplex'), 'WebAdmin'))
+    mkdirSync(join(root, 'Fresh'))
+
+    const result = await new ProjectScanner()
+      .scan(category(root, { flattenFolders: new Set(['Atlas', 'Fresh']) }))
+
+    expect(namesOf(result)).toEqual(['Atlas/MultiTemplateComplex', 'Atlas/SrvTemplateBackend'])
+    expect(result.containers.map((container) => container.name).sort()).toEqual(['Atlas', 'Fresh'])
   })
 })

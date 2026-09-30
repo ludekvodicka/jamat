@@ -13,12 +13,13 @@
  * own %LOCALAPPDATA%\jamat-v3 and ~/.jamat-v3 are never read and never written.
  */
 import { SmokeHarness, SmokeRun } from './smokeHarness.js'
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { HostDescriptorPaths } from '../../lib-orchestrator/hostClient/hostDescriptorPaths.js'
+import { HostTreeVersion } from '../../lib-orchestrator/hostControl/hostTreeVersion.js'
 import { SessionManager } from '../../lib-orchestrator/sessionManager/sessionManager.js'
 import type {
   SessionInfo,
@@ -39,6 +40,7 @@ class SmokeTerminal extends SmokeHarness {
   private static readonly repoRootConst = join(import.meta.dirname, '..', '..')
   private static readonly firstAttachConst = 'smoke-attach-1'
   private static readonly secondAttachConst = 'smoke-attach-2'
+  private static readonly restartedAttachConst = 'smoke-attach-restarted'
   private static readonly markerConst = 'smoke-terminal-marker'
   private static readonly longMarkerConst = 'smoke-terminal-long-marker'
   /** Comfortably past the Host's 4096, and well inside every shell's own command line limit. */
@@ -78,11 +80,16 @@ class SmokeTerminal extends SmokeHarness {
       configDir: this.configDir,
       configIdentity,
       channel: SmokeTerminal.channelConst,
-      // The Host of this run is the one spawned below; nothing here may launch a detached one.
+      // Every Host of this smoke is retained for teardown, including an explicit replacement.
       autoStartHost: false,
       onChanged: () => {},
       onError: (message) => { this.errors.push(message) },
       controllerId: SmokeTerminal.controllerIdConst,
+      spawnImpl: ((command: string, args: readonly string[], options: SpawnOptions) => {
+        const child = spawn(command, args, options)
+        this.host = child
+        return child
+      }) as typeof spawn,
     })
   }
 
@@ -112,7 +119,8 @@ class SmokeTerminal extends SmokeHarness {
     await this.checkInputPastTheWireLimit()
     await this.checkResizeIsSentOnlyWhenItMoved()
     await this.checkSecondAttachRebuildsFromSnapshot(sessionId)
-    await this.checkStop(sessionId)
+    await this.checkHostRestart(sessionId)
+    await this.checkStop(sessionId, SmokeTerminal.restartedAttachConst)
 
     this.check(`nothing was reported through onError (${this.errors.join(' | ')})`,
       this.errors.length === 0)
@@ -141,6 +149,33 @@ class SmokeTerminal extends SmokeHarness {
     )
     this.check('a shell session is live on the Host', true)
     return created.sessionId
+  }
+
+  private async checkHostRestart(sessionId: string): Promise<void> {
+    const before = this.manager.snapshot().host.hostInstanceId
+    if (before === null) throw new Error('No Host instance before restart')
+    const oldProcess = this.host
+    if (oldProcess === null) throw new Error('No Host process before restart')
+    SmokeTerminal.valueOf(await this.manager.restartHost(before), 'restartHost')
+    const after = this.manager.snapshot().host
+    this.check('an explicit restart replaces the Host instance',
+      after.presence === 'running' && after.hostInstanceId !== before)
+    await this.waitUntil(() => oldProcess.exitCode !== null || oldProcess.signalCode !== null,
+      'the replaced Host process never exited')
+    this.check('the previous Host exited', true)
+    this.check(`the restarted Host reports the source version (${after.hostVersion})`,
+      after.hostVersion !== null && after.hostVersion === new HostTreeVersion(SmokeTerminal.repoRootConst).current())
+    this.check('the running session is automatically restored', this.sessionOf(sessionId)?.life === 'live')
+    this.check('the replacement Host granted a controller lease', this.manager.debugStatus().lease.leaseId !== null)
+    this.manager.terminalDetach(SmokeTerminal.secondAttachConst)
+    this.frames.length = 0
+    const attached = this.manager.terminalAttach(SmokeTerminal.restartedAttachConst, { sessionId, size: null }, {
+      source: 'local',
+      onFrame: (frame) => { this.frames.push({ attachId: SmokeTerminal.restartedAttachConst, frame }) },
+    })
+    this.check('the reopened session accepts a fresh attach', attached.ok)
+    await this.waitForFrame(SmokeTerminal.restartedAttachConst, 'terminal.snapshot',
+      'the reopened terminal never sent a snapshot')
   }
 
   private async checkAttach(sessionId: string): Promise<void> {
@@ -248,13 +283,13 @@ class SmokeTerminal extends SmokeHarness {
       snapshot.projection.cols === 120 && snapshot.projection.rows === 40)
   }
 
-  private async checkStop(sessionId: string): Promise<void> {
+  private async checkStop(sessionId: string, attachId: string): Promise<void> {
     SmokeTerminal.valueOf(await this.manager.stopSession(sessionId), 'stopSession')
-    await this.waitForFrame(SmokeTerminal.secondAttachConst, 'terminal.exit',
+    await this.waitForFrame(attachId, 'terminal.exit',
       'the attach never heard that the runtime had gone')
     this.check('a stopped runtime reaches the attach as an exit', true)
     // The exit is the end of that attach: nothing after it is addressed to anybody.
-    this.manager.terminalDetach(SmokeTerminal.secondAttachConst)
+    this.manager.terminalDetach(attachId)
     this.check('the session ended', this.sessionOf(sessionId)?.life === 'ended')
   }
 

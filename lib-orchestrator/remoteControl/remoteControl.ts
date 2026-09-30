@@ -1,6 +1,7 @@
 import { RemoteControlEnvelope } from './remoteControlEnvelope'
 import type {
   CategoryInfo,
+  DisplayEntry,
   ProjectListResult,
   ProjectsOpResult,
 } from '../projectManager/projectManagerApi.types'
@@ -467,15 +468,33 @@ export class RemoteControl {
     if (categoryId !== undefined && selected.length === 0)
       return RemoteControl.error('not-found', `No category ${JSON.stringify(categoryId)}`)
     const listings: RemoteControlProjectCategoryDto[] = await Promise.all(selected.map(
-      async (category) => ({
-        category,
-        listing: await this.deps.projects.listProjects(
+      async (category) => {
+        const listing = await this.deps.projects.listProjects(
           category.id,
           sort === undefined ? undefined : { sort },
-        ),
-      }),
+        )
+        return {
+          category,
+          listing: listing.ok
+            ? { ok: true, value: { ...listing.value, entries: RemoteControl.withoutGroups(listing.value.entries) } }
+            : listing,
+        }
+      },
     ))
     return RemoteControl.success({ categories: listings })
+  }
+
+  /**
+   * A container's projects, at the level the container stood on. A peer built before the `group`
+   * entry existed throws on the kind it does not know, and it gets the same projects under the same
+   * `container/project` names it drew for a flattened container before that entry was added.
+   */
+  private static withoutGroups(entries: readonly DisplayEntry[]): DisplayEntry[] {
+    return entries.flatMap((entry) => {
+      if (entry.kind === 'group') return RemoteControl.withoutGroups(entry.entries)
+      else if (entry.kind === 'project' || entry.kind === 'virtualFolder') return [entry]
+      else throw new Error(`Unknown display entry: ${JSON.stringify(entry)}`)
+    })
   }
 
   private async sessionCreate(

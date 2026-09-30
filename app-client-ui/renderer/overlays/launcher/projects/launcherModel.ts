@@ -15,10 +15,17 @@ import type { ProjectSummary } from './projectSummaries'
 export type LauncherRow =
   | { kind: 'project'; categoryId: string; project: ProjectEntry }
   | { kind: 'virtualFolder'; prefix: string; title: string; count: number }
+  /** A directory holding projects: `name` is its path below the root, what `groupName` holds inside it. */
+  | { kind: 'group'; name: string; title: string; count: number }
   /** A directory outside every category, named by the OS picker rather than typed. */
   | { kind: 'pickFolder' }
   /** The category's own root, for work that is about the root itself rather than one project in it. */
   | { kind: 'categoryRoot'; categoryId: string; label: string; path: string }
+  /**
+   * The group the cursor stands in, for a change across its projects. Bound as the project the
+   * sessions tree files such a session under: the matcher binds the group's own directory to it.
+   */
+  | { kind: 'groupRoot'; categoryId: string; name: string; path: string }
 
 export type LauncherSort = Parameters<AppClientUiBridge['projects']['list']>[1]
 
@@ -59,6 +66,12 @@ export interface LauncherState {
   view: 'grouped' | 'flat'
   /** Non-null while the cursor is inside a virtual folder. Backspace leaves it. */
   virtualFolderPrefix: string | null
+  /**
+   * Non-null while the cursor is inside a group, and then its name: `Atlas/Complex` inside a
+   * nested one. Backspace leaves one level. Never set together with `virtualFolderPrefix`, since a
+   * virtual folder groups only the projects at the root.
+   */
+  groupName: string | null
   /**
    * `active` is "the filter field holds the caret", not "a filter is on" - the text is what filters,
    * and it survives leaving the field. Keeping the two apart is what lets Up open the field again
@@ -184,6 +197,7 @@ export class LauncherModel {
         sort: 'recent',
         view: 'grouped',
         virtualFolderPrefix: null,
+        groupName: null,
         search: { active: false, text: '' },
         tabMemory: new Map(),
         newProject: null,
@@ -220,7 +234,24 @@ export class LauncherModel {
     // comes from this machine's catalog - so a remote card draws neither and says so on the key
     // line instead of offering a folder the other computer has never heard of.
     if (state.remote !== null) return rows
-    return [...rows, { kind: 'pickFolder' }, ...LauncherModel.categoryRootRows(state)]
+    return [
+      ...rows,
+      ...LauncherModel.groupRootRows(state),
+      { kind: 'pickFolder' },
+      ...LauncherModel.categoryRootRows(state),
+    ]
+  }
+
+  /** The group the cursor stands in, while no filter makes the list flat over every category. */
+  private static groupRootRows(state: LauncherState): readonly LauncherRow[] {
+    const groupName = LauncherModel.groupLabelOf(state)
+    if (groupName === null || state.activeCategoryId === null)
+      return []
+    const listing = LauncherModel.activeListingOf(state)
+    const group = listing === null ? null : LauncherModel.groupIn(listing.entries, groupName)
+    if (group === null)
+      return []
+    return [{ kind: 'groupRoot', categoryId: state.activeCategoryId, name: group.name, path: group.path }]
   }
 
   /**
@@ -302,6 +333,11 @@ export class LauncherModel {
     return state.search.text.length > 0 ? null : state.virtualFolderPrefix
   }
 
+  /** The group the rows are drawn inside, null under a filter for the reason `labelPrefixOf` gives. */
+  static groupLabelOf(state: LauncherState): string | null {
+    return state.search.text.length > 0 ? null : state.groupName
+  }
+
   /**
    * The folders a project can be moved into, and the ones the breadcrumb reads its title from: the
    * ones the ROOT defines, not the ones this listing happens to draw. Read off `entries` this was
@@ -322,6 +358,8 @@ export class LauncherModel {
    * still lands in the folder - which is exactly when saying so is worth something.
    */
   static placeLabelOf(state: LauncherState): string {
+    if (state.groupName !== null)
+      return LauncherLabels.groupTitleOf(state.groupName)
     const category = LauncherModel.activeCategoryOf(state)
     return LauncherLabels.placeOf(
       category?.label ?? state.activeCategoryId ?? '',
@@ -383,6 +421,9 @@ export class LauncherModel {
     if (!listing || state.activeCategoryId === null)
       return []
     const categoryId = state.activeCategoryId
+    if (state.groupName !== null)
+      return (LauncherModel.groupIn(listing.entries, state.groupName)?.entries ?? [])
+        .map((entry) => LauncherModel.rowOf(categoryId, entry))
     if (state.virtualFolderPrefix !== null)
       return LauncherModel.folderChildren(listing, state.virtualFolderPrefix)
         .map((project) => ({ kind: 'project', categoryId, project }))
@@ -419,8 +460,36 @@ export class LauncherModel {
       return { kind: 'project', categoryId, project: entry.project }
     else if (entry.kind === 'virtualFolder')
       return { kind: 'virtualFolder', prefix: entry.prefix, title: entry.title, count: entry.children.length }
+    else if (entry.kind === 'group')
+      return { kind: 'group', name: entry.name, title: entry.title, count: LauncherModel.projectCountOf(entry.entries) }
     else
       throw new Error(`Unknown display entry: ${JSON.stringify(entry)}`)
+  }
+
+  /** Every project below, nested groups included: a group holding one group of five holds five. */
+  private static projectCountOf(entries: readonly DisplayEntry[]): number {
+    let count = 0
+    for (const entry of entries) {
+      if (entry.kind === 'project') count += 1
+      else if (entry.kind === 'group') count += LauncherModel.projectCountOf(entry.entries)
+      else if (entry.kind === 'virtualFolder') count += entry.children.length
+      else
+        throw new Error(`Unknown display entry: ${JSON.stringify(entry)}`)
+    }
+    return count
+  }
+
+  /** The group of that name wherever it is nested, or null once it is gone from the listing. */
+  private static groupIn(
+    entries: readonly DisplayEntry[],
+    name: string,
+  ): Extract<DisplayEntry, { kind: 'group' }> | null {
+    for (const entry of entries) {
+      if (entry.kind !== 'group') continue
+      if (entry.name === name) return entry
+      if (name.startsWith(`${entry.name}/`)) return LauncherModel.groupIn(entry.entries, name)
+    }
+    return null
   }
 
   private static folderChildren(listing: ProjectListResult, prefix: string): readonly ProjectEntry[] {
@@ -585,7 +654,7 @@ export class LauncherModel {
       return null
     if (row.kind === 'project')
       return { kind: 'project', categoryId: row.categoryId, name: row.project.name }
-    else if (row.kind === 'virtualFolder')
+    else if (row.kind === 'virtualFolder' || row.kind === 'group' || row.kind === 'groupRoot')
       return null
     else if (row.kind === 'pickFolder')
       return { kind: 'pickFolder' }
@@ -620,6 +689,7 @@ export class LauncherModel {
       tabMemory,
       // A drill, a search and a half-typed name all belong to the category they were made in.
       virtualFolderPrefix: null,
+      groupName: null,
       search: { active: state.search.active, text: '' },
       sortCursor: null,
       searchCursorReset: false,
@@ -685,6 +755,21 @@ export class LauncherModel {
       })
     else if (row.kind === 'virtualFolder')
       return LauncherModel.step({ ...state, virtualFolderPrefix: row.prefix, cursor: 0 })
+    else if (row.kind === 'group')
+      // The filter goes: under one the list is flat, and a group opened from it would not be drawn
+      // until the filter went.
+      return LauncherModel.step({
+        ...state,
+        groupName: row.name,
+        virtualFolderPrefix: null,
+        search: { active: false, text: '' },
+        cursor: 0,
+      })
+    else if (row.kind === 'groupRoot')
+      return LauncherModel.step(state, {
+        effect: 'bindingChosen',
+        binding: { mode: 'project', categoryId: row.categoryId, projectName: row.name, projectPath: row.path },
+      })
     else if (row.kind === 'pickFolder')
       return LauncherModel.step(state, { effect: 'pickDirectory' })
     else if (row.kind === 'categoryRoot')
@@ -704,8 +789,10 @@ export class LauncherModel {
     return LauncherModel.step(state, {
       effect: 'createProject',
       categoryId: state.activeCategoryId,
-      name: trimmed,
-      virtualFolderPrefix: state.virtualFolderPrefix,
+      // Inside a group the project is made in the group; the library's name rules accept the `/`
+      // only because the category lists the group among its subfolders.
+      name: state.groupName === null ? trimmed : `${state.groupName}/${trimmed}`,
+      virtualFolderPrefix: state.groupName === null ? state.virtualFolderPrefix : null,
     })
   }
 
@@ -746,7 +833,12 @@ export class LauncherModel {
     const letter = character.toLowerCase()
     for (let step = 1; step <= rows.length; step += 1) {
       const index = (state.cursor + step) % rows.length
-      if (LauncherModel.startsWith(rows[index], letter, LauncherModel.labelPrefixOf(state)))
+      if (LauncherModel.startsWith(
+        rows[index],
+        letter,
+        LauncherModel.labelPrefixOf(state),
+        LauncherModel.groupLabelOf(state),
+      ))
         return LauncherModel.step({ ...state, cursor: index })
     }
     return LauncherModel.step(state)
@@ -757,16 +849,17 @@ export class LauncherModel {
     row: LauncherRow,
     letter: string,
     virtualFolderPrefix: string | null,
+    groupName: string | null,
   ): boolean {
     if (row.kind === 'project')
       // By what is drawn, as in V1: inside "House projects" the row reads `Bazen`, so `b` is what
       // jumps to it. Matching the directory name would mean typing the prefix every row shares.
-      return LauncherLabels.projectLabelOf(row.project.name, virtualFolderPrefix)
+      return LauncherLabels.projectLabelOf(row.project.name, virtualFolderPrefix, groupName)
         .toLowerCase()
         .startsWith(letter)
-    else if (row.kind === 'virtualFolder')
+    else if (row.kind === 'virtualFolder' || row.kind === 'group')
       return row.title.toLowerCase().startsWith(letter)
-    else if (row.kind === 'pickFolder' || row.kind === 'categoryRoot')
+    else if (row.kind === 'pickFolder' || row.kind === 'categoryRoot' || row.kind === 'groupRoot')
       return false
     else
       throw new Error(`Unknown launcher row: ${JSON.stringify(row)}`)
@@ -791,7 +884,14 @@ export class LauncherModel {
       return LauncherModel.step({ ...state, search: { active: false, text: '' } })
     if (state.virtualFolderPrefix !== null)
       return LauncherModel.withCursor({ ...state, virtualFolderPrefix: null }, 0)
+    if (state.groupName !== null)
+      return LauncherModel.withCursor({ ...state, groupName: LauncherModel.parentGroupOf(state.groupName) }, 0)
     return LauncherModel.step(state)
+  }
+
+  private static parentGroupOf(groupName: string): string | null {
+    const end = groupName.lastIndexOf('/')
+    return end < 0 ? null : groupName.slice(0, end)
   }
 
   private static sorted(state: LauncherState): LauncherStep {
@@ -832,7 +932,7 @@ export class LauncherModel {
   /** Grouping is the same projects drawn differently, so nothing is fetched for it. */
   private static viewed(state: LauncherState): LauncherStep {
     const view = state.view === 'grouped' ? 'flat' : 'grouped'
-    const next: LauncherState = { ...state, view, virtualFolderPrefix: null }
+    const next: LauncherState = { ...state, view, virtualFolderPrefix: null, groupName: null }
     return LauncherModel.withCursor(next, 0)
   }
 
@@ -849,6 +949,8 @@ export class LauncherModel {
       return LauncherModel.withCursor({ ...state, search: { active: false, text: '' } }, 0)
     if (state.virtualFolderPrefix !== null)
       return LauncherModel.withCursor({ ...state, virtualFolderPrefix: null }, 0)
+    if (state.groupName !== null)
+      return LauncherModel.withCursor({ ...state, groupName: LauncherModel.parentGroupOf(state.groupName) }, 0)
     // The last rung of a remote card is the computer list rather than the way out: picking the wrong
     // computer is one of the two mistakes this profile makes easy, and the other one - the wrong
     // project - already steps back one screen.

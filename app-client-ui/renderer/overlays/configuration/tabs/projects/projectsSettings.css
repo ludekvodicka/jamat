@@ -41,10 +41,10 @@
 }
 /* Indented under the root it belongs to, so a collapsed block reads as part of that row rather
    than as another root. */
-.jamat-configuration-projects__folders {
+.jamat-configuration-projects__block {
   padding-left: var(--space-4);
 }
-.jamat-configuration-projects__folders-toggle {
+.jamat-configuration-projects__block-toggle {
   padding: 2px 0;
   font: inherit;
   font-size: var(--fs-secondary);
@@ -53,7 +53,7 @@
   background: none;
   border: 0;
 }
-.jamat-configuration-projects__folders-toggle:hover {
+.jamat-configuration-projects__block-toggle:hover {
   color: var(--color-text-2);
 }
 .jamat-configuration-projects__folder {
@@ -71,7 +71,8 @@
   border: 1px solid var(--color-border-frame);
   border-radius: var(--radius-control);
 }
-.jamat-configuration-projects__prefix {
+.jamat-configuration-projects__prefix,
+.jamat-configuration-projects__subfolder {
   width: 120px;
   padding: 2px var(--space-2);
   font: inherit;

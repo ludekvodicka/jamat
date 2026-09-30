@@ -47,7 +47,7 @@
       "path": "C:/Projects/NodeJs",
       "_README_hiddenFolders": "Names never listed as projects. Directories starting with a dot and the literal 'Archived' are always hidden and need no entry.",
       "hiddenFolders": ["node_modules"],
-      "_README_flattenFolders": "Containers expanded one level deeper, so their children are listed as 'container/child'.",
+      "_README_flattenFolders": "Subfolders in the settings: directories directly below the root that the launcher opens like a folder, listing each child as the project 'container/child'. Every other directory is one project; an .appgroup file has no effect on the listing.",
       "flattenFolders": ["Plugins"],
       "_README_virtualFolders": "Display-only grouping by name prefix. 'temporaryFoo' groups under prefix 'temporary'; a prefix ending in '-' or '_' matches without the capital-letter rule.",
       "virtualFolders": [{ "prefix": "temporary", "title": "Temporary" }],

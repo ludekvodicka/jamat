@@ -102,6 +102,13 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/projects/projectsSe
       .toEqual({ id: 'ai', label: 'Ai', path: 'C:/Projects/Ai' })
   })
 
+  it('stores a root the Windows picker spelled with backslashes in forward slashes', () => {
+    const added = run(loaded(), { input: 'add', path: 'Q:\\Projects' })
+
+    expect(ProjectsSettingsModel.categoriesOf(added.state)[2])
+      .toEqual({ id: 'projects', label: 'Projects', path: 'Q:/Projects' })
+  })
+
   // Everything binds to a category through its id, so two roots that end in the same folder name
   // must not end up sharing one - the store refuses a duplicate, and the second root would be lost.
   it('counts up an id whose name is already taken, and always spells one', () => {
@@ -527,6 +534,84 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/projects/projectsSe
 
       expect(arrived.state.staleOnDisk).toBe(true)
       expect(named(arrived.state, 'nodejs')).toEqual([['', '']])
+    })
+  })
+
+  describe('subfolders', () => {
+    function categoryOf(state: ProjectsSettingsState, id: string): CatalogCategoryDto {
+      const category = ProjectsSettingsModel.categoriesOf(state).find((entry) => entry.id === id)
+      if (!category) throw new Error(`No category ${id}`)
+      return category
+    }
+
+    it('writes flattenFolders with the first subfolder and takes it away with the last', () => {
+      const added = run(loaded(), { input: 'subfolder-added', id: 'web' })
+
+      expect(categoryOf(added.state, 'web').flattenFolders).toEqual([''])
+      expect(added.state.subfoldersExpanded.has('web')).toBe(true)
+      expect(added.state.expanded.has('web')).toBe(false)
+
+      const removed = run(added.state, { input: 'subfolder-removed', id: 'web', index: 0 })
+
+      expect('flattenFolders' in categoryOf(removed.state, 'web')).toBe(false)
+    })
+
+    // The store refuses an empty name (`CatalogSection.nameListProblem`), so Save must not offer it.
+    it('is unsavable while a subfolder has no name, spaces included', () => {
+      const blank = run(
+        loaded(),
+        { input: 'subfolder-added', id: 'nodejs' },
+        { input: 'subfolder-changed', id: 'nodejs', index: 0, value: '   ' },
+      )
+
+      expect(ProjectsSettingsModel.isSavable(blank.state)).toBe(false)
+      expect(ProjectsSettingsModel.subfolderProblemsOf(categoryOf(blank.state, 'nodejs')).get(0))
+        .toContain('cannot be saved')
+
+      const named = run(blank.state, { input: 'subfolder-changed', id: 'nodejs', index: 0, value: 'Plugins' })
+
+      expect(ProjectsSettingsModel.isSavable(named.state)).toBe(true)
+    })
+
+    it('keeps a name as typed and trims it at the save', () => {
+      const typed = run(
+        loaded(),
+        { input: 'subfolder-added', id: 'web' },
+        { input: 'subfolder-changed', id: 'web', index: 0, value: 'My Tools ' },
+      )
+
+      expect(categoryOf(typed.state, 'web').flattenFolders).toEqual(['My Tools '])
+
+      const saved = run(typed.state, { input: 'save' })
+
+      expect(categoryOf(saved.state, 'web').flattenFolders).toEqual(['My Tools'])
+      expect(saved.effects).toContainEqual({ effect: 'save', categories: saved.state.buffer })
+    })
+
+    it('warns about a repeated name without refusing to save it', () => {
+      const twice = run(
+        loaded(),
+        { input: 'subfolder-added', id: 'web' },
+        { input: 'subfolder-changed', id: 'web', index: 0, value: 'Plugins' },
+        { input: 'subfolder-added', id: 'web' },
+        { input: 'subfolder-changed', id: 'web', index: 1, value: 'Plugins ' },
+      )
+
+      const problems = ProjectsSettingsModel.subfolderProblemsOf(categoryOf(twice.state, 'web'))
+      expect(problems.get(1)).toContain('subfolder 1')
+      expect(problems.has(0)).toBe(false)
+      expect(ProjectsSettingsModel.isSavable(twice.state)).toBe(true)
+    })
+
+    it('opens and closes its block without making the tab look modified', () => {
+      const opened = run(loaded(), { input: 'subfolders-toggled', id: 'nodejs' })
+
+      expect(opened.state.subfoldersExpanded.has('nodejs')).toBe(true)
+      expect(ProjectsSettingsModel.isModified(opened.state)).toBe(false)
+
+      const closed = run(opened.state, { input: 'subfolders-toggled', id: 'nodejs' })
+
+      expect(closed.state.subfoldersExpanded.has('nodejs')).toBe(false)
     })
   })
 })

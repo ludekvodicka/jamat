@@ -112,9 +112,20 @@ function world(options?: {
   const terminalCalls: { method: string; args: unknown[] }[] = []
   const transcriptReads: string[] = []
   const errors: string[] = []
+  const one = { name: 'One', path: 'Q:\\Apps\\One', lastActivity: null }
+  const grouped = { name: 'Bots/Two', path: 'Q:\\Apps\\Bots\\Two', lastActivity: null }
   const listing: ProjectListResult = {
-    entries: [],
-    projects: [{ name: 'One', path: 'Q:\\Apps\\One', lastActivity: null }],
+    entries: [
+      {
+        kind: 'group',
+        name: 'Bots',
+        title: 'Bots',
+        path: 'Q:\\Apps\\Bots',
+        entries: [{ kind: 'project', project: grouped }],
+      },
+      { kind: 'project', project: one },
+    ],
+    projects: [one, grouped],
     virtualFolders: [],
     truncated: false,
     available: true,
@@ -883,6 +894,28 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
 
     expect(created).toMatchObject({ ok: true, value: { tabOpen: { ok: false } } })
     expect(found.tabCalls.map((call) => call.args.length)).toEqual([2])
+  })
+
+  // A peer built before groups existed throws on a display entry it does not know.
+  it('unfolds a product group into its projects before a listing leaves this computer', async () => {
+    const listed = await world().control.execute(request('projects.list', { categoryId: 'code' }), context())
+
+    expect(listed).toMatchObject({
+      ok: true,
+      value: {
+        categories: [{
+          listing: {
+            ok: true,
+            value: {
+              entries: [
+                { kind: 'project', project: { name: 'Bots/Two' } },
+                { kind: 'project', project: { name: 'One' } },
+              ],
+            },
+          },
+        }],
+      },
+    })
   })
 
   it('applies category filters, canonical terminal options and capability refusals', async () => {

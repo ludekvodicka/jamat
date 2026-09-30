@@ -132,10 +132,9 @@ class TabContextMenuItems {
         || onSession && placed && admits('newBeside') && facts?.agentId === 'claude')
       .filter((descriptor) => descriptor.id !== 'session.fork'
         || onSession && placed && admits('fork'))
-      // The same operation at two moments, and never both at once: over a session that has stopped
-      // the word is Resume and the card says what it will bring back, over a live one it is Restart.
+      // Resume uses the selected record directly; only creation commands need a launcher binding.
       .filter((descriptor) => descriptor.id !== 'session.resume'
-        || onSession && placed && admits('restart') && facts?.ended === true)
+        || onSession && admits('restart') && facts?.ended === true)
       .filter((descriptor) => descriptor.id !== 'session.restart'
         || onSession && admits('restart') && facts?.ended === false)
       .filter((descriptor) => descriptor.id !== 'session.compact' || onSession && admits('compact'))

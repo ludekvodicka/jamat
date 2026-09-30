@@ -33,7 +33,7 @@ export class FileChangesSvnCopied {
   private readonly deps: FileChangesSvnCopiedDeps
 
   constructor(deps?: FileChangesSvnCopiedDeps) {
-    this.deps = deps ?? { svn: new SvnInvoker({ timeoutMilliseconds: FileChangesLimits.readTimeoutMilliseconds }) }
+    this.deps = deps ?? { svn: new SvnInvoker({ timeoutMilliseconds: FileChangesLimits.commitReadTimeoutMilliseconds }) }
   }
 
   async expand(entries: readonly FileChangesVcsEntry[]): Promise<readonly FileChangesVcsEntry[]> {
@@ -41,7 +41,12 @@ export class FileChangesSvnCopied {
     FileChangesSvnCopied.checkLimit(expanded.size)
     for (const directory of entries) {
       if (directory.status !== 'added' || directory.nodeKind !== 'directory') continue
-      for (const path of await this.contentsOf(directory.absolutePath)) {
+      const carried = await this.contentsOf(directory.absolutePath)
+      if (carried.length > FileChangesLimits.copiedListingEntriesMax) {
+        expanded.set(PathCompare.comparable(directory.absolutePath), { ...directory, carriedItems: carried.length })
+        continue
+      }
+      for (const path of carried) {
         if (!PathCompare.isInside(directory.absolutePath, path))
           throw new Error('SVN returned a copied path outside its directory')
         const key = PathCompare.comparable(path)
@@ -71,7 +76,7 @@ export class FileChangesSvnCopied {
       '--depth', 'infinity', '--', `${directory}@`,
     ])
     if (outcome.failure !== null || outcome.code !== 0)
-      throw new Error(outcome.stderr.trim() || 'SVN could not list the copied directory')
+      throw new Error(outcome.stderr.trim() || `SVN could not list the copied directory ${directory} (${outcome.failure ?? `exit ${outcome.code}`})`)
     const parsed = JsonShape.record(new XMLParser({ ignoreAttributes: false, parseTagValue: false,
       isArray: (name) => name === 'entry' || name === 'target' }).parse(outcome.stdout))
     const targets = JsonShape.record(parsed?.status)?.target

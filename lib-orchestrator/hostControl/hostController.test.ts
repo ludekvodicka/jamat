@@ -83,6 +83,7 @@ describe('lib-orchestrator/hostControl/hostController', () => {
       channel: 'development',
       presenceOf: () => fixture.presence,
       descriptorOf: () => fixture.descriptor,
+      stopHost: async () => ({ ok: true, value: { stopping: true, live: 0 } }),
       onError: (message) => errors.push(message),
       spawnImpl,
       bootTimeoutMilliseconds: 200,
@@ -352,10 +353,125 @@ describe('lib-orchestrator/hostControl/hostController', () => {
     expect(settled.lastStartError).not.toBeNull()
   })
 
-  // `host.stop` kills every PTY the Host owns. Closing a client detaches, so this class must not
-  // grow a way to do it, private or public.
-  it('offers no way to stop the Host', () => {
-    const names = Object.getOwnPropertyNames(HostController.prototype)
-    expect(names.filter((name) => name.toLowerCase().includes('stop'))).toEqual([])
+  it('waits for the old descriptor to disappear before starting its replacement', async () => {
+    const stopped: string[] = []
+    const context = harness({ stopHost: async (id) => {
+      stopped.push(id)
+      context.fixture.presence = 'unreachable'
+      setTimeout(() => { context.fixture.descriptor = null }, 25)
+      return { ok: true, value: { stopping: true, live: 3 } }
+    } })
+    context.fixture.presence = 'running'
+    context.fixture.descriptor = descriptor()
+    context.fixture.onSpawn = () => {
+      expect(context.fixture.descriptor).toBeNull()
+      context.fixture.descriptor = { ...descriptor(), hostInstanceId: 'host-2' }
+      context.fixture.presence = 'running'
+    }
+    const pending = context.controller.restart('host-1')
+    expect(await context.controller.restart('host-1')).toMatchObject({ ok: false, code: 'already-running' })
+    expect(await context.controller.start()).toMatchObject({ ok: false, code: 'already-running' })
+    expect(context.calls).toHaveLength(0)
+    expect(await pending).toEqual({ ok: true, value: undefined })
+    expect(stopped).toEqual(['host-1'])
+    expect(context.controller.hostInstanceId()).toBe('host-2')
+    expect(context.calls).toHaveLength(1)
+  })
+
+  it('stops the running Host, waits for its descriptor to go and launches nothing', async () => {
+    const stopped: string[] = []
+    const context = harness({ stopHost: async (id) => {
+      stopped.push(id)
+      context.fixture.presence = 'unreachable'
+      setTimeout(() => { context.fixture.descriptor = null }, 25)
+      return { ok: true, value: { stopping: true, live: 2 } }
+    } })
+    context.fixture.presence = 'running'
+    context.fixture.descriptor = descriptor()
+    const pending = context.controller.stop('host-1')
+    expect(await context.controller.start()).toMatchObject({ ok: false, code: 'already-running' })
+    expect(await context.controller.restart('host-1')).toMatchObject({ ok: false, code: 'already-running' })
+    expect(await pending).toEqual({ ok: true, value: undefined })
+    expect(stopped).toEqual(['host-1'])
+    expect(context.fixture.descriptor).toBeNull()
+    expect(context.calls).toHaveLength(0)
+  })
+
+  it('does not stop a Host that changed since confirmation, nor one nobody can reach', async () => {
+    let stops = 0
+    const context = harness({ stopHost: async () => {
+      stops++
+      return { ok: true, value: { stopping: true, live: 0 } }
+    } })
+    expect(await context.controller.stop('host-1')).toMatchObject({ ok: false, code: 'host-unreachable' })
+    context.fixture.presence = 'running'
+    context.fixture.descriptor = descriptor()
+    expect(await context.controller.stop('old-host')).toMatchObject({ ok: false, code: 'host-unreachable' })
+    expect(stops).toBe(0)
+  })
+
+  it('refuses a stop while a launch is in flight', async () => {
+    const context = harness()
+    context.fixture.onSpawn = () => {
+      setTimeout(() => {
+        context.fixture.descriptor = descriptor()
+        context.fixture.presence = 'running'
+      }, 25)
+    }
+    const pending = context.controller.start()
+    expect(await context.controller.stop('host-1')).toMatchObject({ ok: false, code: 'already-running' })
+    expect(await pending).toEqual({ ok: true })
+  })
+
+  it('reports a stop the Host acknowledged but never finished', async () => {
+    const context = harness({ bootTimeoutMilliseconds: 25 })
+    context.fixture.presence = 'running'
+    context.fixture.descriptor = descriptor()
+    expect(await context.controller.stop('host-1')).toMatchObject({ ok: false, code: 'host-unreachable' })
+    expect(context.calls).toHaveLength(0)
+    expect(await context.controller.start()).toMatchObject({ ok: false, code: 'already-running' })
+  })
+
+  it('does not stop a Host that changed since confirmation', async () => {
+    let stops = 0
+    const context = harness({ stopHost: async () => {
+      stops++
+      return { ok: true, value: { stopping: true, live: 0 } }
+    } })
+    context.fixture.presence = 'running'
+    context.fixture.descriptor = descriptor()
+    expect(await context.controller.restart('old-host')).toMatchObject({ ok: false, code: 'host-unreachable' })
+    expect(stops).toBe(0)
+    expect(context.calls).toHaveLength(0)
+  })
+
+  it('keeps the running Host when no replacement entry point exists', async () => {
+    let stops = 0
+    const context = harness({ applicationRoot: packagedRootConst, stopHost: async () => {
+      stops++
+      return { ok: true, value: { stopping: true, live: 0 } }
+    } })
+    context.fixture.presence = 'running'
+    context.fixture.descriptor = descriptor()
+    expect(await context.controller.restart('host-1')).toMatchObject({ ok: false, code: 'spawn-failed' })
+    expect(stops).toBe(0)
+  })
+
+  it('does not launch after a refused stop', async () => {
+    const context = harness({ stopHost: async () => ({ ok: false, code: 'no-lease', detail: 'No controller lease' }) })
+    context.fixture.presence = 'running'
+    context.fixture.descriptor = descriptor()
+    expect(await context.controller.restart('host-1')).toMatchObject({ ok: false, code: 'no-lease' })
+    expect(context.calls).toHaveLength(0)
+    expect(context.controller.debugView().launching).toBe(false)
+  })
+
+  it('times out without spawning when an acknowledged stop leaves the old descriptor', async () => {
+    const context = harness({ bootTimeoutMilliseconds: 25 })
+    context.fixture.presence = 'running'
+    context.fixture.descriptor = descriptor()
+    expect(await context.controller.restart('host-1')).toMatchObject({ ok: false, code: 'host-unreachable' })
+    expect(context.calls).toHaveLength(0)
+    expect(context.controller.debugView().launching).toBe(false)
   })
 })

@@ -200,7 +200,7 @@ export class ProjectManager {
     return {
       ok: true,
       value: {
-        entries: DisplayGrouping.buildDisplayEntries(projects, category.virtualFolders),
+        entries: DisplayGrouping.buildDisplayEntries(projects, category.virtualFolders, scan.containers),
         projects,
         // The same folders `entries` was grouped by, but all of them: an empty folder is not drawn
         // and is still a place a project can be moved to.
