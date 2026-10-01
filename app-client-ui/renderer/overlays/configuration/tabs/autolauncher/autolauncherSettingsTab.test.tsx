@@ -10,8 +10,8 @@ function snapshot(change: Partial<AutolauncherSnapshot> = {}): AutolauncherSnaps
   return {
     supported: true,
     target: {
-      configDir: 'C:/Users/Iva/.jamat-v3',
-      configIdentity: 'iva-profile',
+      configDir: 'C:/Users/Alex/.jamat-v3',
+      configIdentity: 'alex-profile',
       runtimeChannel: 'production',
       mode: 'executable',
       path: 'C:/Program Files/Jamat/Jamat.exe',
@@ -92,8 +92,8 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/autolauncher/autola
     const { bridge, mount } = fixture()
     const { view, invitation } = await mount()
 
-    expect(view.getByText('C:/Users/Iva/.jamat-v3')).toBeTruthy()
-    expect(view.getByText('iva-profile')).toBeTruthy()
+    expect(view.getByText('C:/Users/Alex/.jamat-v3')).toBeTruthy()
+    expect(view.getByText('alex-profile')).toBeTruthy()
     expect(view.getByText('Production')).toBeTruthy()
     expect(view.getByText('C:/Program Files/Jamat/Jamat.exe')).toBeTruthy()
     expect(view.container.textContent).toContain('remain signed in to Windows')
@@ -107,11 +107,11 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/autolauncher/autola
 
   it('shows a source checkout and development channel from the captured target', async () => {
     const value = snapshot()
-    value.target = { ...value.target, mode: 'source', runtimeChannel: 'development', path: 'Q:/Applications/Jamat' }
+    value.target = { ...value.target, mode: 'source', runtimeChannel: 'development', path: 'Q:/Projects/Jamat' }
     const { view } = await fixture(value).mount()
 
     expect(view.getByText('Source checkout')).toBeTruthy()
-    expect(view.getByText('Q:/Applications/Jamat')).toBeTruthy()
+    expect(view.getByText('Q:/Projects/Jamat')).toBeTruthy()
     expect(view.getByText('Development')).toBeTruthy()
   })
 

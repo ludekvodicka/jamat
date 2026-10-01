@@ -26,7 +26,7 @@ try {
         try { & $Call } catch { $caught = $_.Exception.Message }
         Assert ($caught -and $caught -match $Pattern) ('Expected refusal: ' + $Pattern)
     }
-    function Fixture {
+    function Fixture([string]$TaskPath = $script:taskPath) {
         $release = Join-Path (Join-Path $script:testRoot 'releases') ([Guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $release -Force | Out-Null
         $runtime = [pscustomobject]@{
@@ -40,16 +40,27 @@ try {
             schemaVersion = 1; enabled = $true; configDir = Join-Path $script:testRoot 'profile'; configIdentity = 'test-profile'
             runtimeChannel = 'development'; ownerSid = $ExpectedUserSid; ownerId = $owner; gatewayAddress = '192.0.2.2'
             runtime = $runtime
-            task = [pscustomobject]@{ name = 'JamatLauncher'; path = '\Inventic\'; fingerprint = Hash-Text $release }
+            task = [pscustomobject]@{ name = 'JamatLauncher'; path = $TaskPath; fingerprint = Hash-Text $release }
             firewall = [pscustomobject]@{ name = 'JamatLauncher-' + $owner; fingerprint = Hash-Text $runtime.nodePath
                 localAddress = '192.0.2.1'; localPort = 3511; remoteAddress = '192.0.2.2'; program = $runtime.nodePath }
         }
     }
-    function Read-Task { return $script:task }
-    function Task-Fingerprint { return Hash-Text $script:task.Xml }
+    function Read-Task([string]$Path) {
+        if ($script:task -and $script:task.Path -ceq $Path) { return $script:task }
+    }
+    function Assert-TaskPath([string]$Path) {
+        Assert ($script:task -and $script:task.Path -ceq $Path) ('Task operation must use the recorded folder ' + $Path)
+    }
+    function Task-Fingerprint([string]$Path) {
+        Assert-TaskPath $Path
+        return Hash-Text $script:task.Xml
+    }
     function Get-NetFirewallRule { return $script:rule }
     function Rule-Fingerprint($Rule) { return Hash-Text $Rule.Program }
-    function Export-ScheduledTask { return $script:task.Xml }
+    function Export-ScheduledTask([string]$TaskName, [string]$TaskPath) {
+        Assert-TaskPath $TaskPath
+        return $script:task.Xml
+    }
     function Owned-Processes($Metadata) {
         if ($script:fakeLive) { return [pscustomobject]@{ ProcessId = -991 } }
     }
@@ -62,13 +73,15 @@ try {
             throw 'fixture lost pause response'
         }
     }
-    function Disable-ScheduledTask {
+    function Disable-ScheduledTask([string]$TaskName, [string]$TaskPath) {
+        Assert-TaskPath $TaskPath
         $script:events.Add('disable-task')
         $script:task.Xml = 'disabled:' + $script:task.Xml
         $script:task.State = 'Disabled'
     }
-    function Unregister-ScheduledTask {
-        $script:events.Add('remove-task')
+    function Unregister-ScheduledTask([string]$TaskName, [string]$TaskPath, [switch]$Confirm) {
+        Assert-TaskPath $TaskPath
+        $script:events.Add('remove-task:' + $TaskPath)
         $script:task = $null
     }
     function Remove-NetFirewallRule {
@@ -84,16 +97,17 @@ try {
     function Register-OwnedTask($Metadata) {
         if ($script:failRegistration) { throw 'fixture-sensitive-failure' }
         Assert (-not $script:task) 'Must not overwrite a scheduled task'
-        $script:events.Add('create-task')
-        $script:task = [pscustomobject]@{ Xml = $Metadata.runtime.directory; State = 'Ready' }
-        $Metadata.task.fingerprint = Task-Fingerprint
+        $script:events.Add('create-task:' + $Metadata.task.path)
+        $script:task = [pscustomobject]@{ Xml = $Metadata.runtime.directory; State = 'Ready'; Path = $Metadata.task.path }
+        $Metadata.task.fingerprint = Task-Fingerprint $Metadata.task.path
     }
     function Register-ScheduledTask {
         param([string]$Xml, [string]$TaskName, [string]$TaskPath, [switch]$Force)
-        $script:events.Add('restore-task')
-        $script:task = [pscustomobject]@{ Xml = $Xml; State = 'Ready' }
+        $script:events.Add('restore-task:' + $TaskPath)
+        $script:task = [pscustomobject]@{ Xml = $Xml; State = 'Ready'; Path = $TaskPath }
     }
-    function Start-ScheduledTask {
+    function Start-ScheduledTask([string]$TaskName, [string]$TaskPath) {
+        Assert-TaskPath $TaskPath
         $script:events.Add('start-task')
         $stored = Get-Content -LiteralPath (Join-Path $script:testRoot 'installation.json') -Raw | ConvertFrom-Json
         Assert ($stored.runtime.directory -ceq $script:task.Xml) 'Starting must follow metadata commit'
@@ -111,7 +125,7 @@ try {
         & $writeJson $Path $Value
     }
     function Seed($Metadata) {
-        $script:task = [pscustomobject]@{ Xml = $Metadata.runtime.directory; State = 'Ready' }
+        $script:task = [pscustomobject]@{ Xml = $Metadata.runtime.directory; State = 'Ready'; Path = $Metadata.task.path }
         $script:rule = [pscustomobject]@{ Program = $Metadata.firewall.program }
         & $writeJson (Join-Path $script:testRoot 'installation.json') $Metadata
         $script:events.Clear()
@@ -125,6 +139,10 @@ try {
     Assert ($script:task.State -eq 'Running') 'Install starts task'
     $pairing = [IO.File]::ReadAllText((Join-Path $root 'pairing.json'))
     Write-Output 'PASS install commits metadata and pairing before task startup'
+    Assert ($script:task.Path -ceq '\Jamat\') 'Fresh install registers in the Jamat task folder'
+    Assert ($installed.task.path -ceq '\Jamat\') 'Fresh install records the Jamat task folder'
+    Assert ($script:events.Contains('create-task:\Jamat\')) 'Fresh install creates the task in the Jamat folder'
+    Write-Output 'PASS fresh install registers under the Jamat task folder'
 
     $Action = 'Disable'
     $script:task.State = 'Ready'
@@ -196,8 +214,34 @@ try {
     Assert ((Read-Installation $root).runtime.directory -ceq $script:next.runtime.directory) 'Failed start retains committed installation'
     Assert ($script:task.Xml -ceq $script:next.runtime.directory) 'Failed start must not roll back task'
     Assert ($script:rule.Program -ceq $script:next.runtime.nodePath) 'Failed start must not roll back firewall'
-    Assert (-not $script:events.Contains('restore-task')) 'Post-commit failure must not roll back'
+    Assert (-not ($script:events -like 'restore-task*')) 'Post-commit failure must not roll back'
     Write-Output 'PASS post-commit start failure keeps consistent installed state'
+
+    # The legacy folder name is a public leak gate owner token, so the test spells it backwards.
+    Assert ($script:legacyTaskPath -ceq ('\' + (-join 'citnevnI'.ToCharArray()[7..0]) + '\')) 'Legacy task folder name'
+    $script:failStart = $false
+    $legacy = Fixture $script:legacyTaskPath
+    Seed $legacy
+    $script:next = Fixture
+    Invoke-SetupTransaction $root
+    Assert ($script:events.Contains('remove-task:' + $script:legacyTaskPath)) 'Migration removes the legacy task'
+    Assert ($script:events.Contains('create-task:\Jamat\')) 'Migration registers in the Jamat folder'
+    Assert ($script:task.Path -ceq '\Jamat\' -and $script:task.State -eq 'Running') 'Migration starts the Jamat task'
+    Assert ((Read-Installation $root).task.path -ceq '\Jamat\') 'Migration records the Jamat task folder'
+    Write-Output 'PASS replacing a legacy-folder install moves the task to the Jamat folder'
+
+    Seed $legacy
+    $script:next = Fixture
+    $script:failRegistration = $true
+    Rejects { Invoke-SetupTransaction $root } '^Windows could not configure'
+    $script:failRegistration = $false
+    Assert ($script:events.Contains('remove-task:' + $script:legacyTaskPath)) 'Failed migration had removed the legacy task'
+    Assert ($script:events.Contains('restore-task:' + $script:legacyTaskPath)) 'Failed migration restores the legacy task'
+    Assert ($script:task.Path -ceq $script:legacyTaskPath -and $script:task.Xml -ceq $legacy.runtime.directory) 'Failed migration keeps the legacy task'
+    Assert ($script:rule.Program -ceq $legacy.runtime.nodePath) 'Failed migration restores old firewall'
+    $stored = Read-Installation $root
+    Assert ($stored.task.path -ceq $script:legacyTaskPath -and $stored.runtime.directory -ceq $legacy.runtime.directory) 'Failed migration preserves legacy metadata'
+    Write-Output 'PASS failed registration during migration restores the legacy task'
 } catch {
     $Error | Select-Object -First 5 | ForEach-Object { Write-Output $_.Exception.Message }
     throw

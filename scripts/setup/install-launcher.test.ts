@@ -13,7 +13,7 @@ test('Windows launcher setup preserves ownership and rolls back only before star
     join(import.meta.dirname, 'install-launcher.test.ps1'),
   ], { windowsHide: true, encoding: 'utf8', timeout: 30_000 })
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
-  assert.equal(result.stdout.split('PASS ').length - 1, 8)
+  assert.equal(result.stdout.split('PASS ').length - 1, 11)
 })
 
 test('Windows launcher setup refuses an alternate account before elevation or installation', {

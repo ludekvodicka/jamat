@@ -62,9 +62,9 @@ enabled on the target's firmware/network adapter.
 
 For a PC with `launcher`, the page also shows its current Jamat state and a `Spustit Jamat` form
 posting to `/start/<configured-id>`. There is no profile, variant, executable, argument or command
-field. The PC launcher owns its one fixed target. In the intended two-PC setup, Luda starts the
-packaged `luda-dev` instance with automatic rebuild when needed, while IVA starts the installed
-GitHub release EXE. Those targets are configured on their PCs, never in a browser request.
+field. The PC launcher owns its one fixed target. In the intended two-PC setup, the first PC starts a
+packaged development instance with automatic rebuild when needed, while the second PC starts the
+installed GitHub release EXE. Those targets are configured on their PCs, never in a browser request.
 
 The PC launcher must already run in the signed-in Windows user's session and be reachable from
 the Docker host. A sleeping PC shows an unavailable launcher. Wake it first, then use `Obnovit stav`

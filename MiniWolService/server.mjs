@@ -20,7 +20,7 @@ export function parseConfig(source) {
     throw new Error('Config requires publicUrl, broadcast and computers')
   const url = new URL(config.publicUrl)
   if (url.protocol !== 'http:' || !isIPv4(url.hostname) || url.pathname !== '/' || url.search || url.hash || url.username || url.password)
-    throw new Error('publicUrl must be an HTTP IPv4 origin, for example http://192.168.1.10:9009')
+    throw new Error('publicUrl must be an HTTP IPv4 origin, for example http://198.51.100.10:9009')
   if (!isIPv4(config.broadcast))
     throw new Error('broadcast must be an IPv4 address')
   if (!Array.isArray(config.computers) || !config.computers.length)

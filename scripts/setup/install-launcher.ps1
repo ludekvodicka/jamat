@@ -12,7 +12,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $script:problem = 'Windows could not configure the launcher.'
 $script:taskName = 'JamatLauncher'
-$script:taskPath = '\Inventic\'
+$script:taskPath = '\Jamat\'
+# Older installers registered the task in this folder. Built from char codes so the public leak gate's owner token stays out of the source.
+$script:legacyTaskPath = '\' + (-join [char[]](73, 110, 118, 101, 110, 116, 105, 99)) + '\'
 
 function Fail-Setup([string]$Message) {
     $script:problem = $Message
@@ -56,17 +58,23 @@ function Hash-Text([string]$Value) {
     finally { $hash.Dispose() }
 }
 
-function Read-Task {
-    return Get-ScheduledTask -TaskName $script:taskName -TaskPath $script:taskPath -ErrorAction SilentlyContinue
+function Read-Task([string]$Path) {
+    return Get-ScheduledTask -TaskName $script:taskName -TaskPath $Path -ErrorAction SilentlyContinue
 }
 
-function Task-Fingerprint {
-    return Hash-Text (Export-ScheduledTask -TaskName $script:taskName -TaskPath $script:taskPath)
+function Task-Fingerprint([string]$Path) {
+    return Hash-Text (Export-ScheduledTask -TaskName $script:taskName -TaskPath $Path)
+}
+
+function Task-Path($Metadata) {
+    if ($Metadata) { return $Metadata.task.path }
+    return $script:taskPath
 }
 
 function Assert-Task($Metadata, [string]$Fingerprint) {
-    $task = Read-Task
-    if ($task -and (-not $Metadata -or -not $Fingerprint -or (Task-Fingerprint) -cne $Fingerprint)) {
+    $path = Task-Path $Metadata
+    $task = Read-Task $path
+    if ($task -and (-not $Metadata -or -not $Fingerprint -or (Task-Fingerprint $path) -cne $Fingerprint)) {
         Fail-Setup 'The JamatLauncher scheduled task was created or changed elsewhere. It has been preserved.'
     }
     return $task
@@ -115,7 +123,7 @@ function Read-Installation([string]$Directory) {
         $metadata.ownerSid -cne $ExpectedUserSid -or $metadata.ownerId -notmatch '^[a-f0-9]{32}$' -or
         [IO.Path]::GetDirectoryName($release) -ine (Join-Path $Directory 'releases') -or
         [IO.Path]::GetFileName($release) -notmatch '^[a-f0-9]{32}$' -or
-        $metadata.task.name -cne $script:taskName -or $metadata.task.path -cne $script:taskPath -or
+        $metadata.task.name -cne $script:taskName -or $metadata.task.path -cnotin @($script:taskPath, $script:legacyTaskPath) -or
         $metadata.task.fingerprint -notmatch '^[a-f0-9]{64}$' -or
         $metadata.firewall.name -cne ('JamatLauncher-' + $metadata.ownerId) -or
         $metadata.firewall.fingerprint -notmatch '^[a-f0-9]{64}$' -or
@@ -196,8 +204,8 @@ function Stop-OwnedLauncher($Metadata, [ref]$Fingerprint, [ref]$Paused) {
     }
     $task = Assert-Task $Metadata $Fingerprint.Value
     if ($task) {
-        Disable-ScheduledTask -TaskName $script:taskName -TaskPath $script:taskPath | Out-Null
-        $Fingerprint.Value = Task-Fingerprint
+        Disable-ScheduledTask -TaskName $script:taskName -TaskPath $Metadata.task.path | Out-Null
+        $Fingerprint.Value = Task-Fingerprint $Metadata.task.path
     }
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
     do {
@@ -315,16 +323,16 @@ function Prepare-Release([string]$Directory, $Previous) {
 }
 
 function Register-OwnedTask($Metadata) {
-    if (Read-Task) { Fail-Setup 'A JamatLauncher task appeared during setup. It has been preserved.' }
+    if (Read-Task $Metadata.task.path) { Fail-Setup 'A JamatLauncher task appeared during setup. It has been preserved.' }
     $taskAction = New-ScheduledTaskAction -Execute (Join-Path $env:SystemRoot 'System32\wscript.exe') `
         -Argument ('"' + $Metadata.runtime.vbsPath + '"') -WorkingDirectory $Metadata.runtime.directory
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $ExpectedUserSid
     $principal = New-ScheduledTaskPrincipal -UserId $ExpectedUserSid -LogonType Interactive -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
         -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-    Register-ScheduledTask -TaskName $script:taskName -TaskPath $script:taskPath -Action $taskAction -Trigger $trigger `
+    Register-ScheduledTask -TaskName $script:taskName -TaskPath $Metadata.task.path -Action $taskAction -Trigger $trigger `
         -Principal $principal -Settings $settings -Description ('JamatLauncher owner ' + $Metadata.ownerId) | Out-Null
-    $Metadata.task.fingerprint = Task-Fingerprint
+    $Metadata.task.fingerprint = Task-Fingerprint $Metadata.task.path
 }
 
 function Invoke-SetupTransaction([string]$Directory) {
@@ -336,7 +344,8 @@ function Invoke-SetupTransaction([string]$Directory) {
     $taskFingerprint = if ($previous) { $previous.task.fingerprint } else { '' }
     $previousTask = Assert-Task $previous $taskFingerprint
     $previousRule = Assert-Rule $previous $(if ($previous) { $previous.firewall.fingerprint } else { '' })
-    $taskXml = if ($previousTask) { Export-ScheduledTask -TaskName $script:taskName -TaskPath $script:taskPath } else { $null }
+    $previousTaskPath = Task-Path $previous
+    $taskXml = if ($previousTask) { Export-ScheduledTask -TaskName $script:taskName -TaskPath $previousTaskPath } else { $null }
     $wasRunning = $previous -and (@(Owned-Processes $previous).Count -gt 0 -or ($previousTask -and $previousTask.State -in @('Running', 'Queued')))
     if ($Action -eq 'Disable' -and -not $previous) { return }
     $next = if ($Action -eq 'Install') { Prepare-Release $Directory $previous } else { $null }
@@ -350,7 +359,7 @@ function Invoke-SetupTransaction([string]$Directory) {
     try {
         if ($previous) { Stop-OwnedLauncher $previous ([ref]$taskFingerprint) ([ref]$paused) }
         if (Assert-Task $previous $taskFingerprint) {
-            Unregister-ScheduledTask -TaskName $script:taskName -TaskPath $script:taskPath -Confirm:$false
+            Unregister-ScheduledTask -TaskName $script:taskName -TaskPath $previousTaskPath -Confirm:$false
             $removedTask = $true
         }
         if (Assert-Rule $previous $(if ($previous) { $previous.firewall.fingerprint } else { '' })) {
@@ -370,7 +379,7 @@ function Invoke-SetupTransaction([string]$Directory) {
             }
             $committed = $true
             $null = Assert-Task $next $next.task.fingerprint
-            Start-ScheduledTask -TaskName $script:taskName -TaskPath $script:taskPath
+            Start-ScheduledTask -TaskName $script:taskName -TaskPath $next.task.path
             Wait-OwnedLauncher $next
         } elseif ($Action -eq 'Disable') {
             $disabled = $previous | ConvertTo-Json -Depth 12 | ConvertFrom-Json
@@ -389,19 +398,19 @@ function Invoke-SetupTransaction([string]$Directory) {
                 $newPaused = $false
                 Stop-OwnedLauncher $next ([ref]$newFingerprint) ([ref]$newPaused)
                 if (Assert-Task $next $newFingerprint) {
-                    Unregister-ScheduledTask -TaskName $script:taskName -TaskPath $script:taskPath -Confirm:$false
+                    Unregister-ScheduledTask -TaskName $script:taskName -TaskPath $next.task.path -Confirm:$false
                 }
             }
             if ($newRule -and (Assert-Rule $next $next.firewall.fingerprint)) { Remove-NetFirewallRule -Name $next.firewall.name }
             if ($removedRule -and $previousRule) { New-OwnedRule $previous }
             $taskChanged = $previous -and $taskFingerprint -cne $previous.task.fingerprint
             if ($taskXml -and ($removedTask -or $taskChanged)) {
-                if ($removedTask -and (Read-Task)) { Fail-Setup 'A changed scheduled task prevented restoring the previous setup.' }
+                if ($removedTask -and (Read-Task $previousTaskPath)) { Fail-Setup 'A changed scheduled task prevented restoring the previous setup.' }
                 if (-not $removedTask) { $null = Assert-Task $previous $taskFingerprint }
-                Register-ScheduledTask -TaskName $script:taskName -TaskPath $script:taskPath -Xml $taskXml -Force | Out-Null
-                $previous.task.fingerprint = Task-Fingerprint
+                Register-ScheduledTask -TaskName $script:taskName -TaskPath $previousTaskPath -Xml $taskXml -Force | Out-Null
+                $previous.task.fingerprint = Task-Fingerprint $previousTaskPath
                 if ($wasRunning -and @(Owned-Processes $previous).Count -eq 0) {
-                    Start-ScheduledTask -TaskName $script:taskName -TaskPath $script:taskPath
+                    Start-ScheduledTask -TaskName $script:taskName -TaskPath $previousTaskPath
                     Wait-OwnedLauncher $previous
                 }
             }

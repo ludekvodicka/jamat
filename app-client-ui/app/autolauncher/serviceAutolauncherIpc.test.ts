@@ -27,11 +27,11 @@ describe('app-client-ui/app/autolauncher/serviceAutolauncherIpc', () => {
   const snapshot: AutolauncherSnapshot = {
     supported: true,
     target: {
-      configDir: 'C:/Users/Iva/.jamat-v3', configIdentity: 'iva-profile',
+      configDir: 'C:/Users/Alex/.jamat-v3', configIdentity: 'alex-profile',
       runtimeChannel: 'production', mode: 'executable', path: 'C:/Jamat/Jamat.exe',
     },
-    installed: true, installedForThisProfile: true, installedConfigDir: 'C:/Users/Iva/.jamat-v3',
-    running: true, connectionReady: true, launcherUrl: 'http://192.168.1.20:3511',
+    installed: true, installedForThisProfile: true, installedConfigDir: 'C:/Users/Alex/.jamat-v3',
+    running: true, connectionReady: true, launcherUrl: 'http://198.51.100.20:3511',
     operation: 'idle', problem: null,
   }
 
