@@ -25,7 +25,9 @@ import type {
 import type {
   SessionTranscriptReading,
 } from '../../../../lib-orchestrator/sessionTranscriptReader/sessionTranscriptReaderApi.types'
-import type { AppClientUiBridge } from '../../../shared/appClientUiIpc'
+import type { AppClientUiBridge, IpcResult } from '../../../shared/appClientUiIpc'
+import type { SplitPinRecord } from '../../../shared/splitPinsState'
+import type { TerminalSplitPinsStore } from './split/useTerminalSplitPins'
 import { AgentSettingsStore } from '../../contextCompaction/agentSettingsStore'
 import { SessionCompact } from '../../contextCompaction/sessionCompact'
 import { SnapshotStore } from '../../ipc/snapshotStore'
@@ -520,6 +522,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
   let settings: AgentSettingsStore
   let compact: SessionCompact
   let marks: SessionsMarksStore
+  let splitPins: SplitPinsFake
   let stopSessions: (() => void) | null = null
 
   /**
@@ -590,6 +593,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
           marks={marks}
           commitOpen={options.commitOpen ?? new CommitOpenStore({ read: async () => ({ ok: true, value: { revision: 0, sessionIds: [] } }), subscribe: () => () => undefined, reportError: vi.fn() })}
           fileTools={new PanelFileToolsRegistry()}
+          splitPins={splitPins}
           openFile={options.openFile ?? (() => Promise.resolve({
             kind: 'opened', panelId: 'file:default',
           }))}
@@ -622,6 +626,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
           marks={marks}
           commitOpen={new CommitOpenStore({ read: async () => ({ ok: true, value: { revision: 0, sessionIds: [] } }), subscribe: () => () => undefined, reportError: vi.fn() })}
           fileTools={new PanelFileToolsRegistry()}
+          splitPins={splitPins}
           openFile={() => Promise.resolve({ kind: 'opened', panelId: 'file:remote' })}
           openDirectoryAt={() => undefined}
         />
@@ -716,6 +721,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
     })
     marks = new SessionsMarksStore(sessions)
     stopSessions = null
+    splitPins = new SplitPinsFake()
     installBridge()
   })
 
@@ -1153,6 +1159,40 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
       expect(view.container.querySelector('.jamat-panel-split__pane')).not.toBeNull()
     })
 
+    it('pins a split file from its menu and stores it for the session', async () => {
+      const item = TerminalPanelFixtures.splitItem(1)
+      const api = new PanelApiFake('terminal:pin')
+      const view = mount(api, 'session-1', {
+        params: { split: { ratio: 0.5, active: item.key, preview: item.key, items: [item] } },
+      })
+      await waitFor(() => expect(splitPins.loads).toEqual(['session-1']))
+
+      const tab = view.container.querySelector('.jamat-panel-split__tab')
+      if (!(tab instanceof HTMLElement)) throw new Error('the split tab is not drawn')
+      fireEvent.contextMenu(tab, { clientX: 20, clientY: 30 })
+      fireEvent.click(await view.findByRole('menuitem', { name: 'Pin' }))
+
+      await waitFor(() => expect(splitPins.stored.get('session-1')).toEqual([{ ...item, pinned: true }]))
+      expect(tab.classList.contains('is-pinned')).toBe(true)
+      expect(tab.classList.contains('is-preview')).toBe(false)
+      expect(PanelSplitParams.of(api.paramsValue()).preview).toBe(null)
+
+      fireEvent.click(view.getByRole('button', { name: 'Close file-1.ts' }))
+      await waitFor(() => expect(splitPins.stored.get('session-1')).toEqual([]))
+    })
+
+    it('brings the stored pins back into a tab opened with an empty split', async () => {
+      const item = { ...TerminalPanelFixtures.splitItem(1), pinned: true as const }
+      splitPins.stored.set('session-1', [item])
+      const api = new PanelApiFake('terminal:pin-restore')
+      const view = mount(api, 'session-1')
+
+      await waitFor(() => expect(PanelSplitParams.of(api.paramsValue()).items).toEqual([item]))
+      expect(PanelSplitParams.of(api.paramsValue()).active).toBe(item.key)
+      expect(view.container.querySelector('.jamat-panel-split__tab.is-pinned')).not.toBeNull()
+      expect(splitPins.saves).toBe(0)
+    })
+
     it('does not draw or read local split state for a remote panel', async () => {
       const item = TerminalPanelFixtures.splitItem(1, {
         kind: 'git-head',
@@ -1172,6 +1212,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
       expect(workingTreeReads).toEqual([])
       expect(restoredSources).toEqual([])
       expect(rootDirectoryReads).toEqual([])
+      expect(splitPins.loads).toEqual([])
     })
   })
 
@@ -2056,6 +2097,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
           marks={marks}
           commitOpen={new CommitOpenStore({ read: async () => ({ ok: true, value: { revision: 0, sessionIds: [] } }), subscribe: () => () => undefined, reportError: vi.fn() })}
           fileTools={new PanelFileToolsRegistry()}
+          splitPins={splitPins}
           openFile={() => Promise.resolve({ kind: 'opened', panelId: 'file:invalid' })}
           openDirectoryAt={() => undefined}
         />
@@ -2063,3 +2105,20 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
     )).toThrow(/without a session/)
   })
 })
+
+class SplitPinsFake implements TerminalSplitPinsStore {
+  readonly stored = new Map<string, readonly SplitPinRecord[]>()
+  readonly loads: string[] = []
+  saves = 0
+
+  loadSplitPins(sessionId: string): Promise<IpcResult<readonly SplitPinRecord[]>> {
+    this.loads.push(sessionId)
+    return Promise.resolve({ ok: true, value: this.stored.get(sessionId) ?? [] })
+  }
+
+  saveSplitPins(sessionId: string, items: readonly SplitPinRecord[]): Promise<IpcResult<boolean>> {
+    this.saves += 1
+    this.stored.set(sessionId, structuredClone(items))
+    return Promise.resolve({ ok: true, value: true })
+  }
+}

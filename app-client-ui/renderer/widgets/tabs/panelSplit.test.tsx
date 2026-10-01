@@ -48,10 +48,11 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
 
   it('shows the commit scope and offers Close without Detach', () => {
     render(<PanelSplitStrip items={[{ kind: 'commit', key: 'c', title: 'Commit SVN', vcs: 'svn', scopeRoot: 'Q:/app' }]}
-      active="c" preview={null} onActivate={vi.fn()} onKeepOpen={vi.fn()} onClose={vi.fn()} onDetach={vi.fn()} />)
+      active="c" preview={null} onActivate={vi.fn()} onKeepOpen={vi.fn()} onSetPinned={vi.fn()} onClose={vi.fn()} onDetach={vi.fn()} />)
     fireEvent.contextMenu(screen.getByTitle('Q:/app'))
     expect(screen.getByRole('menuitem', { name: 'Close' })).toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: 'Detach from split' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'Pin' })).toBeNull()
   })
 
   function sourceFixture(path: string): FileViewerDocumentSource {
@@ -291,6 +292,58 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
       expect(merged.sessionId).toBe('s1')
       expect(merged.sidebar).toEqual({ visible: true })
       expect(merged.split).toEqual(PanelSplitParams.default())
+    })
+  })
+
+  describe('pins', () => {
+    function stateOf(...items: PanelSplitFileItem[]): ReturnType<typeof PanelSplitParams.default> {
+      return { ...PanelSplitParams.default(), items, active: items[0]?.key ?? null }
+    }
+
+    it('pins only files, keeps the pin through a layout round trip and never as the preview', () => {
+      const state = { ...stateOf(itemFixture('a.md')), preview: 'key:a.md' }
+      const pinned = PanelSplitParams.pinToggled(state, 'key:a.md', true)
+      expect(pinned.items[0]).toMatchObject({ pinned: true })
+      expect(pinned.preview).toBeNull()
+      expect(PanelSplitParams.of(PanelSplitParams.merged({}, pinned))).toEqual(pinned)
+      expect(PanelSplitParams.of({ split: { ...pinned, preview: 'key:a.md' } }).preview).toBeNull()
+      expect(PanelSplitParams.pinToggled(pinned, 'key:a.md', true)).toBe(pinned)
+      expect(PanelSplitParams.pinToggled(pinned, 'key:a.md', false).items[0]).not.toHaveProperty('pinned')
+
+      const commit = { kind: 'commit' as const, key: 'c', title: 'Commit', vcs: 'svn' as const, scopeRoot: 'Q:/app' }
+      const withCommit = { ...state, items: [commit], active: 'c', preview: null }
+      expect(PanelSplitParams.pinToggled(withCommit, 'c', true)).toBe(withCommit)
+    })
+
+    it('keeps the pin when the same file opens again and drops it from a history return', () => {
+      const pinned = PanelSplitParams.pinToggled(stateOf(itemFixture('a.md')), 'key:a.md', true)
+      const reopened = PanelSplitParams.opened(pinned, { ...itemFixture('a.md'), location: { line: 3 } })
+      if (!reopened.ok) throw new Error(reopened.refusal)
+      expect(PanelSplitParams.isPinned(reopened.state, 'key:a.md')).toBe(true)
+
+      const closed = PanelSplitParams.closed({ ...pinned, items: [...pinned.items, itemFixture('b.md')] }, 'key:a.md')
+      const back = PanelSplitParams.opened(closed, { ...itemFixture('a.md'), pinned: true })
+      if (!back.ok) throw new Error(back.refusal)
+      expect(PanelSplitParams.isPinned(back.state, 'key:a.md')).toBe(false)
+    })
+
+    it('puts stored pins back, marks a held one, and respects the file limit', () => {
+      const stored = [{ ...itemFixture('a.md'), pinned: true }, { ...itemFixture('b.md'), pinned: true }, { key: 'bad' }]
+      const empty = PanelSplitParams.withPinned(PanelSplitParams.default(), stored)
+      expect(empty.items.map((item) => item.key)).toEqual(['key:a.md', 'key:b.md'])
+      expect(empty.active).toBe('key:a.md')
+      expect(PanelSplitParams.pinnedOf(empty)).toHaveLength(2)
+
+      const held = { ...stateOf(itemFixture('c.md'), itemFixture('b.md')), preview: 'key:b.md' }
+      const merged = PanelSplitParams.withPinned(held, stored)
+      expect(merged.items.map((item) => item.key)).toEqual(['key:c.md', 'key:b.md', 'key:a.md'])
+      expect(merged.active).toBe('key:c.md')
+      expect(merged.preview).toBeNull()
+      expect(PanelSplitParams.withPinned(merged, stored)).toBe(merged)
+
+      const files = Array.from({ length: PanelSplitParams.itemsMaxConst }, (_, index) => itemFixture('f' + index))
+      const full = stateOf(...files)
+      expect(PanelSplitParams.withPinned(full, stored)).toBe(full)
     })
   })
 
@@ -542,28 +595,31 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
   })
 
   describe('PanelSplitStrip', () => {
-    function stripFixture(): {
+    function stripFixture(items = [itemFixture('a.md'), itemFixture('b.md')]): {
       activated: string[]
       keptOpen: string[]
+      pinned: [string, boolean][]
       closed: string[]
       detached: string[]
     } {
       const activated: string[] = []
       const keptOpen: string[] = []
+      const pinned: [string, boolean][] = []
       const closed: string[] = []
       const detached: string[] = []
       render(
         <PanelSplitStrip
-          items={[itemFixture('a.md'), itemFixture('b.md')]}
+          items={items}
           active="key:a.md"
           preview="key:a.md"
           onActivate={(key) => activated.push(key)}
           onKeepOpen={(key) => keptOpen.push(key)}
+          onSetPinned={(key, value) => pinned.push([key, value])}
           onClose={(key) => closed.push(key)}
           onDetach={(key) => detached.push(key)}
         />,
       )
-      return { activated, keptOpen, closed, detached }
+      return { activated, keptOpen, pinned, closed, detached }
     }
 
     it('draws one tab per item and marks the active one', () => {
@@ -595,17 +651,32 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
       expect(activated).toEqual([])
     })
 
-    it('offers exactly the two catalog verbs on a right click', async () => {
-      const { detached } = stripFixture()
+    it('offers Pin, Detach and Close on a right click', async () => {
+      const { detached, pinned } = stripFixture()
       fireEvent.contextMenu(screen.getAllByRole('tab')[1])
       const menu = screen.getByRole('menu', { name: 'Split tab actions' })
       const items = menu.querySelectorAll('[role="menuitem"]')
       expect(Array.from(items).map((item) => item.textContent)).toEqual([
+        'Pin',
         'Detach from split',
         'Close',
       ])
-      fireEvent.click(items[0])
+      fireEvent.click(items[1])
       await waitFor(() => expect(detached).toEqual(['key:b.md']))
+      fireEvent.contextMenu(screen.getAllByRole('tab')[1])
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Pin' }))
+      expect(pinned).toEqual([['key:b.md', true]])
+    })
+
+    it('marks a pinned tab and offers Unpin for it', () => {
+      const { pinned } = stripFixture([itemFixture('a.md'), { ...itemFixture('b.md'), pinned: true }])
+      const tabs = screen.getAllByRole('tab')
+      expect(tabs[1].classList.contains('is-pinned')).toBe(true)
+      expect(tabs[1].querySelector('[aria-label="Pinned"]')).not.toBeNull()
+      expect(tabs[0].classList.contains('is-pinned')).toBe(false)
+      fireEvent.contextMenu(tabs[1])
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Unpin' }))
+      expect(pinned).toEqual([['key:b.md', false]])
     })
 
     it('starts detach after the menu has restored its previous focus', async () => {
@@ -620,6 +691,7 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
           preview="key:a.md"
           onActivate={() => {}}
           onKeepOpen={() => {}}
+          onSetPinned={() => {}}
           onClose={() => {}}
           onDetach={() => detached.focus()}
         />,

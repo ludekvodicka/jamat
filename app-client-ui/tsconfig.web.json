@@ -44,5 +44,10 @@
     "preload/**/*",
     "shared/**/*",
     "vitest.web.setup.ts"
+  ],
+  "exclude": [
+    "shared/electron/*/main",
+    "shared/electron/**/*.test.ts",
+    "shared/electron/**/*.test.tsx"
   ]
 }

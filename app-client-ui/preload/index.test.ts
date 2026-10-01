@@ -34,13 +34,24 @@ const everyEventReachesTheRendererConst:
 /** More than the widest channel takes, so a member that drops a trailing argument shows up. */
 const argumentsConst: readonly string[] = ['one', 'two', 'three', 'four', 'five']
 
-const { invoked, subscribed } = vi.hoisted(() => ({
+const { invoked, subscribed, rawInvoked, rawSubscribed } = vi.hoisted(() => ({
   invoked: [] as [string, unknown[]][],
   subscribed: [] as [string, unknown][],
+  /** What reached `ipcRenderer` directly, past the typed wrappers: only the updater does that. */
+  rawInvoked: [] as string[],
+  rawSubscribed: [] as string[],
 }))
 
 vi.mock('electron', () => ({
   contextBridge: { exposeInMainWorld: (_key: string, _value: unknown) => undefined },
+  ipcRenderer: {
+    invoke: (channel: string) => {
+      rawInvoked.push(channel)
+      return Promise.resolve(undefined)
+    },
+    on: (channel: string) => rawSubscribed.push(channel),
+    removeListener: (channel: string) => rawSubscribed.push(`-${channel}`),
+  },
 }))
 
 vi.mock('../shared/typedIpc', () => ({
@@ -88,6 +99,8 @@ describe('app-client-ui/preload/index', () => {
   beforeEach(() => {
     invoked.length = 0
     subscribed.length = 0
+    rawInvoked.length = 0
+    rawSubscribed.length = 0
   })
 
   it('states at compile time that no channel is off the bridge', () => {
@@ -114,6 +127,53 @@ describe('app-client-ui/preload/index', () => {
       preview: 'remarkable:operation-preview',
       release: 'remarkable:operation-release',
     })
+  })
+
+  it('maps Autolauncher operations and its status subscription to their exact channels', async () => {
+    const bridge = (await import('./index')).appClientUiBridge
+    const invitation = 'opaque-one-time-invitation'
+    const onChanged = vi.fn()
+
+    await bridge.autolauncher.get()
+    await bridge.autolauncher.enable(invitation)
+    await bridge.autolauncher.enable(null)
+    await bridge.autolauncher.disable()
+    const unsubscribe = bridge.onAutolauncherChanged(onChanged)
+
+    expect(invoked).toEqual([
+      ['autolauncher:get', []],
+      ['autolauncher:enable', [invitation]],
+      ['autolauncher:enable', [null]],
+      ['autolauncher:disable', []],
+    ])
+    expect(subscribed).toEqual([['autolauncher:changed', onChanged]])
+    expect(typeof unsubscribe).toBe('function')
+  })
+
+  /*
+   * The updater's channels answer with raw values, so they reach `ipcRenderer` straight rather than
+   * through the IpcResult wrappers, and none of them is a key of the table the walks below read.
+   */
+  it('nests the shared updater beside the table, each member on its own raw channel', async () => {
+    const bridge = (await import('./index')).appClientUiBridge
+
+    await bridge.autoUpdate.status()
+    await bridge.autoUpdate.check()
+    await bridge.autoUpdate.install()
+    await bridge.autoUpdate.openReleasePage()
+    bridge.autoUpdate.onChanged(() => undefined)()
+
+    expect(Object.keys(bridge.autoUpdate).sort())
+      .toEqual(['check', 'install', 'onChanged', 'openReleasePage', 'status'])
+    expect(rawInvoked).toEqual([
+      'autoUpdate:status',
+      'autoUpdate:check',
+      'autoUpdate:install',
+      'autoUpdate:openReleasePage',
+    ])
+    expect(rawSubscribed).toEqual(['autoUpdate:changed', '-autoUpdate:changed'])
+    expect(invoked).toEqual([])
+    expect('autoUpdate' in AppClientUiBridgeCallsConst).toBe(false)
   })
 
   it('covers every channel the main process handles, exactly once and nothing else', async () => {

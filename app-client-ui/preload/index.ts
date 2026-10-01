@@ -1,4 +1,4 @@
-import { contextBridge } from 'electron'
+import { contextBridge, ipcRenderer } from 'electron'
 
 import type {
   AppClientUiBridge,
@@ -11,6 +11,8 @@ import {
   AppClientUiBridgeCallsConst,
   AppClientUiBridgeEventsConst,
 } from '../shared/appClientUiIpc'
+import type { AutoUpdateApi } from '../shared/electron/autoUpdate/common/autoUpdateApi'
+import { AutoUpdateBridge } from '../shared/electron/autoUpdate/preload/autoUpdateBridge'
 import { invokeAppClientUi, onAppClientUiEvent } from '../shared/typedIpc'
 
 /**
@@ -59,9 +61,14 @@ class AppClientUiBridgeBuild {
   }
 }
 
-export const appClientUiBridge: AppClientUiBridge = {
+/**
+ * The shared updater's channels answer with raw values rather than an `IpcResult`, so they are nested
+ * beside the table instead of in it, and `AppClientUiIpcInvokeMap` never names them.
+ */
+export const appClientUiBridge: AppClientUiBridge & { readonly autoUpdate: AutoUpdateApi } = {
   ...AppClientUiBridgeBuild.calls(AppClientUiBridgeCallsConst),
   ...AppClientUiBridgeBuild.listeners(AppClientUiBridgeEventsConst),
+  autoUpdate: AutoUpdateBridge.create(ipcRenderer),
 }
 
 contextBridge.exposeInMainWorld('appClient', appClientUiBridge)

@@ -23,6 +23,7 @@ import type {
 } from '../../lib-orchestrator/terminalDetector/terminalDetector'
 import { AppClientUiBridgeEventsConst } from '../shared/appClientUiIpc'
 import type { CommandId } from '../shared/commands'
+import { AutoUpdateConst } from '../shared/electron/autoUpdate/common/autoUpdateApi'
 import type { AppContext } from './appContext'
 import { AppHub } from './appHub'
 import { ServiceRemarkableIpc } from './remarkable/serviceRemarkableIpc'
@@ -60,6 +61,11 @@ const { FakeWindow, captured, updaterMock } = vi.hoisted(() => {
 
     constructor(readonly options: Record<string, unknown>) {
       FakeWindow.created.push(this)
+    }
+
+    /** What the shared updater broadcasts its status to. */
+    static getAllWindows(): FakeWindow[] {
+      return FakeWindow.created.filter((window) => !window.destroyed)
     }
 
     isDestroyed(): boolean {
@@ -154,18 +160,8 @@ const { FakeWindow, captured, updaterMock } = vi.hoisted(() => {
     appPath: 'C:/tmp/app/resources',
   }
 
-  /**
-   * Deliberately the OPPOSITE of what the wiring must leave behind, so a hub that forgot to wire the
-   * updater is read here as the defaults electron-updater ships rather than as a missing call.
-   */
-  const updaterMock = {
-    autoDownload: true,
-    autoInstallOnAppQuit: false,
-    events: [] as string[],
-    on: (event: string): void => {
-      updaterMock.events.push(event)
-    },
-  }
+  /** How often anything read `autoUpdater`: reading it is what builds the platform updater. */
+  const updaterMock = { reads: 0 }
 
   return { FakeWindow, captured, updaterMock }
 })
@@ -174,6 +170,7 @@ vi.mock('electron', () => ({
   app: {
     getAppPath: () => captured.appPath,
     getPath: () => 'C:/tmp/app/state',
+    getVersion: () => '0.0.0',
     isPackaged: false,
     exit: () => {},
     relaunch: () => {},
@@ -188,7 +185,9 @@ vi.mock('electron', () => ({
   ipcMain: {
     handle: (channel: string, handler: (...args: unknown[]) => Promise<unknown>) =>
       captured.ipcHandlers.set(channel, handler),
+    removeHandler: (channel: string) => captured.ipcHandlers.delete(channel),
   },
+  shell: { openExternal: () => Promise.resolve() },
   protocol: { handle: () => {} },
   Menu: {
     setApplicationMenu: () => {},
@@ -216,7 +215,16 @@ vi.mock('electron', () => ({
 
 // Never the real one: reaching `autoUpdater` builds the platform updater, which reads a version, a
 // name and a userData path off an Electron `app` this mock does not have.
-vi.mock('electron-updater', () => ({ autoUpdater: updaterMock }))
+vi.mock('electron-updater', () => {
+  const module = {
+    get autoUpdater(): never {
+      updaterMock.reads += 1
+      throw new Error('A development run must never build the platform updater')
+    },
+  }
+  // The member reads it through the default import, as CommonJS interop hands it over.
+  return { default: module }
+})
 
 vi.mock('./remarkable/sidecar/remarkableSidecarInstaller', () => ({
   RemarkableSidecarInstaller: class {
@@ -505,9 +513,7 @@ describe('app-client-ui/app/appHub', () => {
     captured.remarkableInstallerOptions = null
     captured.safeStorageCalls = []
     captured.appPath = join(stateRoot, 'application', 'resources')
-    updaterMock.autoDownload = true
-    updaterMock.autoInstallOnAppQuit = false
-    updaterMock.events = []
+    updaterMock.reads = 0
     vi.spyOn(console, 'error').mockImplementation(() => {})
   })
 
@@ -517,17 +523,19 @@ describe('app-client-ui/app/appHub', () => {
     vi.restoreAllMocks()
   })
 
-  /**
-   * The assembly's whole share of the update path: the flags are what make a check ask before it
-   * downloads, and they have to be set before anything can touch the updater - which is why the hub
-   * wires it as it builds it rather than in `initialize`. Nothing is checked until the menu item is.
+  /*
+   * The mock's `app.isPackaged` is false, which is a development run: the updater answers its
+   * channels with "off" and never builds the platform updater, and the menu's check asks nothing.
    */
-  it('wires the updater to find an update without downloading it', () => {
-    hubUnderTest()
+  it('answers the update channels at boot without building the updater in a development run', async () => {
+    const hub = hubUnderTest()
 
-    expect(updaterMock.autoDownload).toBe(false)
-    expect(updaterMock.autoInstallOnAppQuit).toBe(true)
-    expect(updaterMock.events).toEqual(['error'])
+    hub.initialize()
+    const status = await captured.ipcHandlers.get(AutoUpdateConst.channelStatus)?.()
+    ;(hub as unknown as { runMainCommand(id: string): void }).runMainCommand('app.checkForUpdates')
+
+    expect(status).toMatchObject({ running: '0.0.0', mode: 'off', releasePage: true, state: { kind: 'off' } })
+    expect(updaterMock.reads).toBe(0)
   })
 
   it('installs the AppJamatV3 skill links during initialization', () => {
@@ -694,8 +702,8 @@ describe('app-client-ui/app/appHub', () => {
   })
 
   it('holds the final IPC parity counts', () => {
-    expect(Object.keys(AppHub.ipcChannelsConst)).toHaveLength(182)
-    expect(Object.keys(AppClientUiBridgeEventsConst)).toHaveLength(21)
+    expect(Object.keys(AppHub.ipcChannelsConst)).toHaveLength(187)
+    expect(Object.keys(AppClientUiBridgeEventsConst)).toHaveLength(22)
     expect(Object.keys(ServiceTabsIpc.channelsConst)).toHaveLength(13)
     expect(Object.keys(ServiceRemarkableIpc.channelsConst)).toHaveLength(16)
   })
@@ -711,8 +719,15 @@ describe('app-client-ui/app/appHub', () => {
 
     hub.initialize()
 
+    // The updater's channels return raw values rather than IpcResult, so they are not in the contract.
+    const updateChannels = [
+      AutoUpdateConst.channelStatus,
+      AutoUpdateConst.channelCheck,
+      AutoUpdateConst.channelInstall,
+      AutoUpdateConst.channelOpenReleasePage,
+    ]
     expect([...captured.ipcHandlers.keys()].sort())
-      .toEqual(Object.keys(AppHub.ipcChannelsConst).sort())
+      .toEqual([...Object.keys(AppHub.ipcChannelsConst), ...updateChannels].sort())
   })
 
   /*

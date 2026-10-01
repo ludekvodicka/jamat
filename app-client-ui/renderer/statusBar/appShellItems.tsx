@@ -1,5 +1,6 @@
 import type { RateMonitorSnapshot } from '../../../lib-orchestrator/rateMonitor/rateMonitorApi.types'
 import type { AppInfo } from '../../shared/appClientUiIpc'
+import type { AutoUpdateApi } from '../../shared/electron/autoUpdate/common/autoUpdateApi'
 import type { WindowInfo } from '../../shared/windowInfo'
 import type { SessionCompact } from '../contextCompaction/sessionCompact'
 import { SnapshotStore } from '../ipc/snapshotStore'
@@ -10,6 +11,7 @@ import { RateStatusItem, type RateStatusPorts } from './rateStatusItem'
 import { SessionModelItem } from './sessionModelItem'
 import type { SessionModelCurrent } from '../sessionModel/sessionModelStore'
 import type { StatusBarItem } from './statusBar'
+import { UpdateStatusItem } from './updateStatusItem'
 import type { ActiveAgentTerminal } from './useActiveAgentTerminal'
 
 /**
@@ -19,12 +21,14 @@ import type { ActiveAgentTerminal } from './useActiveAgentTerminal'
  */
 export class AppShellItems {
   /**
-   * The version, and the Host beside it: both say what this window is running on, so they are read
-   * in one place rather than one at each end of the bar. The Host item does not wait for app:info -
-   * it reads its own state and says so itself, which is the point of the bar staying layout-only.
+   * The version, the update beside it, and the Host: all three say what this window is running on,
+   * so they are read in one place rather than one at each end of the bar. The Host and update items
+   * do not wait for app:info - each reads its own state and says so itself, which is the point of
+   * the bar staying layout-only.
    */
   static left(
     appInfo: AppInfo | null,
+    update: AutoUpdateApi,
     hostStatus: AppShellHostStatus | null,
     currentProject: CurrentProject | null,
   ): readonly StatusBarItem[] {
@@ -32,6 +36,7 @@ export class AppShellItems {
     // Before app:info answers there is no version to draw, rather than a placeholder reading.
     if (appInfo)
       items.push({ key: 'version', node: <span>{`v${appInfo.appVersion}`}</span> })
+    items.push({ key: 'update', node: <UpdateStatusItem api={update} /> })
     if (hostStatus !== null)
       items.push({
         key: 'host',

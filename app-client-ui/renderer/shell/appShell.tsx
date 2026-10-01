@@ -20,6 +20,7 @@ import type {
   SessionsSnapshot,
 } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type { AppInfo } from '../../shared/appClientUiIpc'
+import type { AutoUpdateApi } from '../../shared/electron/autoUpdate/common/autoUpdateApi'
 import { AppClientUiReport } from '../../shared/appClientUiReport'
 import {
   AppCommands,
@@ -57,6 +58,7 @@ import { SessionDetailsOverlay } from '../overlays/sessionDetails/sessionDetails
 import { ProbePanel } from '../panels/probePanel'
 import { SessionFolder } from '../sessions/sessionFolder'
 import { TerminalPanel } from '../panels/terminal/terminalPanel'
+import type { TerminalSplitPinsStore } from '../panels/terminal/split/useTerminalSplitPins'
 import { WelcomePanel } from '../panels/welcomePanel'
 import { SessionOperations } from './sessionOperations'
 import { WorkspacePanels } from './workspacePanels'
@@ -383,7 +385,7 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
           : AppShellSidebars.render('right', props.sidebars.registry, props.sidebars.handle)}
       </div>
       <StatusBar
-        left={AppShellItems.left(appInfo, props.hostStatus, currentProject)}
+        left={AppShellItems.left(appInfo, wiring.autoUpdate, props.hostStatus, currentProject)}
         right={AppShellItems.right(appInfo, windowInfo, focus, {
           sessionModel,
           compact: wiring.contextCompact,
@@ -608,6 +610,11 @@ class AppShellComposition {
       terminalDrafts,
       (message) => AppClientUiReport.error(message),
     )
+    // Late-bound, so a test bridge installed after this wiring is still the one that answers.
+    const splitPins: TerminalSplitPinsStore = {
+      loadSplitPins: (sessionId) => window.appClient.state.loadSplitPins(sessionId),
+      saveSplitPins: (sessionId, items) => window.appClient.state.saveSplitPins(sessionId, items),
+    }
     panels.register({
       key: PanelKeysConst.terminal,
       title: 'Terminal',
@@ -632,6 +639,7 @@ class AppShellComposition {
             marks={sessionsMarks}
               commitOpen={commitOpen}
             fileTools={fileTools}
+            splitPins={splitPins}
             openFile={(source, documentKey, hint, location) =>
               WorkspacePanels.openFileViewer(controller, source, documentKey, hint, location)}
             openDirectoryAt={(sessionId, path, directoryKey) =>
@@ -713,6 +721,7 @@ class AppShellComposition {
       commitOpen,
       ratePorts,
       rateSnapshot,
+      autoUpdate: AppShellComposition.autoUpdatePorts(),
       activeTerminal,
       sessionModel,
       agentSettings,
@@ -826,6 +835,16 @@ class AppShellComposition {
       subscribe: (onChanged) => window.appClient.onRateChanged(onChanged),
       refresh: () => window.appClient.rateMonitor.refresh(),
       reportError: (message) => AppClientUiReport.error(`${message}`),
+    }
+  }
+
+  private static autoUpdatePorts(): AutoUpdateApi {
+    return {
+      status: () => window.appClient.autoUpdate.status(),
+      check: () => window.appClient.autoUpdate.check(),
+      install: () => window.appClient.autoUpdate.install(),
+      openReleasePage: () => window.appClient.autoUpdate.openReleasePage(),
+      onChanged: (listener) => window.appClient.autoUpdate.onChanged(listener),
     }
   }
 

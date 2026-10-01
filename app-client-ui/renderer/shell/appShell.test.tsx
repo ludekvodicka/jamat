@@ -239,6 +239,8 @@ class AppClientStub {
         saveSessionPins: () => Promise.resolve({ ok: true as const, value: true }),
         loadSessionGroups: () => Promise.resolve({ ok: true as const, value: [] }),
         assignSessionGroup: () => Promise.resolve({ ok: true as const, value: true }),
+        loadSplitPins: () => Promise.resolve({ ok: true as const, value: [] }),
+        saveSplitPins: () => Promise.resolve({ ok: true as const, value: true }),
         saveSessionFilters: () => Promise.resolve({ ok: true as const, value: true }),
         saveSessionsView: (view: SessionsTabsView) => {
           this.savedSessionsViews.push(view)
@@ -532,6 +534,12 @@ class AppClientStub {
         forgetProfile: () => { throw new Error('No test of the shell forgets a paired computer') },
         revokeInbound: () => { throw new Error('No test of the shell revokes inbound access') },
       },
+      autolauncher: {
+        get: () => { throw new Error('No test of the shell reads Autolauncher settings') },
+        enable: () => { throw new Error('No test of the shell enables Autolauncher') },
+        disable: () => { throw new Error('No test of the shell disables Autolauncher') },
+      },
+      onAutolauncherChanged: () => () => undefined,
       onMenuCommand: (callback: (commandId: BareCommandId) => void) => {
         this.menuCommand = callback
         return () => { this.menuCommand = null }
@@ -676,8 +684,20 @@ class AppClientStub {
       },
       onTerminalFrame: () => () => undefined,
       onRemoteTerminalFrame: () => () => undefined,
-    } satisfies AppClientUiBridge
-    ;(window as unknown as { appClient: AppClientUiBridge }).appClient = bridge
+      autoUpdate: {
+        status: () => Promise.resolve({
+          running: '0.0.0',
+          mode: 'off' as const,
+          releasePage: false,
+          state: { kind: 'off' as const, reason: 'Development run' },
+        }),
+        check: () => Promise.resolve(),
+        install: () => Promise.resolve(),
+        openReleasePage: () => Promise.resolve(),
+        onChanged: () => () => undefined,
+      },
+    } satisfies Window['appClient']
+    ;(window as unknown as { appClient: Window['appClient'] }).appClient = bridge
   }
 
   /** `ok: false` is the transport failing, which must latch the same way a damaged file does. */
@@ -1999,6 +2019,7 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     // channel alone. What separates the pieces on screen is layout, and layout leaves no characters.
     await waitFor(() => expect(AppShellTest.barText(bar)).toEqual([
       'v0.0.0',
+      'Updates off',
       'Host v2026.08.04.09.30 · 4 live',
       '|',
       'development',
@@ -2044,6 +2065,7 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     // it no longer waits for a fill threshold it is there for every live session.
     await waitFor(() => expect(AppShellTest.barText(bar)).toEqual([
       'v0.0.0',
+      'Updates off',
       'Host v2026.08.04.09.30 · 4 live',
       'NodeJs / AppJamatV3 / Alpha worktree',
       '|',
@@ -2072,6 +2094,7 @@ describe('app-client-ui/renderer/shell/appShell', () => {
 
     await waitFor(() => expect(AppShellTest.barText(bar)).toEqual([
       'v0.0.0',
+      'Updates off',
       'Host v2026.08.04.09.30 · 4 live',
       'NodeJs / AppJamatV3 / Beta worktree',
       '|',

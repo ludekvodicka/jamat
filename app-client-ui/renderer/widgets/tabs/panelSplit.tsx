@@ -25,6 +25,8 @@ export interface PanelSplitFileItem {
   location?: FileViewerLocation
   /** Reading size for this file alone; absent is the configured size, which is what 100 % means. */
   zoomPercent?: number
+  /** Esc and Ctrl+W close the whole tab instead of it, and the session's split pins keep it. */
+  pinned?: true
 }
 
 export interface PanelSplitCommitItem {
@@ -59,6 +61,9 @@ export interface PanelSplitHandle {
   back(): string | null
   activate(key: string): void
   keepOpen(key: string): void
+  setPinned(key: string, pinned: boolean): void
+  /** Adds the session's stored pins that the restored or reopened split does not hold. */
+  restorePinned(stored: readonly unknown[]): void
   close(key: string): void
   capture(key: string): PanelSplitCapture | null
   closeCaptured(capture: PanelSplitCapture): boolean
@@ -177,8 +182,10 @@ export class PanelSplitParams {
     const existing = state.items.findIndex((candidate) => candidate.key === item.key)
     if (existing !== -1) {
       // The same file again is the same tab, brought forward. The item is replaced rather than
-      // kept, because the second open may carry a baseline the first one did not.
-      const items = state.items.map((candidate, index) => index === existing ? item : candidate)
+      // kept, because the second open may carry a baseline the first one did not. The pin is the
+      // held item's: an open never pins or unpins anything.
+      const items = state.items.map((candidate, index) => index !== existing ? candidate
+        : item.kind === 'file' ? PanelSplitParams.withPin(item, PanelSplitParams.isPinnedItem(candidate)) : item)
       return { ok: true, state: { ...state, items, active: item.key } }
     }
     if (item.kind === 'commit') {
@@ -187,14 +194,16 @@ export class PanelSplitParams {
       return { ok: true, state: { ...state, items: [...state.items, item], active: item.key } }
     }
     else if (item.kind !== 'file') throw new Error(`Unknown split item: ${JSON.stringify(item)}`)
+    // A history entry remembers the pin it had, and an item closed since then is no longer pinned.
+    const file = PanelSplitParams.withPin(item, false)
     const previewIndex = state.preview === null
       ? -1
       : state.items.findIndex((candidate) => candidate.kind === 'file' && candidate.key === state.preview)
     if (previewIndex !== -1) {
-      const items = state.items.map((candidate, index) => index === previewIndex ? item : candidate)
+      const items = state.items.map((candidate, index) => index === previewIndex ? file : candidate)
       return {
         ok: true,
-        state: { ...state, items, active: item.key, preview: item.key },
+        state: { ...state, items, active: file.key, preview: file.key },
       }
     }
     if (state.items.filter((candidate) => candidate.kind === 'file').length >= PanelSplitParams.itemsMaxConst)
@@ -205,7 +214,7 @@ export class PanelSplitParams {
       }
     return {
       ok: true,
-      state: { ...state, items: [...state.items, item], active: item.key, preview: item.key },
+      state: { ...state, items: [...state.items, file], active: file.key, preview: file.key },
     }
   }
 
@@ -235,6 +244,65 @@ export class PanelSplitParams {
     if (state.preview !== key)
       return state
     return { ...state, preview: null }
+  }
+
+  /** Only a file is pinned: a commit dialog closes by itself after a commit, a cancel or an empty
+   *  scope, so a pin on it would be a promise the dialog does not keep. */
+  static isPinnedItem(item: PanelSplitItem): boolean {
+    return item.kind === 'file' && item.pinned === true
+  }
+
+  static isPinned(state: PanelSplitState, key: string): boolean {
+    return state.items.some((item) => item.key === key && PanelSplitParams.isPinnedItem(item))
+  }
+
+  static pinnedOf(state: PanelSplitState): readonly PanelSplitFileItem[] {
+    return state.items.filter((item): item is PanelSplitFileItem => PanelSplitParams.isPinnedItem(item))
+  }
+
+  /** A pinned item is never the preview, so the next open cannot replace it. */
+  static pinToggled(state: PanelSplitState, key: string, pinned: boolean): PanelSplitState {
+    const held = state.items.find((item) => item.key === key)
+    if (held === undefined || held.kind !== 'file' || PanelSplitParams.isPinnedItem(held) === pinned)
+      return state
+    return {
+      ...state,
+      items: state.items.map((item) => item === held ? PanelSplitParams.withPin(held, pinned) : item),
+      preview: pinned && state.preview === key ? null : state.preview,
+    }
+  }
+
+  /**
+   * The stored pins put back into a split. A held item keeps its own fields, which the layout wrote
+   * more recently than the pin store, and is only marked pinned. A missing one is appended while the
+   * file limit allows. Nothing changes the active item unless the split was empty.
+   */
+  static withPinned(state: PanelSplitState, stored: readonly unknown[]): PanelSplitState {
+    const items = [...state.items]
+    let preview = state.preview
+    for (const value of stored) {
+      const parsed = PanelSplitParams.item(value)
+      if (parsed === null || parsed.kind !== 'file')
+        continue
+      const held = items.findIndex((candidate) => candidate.key === parsed.key)
+      const heldItem = held === -1 ? null : items[held]
+      if (heldItem !== null) {
+        if (heldItem.kind === 'file') items[held] = PanelSplitParams.withPin(heldItem, true)
+        if (preview === parsed.key) preview = null
+      }
+      else if (items.filter((candidate) => candidate.kind === 'file').length < PanelSplitParams.itemsMaxConst)
+        items.push(PanelSplitParams.withPin(parsed, true))
+    }
+    if (JSON.stringify(items) === JSON.stringify(state.items))
+      return state
+    return { ...state, items, preview, active: state.active ?? items[0]?.key ?? null }
+  }
+
+  private static withPin(item: PanelSplitFileItem, pinned: boolean): PanelSplitFileItem {
+    const next = { ...item }
+    if (pinned) next.pinned = true
+    else delete next.pinned
+    return next
   }
 
   private static stored(params: unknown): Partial<PanelSplitState> | null {
@@ -305,6 +373,7 @@ export class PanelSplitParams {
       baselineHint: FileViewerSourceShape.hint(candidate.baselineHint),
       ...(location === undefined ? {} : { location }),
       ...(zoomPercent === undefined ? {} : { zoomPercent }),
+      ...(candidate.pinned === true ? { pinned: true as const } : {}),
     }
   }
 
@@ -317,7 +386,8 @@ export class PanelSplitParams {
   }
 
   private static preview(value: unknown, items: readonly PanelSplitItem[]): string | null {
-    if (typeof value === 'string' && items.some((item) => item.kind === 'file' && item.key === value))
+    if (typeof value === 'string'
+      && items.some((item) => item.kind === 'file' && item.key === value && item.pinned !== true))
       return value
     return null
   }
@@ -401,6 +471,26 @@ export function usePanelSplit(props: IDockviewPanelProps): PanelSplitHandle {
         if (next === current)
           return
         store(currentParams, next)
+      },
+      [currentParameters, store],
+    ),
+    setPinned: useCallback(
+      (key: string, pinned: boolean) => {
+        const currentParams = currentParameters()
+        const current = PanelSplitParams.of(currentParams)
+        const next = PanelSplitParams.pinToggled(current, key, pinned)
+        if (next !== current)
+          store(currentParams, next)
+      },
+      [currentParameters, store],
+    ),
+    restorePinned: useCallback(
+      (stored: readonly unknown[]) => {
+        const currentParams = currentParameters()
+        const current = PanelSplitParams.of(currentParams)
+        const next = PanelSplitParams.withPinned(current, stored)
+        if (next !== current)
+          store(currentParams, next)
       },
       [currentParameters, store],
     ),
@@ -554,19 +644,22 @@ export function PanelSplitStrip(props: {
   preview: string | null
   onActivate(key: string): void
   onKeepOpen(key: string): void
+  onSetPinned(key: string, pinned: boolean): void
   onClose(key: string): void
   onDetach(key: string): void
 }): React.JSX.Element {
   const [menu, setMenu] = useState<{ key: string; position: ContextMenuPosition } | null>(null)
   const onDetach = props.onDetach
   const onClose = props.onClose
+  const onSetPinned = props.onSetPinned
+  const menuItem = menu === null ? undefined : props.items.find((item) => item.key === menu.key)
 
   return (
     <div className="jamat-panel-split__strip" role="tablist" aria-label="Split files">
       {props.items.map((item) => (
         <div
           key={item.key}
-          className={`jamat-panel-split__tab${item.key === props.active ? ' is-active' : ''}${item.key === props.preview ? ' is-preview' : ''}`}
+          className={`jamat-panel-split__tab${item.key === props.active ? ' is-active' : ''}${item.key === props.preview ? ' is-preview' : ''}${PanelSplitParams.isPinnedItem(item) ? ' is-pinned' : ''}`}
           role="tab"
           aria-selected={item.key === props.active}
           title={PanelSplitParams.tooltipOf(item)}
@@ -577,6 +670,7 @@ export function PanelSplitStrip(props: {
             setMenu({ key: item.key, position: { x: event.clientX, y: event.clientY } })
           }}
         >
+          {PanelSplitParams.isPinnedItem(item) && <PanelSplitPinGlyph />}
           <span className="jamat-panel-split__title">{item.title}</span>
           <button
             className="jamat-panel-split__close"
@@ -592,22 +686,36 @@ export function PanelSplitStrip(props: {
           </button>
         </div>
       ))}
-      {menu !== null && (
+      {menu !== null && menuItem !== undefined && (
         <ContextMenu
           position={menu.position}
           ariaLabel="Split tab actions"
           items={[
-            ...(props.items.find((item) => item.key === menu.key)?.kind === 'file' ? [{
-              key: 'split.detach',
-              label: 'Detach from split',
-              onSelect: () => queueMicrotask(() => onDetach(menu.key)),
-            }] : []),
+            ...(menuItem.kind === 'file' ? [
+              PanelSplitParams.isPinnedItem(menuItem)
+                ? { key: 'split.unpin', label: 'Unpin', onSelect: () => onSetPinned(menu.key, false) }
+                : { key: 'split.pin', label: 'Pin', onSelect: () => onSetPinned(menu.key, true) },
+              {
+                key: 'split.detach',
+                label: 'Detach from split',
+                onSelect: () => queueMicrotask(() => onDetach(menu.key)),
+              },
+            ] : []),
             { key: 'split.close', label: 'Close', onSelect: () => onClose(menu.key) },
           ]}
           onClose={() => setMenu(null)}
         />
       )}
     </div>
+  )
+}
+
+/** Text glyphs draw as colour emoji on Windows, so the pin is a path in the tab's own colour. */
+function PanelSplitPinGlyph(): React.JSX.Element {
+  return (
+    <svg className="jamat-panel-split__pin" viewBox="0 0 16 16" aria-label="Pinned" role="img">
+      <path d="M10 1.5 14.5 6l-1.4 1.4-1-.6-2.6 2.6.4 3-1.4 1.4-2.6-2.6L2 15l-1-1 3.8-3.9-2.6-2.6L3.6 6l3 .4 2.6-2.6-.6-1z" />
+    </svg>
   )
 }
 

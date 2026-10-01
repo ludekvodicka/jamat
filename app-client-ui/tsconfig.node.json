@@ -26,5 +26,11 @@
     "vitest.workspace.ts",
     "vitest.node.config.ts",
     "vitest.web.config.ts"
+  ],
+  "exclude": [
+    "shared/electron/*/renderer",
+    "shared/electron/autoUpdateWidgets",
+    "shared/electron/**/*.test.ts",
+    "shared/electron/**/*.test.tsx"
   ]
 }

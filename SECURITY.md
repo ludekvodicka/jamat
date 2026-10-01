@@ -18,16 +18,24 @@ Once a fix ships we are happy to credit you, unless you would rather stay anonym
 
 ## What the attack surface actually is
 
-Three listeners exist, and they are not equally exposed:
+Four listeners exist, and they are not equally exposed:
 
 - **The Host** owns the terminals. It listens on loopback only, behind a bearer token written into a
   descriptor file that only your account can read. Nothing about it is reachable from the network.
 - **The client's control endpoint** is what the `jamat-v3` command line client and the shipped agent
   skills talk to. It is loopback only and authenticated the same way.
-- **The peer listener** is the one that can reach the network, and it is **off until you turn it
+- **The peer listener** can reach the network, and it is **off until you turn it
   on**. Its advertised address defaults to `127.0.0.1`, so even switching it on exposes nothing
-  until you deliberately give it your LAN or VPN address. The application never touches firewall
-  rules; the inbound rule is one you add by hand.
+  until you deliberately give it your LAN or VPN address. Its inbound firewall rule is one you add
+  by hand.
+- **The optional Windows Autolauncher** runs independently of the desktop and starts one captured
+  profile. Enabling it in Settings requests administrator approval under the same Windows account,
+  installs a limited interactive logon task, and manages a firewall rule restricted to the configured
+  MiniWol gateway. It does not expose sessions or arbitrary commands. Requests use per-PC HMAC keys,
+  timestamps and replay protection. Installation enrollment uses a five-minute, single-use invitation
+  bound to the PC's socket source address, over unencrypted HTTP on a trusted LAN. This does not
+  authenticate the phone user or Windows user; the MiniWol web page has no login and must not be
+  exposed directly to the Internet. Paired session control uses the separate peer protocol below.
 
 Between two paired computers the connection carries a signed handshake over each machine's long-term
 Ed25519 identity, an ephemeral X25519 exchange, and AES-256-GCM frames with replay protection.

@@ -1,0 +1,23 @@
+/* Every color, radius and layer comes from a --auto-update-* custom property with a fallback,
+   so an app themes the widgets from its own CSS without overriding these rules. */
+.auto-update-indicator { display: inline-flex; align-items: center; gap: 8px; color: var(--auto-update-text, inherit); font: inherit; }
+.auto-update-label { all: unset; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.auto-update-label:focus-visible { outline: 2px solid var(--auto-update-accent, #2f7de1); outline-offset: 2px; }
+.auto-update-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--auto-update-muted, #8a8f98); }
+.auto-update-tone-working .auto-update-dot { background: var(--auto-update-working, #d9a400); }
+.auto-update-tone-attention .auto-update-dot { background: var(--auto-update-attention, #2f7de1); }
+.auto-update-tone-ready .auto-update-dot { background: var(--auto-update-ready, #2e9d57); }
+.auto-update-tone-failed .auto-update-dot { background: var(--auto-update-failed, #d64545); }
+.auto-update-button { font: inherit; padding: 2px 10px; cursor: pointer; border-radius: var(--auto-update-radius, 4px);
+  border: 1px solid var(--auto-update-border, currentColor); background: var(--auto-update-button-bg, transparent); color: inherit; }
+.auto-update-primary { background: var(--auto-update-accent, #2f7de1); color: var(--auto-update-accent-text, #fff); border-color: transparent; }
+.auto-update-backdrop { position: fixed; inset: 0; display: grid; place-items: center; z-index: var(--auto-update-z, 1000);
+  background: var(--auto-update-backdrop, rgba(0, 0, 0, 0.4)); }
+.auto-update-panel { box-sizing: border-box; width: min(560px, 90vw); max-height: 85vh; overflow: auto; padding: 20px;
+  border-radius: var(--auto-update-radius, 6px); background: var(--auto-update-surface, #fff); color: var(--auto-update-surface-text, #1d1f23);
+  font: var(--auto-update-font, inherit); }
+.auto-update-panel h2 { margin: 0 0 8px; font-size: 1.15em; }
+.auto-update-detail, .auto-update-meta { margin: 0 0 8px; opacity: 0.8; }
+.auto-update-notes { white-space: pre-wrap; max-height: 40vh; overflow: auto; margin: 0; padding: 12px; font: inherit;
+  border-radius: var(--auto-update-radius, 4px); background: var(--auto-update-notes-bg, rgba(127, 127, 127, 0.12)); }
+.auto-update-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 16px; }

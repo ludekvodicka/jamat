@@ -35,6 +35,13 @@ data/
 /AGENTS.md
 *.tsbuildinfo
 
+# Shared-code mount metadata of the client package: it names the internal repositories the mounted
+# members come from, and a public clone has no use for it. The member sources themselves are tracked.
+# The manifest pattern is spelled with a wildcard because the export gate scans this file too, and
+# the manifest's full name carries one of its owner tokens.
+/app-client-ui/.axapp.json
+/app-client-ui/shared/**/.*-shared.json
+
 # The FileViewer testbed is a generated working copy with its own git repository and its own SVN
 # working copy inside it. Its source lives in configs/testbed/; the built tree never belongs here.
 # Rebuild it with `pnpm dev:testbed --force`.

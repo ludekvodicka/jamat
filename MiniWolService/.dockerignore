@@ -1,0 +1,9 @@
+*
+!package.json
+!start.mjs
+!server.mjs
+!wol.mjs
+!launcher.mjs
+!pairing.mjs
+!web.css
+!Dockerfile

@@ -156,7 +156,8 @@ export class WorkspacePanels {
     if (controller.keyOf(panelId) === PanelKeysConst.terminal)
       controller.applyPanelParameters(panelId, (params) => {
         const split = PanelSplitParams.of(params)
-        if (split.active === null)
+        // A pinned item is not closed by the keyboard; the same key closes the whole tab instead.
+        if (split.active === null || PanelSplitParams.isPinned(split, split.active))
           return params
         splitClosed = true
         return PanelSplitParams.merged(params, PanelSplitParams.closed(split, split.active))

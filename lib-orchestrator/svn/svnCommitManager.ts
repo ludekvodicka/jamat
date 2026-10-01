@@ -36,6 +36,8 @@ export class SvnCommitManager {
     let temporary: string | null = null
     try {
       onProgress?.({ stage: 'preparing', completed: 0, total: targets.length })
+      const deletionRoots = await this.deletionRootsOf(scope, targets, schedules)
+      if (!deletionRoots.ok) return deletionRoots
       for (const target of [...targets].sort((left, right) => left.absolutePath.length - right.absolutePath.length)) {
         if (listed.has(target.absolutePath)) continue
         if (target.status === 'untracked') {
@@ -67,6 +69,7 @@ export class SvnCommitManager {
         prepared += 1
         onProgress?.({ stage: 'preparing', completed: prepared, total: targets.length })
       }
+      for (const root of deletionRoots.value) listed.add(root)
       temporary = await mkdtemp(join(tmpdir(), 'jamat-v3-svn-commit-'))
       const listFile = join(temporary, 'targets.txt')
       await writeFile(listFile, [...listed].map((path) => `${path}@`).join('\n') + '\n', 'utf8')
@@ -82,9 +85,14 @@ export class SvnCommitManager {
         return { ok: false, code: 'svn-failed', detail: committed.value.stdout || 'SVN did not report a committed revision' }
       // SVN's C-locale notifications have a 15-character prefix. Trimming it would lose
       // leading spaces in literal filenames and could claim an unchanged sibling was sent.
-      const committedPaths = [...new Set(committed.value.stdout.split(/\r?\n/).flatMap((line) =>
+      const sent = committed.value.stdout.split(/\r?\n/).flatMap((line) =>
         /^(Sending {8}|Adding {9}|Adding {2}\(bin\) {2}|Deleting {7}|Replacing {6}).+$/.test(line)
-          ? [resolve(scope, line.slice(15))] : []))]
+          ? [{ path: resolve(scope, line.slice(15)), deleting: line.startsWith('Deleting ') }] : [])
+      // SVN reports a deleted directory as one line, so the selected files under it are sent by it.
+      const deletedWith = targets.flatMap(({ absolutePath }) => sent.some(({ path, deleting }) => deleting
+        && PathCompare.comparable(path) !== PathCompare.comparable(absolutePath) && PathCompare.isInside(path, absolutePath))
+        ? [absolutePath] : [])
+      const committedPaths = [...new Set([...sent.map(({ path }) => path), ...deletedWith])]
       return { ok: true, value: { revision, output: committed.value.stdout + committed.value.stderr, committedPaths } }
     }
     catch (error) { return { ok: false, code: 'svn-failed', detail: ErrorText.of(error) } }
@@ -158,12 +166,7 @@ export class SvnCommitManager {
     const staged: string[] = []
     let parent = dirname(path)
     while (SvnCommitManager.inside(scope, parent)) {
-      const key = PathCompare.comparable(parent)
-      let schedule = schedules.get(key)
-      if (schedule === undefined) {
-        schedule = await this.scheduleOf(scope, parent)
-        schedules.set(key, schedule)
-      }
+      const schedule = await this.cachedScheduleOf(scope, parent, schedules)
       if (schedule === 'delete')
         return { ok: false, code: 'svn-failed', detail: `${parent} is scheduled for deletion, so adding ${path} inside it would replace that directory and publish everything under it again. Leave the path out of the commit, or revert the deletion first.` }
       else if (schedule === 'normal') break
@@ -176,6 +179,56 @@ export class SvnCommitManager {
       parent = next
     }
     return { ok: true, value: staged.reverse() }
+  }
+
+  /**
+   * The deleted directories the selected deletions are published from.
+   *
+   * SVN deletes a directory as one node, so a file deleted with its directory reaches the
+   * repository only through that directory's target: alone, a move out of it stops with E200009
+   * ("both sides of the move must be committed together") and a plain deletion sends nothing. The
+   * directory deletes everything under it, so it joins only when the selection already holds every
+   * file under it; otherwise this commit stops before the first write.
+   */
+  private async deletionRootsOf(scope: string, targets: readonly SvnCommitTarget[],
+    schedules: Map<string, string | null>): Promise<SvnResult<readonly string[]>> {
+    const selected = new Set(targets.map((target) => PathCompare.comparable(target.absolutePath)))
+    const roots = new Map<string, string>()
+    for (const target of targets) {
+      if (target.status !== 'deleted') continue
+      let root: string | null = null
+      for (let parent = dirname(target.absolutePath); SvnCommitManager.inside(scope, parent); parent = dirname(parent)) {
+        if (await this.cachedScheduleOf(scope, parent, schedules) !== 'delete') break
+        root = parent
+        if (dirname(parent) === parent) break
+      }
+      if (root === null || selected.has(PathCompare.comparable(root)) || roots.has(PathCompare.comparable(root))) continue
+      const info = await this.run(scope, ['info', '--xml', '--depth', 'infinity', '--non-interactive', '--', `${root}@`])
+      if (!info.ok) return info
+      const entries = JsonShape.record(JsonShape.record(new XMLParser({ ignoreAttributes: false,
+        isArray: (name) => name === 'entry' }).parse(info.value.stdout))?.info)?.entry
+      if (!Array.isArray(entries)) throw new Error(`SVN returned invalid info for ${root}`)
+      const unselected = entries.flatMap((value) => {
+        const entry = JsonShape.record(value)
+        if (typeof entry?.['@_path'] !== 'string') throw new Error(`SVN returned an info entry without a path under ${root}`)
+        const path = resolve(scope, entry['@_path'])
+        return entry['@_kind'] === 'file' && !selected.has(PathCompare.comparable(path)) ? [path] : []
+      })
+      if (unselected.length > 0)
+        return { ok: false, code: 'svn-failed', detail: `${target.absolutePath} is deleted together with ${root}, and SVN publishes that deletion only as the whole directory, which also deletes:\n${unselected.join('\n')}\nSelect those files as well, or leave the deletions inside ${root} out of this commit.` }
+      roots.set(PathCompare.comparable(root), root)
+    }
+    return { ok: true, value: [...roots.values()] }
+  }
+
+  private async cachedScheduleOf(scope: string, path: string, schedules: Map<string, string | null>): Promise<string | null> {
+    const key = PathCompare.comparable(path)
+    let schedule = schedules.get(key)
+    if (schedule === undefined) {
+      schedule = await this.scheduleOf(scope, path)
+      schedules.set(key, schedule)
+    }
+    return schedule
   }
 
   /**

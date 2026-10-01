@@ -1,0 +1,29 @@
+:root { color-scheme: dark; font-family: system-ui, sans-serif; background: #101720; color: #edf3fb; }
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; display: grid; place-items: center; }
+main { width: min(100%, 760px); padding: 40px 24px; }
+.brand { font-weight: 800; letter-spacing: .16em; font-size: 13px; color: #88b8ff; }
+.brand span { color: #9aaabd; margin-left: 14px; font-weight: 500; letter-spacing: .08em; }
+h1 { font-size: clamp(28px, 6vw, 42px); letter-spacing: -.04em; margin: 24px 0 8px; }
+.intro { color: #a7b6c9; margin: 0 0 28px; }
+.status { padding: 16px 18px; background: #1a2533; border: 1px solid #304156; border-radius: 12px; line-height: 1.5; }
+.sent { border-color: #47856c; background: #182d28; }
+.computers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 24px; }
+.computer { padding: 26px; border: 1px solid #304156; border-radius: 16px; background: #18222f; }
+.launcher-status { min-height: 3em; color: #c1cfdf; line-height: 1.5; }
+a { color: #a8ccff; }
+.pc-icon { font-size: 32px; color: #88b8ff; }
+h2 { font-size: 22px; margin: 14px 0 28px; overflow-wrap: anywhere; }
+button { width: 100%; padding: 14px 16px; background: #a8ccff; border: 0; border-radius: 9px; color: #10233e; font: inherit; font-weight: 700; cursor: pointer; }
+button:hover { background: #c8deff; }
+button:focus-visible { outline: 3px solid #fff; outline-offset: 4px; }
+form + form { margin-top: 12px; }
+button.secondary { background: #304156; color: #edf3fb; }
+button.secondary:hover { background: #405672; }
+.instructions { padding-left: 24px; line-height: 1.6; }
+.instructions li { margin-bottom: 12px; }
+label { display: block; font-weight: 700; margin-top: 24px; }
+textarea { width: 100%; margin-top: 10px; padding: 14px; resize: vertical; border: 1px solid #70839b; border-radius: 9px; background: #18222f; color: #edf3fb; font: inherit; overflow-wrap: anywhere; }
+textarea:focus-visible { outline: 3px solid #a8ccff; outline-offset: 3px; }
+footer { color: #9aaabd; margin-top: 30px; font-size: 12px; }
+@media (max-width: 520px) { .computers { grid-template-columns: 1fr; } main { padding: 28px 20px; } .computer { padding: 22px; } h2 { margin-bottom: 22px; } }

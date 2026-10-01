@@ -41,6 +41,7 @@ import type {
 import { AgentModels } from '../shared/agentModels'
 import { AgentSettings, type AgentSettingsAgentId } from '../shared/agentSettings'
 import { AppCommands, type CommandId } from '../shared/commands'
+import { AutoUpdateMain } from '../shared/electron/autoUpdate/main/autoUpdateMain'
 import { ErrorText } from '../shared/errorText'
 import { FileViewerProtocolUrl } from '../shared/fileViewerProtocol'
 import type { RemoteControlListenerSettings } from '../shared/remoteControlSettings'
@@ -48,6 +49,11 @@ import { SessionsGroupsState } from '../shared/sessionsGroupsState'
 import { AgentSettingsSection } from './agents/agentSettingsSection'
 import { ServiceAgentSettingsIpc } from './agents/serviceAgentSettingsIpc'
 import type { AppContext } from './appContext'
+import { AutolauncherConnection } from './autolauncher/autolauncherConnection'
+import { AutolauncherManager } from './autolauncher/autolauncherManager'
+import { AutolauncherTarget } from './autolauncher/autolauncherTarget'
+import { ServiceAutolauncherIpc } from './autolauncher/serviceAutolauncherIpc'
+import { WindowsLauncherSetup } from './autolauncher/windowsLauncherSetup'
 import { ClientStatePaths } from './clientState/clientStatePaths'
 import { VersioningCommitMessageStore } from './versioning/versioningCommitMessageStore'
 import { ClientStateStore } from './clientState/clientStateStore'
@@ -121,7 +127,6 @@ import { ServiceSessionGroupsIpc } from './sessionGroups/serviceSessionGroupsIpc
 import { SessionGroupsSection } from './sessionGroups/sessionGroupsSection'
 import { ServiceUiSettingsIpc } from './uiSettings/serviceUiSettingsIpc'
 import { UiSettingsSection } from './uiSettings/uiSettingsSection'
-import { UpdateManager } from './update/updateManager'
 
 type TerminalDetectorPathHints = Awaited<ReturnType<TerminalDetectorDeps['changedPaths']>>
 
@@ -167,6 +172,7 @@ export class AppHub {
     ServiceVersioningSettingsIpc.channelsConst,
     ServiceVersioningCommitIpc.channelsConst,
     ServiceWorktreeSettingsIpc.channelsConst,
+    ServiceAutolauncherIpc.channelsConst,
     ServiceFileChangesSettingsIpc.channelsConst,
     ServiceFileChangesIpc.channelsConst,
     ServiceFileViewerIpc.channelsConst,
@@ -222,6 +228,7 @@ export class AppHub {
   private readonly commits: VersioningCommitManager
   private readonly versioningCommitIpc: ServiceVersioningCommitIpc
   private readonly worktreeSettingsIpc: ServiceWorktreeSettingsIpc
+  private readonly autolauncherIpc: ServiceAutolauncherIpc
   private readonly fileChangesSettingsIpc: ServiceFileChangesSettingsIpc
   private readonly fileDiffWorker: FileDiffWorker
   private readonly fileChanges: FileChangesManager
@@ -242,7 +249,7 @@ export class AppHub {
   private readonly pingLoop: HostPingLoop
   private readonly menu: AppMenu
   private readonly appRestart: AppRestart
-  private readonly updateManager: UpdateManager
+  private readonly autoUpdate: AutoUpdateMain
   private readonly visibleWorkspaceWindowIds = new Set<string>()
   private readonly changedPathHintCache = new Map<
     string,
@@ -318,6 +325,16 @@ export class AppHub {
       configStore,
       (projectPath) => this.projects.authorizeProjectPath(projectPath),
     )
+    const launcherDirectory = join(dirname(OrchestratorPaths.defaultMachineRoot()), 'JamatLauncher')
+    this.autolauncherIpc = new ServiceAutolauncherIpc(new AutolauncherManager({
+      configDir: context.config.configDir, configIdentity, runtimeChannel: channel,
+      ...AutolauncherTarget.recipe(app.isPackaged, applicationRoot, process.execPath,
+        process.env.JAMAT_V3_SOURCE_CHECKOUT),
+    }, launcherDirectory, process.platform === 'win32', new WindowsLauncherSetup(
+      app.isPackaged ? join(process.resourcesPath, 'launcher') : join(applicationRoot, 'out', 'launcher'),
+      launcherDirectory,
+    ), new AutolauncherConnection(), snapshot => this.broadcast('autolauncher:changed', snapshot)),
+    sender => this.workspaceWindows.acceptsRenderer(sender))
     this.fileChangesSettingsIpc = new ServiceFileChangesSettingsIpc(configStore)
     this.fileDiffWorker = new FileDiffWorker(context.fileDiffWorkerPath)
     // The project manager's view, not one of its own: it is the only one in this process whose
@@ -568,15 +585,11 @@ export class AppHub {
       relaunch: () => app.relaunch(),
       quit: () => app.quit(),
     })
-    this.updateManager = new UpdateManager({
-      // The workspace in front, main when the menu was reached some other way: the questions belong
-      // over the window the person is looking at.
-      parentWindowOf: () =>
-        (this.workspaceWindows.focusedWorkspace() ?? this.workspaceWindows.main()).windowHandle(),
+    this.autoUpdate = new AutoUpdateMain({
+      releasePageUrl: (version) => version
+        ? `https://github.com/ludekvodicka/jamat/releases/tag/v${version}`
+        : 'https://github.com/ludekvodicka/jamat/releases',
     })
-    // Here rather than in `initialize`: the flags decide what the updater does the first time
-    // anything touches it, and the `error` listener is what keeps an emitted failure from throwing.
-    this.updateManager.wire()
     const remoteIdentity = {
       configIdentity,
       runtimeChannel: channel,
@@ -798,6 +811,7 @@ export class AppHub {
     this.versioningSettingsIpc.initialize()
     this.versioningCommitIpc.initialize()
     this.worktreeSettingsIpc.initialize()
+    this.autolauncherIpc.initialize()
     this.fileChangesSettingsIpc.initialize()
     this.fileChangesIpc.initialize()
     this.fileViewerIpc.initialize()
@@ -810,6 +824,8 @@ export class AppHub {
     this.rateMonitorIpc.initialize()
     this.sessionModelIpc.initialize()
     this.sessionTranscriptIpc.initialize()
+    // Its channels return raw values rather than IpcResult, so they sit outside the contract above.
+    this.autoUpdate.start()
     this.menu.install()
     this.workspaceWindows.restoreAtStart()
     this.skillLinks.install()
@@ -849,6 +865,7 @@ export class AppHub {
     await this.settleStep('the reMarkable manager', () => this.remarkable.stop())
     await this.settleStep('the file diff worker', () => this.fileDiffWorker.stop())
     await this.settleStep('the rate monitor', () => { this.rateMonitor.stop() })
+    await this.settleStep('the updater', () => { this.autoUpdate.stop() })
     await this.settleStep('the control server', () => this.remoteControlServer.stop())
     await this.settleStep('the peer listener', () => this.remoteListener.stop())
     await this.settleStep('the inbound registry', () => { this.remoteInbound.stop() })
@@ -1321,10 +1338,9 @@ export class AppHub {
       this.workspaceWindows.createHolder()
     else if (id === 'debug.open')
       this.debugWindow.open()
-    // Voided rather than awaited: this returns when a person has answered three dialogs, and it
-    // reports its own failures rather than rejecting.
+    // The result is drawn by the status bar's update item, so the menu asks no question of its own.
     else if (id === 'app.checkForUpdates')
-      void this.updateManager.checkInteractive()
+      void this.autoUpdate.check()
     else
       throw new Error(`Command has no main-process handler: ${id}`)
   }

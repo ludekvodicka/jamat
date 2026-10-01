@@ -1,6 +1,9 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
+import type { DtoAutoUpdateStatus } from '../../shared/electron/autoUpdate/common/autoUpdate.dto'
+import type { AutoUpdateApi } from '../../shared/electron/autoUpdate/common/autoUpdateApi'
+import { AppShellItems } from './appShellItems'
 import { StatusBar } from './statusBar'
 
 describe('app-client-ui/renderer/statusBar/statusBar', () => {
@@ -52,5 +55,44 @@ describe('app-client-ui/renderer/statusBar/statusBar', () => {
     }
 
     expect(reads).toEqual([])
+  })
+
+  /*
+   * The update item is the bar's one reader of the shared updater, and it reaches it through the
+   * bridge's `autoUpdate` group rather than through the IpcResult table.
+   */
+  it('draws the update item from the bridge, beside the version', async () => {
+    const status: DtoAutoUpdateStatus = {
+      running: '3.6.0',
+      mode: 'automatic',
+      releasePage: true,
+      state: { kind: 'current', checkedAt: 0 },
+    }
+    const autoUpdate: AutoUpdateApi = {
+      status: () => Promise.resolve(status),
+      check: () => Promise.resolve(),
+      install: () => Promise.resolve(),
+      openReleasePage: () => Promise.resolve(),
+      onChanged: () => () => undefined,
+    }
+    Object.defineProperty(window, 'appClient', { value: { autoUpdate }, configurable: true })
+    try {
+      const appInfo = {
+        appVersion: '3.6.0',
+        platform: 'win32' as NodeJS.Platform,
+        configDir: 'C:/config',
+        configIdentity: 'identity',
+        runtimeChannel: 'development' as const,
+      }
+      const { container } = render(
+        <StatusBar left={AppShellItems.left(appInfo, window.appClient.autoUpdate, null, null)} right={[]} />,
+      )
+
+      expect(await screen.findByText('Up to date')).toBeInTheDocument()
+      expect(container.querySelectorAll('.jamat-status__separator').length).toBe(1)
+      expect(container.querySelector('.auto-update-indicator.jamat-update-status')).not.toBeNull()
+    } finally {
+      delete (window as unknown as { appClient?: unknown }).appClient
+    }
   })
 })

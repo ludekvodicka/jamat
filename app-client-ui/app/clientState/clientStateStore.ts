@@ -14,6 +14,7 @@ import { type SavedSessionsFilter, SessionsFilterState } from '../../shared/sess
 import { SessionsPinsState } from '../../shared/sessionsPinsState'
 import { SessionsGroupsState, type SessionGroup, type SessionGroupAssignment } from '../../shared/sessionsGroupsState'
 import { type SidebarsStateValue, SidebarsState } from '../../shared/sidebarsState'
+import { type SplitPinRecord, type SplitPinsBySession, SplitPinsState } from '../../shared/splitPinsState'
 import type { WindowAppearance } from '../../shared/windowInfo'
 import { WindowAppearanceRules } from '../shell/windowAppearance'
 import { AtomicJsonFile } from '../../../lib-orchestrator/shared/atomicJsonFile'
@@ -47,6 +48,7 @@ interface ClientStateFields {
   sessionsView?: SessionsTabsView
   sessionFilters?: readonly SavedSessionsFilter[]
   sessionGroups?: readonly SessionGroupAssignment[]
+  splitPins?: SplitPinsBySession
   newSessionAgent?: SessionAgentId
 }
 
@@ -205,6 +207,26 @@ export class ClientStateStore {
     const group = SessionsGroupsState.ownGroupOf(this.loadSessionGroups(), fromKey)
     if (group === null) return false
     return this.assignSessionGroup(toKey, group)
+  }
+
+  loadSplitPins(sessionId: string): readonly SplitPinRecord[] {
+    if (!SplitPinsState.isValidSessionId(sessionId))
+      throw new Error(`Refusing to read split pins for session ${JSON.stringify(sessionId)}`)
+    const pins = this.documentOnDisk().splitPins
+    // `hasOwn`, because a session id is caller text and `constructor` would read the prototype.
+    return pins !== undefined && Object.hasOwn(pins, sessionId) ? structuredClone(pins[sessionId]) : []
+  }
+
+  /** One session's list, never the whole map: two windows each hold a different session's panel. */
+  saveSplitPins(sessionId: string, items: readonly SplitPinRecord[]): boolean {
+    if (!SplitPinsState.isValidSessionId(sessionId) || !SplitPinsState.isValidItems(items))
+      throw new Error(`Refusing to store split pins for session ${JSON.stringify(sessionId)}`)
+    const document = this.documentOnDisk()
+    const splitPins = SplitPinsState.stored(document.splitPins ?? {}, sessionId, items)
+    const next: ClientStateDocumentV2 = { ...document, splitPins }
+    if (Object.keys(splitPins).length === 0)
+      delete next.splitPins
+    return this.write(next, { snapshotLayout: false })
   }
 
   saveSessionFilters(filters: readonly SavedSessionsFilter[]): boolean {
@@ -432,6 +454,7 @@ export class ClientStateStore {
       sessionFilters?: unknown
       sessionPins?: unknown
       sessionGroups?: unknown
+      splitPins?: unknown
       newSessionAgent?: unknown
     }
     if (document.layout !== undefined && typeof document.layout !== 'string')
@@ -453,6 +476,9 @@ export class ClientStateStore {
       }),
       ...(document.sessionFilters === undefined ? {} : {
         sessionFilters: SessionsFilterState.coerceSaved(document.sessionFilters, report),
+      }),
+      ...(document.splitPins === undefined ? {} : {
+        splitPins: SplitPinsState.coerce(document.splitPins, report),
       }),
       ...(bounds === undefined ? {} : { windowBounds: bounds }),
       ...(debugBounds === undefined ? {} : { debugWindowBounds: debugBounds }),

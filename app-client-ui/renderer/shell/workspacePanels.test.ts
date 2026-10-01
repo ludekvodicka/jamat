@@ -288,6 +288,22 @@ describe('app-client-ui/renderer/shell/workspacePanels', () => {
     expect(controller.hidden).toEqual([controller.panelId])
     expect(controller.writes).toBe(2)
   })
+
+  it('closes the whole terminal panel when the active split file is pinned', async () => {
+    const controller = new WorkspacePanelsTestController()
+    const loose = WorkspacePanelsTest.item('loose')
+    const pinned = { ...WorkspacePanelsTest.item('pinned'), pinned: true as const }
+    controller.params = PanelSplitParams.merged(controller.params, {
+      ...PanelSplitParams.default(),
+      active: pinned.key,
+      items: [loose, pinned],
+    })
+    const before = structuredClone(controller.params)
+
+    await WorkspacePanels.closeActive(controller.asController())
+    expect(controller.hidden).toEqual([controller.panelId])
+    expect(controller.params).toEqual(before)
+  })
 })
 
 class WorkspacePanelsTest {

@@ -1,6 +1,7 @@
 import { CatalogEntries } from '../../../shared/catalogEntries'
 import type { ConfigurationTabDescriptor, ConfigurationTabId } from './configurationTab.types'
 import { AgentSettingsTab } from './tabs/agents/agentSettingsTab'
+import { AutolauncherSettingsTab } from './tabs/autolauncher/autolauncherSettingsTab'
 import { ProjectsSettingsTab } from './tabs/projects/projectsSettingsTab'
 import { RemarkableSettingsTab } from './tabs/remarkable/remarkableSettingsTab'
 import { RemarkableStorageSettingsTab } from './tabs/remarkableStorage/remarkableStorageSettingsTab'
@@ -82,7 +83,8 @@ export class ConfigurationTabs {
         },
       ],
     },
-    { id: 'window', title: 'Window', order: 9, Component: WindowSettingsTab },
+    { id: 'autolauncher', title: 'Autolauncher', order: 9, Component: AutolauncherSettingsTab },
+    { id: 'window', title: 'Window', order: 10, Component: WindowSettingsTab },
   ]
 
   /**

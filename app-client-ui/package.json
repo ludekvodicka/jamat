@@ -1,6 +1,6 @@
 {
   "name": "jamat-v3-client-ui",
-  "version": "3.5.0",
+  "version": "3.7.0",
   "private": true,
   "license": "MIT",
   "author": "ludekvodicka",
@@ -81,6 +81,13 @@
       }
     ],
     "extraResources": [
+      {
+        "from": "../out/launcher",
+        "to": "launcher",
+        "filter": [
+          "**/*"
+        ]
+      },
       {
         "from": "../out/remarkable-sidecar/${os}-${arch}/current",
         "to": "remarkable-sidecar",

@@ -75,6 +75,7 @@ import type {
   AgentSettingsValue,
 } from './agentSettings'
 import type { BareCommandId } from './commands'
+import type { AutolauncherResult, AutolauncherSnapshot } from './autolauncher'
 import type { ContextCompactionCooldown } from './contextCompactionCooldown'
 import type { ContextCompactionDelivery } from './contextCompactionDelivery'
 import type { DebugSectionId } from './debugSections.types'
@@ -114,6 +115,7 @@ import type { RemarkableImportSettingsValue } from './remarkableImportSettings'
 import type { RemarkableSettingsValue } from './remarkableSettings'
 import type { RemarkableStorageSettingsValue } from './remarkableStorageSettings'
 import type { SessionsTabsView } from './sessionsViewState'
+import type { SplitPinRecord } from './splitPinsState'
 import type { SavedSessionsFilter } from './sessionsFilterState'
 import type { SidebarsStateValue } from './sidebarsState'
 import type { TabControlAck, TabControlCommand } from './tabControl'
@@ -176,6 +178,9 @@ export interface LoadSessionsViewResult {
 }
 
 export interface AppClientUiIpcInvokeMap {
+  'autolauncher:get': () => AutolauncherSnapshot
+  'autolauncher:enable': (invitation: string | null) => AutolauncherResult
+  'autolauncher:disable': () => AutolauncherResult
   'app:info': () => AppInfo
   /**
    * Sent once the renderer has mounted AND the bridge answered, so it proves what
@@ -210,6 +215,13 @@ export interface AppClientUiIpcInvokeMap {
    * drop the fork's own row.
    */
   'state:assign-session-group': (key: string, group: SessionGroup) => boolean
+  /**
+   * The pinned inner split items of ONE session, outside the layout so that they survive a closed
+   * tab, Reset Layout and a restart. Any workspace window may write: a session's panel lives in at
+   * most one window, and that window is the one that pins.
+   */
+  'state:load-split-pins': (sessionId: string) => readonly SplitPinRecord[]
+  'state:save-split-pins': (sessionId: string, items: readonly SplitPinRecord[]) => boolean
   'state:load-new-session-agent': () => SessionAgentId
   'state:save-new-session-agent': (agentId: SessionAgentId) => boolean
   /**
@@ -743,6 +755,7 @@ export interface AppClientUiIpcInvokeMap {
 }
 
 export interface AppClientUiIpcEventMap {
+  'autolauncher:changed': (snapshot: AutolauncherSnapshot) => void
   'versioning:commit-changed': () => void
   'menu:command': (commandId: BareCommandId) => void
   'app:error': (message: string) => void
@@ -822,6 +835,11 @@ export type AppClientUiEventArgs<K extends keyof AppClientUiIpcEventMap> =
  * proof, and `preload/index.test.ts` is the same claim measured at runtime.
  */
 export const AppClientUiBridgeCallsConst = {
+  autolauncher: {
+    get: 'autolauncher:get',
+    enable: 'autolauncher:enable',
+    disable: 'autolauncher:disable',
+  },
   appInfo: 'app:info',
   rendererReady: 'app:renderer-ready',
   windows: {
@@ -842,6 +860,8 @@ export const AppClientUiBridgeCallsConst = {
     saveSessionPins: 'state:save-session-pins',
     loadSessionGroups: 'state:load-session-groups',
     assignSessionGroup: 'state:assign-session-group',
+    loadSplitPins: 'state:load-split-pins',
+    saveSplitPins: 'state:save-split-pins',
     loadNewSessionAgent: 'state:load-new-session-agent',
     saveNewSessionAgent: 'state:save-new-session-agent',
   },
@@ -1058,6 +1078,7 @@ export const AppClientUiBridgeCallsConst = {
 
 /** The event half, flat because every listener the bridge offers sits at its root. */
 export const AppClientUiBridgeEventsConst = {
+  onAutolauncherChanged: 'autolauncher:changed',
   onMenuCommand: 'menu:command',
   onAppError: 'app:error',
   onWindowChanged: 'window:changed',

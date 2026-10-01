@@ -106,6 +106,46 @@ describe('lib-orchestrator/svn/svnCommitManager', () => {
     expect(calls.map(([command]) => command)).toEqual(['info'])
   })
 
+  /** A file moved out of `old/` before `old/` itself was deleted, the way a refactor leaves it. */
+  function deletedDirectory(files: readonly string[]) {
+    const scope = resolve('scope')
+    const directory = resolve(scope, 'old')
+    const calls: string[][] = []
+    const lists: string[] = []
+    const manager = new SvnCommitManager({ run: async (_cwd, args) => {
+      calls.push(args)
+      const path = args[args.length - 1].slice(0, -1)
+      if (args[0] === 'info' && args.includes('infinity'))
+        return { code: 0, failure: null, stderr: '', stdout: `<info><entry kind="dir" path="old"><wc-info><schedule>delete</schedule></wc-info></entry>${
+          files.map((file) => `<entry kind="file" path="old/${file}"><wc-info><schedule>delete</schedule></wc-info></entry>`).join('')}</info>` }
+      if (args[0] === 'info') return { code: 0, failure: null, stderr: '',
+        stdout: `<info><entry kind="dir"><wc-info><schedule>${path === directory ? 'delete' : 'normal'}</schedule></wc-info></entry></info>` }
+      if (args[0] === 'commit') lists.push(await readFile(args[args.indexOf('--targets') + 1], 'utf8'))
+      return { code: 0, failure: null, stderr: '', stdout: 'Adding         new.tsx\nDeleting       old\nCommitted revision 42.\n' }
+    } })
+    const targets = [
+      { absolutePath: resolve(scope, 'new.tsx'), nodeKind: 'file' as const, status: 'added' as const },
+      { absolutePath: resolve(directory, 'moved.tsx'), nodeKind: 'file' as const, status: 'deleted' as const },
+    ]
+    return { manager, scope, directory, calls, lists, targets }
+  }
+
+  it('commits the deleted directory a selected deletion lives in, so a move out of it is not refused', async () => {
+    const { manager, scope, directory, lists, targets } = deletedDirectory(['moved.tsx'])
+    // Without `old` SVN stops with E200009: the move source is the deleted directory, not the file.
+    expect(await manager.commit(scope, targets, 'message.txt')).toMatchObject({ ok: true, value: {
+      committedPaths: [resolve(scope, 'new.tsx'), directory, resolve(directory, 'moved.tsx')],
+    } })
+    expect(lists).toEqual([`${resolve(scope, 'new.tsx')}@\n${resolve(directory, 'moved.tsx')}@\n${directory}@\n`])
+  })
+
+  it('refuses a directory deletion that would publish files the selection left out, before any write', async () => {
+    const { manager, scope, directory, calls, targets } = deletedDirectory(['moved.tsx', 'kept.tsx'])
+    expect(await manager.commit(scope, targets, 'message.txt')).toEqual({ ok: false, code: 'svn-failed',
+      detail: expect.stringContaining(`deleted together with ${directory}, and SVN publishes that deletion only as the whole directory, which also deletes:\n${resolve(directory, 'kept.tsx')}\n`) })
+    expect(calls.map(([command]) => command)).toEqual(['info', 'info', 'info'])
+  })
+
   it('stages a path an earlier attempt already versioned, so the retry of that selection commits', async () => {
     const scope = resolve('scope')
     const path = resolve(scope, 'already.txt')

@@ -142,6 +142,24 @@ describe('app-client-ui/app/clientState/clientStateStore', () => {
     ])
   })
 
+  it('keeps the pinned split items of each session through a restart and removes an emptied one', () => {
+    const { store, stateFile, reopen } = fixture()
+    const item = { kind: 'file', key: 'doc-a', title: 'a.ts', pinned: true }
+    expect(store.loadSplitPins('session-1')).toEqual([])
+    expect(store.saveSplitPins('session-1', [item])).toBe(true)
+    expect(store.saveSplitPins('session-2', [{ ...item, key: 'doc-b' }])).toBe(true)
+    expect(reopen().loadSplitPins('session-1')).toEqual([item])
+    expect(reopen().loadSplitPins('constructor')).toEqual([])
+
+    expect(store.saveSplitPins('session-1', [])).toBe(true)
+    expect(reopen().loadSplitPins('session-1')).toEqual([])
+    expect(store.saveSplitPins('session-2', [])).toBe(true)
+    expect(JSON.parse(readFileSync(stateFile, 'utf8'))).not.toHaveProperty('splitPins')
+
+    expect(() => store.saveSplitPins('', [item])).toThrow('Refusing to store split pins')
+    expect(() => store.saveSplitPins('session-1', [item, item])).toThrow('Refusing to store split pins')
+  })
+
   it('persists pins through restarts and other state writes without accepting invalid or mutable input', () => {
     const { store, reopen } = fixture()
     expect(store.loadSessionPins()).toEqual([])

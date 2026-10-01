@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config'
+import { configDefaults, defineConfig } from 'vitest/config'
 
 export default defineConfig({
   test: {
@@ -10,6 +10,8 @@ export default defineConfig({
       'shared/**/*.test.ts',
       'scripts/**/*.test.ts',
     ],
+    // The mounted shared members carry their own tests, which run in the library's template.
+    exclude: [...configDefaults.exclude, 'shared/electron/**'],
     // The same 30 s the web project takes, and for the same reason it wrote down: these run inside
     // the publish build gate, over a worktree checked out seconds earlier, and on a CI runner
     // several times slower than an idle developer machine. The default five seconds is a budget for

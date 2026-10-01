@@ -20,6 +20,7 @@ export type ConfigurationTabId =
   | 'remoteControlThisComputer'
   | 'remoteControlConnect'
   | 'remoteControlConnections'
+  | 'autolauncher'
   | 'window'
 
 export interface ConfigurationOpenRequest {

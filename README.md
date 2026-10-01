@@ -37,8 +37,10 @@ A ready-to-run installer, no clone and no build step. Or [build it from source](
 or Codex. The application carries its own runtime, so there is no separate Node.js install to do.
 (You only need [Node](https://nodejs.org) if the agent CLI itself is installed through npm.)
 
-Windows and Linux update themselves from GitHub Releases, with your consent before anything is
-downloaded. macOS updates by hand until the application is signed.
+Installed Windows and Linux copies update themselves from GitHub Releases: a new version downloads
+in the background, the status bar says when it is ready, and it installs when you click "Restart and
+install" or the next time you quit. Nothing restarts on its own. macOS updates by hand until the
+application is signed; the status bar links to the release page.
 
 **Verify what you downloaded.** Every release ships a `SHA256SUMS.txt` next to the installers.
 The builds are unsigned, so check yours: `sha256sum -c SHA256SUMS.txt`, or in PowerShell
@@ -151,8 +153,15 @@ stops one paired machine using another as a route to a third. Every accepted ope
 with no tokens, no bodies, no terminal text.
 
 **It is off until you enable it.** The listener is disabled by default, and even switched on it
-advertises `127.0.0.1` until you give it a real address. The application never touches firewall
-rules; that inbound rule is yours to add. Read [SECURITY.md](SECURITY.md) before opening it up.
+advertises `127.0.0.1` until you give it a real address. The peer listener's inbound firewall rule
+is yours to add. Read [SECURITY.md](SECURITY.md) before opening it up.
+
+**Remote startup on Windows:** Settings > Autolauncher installs a bundled independent launcher for
+the current profile and executable, or the current source checkout with automatic packaging.
+Create an invitation for that PC in MiniWolService, paste it into Settings, and approve Windows UAC.
+Setup installs a logon task and a firewall rule restricted to the configured gateway. You must remain
+signed in to Windows. The launcher keeps working after Jamat closes; its API only starts that one
+profile. The server web and invitation exchange are intended for a trusted LAN.
 
 ![A paired computer's sessions in the sessions tree](docs/images/05-remote.png)
 
@@ -217,7 +226,10 @@ as a tool with real reach:
 - **The host and the client's control endpoint listen on loopback only**, behind a token only your
   account can read.
 - **The peer listener is off by default** and advertises `127.0.0.1` until you deliberately give it
-  a LAN or VPN address. The application never changes firewall rules.
+  a LAN or VPN address. Its firewall rule is configured manually.
+- **Autolauncher is enabled separately in Settings**. Its Windows setup requires administrator
+  approval and manages its own gateway-restricted firewall rule. MiniWolService uses a signed
+  fixed-profile startup API; invitation enrollment uses unencrypted trusted-LAN HTTP.
 - **Pairing is explicit and pins the other machine's key**; the connection is signed and encrypted;
   what a peer may ask for is a closed allowlist; every accepted operation is audited.
 - **A reply from a paired computer is untrusted input**, and the application marks it as such.

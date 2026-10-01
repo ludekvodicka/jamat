@@ -12,6 +12,7 @@ import type {
   RemoteControlResponse,
 } from '../../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import type { IpcResult } from '../../shared/appClientUiIpc'
+import type { AutoUpdateApi } from '../../shared/electron/autoUpdate/common/autoUpdateApi'
 import type { TerminalTarget } from '../../shared/terminalTarget'
 import type { SnapshotStore, SnapshotStorePorts } from '../ipc/snapshotStore'
 import type { SessionsMarksStore } from '../sessions/sessionsMarksStore'
@@ -112,6 +113,8 @@ export interface WorkspaceShellWiring {
    */
   ratePorts: AppShellRatePorts
   rateSnapshot: SnapshotStore<RateMonitorSnapshot>
+  /** Every workspace draws the update too: what is installed is the application's, not one window's. */
+  autoUpdate: AutoUpdateApi
   /**
    * Which source-aware terminal target this document has in front, written by the wrap around the
    * active-panel port. Per document rather than per application: the cross-window answer clears

@@ -61,6 +61,7 @@ import { TerminalContextMenu } from './menu/terminalContextMenu'
 import { TerminalPostMortem } from './view/terminalPostMortem'
 import { TerminalTransports } from './attach/terminalTransport'
 import { useTerminalSessionInfo } from './attach/useTerminalSessionInfo'
+import { type TerminalSplitPinsStore, useTerminalSplitPins } from './split/useTerminalSplitPins'
 import {
   type TerminalMenuContext,
   type TerminalSurfaceState,
@@ -93,6 +94,8 @@ export type TerminalPanelProps = IDockviewPanelProps & {
   marks: SessionsMarksStore
   commitOpen: CommitOpenStore
   fileTools: PanelFileToolsRegistry
+  /** Where the session's pinned split items outlive the tab. */
+  splitPins: TerminalSplitPinsStore
   openFile(
     source: FileViewerDocumentSource,
     documentKey: string,
@@ -177,6 +180,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   const commitOpen = localTools && openCommits.has(sessionId)
   const sidebar = usePanelSidebar(props, 'workingTree')
   const split = usePanelSplit(props)
+  useTerminalSplitPins(sessionId, localTools, split, props.splitPins)
   const splitRef = useRef(split)
   const commitPanes = useRef<HTMLDivElement>(null)
   const filePane = useRef<HTMLElement | null>(null)
@@ -473,6 +477,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
           preview={split.state.preview}
           onActivate={(key) => { split.activate(key); requestAnimationFrame(focusSplitPane) }}
           onKeepOpen={split.keepOpen}
+          onSetPinned={split.setPinned}
           onClose={split.close}
           onDetach={(key) => { void detach(key) }}
         />

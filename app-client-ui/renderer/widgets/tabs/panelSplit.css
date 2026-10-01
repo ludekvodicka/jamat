@@ -63,6 +63,12 @@
 .jamat-panel-split__tab.is-preview .jamat-panel-split__title {
   font-style: italic;
 }
+.jamat-panel-split__pin {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  fill: currentColor;
+}
 .jamat-panel-split__title {
   overflow: hidden;
   white-space: nowrap;

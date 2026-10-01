@@ -156,3 +156,39 @@
   margin-left: var(--space-2);
 }
 
+
+/* The shared updater's widgets theme themselves through --auto-update-* properties; this block maps
+   them onto the palette. Both the bar item and the portalled panel carry it, because the panel is
+   not inside the bar. */
+.jamat-update-status,
+.jamat-update-panel {
+  --auto-update-muted: var(--color-text-5);
+  --auto-update-working: var(--color-accent);
+  --auto-update-attention: var(--color-attention);
+  --auto-update-ready: var(--color-ok);
+  --auto-update-failed: var(--color-danger);
+  --auto-update-accent: var(--color-accent-strong);
+  --auto-update-accent-text: var(--color-text-1);
+  --auto-update-border: var(--color-border-frame);
+  --auto-update-button-bg: var(--color-surface-control);
+  --auto-update-radius: var(--radius-control);
+  --auto-update-backdrop: var(--color-scrim);
+  --auto-update-z: 1000;
+  --auto-update-surface: var(--color-surface-raised);
+  --auto-update-surface-text: var(--color-text-2);
+  --auto-update-notes-bg: var(--color-surface-sunken);
+  --auto-update-font: var(--fs-base) var(--font-ui);
+}
+/* The bar's control size, the same as the Host item's Start button: a default button is taller than
+   the strip. */
+.jamat-update-status .auto-update-button {
+  padding: 0 var(--space-1);
+  line-height: var(--space-4);
+}
+.jamat-update-panel .auto-update-panel {
+  border: 1px solid var(--color-border-frame);
+  box-shadow: var(--shadow-overlay);
+}
+.jamat-update-panel .auto-update-panel h2 {
+  color: var(--color-text-1);
+}

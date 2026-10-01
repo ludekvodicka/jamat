@@ -101,6 +101,9 @@ jobs:
       - name: Seed the reMarkable sidecar (this platform)
         run: pnpm setup:remarkable-sidecar
 
+      - name: Bundle Autolauncher with the prepared Node runtime
+        run: pnpm release:launcher
+
       # Platform-neutral by design: on macOS and Linux it is the only proof the seed actually runs,
       # because no packaged smoke can execute there.
       - name: Check the sidecar seed runs

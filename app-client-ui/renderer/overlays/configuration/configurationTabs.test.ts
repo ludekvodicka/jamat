@@ -20,7 +20,7 @@ describe('app-client-ui/renderer/overlays/configuration/configurationTabs', () =
     }
   }
 
-  it('holds the nine groups, with reMarkable and Network nesting their own screens', () => {
+  it('holds the ten groups, with reMarkable and Network nesting their own screens', () => {
     expect(ConfigurationTabs.ordered().map((descriptor) => [descriptor.id, descriptor.order]))
       .toEqual([
         ['projects', 0],
@@ -31,14 +31,15 @@ describe('app-client-ui/renderer/overlays/configuration/configurationTabs', () =
         ['worktrees', 6],
         ['remarkable', 7],
         ['remoteControl', 8],
-        ['window', 9],
+        ['autolauncher', 9],
+        ['window', 10],
       ])
     expect(ConfigurationTabs.flatten().map((descriptor) => descriptor.id)).toEqual([
       'projects', 'ui', 'sessionGroups', 'agents', 'versioning', 'worktrees',
       'remarkable', 'remarkableConnection', 'remarkableStorage',
       'remoteControl', 'remoteControlThisComputer', 'remoteControlConnect',
       'remoteControlConnections',
-      'window',
+      'autolauncher', 'window',
     ])
   })
 
@@ -77,7 +78,7 @@ describe('app-client-ui/renderer/overlays/configuration/configurationTabs', () =
       'projects', 'ui', 'sessionGroups', 'agents', 'versioning', 'worktrees',
       'remarkableConnection', 'remarkableStorage',
       'remoteControlThisComputer', 'remoteControlConnect', 'remoteControlConnections',
-      'window',
+      'autolauncher', 'window',
     ])
     expect(ConfigurationTabs.screenOf('remarkable')?.id).toBe('remarkableConnection')
     expect(ConfigurationTabs.screenOf('remarkableStorage')?.id).toBe('remarkableStorage')

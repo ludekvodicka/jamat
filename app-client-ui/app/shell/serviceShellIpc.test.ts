@@ -123,6 +123,17 @@ describe('app-client-ui/app/shell/serviceShellIpc', () => {
     expect(store.loadSessionGroups()).toEqual(groups)
   })
 
+  it('stores split pins from any workspace window and refuses an unknown sender or a bad list', async () => {
+    service.initialize()
+    const items = [{ kind: 'file', key: 'doc-a', title: 'a.ts', pinned: true }]
+    expect(await invokeFrom(holderSender, 'state:save-split-pins', 'session-1', items)).toEqual({ ok: true, value: true })
+    expect(await invoke('state:load-split-pins', 'session-1')).toEqual({ ok: true, value: items })
+    expect(await invokeFrom(unknownSender, 'state:load-split-pins', 'session-1')).toMatchObject({ ok: false })
+    expect(await invokeFrom(unknownSender, 'state:save-split-pins', 'session-1', [])).toMatchObject({ ok: false })
+    expect(await invoke('state:save-split-pins', 'session-1', [null])).toMatchObject({ ok: false })
+    expect(store.loadSplitPins('session-1')).toEqual(items)
+  })
+
   // That the subsets add up to the whole contract is AppHub's job now; this is the runtime half of
   // the shell's own share.
   it('registers a handler for every channel it declares', () => {

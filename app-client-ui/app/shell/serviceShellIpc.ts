@@ -26,6 +26,8 @@ export class ServiceShellIpc extends ServiceIpcBase<typeof ServiceShellIpc.chann
     'state:save-session-pins': true,
     'state:load-session-groups': true,
     'state:assign-session-group': true,
+    'state:load-split-pins': true,
+    'state:save-split-pins': true,
     'state:load-new-session-agent': true,
     'state:save-new-session-agent': true,
   } as const
@@ -90,6 +92,14 @@ export class ServiceShellIpc extends ServiceIpcBase<typeof ServiceShellIpc.chann
       if (this.requireWindowId(event.sender) !== 'main')
         throw new Error('Only the main window can save session groups')
       return this.store.assignSessionGroup(key, group)
+    })
+    this.register('state:load-split-pins', (event, sessionId) => {
+      this.requireWindowId(event.sender)
+      return this.store.loadSplitPins(sessionId)
+    })
+    this.register('state:save-split-pins', (event, sessionId, items) => {
+      this.requireWindowId(event.sender)
+      return this.store.saveSplitPins(sessionId, items)
     })
     this.register('state:load-new-session-agent', () => this.store.loadNewSessionAgent())
     this.register('state:save-new-session-agent', (_event, agentId) =>

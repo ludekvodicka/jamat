@@ -81,6 +81,7 @@ export class PnpmPreserveSymlinksResolver {
 // and without it the main entry is bundled twice, which splits every module-level singleton in half.
 export default defineConfig({
   main: {
+    cacheDir: resolve(__dirname, 'out/.vite-main'),
     resolve: { preserveSymlinks: true },
     plugins: [externalizeDepsPlugin()],
     build: {
@@ -93,11 +94,13 @@ export default defineConfig({
     },
   },
   preload: {
+    cacheDir: resolve(__dirname, 'out/.vite-preload'),
     resolve: { preserveSymlinks: true },
     plugins: [externalizeDepsPlugin()],
     build: { lib: { entry: resolve(__dirname, 'preload/index.ts') } },
   },
   renderer: {
+    cacheDir: resolve(__dirname, 'out/.vite-renderer'),
     root: resolve(__dirname, 'renderer'),
     esbuild: { jsx: 'automatic' },
     resolve: {

@@ -11,11 +11,9 @@ import { ServiceIpcBase } from '../shared/serviceIpcBase'
 
 /**
  * The native dialogs: every one the renderer asks for, and every question the shell asks about
- * something it owns. `app/update/updateManager.ts` is the one other opener, because the three boxes
- * of an update are one conversation and half of it would be stranded here; what it shares with this
- * service is the convention rather than the code - first button affirmative, `cancelId` last, so a
- * dialog dismissed without an answer is a no. Anything else asking on its own would be a second
- * answer to what "cancelled" means and a second set of dialog options.
+ * something it owns: first button affirmative, `cancelId` last, so a dialog dismissed without an
+ * answer is a no. Anything else asking on its own would be a second answer to what "cancelled" means
+ * and a second set of dialog options. Updates ask nothing natively; the status bar draws them.
  */
 export class ServiceDialogIpc extends ServiceIpcBase<typeof ServiceDialogIpc.channelsConst> {
   static readonly channelsConst = {
