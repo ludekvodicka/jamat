@@ -66,6 +66,21 @@ describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
     return existsSync(directory) ? readdirSync(directory).length : 0
   }
 
+  it('quarantines legacy guessed Codex IDs while preserving the original for recovery', async () => {
+    const context = harness({schemaVersion: 1, records: [
+      record('old', {kind: 'agent', agent: {agentId: 'codex', launchMode: 'new', nativeSessionId: 'guessed'}}),
+      record('explicit', {kind: 'agent', agent: {agentId: 'codex', launchMode: 'resume', nativeSessionId: 'selected'}}),
+      record('proven', {kind: 'agent', agent: {agentId: 'codex', launchMode: 'fork', nativeSessionId: 'confirmed', nativeSessionIdSource: 'codex-app-server'}}),
+    ]})
+    const store = await context.load()
+    expect(store.get('old')?.agent?.nativeSessionId).toBeUndefined()
+    expect(store.get('old')?.agent?.unverifiedNativeSessionId).toBe('guessed')
+    expect(store.get('explicit')?.agent).toMatchObject({nativeSessionId: 'selected', nativeSessionIdSource: 'provided'})
+    expect(store.get('proven')?.agent?.nativeSessionId).toBe('confirmed')
+    await store.put({...store.get('old')!, title: 'Kept'})
+    expect((await context.load()).get('old')?.agent?.unverifiedNativeSessionId).toBe('guessed')
+  })
+
   it('coalesces user input and persists the latest time without replacing concurrent record edits', async () => {
     const it_ = harness()
     const store = await it_.load()
@@ -745,5 +760,17 @@ describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
       directory: { mode: 'elsewhere' } as unknown as SessionRecord['directory'],
     }))).rejects.toThrow(/unknown directory mode/)
     expect(store.list()).toHaveLength(2)
+  })
+
+  it('reports legacy identity migration once even for a large session archive', async () => {
+    const context = harness({schemaVersion: 1, savedAt: 5, records: Array.from({length: 1500}, (_, index) =>
+      record(`legacy-${index}`, {kind: 'agent', agent: {
+        agentId: 'codex', launchMode: 'new', nativeSessionId: `old-${index}`,
+      }}))})
+    const store = await context.load()
+    expect(store.list()).toHaveLength(1500)
+    expect(context.reports).toHaveLength(1)
+    expect(context.reports[0]).toContain('1500 old inferred bindings are unverified')
+    expect(store.get('legacy-1499')?.agent?.unverifiedNativeSessionId).toBe('old-1499')
   })
 })

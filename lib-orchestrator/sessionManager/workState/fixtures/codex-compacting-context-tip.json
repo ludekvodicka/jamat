@@ -1,0 +1,18 @@
+{
+  "agent": "codex",
+  "expected": {
+    "hint": "compacting"
+  },
+  "provenance": {
+    "origin": "User screenshot 2026-10-02_12-43-08_electron.png and subsequent terminal peek of session 5db4dbca-0ee3-4a47-86e3-4b972748389d",
+    "case": "compaction status above the shallow window because its progress row and tip precede the composer and footer",
+    "capture": "Reconstructed physical rows: compaction, progress, tip and composer transcribed from the screenshot; the full footer and spacing verified in the same session after compaction ended. This is not a captured compacting Host frame or evidence of a known Codex build.",
+    "ported": "2026-10-02",
+    "identical": "No; see capture provenance"
+  },
+  "frame": {
+    "rawTail": "",
+    "screenTail": "  └ Making room to continue.\n  └ Tip: Moving from Claude Code? Use /import to bring over your setup, project, and recent chats.\n\n\n› Ask Codex to do anything\n\n  GPT-6-Astra xhigh · Q:\\PROJECT · Rozšiř obtížnosti hry\n  ? for shortcuts",
+    "wideScreenTail": "• Compacting context (2m 40s • esc to interrupt)\n  └ Making room to continue.\n  └ Tip: Moving from Claude Code? Use /import to bring over your setup, project, and recent chats.\n\n\n› Ask Codex to do anything\n\n  GPT-6-Astra xhigh · Q:\\PROJECT · Rozšiř obtížnosti hry\n  ? for shortcuts"
+  }
+}

@@ -85,12 +85,39 @@ describe('lib-orchestrator/fileChangesManager/working/fileChangesSvnUntracked', 
     const f = await fixture()
     f.deps.git.run = vi.fn(async (_cwd, args) => args.includes('--show-toplevel')
       ? { code: checkpoint ? 128 : 0, failure: null, stderr: '', stdout: f.root }
+      : args.includes('check-ignore') ? { code: 1, failure: null, stderr: '', stdout: '' }
       : { code: 0, failure: null, stderr: '', stdout: 'nested/chosen.txt\0nested/chosen.txt\0' })
     if (checkpoint) f.deps.checkpointStore.existingContextOf = vi.fn(async () => ({ ok: true as const, value: { root: f.root, gitDirArgs: ['--git-dir', 'store'], storeDir: 'store' } }))
     const entries = await f.reader.expand([f.entry])
     expect(entries.map((entry) => entry.repositoryPath)).toEqual(['new', 'new/nested', 'new/nested/chosen.txt'])
     expect(f.deps.git.run).toHaveBeenLastCalledWith(f.directory, [...(checkpoint ? ['--git-dir', 'store'] : []), 'ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', '.'])
     expect(f.deps.svn.run).not.toHaveBeenCalled()
+  })
+
+  /**
+   * A public mirror's Git excludes `/.aidocs/` while SVN versions it, so Git lists nothing inside a
+   * new `.aidocs` directory. Its rules say nothing about SVN there (Jamat#35).
+   */
+  it.each([false, true])('walks a directory Git ignores itself with the Subversion rules (checkpoint: %s)', async (checkpoint) => {
+    const f = await fixture()
+    await writeFile(join(f.directory, 'nested', 'inherited.log'), 'ignored')
+    f.deps.svn.run = vi.fn(async () => ({ code: 0, failure: null, stderr: '', stdout: '<properties><target path="parent"><inherited_property name="svn:global-ignores">*.log</inherited_property></target></properties>' }))
+    f.deps.git.run = vi.fn(async (_cwd, args) => args.includes('--show-toplevel')
+      ? { code: checkpoint ? 128 : 0, failure: null, stderr: '', stdout: f.root }
+      : { code: 0, failure: null, stderr: '', stdout: '' })
+    if (checkpoint) f.deps.checkpointStore.existingContextOf = vi.fn(async () => ({ ok: true as const, value: { root: f.root, gitDirArgs: ['--git-dir', 'store'], storeDir: 'store' } }))
+    const entries = await f.reader.expand([f.entry])
+    expect(entries.map((entry) => entry.repositoryPath).sort())
+      .toEqual(['new', 'new/.hidden', 'new/nested', 'new/nested/chosen.txt', 'new/nested/unchecked.txt'])
+    expect(f.deps.git.run).toHaveBeenLastCalledWith(f.directory, [...(checkpoint ? ['--git-dir', 'store'] : []), 'check-ignore', '-q', '--', '.'])
+  })
+
+  it('fails the read when Git cannot check the new directory against its ignore rules', async () => {
+    const f = await fixture()
+    f.deps.git.run = vi.fn(async (_cwd, args) => args.includes('--show-toplevel')
+      ? { code: 0, failure: null, stderr: '', stdout: f.root }
+      : { code: 128, failure: null, stderr: 'fatal: check-ignore failed', stdout: '' })
+    await expect(f.reader.expand([f.entry])).rejects.toThrow('check-ignore failed')
   })
 
   it('does not follow a directory link into an unrelated tree', async () => {
@@ -106,7 +133,7 @@ describe('lib-orchestrator/fileChangesManager/working/fileChangesSvnUntracked', 
 
   it('omits deleted Git index paths that cannot be added to SVN', async () => {
     const f = await fixture()
-    f.deps.git.run = vi.fn(async (_cwd, args) => ({ code: 0, failure: null, stderr: '',
+    f.deps.git.run = vi.fn(async (_cwd, args) => ({ code: args.includes('check-ignore') ? 1 : 0, failure: null, stderr: '',
       stdout: args.includes('--show-toplevel') ? f.root : 'nested/chosen.txt\0deleted/no-longer-here.txt\0' }))
     expect((await f.reader.expand([f.entry])).map((entry) => entry.repositoryPath))
       .toEqual(['new', 'new/nested', 'new/nested/chosen.txt'])

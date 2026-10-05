@@ -701,9 +701,24 @@ describe('app-client-ui/app/appHub', () => {
       expect(view, reader).toBe(projects.transcripts)
   })
 
+  /*
+   * Compaction and the control API already share one terminal and its one-delivery-at-a-time guard.
+   * An import with a terminal of its own could erase a prompt a compact is typing into.
+   */
+  it('gives the Notes import the terminal compaction delivers through', () => {
+    const hub = hubUnderTest()
+    const services = hub as unknown as {
+      contextCompactionIpc: { terminal: unknown }
+      directoryNotesIpc: { terminal: unknown }
+    }
+
+    expect(services.directoryNotesIpc.terminal).toBeDefined()
+    expect(services.directoryNotesIpc.terminal).toBe(services.contextCompactionIpc.terminal)
+  })
+
   it('holds the final IPC parity counts', () => {
-    expect(Object.keys(AppHub.ipcChannelsConst)).toHaveLength(187)
-    expect(Object.keys(AppClientUiBridgeEventsConst)).toHaveLength(22)
+    expect(Object.keys(AppHub.ipcChannelsConst)).toHaveLength(190)
+    expect(Object.keys(AppClientUiBridgeEventsConst)).toHaveLength(23)
     expect(Object.keys(ServiceTabsIpc.channelsConst)).toHaveLength(13)
     expect(Object.keys(ServiceRemarkableIpc.channelsConst)).toHaveLength(16)
   })
@@ -716,8 +731,20 @@ describe('app-client-ui/app/appHub', () => {
    */
   it('leaves no channel of the contract without a handler once it has booted', () => {
     const hub = hubUnderTest()
+    // Read at the first window rather than after the boot: a renderer calls as soon as it loads.
+    const workspace = (hub as unknown as {
+      workspaceWindows: { restoreAtStart(): void }
+    }).workspaceWindows
+    const restore = workspace.restoreAtStart.bind(workspace)
+    let handledAtRestore: string[] = []
+    workspace.restoreAtStart = () => {
+      handledAtRestore = [...captured.ipcHandlers.keys()]
+      restore()
+    }
 
     hub.initialize()
+
+    expect(handledAtRestore).toEqual(expect.arrayContaining(Object.keys(AppHub.ipcChannelsConst)))
 
     // The updater's channels return raw values rather than IpcResult, so they are not in the contract.
     const updateChannels = [

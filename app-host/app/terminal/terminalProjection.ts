@@ -1,7 +1,7 @@
 import { SerializeAddon } from '@xterm/addon-serialize'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import xtermHeadless from '@xterm/headless'
-import type { Terminal as XtermTerminal } from '@xterm/headless'
+import type { IBufferCell, IBufferLine, Terminal as XtermTerminal } from '@xterm/headless'
 
 import type { TerminalProjectionSnapshot, TerminalProjectionView } from '../wire/hostWire.js'
 import { computeRingDelta } from './ringDelta.js'
@@ -230,11 +230,52 @@ export class TerminalProjection {
       screen: tail.truncated
         ? TerminalProjection.tailOf(this.ring, options.maxScreenChars)
         : screen + this.mouseEncodingSequence + tail.data,
+      ...(options.screenScrollbackRows !== null && this.writtenSeqValue >= this.outputSeqValue
+        ? { screenLines: this.screenLines(options.screenScrollbackRows), screenLinesStyled: true as const }
+        : {}),
       cols: this.colsValue,
       rows: this.rowsValue,
       alive,
       lastOutputAt: this.lastOutputAtValue,
     }
+  }
+
+  private screenLines(scrollbackRows: number): string[] {
+    const buffer = this.terminal.buffer.active
+    const start = Math.max(0, buffer.baseY - Math.max(0, scrollbackRows))
+    const lines: string[] = []
+    // Alternate-buffer lines can retain cells beyond cols after a shrink. SerializeAddon reads
+    // their old length and emits wrap repairs, so its bytes cannot reliably locate visible rows.
+    for (let row = start; row < buffer.length; row += 1)
+      lines.push(TerminalProjection.dimmedRow(buffer.getLine(row), this.colsValue))
+    const cursorEnd = buffer.baseY + buffer.cursorY - start + 1
+    while (lines.length > cursorEnd && lines.at(-1) === '') lines.pop()
+    return lines
+  }
+
+  private static dimmedRow(line: IBufferLine | undefined, cols: number): string {
+    if (line === undefined) return ''
+    let cell: IBufferCell | undefined
+    let text = ''
+    let dim = false
+    let end = 0
+    let endDim = false
+    for (let x = 0; x < cols; x += 1) {
+      cell = line.getCell(x, cell)
+      if (cell === undefined || cell.getWidth() === 0) continue
+      const cellDim = cell.isDim() !== 0
+      if (cellDim !== dim) text += cellDim ? '\x1b[2m' : '\x1b[22m'
+      dim = cellDim
+      const chars = cell.getChars() || ' '
+      text += chars
+      const content = chars.trimEnd()
+      if (content !== '') {
+        // Keep the cut before trailing whitespace and its style changes, even on an all-dim row.
+        end = text.length - chars.length + content.length
+        endDim = dim
+      }
+    }
+    return text.slice(0, end) + (endDim ? '\x1b[22m' : '')
   }
 
   /** What a wire `view` means to this projection. Absent is the whole of it, as it always was. */

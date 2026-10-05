@@ -31,11 +31,15 @@ export interface SessionRecordAgent {
   launchMode: 'new' | 'continue' | 'resume' | 'fork'
   /**
    * The conversation this session is holding, however it came to be known: minted by the client
-   * before launch, equal to the Jamat session id, for a Claude `new` or `fork`; found afterwards from the rollout Codex wrote for a
+   * before launch, equal to the Jamat session id, for a Claude `new` or `fork`; confirmed by the launch bridge for a
    * Codex `new` or `fork`, and handed in by the caller for a `resume`. Absent means the record can
    * name no conversation, which is what every reopen and every fork is refused for.
    */
   nativeSessionId?: string
+  nativeSessionIdSource?: 'provided' | 'codex-app-server'
+  unverifiedNativeSessionId?: string
+  identityLaunchId?: string
+  identitySequence?: number
   forkParentId?: string
   /** Part of the command line, so it is kept for the same reason `launchMode` is: replay. */
   initialPrompt?: string

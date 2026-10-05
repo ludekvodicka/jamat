@@ -86,4 +86,64 @@ describe('app-client-ui/renderer/fileViewer/fileToolsSidebar', () => {
     expect(screen.getByRole('tab', { name: 'Changelog' })).toHaveAttribute('aria-selected', 'true')
     expect(view.container.querySelector('.file-tools-changes')).not.toBeNull()
   })
+
+  it('adds Notes as the fourth tab only when Notes content is given', () => {
+    const onSelect = vi.fn()
+    const view = render(
+      <FileToolsSidebar
+        sessionId="session-1"
+        documentId={null}
+        selected="workingTree"
+        changes={changesConst}
+        workingTree={workingConst}
+        onSelect={onSelect}
+        onOpenChanged={vi.fn()}
+        onOpenDocument={vi.fn()}
+        notes={<p className="notes-probe">notes body</p>}
+      />,
+    )
+
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent))
+      .toEqual(['File Changes', 'Changelog', 'Explorer', 'Notes'])
+    expect(view.container.querySelector('.notes-probe')).toBeNull()
+    fireEvent.click(screen.getByRole('tab', { name: 'Notes' }))
+    expect(onSelect).toHaveBeenCalledWith('notes')
+  })
+
+  it('draws the Notes content as the body when Notes is selected', () => {
+    const view = render(
+      <FileToolsSidebar
+        sessionId="session-1"
+        documentId={null}
+        selected="notes"
+        changes={changesConst}
+        workingTree={workingConst}
+        onSelect={vi.fn()}
+        onOpenChanged={vi.fn()}
+        onOpenDocument={vi.fn()}
+        notes={<p className="notes-probe">notes body</p>}
+      />,
+    )
+
+    expect(screen.getByRole('tab', { name: 'Notes' })).toHaveAttribute('aria-selected', 'true')
+    expect(view.container.querySelector('.file-tools-body .notes-probe')?.textContent).toBe('notes body')
+    expect(view.container.querySelector('.file-tools-working-tree, .file-tools-changes, .file-tools-explorer')).toBeNull()
+  })
+
+  it('refuses Notes selected without Notes content', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    expect(() => render(
+      <FileToolsSidebar
+        sessionId="session-1"
+        documentId={null}
+        selected="notes"
+        changes={changesConst}
+        workingTree={workingConst}
+        onSelect={vi.fn()}
+        onOpenChanged={vi.fn()}
+        onOpenDocument={vi.fn()}
+      />,
+    )).toThrow('Notes selected without Notes content')
+    vi.restoreAllMocks()
+  })
 })

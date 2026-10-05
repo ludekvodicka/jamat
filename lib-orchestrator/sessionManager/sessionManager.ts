@@ -1,5 +1,5 @@
 import { hostname } from 'node:os'
-import { basename, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 
 import type {
   HostWireConst,
@@ -26,7 +26,7 @@ import { HostLaunchLocator, type HostLaunchResult } from '../hostControl/hostLau
 import { HostTreeVersion } from '../hostControl/hostTreeVersion'
 import { type CatalogReading, CatalogView } from '../projectManager/catalogView'
 import { ClaudeTitleWriter } from '../projectManager/claudeTitleWriter'
-import { CodexRolloutView } from '../projectManager/codexRolloutView'
+import { CodexSessionFiles } from './launch/codexSessionFiles'
 import type { ProjectBinding } from '../projectManager/projectManagerApi.types'
 import type { ProviderTranscriptView } from '../projectManager/providerTranscriptView'
 import type { PlatformSettingsValue } from '../projectSetup/projectSetup.types'
@@ -75,6 +75,7 @@ import type {
   SessionWorktreeInfo,
   TerminalAttachResult,
   TerminalAttachSpec,
+  TerminalComposerContentResult,
   TerminalComposerResult,
 } from './sessionManagerApi.types'
 import { SessionReference } from './sessionReference'
@@ -123,7 +124,7 @@ export interface SessionManagerDeps {
   spawnImpl?: HostControllerDeps['spawnImpl']
   /** The tests hand attaches a socket of their own; nothing in production passes it. */
   terminalSocketFactory?: TerminalSocketFactory
-  /** Where Codex keeps its rollouts. The tests and the smokes point it at a fixture; production does not. */
+  /** @deprecated Identity is confirmed by app-server. Retained for existing library callers. */
   codexHome?: string
   /** Where Claude keeps its config home. The tests and the smokes point it at a fixture; production does not. */
   claudeHome?: string
@@ -1007,6 +1008,31 @@ export class SessionManager {
   }
 
   /**
+   * The whole draft for an erase, read like `terminalComposer`: one Host call, no attach, not on the
+   * operation queue. The view has no scrollback, so the viewport's top edge is row 0, and the hint
+   * comes from the same snapshot as the rows.
+   */
+  async terminalComposerContent(sessionId: string): Promise<TerminalComposerContentResult> {
+    const resolution = this.terminalRefOf(sessionId)
+    if (!resolution.ok) return { ok: false, code: resolution.code }
+    const agentId = this.agentOf(sessionId)
+    if (agentId === null) return { ok: false, code: 'not-agent' }
+    const inspected = await this.client.runtimeInspect(resolution.ref, ScreenTail.viewportViewConst)
+    if (!inspected.ok || inspected.value.projection === null) return { ok: false, code: 'no-projection' }
+    const viewport = ScreenTail.viewportOf(inspected.value.projection)
+    if (viewport === null) return { ok: false, code: 'no-viewport' }
+    return {
+      ok: true,
+      reading: {
+        agentId,
+        alive: inspected.value.session.alive,
+        hint: WorkStateMonitor.inspect(agentId, ScreenTail.frameOf(inspected.value.projection)).hint,
+        content: AgentComposerReader.content(agentId, viewport),
+      },
+    }
+  }
+
+  /**
    * Everything this subsystem is holding about the Host, for the one surface built to look at it.
    * Composed out of state that is already here: no I/O, no timer of its own, so the freshness of
    * these facts is the freshness of the single cadence above - which is itself one of the facts.
@@ -1204,8 +1230,10 @@ export class SessionManager {
         highestIssued: async (projectPath, list) =>
           (await this.numbers()).highestIssued(projectPath, list),
       },
-      codexRollouts: CodexRolloutView.load({
-        codexHome: this.deps.codexHome,
+      codexSessions: new CodexSessionFiles({
+        directory: join(OrchestratorPaths.directory(this.deps.configIdentity, this.deps.channel), 'codex-sessions'),
+        applicationRoot: this.deps.applicationRoot,
+        resourcesRoot: this.deps.resourcesRoot,
         report: this.deps.onError,
       }),
       claudeTitles: ClaudeTitleWriter.load({

@@ -68,7 +68,7 @@ export class LocalClientPackage {
         executablePath: join(release, 'win-unpacked', 'Jamat.exe'),
         builtAt: new Date().toISOString(),
       }
-      if (!this.isComplete(manifest)) throw new Error('packaging did not produce a complete client, Host and launcher')
+      if (!this.isComplete(manifest)) throw new Error('packaging did not produce a complete client, Host, Codex bridge and launcher')
       if (LocalPackageInputs.read(this.repositoryRoot).hash !== inputs.hash)
         throw new Error('package inputs changed during the build; retry to build the current tree')
       writeFileSync(join(release, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
@@ -94,7 +94,9 @@ export class LocalClientPackage {
     const tsx = join(snapshot, 'node_modules', 'tsx', 'dist', 'cli.mjs')
     await this.runNode(tsx, ['scripts/setup/prepare-remarkable-sidecar.ts'], snapshot)
     await this.runNode(tsx, ['scripts/release/prepare-launcher.ts'], snapshot)
+    await this.runNode(tsx, ['scripts/release/prepare-codex.ts'], snapshot)
     await this.runNode(tsx, ['scripts/release/prepare-host-bundle.ts'], snapshot)
+    await this.runNode(tsx, ['scripts/release/prepare-skills.ts'], snapshot)
     const ui = join(snapshot, 'app-client-ui')
     await this.runNode(join(ui, 'node_modules', 'electron-vite', 'bin', 'electron-vite.js'), ['build'], ui)
     await this.runNode(join(ui, 'node_modules', 'electron-builder', 'out', 'cli', 'cli.js'), [
@@ -179,6 +181,10 @@ export class LocalClientPackage {
     const directory = dirname(manifest.executablePath)
     return [manifest.executablePath, join(directory, 'resources', 'app.asar'),
       join(directory, 'resources', 'host', 'start.cjs'),
+      join(directory, 'resources', 'codex', 'start.cjs'),
+      join(directory, 'resources', 'cli', 'jamat-v3.cjs'),
+      ...['claude', 'codex'].flatMap(agent => ['appjamat-v3', 'mdext-renderer', 'session-automation-groups']
+        .map(skill => join(directory, 'resources', 'skills', agent, skill, 'SKILL.md'))),
       join(directory, 'resources', 'remarkable-sidecar', 'manifest.json'),
       ...['node.exe', 'launcher.cjs', 'install-launcher.ps1', 'package.json', 'README.md',
         'LICENSE', 'NODE-LICENSE.txt', 'WS-LICENSE.txt'].map(name => join(directory, 'resources', 'launcher', name)),

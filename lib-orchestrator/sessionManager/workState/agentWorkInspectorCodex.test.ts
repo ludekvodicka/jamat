@@ -120,6 +120,100 @@ describe('lib-orchestrator/sessionManager/workState/agentWorkInspectorCodex', ()
       expect(AgentWorkInspectorCodex.inspect({ ...compacting, screenTail }).hint).toBe('idle')
   })
 
+  it('reads compaction above its progress row, tip, composer and footer', () => {
+    const frame = recorded('codex-compacting-context-tip.json').frame
+    expect(frame.screenTail).not.toContain('Compacting context')
+    for (const screen of [
+      frame.wideScreenTail,
+      frame.wideScreenTail.replaceAll(' ', '\x1b[1C'),
+      frame.wideScreenTail.replace('• Compacting', '◦ Compacting'),
+      frame.wideScreenTail.replace('your setup, project', 'your setup,\nproject'),
+      frame.wideScreenTail.replace('esc to interrupt)', 'esc to interrupt) · 2 background terminals running · /ps to view · /stop to close'),
+      frame.wideScreenTail.replace('Ask Codex to do anything', 'Continue after compaction'),
+    ])
+      for (const cols of [103, 128, 259]) {
+        const inspection = AgentWorkInspectorCodex.inspect(ScreenTail.frameOf({ raw: '', screen, cols }))
+        expect(inspection.hint, `${cols} columns: ${screen}`).toBe('compacting')
+        expect(inspection.evidence.map((item) => item.signal)).toEqual(['compactingRow'])
+      }
+
+    const screenLines = frame.wideScreenTail.split('\n')
+    const projection = { raw: '', screen: '', cols: 259, screenLines }
+    expect(AgentWorkInspectorCodex.inspect(ScreenTail.frameOf(projection)).evidence)
+      .toEqual([expect.objectContaining({ source: 'wide-screen', signal: 'compactingRow' })])
+    expect(AgentWorkInspectorCodex.inspect(ScreenTail.frameOf({
+      ...projection,
+      raw: frame.wideScreenTail,
+      screenLines: screenLines.slice(3),
+    })).hint).toBe('idle')
+
+    const historical = [...screenLines, '', '• Finished compacting.', '', ...screenLines.slice(5)]
+    expect(AgentWorkInspectorCodex.inspect(ScreenTail.frameOf({
+      ...projection,
+      screenLines: historical,
+    })).hint).toBe('idle')
+  })
+
+  it('recognizes compaction above the deferred-message preview and composer', () => {
+    const queued = recorded('codex-compacting-deferred-messages.json').frame
+    expect(queued.screenTail).not.toContain('Compacting context')
+    for (const screen of [
+      queued.wideScreenTail,
+      queued.wideScreenTail.replaceAll(' ', '\x1b[1C'),
+      queued.wideScreenTail.replace('after next', 'after\nnext'),
+      queued.wideScreenTail.replace('• Compacting', '◦ Compacting'),
+    ]) {
+      const inspection = AgentWorkInspectorCodex.inspect(ScreenTail.frameOf({
+        raw: '', screen, cols: 128, screenLines: screen.split('\n'),
+      }))
+      expect(inspection.hint).toBe('compacting')
+      expect(inspection.evidence).toEqual([
+        expect.objectContaining({ source: 'wide-screen', signal: 'compactingRow' }),
+      ])
+    }
+  })
+
+  it('rejects stale or incomplete compaction blocks around deferred messages', () => {
+    const queued = recorded('codex-compacting-deferred-messages.json').frame
+    for (const screen of [
+      queued.wideScreenTail.replace('  └ Making room to continue.', ''),
+      queued.wideScreenTail.replace('after next tool call', 'after the turn'),
+      queued.wideScreenTail.replace('  ↳ > Use dedicated test accounts with prepared data.', ''),
+      queued.wideScreenTail.replace('› Ask Codex', '• Finished compacting.\n› Ask Codex'),
+      queued.wideScreenTail.split('\n').slice(1).join('\n'),
+    ])
+      expect(AgentWorkInspectorCodex.inspect(ScreenTail.frameOf({
+        raw: queued.wideScreenTail, screen: queued.wideScreenTail,
+        cols: 128, screenLines: screen.split('\n'),
+      })).hint).toBe('idle')
+
+    expect(AgentWorkInspectorCodex.inspect({
+      ...queued, screenTail: recorded('codex-live-idle.json').frame.screenTail,
+    }).hint).toBe('idle')
+  })
+
+  it('requires a current contiguous compaction footer for the wide-window fallback', () => {
+    const frame = recorded('codex-compacting-context-tip.json').frame
+    const idle = recorded('codex-live-idle.json').frame
+    for (const wideScreenTail of [
+      frame.wideScreenTail.replace('  └ Making room to continue.', ''),
+      frame.wideScreenTail.replace('  └ Tip:', 'Finished compacting.\n  └ Tip:'),
+      frame.wideScreenTail.replace('\n\n\n›', '\n\n• A later reply.\n\n›'),
+      `The previous status was ${frame.wideScreenTail}`,
+    ])
+      expect(AgentWorkInspectorCodex.inspect(ScreenTail.frameOf({
+        raw: '', screen: '', cols: 259, screenLines: wideScreenTail.split('\n'),
+      })).hint).toBe('idle')
+
+    expect(AgentWorkInspectorCodex.inspect({ ...idle, wideScreenTail: frame.wideScreenTail }).hint).toBe('idle')
+
+    for (const file of ['codex-live-approval.json', 'codex-queued-question-compacting.json', 'codex-live-working.json']) {
+      const current = recorded(file).frame
+      expect(AgentWorkInspectorCodex.inspect({ ...current, wideScreenTail: frame.wideScreenTail }).hint)
+        .toBe(AgentWorkInspectorCodex.inspect(current).hint)
+    }
+  })
+
   it('recognizes compaction with the background-terminal suffix through rendering and wrapping', () => {
     const frame = recorded('codex-compacting-context-background.json').frame
     for (const screen of [
@@ -362,6 +456,49 @@ describe('lib-orchestrator/sessionManager/workState/agentWorkInspectorCodex', ()
     const working = recorded('codex-live-working.json')
     expect(ScreenTail.normalizeTty(working.frame.screenTail)).toContain('askcodextodoanything')
     expect(AgentWorkInspectorCodex.inspect(working.frame).hint).toBe('working')
+  })
+
+  it('reads Working with a tip from physical Host rows and drops it when those rows clear', () => {
+    const screenLines = [
+      '◦ Working (10m 57s • esc to interrupt)',
+      '  └ Tip: Paste an image with Ctrl+V to attach it to your next message.',
+      '', '',
+      '› Ask Codex to do anything',
+      '',
+      '  GPT-6-Astra xhigh · Q:/PROJECT · Main [default]',
+      '  ? for shortcuts',
+    ]
+    const projection = {
+      raw: screenLines.join('\n'),
+      screen: recorded('codex-live-idle.json').frame.screenTail,
+      cols: 128,
+      screenLines,
+    }
+    expect(AgentWorkInspectorCodex.inspect(ScreenTail.frameOf(projection)).hint).toBe('working')
+    expect(AgentWorkInspectorCodex.inspect(ScreenTail.frameOf({
+      ...projection,
+      screenLines: screenLines.slice(2),
+    })).hint).toBe('idle')
+  })
+
+  it('reads Working above deferred messages from physical rows and clears it with the status', () => {
+    const queued = recorded('codex-working-deferred-messages.json').frame
+    const screenLines = queued.wideScreenTail.split('\n')
+    const projection = { raw: '', screen: '', cols: 128, screenLines }
+    const frame = ScreenTail.frameOf(projection)
+    expect(frame.screenTail).not.toContain('Working')
+    expect(AgentWorkInspectorCodex.inspect(frame)).toEqual({
+      hint: 'working',
+      evidence: [expect.objectContaining({ source: 'wide-screen', signal: 'workingRow' })],
+    })
+
+    for (const remaining of [screenLines.slice(1), screenLines.slice(9)])
+      expect(AgentWorkInspectorCodex.inspect(ScreenTail.frameOf({
+        ...projection,
+        raw: queued.wideScreenTail,
+        screen: queued.wideScreenTail,
+        screenLines: remaining,
+      })).hint).toBe('idle')
   })
 
   it('reads working above the unused rows of a tall serialized viewport', () => {

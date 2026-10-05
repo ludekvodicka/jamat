@@ -38,6 +38,18 @@ export interface AgentWorkFrame {
   rawTail: string
   screenTail: string
   wideScreenTail: string
+  /** False for physical rows from an older Host that discarded dim; absent for serialized frames. */
+  screenStyled?: boolean
+}
+
+/**
+ * Physical rows of the viewport, row 0 at its top edge, the width they were laid out in and the
+ * terminal's height. Blank rows below the cursor may be missing, so `rows.length` is no height.
+ */
+export interface ComposerViewport {
+  rows: readonly string[]
+  cols: number
+  height: number
 }
 
 export interface AgentWorkInspection {

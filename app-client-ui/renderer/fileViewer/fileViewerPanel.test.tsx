@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type {
@@ -179,6 +179,19 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPanel', () => {
     view.unmount()
 
     expect(fileViewer.release).toHaveBeenCalledWith('document-1')
+  })
+
+  it('keeps its dock titled File tools with the three file tabs and no Notes', async () => {
+    PanelHarness.install()
+    render(<FileViewerPanel {...PanelHarness.props({
+      ...PanelHarness.workspaceParams(),
+      sidebar: { visible: true, width: 440, activeView: 'fileChanges' },
+    })} />)
+
+    expect(await screen.findByText('export const answer = 42')).toBeInTheDocument()
+    const dock = screen.getByRole('complementary', { name: 'File tools' })
+    expect(within(dock).getAllByRole('tab').map((tab) => tab.textContent))
+      .toEqual(['File Changes', 'Changelog', 'Explorer'])
   })
 
   it('keeps the zoom of this panel in the layout and draws the document at it', async () => {

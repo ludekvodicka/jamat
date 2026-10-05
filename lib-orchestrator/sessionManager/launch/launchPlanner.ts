@@ -28,6 +28,7 @@ type SpanningLaunchOutcome =
   | { launch: null; problem: string }
 
 export interface LaunchPlanOptions {
+  codexBridge?: (native: RuntimeLaunchSpec, agentArgs: string[]) => RuntimeLaunchSpec
   controller?: { configIdentity: string; channel: RuntimeChannel }
   cols?: number
   rows?: number
@@ -119,7 +120,9 @@ export class LaunchPlanner {
       // after one of them is not a root option any more. The initial prompt stays where the presets
       // put it, last inside the mode args, so nothing here can be read as more prompt either.
       const front = [
-        ...(options?.yolo ? LaunchPlanner.yoloArgsOf(agent.agentId, common.cwd) : []),
+        // Remote Codex resume/fork rejects terminal-side permission flags; its server owns them.
+        ...(options?.yolo && !(agent.agentId === 'codex' && options.codexBridge)
+          ? LaunchPlanner.yoloArgsOf(agent.agentId, common.cwd) : []),
         ...(options?.model === undefined
           ? []
           : LaunchPlanner.modelArgsOf(agent.agentId, options.model)),
@@ -128,9 +131,11 @@ export class LaunchPlanner {
           : LaunchPlanner.effortArgsOf(agent.agentId, options.effort)),
       ]
       const args = [...front, ...modeArgs]
-      if (platform === 'win32')
-        return { ...LaunchPlanner.win32Agent(agent.agentId, args, environment, options), ...common }
-      return { command: agent.agentId, args, ...common }
+      const native = platform === 'win32'
+        ? { ...LaunchPlanner.win32Agent(agent.agentId, args, environment, options), ...common }
+        : { command: agent.agentId, args, ...common }
+      return agent.agentId === 'codex' && options?.codexBridge
+        ? options.codexBridge(native, args) : native
     }
     else
       throw new Error(`Unknown session kind: ${JSON.stringify(record.kind)}`)

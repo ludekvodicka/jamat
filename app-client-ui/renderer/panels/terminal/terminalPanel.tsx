@@ -58,6 +58,9 @@ import {
 } from '../../widgets/tabs/panelSplit'
 import './terminalPanel.css'
 import { TerminalContextMenu } from './menu/terminalContextMenu'
+import { TerminalClipboard } from './input/terminalClipboard'
+import { TerminalNotesPanel } from './notes/terminalNotesPanel'
+import { useTerminalNotes } from './notes/useTerminalNotes'
 import { TerminalPostMortem } from './view/terminalPostMortem'
 import { TerminalTransports } from './attach/terminalTransport'
 import { useTerminalSessionInfo } from './attach/useTerminalSessionInfo'
@@ -205,7 +208,25 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
     else focus()
   }, [focus, visibleCommitPane])
   useLayoutEffect(() => { splitRef.current = split }, [split])
-  const toolsTab = PanelFileToolsRegistry.tab(sidebar.state.activeView)
+  const toolsTab = PanelFileToolsRegistry.terminalTab(sidebar.state.activeView)
+  // An ended session can still read as `live` until its attach goes, and nothing typed reaches it.
+  const writable = state.status === 'live' && !state.ended
+  const agentId = info?.agent?.agentId ?? null
+  const pasteNote = useCallback((text: string): boolean => {
+    const bytes = TerminalClipboard.pasteOf(text.trim())
+    if (bytes === null || !writable || !sendCommand(bytes)) return false
+    // Reported like typed keys: the pasted note is standing in the prompt and must hold off a compact.
+    onTyped(bytes)
+    setTimeout(focus, 0)
+    return true
+  }, [focus, onTyped, sendCommand, writable])
+  const notes = useTerminalNotes({
+    sessionId,
+    enabled: localTools && sidebar.state.visible && toolsTab === 'notes',
+    paste: pasteNote,
+    // The prompt was erased through the main process, which this window's draft count never saw.
+    onTaken: () => drafts.cleared(sessionId),
+  })
   const activeItem = split.state.items.find((item) => item.key === split.state.active) ?? null
   const requiredWorkingTreeSource = localTools && activeItem?.kind === 'file'
     ? activeItem?.baselineHint?.workingTreeSource
@@ -518,7 +539,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
       sidebar={(
         <SidebarDock
           side="right"
-          title="File tools"
+          title="Tools"
           width={sidebar.state.width}
           hidden={!sidebar.state.visible}
           onResize={sidebar.resize}
@@ -540,6 +561,13 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
               setMenuNote(openInSplit(document))
               void window.appClient.fileViewer.release(document.documentId)
             }}
+            notes={(
+              <TerminalNotesPanel
+                model={notes}
+                canPaste={writable}
+                canImport={writable && agentId !== null}
+              />
+            )}
           />
         </SidebarDock>
       )}

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import xtermHeadless from '@xterm/headless'
+import { Unicode11Addon } from '@xterm/addon-unicode11'
 
 import { TerminalProjection } from './terminalProjection.js'
 
@@ -119,16 +120,108 @@ describe('app-host/app/terminal/terminalProjection', () => {
     expect(attached.raw).to.equal(undefined)
     expect(attached.screen).to.include('row 39')
     expect(attached.screen).to.include('row 0')
+    expect(attached.screenLines).to.equal(undefined)
+    expect(attached.screenLinesStyled).to.equal(undefined)
 
     expect(whole.raw).to.equal(rows.join(''))
+    expect(whole.screenLines).to.equal(undefined)
+    expect(whole.screenLinesStyled).to.equal(undefined)
 
     expect(viewed.raw).to.have.length(20)
     expect(viewed.raw).to.include('39')
     expect(viewed.screen).to.include('row 39')
     expect(viewed.screen).to.not.include('row 20')
     expect(viewed.screen.length).to.be.lessThan(whole.screen.length)
+    expect(viewed.screenLines).to.deep.equal(['row 35', 'row 36', 'row 37', 'row 38', 'row 39', ''])
+    expect(viewed.screenLinesStyled).to.equal(true)
 
     projection.dispose()
+  })
+
+  it.each([
+    ['other styles', '\x1b[1;3;4;31mplain\x1b[0m   ', 'plain'],
+    ['placeholder', '> \x1b[2;38;2;153;153;153mplaceholder\x1b[0m', '> \x1b[2mplaceholder\x1b[22m'],
+    ['mixed runs', 'a\x1b[2mb \x1b[22mc\x1b[2md', 'a\x1b[2mb \x1b[22mc\x1b[2md\x1b[22m'],
+    ['open dim', '\x1b[2mhint   ', '\x1b[2mhint\x1b[22m'],
+    ['dim trailing blanks', 'draft\x1b[2m   ', 'draft'],
+    ['trailing style changes', '\x1b[2mhint \x1b[22m \x1b[2m ', '\x1b[2mhint\x1b[22m'],
+    ['dim blank', '\x1b[2m \u00a0\u3000', ''],
+    ['Unicode', 'A\x1b[2m界✅e\u0301\x1b[22mZ\u00a0\u3000', 'A\x1b[2m界✅e\u0301\x1b[22mZ'],
+    ['cursor gap', '\x1b[2ma\x1b[5Gz', '\x1b[2ma\x1b[22m   \x1b[2mz\x1b[22m'],
+  ])('preserves only dim and the visible row text: %s', async (_name, input, expected) => {
+    const projection = new TerminalProjection('runtime-dim', 1, 1, 40, 4)
+    const reference = new xtermHeadless.Terminal({ cols: 40, rows: 4, allowProposedApi: true })
+    reference.loadAddon(new Unicode11Addon())
+    reference.unicode.activeVersion = '11'
+    try {
+      projection.append(input)
+      await new Promise<void>((resolve) => reference.write(input, resolve))
+      const snapshot = await projection.snapshot(true, TerminalProjection.optionsOf(
+        { rawTailChars: 0, screenScrollbackRows: 0 }))
+      expect(snapshot.screenLines).to.deep.equal([expected])
+      expect(snapshot.screenLinesStyled).to.equal(true)
+      expect(expected.replace(/\x1b\[(?:2|22)m/g, ''))
+        .to.equal(reference.buffer.active.getLine(0)?.translateToString(false, 0, 40).trimEnd())
+    } finally {
+      projection.dispose()
+      reference.dispose()
+    }
+  })
+
+  it('closes dim at a physical wrap and removes dim blank rows below the cursor', async () => {
+    const projection = new TerminalProjection('runtime-dim-wrap', 1, 1, 10, 8)
+    try {
+      projection.append('\x1b[2m12345678界next\r\n   \r\n   \x1b[2;5H')
+      const snapshot = await projection.snapshot(true, TerminalProjection.optionsOf(
+        { rawTailChars: 0, screenScrollbackRows: 0 }))
+      expect(snapshot.screenLines).to.deep.equal([
+        '\x1b[2m12345678界\x1b[22m', '\x1b[2mnext\x1b[22m',
+      ])
+    } finally {
+      projection.dispose()
+    }
+  })
+
+  it('reads visible physical rows after shrinking an alternate screen with retained wide cells', async () => {
+    const projection = new TerminalProjection('runtime-shrink', 1, 1, 259, 24)
+    try {
+      projection.append(`\u001b[?1049h\u001b[H${'old hidden content '.repeat(400)}`)
+      await projection.snapshot(true, TerminalProjection.attachOptionsConst)
+      projection.resize(128, 24)
+      const lines = [
+        '◦ Working (5m 29s • esc to interrupt)',
+        '  └ Tip: Paste an image with Ctrl+V to attach it to your next message.',
+        '', '',
+        '› Ask Codex to do anything',
+        '',
+        '  GPT-6-Astra xhigh · Q:/PROJECT',
+        '  ? for shortcuts',
+      ]
+      for (let row = 0; row < 24; row += 1)
+        projection.append(`\u001b[${row + 1};1H${(lines[row] ?? '').padEnd(128)}`)
+      projection.append('\x1b[5;1H› \x1b[2mAsk Codex to do anything\x1b[22m')
+      projection.append('\u001b[5;3H')
+      const snapshot = await projection.snapshot(true, TerminalProjection.optionsOf(
+        { rawTailChars: 0, screenScrollbackRows: 16 }))
+
+      expect(snapshot.screen).to.include('old hidden content')
+      expect(snapshot.screenLines).to.deep.equal(lines.map((line) => line.replace(
+        'Ask Codex to do anything', '\x1b[2mAsk Codex to do anything\x1b[22m')))
+    } finally {
+      projection.dispose()
+    }
+  })
+
+  it('keeps physical wraps, wide characters and intentionally cleared rows through the cursor', async () => {
+    const projection = new TerminalProjection('runtime-text', 1, 1, 10, 8)
+    try {
+      projection.append('\u001b[?1049h\u001b[H12345678✅next\r\n\r\n\u001b[6;1H')
+      const snapshot = await projection.snapshot(true, TerminalProjection.optionsOf(
+        { rawTailChars: 0, screenScrollbackRows: 0 }))
+      expect(snapshot.screenLines).to.deep.equal(['12345678✅', 'next', '', '', '', ''])
+    } finally {
+      projection.dispose()
+    }
   })
 
   /**

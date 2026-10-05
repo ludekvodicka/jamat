@@ -3,6 +3,7 @@ import { open, readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { ErrorText } from '../../../shared/errorText'
+import { JsonShape } from '../../../shared/jsonShape'
 import { PathCompare } from '../../../shared/pathCompare'
 import type { CodexRolloutCwdMemo, RolloutStamp } from './codexRolloutCwdMemo'
 
@@ -14,15 +15,16 @@ export interface CodexRolloutRef {
 }
 
 /**
- * A survivor of the exact-window walk: the ref plus the one header field the capture passes read.
+ * A survivor of the exact-window walk, with lineage and interactive provenance for id capture.
  *
  * It rides on this walk alone. The listing path serves headers out of the cwd memo, which holds only
- * `cwd`, so carrying the parent there would mean a memo schema bump and a cold rebuild for a field
- * only a capture reads.
+ * `cwd`, so capture metadata does not change that memo's schema.
  */
 export interface CodexRolloutWindowRef extends CodexRolloutRef {
   /** `forked_from_id` of the `session_meta` header; null when the field is null or absent. */
   forkedFromId: string | null
+  /** Only a proven interactive CLI conversation can belong to a Jamat terminal. */
+  interactive: boolean
 }
 
 /** How much of the store a walk covers, and therefore whether its absences may be believed. */
@@ -43,6 +45,7 @@ interface ReadCwd {
 interface ReadHeader {
   cwd: string
   forkedFromId: string | null
+  interactive: boolean
 }
 
 /**
@@ -71,6 +74,8 @@ export class CodexRolloutIndex {
    * so a bounded prefix answers the only question the index asks of a rollout's content.
    */
   private static readonly headerReadBytesConst = 16 * 1024
+  /** Capture needs a complete JSON header; instructions can exceed the listing's cwd prefix. */
+  private static readonly captureHeaderReadBytesConst = 128 * 1024
   private static readonly cacheTtlMillisecondsConst = 30_000
   /**
    * How many rollout headers are read at once.
@@ -160,13 +165,14 @@ export class CodexRolloutIndex {
     const root = CodexRolloutIndex.sessionsRootOf(this.codexHome)
     const candidates = (await this.candidates(root, { kind: 'between', from, until }))
       .filter((candidate) => candidate.createdAt >= from && candidate.createdAt <= until)
-    const reads = await this.pooled(candidates, (file) => this.headerFields(file))
+    const reads = await this.pooled(candidates, (file) =>
+      this.headerFields(file, CodexRolloutIndex.captureHeaderReadBytesConst))
     const wanted = CodexRolloutIndex.normalizedCwd(projectDir)
     const found: CodexRolloutWindowRef[] = []
     candidates.forEach((candidate, index) => {
       const read = reads[index]
       if (read !== null && CodexRolloutIndex.normalizedCwd(read.cwd) === wanted)
-        found.push({ ...candidate, forkedFromId: read.forkedFromId })
+        found.push({ ...candidate, forkedFromId: read.forkedFromId, interactive: read.interactive })
     })
     return found.sort((left, right) => right.createdAt - left.createdAt)
   }
@@ -447,23 +453,26 @@ export class CodexRolloutIndex {
     catch { return [] }
   }
 
-  /** What the listing path asks of a header. The parent link is read and dropped. */
+  /** The listing keeps its small cwd read even when capture cannot prove interactive provenance. */
   private async headerCwd(file: string): Promise<string | null> {
     return (await this.headerFields(file))?.cwd ?? null
   }
 
   /**
-   * One prefix read, both answers. The cwd decides whether the file counts at all, so a missing one
+   * One prefix read. The cwd decides whether the file counts at all, so a missing one
    * is reported and the file skipped, exactly as before.
    *
    * The parent is taken from the `session_meta` LINE alone rather than the whole prefix: a later
    * `response_item` may quote the words of the header back, and a rollout that names a parent it was
    * not cut from is the one mistake this field exists to prevent.
    */
-  private async headerFields(file: string): Promise<ReadHeader | null> {
+  private async headerFields(
+    file: string,
+    maxBytes = CodexRolloutIndex.headerReadBytesConst,
+  ): Promise<ReadHeader | null> {
     let head: string
     try {
-      head = await CodexRolloutIndex.readPrefix(file, CodexRolloutIndex.headerReadBytesConst)
+      head = await CodexRolloutIndex.readPrefix(file, maxBytes)
     } catch (error) {
       this.report(`Codex rollout ${file} could not be read (${ErrorText.of(error)}); skipping it`)
       return null
@@ -472,7 +481,7 @@ export class CodexRolloutIndex {
     if (!match) {
       this.report(
         `Codex rollout ${file} has no session_meta cwd in its first `
-        + `${CodexRolloutIndex.headerReadBytesConst} bytes; skipping it`,
+        + `${maxBytes} bytes; skipping it`,
       )
       return null
     }
@@ -482,7 +491,24 @@ export class CodexRolloutIndex {
       this.report(`Codex rollout ${file} has an unreadable cwd (${ErrorText.of(error)}); skipping it`)
       return null
     }
-    return { cwd, forkedFromId: CodexRolloutIndex.forkedFromOf(head) }
+    return {
+      cwd,
+      forkedFromId: CodexRolloutIndex.forkedFromOf(head),
+      interactive: CodexRolloutIndex.interactiveOf(head),
+    }
+  }
+
+  private static interactiveOf(head: string): boolean {
+    // Parse the whole first record: nested instructions and later messages cannot attest origin.
+    const newline = head.indexOf('\n')
+    let record: Record<string, unknown> | null
+    try { record = JsonShape.record(JSON.parse(newline === -1 ? head : head.slice(0, newline))) }
+    catch { return false }
+    if (record?.type !== 'session_meta') return false
+    const payload = JsonShape.record(record.payload)
+    return typeof payload?.cwd === 'string'
+      && payload.source === 'cli'
+      && (payload.thread_source === undefined || payload.thread_source === 'user')
   }
 
   /**

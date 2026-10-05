@@ -2,13 +2,17 @@ import type {
   TerminalProjectionSnapshot,
   TerminalProjectionView,
 } from '../../../app-host/app/wire/hostWire.js'
-import type { AgentWorkFrame } from './agentWorkInspector.types'
+import type { AgentWorkFrame, ComposerViewport } from './agentWorkInspector.types'
 
 /**
  * The frame is half the contract: a classifier is a pure function of it, so the windows it reads
  * decide as much as the patterns do. V1 built these windows from a headless xterm mirror it kept
  * beside every session; the Host already keeps one and publishes the result, so here the same three
  * windows are sliced out of `TerminalProjectionSnapshot` and no terminal is emulated a second time.
+ * Current Hosts supply physical `screenLines` with row-local SGR 2/22 for composer placeholders.
+ * Unmarked physical rows still locate work status after a resize, but `screenStyled: false` keeps
+ * the composer reader from mistaking their placeholders for drafts. The serialized-screen parser
+ * is the compatibility path for Hosts without physical rows and snapshots not yet synchronized.
  *
  * The window sizes are V1's, and each has a reason:
  *
@@ -56,9 +60,55 @@ export class ScreenTail {
     screenScrollbackRows: ScreenTail.wideScreenRowsConst,
   }
 
+  /** What the composer content reads: the viewport alone, for one Host call that also gives the hint. */
+  static readonly viewportViewConst: TerminalProjectionView = {
+    rawTailChars: ScreenTail.rawCharsConst,
+    // Zero rows of scrollback put the viewport's top edge at index 0 of `screenLines`.
+    screenScrollbackRows: 0,
+  }
+
+  /**
+   * The viewport as physical rows, or null when the Host sent none or sent them without the dim
+   * style: a placeholder read from unstyled rows would be taken for a draft and stored as a note.
+   */
+  static viewportOf(
+    projection: Pick<TerminalProjectionSnapshot, 'screenLines' | 'screenLinesStyled' | 'cols' | 'rows'>,
+  ): ComposerViewport | null {
+    if (projection.screenLines === undefined || projection.screenLinesStyled !== true) return null
+    return { rows: projection.screenLines, cols: projection.cols, height: projection.rows }
+  }
+
+  /**
+   * The viewport rebuilt from the serialized screen of an inspect without scrollback, for recordings
+   * only: a Host without styled rows still serializes the dim style, so a frame captured from one can
+   * be admitted as a fixture. A reading never takes this path, because rows counted out of serialized
+   * bytes land in the wrong place after a resize, which is what `screenLines` exist to avoid.
+   */
+  static viewportOfScreen(
+    projection: Pick<TerminalProjectionSnapshot, 'screen' | 'cols' | 'rows'>,
+  ): ComposerViewport {
+    const alternateMarker = '\x1b[?1049h\x1b[H'
+    const alternateStart = projection.screen.lastIndexOf(alternateMarker)
+    const active = alternateStart < 0
+      ? projection.screen
+      : projection.screen.slice(alternateStart + alternateMarker.length)
+    return {
+      rows: ScreenTail.rows(active, projection.rows, projection.cols).split('\n'),
+      cols: projection.cols,
+      height: projection.rows,
+    }
+  }
+
   static frameOf(
-    projection: Pick<TerminalProjectionSnapshot, 'raw' | 'screen' | 'cols'>,
+    projection: Pick<TerminalProjectionSnapshot, 'raw' | 'screen' | 'cols' | 'screenLines' | 'screenLinesStyled'>,
   ): AgentWorkFrame {
+    if (projection.screenLines !== undefined)
+      return {
+        rawTail: ScreenTail.rawTail(projection.raw ?? ''),
+        screenTail: projection.screenLines.slice(-ScreenTail.screenRowsConst).join('\n'),
+        wideScreenTail: projection.screenLines.slice(-ScreenTail.wideScreenRowsConst).join('\n'),
+        screenStyled: projection.screenLinesStyled === true,
+      }
     // One pass for both windows: they are two tails of the same rows, and counting the rows twice
     // was the whole second walk over the screen.
     const starts = ScreenTail.rowStarts(projection.screen, projection.cols)

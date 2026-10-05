@@ -39,6 +39,10 @@ interface Draft {
   dto: VersioningCommitDraftDto
   committedPaths?: readonly string[]
   owners: Set<string>
+  fileReviews: Map<string, {
+    snapshot: FileChangesWorkingTreeSnapshot
+    files: ReadonlyMap<string, FileChangesFileAccessResult>
+  }>
   cwd: string
   lockRoot: string
   targets?: readonly { path: string; recursive: boolean }[]
@@ -99,7 +103,9 @@ export class VersioningCommitManager {
       requested = parent
     }
     let detection = await this.deps.vcsStatus.detect(requested, vcs)
-    while (detection === null && dirname(requested) !== requested) {
+    // A directory SVN does not know yet answers to the project's own Git instead, so a file inside a
+    // new SVN directory has to climb past that answer to the working copy that will version it.
+    while (detection?.id !== vcs && dirname(requested) !== requested) {
       requested = dirname(requested)
       detection = await this.deps.vcsStatus.detect(requested, vcs)
     }
@@ -122,7 +128,7 @@ export class VersioningCommitManager {
         ...this.deps.messages.read({ sessionId, vcs, scopeRoot: requested, paths: selectedPaths }),
         phase: { kind: 'editing' }, revision: 0,
       },
-      owners: new Set(), cwd, lockRoot: PathCompare.comparable(detection.root), ...(restricted ? { targets } : {}),
+      owners: new Set(), fileReviews: new Map(), cwd, lockRoot: PathCompare.comparable(detection.root), ...(restricted ? { targets } : {}),
     }
     const messageApplied = proposed !== null && !draft.dto.editedByPerson && draft.dto.phase.kind === 'editing'
     if (messageApplied) {
@@ -153,8 +159,13 @@ export class VersioningCommitManager {
     if (draft === null) throw new Error('The commit dialog no longer exists')
     const entries = snapshot.entries.filter((entry) => VersioningCommitManager.allows(draft, entry))
     const ids = new Set(entries.map((entry) => entry.fileId))
-    return { ...snapshot, entries, externalRoots: snapshot.externalRoots.map((root) => ({ ...root,
+    const filtered = { ...snapshot, entries, externalRoots: snapshot.externalRoots.map((root) => ({ ...root,
       fileIds: root.fileIds.filter((id) => ids.has(id)) })).filter((root) => root.fileIds.length > 0) }
+    // A visible review must outlive the shared browsing cache's TTL and capacity evictions.
+    // Keep its original timestamps; commit and revert still check the files on disk.
+    draft.fileReviews.set(ownerId, structuredClone({ snapshot: filtered,
+      files: new Map(entries.map((entry) => [entry.fileId, this.deps.fileAccess(ownerId, snapshot.snapshotId, entry.fileId)])) }))
+    return filtered
   }
 
   read(ownerId: string, draftId: string): VersioningCommitDraftDto | null {
@@ -226,6 +237,7 @@ export class VersioningCommitManager {
   release(draftId: string, ownerId: string): void {
     const draft = this.drafts.get(draftId)
     if (draft === undefined || !draft.owners.delete(ownerId)) return
+    draft.fileReviews.delete(ownerId)
     this.releaseUnattached(draftId)
   }
 
@@ -272,7 +284,7 @@ export class VersioningCommitManager {
     const message = VersioningCommitMessage.normalize(request.message)
     if (this.running.has(draft.lockRoot) || draft.dto.phase.kind === 'running' || draft.dto.phase.kind === 'done')
       return { ok: false, code: 'busy', detail: 'A commit is already running or this dialog has already committed' }
-    const snapshot = this.deps.snapshotOf(ownerId, request.snapshotId)
+    const snapshot = this.snapshotOf(ownerId, draft, request.snapshotId)
     if (snapshot === null || snapshot.sessionId !== draft.dto.sessionId || snapshot.source.selected !== draft.dto.source)
       return { ok: false, code: 'invalid-target', detail: 'The file list does not belong to this dialog; reload it', reloadRequired: true }
     if (request.includeExternals !== undefined && request.includeExternals !== true)
@@ -411,7 +423,7 @@ export class VersioningCommitManager {
     if (draft === null) return { ok: false, code: 'unknown-draft', detail: 'The commit dialog no longer exists' }
     if (this.running.has(draft.lockRoot) || draft.dto.phase.kind === 'running' || draft.dto.phase.kind === 'done')
       return { ok: false, code: 'busy', detail: 'Another change is running or this dialog has already committed' }
-    const snapshot = this.deps.snapshotOf(ownerId, request.snapshotId)
+    const snapshot = this.snapshotOf(ownerId, draft, request.snapshotId)
     if (snapshot === null || snapshot.sessionId !== draft.dto.sessionId || snapshot.source.selected !== draft.dto.source)
       return { ok: false, code: 'invalid-target', detail: 'The file list does not belong to this dialog; reload it' }
     if (request.fileIds !== undefined && request.fileId !== undefined)
@@ -503,6 +515,11 @@ export class VersioningCommitManager {
     }
   }
 
+  private snapshotOf(ownerId: string, draft: Draft, snapshotId: string): FileChangesWorkingTreeSnapshot | null {
+    const review = draft.fileReviews.get(ownerId)
+    return review?.snapshot.snapshotId === snapshotId ? review.snapshot : this.deps.snapshotOf(ownerId, snapshotId)
+  }
+
   private resolveTargets(ownerId: string, draft: Draft, snapshot: FileChangesWorkingTreeSnapshot, ids: readonly string[], includeExternals = false):
     | { ok: true; value: CommitTarget[] }
     | Extract<VersioningCommitRunResult, { ok: false }> {
@@ -532,9 +549,11 @@ export class VersioningCommitManager {
     const targets: CommitTarget[] = []
     if (selected.size > VersioningCommitLimits.targetsMaxConst)
       return { ok: false, code: 'invalid-target', detail: 'Too many commit targets including required parent directories' }
+    const review = draft.fileReviews.get(ownerId)
     for (const id of selected) {
       const entry = snapshot.entries.find((candidate) => candidate.fileId === id)
-      const access = this.deps.fileAccess(ownerId, snapshot.snapshotId, id)
+      const access = (review?.snapshot.snapshotId === snapshot.snapshotId ? review.files.get(id) : undefined)
+        ?? this.deps.fileAccess(ownerId, snapshot.snapshotId, id)
       if (entry === undefined || !access.ok || access.value.workingState === undefined
         || !VersioningCommitManager.allows(draft, entry)
         || access.value.sessionId !== draft.dto.sessionId || access.value.path !== entry.path

@@ -494,6 +494,33 @@ describe('lib-orchestrator/sessionManager/workState/workStateMonitor', () => {
     expect(context.changes()).toBe(2)
   })
 
+  it('keeps Codex working with deferred messages through silence until the status clears', async () => {
+    const context = harness()
+    const queued = frameOf('codex-working-deferred-messages.json')
+    context.add({ runtimeSessionId: 'c', agent: 'codex', screen: queued.wideScreenTail })
+    await context.observe()
+    expect(context.monitor.activity('c')).toBe('working')
+    expect(context.monitor.activityDetail('c')).toBeNull()
+    expect(context.monitor.inspection('c')?.evidence).toEqual([
+      expect.objectContaining({ source: 'wide-screen', signal: 'workingRow' }),
+    ])
+
+    for (let window = 0; window < 4; window += 1) {
+      await vi.advanceTimersByTimeAsync(15_000)
+      await context.observe()
+      expect(context.monitor.activity('c')).toBe('working')
+    }
+    expect(context.changes()).toBe(1)
+    expect(context.calls.inspect).toHaveLength(5)
+
+    context.emit('c', codexIdleScreenConst, queued.wideScreenTail)
+    await context.observe()
+    await vi.advanceTimersByTimeAsync(15_000)
+    await context.observe()
+    expect(context.monitor.activity('c')).toBe('idle')
+    expect(context.changes()).toBe(2)
+  })
+
   it('publishes a foreground-to-background detail change without pretending the turn settled', async () => {
     const context = harness()
     context.add({ runtimeSessionId: 'a', agent: 'claude', screen: claudeWorkingScreenConst })
@@ -519,19 +546,23 @@ describe('lib-orchestrator/sessionManager/workState/workStateMonitor', () => {
     expect(context.monitor.activityDetail('shell-1')).toBeNull()
   })
 
-  it.each(['claude', 'codex'] as const)(
-    'keeps %s compaction working through silence and publishes both boundaries',
-    async (agent) => {
+  it.each([
+    ['claude', 'claude-compacting-conversation.json'],
+    ['codex', 'codex-compacting-context-background.json'],
+    ['codex', 'codex-compacting-context-tip.json'],
+    ['codex', 'codex-compacting-deferred-messages.json'],
+  ] as const)(
+    'keeps %s compaction from %s working through silence and publishes both boundaries',
+    async (agent, fixture) => {
       const context = harness()
-      const compacting = frameOf(agent === 'claude'
-        ? 'claude-compacting-conversation.json' : 'codex-compacting-context-background.json')
+      const compacting = frameOf(fixture)
       const working = agent === 'claude' ? claudeWorkingScreenConst : codexWorkingScreenConst
       const idle = agent === 'claude' ? claudeIdleScreenConst : codexIdleScreenConst
       context.add({ runtimeSessionId: 'a', agent, screen: working })
       await context.observe()
       expect(context.monitor.compacting('a')).toBe(false)
 
-      context.emit('a', compacting.screenTail, compacting.rawTail)
+      context.emit('a', compacting.wideScreenTail, compacting.rawTail)
       await context.observe()
       expect(context.monitor.activity('a')).toBe('working')
       expect(context.monitor.compacting('a')).toBe(true)
@@ -553,7 +584,7 @@ describe('lib-orchestrator/sessionManager/workState/workStateMonitor', () => {
       expect(context.monitor.compacting('a')).toBe(false)
       expect(context.changes()).toBe(3)
 
-      context.emit('a', compacting.screenTail)
+      context.emit('a', compacting.wideScreenTail)
       await context.observe()
       context.emit('a', idle, compacting.rawTail)
       await context.observe()

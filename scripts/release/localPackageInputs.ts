@@ -10,8 +10,10 @@ export class LocalPackageInputs {
     'app-client-ui/package.json', 'app-client-ui/pnpm-lock.yaml',
     'app-client-ui/pnpm-workspace.yaml', 'app-client-ui/electron.vite.config.ts',
     'app-client-ui/tsconfig.json', 'app-client-ui/tsconfig.node.json',
-    'app-client-ui/tsconfig.web.json', 'app-host', 'app-launcher', 'lib-orchestrator',
-    'mdext-renderer/renderer', 'configs/remarkable-sidecar', 'scripts/release',
+    'app-client-ui/tsconfig.web.json', 'app-host', 'app-launcher', 'app-codex', 'lib-orchestrator',
+    'mdext-renderer/renderer', 'mdext-renderer/USAGE.md', 'mdext-renderer/reference.md',
+    'mdext-renderer/svg-style.md', 'mdext-renderer/examples',
+    'skills', 'app-client-cli', 'configs/remarkable-sidecar', 'scripts/release',
     'scripts/setup/prepare-remarkable-sidecar.ts', 'scripts/setup/install-launcher.ps1',
   ]
   private static readonly skippedDirectoriesConst = new Set([

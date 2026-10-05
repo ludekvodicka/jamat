@@ -1,0 +1,91 @@
+/* Inside `.file-tools`, whose button rules this inherits; only what Notes adds is here. */
+.terminal-notes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 0;
+  padding: var(--space-2);
+}
+.terminal-notes__scope,
+.terminal-notes__status,
+.terminal-notes__error {
+  margin: 0;
+  color: var(--color-text-4);
+  font-size: var(--fs-status);
+}
+.terminal-notes__scope {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.terminal-notes__error { color: var(--color-danger); }
+.terminal-notes__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.terminal-notes__entry {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: var(--space-1);
+}
+.terminal-notes__toolbar,
+.terminal-notes__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+.terminal-notes__toolbar button,
+.terminal-notes__actions button,
+.terminal-notes__error button {
+  padding: 2px var(--space-1);
+}
+.terminal-notes__toolbar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.terminal-notes__icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+.terminal-notes__label {
+  margin-right: auto;
+  color: var(--color-text-4);
+  font-size: var(--fs-status);
+}
+.terminal-notes button[aria-pressed='true'] {
+  border-color: var(--color-accent);
+  color: var(--color-text-1);
+}
+.terminal-notes__paste:not(:disabled) {
+  border-color: var(--color-accent);
+}
+.terminal-notes__text {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 80px;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-sunken);
+  color: var(--color-text-1);
+  font: inherit;
+  resize: vertical;
+}
+.terminal-notes__text--large { min-height: 320px; }
+.terminal-notes__text:focus {
+  border-color: var(--color-accent);
+  outline: none;
+}
+.terminal-notes__text[readonly] { color: var(--color-text-4); }
+.terminal-notes__notice {
+  color: var(--color-attention);
+  font-size: var(--fs-status);
+}

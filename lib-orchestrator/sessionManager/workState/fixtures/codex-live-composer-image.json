@@ -1,0 +1,38 @@
+{
+  "agent": "codex",
+  "expected": {
+    "hint": "unknown",
+    "composer": {
+      "state": "text",
+      "text": "Describe this image [Image #1]"
+    },
+    "queuedRow": false,
+    "echoHead": null,
+    "pastePlaceholders": 0,
+    "content": {
+      "kind": "placeholder"
+    }
+  },
+  "provenance": {
+    "origin": "captured from this tree's live Host by scripts/dev/capture-workstate.ts",
+    "case": "a typed draft followed by an attached image, drawn as [Image #1]",
+    "capture": "the text was written with `terminal send` without Enter at 120 x 30, then the path of a PNG file inside the repository as one bracketed paste, which the agent turned into an attachment; the Host predates styled screenLines, so `viewport` keeps the serialized viewport of an inspect without scrollback and WorkFixtures.viewportOf rebuilds its rows; sanitized per V1 recipe: the repository directory is replaced by Q:\\PROJECT. ANSI is left intact",
+    "ported": "nothing - recorded in this tree",
+    "identical": "not present in the V1 or V2 corpus"
+  },
+  "recorded": {
+    "build": "codex-cli 0.160.0",
+    "capturedAt": "2026-10-05",
+    "cols": 120,
+    "rows": 30
+  },
+  "frame": {
+    "rawTail": "6h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?25l\u001b[30;2H\u001b[K\u001b[27;3H\u001b[?25h\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[?2026lDescribe this image\u001b[K\u001b[1C\u001b[?25h\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[?2026l\u001b[38;5;6m[Image #1]\u001b[1C\u001b[?25h",
+    "screenTail": "\n\n\n\n\n\u001b[1m›\u001b[0m Describe this image\u001b[1C\u001b[36m[Image #1]\n\n\u001b[0m  GPT-6-Astra xhigh · Q:\\PROJECT\u001b[2A\u001b[28D\u001b[36m\u001b[?2004h\u001b[?1004h\u001b[?1003h\u001b[?1006h",
+    "wideScreenTail": "\n\n\n\n\n\n\n\n\n\n\n\n\n\u001b[1m›\u001b[0m Describe this image\u001b[1C\u001b[36m[Image #1]\n\n\u001b[0m  GPT-6-Astra xhigh · Q:\\PROJECT\u001b[2A\u001b[28D\u001b[36m\u001b[?2004h\u001b[?1004h\u001b[?1003h\u001b[?1006h"
+  },
+  "viewport": {
+    "screen": "\u001b[36m\u001b[?1049h\u001b[H \r\n  >_ \u001b[1mOpenAI Codex\u001b[22;2m (v0.160.0)\r\n\u001b[0m     \u001b[2mQ:\\PROJECT\r\n  permissions: \u001b[35;1;22mYOLO mode\r\n\r\n\u001b[2C\u001b[0mSame\u001b[1Cterminal,\u001b[1Cnew\u001b[1Cpossibilities.\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\u001b[1m›\u001b[0m Describe this image\u001b[1C\u001b[36m[Image #1]\r\n\r\n\u001b[0m  GPT-6-Astra xhigh · Q:\\PROJECT\u001b[2A\u001b[28D\u001b[36m\u001b[?2004h\u001b[?1004h\u001b[?1003h\u001b[?1006h",
+    "rows": 30
+  }
+}

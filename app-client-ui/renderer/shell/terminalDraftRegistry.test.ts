@@ -60,6 +60,22 @@ describe('app-client-ui/renderer/shell/terminalDraftRegistry', () => {
     expect(registry.status('session-1')).toEqual({ characters: 0, quietAt: 0 })
   })
 
+  it('empties a draft another path erased, restarts the quiet period and tells the scheduler', () => {
+    let notifications = 0
+    registry.subscribe(() => { notifications += 1 })
+    registry.typed('session-1', 'hello')
+    registry.typed('session-2', 'other')
+    clock += 60_000
+
+    registry.cleared('session-1')
+
+    expect(registry.status('session-1')).toEqual({ characters: 0, quietAt: clock + 15_000 })
+    expect(registry.status('session-2').characters).toBe(5)
+    expect(notifications).toBe(3)
+    clock += 15_000
+    expect(registry.composing('session-1')).toBe(false)
+  })
+
   it('keeps a real draft through reports and notifies the scheduler when Enter starts the quiet period', () => {
     let notifications = 0
     const off = registry.subscribe(() => { notifications += 1 })

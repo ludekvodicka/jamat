@@ -8,18 +8,20 @@ import type {
   FileChangesWorkingTreeViewModel,
   FileViewerChangedOpen,
 } from './fileViewerPanel.types'
-import type { FileToolsTab } from './panelFileToolsRegistry'
+import type { TerminalToolsTab } from './panelFileToolsRegistry'
 
 export function FileToolsSidebar(props: {
   sessionId: string
   documentId: string | null
-  selected: FileToolsTab
+  selected: TerminalToolsTab
   changes: FileChangesViewModel
   workingTree: FileChangesWorkingTreeViewModel
   onOpenCommit?(vcs: FileChangesVcsId): void
-  onSelect(tab: FileToolsTab): void
+  onSelect(tab: TerminalToolsTab): void
   onOpenChanged(value: FileViewerChangedOpen): void
   onOpenDocument(document: FileViewerDocument): void
+  /** The terminal's Notes; absent in the FileViewer, which then draws exactly its three tabs. */
+  notes?: React.ReactNode
 }): React.JSX.Element {
   return (
     <div className="file-tools">
@@ -48,6 +50,16 @@ export function FileToolsSidebar(props: {
         >
           Explorer
         </button>
+        {props.notes !== undefined && (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={props.selected === 'notes'}
+            onClick={() => props.onSelect('notes')}
+          >
+            Notes
+          </button>
+        )}
       </div>
       <div className="file-tools-body">
         {props.selected === 'workingTree'
@@ -71,7 +83,9 @@ export function FileToolsSidebar(props: {
                 onOpen={props.onOpenDocument}
               />
             )
-              : (() => { throw new Error(`Unknown file tools tab: ${JSON.stringify(props.selected)}`) })()}
+          : props.selected === 'notes'
+            ? (props.notes ?? (() => { throw new Error('Notes selected without Notes content') })())
+            : (() => { throw new Error(`Unknown file tools tab: ${JSON.stringify(props.selected)}`) })()}
       </div>
     </div>
   )

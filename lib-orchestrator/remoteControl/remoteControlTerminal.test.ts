@@ -3,10 +3,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type {
   TerminalAttachResult,
   TerminalAttachSpec,
+  TerminalComposerContent,
+  TerminalComposerContentReading,
+  TerminalComposerContentResult,
   TerminalComposerReading,
   TerminalComposerResult,
   TerminalFrame,
 } from '../sessionManager/sessionManagerApi.types'
+import { AgentComposerReader } from '../sessionManager/workState/agentComposerReader'
+import { WorkFixtures } from '../sessionManager/workState/fixtures/workFixtures'
 import type { SessionTranscriptReading } from '../sessionTranscriptReader/sessionTranscriptReaderApi.types'
 import type {
   TerminalAttachOwner,
@@ -15,6 +20,7 @@ import type {
 } from '../sessionManager/terminals/terminalGateway'
 import {
   RemoteControlTerminal,
+  type RemoteControlTerminalKeep,
   type RemoteControlTerminalSessionPort,
 } from './remoteControlTerminal'
 
@@ -36,6 +42,10 @@ class FakeTerminalSessions implements RemoteControlTerminalSessionPort {
   /** What the composer shows, as a function of everything written so far. */
   composer: (inputs: readonly string[]) => TerminalComposerResult = () => ({ ok: false, code: 'not-agent' })
   composerReads = 0
+  /** What a whole-draft read shows, as a function of everything written so far. */
+  content: (inputs: readonly string[]) => TerminalComposerContentResult | Promise<TerminalComposerContentResult> =
+    () => ({ ok: false, code: 'not-agent' })
+  contentReads = 0
 
   terminalAttach(
     attachId: string,
@@ -75,6 +85,11 @@ class FakeTerminalSessions implements RemoteControlTerminalSessionPort {
   async terminalComposer(_sessionId: string): Promise<TerminalComposerResult> {
     this.composerReads += 1
     return this.composer(this.inputs.map((input) => input.data))
+  }
+
+  async terminalComposerContent(_sessionId: string): Promise<TerminalComposerContentResult> {
+    this.contentReads += 1
+    return this.content(this.inputs.map((input) => input.data))
   }
 
   emit(attachId: string, frame: TerminalFrame): void {
@@ -547,6 +562,24 @@ describe('lib-orchestrator/remoteControl/remoteControlTerminal deliver', () => {
     expect(harness.sessions.detached).toEqual(['control-deliver:deliver-1'])
   })
 
+  // The box runs through blank rows to its bottom rule, so such a draft is seen, and refused, at once
+  // instead of reading as no box until the ready timeout.
+  it('refuses a recorded Claude draft holding a blank row as foreign on the first reading', async () => {
+    const fixture = WorkFixtures.of('claude').find((candidate) => candidate.file === 'claude-live-composer-blank-line.json')
+    if (fixture === undefined) throw new Error('missing work fixture claude-live-composer-blank-line.json')
+    const harness = new DeliverHarness()
+    harness.sessions.composer = () => DeliverReadings.reading(AgentComposerReader.read('claude', fixture.frame))
+
+    const result = await harness.deliver('hello', { readyTimeoutMs: 1_000 })
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: 'conflict', data: { stage: 'ready', reason: 'foreign-draft', typed: false, entered: 0 } },
+    })
+    expect(harness.sessions.composerReads).toBe(1)
+    expect(harness.written()).toEqual([])
+  })
+
   it('times out while the composer never appears, with the last screen facts and nothing written', async () => {
     const harness = new DeliverHarness()
     harness.sessions.composer = () => DeliverReadings.reading({ composer: { state: 'absent' }, hint: 'unknown' })
@@ -899,5 +932,312 @@ describe('lib-orchestrator/remoteControl/remoteControlTerminal deliver', () => {
       ok: false,
       error: { code: 'not-found', data: { stage: 'attach', reason: 'not-live', typed: false, entered: 0, hint: null, composer: null } },
     })
+  })
+})
+
+class TakeHarness {
+  static readonly attachIdConst = 'control-take:take-1'
+  readonly sessions = new FakeTerminalSessions()
+  readonly errors: string[] = []
+  readonly terminal: RemoteControlTerminal
+  clock = 0
+
+  constructor(timeoutMilliseconds?: number) {
+    this.terminal = new RemoteControlTerminal(this.sessions, {
+      internalAttachId: () => 'take-1',
+      onError: (message) => this.errors.push(message),
+      pause: async (milliseconds) => { this.clock += milliseconds },
+      now: () => this.clock,
+      ...(timeoutMilliseconds === undefined ? {} : { timeoutMilliseconds }),
+    })
+  }
+
+  take(keep: RemoteControlTerminalKeep = () => ({ ok: true }), writer = true): ReturnType<RemoteControlTerminal['take']> {
+    const answer = this.terminal.take('session-1', keep)
+    this.sessions.emit(this.sessions.onlyAttachId(), TerminalFrames.attached(writer))
+    return answer
+  }
+
+  written(): string[] {
+    return this.sessions.inputs.map((input) => input.data)
+  }
+}
+
+class TakeReadings {
+  static reading(
+    content: TerminalComposerContent,
+    overrides: Partial<TerminalComposerContentReading> = {},
+  ): TerminalComposerContentResult {
+    return { ok: true, reading: { agentId: 'claude', alive: true, hint: 'idle', content, ...overrides } }
+  }
+
+  /** A prompt holding `text` until anything is written, and `after` from then on. */
+  static erasing(
+    text: string,
+    eraseBound: number,
+    after: TerminalComposerContentResult = TakeReadings.reading({ kind: 'empty' }),
+  ) {
+    return (inputs: readonly string[]): TerminalComposerContentResult => inputs.length === 0
+      ? TakeReadings.reading({ kind: 'text', text, eraseBound })
+      : after
+  }
+}
+
+describe('lib-orchestrator/remoteControl/remoteControlTerminal take', () => {
+  afterEach(() => vi.useRealTimers())
+
+  it('stores the prompt before the first DEL and writes nothing when the store refuses', async () => {
+    const harness = new TakeHarness()
+    harness.sessions.content = TakeReadings.erasing('draft', 14)
+
+    const refused = await harness.take(() => ({ ok: false, detail: 'section damaged' }))
+
+    expect(refused).toEqual({ kind: 'refused', reason: 'keep-refused', detail: 'section damaged' })
+    expect(harness.written()).toEqual([])
+
+    const order: string[] = []
+    const taken = await harness.take((text) => {
+      order.push(`keep:${text}:${harness.written().length}`)
+      return { ok: true }
+    })
+
+    expect(taken).toEqual({ kind: 'taken' })
+    expect(order).toEqual(['keep:draft:0'])
+    expect(harness.written()).toEqual(['\x7f'.repeat(14)])
+    expect(harness.sessions.detached).toEqual([TakeHarness.attachIdConst, TakeHarness.attachIdConst])
+    expect(harness.sessions.attachments.size).toBe(0)
+  })
+
+  it('attaches without a size, so the import never moves the terminal geometry', async () => {
+    const harness = new TakeHarness()
+    harness.sessions.content = () => TakeReadings.reading({ kind: 'empty' })
+    const taking = harness.terminal.take('session-1', () => ({ ok: true }))
+
+    expect(harness.sessions.attachments.get(TakeHarness.attachIdConst)?.spec).toEqual({ sessionId: 'session-1', size: null })
+    harness.sessions.emit(TakeHarness.attachIdConst, TerminalFrames.attached(true))
+    expect(await taking).toEqual({ kind: 'empty' })
+    expect(harness.sessions.resizes).toEqual([])
+    expect(harness.sessions.active).toEqual([])
+  })
+
+  it.each([
+    { content: { kind: 'empty' }, result: { kind: 'empty' } },
+    { content: { kind: 'absent' }, result: { kind: 'refused', reason: 'no-prompt' } },
+    { content: { kind: 'clipped' }, result: { kind: 'refused', reason: 'too-tall' } },
+    { content: { kind: 'placeholder' }, result: { kind: 'refused', reason: 'placeholder' } },
+  ] satisfies { content: TerminalComposerContent; result: object }[])('keeps and writes nothing over $content.kind', async ({ content, result }) => {
+    const harness = new TakeHarness()
+    harness.sessions.content = () => TakeReadings.reading(content)
+    const keep = vi.fn(() => ({ ok: true as const }))
+
+    expect(await harness.take(keep)).toMatchObject(result)
+    expect(keep).not.toHaveBeenCalled()
+    expect(harness.written()).toEqual([])
+    expect(harness.sessions.detached).toEqual([TakeHarness.attachIdConst])
+  })
+
+  it.each([
+    { name: 'a dialog', overrides: { hint: 'blocked' }, reason: 'dialog' },
+    { name: 'a waiting prompt', overrides: { hint: 'waiting' }, reason: 'dialog' },
+    { name: 'a dead runtime', overrides: { alive: false }, reason: 'not-live' },
+  ] satisfies { name: string; overrides: Partial<TerminalComposerContentReading>; reason: string }[])(
+    'refuses $name before keeping anything',
+    async ({ overrides, reason }) => {
+      const harness = new TakeHarness()
+      harness.sessions.content = () => TakeReadings.reading({ kind: 'text', text: 'draft', eraseBound: 14 }, overrides)
+      const keep = vi.fn(() => ({ ok: true as const }))
+
+      expect(await harness.take(keep)).toMatchObject({ kind: 'refused', reason })
+      expect(keep).not.toHaveBeenCalled()
+      expect(harness.written()).toEqual([])
+    },
+  )
+
+  it.each([
+    { code: 'unknown-session', reason: 'unknown-session' },
+    { code: 'not-live', reason: 'not-live' },
+    { code: 'not-agent', reason: 'not-agent' },
+    { code: 'no-projection', reason: 'unavailable' },
+    { code: 'no-viewport', reason: 'unreadable' },
+  ] as const)('maps the read refusal $code to $reason', async ({ code, reason }) => {
+    const harness = new TakeHarness()
+    harness.sessions.content = () => ({ ok: false, code })
+
+    expect(await harness.take()).toMatchObject({ kind: 'refused', reason })
+    expect(harness.written()).toEqual([])
+  })
+
+  it('refuses a read-only attach without reading the prompt', async () => {
+    const harness = new TakeHarness()
+    harness.sessions.content = TakeReadings.erasing('draft', 14)
+    const keep = vi.fn(() => ({ ok: true as const }))
+
+    expect(await harness.take(keep, false)).toEqual({
+      kind: 'refused',
+      reason: 'read-only',
+      detail: 'The terminal attach is read-only',
+    })
+    expect(harness.sessions.contentReads).toBe(0)
+    expect(keep).not.toHaveBeenCalled()
+    expect(harness.written()).toEqual([])
+  })
+
+  it('shares one guard with deliver: a take or a deliver during a take, and a take during a deliver, are in flight', async () => {
+    const harness = new TakeHarness()
+    harness.sessions.content = TakeReadings.erasing('draft', 14)
+    const first = harness.take()
+
+    expect(await harness.terminal.take('session-1', () => ({ ok: true }))).toEqual({
+      kind: 'refused',
+      reason: 'in-flight',
+      detail: 'Another delivery to this session is still running',
+    })
+    expect(await harness.terminal.deliver('session-1', 'other', {
+      input: 'paste',
+      readyTimeoutMs: 1_000,
+      submitTimeoutMs: 1_000,
+    }, { transcript: async () => DeliverReadings.transcript(0) })).toMatchObject({
+      ok: false,
+      error: { code: 'conflict', data: { reason: 'in-flight' } },
+    })
+    expect(await first).toEqual({ kind: 'taken' })
+    expect(harness.written()).toEqual(['\x7f'.repeat(14)])
+
+    const delivering = new DeliverHarness()
+    delivering.sessions.composer = DeliverReadings.echoing('hello')
+    delivering.transcript = DeliverReadings.submitted('hello')
+    const delivery = delivering.deliver('hello')
+    const keep = vi.fn(() => ({ ok: true as const }))
+    expect(await delivering.terminal.take('session-1', keep)).toMatchObject({ kind: 'refused', reason: 'in-flight' })
+    expect(await delivery).toMatchObject({ ok: true })
+    expect(keep).not.toHaveBeenCalled()
+    expect(delivering.sessions.contentReads).toBe(0)
+  })
+
+  it('answers partial not-erased when the DEL write fails after the keep', async () => {
+    const harness = new TakeHarness()
+    harness.sessions.content = TakeReadings.erasing('draft', 14)
+    harness.sessions.inputAnswer = { kind: 'unknown-attach' }
+    const keep = vi.fn(() => ({ ok: true as const }))
+
+    expect(await harness.take(keep)).toEqual({
+      kind: 'partial',
+      reason: 'not-erased',
+      detail: 'The terminal attach disappeared',
+    })
+    expect(keep).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    TerminalFrames.attached(true),
+    { type: 'terminal.status', status: 'connecting', detail: null },
+    { type: 'terminal.status', status: 'lost', code: 'not-live', detail: 'gone' },
+    { type: 'terminal.exit', runtimeSessionId: 'runtime-1', generation: 1, exitCode: 0 },
+  ] satisfies TerminalFrame[])('answers partial not-erased and writes nothing when $type $status lands during the keep', async (frame) => {
+    const harness = new TakeHarness()
+    harness.sessions.content = TakeReadings.erasing('draft', 14)
+
+    const result = await harness.take(() => {
+      harness.sessions.emit(TakeHarness.attachIdConst, frame)
+      return { ok: true }
+    })
+
+    expect(result).toMatchObject({ kind: 'partial', reason: 'not-erased' })
+    expect(harness.written()).toEqual([])
+    expect(harness.sessions.detached).toEqual([TakeHarness.attachIdConst])
+  })
+
+  it('answers refused when the terminal drops during a keep that then refuses', async () => {
+    const harness = new TakeHarness()
+    harness.sessions.content = TakeReadings.erasing('draft', 14)
+
+    const result = await harness.take(() => {
+      harness.sessions.emit(TakeHarness.attachIdConst, { type: 'terminal.status', status: 'connecting', detail: null })
+      return { ok: false, detail: 'section damaged' }
+    })
+
+    expect(result).toEqual({ kind: 'refused', reason: 'unavailable', detail: 'The terminal disconnected during the import' })
+    expect(harness.written()).toEqual([])
+  })
+
+  it('answers partial text-remains when the prompt still shows text after the settle limit', async () => {
+    const harness = new TakeHarness()
+    harness.sessions.content = TakeReadings.erasing(
+      'draft', 14, TakeReadings.reading({ kind: 'text', text: 'tail', eraseBound: 12 }))
+
+    expect(await harness.take()).toEqual({
+      kind: 'partial',
+      reason: 'text-remains',
+      detail: 'Text is still in the prompt; the note holds all of it',
+    })
+    expect(harness.clock).toBeGreaterThanOrEqual(1_500)
+    expect(harness.sessions.contentReads).toBeLessThanOrEqual(9)
+    expect(harness.written()).toEqual(['\x7f'.repeat(14)])
+    expect(harness.sessions.detached).toEqual([TakeHarness.attachIdConst])
+  })
+
+  it('waits through readings that are not empty yet and answers taken once the prompt clears', async () => {
+    const harness = new TakeHarness()
+    harness.sessions.content = (inputs) => {
+      if (inputs.length === 0) return TakeReadings.reading({ kind: 'text', text: 'draft', eraseBound: 14 })
+      if (harness.sessions.contentReads < 4) return { ok: false, code: 'no-projection' }
+      return TakeReadings.reading({ kind: 'empty' })
+    }
+
+    expect(await harness.take()).toEqual({ kind: 'taken' })
+    expect(harness.clock).toBe(600)
+    expect(harness.written()).toEqual(['\x7f'.repeat(14)])
+  })
+
+  it('answers refused unavailable when the read times out before the keep', async () => {
+    vi.useFakeTimers()
+    const harness = new TakeHarness(1_000)
+    harness.sessions.content = () => new Promise<TerminalComposerContentResult>(() => {})
+    const keep = vi.fn(() => ({ ok: true as const }))
+    const taking = harness.take(keep)
+
+    await vi.advanceTimersByTimeAsync(1_000)
+
+    expect(await taking).toEqual({
+      kind: 'refused',
+      reason: 'unavailable',
+      detail: 'The terminal take operation timed out',
+    })
+    expect(keep).not.toHaveBeenCalled()
+    expect(harness.written()).toEqual([])
+    expect(harness.sessions.detached).toEqual([TakeHarness.attachIdConst])
+  })
+
+  it('answers partial when the operation times out after the keep', async () => {
+    vi.useFakeTimers()
+    const harness = new TakeHarness(1_000)
+    harness.sessions.content = (inputs) => inputs.length === 0
+      ? TakeReadings.reading({ kind: 'text', text: 'draft', eraseBound: 14 })
+      : new Promise<TerminalComposerContentResult>(() => {})
+    const taking = harness.take()
+
+    await vi.advanceTimersByTimeAsync(1_000)
+
+    expect(await taking).toMatchObject({ kind: 'partial', reason: 'text-remains' })
+    expect(harness.written()).toEqual(['\x7f'.repeat(14)])
+  })
+
+  it('answers partial when a reading throws after the erase, and refused when one throws before the keep', async () => {
+    const after = new TakeHarness()
+    after.sessions.content = (inputs) => {
+      if (inputs.length === 0) return TakeReadings.reading({ kind: 'text', text: 'draft', eraseBound: 14 })
+      throw new Error('inspect failed')
+    }
+    const before = new TakeHarness()
+    before.sessions.content = () => { throw new Error('inspect failed') }
+
+    expect(await after.take()).toMatchObject({ kind: 'partial', reason: 'text-remains' })
+    expect(after.errors).toEqual(['Remote terminal take failed: inspect failed'])
+    expect(await before.take()).toEqual({
+      kind: 'refused',
+      reason: 'failed',
+      detail: 'The terminal import operation failed',
+    })
+    expect(before.written()).toEqual([])
   })
 })

@@ -81,6 +81,7 @@ import type {
   SessionsOpResult,
   SessionsSnapshot,
   TerminalAttachResult,
+  TerminalComposerContentResult,
   TerminalComposerResult,
   TerminalFrame,
 } from '../../lib-orchestrator/sessionManager/sessionManagerApi.types.js'
@@ -1551,6 +1552,10 @@ class SmokeUnavailableSessions implements RemoteControlSessionsPort, RemoteContr
   terminalDetachAll(_attachIds: readonly string[]): void {}
 
   terminalComposer(_sessionId: string): Promise<TerminalComposerResult> {
+    return Promise.resolve({ ok: false, code: 'unknown-session' })
+  }
+
+  terminalComposerContent(_sessionId: string): Promise<TerminalComposerContentResult> {
     return Promise.resolve({ ok: false, code: 'unknown-session' })
   }
 

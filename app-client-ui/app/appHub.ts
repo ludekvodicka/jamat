@@ -58,6 +58,7 @@ import { ClientStatePaths } from './clientState/clientStatePaths'
 import { VersioningCommitMessageStore } from './versioning/versioningCommitMessageStore'
 import { ClientStateStore } from './clientState/clientStateStore'
 import { ServiceContextCompactionIpc } from './contextCompaction/serviceContextCompactionIpc'
+import { ServiceDirectoryNotesIpc } from './directoryNotes/serviceDirectoryNotesIpc'
 import { HostPingLoop } from './debug/hostPingLoop'
 import { ServiceDebugIpc } from './debug/serviceDebugIpc'
 import { FileChangesSettingsSection } from './fileChanges/fileChangesSettingsSection'
@@ -184,6 +185,7 @@ export class AppHub {
     ServiceRateMonitorIpc.channelsConst,
     ServiceSessionModelIpc.channelsConst,
     ServiceSessionTranscriptIpc.channelsConst,
+    ServiceDirectoryNotesIpc.channelsConst,
   ] as const) satisfies Record<keyof AppClientUiIpcInvokeMap, true>
 
   /**
@@ -242,6 +244,7 @@ export class AppHub {
   private readonly sessionGroupsIpc: ServiceSessionGroupsIpc
   private readonly agentSettingsIpc: ServiceAgentSettingsIpc
   private readonly contextCompactionIpc: ServiceContextCompactionIpc
+  private readonly directoryNotesIpc: ServiceDirectoryNotesIpc
   private readonly rateMonitor: RateMonitor
   private readonly rateMonitorIpc: ServiceRateMonitorIpc
   private readonly sessionModelIpc: ServiceSessionModelIpc
@@ -603,6 +606,14 @@ export class AppHub {
     // The same terminal the control API delivers through, so a compact and a remote deliver to one
     // session share its one-delivery-at-a-time guard.
     this.contextCompactionIpc = new ServiceContextCompactionIpc(remoteTerminal, transcriptAccess)
+    // The same terminal again, so an import never erases a prompt a compact or a remote deliver is
+    // typing into.
+    this.directoryNotesIpc = new ServiceDirectoryNotesIpc(
+      configStore,
+      this.sessions,
+      remoteTerminal,
+      (directory) => this.broadcast('directoryNotes:changed', directory),
+    )
     const remoteControl = new RemoteControl({
       system: { identity: () => remoteIdentity },
       projects: this.projects,
@@ -824,6 +835,7 @@ export class AppHub {
     this.rateMonitorIpc.initialize()
     this.sessionModelIpc.initialize()
     this.sessionTranscriptIpc.initialize()
+    this.directoryNotesIpc.initialize()
     // Its channels return raw values rather than IpcResult, so they sit outside the contract above.
     this.autoUpdate.start()
     this.menu.install()

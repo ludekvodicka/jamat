@@ -96,6 +96,23 @@ describe('lib-orchestrator/svn/svnCommitManager', () => {
     ])
   })
 
+  it('commits new nested directories with their selected files and leaves an unselected sibling out (Jamat#35)', async () => {
+    const scope = resolve('scope')
+    const { manager, calls, lists } = schedules(scope, new Map([[scope, 'normal']]))
+    const engines = resolve(scope, 'engines')
+    const run = resolve(engines, 'run')
+    const files = ['00-run.md', '01-run.md'].map((name) => resolve(run, name))
+    expect(await manager.commit(scope, [
+      ...files.map((absolutePath) => ({ absolutePath, nodeKind: 'file' as const, status: 'untracked' as const })),
+      { absolutePath: run, nodeKind: 'directory', status: 'untracked' },
+      { absolutePath: engines, nodeKind: 'directory', status: 'untracked' },
+    ], 'message.txt')).toMatchObject({ ok: true })
+    expect(calls.filter(([command]) => command === 'add').map((args) => args.at(-1)))
+      .toEqual([engines, run, ...files].map((path) => `${path}@`))
+    expect(lists).toEqual([[engines, run, ...files].map((path) => `${path}@\n`).join('')])
+    expect(lists[0]).not.toContain('report.md')
+  })
+
   it('refuses to add inside a directory scheduled for deletion, before any write', async () => {
     const scope = resolve('scope')
     const deleted = resolve(scope, 'data')

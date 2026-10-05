@@ -237,6 +237,7 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       throw new Error('records must be an array')
     const seen = new Set<string>()
     const records: SessionRecord[] = []
+    let unverified = 0
     for (const candidate of document.records ?? []) {
       const reason = SessionRecordsStore.problemOf(candidate, seen)
       if (reason) {
@@ -244,6 +245,16 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
         continue
       }
       const record = candidate as SessionRecord
+      const agent = record.agent
+      if (agent?.agentId === 'codex' && agent.nativeSessionId !== undefined
+        && agent.nativeSessionIdSource === undefined) {
+        if (agent.launchMode === 'resume') agent.nativeSessionIdSource = 'provided'
+        else {
+          agent.unverifiedNativeSessionId = agent.nativeSessionId
+          delete agent.nativeSessionId
+          unverified++
+        }
+      }
       // The one field this store does NOT let ride through, because it is gone rather than unknown:
       // a record written before 2026-09-23 may still say `presentation: "tab"`, and such a session
       // is an ordinary session of the tree now. Dropping it on read is what clears it from the file
@@ -252,6 +263,9 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       seen.add(record.sessionId)
       records.push(record)
     }
+    if (unverified > 0)
+      this.report(`Codex identity migration: ${unverified} old inferred bindings are unverified; `
+        + 'their original IDs are preserved. Open the intended conversation explicitly from Codex history to resume it')
     return records
   }
 
@@ -454,6 +468,13 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     // says yes, and a session wrongly read as one-shot is one nothing ever reopens.
     if (value.oneShot !== undefined && value.oneShot !== true)
       return `oneShot must be true or absent, not ${JSON.stringify(value.oneShot)}`
+    if (value.nativeSessionIdSource !== undefined && value.nativeSessionIdSource !== 'provided'
+      && value.nativeSessionIdSource !== 'codex-app-server') return 'unknown native identity source'
+    for (const id of [value.identityLaunchId, value.unverifiedNativeSessionId])
+      if (id !== undefined && !SessionRecordsStore.isFilledString(id)) return 'invalid identity metadata'
+    if (value.identitySequence !== undefined
+      && (!Number.isSafeInteger(value.identitySequence) || value.identitySequence < 1))
+      return 'invalid identity sequence'
     return null
   }
 

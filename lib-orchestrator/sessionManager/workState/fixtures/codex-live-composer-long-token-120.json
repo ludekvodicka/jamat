@@ -1,0 +1,40 @@
+{
+  "agent": "codex",
+  "expected": {
+    "hint": "unknown",
+    "composer": {
+      "state": "text",
+      "text": "Reply with pong. Then read E:/Temp/claude/fixture-notes/\naVeryLongDirectoryNameWithoutAnyBreakOpportunityThatIsLongerThanOneWholeRowOfTheTerminalAtOneHundredTwentyColumnsWide\nForSure/notes.md and the-hyphenated-file-name-that-keeps-going-on-and-on-past-the-end-of-the-row-for-the-join-rule.md\nnow."
+    },
+    "queuedRow": false,
+    "echoHead": null,
+    "pastePlaceholders": 0,
+    "content": {
+      "kind": "text",
+      "text": "Reply with pong. Then read E:/Temp/claude/fixture-notes/aVeryLongDirectoryNameWithoutAnyBreakOpportunityThatIsLongerThanOneWholeRowOfTheTerminalAtOneHundredTwentyColumnsWideForSure/notes.md and the-hyphenated-file-name-that-keeps-going-on-and-on-past-the-end-of-the-row-for-the-join-rule.md now.",
+      "eraseBound": 306
+    }
+  },
+  "provenance": {
+    "origin": "captured from this tree's live Host by scripts/dev/capture-workstate.ts",
+    "case": "one typed line wrapped at 120 columns: the path breaks after a slash and is then cut at the row end",
+    "capture": "the text, one line of 295 characters with a token longer than a row and a hyphenated token, was written with `terminal send` without Enter at 80 x 30, and the terminal was then grown to 120 x 30, which Codex rewrapped; the Host predates styled screenLines, so `viewport` keeps the serialized viewport of an inspect without scrollback and WorkFixtures.viewportOf rebuilds its rows; sanitized per V1 recipe: the repository directory is replaced by Q:\\PROJECT. ANSI is left intact",
+    "ported": "nothing - recorded in this tree",
+    "identical": "not present in the V1 or V2 corpus"
+  },
+  "recorded": {
+    "build": "codex-cli 0.160.0",
+    "capturedAt": "2026-10-05",
+    "cols": 120,
+    "rows": 30
+  },
+  "frame": {
+    "rawTail": "h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[?2026l\u001b[1m\u001b[23;1H›\u001b[22m\u001b[1CReply\u001b[1Cwith\u001b[1Cpong.\u001b[1CThen\u001b[1Cread\u001b[1CE:/Temp/claude/fixture-notes/\u001b[24;3HaVeryLongDirectoryNameWithoutAnyBreakOpportunityThatIsLongerThanOneWholeRowOf\u001b[25;3HTheTerminalAtOneHundredTwentyColumnsWideForSure/notes.md\u001b[1Cand\u001b[1Cthe-hyphenated-\u001b[26;3Hfile-name-that-keeps-going-on-and-on-past-the-end-of-the-row-for-the-join-\r\n \u001b[1Crule.md now.\u001b[K\u001b[?25h\u001b[?25l\u001b[H\u001b[K\r\n  >_ \u001b[1mOpenAI Codex\u001b[22m\u001b[2m (v0.160.0)\u001b[22m\u001b[K\r\n     \u001b[2mQ:\\PROJECT\u001b[22m\u001b[K\u001b[2m\r\n  permissions: \u001b[38;5;5m\u001b[22m\u001b[1mYOLO mode\u001b[m\u001b[K\r\n\u001b[K\r\n  How deep does this codebase go?\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\u001b[1m\r\n›\u001b[22m Reply with pong. Then read E:/Temp/claude/fixture-notes/\u001b[K\r\n  aVeryLongDirectoryNameWithoutAnyBreakOpportunityThatIsLongerThanOneWholeRowOf\u001b[K\r\n  TheTerminalAtOneHundredTwentyColumnsWideForSure/notes.md and the-hyphenated-\u001b[K\r\n  file-name-that-keeps-going-on-and-on-past-the-end-of-the-row-for-the-join-\u001b[K\r\n  rule.md now.\u001b[K\r\n\u001b[K\r\n  GPT-6-Astra xhigh · Q:\\PROJECT\u001b[K\r\n\u001b[K\u001b[27;15H\u001b[?25h\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[H\u001b[K\r\n  >_ \u001b[1mOpenAI Codex\u001b[22m\u001b[2m (v0.160.0)\u001b[22m\u001b[K\r\n     \u001b[2mQ:\\PROJECT\u001b[22m\u001b[K\u001b[2m\r\n  permissions: \u001b[38;5;5m\u001b[22m\u001b[1mYOLO mode\u001b[m\u001b[K\r\n\u001b[K\r\n  How deep does this codebase go?\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\u001b[1m\r\n›\u001b[22m Reply with pong. Then read E:/Temp/claude/fixture-notes/\u001b[K\r\n  aVeryLongDirectoryNameWithoutAnyBreakOpportunityThatIsLongerThanOneWholeRowOfTheTerminalAtOneHundredTwentyColumnsWide \r\n  ForSure/notes.md and the-hyphenated-file-name-that-keeps-going-on-and-on-past-the-end-of-the-row-for-the-join-rule.md \r\n  now.\u001b[K\r\n\u001b[K\r\n  GPT-6-Astra xhigh · Q:\\PROJECT\u001b[K\r\n\u001b[K\u001b[27;7H\u001b[?25h\u001b[?2026h\u001b[?2026l",
+    "screenTail": "\n\n\u001b[1m›\u001b[0m Reply with pong. Then read E:/Temp/claude/fixture-notes/\n  aVeryLongDirectoryNameWithoutAnyBreakOpportunityThatIsLongerThanOneWholeRowOfTheTerminalAtOneHundredTwentyColumnsWide \n  ForSure/notes.md and the-hyphenated-file-name-that-keeps-going-on-and-on-past-the-end-of-the-row-for-the-join-rule.md \n  now.\n\n  GPT-6-Astra xhigh · Q:\\PROJECT\u001b[2A\u001b[55D\u001b[?2004h\u001b[?1004h\u001b[?1003h\u001b[?1006h",
+    "wideScreenTail": "\n\n\n\n\n\n\n\n\n\n\u001b[1m›\u001b[0m Reply with pong. Then read E:/Temp/claude/fixture-notes/\n  aVeryLongDirectoryNameWithoutAnyBreakOpportunityThatIsLongerThanOneWholeRowOfTheTerminalAtOneHundredTwentyColumnsWide \n  ForSure/notes.md and the-hyphenated-file-name-that-keeps-going-on-and-on-past-the-end-of-the-row-for-the-join-rule.md \n  now.\n\n  GPT-6-Astra xhigh · Q:\\PROJECT\u001b[2A\u001b[55D\u001b[?2004h\u001b[?1004h\u001b[?1003h\u001b[?1006h"
+  },
+  "viewport": {
+    "screen": "\u001b[?1049h\u001b[H\r\n  >_ \u001b[1mOpenAI Codex\u001b[22;2m (v0.160.0)\r\n\u001b[0m     \u001b[2mQ:\\PROJECT\r\n  permissions: \u001b[35;1;22mYOLO mode\r\n\r\n\u001b[0m  How deep does this codebase go?\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\u001b[1m›\u001b[0m Reply with pong. Then read E:/Temp/claude/fixture-notes/\r\n  aVeryLongDirectoryNameWithoutAnyBreakOpportunityThatIsLongerThanOneWholeRowOfTheTerminalAtOneHundredTwentyColumnsWide \r\n  ForSure/notes.md and the-hyphenated-file-name-that-keeps-going-on-and-on-past-the-end-of-the-row-for-the-join-rule.md \r\n  now.\r\n\r\n  GPT-6-Astra xhigh · Q:\\PROJECT\u001b[2A\u001b[55D\u001b[?2004h\u001b[?1004h\u001b[?1003h\u001b[?1006h",
+    "rows": 30
+  }
+}

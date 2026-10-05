@@ -12,10 +12,9 @@ import type {
 import type { GitResult, WorktreeFacts } from '../../git/git.types'
 import type { HostCallResult } from '../../hostClient/hostClient.types'
 import type { DeclaredSetup, SetupResolution } from '../../projectSetup/projectSetup.types'
-import type { CodexRolloutMatch } from '../../projectManager/codexRolloutView'
 import { AgentPresets, type SessionAgentSpec } from '../launch/agentPresets'
 import { ClaudeTrustSeed, type ClaudeTrustSeedResult } from '../launch/claudeTrustSeed'
-import { CodexIdCapture } from '../launch/codexIdCapture'
+import type { CodexSessionFiles } from '../launch/codexSessionFiles'
 import { GitCodes } from './gitCodes'
 import { SetupFlow } from './setupFlow'
 import { OperationOutcomes } from './operationOutcomes'
@@ -104,24 +103,8 @@ export interface SessionNumbersPort {
 }
 
 /**
- * Where a Codex conversation id can be found after the fact. Narrow, and pointed at the subsystem's
- * declared read surface rather than at `providers/`, which nothing outside `projectManager` imports.
- */
-export interface SessionCodexRolloutsPort {
-  /**
-   * The launch window, walked fresh: the one read every capture pass makes. A record's window is
-   * its own, so this costs the same whether the record was launched a second or a month ago.
-   */
-  rolloutsBetween(
-    directory: string,
-    from: number,
-    until: number,
-  ): Promise<readonly CodexRolloutMatch[]>
-}
-
-/**
  * Where a session's name goes into its Claude transcript. Narrow, and pointed at the subsystem's
- * declared write surface for the same reason the rollouts port is: `providers/` is imported by
+ * declared write surface: `providers/` is imported by
  * `projectManager` and by nothing else. False means the name was not written, never a failed rename.
  */
 export interface SessionClaudeTitlesPort {
@@ -135,7 +118,7 @@ export interface SessionLifecycleDeps {
   worktrees: SessionWorktreePort
   setup: SessionSetupPort
   numbers: SessionNumbersPort
-  codexRollouts: SessionCodexRolloutsPort
+  codexSessions: Pick<CodexSessionFiles, 'launch' | 'identity'>
   claudeTitles: SessionClaudeTitlesPort
   /** Where a fact the user has to know but cannot act on through the result goes. */
   report: (message: string) => void
@@ -207,7 +190,7 @@ export class SessionLifecycle {
   private readonly worktrees: SessionWorktreePort
   private readonly setup: SessionSetupPort
   private readonly numbers: SessionNumbersPort
-  private readonly codexRollouts: SessionCodexRolloutsPort
+  private readonly codexSessions: SessionLifecycleDeps['codexSessions']
   private readonly claudeTitles: SessionClaudeTitlesPort
   private readonly report: (message: string) => void
   private resumeMerge: ((sessionId: string) => void) | null
@@ -231,7 +214,7 @@ export class SessionLifecycle {
     this.worktrees = deps.worktrees
     this.setup = deps.setup
     this.numbers = deps.numbers
-    this.codexRollouts = deps.codexRollouts
+    this.codexSessions = deps.codexSessions
     this.claudeTitles = deps.claudeTitles
     this.report = deps.report
     this.resumeMerge = deps.resumeMerge ?? null
@@ -307,7 +290,10 @@ export class SessionLifecycle {
       }
       else
         throw new Error(`Unknown launch: ${JSON.stringify(launch)}`)
-      return LaunchPlanner.plan(record, { ...options, yolo, model, effort })
+      const effective = { ...options, yolo, model, effort }
+      return LaunchPlanner.plan(record, { ...effective,
+        codexBridge: (native, args) => this.codexSessions.launch(record, native, args, effective),
+      })
     }
     else
       throw new Error(`Unknown session kind: ${JSON.stringify(record.kind)}`)
@@ -329,17 +315,12 @@ export class SessionLifecycle {
     this.resumeMerge = resume
   }
 
-  /**
-   * One pass catches records whose regular five-minute naming cadence elapsed while no client ran.
-   *
-   * A record's window is its own, so this reaches a fork taken weeks ago exactly as cheaply as one
-   * taken this morning: that is what names the forks that were written before forks were looked for.
-   */
+  /** Recover confirmations written while the UI was closed, including terminals that already ended. */
   async nameCodexOnStartup(): Promise<void> {
     if (this.codexStartupNamingDone) return
     this.codexStartupNamingDone = true
     for (const record of this.records.list())
-      if (CodexIdCapture.discoverable(record)) await this.applyCodexName(record.sessionId)
+      if (SessionLifecycle.tracksCodex(record)) await this.applyCodexName(record.sessionId)
   }
 
   /**
@@ -599,19 +580,25 @@ export class SessionLifecycle {
   async prepareHostRestart(listing: RuntimeListResult): Promise<SessionsOpResult<string[]>> {
     if (this.records.latched) return OperationOutcomes.latched()
     const sessions: string[] = []
+    const problems: string[] = []
     for (const runtime of listing.sessions) {
       if (!runtime.alive) continue
       const stored = this.records.get(runtime.runtimeSessionId)
-      if (!stored)
-        return { ok: false, code: 'invalid-spec', detail: `Adopt or stop runtime ${runtime.runtimeSessionId} before restarting the Host.` }
+      if (!stored) {
+        problems.push(`Adopt or stop runtime ${runtime.runtimeSessionId} before restarting the Host.`)
+        continue
+      }
       const record = await this.withCapturedCodexId(stored)
       const problem = record.pendingSetup || record.setupFor || record.commands || record.resolveFor || record.agent?.oneShot
         ? 'a setup or one-shot task is still running; let it finish before restarting the Host'
         : record.agent ? AgentPresets.reopenProblem(record.agent) : null
       if (problem)
-        return { ok: false, code: 'invalid-spec', detail: `Cannot restore ${record.title} after a Host restart: ${problem}` }
-      sessions.push(record.sessionId)
+        problems.push(`${record.title} (${record.sessionId}): ${problem}`)
+      else
+        sessions.push(record.sessionId)
     }
+    if (problems.length > 0)
+      return { ok: false, code: 'invalid-spec', detail: `Host restart was cancelled. Resolve these sessions first:\n${problems.join('\n')}` }
     return { ok: true, value: sessions }
   }
 
@@ -661,8 +648,7 @@ export class SessionLifecycle {
         code: 'launch-pending',
         detail: `Session ${sessionId} has a launch waiting for the Host to answer; it is replayed as soon as the Host can`,
       }
-    // A Codex record has no id until one is found for it, so the look happens before the gate rather
-    // than after the refusal. Everything from here on reads the record this may have replaced.
+    // Consume a pending confirmation before deciding whether the conversation can be resumed.
     record = await this.withCapturedCodexId(record)
     // Asked before the Host is touched: a record that cannot name the conversation it would land on
     // is refused outright rather than started on a guess.
@@ -696,6 +682,9 @@ export class SessionLifecycle {
     // reporting when and why it ended.
     const pending: SessionRecord = {
       ...record,
+      ...(record.agent?.agentId === 'codex' ? {
+        agent: {...record.agent, identityLaunchId: operationId, identitySequence: undefined},
+      } : {}),
       binding: null,
       life: 'starting',
       pendingOperationId: operationId,
@@ -893,8 +882,7 @@ export class SessionLifecycle {
         detail: `Session ${sessionId} resolves a merge for ${record.resolveFor}, and its worktree goes when that merge is done, so nothing may fork it`,
       }
     const agentId = record.agent.agentId
-    // The one thing a client could never do for itself: a codex session learns its own id late, and
-    // this is the moment to go and find it rather than refuse for want of it.
+    // A receipt can be newer than the last reconciliation tick.
     const captured = await this.withCapturedCodexId(record)
     const parentId = captured.agent?.nativeSessionId
     if (parentId === undefined)
@@ -1087,17 +1075,7 @@ export class SessionLifecycle {
     return { text: `${SessionLifecycle.renameCommandConst} ${name}` }
   }
 
-  /**
-   * The pass's own look for the conversation a live Codex session is having, read out of the rollout
-   * it wrote seconds ago.
-   *
-   * This is what makes the id knowable at all for a session nobody reopens: the model and context the
-   * status bar draws, the conversation File Changes reconstructs and `admits.fork` all hang off that
-   * one field, and before this the only two things that ever filled it were a reopen and a fork.
-   *
-   * False here means only that nothing could be claimed on this pass, which is the normal answer for
-   * most of them.
-   */
+  /** Applies a newer confirmation, including a native /new, /resume or /fork in the same terminal. */
   private async applyCodexName(sessionId: string): Promise<boolean> {
     const record = this.records.get(sessionId)
     if (!record) return false
@@ -1108,7 +1086,7 @@ export class SessionLifecycle {
   private async captureProjectCodexIds(projectPath: string): Promise<void> {
     const unnamed = this.records.list().filter((record) =>
       SessionLifecycle.isProjectRecord(record, projectPath)
-      && CodexIdCapture.discoverable(record))
+      && SessionLifecycle.tracksCodex(record))
     for (const record of unnamed) await this.withCapturedCodexId(record)
   }
 
@@ -1119,29 +1097,22 @@ export class SessionLifecycle {
       && record.agent.nativeSessionId === spec.nativeSessionId)
   }
 
-  /**
-   * The record, with the id of the conversation it ran written into it where one could be found for
-   * it beyond doubt. Unchanged in every other case, which leaves the reopen gate saying exactly what
-   * it said before this existed.
-   *
-   * The one read every pass makes: the launch window walked fresh. A listing would answer out of a
-   * thirty-second cache, so it could not see a rollout written a second ago, and building that cache
-   * without a memo reads every header in ninety days. The window a rollout has to fall inside is the
-   * record's own, so this costs the same for a record launched a second or a month ago.
-   */
+  /** A receipt is scoped to one persisted launch; timestamps and rollout contents are never evidence. */
   private async withCapturedCodexId(record: SessionRecord): Promise<SessionRecord> {
     const agent = record.agent
-    if (!agent || !CodexIdCapture.discoverable(record) || this.records.latched) return record
-    const window = CodexIdCapture.windowOf(record)
-    const found = await this.codexRollouts.rolloutsBetween(
-      LaunchPlanner.cwdOf(record),
-      window.from,
-      window.until,
-    )
-    const captured = CodexIdCapture.matchOf(found, record, this.records.list())
-    if (captured === null) return record
-    const named: SessionRecord = { ...record, agent: { ...agent, nativeSessionId: captured } }
+    if (!agent || !SessionLifecycle.tracksCodex(record) || this.records.latched) return record
+    const receipt = this.codexSessions.identity(record)
+    if (receipt === null || receipt.sequence <= (agent.identitySequence ?? 0)) return record
+    const named: SessionRecord = { ...record, agent: { ...agent,
+      nativeSessionId: receipt.nativeSessionId, nativeSessionIdSource: 'codex-app-server',
+      identitySequence: receipt.sequence,
+    } }
     return await this.records.put(named) ? named : record
+  }
+
+  private static tracksCodex(record: SessionRecord): boolean {
+    return record.agent?.agentId === 'codex' && record.agent.identityLaunchId !== undefined
+      && record.endedReason === undefined
   }
 
   /**
@@ -1220,8 +1191,9 @@ export class SessionLifecycle {
         if (await this.applyBindLive(change.sessionId, change.binding)) applied.push(change)
       }
       else if (change.kind === 'mark-ended') {
-        const record = this.records.get(change.sessionId)
-        if (record) {
+        const previous = this.records.get(change.sessionId)
+        if (previous) {
+          const record = await this.withCapturedCodexId(previous)
           const ended: SessionRecord = {
             ...record,
             life: 'ended',
@@ -1540,6 +1512,7 @@ export class SessionLifecycle {
       createdAt: this.now(),
     }
     if (agent) {
+      if (agent.agentId === 'codex') agent.identityLaunchId = operationId
       record.agent = agent
       record.transcriptCwd = cwd
       if (agent.initialPrompt) record.lastUserInputAt = record.createdAt
@@ -1556,6 +1529,7 @@ export class SessionLifecycle {
       ?? (AgentPresets.mintsNativeSessionId(agent) ? sessionId : undefined)
     const stored: SessionRecordAgent = { agentId: agent.agentId, launchMode: agent.mode }
     if (nativeSessionId) stored.nativeSessionId = nativeSessionId
+    if (agent.agentId === 'codex' && nativeSessionId) stored.nativeSessionIdSource = 'provided'
     if (agent.forkParentId) stored.forkParentId = agent.forkParentId
     if (agent.initialPrompt) stored.initialPrompt = agent.initialPrompt
     // Resolved HERE rather than at the launch, and that is what makes the field readable at all: the

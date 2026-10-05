@@ -208,6 +208,11 @@ class SmokeHost extends SmokeHarness {
       // No view is named above, so the whole ring comes back; `?.` covers the runtime without one.
       if (inspected.projection?.raw?.includes(needle)) {
         SmokeHost.check(`projection captured ${JSON.stringify(needle)}`, true)
+        const bounded = await SmokeHost.op<RuntimeInspectResult>(descriptor, 'runtime.inspect', {
+          target, view: { rawTailChars: 0, screenScrollbackRows: 16 },
+        })
+        SmokeHost.check('bounded inspection carries physical visible rows',
+          bounded.projection?.screenLines?.some((line) => line.includes(needle)) === true)
         return
       }
       await SmokeHarness.sleep(200)

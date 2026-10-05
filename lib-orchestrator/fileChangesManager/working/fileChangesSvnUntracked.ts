@@ -74,6 +74,12 @@ export class FileChangesSvnUntracked {
       if (stored.value === null) return null
       args = stored.value.gitDirArgs
     }
+    // Git's rules decide what it lists, not what SVN versions: a mirror that excludes `/.aidocs/`
+    // lists nothing under a new `.aidocs` directory, and the review then showed and committed the
+    // directory alone (Jamat#35). Where Git ignores the directory itself, SVN's own rules apply.
+    const ignored = await this.deps.git.run(directory, [...args, 'check-ignore', '-q', '--', '.'])
+    if (ignored.failure === null && ignored.code === 0) return null
+    if (ignored.failure !== null || ignored.code !== 1) throw new Error(ignored.stderr || 'Git could not check the new directory against its ignore rules')
     const listed = await this.deps.git.run(directory, [...args, 'ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', '.'])
     if (listed.failure !== null || listed.code !== 0) throw new Error(listed.stderr || 'Git could not enumerate the new directory')
     const paths = new Set<string>()

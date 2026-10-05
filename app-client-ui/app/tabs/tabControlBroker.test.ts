@@ -249,6 +249,50 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     h.acknowledge('main', returned, { kind: 'focused', panelId: 'original' })
   })
 
+  it.each(['other-session', 'other-window', 'other-app'] as const)(
+    'activates a new review after leaving the unfinished queue for %s', async (move) => {
+      const h = new TabControlHarness()
+      h.session('first')
+      h.session('second')
+      h.session('third')
+      h.session('original')
+      await h.queueReview('first', 'one')
+      await h.queueReview('second', 'two')
+      const windowId = move === 'other-window' ? 'holder' : 'main'
+      h.session('other', windowId)
+      h.windows.lastFocusedWindowId = windowId
+      h.windows.focusedWindowId = move === 'other-app' ? null : windowId
+      h.clock = 300_001
+
+      await h.queueReview('third', 'three')
+
+      expect(h.windows.published[2]?.command).toMatchObject({ panelId: 'third', activate: true })
+      h.finishReview('one')
+      h.finishReview('two')
+      await h.settled()
+      expect(h.windows.published).toHaveLength(3)
+      h.finishReview('three')
+      const returned = await h.command(3)
+      expect(returned).toMatchObject({ kind: 'focus-panel', panelId: 'other' })
+      h.acknowledge(windowId, returned, { kind: 'focused', panelId: 'other' })
+    },
+  )
+
+  it.each(['first', 'second'] as const)('activates a reopened %s review after leaving its queue', async (sessionId) => {
+    const h = new TabControlHarness()
+    h.session('first')
+    h.session('second')
+    h.session('original')
+    await h.queueReview('first', 'one')
+    await h.queueReview('second', 'two')
+    h.index.setActivePanel('main', 'original')
+
+    await h.queueReview(sessionId, sessionId === 'first' ? 'one' : 'two')
+
+    expect(h.windows.published[2]?.command).toMatchObject({ panelId: sessionId, activate: true })
+    h.broker.cancelAll()
+  })
+
   it.each(['failed', 'running', 'external-closed'] as const)('holds the queue while the current review is %s', async (state) => {
     const h = new TabControlHarness()
     h.session('first')

@@ -1,0 +1,40 @@
+{
+  "agent": "codex",
+  "expected": {
+    "hint": "unknown",
+    "composer": {
+      "state": "text",
+      "text": "Reply with pong 👍 then read 日本語のテキスト and cafe now."
+    },
+    "queuedRow": false,
+    "echoHead": null,
+    "pastePlaceholders": 0,
+    "content": {
+      "kind": "text",
+      "text": "Reply with pong 👍 then read 日本語のテキスト and cafe now.",
+      "eraseBound": 60
+    }
+  },
+  "provenance": {
+    "origin": "captured from this tree's live Host by scripts/dev/capture-workstate.ts",
+    "case": "a one-row draft of wide and combining characters",
+    "capture": "the text, one row with an emoji, six CJK characters and `cafe` followed by U+0301 COMBINING ACUTE ACCENT, was written with `terminal send` without Enter at 120 x 30; Codex draws `cafe` with no accent anywhere on screen, so no reading can return it; the Host predates styled screenLines, so `viewport` keeps the serialized viewport of an inspect without scrollback and WorkFixtures.viewportOf rebuilds its rows; sanitized per V1 recipe: the repository directory is replaced by Q:\\PROJECT. ANSI is left intact",
+    "ported": "nothing - recorded in this tree",
+    "identical": "not present in the V1 or V2 corpus"
+  },
+  "recorded": {
+    "build": "codex-cli 0.160.0",
+    "capturedAt": "2026-10-05",
+    "cols": 120,
+    "rows": 30
+  },
+  "frame": {
+    "rawTail": "026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[27;12H\u001b[K\u001b[109C\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[2m\u001b[27;3HAsk Codex to do anything\u001b[22m\u001b[K\u001b[1m\u001b[30;3H?\u001b[22m\u001b[1Cfor\u001b[1Cshortcuts\u001b[27;3H\u001b[?25h\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?25l\u001b[30;2H\u001b[K\u001b[27;3H\u001b[?25h\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[?2026lReply with pong 👍 then read\u001b[1C日本語のテキスト\u001b[1Cand\u001b[1Ccafe\u001b[1Cnow.\u001b[?25h",
+    "screenTail": "\n\n\n\n\n\u001b[1m›\u001b[0m Reply with pong 👍 then read\u001b[1C日本語のテキスト\u001b[1Cand\u001b[1Ccafe\u001b[1Cnow.\n\n  GPT-6-Astra xhigh · Q:\\PROJECT\u001b[2A\u001b[?2004h\u001b[?1004h\u001b[?1003h\u001b[?1006h",
+    "wideScreenTail": "\n\n\n\n\n\n\n\n\n\n\n\n\n\u001b[1m›\u001b[0m Reply with pong 👍 then read\u001b[1C日本語のテキスト\u001b[1Cand\u001b[1Ccafe\u001b[1Cnow.\n\n  GPT-6-Astra xhigh · Q:\\PROJECT\u001b[2A\u001b[?2004h\u001b[?1004h\u001b[?1003h\u001b[?1006h"
+  },
+  "viewport": {
+    "screen": "\u001b[?1049h\u001b[H\r\n  >_ \u001b[1mOpenAI Codex\u001b[22;2m (v0.160.0)\r\n\u001b[0m     \u001b[2mQ:\\PROJECT\r\n  permissions: \u001b[35;1;22mYOLO mode\r\n\r\n\u001b[0m  How deep does this codebase go?\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\u001b[1m›\u001b[0m Reply with pong 👍 then read\u001b[1C日本語のテキスト\u001b[1Cand\u001b[1Ccafe\u001b[1Cnow.\r\n\r\n  GPT-6-Astra xhigh · Q:\\PROJECT\u001b[2A\u001b[?2004h\u001b[?1004h\u001b[?1003h\u001b[?1006h",
+    "rows": 30
+  }
+}

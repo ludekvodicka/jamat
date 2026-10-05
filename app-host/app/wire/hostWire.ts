@@ -177,6 +177,15 @@ export interface TerminalProjectionSnapshot {
    */
   raw?: string
   screen: string
+  /**
+   * Physical rows from the synchronized active buffer for a bounded inspect. Cells outside `cols`
+   * and unused rows below both the cursor and the last content are excluded. Trailing whitespace
+   * is trimmed. With `screenLinesStyled`, dim runs carry SGR 2/22 only, closed within each row.
+   * Older Hosts omit the rows or send plain rows without the style marker.
+   */
+  screenLines?: string[]
+  /** Without this marker a reader cannot distinguish a dim placeholder from a typed draft. */
+  screenLinesStyled?: true
   cols: number
   rows: number
   alive: boolean

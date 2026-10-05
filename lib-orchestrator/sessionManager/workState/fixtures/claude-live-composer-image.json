@@ -1,0 +1,38 @@
+{
+  "agent": "claude",
+  "expected": {
+    "hint": "idle",
+    "composer": {
+      "state": "text",
+      "text": "Describe this image [Image #1]"
+    },
+    "queuedRow": false,
+    "echoHead": null,
+    "pastePlaceholders": 0,
+    "content": {
+      "kind": "placeholder"
+    }
+  },
+  "provenance": {
+    "origin": "captured from this tree's live Host by scripts/dev/capture-workstate.ts",
+    "case": "a typed draft followed by an attached image, drawn as [Image #1]",
+    "capture": "the text was written with `terminal send` without Enter at 120 x 30, then the path of a PNG file inside the repository as one bracketed paste, which the agent turned into an attachment; the Host predates styled screenLines, so `viewport` keeps the serialized viewport of an inspect without scrollback and WorkFixtures.viewportOf rebuilds its rows; sanitized per V1 recipe: the repository directory is replaced by Q:\\PROJECT. ANSI is left intact",
+    "ported": "nothing - recorded in this tree",
+    "identical": "not present in the V1 or V2 corpus"
+  },
+  "recorded": {
+    "build": "claude-code 2.1.289",
+    "capturedAt": "2026-10-05",
+    "cols": 120,
+    "rows": 30
+  },
+  "frame": {
+    "rawTail": "t line 39\u001b[K\r\n  Tall draft line 40\u001b[K\u001b[38;2;136;136;136m\r\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[m  \u001b[38;2;255;107;128m⏵⏵ bypass permissions on \u001b[38;2;153;153;153m(shift+tab to cycle)\u001b[K\u001b[m\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\u001b[22;21H\u001b[?25h\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?25l\u001b[2J\u001b[H\u001b[K\u001b[38;2;215;119;87m\r\n ▐\u001b[48;2;0;0;0m▛███▛█\u001b[m   \u001b[1mClaude Code\u001b[22m \u001b[38;2;153;153;153mv2.1.289\u001b[K\u001b[38;2;215;119;87m\r\n▝▜\u001b[48;2;0;0;0m█████\u001b[49m█▀  \u001b[38;2;153;153;153mOpus 5.5 with high effort · Claude Max\u001b[K\u001b[38;2;215;119;87m\r\n ▝▝   ▝▝   \u001b[38;2;153;153;153mQ:\\PROJECT · \u001b[38;2;78;186;101m/rc\u001b[K\u001b[m\r\n\u001b[K\u001b[38;2;255;193;7m\r\n‼ Your login expires in 2 days \u001b[38;2;153;153;153m· run /login to renew\u001b[K\u001b[m\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\u001b[38;2;136;136;136m\r\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[m> Tall draft line 31\u001b[K\r\n  Tall draft line 32\u001b[K\r\n  Tall draft line 33\u001b[K\r\n  Tall draft line 34\u001b[K\r\n  Tall draft line 35\u001b[K\r\n  Tall draft line 36\u001b[K\r\n  Tall draft line 37\u001b[K\r\n  Tall draft line 38\u001b[K\r\n  Tall draft line 39\u001b[K\r\n  Tall draft line 40\u001b[K\u001b[38;2;136;136;136m\r\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[m  \u001b[38;2;255;107;128m⏵⏵ bypass permissions on \u001b[38;2;153;153;153m(shift+tab to cycle)\u001b[K\u001b[28;21H\u001b[?25h\u001b[?2004h\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[m\u001b[?25l\u001b[18;1H                                                                                                                        \r\n\u001b[K\u001b[20;3H\u001b[K\n\u001b[K\n\u001b[K\n\u001b[K\n\u001b[K\n\u001b[K\n\u001b[K\u001b[38;2;136;136;136m\r\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[m> \u001b[2mTry \"refactor <filepath>\"\u001b[38;2;153;153;153m\u001b[22m\u001b[30;48H · ← 1 agent\u001b[28;3H\u001b[?25h\u001b[m\u001b[?25lDescribe this image\u001b[K\u001b[30;48H\u001b[K\u001b[28;23H\u001b[?25h[Image\u001b[1C#1]",
+    "screenTail": "  \n  \n  \n  \n\u001b[38;2;136;136;136m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[0m> Describe this image\u001b[1C[Image\u001b[1C#1]\n\u001b[38;2;136;136;136m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[0m  \u001b[38;2;255;107;128m⏵⏵ bypass permissions on \u001b[38;2;153;153;153m(shift+tab to cycle)\u001b[2A\u001b[15D\u001b[0m\u001b[?2004h\u001b[?1004h\u001b[?1003h\u001b[?1006h",
+    "wideScreenTail": "\n\n\n\u001b[0m                                                                                                                        \n\n  \n  \n  \n  \n  \n  \n  \n\u001b[38;2;136;136;136m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[0m> Describe this image\u001b[1C[Image\u001b[1C#1]\n\u001b[38;2;136;136;136m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[0m  \u001b[38;2;255;107;128m⏵⏵ bypass permissions on \u001b[38;2;153;153;153m(shift+tab to cycle)\u001b[2A\u001b[15D\u001b[0m\u001b[?2004h\u001b[?1004h\u001b[?1003h\u001b[?1006h"
+  },
+  "viewport": {
+    "screen": "\u001b[?1049h\u001b[H\r\n\u001b[38;2;215;119;87m ▐\u001b[48;2;0;0;0m▛███▛█\u001b[0m   \u001b[1mClaude Code\u001b[0m \u001b[38;2;153;153;153mv2.1.289\r\n\u001b[38;2;215;119;87m▝▜\u001b[48;2;0;0;0m█████\u001b[49m█▀  \u001b[38;2;153;153;153mOpus 5.5 with high effort · Claude Max\r\n\u001b[38;2;215;119;87m ▝▝   ▝▝   \u001b[38;2;153;153;153mQ:\\PROJECT · \u001b[38;2;78;186;101m/rc\r\n\r\n\u001b[38;2;255;193;7m‼ Your login expires in 2 days \u001b[38;2;153;153;153m· run /login to renew\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\u001b[0m                                                                                                                        \r\n\r\n  \r\n  \r\n  \r\n  \r\n  \r\n  \r\n  \r\n\u001b[38;2;136;136;136m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[0m> Describe this image\u001b[1C[Image\u001b[1C#1]\r\n\u001b[38;2;136;136;136m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[0m  \u001b[38;2;255;107;128m⏵⏵ bypass permissions on \u001b[38;2;153;153;153m(shift+tab to cycle)\u001b[2A\u001b[15D\u001b[0m\u001b[?2004h\u001b[?1004h\u001b[?1003h\u001b[?1006h",
+    "rows": 30
+  }
+}

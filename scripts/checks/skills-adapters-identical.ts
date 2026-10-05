@@ -11,16 +11,19 @@ import { fileURLToPath } from 'node:url'
 class SkillsAdaptersIdentical {
   private static readonly repositoryRootConst =
     join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-  private static readonly skillConst = 'appjamat-v3'
+  private static readonly skillsConst = {
+    'appjamat-v3': ['REFERENCE.md', 'scripts/jamat-v3.mjs'],
+    'session-automation-groups': ['SKILL.md', 'REFERENCE.md', 'scripts/session-automation-groups.mjs'],
+  }
   private static readonly agentsConst = ['claude', 'codex'] as const
   /** Everything that is duplicated. A file only one adapter needs does not belong on this list. */
-  private static readonly sharedFilesConst = ['REFERENCE.md', 'scripts/jamat-v3.mjs'] as const
 
   static findings(): string[] {
     const findings: string[] = []
-    for (const file of SkillsAdaptersIdentical.sharedFilesConst) {
+    for (const [skill, files] of Object.entries(SkillsAdaptersIdentical.skillsConst))
+    for (const file of files) {
       const paths = SkillsAdaptersIdentical.agentsConst
-        .map(agent => SkillsAdaptersIdentical.pathOf(agent, file))
+        .map(agent => SkillsAdaptersIdentical.pathOf(agent, skill, file))
       const missing = paths.filter(path => !existsSync(path))
       if (missing.length > 0) {
         findings.push(`${file}: missing in ${missing.join(', ')}`)
@@ -33,12 +36,12 @@ class SkillsAdaptersIdentical {
     return findings
   }
 
-  private static pathOf(agent: string, file: string): string {
+  private static pathOf(agent: string, skill: string, file: string): string {
     return join(
       SkillsAdaptersIdentical.repositoryRootConst,
       'skills',
       agent,
-      SkillsAdaptersIdentical.skillConst,
+      skill,
       ...file.split('/'),
     )
   }
@@ -46,8 +49,7 @@ class SkillsAdaptersIdentical {
   static run(): number {
     const findings = SkillsAdaptersIdentical.findings()
     if (findings.length === 0) {
-      console.log(`[skills] ${SkillsAdaptersIdentical.skillConst}: both adapters carry the same `
-        + `${SkillsAdaptersIdentical.sharedFilesConst.length} files`)
+      console.log('[skills] appjamat-v3 and session-automation-groups: both adapters are identical')
       return 0
     }
     console.error('[skills] the two adapter copies are not identical:')

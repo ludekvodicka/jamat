@@ -1,0 +1,18 @@
+{
+  "agent": "codex",
+  "expected": {
+    "hint": "compacting"
+  },
+  "provenance": {
+    "origin": "Terminal peek of session 7e5792f6-cc5d-44e4-b101-2724d1e1595f on 2026-10-03 after the client restart.",
+    "case": "Compaction above deferred messages pushes the status outside the shallow window.",
+    "capture": "Visible text transcribed from the live peek, with physical row spacing reconstructed using the previously supplied screenshot of the same queued layout. Retained hidden columns, message contents and the project path are removed. This is not a captured physical-row Host frame or evidence of a known Codex build.",
+    "ported": "nothing",
+    "identical": "not present in the V1 or V2 corpus"
+  },
+  "frame": {
+    "rawTail": "",
+    "screenTail": "\n    …\n\n\n› Ask Codex to do anything\n\n  GPT-6-Astra xhigh · Q:/PROJECT\n  ? for shortcuts",
+    "wideScreenTail": "• Compacting context (1m 17s • esc to interrupt)\n  └ Making room to continue.\n\n• Messages to be submitted after next tool call (press esc to interrupt and send immediately)\n  ↳ > Use dedicated test accounts with prepared data.\n    Which data should the expanded suite use?\n\n    …\n\n\n› Ask Codex to do anything\n\n  GPT-6-Astra xhigh · Q:/PROJECT\n  ? for shortcuts"
+  }
+}

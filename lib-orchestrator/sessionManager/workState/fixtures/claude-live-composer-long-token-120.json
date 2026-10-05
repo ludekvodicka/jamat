@@ -1,0 +1,40 @@
+{
+  "agent": "claude",
+  "expected": {
+    "hint": "idle",
+    "composer": {
+      "state": "text",
+      "text": "Reply with pong. Then read E:/Temp/claude/fixture-notes/aVeryLongDirectoryNameWithoutAnyBreakOpportunityThatIsLonger\nThanOneWholeRowOfTheTerminalAtOneHundredTwentyColumnsWideForSure/notes.md and\nthe-hyphenated-file-name-that-keeps-going-on-and-on-past-the-end-of-the-row-for-the-join-rule.md now."
+    },
+    "queuedRow": false,
+    "echoHead": null,
+    "pastePlaceholders": 0,
+    "content": {
+      "kind": "text",
+      "text": "Reply with pong. Then read E:/Temp/claude/fixture-notes/aVeryLongDirectoryNameWithoutAnyBreakOpportunityThatIsLongerThanOneWholeRowOfTheTerminalAtOneHundredTwentyColumnsWideForSure/notes.md and the-hyphenated-file-name-that-keeps-going-on-and-on-past-the-end-of-the-row-for-the-join-rule.md now.",
+      "eraseBound": 305
+    }
+  },
+  "provenance": {
+    "origin": "captured from this tree's live Host by scripts/dev/capture-workstate.ts",
+    "case": "one typed line wrapped at 120 columns: the path longer than a row is cut wherever the row ends, the hyphenated name that fits a row moves to the next row whole",
+    "capture": "the text, one line of 295 characters with a token longer than a row and a hyphenated token, was written with `terminal send` without Enter at 80 x 30, and the terminal was then grown to 120 x 30, which Claude rewrapped; the Host predates styled screenLines, so `viewport` keeps the serialized viewport of an inspect without scrollback and WorkFixtures.viewportOf rebuilds its rows; sanitized per V1 recipe: the repository directory is replaced by Q:\\PROJECT. ANSI is left intact",
+    "ported": "nothing - recorded in this tree",
+    "identical": "not present in the V1 or V2 corpus"
+  },
+  "recorded": {
+    "build": "claude-code 2.1.289",
+    "capturedAt": "2026-10-05",
+    "cols": 120,
+    "rows": 30
+  },
+  "frame": {
+    "rawTail": "\r\n────────────────────────────────────────────────────────────────────────────────                                        \u001b[m> Reply with pong. Then read E:/Temp/claude/fixture-notes/aVeryLongDirectoryNa\u001b[K\r\n  meWithoutAnyBreakOpportunityThatIsLongerThanOneWholeRowOfTheTerminalAtOneHun\u001b[K\r\n  dredTwentyColumnsWideForSure/notes.md and the-hyphenated-file-name-that-keep                                            s-going-on-and-on-past-the-end-of-the-row-for-the-join-rule.md now.\u001b[K\u001b[38;2;136;136;136m\r\n────────────────────────────────────────────────────────────────────────────────                                        \u001b[m  \u001b[38;2;255;107;128m⏵⏵ bypass permissions on \u001b[38;2;153;153;153m(shift+tab to cycle)\u001b[K\u001b[28;70H\u001b[?25h\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[m\u001b[?25l\u001b[2J\u001b[H\u001b[K\u001b[38;2;215;119;87m\r\n ▐\u001b[48;2;0;0;0m▛███▛█\u001b[m   \u001b[1mClaude Code\u001b[22m \u001b[38;2;153;153;153mv2.1.289\u001b[K\u001b[38;2;215;119;87m\r\n▝▜\u001b[48;2;0;0;0m█████\u001b[49m█▀  \u001b[38;2;153;153;153mOpus 5.5 with high effort · Claude Max\u001b[K\u001b[38;2;215;119;87m\r\n ▝▝   ▝▝   \u001b[38;2;153;153;153mQ:\\PROJECT · \u001b[38;2;78;186;101m/rc\u001b[K\u001b[m\r\n\u001b[K\u001b[38;2;255;193;7m\r\n‼ Your login expires in 2 days \u001b[38;2;153;153;153m· run /login to renew\u001b[K\u001b[m\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\u001b[38;2;136;136;136m\r\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[m> Reply with pong. Then read E:/Temp/claude/fixture-notes/aVeryLongDirectoryNameWithoutAnyBreakOpportunityThatIsLonger  \r\n  ThanOneWholeRowOfTheTerminalAtOneHundredTwentyColumnsWideForSure/notes.md and\u001b[K\r\n  the-hyphenated-file-name-that-keeps-going-on-and-on-past-the-end-of-the-row-for-the-join-rule.md now.\u001b[K\u001b[38;2;136;136;136m\r\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[m  \u001b[38;2;255;107;128m⏵⏵ bypass permissions on \u001b[38;2;153;153;153m(shift+tab to cycle)\u001b[K\u001b[28;104H\u001b[?25h",
+    "screenTail": "\n\n\u001b[38;2;136;136;136m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[0m> Reply with pong. Then read E:/Temp/claude/fixture-notes/aVeryLongDirectoryNameWithoutAnyBreakOpportunityThatIsLonger  \n  ThanOneWholeRowOfTheTerminalAtOneHundredTwentyColumnsWideForSure/notes.md and\n  the-hyphenated-file-name-that-keeps-going-on-and-on-past-the-end-of-the-row-for-the-join-rule.md now.\n\u001b[38;2;136;136;136m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[0m  \u001b[38;2;255;107;128m⏵⏵ bypass permissions on \u001b[38;2;153;153;153m(shift+tab to cycle)\u001b[2A\u001b[56C\u001b[?2004h\u001b[?1004h\u001b[?1003h\u001b[?1006h",
+    "wideScreenTail": "\n\n\n\n\n\n\n\n\n\n\u001b[38;2;136;136;136m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[0m> Reply with pong. Then read E:/Temp/claude/fixture-notes/aVeryLongDirectoryNameWithoutAnyBreakOpportunityThatIsLonger  \n  ThanOneWholeRowOfTheTerminalAtOneHundredTwentyColumnsWideForSure/notes.md and\n  the-hyphenated-file-name-that-keeps-going-on-and-on-past-the-end-of-the-row-for-the-join-rule.md now.\n\u001b[38;2;136;136;136m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[0m  \u001b[38;2;255;107;128m⏵⏵ bypass permissions on \u001b[38;2;153;153;153m(shift+tab to cycle)\u001b[2A\u001b[56C\u001b[?2004h\u001b[?1004h\u001b[?1003h\u001b[?1006h"
+  },
+  "viewport": {
+    "screen": "\u001b[29B\u001b[79C\u001b[38;2;153;153;153m\u001b[?1049h\u001b[H\r\n\u001b[38;2;215;119;87m ▐\u001b[48;2;0;0;0m▛███▛█\u001b[0m   \u001b[1mClaude Code\u001b[0m \u001b[38;2;153;153;153mv2.1.289\r\n\u001b[38;2;215;119;87m▝▜\u001b[48;2;0;0;0m█████\u001b[49m█▀  \u001b[38;2;153;153;153mOpus 5.5 with high effort · Claude Max\r\n\u001b[38;2;215;119;87m ▝▝   ▝▝   \u001b[38;2;153;153;153mQ:\\PROJECT · \u001b[38;2;78;186;101m/rc\r\n\r\n\u001b[38;2;255;193;7m‼ Your login expires in 2 days \u001b[38;2;153;153;153m· run /login to renew\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\u001b[38;2;136;136;136m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[0m> Reply with pong. Then read E:/Temp/claude/fixture-notes/aVeryLongDirectoryNameWithoutAnyBreakOpportunityThatIsLonger  \r\n  ThanOneWholeRowOfTheTerminalAtOneHundredTwentyColumnsWideForSure/notes.md and\r\n  the-hyphenated-file-name-that-keeps-going-on-and-on-past-the-end-of-the-row-for-the-join-rule.md now.\r\n\u001b[38;2;136;136;136m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[0m  \u001b[38;2;255;107;128m⏵⏵ bypass permissions on \u001b[38;2;153;153;153m(shift+tab to cycle)\u001b[2A\u001b[56C\u001b[?2004h\u001b[?1004h\u001b[?1003h\u001b[?1006h",
+    "rows": 30
+  }
+}

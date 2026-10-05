@@ -400,6 +400,9 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     } } })
     fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
     await screen.findByLabelText('Include shared')
+    expect(screen.getByLabelText('Include shared')).not.toBeChecked()
+    expect(screen.getByRole('button', { name: 'Commit files' })).toBeDisabled()
+    fireEvent.click(screen.getByLabelText('Include shared'))
     expect(screen.getByRole('button', { name: 'Commit files' })).toBeEnabled()
     expect(close).not.toHaveBeenCalled()
     vi.mocked(f.ports.versioning.commitFiles).mockResolvedValue({ ok: true, value: { ok: true, value: {
@@ -705,10 +708,15 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     expect(screen.getByRole('textbox')).toHaveValue('Keep this review message')
     expect(screen.getByLabelText('Include a.txt')).toBeChecked()
     expect(screen.getByLabelText('Include b.txt')).not.toBeChecked()
-    expect(screen.getByLabelText('Include new.txt')).toBeChecked()
+    expect(screen.getByLabelText('Include new.txt')).not.toBeChecked()
     expect(f.ports.versioning.commitFiles).toHaveBeenCalledTimes(reads + 1)
     expect(f.ports.versioning.runCommit).toHaveBeenCalledTimes(1)
     expect(close).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByLabelText('Include new.txt'))
+    vi.mocked(f.ports.versioning.commitFiles).mockResolvedValue({ ok: true, value: { ok: true, value: refreshed } })
+    fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
+    await waitFor(() => expect(f.ports.versioning.commitFiles).toHaveBeenCalledTimes(reads + 2))
+    expect(screen.getByLabelText('Include new.txt')).toBeChecked()
     fireEvent.click(screen.getByLabelText('Include new.txt'))
     fireEvent.click(screen.getByRole('button', { name: 'Commit files' }))
     await waitFor(() => expect(f.ports.versioning.runCommit).toHaveBeenNthCalledWith(2, {
@@ -732,6 +740,34 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Commit files' })).toBeEnabled())
     expect(f.ports.versioning.runCommit).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps conflict backup files unchecked after SVN recovery without any prior checkbox edit', async () => {
+    const f = CommitPaneTest.fixture()
+    const detail = 'SVN update left conflicts in a.txt'
+    vi.mocked(f.ports.versioning.runCommit).mockResolvedValueOnce({ ok: true,
+      value: { ok: false, code: 'vcs-failed', detail, reloadRequired: true } })
+    render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={vi.fn()} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Commit files' })).toBeEnabled())
+    const backups = ['a.txt.mine', 'a.txt.r901', 'a.txt.r902']
+    const refreshed = { ...f.snapshot, snapshotId: 'after-update',
+      entries: [...f.snapshot.entries.map((entry) => ({ ...entry, fileId: `${entry.fileId}-2`,
+        status: entry.fileId === 'a.txt' ? 'conflicted' as const : entry.status })),
+      ...backups.map((path) => CommitPaneTest.entry(path, 'untracked'))],
+      externalRoots: [{ ...f.snapshot.externalRoots[0], fileIds: ['shared/external.txt-2'] }] }
+    vi.mocked(f.ports.versioning.commitFiles).mockResolvedValue({ ok: true, value: { ok: true, value: refreshed } })
+    fireEvent.click(screen.getByRole('button', { name: 'Commit files' }))
+    await waitFor(() => expect(screen.getByLabelText('Include a.txt')).toBeDisabled())
+    for (const path of backups) expect(screen.getByLabelText(`Include ${path}`)).not.toBeChecked()
+    expect(screen.getByLabelText('Include b.txt')).toBeChecked()
+    expect(screen.getByLabelText('Include shared/external.txt')).toBeChecked()
+    expect(screen.getByRole('status')).toHaveTextContent(detail)
+    expect(f.ports.versioning.runCommit).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Commit files' }))
+    await waitFor(() => expect(f.ports.versioning.runCommit).toHaveBeenNthCalledWith(2, {
+      draftId: 'draft', snapshotId: 'after-update', fileIds: ['b.txt-2', 'shared/external.txt-2'],
+      message: 'Proposed message', includeExternals: true,
+    }))
   })
 
   it('does not reload after an unrelated invalid target refusal', async () => {

@@ -10,7 +10,7 @@ import type {
   RuntimeSessionInfo,
 } from '../../../app-host/app/wire/hostWire.js'
 import type { GitErrorCode, GitResult, WorktreeFacts } from '../../git/git.types'
-import type { CodexRolloutMatch } from '../../projectManager/codexRolloutView'
+import type { CodexSessionIdentity } from '../codexSessionIdentity'
 import type { HostCallFailure } from '../../hostClient/hostClient.types'
 import type { DeclaredSetup, SetupResolution } from '../../projectSetup/projectSetup.types'
 import { AtomicJsonFile } from '../../shared/atomicJsonFile'
@@ -25,7 +25,6 @@ import type {
 import {
   SessionLifecycle,
   type SessionClaudeTitlesPort,
-  type SessionCodexRolloutsPort,
   type SessionHostPort,
   type SessionNumbersPort,
   type SessionSetupPort,
@@ -109,7 +108,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     worktrees: FakeWorktrees
     setup: FakeSetup
     numbers: FakeNumbers
-    codexRollouts: FakeCodexRollouts
+    identities: Map<string, CodexSessionIdentity>
     claudeTitles: FakeClaudeTitles
     snapshotsDirectory: string
     /** The records file itself, so a case can make it unwritable AFTER it has been seeded. */
@@ -128,14 +127,6 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     resumed: string[]
     /** The lifecycle's clock, movable so a case can wait out a replay backoff. */
     clock: { now: number }
-  }
-
-  interface FakeCodexRollouts {
-    /** What Codex is pretending to have written, keyed by the directory it ran in. */
-    byDirectory: Map<string, CodexRolloutMatch[]>
-    /** The directory and exact launch window each capture pass asked to read. */
-    windowCalls: { directory: string; from: number; until: number }[]
-    port: SessionCodexRolloutsPort
   }
 
   interface FakeClaudeTitles {
@@ -161,29 +152,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     return fake
   }
 
-  function fakeCodexRollouts(): FakeCodexRollouts {
-    const byDirectory = new Map<string, CodexRolloutMatch[]>()
-    const windowCalls: { directory: string; from: number; until: number }[] = []
-    return {
-      byDirectory,
-      windowCalls,
-      port: {
-        async rolloutsBetween(directory, from, until) {
-          windowCalls.push({ directory, from, until })
-          return (byDirectory.get(directory) ?? [])
-            .filter((match) => match.createdAt >= from && match.createdAt <= until)
-        },
-      },
-    }
-  }
-
-  /** One rollout the fake store holds. A conversation nobody forked names no parent. */
-  function rollout(
-    sessionId: string,
-    createdAt: number,
-    forkedFromId: string | null = null,
-  ): CodexRolloutMatch {
-    return { sessionId, createdAt, forkedFromId, firstUserMessage: null }
+  function identity(sessionId: string, nativeSessionId: string, sequence = 1): CodexSessionIdentity {
+    return {schemaVersion: 1, jamatSessionId: sessionId, launchId: 'proof', nativeSessionId, sequence}
   }
 
   function fakeNumbers(): FakeNumbers {
@@ -429,7 +399,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     const worktrees = fakeWorktrees()
     const setup = fakeSetup()
     const numbers = fakeNumbers()
-    const codexRollouts = fakeCodexRollouts()
+    const identities = new Map<string, CodexSessionIdentity>()
     const claudeTitles = fakeClaudeTitles()
     let minted = 0
     // Movable, because the replay backoff is measured against it: a fixed clock makes every pass
@@ -447,7 +417,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       worktrees,
       setup,
       numbers,
-      codexRollouts,
+      identities,
       claudeTitles,
       snapshotsDirectory,
       reports,
@@ -465,7 +435,10 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         worktrees: worktrees.port,
         setup: setup.port,
         numbers: numbers.port,
-        codexRollouts: codexRollouts.port,
+        codexSessions: {
+          launch: (_record, native) => native,
+          identity: record => identities.get(record.sessionId) ?? null,
+        },
         claudeTitles: claudeTitles.port,
         // The one channel the client has for a fact it cannot put in a result, and the store's own
         // damage report goes to the same place in production.
@@ -3139,206 +3112,71 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(context.store.get('s1')?.exitReason).toBeUndefined()
     })
 
-    it('finds a Codex id from the rollout and reopens by it', async () => {
+    it('recovers the confirmed identity before reopening and rotates the launch generation', async () => {
       const context = await harness()
-      context.codexRollouts.byDirectory.set(context.workDirectory, [
-        rollout('conv-1', 5_000),
-      ])
       await context.store.put(record('s1', {
-        kind: 'agent',
-        agent: { agentId: 'codex', launchMode: 'new' },
-        directory: { mode: 'adHoc', path: context.workDirectory },
-        life: 'lost',
-        binding: null,
-        createdAt: 5_000,
+        kind: 'agent', agent: {agentId: 'codex', launchMode: 'new', identityLaunchId: 'proof'},
+        life: 'lost', binding: null,
       }))
-
-      expect(await context.lifecycle.reopen('s1')).toEqual({ ok: true, value: undefined })
-      expect(context.store.get('s1')?.agent?.nativeSessionId).toBe('conv-1')
-      expect(launchOf(callsNamed(context.host, 'runtime.create')[0]).args.slice(-2))
-        .toEqual(['resume', 'conv-1'])
+      context.identities.set('s1', identity('s1', 'conv-1'))
+      expect(await context.lifecycle.reopen('s1')).toEqual({ok: true, value: undefined})
+      expect(context.store.get('s1')?.agent).toMatchObject({
+        nativeSessionId: 'conv-1', nativeSessionIdSource: 'codex-app-server', identityLaunchId: 'id-1',
+      })
+      expect(launchOf(callsNamed(context.host, 'runtime.create')[0]).args.slice(-2)).toEqual(['resume', 'conv-1'])
     })
 
-    it('names old Codex records on startup and skips records that cannot need a lookup', async () => {
+    it('recovers a receipt after restart without any launch-time window', async () => {
       const context = await harness()
-      const createdAt = -3_600_000
-      context.codexRollouts.byDirectory.set(context.workDirectory, [
-        rollout('conv-1', createdAt + 1_000),
-        rollout('conv-3', createdAt + 2_000, 'conv-2'),
-      ])
       await context.store.put(record('s1', {
-        kind: 'agent',
-        agent: { agentId: 'codex', launchMode: 'new' },
-        directory: { mode: 'adHoc', path: context.workDirectory },
-        life: 'lost',
-        binding: null,
-        createdAt,
+        kind: 'agent', agent: {agentId: 'codex', launchMode: 'new', identityLaunchId: 'proof'},
+        life: 'lost', binding: null, createdAt: -9_000_000,
       }))
-      // The fork this pass exists for: taken long ago, never named, and its rollout says whose it is.
-      await context.store.put(record('s5', {
-        kind: 'agent',
-        agent: { agentId: 'codex', launchMode: 'fork', forkParentId: 'conv-2' },
-        directory: { mode: 'adHoc', path: context.workDirectory },
-        life: 'lost',
-        binding: null,
-        createdAt,
-      }))
-      await context.store.put(record('s2', {
-        kind: 'agent',
-        agent: { agentId: 'codex', launchMode: 'new', nativeSessionId: 'conv-2' },
-        directory: { mode: 'adHoc', path: context.workDirectory },
-      }))
-      await context.store.put(record('s3', {
-        kind: 'agent',
-        agent: { agentId: 'claude', launchMode: 'new' },
-        directory: { mode: 'adHoc', path: context.workDirectory },
-      }))
-      await context.store.put(record('s4', {
-        kind: 'agent',
-        agent: { agentId: 'codex', launchMode: 'continue' },
-        directory: { mode: 'adHoc', path: context.workDirectory },
-      }))
-
+      context.identities.set('s1', identity('s1', 'conv-1'))
       await context.lifecycle.nameCodexOnStartup()
-
       expect(context.store.get('s1')?.agent?.nativeSessionId).toBe('conv-1')
-      expect(context.store.get('s5')?.agent?.nativeSessionId).toBe('conv-3')
-      // Two records were looked for and the other three were not: the Claude one, the one that
-      // already has an id, and the `continue` that no id could name.
-      expect(context.codexRollouts.windowCalls).toEqual([
-        { directory: context.workDirectory, from: createdAt - 60_000, until: createdAt + 300_000 },
-        { directory: context.workDirectory, from: createdAt - 60_000, until: createdAt + 300_000 },
-      ])
     })
 
-    it('makes only one startup naming attempt in a process', async () => {
+    it('keeps legacy records unnamed even when a receipt was supplied without a launch generation', async () => {
       const context = await harness()
-      context.codexRollouts.byDirectory.set(context.workDirectory, [
-        rollout('conv-1', 5_000),
-        rollout('conv-2', 5_100),
-      ])
       await context.store.put(record('s1', {
-        kind: 'agent',
-        agent: { agentId: 'codex', launchMode: 'new' },
-        directory: { mode: 'adHoc', path: context.workDirectory },
-        life: 'lost',
-        binding: null,
-        createdAt: 5_000,
+        kind: 'agent', agent: {agentId: 'codex', launchMode: 'new'}, life: 'lost', binding: null,
       }))
+      context.identities.set('s1', identity('s1', 'conv-1'))
       await context.lifecycle.nameCodexOnStartup()
-      context.codexRollouts.byDirectory.set(context.workDirectory, [
-        rollout('conv-1', 5_000),
-      ])
-
-      await context.lifecycle.nameCodexOnStartup()
-
-      expect(context.codexRollouts.windowCalls).toHaveLength(1)
       expect(context.store.get('s1')?.agent?.nativeSessionId).toBeUndefined()
-    })
-
-    /**
-     * The pass's own look, which is what makes the id knowable for a session nobody reopens. Before
-     * it, the status bar could draw no model and no context for any Codex session, File Changes had
-     * no conversation to reconstruct and the tab menu offered no fork.
-     */
-    it('names the conversation of a live Codex session on the reconcile pass', async () => {
-      const context = await harness()
-      context.host.runtimes.set('s1', runtime('s1'))
-      context.codexRollouts.byDirectory.set(context.workDirectory, [
-        rollout('conv-1', 5_000),
-      ])
-      await context.store.put(record('s1', {
-        kind: 'agent',
-        agent: { agentId: 'codex', launchMode: 'new' },
-        directory: { mode: 'adHoc', path: context.workDirectory },
-        createdAt: 4_000,
-      }))
-
-      expect(await context.lifecycle.reconcile(context.host.listing()))
-        .toContainEqual({ kind: 'name-codex-conversation', sessionId: 's1' })
-      expect(context.store.get('s1')?.agent?.nativeSessionId).toBe('conv-1')
-      // Read from the moment the record started, minus the slack a rollout may lag by, so the walk
-      // covers the days that window touches and nothing else.
-      expect(context.codexRollouts.windowCalls).toEqual([{
-        directory: context.workDirectory,
-        from: context.store.get('s1')!.createdAt - 60_000,
-        until: context.store.get('s1')!.createdAt + 300_000,
-      }])
-    })
-
-    /** The second pass has nothing left to do, and says so rather than writing the record again. */
-    it('names it once and then stops asking', async () => {
-      const context = await harness()
-      context.host.runtimes.set('s1', runtime('s1'))
-      context.codexRollouts.byDirectory.set(context.workDirectory, [
-        rollout('conv-1', 5_000),
-      ])
-      await context.store.put(record('s1', {
-        kind: 'agent',
-        agent: { agentId: 'codex', launchMode: 'new' },
-        directory: { mode: 'adHoc', path: context.workDirectory },
-        createdAt: 4_000,
-      }))
-      await context.lifecycle.reconcile(context.host.listing())
-
-      expect(await context.lifecycle.reconcile(context.host.listing()))
-        .not.toContainEqual({ kind: 'name-codex-conversation', sessionId: 's1' })
-      expect(context.codexRollouts.windowCalls).toHaveLength(1)
-    })
-
-    // Landing on somebody else's conversation is the harm the whole capture is written to avoid.
-    it('claims nothing on the pass when two rollouts could be the session', async () => {
-      const context = await harness()
-      context.host.runtimes.set('s1', runtime('s1'))
-      context.codexRollouts.byDirectory.set(context.workDirectory, [
-        rollout('conv-1', 5_000),
-        rollout('conv-2', 5_000),
-      ])
-      await context.store.put(record('s1', {
-        kind: 'agent',
-        agent: { agentId: 'codex', launchMode: 'new' },
-        directory: { mode: 'adHoc', path: context.workDirectory },
-        createdAt: 4_000,
-      }))
-
-      expect(await context.lifecycle.reconcile(context.host.listing()))
-        .not.toContainEqual({ kind: 'name-codex-conversation', sessionId: 's1' })
-      expect(context.store.get('s1')?.agent?.nativeSessionId).toBeUndefined()
-    })
-
-    it('leaves the record and the refusal alone when the rollout is ambiguous', async () => {
-      const context = await harness()
-      context.codexRollouts.byDirectory.set(context.workDirectory, [
-        rollout('conv-1', 5_000),
-        rollout('conv-2', 5_100),
-      ])
-      await context.store.put(record('s1', {
-        kind: 'agent',
-        agent: { agentId: 'codex', launchMode: 'new' },
-        directory: { mode: 'adHoc', path: context.workDirectory },
-        life: 'lost',
-        binding: null,
-        createdAt: 5_000,
-      }))
-
       expect(failureOf(await context.lifecycle.reopen('s1')).code).toBe('invalid-spec')
-      expect(context.store.get('s1')?.agent?.nativeSessionId).toBeUndefined()
       expect(callsNamed(context.host, 'runtime.create')).toEqual([])
     })
 
-    // A Claude session is launched under an id this client minted, so there is nothing to look for.
-    it('reads no rollouts for an agent that already names its conversation', async () => {
+    it('persists the final identity when the terminal exits before the next live reconciliation', async () => {
       const context = await harness()
+      context.host.runtimes.set('s1', {...runtime('s1'), alive: false, exitCode: 0, exitedAt: 1500})
       await context.store.put(record('s1', {
-        kind: 'agent',
-        agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'native-1' },
-        directory: { mode: 'adHoc', path: context.workDirectory },
-        life: 'lost',
-        binding: null,
+        kind: 'agent', agent: {agentId: 'codex', launchMode: 'new', identityLaunchId: 'proof'},
       }))
+      context.identities.set('s1', identity('s1', 'conv-final', 2))
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.store.get('s1')).toMatchObject({life: 'ended', agent: {
+        nativeSessionId: 'conv-final', nativeSessionIdSource: 'codex-app-server', identitySequence: 2,
+      }})
+    })
 
-      expect(await context.lifecycle.reopen('s1')).toEqual({ ok: true, value: undefined })
-      expect(context.codexRollouts.windowCalls).toEqual([])
+    it('updates a running conversation after clear and ignores an older receipt', async () => {
+      const context = await harness()
+      context.host.runtimes.set('s1', runtime('s1'))
+      await context.store.put(record('s1', {
+        kind: 'agent', agent: {agentId: 'codex', launchMode: 'new', identityLaunchId: 'proof'},
+      }))
+      context.identities.set('s1', identity('s1', 'conv-1'))
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.store.get('s1')?.agent?.nativeSessionId).toBe('conv-1')
+      context.identities.set('s1', identity('s1', 'conv-2', 2))
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.store.get('s1')?.agent?.nativeSessionId).toBe('conv-2')
+      context.identities.set('s1', identity('s1', 'conv-1'))
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.store.get('s1')?.agent?.nativeSessionId).toBe('conv-2')
     })
   })
 
@@ -3431,14 +3269,12 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
 
     // The one thing a client could never do for itself, which is the argument for the operation
     // living here at all.
-    it('goes and finds a Codex id before deciding it has nothing to fork', async () => {
+    it('reads a Codex identity receipt before forking', async () => {
       const context = await harness()
-      context.codexRollouts.byDirectory.set(context.workDirectory, [
-        rollout('conv-1', 5_000),
-      ])
+      context.identities.set('s1', identity('s1', 'conv-1'))
       await context.store.put(record('s1', {
         kind: 'agent',
-        agent: { agentId: 'codex', launchMode: 'new' },
+        agent: { agentId: 'codex', launchMode: 'new', identityLaunchId: 'proof' },
         directory: { mode: 'adHoc', path: context.workDirectory },
         createdAt: 5_000,
       }))
@@ -3472,15 +3308,12 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
 
     // The rollout of a fork names the conversation it was cut from, which is what tells it apart
     // from a fresh session started in the same directory a minute later.
-    it('names a Codex fork from the rollout that says whose fork it is', async () => {
+    it('names a Codex fork from its confirmed receipt', async () => {
       const context = await harness()
-      context.codexRollouts.byDirectory.set(context.workDirectory, [
-        rollout('conv-2', 5_100, 'conv-1'),
-        rollout('conv-3', 5_100),
-      ])
+      context.identities.set('f1', identity('f1', 'conv-2'))
       await context.store.put(record('f1', {
         kind: 'agent',
-        agent: { agentId: 'codex', launchMode: 'fork', forkParentId: 'conv-1' },
+        agent: { agentId: 'codex', launchMode: 'fork', forkParentId: 'conv-1', identityLaunchId: 'proof' },
         directory: { mode: 'adHoc', path: context.workDirectory },
         life: 'live',
         createdAt: 5_000,
@@ -3489,24 +3322,6 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       await context.lifecycle.nameCodexOnStartup()
 
       expect(context.store.get('f1')?.agent?.nativeSessionId).toBe('conv-2')
-    })
-
-    it('leaves a Codex fork unnamed when the only candidate names another parent', async () => {
-      const context = await harness()
-      context.codexRollouts.byDirectory.set(context.workDirectory, [
-        rollout('conv-2', 5_100, 'conv-9'),
-      ])
-      await context.store.put(record('f1', {
-        kind: 'agent',
-        agent: { agentId: 'codex', launchMode: 'fork', forkParentId: 'conv-1' },
-        directory: { mode: 'adHoc', path: context.workDirectory },
-        life: 'live',
-        createdAt: 5_000,
-      }))
-
-      await context.lifecycle.nameCodexOnStartup()
-
-      expect(context.store.get('f1')?.agent?.nativeSessionId).toBeUndefined()
     })
 
     // The chain: the child's own id is what the grandchild is cut from, for either agent.
@@ -3529,12 +3344,10 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     // The Codex half of the same chain: the child is named from its rollout first, then forked.
     it('captures an unnamed Codex fork before forking it again', async () => {
       const context = await harness()
-      context.codexRollouts.byDirectory.set(context.workDirectory, [
-        rollout('conv-2', 5_100, 'conv-1'),
-      ])
+      context.identities.set('f1', identity('f1', 'conv-2'))
       await context.store.put(record('f1', {
         kind: 'agent',
-        agent: { agentId: 'codex', launchMode: 'fork', forkParentId: 'conv-1' },
+        agent: { agentId: 'codex', launchMode: 'fork', forkParentId: 'conv-1', identityLaunchId: 'proof' },
         directory: { mode: 'adHoc', path: context.workDirectory },
         createdAt: 5_000,
       }))
@@ -3636,6 +3449,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
           agentId,
           launchMode: 'resume',
           nativeSessionId: 'native-1',
+          ...(agentId === 'codex' ? {nativeSessionIdSource: 'provided', identityLaunchId: 'id-2'} : {}),
         })
         expect(context.store.get(opened.sessionId)?.title).toBe('007 - Provider task')
       }
@@ -3698,13 +3512,11 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
 
     it('captures a live Codex record before deciding to fork its conversation', async () => {
       const context = await harness()
-      context.codexRollouts.byDirectory.set(projectRoot, [
-        rollout('conv-1', 5_000),
-      ])
+      context.identities.set('s1', identity('s1', 'conv-1'))
       await context.store.put(record('s1', {
         kind: 'agent',
         directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
-        agent: { agentId: 'codex', launchMode: 'new' },
+        agent: { agentId: 'codex', launchMode: 'new', identityLaunchId: 'proof' },
         life: 'live',
         createdAt: 5_000,
       }))
@@ -3715,19 +3527,18 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         agentId: 'codex',
         launchMode: 'fork',
         forkParentId: 'conv-1',
+        identityLaunchId: 'id-2',
       })
     })
 
     it('returns the exact local tree title and captures a missing Codex id first', async () => {
       const context = await harness()
-      context.codexRollouts.byDirectory.set(projectRoot, [
-        rollout('conv-1', 5_000),
-      ])
+      context.identities.set('s1', identity('s1', 'conv-1'))
       await context.store.put(record('s1', {
         kind: 'agent',
         title: '014 - Existing Codex task',
         directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
-        agent: { agentId: 'codex', launchMode: 'new' },
+        agent: { agentId: 'codex', launchMode: 'new', identityLaunchId: 'proof' },
         life: 'ended',
         createdAt: 5_000,
       }))

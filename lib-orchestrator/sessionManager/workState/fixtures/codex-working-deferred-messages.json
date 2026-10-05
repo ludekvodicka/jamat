@@ -1,0 +1,18 @@
+{
+  "agent": "codex",
+  "expected": {
+    "hint": "working"
+  },
+  "provenance": {
+    "origin": "Manually transcribed from the user's 2026-10-03_18-24-48_electron.png screenshot.",
+    "case": "Working above deferred messages, a wrapped message preview, an ellipsis, the empty composer and two footer rows.",
+    "capture": "The screenshot supplies the 13-row layout and 29m 04s timer. The complete deferred-message heading was verified through terminal peek of the same session on 2026-10-03. Message text and the project path are sanitized. These physical-row windows are a reconstruction, not a captured Host frame.",
+    "ported": "nothing",
+    "identical": "not present in the V1 or V2 corpus"
+  },
+  "frame": {
+    "rawTail": "",
+    "screenTail": "\n    …\n\n\n› Ask Codex to do anything\n\n  GPT-6-Astra xhigh · Q:/PROJECT\n  ? for shortcuts",
+    "wideScreenTail": "◦ Working (29m 04s • esc to interrupt)\n\n• Messages to be submitted after next tool call (press esc to interrupt and send immediately)\n  ↳ Compare the available models on the same scenario\n    and find the fastest one with good results.\n\n    …\n\n\n› Ask Codex to do anything\n\n  GPT-6-Astra xhigh · Q:/PROJECT\n  ? for shortcuts"
+  }
+}

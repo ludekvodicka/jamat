@@ -89,6 +89,7 @@ export function HostStatusItem(props: {
   const { snapshot, error, refresh } = useSessionsSnapshot(snapshotStore)
   const [menu, setMenu] = useState<{ position: ContextMenuPosition; hostInstanceId: string | null; liveCount: number } | null>(null)
   const [busy, setBusy] = useState<HostAction | null>(null)
+  const [operationError, setOperationError] = useState<string | null>(null)
   const actionPending = useRef(false)
   const host = snapshot?.host ?? null
   const presence = host?.presence ?? null
@@ -101,15 +102,21 @@ export function HostStatusItem(props: {
     [hostVersion, liveCount, presence],
   )
 
+  const reportFailure = (message: string): void => {
+    setOperationError(message)
+    ports.reportError(message)
+  }
+
   const start = (): void => {
+    setOperationError(null)
     void ports.startHost()
       .then((answer) => {
         const failure = IpcFailure.of(answer)
         if (failure)
-          ports.reportError(`The Host could not be started: ${failure}`)
+          reportFailure(`The Host could not be started: ${failure}`)
       })
       .catch((thrown: unknown) =>
-        ports.reportError(`The Host could not be started: ${ErrorText.of(thrown)}`))
+        reportFailure(`The Host could not be started: ${ErrorText.of(thrown)}`))
   }
 
   const act = async (action: HostAction): Promise<void> => {
@@ -120,15 +127,16 @@ export function HostStatusItem(props: {
     try {
       const confirmed = await spec.confirm(ports, menu.liveCount)
       if (!confirmed.ok) {
-        ports.reportError(`The Host could not be ${spec.verb}: ${confirmed.error}`)
+        reportFailure(`The Host could not be ${spec.verb}: ${confirmed.error}`)
         return
       }
       if (!confirmed.value) return
+      setOperationError(null)
       setBusy(action)
       const failure = IpcFailure.of(await spec.run(ports, hostInstanceId))
-      if (failure) ports.reportError(`The Host could not be ${spec.verb}: ${failure}`)
+      if (failure) reportFailure(`The Host could not be ${spec.verb}: ${failure}`)
     } catch (thrown) {
-      ports.reportError(`The Host could not be ${spec.verb}: ${ErrorText.of(thrown)}`)
+      reportFailure(`The Host could not be ${spec.verb}: ${ErrorText.of(thrown)}`)
     } finally {
       actionPending.current = false
       setBusy(null)
@@ -165,17 +173,29 @@ export function HostStatusItem(props: {
     />
   )
 
+  const failureNotice = operationError !== null && (
+    <span className="jamat-host-status__failure" role="alert">
+      <span>{operationError}</span>
+      <button className="jamat-host-status__dismiss" type="button" onClick={() => setOperationError(null)}>
+        Dismiss
+      </button>
+    </span>
+  )
+
   if (error !== null)
     return (
-      <span className="jamat-host-status" title={error}>
-        Host status unavailable
-        <button className="jamat-host-status__start" type="button" onClick={refresh}>Retry</button>
-      </span>
+      <>
+        <span className="jamat-host-status" title={error}>
+          Host status unavailable
+          <button className="jamat-host-status__start" type="button" onClick={refresh}>Retry</button>
+        </span>
+        {failureNotice}
+      </>
     )
   // Before the first read answers there is nothing true to say: a Host drawn as unreachable here
   // would offer a Start for a Host that may well be running.
   if (reading === null)
-    return <span className="jamat-host-status">Host …</span>
+    return <><span className="jamat-host-status">Host …</span>{failureNotice}</>
   if (!reading.startable || busy !== null)
     return (
       <>
@@ -183,6 +203,7 @@ export function HostStatusItem(props: {
           {busy === null ? reading.text : hostActionsConst[busy].busyText}
         </span>
         {contextMenu}
+        {failureNotice}
       </>
     )
   return (
@@ -192,6 +213,7 @@ export function HostStatusItem(props: {
         <button className="jamat-host-status__start" type="button" onClick={start}>Start Host</button>
       </span>
       {contextMenu}
+      {failureNotice}
     </>
   )
 }

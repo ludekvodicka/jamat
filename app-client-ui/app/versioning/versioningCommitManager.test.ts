@@ -929,6 +929,57 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(f.manager.read('window', f.draftId)?.phase.kind).toBe('editing')
   })
 
+  it.each(['svn', 'git'] as const)('commits the unchanged %s review once after the shared snapshot cache expires', async (vcs) => {
+    const f = await fixture(vcs)
+    f.deps.git.commit = vi.fn(async () => ({ ok: true as const, value: { hash: 'abc123', output: 'Committed' } }))
+    const svn = vi.spyOn(f.deps.svn, 'commit')
+    f.manager.files('window', f.draftId, f.snapshot)
+    f.deps.snapshotOf = () => null
+    f.deps.fileAccess = () => ({ ok: false, code: 'snapshot-expired', detail: 'Evicted' })
+    expect(await f.manager.run('window', f.request)).toEqual({ ok: true, revision: vcs === 'svn' ? '42' : 'abc123' })
+    expect(vcs === 'svn' ? svn : f.deps.git.commit).toHaveBeenCalledTimes(1)
+  })
+
+  it('still rejects an actual file change after retaining a review', async () => {
+    const f = await fixture()
+    f.manager.files('window', f.draftId, f.snapshot)
+    f.deps.snapshotOf = () => null
+    f.deps.fileAccess = () => ({ ok: false, code: 'snapshot-expired', detail: 'Expired' })
+    await writeFile(f.path, 'Changed during review')
+    await utimes(f.path, new Date(), new Date(Date.now() + 10_000))
+    expect(await f.manager.run('window', f.request)).toMatchObject({ ok: false, code: 'stale' })
+    expect(f.writes).toEqual([])
+  })
+
+  it('retains only the latest review per owner and releases it when that owner closes', async () => {
+    const f = await fixture()
+    f.manager.files('window', f.draftId, f.snapshot)
+    f.snapshot.snapshotId = 'refreshed'
+    f.manager.files('window', f.draftId, f.snapshot)
+    f.manager.attach(f.draftId, 'second')
+    f.deps.snapshotOf = () => null
+    f.deps.fileAccess = () => ({ ok: false, code: 'snapshot-expired', detail: 'Expired' })
+    const request = { ...f.request, snapshotId: 'refreshed' }
+    expect(await f.manager.run('window', f.request)).toMatchObject({ ok: false, code: 'invalid-target', reloadRequired: true })
+    expect(await f.manager.run('second', request)).toMatchObject({ ok: false, code: 'invalid-target' })
+    expect(await f.manager.run('window', { ...request, fileIds: ['foreign-file'] })).toMatchObject({ ok: false, code: 'invalid-target' })
+    f.manager.release(f.draftId, 'window')
+    f.manager.attach(f.draftId, 'window')
+    expect(await f.manager.run('window', request)).toMatchObject({ ok: false, code: 'invalid-target', reloadRequired: true })
+    expect(f.writes).toEqual([])
+  })
+
+  it('keeps revert confirmation usable after the shared snapshot expires', async () => {
+    const f = await fixture()
+    f.manager.files('window', f.draftId, f.snapshot)
+    f.deps.snapshotOf = () => null
+    f.deps.fileAccess = () => ({ ok: false, code: 'snapshot-expired', detail: 'Expired' })
+    const confirm = vi.fn(async () => false)
+    expect(await f.manager.revert('window', f.request, confirm)).toEqual({ ok: true, reverted: false })
+    expect(confirm).toHaveBeenCalledWith([f.path], 'svn')
+    expect(f.writes).toEqual([])
+  })
+
   it('locks the repository across sibling dialog scopes', async () => {
     const f = await fixture()
     let finish!: () => void
@@ -1024,6 +1075,18 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     f.deps.git.commit = async () => { throw new Error('Git failed') }
     expect(await f.manager.run('window', f.request)).toMatchObject({ ok: false, detail: vcs === 'svn' ? 'locked' : 'Git failed' })
     expect(f.deps.svn.update).not.toHaveBeenCalled()
+  })
+
+  it('climbs past the project Git answer of a new SVN directory to its working copy (Jamat#35)', async () => {
+    const f = await fixture()
+    const fresh = join(f.root, '.aidocs', 'completed')
+    await mkdir(fresh, { recursive: true })
+    const file = join(fresh, 'done.md')
+    await writeFile(file, 'done\n')
+    f.deps.vcsStatus.detect = async (cwd, id) => ({ id: cwd === fresh ? 'git' : id,
+      cwd, root: f.root, scopeRelativePath: '.', scopeUrl: null, repositoryPathPrefix: null })
+    expect(await f.manager.prepare('session', 'svn', null, null, [file]))
+      .toMatchObject({ ok: true, value: { scopeRoot: join(f.root, '.aidocs'), paths: [file] } })
   })
 
   it('allows explicit outside scopes and still refuses missing VCS and checkpoint worktrees', async () => {

@@ -1,7 +1,7 @@
 import { CodexRolloutIndex } from './providers/codex/codexRolloutIndex'
 import { CodexSessionSource } from './providers/codex/codexSessionSource'
 
-/** One rollout, reduced to the four things a caller outside this subsystem can act on. */
+/** One rollout, reduced to the identity facts a caller outside this subsystem can act on. */
 export interface CodexRolloutMatch {
   sessionId: string
   createdAt: number
@@ -9,6 +9,8 @@ export interface CodexRolloutMatch {
   forkedFromId: string | null
   /** First user message, whitespace collapsed and cut to a fixed head; null while none is written. */
   firstUserMessage: string | null
+  /** False for child agents, noninteractive providers and unproven header provenance. */
+  interactive: boolean
 }
 
 /**
@@ -52,6 +54,7 @@ export class CodexRolloutView {
       sessionId: ref.sessionId,
       createdAt: ref.createdAt,
       forkedFromId: ref.forkedFromId,
+      interactive: ref.interactive,
       firstUserMessage: await CodexSessionSource.firstUserMessageOf(ref.file),
     })))
   }

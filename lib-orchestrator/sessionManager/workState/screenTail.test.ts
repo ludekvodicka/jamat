@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
 import { ScreenTail } from './screenTail'
+import { WorkFixtures } from './fixtures/workFixtures'
+import { WorkStateMonitor } from './workStateMonitor'
 
 describe('lib-orchestrator/sessionManager/workState/screenTail', () => {
   const colsConst = 120
@@ -38,6 +40,66 @@ describe('lib-orchestrator/sessionManager/workState/screenTail', () => {
   it('returns the whole screen when it is shorter than the window', () => {
     expect(ScreenTail.rows('one\ntwo', ScreenTail.screenRowsConst, colsConst)).toBe('one\ntwo')
   })
+
+  it('uses physical Host rows without rewrapping Unicode or serialized resize artifacts', () => {
+    const screenLines = Array.from({ length: 20 }, (_, index) => `row ${index}: ✅界e\u0301`)
+    const frame = ScreenTail.frameOf({
+      raw: 'ring', screen: 'stale serialized content', cols: 10, screenLines, screenLinesStyled: true,
+    })
+    expect(frame.rawTail).toBe('ring')
+    expect(frame.screenTail).toBe(screenLines.slice(-8).join('\n'))
+    expect(frame.wideScreenTail).toBe(screenLines.slice(-16).join('\n'))
+    expect(frame.screenStyled).toBe(true)
+  })
+
+  it('does not resurrect serialized history when physical Host rows are empty or cleared', () => {
+    for (const screenLines of [[], Array<string>(20).fill('')]) {
+      const frame = ScreenTail.frameOf({
+        screen: 'old working status', cols: 80, screenLines, screenLinesStyled: true,
+      })
+      expect(frame.screenTail.trim()).toBe('')
+      expect(frame.wideScreenTail.trim()).toBe('')
+    }
+  })
+
+  it('keeps dim style across both physical row windows without counting escapes as cells', () => {
+    const screenLines = Array.from({ length: 20 }, (_, index) => `\x1b[2mrow ${index}\x1b[22m`)
+    const frame = ScreenTail.frameOf({ screen: '', cols: 8, screenLines, screenLinesStyled: true })
+    expect(frame.screenTail).toBe(screenLines.slice(-8).join('\n'))
+    expect(frame.wideScreenTail).toBe(screenLines.slice(-16).join('\n'))
+  })
+
+  it('keeps unmarked physical rows for work status but marks their style as unavailable', () => {
+    const screen = '> \x1b[2mplaceholder\x1b[22m'
+    expect(ScreenTail.frameOf({ screen, cols: 80, screenLines: ['> placeholder'] }))
+      .toEqual({ rawTail: '', screenTail: '> placeholder', wideScreenTail: '> placeholder', screenStyled: false })
+    expect(ScreenTail.frameOf({ screen, cols: 80, screenLinesStyled: true }))
+      .toEqual(ScreenTail.frameOf({ screen, cols: 80 }))
+  })
+
+  it('reads the viewport only from styled physical rows, and hands them over unchanged', () => {
+    expect(ScreenTail.viewportViewConst.screenScrollbackRows).toBe(0)
+    expect(ScreenTail.viewportOf({ cols: 80, rows: 24 })).toBeNull()
+    expect(ScreenTail.viewportOf({ cols: 80, rows: 24, screenLinesStyled: true })).toBeNull()
+    expect(ScreenTail.viewportOf({ cols: 80, rows: 24, screenLines: ['> draft'] })).toBeNull()
+    const screenLines = ['', '> \x1b[2mplaceholder\x1b[22m', '  footer']
+    const viewport = ScreenTail.viewportOf({ cols: 80, rows: 24, screenLines, screenLinesStyled: true })
+    expect(viewport).toEqual({ rows: screenLines, cols: 80, height: 24 })
+    expect(viewport?.rows).toBe(screenLines)
+  })
+
+  it.each(WorkFixtures.all().map((fixture) => [fixture.file, fixture] as const))(
+    'keeps the work hint of plain physical rows when dim is added: %s',
+    (_file, fixture) => {
+      const plain = fixture.frame.wideScreenTail.split('\n').map((row) => ScreenTail.stripAnsi(row).trimEnd())
+      const styled = plain.map((row) => row === '' ? '' : `\x1b[2m${row}\x1b[22m`)
+      const frame = (screenLines: string[]) => ScreenTail.frameOf({
+        raw: fixture.frame.rawTail, screen: '', cols: 120, screenLines, screenLinesStyled: true,
+      })
+      expect(WorkStateMonitor.inspect(fixture.agent, frame(styled)).hint)
+        .toBe(WorkStateMonitor.inspect(fixture.agent, frame(plain)).hint)
+    },
+  )
 
   // The status line of an agent TUI sits at the bottom of the viewport, under whatever blank rows the
   // conversation left above it. Trimming them would move the window off the region it exists to read.

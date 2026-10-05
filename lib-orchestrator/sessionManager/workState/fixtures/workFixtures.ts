@@ -1,9 +1,10 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import type { AgentWorkFrame, AgentWorkHint } from '../agentWorkInspector.types'
+import type { AgentWorkFrame, AgentWorkHint, ComposerViewport } from '../agentWorkInspector.types'
+import { ScreenTail } from '../screenTail'
 import type { SessionRecordAgent } from '../../records/sessionRecord.types'
-import type { TerminalComposerReading } from '../../sessionManagerApi.types'
+import type { TerminalComposerContent, TerminalComposerReading } from '../../sessionManagerApi.types'
 
 export interface WorkFixtureProvenance {
   /** The corpus this frame came from, named so a reader can go and look at it. */
@@ -26,6 +27,22 @@ export interface WorkFixtureProvenance {
 export interface WorkFixtureRecording {
   build: string
   capturedAt: string
+  /** The terminal width the screen was laid out in, which the row join of a draft depends on. */
+  cols?: number
+  /** The terminal height, where the frame proves it; the height Claude's box stops growing at. */
+  rows?: number
+}
+
+/**
+ * The viewport of an inspect with no scrollback, recorded beside the frame for
+ * `AgentComposerReader.content`. The recording Hosts predate styled `screenLines`, so this keeps the
+ * serialized bytes, which carry the dim style and are rebuilt into rows by
+ * `ScreenTail.viewportOfScreen`. Recorded only at a width the terminal never shrank to: after a
+ * shrink the bytes keep cells beyond the new width.
+ */
+export interface WorkFixtureViewport {
+  screen: string
+  rows: number
 }
 
 export interface WorkFixture {
@@ -41,10 +58,13 @@ export interface WorkFixture {
     queuedRow?: boolean
     echoHead?: string | null
     pastePlaceholders?: number
+    /** Present on the frames recorded for `AgentComposerReader.content`, with `recorded.cols`. */
+    content?: TerminalComposerContent
   }
   provenance: WorkFixtureProvenance
   recorded?: WorkFixtureRecording
   frame: AgentWorkFrame
+  viewport?: WorkFixtureViewport
 }
 
 /**
@@ -63,6 +83,21 @@ export class WorkFixtures {
       .map((name) => WorkFixtures.read(name))
   }
 
+  /**
+   * The viewport `AgentComposerReader.content` reads. A frame recorded before the viewport was lends
+   * its wide window: its row 0 is then the window's top, which is at or below the viewport's, and
+   * a height the frame does not prove is the window's own, so both can only make a reading more
+   * cautious than the live one.
+   */
+  static viewportOf(fixture: WorkFixture): ComposerViewport {
+    const cols = fixture.recorded?.cols
+    if (cols === undefined) throw new Error(`Work fixture ${fixture.file} does not say how wide it was`)
+    if (fixture.viewport !== undefined)
+      return ScreenTail.viewportOfScreen({ screen: fixture.viewport.screen, cols, rows: fixture.viewport.rows })
+    const rows = fixture.frame.wideScreenTail.split('\n')
+    return { rows, cols, height: fixture.recorded?.rows ?? rows.length }
+  }
+
   private static read(name: string): WorkFixture {
     const parsed = JSON.parse(
       readFileSync(join(import.meta.dirname, name), 'utf8'),
@@ -73,6 +108,8 @@ export class WorkFixtures {
     const recorded = parsed.recorded
     if (recorded !== undefined && (!recorded.build || !recorded.capturedAt))
       throw new Error(`Work fixture ${name} claims a recording without saying which build or when`)
+    if ((parsed.viewport !== undefined || parsed.expected.content !== undefined) && recorded?.cols === undefined)
+      throw new Error(`Work fixture ${name} carries a viewport reading without a recorded width`)
     return { file: name, ...parsed }
   }
 }

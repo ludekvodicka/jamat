@@ -11,4 +11,4 @@ class AppClientCliEntry {
   }
 }
 
-process.exitCode = await AppClientCliEntry.run()
+void AppClientCliEntry.run().then(code => { process.exitCode = code })

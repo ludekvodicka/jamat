@@ -1,5 +1,5 @@
 import { CommitOpenStore } from '../../versioning/commitOpenStore'
-import { act, cleanup, fireEvent, render, type RenderResult, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, type RenderResult, waitFor, within } from '@testing-library/react'
 import type { IDockviewPanelProps } from 'dockview'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -26,6 +26,7 @@ import type {
   SessionTranscriptReading,
 } from '../../../../lib-orchestrator/sessionTranscriptReader/sessionTranscriptReaderApi.types'
 import type { AppClientUiBridge, IpcResult } from '../../../shared/appClientUiIpc'
+import type { DirectoryNote, DirectoryNotesImportResult } from '../../../shared/directoryNotes'
 import type { SplitPinRecord } from '../../../shared/splitPinsState'
 import type { TerminalSplitPinsStore } from './split/useTerminalSplitPins'
 import { AgentSettingsStore } from '../../contextCompaction/agentSettingsStore'
@@ -323,6 +324,12 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
     detail: 'no repository here',
   }
   let detectCalls = 0
+  /** What the Notes tab reads, writes and imports, per session. */
+  let notesReads: string[] = []
+  let notesSaves: { sessionId: string; notes: readonly DirectoryNote[] }[] = []
+  let notesStored: readonly DirectoryNote[] = [{ text: '' }]
+  let notesImports: string[] = []
+  let importAnswer: DirectoryNotesImportResult = { kind: 'empty' }
 
   function installBridge(): void {
     const bridge = {
@@ -489,6 +496,24 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
           })
         },
       },
+      directoryNotes: {
+        get: (sessionId: string) => {
+          notesReads.push(sessionId)
+          return Promise.resolve({
+            ok: true as const,
+            value: { ok: true as const, value: { directory: 'C:/work', notes: notesStored } },
+          })
+        },
+        save: (sessionId: string, notes: readonly DirectoryNote[]) => {
+          notesSaves.push({ sessionId, notes })
+          return Promise.resolve({ ok: true as const, value: { ok: true as const } })
+        },
+        importPrompt: (sessionId: string) => {
+          notesImports.push(sessionId)
+          return Promise.resolve({ ok: true as const, value: importAnswer })
+        },
+      },
+      onDirectoryNotesChanged: () => () => undefined,
       onTerminalFrame: (callback: (id: string, frame: TerminalFrame) => void) => {
         listeners.push(callback)
         serve = callback
@@ -567,16 +592,20 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
     await act(async () => { await Promise.resolve() })
   }
 
-  function mount(
-    api: PanelApiFake,
-    sessionId = 'session-1',
-    options: {
-      params?: Record<string, unknown>
-      openFile?: TerminalPanelProps['openFile']
-      commitOpen?: CommitOpenStore
-    } = {},
-  ): RenderResult {
-    return render(
+  interface MountOptions {
+    params?: Record<string, unknown>
+    openFile?: TerminalPanelProps['openFile']
+    commitOpen?: CommitOpenStore
+    fileTools?: PanelFileToolsRegistry
+  }
+
+  function mount(api: PanelApiFake, sessionId = 'session-1', options: MountOptions = {}): RenderResult {
+    return render(panelOf(api, sessionId, options))
+  }
+
+  /** The same panel element again, so a rerender with new params is dockview restoring a layout in place. */
+  function panelOf(api: PanelApiFake, sessionId: string, options: MountOptions): React.JSX.Element {
+    return (
       <TabDecorationsProvider store={store}>
         <TerminalPanel
           {...api.props({ sessionId, ...options.params })}
@@ -592,14 +621,14 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
           compaction={{ inspect: () => Promise.resolve({ reason: 'Test session', nextCheckAt: null, cooldown: null }) }}
           marks={marks}
           commitOpen={options.commitOpen ?? new CommitOpenStore({ read: async () => ({ ok: true, value: { revision: 0, sessionIds: [] } }), subscribe: () => () => undefined, reportError: vi.fn() })}
-          fileTools={new PanelFileToolsRegistry()}
+          fileTools={options.fileTools ?? new PanelFileToolsRegistry()}
           splitPins={splitPins}
           openFile={options.openFile ?? (() => Promise.resolve({
             kind: 'opened', panelId: 'file:default',
           }))}
           openDirectoryAt={() => undefined}
         />
-      </TabDecorationsProvider>,
+      </TabDecorationsProvider>
     )
   }
 
@@ -700,6 +729,11 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
     detections = []
     terminalFileOpens = []
     detectCalls = 0
+    notesReads = []
+    notesSaves = []
+    notesStored = [{ text: '' }]
+    notesImports = []
+    importAnswer = { kind: 'empty' }
     transcriptReads = []
     transcriptAnswer = {
       kind: 'none',
@@ -1213,6 +1247,209 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
       expect(restoredSources).toEqual([])
       expect(rootDirectoryReads).toEqual([])
       expect(splitPins.loads).toEqual([])
+    })
+  })
+
+  /** The fourth tab of a local terminal, and the only one the FileViewer never has. */
+  describe('the Notes tab', () => {
+    function sidebarAt(activeView: string): Record<string, unknown> {
+      return { sidebar: { visible: true, width: 440, activeView } }
+    }
+
+    function attached(sessionId: string): void {
+      push({
+        type: 'terminal.attached',
+        writer: true,
+        session: {
+          runtimeSessionId: sessionId,
+          generation: 1,
+          alive: true,
+          cols: 80,
+          rows: 24,
+          outputSeq: 0,
+          outputEpoch: 1,
+          lastOutputAt: null,
+          startedAt: 1,
+        },
+      })
+    }
+
+    async function settled(): Promise<void> {
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+    }
+
+    it('draws File Changes, Changelog, Explorer and Notes under a dock titled Tools', () => {
+      const view = mount(new PanelApiFake('terminal:notes-tabs'), 'session-1', { params: sidebarAt('workingTree') })
+
+      const dock = view.getByRole('complementary', { name: 'Tools' })
+      expect(within(dock).getAllByRole('tab').map((tab) => tab.textContent))
+        .toEqual(['File Changes', 'Changelog', 'Explorer', 'Notes'])
+      expect(view.queryByRole('complementary', { name: 'File tools' })).toBeNull()
+      expect(notesReads).toEqual([])
+    })
+
+    it('draws no sidebar and reads no notes for a remote terminal', async () => {
+      const view = mountRemote(new PanelApiFake('terminal:remote-notes'), undefined, undefined, sidebarAt('notes'))
+      await settled()
+
+      expect(view.container.querySelector('.jamat-sidebar')).toBeNull()
+      expect(view.queryAllByRole('tab')).toEqual([])
+      expect(notesReads).toEqual([])
+    })
+
+    it('stores a click on Notes in the layout and reads the notes once', async () => {
+      notesStored = [{ text: 'remember the release notes' }]
+      const api = new PanelApiFake('terminal:notes-click')
+      const view = mount(api, 'session-1', { params: sidebarAt('workingTree') })
+
+      fireEvent.click(view.getByRole('tab', { name: 'Notes' }))
+
+      expect(api.paramsValue().sidebar).toMatchObject({ visible: true, activeView: 'notes' })
+      expect(await view.findByRole('textbox', { name: 'Note 1' })).toHaveValue('remember the release notes')
+      expect(notesReads).toEqual(['session-1'])
+    })
+
+    it('opens Notes from a restored layout and keeps it through the sidebar toggle', async () => {
+      const fileTools = new PanelFileToolsRegistry()
+      const view = mount(new PanelApiFake('terminal:notes-restore'), 'session-1', {
+        params: sidebarAt('notes'),
+        fileTools,
+      })
+
+      await view.findByRole('textbox', { name: 'Note 1' })
+      expect(notesReads).toEqual(['session-1'])
+      act(() => fileTools.toggle('terminal:notes-restore'))
+      expect(view.container.querySelector('.jamat-sidebar')).toHaveAttribute('aria-hidden', 'true')
+
+      act(() => fileTools.toggle('terminal:notes-restore'))
+      const dock = view.getByRole('complementary', { name: 'Tools' })
+      expect(within(dock).getByRole('tab', { name: 'Notes' })).toHaveAttribute('aria-selected', 'true')
+      expect(within(dock).getByRole('textbox', { name: 'Note 1' })).toBeTruthy()
+      expect(notesReads).toEqual(['session-1'])
+    })
+
+    it('reads neither the working tree nor the Changelog while Notes is shown', async () => {
+      const view = mount(new PanelApiFake('terminal:notes-quiet'), 'session-1', { params: sidebarAt('notes') })
+      attached('session-1')
+
+      await view.findByRole('textbox', { name: 'Note 1' })
+      await settled()
+
+      expect(workingTreeReads).toEqual([])
+      expect(fileChangesReads).toBe(0)
+    })
+
+    it('restores a layout with each of the four keys without building the terminal again', async () => {
+      const api = new PanelApiFake('terminal:notes-layout')
+      const view = mount(api, 'session-1', { params: sidebarAt('workingTree') })
+      const screen = view.container.querySelector('.jamat-terminal__screen')
+      const attaches = attachIds.length
+
+      for (const [key, name] of [
+        ['fileChanges', 'Changelog'],
+        ['directoryExplorer', 'Explorer'],
+        ['notes', 'Notes'],
+        ['workingTree', 'File Changes'],
+      ] as const) {
+        view.rerender(panelOf(api, 'session-1', { params: sidebarAt(key) }))
+        await settled()
+        expect(view.getByRole('tab', { name })).toHaveAttribute('aria-selected', 'true')
+        expect(view.container.querySelector('.jamat-terminal__screen')).toBe(screen)
+      }
+      expect(attachIds).toHaveLength(attaches)
+    })
+
+    it('pastes a note as one bracketed paste without Enter, counts it as typed and gives the caret back', async () => {
+      notesStored = [{ text: '  fix the build\n' }]
+      const typed = vi.spyOn(drafts, 'typed')
+      const view = mount(new PanelApiFake('terminal:notes-paste'), 'session-1', { params: sidebarAt('notes') })
+      attached('session-1')
+      await view.findByRole('textbox', { name: 'Note 1' })
+      const focuses = xtermMock.focuses
+
+      fireEvent.click(view.getByRole('button', { name: 'Paste' }))
+
+      const bytes = '\x1b[200~fix the build\x1b[201~'
+      expect(inputCalls).toEqual([{ attachId: attachIds.at(-1), data: bytes }])
+      expect(typed).toHaveBeenCalledWith('session-1', bytes)
+      expect(drafts.composing('session-1')).toBe(true)
+      await waitFor(() => expect(xtermMock.focuses).toBe(focuses + 1))
+      expect(view.getByRole('textbox', { name: 'Note 1' })).toHaveValue('')
+    })
+
+    it('offers no Paste while the terminal is not live, and reports nothing', async () => {
+      notesStored = [{ text: 'draft' }]
+      const typed = vi.spyOn(drafts, 'typed')
+      const view = mount(new PanelApiFake('terminal:notes-not-live'), 'session-1', { params: sidebarAt('notes') })
+      await view.findByRole('textbox', { name: 'Note 1' })
+      expect(view.getByRole('button', { name: 'Paste' })).toBeDisabled()
+
+      push({ type: 'terminal.status', status: 'read-only', detail: null })
+      fireEvent.click(view.getByRole('button', { name: 'Paste' }))
+
+      expect(view.getByRole('button', { name: 'Paste' })).toBeDisabled()
+      expect(inputCalls).toEqual([])
+      expect(typed).not.toHaveBeenCalled()
+      expect(view.getByRole('textbox', { name: 'Note 1' })).toHaveValue('draft')
+    })
+
+    it('empties the draft count after an import took the prompt, and keeps it after a partial one', async () => {
+      await withSessions(SessionsFixtures.mixed())
+      const view = mount(new PanelApiFake('terminal:notes-import'), 's-working', { params: sidebarAt('notes') })
+      attached('s-working')
+      await view.findByRole('textbox', { name: 'Note 1' })
+      drafts.typed('s-working', 'hello')
+      const importButton = (): HTMLElement => view.getByRole('button', { name: 'Import from prompt' })
+
+      importAnswer = {
+        kind: 'partial',
+        notes: [{ text: 'hello' }],
+        index: 0,
+        reason: 'text-remains',
+        detail: 'part of the prompt is still there',
+      }
+      fireEvent.click(importButton())
+      await waitFor(() => expect(importButton()).not.toBeDisabled())
+      expect(notesImports).toEqual(['s-working'])
+      expect(drafts.status('s-working').characters).toBe(5)
+
+      importAnswer = { kind: 'taken', notes: [{ text: 'hello' }, { text: 'hello' }], index: 1 }
+      fireEvent.click(importButton())
+      await waitFor(() => expect(view.getAllByRole('textbox')).toHaveLength(2))
+      await waitFor(() => expect(importButton()).not.toBeDisabled())
+      expect(notesImports).toEqual(['s-working', 's-working'])
+      expect(drafts.status('s-working').characters).toBe(0)
+    })
+
+    it.each([
+      ['a live Claude session', 's-working', true],
+      ['a live Codex session', 's-waiting', true],
+      ['a plain shell', 's-shell', false],
+    ] as const)('offers Import from prompt for %s: %s', async (_label, sessionId, offered) => {
+      await withSessions(SessionsFixtures.mixed())
+      const view = mount(new PanelApiFake('terminal:notes-offer'), sessionId, { params: sidebarAt('notes') })
+      attached(sessionId)
+      await view.findByRole('textbox', { name: 'Note 1' })
+
+      expect(view.queryByRole('button', { name: 'Import from prompt' }) !== null).toBe(offered)
+    })
+
+    it('keeps the editors of an ended agent and offers neither Paste nor Import', async () => {
+      await withSessions(SessionsFixtures.mixed())
+      notesStored = [{ text: 'after the run' }]
+      const view = mount(new PanelApiFake('terminal:notes-ended'), 's-working', { params: sidebarAt('notes') })
+      attached('s-working')
+      push({ type: 'terminal.exit', runtimeSessionId: 's-working', generation: 1, exitCode: 0 })
+      const editor = await view.findByRole('textbox', { name: 'Note 1' })
+
+      expect(view.getByRole('button', { name: 'Paste' })).toBeDisabled()
+      expect(view.queryByRole('button', { name: 'Import from prompt' })).toBeNull()
+      expect(editor).not.toHaveAttribute('readonly')
+      fireEvent.change(editor, { target: { value: 'edited after the run' } })
+      expect(editor).toHaveValue('edited after the run')
     })
   })
 

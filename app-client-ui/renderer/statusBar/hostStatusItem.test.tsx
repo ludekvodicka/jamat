@@ -173,6 +173,46 @@ describe('app-client-ui/renderer/statusBar/hostStatusItem', () => {
     fireEvent.contextMenu(await view.findByText('Host v2026.08.04.09.30 · 4 live'))
     fireEvent.click(view.getByRole('menuitem', { name: 'Restart apphost' }))
     await waitFor(() => expect(ports.errors).toEqual(['The Host could not be restarted: no-lease: Controller lease expired']))
+    expect(view.getByRole('alert').textContent).toContain(ports.errors[0])
+  })
+
+  it('shows every restart blocker until dismissed and clears it on a successful retry', async () => {
+    const ports = new Ports(SessionsFixtures.mixed())
+    const detail = 'Host restart was cancelled. Resolve these sessions first:\nFirst: missing identity\nSecond: missing identity'
+    ports.answer = { ok: true, value: { ok: false, code: 'invalid-spec', detail } }
+    const view = mount(ports)
+    const item = await view.findByText('Host v2026.08.04.09.30 · 4 live')
+    const restart = (): void => {
+      fireEvent.contextMenu(item)
+      fireEvent.click(view.getByRole('menuitem', { name: 'Restart apphost' }))
+    }
+    restart()
+    expect((await view.findByRole('alert')).textContent).toContain(detail)
+    expect(item.textContent).toBe('Host v2026.08.04.09.30 · 4 live')
+    fireEvent.click(view.getByRole('button', { name: 'Dismiss' }))
+    expect(view.queryByRole('alert')).toBeNull()
+    restart()
+    await view.findByRole('alert')
+    ports.answer = { ok: true, value: { ok: true, value: undefined } }
+    restart()
+    await waitFor(() => expect(ports.restarts).toHaveLength(3))
+    expect(view.queryByRole('alert')).toBeNull()
+  })
+
+  it('displays confirmation and transport failures', async () => {
+    const ports = new Ports(SessionsFixtures.mixed())
+    const confirmation = vi.spyOn(ports, 'confirmHostRestart').mockResolvedValue({ ok: false, error: 'dialog unavailable' })
+    const view = mount(ports)
+    const item = await view.findByText('Host v2026.08.04.09.30 · 4 live')
+    fireEvent.contextMenu(item)
+    fireEvent.click(view.getByRole('menuitem', { name: 'Restart apphost' }))
+    expect((await view.findByRole('alert')).textContent).toContain('dialog unavailable')
+    expect(ports.restarts).toEqual([])
+    confirmation.mockRestore()
+    vi.spyOn(ports, 'restartHost').mockRejectedValue(new Error('connection lost'))
+    fireEvent.contextMenu(item)
+    fireEvent.click(view.getByRole('menuitem', { name: 'Restart apphost' }))
+    await waitFor(() => expect(view.getByRole('alert').textContent).toContain('connection lost'))
   })
 
   it('offers Stop apphost on right click and stops the confirmed Host', async () => {
@@ -203,6 +243,7 @@ describe('app-client-ui/renderer/statusBar/hostStatusItem', () => {
     fireEvent.contextMenu(await view.findByText('Host v2026.08.04.09.30 · 4 live'))
     fireEvent.click(view.getByRole('menuitem', { name: 'Stop apphost' }))
     await waitFor(() => expect(ports.errors).toEqual(['The Host could not be stopped: no-lease: Controller lease expired']))
+    expect(view.getByRole('alert').textContent).toContain(ports.errors[0])
   })
 
   it('offers no menu for a Host that is starting', async () => {
@@ -253,6 +294,7 @@ describe('app-client-ui/renderer/statusBar/hostStatusItem', () => {
     await waitFor(() => expect(ports.errors).toEqual([
       'The Host could not be started: spawn-failed: no executable',
     ]))
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(ports.errors[0])
   })
 
   it('reports a channel that never carried the request', async () => {

@@ -700,3 +700,27 @@ export interface TerminalComposerReading {
 export type TerminalComposerResult =
   | { ok: true; reading: TerminalComposerReading }
   | { ok: false; code: 'unknown-session' | 'not-live' | 'not-agent' | 'no-projection' }
+
+/**
+ * The whole draft or nothing: `text` only for a box whose start and end are both recognized, because
+ * an erase runs backwards from the cursor and would remove any row this reading missed. `clipped` is
+ * a box touching the viewport's top edge, `placeholder` a collapsed paste or an image. `eraseBound`
+ * is an upper bound of the characters the draft holds, never an exact count.
+ */
+export type TerminalComposerContent =
+  | { kind: 'absent' }
+  | { kind: 'empty' }
+  | { kind: 'clipped' }
+  | { kind: 'placeholder' }
+  | { kind: 'text'; text: string; eraseBound: number }
+
+export interface TerminalComposerContentReading {
+  agentId: SessionAgentId
+  alive: boolean
+  hint: AgentWorkHint
+  content: TerminalComposerContent
+}
+
+export type TerminalComposerContentResult =
+  | { ok: true; reading: TerminalComposerContentReading }
+  | { ok: false; code: 'unknown-session' | 'not-live' | 'not-agent' | 'no-projection' | 'no-viewport' }

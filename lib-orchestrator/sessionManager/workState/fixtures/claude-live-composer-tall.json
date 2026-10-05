@@ -1,0 +1,38 @@
+{
+  "agent": "claude",
+  "expected": {
+    "hint": "idle",
+    "composer": {
+      "state": "text",
+      "text": "Tall draft line 31\nTall draft line 32\nTall draft line 33\nTall draft line 34\nTall draft line 35\nTall draft line 36\nTall draft line 37\nTall draft line 38\nTall draft line 39\nTall draft line 40"
+    },
+    "queuedRow": false,
+    "echoHead": null,
+    "pastePlaceholders": 0,
+    "content": {
+      "kind": "clipped"
+    }
+  },
+  "provenance": {
+    "origin": "captured from this tree's live Host by scripts/dev/capture-workstate.ts",
+    "case": "a 40-row draft in a 30-row terminal: the box stops at ten draft rows and scrolls inside, with the marker on the first row it shows (line 31)",
+    "capture": "the rows were written with `terminal send` without Enter at 120 x 30, the line breaks as Ctrl+J (LF); the same build showed 3, 3, 3, 5, 5, 7, 10, 10, 15, 20 and 25 draft rows at heights 10, 12, 15, 20, 21, 24, 30, 31, 41, 50 and 60; the Host predates styled screenLines, so `viewport` keeps the serialized viewport of an inspect without scrollback and WorkFixtures.viewportOf rebuilds its rows; sanitized per V1 recipe: the repository directory is replaced by Q:\\PROJECT. ANSI is left intact",
+    "ported": "nothing - recorded in this tree",
+    "identical": "not present in the V1 or V2 corpus"
+  },
+  "recorded": {
+    "build": "claude-code 2.1.289",
+    "capturedAt": "2026-10-05",
+    "cols": 120,
+    "rows": 30
+  },
+  "frame": {
+    "rawTail": "  ▝▝   \u001b[38;2;153;153;153mQ:\\PROJECT · \u001b[38;2;78;186;101m/rc\u001b[K\u001b[m\r\n\u001b[K\u001b[38;2;255;193;7m\r\n‼ Your login expires in 2 days \u001b[38;2;153;153;153m· run /login to renew\u001b[K\u001b[m\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\u001b[38;2;136;136;136m\r\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[m> Tall draft line 34\u001b[K\r\n  Tall draft line 35\u001b[K\r\n  Tall draft line 36\u001b[K\r\n  Tall draft line 37\u001b[K\r\n  Tall draft line 38\u001b[K\r\n  Tall draft line 39\u001b[K\r\n  Tall draft line 40\u001b[K\u001b[38;2;136;136;136m\r\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[m  \u001b[38;2;255;107;128m⏵⏵ bypass permissions on \u001b[38;2;153;153;153m(shift+tab to cycle)\u001b[K\u001b[m\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\u001b[22;21H\u001b[?25h\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?25l\u001b[2J\u001b[H\u001b[K\u001b[38;2;215;119;87m\r\n ▐\u001b[48;2;0;0;0m▛███▛█\u001b[m   \u001b[1mClaude Code\u001b[22m \u001b[38;2;153;153;153mv2.1.289\u001b[K\u001b[38;2;215;119;87m\r\n▝▜\u001b[48;2;0;0;0m█████\u001b[49m█▀  \u001b[38;2;153;153;153mOpus 5.5 with high effort · Claude Max\u001b[K\u001b[38;2;215;119;87m\r\n ▝▝   ▝▝   \u001b[38;2;153;153;153mQ:\\PROJECT · \u001b[38;2;78;186;101m/rc\u001b[K\u001b[m\r\n\u001b[K\u001b[38;2;255;193;7m\r\n‼ Your login expires in 2 days \u001b[38;2;153;153;153m· run /login to renew\u001b[K\u001b[m\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\u001b[38;2;136;136;136m\r\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[m> Tall draft line 31\u001b[K\r\n  Tall draft line 32\u001b[K\r\n  Tall draft line 33\u001b[K\r\n  Tall draft line 34\u001b[K\r\n  Tall draft line 35\u001b[K\r\n  Tall draft line 36\u001b[K\r\n  Tall draft line 37\u001b[K\r\n  Tall draft line 38\u001b[K\r\n  Tall draft line 39\u001b[K\r\n  Tall draft line 40\u001b[K\u001b[38;2;136;136;136m\r\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[m  \u001b[38;2;255;107;128m⏵⏵ bypass permissions on \u001b[38;2;153;153;153m(shift+tab to cycle)\u001b[K\u001b[28;21H\u001b[?25h",
+    "screenTail": "  Tall draft line 35\n  Tall draft line 36\n  Tall draft line 37\n  Tall draft line 38\n  Tall draft line 39\n  Tall draft line 40\n\u001b[38;2;136;136;136m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[0m  \u001b[38;2;255;107;128m⏵⏵ bypass permissions on \u001b[38;2;153;153;153m(shift+tab to cycle)\u001b[2A\u001b[27D\u001b[?2004h\u001b[?1004h\u001b[?1003h\u001b[?1006h",
+    "wideScreenTail": "\n\n\n\u001b[38;2;136;136;136m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[0m> Tall draft line 31\n  Tall draft line 32\n  Tall draft line 33\n  Tall draft line 34\n  Tall draft line 35\n  Tall draft line 36\n  Tall draft line 37\n  Tall draft line 38\n  Tall draft line 39\n  Tall draft line 40\n\u001b[38;2;136;136;136m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[0m  \u001b[38;2;255;107;128m⏵⏵ bypass permissions on \u001b[38;2;153;153;153m(shift+tab to cycle)\u001b[2A\u001b[27D\u001b[?2004h\u001b[?1004h\u001b[?1003h\u001b[?1006h"
+  },
+  "viewport": {
+    "screen": "\u001b[38;2;153;153;153m\u001b[?1049h\u001b[H\r\n\u001b[38;2;215;119;87m ▐\u001b[48;2;0;0;0m▛███▛█\u001b[0m   \u001b[1mClaude Code\u001b[0m \u001b[38;2;153;153;153mv2.1.289\r\n\u001b[38;2;215;119;87m▝▜\u001b[48;2;0;0;0m█████\u001b[49m█▀  \u001b[38;2;153;153;153mOpus 5.5 with high effort · Claude Max\r\n\u001b[38;2;215;119;87m ▝▝   ▝▝   \u001b[38;2;153;153;153mQ:\\PROJECT · \u001b[38;2;78;186;101m/rc\r\n\r\n\u001b[38;2;255;193;7m‼ Your login expires in 2 days \u001b[38;2;153;153;153m· run /login to renew\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\u001b[38;2;136;136;136m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[0m> Tall draft line 31\r\n  Tall draft line 32\r\n  Tall draft line 33\r\n  Tall draft line 34\r\n  Tall draft line 35\r\n  Tall draft line 36\r\n  Tall draft line 37\r\n  Tall draft line 38\r\n  Tall draft line 39\r\n  Tall draft line 40\r\n\u001b[38;2;136;136;136m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[0m  \u001b[38;2;255;107;128m⏵⏵ bypass permissions on \u001b[38;2;153;153;153m(shift+tab to cycle)\u001b[2A\u001b[27D\u001b[?2004h\u001b[?1004h\u001b[?1003h\u001b[?1006h",
+    "rows": 30
+  }
+}

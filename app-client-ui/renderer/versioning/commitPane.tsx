@@ -34,16 +34,23 @@ export function CommitPane(props: {
   const snapshot = draft === null ? null : working.snapshotFor(draft.source)
   const latestSnapshot = useRef(snapshot)
   useEffect(() => { latestSnapshot.current = snapshot }, [snapshot])
-  const [selection, setSelection] = useState<ReadonlyMap<string, boolean>>(new Map())
+  const [selection, setSelection] = useState<{ draftId: string; paths: ReadonlySet<string> } | null>(null)
+  // SVN recovery can introduce conflict backups after the person reviewed the original paths.
+  useEffect(() => {
+    if (draftId === undefined || snapshot === null || working.loading || working.requiredLoading
+      || working.error !== null || working.requiredError !== null) return
+    setSelection((held) => held?.draftId === draftId ? held
+      : { draftId, paths: new Set(CommitTargets.eligible(snapshot).map((entry) => entry.path)) })
+  }, [draftId, snapshot, working.loading, working.requiredLoading, working.error, working.requiredError])
   const checked = new Set(snapshot === null ? [] : CommitTargets.eligible(snapshot)
-    .filter((entry) => selection.get(entry.path) ?? true).map((entry) => entry.fileId))
+    .filter((entry) => selection === null || selection.draftId !== draftId || selection.paths.has(entry.path)).map((entry) => entry.fileId))
   const selectedCount = snapshot === null ? 0 : CommitTargets.selected(CommitTargets.eligible(snapshot), checked).length
   const revertible = snapshot === null ? [] : CommitTargets.eligible(snapshot)
     .filter((entry) => checked.has(entry.fileId) && VersioningRevert.allows(entry)
       && !snapshot.externalRoots.some((root) => root.fileIds.includes(entry.fileId)))
   const setChecked = (ids: ReadonlySet<string>): void => {
-    if (snapshot === null) return
-    setSelection(new Map(snapshot.entries.map((entry) => [entry.path, ids.has(entry.fileId)])))
+    if (snapshot === null || draftId === undefined) return
+    setSelection({ draftId, paths: new Set(snapshot.entries.filter((entry) => ids.has(entry.fileId)).map((entry) => entry.path)) })
   }
   const [note, setNote] = useState<string | null>(null)
   const [running, setRunning] = useState(false)

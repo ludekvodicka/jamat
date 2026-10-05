@@ -1,6 +1,6 @@
 {
   "name": "jamat-v3-client-ui",
-  "version": "3.7.0",
+  "version": "3.9.0",
   "private": true,
   "license": "MIT",
   "author": "ludekvodicka",
@@ -81,6 +81,16 @@
       }
     ],
     "extraResources": [
+      {
+        "from": "../out/codex",
+        "to": "codex",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "../out/skills-bundle",
+        "to": ".",
+        "filter": ["**/*"]
+      },
       {
         "from": "../out/launcher",
         "to": "launcher",

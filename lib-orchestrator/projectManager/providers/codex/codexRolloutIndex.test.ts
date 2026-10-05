@@ -439,7 +439,7 @@ describe('lib-orchestrator/projectManager/providers/codex/codexRolloutIndex', ()
       const other = writeRolloutAt(codexHome, { at: noonConst + hour, sessionId: backslashId, fixture: 'rollout-injected-blocks.jsonl', cwd: 'Q:/Projects/Other' })
 
       expect(await index.rolloutsBetween(projectDir, noonConst, noonConst + 2 * hour)).toEqual([
-        { file: wanted.file, sessionId: forwardSlashId, createdAt: wanted.createdAt, forkedFromId: null },
+        { file: wanted.file, sessionId: forwardSlashId, createdAt: wanted.createdAt, forkedFromId: null, interactive: false },
       ])
       expect(earlier.file).not.toEqual(other.file)
       expect(reports).toEqual([])
@@ -455,7 +455,7 @@ describe('lib-orchestrator/projectManager/providers/codex/codexRolloutIndex', ()
       const forked = writeRolloutAt(codexHome, { at: noonConst + hour, sessionId: forkedId, fixture: 'rollout-forked.jsonl' })
 
       expect(await index.rolloutsBetween(projectDir, noonConst, noonConst + 2 * hour)).toEqual([
-        { file: forked.file, sessionId: forkedId, createdAt: forked.createdAt, forkedFromId: forwardSlashId },
+        { file: forked.file, sessionId: forkedId, createdAt: forked.createdAt, forkedFromId: forwardSlashId, interactive: true },
       ])
       expect(reports).toEqual([])
     })
@@ -479,7 +479,7 @@ describe('lib-orchestrator/projectManager/providers/codex/codexRolloutIndex', ()
 
       expect(await index.rolloutsBetween(projectDir, noonConst, noonConst + 2 * hour)).toEqual([])
       expect(reports).toEqual([
-        `Codex rollout ${forked.file} has no session_meta cwd in its first 16384 bytes; skipping it`,
+        `Codex rollout ${forked.file} has no session_meta cwd in its first 131072 bytes; skipping it`,
       ])
     })
 

@@ -32,13 +32,13 @@ export type AgentLaunchSpec = SessionAgentSpec & { oneShot?: true }
  *
  * Codex is richer than the plan assumed: it resumes and forks BY ID, so `--last` is a fallback here
  * rather than the only thing it can do. What stays asymmetric is minting: Codex has no equivalent of
- * `--session-id` on the root command, so its native id is only knowable afterwards, from its history.
+ * `--session-id` on the root command, so its native id is confirmed afterwards by the app-server bridge.
  *
  * A second probe on 2026-09-06, Claude Code 2.1.263 and Codex CLI 0.153.4, settled what the first
  * left open: **`--session-id` may be combined with `--resume <parent> --fork-session`.** The fork
  * carried the parent's history, its transcript landed under the given id, and the parent's own file
  * did not grow. Codex has no such switch anywhere - `codex fork` takes a session id and a prompt and
- * nothing else - so a Codex fork's id stays a thing found afterwards, from the rollout it wrote.
+ * nothing else - so a Codex fork uses the thread ID returned by its app-server response.
  *
  * **No branch may produce a bare `codex resume` or `codex fork`.** Both open an interactive picker,
  * and these processes run in a PTY with nobody at the keyboard: the picker would hold the session on
@@ -130,10 +130,12 @@ export class AgentPresets {
    * session started with `--continue`, and a fork taken before forks were given ids of their own
    * (minted for Claude, found for Codex). Both agents' own pickers still reach that history from a
    * plain shell session. What is NOT affected is the ordinary case - a Claude session created as
-   * `new` or as a `fork` is launched under an id this client minted, a Codex one is named from the
-   * rollout it wrote, and that id is what either is reopened by.
+   * `new` or as a `fork` is launched under an id this client minted, a Codex one is named from its
+   * confirmed app-server response, and that id is what either is reopened by.
    */
   static reopenProblem(agent: SessionRecordAgent): string | null {
+    if (agent.agentId === 'codex' && agent.unverifiedNativeSessionId && !agent.nativeSessionId)
+      return 'the old inferred Codex identity is unverified; select the intended conversation explicitly from history'
     if (agent.agentId === 'claude')
       return AgentPresets.reopenModeOf(agent) === 'resume'
         ? null
@@ -147,15 +149,14 @@ export class AgentPresets {
   }
 
   /**
-   * A record that names its conversation resumes it, whichever way it was launched. `continue` is
-   * the one mode that never can: it landed on a conversation by recency, so nothing on the record
-   * says which one it was.
+   * A Codex `continue` becomes resumable only after the server confirms its selected thread.
+   * Claude `continue` has no equivalent confirmation here.
    */
   private static reopenModeOf(agent: SessionRecordAgent): SessionAgentSpec['mode'] {
     if (agent.launchMode === 'new' || agent.launchMode === 'resume' || agent.launchMode === 'fork')
       return agent.nativeSessionId ? 'resume' : 'continue'
     else if (agent.launchMode === 'continue')
-      return 'continue'
+      return agent.nativeSessionIdSource === 'codex-app-server' && agent.nativeSessionId ? 'resume' : 'continue'
     else
       throw new Error(`Unknown launch mode: ${JSON.stringify(agent.launchMode)}`)
   }

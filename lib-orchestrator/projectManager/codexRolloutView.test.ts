@@ -75,7 +75,7 @@ describe('lib-orchestrator/projectManager/codexRolloutView', () => {
     const view = CodexRolloutView.load({ codexHome, report: () => undefined })
     const { from, until } = window()
     expect(await view.rolloutsBetween(fixtureProjectDir, from, until))
-      .toEqual([{ sessionId: mineConst, createdAt: expect.any(Number), forkedFromId: null, firstUserMessage: expect.anything() }])
+      .toEqual([{ sessionId: mineConst, createdAt: expect.any(Number), forkedFromId: null, firstUserMessage: expect.anything(), interactive: false }])
     expect((await view.rolloutsBetween(otherProjectDir, from, until)).map((match) => match.sessionId))
       .toEqual([theirsConst])
   })
@@ -88,7 +88,51 @@ describe('lib-orchestrator/projectManager/codexRolloutView', () => {
     const view = CodexRolloutView.load({ codexHome, report: () => undefined })
     const { from, until } = window()
     expect(await view.rolloutsBetween(fixtureProjectDir, from, until))
-      .toEqual([{ sessionId: forkedConst, createdAt: expect.any(Number), forkedFromId: parentConst, firstUserMessage: expect.anything() }])
+      .toEqual([{ sessionId: forkedConst, createdAt: expect.any(Number), forkedFromId: parentConst, firstUserMessage: expect.anything(), interactive: true }])
+  })
+
+  it.each([
+    { source: 'cli', thread_source: 'user', expected: true },
+    { source: 'cli', expected: true },
+    { source: 'cli', thread_source: 'agent', expected: false },
+    { source: { subagent: { thread_spawn: { parent_thread_id: parentConst, depth: 1 } } }, expected: false },
+    { source: 'exec', expected: false },
+    { source: 'subagent', expected: false },
+    { source: null, expected: false },
+    { source: undefined, expected: false },
+    { source: 'unknown', expected: false },
+  ])('attests interactive provenance only from session metadata: %j', async ({ expected, ...provenance }) => {
+    const codexHome = home()
+    writeRollout(codexHome, mineConst, {
+      edit: () => `${JSON.stringify({
+        type: 'session_meta',
+        payload: {
+          cwd: fixtureProjectDir,
+          originator: 'codex-tui',
+          ...provenance,
+          instructions: { source: 'cli', thread_source: 'user' },
+        },
+      })}\n${JSON.stringify({ type: 'response_item', payload: { source: 'cli', thread_source: 'user' } })}\n`,
+    })
+    const { from, until } = window()
+    const found = await CodexRolloutView.load({ codexHome }).rolloutsBetween(fixtureProjectDir, from, until)
+    expect(found).toHaveLength(1)
+    expect(found[0].interactive).toBe(expected)
+  })
+
+  it.each([
+    { padding: 20_000, expected: true },
+    { padding: 140_000, expected: false },
+  ])('requires a complete bounded header after $padding instruction bytes', async ({ padding, expected }) => {
+    const codexHome = home()
+    writeRollout(codexHome, mineConst, {
+      edit: () => `${JSON.stringify({ type: 'session_meta', payload: {
+        cwd: fixtureProjectDir, source: 'cli', instructions: 'x'.repeat(padding), thread_source: 'user',
+      } })}\n`,
+    })
+    const { from, until } = window()
+    const found = await CodexRolloutView.load({ codexHome }).rolloutsBetween(fixtureProjectDir, from, until)
+    expect(found[0].interactive).toBe(expected)
   })
 
   // Codex writes the field as `null` for a session nobody forked; an absent field means the same.

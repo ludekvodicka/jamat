@@ -1,7 +1,8 @@
 /**
  * Diagnostic, not a gate. It reads every live Host on this machine, builds each alive session's
  * frame exactly the way the work-state monitor does, prints what both inspectors make of it, and
- * writes the frames out as CANDIDATES for the fixture corpus.
+ * writes the frames out as CANDIDATES for the fixture corpus. A second inspect of the viewport alone
+ * records what the prompt import reads, `viewport` and the `content` of both agents.
  *
  * It exists because the corpus was inherited rather than recorded. Every fixture under
  * `lib-orchestrator/sessionManager/workState/fixtures/` was copied from AppJamat V1 as a single line
@@ -31,6 +32,7 @@ import type {
   HostDescriptor,
   RuntimeInspectResult,
   RuntimeListResult,
+  TerminalProjectionSnapshot,
 } from '../../app-host/app/wire/hostWire.js'
 import { HostDescriptorPaths } from '../../lib-orchestrator/hostClient/hostDescriptorPaths.js'
 import { PathCompare } from '../../lib-orchestrator/shared/pathCompare.js'
@@ -38,7 +40,11 @@ import { AgentComposerReader } from '../../lib-orchestrator/sessionManager/workS
 import { AgentWorkInspectorClaude } from '../../lib-orchestrator/sessionManager/workState/agentWorkInspectorClaude.js'
 import { AgentWorkInspectorCodex } from '../../lib-orchestrator/sessionManager/workState/agentWorkInspectorCodex.js'
 import { ScreenTail } from '../../lib-orchestrator/sessionManager/workState/screenTail.js'
-import type { AgentWorkInspection } from '../../lib-orchestrator/sessionManager/workState/agentWorkInspector.types.js'
+import type {
+  AgentWorkInspection,
+  ComposerViewport,
+} from '../../lib-orchestrator/sessionManager/workState/agentWorkInspector.types.js'
+import type { TerminalComposerContent } from '../../lib-orchestrator/sessionManager/sessionManagerApi.types.js'
 
 /** One descriptor found on this machine, with the two names that say which Host it belongs to. */
 interface FoundHost {
@@ -138,6 +144,19 @@ class CaptureWorkstate {
         console.log(`   ${session.runtimeSessionId}: no projection`)
         continue
       }
+      // The viewport the import reads, asked for the way `SessionManager` asks: no scrollback.
+      const viewportInspected = await CaptureWorkstate.op<RuntimeInspectResult>(
+        host.descriptor,
+        'runtime.inspect',
+        {
+          target: {
+            hostInstanceId: listing.hostInstanceId,
+            runtimeSessionId: session.runtimeSessionId,
+            generation: session.generation,
+          },
+          view: ScreenTail.viewportViewConst,
+        },
+      )
       const frame = ScreenTail.frameOf(inspected.projection)
       // Both inspectors are run because the Host is agent-agnostic: nothing in a listing says which
       // agent a runtime is, and the record that would is the session manager's, not this tool's.
@@ -159,6 +178,9 @@ class CaptureWorkstate {
       }
       console.log(`     composer claude=${JSON.stringify(composers.claude)}`)
       console.log(`     composer codex=${JSON.stringify(composers.codex)}`)
+      const viewportCapture = CaptureWorkstate.viewportCaptureOf(viewportInspected.projection)
+      console.log(`     content (${viewportCapture.source}) claude=${JSON.stringify(viewportCapture.contents.claude)}`)
+      console.log(`     content (${viewportCapture.source}) codex=${JSON.stringify(viewportCapture.contents.codex)}`)
       writeFileSync(
         join(outDir, `frame-${session.runtimeSessionId}.json`),
         JSON.stringify({
@@ -169,9 +191,46 @@ class CaptureWorkstate {
           verdicts,
           composers,
           frame,
+          ...viewportCapture,
         }, null, 2),
       )
       CaptureWorkstate.written += 1
+    }
+  }
+
+  /**
+   * The viewport and what `AgentComposerReader.content` makes of it as either agent. A Host that
+   * sends styled rows gives the reading the import itself would take. An older one gives none, so
+   * the serialized viewport is read instead. Both forms are kept for an admission: the serialized
+   * bytes carry the dim style, and an older Host's plain rows stay in place after a shrink, which
+   * leaves cells beyond the new width in the serialized bytes.
+   */
+  private static viewportCaptureOf(projection: TerminalProjectionSnapshot | null): {
+    source: 'screen-lines' | 'serialized-screen' | 'no-projection'
+    viewport: ComposerViewport | null
+    viewportProjection: Pick<
+      TerminalProjectionSnapshot, 'screen' | 'cols' | 'rows' | 'screenLines' | 'screenLinesStyled'
+    > | null
+    contents: { claude: TerminalComposerContent | null; codex: TerminalComposerContent | null }
+  } {
+    if (projection === null)
+      return { source: 'no-projection', viewport: null, viewportProjection: null, contents: { claude: null, codex: null } }
+    const viewport = ScreenTail.viewportOf(projection)
+    const read = viewport ?? ScreenTail.viewportOfScreen(projection)
+    return {
+      source: viewport === null ? 'serialized-screen' : 'screen-lines',
+      viewport,
+      viewportProjection: {
+        screen: projection.screen,
+        cols: projection.cols,
+        rows: projection.rows,
+        screenLines: projection.screenLines,
+        screenLinesStyled: projection.screenLinesStyled,
+      },
+      contents: {
+        claude: AgentComposerReader.content('claude', read),
+        codex: AgentComposerReader.content('codex', read),
+      },
     }
   }
 

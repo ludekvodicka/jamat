@@ -40,6 +40,7 @@ class SmokeVcsCommit extends SmokeHarness {
     await this.checkSvnUpdate(message)
     await this.checkExplicitScopes(message)
     await this.checkSvnKeptLocalDeletion(message)
+    await this.checkSvnGitIgnoredDirectory(message)
     console.log(`\nsmoke-vcs-commit: ${this.passed} checks passed`)
   }
 
@@ -112,6 +113,92 @@ class SmokeVcsCommit extends SmokeHarness {
       && await readFile(join(data, 'records', 'fresh', 'run.json'), 'utf8') === 'local\n'
       && (await this.svnRun(working, ['status', '--', `${data}@`])).trim().startsWith('?'))
     manager.release(prepared.value.draftId, 'owner')
+  }
+
+  /**
+   * A project's own Git can ignore what SVN versions: a public mirror excludes `/.aidocs/`, while SVN
+   * keeps it. Git then lists nothing inside a new `.aidocs` directory, the review drew the directory
+   * alone, and the commit published an empty directory (applications/Jamat#35, r158 and r162).
+   */
+  private async checkSvnGitIgnoredDirectory(message: string): Promise<void> {
+    const repository = join(this.root, 'ignored-repository')
+    const created = await new CommandInvoker().run({ command: 'svnadmin', args: ['create', repository], cwd: this.root, env: process.env })
+    if (created.failure !== null || created.code !== 0) throw new Error(created.stderr)
+    const working = join(this.root, 'ignored-working')
+    await this.svnRun(this.root, ['checkout', pathToFileURL(repository).href, working])
+    const aidocs = join(working, '.aidocs')
+    await mkdir(join(aidocs, 'plans'), { recursive: true })
+    await writeFile(join(aidocs, 'plans', 'plan.md'), 'plan\n')
+    await this.svnRun(working, ['add', '--', '.aidocs'])
+    await this.svnRun(working, ['commit', '--file', message])
+    await this.gitRun(working, ['init'])
+    await writeFile(join(working, '.git', 'info', 'exclude'), '/.aidocs/\n')
+    const manager = new VersioningCommitManager({
+      messages: new VersioningCommitMessageStore(join(this.root, 'ignored-messages.json'), (detail) => console.error(detail)),
+      sessions: { workingContext: async () => ({ ok: true, value: { sessionId: 'ignored', cwd: working, agent: null, worktree: null } }), settleVcs: () => {} },
+      vcsStatus: new VcsStatusView(), checkpointStore: { worktreeBelongsToStore: async () => false },
+      fileAccess: (_owner, snapshot, file) => this.files.fileAccess(snapshot, file),
+      snapshotOf: (_owner, snapshot) => this.files.workingSnapshot(snapshot),
+      git: this.commits, svn: this.svnCommits,
+      tortoise: { open: async () => { throw new Error('Unexpected Tortoise fallback') } }, onChanged: () => {},
+    })
+    const names = ['00-run.md', 'brief.md', 'report.md']
+    let evictFirstReview = true
+    const review = async (paths: readonly string[], unchecked: readonly string[]): Promise<{ revision: string; committed: readonly string[] }> => {
+      const prepared = await manager.prepare('ignored', 'svn', null, null, paths)
+      if (!prepared.ok) throw new Error(prepared.detail)
+      manager.attach(prepared.value.draftId, 'owner')
+      const read = await this.files.workingTree({ sessionId: 'ignored', cwd: prepared.value.scopeRoot, agent: null, worktree: null }, 'svn', true)
+      if (!read.ok) throw new Error(read.detail)
+      const snapshot = manager.files('owner', prepared.value.draftId, read.value)
+      if (evictFirstReview) {
+        evictFirstReview = false
+        for (let index = 0; index < 40; index++) {
+          const other = await this.files.workingTree({ sessionId: 'other-review', cwd: working, agent: null, worktree: null }, 'svn', true)
+          if (!other.ok) throw new Error(other.detail)
+        }
+        this.check('Other file lists evict the shared snapshot while the Markdown commit review stays open',
+          this.files.workingSnapshot(snapshot.snapshotId) === null)
+      }
+      const result = await manager.run('owner', { draftId: prepared.value.draftId, snapshotId: snapshot.snapshotId,
+        fileIds: snapshot.entries.filter((entry) => !unchecked.includes(entry.path)).map((entry) => entry.fileId),
+        message: await readFile(message, 'utf8') })
+      if (!result.ok) throw new Error(result.detail)
+      const committed = manager.status(prepared.value.draftId)?.committedPaths ?? []
+      manager.release(prepared.value.draftId, 'owner')
+      return { revision: result.revision, committed }
+    }
+    const added = async (revision: string): Promise<readonly string[]> =>
+      [...(await this.svnRun(working, ['log', '--xml', '--verbose', '-r', revision, pathToFileURL(repository).href]))
+        .matchAll(/action="A"[^>]*>([^<]+)</g)].map((match) => match[1]).sort()
+    const runA = join(aidocs, 'engines', 'run-a')
+    await mkdir(runA, { recursive: true })
+    for (const name of names) await writeFile(join(runA, name), `${name}\n`)
+    const first = await review([aidocs], [])
+    this.check('A reviewed new directory inside a new directory commits both directories and every file in one revision',
+      JSON.stringify(await added(first.revision)) === JSON.stringify(['/.aidocs/engines', '/.aidocs/engines/run-a',
+        ...names.map((name) => `/.aidocs/engines/run-a/${name}`)])
+      && names.every((name) => first.committed.includes(join(runA, name)))
+      && (await this.svnRun(working, ['status', '--', '.aidocs'])).trim() === '')
+    const runB = join(aidocs, 'engines', 'run-b')
+    await mkdir(runB)
+    for (const name of names) await writeFile(join(runB, name), `${name}\n`)
+    await writeFile(join(aidocs, 'plans', 'plan.md'), 'plan edited\n')
+    const second = await review([aidocs], [join(runB, 'report.md')])
+    this.check('An unchecked file in a reviewed new directory stays unversioned while its siblings and a modified file commit',
+      JSON.stringify(await added(second.revision)) === JSON.stringify(['/.aidocs/engines/run-b',
+        '/.aidocs/engines/run-b/00-run.md', '/.aidocs/engines/run-b/brief.md'])
+      && await this.svnRun(working, ['cat', '-r', 'BASE', '.aidocs/plans/plan.md']) === 'plan edited\n'
+      && (await this.svnRun(working, ['status', '--', '.aidocs'])).trim() === `?       ${join('.aidocs', 'engines', 'run-b', 'report.md')}`)
+    const completed = join(aidocs, 'completed', 'plans')
+    await mkdir(completed, { recursive: true })
+    await writeFile(join(completed, 'done.md'), 'done\n')
+    await writeFile(join(completed, 'other.md'), 'other\n')
+    const third = await review([join(completed, 'done.md')], [])
+    this.check('An exact file scope commits that file with its new parent directories only',
+      JSON.stringify(await added(third.revision)) === JSON.stringify(['/.aidocs/completed', '/.aidocs/completed/plans',
+        '/.aidocs/completed/plans/done.md'])
+      && (await this.svnRun(working, ['status', '--', `${join(completed, 'other.md')}@`])).trim().startsWith('?'))
   }
 
   private async checkExplicitScopes(message: string): Promise<void> {

@@ -64,6 +64,7 @@
   gap: var(--space-2);
 }
 .jamat-host-status__start,
+.jamat-host-status__dismiss,
 .jamat-rate__retry,
 .jamat-session-model__compact {
   padding: 0 var(--space-1);
@@ -76,6 +77,7 @@
   cursor: pointer;
 }
 .jamat-host-status__start:hover,
+.jamat-host-status__dismiss:hover,
 .jamat-rate__retry:hover,
 .jamat-session-model__compact:hover {
   color: var(--color-text-1);
@@ -191,4 +193,29 @@
 }
 .jamat-update-panel .auto-update-panel h2 {
   color: var(--color-text-1);
+}
+
+.jamat-host-status__failure {
+  position: fixed;
+  z-index: 20;
+  left: var(--space-2);
+  bottom: calc(var(--size-statusbar) + var(--space-2));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  width: min(640px, calc(100vw - var(--space-4)));
+  max-height: 50vh;
+  box-sizing: border-box;
+  overflow: auto;
+  padding: var(--space-3);
+  color: var(--color-text-1);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-surface);
+  box-shadow: var(--shadow-overlay);
+  font-size: var(--fs-base);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }

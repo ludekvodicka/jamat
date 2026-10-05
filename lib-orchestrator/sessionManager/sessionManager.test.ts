@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type {
   RuntimeInspectResult,
+  RuntimeLaunchSpec,
   RuntimeListResult,
   RuntimeMutationAck,
   RuntimeRef,
@@ -23,6 +24,7 @@ import type { SessionRecord, SessionRecordsDocument } from './records/sessionRec
 import type { SessionInfo, SessionsOpResult } from './sessionManagerApi.types'
 import { SessionManager, type SessionManagerDeps } from './sessionManager'
 import { WorkFixtures } from './workState/fixtures/workFixtures'
+import { ScreenTail } from './workState/screenTail'
 
 describe('lib-orchestrator/sessionManager/sessionManager', () => {
   const roots: string[] = []
@@ -300,7 +302,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const context = await world()
     seedRecords(context, [
       recordOf(context, 'claude', { kind: 'agent', life: 'live', agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'claude-conversation', initialPrompt: 'do not replay this' } }),
-      recordOf(context, 'codex', { kind: 'agent', life: 'live', agent: { agentId: 'codex', launchMode: 'fork', nativeSessionId: 'codex-conversation' } }),
+      recordOf(context, 'codex', { kind: 'agent', life: 'live', agent: { agentId: 'codex', launchMode: 'fork', nativeSessionId: 'codex-conversation', nativeSessionIdSource: 'codex-app-server' } }),
       recordOf(context, 'shell', { life: 'live', color: 'green', note: 'keep me' }),
       recordOf(context, 'ended', {}),
       recordOf(context, 'lost', { life: 'lost' }),
@@ -324,7 +326,9 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const launches = replacement.calls.filter((call) => call.name === 'runtime.create')
     expect(launches.map((call) => call.body.runtimeSessionId)).toEqual(['claude', 'codex', 'shell'])
     expect(JSON.stringify(launches[0]?.body.launch)).toContain('claude-conversation')
-    expect(JSON.stringify(launches[1]?.body.launch)).toContain('codex-conversation')
+    const codexLaunch = launches[1]?.body.launch as RuntimeLaunchSpec
+    const launchFile = JSON.parse(readFileSync(codexLaunch.args.at(-1)!, 'utf8')) as {client: {args: string[]}}
+    expect(launchFile.client.args).toContain('codex-conversation')
     expect(JSON.stringify(launches)).not.toContain('do not replay this')
     for (const id of ['claude', 'codex', 'shell']) expect(sessionOf(client, id)?.life).toBe('live')
     expect(sessionOf(client, 'ended')?.life).toBe('ended')
@@ -370,6 +374,34 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(await client.manager.restartHost('fake-host-1')).toMatchObject({ ok: false, code: 'invalid-spec' })
     expect(context.host.calls.some((call) => call.name === 'host.stop')).toBe(false)
     expect(sessionOf(client, 's1')?.life).toBe('live')
+    expect(client.spawns()).toBe(0)
+  })
+
+  it('reports every non-resumable session and leaves every runtime running', async () => {
+    const context = await world()
+    seedRecords(context, [
+      recordOf(context, 'legacy', { kind: 'agent', life: 'live', title: 'Legacy Codex', agent: {
+        agentId: 'codex', launchMode: 'new', unverifiedNativeSessionId: 'old-guessed-id',
+      } }),
+      recordOf(context, 'unnamed', { kind: 'agent', life: 'live', title: 'Unnamed Codex', agent: {
+        agentId: 'codex', launchMode: 'new',
+      } }),
+      recordOf(context, 'shell', { life: 'live' }),
+    ])
+    for (const id of ['legacy', 'unnamed', 'shell']) context.runtimes.set(id, runtime(id))
+    context.publishDescriptor()
+    const client = clientOf(context, { codexHome: join(context.root, 'empty-codex') })
+    await client.manager.start()
+    await writable(client)
+    const result = await client.manager.restartHost('fake-host-1')
+    expect(result).toMatchObject({ ok: false, code: 'invalid-spec' })
+    if (result.ok) throw new Error('Restart should have been refused')
+    expect(result.detail).toContain('Legacy Codex (legacy)')
+    expect(result.detail).toContain('old inferred Codex identity is unverified')
+    expect(result.detail).toContain('Unnamed Codex (unnamed)')
+    expect(result.detail).toContain('Codex never reported the id')
+    expect(context.host.calls.some((call) => call.name === 'host.stop')).toBe(false)
+    for (const id of ['legacy', 'unnamed', 'shell']) expect(sessionOf(client, id)?.life).toBe('live')
     expect(client.spawns()).toBe(0)
   })
 
@@ -428,6 +460,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     codexHome: string,
     sessionId: string,
     createdAt: number,
+    provenance: { source?: unknown },
   ): void {
     const at = new Date(createdAt)
     const pad = (value: number): string => String(value).padStart(2, '0')
@@ -449,18 +482,24 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
           cwd: context.root,
           originator: 'codex_cli_rs',
           cli_version: 'test',
+          ...provenance,
         },
       })}\n`,
       'utf8',
     )
   }
 
-  it('finishes the first reconcile before naming an old Codex conversation on startup', async () => {
+  it.each([
+    { source: 'cli', captured: false },
+    { source: undefined, captured: false },
+    { source: 'exec', captured: false },
+    { source: { subagent: 'review' }, captured: false },
+  ])('never associates a legacy tab with a rollout found on startup: %j', async ({ source, captured }) => {
     const context = await world()
     const codexHome = join(context.root, 'codex-home')
     const conversationId = '019f4bf7-b5d8-74b0-9175-a5a5938a4082'
     const createdAt = Date.now() - 3_600_000
-    writeCodexRollout(context, codexHome, conversationId, createdAt + 1_000)
+    writeCodexRollout(context, codexHome, conversationId, createdAt + 1_000, { source })
     seedRecords(context, [recordOf(context, 'codex-old', {
       kind: 'agent',
       agent: { agentId: 'codex', launchMode: 'new' },
@@ -472,7 +511,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     await client.manager.start()
 
     expect(client.manager.debugStatus().reconcile.lastReason).toBe('poll')
-    expect(storedRecord(context, 'codex-old')?.agent?.nativeSessionId).toBe(conversationId)
+    expect(storedRecord(context, 'codex-old')?.agent?.nativeSessionId).toBe(captured ? conversationId : undefined)
     expect(client.errors).toEqual([])
   }, 20_000)
 
@@ -641,6 +680,81 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(await client.manager.terminalComposer('composer-blind')).toEqual({ ok: false, code: 'no-projection' })
   })
 
+  it('reads an agent session\'s whole draft off one viewport inspect and refuses what has none', async () => {
+    const context = await world()
+    context.publishDescriptor()
+    const binding = { hostInstanceId: context.host.descriptor().hostInstanceId, generation: 1 }
+    const directory = { mode: 'project' as const, categoryId: 'code', projectPath: join(context.categoryRoot, 'Alpha') }
+    for (const id of ['content-agent', 'content-shell', 'content-blind', 'content-plain', 'content-dialog'])
+      context.runtimes.set(id, runtime(id))
+    const claude = (id: string) => recordOf(context, id, {
+      kind: 'agent', life: 'live', binding, directory,
+      agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: `${id}-native` },
+    })
+    seedRecords(context, [
+      claude('content-agent'),
+      recordOf(context, 'content-shell', { kind: 'shell', life: 'live', binding, directory }),
+      claude('content-blind'),
+      claude('content-plain'),
+      claude('content-dialog'),
+      recordOf(context, 'content-gone', {
+        kind: 'agent', life: 'lost', binding: null, directory,
+        agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'content-gone-native' },
+      }),
+    ])
+    const fixtureOf = (file: string) => {
+      const found = WorkFixtures.all().find((candidate) => candidate.file === file)
+      if (found === undefined) throw new Error(`missing work fixture ${file}`)
+      return found
+    }
+    const text = fixtureOf('claude-live-composer-text.json')
+    const dialog = fixtureOf('claude-live-permission-prompt.json')
+    const client = clientOf(context)
+    await client.manager.start()
+    await writable(client)
+    await reconciled(client)
+    const views: ({ screenScrollbackRows?: number } | undefined)[] = []
+    context.host.handle('runtime.inspect', (body) => {
+      const target = body.target as RuntimeRef
+      const session = context.runtimes.get(target.runtimeSessionId)
+      if (session === undefined || target.runtimeSessionId === 'content-blind')
+        return { status: 404, body: { error: 'no such runtime' } }
+      views.push(body.view as { screenScrollbackRows?: number } | undefined)
+      const rows = target.runtimeSessionId === 'content-dialog'
+        ? dialog.frame.wideScreenTail.split('\n')
+        : text.frame.wideScreenTail.split('\n')
+      // An older Host sends rows without the style marker; they cannot tell a dim placeholder.
+      const styled = target.runtimeSessionId !== 'content-plain'
+      return {
+        body: {
+          session,
+          projection: { ...session, raw: '', screen: '', screenLines: rows, ...(styled ? { screenLinesStyled: true } : {}) },
+        } satisfies RuntimeInspectResult,
+      }
+    })
+
+    expect(await client.manager.terminalComposerContent('content-agent')).toEqual({
+      ok: true,
+      reading: {
+        agentId: 'claude',
+        alive: true,
+        hint: 'idle',
+        content: text.expected.content,
+      },
+    })
+    // The work-state monitor inspects too, with its own scrollback; only the read asks for none.
+    expect(views.filter((view) => view?.screenScrollbackRows === 0)).toEqual([ScreenTail.viewportViewConst])
+    expect(await client.manager.terminalComposerContent('content-dialog')).toMatchObject({
+      ok: true,
+      reading: { hint: 'blocked' },
+    })
+    expect(await client.manager.terminalComposerContent('nobody')).toEqual({ ok: false, code: 'unknown-session' })
+    expect(await client.manager.terminalComposerContent('content-gone')).toEqual({ ok: false, code: 'not-live' })
+    expect(await client.manager.terminalComposerContent('content-shell')).toEqual({ ok: false, code: 'not-agent' })
+    expect(await client.manager.terminalComposerContent('content-blind')).toEqual({ ok: false, code: 'no-projection' })
+    expect(await client.manager.terminalComposerContent('content-plain')).toEqual({ ok: false, code: 'no-viewport' })
+  })
+
   it('names the Host, the catalog and where every session belongs', async () => {
     const context = await world()
     context.publishDescriptor()
@@ -806,7 +920,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       value: {
         agentId: 'codex',
         cwd: join(context.root, 'legacy-cwd'),
-        nativeSessionId: 'native-2',
+        nativeSessionId: null,
         launchModel: null,
       },
     })

@@ -102,9 +102,13 @@ export class TabControlBroker implements RemoteControlTabsPort {
     try {
       if (this.stopping) return TabControlBroker.error('unavailable', 'The AppClientUI process is stopping')
       const automatic = options.showRefusal !== true && (this.deps?.activateSessionOnCommit?.() ?? true)
+      const activePanelId = this.activePanel(this.windows.lastFocusedWorkspace()?.windowId)
+      // An unfinished review left in another session must not suppress later activation requests.
+      if (automatic && this.commitSequence?.reviews[0]?.command.panelId !== activePanelId)
+        this.commitSequence = null
       const activate = options.showRefusal === true || (automatic && this.commitSequence === null)
       const shouldReturn = automatic && (this.deps?.returnToPreviousSessionAfterCommit?.() ?? true)
-      const previousPanelId = shouldReturn ? this.activePanel(this.windows.lastFocusedWorkspace()?.windowId) : null
+      const previousPanelId = shouldReturn ? activePanelId : null
       const existing = this.index.panelsOfSession(sessionId)[0]
       const opened = existing === undefined
         ? await this.open(sessionId, tabTitle, { ...options, activate })

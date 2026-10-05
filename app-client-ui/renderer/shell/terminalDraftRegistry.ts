@@ -40,6 +40,16 @@ export class TerminalDraftRegistry {
     for (const subscriber of this.subscribers) subscriber()
   }
 
+  /**
+   * The prompt was proven empty by something other than this person's keys: an import erased it
+   * through main's own attach, which this window never saw. Touched as well, because the hands that
+   * asked for the import are still at the prompt.
+   */
+  cleared(sessionId: string): void {
+    this.entries.set(sessionId, { characters: 0, touchedAt: this.now() })
+    for (const subscriber of this.subscribers) subscriber()
+  }
+
   subscribe(onChanged: () => void): () => void {
     this.subscribers.add(onChanged)
     return () => { this.subscribers.delete(onChanged) }

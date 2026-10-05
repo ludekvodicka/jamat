@@ -1,0 +1,37 @@
+{
+  "agent": "codex",
+  "expected": {
+    "hint": "idle",
+    "composer": {
+      "state": "empty"
+    },
+    "queuedRow": false,
+    "echoHead": null,
+    "pastePlaceholders": 0,
+    "content": {
+      "kind": "empty"
+    }
+  },
+  "provenance": {
+    "origin": "captured from this tree's live Host by scripts/dev/capture-workstate.ts",
+    "case": "a freshly booted Codex with an empty box: the dimmed placeholder, and a footer of two rows, the model row and `? for shortcuts` under it",
+    "capture": "nothing was typed; the terminal was resized to 80 x 30 right after the spawn, before Codex drew; the Host predates styled screenLines, so `viewport` keeps the serialized viewport of an inspect without scrollback and WorkFixtures.viewportOf rebuilds its rows; sanitized per V1 recipe: the repository directory is replaced by Q:\\PROJECT. ANSI is left intact",
+    "ported": "nothing - recorded in this tree",
+    "identical": "not present in the V1 or V2 corpus"
+  },
+  "recorded": {
+    "build": "codex-cli 0.160.0",
+    "capturedAt": "2026-10-05",
+    "cols": 80,
+    "rows": 30
+  },
+  "frame": {
+    "rawTail": "\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\u001b[1m\r\n›\u001b[22m \u001b[2mAsk Codex to do anything\u001b[22m\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n  \u001b[1m?\u001b[22m for shortcuts\u001b[K\u001b[27;3H\u001b[?25h\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[2m\u001b[3;6HQ:\\PROJECT\u001b[27;3H\u001b[?25h\u001b[?2026h\u001b[?2026l\u001b[22m\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?25l\u001b[8;30;80t\u001b[H\u001b[K\r\n  >_ \u001b[1mOpenAI Codex\u001b[22m\u001b[2m (v0.160.0)\u001b[22m\u001b[K\r\n     \u001b[2mQ:\\PROJECT\u001b[22m\u001b[K\r\n\u001b[K\r\n  How deep does this codebase go?\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\u001b[1m\r\n›\u001b[22m \u001b[2mAsk Codex to do anything\u001b[22m\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n  \u001b[1m?\u001b[22m for shortcuts\u001b[K\u001b[27;3H\u001b[?25h\u001b[?2026h\u001b[0 q\u001b[?2026l\u001b[?25l\u001b[H\u001b[K\r\n  >_ \u001b[1mOpenAI Codex\u001b[22m\u001b[2m (v0.160.0)\u001b[22m\u001b[K\r\n     \u001b[2mQ:\\PROJECT\u001b[22m\u001b[K\r\n\u001b[K\r\n  How deep does this codebase go?\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\u001b[1m\r\n›\u001b[22m \u001b[2mAsk Codex to do anything\u001b[22m\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n  \u001b[1m?\u001b[22m for shortcuts\u001b[K\u001b[27;3H\u001b[?25h\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b]0;Jamat\u0007\u001b[?2026h\u001b[?25l\u001b[?2026l\u001b[29;3HGPT-6-Astra\u001b[1Cdefault\u001b[1C·\u001b[1CQ:\\PROJECT\u001b[27;3H\u001b[?25h\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b]0;⠼ Jamat\u0007\u001b]0;⠦ Jamat\u0007\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?25l\u001b[2m\u001b[4;1H  permissions: \u001b[38;5;5m\u001b[22m\u001b[1mYOLO mode\u001b[m\u001b[5;2H\u001b[K\u001b[6;3HHow\u001b[1Cdeep\u001b[1Cdoes\u001b[1Cthis\u001b[1Ccodebase\u001b[1Cgo?\u001b[29;15Hxhigh ·\u001b[1CQ:\\PROJECT\u001b[K\u001b[27;3H\u001b[?25h\u001b]0;⠧ Jamat\u0007\u001b]0;⠏ Jamat\u0007\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b]0;⠋ Jamat\u0007\u001b]0;⠙ Jamat\u0007\u001b]0;⠹ Jamat\u0007\u001b]0;⠴ Jamat\u0007\u001b]0;⠦ Jamat\u0007\u001b[?2026h\u001b[?2026l\u001b]0;⠧ Jamat\u0007\u001b[?2026h\u001b[?2026l\u001b]0;⠇ Jamat\u0007\u001b]0;⠏ Jamat\u0007\u001b]0;⠋ Jamat\u0007\u001b[?2026h\u001b[?2026l\u001b]0;⠙ Jamat\u0007\u001b]0;⠹ Jamat\u0007\u001b]0;⠸ Jamat\u0007\u001b]0;⠼ Jamat\u0007\u001b]0;⠴ Jamat\u0007\u001b]0;Jamat\u0007\u001b[?2026h\u001b[?2026l",
+    "screenTail": "\n\n\n\n\u001b[1m›\u001b[0m \u001b[2mAsk Codex to do anything\n\n\u001b[2C\u001b[0mGPT-6-Astra\u001b[1Cxhigh ·\u001b[1CQ:\\PROJECT\n  \u001b[1m?\u001b[0m for shortcuts\u001b[3A\u001b[15D\u001b[?2004h\u001b[?1004h\u001b[?1003h\u001b[?1006h",
+    "wideScreenTail": "\n\n\n\n\n\n\n\n\n\n\n\n\u001b[1m›\u001b[0m \u001b[2mAsk Codex to do anything\n\n\u001b[2C\u001b[0mGPT-6-Astra\u001b[1Cxhigh ·\u001b[1CQ:\\PROJECT\n  \u001b[1m?\u001b[0m for shortcuts\u001b[3A\u001b[15D\u001b[?2004h\u001b[?1004h\u001b[?1003h\u001b[?1006h"
+  },
+  "viewport": {
+    "screen": "\u001b[?1049h\u001b[H\r\n  >_ \u001b[1mOpenAI Codex\u001b[22;2m (v0.160.0)\r\n\u001b[0m     \u001b[2mQ:\\PROJECT\r\n  permissions: \u001b[35;1;22mYOLO mode\r\n\u001b[0m \r\n\u001b[2CHow\u001b[1Cdeep\u001b[1Cdoes\u001b[1Cthis\u001b[1Ccodebase\u001b[1Cgo?\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\u001b[1m›\u001b[0m \u001b[2mAsk Codex to do anything\r\n\r\n\u001b[2C\u001b[0mGPT-6-Astra\u001b[1Cxhigh ·\u001b[1CQ:\\PROJECT\r\n  \u001b[1m?\u001b[0m for shortcuts\u001b[3A\u001b[15D\u001b[?2004h\u001b[?1004h\u001b[?1003h\u001b[?1006h",
+    "rows": 30
+  }
+}

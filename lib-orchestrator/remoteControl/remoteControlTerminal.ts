@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import type {
   TerminalAttachResult,
   TerminalAttachSpec,
+  TerminalComposerContentResult,
   TerminalComposerReading,
   TerminalComposerResult,
   TerminalFrame,
@@ -45,7 +46,37 @@ export interface RemoteControlTerminalSessionPort {
   terminalDetach(attachId: string): void
   terminalDetachAll(attachIds: readonly string[]): void
   terminalComposer(sessionId: string): Promise<TerminalComposerResult>
+  terminalComposerContent(sessionId: string): Promise<TerminalComposerContentResult>
 }
+
+/** Synchronous by contract: nothing may reach the terminal between the store and the erase. */
+export type RemoteControlTerminalKeep = (text: string) => { ok: true } | { ok: false; detail: string }
+
+export type RemoteControlTerminalTakeRefusal =
+  | 'unknown-session'
+  | 'not-live'
+  | 'not-agent'
+  | 'unreadable'
+  | 'dialog'
+  | 'no-prompt'
+  | 'too-tall'
+  | 'placeholder'
+  | 'in-flight'
+  | 'read-only'
+  | 'keep-refused'
+  | 'unavailable'
+  | 'failed'
+
+/**
+ * `taken`: kept, and the prompt read empty afterwards. `partial`: kept, but the prompt was not erased
+ * or still shows text, so the note holds all of it and the prompt a remainder. `refused`: nothing was
+ * kept and nothing was written.
+ */
+export type RemoteControlTerminalTakeResult =
+  | { kind: 'taken' }
+  | { kind: 'partial'; reason: 'not-erased' | 'text-remains'; detail: string }
+  | { kind: 'empty' }
+  | { kind: 'refused'; reason: RemoteControlTerminalTakeRefusal; detail: string }
 
 export interface RemoteControlTerminalDeps {
   internalAttachId?(): string
@@ -106,6 +137,27 @@ interface DeliverBaseline {
 
 type DeliverFinish = (result: RemoteControlStepResult<RemoteControlTerminalDeliverDto>) => void
 
+/** What one import has done so far; whether a stop is a refusal or partial is read off it. */
+interface TakeState {
+  done: boolean
+  started: boolean
+  /** The keep was called: from here a reattach or a disconnect stops the erase. */
+  keeping: boolean
+  kept: boolean
+  erased: boolean
+}
+
+/**
+ * A step either answers outright or stops. A stop becomes a result only after the attach has
+ * finished, from the state at that moment, so a stop that lands while the keep runs still counts
+ * the note the keep stored.
+ */
+type TakeStep =
+  | { kind: 'answer'; result: RemoteControlTerminalTakeResult }
+  | { kind: 'stop'; reason: RemoteControlTerminalTakeRefusal; detail: string }
+
+type TakeFinish = (result: RemoteControlStepResult<TakeStep>) => void
+
 export class RemoteControlTerminal implements RemoteControlTerminalPort {
   private static readonly timeoutMillisecondsConst = 5_000
   private static readonly screenCharacterLimitConst = 32_768
@@ -127,6 +179,9 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
   }
   private static readonly pasteStartConst = '\x1b[200~'
   private static readonly pasteEndConst = '\x1b[201~'
+  private static readonly deleteConst = '\x7f'
+  private static readonly erasePollMillisecondsConst = 200
+  private static readonly eraseSettleMillisecondsConst = 1_500
 
   private readonly internalAttachId: () => string
   private readonly timeoutMilliseconds: number
@@ -134,7 +189,10 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
   private readonly pause: (milliseconds: number) => Promise<void>
   private readonly now: () => number
   private readonly liveByOwner = new Map<string, Map<string, LiveTerminalAttachment>>()
-  /** Two deliveries to one session could both take one merged message as their proof. */
+  /**
+   * Two deliveries to one session could both take one merged message as their proof. An import holds
+   * the same set, so nothing types into a prompt while it is being taken.
+   */
   private readonly delivering = new Set<string>()
 
   constructor(
@@ -712,6 +770,198 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
     return { ok: false, error: { code, detail, data: { ...data } } }
   }
 
+  /**
+   * Imports the prompt over one attach: read the whole draft, hand it to `keep`, and only after the
+   * keep stored it erase it with DEL and watch the prompt read empty. Never Enter, nothing over a
+   * dialog, and not one byte when the keep refuses.
+   */
+  async take(sessionId: string, keep: RemoteControlTerminalKeep): Promise<RemoteControlTerminalTakeResult> {
+    if (this.delivering.has(sessionId))
+      return { kind: 'refused', reason: 'in-flight', detail: 'Another delivery to this session is still running' }
+    this.delivering.add(sessionId)
+    try {
+      return await this.takeOnce(sessionId, keep)
+    } finally {
+      this.delivering.delete(sessionId)
+    }
+  }
+
+  private async takeOnce(sessionId: string, keep: RemoteControlTerminalKeep): Promise<RemoteControlTerminalTakeResult> {
+    const state: TakeState = { done: false, started: false, keeping: false, kept: false, erased: false }
+    const result = await this.once<TakeStep>(
+      'take',
+      sessionId,
+      null,
+      undefined,
+      (attachId, frame, finish) => {
+        const stop = (reason: RemoteControlTerminalTakeRefusal, detail: string): void =>
+          finish(RemoteControlTerminal.success({ kind: 'stop', reason, detail }))
+        if (frame.type === 'terminal.attached') {
+          if (!frame.writer) stop('read-only', 'The terminal attach is read-only')
+          else if (state.keeping) stop('unavailable', 'The terminal reattached during the import')
+          else if (!state.started) {
+            state.started = true
+            void this.takePhases(attachId, sessionId, keep, state, finish)
+          }
+        } else if (frame.type === 'terminal.status') {
+          if (frame.status === 'connecting') {
+            if (state.keeping) stop('unavailable', 'The terminal disconnected during the import')
+          } else if (frame.status === 'read-only')
+            stop('read-only', 'The terminal attach is read-only')
+          else if (frame.status === 'lost')
+            stop(
+              frame.code === 'not-live' || frame.code === 'unknown-session' ? 'not-live' : 'unavailable',
+              frame.detail ?? 'The terminal was lost',
+            )
+          else
+            throw new Error(`Unknown terminal status: ${JSON.stringify(frame)}`)
+        } else if (frame.type === 'terminal.exit')
+          stop('not-live', 'The terminal exited during the import')
+        else if (frame.type === 'terminal.snapshot'
+          || frame.type === 'terminal.data'
+          || frame.type === 'terminal.delta'
+          || frame.type === 'terminal.resize')
+          return
+        else
+          throw new Error(`Unknown terminal frame: ${JSON.stringify(frame)}`)
+      },
+      () => { state.done = true },
+    )
+    if (!result.ok)
+      return RemoteControlTerminal.takeStopped(state, RemoteControlTerminal.takeReasonOf(result.error.code), result.error.detail)
+    const step = result.value
+    if (step.kind === 'answer') return step.result
+    else if (step.kind === 'stop') return RemoteControlTerminal.takeStopped(state, step.reason, step.detail)
+    else
+      throw new Error(`Unknown take step: ${JSON.stringify(step)}`)
+  }
+
+  /** Shaped like `deliverPhases`: an exception still answers, refused before the keep and partial after it. */
+  private async takePhases(
+    attachId: string,
+    sessionId: string,
+    keep: RemoteControlTerminalKeep,
+    state: TakeState,
+    finish: TakeFinish,
+  ): Promise<void> {
+    try {
+      await this.takeSteps(attachId, sessionId, keep, state, finish)
+    } catch (error) {
+      this.deps.onError(`Remote terminal take failed: ${ErrorText.of(error)}`)
+      finish(RemoteControlTerminal.success({ kind: 'stop', reason: 'failed', detail: 'The terminal import operation failed' }))
+    }
+  }
+
+  private async takeSteps(
+    attachId: string,
+    sessionId: string,
+    keep: RemoteControlTerminalKeep,
+    state: TakeState,
+    finish: TakeFinish,
+  ): Promise<void> {
+    const answer = (result: RemoteControlTerminalTakeResult): void =>
+      finish(RemoteControlTerminal.success({ kind: 'answer', result }))
+    const read = await this.sessions.terminalComposerContent(sessionId)
+    if (state.done) return
+    if (!read.ok) {
+      answer({ kind: 'refused', ...RemoteControlTerminal.takeRefusalOf(read.code) })
+      return
+    }
+    const reading = read.reading
+    if (!reading.alive) {
+      answer({ kind: 'refused', reason: 'not-live', detail: 'The session is not alive' })
+      return
+    }
+    if (reading.hint === 'blocked' || reading.hint === 'waiting') {
+      answer({ kind: 'refused', reason: 'dialog', detail: 'The agent is showing a dialog' })
+      return
+    }
+    const content = reading.content
+    if (content.kind === 'empty') answer({ kind: 'empty' })
+    else if (content.kind === 'absent')
+      answer({ kind: 'refused', reason: 'no-prompt', detail: 'No whole prompt box was recognized' })
+    else if (content.kind === 'clipped')
+      answer({ kind: 'refused', reason: 'too-tall', detail: 'The prompt is taller than the window shows' })
+    else if (content.kind === 'placeholder')
+      answer({ kind: 'refused', reason: 'placeholder', detail: 'The prompt holds a collapsed paste or an image' })
+    else if (content.kind === 'text') {
+      state.keeping = true
+      const kept = keep(content.text)
+      if (!kept.ok) {
+        answer({ kind: 'refused', reason: 'keep-refused', detail: kept.detail })
+        return
+      }
+      state.kept = true
+      // A stop that arrived while the keep ran has already ended the attach: the note holds the text
+      // and the prompt stays as it was.
+      if (state.done) return
+      const written = this.writeInput(attachId, RemoteControlTerminal.deleteConst.repeat(content.eraseBound))
+      if (!written.ok) {
+        finish(RemoteControlTerminal.success({
+          kind: 'stop',
+          reason: RemoteControlTerminal.takeReasonOf(written.error.code),
+          detail: written.error.detail,
+        }))
+        return
+      }
+      state.erased = true
+      answer(await this.awaitErased(sessionId, state))
+    } else
+      throw new Error(`Unknown composer content: ${JSON.stringify(content)}`)
+  }
+
+  /** The bound can leave DEL over; only a prompt that reads empty proves the draft is gone. */
+  private async awaitErased(sessionId: string, state: TakeState): Promise<RemoteControlTerminalTakeResult> {
+    const startedAt = this.now()
+    for (;;) {
+      await this.pause(RemoteControlTerminal.erasePollMillisecondsConst)
+      if (!state.done) {
+        const read = await this.sessions.terminalComposerContent(sessionId)
+        if (read.ok && read.reading.content.kind === 'empty') return { kind: 'taken' }
+      }
+      if (state.done || this.now() - startedAt >= RemoteControlTerminal.eraseSettleMillisecondsConst)
+        return { kind: 'partial', reason: 'text-remains', detail: 'Text is still in the prompt; the note holds all of it' }
+    }
+  }
+
+  /** Before the keep a stop is a refusal; after it the note already holds the text, so it is partial. */
+  private static takeStopped(
+    state: TakeState,
+    reason: RemoteControlTerminalTakeRefusal,
+    detail: string,
+  ): RemoteControlTerminalTakeResult {
+    if (!state.kept) return { kind: 'refused', reason, detail }
+    return { kind: 'partial', reason: state.erased ? 'text-remains' : 'not-erased', detail }
+  }
+
+  private static takeReasonOf(code: RemoteControlError['code']): RemoteControlTerminalTakeRefusal {
+    if (code === 'not-found') return 'not-live'
+    else if (code === 'unavailable' || code === 'timeout') return 'unavailable'
+    else if (code === 'conflict') return 'read-only'
+    else if (code === 'invalid-request'
+      || code === 'protocol-mismatch'
+      || code === 'forbidden'
+      || code === 'operation-failed')
+      return 'failed'
+    else
+      throw new Error(`Unknown remote control error code: ${JSON.stringify(code)}`)
+  }
+
+  private static takeRefusalOf(
+    code: Extract<TerminalComposerContentResult, { ok: false }>['code'],
+  ): { reason: RemoteControlTerminalTakeRefusal; detail: string } {
+    if (code === 'unknown-session') return { reason: 'unknown-session', detail: 'The session is not known' }
+    else if (code === 'not-live') return { reason: 'not-live', detail: 'The session is not live' }
+    else if (code === 'not-agent') return { reason: 'not-agent', detail: 'Only an agent session has a prompt to import' }
+    else if (code === 'no-projection')
+      return { reason: 'unavailable', detail: 'The Host did not return the terminal screen' }
+    // A Host older than styled rows cannot show a dim placeholder, which would then read as a draft.
+    else if (code === 'no-viewport')
+      return { reason: 'unreadable', detail: 'The Host sends no styled screen rows; restart it to import' }
+    else
+      throw new Error(`Unknown composer content refusal: ${JSON.stringify(code)}`)
+  }
+
   private writeInput(attachId: string, data: string): RemoteControlStepResult<null> {
     try {
       const input = this.sessions.terminalInput(attachId, data)
@@ -847,7 +1097,7 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
   }
 
   private once<T>(
-    kind: 'peek' | 'send' | 'deliver',
+    kind: 'peek' | 'send' | 'deliver' | 'take',
     sessionId: string,
     size: TerminalAttachSpec['size'],
     timeoutMilliseconds: number | undefined,

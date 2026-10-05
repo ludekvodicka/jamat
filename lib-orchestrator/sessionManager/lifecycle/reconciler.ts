@@ -1,5 +1,4 @@
 import type { RuntimeListResult, RuntimeSessionInfo } from '../../../app-host/app/wire/hostWire.js'
-import { CodexIdCapture } from '../launch/codexIdCapture'
 import type { SessionExitReason, SessionRecord } from '../records/sessionRecord.types'
 import { LaunchBackoff } from './launchBackoff'
 
@@ -47,12 +46,7 @@ export type ReconcileChange =
   | { kind: 'merge-resolve-succeeded'; sessionId: string }
   /** The resolver did not finish cleanly. The phase stays, so the manual path is still open. */
   | { kind: 'merge-resolve-failed'; sessionId: string; reason: string }
-  /**
-   * A live Codex session that has never named the conversation it is having. Codex takes no id
-   * before it starts, so the only place one exists is the rollout it has just written; this says to
-   * look for it, and looking is all it says - the apply side may find nothing, twice over, and that
-   * is a normal answer rather than a failure.
-   */
+  /** Read the current launch confirmation without searching provider history. */
   | { kind: 'name-codex-conversation'; sessionId: string }
 
 /**
@@ -60,23 +54,6 @@ export type ReconcileChange =
  * answer in, changes out - so every state this library has to survive can be tested as plain data.
  */
 export class Reconciler {
-  /**
-   * How long a live Codex session keeps being asked what conversation it is having on regular passes.
-   *
-   * The rollout appears a second or two after launch, so this is retry cadence rather than the last
-   * moment its id can be found. A startup pass catches sessions missed here against the same fixed
-   * launch window. Asking on the pass's own clock keeps this cadence free of another timer or state.
-   */
-  private static readonly codexNameWindowMillisecondsConst = 300_000
-
-  /**
-   * Runs on every (re)connect, on a new `hostInstanceId`, and after every `runtime-*` event.
-   *
-   * `now` is the lifecycle's own clock, which is what the applied changes are then judged against:
-   * one of them is a window over the record's age, and a planner deciding it from the wall clock
-   * while the capture behind it reads an injected one would disagree with itself. The default is for
-   * the tests that do not care which moment it is.
-   */
   static plan(
     records: readonly SessionRecord[],
     listing: RuntimeListResult | null,
@@ -175,7 +152,7 @@ export class Reconciler {
           sessionId: record.sessionId,
           binding: { hostInstanceId: listing.hostInstanceId, generation: found.generation },
         })
-        if (Reconciler.wantsCodexName(record, now))
+        if (Reconciler.wantsCodexName(record))
           changes.push({ kind: 'name-codex-conversation', sessionId: record.sessionId })
       }
     }
@@ -211,17 +188,10 @@ export class Reconciler {
     return owner?.pendingSetup?.setupSessionId !== record.sessionId
   }
 
-  /**
-   * Whether this record is a Codex session still missing the id of its own conversation and young
-   * enough to be worth asking for on every regular pass.
-   *
-   * `new` and `fork`, which is `CodexIdCapture.discoverable`'s answer and not a second copy of it:
-   * both start a conversation Codex names itself, and the rollout it writes is where that name is.
-   * The age bound is this pass's own - a record older than the window is left to the startup catch-up.
-   */
-  private static wantsCodexName(record: SessionRecord, now: number): boolean {
-    return CodexIdCapture.discoverable(record)
-      && now - record.createdAt <= Reconciler.codexNameWindowMillisecondsConst
+  /** A running terminal may select a different thread without launching a new process. */
+  private static wantsCodexName(record: SessionRecord): boolean {
+    return record.agent?.agentId === 'codex' && record.agent.identityLaunchId !== undefined
+      && record.endedReason === undefined
   }
 
   /**

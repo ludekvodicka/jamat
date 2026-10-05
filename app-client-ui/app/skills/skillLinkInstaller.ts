@@ -3,17 +3,21 @@ import {
   mkdirSync,
   readlinkSync,
   realpathSync,
+  readFileSync,
+  writeFileSync,
+  renameSync,
   rmdirSync,
   symlinkSync,
   unlinkSync,
   type Stats,
 } from 'node:fs'
 import { isAbsolute, join, relative, resolve } from 'node:path'
+import { randomUUID } from 'node:crypto'
 
 import { ErrorText } from '../../shared/errorText'
 
 export type SkillLinkAgent = 'claude' | 'codex'
-export type SkillLinkName = 'appjamat-v3' | 'mdext-renderer'
+export type SkillLinkName = 'appjamat-v3' | 'mdext-renderer' | 'session-automation-groups'
 export type SkillLinkResultKind = 'created' | 'current' | 'repointed' | 'refused' | 'failed'
 
 export interface SkillLinkResult {
@@ -36,12 +40,15 @@ export class SkillLinkInstaller {
   private static readonly skillNamesConst: readonly SkillLinkName[] = [
     'appjamat-v3',
     'mdext-renderer',
+    'session-automation-groups',
   ]
   private readonly repoRoot: string
   private readonly homeRoot: string
   private readonly codexHome: string
+  private readonly deps: SkillLinkInstallerDeps
 
-  constructor(private readonly deps: SkillLinkInstallerDeps) {
+  constructor(deps: SkillLinkInstallerDeps) {
+    this.deps = deps
     this.repoRoot = resolve(deps.repoRoot)
     this.homeRoot = resolve(deps.homeRoot)
     this.codexHome = resolve(deps.codexHome ?? join(this.homeRoot, '.codex'))
@@ -81,6 +88,7 @@ export class SkillLinkInstaller {
       const targetStats = SkillLinkInstaller.lstat(target)
       if (targetStats === null) {
         symlinkSync(source, target, 'junction')
+        this.remember(target, source)
         return { agent, skill, kind: 'created', source, target }
       }
       if (!targetStats.isSymbolicLink())
@@ -89,15 +97,18 @@ export class SkillLinkInstaller {
           'A real file or directory already occupies the skill target',
         )
       const linked = resolve(readlinkSync(target))
-      if (SkillLinkInstaller.samePath(linked, source))
+      if (SkillLinkInstaller.samePath(linked, source)) {
+        this.remember(target, source)
         return { agent, skill, kind: 'current', source, target }
-      if (!this.ownedTarget(linked, skill, agent))
+      }
+      if (!this.ownedTarget(linked, skill, agent) && !this.recordedTarget(target, linked))
         return this.report(
           { agent, skill, kind: 'refused', source, target },
           `The existing link points outside ${join(this.repoRoot, 'skills')}`,
         )
       SkillLinkInstaller.removeLink(target)
       symlinkSync(source, target, 'junction')
+      this.remember(target, source)
       return { agent, skill, kind: 'repointed', source, target }
     } catch (error) {
       return this.report(
@@ -110,11 +121,35 @@ export class SkillLinkInstaller {
   private ownedTarget(target: string, skill: SkillLinkName, agent: SkillLinkAgent): boolean {
     const fromSkills = relative(join(this.repoRoot, 'skills'), target)
     if (fromSkills !== '' && !fromSkills.startsWith('..') && !isAbsolute(fromSkills)) return true
-    if (skill === 'appjamat-v3') return false
+    if (skill === 'appjamat-v3' || skill === 'session-automation-groups') return false
     else if (skill === 'mdext-renderer')
       return this.legacyMdExtTargets(agent).some(candidate => SkillLinkInstaller.samePath(candidate, target))
     else
       throw new Error(`Unknown skill: ${JSON.stringify(skill)}`)
+  }
+
+  private receipt(target: string): string {
+    return `${target}.jamat-link.json`
+  }
+
+  private recordedTarget(target: string, linked: string): boolean {
+    try {
+      const receipt: unknown = JSON.parse(readFileSync(this.receipt(target), 'utf8'))
+      return typeof receipt === 'object' && receipt !== null && 'source' in receipt
+        && typeof receipt.source === 'string' && SkillLinkInstaller.samePath(receipt.source, linked)
+    } catch { return false }
+  }
+
+  private remember(target: string, source: string): void {
+    if (this.recordedTarget(target, source)) return
+    const receipt = this.receipt(target)
+    const temporary = `${receipt}.${randomUUID()}.tmp`
+    try {
+      writeFileSync(temporary, `${JSON.stringify({ source })}\n`, 'utf8')
+      renameSync(temporary, receipt)
+    } finally {
+      if (SkillLinkInstaller.lstat(temporary)) unlinkSync(temporary)
+    }
   }
 
   private legacyMdExtTargets(agent: SkillLinkAgent): readonly string[] {

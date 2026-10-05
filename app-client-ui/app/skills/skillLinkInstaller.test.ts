@@ -24,7 +24,7 @@ class SkillLinkWorld {
   readonly installer: SkillLinkInstaller
 
   constructor() {
-    for (const skill of ['appjamat-v3', 'mdext-renderer'])
+    for (const skill of ['appjamat-v3', 'mdext-renderer', 'session-automation-groups'])
       for (const agent of ['claude', 'codex']) {
         const source = this.source(agent, skill)
         mkdirSync(source, { recursive: true })
@@ -59,20 +59,52 @@ describe('app-client-ui/app/skills/skillLinkInstaller', () => {
     for (const world of worlds.splice(0)) world.cleanup()
   })
 
+  it('installs automation for a custom Codex home and safely follows the next packaged release', () => {
+    const world = new SkillLinkWorld()
+    worlds.push(world)
+    const codexHome = join(world.root, 'custom-codex')
+    const deps = { repoRoot: world.repo, homeRoot: world.home, codexHome, report: () => {} }
+    const initial = new SkillLinkInstaller(deps).install()
+    const target = join(codexHome, 'skills', 'session-automation-groups')
+    expect(initial.find(result => result.target === target)?.kind).toBe('created')
+    const nextRoot = join(world.root, 'next-release', 'resources')
+    for (const result of initial) {
+      const source = join(nextRoot, 'skills', result.agent, result.skill)
+      mkdirSync(source, { recursive: true })
+      writeFileSync(join(source, 'SKILL.md'), 'new release')
+    }
+    const next = new SkillLinkInstaller({ ...deps, repoRoot: nextRoot }).install()
+    expect(next.map(result => result.kind)).toEqual(Array(6).fill('repointed'))
+    expect(readFileSync(join(target, 'SKILL.md'), 'utf8')).toBe('new release')
+  })
+
+  it('does not replace an automation link repointed by its owner after installation', () => {
+    const world = new SkillLinkWorld()
+    worlds.push(world)
+    const target = world.target('codex', 'session-automation-groups')
+    world.installer.install()
+    const foreign = join(world.root, 'custom-automation')
+    mkdirSync(foreign)
+    rmSync(target)
+    symlinkSync(foreign, target, 'junction')
+    expect(world.installer.install().find(result => result.target === target)?.kind).toBe('refused')
+    expect(realpathSync(target)).toBe(realpathSync(foreign))
+  })
+
   it('creates all junctions and leaves correct links untouched', () => {
     const world = new SkillLinkWorld()
     worlds.push(world)
 
     expect(world.installer.install().map((result) => result.kind)).toEqual([
-      'created', 'created', 'created', 'created',
+      'created', 'created', 'created', 'created', 'created', 'created',
     ])
-    for (const skill of ['appjamat-v3', 'mdext-renderer'])
+    for (const skill of ['appjamat-v3', 'mdext-renderer', 'session-automation-groups'])
       for (const agent of ['claude', 'codex'] as const) {
         expect(lstatSync(world.target(agent, skill)).isSymbolicLink()).toBe(true)
         expect(realpathSync(world.target(agent, skill))).toBe(realpathSync(world.source(agent, skill)))
       }
     expect(world.installer.install().map((result) => result.kind)).toEqual([
-      'current', 'current', 'current', 'current',
+      'current', 'current', 'current', 'current', 'current', 'current',
     ])
     expect(world.reports).toEqual([])
   })
@@ -86,6 +118,8 @@ describe('app-client-ui/app/skills/skillLinkInstaller', () => {
 
     expect(world.installer.install().map((result) => result.kind)).toEqual([
       'repointed',
+      'created',
+      'created',
       'created',
       'created',
       'created',
@@ -109,6 +143,8 @@ describe('app-client-ui/app/skills/skillLinkInstaller', () => {
     expect(world.installer.install().map((result) => result.kind)).toEqual([
       'repointed',
       'refused',
+      'created',
+      'created',
       'created',
       'created',
     ])
@@ -142,7 +178,7 @@ describe('app-client-ui/app/skills/skillLinkInstaller', () => {
       symlinkSync(legacy, target, 'junction')
     }
 
-    expect(world.installer.install().slice(2).map((result) => result.kind)).toEqual([
+    expect(world.installer.install().slice(2, 4).map((result) => result.kind)).toEqual([
       'repointed',
       'repointed',
     ])

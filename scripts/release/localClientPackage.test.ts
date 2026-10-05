@@ -22,8 +22,10 @@ class FixturePackage extends LocalClientPackage {
   protected override async packageSnapshot(snapshot: string, release: string): Promise<void> {
     this.builds++
     await this.onBuild(snapshot, release)
-    for (const path of ['Jamat.exe', 'resources/app.asar', 'resources/host/start.cjs',
-      'resources/remarkable-sidecar/manifest.json',
+    for (const path of ['Jamat.exe', 'resources/app.asar', 'resources/host/start.cjs', 'resources/codex/start.cjs',
+      'resources/remarkable-sidecar/manifest.json', 'resources/cli/jamat-v3.cjs',
+      ...['claude', 'codex'].flatMap(agent => ['appjamat-v3', 'mdext-renderer', 'session-automation-groups']
+        .map(skill => `resources/skills/${agent}/${skill}/SKILL.md`)),
       ...['node.exe', 'launcher.cjs', 'install-launcher.ps1', 'package.json', 'README.md',
         'LICENSE', 'NODE-LICENSE.txt', 'WS-LICENSE.txt'].map(name => `resources/launcher/${name}`)])
       write(join(release, 'win-unpacked', path), `build-${this.builds}`)
@@ -46,9 +48,11 @@ function fixture(): string {
     'app-client-ui/tsconfig.json', 'app-client-ui/tsconfig.node.json',
     'app-client-ui/tsconfig.web.json', 'app-host/start.ts', 'app-host/pnpm-lock.yaml',
     'app-launcher/start.ts', 'app-launcher/app/app.ts', 'app-launcher/package.json',
-    'app-launcher/README.md',
+    'app-launcher/README.md', 'app-codex/start.ts', 'app-codex/app/app.ts', 'app-codex/package.json',
     'lib-orchestrator/index.ts', 'lib-orchestrator/pnpm-lock.yaml',
-    'mdext-renderer/renderer/index.ts', 'configs/remarkable-sidecar/package-lock.json',
+    'mdext-renderer/renderer/index.ts', 'mdext-renderer/USAGE.md', 'mdext-renderer/reference.md',
+    'mdext-renderer/svg-style.md', 'mdext-renderer/examples/example.md',
+    'skills/codex/session-automation-groups/SKILL.md', 'app-client-cli/start.ts', 'configs/remarkable-sidecar/package-lock.json',
     'configs/remarkable-sidecar/manifest.json',
     'scripts/release/prepare-host-bundle.ts', 'scripts/release/prepare-launcher.ts',
     'scripts/release/start-packaged-client.ts', 'scripts/setup/prepare-remarkable-sidecar.ts',
@@ -200,6 +204,10 @@ test('missing packaged resources trigger a new immutable release', async () => {
     const second = await builder.ensure()
     assert.notEqual(second.executablePath, first.executablePath)
     assert.equal(builder.builds, 2)
+    rmSync(join(dirname(second.executablePath), 'resources/codex/start.cjs'))
+    const third = await builder.ensure()
+    assert.notEqual(third.executablePath, second.executablePath)
+    assert.equal(builder.builds, 3)
   } finally { dispose(root) }
 })
 

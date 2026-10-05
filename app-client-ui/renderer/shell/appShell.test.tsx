@@ -624,6 +624,12 @@ class AppClientStub {
           },
         }),
       },
+      directoryNotes: {
+        get: () => { throw new Error('No test of the shell reads directory notes') },
+        save: () => { throw new Error('No test of the shell saves directory notes') },
+        importPrompt: () => { throw new Error('No test of the shell imports a prompt') },
+      },
+      onDirectoryNotesChanged: () => () => undefined,
       onUiSettingsChanged: () => () => undefined,
       onCommitChanged: () => () => undefined,
       onAgentSettingsChanged: () => () => undefined,

@@ -692,74 +692,36 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
    * having from the rollout it wrote. This decides when it is worth looking, and the whole of the
    * bound is data: the record's own fields and how old it is.
    */
-  describe('naming a Codex conversation', () => {
-    /** A live Codex session started fresh, young, with no id: the one shape worth looking for. */
+  describe('reading Codex identity confirmations', () => {
     function codex(overrides?: Partial<SessionRecord>): SessionRecord {
       return record('c', {
-        kind: 'agent',
-        createdAt: Date.now() - 5_000,
-        agent: { agentId: 'codex', launchMode: 'new' },
-        ...overrides,
+        kind: 'agent', createdAt: 1,
+        agent: {agentId: 'codex', launchMode: 'new', identityLaunchId: 'launch'}, ...overrides,
       })
     }
-
     function asks(records: readonly SessionRecord[]): ReconcileChange[] {
       return Reconciler.plan(records, listing([runtime('c')]))
-        .filter((change) => change.kind === 'name-codex-conversation')
+        .filter(change => change.kind === 'name-codex-conversation')
     }
-
-    it('asks for a live Codex session that has never named its conversation', () => {
-      expect(asks([codex()])).toEqual([{ kind: 'name-codex-conversation', sessionId: 'c' }])
+    it('continues reading the active launch even after an identity has been confirmed', () => {
+      for (const launchMode of ['new', 'fork', 'resume', 'continue'] as const)
+        expect(asks([codex({agent: {
+          agentId: 'codex', launchMode, identityLaunchId: 'launch', nativeSessionId: 'native',
+        }})])).toEqual([{kind: 'name-codex-conversation', sessionId: 'c'}])
     })
-
-    it('stops asking once the record carries an id', () => {
-      expect(asks([codex({
-        agent: { agentId: 'codex', launchMode: 'new', nativeSessionId: 'conv-1' },
-      })])).toEqual([])
+    it('does not depend on the age of the session', () => {
+      expect(asks([codex()])).toEqual([{kind: 'name-codex-conversation', sessionId: 'c'}])
     })
-
-    /** Claude was given `--session-id` at launch, so there is nothing here to find out. */
-    it('never asks for Claude', () => {
-      expect(asks([codex({ agent: { agentId: 'claude', launchMode: 'new' } })]))
-        .toEqual([])
+    it('never guesses an identity for a legacy launch', () => {
+      expect(asks([codex({agent: {agentId: 'codex', launchMode: 'new'}})])).toEqual([])
     })
-
-    it('never asks for a launch mode an id would not serve', () => {
-      for (const launchMode of ['continue', 'resume'] as const)
-        expect(asks([codex({ agent: { agentId: 'codex', launchMode } })]), launchMode)
-          .toEqual([])
-    })
-
-    /** A fork starts a conversation of its own, and Codex names it in the rollout it writes. */
-    it('asks for a live Codex fork that has not named its conversation', () => {
-      expect(asks([codex({
-        agent: { agentId: 'codex', launchMode: 'fork', forkParentId: 'conv-0' },
-      })])).toEqual([{ kind: 'name-codex-conversation', sessionId: 'c' }])
-    })
-
-    it('stops asking once a fork carries an id, and once it is older than the window', () => {
-      expect(asks([codex({
-        agent: { agentId: 'codex', launchMode: 'fork', forkParentId: 'conv-0', nativeSessionId: 'conv-2' },
-      })])).toEqual([])
-      expect(asks([codex({
-        createdAt: Date.now() - 400_000,
-        agent: { agentId: 'codex', launchMode: 'fork', forkParentId: 'conv-0' },
-      })])).toEqual([])
-    })
-
-    it('never asks for a shell session', () => {
+    it('never reads Codex identities for Claude or a shell', () => {
+      expect(asks([codex({agent: {agentId: 'claude', launchMode: 'new'}})])).toEqual([])
       expect(asks([record('c')])).toEqual([])
     })
-
-    /** The regular pass stops retrying after five minutes; startup recovery is a separate pass. */
-    it('stops asking for a session older than the window', () => {
-      expect(asks([codex({ createdAt: Date.now() - 400_000 })])).toEqual([])
-    })
-
-    /** The Host is the authority: what it does not have is not live, whatever the record says. */
-    it('never asks for a record the Host has no runtime for', () => {
+    it('does not read an active launch when the Host has no runtime', () => {
       expect(Reconciler.plan([codex()], listing([]))
-        .filter((change) => change.kind === 'name-codex-conversation')).toEqual([])
+        .filter(change => change.kind === 'name-codex-conversation')).toEqual([])
     })
   })
 })

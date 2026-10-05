@@ -46,6 +46,14 @@ export class AgentWorkInspectorCodex {
    */
   private static readonly foregroundScreenConst =
     /(?:^|\n)\s*[›❯>◦•]\s*(?:(?<compacting>compacting\s*context)|working)\s*\(\s*(?:\d+\s*(?:h|m|s)\s*)+[•·]\s*esc\s*to\s*interrupt\s*\)(?:\s*[•·]\s*\d+\s*background\s*terminals?\s*running(?:\s*[•·]\s*\/ps\s*to\s*view\s*[•·]\s*\/stop\s*to\s*close|[^\n]*…))?\s*(?:\n|$)/i
+  // codex-compacting-context-tip.json: progress and a wrapped tip can push the status above eight
+  // rows. A wide match needs the uninterrupted progress/tip/composer block below it, not history.
+  private static readonly compactingFooterScreenConst =
+    /^\s*└\s*making\s*room\s*to\s*continue\.\s*(?:└\s*tip:[^\n]*(?:\n[ \t]*[^\s›❯>][^\n]*)*)?\s*\n[ \t]*[›❯>][^\n]*(?:\n(?![ \t]*[›❯>◦•])[^\n]*)*$/i
+  // codex-compacting-deferred-messages.json: remove only the complete deferred-message block
+  // before validating the progress/composer boundary; a later reply or status must still reject it.
+  private static readonly deferredMessagesScreenConst =
+    /(?:^|\n)[ \t]*[◦•]\s*messages\s*to\s*be\s*submitted\s*after\s*next\s*tool\s*call\s*\(\s*press\s*esc\s*to\s*interrupt\s*and\s*send\s*immediately\s*\)\s*\n[ \t]*↳[^\n]*(?:\n(?![ \t]*[›❯>◦•])[^\n]*)*(?=\n[ \t]*[›❯>])/i
   /**
    * A foreground turn can finish while its yielded terminal continues. Codex then replaces
    * `Working` with this status, and the current screen remains authority for as long as it stands.
@@ -139,11 +147,21 @@ export class AgentWorkInspectorCodex {
     if (foreground)
       return { hint: 'working', evidence: [{ source: 'screen', signal: 'workingRow', match: foreground[0].trim() }] }
     const wideScreen = ScreenTail.stripAnsiLower(frame.wideScreenTail)
-      .match(AgentWorkInspectorCodex.foregroundScreenConst)
-    if (wideScreen && !wideScreen.groups?.compacting)
+    const wideForeground = AgentWorkInspectorCodex.foregroundScreenConst.exec(wideScreen)
+    if (wideForeground?.groups?.compacting
+      && wideScreen.endsWith(ScreenTail.stripAnsiLower(frame.screenTail))
+      && AgentWorkInspectorCodex.compactingFooterScreenConst.test(
+        wideScreen.slice(wideForeground.index + wideForeground[0].length)
+          .replace(AgentWorkInspectorCodex.deferredMessagesScreenConst, '\n'),
+      ))
+      return {
+        hint: 'compacting',
+        evidence: [{ source: 'wide-screen', signal: 'compactingRow', match: wideForeground[0].trim() }],
+      }
+    if (wideForeground && !wideForeground.groups?.compacting)
       return {
         hint: 'working',
-        evidence: [{ source: 'wide-screen', signal: 'workingRow', match: wideScreen[0].trim() }],
+        evidence: [{ source: 'wide-screen', signal: 'workingRow', match: wideForeground[0].trim() }],
       }
 
     // After the background and working rows, never before them: Codex draws the input box under a

@@ -281,6 +281,7 @@ class SmokeRemoteControl extends SmokeHarness {
         agentId: 'codex',
         launchMode: 'fork',
         nativeSessionId: SmokeRemoteControl.nativeSessionIdConst,
+        nativeSessionIdSource: 'codex-app-server',
         forkParentId: 'smoke-parent',
       },
       transcriptCwd: this.transcriptCwd,

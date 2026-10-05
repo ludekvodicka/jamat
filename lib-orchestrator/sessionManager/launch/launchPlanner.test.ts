@@ -56,6 +56,17 @@ describe('lib-orchestrator/sessionManager/launch/launchPlanner', () => {
     expect(plan(record(), 'linux').command).toBe('/bin/zsh')
   })
 
+  it('leaves remote Codex permission overrides to the bridge server while retaining model and prompt', () => {
+    const launch = LaunchPlanner.plan(record({kind: 'agent', agent: {agentId: 'codex', launchMode: 'fork'}}), {
+      platform: 'linux', yolo: true, model: 'model-one', effort: 'high',
+      agentArgs: ['fork', 'parent-id', 'the prompt'], codexBridge: (native, args) => {
+        expect(args).toEqual(['-m', 'model-one', '-c', 'model_reasoning_effort="high"', 'fork', 'parent-id', 'the prompt'])
+        return native
+      },
+    })
+    expect(launch.args).not.toContain('--dangerously-bypass-approvals-and-sandbox')
+  })
+
   it('exports the session and its controller after removing inherited Jamat variables', () => {
     for (const value of [record(), record({ kind: 'agent', agent: { agentId: 'codex', launchMode: 'new' } })]) {
       const launch = LaunchPlanner.plan(value, {

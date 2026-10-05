@@ -80,6 +80,12 @@ import type { ContextCompactionCooldown } from './contextCompactionCooldown'
 import type { ContextCompactionDelivery } from './contextCompactionDelivery'
 import type { DebugSectionId } from './debugSections.types'
 import type {
+  DirectoryNote,
+  DirectoryNotesGetResult,
+  DirectoryNotesImportResult,
+  DirectoryNotesSaveResult,
+} from './directoryNotes'
+import type {
   FileChangesSettingsSaveResult,
   FileChangesSettingsValue,
 } from './fileChangesSettings'
@@ -752,6 +758,18 @@ export interface AppClientUiIpcInvokeMap {
    * session nobody knows, a shell and an agent with no native session id all answer `none`.
    */
   'sessionTranscript:get': (sessionId: string) => SessionTranscriptReading
+  /**
+   * The notes of the session's working directory, which main resolves from the session id. A
+   * section damaged by hand is a refusal, so the tab never shows an empty editor over it.
+   */
+  'directoryNotes:get': (sessionId: string) => DirectoryNotesGetResult
+  /** The whole set of that directory; the limits are checked here, not by the section. */
+  'directoryNotes:save': (sessionId: string, notes: readonly DirectoryNote[]) => DirectoryNotesSaveResult
+  /**
+   * Reads the agent's prompt in the main process, stores it as a note and only then erases it.
+   * Never presses Enter; shares the one-delivery-at-a-time guard with `contextCompaction:deliver`.
+   */
+  'directoryNotes:import': (sessionId: string) => DirectoryNotesImportResult
 }
 
 export interface AppClientUiIpcEventMap {
@@ -809,6 +827,11 @@ export interface AppClientUiIpcEventMap {
     attachId: string,
     frame: TerminalFrame,
   ) => void
+  /**
+   * One directory's stored notes moved, after every save including an import's. To every workspace
+   * plus Debug; a panel of that directory holding no unsaved edit reads them again.
+   */
+  'directoryNotes:changed': (directory: string) => void
 }
 
 export type IpcResult<T> = { ok: true; value: T } | { ok: false; error: string }
@@ -1074,6 +1097,11 @@ export const AppClientUiBridgeCallsConst = {
   sessionTranscript: {
     get: 'sessionTranscript:get',
   },
+  directoryNotes: {
+    get: 'directoryNotes:get',
+    save: 'directoryNotes:save',
+    importPrompt: 'directoryNotes:import',
+  },
 } as const satisfies AppClientUiBridgeCallTable
 
 /** The event half, flat because every listener the bridge offers sits at its root. */
@@ -1100,6 +1128,7 @@ export const AppClientUiBridgeEventsConst = {
   onHostPingResult: 'debug:host-ping-result',
   onTerminalFrame: 'terminal:frame',
   onRemoteTerminalFrame: 'remote:terminal-frame',
+  onDirectoryNotesChanged: 'directoryNotes:changed',
 } as const satisfies Readonly<Record<string, keyof AppClientUiIpcEventMap>>
 
 /** A group of members, or the channel one member calls. Nesting is how the bridge reads, nothing more. */
