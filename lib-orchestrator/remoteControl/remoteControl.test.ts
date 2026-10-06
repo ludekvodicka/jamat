@@ -5,9 +5,11 @@ import type {
   SessionColorName,
   SessionDetailsSaved,
   SessionGroup,
+  SessionCreated,
   SessionInfo,
   SessionsOpResult,
   SessionsSnapshot,
+  SessionWorktreeState,
 } from '../sessionManager/sessionManagerApi.types'
 import {
   RemoteControl,
@@ -36,7 +38,9 @@ interface World {
   groupAssigns: { sessionId: string; group: SessionGroup }[]
   reopened: string[]
   finalized: string[]
+  finalizeOptions: ({ expect?: 'stop' } | undefined)[]
   removed: string[]
+  worktreeCalls: { method: string; sessionId: string; acknowledgeSetup?: string }[]
   tabCalls: { method: string; args: unknown[] }[]
   terminalCalls: { method: string; args: unknown[] }[]
   transcriptReads: string[]
@@ -99,6 +103,10 @@ function world(options?: {
   setColor?: SessionsOpResult
   setNote?: SessionsOpResult<SessionDetailsSaved>
   remove?: SessionsOpResult
+  worktreeEnding?: SessionsOpResult
+  finalize?: SessionsOpResult
+  created?: Partial<SessionCreated>
+  worktree?: SessionsOpResult<SessionWorktreeState>
 }): World {
   const sessions = options?.sessions ?? [session('session-1', '001')]
   let creates = 0
@@ -107,7 +115,9 @@ function world(options?: {
   const groupAssigns: { sessionId: string; group: SessionGroup }[] = []
   const reopened: string[] = []
   const finalized: string[] = []
+  const finalizeOptions: ({ expect?: 'stop' } | undefined)[] = []
   const removed: string[] = []
+  const worktreeCalls: { method: string; sessionId: string; acknowledgeSetup?: string }[] = []
   const tabCalls: { method: string; args: unknown[] }[] = []
   const terminalCalls: { method: string; args: unknown[] }[] = []
   const transcriptReads: string[] = []
@@ -155,19 +165,40 @@ function world(options?: {
         creates += 1
         const created = session(`created-${creates}`, '002')
         sessions.push(created)
-        return { ok: true, value: { sessionId: created.sessionId, tabTitle: created.tabTitle } }
+        return { ok: true, value: { sessionId: created.sessionId, tabTitle: created.tabTitle, ...options?.created } }
       },
       reopenSession: async (sessionId) => {
         reopened.push(sessionId)
         return { ok: true, value: undefined }
       },
-      finalizeSession: async (sessionId) => {
+      finalizeSession: async (sessionId, finalizeOption) => {
         finalized.push(sessionId)
-        return { ok: true, value: undefined }
+        finalizeOptions.push(finalizeOption)
+        return options?.finalize ?? { ok: true, value: undefined }
+      },
+      worktreeOf: async (sessionId) => options?.worktree ?? {
+        ok: true,
+        value: { sessionId, worktree: null, retired: null, finish: null, outcome: null, cleanup: null },
       },
       removeSession: async (sessionId) => {
         removed.push(sessionId)
         return options?.remove ?? { ok: true, value: undefined }
+      },
+      discardWorktree: async (sessionId) => {
+        worktreeCalls.push({ method: 'discardWorktree', sessionId })
+        return options?.worktreeEnding ?? { ok: true, value: undefined }
+      },
+      retrySetup: async (sessionId, acknowledgeSetup) => {
+        worktreeCalls.push({
+          method: 'retrySetup',
+          sessionId,
+          ...(acknowledgeSetup === undefined ? {} : { acknowledgeSetup }),
+        })
+        return options?.worktreeEnding ?? { ok: true, value: undefined }
+      },
+      requestWorktreeCleanup: async (sessionId) => {
+        worktreeCalls.push({ method: 'requestWorktreeCleanup', sessionId })
+        return options?.worktreeEnding ?? { ok: true, value: undefined }
       },
       setSessionColor: async (sessionId, color) => {
         colored.push({ sessionId, color })
@@ -345,7 +376,9 @@ function world(options?: {
     groupAssigns,
     reopened,
     finalized,
+    finalizeOptions,
     removed,
+    worktreeCalls,
     tabCalls,
     terminalCalls,
     transcriptReads,
@@ -401,6 +434,10 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
       request('sessions.reopen', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-2'),
       request('sessions.finalize', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-3'),
       request('sessions.remove', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-remove'),
+      request('sessions.worktree', { session: { kind: 'sessionId', sessionId: 'session-1' } }),
+      request('sessions.discardWorktree', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-discard'),
+      request('sessions.retrySetup', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-retry'),
+      request('sessions.cleanupWorktree', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-cleanup'),
       request('sessions.transcript', {
         session: { kind: 'sessionId', sessionId: 'session-1' },
       }),
@@ -644,6 +681,128 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     }, 'remove-4'), peer)).resolves.toMatchObject({ ok: false, error: { code: 'forbidden' } })
     expect(RemoteControlPeerConst.controlOperations).not.toContain('sessions.remove')
     expect(ended.removed).toEqual(['session-1'])
+  })
+
+  /**
+   * A script that means to stop a running session says so, and a session that ended meanwhile is
+   * then never handed to its Finish Commit by the same press.
+   */
+  it('refuses a finalize whose next step is no stop as a conflict, and passes the expectation on', async () => {
+    const ended = world({ finalize: {
+      ok: false,
+      code: 'live-refused',
+      detail: 'Session session-1: the next Finish step is finish-worktree, not a stop; nothing was done',
+    } })
+    await expect(ended.control.execute(request('sessions.finalize', {
+      session: { kind: 'number', number: '001' },
+      expect: 'stop',
+    }, 'stop-1'), context())).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'conflict', data: { sourceCode: 'live-refused' } },
+    })
+    expect(ended.finalizeOptions).toEqual([{ expect: 'stop' }])
+
+    const plain = world()
+    await expect(plain.control.execute(request('sessions.finalize', {
+      session: { kind: 'sessionId', sessionId: 'session-1' },
+    }, 'stop-2'), context())).resolves.toMatchObject({ ok: true, value: { sessionId: 'session-1' } })
+    expect(plain.finalizeOptions).toEqual([undefined])
+  })
+
+  it('maps a worktree state that stands in the way to a conflict, with the finish lines as the detail', async () => {
+    for (const code of ['worktree-updated', 'worktree-conflict', 'worktree-removed'] as const) {
+      const found = world({ finalize: { ok: false, code, detail: 'UPDATED to r12: other commits changed the project' } })
+      await expect(found.control.execute(request('sessions.finalize', {
+        session: { kind: 'sessionId', sessionId: 'session-1' },
+      }, `finish-${code}`), context())).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'conflict', detail: 'UPDATED to r12: other commits changed the project', data: { sourceCode: code } },
+      })
+    }
+    for (const code of ['svn-failed', 'review-unavailable'] as const) {
+      const found = world({ finalize: { ok: false, code, detail: 'svn: E170013' } })
+      await expect(found.control.execute(request('sessions.finalize', {
+        session: { kind: 'sessionId', sessionId: 'session-1' },
+      }, `finish-${code}`), context())).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'operation-failed', data: { sourceCode: code } },
+      })
+    }
+  })
+
+  it('answers a session worktree from its record, and a create with its number and worktree', async () => {
+    const state: SessionWorktreeState = {
+      sessionId: 'session-1',
+      worktree: { kind: 'svn', worktreePath: 'Q:/Apps/One/.worktrees/014-fix', url: 'file:///repo/One', baseRevision: 12 },
+      retired: null,
+      finish: { phase: 'reviewing', scopeRoot: 'Q:/Apps/One/.worktrees/014-fix' },
+      outcome: null,
+      cleanup: { phase: 'pending', reason: 'in use' },
+    }
+    const found = world({
+      worktree: { ok: true, value: state },
+      created: { number: '014', worktree: state.worktree ?? undefined },
+    })
+    await expect(found.control.execute(request('sessions.worktree', {
+      session: { kind: 'number', number: '001' },
+    }), context())).resolves.toMatchObject({ ok: true, operationId: null, value: state })
+    await expect(found.control.execute(request('sessions.create', {
+      spec: { kind: 'shell', directory: { mode: 'default' }, worktree: { slug: 'fix', owner: 'Q:/Apps/One' } },
+    }, 'create-wt'), context())).resolves.toMatchObject({
+      ok: true,
+      value: { session: { number: '014', worktree: { kind: 'svn', baseRevision: 12 } }, tabOpen: null, groupAssign: null },
+    })
+
+    const missing = world({ worktree: { ok: false, code: 'not-found', detail: 'No session session-1' } })
+    await expect(missing.control.execute(request('sessions.worktree', {
+      session: { kind: 'sessionId', sessionId: 'session-1' },
+    }), context())).resolves.toMatchObject({ ok: false, error: { code: 'not-found' } })
+
+    // A read a peer is never offered: a paired computer's build may refuse a capability it does not know.
+    const peer = context(RemoteControlPeerConst.controlOperations)
+    peer.callerKind = 'remote-peer'
+    await expect(found.control.execute(request('sessions.worktree', {
+      session: { kind: 'sessionId', sessionId: 'session-1' },
+    }), peer)).resolves.toMatchObject({ ok: false, error: { code: 'forbidden' } })
+  })
+
+  it('ends a worktree the way the Finish overlay and the row do, and only for a local caller', async () => {
+    const found = world()
+    const one = { session: { kind: 'number', number: '001' } } as const
+    await expect(found.control.execute(request('sessions.discardWorktree', one, 'discard-1'), context()))
+      .resolves.toMatchObject({ ok: true, value: { sessionId: 'session-1' } })
+    await expect(found.control.execute(request('sessions.cleanupWorktree', one, 'cleanup-1'), context()))
+      .resolves.toMatchObject({ ok: true, value: { sessionId: 'session-1' } })
+    await expect(found.control.execute(request('sessions.retrySetup', {
+      ...one,
+      acknowledgeSetup: 'hash-1',
+    }, 'retry-1'), context())).resolves.toMatchObject({ ok: true, value: { sessionId: 'session-1' } })
+    expect(found.worktreeCalls).toEqual([
+      { method: 'discardWorktree', sessionId: 'session-1' },
+      { method: 'requestWorktreeCleanup', sessionId: 'session-1' },
+      { method: 'retrySetup', sessionId: 'session-1', acknowledgeSetup: 'hash-1' },
+    ])
+
+    // A running session or a finish in progress is waited out, not a failure.
+    for (const code of ['live-refused', 'merge-pending'] as const) {
+      const busy = world({ worktreeEnding: { ok: false, code, detail: 'busy' } })
+      await expect(busy.control.execute(request('sessions.discardWorktree', one, `discard-${code}`), context()))
+        .resolves.toMatchObject({ ok: false, error: { code: 'conflict', data: { sourceCode: code } } })
+      await expect(busy.control.execute(request('sessions.cleanupWorktree', one, `cleanup-${code}`), context()))
+        .resolves.toMatchObject({ ok: false, error: { code: 'conflict', data: { sourceCode: code } } })
+    }
+    const gone = world({ worktreeEnding: { ok: false, code: 'worktree-removed', detail: 'removed after r12' } })
+    await expect(gone.control.execute(request('sessions.cleanupWorktree', one, 'cleanup-gone'), context()))
+      .resolves.toMatchObject({ ok: false, error: { code: 'conflict', data: { sourceCode: 'worktree-removed' } } })
+
+    const peer = context(RemoteControlPeerConst.controlOperations)
+    peer.callerKind = 'remote-peer'
+    for (const operation of ['sessions.discardWorktree', 'sessions.retrySetup', 'sessions.cleanupWorktree'] as const) {
+      expect(RemoteControlPeerConst.controlOperations).not.toContain(operation)
+      await expect(found.control.execute(request(operation, one, `peer-${operation}`), peer))
+        .resolves.toMatchObject({ ok: false, error: { code: 'forbidden' } })
+    }
+    expect(found.worktreeCalls).toHaveLength(3)
   })
 
   it('opens a file on the tab of the session it names', async () => {
@@ -1132,6 +1291,10 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
         reopenSession: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         finalizeSession: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         removeSession: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        discardWorktree: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        retrySetup: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        requestWorktreeCleanup: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        worktreeOf: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         setSessionColor: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         setSessionDetails: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
       },

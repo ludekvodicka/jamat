@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<log>
+<logentry
+   revision="6">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+<paths>
+<path
+   text-mods="true"
+   kind="file"
+   action="M"
+   prop-mods="false">/Project/src/a.txt</path>
+</paths>
+<msg>commit from the worktree</msg>
+</logentry>
+</log>

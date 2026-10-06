@@ -1,0 +1,22 @@
+Updating '.':
+Restored 'missing.txt'
+   C tree.txt
+D    gone.txt
+U    .aidocs\note.md
+C    conflict.txt
+ U   keep.txt
+ C   props.txt
+G    src\a.txt
+U    src\b.txt
+A    src\new.txt
+ G   src
+
+Fetching external item into 'mount':
+U    mount\l.txt
+Updated external to revision 5.
+
+At revision 5.
+Summary of conflicts:
+  Text conflicts: 1
+  Property conflicts: 1
+  Tree conflicts: 1

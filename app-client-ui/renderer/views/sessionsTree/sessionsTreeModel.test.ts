@@ -298,6 +298,88 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
     expect(project.folderSessionId).toBe(own[0])
   })
 
+  describe('SVN worktree sessions', () => {
+    function sessionNode(id: string): Extract<TreeNode, { kind: 'session' }> {
+      const node = find(build(SessionsFixtures.svnWorktrees()).nodes, `session:${id}`)
+      if (node.kind !== 'session') throw new Error(`${id} is not a session node`)
+      return node
+    }
+
+    it('marks an SVN worktree with its kind and checkout, and names it in the tooltip', () => {
+      const node = sessionNode('s-svn')
+
+      expect(node.badges.worktree).toMatchObject({
+        kind: 'svn',
+        path: 'C:/Projects/NodeJs/AppJamatV3/.worktrees/014-svn-worktree',
+        branch: 'http://svn.local/applications/AppJamatV3',
+        baseMoved: false,
+        finish: null,
+        outcome: null,
+      })
+      expect(node.worktreeLine).toBe('SVN worktree C:/Projects/NodeJs/AppJamatV3/.worktrees/014-svn-worktree')
+    })
+
+    it('shows the scope a review waits for, and no outcome while a finish runs', () => {
+      const node = sessionNode('s-reviewing')
+
+      expect(node.badges.worktree?.finish).toEqual({
+        phase: 'reviewing',
+        title: 'Waiting for the commit review of C:/Projects/NodeJs/AppJamatV3/.worktrees/015-reviewing',
+      })
+      expect(node.badges.worktree?.outcome).toBeNull()
+      expect(node.finalizeLabel).toBeNull()
+    })
+
+    it('shows how many changes a partial commit left', () => {
+      const outcome = sessionNode('s-partial').badges.worktree?.outcome
+
+      expect(outcome?.result).toBe('partial')
+      expect(outcome?.title).toContain('left 2 change(s)')
+    })
+
+    it('tells the person after UPDATED to reopen the session or press Finish again', () => {
+      const outcome = sessionNode('s-updated').badges.worktree?.outcome
+
+      expect(outcome?.result).toBe('updated')
+      expect(outcome?.title)
+        .toContain('Reopen the session to rerun the tests, or press Finish again')
+    })
+
+    it('says why a worktree outlived its session on the row and in the tooltip', () => {
+      const fixture = SessionsFixtures.svnWorktrees()
+      const unlanded = 'r4127 is not in the main copy; Finish brings it in and removes the worktree'
+      const snapshot = {
+        ...fixture,
+        sessions: fixture.sessions.map((session) => {
+          if (session.sessionId === 's-svn' && session.worktree)
+            return { ...session, worktree: { ...session.worktree, cleanup: { phase: 'pending' as const, reason: 'unlanded r4127: a.ts', summary: unlanded } } }
+          if (session.sessionId === 's-partial' && session.worktree)
+            return { ...session, worktree: { ...session.worktree, cleanup: { phase: 'pending' as const, summary: 'removed once the session has ended' } } }
+          return session
+        }),
+      }
+      const nodes = build(snapshot).nodes
+      const svn = find(nodes, 'session:s-svn')
+      const partial = find(nodes, 'session:s-partial')
+      if (svn.kind !== 'session' || partial.kind !== 'session') throw new Error('not session nodes')
+
+      expect(svn.badges.worktree?.cleanup).toEqual({ phase: 'pending', title: unlanded })
+      expect(svn.worktreeLine).toBe(`SVN worktree C:/Projects/NodeJs/AppJamatV3/.worktrees/014-svn-worktree; ${unlanded}`)
+      expect(partial.badges.worktree?.cleanup).toBeNull()
+      expect(partial.worktreeLine).toContain('; removed once the session has ended')
+    })
+
+    it('names where the work of a removed worktree went', () => {
+      const node = sessionNode('s-retired')
+
+      expect(node.badges.worktree).toBeNull()
+      expect(node.worktreeLine).toBe(
+        'Worktree C:/Projects/NodeJs/AppJamatV3/.worktrees/013-retired removed after '
+          + 'http://svn.local/applications:r4119',
+      )
+    })
+  })
+
   it('draws NO PROJECT flat, with the session straight under the root', () => {
     const none = find(build(SessionsFixtures.mixed()).nodes, 'root:none')
 
@@ -318,7 +400,16 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
     expect(working.badges.worktree)
       // `changedFiles` is deliberately NOT carried: the mark draws two numbers, and a third
       // that moves on its own is a tree rebuild nobody asked for.
-      .toEqual({ branch: 'feature/alpha', diff: { added: 12, removed: 3 }, baseMoved: true })
+      .toEqual({
+        kind: 'git',
+        path: 'C:/Projects/NodeJs/AppJamatV3/.worktrees/alpha',
+        branch: 'feature/alpha',
+        diff: { added: 12, removed: 3 },
+        baseMoved: true,
+        finish: null,
+        outcome: null,
+        cleanup: null,
+      })
     // Nothing has measured this worktree yet, which is not the same as no changes.
     expect(waiting.badges.worktree?.diff).toBe(null)
     expect(waiting.badges.worktree?.baseMoved).toBe(false)

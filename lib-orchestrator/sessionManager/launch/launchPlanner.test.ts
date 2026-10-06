@@ -441,6 +441,22 @@ describe('lib-orchestrator/sessionManager/launch/launchPlanner', () => {
     expect(LaunchPlanner.cwdOf(worktree)).toBe('Q:\\apps\\one\\.worktrees\\fix')
   })
 
+  // A launch that slipped past the refusal fails in the gone directory rather than running in the
+  // main copy, which is not where the conversation's work was.
+  it('never answers the project directory for a session whose worktree was removed', () => {
+    const retired = record({
+      directory: { mode: 'project', categoryId: 'c1', projectPath: 'Q:\\apps\\one' },
+      retiredWorktree: {
+        worktreePath: 'Q:\\apps\\one\\.worktrees\\014-fix',
+        kind: 'svn',
+        revisions: ['https://svn.example.test/repos/app:r42'],
+        removedAt: 5,
+      },
+    })
+    expect(LaunchPlanner.cwdOf(retired)).toBe('Q:\\apps\\one\\.worktrees\\014-fix')
+    expect(plan(retired, 'linux').cwd).toBe('Q:\\apps\\one\\.worktrees\\014-fix')
+  })
+
   // A terminal opened inside V1 or V2 exports their variables, and the agent must inherit none.
   // The dev runtime is the second half of the same rule: a development client is started by
   // electron-vite under pnpm, and an agent that inherits THAT runs every Node tool with the build

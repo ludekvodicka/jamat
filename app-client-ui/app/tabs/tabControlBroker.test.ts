@@ -671,7 +671,17 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     harness.acknowledge('holder', second, { kind: 'commit-opened', panelId: 'session-panel' })
     expect(await pending).toMatchObject({ ok: true, value: { kind: 'commit-opened', scopeRoot: 'Q:/app/shared', windowId: 'holder', messageApplied: false } })
     expect(harness.commits.attach).toHaveBeenCalledWith('draft', 'holder')
-    expect(harness.commits.prepare).toHaveBeenCalledWith('session-1', 'svn', 'shared', 'Proposal', undefined)
+    expect(harness.commits.prepare).toHaveBeenCalledWith('session-1', 'svn', 'shared', 'Proposal', undefined, {})
+  })
+
+  it('asks for a fresh draft for a caller that waits for the outcome of its review', async () => {
+    const harness = new TabControlHarness()
+    const pending = harness.broker.openCommit('session-1', 'App', 'svn', 'shared', 'Proposal', { fresh: true })
+    const first = await harness.command()
+    harness.acknowledge('main', first, { kind: 'focused-existing', panelId: 'session-panel', windowId: 'holder' })
+    harness.acknowledge('holder', await harness.command(1), { kind: 'commit-opened', panelId: 'session-panel' })
+    expect(await pending).toMatchObject({ ok: true })
+    expect(harness.commits.prepare).toHaveBeenCalledWith('session-1', 'svn', 'shared', 'Proposal', undefined, { fresh: true })
   })
 
   it('does not open a tab after prepare refuses, but a person can see the missing-working-copy pane', async () => {

@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<status>
+<target
+   path="{ROOT}">
+<entry
+   path="{ROOT}\conflict.txt">
+<wc-status
+   item="modified"
+   revision="3"
+   props="none">
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</wc-status>
+</entry>
+<entry
+   path="{ROOT}\missing.txt">
+<wc-status
+   item="missing"
+   revision="3"
+   props="none">
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</wc-status>
+</entry>
+<entry
+   path="{ROOT}\mount">
+<wc-status
+   item="external"
+   props="none">
+</wc-status>
+</entry>
+<entry
+   path="{ROOT}\props.txt">
+<wc-status
+   item="normal"
+   revision="3"
+   props="modified">
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</wc-status>
+</entry>
+<entry
+   path="{ROOT}\src">
+<wc-status
+   item="normal"
+   revision="3"
+   props="modified">
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</wc-status>
+</entry>
+<entry
+   path="{ROOT}\src\a.txt">
+<wc-status
+   item="modified"
+   revision="3"
+   props="none">
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</wc-status>
+</entry>
+<entry
+   path="{ROOT}\src\added.txt">
+<wc-status
+   item="added"
+   revision="-1"
+   props="none">
+</wc-status>
+</entry>
+<entry
+   path="{ROOT}\src\c.txt">
+<wc-status
+   item="deleted"
+   revision="3"
+   props="none">
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</wc-status>
+</entry>
+<entry
+   path="{ROOT}\src\loose.txt">
+<wc-status
+   item="unversioned"
+   props="none">
+</wc-status>
+</entry>
+<entry
+   path="{ROOT}\src\přehled.md">
+<wc-status
+   item="unversioned"
+   props="none">
+</wc-status>
+</entry>
+<entry
+   path="{ROOT}\tree.txt">
+<wc-status
+   item="modified"
+   revision="3"
+   props="none">
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</wc-status>
+</entry>
+</target>
+</status>

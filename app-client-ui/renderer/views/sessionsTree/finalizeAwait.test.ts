@@ -86,6 +86,16 @@ describe('app-client-ui/renderer/views/sessionsTree/finalizeAwait', () => {
       .toEqual(['merge', 'keep'])
   })
 
+  it('asks an ended SVN worktree session to Commit, and nothing while its finish runs', () => {
+    const snapshot = SessionsFixtures.svnWorktrees()
+    const ended = FinalizeAwait.askOf({ kind: 'local', sessionId: 's-svn' }, snapshot, null)
+
+    expect(ended?.questions[0].question.choices.map((choice) => choice.id))
+      .toEqual(['commit', 'keep', 'discard'])
+    expect(FinalizeAwait.askOf({ kind: 'local', sessionId: 's-reviewing' }, snapshot, null))
+      .toBeNull()
+  })
+
   it('returns no ask when the target vanished or has no finalize question', () => {
     const snapshot = SessionsFixtures.mixed()
     const plain = { kind: 'local', sessionId: 's-ended' } as const

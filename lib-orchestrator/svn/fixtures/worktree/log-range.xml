@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<log>
+<logentry
+   revision="4">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+<paths>
+<path
+   action="M"
+   prop-mods="false"
+   text-mods="true"
+   kind="file">/Project/.aidocs/note.md</path>
+<path
+   action="M"
+   prop-mods="false"
+   text-mods="true"
+   kind="file">/Project/conflict.txt</path>
+<path
+   action="D"
+   prop-mods="false"
+   text-mods="false"
+   kind="file">/Project/gone.txt</path>
+<path
+   action="M"
+   prop-mods="true"
+   text-mods="false"
+   kind="file">/Project/keep.txt</path>
+<path
+   action="M"
+   prop-mods="true"
+   text-mods="false"
+   kind="file">/Project/props.txt</path>
+<path
+   action="M"
+   prop-mods="true"
+   text-mods="false"
+   kind="dir">/Project/src</path>
+<path
+   action="M"
+   prop-mods="false"
+   text-mods="true"
+   kind="file">/Project/src/a.txt</path>
+<path
+   action="M"
+   prop-mods="false"
+   text-mods="true"
+   kind="file">/Project/src/b.txt</path>
+<path
+   action="A"
+   prop-mods="false"
+   text-mods="true"
+   kind="file">/Project/src/new.txt</path>
+<path
+   action="D"
+   prop-mods="false"
+   text-mods="false"
+   kind="file">/Project/tree.txt</path>
+</paths>
+<msg>foreign changes</msg>
+</logentry>
+<logentry
+   revision="5">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+<paths>
+<path
+   action="M"
+   prop-mods="false"
+   text-mods="true"
+   kind="file">/Lib/l.txt</path>
+</paths>
+<msg>lib theirs</msg>
+</logentry>
+<logentry
+   revision="6">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+<paths>
+<path
+   action="M"
+   prop-mods="false"
+   text-mods="true"
+   kind="file">/Project/src/a.txt</path>
+</paths>
+<msg>commit from the worktree</msg>
+</logentry>
+<logentry
+   revision="7">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+<paths>
+<path
+   action="M"
+   prop-mods="false"
+   text-mods="true"
+   kind="file">/Project/keep.txt</path>
+<path
+   action="M"
+   prop-mods="false"
+   text-mods="true"
+   kind="file">/Project/src/b.txt</path>
+</paths>
+<msg>foreign revision</msg>
+</logentry>
+</log>

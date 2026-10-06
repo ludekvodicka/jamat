@@ -724,4 +724,77 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
         .filter(change => change.kind === 'name-codex-conversation')).toEqual([])
     })
   })
+
+  /**
+   * The removal of an SVN worktree once its process is gone. Judged over every record, because the
+   * records it is about are ended or lost, which the general loop skips.
+   */
+  describe('the cleanup of an SVN worktree', () => {
+    const start = 1_000_000
+
+    function cleaning(overrides?: Partial<SessionRecord>): SessionRecord {
+      return record('w', {
+        life: 'ended',
+        binding: null,
+        exitReason: 'process-exit',
+        endedAt: start - 60_000,
+        worktree: {
+          worktreePath: 'C:\\repo\\.worktrees\\014-fix',
+          branch: 'https://svn.test/repo/trunk',
+          baseCommit: 'r10',
+          repositoryRoot: 'C:\\repo',
+          kind: 'svn',
+          directoryId: '1:2:3',
+        },
+        worktreeCleanup: { phase: 'pending', trigger: 'committed', requestedAt: 1, attempts: 0 },
+        ...overrides,
+      })
+    }
+
+    function cleans(records: readonly SessionRecord[], now = start + 1_000, clientStartedAt = start): boolean {
+      return Reconciler.plan(records, listing([]), now, clientStartedAt)
+        .some((change) => change.kind === 'clean-worktree' && change.sessionId === 'w')
+    }
+
+    it('judges a pending cleanup once the process exited, was stopped or never spawned, or the record was lost', () => {
+      expect(cleans([cleaning()])).toBe(true)
+      expect(cleans([cleaning({ exitReason: 'stopped' })])).toBe(true)
+      expect(cleans([cleaning({ exitReason: 'spawn-failed' })])).toBe(true)
+      expect(cleans([cleaning({ life: 'lost', exitReason: undefined, endedAt: undefined })], start + 30_000)).toBe(true)
+    })
+
+    it('judges nothing while the process may still run', () => {
+      expect(cleans([cleaning({ exitReason: 'host-lost' })])).toBe(false)
+      expect(cleans([cleaning({ exitReason: undefined })])).toBe(false)
+      expect(cleans([cleaning({ life: 'live', binding: { hostInstanceId: 'host-1', generation: 1 } })])).toBe(false)
+    })
+
+    it('waits thirty seconds after the end, and a lost record without an end thirty seconds after the start', () => {
+      expect(cleans([cleaning({ endedAt: start - 29_000 })], start)).toBe(false)
+      expect(cleans([cleaning({ endedAt: start - 29_000 })], start + 1_000)).toBe(true)
+      expect(cleans([cleaning({ life: 'lost', endedAt: undefined })], start + 29_999)).toBe(false)
+    })
+
+    it('leaves a record that a finish or a pending launch holds, a kept one and a Git one alone', () => {
+      expect(cleans([cleaning({ worktreeFinish: { phase: 'removing', startedAt: 1 } })])).toBe(false)
+      expect(cleans([cleaning({ pendingOperationId: 'op', pendingOperationKind: 'reopen' })])).toBe(false)
+      expect(cleans([cleaning({ worktreeCleanup: { phase: 'kept', trigger: 'committed', reason: '1 change', requestedAt: 1, attempts: 1 } })])).toBe(false)
+      const git = cleaning()
+      expect(cleans([{ ...git, worktree: { ...git.worktree!, kind: 'git' } }])).toBe(false)
+      expect(cleans([cleaning({ worktreeCleanup: undefined })])).toBe(false)
+    })
+
+    it('paces an unlanded commit to ten minutes, except for the first judgement after a client start', () => {
+      const waiting = cleaning({ worktreeCleanup: {
+        phase: 'pending', trigger: 'committed', reason: 'unlanded r12: a.txt', requestedAt: 1, attempts: 1, lastAttemptAt: start + 1_000,
+      } })
+      expect(cleans([waiting], start + 9 * 60_000)).toBe(false)
+      expect(cleans([waiting], start + 1_000 + 10 * 60_000)).toBe(true)
+      expect(cleans([waiting], start + 2_000, start + 1_500)).toBe(true)
+    })
+
+    it('judges nothing without an answer from the Host', () => {
+      expect(Reconciler.plan([cleaning()], null, start + 1_000, start)).toEqual([])
+    })
+  })
 })

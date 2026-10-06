@@ -890,6 +890,21 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     expect(screen.getByText('0 selected')).toBeInTheDocument()
   })
 
+  it('lists directories among files in path order, each directory directly above its contents', () => {
+    const f = CommitPaneTest.fixture()
+    const snapshot = { ...f.snapshot, externalRoots: [], entries: [
+      CommitPaneTest.entry('b.txt'),
+      CommitPaneTest.entry('app/foo.ts', 'untracked'),
+      CommitPaneTest.entry('app/foo/x.ts', 'untracked'),
+      CommitPaneTest.entry('.aidocs/plan.md', 'untracked'),
+      CommitPaneTest.entry('app/foo', 'untracked', 'directory'),
+      CommitPaneTest.entry('app/bar.ts'),
+    ] }
+    render(<CommitTargetsList snapshot={snapshot} checked={new Set()} disabled={false} onChange={vi.fn()} onOpen={vi.fn()} onMenuOpen={vi.fn()} onOpenExternal={null} onRevert={vi.fn()} onOpenSeparately={vi.fn()} />)
+    expect(screen.getAllByRole('checkbox').map((box) => box.getAttribute('aria-label'))).toEqual([
+      'Include .aidocs/plan.md', 'Include app/bar.ts', 'Include app/foo', 'Include app/foo/x.ts', 'Include app/foo.ts', 'Include b.txt'])
+  })
+
   /**
    * A runtime directory stops being versioned through `svn delete --keep-local`, which leaves its
    * files on disk. They return as untracked rows inside the deleted one, and adding any of them

@@ -39,6 +39,18 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionRowTooltip', () => {
     expect(screen.getByRole('tooltip').querySelector('.jamat-sessions__tooltip-note')).toBeNull()
   })
 
+  it('names the worktree under the title and draws no worktree line without one', () => {
+    render(<Row title="Svn worktree" note={null} worktree="SVN worktree C:/p/.worktrees/014-x" />)
+    hoverOpen()
+    expect(screen.getByRole('tooltip').querySelector('.jamat-sessions__tooltip-worktree')?.textContent)
+      .toBe('SVN worktree C:/p/.worktrees/014-x')
+    cleanup()
+
+    render(<Row title="Plain" note={null} />)
+    hoverOpen()
+    expect(screen.getByRole('tooltip').querySelector('.jamat-sessions__tooltip-worktree')).toBeNull()
+  })
+
   it('never opens for a pointer that left before the delay, and closes when it leaves', () => {
     render(<Row title="Alpha" note="n" />)
     fireEvent.pointerEnter(title())
@@ -138,13 +150,19 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionRowTooltip', () => {
   })
 })
 
-function Row(props: { title: string; note: string | null }): React.JSX.Element {
+function Row(props: { title: string; note: string | null; worktree?: string }): React.JSX.Element {
   const tooltip = useSessionRowTooltip()
   return (
     <div>
       <button type="button" {...tooltip.anchorProps}>{props.title}</button>
       {tooltip.open && (
-        <SessionRowTooltip id={tooltip.id} anchor={tooltip.anchor} title={props.title} note={props.note} />
+        <SessionRowTooltip
+          id={tooltip.id}
+          anchor={tooltip.anchor}
+          title={props.title}
+          note={props.note}
+          worktree={props.worktree ?? null}
+        />
       )}
     </div>
   )

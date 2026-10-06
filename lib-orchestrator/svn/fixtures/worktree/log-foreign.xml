@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<log>
+<logentry
+   revision="7">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+<paths>
+<path
+   action="M"
+   prop-mods="false"
+   text-mods="true"
+   kind="file">/Project/keep.txt</path>
+<path
+   action="M"
+   prop-mods="false"
+   text-mods="true"
+   kind="file">/Project/src/b.txt</path>
+</paths>
+<msg>foreign revision</msg>
+</logentry>
+</log>

@@ -330,9 +330,15 @@ export class LaunchPlanner {
       throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
   }
 
-  /** A worktree is where the session actually runs; the directory it came from only names the repo. */
+  /**
+   * A worktree is where the session actually runs; the directory it came from only names the repo.
+   * A removed worktree still answers its own path, so a launch fails there rather than running in
+   * the main copy.
+   */
   static cwdOf(record: SessionRecord): string {
-    return record.worktree?.worktreePath ?? LaunchPlanner.directoryOf(record.directory)
+    return record.worktree?.worktreePath
+      ?? record.retiredWorktree?.worktreePath
+      ?? LaunchPlanner.directoryOf(record.directory)
   }
 
   /**

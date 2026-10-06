@@ -10,7 +10,7 @@ import type { SessionRecord } from '../records/sessionRecord.types'
  * because a caller that is not the row - the CLI, a smoke, remote control - has to be told which of
  * the two it is looking at.
  */
-export type FinalizeStep = 'stop' | 'commit-and-merge' | 'already-finalized' | 'never-started'
+export type FinalizeStep = 'stop' | 'finish-worktree' | 'already-finalized' | 'never-started'
 
 /**
  * Finish is one action that always does the next step, and this is the whole of what it knows.
@@ -38,7 +38,7 @@ export class FinalizeSteps {
       // hides the button as well, but the rule belongs here: a caller that is not that row - a smoke,
       // a menu item added later - must not be able to ask for it either.
       if (record.pendingSetup !== undefined) return 'already-finalized'
-      return 'commit-and-merge'
+      return 'finish-worktree'
     }
     else
       throw new Error(`Unknown session life: ${JSON.stringify(life)}`)
@@ -47,7 +47,7 @@ export class FinalizeSteps {
   /** Whether Finish has anything to do here, which is what decides if the row offers it at all. */
   static offers(record: SessionRecord): boolean {
     const step = FinalizeSteps.planOf(record)
-    if (step === 'stop' || step === 'commit-and-merge') return true
+    if (step === 'stop' || step === 'finish-worktree') return true
     else if (step === 'already-finalized' || step === 'never-started') return false
     else throw new Error(`Unknown finalize step: ${JSON.stringify(step)}`)
   }

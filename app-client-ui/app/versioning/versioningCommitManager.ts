@@ -7,7 +7,6 @@ import { basename, dirname, join, relative, resolve } from 'node:path'
 import type { FileChangesFileAccessResult } from '../../../lib-orchestrator/fileChangesManager/fileChangesManager'
 import type { FileChangeEntry, FileChangesVcsId, FileChangesWorkingTreeSnapshot } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import type { VcsStatusView } from '../../../lib-orchestrator/fileChangesManager/vcsStatusView'
-import type { GitCheckpointStore } from '../../../lib-orchestrator/git/gitCheckpointStore'
 import type { GitCommitManager } from '../../../lib-orchestrator/git/gitCommitManager'
 import type { SessionManager } from '../../../lib-orchestrator/sessionManager/sessionManager'
 import { ErrorText } from '../../../lib-orchestrator/shared/errorText'
@@ -24,13 +23,14 @@ export interface VersioningCommitManagerDeps {
   messages: Pick<VersioningCommitMessageStore, 'read' | 'save' | 'remove'>
   sessions: Pick<SessionManager, 'workingContext' | 'settleVcs'>
   vcsStatus: Pick<VcsStatusView, 'detect'>
-  checkpointStore: Pick<GitCheckpointStore, 'worktreeBelongsToStore'>
   fileAccess(ownerId: string, snapshotId: string, fileId: string): FileChangesFileAccessResult
   snapshotOf(ownerId: string, snapshotId: string): FileChangesWorkingTreeSnapshot | null
   git: Pick<GitCommitManager, 'commit' | 'revertFile'>
   svn: Pick<SvnCommitManager, 'commit' | 'revertFile' | 'update'>
   tortoise: Pick<TortoiseCommitDialog, 'open'>
   onChanged(): void
+  /** An SVN review of this scope committed, or went to TortoiseSVN and closed; a worktree session there may go once it ended. */
+  worktreeCommitted?(scopeRoot: string): void
   now?(): number
   newId?(): string
 }
@@ -73,8 +73,12 @@ export class VersioningCommitManager {
 
   constructor(deps: VersioningCommitManagerDeps) { this.deps = deps }
 
+  /**
+   * `fresh` is for a caller that waits for the outcome of the review it opens: a draft of the same
+   * scope that already ended, still shown in a pane, would answer its old outcome at once.
+   */
   async prepare(sessionId: string, vcs: FileChangesVcsId, scope: string | null, proposal: string | null,
-    paths?: readonly string[]): Promise<VersioningCommitOpenResult> {
+    paths?: readonly string[], options: { fresh?: true } = {}): Promise<VersioningCommitOpenResult> {
     if (vcs !== 'svn' && vcs !== 'git') throw new Error(`Unknown commit VCS: ${JSON.stringify(vcs)}`)
     const proposed = proposal === null ? null : VersioningCommitMessage.normalize(proposal)
     if (proposed !== null && proposed.length > VersioningCommitLimits.messageMaxCharactersConst)
@@ -114,11 +118,12 @@ export class VersioningCommitManager {
     const restricted = targets.length !== 1 || !targets[0].recursive
       || PathCompare.comparable(targets[0].path) !== PathCompare.comparable(requested)
     const selectedPaths = restricted ? selected : undefined
-    if (vcs === 'git' && await this.deps.checkpointStore.worktreeBelongsToStore(detection.root))
-      return { ok: false, code: 'store-worktree', detail: 'This worktree belongs to the checkpoint store' }
-    const existing = [...this.drafts.values()].find((draft) => draft.dto.sessionId === sessionId && draft.dto.vcs === vcs
+    const matching = [...this.drafts.values()].find((draft) => draft.dto.sessionId === sessionId && draft.dto.vcs === vcs
       && PathCompare.comparable(draft.dto.scopeRoot) === PathCompare.comparable(requested)
       && JSON.stringify(draft.dto.paths?.map(PathCompare.comparable)) === JSON.stringify(selectedPaths?.map(PathCompare.comparable)))
+    const existing = matching !== undefined && options.fresh === true && VersioningCommitManager.ended(matching) ? undefined : matching
+    // Its pane finds the draft gone and opens this scope again, which reaches the fresh draft.
+    if (matching !== undefined && existing === undefined) this.close(matching)
     const draft: Draft = existing ?? {
       dto: {
         draftId: this.deps.newId?.() ?? randomUUID(), sessionId, vcs, scopeRoot: requested,
@@ -141,6 +146,15 @@ export class VersioningCommitManager {
     return { ok: true, value: { draftId: draft.dto.draftId, scopeRoot: requested,
       ...(restricted ? { paths: selected } : {}),
       title: `Commit ${vcs.toUpperCase()} · ${selected.length === 1 ? basename(selected[0]) : `${selected.length} paths`}` }, messageApplied }
+  }
+
+  /** Whether a draft can no longer settle any other way than it already did. */
+  private static ended(draft: Draft): boolean {
+    const phase = draft.dto.phase
+    if (phase.kind === 'done' || phase.kind === 'cancelled') return true
+    else if (phase.kind === 'editing' || phase.kind === 'failed') return draft.externalReview === 'closed'
+    else if (phase.kind === 'running') return false
+    else throw new Error(`Unknown commit phase: ${JSON.stringify(phase satisfies never)}`)
   }
 
   /**
@@ -244,6 +258,12 @@ export class VersioningCommitManager {
   releaseUnattached(draftId: string): void {
     const draft = this.drafts.get(draftId)
     if (draft === undefined || draft.owners.size !== 0) return
+    this.close(draft)
+  }
+
+  /** The review leaves the open drafts; its status stays readable until it expires. */
+  private close(draft: Draft): void {
+    const draftId = draft.dto.draftId
     this.closed.set(draftId, { draft, closedAt: this.now() })
     this.drafts.delete(draftId)
     const pending = this.cancellations.get(draftId)
@@ -406,6 +426,7 @@ export class VersioningCommitManager {
       draft.dto.phase = { kind: 'done', revision, output, finishedAt: this.now() }
       this.deps.messages.remove(draft.dto)
       this.bump(draft)
+      this.svnSettled(draft)
       return { ok: true, revision }
     }
     catch (error) { return fail(ErrorText.of(error)) }
@@ -504,6 +525,8 @@ export class VersioningCommitManager {
       try { await opened.closed }
       finally { draft.externalReview = 'closed'; this.bump(draft) }
       this.settle(draft, draft.dto.scopeRoot)
+      // TortoiseSVN does not say whether it committed; the cleanup reads the worktree before it removes anything.
+      this.svnSettled(draft)
       return { ok: true }
     } catch (error) {
       if (draft.externalReview === 'running') { draft.externalReview = 'closed'; this.bump(draft) }
@@ -647,6 +670,10 @@ export class VersioningCommitManager {
     draft.dto.phase = { kind: 'failed', detail, failedAt: this.now() }
     this.bump(draft)
     return { ok: false, code: 'vcs-failed', detail, ...(reloadRequired ? { reloadRequired: true } : {}) }
+  }
+
+  private svnSettled(draft: Draft): void {
+    if (draft.dto.vcs === 'svn') this.deps.worktreeCommitted?.(draft.dto.scopeRoot)
   }
 
   private now(): number { return this.deps.now?.() ?? Date.now() }

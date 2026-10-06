@@ -39,13 +39,56 @@ describe('app-client-ui/renderer/overlays/finalize/worktreeQuestion', () => {
         {
           id: 'discard',
           title: 'Discard worktree',
-          note: 'throws the branch and the directory away',
+          note: 'throws the branch, the directory and its unmeasured changes away',
           glyph: '✕',
           submitLabel: 'Discard worktree',
           danger: true,
         },
       ],
     })
+  })
+
+  it('renders the choices the library composed for an SVN worktree, defaulting to Commit', () => {
+    const session = sessionOf(SessionsFixtures.svnWorktrees().sessions, 's-svn')
+    const question = WorktreeQuestion.spec.questionOf(session, 'local')
+
+    expect(question?.choices.map((choice) => choice.id)).toEqual(['commit', 'keep', 'discard'])
+    expect(question?.chosenDefault).toBe('commit')
+    expect(question?.choices[0]).toMatchObject({ title: 'Commit', submitLabel: 'Commit' })
+    expect(question?.choices.find((choice) => choice.id === 'discard')).toMatchObject({
+      note: 'throws the checkout and its 2 changed files away',
+      danger: true,
+    })
+  })
+
+  it('offers only Keep and Discard for a legacy store-cut worktree, whatever its kind', () => {
+    const session = sessionOf(SessionsFixtures.svnWorktrees().sessions, 's-store-cut')
+    const question = WorktreeQuestion.spec.questionOf(session, 'local')
+
+    expect(question?.choices.map((choice) => choice.id)).toEqual(['keep', 'discard'])
+    expect(question?.chosenDefault).toBe('keep')
+  })
+
+  it('takes the choices off the snapshot rather than off the kind', () => {
+    const svn = sessionOf(SessionsFixtures.svnWorktrees().sessions, 's-svn')
+    if (svn.worktree === undefined) throw new Error('The SVN fixture lost its worktree')
+    const reordered = { ...svn, worktree: { ...svn.worktree, choices: ['keep', 'discard'] as const } }
+
+    expect(WorktreeQuestion.spec.questionOf(reordered, 'local')?.choices.map((choice) => choice.id))
+      .toEqual(['keep', 'discard'])
+  })
+
+  it('asks nothing while a finish holds the session', () => {
+    const reviewing = sessionOf(SessionsFixtures.svnWorktrees().sessions, 's-reviewing')
+    expect(WorktreeQuestion.spec.questionOf(reviewing, 'local')).toBeNull()
+  })
+
+  it('throws on a finish choice it does not know', () => {
+    const svn = sessionOf(SessionsFixtures.svnWorktrees().sessions, 's-svn')
+    if (svn.worktree === undefined) throw new Error('The SVN fixture lost its worktree')
+    const unknown = { ...svn, worktree: { ...svn.worktree, choices: ['rebase'] as never } }
+
+    expect(() => WorktreeQuestion.spec.questionOf(unknown, 'local')).toThrow('Unknown finish choice')
   })
 
   it('omits Discard remotely and omits a discard-only question altogether', () => {
@@ -80,7 +123,7 @@ describe('app-client-ui/renderer/overlays/finalize/worktreeQuestion', () => {
       .toThrow('Unknown finalize scope')
   })
 
-  it('routes Merge and Discard through their narrow ports and rejects any other choice', async () => {
+  it('routes Merge, Commit and Discard through their narrow ports and rejects any other choice', async () => {
     const calls: string[] = []
     const ports: SessionFinalizePorts = {
       finalize: () => {
@@ -94,8 +137,9 @@ describe('app-client-ui/renderer/overlays/finalize/worktreeQuestion', () => {
     }
 
     await WorktreeQuestion.spec.perform('merge', ports)
+    await WorktreeQuestion.spec.perform('commit', ports)
     await WorktreeQuestion.spec.perform('discard', ports)
-    expect(calls).toEqual(['finalize', 'discardWorktree'])
+    expect(calls).toEqual(['finalize', 'finalize', 'discardWorktree'])
     expect(() => WorktreeQuestion.spec.perform('keep', ports))
       .toThrow(/Unknown worktree choice/)
   })

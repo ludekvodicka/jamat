@@ -1,0 +1,273 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<info>
+<entry
+   path="."
+   revision="3"
+   kind="dir">
+<url>{REPO}/Project</url>
+<relative-url>^/Project</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{MAIN}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+</wc-info>
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+<entry
+   path=".aidocs"
+   revision="3"
+   kind="dir">
+<url>{REPO}/Project/.aidocs</url>
+<relative-url>^/Project/.aidocs</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{MAIN}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+</wc-info>
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+<entry
+   path=".aidocs\note.md"
+   revision="4"
+   kind="file">
+<url>{REPO}/Project/.aidocs/note.md</url>
+<relative-url>^/Project/.aidocs/note.md</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{MAIN}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+<text-updated>2026-01-01T00:00:00.000000Z</text-updated>
+<checksum>2078a01720a528c9fee69f19e54de4d36ea86d2e</checksum>
+</wc-info>
+<commit
+   revision="4">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+<entry
+   path="conflict.txt"
+   revision="4"
+   kind="file">
+<url>{REPO}/Project/conflict.txt</url>
+<relative-url>^/Project/conflict.txt</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{MAIN}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+<text-updated>2026-01-01T00:00:00.000000Z</text-updated>
+<checksum>3b8fc21ae236bce835a424bdabdb91d22bc67eae</checksum>
+</wc-info>
+<commit
+   revision="4">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+<entry
+   path="keep.txt"
+   revision="7"
+   kind="file">
+<url>{REPO}/Project/keep.txt</url>
+<relative-url>^/Project/keep.txt</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{MAIN}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+<text-updated>2026-01-01T00:00:00.000000Z</text-updated>
+<checksum>999e0c4af0a08606d2c224acf8f93cba758eac61</checksum>
+</wc-info>
+<commit
+   revision="7">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+<entry
+   path="missing.txt"
+   revision="3"
+   kind="file">
+<url>{REPO}/Project/missing.txt</url>
+<relative-url>^/Project/missing.txt</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{MAIN}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+<text-updated>2026-01-01T00:00:00.000000Z</text-updated>
+<checksum>f9c24e2abb82063a3ba2c44efd2d3c797f28ac90</checksum>
+</wc-info>
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+<entry
+   path="props.txt"
+   revision="4"
+   kind="file">
+<url>{REPO}/Project/props.txt</url>
+<relative-url>^/Project/props.txt</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{MAIN}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+<text-updated>2026-01-01T00:00:00.000000Z</text-updated>
+<checksum>7cd4a25d143a6bfe4256b3346b348937427e91c7</checksum>
+</wc-info>
+<commit
+   revision="4">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+<entry
+   path="src"
+   revision="4"
+   kind="dir">
+<url>{REPO}/Project/src</url>
+<relative-url>^/Project/src</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{MAIN}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+</wc-info>
+<commit
+   revision="4">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+<entry
+   path="src\a.txt"
+   revision="4"
+   kind="file">
+<url>{REPO}/Project/src/a.txt</url>
+<relative-url>^/Project/src/a.txt</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{MAIN}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+<text-updated>2026-01-01T00:00:00.000000Z</text-updated>
+<checksum>df4dc669a728df461efa3cd91247bd6cdce9df57</checksum>
+</wc-info>
+<commit
+   revision="4">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+<entry
+   path="src\b.txt"
+   revision="7"
+   kind="file">
+<url>{REPO}/Project/src/b.txt</url>
+<relative-url>^/Project/src/b.txt</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{MAIN}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+<text-updated>2026-01-01T00:00:00.000000Z</text-updated>
+<checksum>07fdf85a347f545cc051c8b8e91a904aebbc231b</checksum>
+</wc-info>
+<commit
+   revision="7">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+<entry
+   path="src\c.txt"
+   revision="3"
+   kind="file">
+<url>{REPO}/Project/src/c.txt</url>
+<relative-url>^/Project/src/c.txt</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{MAIN}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+<text-updated>2026-01-01T00:00:00.000000Z</text-updated>
+<checksum>2b66fd261ee5c6cfc8de7fa466bab600bcfe4f69</checksum>
+</wc-info>
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+<entry
+   path="src\new.txt"
+   revision="4"
+   kind="file">
+<url>{REPO}/Project/src/new.txt</url>
+<relative-url>^/Project/src/new.txt</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{MAIN}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+<text-updated>2026-01-01T00:00:00.000000Z</text-updated>
+<checksum>389cc6b7ae5a659383eab5dfc253764eccf84732</checksum>
+</wc-info>
+<commit
+   revision="4">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+</info>

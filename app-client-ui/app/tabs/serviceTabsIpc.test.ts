@@ -142,6 +142,7 @@ describe('app-client-ui/app/tabs/serviceTabsIpc', () => {
   let controlBroker: FakeControlBroker
   let presenceChanges: number
   let presenceFails: boolean
+  let ipc: ServiceTabsIpc
 
   function panel(panelId: string, sessionId: string | null = null): WorkspacePanelPresence {
     return {
@@ -161,7 +162,7 @@ describe('app-client-ui/app/tabs/serviceTabsIpc', () => {
     controlBroker = new FakeControlBroker()
     presenceChanges = 0
     presenceFails = false
-    new ServiceTabsIpc(
+    ipc = new ServiceTabsIpc(
       windows.asRegistry(),
       index,
       broker.asBroker(),
@@ -171,7 +172,8 @@ describe('app-client-ui/app/tabs/serviceTabsIpc', () => {
         if (presenceFails)
           throw new Error('presence publish failed')
       },
-    ).initialize()
+    )
+    ipc.initialize()
   })
 
   afterEach(() => vi.restoreAllMocks())
@@ -304,6 +306,15 @@ describe('app-client-ui/app/tabs/serviceTabsIpc', () => {
       { windowId: 'holder', channel: 'tabs:close-panel', args: ['other'] },
       { windowId: 'main', channel: 'tabs:terminal-restarted', args: ['session-1'] },
     ])
+  })
+
+  // A session that removed itself after its worktree ended: no renderer asked, so main closes it.
+  it('closes the panels of a target for main itself', () => {
+    index.claimOpen('holder', panel('ended', 'session-3'))
+
+    ipc.closeTerminalPanels('session-3')
+
+    expect(windows.published).toEqual([{ windowId: 'holder', channel: 'tabs:close-panel', args: ['ended'] }])
   })
 
   it('routes a remote target only to the window that owns that endpoint session', async () => {

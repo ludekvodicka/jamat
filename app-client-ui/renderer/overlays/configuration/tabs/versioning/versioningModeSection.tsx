@@ -11,9 +11,9 @@ import { useVersioningSettings } from './useVersioningSettings'
 const modeLabelsConst: Readonly<Record<VersioningMode, { title: string; detail: string }>> = {
   checkpoints: {
     title: 'Checkpoints',
-    detail: 'AI checkpoints and worktrees go into .checkpoints/store.git inside the project. '
-      + 'A repository of your own is never written to, and a project with no version control at '
-      + 'all can still run isolated sessions.',
+    detail: 'An isolated session gets a fresh SVN checkout where SVN versions the project, else a '
+      + 'branch of the project’s own .git. AI checkpoints go into .checkpoints/store.git; a project '
+      + 'with neither SVN nor its own .git refuses an isolated session.',
   },
   git: {
     title: 'Project Git',

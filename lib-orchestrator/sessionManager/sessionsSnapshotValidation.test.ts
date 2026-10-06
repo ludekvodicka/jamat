@@ -122,6 +122,86 @@ describe('lib-orchestrator/sessionManager/sessionsSnapshotValidation', () => {
         .toBeNull()
   })
 
+  /*
+   * An older peer requires `branch` and `baseCommit` as non-empty strings and ignores keys it does
+   * not know, which is why SVN fills them with the URL and `r<rev>` rather than leaving them out.
+   * This build's worktree check is those rules plus the kind, so a pass here is a pass there.
+   */
+  it('takes an SVN worktree and a tombstone, and reads a worktree without a kind as git', () => {
+    const svn = {
+      worktreePath: 'Q:\\repo\\.worktrees\\014-fix',
+      branch: 'https://svn.example.test/repos/app/trunk',
+      baseCommit: 'r41',
+      kind: 'svn',
+      diff: null,
+      baseMoved: false,
+    }
+    const older = { ...svn, branch: 'session/one', baseCommit: 'abc123', kind: undefined }
+    const retiredWorktree = { worktreePath: 'Q:\\repo\\.worktrees\\013-old', revisions: ['https://svn.example.test/repos/app:r40'] }
+
+    const parsed = SessionsSnapshotValidation.parse(snapshot([
+      session({ sessionId: 's1', worktree: svn }),
+      session({ sessionId: 's2', worktree: older }),
+      session({ sessionId: 's3', retiredWorktree }),
+    ]))
+
+    expect(parsed?.sessions.map((entry) => entry.worktree?.kind)).toEqual(['svn', 'git', undefined])
+    expect(parsed?.sessions[2]?.retiredWorktree).toEqual(retiredWorktree)
+  })
+
+  // An older peer composed no choices; its library offered by kind alone, and so does this reading.
+  it('composes the Finish choices an older peer did not send, and takes the ones a peer did', () => {
+    const svn = {
+      worktreePath: 'Q:\\repo\\.worktrees\\014-fix', branch: 'https://svn.example.test/repos/app/trunk', baseCommit: 'r41',
+      kind: 'svn', diff: null, baseMoved: false,
+    }
+    const git = { ...svn, branch: 'session/one', baseCommit: 'abc123', kind: undefined }
+    const legacy = { ...git, kind: 'git', choices: ['keep', 'discard'] }
+
+    const parsed = SessionsSnapshotValidation.parse(snapshot([
+      session({ sessionId: 's1', worktree: svn }),
+      session({ sessionId: 's2', worktree: git }),
+      session({ sessionId: 's3', worktree: legacy }),
+    ]))
+
+    expect(parsed?.sessions.map((entry) => entry.worktree?.choices))
+      .toEqual([['commit', 'keep', 'discard'], ['merge', 'keep', 'discard'], ['keep', 'discard']])
+  })
+
+  // The tree draws a badge per finish phase and per result, and a value it does not know throws there.
+  it('takes a running finish and an outcome only in the vocabulary this build draws', () => {
+    const worktree = {
+      worktreePath: 'Q:\\wt', branch: 'https://svn.example.test/repos/app/trunk', baseCommit: 'r1', kind: 'svn',
+      choices: ['commit', 'keep', 'discard'], diff: null, baseMoved: false,
+    }
+    const outcome = { result: 'partial', revisions: ['https://svn.example.test/repos/app:r2'], main: 'updated', worktree: 'kept', lines: ['PARTIAL'], at: 1 }
+    expect(SessionsSnapshotValidation.parse(snapshot([session({
+      worktree: { ...worktree, finish: { phase: 'reviewing', scopeRoot: 'Q:\\wt' }, outcome },
+    })]))).not.toBeNull()
+    const cleanup = { phase: 'pending', reason: 'in use', summary: 'waiting to remove (in use)' }
+    expect(SessionsSnapshotValidation.parse(snapshot([session({ worktree: { ...worktree, cleanup } })]))).not.toBeNull()
+    for (const invalid of [
+      { ...worktree, cleanup: { ...cleanup, phase: 'removed' } },
+      { ...worktree, cleanup: { ...cleanup, reason: 3 } },
+      { ...worktree, cleanup: { phase: 'kept' } },
+      { ...worktree, choices: ['push'] },
+      { ...worktree, finish: { phase: 'pushing' } },
+      { ...worktree, outcome: { ...outcome, result: 'shipped' } },
+      { ...worktree, outcome: { ...outcome, worktree: 'gone' } },
+      { ...worktree, outcome: { ...outcome, lines: [1] } },
+    ])
+      expect(SessionsSnapshotValidation.parse(snapshot([session({ worktree: invalid })]))).toBeNull()
+  })
+
+  it('refuses an unknown worktree kind and a tombstone it cannot read', () => {
+    const worktree = { worktreePath: 'Q:\\wt', branch: 'b', baseCommit: 'r1', diff: null, baseMoved: false }
+    expect(SessionsSnapshotValidation.parse(snapshot([session({ worktree: { ...worktree, kind: 'hg' } })])))
+      .toBeNull()
+    for (const invalid of [null, {}, { worktreePath: '', revisions: [] }, { worktreePath: 'Q:\\wt', revisions: [1] }])
+      expect(SessionsSnapshotValidation.parse(snapshot([session({ retiredWorktree: invalid })])))
+        .toBeNull()
+  })
+
   it('refuses anything that is not a snapshot at all', () => {
     for (const value of [null, undefined, 42, 'snapshot', [], {}])
       expect(SessionsSnapshotValidation.parse(value), JSON.stringify(value ?? null)).toBeNull()

@@ -28,6 +28,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -35,6 +36,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 import type {
   ControllerLeaseResult,
@@ -61,6 +63,8 @@ import type {
 } from '../../lib-orchestrator/sessionManager/sessionManagerApi.types.js'
 import { ConfigIdentityStore } from '../../lib-orchestrator/shared/configIdentityStore.js'
 import { OrchestratorPaths } from '../../lib-orchestrator/shared/orchestratorPaths.js'
+import { CommandInvoker } from '../../lib-orchestrator/shared/commandInvoker.js'
+import { SvnInvoker } from '../../lib-orchestrator/svn/svnInvoker.js'
 
 class SmokeSessionManager extends SmokeHarness {
   protected override get waitMilliseconds(): number {
@@ -113,16 +117,20 @@ class SmokeSessionManager extends SmokeHarness {
   private readonly stateRoot: string
   private readonly workDir: string
   private readonly projectRoot: string
-  /** A project with NO version control at all, which is what checkpoints mode is for. */
+  /** A project with NO version control at all, which checkpoints mode refuses a worktree. */
   private readonly bareProjectRoot: string
+  /** A disposable SVN repository and the working copy a checkpoints-mode worktree checks out. */
+  private readonly svnRepository: string
+  private readonly svnProjectRoot: string
   private readonly configIdentity: string
   private readonly descriptorFile: string
   private readonly errors: string[] = []
+  /** What the manager removed on its own after a worktree ended. */
+  private readonly removedItself: string[] = []
   private readonly manager: SessionManager
   private readonly git = new GitInvoker()
   private readonly crashedRecord: SessionRecord
   private host: ChildProcess | null = null
-  private checkpointSession: { sessionId: string; worktreePath: string } | null = null
   /** What `acquireLease` holds the Host to: one lease id per Host process, never a second. */
   private heldLease: { hostInstanceId: string; controllerLeaseId: string } | null = null
   private changes = 0
@@ -145,6 +153,8 @@ class SmokeSessionManager extends SmokeHarness {
     // step that escapes the repository it was resolved against.
     this.projectRoot = join(realpathSync.native(root), SmokeSessionManager.projectDirectoryConst)
     this.bareProjectRoot = join(realpathSync.native(root), 'project-without-vcs')
+    this.svnRepository = join(realpathSync.native(root), 'svn-repository')
+    this.svnProjectRoot = join(realpathSync.native(root), 'svn-project')
     mkdirSync(this.workDir, { recursive: true })
     // Named before anything resolves a path: both the Host's state scope and the orchestrator's hang
     // off it, and the Host child inherits it through its environment. The Host scope is pinned to
@@ -167,6 +177,7 @@ class SmokeSessionManager extends SmokeHarness {
       autoStartHost: false,
       onChanged: () => { this.changes += 1 },
       onError: (message) => { this.errors.push(message) },
+      onRemovedItself: (sessionId) => { this.removedItself.push(sessionId) },
       controllerId: SmokeSessionManager.controllerIdConst,
       applicationRoot: SmokeSessionManager.repoRootConst,
       // A source tree: the Host starts from `app-host/start.ts`, never from a packaged bundle.
@@ -707,8 +718,8 @@ class SmokeSessionManager extends SmokeHarness {
       !existsSync(session.worktreePath))
     const branches = await this.git.run(this.projectRoot, ['branch', '--list', session.branch])
     this.check(`the branch is gone too (${session.branch})`, branches.stdout.trim().length === 0)
-    this.check('and the record no longer names either',
-      this.sessionOf(session.sessionId)?.worktree === undefined)
+    this.check('and the session goes with them, the way Remove takes it',
+      await this.removedOnItsOwn(session.sessionId))
   }
 
   /**
@@ -742,8 +753,8 @@ class SmokeSessionManager extends SmokeHarness {
       !existsSync(session.worktreePath))
     const branches = await this.git.run(this.projectRoot, ['branch', '--list', session.branch])
     this.check(`the branch is gone too (${session.branch})`, branches.stdout.trim().length === 0)
-    this.check('and the record no longer names either',
-      this.sessionOf(session.sessionId)?.worktree === undefined)
+    this.check('and the session goes with them, the way Remove takes it',
+      await this.removedOnItsOwn(session.sessionId))
   }
 
   /**
@@ -769,6 +780,8 @@ class SmokeSessionManager extends SmokeHarness {
       this.sessionOf(session.sessionId)?.merge?.phase === 'resolving')
     this.check('the worktree is left with the half-finished merge in it, markers and all',
       readFileSync(join(session.worktreePath, contested), 'utf8').includes('<<<<<<<'))
+    this.check('and the session stays, because the merge did not end',
+      this.sessionOf(session.sessionId) !== undefined && !this.removedItself.includes(session.sessionId))
 
     // Resolved by hand, which is the fallback path that is always available.
     writeFileSync(join(session.worktreePath, contested), 'both lines, reconciled\n', 'utf8')
@@ -781,6 +794,7 @@ class SmokeSessionManager extends SmokeHarness {
     this.check('and the worktree is gone', !existsSync(session.worktreePath))
     this.check('the reconciled line is what the main copy has now',
       readFileSync(join(this.projectRoot, contested), 'utf8').includes('reconciled'))
+    this.check('and the session goes once it landed', await this.removedOnItsOwn(session.sessionId))
   }
 
   private async checkDiscardWorktree(): Promise<void> {
@@ -793,6 +807,9 @@ class SmokeSessionManager extends SmokeHarness {
     this.check(`the branch is gone (${session.branch})`, branches.stdout.trim().length === 0)
     this.check('and nothing of it reached the main copy',
       !existsSync(join(this.projectRoot, 'thrown-away.txt')))
+    // Discard holds the session while it runs, so the Remove lands before the answer.
+    this.check('the session is gone by the time the Discard answers',
+      this.sessionOf(session.sessionId) === undefined && this.removedItself.includes(session.sessionId))
   }
 
   /**
@@ -852,9 +869,9 @@ class SmokeSessionManager extends SmokeHarness {
    * seed reads the `.worktrees/` of the project it was actually handed.
    */
   /**
-   * The whole point of checkpoints mode, against a project that has NO version control at all - no
-   * `.git`, no `.svn`, nothing. Nothing in this section is reachable in git mode: there is no
-   * repository to cut a worktree from, which the git-mode check at the end asserts directly.
+   * checkpoints mode against real repositories: an SVN working copy gets a numbered SVN checkout, a
+   * project with its own Git repository gets the worktree of git mode and lands as it does there,
+   * and a project with neither is refused with nothing created.
    *
    * The mode is switched on the live callback rather than by building a second manager, because
    * "read per operation" is the contract and a second manager would only prove the constructor.
@@ -862,8 +879,9 @@ class SmokeSessionManager extends SmokeHarness {
   private async checkCheckpointsMode(): Promise<void> {
     this.versioningMode = 'checkpoints'
     try {
-      await this.checkCheckpointCut()
-      await this.checkCheckpointLanding()
+      await this.checkCheckpointsRefusesBareProject()
+      await this.checkCheckpointsSvnWorktree()
+      await this.checkCheckpointsGitWorktree()
       await this.checkCheckpointRefusesInGitMode()
     }
     finally {
@@ -871,94 +889,77 @@ class SmokeSessionManager extends SmokeHarness {
     }
   }
 
-  private async checkCheckpointCut(): Promise<void> {
+  private async checkCheckpointsRefusesBareProject(): Promise<void> {
     mkdirSync(this.bareProjectRoot, { recursive: true })
-    writeFileSync(join(this.bareProjectRoot, 'shared.txt'), 'head\nmiddle\ntail\n', 'utf8')
-    writeFileSync(join(this.bareProjectRoot, 'human.txt'), 'the human wrote this\n', 'utf8')
+    writeFileSync(join(this.bareProjectRoot, 'shared.txt'), 'nothing versions this\n', 'utf8')
 
-    const created = SmokeSessionManager.valueOf(await this.manager.createSession({
+    const refused = await this.manager.createSession({
       kind: 'shell',
       directory: { mode: 'project', categoryId: 'smoke', projectPath: this.bareProjectRoot },
       worktree: { slug: 'checkpoint-cut' },
-    }), 'createSession')
-    const worktreePath = this.sessionOf(created.sessionId)?.worktree?.worktreePath
-    if (worktreePath === undefined)
-      throw new Error('FAILED: a checkpoint session created with a worktree names none')
+    })
 
-    this.check('a project with no version control at all got a store of its own',
-      existsSync(join(this.bareProjectRoot, CheckpointLayout.storeRelativeConst, 'HEAD')))
-    this.check('and it never gained a .git of its own',
-      !existsSync(join(this.bareProjectRoot, '.git')))
-    this.check(`the worktree points into the store rather than at a repository (${worktreePath})`,
-      readFileSync(join(worktreePath, '.git'), 'utf8').includes(CheckpointLayout.storeNameConst))
-    this.check('the work that was already there came along into the worktree',
-      readFileSync(join(worktreePath, 'shared.txt'), 'utf8').includes('middle'))
-
-    this.checkpointSession = { sessionId: created.sessionId, worktreePath }
+    this.check(`checkpoints mode refuses a project with neither SVN nor its own Git (${
+      refused.ok ? 'created' : refused.code})`, !refused.ok && refused.code === 'invalid-spec')
+    this.check('and the store-cut worktree is gone: no store, no .worktrees and no .git were made',
+      !existsSync(join(this.bareProjectRoot, CheckpointLayout.folderNameConst))
+      && !existsSync(join(this.bareProjectRoot, '.worktrees'))
+      && !existsSync(join(this.bareProjectRoot, '.git')))
   }
 
-  /**
-   * The landing MERGES: the session's change and the human's uncommitted change are two sides of one
-   * merge, not one overwriting the other. That is the property the whole mode exists for, so it is
-   * asserted on the bytes of the file rather than on the result code.
-   */
-  private async checkCheckpointLanding(): Promise<void> {
-    const session = this.checkpointSession
-    if (session === null) throw new Error('FAILED: no checkpoint session to land')
+  private async checkCheckpointsSvnWorktree(): Promise<void> {
+    const svn = new SvnInvoker()
+    const run = async (cwd: string, args: string[]): Promise<void> => {
+      const author = args[0] === 'commit' || args[0] === 'mkdir' ? ['--username', 'smoke'] : []
+      const outcome = await svn.run(cwd, [args[0], '--non-interactive', ...author, ...args.slice(1)])
+      if (outcome.failure !== null || outcome.code !== 0)
+        throw new Error(`FAILED: svn ${args.join(' ')}: ${outcome.stderr || outcome.failure}`)
+    }
+    const created = await new CommandInvoker().run({
+      command: 'svnadmin', args: ['create', this.svnRepository], cwd: join(this.svnRepository, '..'), env: process.env,
+    })
+    if (created.failure !== null || created.code !== 0)
+      throw new Error(`FAILED: svnadmin create: ${created.stderr || created.failure}`)
+    const url = `${pathToFileURL(this.svnRepository).href}/Project`
+    await run(join(this.svnRepository, '..'), ['mkdir', '-m', 'project', '--', url])
+    await run(join(this.svnRepository, '..'), ['checkout', '-q', '--', url, this.svnProjectRoot])
+    await run(this.svnProjectRoot, ['propset', 'svn:global-ignores', '.worktrees', '--', '.'])
+    writeFileSync(join(this.svnProjectRoot, 'tracked.txt'), 'from SVN\n', 'utf8')
+    await run(this.svnProjectRoot, ['add', '-q', '--', 'tracked.txt'])
+    await run(this.svnProjectRoot, ['commit', '-q', '-m', 'base', '--', '.'])
+    // A human .git beside it changes nothing: the SVN working copy decides.
+    await this.runGitIn(this.svnProjectRoot, ['init'])
 
-    writeFileSync(
-      join(session.worktreePath, 'shared.txt'),
-      'head\nmiddle\nTAIL FROM THE SESSION\n',
-      'utf8',
-    )
-    writeFileSync(join(session.worktreePath, 'from-session.txt'), 'the session wrote this\n', 'utf8')
-    // NOTHING is committed here, on purpose: an agent leaves its work on disk. Until 2026-08-28 the
-    // merge refused that in this mode, and the bash twin did worse - it carried nothing and reported
-    // a landing. The checkpoint the merge takes of the worktree is what these checks now prove.
+    const session = SmokeSessionManager.valueOf(await this.manager.createSession({
+      kind: 'shell',
+      directory: { mode: 'project', categoryId: 'smoke', projectPath: this.svnProjectRoot },
+      worktree: { slug: 'svn-smoke' },
+    }), 'createSession')
+    const worktree = this.sessionOf(session.sessionId)?.worktree
+
+    this.check(`an SVN working copy gets an SVN worktree, also beside a human .git (${worktree?.kind})`,
+      worktree?.kind === 'svn' && worktree.branch === url && /^r\d+$/.test(worktree.baseCommit))
+    this.check(`its folder carries the session number (${worktree?.worktreePath})`,
+      worktree !== undefined
+      && /^\d{3}-svn-smoke$/.test(worktree.worktreePath.split(/[\\/]/).pop() ?? '')
+      && existsSync(join(worktree.worktreePath, '.svn'))
+      && readFileSync(join(worktree.worktreePath, 'tracked.txt'), 'utf8').includes('from SVN'))
     SmokeSessionManager.valueOf(await this.manager.stopSession(session.sessionId), 'stopSession')
-    await this.waitUntil(() => this.sessionOf(session.sessionId)?.life === 'ended',
-      'the checkpoint session never ended')
+    await this.waitUntil(() => this.sessionOf(session.sessionId)?.life === 'ended', 'the SVN worktree session never ended')
+  }
 
-    // The human is mid-edit in their own copy when Merge is pressed. In git mode this is a refusal;
-    // here the checkpoint takes it into the merge, which is the difference the mode is for.
-    writeFileSync(join(this.bareProjectRoot, 'shared.txt'), 'HEAD FROM THE HUMAN\nmiddle\ntail\n', 'utf8')
-    writeFileSync(join(this.bareProjectRoot, 'untracked.txt'), 'never staged by anyone\n', 'utf8')
+  /** A project with its own Git repository: the worktree of git mode, landed the same way. */
+  private async checkCheckpointsGitWorktree(): Promise<void> {
+    const session = await this.worktreeSession('checkpoints-git', 'checkpoints-git.txt', 'landed under checkpoints mode')
+    this.check('a project with its own Git gets the git-mode worktree in checkpoints mode',
+      this.sessionOf(session.sessionId)?.worktree?.kind === 'git'
+      && !existsSync(join(this.projectRoot, CheckpointLayout.storeRelativeConst)))
 
     const merged = await this.manager.mergeSession(session.sessionId)
-    this.check(`a merge over a main copy the human is editing finishes (${
+    this.check(`and Merge lands it in that repository as git mode does (${
       merged.ok ? 'ok' : `${merged.code}: ${merged.detail}`})`, merged.ok)
-
-    const landed = readFileSync(join(this.bareProjectRoot, 'shared.txt'), 'utf8')
-    this.check(`the session's change reached the main copy (${landed.includes('TAIL FROM THE SESSION')})`,
-      landed.includes('TAIL FROM THE SESSION'))
-    this.check('and the human\'s uncommitted line survived it, so the landing merged rather than overwrote',
-      landed.includes('HEAD FROM THE HUMAN'))
-    this.check('the file the session added is there too',
-      existsSync(join(this.bareProjectRoot, 'from-session.txt')))
-    this.check('and an untracked file nobody staged was left alone',
-      existsSync(join(this.bareProjectRoot, 'untracked.txt')))
-    this.check(`the worktree is gone from disk (${session.worktreePath})`,
-      !existsSync(session.worktreePath))
-    this.check('and the record no longer names it',
-      this.sessionOf(session.sessionId)?.worktree === undefined)
-
-    const store = join(this.bareProjectRoot, CheckpointLayout.storeRelativeConst)
-    const log = await this.git.run(this.bareProjectRoot, [
-      '--git-dir', store, '--work-tree', this.bareProjectRoot,
-      'log', CheckpointLayout.branchConst, '--format=%an|%s',
-    ])
-    const lines = log.stdout.split('\n').map((line) => line.trim()).filter(Boolean)
-    this.check(`the store's ${CheckpointLayout.branchConst} line carries the cut checkpoint (${
-      lines.length} commits)`,
-      lines.some((line) => line.includes('Checkpoint in the main copy before cutting worktree checkpoint-cut')))
-    this.check('and the checkpoint taken before the landing',
-      lines.some((line) => line.includes('Checkpoint in the main copy before merging')))
-    this.check('and the one the merge took of the worktree, which nobody committed by hand',
-      lines.some((line) => line.includes('Checkpoint in the worktree on')))
-    this.check(`every checkpoint says a tool wrote it, not a person (${
-      CheckpointLayout.authorNameConst})`,
-      lines.filter((line) => line.includes('Checkpoint in the'))
-        .every((line) => line.startsWith(`${CheckpointLayout.authorNameConst}|`)))
+    this.check('the file the session wrote is in the main copy',
+      existsSync(join(this.projectRoot, 'checkpoints-git.txt')))
   }
 
   /** The escape hatch behaves as it always did: no repository, no worktree, and nothing created. */
@@ -980,7 +981,6 @@ class SmokeSessionManager extends SmokeHarness {
       !existsSync(join(bare, '.git'))
       && !existsSync(join(bare, CheckpointLayout.folderNameConst))
       && !existsSync(join(bare, '.worktrees')))
-    this.versioningMode = 'checkpoints'
   }
 
   /**
@@ -1131,8 +1131,10 @@ class SmokeSessionManager extends SmokeHarness {
     this.check('the refusal names the commands it is asking about',
       JSON.stringify(refused.setup?.commands) === JSON.stringify(expected))
     // The whole reason the gate stands before the worktree is cut rather than beside the resolution.
+    const slug = spec.worktree?.slug ?? ''
+    const worktrees = existsSync(join(this.projectRoot, '.worktrees')) ? readdirSync(join(this.projectRoot, '.worktrees')) : []
     this.check('the refused create left no worktree behind',
-      !existsSync(join(this.projectRoot, '.worktrees', spec.worktree?.slug ?? '')))
+      !worktrees.some((name) => name === slug || name.endsWith(`-${slug}`)))
 
     return SmokeSessionManager.valueOf(
       await this.manager.createSession({ ...spec, acknowledgeSetup: refused.setup?.hash }),
@@ -1313,6 +1315,16 @@ class SmokeSessionManager extends SmokeHarness {
       await SmokeHarness.sleep(150)
     }
     throw new Error(`the Host never published ${this.descriptorFile}`)
+  }
+
+  /** A Merge outside Finish removes the session detached, so this waits for it a little. */
+  private async removedOnItsOwn(sessionId: string): Promise<boolean> {
+    const deadline = Date.now() + 5_000
+    while (Date.now() < deadline) {
+      if (this.removedItself.includes(sessionId) && this.sessionOf(sessionId) === undefined) return true
+      await SmokeHarness.sleep(50)
+    }
+    return false
   }
 
   private sessionOf(sessionId: string): SessionInfo | undefined {

@@ -21,6 +21,7 @@
     "smoke:remote-app": "tsx scripts/smoke/remote-app.ts",
     "smoke:remote-control": "tsx scripts/smoke/remote-control.ts",
     "smoke:session-manager": "tsx scripts/smoke/session-manager.ts",
+    "smoke:svn-worktree": "tsx scripts/smoke/svn-worktree.ts",
     "smoke:terminal": "tsx scripts/smoke/terminal.ts",
     "smoke:terminal-detector": "tsx scripts/smoke/terminal-detector.ts",
     "smoke:ui": "tsx scripts/smoke/ui.ts",

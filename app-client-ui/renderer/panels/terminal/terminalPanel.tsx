@@ -12,6 +12,7 @@ import type {
   SessionInfo,
   SessionOutcome,
   SessionsSnapshot,
+  SessionWorktreeInfo,
 } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type {
   RemoteConnectionsSnapshot,
@@ -44,7 +45,7 @@ import type { TerminalInputRegistry } from '../../shell/terminalInputRegistry'
 import type { SessionsMarksStore } from '../../sessions/sessionsMarksStore'
 import { useSessionMarked } from '../../sessions/useSessionMarked'
 import { type SessionGlyph, SessionNodeState } from '../../views/sessionsTree/sessionNodeState'
-import type { TabDecorations, TabSignal } from '../../widgets/tabs/tabDecorations'
+import type { TabBadge, TabDecorations, TabSignal } from '../../widgets/tabs/tabDecorations'
 import { useTabDecorationsPublisher } from '../../widgets/tabs/tabDecorationsContext'
 import { SidebarDock } from '../../widgets/sidebar/sidebarDock'
 import { ContextMenu } from '../../widgets/contextMenu'
@@ -181,6 +182,11 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   const dirtyVcs = info?.vcs?.dirty === true ? info.vcs.vcsId : null
   const openCommits = useCommitOpen(props.commitOpen)
   const commitOpen = localTools && openCommits.has(sessionId)
+  // Two strings rather than the object: a new snapshot is a new object, and the tab would publish
+  // again on every tick for a worktree that did not move.
+  const worktreeKind = info?.worktree?.kind ?? null
+  const worktreePath = info?.worktree?.worktreePath ?? null
+  const worktreeCleanup = info?.worktree?.cleanup?.summary ?? null
   const sidebar = usePanelSidebar(props, 'workingTree')
   const split = usePanelSplit(props)
   useTerminalSplitPins(sessionId, localTools, split, props.splitPins)
@@ -364,8 +370,9 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   }, [])
 
   useEffect(
-    () => publish(TerminalPanelState.decorationsOf(state, glyph, color, marked, dirtyVcs, commitOpen)),
-    [publish, state, glyph, color, marked, dirtyVcs, commitOpen],
+    () => publish(TerminalPanelState.decorationsOf(state, glyph, color, marked, dirtyVcs, commitOpen,
+      worktreeKind === null || worktreePath === null ? null : { kind: worktreeKind, worktreePath, cleanup: worktreeCleanup })),
+    [publish, state, glyph, color, marked, dirtyVcs, commitOpen, worktreeKind, worktreePath, worktreeCleanup],
   )
 
   useEffect(() => {
@@ -663,11 +670,13 @@ class TerminalPanelState {
     marked: boolean,
     dirtyVcs: FileChangesVcsId | null,
     commitOpen: boolean,
+    /** `cleanup` is the library's sentence for a worktree that waits to be removed or was kept. */
+    worktree: Pick<SessionWorktreeInfo, 'kind' | 'worktreePath'> & { cleanup: string | null } | null,
   ): TabDecorations {
     const attachment = TerminalPanelState.attachmentSignalOf(state)
     // The first badge a session tab has ever published. Muted on purpose: it is worth noticing
     // while reading the strip, never worth looking at first.
-    const badges = dirtyVcs === null && !commitOpen
+    const badges: TabBadge[] = dirtyVcs === null && !commitOpen
       ? []
       : [{
         key: 'vcs',
@@ -675,6 +684,16 @@ class TerminalPanelState {
         tone: commitOpen ? 'danger' as const : 'muted' as const,
         title: commitOpen ? 'Commit dialog open' : `Uncommitted changes (${dirtyVcs})`,
       }]
+    // A badge and not the second slot: that slot carries the attachment, which a worktree session
+    // needs as much as any other.
+    if (worktree !== null)
+      badges.push({
+        key: 'worktree',
+        text: 'WT',
+        tone: 'accent',
+        title: `${SessionNodeState.worktreeKindLabelOf(worktree.kind)} worktree ${worktree.worktreePath}${
+          worktree.cleanup === null ? '' : `; ${worktree.cleanup}`}`,
+      })
     // Undefined rather than null where there is none: the tab puts it straight on an attribute, and
     // an attribute set to nothing is an attribute the CSS still matches.
     const painted = color === null ? {} : { color }

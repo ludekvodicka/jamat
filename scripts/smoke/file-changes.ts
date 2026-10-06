@@ -23,6 +23,8 @@ import { GitWorktreeManager } from '../../lib-orchestrator/git/gitWorktreeManage
 import type { GitResult } from '../../lib-orchestrator/git/git.types.js'
 import { ProviderTranscriptView } from '../../lib-orchestrator/projectManager/providerTranscriptView.js'
 import { PathCompare } from '../../lib-orchestrator/shared/pathCompare.js'
+import { SvnInvoker } from '../../lib-orchestrator/svn/svnInvoker.js'
+import { SvnWorktreeManager } from '../../lib-orchestrator/svn/svnWorktreeManager.js'
 
 class SmokeFileChanges extends SmokeHarness {
   private readonly gitRoot: string
@@ -85,40 +87,8 @@ class SmokeFileChanges extends SmokeHarness {
       && main.entries.some((entry) => entry.displayPath === 'file.txt'
         && entry.status === 'modified'))
 
-    const worktrees = new GitWorktreeManager(invoker, { modeOf: () => 'checkpoints', store })
-    const facts = SmokeFileChanges.gitValue(await worktrees.create(root, 'source-smoke'))
-    const worktreeCwd = join(facts.worktreePath, 'project')
-    writeFileSync(join(worktreeCwd, 'file.txt'), 'worktree after\n', 'utf8')
-    const context = {
-      sessionId: 'checkpoint-worktree',
-      cwd: worktreeCwd,
-      agent: null,
-      worktree: {
-        worktreePath: facts.worktreePath,
-        repositoryRoot: facts.repositoryRoot,
-        baseCommit: facts.baseCommit,
-      },
-    }
-    const againstBase = SmokeFileChanges.workingSnapshotOf(
-      await manager.workingTree(context, null),
-    )
-    this.check('a checkpoint worktree defaults to its persisted creation base',
-      againstBase.source.selected === 'worktree-base'
-      && againstBase.source.available.join() === 'worktree-base,checkpoint'
-      && againstBase.entries.some((entry) => entry.displayPath === 'file.txt'))
-    SmokeFileChanges.gitValue(await store.checkpointWorktree(
-      facts.worktreePath,
-      'Checkpoint worktree smoke',
-    ))
-    const checkpoint = SmokeFileChanges.workingSnapshotOf(
-      await manager.workingTree(context, 'checkpoint'),
-    )
-    const baseAfterCheckpoint = SmokeFileChanges.workingSnapshotOf(
-      await manager.workingTree(context, 'worktree-base'),
-    )
-    this.check('checkpoint clears while creation base still includes committed worktree changes',
-      checkpoint.entries.length === 0
-      && baseAfterCheckpoint.entries.some((entry) => entry.displayPath === 'file.txt'))
+    await this.checkGitWorktree(manager)
+    await this.checkSvnWorktree(manager, store)
 
     const missing = join(this.root, 'checkpoint-missing')
     mkdirSync(missing)
@@ -128,6 +98,73 @@ class SmokeFileChanges extends SmokeHarness {
     this.check('reading a project without a checkpoint store does not create one',
       withoutStore.source.available.length === 0
       && !SmokeFileChanges.exists(join(missing, CheckpointLayout.storeRelativeConst)))
+  }
+
+  /** A Git worktree reads against the base it was cut at, and only through its own repository. */
+  private async checkGitWorktree(manager: FileChangesManager): Promise<void> {
+    const root = join(this.root, 'git-worktree')
+    mkdirSync(join(root, 'project'), { recursive: true })
+    writeFileSync(join(root, 'project', 'file.txt'), 'git before\n', 'utf8')
+    this.run('git', root, ['init'])
+    this.run('git', root, ['config', 'user.name', 'File Changes Smoke'])
+    this.run('git', root, ['config', 'user.email', 'file-changes-smoke@example.invalid'])
+    this.run('git', root, ['add', '.'])
+    this.run('git', root, ['commit', '-m', 'Git worktree base'])
+    const facts = SmokeFileChanges.gitValue(await new GitWorktreeManager(new GitInvoker()).create(root, '014-source-smoke'))
+    const worktreeCwd = join(facts.worktreePath, 'project')
+    writeFileSync(join(worktreeCwd, 'file.txt'), 'worktree after\n', 'utf8')
+    const context = {
+      sessionId: 'git-worktree',
+      cwd: worktreeCwd,
+      agent: null,
+      worktree: { worktreePath: facts.worktreePath, repositoryRoot: facts.repositoryRoot, baseCommit: facts.baseCommit, kind: 'git' as const },
+    }
+    const againstBase = SmokeFileChanges.workingSnapshotOf(await manager.workingTree(context, null))
+    this.check('a Git worktree defaults to its persisted creation base',
+      againstBase.source.selected === 'worktree-base'
+      && againstBase.source.available.join() === 'worktree-base'
+      && againstBase.entries.some((entry) => entry.displayPath === 'file.txt'))
+  }
+
+  /**
+   * An SVN worktree below a human `.git` reads SVN BASE of its own checkout and its own store, and
+   * never the Git repository above it, which knows nothing of the session's base.
+   */
+  private async checkSvnWorktree(manager: FileChangesManager, store: GitCheckpointStore): Promise<void> {
+    const repository = join(this.root, 'svn-worktree-repository')
+    const owner = join(this.root, 'svn-worktree-owner')
+    const imported = join(this.root, 'svn-worktree-import')
+    mkdirSync(join(imported, 'src'), { recursive: true })
+    writeFileSync(join(imported, 'src', 'file.txt'), 'svn before\n', 'utf8')
+    this.run('svnadmin', this.root, ['create', repository])
+    const url = pathToFileURL(repository).href
+    this.run('svn', this.root, ['import', imported, url, '-m', 'SVN worktree base', '--non-interactive'])
+    this.run('svn', this.root, ['checkout', url, owner, '--non-interactive'])
+    this.run('svn', owner, ['propset', 'svn:global-ignores', '.worktrees', '.', '--non-interactive'])
+    this.run('git', owner, ['init'])
+    this.run('git', owner, ['config', 'user.name', 'File Changes Smoke'])
+    this.run('git', owner, ['config', 'user.email', 'file-changes-smoke@example.invalid'])
+    this.run('git', owner, ['add', 'src'])
+    this.run('git', owner, ['commit', '-m', 'The human Git beside the SVN copy'])
+    const checkout = await new SvnWorktreeManager(new SvnInvoker()).create({ ownerDir: owner, folder: '015-svn-source-smoke' })
+    if (!checkout.ok) throw new Error(`FAILED: ${checkout.code}: ${checkout.detail}`)
+    const worktreePath = checkout.value.worktreePath
+    writeFileSync(join(worktreePath, 'src', 'file.txt'), 'svn worktree after\n', 'utf8')
+    const context = {
+      sessionId: 'svn-worktree',
+      cwd: worktreePath,
+      agent: null,
+      worktree: { worktreePath, repositoryRoot: owner, baseCommit: `r${checkout.value.baseRevision}`, kind: 'svn' as const },
+    }
+    const plain = SmokeFileChanges.workingSnapshotOf(await manager.workingTree(context, null))
+    this.check('an SVN worktree below a human .git offers SVN BASE alone',
+      plain.source.selected === 'svn'
+      && plain.source.available.join() === 'svn'
+      && plain.entries.some((entry) => entry.displayPath === 'src/file.txt' && entry.status === 'modified'))
+    SmokeFileChanges.gitValue(await store.checkpoint(worktreePath, 'Checkpoint of the SVN worktree'))
+    const stored = SmokeFileChanges.workingSnapshotOf(await manager.workingTree(context, null))
+    this.check('and its own checkpoint store beside it, never the owner\'s Git',
+      stored.source.selected === 'svn' && stored.source.available.join() === 'svn,checkpoint')
   }
 
   private seedGit(): void {

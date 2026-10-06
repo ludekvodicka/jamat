@@ -4,8 +4,10 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import type { GitResult, VersioningMode } from '../../git/git.types'
+import type { GitResult, WorktreeFacts } from '../../git/git.types'
 import type { MergeStatus } from '../../git/gitMergeManager'
+import type { GitWorktreeManager } from '../../git/gitWorktreeManager'
+import type { StoreCutWorktrees } from '../../git/storeCutWorktrees'
 import type { SessionLife, SessionRecord } from '../records/sessionRecord.types'
 import { SessionRecordsStore } from '../records/sessionRecordsStore'
 import type { SessionCreateSpec, SessionsOpResult } from '../sessionManagerApi.types'
@@ -35,8 +37,6 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
     merged = false
     conflict = false
     mainConflict = false
-    /** Set only by the checkpoints-mode landing: the main copy took a commit of its own. */
-    mainDiverged = false
     /** What the MAIN copy answers, when a case needs it to differ from the worktree's. */
     mainStatus: MergeStatus | null = null
     failures = new Map<string, string>()
@@ -77,31 +77,9 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
       return this.answer('isMerged', this.merged)
     }
 
-    /** Like the real one, this commits the WORKTREE's own tree, so it is clean from here on. */
-    checkpointWorktree(worktreePath: string, message: string): Promise<GitResult<void>> {
-      this.calls.push(['checkpointWorktree', worktreePath, message])
-      if (!this.failures.has('checkpointWorktree'))
-        this.status = { ...this.status, dirty: false, dirtyTracked: false }
-      return this.answer('checkpointWorktree', undefined)
-    }
-
-    /** Like the real one, a checkpoint takes the main copy's uncommitted work into the store. */
-    checkpointMain(repositoryRoot: string, message: string): Promise<GitResult<void>> {
-      this.calls.push(['checkpointMain', repositoryRoot, message])
-      if (!this.failures.has('checkpointMain') && this.mainStatus !== null)
-        this.mainStatus = { ...this.mainStatus, dirty: false, dirtyTracked: false }
-      return this.answer('checkpointMain', undefined)
-    }
-
-    mergeToMain(
-      repositoryRoot: string,
-      branch: string,
-    ): Promise<GitResult<{ conflict: boolean; diverged?: boolean }>> {
+    mergeToMain(repositoryRoot: string, branch: string): Promise<GitResult<{ conflict: boolean }>> {
       this.calls.push(['mergeToMain', repositoryRoot, branch])
-      return this.answer('mergeToMain', {
-        conflict: this.mainConflict,
-        diverged: this.mainDiverged,
-      })
+      return this.answer('mergeToMain', { conflict: this.mainConflict })
     }
 
     removeWorktreeForced(repositoryRoot: string, worktreePath: string): Promise<GitResult<void>> {
@@ -109,12 +87,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
       return this.answer('removeWorktreeForced', undefined)
     }
 
-    deleteBranch(
-      repositoryRoot: string,
-      branch: string,
-      force: boolean,
-      _worktreePath: string,
-    ): Promise<GitResult<void>> {
+    deleteBranch(repositoryRoot: string, branch: string, force: boolean): Promise<GitResult<void>> {
       this.calls.push([`deleteBranch:${force ? 'force' : 'safe'}`, repositoryRoot, branch])
       return this.answer('deleteBranch', undefined)
     }
@@ -131,18 +104,41 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
     }
   }
 
+  /** A legacy worktree cut from the checkpoint store, when `legacy` says the disk holds one. */
+  class FakeStoreCut implements Pick<StoreCutWorktrees, 'recognize' | 'discard'> {
+    legacy = false
+    failure: string | null = null
+    readonly discarded: WorktreeFacts[] = []
+
+    recognize(): Promise<{ storeDir: string } | null> {
+      return Promise.resolve(this.legacy ? { storeDir: `${rootConst}\\.checkpoints\\store.git` } : null)
+    }
+
+    discard(worktree: WorktreeFacts): Promise<GitResult<void>> {
+      if (this.failure !== null) return Promise.resolve({ ok: false, code: 'locked', detail: this.failure })
+      this.discarded.push(worktree)
+      return Promise.resolve({ ok: true, value: undefined })
+    }
+  }
+
+  /** A worktree that measured three lines and one file against a base nobody moved. */
+  const measureConst: Pick<GitWorktreeManager, 'refreshDiff' | 'baseMoved'> = {
+    refreshDiff: () => Promise.resolve({ ok: true, value: { added: 2, removed: 1, changedFiles: 1, capturedAt: 5 } }),
+    baseMoved: () => Promise.resolve({ ok: true, value: false }),
+  }
+
   interface Harness {
     flow: WorktreeMergeFlow
     merge: FakeMerge
+    storeCut: FakeStoreCut
     store: SessionRecordsStore
     reports: string[]
+    /** Each call of `ended`, and whether the record still named a worktree at that moment. */
+    ended: { sessionId: string; worktree: boolean }[]
     record: () => SessionRecord | null
   }
 
-  async function harness(
-    overrides: Partial<SessionRecord> = {},
-    mode: VersioningMode = 'git',
-  ): Promise<Harness> {
+  async function harness(overrides: Partial<SessionRecord> = {}): Promise<Harness> {
     const root = mkdtempSync(join(tmpdir(), 'jamat-v3-merge-flow-'))
     created.push(root)
     const reports: string[] = []
@@ -152,16 +148,22 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
     })
     await store.put(recordOf(overrides))
     const merge = new FakeMerge()
+    const storeCut = new FakeStoreCut()
+    const ended: Harness['ended'] = []
     return {
       merge,
+      storeCut,
       store,
       reports,
+      ended,
       record: () => store.get('s1'),
       flow: new WorktreeMergeFlow({
         records: store,
         merge,
+        measure: measureConst,
+        storeCut,
         report: (message) => reports.push(message),
-        modeOf: () => mode,
+        ended: (sessionId) => { ended.push({ sessionId, worktree: store.get(sessionId)?.worktree !== undefined }) },
         newId: () => 'op-1',
         now: () => 1_000,
       }),
@@ -238,6 +240,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
     // Nothing is reported: `report` reaches the user as an app error, and a merge that worked is
     // not one. The worktree leaving the row is what says it is done.
     expect(it_.reports).toEqual([])
+    expect(it_.ended).toEqual([{ sessionId: 's1', worktree: false }])
   })
 
   /** The teardown removes the directory a live session is standing in. */
@@ -282,7 +285,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
       const it_ = await harness({ title: '007 - fix' })
       it_.merge.status = { inProgress: false, dirty: true, dirtyTracked: true, unresolved: false }
 
-      expect(await it_.flow.commitAndMerge('s1')).toEqual({ ok: true, value: undefined })
+      expect(await it_.flow.finish('s1')).toEqual({ ok: true, value: undefined })
       expect(it_.merge.calls[1]).toEqual(['commitAll', worktreeConst, 'Finalize session 007 - fix'])
       expect(it_.merge.names).toContain('mergeToMain')
       expect(it_.record()?.worktree).toBeUndefined()
@@ -292,7 +295,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
     it('commits nothing when the worktree was already clean', async () => {
       const it_ = await harness()
 
-      expect(await it_.flow.commitAndMerge('s1')).toEqual({ ok: true, value: undefined })
+      expect(await it_.flow.finish('s1')).toEqual({ ok: true, value: undefined })
       expect(it_.merge.names).not.toContain('commitAll')
       expect(it_.merge.names).toContain('mergeToMain')
     })
@@ -306,7 +309,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
       const it_ = await harness()
       it_.merge.status = { inProgress: true, dirty: true, dirtyTracked: true, unresolved: true }
 
-      const refusal = refusalOf(await it_.flow.commitAndMerge('s1'))
+      const refusal = refusalOf(await it_.flow.finish('s1'))
       expect(refusal.code).toBe('merge-conflict')
       expect(it_.merge.names).not.toContain('commitAll')
       expect(it_.record()?.worktreeMerge?.phase).toBe('resolving')
@@ -321,7 +324,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
       const it_ = await harness()
       it_.merge.status = { inProgress: false, dirty: true, dirtyTracked: true, unresolved: true }
 
-      const refusal = refusalOf(await it_.flow.commitAndMerge('s1'))
+      const refusal = refusalOf(await it_.flow.finish('s1'))
       expect(refusal.code).toBe('dirty')
       expect(it_.merge.names).not.toContain('commitAll')
       expect(it_.merge.names).not.toContain('mergeToMain')
@@ -334,7 +337,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
       it_.merge.status = { inProgress: false, dirty: true, dirtyTracked: true, unresolved: false }
       it_.merge.fails('commitAll', 'pre-commit hook refused')
 
-      await it_.flow.commitAndMerge('s1')
+      await it_.flow.finish('s1')
 
       expect(it_.record()?.worktreeMerge?.failure).toMatch(/pre-commit hook refused/)
     })
@@ -344,7 +347,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
       it_.merge.status = { inProgress: false, dirty: true, dirtyTracked: true, unresolved: false }
       it_.merge.fails('commitAll', 'pre-commit hook refused')
 
-      const refusal = refusalOf(await it_.flow.commitAndMerge('s1'))
+      const refusal = refusalOf(await it_.flow.finish('s1'))
       expect(refusal.detail).toMatch(/pre-commit hook refused/)
       expect(it_.merge.names).not.toContain('mergeIntoWorktree')
       expect(it_.record()?.worktree).toBeDefined()
@@ -354,15 +357,15 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
     // is idempotent and the record has no worktree left to act on.
     it('refuses a second press once the worktree is gone', async () => {
       const it_ = await harness()
-      await it_.flow.commitAndMerge('s1')
+      await it_.flow.finish('s1')
 
-      expect(refusalOf(await it_.flow.commitAndMerge('s1')).code).toBe('invalid-spec')
+      expect(refusalOf(await it_.flow.finish('s1')).code).toBe('invalid-spec')
     })
 
     it('refuses a session that is still running, as the merge does', async () => {
       const it_ = await harness({ life: 'live' })
 
-      expect(refusalOf(await it_.flow.commitAndMerge('s1')).code).toBe('live-refused')
+      expect(refusalOf(await it_.flow.finish('s1')).code).toBe('live-refused')
       expect(it_.merge.names).toEqual([])
     })
   })
@@ -439,6 +442,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
     expect(refusal.detail).toMatch(/run Merge again/)
     expect(it_.record()?.worktreeMerge?.phase).toBe('resolving')
     expect(it_.record()?.worktree).toBeTruthy()
+    expect(it_.ended).toEqual([])
   })
 
   it('finds a merge already in progress and goes straight back to resolving', async () => {
@@ -468,6 +472,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
       'removeWorktreeForced',
       'deleteBranch:safe',
     ])
+    expect(it_.ended).toEqual([{ sessionId: 's1', worktree: false }])
   })
 
   /**
@@ -498,6 +503,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
     expect(it_.record()?.worktreeMerge?.failure).toBe('main is locked')
     // And the worktree is still there, because nothing was torn down.
     expect(it_.record()?.worktree).toBeTruthy()
+    expect(it_.ended).toEqual([])
   })
 
   it('clears a previous failure when the same phase is attempted again', async () => {
@@ -551,7 +557,10 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
       const flow = new WorktreeMergeFlow({
         records: base.store,
         merge: base.merge,
+        measure: measureConst,
+        storeCut: base.storeCut,
         report: (message) => base.reports.push(message),
+        ended: (sessionId) => { base.ended.push({ sessionId, worktree: base.store.get(sessionId)?.worktree !== undefined }) },
         newId: () => 'resolve-1',
         now: () => 1_000,
         launchResolve: async (spec, marks) => {
@@ -676,6 +685,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
       // resolver under the session it ran for.
       expect(it_.record()?.worktreeMerge?.phase).toBe('resolving')
       expect(it_.record()?.worktreeMerge?.resolveSessionId).toBe('resolve-1')
+      expect(it_.ended).toEqual([])
     })
 
     /**
@@ -735,6 +745,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
       expect(await it_.flow.mergeSession('s1')).toEqual({ ok: true, value: undefined })
       expect(it_.record()?.worktree).toBeUndefined()
       expect(it_.record()?.worktreeMerge).toBeUndefined()
+      // Only the merge the resolver let through ends it; the two conflicted passes before it did not.
+      expect(it_.ended).toEqual([{ sessionId: 's1', worktree: false }])
     })
 
     it('takes the manual path for a shell session, which has no conversation to fork', async () => {
@@ -765,23 +777,25 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
   it('discards the worktree and the branch, saying nothing was merged', async () => {
     const it_ = await harness()
 
-    expect(await it_.flow.discardWorktree('s1')).toEqual({ ok: true, value: undefined })
+    expect(await it_.flow.discard('s1')).toEqual({ ok: true, value: undefined })
     expect(it_.merge.names).toEqual(['removeWorktreeForced', 'deleteBranch:force'])
     expect(it_.record()?.worktree).toBeUndefined()
     expect(it_.reports).toEqual([])
+    expect(it_.ended).toEqual([{ sessionId: 's1', worktree: false }])
   })
 
   it('names a branch it could not delete after the directory was already gone', async () => {
     const it_ = await harness()
     it_.merge.fails('deleteBranch', 'branch is checked out somewhere')
 
-    expect((await it_.flow.discardWorktree('s1')).ok).toBe(false)
+    expect((await it_.flow.discard('s1')).ok).toBe(false)
     expect(it_.reports.some((line) => line.includes('jamat/015-wizard'))).toBe(true)
+    expect(it_.ended).toEqual([])
   })
 
   it('refuses a discard on a live session, exactly as a merge is refused', async () => {
     const it_ = await harness({ life: 'live' })
-    expect(refusalOf(await it_.flow.discardWorktree('s1')).code).toBe('live-refused')
+    expect(refusalOf(await it_.flow.discard('s1')).code).toBe('live-refused')
   })
 
   /**
@@ -801,7 +815,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
       await it_.store.put({ ...recordOf(), sessionId: 'r1', life, resolveFor: 's1' })
 
       for (const answer of [
-        await it_.flow.discardWorktree('s1'),
+        await it_.flow.discard('s1'),
         await it_.flow.mergeSession('s1'),
       ]) {
         expect(refusalOf(answer).code).toBe('live-refused')
@@ -816,7 +830,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
     const it_ = await harness()
     it_.merge.fails('removeWorktreeForced', 'the worktree is locked')
 
-    expect((await it_.flow.discardWorktree('s1')).ok).toBe(false)
+    expect((await it_.flow.discard('s1')).ok).toBe(false)
     expect(it_.record()?.worktreeMerge?.phase).toBe('tearing-down')
     expect(it_.record()?.worktreeMerge?.failure).toBe('the worktree is locked')
     expect(it_.record()?.worktree).toBeTruthy()
@@ -830,163 +844,87 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
   it('finishes on the second press when the branch delete was what failed', async () => {
     const it_ = await harness()
     it_.merge.fails('deleteBranch', 'branch is checked out somewhere')
-    expect((await it_.flow.discardWorktree('s1')).ok).toBe(false)
+    expect((await it_.flow.discard('s1')).ok).toBe(false)
     expect(it_.record()?.worktree).toBeTruthy()
 
     it_.merge.failures.clear()
-    expect(await it_.flow.discardWorktree('s1')).toEqual({ ok: true, value: undefined })
+    expect(await it_.flow.discard('s1')).toEqual({ ok: true, value: undefined })
     expect(it_.record()?.worktree).toBeUndefined()
     expect(it_.record()?.worktreeMerge).toBeUndefined()
   })
 
-  describe('in checkpoints mode', () => {
-    const cleanConst: MergeStatus =
-      { inProgress: false, dirty: false, dirtyTracked: false, unresolved: false }
+  it('refuses a dirty main copy and never writes into it', async () => {
+    const it_ = await harness()
+    it_.merge.mainStatus = { inProgress: false, dirty: true, dirtyTracked: true, unresolved: false }
 
-    /**
-     * The checkpoint has to come BEFORE the base goes into the worktree. That merge is what makes
-     * the landing a fast-forward, so a checkpoint taken after it would move the main copy out from
-     * under the branch that had just absorbed it and every landing would come back diverged.
-     */
-    it('checkpoints the main copy before anything else moves', async () => {
-      const it_ = await harness({}, 'checkpoints')
+    const refused = await it_.flow.mergeSession('s1')
 
-      expect(await it_.flow.mergeSession('s1')).toEqual({ ok: true, value: undefined })
+    expect(refused).toMatchObject({ ok: false, code: 'dirty' })
+    expect(it_.merge.names).not.toContain('mergeToMain')
+  })
 
-      expect(it_.merge.names).toEqual([
-        'currentBranch',
-        'mergeStatus',
-        'checkpointWorktree',
-        'isMerged',
-        'checkpointMain',
-        'mergeIntoWorktree',
-        'mergeStatus',
-        'mergeToMain',
-        'removeWorktreeForced',
-        'deleteBranch:safe',
-      ])
-      expect(it_.merge.calls.find((call) => call[0] === 'checkpointMain'))
-        .toEqual(['checkpointMain', rootConst, 'Checkpoint in the main copy before merging jamat/015-wizard home'])
+  it('finishes Git worktrees only, and never runs git inside an SVN checkout', async () => {
+    const it_ = await harness({
+      worktree: { worktreePath: worktreeConst, branch: 'file:///repository/App', baseCommit: 'r41', repositoryRoot: rootConst, kind: 'svn' },
     })
 
-    /**
-     * The other half of the same idea, and the one that was wrong until 2026-08-28: a session leaves
-     * its work on DISK, not in a commit. Refusing here asked the user to do by hand the one thing
-     * this mode exists to do for them, and the bash twin got it worse still - it merged nothing and
-     * reported a landing anyway.
-     */
-    it('checkpoints a worktree holding uncommitted work instead of refusing it', async () => {
-      const it_ = await harness({}, 'checkpoints')
-      it_.merge.status = { inProgress: false, dirty: true, dirtyTracked: true, unresolved: false }
+    for (const answer of [
+      await it_.flow.mergeSession('s1'),
+      await it_.flow.finish('s1'),
+      await it_.flow.discard('s1'),
+    ])
+      expect(refusalOf(answer)).toEqual({ code: 'invalid-spec', detail: `${worktreeConst} is an SVN checkout, not a Git worktree` })
+    expect(it_.merge.names).toEqual([])
+    expect(it_.record()?.worktree).toBeDefined()
+  })
 
-      expect(await it_.flow.mergeSession('s1')).toEqual({ ok: true, value: undefined })
-      expect(it_.merge.calls.find((call) => call[0] === 'checkpointWorktree'))
-        .toEqual(['checkpointWorktree', worktreeConst, 'Checkpoint in the worktree on jamat/015-wizard before merging it home'])
-      expect(it_.merge.names).toContain('mergeToMain')
-    })
+  describe('a legacy worktree cut from the checkpoint store', () => {
+    it('is never merged back, by Merge or by Finish, and stays where it is', async () => {
+      const it_ = await harness()
+      it_.storeCut.legacy = true
 
-    /**
-     * The shortcut reads a BRANCH, and a branch is contained in the main line from the moment it is
-     * cut until its first commit lands. Asking it before the checkpoint is how a directory full of
-     * work gets torn down as "already merged".
-     */
-    it('checkpoints the worktree before asking whether the branch is already merged', async () => {
-      const it_ = await harness({}, 'checkpoints')
-      it_.merge.status = { inProgress: false, dirty: true, dirtyTracked: true, unresolved: false }
-      it_.merge.merged = true
-
-      expect(await it_.flow.mergeSession('s1')).toEqual({ ok: true, value: undefined })
-      expect(it_.merge.names.indexOf('checkpointWorktree'))
-        .toBeLessThan(it_.merge.names.indexOf('isMerged'))
-    })
-
-    /** A checkpoint that cannot be written stops the run; nothing is torn down on a guess. */
-    it('stops when the worktree cannot be checkpointed', async () => {
-      const it_ = await harness({}, 'checkpoints')
-      it_.merge.fails('checkpointWorktree', 'the store is locked')
-
-      expect(refusalOf(await it_.flow.mergeSession('s1')).detail).toMatch(/the store is locked/)
-      expect(it_.merge.names).not.toContain('mergeIntoWorktree')
-      expect(it_.merge.names).not.toContain('removeWorktreeForced')
-    })
-
-    /**
-     * The refusal this mode exists to remove. The user's own uncommitted work is a side of the merge
-     * now, not an obstacle, so a dirty main copy no longer stops a merge.
-     */
-    it('merges over a main copy holding uncommitted tracked work', async () => {
-      const it_ = await harness({}, 'checkpoints')
-      it_.merge.mainStatus = { ...cleanConst, dirty: true, dirtyTracked: true }
-
-      expect(await it_.flow.mergeSession('s1')).toEqual({ ok: true, value: undefined })
-
-      expect(it_.merge.names).toContain('mergeToMain')
-      expect(it_.record()?.worktree).toBeUndefined()
-    })
-
-    /** The same state in git mode is still a refusal, which is what keeps that mode unchanged. */
-    it('still refuses a dirty main copy in git mode', async () => {
-      const it_ = await harness({}, 'git')
-      it_.merge.mainStatus = { ...cleanConst, dirty: true, dirtyTracked: true }
-
-      const refused = await it_.flow.mergeSession('s1')
-
-      expect(refused).toMatchObject({ ok: false, code: 'dirty' })
-      expect(it_.merge.names).not.toContain('checkpointMain')
-      expect(it_.merge.names).not.toContain('mergeToMain')
-    })
-
-    /** Nothing was written and nothing is broken: checkpoint the new state and land on top of it. */
-    it('answers a main copy that moved on with run Merge again', async () => {
-      const it_ = await harness({}, 'checkpoints')
-      it_.merge.mainDiverged = true
-
-      const stopped = await it_.flow.mergeSession('s1')
-
-      expect(stopped).toMatchObject({ ok: false, code: 'merge-pending' })
-      if (stopped.ok) return
-      expect(stopped.detail).toContain('moved on while this merge ran')
-      expect(stopped.detail).toContain('run Merge again')
-      // The worktree is still there, because the second run is what finishes this.
-      expect(it_.record()?.worktree).toBeDefined()
-      expect(it_.merge.names).not.toContain('removeWorktreeForced')
-    })
-
-    /** A second run over the settled state converges, which is what makes that message true. */
-    it('converges on the next run once the main copy stands still', async () => {
-      const it_ = await harness({}, 'checkpoints')
-      it_.merge.mainDiverged = true
-      expect((await it_.flow.mergeSession('s1')).ok).toBe(false)
-
-      it_.merge.mainDiverged = false
-      expect(await it_.flow.mergeSession('s1')).toEqual({ ok: true, value: undefined })
-      expect(it_.record()?.worktree).toBeUndefined()
-    })
-
-    /** Conflicts still live in the worktree, where the agent that made them can be asked. */
-    it('leaves a conflict in the worktree exactly as git mode does', async () => {
-      const it_ = await harness({}, 'checkpoints')
-      it_.merge.conflict = true
-
-      const stopped = await it_.flow.mergeSession('s1')
-
-      expect(stopped.ok).toBe(false)
-      expect(it_.merge.names).toContain('checkpointMain')
-      expect(it_.merge.names).not.toContain('mergeToMain')
+      for (const answer of [await it_.flow.mergeSession('s1'), await it_.flow.finish('s1')]) {
+        expect(refusalOf(answer).code).toBe('invalid-spec')
+        expect(refusalOf(answer).detail).toMatch(/keep it or discard it/)
+      }
+      expect(it_.merge.names).toEqual([])
       expect(it_.record()?.worktree).toBeDefined()
     })
 
-    /** A checkpoint that could not be taken stops the run before the worktree is touched. */
-    it('stops when the main copy could not be checkpointed', async () => {
-      const it_ = await harness({}, 'checkpoints')
-      it_.merge.fails('checkpointMain', 'the store is locked')
+    it('is discarded through the store rather than through a project repository', async () => {
+      const it_ = await harness()
+      it_.storeCut.legacy = true
 
-      const failed = await it_.flow.mergeSession('s1')
+      expect(await it_.flow.discard('s1')).toEqual({ ok: true, value: undefined })
 
-      expect(failed.ok).toBe(false)
-      if (failed.ok) return
-      expect(failed.detail).toBe('the store is locked')
-      expect(it_.merge.names).not.toContain('mergeIntoWorktree')
+      expect(it_.storeCut.discarded.map((worktree) => worktree.worktreePath)).toEqual([worktreeConst])
+      expect(it_.merge.names).toEqual([])
+      expect(it_.record()?.worktree).toBeUndefined()
+      expect(it_.record()?.completed).toBe(true)
+      expect(it_.ended).toEqual([{ sessionId: 's1', worktree: false }])
+    })
+
+    it('is offered Keep and Discard once its facts were measured', async () => {
+      const it_ = await harness()
+      const worktree = it_.record()!.worktree!
+      expect(it_.flow.choicesOf(worktree)).toEqual(['merge', 'keep', 'discard'])
+
+      it_.storeCut.legacy = true
+      expect(await it_.flow.facts(worktree))
+        .toEqual({ diff: { added: 2, removed: 1, changedFiles: 1, capturedAt: 5 }, baseMoved: false })
+
+      expect(it_.flow.choicesOf(worktree)).toEqual(['keep', 'discard'])
+    })
+
+    it('keeps the record and says why when the store discard fails', async () => {
+      const it_ = await harness()
+      it_.storeCut.legacy = true
+      it_.storeCut.failure = 'the worktree is in use'
+
+      expect(refusalOf(await it_.flow.discard('s1')).code).toBe('locked')
+      expect(it_.record()?.worktree).toBeDefined()
+      expect(it_.record()?.worktreeMerge?.failure).toBe('the worktree is in use')
+      expect(it_.ended).toEqual([])
     })
   })
 })

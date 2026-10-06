@@ -27,6 +27,7 @@ import type {
   SetupPlan,
 } from './sessionLifecycle'
 import { OperationOutcomes } from './operationOutcomes'
+import { WorktreeCleanupPacing } from './worktreeCleanupPacing'
 
 /**
  * What the lifecycle around this flow does for it, kept narrow so the flow never sees the whole
@@ -287,7 +288,9 @@ export class SetupFlow {
     // Both come off a file the store checks field by field and never for agreement between fields, so
     // a waiting record that names no worktree is answered rather than resolved against nothing.
     const worktree = record.worktree
-    const projectRoot = record.directory.mode === 'project' ? record.directory.projectPath : null
+    const projectRoot = record.directory.mode === 'project' && worktree
+      ? SetupFlow.setupProjectOf(record.directory.projectPath, worktree)
+      : null
     if (!worktree || projectRoot === null)
       return {
         ok: false,
@@ -456,7 +459,7 @@ export class SetupFlow {
    * what follows is a launch under an id nothing has run yet, whatever the agent's launch mode says.
    */
   private rearmed(record: SessionRecord, operationId: string): SessionRecord {
-    return {
+    return WorktreeCleanupPacing.relaunched({
       ...record,
       life: 'starting',
       binding: null,
@@ -467,7 +470,7 @@ export class SetupFlow {
       endedReason: undefined,
       exitReason: undefined,
       stopRequested: undefined,
-    }
+    }, this.now())
   }
 
   /**
@@ -556,9 +559,8 @@ export class SetupFlow {
     })
     if (done && record.worktree)
       this.report(
-        `Session ${sessionId}: the setup failed (${reason}); its worktree `
-        + `${record.worktree.worktreePath} and the branch ${record.worktree.branch} are left in `
-        + `${record.worktree.repositoryRoot} for a retry or for you to remove`,
+        `Session ${sessionId}: the setup failed (${reason}); `
+        + `${OperationOutcomes.leftBehindOf(record.worktree)} for a retry or for you to remove`,
       )
     return done
   }
@@ -610,9 +612,21 @@ export class SetupFlow {
   ): Promise<SessionsOpResult<never> | null> {
     if (!spec.worktree) return null
     return this.setupAgreementFor(
-      OperationOutcomes.projectRootOf(spec.directory),
+      spec.worktree.owner ?? OperationOutcomes.projectRootOf(spec.directory),
       spec.acknowledgeSetup,
     )
+  }
+
+  /**
+   * Whose `.worktree.json` and dependencies a worktree installs. A Git worktree copies the whole
+   * repository, so the project inside it decides. An SVN worktree checks out its owner, which is
+   * the project or a member of it below, and only the owner is there to install.
+   */
+  static setupProjectOf(projectRoot: string, worktree: SessionRecordWorktree): string {
+    const kind = worktree.kind ?? 'git'
+    if (kind === 'git') return projectRoot
+    else if (kind === 'svn') return worktree.repositoryRoot
+    else throw new Error(`Unknown worktree kind: ${JSON.stringify(kind)}`)
   }
 
   /** The same question for the retry, which resolves afresh and can be answered by its caller too. */

@@ -67,4 +67,13 @@ export class CheckpointLayout {
 
   /** What a human `.git` beside the store must ignore, so neither shows up in the human's status. */
   static readonly humanExcludesConst: readonly string[] = ['/.checkpoints/', '/.worktrees/']
+
+  /**
+   * The worktree `<x>/.worktrees/<name>` a path lies in, the deepest one, or null. A worktree is a
+   * project of its own: its checkpoints go into its own store, which leaves with it, and never into
+   * the store of the main copy above it (`resolve_checkpoint_root` in commit-git.sh).
+   */
+  static worktreeRootOf(path: string): string | null {
+    return /^(.*[\\/]\.worktrees[\\/][^\\/]+)(?:[\\/]|$)/.exec(path)?.[1] ?? null
+  }
 }

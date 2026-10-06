@@ -4,6 +4,9 @@ import type {
   SessionActivity,
   SessionInfo,
   SessionSetupInfo,
+  SessionWorktreeInfo,
+  SvnFinishPhase,
+  SvnFinishResult,
 } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { type SessionAction, type SessionGlyph, SessionNodeState } from './sessionNodeState'
 
@@ -271,6 +274,73 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionNodeState', () => {
       phase: 'gluing' as 'resolving',
       startedAt: 0,
     })).toThrow('Unknown merge phase: "gluing"')
+  })
+
+  it('names the kind of a worktree and refuses one it does not know', () => {
+    expect(SessionNodeState.worktreeKindLabelOf('git')).toBe('Git')
+    expect(SessionNodeState.worktreeKindLabelOf('svn')).toBe('SVN')
+    expect(() => SessionNodeState.worktreeKindLabelOf('hg' as 'git'))
+      .toThrow('Unknown worktree kind: "hg"')
+  })
+
+  describe('the SVN finish marks', () => {
+    const worktree: SessionWorktreeInfo = {
+      worktreePath: 'C:/p/.worktrees/014-x',
+      branch: 'http://svn.local/p',
+      baseCommit: 'r10',
+      kind: 'svn',
+      choices: ['commit', 'keep', 'discard'],
+      diff: null,
+      baseMoved: false,
+    }
+    const outcomeOf = (result: SvnFinishResult, lines: readonly string[] = []): SessionWorktreeInfo => ({
+      ...worktree,
+      outcome: { result, revisions: [], main: 'none', worktree: 'kept', lines, at: 0 },
+    })
+
+    it('reads every finish phase and names the review scope', () => {
+      expect(SessionNodeState.finishBadgeOf(undefined)).toBeNull()
+      for (const phase of ['updating', 'reviewing', 'main-updating', 'removing'] as const)
+        expect(SessionNodeState.finishBadgeOf({ phase })).toBe(phase)
+      expect(SessionNodeState.finishTitleOf({ phase: 'reviewing', scopeRoot: 'C:/p/.worktrees/014-x/shared' }))
+        .toBe('Waiting for the commit review of C:/p/.worktrees/014-x/shared')
+      expect(SessionNodeState.finishTitleOf({ phase: 'removing' })).toBe('Removing the worktree')
+      expect(() => SessionNodeState.finishBadgeOf({ phase: 'merging' as SvnFinishPhase }))
+        .toThrow('Unknown finish phase: "merging"')
+    })
+
+    it('reads every finish result, and a running finish outranks the last outcome', () => {
+      const results = ['committed', 'partial', 'not-committed', 'out-of-date', 'updated', 'conflict',
+        'nothing', 'failed', 'interrupted'] as const
+      for (const result of results)
+        expect(SessionNodeState.outcomeBadgeOf(outcomeOf(result))).toBe(result)
+      expect(SessionNodeState.outcomeBadgeOf(worktree)).toBeNull()
+      expect(SessionNodeState.outcomeBadgeOf(undefined)).toBeNull()
+      expect(SessionNodeState.outcomeBadgeOf({ ...outcomeOf('partial'), finish: { phase: 'updating' } }))
+        .toBeNull()
+      expect(() => SessionNodeState.outcomeBadgeOf(outcomeOf('merged' as SvnFinishResult)))
+        .toThrow('Unknown finish result: "merged"')
+    })
+
+    it('titles an outcome with its own lines, verbatim', () => {
+      expect(SessionNodeState.outcomeTitleOf(outcomeOf('partial', ['PARTIAL: r12 left 1 change(s) in x', '  a.ts'])))
+        .toBe('PARTIAL: r12 left 1 change(s) in x\n  a.ts')
+      expect(SessionNodeState.outcomeTitleOf(outcomeOf('nothing'))).toBe('The last finish ended nothing')
+    })
+
+    it('says why a worktree stayed once the removal after the end judged it, and nothing before', () => {
+      const kept = { ...worktree, cleanup: { phase: 'kept' as const, reason: '2 changes', summary: 'kept: 2 changes' } }
+      const waiting = { ...worktree, cleanup: { phase: 'pending' as const, reason: 'in use', summary: 'waiting to remove (in use)' } }
+      const asked = { ...worktree, cleanup: { phase: 'pending' as const, summary: 'removed once the session has ended' } }
+      expect(SessionNodeState.cleanupBadgeOf(kept)).toBe('kept')
+      expect(SessionNodeState.cleanupBadgeOf(waiting)).toBe('pending')
+      expect(SessionNodeState.cleanupBadgeOf(asked)).toBeNull()
+      expect(SessionNodeState.cleanupBadgeOf(worktree)).toBeNull()
+      expect(SessionNodeState.cleanupBadgeOf(undefined)).toBeNull()
+      expect(SessionNodeState.cleanupBadgeOf({ ...kept, finish: { phase: 'removing' } })).toBeNull()
+      expect(() => SessionNodeState.cleanupBadgeOf({ ...kept, cleanup: { ...kept.cleanup, phase: 'gone' as 'kept' } }))
+        .toThrow('Unknown cleanup phase: "gone"')
+    })
   })
 
   it('counts a starting session as live and an ended one as not', () => {

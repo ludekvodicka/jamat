@@ -2,6 +2,7 @@ import type {
   OrphanInfo,
   SessionInfo,
   SessionsSnapshot,
+  SvnFinishResult,
 } from './sessionManagerApi.types'
 import { JsonShape } from '../shared/jsonShape'
 
@@ -19,6 +20,9 @@ import { JsonShape } from '../shared/jsonShape'
  * reads that throw rather than draw nothing.
  */
 export class SessionsSnapshotValidation {
+  private static readonly finishResultsConst: readonly string[] = ['committed', 'partial', 'not-committed',
+    'out-of-date', 'updated', 'conflict', 'nothing', 'failed', 'interrupted'] satisfies readonly SvnFinishResult[]
+
   static parse(value: unknown): SessionsSnapshot | null {
     const snapshot = JsonShape.record(value)
     if (snapshot === null
@@ -29,7 +33,18 @@ export class SessionsSnapshotValidation {
       || !SessionsSnapshotValidation.every(snapshot.sessions, SessionsSnapshotValidation.session)
       || !SessionsSnapshotValidation.every(snapshot.orphans, SessionsSnapshotValidation.orphan))
       return null
-    return value as SessionsSnapshot
+    const parsed = value as SessionsSnapshot
+    // A peer older than SVN worktrees sends no kind, and every worktree it has is a Git one. Nor
+    // does it send the Finish choices, which its library composed by kind alone.
+    for (const session of parsed.sessions) {
+      if (session.worktree === undefined) continue
+      if (session.worktree.kind === undefined) session.worktree.kind = 'git'
+      if (session.worktree.choices === undefined)
+        session.worktree.choices = session.worktree.kind === 'svn'
+          ? ['commit', 'keep', 'discard']
+          : ['merge', 'keep', 'discard']
+    }
+    return parsed
   }
 
   private static host(value: unknown): boolean {
@@ -68,6 +83,7 @@ export class SessionsSnapshotValidation {
       && (session.compacting === undefined || (session.compacting === true
         && session.activity === 'working' && session.activityDetail === undefined))
       && SessionsSnapshotValidation.worktree(session.worktree)
+      && SessionsSnapshotValidation.retiredWorktree(session.retiredWorktree)
       && Array.isArray(session.admits)
       && session.admits.every((operation) => typeof operation === 'string')
     // `outputSeq` and `lastOutputAt` were checked here until 2026-08-24 and left `SessionInfo` in
@@ -135,7 +151,13 @@ export class SessionsSnapshotValidation {
       || !SessionsSnapshotValidation.filledText(worktree.worktreePath)
       || !SessionsSnapshotValidation.filledText(worktree.branch)
       || !SessionsSnapshotValidation.filledText(worktree.baseCommit)
-      || typeof worktree.baseMoved !== 'boolean')
+      || typeof worktree.baseMoved !== 'boolean'
+      || (worktree.kind !== undefined && worktree.kind !== 'svn' && worktree.kind !== 'git')
+      || (worktree.choices !== undefined
+        && !SessionsSnapshotValidation.every(worktree.choices, SessionsSnapshotValidation.finishChoice))
+      || !SessionsSnapshotValidation.worktreeFinish(worktree.finish)
+      || !SessionsSnapshotValidation.worktreeOutcome(worktree.outcome)
+      || !SessionsSnapshotValidation.worktreeCleanup(worktree.cleanup))
       return false
     if (worktree.diff === null) return true
     const diff = JsonShape.record(worktree.diff)
@@ -144,6 +166,50 @@ export class SessionsSnapshotValidation {
       && SessionsSnapshotValidation.nonNegativeInteger(diff.removed)
       && SessionsSnapshotValidation.nonNegativeInteger(diff.changedFiles)
       && SessionsSnapshotValidation.nonNegativeInteger(diff.capturedAt)
+  }
+
+  private static finishChoice(value: unknown): boolean {
+    return value === 'commit' || value === 'merge' || value === 'keep' || value === 'discard'
+  }
+
+  /** The tree draws a badge per phase and per result, and a value it does not know throws there. */
+  private static worktreeFinish(value: unknown): boolean {
+    if (value === undefined) return true
+    const finish = JsonShape.record(value)
+    return finish !== null
+      && (finish.phase === 'updating' || finish.phase === 'reviewing'
+        || finish.phase === 'main-updating' || finish.phase === 'removing')
+      && (finish.scopeRoot === undefined || typeof finish.scopeRoot === 'string')
+  }
+
+  private static worktreeOutcome(value: unknown): boolean {
+    if (value === undefined) return true
+    const outcome = JsonShape.record(value)
+    return outcome !== null
+      && SessionsSnapshotValidation.finishResultsConst.includes(outcome.result as string)
+      && SessionsSnapshotValidation.every(outcome.revisions, (revision) => typeof revision === 'string')
+      && typeof outcome.main === 'string'
+      && (outcome.worktree === 'removed' || outcome.worktree === 'kept'
+        || outcome.worktree === 'in-use' || outcome.worktree === 'undeleted')
+      && SessionsSnapshotValidation.every(outcome.lines, (line) => typeof line === 'string')
+      && typeof outcome.at === 'number'
+  }
+
+  private static worktreeCleanup(value: unknown): boolean {
+    if (value === undefined) return true
+    const cleanup = JsonShape.record(value)
+    return cleanup !== null
+      && (cleanup.phase === 'pending' || cleanup.phase === 'kept')
+      && (cleanup.reason === undefined || typeof cleanup.reason === 'string')
+      && typeof cleanup.summary === 'string'
+  }
+
+  private static retiredWorktree(value: unknown): boolean {
+    if (value === undefined) return true
+    const retired = JsonShape.record(value)
+    return retired !== null
+      && SessionsSnapshotValidation.filledText(retired.worktreePath)
+      && SessionsSnapshotValidation.every(retired.revisions, (revision) => typeof revision === 'string')
   }
 
   private static every(value: unknown, holds: (item: unknown) => boolean): boolean {

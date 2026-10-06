@@ -378,6 +378,12 @@
   font-weight: 600;
   overflow-wrap: anywhere;
 }
+/* A path, so it may break anywhere. */
+.jamat-sessions__tooltip-worktree {
+  margin-top: var(--space-1);
+  color: var(--color-text-3);
+  overflow-wrap: anywhere;
+}
 /* A note is prose somebody wrote, so its own line breaks are kept and a long one wraps. */
 .jamat-sessions__tooltip-note {
   margin: var(--space-1) 0 0;
@@ -426,6 +432,10 @@
   gap: 3px;
   font-size: var(--fs-chip);
   color: var(--color-text-4);
+}
+.jamat-sessions__worktree-mark {
+  font-weight: 700;
+  letter-spacing: 0.06em;
 }
 .jamat-sessions__base {
   padding: 0 3px;
@@ -484,6 +494,36 @@
 }
 .jamat-sessions__merge--merge-failed {
   color: var(--color-danger);
+}
+/* An SVN finish: its phase while it runs, then how it ended, in the merge badge's place and shape. */
+.jamat-sessions__finish {
+  font-size: var(--fs-chip);
+  color: var(--color-accent);
+}
+.jamat-sessions__finish--committed {
+  color: var(--color-ok);
+}
+.jamat-sessions__finish--nothing,
+.jamat-sessions__finish--not-committed {
+  color: var(--color-text-4);
+}
+.jamat-sessions__finish--partial,
+.jamat-sessions__finish--out-of-date,
+.jamat-sessions__finish--updated,
+.jamat-sessions__finish--conflict,
+.jamat-sessions__finish--interrupted {
+  color: var(--color-attention);
+}
+.jamat-sessions__finish--failed {
+  color: var(--color-danger);
+}
+/* Why a worktree outlived its session: kept with changes needs a person, a wait clears by itself. */
+.jamat-sessions__cleanup {
+  font-size: var(--fs-chip);
+  color: var(--color-text-4);
+}
+.jamat-sessions__cleanup--kept {
+  color: var(--color-attention);
 }
 /* Uncommitted work, in the slot the two dots used to sit in. As quiet as the agent mark beside it:
    it is worth noticing while reading a row, never worth looking at first. */

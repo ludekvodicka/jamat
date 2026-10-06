@@ -16,6 +16,9 @@ import type {
   SessionSetupAgreement,
   SessionsOpResult,
   SessionsSnapshot,
+  SessionWorktreeCleanupPhase,
+  SvnFinishPhase,
+  SvnFinishResult,
 } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type {
   RemoteConnectionsSnapshot,
@@ -1508,7 +1511,13 @@ function SessionRow(props: {
           {node.title}
         </button>
         {tooltip.open && (
-          <SessionRowTooltip id={tooltip.id} anchor={tooltip.anchor} title={node.title} note={node.note} />
+          <SessionRowTooltip
+            id={tooltip.id}
+            anchor={tooltip.anchor}
+            title={node.title}
+            note={node.note}
+            worktree={node.worktreeLine}
+          />
         )}
         <Badges badges={node.badges} />
         <Pills glyph={node.glyph} badges={node.badges} />
@@ -1547,6 +1556,8 @@ function SessionRow(props: {
             {SessionsTreeGlyphs.mergeTextOf(node.merge)}
           </span>
         )}
+        {node.badges.worktree !== null && <WorktreeFinishMark worktree={node.badges.worktree} />}
+        {node.badges.worktree !== null && <WorktreeCleanupMark worktree={node.badges.worktree} />}
         <span className="jamat-sessions__actions">
           {inlineActions.map((action) => (
             <ActionButton
@@ -1676,16 +1687,21 @@ function ExitPill(props: {
     throw new Error(`Unknown session outcome: ${JSON.stringify(outcome)}`)
 }
 
-/** No diff drawn at all until one has been measured: `+0 -0` is a measurement, absence is not. */
+/**
+ * Drawn for every worktree session of either kind, so a row says where it runs before it has been
+ * measured. No diff drawn at all until one has been: `+0 -0` is a measurement, absence is not.
+ */
 function WorktreeMark(props: { worktree: WorktreeBadge }): React.JSX.Element {
   const { worktree } = props
-  // The branch alone left the numbers beside it unexplained: they are lines against the base the
-  // worktree was cut from, not a count of anything on screen.
-  const title = worktree.diff === null
-    ? `Branch ${worktree.branch}`
-    : `Branch ${worktree.branch} - +${worktree.diff.added} -${worktree.diff.removed} lines vs base`
+  const title = SessionsTreeGlyphs.worktreeTitleOf(worktree)
   return (
-    <span className="jamat-sessions__worktree" title={title} aria-label={title}>
+    <span
+      className="jamat-sessions__worktree"
+      data-worktree-kind={worktree.kind}
+      title={title}
+      aria-label={title}
+    >
+      <span className="jamat-sessions__worktree-mark">WT</span>
       {worktree.diff !== null && (
         <span>{`+${worktree.diff.added} -${worktree.diff.removed}`}</span>
       )}
@@ -1700,6 +1716,50 @@ function WorktreeMark(props: { worktree: WorktreeBadge }): React.JSX.Element {
       )}
     </span>
   )
+}
+
+/** Why a worktree is still there after its session's end, beside how its last finish ended. */
+function WorktreeCleanupMark(props: { worktree: WorktreeBadge }): React.JSX.Element | null {
+  const { cleanup } = props.worktree
+  if (cleanup === null) return null
+  return (
+    <span
+      className={`jamat-sessions__cleanup jamat-sessions__cleanup--${cleanup.phase}`}
+      data-cleanup={cleanup.phase}
+      title={cleanup.title}
+      aria-label={cleanup.title}
+    >
+      {SessionsTreeGlyphs.cleanupTextOf(cleanup.phase)}
+    </span>
+  )
+}
+
+/** What a running SVN finish is doing, or else how the last one ended; nothing for neither. */
+function WorktreeFinishMark(props: { worktree: WorktreeBadge }): React.JSX.Element | null {
+  const { finish, outcome } = props.worktree
+  if (finish !== null)
+    return (
+      <span
+        className={`jamat-sessions__finish jamat-sessions__finish--${finish.phase}`}
+        data-finish={finish.phase}
+        title={finish.title}
+        aria-label={finish.title}
+      >
+        {SessionsTreeGlyphs.finishTextOf(finish.phase)}
+      </span>
+    )
+  if (outcome !== null)
+    return (
+      <span
+        className={`jamat-sessions__finish jamat-sessions__finish--${outcome.result}`}
+        data-finish-outcome={outcome.result}
+        title={outcome.title}
+        aria-label={outcome.title}
+      >
+        {SessionsTreeGlyphs.outcomeTextOf(outcome.result)}
+      </span>
+    )
+  return null
 }
 
 /** The name comes with the click: acting on a row shows it, and a tab is opened under a name. */
@@ -1968,6 +2028,49 @@ class RemoteComputerMenu {
 }
 
 class SessionsTreeGlyphs {
+  /** The numbers beside the mark are lines against the worktree's base, so the title says so. */
+  static worktreeTitleOf(worktree: WorktreeBadge): string {
+    const lines = worktree.diff === null
+      ? ''
+      : ` - +${worktree.diff.added} -${worktree.diff.removed} lines vs base`
+    if (worktree.kind === 'git') return `Git worktree ${worktree.path}, branch ${worktree.branch}${lines}`
+    else if (worktree.kind === 'svn')
+      return `SVN worktree ${worktree.path}, a checkout of ${worktree.branch}${lines}`
+    else
+      throw new Error(`Unknown worktree kind: ${JSON.stringify(worktree.kind satisfies never)}`)
+  }
+
+  static finishTextOf(phase: SvnFinishPhase): string {
+    if (phase === 'updating') return 'updating…'
+    else if (phase === 'reviewing') return 'reviewing…'
+    else if (phase === 'main-updating') return 'updating main…'
+    else if (phase === 'removing') return 'removing…'
+    else
+      throw new Error(`Unknown finish phase: ${JSON.stringify(phase satisfies never)}`)
+  }
+
+  static outcomeTextOf(result: SvnFinishResult): string {
+    if (result === 'committed') return 'committed'
+    else if (result === 'partial') return 'partly committed'
+    else if (result === 'not-committed') return 'not committed'
+    else if (result === 'out-of-date') return 'out of date'
+    else if (result === 'updated') return 'updated'
+    else if (result === 'conflict') return 'update conflict'
+    else if (result === 'nothing') return 'nothing to commit'
+    else if (result === 'failed') return 'finish failed'
+    else if (result === 'interrupted') return 'finish interrupted'
+    else
+      throw new Error(`Unknown finish result: ${JSON.stringify(result satisfies never)}`)
+  }
+
+  /** Short on purpose; the title carries the reason and what to do about it. */
+  static cleanupTextOf(phase: SessionWorktreeCleanupPhase): string {
+    if (phase === 'kept') return 'kept'
+    else if (phase === 'pending') return 'waiting to remove'
+    else
+      throw new Error(`Unknown cleanup phase: ${JSON.stringify(phase satisfies never)}`)
+  }
+
   /** One word, the same shape the install badge beside it uses. */
   static mergeTextOf(merge: SessionMergeBadge): string {
     if (merge === 'merging') return 'merging…'

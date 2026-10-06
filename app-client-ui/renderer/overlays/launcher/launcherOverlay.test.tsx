@@ -1457,7 +1457,7 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
       fireEvent.keyDown(card(view.container), { key: 'w' })
       expect(chosen(view.container)).toContain('Worktree')
       expect(view.container.querySelector('.jamat-launcher-create__note')?.textContent)
-        .toContain('jamat/015')
+        .toMatch(/^Runs in .*\.worktrees.015/)
 
       fireEvent.keyDown(card(view.container), { key: 'w' })
       expect(chosen(view.container)).toContain('None')

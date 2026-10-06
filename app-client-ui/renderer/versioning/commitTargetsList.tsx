@@ -63,6 +63,20 @@ export class CommitTargets {
   static selected(entries: readonly FileChangeEntry[], checked: ReadonlySet<string>): readonly FileChangeEntry[] {
     return entries.filter((entry) => checked.has(entry.fileId) || CommitTargets.requiredParent(entry, entries, checked))
   }
+
+  /**
+   * Directories and files in one alphabetical order, compared segment by segment. A whole-path
+   * localeCompare puts `.` before `/`, so `foo.ts` would land between `foo/` and `foo/x.ts`.
+   */
+  static byPath(left: FileChangeEntry, right: FileChangeEntry): number {
+    const leftSegments = left.displayPath.split(/[\\/]/)
+    const rightSegments = right.displayPath.split(/[\\/]/)
+    for (let index = 0; index < Math.min(leftSegments.length, rightSegments.length); index++) {
+      const order = leftSegments[index]!.localeCompare(rightSegments[index]!)
+      if (order !== 0) return order
+    }
+    return leftSegments.length - rightSegments.length
+  }
 }
 
 export function CommitTargetsList(props: {
@@ -82,8 +96,7 @@ export function CommitTargetsList(props: {
   const externalOf = new Map<string, FileChangesWorkingTreeSnapshot['externalRoots'][number]>()
   for (const root of [...props.snapshot.externalRoots].sort((left, right) => left.path.length - right.path.length))
     for (const id of root.fileIds) externalOf.set(id, root)
-  const entries = [...props.snapshot.entries].sort((left, right) =>
-    Number(right.nodeKind === 'directory') - Number(left.nodeKind === 'directory') || left.displayPath.localeCompare(right.displayPath))
+  const entries = [...props.snapshot.entries].sort(CommitTargets.byPath)
   const mainEntries = entries.filter((entry) => !externalOf.has(entry.fileId))
   const menuEntry = entries.find((entry) => entry.path === menu?.path)
   const activePath = entries.some((entry) => entry.path === selectedPath) ? selectedPath : mainEntries[0]?.path ?? entries[0]?.path

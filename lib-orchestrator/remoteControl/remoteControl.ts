@@ -7,14 +7,17 @@ import type {
 } from '../projectManager/projectManagerApi.types'
 import type {
   SessionColorName,
+  SessionCreated,
   SessionCreateSpec,
   SessionDetailsSaved,
   SessionDetailsUpdate,
   SessionGroup,
   SessionInfo,
   SessionSetupAgreement,
+  SessionsOpErrorCode,
   SessionsOpResult,
   SessionsSnapshot,
+  SessionWorktreeState,
 } from '../sessionManager/sessionManagerApi.types'
 import { ErrorText } from '../shared/errorText'
 import { RemoteControlOperationStore } from './remoteControlOperationStore'
@@ -60,12 +63,14 @@ export interface RemoteControlProjectsPort {
 
 export interface RemoteControlSessionsPort {
   snapshot(): SessionsSnapshot
-  createSession(
-    spec: SessionCreateSpec,
-  ): Promise<SessionsOpResult<{ sessionId: string; tabTitle: string }>>
+  createSession(spec: SessionCreateSpec): Promise<SessionsOpResult<SessionCreated>>
   reopenSession(sessionId: string): Promise<SessionsOpResult>
-  finalizeSession(sessionId: string): Promise<SessionsOpResult>
+  finalizeSession(sessionId: string, options?: { expect?: 'stop' }): Promise<SessionsOpResult>
   removeSession(sessionId: string): Promise<SessionsOpResult>
+  discardWorktree(sessionId: string): Promise<SessionsOpResult>
+  retrySetup(sessionId: string, acknowledgeSetup?: string): Promise<SessionsOpResult>
+  requestWorktreeCleanup(sessionId: string): Promise<SessionsOpResult>
+  worktreeOf(sessionId: string): Promise<SessionsOpResult<SessionWorktreeState>>
   /**
    * The same setter the details dialog uses. It is on the sessions port and the group beside it is
    * not, because a colour lives on the session RECORD, which this library owns, while a group lives
@@ -314,8 +319,22 @@ export class RemoteControl {
     } else if (request.operation === 'sessions.finalize') {
       const session = this.session(request.body.session)
       if (!session.ok) return session
-      return this.sessionMutation(session.value.sessionId, () =>
-        this.deps.sessions.finalizeSession(session.value.sessionId))
+      const expect = request.body.expect
+      const result = await this.deps.sessions.finalizeSession(
+        session.value.sessionId,
+        expect === undefined ? undefined : { expect },
+      )
+      // The next step is not what the caller expected: its request conflicts with the session's state.
+      if (!result.ok && result.code === 'live-refused')
+        return RemoteControl.error('conflict', result.detail, { sourceCode: result.code })
+      if (!result.ok) return RemoteControl.sessionError(result)
+      return RemoteControl.success({ sessionId: session.value.sessionId })
+    } else if (request.operation === 'sessions.worktree') {
+      const session = this.session(request.body.session)
+      if (!session.ok) return session
+      const state = await this.deps.sessions.worktreeOf(session.value.sessionId)
+      if (!state.ok) return RemoteControl.sessionError(state)
+      return RemoteControl.success(state.value)
     } else if (request.operation === 'sessions.remove') {
       const session = this.session(request.body.session)
       if (!session.ok) return session
@@ -328,6 +347,21 @@ export class RemoteControl {
         return RemoteControl.error('conflict', result.detail, { sourceCode: result.code })
       if (!result.ok) return RemoteControl.sessionError(result)
       return RemoteControl.success({ sessionId: session.value.sessionId })
+    } else if (request.operation === 'sessions.discardWorktree') {
+      const session = this.session(request.body.session)
+      if (!session.ok) return session
+      return this.worktreeMutation(session.value.sessionId, () =>
+        this.deps.sessions.discardWorktree(session.value.sessionId))
+    } else if (request.operation === 'sessions.cleanupWorktree') {
+      const session = this.session(request.body.session)
+      if (!session.ok) return session
+      return this.worktreeMutation(session.value.sessionId, () =>
+        this.deps.sessions.requestWorktreeCleanup(session.value.sessionId))
+    } else if (request.operation === 'sessions.retrySetup') {
+      const session = this.session(request.body.session)
+      if (!session.ok) return session
+      return this.sessionMutation(session.value.sessionId, () =>
+        this.deps.sessions.retrySetup(session.value.sessionId, request.body.acknowledgeSetup))
     } else if (request.operation === 'sessions.transcript') {
       const session = this.session(request.body.session)
       if (!session.ok) return session
@@ -529,6 +563,21 @@ export class RemoteControl {
     return RemoteControl.success({ sessionId })
   }
 
+  /**
+   * A running session or a finish in progress stands in the way of a worktree's ending: a conflict
+   * the caller waits out or resolves, as for `sessions.remove`.
+   */
+  private async worktreeMutation(
+    sessionId: string,
+    mutate: () => Promise<SessionsOpResult>,
+  ): Promise<RemoteControlDispatchResult> {
+    const result = await mutate()
+    if (!result.ok && (result.code === 'live-refused' || result.code === 'merge-pending'))
+      return RemoteControl.error('conflict', result.detail, { sourceCode: result.code })
+    if (!result.ok) return RemoteControl.sessionError(result)
+    return RemoteControl.success({ sessionId })
+  }
+
   private session(
     selector: RemoteControlSessionSelector,
   ): RemoteControlStepResult<SessionInfo> {
@@ -562,13 +611,24 @@ export class RemoteControl {
     setup?: SessionSetupAgreement
   }): RemoteControlDispatchResult {
     return RemoteControl.error(
-      result.code === 'not-found' ? 'not-found' : 'operation-failed',
+      RemoteControl.remoteCodeOf(result.code),
       result.detail,
       {
         sourceCode: result.code,
         ...(result.setup === undefined ? {} : { setup: result.setup }),
       },
     )
+  }
+
+  /**
+   * A worktree whose state stands in the way of the request is a conflict the caller resolves: the
+   * detail carries the finish's own lines, and `sourceCode` the library's code. Every other code the
+   * library names is a failure of the operation.
+   */
+  private static remoteCodeOf(code: SessionsOpErrorCode): RemoteControlError['code'] {
+    if (code === 'not-found') return 'not-found'
+    if (code === 'worktree-updated' || code === 'worktree-conflict' || code === 'worktree-removed') return 'conflict'
+    return 'operation-failed'
   }
 
   private static deliverRefusal(

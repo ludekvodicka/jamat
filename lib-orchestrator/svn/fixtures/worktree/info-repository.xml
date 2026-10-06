@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<info>
+<entry
+   kind="dir"
+   path="repository"
+   revision="7">
+<url>{REPO}</url>
+<relative-url>^/</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<commit
+   revision="7">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+</info>

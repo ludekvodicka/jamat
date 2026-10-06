@@ -445,6 +445,176 @@ describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
     })
   })
 
+  describe('the fields an SVN worktree and its finish persist', () => {
+    const svnWorktree = {
+      worktreePath: 'C:\\repo\\.worktrees\\014-fix',
+      branch: 'https://svn.example.test/repos/app/trunk',
+      baseCommit: 'r41',
+      repositoryRoot: 'C:\\repo',
+      kind: 'svn' as const,
+      directoryId: '12:34:5678',
+    }
+
+    it('round-trips an SVN worktree, its outcome and a tombstone through a fresh load', async () => {
+      const context = harness()
+      const store = await context.load()
+      const outcome = {
+        result: 'committed' as const,
+        revisions: ['https://svn.example.test/repos/app:r42'],
+        main: 'merged:1' as const,
+        worktree: 'kept' as const,
+        lines: ['MAIN MERGED src/a.ts'],
+        at: 9,
+      }
+      const tombstone = {
+        worktreePath: 'C:\\repo\\.worktrees\\013-old',
+        kind: 'svn' as const,
+        revisions: ['https://svn.example.test/repos/app:r40'],
+        removedAt: 8,
+      }
+
+      expect(await store.put(record('a', { worktree: svnWorktree, worktreeOutcome: outcome }))).toBe(true)
+      expect(await store.put(record('b', { retiredWorktree: tombstone, completed: true }))).toBe(true)
+
+      const reloaded = await context.load()
+      expect(reloaded.get('a')?.worktree).toEqual(svnWorktree)
+      expect(reloaded.get('a')?.worktreeOutcome).toEqual(outcome)
+      expect(reloaded.get('b')?.retiredWorktree).toEqual(tombstone)
+      expect(context.reports).toEqual([])
+    })
+
+    it('reads a worktree without a kind, which every older record is', async () => {
+      const context = harness({ schemaVersion: 1, savedAt: 5, records: [record('a', {
+        worktree: { worktreePath: 'C:\\wt', branch: 'jamat/fix', baseCommit: 'abc', repositoryRoot: 'C:\\repo' },
+      })] })
+
+      const store = await context.load()
+
+      expect(store.get('a')?.worktree?.kind).toBeUndefined()
+      expect(context.reports).toEqual([])
+    })
+
+    it('refuses a worktree kind it does not know, in both directions', async () => {
+      const context = harness({ schemaVersion: 1, savedAt: 5, records: [
+        record('a', { worktree: { ...svnWorktree, kind: 'hg' } } as unknown as Partial<SessionRecord>),
+        record('b'),
+      ] })
+      const store = await context.load()
+
+      expect(store.list().map((entry) => entry.sessionId)).toEqual(['b'])
+      expect(context.reports[0]).toContain('unknown worktree kind')
+      await expect(store.put(record('c', {
+        worktree: { ...svnWorktree, kind: 'hg' },
+      } as unknown as Partial<SessionRecord>))).rejects.toThrow(/unknown worktree kind/)
+      await expect(store.put(record('c', {
+        retiredWorktree: { worktreePath: 'C:\\wt', kind: 'hg', revisions: [], removedAt: 1 },
+      } as unknown as Partial<SessionRecord>))).rejects.toThrow(/unknown retired worktree kind/)
+    })
+
+    it('refuses a finish phase, result or main answer that is not in its closed set', async () => {
+      const store = await harness().load()
+      const outcome = { result: 'committed', revisions: [], main: 'none', worktree: 'kept', lines: [], at: 1 }
+
+      await expect(store.put(record('a', {
+        worktree: svnWorktree, worktreeFinish: { phase: 'merging', startedAt: 1 },
+      } as unknown as Partial<SessionRecord>))).rejects.toThrow(/unknown finish phase/)
+      await expect(store.put(record('a', {
+        worktreeOutcome: { ...outcome, result: 'done' },
+      } as unknown as Partial<SessionRecord>))).rejects.toThrow(/unknown finish result/)
+      await expect(store.put(record('a', {
+        worktreeOutcome: { ...outcome, main: 'merged:x' },
+      } as unknown as Partial<SessionRecord>))).rejects.toThrow(/unknown finish main result/)
+      await expect(store.put(record('a', {
+        worktreeOutcome: { ...outcome, revisions: [42] },
+      } as unknown as Partial<SessionRecord>))).rejects.toThrow(/revisions must be a list of strings/)
+    })
+
+    it('round-trips a cleanup, and keeps it pending across a load', async () => {
+      const context = harness()
+      const store = await context.load()
+      const cleanup = {
+        phase: 'pending' as const,
+        trigger: 'committed' as const,
+        reason: 'unlanded r12: src/a.ts',
+        requestedAt: 4,
+        attempts: 2,
+        lastAttemptAt: 6,
+      }
+
+      expect(await store.put(record('a', { life: 'ended', worktree: svnWorktree, worktreeCleanup: cleanup }))).toBe(true)
+
+      expect((await context.load()).get('a')?.worktreeCleanup).toEqual(cleanup)
+      expect(context.reports).toEqual([])
+    })
+
+    it('refuses a cleanup phase, trigger or count that is not its own', async () => {
+      const store = await harness().load()
+      const cleanup = { phase: 'pending', trigger: 'committed', requestedAt: 1, attempts: 0 }
+
+      await expect(store.put(record('a', {
+        worktree: svnWorktree, worktreeCleanup: { ...cleanup, phase: 'waiting' },
+      } as unknown as Partial<SessionRecord>))).rejects.toThrow(/unknown cleanup phase/)
+      await expect(store.put(record('a', {
+        worktree: svnWorktree, worktreeCleanup: { ...cleanup, trigger: 'stopped' },
+      } as unknown as Partial<SessionRecord>))).rejects.toThrow(/unknown cleanup trigger/)
+      await expect(store.put(record('a', {
+        worktree: svnWorktree, worktreeCleanup: { ...cleanup, attempts: -1 },
+      } as unknown as Partial<SessionRecord>))).rejects.toThrow(/attempts count/)
+      await expect(store.put(record('a', {
+        worktree: svnWorktree, worktreeCleanup: { ...cleanup, lastAttemptAt: 'now' },
+      } as unknown as Partial<SessionRecord>))).rejects.toThrow(/lastAttemptAt/)
+    })
+
+    it('loads a record holding a finish as an interrupted outcome naming the phase, and writes it back', async () => {
+      const context = harness({ schemaVersion: 1, savedAt: 5, records: [record('a', {
+        life: 'ended',
+        worktree: svnWorktree,
+        worktreeFinish: { phase: 'main-updating', scopeRoot: 'C:\\repo\\.worktrees\\014-fix', startedAt: 3 },
+      })] })
+
+      const store = await context.load()
+
+      const loaded = store.get('a')
+      expect(loaded?.worktreeFinish).toBeUndefined()
+      expect(loaded?.worktree).toEqual(svnWorktree)
+      expect(loaded?.worktreeOutcome).toMatchObject({
+        result: 'interrupted', revisions: [], main: 'none', worktree: 'kept',
+        lines: ['INTERRUPTED during main-updating in C:\\repo\\.worktrees\\014-fix'],
+      })
+      const onDisk = JSON.parse(readFileSync(context.file, 'utf8')) as { records: SessionRecord[] }
+      expect(onDisk.records[0]?.worktreeFinish).toBeUndefined()
+      expect(onDisk.records[0]?.worktreeOutcome?.result).toBe('interrupted')
+    })
+
+    it('keeps the revisions of the earlier outcome in an interrupted one', async () => {
+      const context = harness({ schemaVersion: 1, savedAt: 5, records: [record('a', {
+        life: 'ended',
+        worktree: svnWorktree,
+        worktreeOutcome: { result: 'committed', revisions: ['https://svn/repo:r12'], main: 'updated', worktree: 'in-use', lines: [], at: 2 },
+        worktreeFinish: { phase: 'updating', startedAt: 3 },
+      })] })
+
+      const store = await context.load()
+
+      expect(store.get('a')?.worktreeOutcome).toMatchObject({ result: 'interrupted', revisions: ['https://svn/repo:r12'] })
+    })
+
+    it('forgets a finish in memory only, and the next write of any record carries that', async () => {
+      const context = harness()
+      const store = await context.load()
+      await store.put(record('a', { worktree: svnWorktree, worktreeFinish: { phase: 'removing', startedAt: 3 } }))
+
+      await store.forgetFinish('a')
+
+      expect(store.get('a')?.worktreeFinish).toBeUndefined()
+      const before = JSON.parse(readFileSync(context.file, 'utf8')) as { records: SessionRecord[] }
+      expect(before.records[0]?.worktreeFinish).toEqual({ phase: 'removing', startedAt: 3 })
+      await store.put(record('b'))
+      const after = JSON.parse(readFileSync(context.file, 'utf8')) as { records: SessionRecord[] }
+      expect(after.records.find((entry) => entry.sessionId === 'a')?.worktreeFinish).toBeUndefined()
+    })
+  })
+
   it('drops a duplicate sessionId, keeping the first', async () => {
     const context = harness({
       schemaVersion: 1,

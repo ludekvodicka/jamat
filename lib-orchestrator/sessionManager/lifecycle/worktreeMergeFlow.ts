@@ -1,16 +1,21 @@
 import { randomUUID } from 'node:crypto'
 
-import type { GitErrorCode, GitResult, VersioningMode } from '../../git/git.types'
+import type { GitErrorCode, GitResult, WorktreeFacts } from '../../git/git.types'
 import type { MergeStatus } from '../../git/gitMergeManager'
-import type { SessionMergePhase, SessionRecord } from '../records/sessionRecord.types'
+import type { GitWorktreeManager } from '../../git/gitWorktreeManager'
+import type { StoreCutWorktrees } from '../../git/storeCutWorktrees'
+import { PathCompare } from '../../shared/pathCompare'
+import type { SessionMergePhase, SessionRecord, SessionRecordWorktree } from '../records/sessionRecord.types'
 import type { SessionRecordsStore } from '../records/sessionRecordsStore'
 import { AgentPresets } from '../launch/agentPresets'
 import type {
   SessionCreateSpec,
+  SessionFinishChoice,
   SessionsOpErrorCode,
   SessionsOpResult,
 } from '../sessionManagerApi.types'
 import { GitCodes } from './gitCodes'
+import type { WorktreeEnded, WorktreeFinishFacts, WorktreeFinisher } from './worktreeFinish.types'
 
 /** The git calls this flow makes, named so a test can hand it a scripted set instead. */
 export interface SessionMergePort {
@@ -19,24 +24,9 @@ export interface SessionMergePort {
   commitAll(worktreePath: string, message: string): Promise<GitResult<void>>
   mergeIntoWorktree(worktreePath: string, baseBranch: string): Promise<GitResult<{ conflict: boolean }>>
   isMerged(repositoryRoot: string, branch: string): Promise<GitResult<boolean>>
-  /**
-   * A checkpoint of the main copy, called only in `checkpoints` mode. It is what turns the user's
-   * uncommitted work from an obstacle into a side of the merge.
-   */
-  checkpointMain(repositoryRoot: string, message: string): Promise<GitResult<void>>
-  checkpointWorktree(worktreePath: string, message: string): Promise<GitResult<void>>
-  /** `diverged` is set only in `checkpoints` mode, where the landing is a fast-forward. */
-  mergeToMain(
-    repositoryRoot: string,
-    branch: string,
-  ): Promise<GitResult<{ conflict: boolean; diverged?: boolean }>>
+  mergeToMain(repositoryRoot: string, branch: string): Promise<GitResult<{ conflict: boolean }>>
   removeWorktreeForced(repositoryRoot: string, worktreePath: string): Promise<GitResult<void>>
-  deleteBranch(
-    repositoryRoot: string,
-    branch: string,
-    force: boolean,
-    worktreePath: string,
-  ): Promise<GitResult<void>>
+  deleteBranch(repositoryRoot: string, branch: string, force: boolean): Promise<GitResult<void>>
 }
 
 /** What launching a resolve session takes, kept narrow so the flow never sees the whole lifecycle. */
@@ -48,16 +38,16 @@ export type ResolveLauncher = (
 export interface WorktreeMergeFlowDeps {
   records: SessionRecordsStore
   merge: SessionMergePort
+  /** What the Finish row promises is measured with these. */
+  measure: Pick<GitWorktreeManager, 'refreshDiff' | 'baseMoved'>
+  /** The legacy worktrees cut from the checkpoint store: never landed, only discarded. */
+  storeCut: Pick<StoreCutWorktrees, 'recognize' | 'discard'>
   /** Absent in the tests that only cover the manual path; then every conflict takes it. */
   launchResolve?: ResolveLauncher
   /** Where a fact the user has to know but cannot act on through the result goes. */
   report: (message: string) => void
-  /**
-   * Which repository the main copy means. Defaults to `git`, which is the mode this flow was
-   * written for and the one every test that does not care about checkpoints keeps getting; the
-   * real default belongs to `SessionManager`, which knows what the user set.
-   */
-  modeOf?: () => VersioningMode
+  /** After a landed teardown or a Discard, once the record no longer names the worktree. */
+  ended: WorktreeEnded
   newId?: () => string
   now?: () => number
 }
@@ -82,8 +72,11 @@ export interface WorktreeMergeFlowDeps {
  *
  * The merge ends at git. The final commit is a person's, through TortoiseSVN or Jamat's confirmed
  * commit dialog; see docs/architecture/versioning-commit-dialog.md.
+ *
+ * It finishes Git worktrees only, and reads no versioning mode: a Git worktree is cut from the
+ * project's own repository whichever mode created it, so it lands there the same way.
  */
-export class WorktreeMergeFlow {
+export class WorktreeMergeFlow implements WorktreeFinisher {
   /**
    * One merge at a time per repository. Two worktrees of one repository merging into the same branch
    * at once is the case git does NOT protect against - 009e measured that worktree add and remove
@@ -92,18 +85,24 @@ export class WorktreeMergeFlow {
   private readonly repositories = new Set<string>()
   private readonly records: SessionRecordsStore
   private readonly merge: SessionMergePort
+  private readonly measure: Pick<GitWorktreeManager, 'refreshDiff' | 'baseMoved'>
+  /** By worktree path, from the last `facts`: whether it is a legacy store-cut worktree. */
+  private readonly legacyPaths = new Map<string, boolean>()
+  private readonly storeCut: Pick<StoreCutWorktrees, 'recognize' | 'discard'>
   private readonly launchResolve: ResolveLauncher | null
   private readonly report: (message: string) => void
-  private readonly modeOf: () => VersioningMode
+  private readonly ended: WorktreeEnded
   private readonly newId: () => string
   private readonly now: () => number
 
   constructor(deps: WorktreeMergeFlowDeps) {
     this.records = deps.records
     this.merge = deps.merge
+    this.measure = deps.measure
+    this.storeCut = deps.storeCut
     this.launchResolve = deps.launchResolve ?? null
     this.report = deps.report
-    this.modeOf = deps.modeOf ?? (() => 'git')
+    this.ended = deps.ended
     this.newId = deps.newId ?? randomUUID
     this.now = deps.now ?? (() => Date.now())
   }
@@ -127,10 +126,12 @@ export class WorktreeMergeFlow {
    * codes rather than the one ref a merge happens to leave. Both fall through to `run`, which refuses
    * the tree as dirty and leaves the manual way out - resolve, commit, Finish again - open.
    */
-  async commitAndMerge(sessionId: string): Promise<SessionsOpResult> {
+  async finish(sessionId: string): Promise<SessionsOpResult> {
     return this.underRepositoryLock(sessionId, async (record) => {
       const worktree = record.worktree
       if (!worktree) throw new Error('A refused finalize reached the work itself')
+      const legacy = await this.legacyRefusal(worktree)
+      if (legacy) return legacy
       const state = await this.merge.mergeStatus(worktree.worktreePath)
       if (!state.ok) return WorktreeMergeFlow.gitRefusal(state)
       if (!state.value.inProgress && !state.value.unresolved && state.value.dirty) {
@@ -152,24 +153,24 @@ export class WorktreeMergeFlow {
    * Abandoning the work instead of bringing it home. It is the same teardown with `-D` on the
    * branch, and the two-step confirmation in front of it belongs to whatever draws the button.
    */
-  async discardWorktree(sessionId: string): Promise<SessionsOpResult> {
+  async discard(sessionId: string): Promise<SessionsOpResult> {
     return this.underRepositoryLock(sessionId, async (record) => {
       const worktree = record.worktree
       if (!worktree) throw new Error('A refused discard reached the discard itself')
       // Write-ahead, for the same reason the merge writes one: two destructive commands with no
       // trace between them leave a crash looking exactly like a discard that never started.
       if (!await this.phase(record, 'tearing-down')) return WorktreeMergeFlow.latched()
+      if (await this.storeCut.recognize(worktree.worktreePath) !== null) {
+        const discarded = await this.storeCut.discard(worktree)
+        if (!discarded.ok) return this.failed(record, discarded.detail, discarded.code)
+        return this.clearWorktree(record)
+      }
       const removed = await this.merge.removeWorktreeForced(
         worktree.repositoryRoot,
         worktree.worktreePath,
       )
       if (!removed.ok) return this.failed(record, removed.detail, removed.code)
-      const deleted = await this.merge.deleteBranch(
-        worktree.repositoryRoot,
-        worktree.branch,
-        true,
-        worktree.worktreePath,
-      )
+      const deleted = await this.merge.deleteBranch(worktree.repositoryRoot, worktree.branch, true)
       if (!deleted.ok) {
         // The directory is already gone, so saying nothing would leave a branch nobody can see.
         // Discard again finishes the job: the removal answers "already gone" as success.
@@ -182,6 +183,21 @@ export class WorktreeMergeFlow {
       // As with the merge: a discard that did what it was asked is not reported as a fault.
       return this.clearWorktree(record)
     })
+  }
+
+  async facts(worktree: SessionRecordWorktree): Promise<WorktreeFinishFacts> {
+    this.legacyPaths.set(PathCompare.comparable(worktree.worktreePath),
+      await this.storeCut.recognize(worktree.worktreePath) !== null)
+    const diff = await this.measure.refreshDiff(worktree.worktreePath, worktree.baseCommit)
+    const base = await this.measure.baseMoved(worktree.repositoryRoot, worktree)
+    return { diff: diff.ok ? diff.value : null, baseMoved: base.ok ? base.value : false }
+  }
+
+  /** Until `facts` has looked, a legacy worktree is offered Merge back, which refuses it by name. */
+  choicesOf(worktree: SessionRecordWorktree): readonly SessionFinishChoice[] {
+    return this.legacyPaths.get(PathCompare.comparable(worktree.worktreePath)) === true
+      ? ['keep', 'discard']
+      : ['merge', 'keep', 'discard']
   }
 
   /**
@@ -223,10 +239,8 @@ export class WorktreeMergeFlow {
   private async run(record: SessionRecord): Promise<SessionsOpResult> {
     const worktree = record.worktree
     if (!worktree) throw new Error('A merge ran on a record with no worktree')
-    // Read ONCE for the whole run. A mode that changed between the checkpoint and the landing
-    // would checkpoint one repository and land in another, and the run is the unit a user asked
-    // for: a switch made in the settings tab while it is going takes effect on the next one.
-    const checkpointing = WorktreeMergeFlow.checkpointing(this.modeOf())
+    const legacy = await this.legacyRefusal(worktree)
+    if (legacy) return legacy
     const base = await this.merge.currentBranch(worktree.repositoryRoot)
     if (!base.ok) return this.failed(record, base.detail, base.code)
     if (base.value.branch === null)
@@ -248,27 +262,7 @@ export class WorktreeMergeFlow {
     const state = await this.merge.mergeStatus(worktree.worktreePath)
     if (!state.ok) return this.failed(record, state.detail, state.code)
     if (state.value.inProgress) return this.conflicted(record, baseBranch)
-
-    /*
-     * The session's own side, taken BEFORE the shortcut below and AFTER the in-progress question.
-     * After, because `add -A` over an unresolved merge would stage the conflict markers themselves.
-     * Before, because a session leaves its work on disk and not in a commit: without this the merge
-     * carried nothing and reported a landing anyway, which is the one failure worse than refusing.
-     *
-     * It also removes the last place where checkpoints mode still demanded a manual commit. The
-     * main copy is checkpointed a few lines down for exactly the same reason; the two sides arrive
-     * as the two sides of one merge, and neither has to be committed by hand first.
-     */
-    if (checkpointing) {
-      const session = await this.merge.checkpointWorktree(
-        worktree.worktreePath,
-        `Checkpoint in the worktree on ${worktree.branch} before merging it home`,
-      )
-      if (!session.ok) return this.failed(record, session.detail, session.code)
-    }
-    // Only `git` mode can still get here dirty, and there a refusal is right: nothing in that mode
-    // may commit into a repository that belongs to a human.
-    if (!checkpointing && state.value.dirty)
+    if (state.value.dirty)
       return this.stopped(
         record,
         'dirty',
@@ -282,26 +276,6 @@ export class WorktreeMergeFlow {
     if (merged.value) return this.teardown(record)
 
     if (!await this.phase(record, 'base-merging')) return WorktreeMergeFlow.latched()
-    /*
-     * The main copy is checkpointed BEFORE anything else moves, and the order is the whole
-     * mechanism rather than tidiness. It has to come before the base goes into the worktree,
-     * because that merge is what makes the landing a fast-forward: a checkpoint taken afterwards
-     * would move the main copy out from under the branch that had just absorbed it, and the
-     * landing would come back `diverged` every single time.
-     *
-     * What it buys is the refusal below going away in this mode. The user's uncommitted work is
-     * committed into the store first, so it arrives in the worktree as a SIDE of the merge and
-     * comes home with the session's own work rather than standing in its way. An edit made in the
-     * gap between this and the landing is still refused - by git itself, in its own words - and
-     * the next run absorbs it into a new checkpoint, so running Merge again converges.
-     */
-    if (checkpointing) {
-      const checkpointed = await this.merge.checkpointMain(
-        worktree.repositoryRoot,
-        `Checkpoint in the main copy before merging ${worktree.branch} home`,
-      )
-      if (!checkpointed.ok) return this.failed(record, checkpointed.detail, checkpointed.code)
-    }
     const intoWorktree = await this.merge.mergeIntoWorktree(worktree.worktreePath, baseBranch)
     if (!intoWorktree.ok) return this.failed(record, intoWorktree.detail, intoWorktree.code)
     if (intoWorktree.value.conflict) return this.conflicted(record, baseBranch)
@@ -320,10 +294,6 @@ export class WorktreeMergeFlow {
      * untracked files would refuse every merge this feature exists to make. It is still stricter
      * than git, which merges over tracked changes it does not touch; a refusal naming the path,
      * before anything moves, beats a half-applied merge explained as `git-failed`.
-     *
-     * That refusal is a `git` mode rule and does not survive into `checkpoints` mode, where the
-     * checkpoint above already took the same work into the merge. Keeping it there would refuse
-     * a merge for the one thing this mode exists to handle.
      */
     const main = await this.merge.mergeStatus(worktree.repositoryRoot)
     if (!main.ok) return this.failed(record, main.detail, main.code)
@@ -333,7 +303,7 @@ export class WorktreeMergeFlow {
         'merge-pending',
         `${worktree.repositoryRoot} is in the middle of a merge; finish that one there first`,
       )
-    if (!checkpointing && main.value.dirtyTracked)
+    if (main.value.dirtyTracked)
       return this.stopped(
         record,
         'dirty',
@@ -344,15 +314,6 @@ export class WorktreeMergeFlow {
     if (!await this.phase(record, 'main-merging')) return WorktreeMergeFlow.latched()
     const intoMain = await this.merge.mergeToMain(worktree.repositoryRoot, worktree.branch)
     if (!intoMain.ok) return this.failed(record, intoMain.detail, intoMain.code)
-    // Only `checkpoints` mode can answer this: the main copy took a commit of its own between the
-    // checkpoint and the landing, so the fast-forward no longer applies. Nothing was written and
-    // nothing is broken - the next run checkpoints the new state and lands on top of it.
-    if (intoMain.value.diverged === true)
-      return this.stopped(
-        record,
-        'merge-pending',
-        `${worktree.repositoryRoot} moved on while this merge ran; run Merge again`,
-      )
     // Not `conflicted()`: that one is about the WORKTREE, where a resolver can be launched into
     // the conflict. This one is in the user's own copy, which no session owns and nothing here
     // may touch. The copy is now mid-merge, so the next Merge meets the guard above and says the
@@ -380,12 +341,7 @@ export class WorktreeMergeFlow {
       worktree.worktreePath,
     )
     if (!removed.ok) return this.failed(record, removed.detail, removed.code)
-    const deleted = await this.merge.deleteBranch(
-      worktree.repositoryRoot,
-      worktree.branch,
-      false,
-      worktree.worktreePath,
-    )
+    const deleted = await this.merge.deleteBranch(worktree.repositoryRoot, worktree.branch, false)
     if (!deleted.ok) return this.failed(record, deleted.detail, deleted.code)
     // Nothing is reported here on purpose. `report` reaches the user as an app ERROR, and a merge
     // that worked is not one: the worktree badge leaving the row is what says it is done, and the
@@ -535,6 +491,11 @@ export class WorktreeMergeFlow {
     if (!record) return { ok: false, code: 'not-found', detail: `No session ${sessionId}` }
     if (!record.worktree)
       return { ok: false, code: 'invalid-spec', detail: 'This session has no worktree' }
+    // Git run inside an SVN checkout would find a human .git above it and commit there.
+    const kind = record.worktree.kind ?? 'git'
+    if (kind === 'svn')
+      return { ok: false, code: 'invalid-spec', detail: `${record.worktree.worktreePath} is an SVN checkout, not a Git worktree` }
+    else if (kind !== 'git') throw new Error(`Unknown worktree kind: ${JSON.stringify(kind)}`)
     // The teardown removes the directory the session is running in. Stopping it first is the
     // caller's to do, and saying which is more useful than a git error about a busy path.
     if (record.life === 'live' || record.life === 'starting')
@@ -573,16 +534,18 @@ export class WorktreeMergeFlow {
     })
   }
 
-  /** The phase stays and the reason is written beside it, because Merge again continues from here. */
   /**
-   * Whether this run checkpoints the main copy. The one place the mode is interpreted, so the two
-   * questions the run asks of it - take a checkpoint, and keep the dirty refusal - can never end
-   * up disagreeing about what mode they are in.
+   * A worktree cut from the checkpoint store lands in that store, which nothing reads any more, so
+   * it is never merged: Keep or Discard are its endings.
    */
-  private static checkpointing(mode: VersioningMode): boolean {
-    if (mode === 'checkpoints') return true
-    else if (mode === 'git') return false
-    else throw new Error(`Unknown versioning mode: ${JSON.stringify(mode)}`)
+  private async legacyRefusal(worktree: WorktreeFacts): Promise<SessionsOpResult | null> {
+    if (await this.storeCut.recognize(worktree.worktreePath) === null) return null
+    return {
+      ok: false,
+      code: 'invalid-spec',
+      detail: `${worktree.worktreePath} was cut from the checkpoint store, which AppJamatV3 no longer `
+        + 'merges back; keep it or discard it',
+    }
   }
 
   private async failed(
@@ -654,6 +617,9 @@ export class WorktreeMergeFlow {
    * Where both endings land: the branch is home, or it is gone. Either way the after-steps a stop
    * left waiting are done, so this is also where the session becomes finished - the person said so
    * when they stopped it, and this is the moment it becomes true.
+   *
+   * Every caller is a successful ending (a teardown after the branch landed, or a Discard), so this is
+   * also the one place that says so through `ended`.
    */
   private async clearWorktree(record: SessionRecord): Promise<SessionsOpResult> {
     const current = this.records.get(record.sessionId) ?? record
@@ -661,6 +627,7 @@ export class WorktreeMergeFlow {
     delete next.worktree
     delete next.worktreeMerge
     if (!await this.records.put(next)) return WorktreeMergeFlow.latched()
+    this.ended(record.sessionId)
     return { ok: true, value: undefined }
   }
 

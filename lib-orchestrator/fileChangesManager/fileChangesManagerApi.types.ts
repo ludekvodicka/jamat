@@ -28,6 +28,8 @@ export interface FileChangesWorkingTreeContext extends FileChangesContext {
     worktreePath: string
     repositoryRoot: string
     baseCommit: string
+    /** An SVN worktree is read through SVN alone, never through a Git repository above it. */
+    kind: 'svn' | 'git'
   } | null
 }
 

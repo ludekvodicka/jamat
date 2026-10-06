@@ -5,7 +5,6 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -456,157 +455,34 @@ describe('lib-orchestrator/git/gitWorktreeManager', () => {
     expect(valueOf(await manager.baseMoved(root, second))).toBe(false)
   })
 
-  describe('in checkpoints mode', () => {
-    function checkpointManager(runner: GitCommandRunner): GitWorktreeManager {
-      return new GitWorktreeManager(runner, {
-        modeOf: () => 'checkpoints',
-        store: new GitCheckpointStore(runner),
-      })
-    }
+  it('answers the repository root a path lies in, and null where git owns none', async () => {
+    const { root, commonDir } = repository()
+    const inside = join(resolve(root), 'packages', 'app')
+    mkdirSync(inside, { recursive: true })
+    const outside = scripted(root, commonDir, (args) =>
+      args[1] === '--show-toplevel' ? { code: 128, stderr: 'fatal: not a git repository' } : null)
 
-    /**
-     * A project with no store yet still has an answer, because the question is where a worktree
-     * WOULD be cut. The fallback chain is the store's: no marker above, no git toplevel, so the
-     * path itself.
-     */
-    it('answers where a worktree would be cut for a project with no store and no git', async () => {
-      const root = temporaryDirectory('jamat-v3-cp-')
-      const runner = scripted(root, join(root, '.git'), (args) =>
-        args.join(' ') === 'rev-parse --show-toplevel'
-          ? { code: 128, stderr: 'fatal: not a git repository' }
-          : null)
+    expect(await new GitWorktreeManager(scripted(root, commonDir)).repositoryRootOf(inside)).toBe(resolve(root))
+    expect(await new GitWorktreeManager(outside).repositoryRootOf(inside)).toBeNull()
+  })
 
-      expect(await checkpointManager(runner).worktreesDirectoryOf(root))
-        .toBe(join(resolve(root), '.worktrees'))
-    })
+  /**
+   * The store-cut worktree is retired: a project whose only repository is its checkpoint store has
+   * no Git worktree, because git never finds `.checkpoints/store.git` on its own.
+   */
+  it('never cuts a worktree from a checkpoint store', { timeout: 120_000 }, async (context) => {
+    const invoker = new GitInvoker()
+    const version = await invoker.run(tmpdir(), ['--version'])
+    if (version.failure !== null || version.code !== 0)
+      context.skip()
+    const root = temporaryDirectory('jamat-v3-store-only-')
+    writeFileSync(join(root, 'a.txt'), 'v1\n', 'utf8')
+    expect((await new GitCheckpointStore(invoker).checkpoint(root, 'checkpoint: baseline')).ok).toBe(true)
+    const manager = new GitWorktreeManager(invoker)
 
-    /**
-     * The whole point of the mode, end to end: a directory with NO version control at all becomes
-     * isolatable by one call. It is also the ordering proof - with no git and no store there is no
-     * HEAD, so the only reason `worktree add` finds a commit to cut from is the checkpoint `create`
-     * takes before it.
-     */
-    it('cuts from a store it creates itself, over a project with no version control', {
-      timeout: 120_000,
-    }, async (context) => {
-      const invoker = new GitInvoker()
-      const version = await invoker.run(tmpdir(), ['--version'])
-      if (version.failure !== null || version.code !== 0)
-        context.skip()
-
-      const root = temporaryDirectory('jamat-v3-cp-real-')
-      writeFileSync(join(root, 'a.txt'), 'v1\n', 'utf8')
-      const manager = checkpointManager(invoker)
-
-      const facts = valueOf(await manager.create(root, 'Feature X!'))
-
-      expect(facts.repositoryRoot).toBe(resolve(root))
-      expect(facts.worktreePath).toBe(join(resolve(root), '.worktrees', 'feature-x'))
-      expect(facts.branch).toBe('jamat/feature-x')
-      // The root never gains a .git of its own; the store carries the history instead.
-      expect(existsSync(join(root, '.git'))).toBe(false)
-      expect(existsSync(join(root, CheckpointLayout.storeRelativeConst, 'HEAD'))).toBe(true)
-      // A worktree's .git is a FILE holding a pointer, and this one points into the store.
-      expect(statSync(join(facts.worktreePath, '.git')).isFile()).toBe(true)
-      expect(readFileSync(join(facts.worktreePath, '.git'), 'utf8'))
-        .toContain(CheckpointLayout.storeNameConst)
-      // The work that existed before isolation came along is in the worktree.
-      expect(readFileSync(join(facts.worktreePath, 'a.txt'), 'utf8').trim()).toBe('v1')
-
-      // The store answers `worktree list` with ITSELF as a bare first entry; the listing drops it
-      // and names the project as the root rather than the store directory.
-      const listed = valueOf(await manager.list(root))
-      expect(listed.map((entry) => entry.worktreePath)).toEqual([facts.worktreePath])
-      expect(listed[0].repositoryRoot).toBe(resolve(root))
-      expect(listed[0].branch).toBe('jamat/feature-x')
-
-      expect(valueOf(await manager.baseMoved(root, facts))).toBe(false)
-    })
-
-    /** The ČVUT layout: a human repository with the store beside it. Nothing of the human's moves. */
-    it('cuts from the store beside a human .git and leaves that repository untouched', {
-      timeout: 120_000,
-    }, async (context) => {
-      const invoker = new GitInvoker()
-      const version = await invoker.run(tmpdir(), ['--version'])
-      if (version.failure !== null || version.code !== 0)
-        context.skip()
-
-      const root = temporaryDirectory('jamat-v3-cp-human-')
-      expect((await invoker.run(root, ['init'])).code).toBe(0)
-      writeFileSync(join(root, 'tracked.txt'), 'human\n', 'utf8')
-      expect((await invoker.run(root, ['add', '-A'])).code).toBe(0)
-      const committed = await invoker.run(root, [
-        '-c', 'user.email=tester@example.com',
-        '-c', 'user.name=Tester',
-        '-c', 'commit.gpgsign=false',
-        'commit', '-m', 'human base',
-      ])
-      expect(committed.code, committed.stderr).toBe(0)
-      const humanHead = (await invoker.run(root, ['rev-parse', 'HEAD'])).stdout.trim()
-
-      const facts = valueOf(await checkpointManager(invoker).create(root, 'Isolated'))
-
-      expect(readFileSync(join(facts.worktreePath, '.git'), 'utf8'))
-        .toContain(CheckpointLayout.storeNameConst)
-      expect((await invoker.run(root, ['rev-parse', 'HEAD'])).stdout.trim()).toBe(humanHead)
-      expect((await invoker.run(root, ['branch', '--list', 'jamat/*'])).stdout.trim()).toBe('')
-      // Clean, because the store and the worktrees reached info/exclude rather than a .gitignore
-      // the next commit would have offered to add.
-      expect((await invoker.run(root, ['status', '--porcelain'])).stdout.trim()).toBe('')
-      expect(existsSync(join(root, '.gitignore'))).toBe(false)
-      const exclude = readFileSync(join(root, '.git', 'info', 'exclude'), 'utf8')
-      expect(exclude).toContain('/.checkpoints/')
-      expect(exclude).toContain('/.worktrees/')
-    })
-
-    it('removes a checkpoint worktree from a root with no project git', {
-      timeout: 120_000,
-    }, async (context) => {
-      const invoker = new GitInvoker()
-      const version = await invoker.run(tmpdir(), ['--version'])
-      if (version.failure !== null || version.code !== 0)
-        context.skip()
-      const root = temporaryDirectory('jamat-v3-cp-remove-plain-')
-      writeFileSync(join(root, 'a.txt'), 'base\n', 'utf8')
-      const manager = checkpointManager(invoker)
-      const facts = valueOf(await manager.create(root, 'Remove Me'))
-
-      expect(await manager.remove(facts.repositoryRoot, facts.worktreePath))
-        .toEqual({ ok: true, value: undefined })
-      expect(existsSync(facts.worktreePath)).toBe(false)
-      expect(existsSync(join(root, '.git'))).toBe(false)
-    })
-
-    it('removes from the checkpoint store beside human git after mode switches to git', {
-      timeout: 120_000,
-    }, async (context) => {
-      const invoker = new GitInvoker()
-      const version = await invoker.run(tmpdir(), ['--version'])
-      if (version.failure !== null || version.code !== 0)
-        context.skip()
-      const root = temporaryDirectory('jamat-v3-cp-remove-human-')
-      expect((await invoker.run(root, ['init'])).code).toBe(0)
-      writeFileSync(join(root, 'base.txt'), 'base\n', 'utf8')
-      expect((await invoker.run(root, ['add', '-A'])).code).toBe(0)
-      expect((await invoker.run(root, [
-        '-c', 'user.email=tester@example.com',
-        '-c', 'user.name=Tester',
-        '-c', 'commit.gpgsign=false',
-        'commit', '--allow-empty', '-m', 'human base',
-      ])).code).toBe(0)
-      let mode: 'checkpoints' | 'git' = 'checkpoints'
-      const manager = new GitWorktreeManager(invoker, {
-        modeOf: () => mode,
-        store: new GitCheckpointStore(invoker),
-      })
-      const facts = valueOf(await manager.create(root, 'Remove Me'))
-      mode = 'git'
-
-      expect(await manager.remove(facts.repositoryRoot, facts.worktreePath))
-        .toEqual({ ok: true, value: undefined })
-      expect(existsSync(facts.worktreePath)).toBe(false)
-      expect((await invoker.run(root, ['status', '--porcelain'])).stdout.trim()).toBe('')
-    })
+    expect(await manager.repositoryRootOf(root)).toBeNull()
+    expect(await manager.create(root, 'Feature X')).toMatchObject({ ok: false, code: 'not-a-repo' })
+    expect(existsSync(join(root, '.worktrees'))).toBe(false)
+    expect(existsSync(join(root, CheckpointLayout.storeRelativeConst, 'worktrees'))).toBe(false)
   })
 })

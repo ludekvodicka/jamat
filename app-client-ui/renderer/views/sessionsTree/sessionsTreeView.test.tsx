@@ -2618,10 +2618,54 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     const { container } = await mount(SessionsFixtures.mixed())
 
     const measured = container.querySelector('[data-session="s-working"] .jamat-sessions__worktree')
-    expect(measured?.textContent).toBe('+12 -3BASE')
+    expect(measured?.textContent).toBe('WT+12 -3BASE')
     const unmeasured = container
       .querySelector('[data-session="s-waiting"] .jamat-sessions__worktree')
-    expect(unmeasured?.textContent).toBe('')
+    expect(unmeasured?.textContent).toBe('WT')
+  })
+
+  it('marks an SVN worktree row by kind and draws its finish phase or last outcome', async () => {
+    const { container } = await mount(SessionsFixtures.svnWorktrees())
+    const rowOf = (sessionId: string): Element | null =>
+      container.querySelector(`[data-session="${sessionId}"] > .jamat-sessions__row`)
+
+    const mark = rowOf('s-svn')?.querySelector('.jamat-sessions__worktree')
+    expect(mark?.getAttribute('data-worktree-kind')).toBe('svn')
+    expect(mark?.getAttribute('title')).toBe(
+      'SVN worktree C:/Projects/NodeJs/AppJamatV3/.worktrees/014-svn-worktree, a checkout of '
+        + 'http://svn.local/applications/AppJamatV3 - +12 -3 lines vs base',
+    )
+    expect(rowOf('s-svn')?.querySelector('.jamat-sessions__finish')).toBeNull()
+
+    const reviewing = rowOf('s-reviewing')?.querySelector('[data-finish="reviewing"]')
+    expect(reviewing?.textContent).toBe('reviewing…')
+    expect(reviewing?.getAttribute('title'))
+      .toBe('Waiting for the commit review of C:/Projects/NodeJs/AppJamatV3/.worktrees/015-reviewing')
+
+    const partial = rowOf('s-partial')?.querySelector('[data-finish-outcome="partial"]')
+    expect(partial?.textContent).toBe('partly committed')
+    expect(partial?.getAttribute('title')).toContain('left 2 change(s)')
+
+    const updated = rowOf('s-updated')?.querySelector('[data-finish-outcome="updated"]')
+    expect(updated?.getAttribute('title'))
+      .toContain('Reopen the session to rerun the tests, or press Finish again')
+  })
+
+  it('says beside the outcome why a worktree outlived its session', async () => {
+    const fixture = SessionsFixtures.svnWorktrees()
+    const { container } = await mount({
+      ...fixture,
+      sessions: fixture.sessions.map((session) => session.sessionId === 's-partial' && session.worktree
+        ? { ...session, worktree: { ...session.worktree, cleanup: { phase: 'kept' as const, reason: '2 changes', summary: 'kept: 2 changes' } } }
+        : session),
+    })
+    const row = container.querySelector('[data-session="s-partial"] > .jamat-sessions__row')
+
+    const kept = row?.querySelector('[data-cleanup="kept"]')
+    expect(kept?.textContent).toBe('kept')
+    expect(kept?.getAttribute('title')).toBe('kept: 2 changes')
+    expect(row?.querySelector('[data-finish-outcome="partial"]')).toBeTruthy()
+    expect(container.querySelector('[data-session="s-svn"] [data-cleanup]')).toBeNull()
   })
 
   it('collapses a root and takes its sessions off the screen with it', async () => {
@@ -2854,7 +2898,8 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
       container.querySelector(`[data-session="${sessionId}"] > .jamat-sessions__row ${selector}`)
         ?.getAttribute('title')
 
-    expect(titleOf('s-dirty', '.jamat-sessions__worktree')).toBe('Branch jamat/dirty')
+    expect(titleOf('s-dirty', '.jamat-sessions__worktree'))
+      .toBe('Git worktree C:/Projects/NodeJs/AppJamatV3/.worktrees/dirty, branch jamat/dirty')
     expect(titleOf('s-dirty', '.jamat-sessions__vcs')).toBe('Uncommitted changes (git)')
     expect(titleOf('s-dirty', '.jamat-sessions__glyph')).toBe('ended')
   })

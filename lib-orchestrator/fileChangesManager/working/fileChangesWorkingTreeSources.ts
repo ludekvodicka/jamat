@@ -20,7 +20,7 @@ import { FileChangesLimits } from '../fileChangesLimits'
 import { SvnInvoker } from '../../svn/svnInvoker'
 
 export interface FileChangesWorkingTreeSourcesDeps {
-  checkpointStore?: Pick<GitCheckpointStore, 'existingContextOf' | 'worktreeBelongsToStore'>
+  checkpointStore?: Pick<GitCheckpointStore, 'existingContextOf'>
   gitOf?: (commandArgs: readonly string[]) => FileChangesVcsGit
   svn?: FileChangesVcs
   /** The adapter a commit review reads through; its only difference is the longer timeout. */
@@ -48,10 +48,7 @@ export interface FileChangesWorkingTreeRead {
 }
 
 export class FileChangesWorkingTreeSources {
-  private readonly checkpointStore: Pick<
-    GitCheckpointStore,
-    'existingContextOf' | 'worktreeBelongsToStore'
-  >
+  private readonly checkpointStore: Pick<GitCheckpointStore, 'existingContextOf'>
   private readonly gitOf: (commandArgs: readonly string[]) => FileChangesVcsGit
   private readonly svn: FileChangesVcs
   private readonly commitSvn: FileChangesVcs
@@ -142,10 +139,19 @@ export class FileChangesWorkingTreeSources {
     context: FileChangesWorkingTreeContext,
     warnings: string[],
   ): Promise<FileChangesWorkingTreeCandidate[]> {
-    const git = await this.gitCandidates(context, warnings)
-    const svn = await this.svnCandidates(context, this.svn)
-    if (context.worktree !== null) return [...git, ...svn]
-    return [...svn, ...git, ...await this.ownGitCandidate(context)]
+    if (context.worktree === null)
+      return [
+        ...await this.svnCandidates(context, this.svn),
+        ...await this.storeCandidates(context, warnings),
+        ...await this.ownGitCandidate(context),
+      ]
+    const kind = context.worktree.kind
+    if (kind === 'git')
+      return [...await this.worktreeBaseCandidates(context), ...await this.svnCandidates(context, this.svn)]
+    // A human `.git` above an SVN worktree is somebody else's repository, not this session's base.
+    else if (kind === 'svn')
+      return [...await this.svnCandidates(context, this.svn), ...await this.storeCandidates(context, warnings)]
+    else throw new Error(`Unknown worktree kind: ${JSON.stringify(kind)}`)
   }
 
   private async svnCandidates(
@@ -159,34 +165,25 @@ export class FileChangesWorkingTreeSources {
   private async ownGitCandidate(context: FileChangesWorkingTreeContext): Promise<FileChangesWorkingTreeCandidate[]> {
     const adapter = this.gitOf([])
     const detection = await adapter.detect(context.cwd).catch(() => null)
-    if (detection === null || await this.checkpointStore.worktreeBelongsToStore(detection.root)) return []
+    if (detection === null) return []
     return [{ source: 'git', adapter, detection, baseRef: null }]
   }
 
-  private async gitCandidates(
+  private async worktreeBaseCandidates(
+    context: FileChangesWorkingTreeContext,
+  ): Promise<FileChangesWorkingTreeCandidate[]> {
+    if (context.worktree === null || !PathCompare.isInside(context.worktree.worktreePath, context.cwd)) return []
+    const adapter = this.gitOf([])
+    const detection = await adapter.detect(context.cwd).catch(() => null)
+    if (detection === null) return []
+    return [{ source: 'worktree-base', adapter, detection, baseRef: context.worktree.baseCommit }]
+  }
+
+  /** An existing checkpoint store; inside a worktree only the worktree's own one is found. */
+  private async storeCandidates(
     context: FileChangesWorkingTreeContext,
     warnings: string[],
   ): Promise<FileChangesWorkingTreeCandidate[]> {
-    if (context.worktree !== null) {
-      if (!PathCompare.isInside(context.worktree.worktreePath, context.cwd)) return []
-      const adapter = this.gitOf([])
-      const detection = await adapter.detect(context.cwd).catch(() => null)
-      if (detection === null) return []
-      const belongs = await this.checkpointStore
-        .worktreeBelongsToStore(context.worktree.worktreePath)
-        .catch(() => false)
-      return [
-        {
-          source: 'worktree-base',
-          adapter,
-          detection,
-          baseRef: context.worktree.baseCommit,
-        },
-        ...(belongs
-          ? [{ source: 'checkpoint' as const, adapter, detection, baseRef: null }]
-          : []),
-      ]
-    }
     let existing: Awaited<ReturnType<GitCheckpointStore['existingContextOf']>>
     try { existing = await this.checkpointStore.existingContextOf(context.cwd) }
     catch (error) {

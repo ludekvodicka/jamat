@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 
@@ -7,27 +7,13 @@ import { ProductGroup } from '../shared/productGroup'
 import { SvnInvoker } from '../svn/svnInvoker'
 import { CheckpointLayout } from './checkpointLayout'
 import { GitManager } from './gitManager'
+import { WorktreeNaming } from './worktreeNaming'
 import type {
   GitCommandOutcome,
   GitCommandRunner,
   GitResult,
   RepoCommandContext,
-  VersioningMode,
 } from './git.types'
-
-/**
- * What a manager needs to work over checkpoint stores instead of the project's own git: which
- * mode is set, and the store to use when it is `checkpoints`.
- *
- * Named ONCE and shared by every manager that takes one, because the two halves only mean
- * something together: a store nothing decides to use is a capability, and a mode nothing can act
- * on is an opinion. Absent altogether means `git` mode, which is what every caller written before
- * checkpoints existed gets.
- */
-export interface CheckpointModeContext {
-  modeOf: () => VersioningMode
-  store: GitCheckpointStore
-}
 
 /**
  * The checkpoint store: finding it, creating it, and writing a checkpoint into it.
@@ -45,8 +31,8 @@ export class GitCheckpointStore extends GitManager {
 
   /**
    * Where the repair says what it did. It is a report and not a returned value because the repair
-   * happens inside somebody else's operation - a checkpoint taken before a worktree is cut - and
-   * nothing in that operation's answer is about line endings. `ConfigStore` carries its refusals
+   * happens inside somebody else's operation - a checkpoint - and nothing in that operation's answer
+   * is about line endings. `ConfigStore` carries its refusals
    * the same way, for the same reason.
    */
   private readonly report: (message: string) => void
@@ -63,20 +49,21 @@ export class GitCheckpointStore extends GitManager {
    * Which project owns the store for this path, without creating anything.
    *
    * The order is the contract's: an existing store in the nearest ancestor wins, because once a
-   * project has one it is the answer for everything beneath it; then the git toplevel, so a package
-   * inside a monorepo checkpoints the whole tree a worktree would have to be cut from; then the path
+   * project has one it is the answer for everything beneath it; then the worktree the path lies in;
+   * then the git toplevel, so a package inside a monorepo checkpoints the whole tree; then the path
    * itself, which only ever happens when the caller named a project directly.
    *
-   * The ancestor never reaches past the project's own git root. A store one directory up can belong
-   * to something else entirely, and an Applications group root is the case that hurts: it would
-   * stage every project below it and save this one as a gitlink, a rollback point holding none of
-   * the work it was asked for. A worktree cut from a store is the exemption, because its own git
-   * toplevel IS the worktree and the store that owns it is the ancestor above.
+   * The ancestor never reaches past the project's own git root or past a worktree. A store one
+   * directory up can belong to something else entirely, and an Applications group root is the case
+   * that hurts: it would stage every project below it and save this one as a gitlink, a rollback
+   * point holding none of the work it was asked for. Inside a worktree, git is never asked: an SVN
+   * worktree below a human `.git` would otherwise answer with that repository.
    */
   async rootOf(path: string): Promise<GitResult<{ root: string; storeDir: string; exists: boolean }>> {
     const start = resolve(path)
-    let boundary: string | null = null
-    if (!await this.worktreeBelongsToStore(start)) {
+    const worktree = CheckpointLayout.worktreeRootOf(start)
+    let boundary: string | null = worktree
+    if (worktree === null) {
       const top = await this.invoker.run(start, ['rev-parse', '--show-toplevel'])
       // Not a git work tree is not a failure here: a project with no VCS at all still gets a store.
       if (top.failure) {
@@ -148,35 +135,7 @@ export class GitCheckpointStore extends GitManager {
     return { ok: true, value: undefined }
   }
 
-  /**
-   * One checkpoint of a WORKTREE, on the branch that worktree is on.
-   *
-   * It cannot go through `checkpoint` above, and the difference is not cosmetic: that one points
-   * `--git-dir` at the store and `--work-tree` at the MAIN COPY, so handing it a worktree path
-   * would quietly checkpoint the main copy instead. A worktree carries a `.git` file that already
-   * names the store and its own branch, so a plain commit inside it is both the right command and
-   * the only one that lands where the session's work belongs.
-   *
-   * Nothing to commit is success for the same reason it is above: the caller wants the branch to
-   * carry everything on disk, and a tree nobody touched already satisfies that.
-   */
-  async checkpointWorktree(worktreePath: string, message: string): Promise<GitResult<void>> {
-    const added = await this.invoker.run(worktreePath, ['add', '-A'])
-    const addFailure = GitManager.failureOf(added, 'git-failed')
-    if (addFailure) return addFailure
-
-    const committed = await this.invoker.run(worktreePath, [
-      '-c', `user.name=${CheckpointLayout.authorNameConst}`,
-      '-c', `user.email=${CheckpointLayout.authorEmailConst}`,
-      'commit', '--message', message,
-    ])
-    if (GitCheckpointStore.saysNothingToCommit(committed)) return { ok: true, value: undefined }
-    const failure = GitManager.failureOf(committed, 'git-failed')
-    if (failure) return failure
-    return { ok: true, value: undefined }
-  }
-
-  /** What a main-copy command needs in checkpoints mode; creates the store if it is not there yet. */
+  /** What a main-copy command needs against the store; creates the store if it is not there yet. */
   async contextOf(root: string): Promise<GitResult<RepoCommandContext>> {
     const ensured = await this.ensure(root)
     if (!ensured.ok) return ensured
@@ -211,38 +170,6 @@ export class GitCheckpointStore extends GitManager {
         ],
         storeDir: found.value.storeDir,
       },
-    }
-  }
-
-  /**
-   * Whether this worktree was cut from a checkpoint store. A worktree carries a `.git` FILE holding
-   * a `gitdir:` line, so the question is answered by reading one small file rather than by running
-   * git in a directory that may belong to a repository we are not allowed to touch.
-   *
-   * The hard cut needs this: an operation reaching a worktree cut from an old project `.git` must
-   * refuse rather than quietly succeed against a store that has never heard of it.
-   */
-  async worktreeBelongsToStore(worktreePath: string): Promise<boolean> {
-    return await this.contextOfWorktree(worktreePath) !== null
-  }
-
-  /** The checkpoint repository named by a worktree's own pointer, independent of current mode. */
-  async contextOfWorktree(worktreePath: string): Promise<RepoCommandContext | null> {
-    const pointer = await GitCheckpointStore.readPointer(join(worktreePath, '.git'))
-    if (pointer === null) return null
-    const absolute = isAbsolute(pointer) ? resolve(pointer) : resolve(worktreePath, pointer)
-    const normalized = absolute.replace(/\\/g, '/')
-    const marker = `/${CheckpointLayout.storeRelativeConst.replace(/\\/g, '/')}`
-    const markerAt = normalized.toLowerCase().lastIndexOf(marker.toLowerCase())
-    if (markerAt < 0) return null
-    const afterMarker = normalized[markerAt + marker.length]
-    if (afterMarker !== undefined && afterMarker !== '/') return null
-    const storeDir = resolve(normalized.slice(0, markerAt + marker.length))
-    const root = dirname(dirname(storeDir))
-    return {
-      root,
-      gitDirArgs: ['--git-dir', storeDir, '--work-tree', root],
-      storeDir,
     }
   }
 
@@ -325,12 +252,6 @@ export class GitCheckpointStore extends GitManager {
       return
     }
     this.report(`Checkpoint store made byte-transparent: ${storeDir}`)
-    const cut = await GitCheckpointStore.worktreesOf(storeDir)
-    if (cut.length > 0)
-      this.report(
-        'These worktrees were cut before that and still hold converted files, so land or discard '
-        + `each of them on its own: ${cut.join(', ')}`,
-      )
   }
 
   /**
@@ -373,27 +294,6 @@ export class GitCheckpointStore extends GitManager {
       if (previous === null) await rm(target, { force: true })
       else await writeFile(target, previous, 'utf8')
     } catch { /* The caller reports that the store still converts, which is the part that matters. */ }
-  }
-
-  /**
-   * The worktrees this store has cut, read from git's own registry rather than from `worktree
-   * list`: a repair is not the moment to make the answer depend on a subprocess. Each
-   * `<store>/worktrees/<id>/gitdir` holds the absolute path of that worktree's own `.git` file, so
-   * its directory IS the worktree. One whose directory is gone is left out - git prunes those, and
-   * naming it would ask the user to land something that is not there.
-   */
-  private static async worktreesOf(storeDir: string): Promise<string[]> {
-    const registry = join(storeDir, 'worktrees')
-    let entries: string[]
-    try { entries = await readdir(registry) } catch { return [] }
-    const found: string[] = []
-    for (const entry of entries) {
-      let pointer: string
-      try { pointer = await readFile(join(registry, entry, 'gitdir'), 'utf8') } catch { continue }
-      const worktree = dirname(resolve(pointer.trim()))
-      if (await GitManager.exists(worktree)) found.push(worktree)
-    }
-    return found
   }
 
   /**
@@ -475,10 +375,14 @@ export class GitCheckpointStore extends GitManager {
    * volume is a project only when SVN says it is a repository root, which is what `Q:/Docker` is:
    * a store there proves nothing, because group stores predate this guard. The same rule is
    * `is_unsafe_root` in commit-git.sh; the contract both implement is in versioning-full.md.
+   *
+   * A worktree of a product group carries the group's `.appgroup` and is still one session's copy:
+   * its own store is the only place its checkpoints can go, and it leaves with the worktree.
    */
   private async isUnsafeRoot(path: string): Promise<boolean> {
     const abs = resolve(path)
     if (GitCheckpointStore.isRefusedRoot(abs)) return true
+    if (basename(dirname(abs)) === WorktreeNaming.folderNameConst) return false
     if (await GitManager.exists(join(abs, ProductGroup.markerConst))) return true
     const parent = dirname(abs)
     return dirname(parent) === parent && !await this.isSvnRepositoryRoot(abs)

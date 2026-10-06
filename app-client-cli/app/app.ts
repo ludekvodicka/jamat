@@ -167,6 +167,12 @@ export class AppClientCli {
             code: 'unavailable',
             detail: `${plan.request.operation} is not exposed by this AppClientUI`,
           })
+        const feature = AppClientCli.featureOf(plan.request)
+        if (feature !== null && !RemoteControlCapabilities.of(descriptor.value).includes(feature.operation))
+          return this.finishFailure(plan, {
+            code: 'unavailable',
+            detail: `${feature.option} needs ${feature.operation}, which this AppClientUI does not expose; update AppJamatV3`,
+          })
         let remoteEndpointId: string | null = null
         if (plan.computer !== null) {
           const endpoint = await this.remoteEndpoint(client, plan.computer)
@@ -276,16 +282,47 @@ export class AppClientCli {
           requestId,
           this.operationId(args),
         ))
-    else if (args.command === 'sessions finalize')
+    else if (args.command === 'sessions finalize') {
+      const expect = args.option('--expect')
+      if (expect !== null && expect !== 'stop')
+        throw new AppClientCliError('invalid-request', '--expect must be stop')
       return this.requestPlan(args, this.request(
           'sessions.finalize',
-          { session: this.selector(args) },
+          { session: this.selector(args), ...(expect === null ? {} : { expect }) },
           requestId,
           this.operationId(args),
+        ))
+    } else if (args.command === 'sessions worktree')
+      return this.requestPlan(args, this.request(
+          'sessions.worktree',
+          { session: this.selector(args) },
+          requestId,
         ))
     else if (args.command === 'sessions remove')
       return this.requestPlan(args, this.request(
           'sessions.remove',
+          { session: this.selector(args) },
+          requestId,
+          this.operationId(args),
+        ))
+    else if (args.command === 'sessions discard-worktree')
+      return this.requestPlan(args, this.request(
+          'sessions.discardWorktree',
+          { session: this.selector(args) },
+          requestId,
+          this.operationId(args),
+        ))
+    else if (args.command === 'sessions retry-setup') {
+      const acknowledgeSetup = args.option('--acknowledge-setup')
+      return this.requestPlan(args, this.request(
+          'sessions.retrySetup',
+          { session: this.selector(args), ...(acknowledgeSetup === null ? {} : { acknowledgeSetup }) },
+          requestId,
+          this.operationId(args),
+        ))
+    } else if (args.command === 'sessions cleanup-worktree')
+      return this.requestPlan(args, this.request(
+          'sessions.cleanupWorktree',
           { session: this.selector(args) },
           requestId,
           this.operationId(args),
@@ -580,6 +617,14 @@ export class AppClientCli {
     const baseRef = args.option('--base-ref')
     if (baseRef !== null && worktree === null)
       throw new AppClientCliError('invalid-request', '--base-ref requires --worktree')
+    const owner = args.option('--worktree-owner')
+    if (owner !== null && worktree === null)
+      throw new AppClientCliError('invalid-request', '--worktree-owner requires --worktree')
+    if (owner !== null && !owner.trim())
+      throw new AppClientCliError('invalid-request', '--worktree-owner cannot be empty')
+    const removeWhenEnded = args.has('--worktree-remove-when-ended')
+    if (removeWhenEnded && worktree === null)
+      throw new AppClientCliError('invalid-request', '--worktree-remove-when-ended requires --worktree')
     const title = args.option('--title')
     const number = AppClientCli.customNumberOf(args.option('--number'))
     const color = AppClientCli.colorOf(args.option('--color'))
@@ -598,7 +643,12 @@ export class AppClientCli {
         },
       }),
       ...(worktree === null ? {} : {
-        worktree: { slug: worktree, ...(baseRef === null ? {} : { baseRef }) },
+        worktree: {
+          slug: worktree,
+          ...(baseRef === null ? {} : { baseRef }),
+          ...(owner === null ? {} : { owner: resolve(this.deps.cwd(), owner) }),
+          ...(removeWhenEnded ? { removeWhenEnded: true as const } : {}),
+        },
       }),
       ...(title === null ? {} : { title }),
       ...(number === null ? {} : { number }),
@@ -698,7 +748,11 @@ export class AppClientCli {
   ): Promise<RemoteControlStepResult<RemoteControlRequestUnion>> {
     if (request.operation === 'sessions.reopen'
       || request.operation === 'sessions.finalize'
+      || request.operation === 'sessions.worktree'
       || request.operation === 'sessions.remove'
+      || request.operation === 'sessions.discardWorktree'
+      || request.operation === 'sessions.retrySetup'
+      || request.operation === 'sessions.cleanupWorktree'
       || request.operation === 'sessions.color'
       || request.operation === 'sessions.group'
       || request.operation === 'sessions.note'
@@ -745,6 +799,23 @@ export class AppClientCli {
       return { ok: true, value: request }
     else
       throw new Error(`Unknown control request: ${JSON.stringify(request)}`)
+  }
+
+  /**
+   * An option an older AppClientUI would refuse, and the operation whose capability marks a build
+   * that takes it. Such a build validates the body with exact keys and refuses the whole request over
+   * one it does not know, so the option is refused here by name and nothing is sent.
+   */
+  private static featureOf(
+    request: RemoteControlRequestUnion,
+  ): { option: string; operation: RemoteControlOperation } | null {
+    if (request.operation === 'sessions.create' && request.body.spec.worktree?.owner !== undefined)
+      return { option: '--worktree-owner', operation: 'sessions.worktree' }
+    if (request.operation === 'sessions.create' && request.body.spec.worktree?.removeWhenEnded !== undefined)
+      return { option: '--worktree-remove-when-ended', operation: 'sessions.worktree' }
+    if (request.operation === 'sessions.finalize' && request.body.expect !== undefined)
+      return { option: '--expect', operation: 'sessions.worktree' }
+    return null
   }
 
   private operationId(args: CliArguments): string {
@@ -881,6 +952,10 @@ export class AppClientCli {
     'sessions.setNote',
     'terminal.deliver',
     'sessions.remove',
+    'sessions.worktree',
+    'sessions.discardWorktree',
+    'sessions.retrySetup',
+    'sessions.cleanupWorktree',
   ]
 
   private static readonly deliverMarginMillisecondsConst = 5_000

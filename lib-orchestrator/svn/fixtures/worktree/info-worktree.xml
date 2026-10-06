@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<info>
+<entry
+   kind="dir"
+   path="."
+   revision="5">
+<url>{REPO}/Project</url>
+<relative-url>^/Project</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+</wc-info>
+<commit
+   revision="4">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+</info>

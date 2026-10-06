@@ -1,4 +1,10 @@
-import type { SessionAgentId, SessionColorName } from '../sessionManagerApi.types'
+import type {
+  SessionAgentId,
+  SessionColorName,
+  SessionWorktreeKind,
+  SessionWorktreeOutcome,
+  SvnFinishPhase,
+} from '../sessionManagerApi.types'
 
 /**
  * What the client remembers about a session, and the only evidence one ever existed: AppHost keeps
@@ -81,11 +87,65 @@ export interface SessionRecordMerge {
   failure?: string
 }
 
+/**
+ * `branch` and `baseCommit` stay mandatory non-empty strings for an SVN worktree as well, because an
+ * older peer validates them that way and accepts unknown keys: SVN fills them with the checked-out
+ * URL and `r<rev>`.
+ */
 export interface SessionRecordWorktree {
   worktreePath: string
+  /** git: the branch; svn: the checked-out URL. */
   branch: string
+  /** git: the commit; svn: `r<rev>`. */
   baseCommit: string
+  /** git: the repository root; svn: the owner directory, which is the main copy. */
   repositoryRoot: string
+  /** Absent means git: every record and every peer older than SVN worktrees. */
+  kind?: SessionWorktreeKind
+  /** svn: `dev:ino:birthtimeNs` of the checkout, so a removal never deletes a reused name. */
+  directoryId?: string
+}
+
+/**
+ * How far an SVN finish got. Write-ahead evidence like `SessionRecordMerge`, never a program
+ * counter: no finish outlives the client process that ran it, so a record loaded with one reads as
+ * an `interrupted` outcome and the next Finish recovers from the disk.
+ */
+export interface SessionRecordWorktreeFinish {
+  phase: SvnFinishPhase
+  scopeRoot?: string
+  commitSessionId?: string
+  startedAt: number
+}
+
+/**
+ * The tombstone of a removed worktree: where the work went. A record carrying it is never reopened,
+ * restarted or forked, because its directory is gone and the project directory is not a substitute.
+ */
+export interface SessionRecordRetiredWorktree {
+  worktreePath: string
+  kind: SessionWorktreeKind
+  revisions: readonly string[]
+  removedAt: number
+}
+
+/** What asked for the removal of an SVN worktree after its session's process ended. */
+export type SessionWorktreeCleanupTrigger =
+  | 'committed' | 'removal-unfinished' | 'discard-unfinished' | 'remove-when-ended' | 'requested'
+
+/**
+ * The removal of an SVN worktree once its session's process ended, judged by the reconciler and
+ * applied off its loop. `pending` is judged again, paced by `attempts` and `lastAttemptAt`; `kept`
+ * found changes and is never judged again until a new trigger writes `pending`.
+ */
+export interface SessionRecordWorktreeCleanup {
+  phase: 'pending' | 'kept'
+  trigger: SessionWorktreeCleanupTrigger
+  /** Why the worktree is still there: `unlanded r<N>: <paths>`, `in use`, `<N> changes`, `svn status failed: ...`. */
+  reason?: string
+  requestedAt: number
+  attempts: number
+  lastAttemptAt?: number
 }
 
 /**
@@ -144,6 +204,14 @@ export interface SessionRecord {
   worktree?: SessionRecordWorktree
   /** Present only while this session's worktree is being merged back. Cleared by the teardown. */
   worktreeMerge?: SessionRecordMerge
+  /** Present only while an SVN finish of this session's worktree runs. */
+  worktreeFinish?: SessionRecordWorktreeFinish
+  /** The result of the last finish of this record; a later finish replaces it. */
+  worktreeOutcome?: SessionWorktreeOutcome
+  /** Set once the worktree was removed, together with `worktree` going. */
+  retiredWorktree?: SessionRecordRetiredWorktree
+  /** SVN only: the worktree goes once the process ended; the removal clears it with `worktree`. */
+  worktreeCleanup?: SessionRecordWorktreeCleanup
   /** On a resolve session only: whose merge conflict it was launched to settle. */
   resolveFor?: string
   binding: { hostInstanceId: string; generation: number } | null

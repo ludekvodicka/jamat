@@ -23,6 +23,8 @@ describe('lib-orchestrator/sessionManager/sessionWorkingDirectory', () => {
         worktreePath: 'Q:/Repo/.worktrees/task',
         branch: 'jamat/task',
         baseCommit: 'abc',
+        kind: 'git',
+        choices: ['merge', 'keep', 'discard'],
         diff: null,
         baseMoved: false,
       },

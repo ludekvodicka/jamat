@@ -116,13 +116,36 @@ export class RemoteControlRequestValidation {
         operationId: RemoteControlEnvelopeValidation.requiredOperationId(operationId),
         body: RemoteControlRequestValidation.sessionBody(body, operation),
       }
-    else if (operation === 'sessions.finalize' || operation === 'sessions.remove')
+    else if (operation === 'sessions.finalize')
+      return {
+        ...base,
+        operation,
+        operationId: RemoteControlEnvelopeValidation.requiredOperationId(operationId),
+        body: RemoteControlRequestValidation.sessionFinalizeBody(body),
+      }
+    else if (operation === 'sessions.remove')
       return {
         ...base,
         operation,
         operationId: RemoteControlEnvelopeValidation.requiredOperationId(operationId),
         body: RemoteControlRequestValidation.sessionBody(body, operation),
       }
+    else if (operation === 'sessions.discardWorktree' || operation === 'sessions.cleanupWorktree')
+      return {
+        ...base,
+        operation,
+        operationId: RemoteControlEnvelopeValidation.requiredOperationId(operationId),
+        body: RemoteControlRequestValidation.sessionBody(body, operation),
+      }
+    else if (operation === 'sessions.retrySetup')
+      return {
+        ...base,
+        operation,
+        operationId: RemoteControlEnvelopeValidation.requiredOperationId(operationId),
+        body: RemoteControlRequestValidation.sessionRetrySetupBody(body),
+      }
+    else if (operation === 'sessions.worktree')
+      return { ...base, operation, body: RemoteControlRequestValidation.sessionBody(body, operation) }
     else if (operation === 'sessions.transcript')
       return { ...base, operation, body: RemoteControlRequestValidation.sessionBody(body, operation) }
     else if (operation === 'sessions.color')
@@ -302,6 +325,35 @@ export class RemoteControlRequestValidation {
     return {
       session: RemoteControlRequestValidation.sessionSelector(value.session),
       note: value.note,
+    }
+  }
+
+  private static sessionFinalizeBody(
+    input: unknown,
+  ): { session: RemoteControlSessionSelector; expect?: 'stop' } {
+    const value = RemoteControlEnvelopeValidation.object(input, 'sessions.finalize body')
+    RemoteControlEnvelopeValidation.keys(value, ['session', 'expect'], 'sessions.finalize body')
+    if (value.expect !== undefined && value.expect !== 'stop')
+      throw new RemoteControlValidationError('expect must be stop')
+    return {
+      session: RemoteControlRequestValidation.sessionSelector(value.session),
+      ...(value.expect === undefined ? {} : { expect: value.expect }),
+    }
+  }
+
+  private static sessionRetrySetupBody(
+    input: unknown,
+  ): { session: RemoteControlSessionSelector; acknowledgeSetup?: string } {
+    const value = RemoteControlEnvelopeValidation.object(input, 'sessions.retrySetup body')
+    RemoteControlEnvelopeValidation.keys(value, ['session', 'acknowledgeSetup'], 'sessions.retrySetup body')
+    const acknowledgeSetup = RemoteControlRequestValidation.optionalText(
+      value.acknowledgeSetup,
+      'acknowledgeSetup',
+      RemoteControlRequestValidation.idLengthConst,
+    )
+    return {
+      session: RemoteControlRequestValidation.sessionSelector(value.session),
+      ...(acknowledgeSetup === undefined ? {} : { acknowledgeSetup }),
     }
   }
 
@@ -668,10 +720,22 @@ export class RemoteControlRequestValidation {
 
   private static worktree(input: unknown): NonNullable<SessionCreateSpec['worktree']> {
     const value = RemoteControlEnvelopeValidation.object(input, 'worktree')
-    RemoteControlEnvelopeValidation.keys(value, ['slug', 'baseRef'], 'worktree')
+    RemoteControlEnvelopeValidation.keys(value, ['slug', 'baseRef', 'owner', 'removeWhenEnded'], 'worktree')
     const slug = RemoteControlEnvelopeValidation.text(value.slug, 'slug', 256)
     const baseRef = RemoteControlRequestValidation.optionalText(value.baseRef, 'baseRef', 1_024)
-    return { slug, ...(baseRef === undefined ? {} : { baseRef }) }
+    const owner = RemoteControlRequestValidation.optionalText(
+      value.owner,
+      'owner',
+      RemoteControlRequestValidation.pathLengthConst,
+    )
+    if (value.removeWhenEnded !== undefined && value.removeWhenEnded !== true)
+      throw new RemoteControlValidationError('removeWhenEnded must be true when given')
+    return {
+      slug,
+      ...(baseRef === undefined ? {} : { baseRef }),
+      ...(owner === undefined ? {} : { owner }),
+      ...(value.removeWhenEnded === true ? { removeWhenEnded: true as const } : {}),
+    }
   }
 
   private static string(input: unknown, name: string, maximumLength: number): string {

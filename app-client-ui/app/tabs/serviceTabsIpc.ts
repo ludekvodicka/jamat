@@ -92,8 +92,7 @@ export class ServiceTabsIpc extends ServiceIpcBase<typeof ServiceTabsIpc.channel
     })
     this.register('tabs:close-terminal-panel', (event, targetKey) => {
       this.requireMain(event.sender)
-      for (const owner of this.index.panelsOfTerminalTarget(targetKey))
-        this.windows.publishTo(owner.windowId, 'tabs:close-panel', owner.panel.panelId)
+      this.closeTerminalPanels(targetKey)
     })
     this.register('tabs:publish-terminal-restarted', (event, targetKey) => {
       // Any accepting window, unlike the two channels above it. `session.restart` is a
@@ -159,6 +158,12 @@ export class ServiceTabsIpc extends ServiceIpcBase<typeof ServiceTabsIpc.channel
     if (windowId === null)
       throw new Error('Unknown workspace renderer')
     return windowId
+  }
+
+  /** Every window drawing the target closes its panel; main also calls it for a session that removed itself. */
+  closeTerminalPanels(targetKey: string): void {
+    for (const owner of this.index.panelsOfTerminalTarget(targetKey))
+      this.windows.publishTo(owner.windowId, 'tabs:close-panel', owner.panel.panelId)
   }
 
   private requireMain(sender: WebContents): void {

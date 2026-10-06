@@ -11,7 +11,6 @@ import { ConfigStore } from '../../lib-orchestrator/configStore/configStore'
 import { FileChangesManager } from '../../lib-orchestrator/fileChangesManager/fileChangesManager'
 import { VcsStatusView } from '../../lib-orchestrator/fileChangesManager/vcsStatusView'
 import { GitCommitManager } from '../../lib-orchestrator/git/gitCommitManager'
-import { GitCheckpointStore } from '../../lib-orchestrator/git/gitCheckpointStore'
 import { GitInvoker } from '../../lib-orchestrator/git/gitInvoker'
 import { SvnCommitManager } from '../../lib-orchestrator/svn/svnCommitManager'
 import { SvnInvoker } from '../../lib-orchestrator/svn/svnInvoker'
@@ -44,6 +43,7 @@ import { AppCommands, type CommandId } from '../shared/commands'
 import { AutoUpdateMain } from '../shared/electron/autoUpdate/main/autoUpdateMain'
 import { ErrorText } from '../shared/errorText'
 import { FileViewerProtocolUrl } from '../shared/fileViewerProtocol'
+import { TerminalTargetCodec } from '../shared/terminalTarget'
 import type { RemoteControlListenerSettings } from '../shared/remoteControlSettings'
 import { SessionsGroupsState } from '../shared/sessionsGroupsState'
 import { AgentSettingsSection } from './agents/agentSettingsSection'
@@ -68,6 +68,7 @@ import { ServiceVersioningSettingsIpc } from './versioning/serviceVersioningSett
 import { ServiceVersioningCommitIpc } from './versioning/serviceVersioningCommitIpc'
 import { ExternalDiffLauncher } from './versioning/externalDiffLauncher'
 import { VersioningCommitManager } from './versioning/versioningCommitManager'
+import { SessionReviewPortAdapter } from './versioning/sessionReviewPortAdapter'
 import { ServiceWorktreeSettingsIpc } from './worktrees/serviceWorktreeSettingsIpc'
 import { VersioningSettings } from '../shared/versioningSettings'
 import { VersioningSettingsSection } from './versioning/versioningSettingsSection'
@@ -388,6 +389,9 @@ export class AppHub {
       autoStartHost: !context.smoke,
       onChanged: () => this.sessionsChanged(),
       onError: (message) => this.report(message),
+      // A session whose worktree ended goes as Remove takes it, and Remove's caller closes the tab.
+      onRemovedItself: (sessionId) =>
+        this.tabsIpc.closeTerminalPanels(TerminalTargetCodec.key({ kind: 'local', sessionId })),
       // Read per launch rather than captured once: `readSection` re-reads whenever the file's mtime
       // moved, so the switch in the tab reaches the next launch without a notification of its own.
       // The same shape and the same reason as `yoloFor` below: read per operation, so switching
@@ -478,12 +482,10 @@ export class AppHub {
       workspaceOwnerIdOf,
     )
     const commitGit = new GitInvoker()
-    const checkpointStore = new GitCheckpointStore(commitGit)
     this.commits = new VersioningCommitManager({
       messages: new VersioningCommitMessageStore(ClientStatePaths.commitMessagesFile(configIdentity, channel), (message) => this.report(message)),
       sessions: this.sessions,
       vcsStatus: new VcsStatusView(),
-      checkpointStore,
       fileAccess: (owner, snapshot, file) => this.fileChangesIpc.ownedFileAccess(owner, snapshot, file),
       snapshotOf: (owner, snapshot) => this.fileChangesIpc.ownedWorkingTreeSnapshot(owner, snapshot),
       git: new GitCommitManager(commitGit),
@@ -493,6 +495,7 @@ export class AppHub {
         this.broadcast('versioning:commit-changed')
         this.tabControlBroker.commitsChanged()
       },
+      worktreeCommitted: (scopeRoot) => this.sessions.noteWorktreeCommitted(scopeRoot),
     })
     this.versioningCommitIpc = new ServiceVersioningCommitIpc(this.commits, workspaceOwnerIdOf, this.fileChangesIpc, async (sessionId, vcs, scope) => {
       const info = this.sessions.snapshot().sessions.find((session) => session.sessionId === sessionId)
@@ -526,6 +529,10 @@ export class AppHub {
         returnWindowMilliseconds: () => VersioningSettings.returnWindowMilliseconds(configStore.readSection(VersioningSettingsSection.spec)),
       },
     )
+    // Bound late, like the resumed merge: the sessions are built before the commit dialog and its
+    // broker, and an SVN worktree's Commit opens its reviews there.
+    this.sessions.setReviewPort(new SessionReviewPortAdapter(this.tabControlBroker, this.commits,
+      (sessionId) => this.sessions.snapshot().sessions.find((session) => session.sessionId === sessionId)?.tabTitle ?? null))
     this.fileViewerIpc = new ServiceFileViewerIpc(
       this.fileViewer,
       this.sessions,

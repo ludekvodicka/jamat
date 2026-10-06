@@ -121,7 +121,7 @@ class FlowScreenText {
       options.token,
     )
     if (preview === null) return 'no worktree'
-    return `Worktree ${preview.branch}`
+    return `Worktree ${preview.slug}`
   }
 
   private static suggestsWorktree(state: FlowScreenState): boolean {

@@ -74,7 +74,7 @@ export function LauncherCreateScreen(props: {
       <ChoiceRow label="Name" current={state.field === 'name'}>
         {/* The number is not editable, so it is drawn beside the field rather than typed into it:
             putting it in the value would make backspace able to delete the thing that names the
-            branch. */}
+            worktree. */}
         <span className="jamat-launcher-create__name">
           {token !== null && (
             <span className="jamat-launcher-create__token">{`${token} - `}</span>
@@ -125,7 +125,7 @@ export function LauncherCreateScreen(props: {
           />
           <ChoiceCard
             title="Worktree"
-            note="runs in its own worktree and branch"
+            note="runs in its own worktree"
             glyph="◆"
             chosen={state.worktree}
             refusal={worktreeRefusal}
@@ -134,9 +134,7 @@ export function LauncherCreateScreen(props: {
         </div>
         {state.worktree && preview !== null && (
           <p className="jamat-launcher-create__note">
-            {'Branch '}
-            <code>{preview.branch}</code>
-            {', runs in '}
+            {'Runs in '}
             <code>{preview.path}</code>
             {', from HEAD'}
           </p>

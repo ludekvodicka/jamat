@@ -5,6 +5,7 @@ import { isAbsolute, join } from 'node:path'
 import { AtomicJsonFile } from '../../shared/atomicJsonFile'
 import { ErrorText } from '../../shared/errorText'
 import { type JsonDocumentReading, JsonDocumentStore } from '../../shared/jsonDocumentStore'
+import type { SessionWorktreeKind } from '../sessionManagerApi.types'
 import type { SessionRecord, SessionRecordsDocument } from './sessionRecord.types'
 
 export interface SessionRecordsStoreOptions {
@@ -28,8 +29,13 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
   private static readonly snapshotKeepConst = 10
   private static readonly snapshotPatternConst =
     /^session-records-\d+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$/
+  private static readonly finishResultsConst: readonly unknown[] = ['committed', 'partial',
+    'not-committed', 'out-of-date', 'updated', 'conflict', 'nothing', 'failed', 'interrupted']
+  private static readonly finishMainPatternConst = /^(?:none|updated|failed|merged:\d+|conflict:\d+)$/
   private records: SessionRecord[] = []
   private readonly pendingUserInput = new Map<string, number>()
+  /** How many records the read turned from a cut-short finish into an `interrupted` outcome. */
+  private interruptedFinishes = 0
 
   private constructor(
     file: string,
@@ -70,6 +76,9 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       options.report ?? ((message) => console.warn(message)),
     )
     await store.read()
+    if (store.interruptedFinishes > 0 && !await store.inTurn(() => store.commit(store.records, false)))
+      store.report(`Session records at ${file}: ${store.interruptedFinishes} interrupted worktree `
+        + 'finishes could not be written back; they read as interrupted until the next write')
     return store
   }
 
@@ -134,6 +143,23 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       const next = this.records.filter((record) => record.sessionId !== sessionId)
       if (next.length === this.records.length) return Promise.resolve(true)
       return this.commit(next, true)
+    })
+  }
+
+  /**
+   * A finish whose closing write failed twice would hold its session until a restart. Memory lets go
+   * of the phase; the file keeps it until the next write of any record lands, and a load before that
+   * reads the finish as interrupted.
+   */
+  async forgetFinish(sessionId: string): Promise<void> {
+    await this.inTurn(() => {
+      this.records = this.records.map((record) => {
+        if (record.sessionId !== sessionId || record.worktreeFinish === undefined) return record
+        const next = { ...record }
+        delete next.worktreeFinish
+        return next
+      })
+      return Promise.resolve(true)
     })
   }
 
@@ -261,7 +287,11 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       // - the next write of any record writes the whole document - so this line retires itself.
       delete (record as { presentation?: unknown }).presentation
       seen.add(record.sessionId)
-      records.push(record)
+      if (record.worktreeFinish !== undefined) {
+        records.push(SessionRecordsStore.interruptedFinishOf(record, Date.now()))
+        this.interruptedFinishes++
+      }
+      else records.push(record)
     }
     if (unverified > 0)
       this.report(`Codex identity migration: ${unverified} old inferred bindings are unverified; `
@@ -316,6 +346,10 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       ?? SessionRecordsStore.setupForProblem(record.setupFor)
       ?? SessionRecordsStore.worktreeProblem(record.worktree)
       ?? SessionRecordsStore.worktreeMergeProblem(record.worktreeMerge)
+      ?? SessionRecordsStore.worktreeFinishProblem(record.worktreeFinish)
+      ?? SessionRecordsStore.worktreeOutcomeProblem(record.worktreeOutcome)
+      ?? SessionRecordsStore.retiredWorktreeProblem(record.retiredWorktree)
+      ?? SessionRecordsStore.worktreeCleanupProblem(record.worktreeCleanup)
       ?? SessionRecordsStore.resolveForProblem(record.resolveFor)
       ?? SessionRecordsStore.flowIdProblem(record.flowId)
       ?? SessionRecordsStore.completedProblem(record.completed)
@@ -362,7 +396,110 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     for (const field of ['worktreePath', 'branch', 'baseCommit', 'repositoryRoot'] as const)
       if (!SessionRecordsStore.isFilledString(value[field]))
         return `worktree needs a ${field} string`
+    if (value.kind !== undefined && !SessionRecordsStore.isWorktreeKind(value.kind))
+      return `unknown worktree kind ${JSON.stringify(value.kind)}`
+    if (value.directoryId !== undefined && !SessionRecordsStore.isFilledString(value.directoryId))
+      return 'worktree directoryId must be a non-empty string'
     return null
+  }
+
+  private static worktreeFinishProblem(value: SessionRecord['worktreeFinish']): string | null {
+    if (value === undefined) return null
+    if (!value || typeof value !== 'object') return 'worktreeFinish must be an object'
+    if (value.phase !== 'updating' && value.phase !== 'reviewing'
+      && value.phase !== 'main-updating' && value.phase !== 'removing')
+      return `unknown finish phase ${JSON.stringify(value.phase)}`
+    if (typeof value.startedAt !== 'number' || !Number.isFinite(value.startedAt))
+      return 'worktreeFinish needs a startedAt number'
+    for (const field of ['scopeRoot', 'commitSessionId'] as const)
+      if (value[field] !== undefined && !SessionRecordsStore.isFilledString(value[field]))
+        return `worktreeFinish ${field} must be a non-empty string`
+    return null
+  }
+
+  private static worktreeOutcomeProblem(value: SessionRecord['worktreeOutcome']): string | null {
+    if (value === undefined) return null
+    if (!value || typeof value !== 'object') return 'worktreeOutcome must be an object'
+    if (!SessionRecordsStore.finishResultsConst.includes(value.result))
+      return `unknown finish result ${JSON.stringify(value.result)}`
+    if (!SessionRecordsStore.isStringList(value.revisions))
+      return 'worktreeOutcome revisions must be a list of strings'
+    if (typeof value.main !== 'string' || !SessionRecordsStore.finishMainPatternConst.test(value.main))
+      return `unknown finish main result ${JSON.stringify(value.main)}`
+    if (value.worktree !== 'removed' && value.worktree !== 'kept'
+      && value.worktree !== 'in-use' && value.worktree !== 'undeleted')
+      return `unknown finish worktree result ${JSON.stringify(value.worktree)}`
+    if (!SessionRecordsStore.isStringList(value.lines))
+      return 'worktreeOutcome lines must be a list of strings'
+    if (typeof value.at !== 'number' || !Number.isFinite(value.at))
+      return 'worktreeOutcome needs an at number'
+    return null
+  }
+
+  private static retiredWorktreeProblem(value: SessionRecord['retiredWorktree']): string | null {
+    if (value === undefined) return null
+    if (!value || typeof value !== 'object') return 'retiredWorktree must be an object'
+    if (!SessionRecordsStore.isFilledString(value.worktreePath))
+      return 'retiredWorktree needs a worktreePath string'
+    if (!SessionRecordsStore.isWorktreeKind(value.kind))
+      return `unknown retired worktree kind ${JSON.stringify(value.kind)}`
+    if (!SessionRecordsStore.isStringList(value.revisions))
+      return 'retiredWorktree revisions must be a list of strings'
+    if (typeof value.removedAt !== 'number' || !Number.isFinite(value.removedAt))
+      return 'retiredWorktree needs a removedAt number'
+    return null
+  }
+
+  private static worktreeCleanupProblem(value: SessionRecord['worktreeCleanup']): string | null {
+    if (value === undefined) return null
+    if (!value || typeof value !== 'object') return 'worktreeCleanup must be an object'
+    if (value.phase !== 'pending' && value.phase !== 'kept')
+      return `unknown cleanup phase ${JSON.stringify(value.phase)}`
+    if (value.trigger !== 'committed' && value.trigger !== 'removal-unfinished'
+      && value.trigger !== 'discard-unfinished' && value.trigger !== 'remove-when-ended'
+      && value.trigger !== 'requested')
+      return `unknown cleanup trigger ${JSON.stringify(value.trigger)}`
+    if (value.reason !== undefined && typeof value.reason !== 'string')
+      return 'worktreeCleanup reason must be a string'
+    if (typeof value.requestedAt !== 'number' || !Number.isFinite(value.requestedAt))
+      return 'worktreeCleanup needs a requestedAt number'
+    if (typeof value.attempts !== 'number' || !Number.isSafeInteger(value.attempts) || value.attempts < 0)
+      return 'worktreeCleanup needs an attempts count'
+    if (value.lastAttemptAt !== undefined
+      && (typeof value.lastAttemptAt !== 'number' || !Number.isFinite(value.lastAttemptAt)))
+      return 'worktreeCleanup lastAttemptAt must be a number'
+    return null
+  }
+
+  private static isWorktreeKind(value: unknown): value is SessionWorktreeKind {
+    return value === 'svn' || value === 'git'
+  }
+
+  private static isStringList(value: unknown): value is readonly string[] {
+    return Array.isArray(value) && value.every((entry) => typeof entry === 'string')
+  }
+
+  /**
+   * A finish cannot outlive the client process that ran it, so a record still carrying one was cut
+   * short. It becomes an `interrupted` outcome naming the phase, and the next Finish reads the disk.
+   */
+  private static interruptedFinishOf(record: SessionRecord, now: number): SessionRecord {
+    const finish = record.worktreeFinish
+    if (finish === undefined) return record
+    const scope = finish.scopeRoot === undefined ? '' : ` in ${finish.scopeRoot}`
+    return {
+      ...record,
+      worktreeFinish: undefined,
+      worktreeOutcome: {
+        result: 'interrupted',
+        // Commits of an earlier finish are still this worktree's; the next Finish no longer recovers them.
+        revisions: record.worktreeOutcome?.revisions ?? [],
+        main: 'none',
+        worktree: 'kept',
+        lines: [`INTERRUPTED during ${finish.phase}${scope}`],
+        at: now,
+      },
+    }
   }
 
   /**

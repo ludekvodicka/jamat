@@ -648,10 +648,11 @@ describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', ()
   })
 
   /**
-   * The title is what the slug comes from, so the branch carries the number by construction. That is
-   * also how the number is read back out of the records without a field of its own.
+   * The title is what the slug comes from, so the folder carries the number by construction. That is
+   * also how the number is read back out of the records without a field of its own. No branch: the
+   * library decides by versioning mode whether there is one.
    */
-  it('builds the branch and the worktree path from the title', () => {
+  it('builds the worktree path from the title, and no branch', () => {
     const run = Run.numbered().on(
       { input: 'nameChanged', name: 'session wizard' },
       { input: 'chooseIsolation', worktree: true },
@@ -660,7 +661,6 @@ describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', ()
 
     expect(preview).toEqual({
       slug: '015-session-wizard',
-      branch: 'jamat/015-session-wizard',
       path: 'C:\\Projects\\NodeJs\\AppJamatV3\\.worktrees\\015-session-wizard',
     })
   })

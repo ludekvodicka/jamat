@@ -63,7 +63,12 @@ export interface SessionCreateSpec {
      */
     model?: string
   }
-  worktree?: { slug: string; baseRef?: string }
+  /**
+   * `owner` is the directory the worktree is cut from: the project or a directory below it. Absent
+   * means the project itself. `removeWhenEnded` has an SVN worktree removed once the session's
+   * process ended and nothing is left in it; a Git worktree ignores it and keeps its Finish.
+   */
+  worktree?: { slug: string; baseRef?: string; owner?: string; removeWhenEnded?: true }
   title?: string
   /**
    * The number this session is to carry INSTEAD of one from the project's counter: `i34` for issue
@@ -262,12 +267,98 @@ export interface SessionVcsInfo {
   dirty: boolean
 }
 
+export type SessionWorktreeKind = 'svn' | 'git'
+
+/** What Finish offers for a worktree, composed by the library; a surface never derives it from the kind. */
+export type SessionFinishChoice = 'commit' | 'merge' | 'keep' | 'discard'
+
+export type SvnFinishPhase = 'updating' | 'reviewing' | 'main-updating' | 'removing'
+
+export type SvnFinishResult = 'committed' | 'partial' | 'not-committed' | 'out-of-date'
+  | 'updated' | 'conflict' | 'nothing' | 'failed' | 'interrupted'
+
+export type SvnFinishMainResult = 'none' | 'updated' | `merged:${number}` | `conflict:${number}` | 'failed'
+
+export type SvnFinishWorktreeResult = 'removed' | 'kept' | 'in-use' | 'undeleted'
+
+/** The result of the last SVN finish of a session, the twin of the bash helper's RESULT line. */
+export interface SessionWorktreeOutcome {
+  result: SvnFinishResult
+  /** `<repository URL>:r<N>`, ordered by repository URL, then revision. */
+  revisions: readonly string[]
+  main: SvnFinishMainResult
+  worktree: SvnFinishWorktreeResult
+  /** RECOVERED, UPDATED, CONFLICT, UNVERIFIED, EXTERNAL PUBLISHED, MAIN ... lines, verbatim. */
+  lines: readonly string[]
+  at: number
+}
+
 export interface SessionWorktreeInfo {
   worktreePath: string
+  /** git: the branch; svn: the checked-out URL. */
   branch: string
+  /** git: the commit; svn: `r<rev>`. */
   baseCommit: string
+  /** A snapshot from an older peer carries none; `SessionsSnapshotValidation` reads that as git. */
+  kind: SessionWorktreeKind
+  /** A snapshot from an older peer carries none; `SessionsSnapshotValidation` composes them by kind. */
+  choices: readonly SessionFinishChoice[]
   diff: { added: number; removed: number; changedFiles: number; capturedAt: number } | null
+  /** Always false for svn: an SVN worktree takes everyone else's commits when it finishes. */
   baseMoved: boolean
+  /** Present only while an SVN finish of this worktree runs. */
+  finish?: { phase: SvnFinishPhase; scopeRoot?: string }
+  outcome?: SessionWorktreeOutcome
+  /**
+   * Present while the worktree waits to be removed after the session's end, or was kept by that
+   * removal. `summary` is the sentence a surface shows; `reason` is the record's own word.
+   */
+  cleanup?: SessionWorktreeCleanupInfo
+}
+
+export type SessionWorktreeCleanupPhase = 'pending' | 'kept'
+
+export interface SessionWorktreeCleanupInfo {
+  phase: SessionWorktreeCleanupPhase
+  reason?: string
+  summary: string
+}
+
+/** Where a removed worktree's work went. Such a session is never reopened, restarted or forked. */
+export interface SessionRetiredWorktreeInfo {
+  worktreePath: string
+  revisions: readonly string[]
+}
+
+/** The directory a session's worktree occupies, as a script reads it: git names no URL and no revision. */
+export interface SessionWorktreePlace {
+  kind: SessionWorktreeKind
+  worktreePath: string
+  url: string | null
+  baseRevision: number | null
+}
+
+/** What a create answers. A session in a catalog project carries its number, a worktree session its place. */
+export interface SessionCreated {
+  sessionId: string
+  tabTitle: string
+  number?: string
+  worktree?: SessionWorktreePlace
+}
+
+/**
+ * Everything a script may ask about one session's worktree, from its record: the worktree while it
+ * stands, the tombstone once it was removed, an SVN finish while one runs, the last outcome and the
+ * removal after the session's end: `pending` waits for the process to end or for its reason to go
+ * (`in use`, `unlanded r<N>: <paths>`), `kept` is final until a new trigger (`<N> changes`).
+ */
+export interface SessionWorktreeState {
+  sessionId: string
+  worktree: SessionWorktreePlace | null
+  retired: { worktreePath: string; revisions: readonly string[]; removedAt: number } | null
+  finish: { phase: SvnFinishPhase; scopeRoot: string | null } | null
+  outcome: SessionWorktreeOutcome | null
+  cleanup: { phase: SessionWorktreeCleanupPhase; reason: string | null } | null
 }
 
 /**
@@ -349,6 +440,7 @@ export interface SessionInfo {
   project: ProjectBinding
   agent?: { agentId: SessionAgentId; nativeSessionId?: string }
   worktree?: SessionWorktreeInfo
+  retiredWorktree?: SessionRetiredWorktreeInfo
   /** Absent = unmeasured, or no VCS governs the directory. Absence is not a measurement. */
   vcs?: SessionVcsInfo
   /** Absent = None. A name only; what it looks like is the renderer's to decide. */
@@ -464,6 +556,8 @@ export type SessionsOpErrorCode =
   | 'missing-base'
   | 'worktree-exists'
   | 'git-failed'
+  /** svn could not run or refused an SVN worktree operation; its own words travel in the detail. */
+  | 'svn-failed'
   | 'already-running'
   | 'spawn-failed'
   | 'boot-timeout'
@@ -486,9 +580,24 @@ export type SessionsOpErrorCode =
   /**
    * Another merge is already running against this repository, or the main copy is mid-merge:
    * one somebody left unfinished, or one this merge itself stopped on conflicts. A foreign
-   * merge is never aborted, so the answer says where it is and stops.
+   * merge is never aborted, so the answer says where it is and stops. Also the answer while an
+   * SVN finish holds the session.
    */
   | 'merge-pending'
+  /**
+   * The session's worktree was removed or is gone. It is never started again in the project
+   * directory instead; the detail names the revisions its work went to.
+   */
+  | 'worktree-removed'
+  /**
+   * An SVN finish took other commits into the worktree that touch the project of its change set, so
+   * nothing was committed: the tests ran without them. Finish again commits as it is.
+   */
+  | 'worktree-updated'
+  /** Updating the SVN worktree left conflicts; the detail names them and nothing was committed. */
+  | 'worktree-conflict'
+  /** Committing an SVN worktree needs this client's commit dialog, and there is none to open. */
+  | 'review-unavailable'
 
 export type SessionsOpResult<T = void> =
   | { ok: true; value: T }

@@ -204,6 +204,13 @@ class RemoteControlServerHarness {
         reopenSession: async () => ({ ok: true, value: undefined }),
         finalizeSession: async () => ({ ok: true, value: undefined }),
         removeSession: async () => ({ ok: true, value: undefined }),
+        discardWorktree: async () => ({ ok: true, value: undefined }),
+        retrySetup: async () => ({ ok: true, value: undefined }),
+        requestWorktreeCleanup: async () => ({ ok: true, value: undefined }),
+        worktreeOf: async (sessionId) => ({
+          ok: true,
+          value: { sessionId, worktree: null, retired: null, finish: null, outcome: null, cleanup: null },
+        }),
         setSessionColor: async () => ({ ok: true, value: undefined }),
         setSessionDetails: async () => ({ ok: true, value: { titleChanged: false, notifyAgent: null } }),
       },

@@ -160,9 +160,11 @@ candidates listed, exactly as a shared allocated number does.
 | Transcript history | `sessions transcript <session selector> [--working-directory PATH]` |
 | Create shell | `sessions create [--directory PATH \| --category-id ID --project-path PATH] [--title TEXT] [--number LABEL] [--color NAME] [--group ID] [--open-tab]` |
 | Create agent | `sessions create --agent claude\|codex [--mode new\|continue\|resume\|fork] [--native-session-id ID] [--fork-parent-id ID] [--prompt TEXT]` plus directory/title options. `--native-session-id` belongs to `--mode resume`, or to a Claude `new`/`fork`; a Codex `new`/`fork` carrying it is refused as `invalid-spec`. |
-| Worktree session | Add `--worktree SLUG [--base-ref REF]` |
-| Reopen/finalize | `sessions reopen\|finalize <session selector> [--working-directory PATH]` |
+| Worktree session | Add `--worktree SLUG [--worktree-owner DIR] [--worktree-remove-when-ended] [--base-ref REF]`; see Worktree sessions below |
+| Reopen/finalize | `sessions reopen\|finalize <session selector> [--working-directory PATH]`; `finalize` also takes `--expect stop` |
+| Read a session's worktree | `sessions worktree <session selector> [--working-directory PATH]` |
 | Remove an ended session | `sessions remove <session selector> [--working-directory PATH]` |
+| End or repair a worktree session | `sessions discard-worktree\|cleanup-worktree <session selector>`, `sessions retry-setup <session selector> [--acknowledge-setup HASH]`; see Worktree sessions below |
 | Recolour, refile | `sessions color <session selector> --color NAME`, `sessions group <session selector> --group ID` |
 | Read, write, clear the note | `sessions note <session selector>` reads; `--note TEXT` writes; `--clear` takes it away |
 | Tabs | `tabs list`, `tabs open <session selector>`, `tabs open-file <session selector> --path PATH`, `tabs focus\|close --panel-id ID` |
@@ -184,6 +186,111 @@ are local-only. The local controller and the selected remote endpoint must be ru
 
 Mutations accept `--operation-id ID`; the CLI generates one when omitted and returns it. Session
 creation also accepts `--flow-id ID`, `--acknowledge-setup HASH` and `--open-tab`.
+
+### Worktree sessions
+
+`--worktree SLUG` runs the session in its own worktree in `<owner>/.worktrees/<NNN>-<slug>`. The
+session's number is given before the worktree is made, so the folder carries it; a create with
+`--number i34` gets `i34-<slug>`. What kind of worktree it is depends on the target's versioning mode
+and on the project, never on an option:
+
+- **`checkpoints` mode, owner in an SVN working copy:** a fresh `svn checkout` of the owner's URL at
+  HEAD, also when the project has a Git repository of its own beside it. `.worktrees` must be ignored
+  by SVN (`global-ignores` in the Subversion config), or the create is refused. `--base-ref` is
+  refused: an SVN worktree always starts at HEAD.
+- **`checkpoints` mode, project in no SVN working copy but with a Git repository of its own:** the
+  Git worktree of `git` mode, on branch `jamat/<folder>`.
+- **`checkpoints` mode, neither:** refused as `operation-failed` with source code `invalid-spec`.
+- **`git` mode:** the Git worktree of the project's repository, as always.
+
+`--worktree-owner DIR` names the directory an SVN worktree checks out, at or below the project, for
+example one member of a product group. A relative path resolves against the CLI's working directory.
+It is refused for a Git worktree, outside the project, inside `.worktrees`, and for a working-copy
+root that holds other catalog projects.
+
+`--worktree-remove-when-ended` has AppJamatV3 remove an SVN worktree by itself once the session's
+process ended, with no Finish (a Git worktree ignores it). Without it, a session's worktree stays
+until Finish, unless a Jamat commit review inside the worktree committed (or went to TortoiseSVN), or
+a Finish Commit or Discard could not remove it because something held it. In every case the removal
+waits about 30 seconds after the end, then:
+
+- **Changes left** (unversioned files included, ignored files not): the worktree is **kept** for
+  good, `cleanup` reads `{"phase": "kept", "reason": "<N> changes"}` (`"1 change"` for one). Only a new commit review in the
+  worktree, `sessions cleanup-worktree` or Finish judges it again.
+- **A commit of the worktree the main copy lacks:** it stays `pending` with reason
+  `unlanded r<N>: <paths>`. The removal never writes the main copy; it goes once the main copy holds
+  r<N> (an `svn update` there, another landing or Finish). It is asked again at every client start and
+  then about every 10 minutes.
+- **Held by a process:** `pending` with reason `in use`, asked again soon and then every 10 minutes.
+- **Otherwise** the worktree is removed by identity, and the session with it, as after a Finish.
+
+The create value's `session` then also carries `number` (absent outside a catalog project) and
+`worktree`: `{ "kind": "svn"|"git", "worktreePath", "url", "baseRevision" }`, where `url` and
+`baseRevision` are `null` for Git. Read the path from there; never search `.worktrees` for it.
+
+```bash
+node <wrapper> sessions create --category-id apps --project-path Q:/Apps/Group --agent claude \
+  --worktree fix-login --worktree-owner Q:/Apps/Group/Member
+# -> {"session": {"sessionId": "...", "tabTitle": "...", "number": "014",
+#      "worktree": {"kind": "svn", "worktreePath": "Q:/Apps/Group/Member/.worktrees/014-fix-login",
+#                   "url": "https://svn.example/repos/Group/Member", "baseRevision": 4120}}, ...}
+node <wrapper> sessions worktree --number 014
+node <wrapper> sessions finalize --number 014 --expect stop
+```
+
+`sessions worktree` answers `{ "sessionId", "worktree", "retired", "finish", "outcome", "cleanup" }`
+from the session's record: `worktree` while it stands (as above, or `null`), `retired` once it was
+removed (`worktreePath`, `revisions`, `removedAt`), `finish` while an SVN finish runs (`phase`:
+`updating`, `reviewing`, `main-updating` or `removing`, and `scopeRoot` during a review), and
+`outcome`, the last SVN finish (`result`, `revisions`, `main`, `worktree` and its verbatim `lines`),
+and `cleanup`, the removal after the session's end (`phase` `pending` or `kept`, and `reason` or
+`null`; `null` when none was asked for). It is local-only (no `--computer`).
+
+**Finish of a worktree session.** The first `sessions finalize` stops the session. The next one
+finishes the worktree: Git merges the branch back, as before. SVN updates the worktree, opens one
+Jamat commit review per changed working copy (changed externals first) and answers once the first
+review is open; the person commits there. AppJamatV3 then proves the commit, updates the main copy
+and removes the worktree; read the result with `sessions worktree`. An update that brought other
+commits into the project of the change set answers `conflict` (exit 4) with source code
+`worktree-updated`, and an update conflict `worktree-conflict`; nothing was committed, and the
+detail names the paths. Reopening a session whose worktree was removed or is gone answers
+`conflict` with `worktree-removed`; it never runs in the project directory instead. A client without its commit dialog answers
+`operation-failed` with `review-unavailable`.
+
+**A successful ending removes the session.** When an SVN finish ends `committed` or `nothing` with
+the main copy `updated`, `merged:N` or `none` and the worktree removed, when a Git Merge back landed
+and its worktree was torn down, or when a Discard removed the worktree, AppJamatV3 then removes the
+session as `sessions remove` does (record, row and tab). `sessions finalize` answers as before; a
+later `sessions worktree` or any other call for that session answers `not-found`. Every other outcome
+keeps the session with its outcome, and a Remove that is refused keeps it too and is reported.
+
+**`--expect stop` finalizes only when the next step is the stop.** Any other step answers
+`conflict` (exit 4) with source code `live-refused` and does nothing. Use it whenever you mean to
+stop a running session: without it, a session that ended meanwhile starts its Finish on that call.
+
+**Discard, cleanup and a failed setup without the window.** These do what the window does, on this
+computer only (no `--computer`), and each answers `{ "sessionId" }`:
+
+- `sessions discard-worktree` is the Finish overlay's Discard: the worktree goes with its
+  uncommitted work and nothing is brought home, and the session is removed. A running session or a
+  finish in progress answers `conflict` (exit 4) with source code `live-refused` or `merge-pending`.
+  Ask the person before you discard work you did not make.
+- `sessions cleanup-worktree` asks AppJamatV3 to remove an SVN worktree once the session's process
+  ended, judged at the next pass (about 30 seconds after the end at the earliest). It keeps every
+  check above: changes keep the worktree `kept`, an unlanded commit keeps it `pending`. Use it after
+  you dealt with the changes of a `kept` worktree. Read the result with `sessions worktree`.
+- `sessions retry-setup` runs the failed dependency install of a worktree session again. A setup the
+  project has not acknowledged answers `operation-failed` with `data.setup`; repeat the command with
+  `--acknowledge-setup <data.setup.hash>` only when the person agreed to that install.
+
+There is no command that commits inside a review: a commit stays the person's act. Follow a review
+with `commit status` and the finish with `sessions worktree`.
+
+**Older AppJamatV3.** `--worktree-owner`, `--worktree-remove-when-ended`, `--expect` and
+`sessions worktree` need the `sessions.worktree` capability of the selected controller. Without it
+the CLI answers `unavailable` (exit 6) naming `sessions.worktree`, and sends nothing, because an
+older build refuses the whole request over an option it does not know. With `--computer`, the target computer may predate the
+options although the local controller has them; it then refuses the request as `invalid-request`.
 
 ### The session note
 
@@ -286,8 +393,9 @@ Inside the session, use:
 node "<skill>/scripts/jamat-v3.mjs" commit-svn-jamat --self --message-file "Q:/temp/message.txt"
 ```
 
-Use `commit-git-jamat` for an ordinary human Git repository; checkpoint worktrees are refused.
-Git commits never push. `--path` selects one file or directory, including outside the session cwd.
+Use `commit-git-jamat` for an ordinary human Git repository, also from a Git worktree session.
+Inside an SVN worktree session `commit-svn-jamat --self` reviews the worktree's own changes; Finish
+of that session commits through the same review. Git commits never push. `--path` selects one file or directory, including outside the session cwd.
 Relative paths resolve against the session cwd. `--paths-file` accepts a JSON array of 1 to 2,000
 literal paths, resolved against the CLI cwd; it cannot be combined with `--path`. File selections
 remain exact through review, reload and Tortoise fallback, including required new parents. Checked SVN

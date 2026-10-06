@@ -257,7 +257,7 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
       diffExecutor: new FileDiffComputer(),
       workingSources: new FileChangesWorkingTreeSources({
         svn: adapter,
-        checkpointStore: { existingContextOf: async () => ({ ok: true, value: null }), worktreeBelongsToStore: async () => false },
+        checkpointStore: { existingContextOf: async () => ({ ok: true, value: null }) },
       }),
     })
     const result = await managerInstance.workingTree({ sessionId: 'session', cwd: root, agent: null, worktree: null }, 'svn')

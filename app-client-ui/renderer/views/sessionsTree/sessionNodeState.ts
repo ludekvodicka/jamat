@@ -3,6 +3,11 @@ import type {
   SessionInfo,
   SessionOperation,
   SessionSetupInfo,
+  SessionWorktreeCleanupPhase,
+  SessionWorktreeInfo,
+  SessionWorktreeKind,
+  SvnFinishPhase,
+  SvnFinishResult,
 } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 
 /**
@@ -180,6 +185,79 @@ export class SessionNodeState {
     else if (badge === 'merging') return 'Merging the worktree back to its base'
     else
       throw new Error(`Unknown session merge badge: ${JSON.stringify(badge)}`)
+  }
+
+  /** The word a surface names a worktree's kind with, in a title or a tooltip. */
+  static worktreeKindLabelOf(kind: SessionWorktreeKind): string {
+    if (kind === 'git') return 'Git'
+    else if (kind === 'svn') return 'SVN'
+    else
+      throw new Error(`Unknown worktree kind: ${JSON.stringify(kind satisfies never)}`)
+  }
+
+  /** The phase of a running SVN finish, beside the merge badge; null while none runs. */
+  static finishBadgeOf(finish: SessionWorktreeInfo['finish']): SvnFinishPhase | null {
+    if (finish === undefined) return null
+    const phase = finish.phase
+    if (phase === 'updating' || phase === 'reviewing' || phase === 'main-updating'
+      || phase === 'removing')
+      return phase
+    else
+      throw new Error(`Unknown finish phase: ${JSON.stringify(phase satisfies never)}`)
+  }
+
+  /** What the finish word says when it is pointed at; a review names the scope it waits for. */
+  static finishTitleOf(finish: SessionWorktreeInfo['finish']): string | null {
+    const phase = SessionNodeState.finishBadgeOf(finish)
+    if (phase === null) return null
+    if (phase === 'updating') return 'Updating the worktree to HEAD before the review'
+    else if (phase === 'reviewing')
+      return `Waiting for the commit review of ${finish?.scopeRoot ?? 'the worktree'}`
+    else if (phase === 'main-updating') return 'Updating the main copy with what was committed'
+    else if (phase === 'removing') return 'Removing the worktree'
+    else
+      throw new Error(`Unknown finish phase: ${JSON.stringify(phase satisfies never)}`)
+  }
+
+  /**
+   * How the last SVN finish ended. A running finish outranks it: what the row says is what is
+   * happening now, and the outcome comes back when that finish writes its own.
+   */
+  static outcomeBadgeOf(worktree: SessionWorktreeInfo | undefined): SvnFinishResult | null {
+    if (worktree?.outcome === undefined || worktree.finish !== undefined) return null
+    const result = worktree.outcome.result
+    if (result === 'committed' || result === 'partial' || result === 'not-committed'
+      || result === 'out-of-date' || result === 'updated' || result === 'conflict'
+      || result === 'nothing' || result === 'failed' || result === 'interrupted')
+      return result
+    else
+      throw new Error(`Unknown finish result: ${JSON.stringify(result satisfies never)}`)
+  }
+
+  /**
+   * The finish's own lines, verbatim: they already name the paths, the revisions, how many changes
+   * were left and what to do next, and a second wording here would drift from them.
+   */
+  static outcomeTitleOf(worktree: SessionWorktreeInfo | undefined): string | null {
+    const result = SessionNodeState.outcomeBadgeOf(worktree)
+    if (result === null || worktree?.outcome === undefined) return null
+    const lines = worktree.outcome.lines
+    return lines.length > 0 ? lines.join('\n') : `The last finish ended ${result}`
+  }
+
+  /**
+   * The removal after the session's end, once it has something to say: a cleanup that was asked
+   * for and never judged is the normal state of a running worktree session, and the row stays quiet
+   * about it. A running finish outranks it, as it outranks the outcome.
+   */
+  static cleanupBadgeOf(worktree: SessionWorktreeInfo | undefined): SessionWorktreeCleanupPhase | null {
+    const cleanup = worktree?.cleanup
+    if (cleanup === undefined || worktree?.finish !== undefined) return null
+    const phase = cleanup.phase
+    if (phase === 'kept') return phase
+    else if (phase === 'pending') return cleanup.reason === undefined ? null : phase
+    else
+      throw new Error(`Unknown cleanup phase: ${JSON.stringify(phase satisfies never)}`)
   }
 
   /** Counted by the project rows, so `starting` counts: it is a session on its way, not an absence. */

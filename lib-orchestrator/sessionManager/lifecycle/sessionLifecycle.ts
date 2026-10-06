@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { stat } from 'node:fs/promises'
 import { basename } from 'node:path'
 
 import type {
@@ -9,13 +10,13 @@ import type {
   RuntimeResult,
   RuntimeSessionInfo,
 } from '../../../app-host/app/wire/hostWire.js'
-import type { GitResult, WorktreeFacts } from '../../git/git.types'
 import type { HostCallResult } from '../../hostClient/hostClient.types'
 import type { DeclaredSetup, SetupResolution } from '../../projectSetup/projectSetup.types'
 import { AgentPresets, type SessionAgentSpec } from '../launch/agentPresets'
 import { ClaudeTrustSeed, type ClaudeTrustSeedResult } from '../launch/claudeTrustSeed'
 import type { CodexSessionFiles } from '../launch/codexSessionFiles'
-import { GitCodes } from './gitCodes'
+import { PathCompare } from '../../shared/pathCompare'
+import { Slug } from '../../shared/slug'
 import { SetupFlow } from './setupFlow'
 import { OperationOutcomes } from './operationOutcomes'
 import { LaunchPlanner, type LaunchPlanOptions } from '../launch/launchPlanner'
@@ -23,6 +24,7 @@ import type {
   SessionRecord,
   SessionRecordAgent,
   SessionRecordSetupCommand,
+  SessionRecordWorktree,
 } from '../records/sessionRecord.types'
 import { SessionColors } from '../sessionColors'
 import { SessionLimits } from '../sessionLimits'
@@ -43,6 +45,7 @@ import type {
 } from '../sessionManagerApi.types'
 import { LaunchBackoff } from './launchBackoff'
 import { Reconciler, type ReconcileChange } from './reconciler'
+import { WorktreeCleanupPacing } from './worktreeCleanupPacing'
 
 /** What this class asks of the Host: five operations, all of them answering with a value. */
 export interface SessionHostPort {
@@ -62,17 +65,28 @@ export interface SessionHostPort {
 }
 
 /**
- * The one thing a session wants from git. Tearing a worktree down is deliberately not on it: the
- * teardown is `worktree remove --force` together with `branch -d`, both under a user who has said
- * what should happen to the work inside, and that belongs to `WorktreeMergeFlow` rather than to a
- * record being deleted. What `remove` does instead is SAY what it leaves - see there.
+ * What a worktree create asks for. `folder` is the final directory name, the session number already
+ * in front; `owner` is the directory an SVN worktree checks out, at or below `projectRoot`.
+ */
+export interface WorktreeRequest {
+  projectRoot: string
+  owner?: string
+  folder: string
+  baseRef?: string
+}
+
+export type WorktreeProvision =
+  | { ok: true; value: SessionRecordWorktree }
+  | { ok: false; code: SessionsOpErrorCode; detail: string }
+
+/**
+ * The one thing a session wants of a worktree at create. Tearing one down is deliberately not on
+ * it: that is a finish, under a person who has said what should happen to the work inside, and it
+ * belongs to the finish flows rather than to a record being deleted. What `remove` does instead is
+ * SAY what it leaves - see there.
  */
 export interface SessionWorktreePort {
-  create(
-    repositoryRoot: string,
-    slug: string,
-    baseRef?: string,
-  ): Promise<GitResult<WorktreeFacts>>
+  create(request: WorktreeRequest): Promise<WorktreeProvision>
 }
 
 /**
@@ -142,11 +156,22 @@ export interface SessionLifecycleDeps {
    */
   modelFor?: (agentId: SessionRecordAgent['agentId']) => string | undefined
   effortFor?: (agentId: SessionRecordAgent['agentId']) => string | undefined
+  /**
+   * Whether a Finish or Discard of this client has begun on a session whose record does not say so
+   * yet: its first phase write is still on the way. Absent means none ever begins.
+   */
+  finishing?: (sessionId: string) => boolean
   /** Injected by tests; the default answers Claude's trust dialog in the file it reads it from. */
   seedClaudeTrust?: (cwd: string) => ClaudeTrustSeedResult
   /** Both are injected by tests only. Ids are v4 UUIDs because Claude's `--session-id` demands one. */
   newId?: () => string
   now?: () => number
+}
+
+/** A worktree a session can no longer be started in, and where its work went. */
+interface GoneWorktree {
+  worktreePath: string
+  revisions: readonly string[]
 }
 
 export type ReopenRoute =
@@ -194,12 +219,17 @@ export class SessionLifecycle {
   private readonly claudeTitles: SessionClaudeTitlesPort
   private readonly report: (message: string) => void
   private resumeMerge: ((sessionId: string) => void) | null
+  /** Judges and removes a worktree whose cleanup is due, detached; unwired, a pending cleanup waits. */
+  private cleanWorktree: ((sessionId: string) => void) | null = null
   private readonly yoloFor: (agentId: SessionRecordAgent['agentId']) => boolean
   private readonly modelFor: (agentId: SessionRecordAgent['agentId']) => string | undefined
   private readonly effortFor: (agentId: SessionRecordAgent['agentId']) => string | undefined
+  private readonly finishing: (sessionId: string) => boolean
   private readonly seedClaudeTrust: (cwd: string) => ClaudeTrustSeedResult
   private readonly newId: () => string
   private readonly now: () => number
+  /** This client process's start: the first cleanup judgement after it is always due. */
+  private readonly startedAt: number
   private codexStartupNamingDone = false
   /**
    * The install machine, carved out of this class. It launches records the way this class does, so
@@ -221,10 +251,12 @@ export class SessionLifecycle {
     this.yoloFor = deps.yoloFor ?? (() => false)
     this.modelFor = deps.modelFor ?? (() => undefined)
     this.effortFor = deps.effortFor ?? (() => undefined)
+    this.finishing = deps.finishing ?? (() => false)
     this.seedClaudeTrust = deps.seedClaudeTrust
       ?? ((cwd) => ClaudeTrustSeed.seed(cwd, ClaudeTrustSeed.defaultPath()))
     this.newId = deps.newId ?? (() => randomUUID())
     this.now = deps.now ?? (() => Date.now())
+    this.startedAt = this.now()
     this.setupFlow = new SetupFlow({
       records: this.records,
       host: this.host,
@@ -313,6 +345,63 @@ export class SessionLifecycle {
    */
   setResumeMerge(resume: (sessionId: string) => void): void {
     this.resumeMerge = resume
+  }
+
+  /** Wired after construction for the reason `setResumeMerge` is: the finish flow needs this store loaded. */
+  setCleanWorktree(clean: (sessionId: string) => void): void {
+    this.cleanWorktree = clean
+  }
+
+  /**
+   * A Jamat review committed from `scopeRoot`. When that lies in a session's SVN worktree, the
+   * worktree is removed once the session's process ended and nothing is left in it. A Finish removes
+   * its own worktree, and a cleanup already pending keeps its trigger: a Discard that did not finish
+   * must not start counting the changes it threw away.
+   */
+  async noteWorktreeCommitted(scopeRoot: string): Promise<SessionsOpResult> {
+    const record = this.records.list().find((candidate) => candidate.worktree?.kind === 'svn'
+      && PathCompare.isInside(candidate.worktree.worktreePath, scopeRoot))
+    if (!record || record.worktreeFinish !== undefined || this.finishing(record.sessionId)
+      || record.worktreeCleanup?.phase === 'pending')
+      return { ok: true, value: undefined }
+    if (!await this.records.put({ ...record, worktreeCleanup: WorktreeCleanupPacing.pending('committed', this.now()) }))
+      return OperationOutcomes.latched()
+    return { ok: true, value: undefined }
+  }
+
+  /**
+   * A caller asks for the removal of an SVN worktree once the session's process ended, and for a
+   * judgement at the next pass. The checks stay: changes keep the worktree, an unlanded commit waits.
+   * A pending cleanup keeps its trigger, so an unfinished Discard is not turned into one that keeps
+   * the changes it threw away.
+   */
+  async requestWorktreeCleanup(sessionId: string): Promise<SessionsOpResult> {
+    const record = this.records.get(sessionId)
+    if (!record) return { ok: false, code: 'not-found', detail: `No session ${sessionId}` }
+    if (record.retiredWorktree !== undefined)
+      return SessionLifecycle.goneRefusal(sessionId, {
+        worktreePath: record.retiredWorktree.worktreePath,
+        revisions: record.retiredWorktree.revisions,
+      })
+    const worktree = record.worktree
+    if (worktree === undefined)
+      return { ok: false, code: 'invalid-spec', detail: `Session ${sessionId} has no worktree` }
+    const kind = worktree.kind ?? 'git'
+    if (kind === 'git')
+      return {
+        ok: false,
+        code: 'invalid-spec',
+        detail: `${worktree.worktreePath} is a Git worktree; only an SVN worktree is removed after its session`,
+      }
+    else if (kind !== 'svn') throw new Error(`Unknown worktree kind: ${JSON.stringify(kind satisfies never)}`)
+    const finishing = this.finishingRefusal(record)
+    if (finishing) return finishing
+    const current = record.worktreeCleanup
+    const worktreeCleanup = current?.phase === 'pending'
+      ? WorktreeCleanupPacing.pending(current.trigger, current.requestedAt)
+      : WorktreeCleanupPacing.pending('requested', this.now())
+    if (!await this.records.put({ ...record, worktreeCleanup })) return OperationOutcomes.latched()
+    return { ok: true, value: undefined }
   }
 
   /** Recover confirmations written while the UI was closed, including terminals that already ended. */
@@ -464,18 +553,14 @@ export class SessionLifecycle {
     // about is readable at the project root alone.
     const agreement = await this.setupFlow.setupAgreement(spec)
     if (agreement) return agreement
-    const worktree = await this.provisionWorktree(spec)
-    if (!worktree.ok)
-      return {
-        ok: false,
-        code: GitCodes.sessionCodeOf(worktree.code),
-        detail: worktree.detail,
-      }
+    // Before the cut, so the worktree folder carries the number; a refused cut spends it.
+    const token = options?.titleFinal === true ? null : await this.numberFor(spec)
+    const worktree = await this.provisionWorktree(spec, token)
+    if (!worktree.ok) return { ok: false, code: worktree.code, detail: worktree.detail }
 
     const facts = worktree.value
     const sessionId = marks?.sessionId ?? this.newId()
     const operationId = this.newId()
-    const token = options?.titleFinal === true ? null : await this.numberFor(spec)
     const record = this.recordOf(spec, sessionId, facts, operationId, token, marks)
     /*
      * Only a worktree is empty enough to need this, and only a worktree create can name the
@@ -484,7 +569,7 @@ export class SessionLifecycle {
      * runs as a runtime on the Host, where nothing waits for it.
      */
     if (facts !== null) {
-      const projectRoot = OperationOutcomes.projectRootOf(spec.directory)
+      const projectRoot = SetupFlow.setupProjectOf(OperationOutcomes.projectRootOf(spec.directory), facts)
       const plan = await this.setupFlow.setupPlanFor(projectRoot, facts.repositoryRoot, facts.worktreePath)
       if (plan.kind === 'run') return this.setupFlow.createWithSetup(record, facts, plan.commands)
       else if (plan.kind === 'skip') {
@@ -589,9 +674,11 @@ export class SessionLifecycle {
         continue
       }
       const record = await this.withCapturedCodexId(stored)
+      const gone = await SessionLifecycle.worktreeGone(record)
       const problem = record.pendingSetup || record.setupFor || record.commands || record.resolveFor || record.agent?.oneShot
         ? 'a setup or one-shot task is still running; let it finish before restarting the Host'
-        : record.agent ? AgentPresets.reopenProblem(record.agent) : null
+        : gone !== null ? SessionLifecycle.goneDetailOf(gone)
+          : record.agent ? AgentPresets.reopenProblem(record.agent) : null
       if (problem)
         problems.push(`${record.title} (${record.sessionId}): ${problem}`)
       else
@@ -648,6 +735,10 @@ export class SessionLifecycle {
         code: 'launch-pending',
         detail: `Session ${sessionId} has a launch waiting for the Host to answer; it is replayed as soon as the Host can`,
       }
+    const finishing = this.finishingRefusal(record)
+    if (finishing !== null) return finishing
+    const gone = await SessionLifecycle.worktreeGone(record)
+    if (gone !== null) return SessionLifecycle.goneRefusal(sessionId, gone)
     // Consume a pending confirmation before deciding whether the conversation can be resumed.
     record = await this.withCapturedCodexId(record)
     // Asked before the Host is touched: a record that cannot name the conversation it would land on
@@ -680,7 +771,7 @@ export class SessionLifecycle {
     // comes from the listing, never from here, so nothing reads the binding this drops. The ended
     // fields go for the same reason: a record the snapshot reports as `starting` must not also be
     // reporting when and why it ended.
-    const pending: SessionRecord = {
+    const pending: SessionRecord = WorktreeCleanupPacing.relaunched({
       ...record,
       ...(record.agent?.agentId === 'codex' ? {
         agent: {...record.agent, identityLaunchId: operationId, identitySequence: undefined},
@@ -697,7 +788,7 @@ export class SessionLifecycle {
       // Running it again is the opposite of being done with it, so the mark goes. Without this a
       // reopened session would be live and still filed as finished, which is to say invisible.
       completed: undefined,
-    }
+    }, this.now())
     if (!await this.records.put(pending)) return OperationOutcomes.latched()
     const launch = this.plannedLaunch(pending, 'reopen')
     let result: HostCallResult<RuntimeResult>
@@ -824,6 +915,8 @@ export class SessionLifecycle {
         code: 'live-refused',
         detail: `Session ${sessionId} is ${record.life}; stop it before removing it`,
       }
+    const finishing = this.finishingRefusal(record)
+    if (finishing !== null) return finishing
     else if (record.life === 'starting' || record.life === 'ended' || record.life === 'lost') {
       // Best effort, and deliberately not a reason to refuse: the Host's dead entry is only a
       // diagnostic once the record is gone, and it does not survive the Host's next start anyway.
@@ -834,9 +927,8 @@ export class SessionLifecycle {
       if (record.pendingSetup) await this.setupFlow.stopSetup(record.pendingSetup.setupSessionId)
       if (record.worktree)
         this.report(
-          `Session ${sessionId} is gone; its worktree ${record.worktree.worktreePath} and the branch `
-          + `${record.worktree.branch} are left in ${record.worktree.repositoryRoot} for you to keep `
-          + 'or remove, because nothing here throws away work that was never committed',
+          `Session ${sessionId} is gone; ${OperationOutcomes.leftBehindOf(record.worktree)} for you `
+          + 'to keep or remove, because nothing here throws away work that was never committed',
         )
       return { ok: true, value: undefined }
     }
@@ -881,6 +973,11 @@ export class SessionLifecycle {
         code: 'invalid-spec',
         detail: `Session ${sessionId} resolves a merge for ${record.resolveFor}, and its worktree goes when that merge is done, so nothing may fork it`,
       }
+    const finishing = this.finishingRefusal(record)
+    if (finishing !== null) return finishing
+    // Its conversation ran in a directory that no longer exists, and the project directory is not it.
+    const gone = await SessionLifecycle.worktreeGone(record)
+    if (gone !== null) return SessionLifecycle.goneRefusal(sessionId, gone)
     const agentId = record.agent.agentId
     // A receipt can be newer than the last reconciliation tick.
     const captured = await this.withCapturedCodexId(record)
@@ -1184,7 +1281,7 @@ export class SessionLifecycle {
   async reconcile(listing: RuntimeListResult | null): Promise<ReconcileChange[]> {
     if (this.records.latched) return []
     const applied: ReconcileChange[] = []
-    for (const change of Reconciler.plan(this.records.list(), listing, this.now())) {
+    for (const change of Reconciler.plan(this.records.list(), listing, this.now(), this.startedAt)) {
       if (change.kind === 'orphan')
         applied.push(change)
       else if (change.kind === 'bind-live') {
@@ -1245,6 +1342,13 @@ export class SessionLifecycle {
       else if (change.kind === 'name-codex-conversation') {
         if (await this.applyCodexName(change.sessionId)) applied.push(change)
       }
+      else if (change.kind === 'clean-worktree') {
+        // Fired and not awaited for the reason a resumed merge is: svn work must not hold this loop.
+        if (this.cleanWorktree && await this.applyCleanAttempt(change.sessionId)) {
+          this.cleanWorktree(change.sessionId)
+          applied.push(change)
+        }
+      }
       else
         throw new Error(`Unknown reconcile change: ${JSON.stringify(change)}`)
     }
@@ -1263,6 +1367,13 @@ export class SessionLifecycle {
       ...record,
       worktreeMerge: { ...record.worktreeMerge, failure: reason },
     })
+  }
+
+  /** The attempt is written before the apply runs, so the next pass waits its turn instead of judging again. */
+  private async applyCleanAttempt(sessionId: string): Promise<boolean> {
+    const record = this.records.get(sessionId)
+    if (!record?.worktreeCleanup || this.finishing(sessionId)) return false
+    return this.records.put({ ...record, worktreeCleanup: WorktreeCleanupPacing.attempted(record.worktreeCleanup, this.now()) })
   }
 
   /** The binding named a runtime this Host answered it does not have, so it stops being true. */
@@ -1297,7 +1408,7 @@ export class SessionLifecycle {
       && record.binding?.hostInstanceId === binding.hostInstanceId
       && record.binding.generation === binding.generation)
       return false
-    return this.records.put({
+    return this.records.put(WorktreeCleanupPacing.relaunched({
       ...record,
       binding,
       life: 'live',
@@ -1314,7 +1425,7 @@ export class SessionLifecycle {
       // witness they have that a killed process reporting 0 on POSIX did not finish its work. A pass
       // that merely OBSERVES a runtime has no business erasing that; the two places that do erase it
       // are `reopen` and the create replay, where a new run is being launched on purpose.
-    })
+    }, this.now()))
   }
 
   /**
@@ -1403,7 +1514,7 @@ export class SessionLifecycle {
 
   /** A session with a runtime of its own is not waiting for anything, so `pendingSetup` goes too. */
   private async bindLive(record: SessionRecord, result: RuntimeResult): Promise<boolean> {
-    return this.records.put({
+    return this.records.put(WorktreeCleanupPacing.relaunched({
       ...record,
       binding: {
         hostInstanceId: result.hostInstanceId,
@@ -1419,18 +1530,27 @@ export class SessionLifecycle {
       endedReason: undefined,
       exitReason: undefined,
       // `stopRequested` survives a bind, for the reason `applyBindLive` gives.
-    })
+    }, this.now()))
   }
 
-  private async provisionWorktree(
+  /**
+   * The folder is `<token>-<slug>`, so a worktree made by the CLI or a skill carries its session's
+   * number as the launcher's always did. The launcher builds its slug from a title that already
+   * starts with the token, which is used as it is.
+   */
+  private provisionWorktree(
     spec: SessionCreateSpec,
-  ): Promise<GitResult<WorktreeFacts | null>> {
-    if (!spec.worktree) return { ok: true, value: null }
-    return this.worktrees.create(
-      OperationOutcomes.projectRootOf(spec.directory),
-      spec.worktree.slug,
-      spec.worktree.baseRef,
-    )
+    token: string | null,
+  ): Promise<WorktreeProvision | { ok: true; value: null }> {
+    if (!spec.worktree) return Promise.resolve({ ok: true, value: null })
+    const slug = Slug.of(spec.worktree.slug)
+    const folder = token !== null && !slug.startsWith(`${Slug.of(token)}-`) ? Slug.of(`${token} ${slug}`) : slug
+    return this.worktrees.create({
+      projectRoot: OperationOutcomes.projectRootOf(spec.directory),
+      owner: spec.worktree.owner,
+      folder,
+      baseRef: spec.worktree.baseRef,
+    })
   }
 
   /**
@@ -1440,10 +1560,10 @@ export class SessionLifecycle {
    * skill - said nothing about a number and got the one session in the project that the tree could
    * not order and `--number` could not reach.
    *
-   * Asked after the worktree is cut, so a create that is refused before that costs the project no
-   * number. Null is every case that is not counted: a title that already carries one, a binding that
-   * names a directory rather than a project, and a counter that could not answer, which is never a
-   * reason to refuse a session.
+   * Asked after every refusal that reads the spec and the project alone, and before the worktree is
+   * cut, whose folder carries it. Null is every case that is not counted: a title that already
+   * carries one, a binding that names a directory rather than a project, and a counter that could
+   * not answer, which is never a reason to refuse a session.
    *
    * A custom number short-circuits every one of those, because none of them is about it: they all
    * ask whether this session should SPEND a number, and `i34` spends nothing. It is taken for an
@@ -1490,7 +1610,7 @@ export class SessionLifecycle {
   private recordOf(
     spec: SessionCreateSpec,
     sessionId: string,
-    worktree: WorktreeFacts | null,
+    worktree: SessionRecordWorktree | null,
     operationId: string,
     token: string | null,
     marks?: { oneShot: true; resolveFor: string },
@@ -1521,6 +1641,9 @@ export class SessionLifecycle {
     if (spec.flowId) record.flowId = spec.flowId
     if (spec.color) record.color = spec.color
     if (worktree) record.worktree = worktree
+    // Only an SVN worktree has a removal after the end; a Git one keeps its Finish.
+    if (worktree?.kind === 'svn' && spec.worktree?.removeWhenEnded === true)
+      record.worktreeCleanup = WorktreeCleanupPacing.pending('remove-when-ended', record.createdAt)
     return record
   }
 
@@ -1548,6 +1671,43 @@ export class SessionLifecycle {
     return agent ? `${name} (${agent.agentId})` : name
   }
 
+  /**
+   * The tombstone, or a recorded worktree whose directory is absent. Either way the session must not
+   * be started again: `LaunchPlanner.cwdOf` would otherwise have nothing but the project directory.
+   */
+  private static async worktreeGone(record: SessionRecord): Promise<GoneWorktree | null> {
+    if (record.retiredWorktree !== undefined)
+      return { worktreePath: record.retiredWorktree.worktreePath, revisions: record.retiredWorktree.revisions }
+    if (record.worktree === undefined) return null
+    try {
+      if ((await stat(record.worktree.worktreePath)).isDirectory()) return null
+    } catch (error) {
+      // A path that cannot be read is not proven gone; the launch gives the real refusal.
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return null
+    }
+    return { worktreePath: record.worktree.worktreePath, revisions: record.worktreeOutcome?.revisions ?? [] }
+  }
+
+  /** A running SVN finish owns the record and the worktree under it until its outcome is written. */
+  private finishingRefusal(record: SessionRecord): SessionsOpResult<never> | null {
+    const phase = record.worktreeFinish?.phase ?? (this.finishing(record.sessionId) ? 'starting' : null)
+    if (phase === null) return null
+    return {
+      ok: false,
+      code: 'merge-pending',
+      detail: `Session ${record.sessionId}: the finish of its worktree is ${phase}; wait for it to end`,
+    }
+  }
+
+  private static goneDetailOf(gone: GoneWorktree): string {
+    const revisions = gone.revisions.length > 0 ? gone.revisions.join(', ') : 'no commit'
+    return `its worktree ${gone.worktreePath} was removed after ${revisions}; start a new session`
+  }
+
+  private static goneRefusal(sessionId: string, gone: GoneWorktree): SessionsOpResult<never> {
+    return { ok: false, code: 'worktree-removed', detail: `Session ${sessionId}: ${SessionLifecycle.goneDetailOf(gone)}` }
+  }
+
   private static reopenRoute(
     known: RuntimeSessionInfo | undefined,
     hostInstanceId: string,
@@ -1569,6 +1729,9 @@ export class SessionLifecycle {
       if (spec.directory.mode !== 'project')
         return 'a worktree can only be created for a project directory'
       if (!SessionLifecycle.filled(spec.worktree.slug)) return 'a worktree needs a slug'
+      if (Slug.of(spec.worktree.slug) === '') return 'a worktree slug needs at least one letter or digit'
+      if (spec.worktree.removeWhenEnded !== undefined && spec.worktree.removeWhenEnded !== true)
+        return 'removeWhenEnded is either true or absent'
     }
     const number = SessionLifecycle.numberProblem(spec)
     if (number) return number
@@ -1689,13 +1852,12 @@ export class SessionLifecycle {
    * nobody has looked at is not a decision a failed write is entitled to take.
    */
   private unrecordedWorktree(
-    facts: WorktreeFacts,
+    facts: SessionRecordWorktree,
   ): { ok: false; code: SessionsOpErrorCode; detail: string } {
-    const left = `the worktree ${facts.worktreePath} and the branch ${facts.branch} are left in `
-      + facts.repositoryRoot
+    const left = OperationOutcomes.leftBehindOf(facts)
     this.report(
-      `A session could not be recorded, so ${left} with nothing naming them; they are yours to keep `
-      + 'or remove, and the same slug is refused to the next create over it',
+      `A session could not be recorded, so ${left} with no record naming it; keep or remove it `
+      + `yourself, and ${OperationOutcomes.nameReuseOf(facts)}`,
     )
     return {
       ok: false,

@@ -19,21 +19,20 @@ export interface WorktreeDiff {
 }
 
 /**
- * Which repository AppJamatV3 puts AI work in. `checkpoints` is the default and the only mode the
- * shared instructions know; `git` exists for somebody running AppJamatV3 without them, who wants to
- * work over the project's own git directly. It is one global setting, not a per-project one.
+ * Which worktree a session gets. `checkpoints` is the default and the only mode the shared
+ * instructions know: an SVN checkout where SVN versions the project, else a branch of the project's
+ * own Git repository. `git` exists for somebody running AppJamatV3 without them, who wants Git
+ * worktrees only. It is one global setting, not a per-project one.
  */
 export type VersioningMode = 'checkpoints' | 'git'
 
 /**
- * How a manager targets a command at the MAIN COPY. In `checkpoints` mode that means the store with
- * the project as its work tree; in `git` mode, and inside any worktree, it means plain `git -C`, so
- * the prefix is empty and `storeDir` is null. Commands that run INSIDE a worktree never need this:
- * a worktree already points at whichever repository cut it.
+ * How a command targets a main copy: through its checkpoint store with the project as the work
+ * tree, or through plain `git -C`, where the prefix is empty and `storeDir` is null.
  */
 export interface RepoCommandContext {
   root: string
-  /** `['--git-dir', storeDir, '--work-tree', root]` in checkpoints mode; empty otherwise. */
+  /** `['--git-dir', storeDir, '--work-tree', root]` for a checkpoint store; empty otherwise. */
   gitDirArgs: string[]
   storeDir: string | null
 }

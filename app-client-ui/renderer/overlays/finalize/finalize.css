@@ -64,8 +64,10 @@
   padding: var(--space-3);
   overflow: auto;
 }
+/* An SVN finish answers with its RESULT lines, one path per line. */
 .jamat-finalize__error {
   margin: 0;
+  white-space: pre-wrap;
   font-size: var(--fs-secondary);
   color: var(--color-danger);
 }

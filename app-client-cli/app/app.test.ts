@@ -407,7 +407,7 @@ describe('app-client-cli/app/app', () => {
   it('lets a worktree session request a review of its main project', async () => {
     const h = new CliHarness()
     h.client.sessions[0] = { ...h.client.sessions[0]!, life: 'live', worktree: {
-      worktreePath: 'Q:/Apps/One/.worktrees/task', branch: 'jamat/task', baseCommit: 'abc', diff: null, baseMoved: false,
+      worktreePath: 'Q:/Apps/One/.worktrees/task', branch: 'jamat/task', baseCommit: 'abc', kind: 'git', choices: ['merge', 'keep', 'discard'], diff: null, baseMoved: false,
     } }
     expect(await new AppClientCli(['commit-svn-jamat', '--session-id', 'session-001', '--path', 'Q:/Apps/One', '--fallback', 'report'], h.deps()).run()).toBe(0)
     expect(h.parsedOutput()).toMatchObject({ value: { kind: 'commit-opened' } })
@@ -529,6 +529,10 @@ describe('app-client-cli/app/app', () => {
       { args: ['sessions', 'reopen', '--session-id', 'session-1'], operation: 'sessions.reopen' },
       { args: ['sessions', 'finalize', '--number', '001'], operation: 'sessions.finalize' },
       { args: ['sessions', 'remove', '--number', '001'], operation: 'sessions.remove' },
+      { args: ['sessions', 'worktree', '--number', '001'], operation: 'sessions.worktree' },
+      { args: ['sessions', 'discard-worktree', '--number', '001'], operation: 'sessions.discardWorktree' },
+      { args: ['sessions', 'retry-setup', '--number', '001'], operation: 'sessions.retrySetup' },
+      { args: ['sessions', 'cleanup-worktree', '--number', '001'], operation: 'sessions.cleanupWorktree' },
       { args: ['sessions', 'transcript', '--session-id', 'session-001'], operation: 'sessions.transcript' },
       {
         args: ['sessions', 'color', '--session-id', 'session-001', '--color', 'cyan'],
@@ -812,6 +816,104 @@ describe('app-client-cli/app/app', () => {
       operation: 'sessions.remove',
       error: { code: 'unavailable' },
     })
+  })
+
+  it('ends a worktree by number, passes a setup acknowledgement and refuses before HTTP on an old Jamat', async () => {
+    const harness = new CliHarness()
+    expect(await new AppClientCli(
+      ['sessions', 'retry-setup', '--number', '001', '--acknowledge-setup', 'hash-1', '--operation-id', 'retry-1'],
+      harness.deps(),
+    ).run()).toBe(0)
+    expect(harness.client.requests.at(-1)).toMatchObject({
+      operation: 'sessions.retrySetup',
+      operationId: 'retry-1',
+      body: { session: { kind: 'sessionId' }, acknowledgeSetup: 'hash-1' },
+    })
+    expect(await new AppClientCli(['sessions', 'discard-worktree', '--number', '001'], harness.deps()).run()).toBe(0)
+    expect(harness.client.requests.at(-1)).toMatchObject({
+      operation: 'sessions.discardWorktree',
+      body: { session: { kind: 'sessionId' } },
+    })
+
+    for (const command of ['discard-worktree', 'retry-setup', 'cleanup-worktree']) {
+      expect(await new AppClientCli(
+        ['sessions', command, '--number', '001', '--computer', 'Remote computer'],
+        new CliHarness().deps(),
+      ).run()).toBe(2)
+      const old = new CliHarness()
+      old.descriptor.optionalOperations = []
+      expect(await new AppClientCli(['sessions', command, '--number', '001'], old.deps()).run()).toBe(6)
+      expect(old.client.requests).toEqual([])
+    }
+    expect(await new AppClientCli(
+      ['sessions', 'discard-worktree', '--number', '001', '--acknowledge-setup', 'hash-1'],
+      new CliHarness().deps(),
+    ).run()).toBe(2)
+  })
+
+  /*
+   * An older AppClientUI validates a create and a finalize with exact keys and refuses the whole
+   * request over one it does not know, so the option is refused by name here and nothing is sent.
+   */
+  it('sends a worktree owner, removeWhenEnded and expect stop only to a Jamat that offers sessions.worktree', async () => {
+    const harness = new CliHarness()
+    expect(await new AppClientCli([
+      'sessions', 'create', '--category-id', 'apps', '--project-path', 'Q:/Apps/Group',
+      '--worktree', 'fix-login', '--worktree-owner', '../Group/Member',
+    ], harness.deps()).run()).toBe(0)
+    expect(harness.client.requests.at(-1)).toMatchObject({
+      operation: 'sessions.create',
+      body: { spec: { worktree: { slug: 'fix-login', owner: resolve('Q:/Apps/One', '../Group/Member') } } },
+    })
+    expect(harness.client.requests.at(-1)?.body).not.toHaveProperty('spec.worktree.removeWhenEnded')
+    expect(await new AppClientCli([
+      'sessions', 'create', '--category-id', 'apps', '--project-path', 'Q:/Apps/Group',
+      '--worktree', 'fix-login', '--worktree-remove-when-ended',
+    ], harness.deps()).run()).toBe(0)
+    expect(harness.client.requests.at(-1)).toMatchObject({
+      operation: 'sessions.create',
+      body: { spec: { worktree: { slug: 'fix-login', removeWhenEnded: true } } },
+    })
+    expect(await new AppClientCli(
+      ['sessions', 'finalize', '--session-id', 'session-1', '--expect', 'stop'],
+      harness.deps(),
+    ).run()).toBe(0)
+    expect(harness.client.requests.at(-1)).toMatchObject({
+      operation: 'sessions.finalize',
+      body: { session: { kind: 'sessionId', sessionId: 'session-1' }, expect: 'stop' },
+    })
+
+    for (const args of [
+      ['sessions', 'finalize', '--session-id', 'session-1', '--expect', 'finish'],
+      ['sessions', 'create', '--directory', 'Q:/Apps/One', '--worktree-owner', 'Q:/Apps/One'],
+      ['sessions', 'create', '--directory', 'Q:/Apps/One', '--worktree-remove-when-ended'],
+      ['sessions', 'worktree', '--session-id', 'session-1', '--computer', 'Remote computer'],
+    ]) {
+      const refused = new CliHarness()
+      expect(await new AppClientCli(args, refused.deps()).run()).toBe(2)
+      expect(refused.discoveries).toBe(0)
+    }
+
+    for (const args of [
+      ['sessions', 'create', '--directory', 'Q:/Apps/One', '--worktree', 'x', '--worktree-owner', 'Q:/Apps/One'],
+      ['sessions', 'create', '--directory', 'Q:/Apps/One', '--worktree', 'x', '--worktree-remove-when-ended'],
+      ['sessions', 'finalize', '--number', '001', '--expect', 'stop'],
+      ['sessions', 'worktree', '--number', '001'],
+    ]) {
+      const old = new CliHarness()
+      old.descriptor.optionalOperations = RemoteControlConst.optionalOperations
+        .filter((operation) => operation !== 'sessions.worktree')
+      expect(await new AppClientCli(args, old.deps()).run()).toBe(6)
+      expect(old.client.requests).toEqual([])
+      expect(old.parsedOutput()).toMatchObject({ ok: false, error: { code: 'unavailable' } })
+      expect(String((old.parsedOutput().error as { detail: string }).detail)).toContain('sessions.worktree')
+    }
+
+    // A plain finalize and a create without an owner still reach an older Jamat.
+    const older = new CliHarness()
+    older.descriptor.optionalOperations = []
+    expect(await new AppClientCli(['sessions', 'finalize', '--session-id', 'session-1'], older.deps()).run()).toBe(0)
+    expect(await new AppClientCli(['sessions', 'create', '--directory', 'Q:/Apps/One', '--worktree', 'x'], older.deps()).run()).toBe(0)
   })
 
   /*

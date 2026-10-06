@@ -216,6 +216,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       transcripts?: SessionManagerDeps['transcripts']
       versioningModeOf?: SessionManagerDeps['versioningModeOf']
       terminalSocketFactory?: SessionManagerDeps['terminalSocketFactory']
+      onRemovedItself?: SessionManagerDeps['onRemovedItself']
     },
   ): Client {
     const errors: string[] = []
@@ -242,6 +243,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       transcripts: options?.transcripts,
       versioningModeOf: options?.versioningModeOf,
       terminalSocketFactory: options?.terminalSocketFactory,
+      onRemovedItself: options?.onRemovedItself,
       // The machine's real name would put the host running the suite into an asserted block.
       computerName: () => 'TEST-PC',
     })
@@ -1275,6 +1277,195 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(client.errors).toEqual([])
   }, 20_000)
 
+  /*
+   * A tombstone names a directory that is gone, so nothing may start its conversation again: the
+   * project directory would be the only place left, and the work was never there.
+   */
+  it('offers no restart or fork for a tombstone, shows where its work went, and refuses the restart', async () => {
+    const context = await world()
+    const revision = 'https://svn.example.test/repos/app:r42'
+    seedRecords(context, [
+      recordOf(context, 'retired', {
+        kind: 'agent',
+        agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'native-1' },
+        directory: { mode: 'project', categoryId: 'c1', projectPath: context.root },
+        completed: true,
+        retiredWorktree: {
+          worktreePath: join(context.root, '.worktrees', '014-fix'),
+          kind: 'svn',
+          revisions: [revision],
+          removedAt: 2_000,
+        },
+      }),
+      recordOf(context, 'interrupted', {
+        kind: 'agent',
+        agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'native-2' },
+        directory: { mode: 'project', categoryId: 'c1', projectPath: context.root },
+        worktree: {
+          worktreePath: join(context.root, '.worktrees', '015-next'),
+          branch: 'https://svn.example.test/repos/app/trunk',
+          baseCommit: 'r41',
+          repositoryRoot: context.root,
+          kind: 'svn',
+        },
+        worktreeFinish: { phase: 'reviewing', startedAt: 1_500 },
+      }),
+    ])
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.manager.start()
+    await writable(client)
+
+    const retired = sessionOf(client, 'retired')
+    expect(retired?.admits).not.toContain('restart')
+    expect(retired?.admits).not.toContain('fork')
+    expect(retired?.admits).toContain('remove')
+    expect(retired?.retiredWorktree).toEqual({
+      worktreePath: join(context.root, '.worktrees', '014-fix'),
+      revisions: [revision],
+    })
+    const refused = await client.manager.restartSession('retired')
+    expect(refused).toMatchObject({ ok: false, code: 'worktree-removed' })
+    expect(refused.ok ? '' : refused.detail).toContain(revision)
+
+    // The finish that was running when the last client went is gone with it, so the record holds
+    // an outcome rather than a phase, and the session is no longer held by a finish.
+    expect(sessionOf(client, 'interrupted')?.worktree?.kind).toBe('svn')
+    expect(sessionOf(client, 'interrupted')?.admits).toContain('remove')
+    expect(storedRecord(context, 'interrupted')?.worktreeFinish).toBeUndefined()
+    expect(storedRecord(context, 'interrupted')?.worktreeOutcome?.result).toBe('interrupted')
+  }, 20_000)
+
+  /*
+   * The finisher is chosen by the worktree's kind: an SVN one goes to the SVN twin, which needs the
+   * client's commit dialog for Commit and nothing for Discard. Every path here stays inside the
+   * test's own directory, and the owner does not exist, so nothing reaches a real working copy.
+   */
+  it('finishes an SVN worktree through its own finisher and composes its choices', async () => {
+    const context = await world()
+    const worktreePath = join(context.root, 'owner', '.worktrees', '014-fix')
+    seedRecords(context, [
+      recordOf(context, 'svn', {
+        kind: 'agent',
+        agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'native-1' },
+        directory: { mode: 'project', categoryId: 'c1', projectPath: context.root },
+        life: 'ended',
+        worktree: {
+          worktreePath,
+          branch: 'https://svn.example.test/repos/app/trunk',
+          baseCommit: 'r41',
+          repositoryRoot: join(context.root, 'owner'),
+          kind: 'svn',
+        },
+      }),
+      recordOf(context, 'git', {
+        kind: 'agent',
+        agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'native-2' },
+        life: 'ended',
+        worktree: {
+          worktreePath: join(context.root, 'repo', '.worktrees', 'task'),
+          branch: 'jamat/task',
+          baseCommit: 'abc1234',
+          repositoryRoot: join(context.root, 'repo'),
+        },
+      }),
+      recordOf(context, 'svn-kept', {
+        kind: 'shell',
+        life: 'ended',
+        worktree: {
+          worktreePath: join(context.root, 'owner', '.worktrees', '015-kept'),
+          branch: 'https://svn.example.test/repos/app/trunk',
+          baseCommit: 'r41',
+          repositoryRoot: join(context.root, 'owner'),
+          kind: 'svn',
+        },
+        worktreeCleanup: { phase: 'kept', trigger: 'committed', reason: '2 changes', requestedAt: 1, attempts: 1, lastAttemptAt: 2 },
+      }),
+      recordOf(context, 'svn-unconfirmed', {
+        kind: 'shell',
+        life: 'ended',
+        exitReason: 'host-lost',
+        worktree: {
+          worktreePath: join(context.root, 'owner', '.worktrees', '016-unconfirmed'),
+          branch: 'https://svn.example.test/repos/app/trunk',
+          baseCommit: 'r41',
+          repositoryRoot: join(context.root, 'owner'),
+          kind: 'svn',
+        },
+        worktreeCleanup: { phase: 'pending', trigger: 'remove-when-ended', reason: 'in use', requestedAt: 1, attempts: 1, lastAttemptAt: 2 },
+      }),
+    ])
+    context.publishDescriptor()
+    const removedItself: string[] = []
+    const client = clientOf(context, { onRemovedItself: (sessionId) => removedItself.push(sessionId) })
+    await client.manager.start()
+    await writable(client)
+
+    expect(sessionOf(client, 'svn')?.worktree?.choices).toEqual(['commit', 'keep', 'discard'])
+    expect(sessionOf(client, 'git')?.worktree?.choices).toEqual(['merge', 'keep', 'discard'])
+    expect(await client.manager.worktreeOf('svn')).toEqual({
+      ok: true,
+      value: {
+        sessionId: 'svn',
+        worktree: { kind: 'svn', worktreePath, url: 'https://svn.example.test/repos/app/trunk', baseRevision: 41 },
+        retired: null,
+        finish: null,
+        outcome: null,
+        cleanup: null,
+      },
+    })
+    expect(await client.manager.worktreeOf('git')).toMatchObject({
+      ok: true,
+      value: { worktree: { kind: 'git', url: null, baseRevision: null } },
+    })
+    expect(await client.manager.worktreeOf('nobody')).toMatchObject({ ok: false, code: 'not-found' })
+    // The removal after the end says why the worktree stayed, to a script and to the row.
+    expect(await client.manager.worktreeOf('svn-kept')).toMatchObject({
+      ok: true, value: { cleanup: { phase: 'kept', reason: '2 changes' } },
+    })
+    expect(sessionOf(client, 'svn-kept')?.worktree?.cleanup)
+      .toEqual({ phase: 'kept', reason: '2 changes', summary: 'kept: 2 changes' })
+    expect(sessionOf(client, 'svn')?.worktree?.cleanup).toBeUndefined()
+    // No verdict comes for an end the Host could not confirm, and the row says so instead of a stale reason.
+    expect(sessionOf(client, 'svn-unconfirmed')?.worktree?.cleanup)
+      .toEqual({ phase: 'pending', reason: 'in use', summary: 'waiting: the end of the session is not confirmed' })
+
+    // A script that only means to stop a session never starts the Finish of one that already ended.
+    expect(await client.manager.finalizeSession('svn', { expect: 'stop' })).toMatchObject({
+      ok: false,
+      code: 'live-refused',
+      detail: expect.stringContaining('finish-worktree'),
+    })
+    expect(sessionOf(client, 'svn')?.worktree?.outcome).toBeUndefined()
+
+    expect(await client.manager.finalizeSession('svn')).toMatchObject({ ok: false, code: 'review-unavailable' })
+    client.manager.setReviewPort({
+      open: () => Promise.reject(new Error('no review may open for an owner that is gone')),
+      settled: () => Promise.reject(new Error('no review was opened')),
+    })
+    expect(await client.manager.finalizeSession('svn')).toMatchObject({ ok: false, code: 'invalid-spec' })
+    // A finish with a problem keeps the session, its outcome on the row.
+    expect(sessionOf(client, 'svn')?.worktree?.outcome).toMatchObject({ result: 'failed', worktree: 'kept' })
+    expect(removedItself).toEqual([])
+
+    // A successful ending removes the session the way Remove does, before the answer comes back.
+    expect(await client.manager.discardWorktree('svn')).toEqual({ ok: true, value: undefined })
+    expect(sessionOf(client, 'svn')).toBeUndefined()
+    expect(await client.manager.worktreeOf('svn')).toMatchObject({ ok: false, code: 'not-found' })
+    expect(storedRecord(context, 'svn')).toBeUndefined()
+    expect(removedItself).toEqual(['svn'])
+
+    // A Remove that is refused keeps the session with its tombstone, and says why.
+    const remove = vi.spyOn(client.manager, 'removeSession')
+      .mockResolvedValueOnce({ ok: false, code: 'records-latched', detail: 'the disk is full' })
+    expect(await client.manager.discardWorktree('svn-kept')).toEqual({ ok: true, value: undefined })
+    remove.mockRestore()
+    expect(sessionOf(client, 'svn-kept')?.retiredWorktree?.worktreePath).toBe(join(context.root, 'owner', '.worktrees', '015-kept'))
+    expect(storedRecord(context, 'svn-kept')?.completed).toBe(true)
+    expect(client.errors.join('\n')).toContain('Session svn-kept: its worktree ended as asked, and the session stays because it could not be removed: the disk is full')
+    expect(removedItself).toEqual(['svn'])
+  }, 20_000)
+
   /** `runtime.stop`, with a switch for whether the process actually goes away afterwards. */
   function handleStop(context: World, options: { exits: boolean }): { calls: () => number } {
     let calls = 0
@@ -2006,13 +2197,31 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
   describe('which repository worktrees are cut from', () => {
     /**
      * The wiring is asserted on DISK rather than by reading a private field, because the disk is the
-     * only place where a context that was built but never handed down looks different from one that
-     * reached the worktree manager.
+     * only place where a provisioner that was built but never handed down looks different from one
+     * that reached the lifecycle.
      */
     async function worktreeProject(context: World): Promise<string> {
       const project = join(context.categoryRoot, 'Wiring')
       mkdirSync(project, { recursive: true })
       writeFileSync(join(project, 'a.txt'), 'v1\n', 'utf8')
+      return project
+    }
+
+    /** The project's own repository, one commit deep, with an identity of its own for Finish. */
+    async function gitProject(context: World): Promise<string> {
+      const project = await worktreeProject(context)
+      const git = new GitInvoker()
+      for (const args of [
+        ['init', '-b', 'main'],
+        ['config', 'user.name', 'Session Manager Test'],
+        ['config', 'user.email', 'session-manager@example.invalid'],
+        ['config', 'commit.gpgsign', 'false'],
+        ['add', '-A'],
+        ['commit', '-m', 'base'],
+      ]) {
+        const outcome = await git.run(project, args)
+        expect(outcome.code, outcome.stderr).toBe(0)
+      }
       return project
     }
 
@@ -2022,8 +2231,8 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
         runner.skip()
     }
 
-    /** No `versioningModeOf` passed: the default is checkpoints, and a project with no git works. */
-    it('defaults to a checkpoint store, so a project with no git is isolatable', {
+    /** No `versioningModeOf` passed: the default is checkpoints, and the store-cut worktree is retired. */
+    it('refuses a project with no SVN and no Git of its own in the default mode, creating nothing', {
       timeout: 120_000,
     }, async (runner) => {
       await skipWithoutGit(runner)
@@ -2034,72 +2243,70 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       await writable(client)
       const project = await worktreeProject(context)
 
-      const created = valueOf(await client.manager.createSession({
+      const refused = await client.manager.createSession({
         kind: 'shell',
         directory: { mode: 'project', categoryId: 'code', projectPath: project },
         worktree: { slug: 'wiring' },
-      }))
-
-      expect(existsSync(join(project, CheckpointLayout.storeRelativeConst, 'HEAD'))).toBe(true)
-      // The project never gains a git of its own, which is the whole point of the mode.
-      expect(existsSync(join(project, '.git'))).toBe(false)
-      // A worktree's .git is a FILE holding a pointer, and this one points into the store.
-      const pointer = join(project, '.worktrees', 'wiring', '.git')
-      expect(statSync(pointer).isFile()).toBe(true)
-      expect(readFileSync(pointer, 'utf8')).toContain(CheckpointLayout.storeNameConst)
-      const worktree = sessionOf(client, created.sessionId)?.worktree
-      expect(worktree?.branch).toBe('jamat/wiring')
-      expect(await client.manager.workingContext(created.sessionId)).toEqual({
-        ok: true,
-        value: {
-          sessionId: created.sessionId,
-          cwd: join(project, '.worktrees', 'wiring'),
-          agent: null,
-          worktree: {
-            worktreePath: join(project, '.worktrees', 'wiring'),
-            repositoryRoot: project,
-            baseCommit: worktree?.baseCommit,
-          },
-        },
       })
+
+      expect(refused).toMatchObject({ ok: false, code: 'invalid-spec', detail: expect.stringMatching(/no SVN working copy and no Git repository/) })
+      expect(existsSync(join(project, CheckpointLayout.folderNameConst))).toBe(false)
+      expect(existsSync(join(project, '.worktrees'))).toBe(false)
+      expect(existsSync(join(project, '.git'))).toBe(false)
     })
 
-    it('keeps the original transcript cwd after merge removes the worktree', {
+    /**
+     * A project with its own Git repository gets the worktree of `git` mode in `checkpoints` mode,
+     * numbered, and Finish lands it in that repository whichever mode is set when it runs: the merge
+     * flow reads no mode.
+     */
+    it('gives a project with its own Git the git-mode worktree, and finishes it the same under both modes', {
       timeout: 120_000,
     }, async (runner) => {
       await skipWithoutGit(runner)
       const context = await world()
       handleStop(context, { exits: true })
       context.publishDescriptor()
-      const client = clientOf(context)
+      let mode: 'checkpoints' | 'git' = 'checkpoints'
+      const client = clientOf(context, { versioningModeOf: () => mode })
       await client.manager.start()
       await writable(client)
-      const project = await worktreeProject(context)
-      const transcriptCwd = join(project, '.worktrees', 'transcript-provenance')
+      const project = await gitProject(context)
 
-      const created = valueOf(await client.manager.createSession({
-        kind: 'agent',
-        directory: { mode: 'project', categoryId: 'code', projectPath: project },
-        agent: { agentId: 'claude', mode: 'new', nativeSessionId: 'native-provenance' },
-        worktree: { slug: 'transcript-provenance' },
-      }))
-      valueOf(await client.manager.finalizeSession(created.sessionId))
-      valueOf(await client.manager.mergeSession(created.sessionId))
+      const finishUnder = async (finishMode: 'checkpoints' | 'git', file: string) => {
+        mode = 'checkpoints'
+        const created = valueOf(await client.manager.createSession({
+          kind: 'agent',
+          directory: { mode: 'project', categoryId: 'code', projectPath: project },
+          agent: { agentId: 'claude', mode: 'new', nativeSessionId: `native-${file}` },
+          worktree: { slug: file },
+        }))
+        const worktree = sessionOf(client, created.sessionId)?.worktree
+        expect(worktree).toMatchObject({ kind: 'git', branch: expect.stringMatching(new RegExp(`^jamat/\\d{3}-${file}$`)) })
+        // The answer names the number and the place, so a script never lists `.worktrees` to find it.
+        expect(created).toMatchObject({
+          number: expect.stringMatching(/^\d{3}$/),
+          worktree: { kind: 'git', worktreePath: worktree?.worktreePath, url: null, baseRevision: null },
+        })
+        expect(statSync(join(worktree?.worktreePath ?? '', '.git')).isFile()).toBe(true)
+        writeFileSync(join(worktree?.worktreePath ?? '', `${file}.txt`), 'from the session\n', 'utf8')
+        valueOf(await client.manager.finalizeSession(created.sessionId))
+        mode = finishMode
+        valueOf(await client.manager.finalizeSession(created.sessionId))
+        expect(existsSync(worktree?.worktreePath ?? '')).toBe(false)
+        // A landed merge takes the session with it, as Remove does.
+        expect(sessionOf(client, created.sessionId)).toBeUndefined()
+        expect(await client.manager.worktreeOf(created.sessionId)).toMatchObject({ ok: false, code: 'not-found' })
+      }
 
-      expect(existsSync(transcriptCwd)).toBe(false)
-      expect(await client.manager.workingContext(created.sessionId)).toMatchObject({
-        ok: true,
-        value: { cwd: project, worktree: null },
-      })
-      expect(await client.manager.transcriptContext(created.sessionId)).toEqual({
-        ok: true,
-        value: {
-          agentId: 'claude',
-          cwd: transcriptCwd,
-          nativeSessionId: 'native-provenance',
-          launchModel: null,
-        },
-      })
+      await finishUnder('checkpoints', 'one')
+      await finishUnder('git', 'two')
+
+      expect(readFileSync(join(project, 'one.txt'), 'utf8')).toContain('from the session')
+      expect(readFileSync(join(project, 'two.txt'), 'utf8')).toContain('from the session')
+      const merges = await new GitInvoker().run(project, ['log', '--merges', '--format=%s'])
+      expect(merges.stdout.trim().split('\n')).toHaveLength(2)
+      expect(existsSync(join(project, CheckpointLayout.folderNameConst))).toBe(false)
     })
 
     /** The escape hatch, for somebody running AppJamatV3 without the shared instructions. */

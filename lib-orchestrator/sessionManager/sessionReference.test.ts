@@ -65,6 +65,8 @@ describe('lib-orchestrator/sessionManager/sessionReference', () => {
           worktreePath: 'C:/Projects/NodeJs/AppJamatV3-wt/copy-id',
           branch: 'session/copy-id',
           baseCommit: 'abc1234',
+          kind: 'git',
+          choices: ['merge', 'keep', 'discard'],
           diff: null,
           baseMoved: false,
         },

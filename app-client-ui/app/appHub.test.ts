@@ -29,6 +29,7 @@ import { AppHub } from './appHub'
 import { ServiceRemarkableIpc } from './remarkable/serviceRemarkableIpc'
 import { ServiceShellIpc } from './shell/serviceShellIpc'
 import { ServiceTabsIpc } from './tabs/serviceTabsIpc'
+import { SessionReviewPortAdapter } from './versioning/sessionReviewPortAdapter'
 
 /** Hoisted with the mock factories: `vi.mock` runs before any top-level statement of this file. */
 const { FakeWindow, captured, updaterMock } = vi.hoisted(() => {
@@ -133,6 +134,7 @@ const { FakeWindow, captured, updaterMock } = vi.hoisted(() => {
       onChanged: () => void
       onError: (message: string) => void
     },
+    reviewPort: null as unknown,
     rateDeps: null as null | {
       onChanged: () => void
       onError: (message: string) => void
@@ -301,6 +303,10 @@ vi.mock('../../lib-orchestrator/sessionManager/sessionManager', () => ({
     /** The one operation whose answer the hub reads rather than forwards; see the fork case below. */
     forkSession(): Promise<{ ok: true; value: { sessionId: string; tabTitle: string } }> {
       return Promise.resolve({ ok: true, value: { sessionId: 'fork-1', tabTitle: 'Work - 014-015' } })
+    }
+
+    setReviewPort(port: unknown): void {
+      captured.reviewPort = port
     }
 
     async start(): Promise<void> {}
@@ -496,6 +502,7 @@ describe('app-client-ui/app/appHub', () => {
     process.env.JAMAT_V3_LOCAL_STATE_DIR = stateRoot
     FakeWindow.created = []
     captured.sessionDeps = null
+    captured.reviewPort = null
     captured.rateDeps = null
     captured.visible = []
     captured.rateVisible = []
@@ -638,6 +645,12 @@ describe('app-client-ui/app/appHub', () => {
 
     expect(captured.disposeOrder).toEqual(['remarkable', 'diff', 'rate', 'control', 'sessions'])
     expect(captured.remoteBeginStops).toBe(1)
+  })
+
+  it('gives the sessions the commit dialog once its broker exists', () => {
+    hubUnderTest()
+
+    expect(captured.reviewPort).toBeInstanceOf(SessionReviewPortAdapter)
   })
 
   it('owns one lazy diff worker and gives it to the file changes manager', () => {

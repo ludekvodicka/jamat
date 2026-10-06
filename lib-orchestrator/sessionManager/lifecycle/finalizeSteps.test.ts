@@ -49,9 +49,15 @@ describe('lib-orchestrator/sessionManager/lifecycle/finalizeSteps', () => {
   // The stop leaves the worktree unfinished on purpose, and this is the step that finishes it.
   it('brings a stopped worktree session home', () => {
     expect(FinalizeSteps.planOf(record({ life: 'ended', worktree: worktreeConst })))
-      .toBe('commit-and-merge')
+      .toBe('finish-worktree')
     expect(FinalizeSteps.planOf(record({ life: 'lost', worktree: worktreeConst })))
-      .toBe('commit-and-merge')
+      .toBe('finish-worktree')
+  })
+
+  // The step names no VCS: which finisher takes it is the manager's choice, by the worktree's kind.
+  it('plans the same step for an SVN worktree', () => {
+    expect(FinalizeSteps.planOf(record({ life: 'ended', worktree: { ...worktreeConst, kind: 'svn' } })))
+      .toBe('finish-worktree')
   })
 
   /**

@@ -67,6 +67,16 @@ describe('app-client-ui/renderer/overlays/launcher/create/launcherCreateScreen',
     expect(nameField(view).value).toBe('')
   })
 
+  it('previews the worktree directory and draws no branch line', () => {
+    const view = draw(opened({ field: 'isolation', token: '015', name: 'session wizard', worktree: true }))
+    const note = view.container.querySelector('.jamat-launcher-create__note')
+
+    expect(note?.textContent).toBe(
+      'Runs in C:\\Projects\\NodeJs\\AppJamatV3\\.worktrees\\015-session-wizard, from HEAD',
+    )
+    expect(view.container.textContent).not.toContain('Branch')
+  })
+
   it('replaces Name and Isolation with Existing sessions and adds All to Agent', () => {
     const index = CreateScreenModel.typesOf({ target: { kind: 'local' }, source: null }).findIndex((type) => type.kind === 'existing')
     const state = CreateScreenModel.transition(opened(), { input: 'chooseType', index }).state

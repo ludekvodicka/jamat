@@ -88,15 +88,16 @@ export class TabControlBroker implements RemoteControlTabsPort {
   }
 
   async openCommit(sessionId: string, tabTitle: string, vcs: 'svn' | 'git', scope: string | null,
-    proposal: string | null, options: { showRefusal?: true; paths?: readonly string[] }): Promise<RemoteControlStepResult<RemoteControlTabOpenCommitDto>> {
+    proposal: string | null, options: { showRefusal?: true; paths?: readonly string[]; fresh?: true }): Promise<RemoteControlStepResult<RemoteControlTabOpenCommitDto>> {
     return this.withCommitTurn(() => this.openCommitNow(sessionId, tabTitle, vcs, scope, proposal, options))
   }
 
   private async openCommitNow(...args: Parameters<TabControlBroker['openCommit']>): Promise<RemoteControlStepResult<RemoteControlTabOpenCommitDto>> {
     if (this.stopping) return TabControlBroker.error('unavailable', 'The AppClientUI process is stopping')
     const [sessionId, tabTitle, vcs, scope, proposal, options] = args
-    const prepared = await this.commits.prepare(sessionId, vcs, scope, proposal, options.paths)
-    if (!prepared.ok && !(options.showRefusal && (prepared.code === 'no-working-copy' || prepared.code === 'store-worktree')))
+    const prepared = await this.commits.prepare(sessionId, vcs, scope, proposal, options.paths,
+      options.fresh === undefined ? {} : { fresh: options.fresh })
+    if (!prepared.ok && !(options.showRefusal && prepared.code === 'no-working-copy'))
       return TabControlBroker.error(prepared.code === 'unknown-session' ? 'not-found' : 'operation-failed', prepared.detail)
     const draftId = prepared.ok ? prepared.value.draftId : null
     try {

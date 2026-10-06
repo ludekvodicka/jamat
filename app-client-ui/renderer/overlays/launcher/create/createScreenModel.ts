@@ -629,11 +629,15 @@ export class CreateScreenModel {
     return name.length === 0 ? token : `${token} - ${name}`
   }
 
-  /** The branch and the directory this would land on, drawn before anything is created. */
+  /**
+   * The directory this would land on, drawn before anything is created. No branch: whether the
+   * worktree is an SVN checkout or a Git branch is the library's choice by versioning mode, which
+   * this screen does not know, and the folder is named the same way under both.
+   */
   static worktreePreviewOf(
     state: CreateScreenState,
     token: string | null,
-  ): { slug: string; branch: string; path: string } | null {
+  ): { slug: string; path: string } | null {
     const title = CreateScreenModel.titleOf(state, token)
     if (title === undefined || state.binding.mode !== 'project') return null
     const slug = WorktreeNaming.slugOf(title)
@@ -643,7 +647,6 @@ export class CreateScreenModel {
     const separator = state.binding.projectPath.includes('\\') ? '\\' : '/'
     return {
       slug,
-      branch: WorktreeNaming.branchOf(slug),
       path: [state.binding.projectPath, WorktreeNaming.folderNameConst, slug].join(separator),
     }
   }

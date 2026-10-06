@@ -1565,14 +1565,63 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
 
       expect(store.get('terminal:1').badges).toEqual([
         { key: 'vcs', text: '*', tone: 'muted', title: 'Uncommitted changes (git)' },
+        {
+          key: 'worktree',
+          text: 'WT',
+          tone: 'accent',
+          title: 'Git worktree C:/Projects/NodeJs/AppJamatV3/.worktrees/dirty',
+        },
       ])
     })
 
-    it('carries no mark where the working copy was measured clean', async () => {
+    it('carries no uncommitted-work mark where the working copy was measured clean', async () => {
       await withSessions(SessionsFixtures.stoppedWorktree())
       mount(new PanelApiFake('terminal:1'), 's-clean')
 
+      expect(store.get('terminal:1').badges.map((badge) => badge.key)).toEqual(['worktree'])
+    })
+
+    it('carries no badge at all for a session outside a worktree with a clean copy', async () => {
+      await withSessions(SessionsFixtures.mixed())
+      mount(new PanelApiFake('terminal:1'), 's-shell')
+
       expect(store.get('terminal:1').badges).toEqual([])
+    })
+
+    it('marks an SVN worktree session on its tab and keeps the attachment signal', async () => {
+      const svn = SessionsFixtures.svnWorktrees()
+      await withSessions({
+        ...svn,
+        sessions: svn.sessions.map((session) => session.sessionId === 's-svn'
+          ? { ...session, life: 'live' as const, activity: 'waiting' as const } : session),
+      })
+      mount(new PanelApiFake('terminal:1'), 's-svn')
+
+      expect(store.get('terminal:1').badges).toEqual([{
+        key: 'worktree',
+        text: 'WT',
+        tone: 'accent',
+        title: 'SVN worktree C:/Projects/NodeJs/AppJamatV3/.worktrees/014-svn-worktree',
+      }])
+      expect(store.get('terminal:1').secondary).toMatchObject({ glyph: '·', tone: 'muted' })
+    })
+
+    it('says on the worktree badge why the worktree is still there', async () => {
+      const svn = SessionsFixtures.svnWorktrees()
+      await withSessions({
+        ...svn,
+        sessions: svn.sessions.map((session) => session.sessionId === 's-svn' && session.worktree
+          ? { ...session, worktree: { ...session.worktree, cleanup: { phase: 'kept' as const, reason: '2 changes', summary: 'kept: 2 changes' } } }
+          : session),
+      })
+      mount(new PanelApiFake('terminal:1'), 's-svn')
+
+      expect(store.get('terminal:1').badges).toEqual([{
+        key: 'worktree',
+        text: 'WT',
+        tone: 'accent',
+        title: 'SVN worktree C:/Projects/NodeJs/AppJamatV3/.worktrees/014-svn-worktree; kept: 2 changes',
+      }])
     })
 
     it('marks a clean session red while its commit dialog remains open', async () => {
@@ -1581,9 +1630,9 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
       const stop = commitOpen.start()
       try {
         mount(new PanelApiFake('terminal:1'), 's-clean', { commitOpen })
-        await waitFor(() => expect(store.get('terminal:1').badges).toEqual([
+        await waitFor(() => expect(store.get('terminal:1').badges[0]).toEqual(
           { key: 'vcs', text: '*', tone: 'danger', title: 'Commit dialog open' },
-        ]))
+        ))
         expect(store.get('terminal:1').primary).toEqual({ glyph: '!', tone: 'danger', title: 'Commit review required' })
       } finally { stop() }
     })

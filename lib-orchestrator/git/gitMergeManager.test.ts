@@ -1,11 +1,9 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { CheckpointLayout } from './checkpointLayout'
-import { GitCheckpointStore } from './gitCheckpointStore'
 import { GitInvoker } from './gitInvoker'
 import { GitWorktreeManager } from './gitWorktreeManager'
 import type { GitCommandOutcome, GitCommandRunner, GitResult } from './git.types'
@@ -209,7 +207,7 @@ describe('lib-orchestrator/git/gitMergeManager', () => {
   it('merges to main without fast-forwarding', async () => {
     const { manager, runner } = managerOf({})
     expect(await manager.mergeToMain(rootConst, 'jamat/015-wizard'))
-      .toEqual({ ok: true, value: { conflict: false, diverged: false } })
+      .toEqual({ ok: true, value: { conflict: false } })
 
     expect(runner.calls)
       .toEqual([['merge', '--no-ff', '--no-edit', '--end-of-options', 'jamat/015-wizard']])
@@ -228,7 +226,7 @@ describe('lib-orchestrator/git/gitMergeManager', () => {
     })
 
     expect(await manager.mergeToMain(rootConst, 'jamat/015-wizard'))
-      .toEqual({ ok: true, value: { conflict: true, diverged: false } })
+      .toEqual({ ok: true, value: { conflict: true } })
   })
 
   /** The one forced removal in the library, and the reason this class exists beside the other one. */
@@ -242,11 +240,11 @@ describe('lib-orchestrator/git/gitMergeManager', () => {
 
   it('deletes a branch safely by default and forcibly when told', async () => {
     const safe = managerOf({})
-    await safe.manager.deleteBranch(rootConst, 'jamat/015', false, worktreeConst)
+    await safe.manager.deleteBranch(rootConst, 'jamat/015', false)
     expect(safe.runner.calls).toEqual([['branch', '-d', '--end-of-options', 'jamat/015']])
 
     const forced = managerOf({})
-    await forced.manager.deleteBranch(rootConst, 'jamat/015', true, worktreeConst)
+    await forced.manager.deleteBranch(rootConst, 'jamat/015', true)
     expect(forced.runner.calls).toEqual([['branch', '-D', '--end-of-options', 'jamat/015']])
   })
 
@@ -264,7 +262,7 @@ describe('lib-orchestrator/git/gitMergeManager', () => {
       .toEqual({ ok: true, value: undefined })
 
     const branch = managerOf({ code: 1, stderr: "error: branch 'jamat/015' not found." })
-    expect(await branch.manager.deleteBranch(rootConst, 'jamat/015', true, worktreeConst))
+    expect(await branch.manager.deleteBranch(rootConst, 'jamat/015', true))
       .toEqual({ ok: true, value: undefined })
   })
 
@@ -275,7 +273,7 @@ describe('lib-orchestrator/git/gitMergeManager', () => {
     expect(removal.ok === false && removal.code).toBe('locked')
 
     const unmerged = managerOf({ code: 1, stderr: "error: the branch 'jamat/015' is not fully merged" })
-    const deletion = await unmerged.manager.deleteBranch(rootConst, 'jamat/015', false, worktreeConst)
+    const deletion = await unmerged.manager.deleteBranch(rootConst, 'jamat/015', false)
     expect(deletion.ok).toBe(false)
 
     // A git that could not run at all said nothing about the target, so it is never read as absent.
@@ -290,108 +288,6 @@ describe('lib-orchestrator/git/gitMergeManager', () => {
     expect(answer.ok).toBe(false)
     expect(answer.ok === false && answer.code).toBe('git-missing')
   })
-  describe('in checkpoints mode', () => {
-    const created: string[] = []
-
-    afterEach(() => {
-      for (const directory of created.splice(0))
-        rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
-    })
-
-    function temporaryDirectory(prefix: string): string {
-      // realpathSync.NATIVE: os.tmpdir() can be an 8.3 short path on Windows and git answers in the
-      // long form. Plain realpathSync leaves the short name alone, so it would not help here.
-      const directory = realpathSync.native(mkdtempSync(join(tmpdir(), prefix)))
-      created.push(directory)
-      return directory
-    }
-
-    function checkpointManagerOf(
-      runner: GitCommandRunner,
-    ): { manager: GitMergeManager; store: GitCheckpointStore } {
-      const store = new GitCheckpointStore(runner)
-      return { manager: new GitMergeManager(runner, { modeOf: () => 'checkpoints', store }), store }
-    }
-
-    /** A worktree that exists on disk and says, in its own `.git` file, where it was cut from. */
-    function worktreeAt(root: string, name: string, gitdir: string): string {
-      const path = join(root, '.worktrees', name)
-      mkdirSync(path, { recursive: true })
-      writeFileSync(join(path, '.git'), `gitdir: ${gitdir}\n`, 'utf8')
-      return path
-    }
-
-    /**
-     * The disk guard of the hard cut. A worktree carrying a pointer into a project `.git` predates
-     * the cut, and a forced removal aimed at the store would be answered "is not a working tree",
-     * read as already gone, and the record deleted over a directory still full of work.
-     */
-    it('targets a project git worktree even while global mode says checkpoints', async () => {
-      const root = temporaryDirectory('jamat-v3-merge-foreign-')
-      mkdirSync(join(root, CheckpointLayout.storeRelativeConst), { recursive: true })
-      const worktree = worktreeAt(root, 'old', join(root, '.git', 'worktrees', 'old'))
-      const runner = new ScriptedRunner({})
-      const { manager } = checkpointManagerOf(runner)
-
-      expect(await manager.removeWorktreeForced(root, worktree))
-        .toEqual({ ok: true, value: undefined })
-      expect(runner.calls).toEqual([
-        ['worktree', 'remove', '--force', '--end-of-options', worktree],
-      ])
-    })
-
-    it('refuses a foreign worktree from the worktree-side commands too', async () => {
-      const root = temporaryDirectory('jamat-v3-merge-foreign2-')
-      mkdirSync(join(root, CheckpointLayout.storeRelativeConst), { recursive: true })
-      const worktree = worktreeAt(root, 'old', join(root, '.git', 'worktrees', 'old'))
-      const runner = new ScriptedRunner()
-      const { manager } = checkpointManagerOf(runner)
-
-      expect((await manager.commitAll(worktree, 'work')).ok).toBe(false)
-      expect((await manager.mergeIntoWorktree(worktree, 'main')).ok).toBe(false)
-      expect(runner.calls).toEqual([])
-    })
-
-    it('lets a worktree cut from the store through', async () => {
-      const root = temporaryDirectory('jamat-v3-merge-own-')
-      mkdirSync(join(root, CheckpointLayout.storeRelativeConst), { recursive: true })
-      const worktree = worktreeAt(
-        root,
-        'feature',
-        join(root, CheckpointLayout.storeRelativeConst, 'worktrees', 'feature'),
-      )
-      const runner = new ScriptedRunner({}, {})
-      const { manager } = checkpointManagerOf(runner)
-
-      expect(await manager.commitAll(worktree, 'work')).toEqual({ ok: true, value: undefined })
-      expect(runner.calls[0]).toEqual(['add', '--all'])
-    })
-
-    /**
-     * A teardown interrupted after the removal has to stay repeatable, so a worktree that is not on
-     * disk at all is GONE rather than foreign. Reading it as foreign would strand every record whose
-     * directory was already taken away.
-     */
-    it('treats a worktree that is not on disk as gone rather than as foreign', async () => {
-      const root = temporaryDirectory('jamat-v3-merge-gone-')
-      mkdirSync(join(root, CheckpointLayout.storeRelativeConst), { recursive: true })
-      const runner = new ScriptedRunner()
-      const { manager } = checkpointManagerOf(runner)
-
-      expect(await manager.removeWorktreeForced(root, join(root, '.worktrees', 'never-was')))
-        .toEqual({ ok: true, value: undefined })
-      expect(runner.calls).toEqual([])
-    })
-
-    it('refuses to checkpoint a main copy when it is in git mode', async () => {
-      const { manager } = managerOf()
-      const refused = await manager.checkpointMain('Q:\\somewhere', 'message')
-      expect(refused.ok).toBe(false)
-      if (refused.ok) return
-      expect(refused.detail).toContain('git mode')
-    })
-  })
-
   describe('against a real git', () => {
     const created: string[] = []
 
@@ -405,27 +301,29 @@ describe('lib-orchestrator/git/gitMergeManager', () => {
       return result.value
     }
 
-    /** A project with a store, one checkpoint and a worktree carrying committed work. */
-    async function landable(invoker: GitInvoker) {
-      const root = mkdtempSync(join(tmpdir(), 'jamat-v3-merge-real-'))
-      created.push(root)
-      writeFileSync(join(root, 'a.txt'), 'head\nmiddle\ntail\n', 'utf8')
-      const store = new GitCheckpointStore(invoker)
-      const context = { modeOf: () => 'checkpoints' as const, store }
-      const facts = valueOf(
-        await new GitWorktreeManager(invoker, context).create(root, 'Feature'),
-      )
-      writeFileSync(join(facts.worktreePath, 'a.txt'), 'head\nCHANGED\ntail\n', 'utf8')
-      writeFileSync(join(facts.worktreePath, 'b.txt'), 'new\n', 'utf8')
-      expect((await invoker.run(facts.worktreePath, ['add', '--all'])).code).toBe(0)
-      const committed = await invoker.run(facts.worktreePath, [
+    async function commit(invoker: GitInvoker, cwd: string, message: string): Promise<void> {
+      expect((await invoker.run(cwd, ['add', '--all'])).code).toBe(0)
+      const committed = await invoker.run(cwd, [
         '-c', 'user.email=tester@example.com',
         '-c', 'user.name=Tester',
         '-c', 'commit.gpgsign=false',
-        'commit', '--message', 'work',
+        'commit', '--message', message,
       ])
       expect(committed.code, committed.stderr).toBe(0)
-      return { root, facts, merge: new GitMergeManager(invoker, context), store }
+    }
+
+    /** A project with its own repository and a worktree carrying committed work. */
+    async function landable(invoker: GitInvoker) {
+      const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'jamat-v3-merge-real-')))
+      created.push(root)
+      expect((await invoker.run(root, ['init', '-b', 'main'])).code).toBe(0)
+      writeFileSync(join(root, 'a.txt'), 'head\nmiddle\ntail\n', 'utf8')
+      await commit(invoker, root, 'base')
+      const facts = valueOf(await new GitWorktreeManager(invoker).create(root, 'Feature'))
+      writeFileSync(join(facts.worktreePath, 'a.txt'), 'head\nCHANGED\ntail\n', 'utf8')
+      writeFileSync(join(facts.worktreePath, 'b.txt'), 'new\n', 'utf8')
+      await commit(invoker, facts.worktreePath, 'work')
+      return { root, facts, merge: new GitMergeManager(invoker) }
     }
 
     async function skipWithoutGit(context: { skip: () => void }): Promise<GitInvoker> {
@@ -436,92 +334,19 @@ describe('lib-orchestrator/git/gitMergeManager', () => {
       return invoker
     }
 
-    it('discards from the checkpoint store after switching to git mode', {
-      timeout: 120_000,
-    }, async (context) => {
-      const invoker = await skipWithoutGit(context)
-      const root = mkdtempSync(join(tmpdir(), 'jamat-v3-merge-affinity-'))
-      created.push(root)
-      expect((await invoker.run(root, ['init'])).code).toBe(0)
-      writeFileSync(join(root, 'base.txt'), 'base\n', 'utf8')
-      expect((await invoker.run(root, ['add', '-A'])).code).toBe(0)
-      expect((await invoker.run(root, [
-        '-c', 'user.email=tester@example.com',
-        '-c', 'user.name=Tester',
-        '-c', 'commit.gpgsign=false',
-        'commit', '--allow-empty', '-m', 'human base',
-      ])).code).toBe(0)
-      let mode: 'checkpoints' | 'git' = 'checkpoints'
-      const store = new GitCheckpointStore(invoker)
-      const modeContext = { modeOf: () => mode, store }
-      const facts = valueOf(await new GitWorktreeManager(invoker, modeContext)
-        .create(root, 'Feature'))
-      expect((await invoker.run(root, ['branch', facts.branch])).code).toBe(0)
-      mode = 'git'
-      const merge = new GitMergeManager(invoker, modeContext)
-
-      expect(await merge.removeWorktreeForced(facts.repositoryRoot, facts.worktreePath))
-        .toEqual({ ok: true, value: undefined })
-      expect(await merge.deleteBranch(
-        facts.repositoryRoot,
-        facts.branch,
-        true,
-        facts.worktreePath,
-      )).toEqual({ ok: true, value: undefined })
-
-      expect((await invoker.run(root, [
-        'show-ref', '--verify', '--quiet', `refs/heads/${facts.branch}`,
-      ])).code).toBe(0)
-      const checkpoint = valueOf(await store.existingContextOf(root))
-      if (checkpoint === null) throw new Error('The checkpoint store disappeared')
-      expect((await invoker.run(root, [
-        ...checkpoint.gitDirArgs,
-        'show-ref', '--verify', '--quiet', `refs/heads/${facts.branch}`,
-      ])).code).toBe(1)
-      expect(existsSync(facts.worktreePath)).toBe(false)
-
-      const restarted = new GitMergeManager(invoker, modeContext)
-      const repeated = await restarted.deleteBranch(
-        facts.repositoryRoot,
-        facts.branch,
-        true,
-        facts.worktreePath,
-      )
-      expect(repeated.ok).toBe(false)
-      if (repeated.ok) throw new Error('The ambiguous repeat was accepted')
-      expect(repeated.detail).toContain('repository affinity unknown')
-      expect((await invoker.run(root, [
-        'show-ref', '--verify', '--quiet', `refs/heads/${facts.branch}`,
-      ])).code).toBe(0)
-    })
-
-    /** The landing writes the session's work into the human's own files, through the store. */
-    it('fast-forwards the main copy onto the session branch', { timeout: 120_000 }, async (context) => {
+    /** The landing writes the session's work into the project's own files, with a merge commit. */
+    it('lands the session branch in the project repository', { timeout: 120_000 }, async (context) => {
       const invoker = await skipWithoutGit(context)
       const { root, facts, merge } = await landable(invoker)
 
       expect(await merge.mergeToMain(facts.repositoryRoot, facts.branch))
-        .toEqual({ ok: true, value: { conflict: false, diverged: false } })
+        .toEqual({ ok: true, value: { conflict: false } })
 
       expect(readFileSync(join(root, 'a.txt'), 'utf8')).toContain('CHANGED')
       expect(readFileSync(join(root, 'b.txt'), 'utf8').trim()).toBe('new')
       expect(valueOf(await merge.isMerged(facts.repositoryRoot, facts.branch))).toBe(true)
-      expect(valueOf(await merge.currentBranch(facts.repositoryRoot)).branch)
-        .toBe(CheckpointLayout.branchConst)
-    })
-
-    /** The main copy moved on: not a conflict, not a failure, just merge again. */
-    it('answers a main copy that moved as diverged', { timeout: 120_000 }, async (context) => {
-      const invoker = await skipWithoutGit(context)
-      const { root, facts, merge, store } = await landable(invoker)
-      writeFileSync(join(root, 'elsewhere.txt'), 'main moved\n', 'utf8')
-      expect((await store.checkpoint(root, 'main moved')).ok).toBe(true)
-
-      expect(await merge.mergeToMain(facts.repositoryRoot, facts.branch))
-        .toEqual({ ok: true, value: { conflict: false, diverged: true } })
-
-      // Nothing of the session reached the main copy.
-      expect(readFileSync(join(root, 'a.txt'), 'utf8')).not.toContain('CHANGED')
+      expect(valueOf(await merge.currentBranch(facts.repositoryRoot)).branch).toBe('main')
+      expect(existsSync(join(root, '.checkpoints'))).toBe(false)
     })
 
     /**
@@ -539,24 +364,6 @@ describe('lib-orchestrator/git/gitMergeManager', () => {
       if (refused.ok) return
       expect(refused.code).toBe('dirty')
       expect(readFileSync(join(root, 'a.txt'), 'utf8')).toContain('LOCAL EDIT')
-    })
-
-    /** The delegate the merge flow calls before landing; the store owns what a checkpoint is. */
-    it('checkpoints the main copy through the store', { timeout: 120_000 }, async (context) => {
-      const invoker = await skipWithoutGit(context)
-      const { root, merge, store } = await landable(invoker)
-      writeFileSync(join(root, 'wip.txt'), 'human work in progress\n', 'utf8')
-
-      expect(await merge.checkpointMain(root, 'Checkpoint before merge')).toEqual({
-        ok: true,
-        value: undefined,
-      })
-
-      const target = valueOf(await store.contextOf(root))
-      const log = await invoker.run(root, [...target.gitDirArgs, 'log', '--format=%s'])
-      expect(log.stdout.split('\n')[0].trim()).toBe('Checkpoint before merge')
-      const status = await invoker.run(root, [...target.gitDirArgs, 'status', '--porcelain'])
-      expect(status.stdout.trim()).toBe('')
     })
   })
 })

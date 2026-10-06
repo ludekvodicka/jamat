@@ -65,7 +65,7 @@ export interface VersioningCommitDraftDto {
 
 export type VersioningCommitOpenResult =
   | { ok: true; value: { draftId: string; scopeRoot: string; title: string; paths?: readonly string[] }; messageApplied: boolean }
-  | { ok: false; code: 'unknown-session' | 'no-working-copy' | 'outside-session' | 'store-worktree' | 'remote-session' | 'message-too-long'; detail: string }
+  | { ok: false; code: 'unknown-session' | 'no-working-copy' | 'outside-session' | 'remote-session' | 'message-too-long'; detail: string }
 
 export interface VersioningCommitRunRequest {
   draftId: string

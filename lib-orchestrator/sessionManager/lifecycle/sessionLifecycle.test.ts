@@ -9,7 +9,6 @@ import type {
   RuntimeListResult,
   RuntimeSessionInfo,
 } from '../../../app-host/app/wire/hostWire.js'
-import type { GitErrorCode, GitResult, WorktreeFacts } from '../../git/git.types'
 import type { CodexSessionIdentity } from '../codexSessionIdentity'
 import type { HostCallFailure } from '../../hostClient/hostClient.types'
 import type { DeclaredSetup, SetupResolution } from '../../projectSetup/projectSetup.types'
@@ -29,7 +28,11 @@ import {
   type SessionNumbersPort,
   type SessionSetupPort,
   type SessionWorktreePort,
+  type WorktreeProvision,
+  type WorktreeRequest,
 } from './sessionLifecycle'
+import { type SvnFinishPort, SvnWorktreeFinishFlow } from './svnWorktreeFinishFlow'
+import { WorktreeCleanupPacing } from './worktreeCleanupPacing'
 
 describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
   const created: string[] = []
@@ -71,8 +74,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
 
   interface FakeWorktrees {
     port: SessionWorktreePort
-    calls: { repositoryRoot: string; slug: string; baseRef?: string }[]
-    outcome: GitResult<WorktreeFacts>
+    calls: WorktreeRequest[]
+    outcome: WorktreeProvision
   }
 
   interface FakeSetup {
@@ -125,6 +128,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     seeded: string[]
     /** Every session id the reconciler asked to have its merge carried on. */
     resumed: string[]
+    /** Sessions whose finish began before its record says so. */
+    finishing: Set<string>
     /** The lifecycle's clock, movable so a case can wait out a replay backoff. */
     clock: { now: number }
   }
@@ -331,11 +336,12 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
           branch: 'jamat/fix',
           baseCommit: 'abc123',
           repositoryRoot: projectRoot,
+          kind: 'git',
         },
       },
       port: {
-        async create(repositoryRoot, slug, baseRef) {
-          calls.push({ repositoryRoot, slug, baseRef })
+        async create(request) {
+          calls.push(request)
           return fake.outcome
         },
       },
@@ -410,6 +416,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     const efforts = new Map<'claude' | 'codex', string>()
     const seeded: string[] = []
     const resumed: string[] = []
+    const finishing = new Set<string>()
     return {
       store,
       recordsFile: file,
@@ -427,6 +434,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       efforts,
       seeded,
       resumed,
+      finishing,
       clock,
       lifecycle: wire(new SessionLifecycle({
         controller: { configIdentity: 'controller-1', channel: 'development' },
@@ -446,6 +454,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         yoloFor: (agentId) => yolo.has(agentId),
         modelFor: (agentId) => models.get(agentId),
         effortFor: (agentId) => efforts.get(agentId),
+        finishing: (sessionId) => finishing.has(sessionId),
         seedClaudeTrust: (cwd) => {
           seeded.push(cwd)
           return options?.seedProblem === undefined
@@ -782,8 +791,9 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     })
     expect(result.ok).toBe(true)
     expect(context.worktrees.calls).toEqual([{
-      repositoryRoot: join('Q:', 'apps', 'one'),
-      slug: 'fix',
+      projectRoot: join('Q:', 'apps', 'one'),
+      owner: undefined,
+      folder: '007-fix',
       baseRef: 'main',
     }])
     expect(context.store.get('id-1')?.worktree?.branch).toBe('jamat/fix')
@@ -806,20 +816,34 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     expect(context.host.calls).toEqual([])
   })
 
-  // Git's codes are carried verbatim, but through a mapping: a code this library has no name for is
-  // a loud failure rather than a code the caller cannot read.
-  it('throws on a git failure it has no session code for', async () => {
+  it('refuses a worktree slug that carries no letter or digit before it takes a number', async () => {
     const context = await harness()
+
+    const refused = await context.lifecycle.create({ ...worktreeSpec(), worktree: { slug: '!!!' } })
+
+    expect(failureOf(refused)).toMatchObject({ code: 'invalid-spec', detail: expect.stringMatching(/letter or digit/) })
+    expect(context.numbers.calls).toEqual([])
+    expect(context.worktrees.calls).toEqual([])
+  })
+
+  it('hands the owner and the setup of a member checkout to the owner directory', async () => {
+    const context = await harness()
+    const owner = join(projectRoot, 'Member')
     context.worktrees.outcome = {
-      ok: false,
-      code: 'submodule-hell' as GitErrorCode,
-      detail: 'a code from a later git manager',
+      ok: true,
+      value: {
+        worktreePath: join(owner, '.worktrees', '007-fix'),
+        branch: 'file:///repository/Member',
+        baseCommit: 'r41',
+        repositoryRoot: owner,
+        kind: 'svn',
+      },
     }
-    await expect(context.lifecycle.create({
-      kind: 'shell',
-      directory: { mode: 'project', categoryId: 'c1', projectPath: join('Q:', 'apps', 'one') },
-      worktree: { slug: 'fix' },
-    })).rejects.toThrow(/Unknown git failure/)
+
+    successOf(await context.lifecycle.create({ ...worktreeSpec(), worktree: { slug: 'fix', owner } }))
+
+    expect(context.worktrees.calls).toMatchObject([{ projectRoot, owner, folder: '007-fix' }])
+    expect(context.setup.calls).toEqual([{ projectRoot: owner, repositoryRoot: owner }])
   })
 
   it('refuses a spec that does not describe a session it could launch', async () => {
@@ -1045,20 +1069,41 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(context.numbers.calls).toEqual([])
     })
 
-    // A refused create leaves nothing behind, and a number is part of that nothing: the counter is
-    // asked after the worktree is cut, so a create that never got one costs the project no number.
-    it('takes no number for a create the worktree refused', async () => {
+    // The worktree folder carries the number, so the counter is asked before the cut: a refused
+    // checkout costs the project one number and leaves no folder.
+    it('takes the number before the cut and names the worktree folder after it', async () => {
       const context = await harness()
+      context.numbers.token = '015'
       context.worktrees.outcome = {
         ok: false,
-        code: 'dirty',
-        detail: 'the base repository is dirty',
+        code: 'invalid-spec',
+        detail: 'SVN does not ignore .worktrees',
       }
 
       const refused = await context.lifecycle.create(worktreeSpec())
 
-      expect(failureOf(refused).code).toBe('dirty')
-      expect(context.numbers.calls).toEqual([])
+      expect(failureOf(refused).code).toBe('invalid-spec')
+      expect(context.numbers.calls).toEqual([{ projectPath: projectRoot }])
+      expect(context.worktrees.calls.map((call) => call.folder)).toEqual(['015-fix'])
+      expect(context.store.list()).toEqual([])
+    })
+
+    it('uses the launcher slug as it is, and puts a custom number in front of a plain one', async () => {
+      const launcher = await harness()
+      successOf(await launcher.lifecycle.create({
+        ...worktreeSpec(),
+        title: '014 - Fix login',
+        worktree: { slug: '014-fix-login' },
+      }))
+      const ticket = await harness()
+      successOf(await ticket.lifecycle.create({ ...worktreeSpec(), number: 'i34', worktree: { slug: 'Fix Login' } }))
+      const repeated = await harness()
+      successOf(await repeated.lifecycle.create({ ...worktreeSpec(), worktree: { slug: '007-fix' } }))
+
+      expect(launcher.worktrees.calls.map((call) => call.folder)).toEqual(['014-fix-login'])
+      expect(launcher.numbers.calls).toEqual([])
+      expect(ticket.worktrees.calls.map((call) => call.folder)).toEqual(['i34-fix-login'])
+      expect(repeated.worktrees.calls.map((call) => call.folder)).toEqual(['007-fix'])
     })
 
     // A number that could not be taken is not a reason to refuse: a session without a number is
@@ -1998,6 +2043,27 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     expect(context.reports).toHaveLength(1)
     expect(context.reports[0]).toContain(join('Q:', 'apps', 'one', '.worktrees', 'fix'))
     expect(context.reports[0]).toContain('jamat/fix')
+  })
+
+  it('names an SVN worktree it leaves behind as a checkout, with no branch', async () => {
+    const context = await harness()
+    await context.store.put(record('s1', {
+      life: 'lost',
+      binding: null,
+      worktree: {
+        worktreePath: join('Q:', 'apps', 'one', '.worktrees', '014-fix'),
+        branch: 'http://svn.local/apps/one',
+        baseCommit: 'r12',
+        repositoryRoot: join('Q:', 'apps', 'one'),
+        kind: 'svn',
+      },
+    }))
+    expect(await context.lifecycle.remove('s1')).toEqual({ ok: true, value: undefined })
+    expect(context.reports).toEqual([
+      `Session s1 is gone; the SVN worktree ${join('Q:', 'apps', 'one', '.worktrees', '014-fix')}, `
+        + `a checkout of http://svn.local/apps/one, is left in ${join('Q:', 'apps', 'one')} for you `
+        + 'to keep or remove, because nothing here throws away work that was never committed',
+    ])
   })
 
   /*
@@ -4558,6 +4624,437 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(args.slice(0, 4)).toEqual(['--model', 'opus', '--effort', 'high'])
       expect(args).toContain('-p')
       expect(args.at(-1)).toBe('resolve it')
+    })
+  })
+
+  /*
+   * A session's conversation ran in its worktree. Once that directory is gone, the only other
+   * directory a launch could use is the project's main copy, which is not where the work was.
+   */
+  describe('a session whose worktree is gone', () => {
+    const revision = 'https://svn.example.test/repos/app:r42'
+
+    function tombstone(context: Harness): SessionRecord {
+      return record('s1', {
+        kind: 'agent',
+        agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'native-1' },
+        directory: { mode: 'project', categoryId: 'c1', projectPath: context.workDirectory },
+        life: 'ended',
+        binding: null,
+        completed: true,
+        retiredWorktree: {
+          worktreePath: join(context.workDirectory, '.worktrees', '014-fix'),
+          kind: 'svn',
+          revisions: [revision],
+          removedAt: 5,
+        },
+      })
+    }
+
+    function withWorktree(context: Harness, folder: string): SessionRecord {
+      return record('s1', {
+        kind: 'agent',
+        agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'native-1' },
+        directory: { mode: 'project', categoryId: 'c1', projectPath: context.workDirectory },
+        life: 'ended',
+        binding: null,
+        worktree: {
+          worktreePath: join(context.workDirectory, '.worktrees', folder),
+          branch: 'https://svn.example.test/repos/app/trunk',
+          baseCommit: 'r41',
+          repositoryRoot: context.workDirectory,
+          kind: 'svn',
+        },
+      })
+    }
+
+    it('refuses to reopen or fork a tombstone, naming its revisions, and asks the Host nothing', async () => {
+      const context = await harness()
+      await context.store.put(tombstone(context))
+
+      for (const refused of [
+        failureOf(await context.lifecycle.reopen('s1')),
+        failureOf(await context.lifecycle.forkFrom('s1')),
+      ]) {
+        expect(refused.code).toBe('worktree-removed')
+        expect(refused.detail).toContain(revision)
+      }
+      expect(context.host.calls).toEqual([])
+      expect(context.store.get('s1')).toEqual(tombstone(context))
+    })
+
+    it('refuses to reopen a session whose worktree directory is absent', async () => {
+      const context = await harness()
+      await context.store.put(withWorktree(context, 'gone'))
+
+      const refused = failureOf(await context.lifecycle.reopen('s1'))
+
+      expect(refused.code).toBe('worktree-removed')
+      expect(refused.detail).toContain(join(context.workDirectory, '.worktrees', 'gone'))
+      expect(context.host.calls).toEqual([])
+    })
+
+    it('reopens a session whose worktree directory is there, in that directory', async () => {
+      const context = await harness()
+      mkdirSync(join(context.workDirectory, '.worktrees', 'here'), { recursive: true })
+      await context.store.put(withWorktree(context, 'here'))
+
+      expect(await context.lifecycle.reopen('s1')).toEqual({ ok: true, value: undefined })
+      expect(launchOf(callsNamed(context.host, 'runtime.create')[0]).cwd)
+        .toBe(join(context.workDirectory, '.worktrees', 'here'))
+    })
+
+    // A running finish may be about to rename the directory away; nothing else may start in it or
+    // drop the record that will carry the outcome.
+    it('refuses to reopen, fork or remove a session while its worktree finish runs', async () => {
+      const context = await harness()
+      mkdirSync(join(context.workDirectory, '.worktrees', 'busy'), { recursive: true })
+      const finishing: SessionRecord = {
+        ...withWorktree(context, 'busy'),
+        worktreeFinish: { phase: 'reviewing', scopeRoot: join(context.workDirectory, '.worktrees', 'busy'), startedAt: 5 },
+      }
+      await context.store.put(finishing)
+
+      for (const refused of [
+        failureOf(await context.lifecycle.reopen('s1')),
+        failureOf(await context.lifecycle.forkFrom('s1')),
+        failureOf(await context.lifecycle.remove('s1')),
+      ]) {
+        expect(refused.code).toBe('merge-pending')
+        expect(refused.detail).toContain('reviewing')
+      }
+      expect(context.host.calls).toEqual([])
+      expect(context.store.get('s1')).toEqual(finishing)
+    })
+
+    // The first phase write of a Finish lands after an await; a reopen in between would start the
+    // session in the directory the finish is about to rename away.
+    it('refuses to reopen, fork or remove a session whose finish began before its record says so', async () => {
+      const context = await harness()
+      mkdirSync(join(context.workDirectory, '.worktrees', 'busy'), { recursive: true })
+      await context.store.put(withWorktree(context, 'busy'))
+      context.finishing.add('s1')
+
+      for (const refused of [
+        failureOf(await context.lifecycle.reopen('s1')),
+        failureOf(await context.lifecycle.forkFrom('s1')),
+        failureOf(await context.lifecycle.remove('s1')),
+      ]) {
+        expect(refused.code).toBe('merge-pending')
+        expect(refused.detail).toContain('starting')
+      }
+      expect(context.host.calls).toEqual([])
+
+      context.finishing.delete('s1')
+      expect(await context.lifecycle.reopen('s1')).toEqual({ ok: true, value: undefined })
+    })
+
+    // The Host restart reopens every live session on the replacement; one that cannot be reopened
+    // has to stop the restart before the old Host goes, not fail after it.
+    it('cancels a Host restart over a live session whose worktree directory is absent', async () => {
+      const context = await harness()
+      await context.store.put({ ...withWorktree(context, 'gone'), life: 'live', binding: { hostInstanceId: 'host-1', generation: 1 } })
+      context.host.runtimes.set('s1', runtime('s1'))
+
+      const refused = failureOf(await context.lifecycle.prepareHostRestart(context.host.listing()))
+
+      expect(refused.detail).toContain(join(context.workDirectory, '.worktrees', 'gone'))
+    })
+  })
+
+  /**
+   * The verdict is the reconciler's; the lifecycle writes the attempt first and hands the apply to the
+   * finish flow, off this loop. The flow's own judgement is tested in `svnWorktreeFinishFlow.test.ts`.
+   */
+  describe('the cleanup of an SVN worktree after its end', () => {
+    function cleaning(overrides?: Partial<SessionRecord>): SessionRecord {
+      return record('w1', {
+        life: 'ended',
+        binding: null,
+        exitReason: 'process-exit',
+        endedAt: 1_000,
+        worktree: {
+          worktreePath: 'C:\\repo\\.worktrees\\014-fix',
+          branch: 'https://svn.example.test/repos/app/trunk',
+          baseCommit: 'r41',
+          repositoryRoot: 'C:\\repo',
+          kind: 'svn',
+          directoryId: '1:2:3',
+        },
+        worktreeCleanup: { phase: 'pending', trigger: 'remove-when-ended', requestedAt: 1, attempts: 0 },
+        ...overrides,
+      })
+    }
+
+    async function wired(): Promise<Harness & { cleaned: string[] }> {
+      const context = await harness()
+      const cleaned: string[] = []
+      context.lifecycle.setCleanWorktree((sessionId) => cleaned.push(sessionId))
+      return { ...context, cleaned }
+    }
+
+    it('hands a pending cleanup to the flow thirty seconds after the end, with the attempt written first', async () => {
+      const context = await wired()
+      await context.store.put(cleaning())
+
+      context.clock.now = 30_999
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.cleaned).toEqual([])
+
+      context.clock.now = 31_000
+      const applied = await context.lifecycle.reconcile(context.host.listing())
+
+      expect(applied).toContainEqual({ kind: 'clean-worktree', sessionId: 'w1' })
+      expect(context.cleaned).toEqual(['w1'])
+      expect(context.store.get('w1')?.worktreeCleanup).toMatchObject({ phase: 'pending', attempts: 1, lastAttemptAt: 31_000 })
+      // The session with a worktree is never filed as done by its ending; the removal does that.
+      expect(context.store.get('w1')?.completed).toBeUndefined()
+    })
+
+    it('judges a cleanup waiting for an unlanded commit at once after a client start, then every ten minutes', async () => {
+      const context = await wired()
+      // The harness client started at 5_000; this attempt is older than that start.
+      await context.store.put(cleaning({ worktreeCleanup: {
+        phase: 'pending', trigger: 'committed', reason: 'unlanded r12: a.txt', requestedAt: 1, attempts: 3, lastAttemptAt: 4_000,
+      } }))
+
+      context.clock.now = 40_000
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.cleaned).toEqual(['w1'])
+
+      context.clock.now = 40_000 + 10 * 60_000 - 1
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.cleaned).toEqual(['w1'])
+
+      context.clock.now = 40_000 + 10 * 60_000
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.cleaned).toEqual(['w1', 'w1'])
+    })
+
+    it('writes no attempt while a finish or an earlier cleanup of this client holds the session', async () => {
+      const context = await wired()
+      await context.store.put(cleaning())
+      context.finishing.add('w1')
+      context.clock.now = 60_000
+
+      await context.lifecycle.reconcile(context.host.listing())
+
+      expect(context.cleaned).toEqual([])
+      expect(context.store.get('w1')?.worktreeCleanup?.attempts).toBe(0)
+    })
+
+    it('writes nothing without a flow to hand the cleanup to', async () => {
+      const context = await harness()
+      await context.store.put(cleaning())
+      context.clock.now = 60_000
+
+      expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([])
+      expect(context.store.get('w1')?.worktreeCleanup?.attempts).toBe(0)
+    })
+
+    function svnProvision(context: Harness): void {
+      context.worktrees.outcome = {
+        ok: true,
+        value: {
+          worktreePath: join(projectRoot, '.worktrees', '007-fix'),
+          branch: 'file:///repository/one',
+          baseCommit: 'r41',
+          repositoryRoot: projectRoot,
+          kind: 'svn',
+        },
+      }
+    }
+
+    it('keeps a changed worktree after Discard IN USE, a reopen and a stop, because the reopen made the cleanup count changes', async () => {
+      const context = await wired()
+      const worktree = join(context.workDirectory, 'repo', '.worktrees', '014-fix')
+      mkdirSync(worktree, { recursive: true })
+      const base = cleaning({ exitReason: 'stopped', endedAt: 1_000 })
+      if (base.worktree === undefined) throw new Error('the fixture has no worktree')
+      await context.store.put({ ...base, worktree: { ...base.worktree, worktreePath: worktree, repositoryRoot: join(context.workDirectory, 'repo') } })
+      const flowLog: string[] = []
+      const svn = {
+        present: async () => true,
+        changes: async (path: string) => {
+          flowLog.push(`changes ${path}`)
+          return { ok: true as const, value: [{ kind: 'item' as const, conflict: false, path: 'after-reopen.txt' }] }
+        },
+        unlanded: async () => ({ ok: true as const, value: [] }),
+        renameAside: async () => {
+          flowLog.push('renameAside')
+          return { ok: true as const, value: renameAnswer }
+        },
+        purgeAside: async () => ({ ok: true as const, value: 'removed' as const }),
+        removeEmptyWorktreesDir: async () => undefined,
+      }
+      let renameAnswer: 'in-use' | 'renamed' = 'in-use'
+      const ended: string[] = []
+      const flow = new SvnWorktreeFinishFlow({
+        records: context.store,
+        svn: svn as unknown as SvnFinishPort,
+        reviewOf: () => null,
+        releaseBelow: async () => undefined,
+        onQueue: (work) => work(),
+        detach: () => { throw new Error('a Discard and a cleanup detach nothing') },
+        report: () => undefined,
+        changed: () => undefined,
+        ended: (sessionId) => { ended.push(sessionId) },
+        now: () => context.clock.now,
+      })
+      const cleanups: Promise<void>[] = []
+      context.lifecycle.setCleanWorktree((sessionId) => { cleanups.push(flow.cleanUp(sessionId)) })
+
+      context.clock.now = 2_000
+      expect(failureOf(await flow.discard('w1')).code).toBe('locked')
+      expect(context.store.get('w1')?.worktreeCleanup?.trigger).toBe('discard-unfinished')
+
+      context.clock.now = 3_000
+      expect(await context.lifecycle.reopen('w1')).toEqual({ ok: true, value: undefined })
+      expect(context.store.get('w1')?.life).toBe('live')
+      expect(context.store.get('w1')?.worktreeCleanup)
+        .toEqual({ phase: 'pending', trigger: 'removal-unfinished', requestedAt: 3_000, attempts: 0 })
+
+      expect(await context.lifecycle.stop('w1')).toEqual({ ok: true, value: undefined })
+      const stopped = context.host.runtimes.get('w1')
+      if (stopped === undefined) throw new Error('the Host holds no runtime')
+      context.host.runtimes.set('w1', { ...stopped, exitReason: 'stopped', exitedAt: 4_000 })
+      context.clock.now = 4_000
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.store.get('w1')?.life).toBe('ended')
+
+      renameAnswer = 'renamed'
+      context.clock.now = 4_000 + 31_000
+      await context.lifecycle.reconcile(context.host.listing())
+      await Promise.all(cleanups)
+
+      expect(cleanups).toHaveLength(1)
+      expect(flowLog).toEqual(['renameAside', `changes ${worktree}`])
+      expect(context.store.get('w1')?.worktreeCleanup).toMatchObject({ phase: 'kept', reason: '1 change' })
+      expect(context.store.get('w1')?.worktree?.worktreePath).toBe(worktree)
+      expect(ended).toEqual([])
+    })
+
+    it('writes a removeWhenEnded create pending from the start, and judges nothing while it runs', async () => {
+      const context = await wired()
+      svnProvision(context)
+
+      const { sessionId } = successOf(await context.lifecycle.create({
+        ...worktreeSpec(), worktree: { slug: 'fix', removeWhenEnded: true },
+      }))
+
+      expect(context.store.get(sessionId)?.worktreeCleanup)
+        .toEqual({ phase: 'pending', trigger: 'remove-when-ended', requestedAt: context.clock.now, attempts: 0 })
+      expect(context.store.get(sessionId)?.life).toBe('live')
+      context.clock.now += 60 * 60_000
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.cleaned).toEqual([])
+    })
+
+    it('writes no cleanup for a Git worktree or a create without the option', async () => {
+      const context = await wired()
+      const git = successOf(await context.lifecycle.create({ ...worktreeSpec(), worktree: { slug: 'fix', removeWhenEnded: true } }))
+      svnProvision(context)
+      const plain = successOf(await context.lifecycle.create(worktreeSpec()))
+
+      expect(context.store.get(git.sessionId)?.worktree?.kind).toBe('git')
+      expect(context.store.get(git.sessionId)?.worktreeCleanup).toBeUndefined()
+      expect(context.store.get(plain.sessionId)?.worktreeCleanup).toBeUndefined()
+    })
+
+    it('refuses a removeWhenEnded that is not true before it takes a number', async () => {
+      const context = await harness()
+
+      const refused = await context.lifecycle.create({
+        ...worktreeSpec(), worktree: { slug: 'fix', removeWhenEnded: false as unknown as true },
+      })
+
+      expect(failureOf(refused)).toMatchObject({ code: 'invalid-spec', detail: expect.stringMatching(/removeWhenEnded/) })
+      expect(context.numbers.calls).toEqual([])
+    })
+
+    it('writes a committed cleanup for a review inside a session\'s SVN worktree, and nothing for a main-copy review', async () => {
+      const context = await harness()
+      await context.store.put(cleaning({ life: 'live', binding: { hostInstanceId: 'host-1', generation: 1 }, worktreeCleanup: undefined }))
+      context.clock.now = 7_000
+
+      expect(await context.lifecycle.noteWorktreeCommitted('C:\\repo')).toEqual({ ok: true, value: undefined })
+      expect(await context.lifecycle.noteWorktreeCommitted('C:\\repo\\src')).toEqual({ ok: true, value: undefined })
+      expect(context.store.get('w1')?.worktreeCleanup).toBeUndefined()
+
+      await context.lifecycle.noteWorktreeCommitted('C:/repo/.worktrees/014-fix/mount')
+      expect(context.store.get('w1')?.worktreeCleanup)
+        .toEqual({ phase: 'pending', trigger: 'committed', requestedAt: 7_000, attempts: 0 })
+    })
+
+    it('leaves a running finish and a pending trigger alone, and judges a kept worktree again', async () => {
+      const context = await harness()
+      const scope = 'C:\\repo\\.worktrees\\014-fix'
+      const discarded = cleaning({ worktreeCleanup: { phase: 'pending', trigger: 'discard-unfinished', reason: 'in use', requestedAt: 1, attempts: 2 } })
+      await context.store.put(discarded)
+      await context.lifecycle.noteWorktreeCommitted(scope)
+      expect(context.store.get('w1')).toEqual(discarded)
+
+      const reviewing = cleaning({ worktreeCleanup: undefined, worktreeFinish: { phase: 'reviewing', scopeRoot: scope, startedAt: 5 } })
+      await context.store.put(reviewing)
+      await context.lifecycle.noteWorktreeCommitted(scope)
+      expect(context.store.get('w1')).toEqual(reviewing)
+
+      await context.store.put(cleaning({ worktreeCleanup: undefined }))
+      context.finishing.add('w1')
+      await context.lifecycle.noteWorktreeCommitted(scope)
+      expect(context.store.get('w1')?.worktreeCleanup).toBeUndefined()
+      context.finishing.delete('w1')
+
+      await context.store.put(cleaning({ worktreeCleanup: { phase: 'kept', trigger: 'committed', reason: '2 changes', requestedAt: 1, attempts: 1 } }))
+      context.clock.now = 9_000
+      await context.lifecycle.noteWorktreeCommitted(scope)
+      expect(context.store.get('w1')?.worktreeCleanup)
+        .toEqual({ phase: 'pending', trigger: 'committed', requestedAt: 9_000, attempts: 0 })
+    })
+
+    it('takes a requested cleanup, judges a kept worktree again and makes a paced one due at once', async () => {
+      const context = await harness()
+      await context.store.put(cleaning({ worktreeCleanup: undefined }))
+      context.clock.now = 7_000
+      expect(await context.lifecycle.requestWorktreeCleanup('w1')).toEqual({ ok: true, value: undefined })
+      expect(context.store.get('w1')?.worktreeCleanup)
+        .toEqual({ phase: 'pending', trigger: 'requested', requestedAt: 7_000, attempts: 0 })
+
+      await context.store.put(cleaning({ worktreeCleanup: { phase: 'kept', trigger: 'committed', reason: '2 changes', requestedAt: 1, attempts: 1, lastAttemptAt: 2 } }))
+      await context.lifecycle.requestWorktreeCleanup('w1')
+      expect(context.store.get('w1')?.worktreeCleanup)
+        .toEqual({ phase: 'pending', trigger: 'requested', requestedAt: 7_000, attempts: 0 })
+
+      // An unfinished Discard stays one: its trigger skips the change check the person already passed.
+      await context.store.put(cleaning({ worktreeCleanup: { phase: 'pending', trigger: 'discard-unfinished', reason: 'unlanded r12: a.txt', requestedAt: 3, attempts: 4, lastAttemptAt: 6_000 } }))
+      await context.lifecycle.requestWorktreeCleanup('w1')
+      const paced = context.store.get('w1')?.worktreeCleanup
+      expect(paced).toEqual({ phase: 'pending', trigger: 'discard-unfinished', requestedAt: 3, attempts: 0 })
+      expect(paced && WorktreeCleanupPacing.due(paced, 7_000, 0)).toBe(true)
+    })
+
+    it('refuses a requested cleanup without an SVN worktree, during a finish and after the removal', async () => {
+      const context = await harness()
+      expect(failureOf(await context.lifecycle.requestWorktreeCleanup('nobody'))).toMatchObject({ code: 'not-found' })
+
+      await context.store.put(cleaning({
+        worktreeCleanup: undefined,
+        worktree: { worktreePath: 'C:\\repo\\.worktrees\\014-fix', branch: 'jamat/fix', baseCommit: 'abc', repositoryRoot: 'C:\\repo', kind: 'git' },
+      }))
+      expect(failureOf(await context.lifecycle.requestWorktreeCleanup('w1'))).toMatchObject({ code: 'invalid-spec' })
+
+      const reviewing = cleaning({ worktreeCleanup: undefined, worktreeFinish: { phase: 'reviewing', startedAt: 5 } })
+      await context.store.put(reviewing)
+      expect(failureOf(await context.lifecycle.requestWorktreeCleanup('w1'))).toMatchObject({ code: 'merge-pending' })
+      expect(context.store.get('w1')).toEqual(reviewing)
+
+      const { worktree: _worktree, ...withoutWorktree } = cleaning({ worktreeCleanup: undefined })
+      await context.store.put({
+        ...withoutWorktree,
+        retiredWorktree: { worktreePath: 'C:/repo/.worktrees/014-fix', kind: 'svn', revisions: ['r12'], removedAt: 9 },
+      })
+      expect(failureOf(await context.lifecycle.requestWorktreeCleanup('w1')))
+        .toMatchObject({ code: 'worktree-removed', detail: expect.stringMatching(/r12/) })
     })
   })
 })

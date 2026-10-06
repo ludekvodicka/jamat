@@ -735,12 +735,15 @@ class SmokeRemoteControl extends SmokeHarness {
       && data.typed === false)
   }
 
+  /** `--expect stop` stops a running session, and refuses the press after it, whose step is no stop. */
   private async checkFinalize(sessionId: string): Promise<void> {
     await this.cli(
       'sessions',
       'finalize',
       '--session-id',
       sessionId,
+      '--expect',
+      'stop',
       '--operation-id',
       'smoke-finalize-1',
     )
@@ -750,6 +753,14 @@ class SmokeRemoteControl extends SmokeHarness {
         .some((session) => session.sessionId === sessionId && session.life === 'ended'),
       'the CLI-finalized session never ended',
     )
+    const again = await this.cliFailure(4, 'sessions', 'finalize', '--session-id', sessionId, '--expect', 'stop',
+      '--operation-id', 'smoke-finalize-2')
+    this.check('a second finalize expecting a stop is refused as a conflict naming live-refused',
+      again.error?.code === 'conflict' && CliClient.object(again.error.data, 'finalize refusal').sourceCode === 'live-refused')
+    const worktree = await this.cli('sessions', 'worktree', '--session-id', sessionId)
+    const state = CliClient.object(worktree.value, 'sessions worktree')
+    this.check('sessions worktree reads a session without a worktree as nulls',
+      state.sessionId === sessionId && state.worktree === null && state.retired === null && state.cleanup === null)
   }
 
   private control(identity: RemoteControlSystemIdentity): RemoteControl {
@@ -802,8 +813,12 @@ class SmokeRemoteControl extends SmokeHarness {
       },
       createSession: (spec) => this.manager.createSession(spec),
       reopenSession: (sessionId) => this.manager.reopenSession(sessionId),
-      finalizeSession: (sessionId) => this.manager.finalizeSession(sessionId),
+      finalizeSession: (sessionId, options) => this.manager.finalizeSession(sessionId, options),
       removeSession: (sessionId) => this.manager.removeSession(sessionId),
+      discardWorktree: (sessionId) => this.manager.discardWorktree(sessionId),
+      retrySetup: (sessionId, acknowledgeSetup) => this.manager.retrySetup(sessionId, acknowledgeSetup),
+      requestWorktreeCleanup: (sessionId) => this.manager.requestWorktreeCleanup(sessionId),
+      worktreeOf: (sessionId) => this.manager.worktreeOf(sessionId),
       setSessionColor: (sessionId, color) => this.manager.setSessionColor(sessionId, color),
       setSessionDetails: (sessionId, update) => this.manager.setSessionDetails(sessionId, update),
     }

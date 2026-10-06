@@ -83,7 +83,7 @@ class SmokeVcsCommit extends SmokeHarness {
     const manager = new VersioningCommitManager({
       messages: new VersioningCommitMessageStore(join(this.root, 'kept-messages.json'), (detail) => console.error(detail)),
       sessions: { workingContext: async () => ({ ok: true, value: { sessionId: 'kept', cwd: working, agent: null, worktree: null } }), settleVcs: () => {} },
-      vcsStatus: new VcsStatusView(), checkpointStore: { worktreeBelongsToStore: async () => false },
+      vcsStatus: new VcsStatusView(),
       fileAccess: (_owner, snapshot, file) => this.files.fileAccess(snapshot, file),
       snapshotOf: (_owner, snapshot) => this.files.workingSnapshot(snapshot),
       git: this.commits, svn: this.svnCommits,
@@ -136,7 +136,7 @@ class SmokeVcsCommit extends SmokeHarness {
     const manager = new VersioningCommitManager({
       messages: new VersioningCommitMessageStore(join(this.root, 'ignored-messages.json'), (detail) => console.error(detail)),
       sessions: { workingContext: async () => ({ ok: true, value: { sessionId: 'ignored', cwd: working, agent: null, worktree: null } }), settleVcs: () => {} },
-      vcsStatus: new VcsStatusView(), checkpointStore: { worktreeBelongsToStore: async () => false },
+      vcsStatus: new VcsStatusView(),
       fileAccess: (_owner, snapshot, file) => this.files.fileAccess(snapshot, file),
       snapshotOf: (_owner, snapshot) => this.files.workingSnapshot(snapshot),
       git: this.commits, svn: this.svnCommits,
@@ -223,7 +223,7 @@ class SmokeVcsCommit extends SmokeHarness {
     const manager = new VersioningCommitManager({
       messages: new VersioningCommitMessageStore(join(this.root, 'selection-messages.json'), (detail) => console.error(detail)),
       sessions: { workingContext: async () => ({ ok: true, value: { sessionId: 'selection', cwd: origin, agent: null, worktree: null } }), settleVcs: () => {} },
-      vcsStatus: new VcsStatusView(), checkpointStore: { worktreeBelongsToStore: async () => false },
+      vcsStatus: new VcsStatusView(),
       fileAccess: (_owner, snapshot, file) => this.files.fileAccess(snapshot, file),
       snapshotOf: (_owner, snapshot) => this.files.workingSnapshot(snapshot),
       git: this.commits, svn: this.svnCommits,
@@ -436,7 +436,7 @@ class SmokeVcsCommit extends SmokeHarness {
     const manager = new VersioningCommitManager({
       messages: new VersioningCommitMessageStore(join(this.root, 'batch-messages.json'), (detail) => console.error(detail)),
       sessions: { workingContext: async () => ({ ok: true, value: { sessionId: 'batch', cwd: scope, agent: null, worktree: null } }), settleVcs: () => {} },
-      vcsStatus: new VcsStatusView(), checkpointStore: { worktreeBelongsToStore: async () => false },
+      vcsStatus: new VcsStatusView(),
       fileAccess: (_owner, snapshotId, fileId) => this.files.fileAccess(snapshotId, fileId),
       snapshotOf: (_owner, snapshotId) => this.files.workingSnapshot(snapshotId),
       git: this.commits, svn: this.svnCommits, tortoise: { open: async () => { throw new Error('Unexpected Tortoise') } }, onChanged: () => {},

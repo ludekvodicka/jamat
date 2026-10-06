@@ -75,11 +75,13 @@ import {
 import { SessionManager } from '../../lib-orchestrator/sessionManager/sessionManager.js'
 import type {
   SessionColorName,
+  SessionCreated,
   SessionCreateSpec,
   SessionDetailsSaved,
   SessionDetailsUpdate,
   SessionsOpResult,
   SessionsSnapshot,
+  SessionWorktreeState,
   TerminalAttachResult,
   TerminalComposerContentResult,
   TerminalComposerResult,
@@ -1184,9 +1186,7 @@ class SmokeSessionsObserver implements RemoteControlSessionsPort {
     return this.sessions.snapshot()
   }
 
-  createSession(
-    spec: SessionCreateSpec,
-  ): Promise<SessionsOpResult<{ sessionId: string; tabTitle: string }>> {
+  createSession(spec: SessionCreateSpec): Promise<SessionsOpResult<SessionCreated>> {
     this.createSpec = structuredClone(spec)
     return this.sessions.createSession(spec)
   }
@@ -1195,12 +1195,28 @@ class SmokeSessionsObserver implements RemoteControlSessionsPort {
     return this.sessions.reopenSession(sessionId)
   }
 
-  finalizeSession(sessionId: string): Promise<SessionsOpResult> {
-    return this.sessions.finalizeSession(sessionId)
+  finalizeSession(sessionId: string, options?: { expect?: 'stop' }): Promise<SessionsOpResult> {
+    return this.sessions.finalizeSession(sessionId, options)
   }
 
   removeSession(sessionId: string): Promise<SessionsOpResult> {
     return this.sessions.removeSession(sessionId)
+  }
+
+  discardWorktree(sessionId: string): Promise<SessionsOpResult> {
+    return this.sessions.discardWorktree(sessionId)
+  }
+
+  retrySetup(sessionId: string, acknowledgeSetup?: string): Promise<SessionsOpResult> {
+    return this.sessions.retrySetup(sessionId, acknowledgeSetup)
+  }
+
+  requestWorktreeCleanup(sessionId: string): Promise<SessionsOpResult> {
+    return this.sessions.requestWorktreeCleanup(sessionId)
+  }
+
+  worktreeOf(sessionId: string): Promise<SessionsOpResult<SessionWorktreeState>> {
+    return this.sessions.worktreeOf(sessionId)
   }
 
   setSessionColor(sessionId: string, color: SessionColorName): Promise<SessionsOpResult> {
@@ -1513,6 +1529,22 @@ class SmokeUnavailableSessions implements RemoteControlSessionsPort, RemoteContr
   }
 
   removeSession(_sessionId: string): Promise<SessionsOpResult> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  discardWorktree(_sessionId: string): Promise<SessionsOpResult> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  retrySetup(_sessionId: string, _acknowledgeSetup?: string): Promise<SessionsOpResult> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  requestWorktreeCleanup(_sessionId: string): Promise<SessionsOpResult> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  worktreeOf(_sessionId: string): Promise<SessionsOpResult<SessionWorktreeState>> {
     return Promise.resolve(SmokeUnavailableSessions.refused())
   }
 

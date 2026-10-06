@@ -1,6 +1,7 @@
 import type { RuntimeListResult, RuntimeSessionInfo } from '../../../app-host/app/wire/hostWire.js'
 import type { SessionExitReason, SessionRecord } from '../records/sessionRecord.types'
 import { LaunchBackoff } from './launchBackoff'
+import { WorktreeCleanupPacing } from './worktreeCleanupPacing'
 
 export type ReconcileChange =
   | { kind: 'bind-live'; sessionId: string; binding: { hostInstanceId: string; generation: number } }
@@ -48,6 +49,8 @@ export type ReconcileChange =
   | { kind: 'merge-resolve-failed'; sessionId: string; reason: string }
   /** Read the current launch confirmation without searching provider history. */
   | { kind: 'name-codex-conversation'; sessionId: string }
+  /** The process of an SVN worktree session is gone and its cleanup is due: judge and remove it off this loop. */
+  | { kind: 'clean-worktree'; sessionId: string }
 
 /**
  * The one place that decides what a session's record should say. It is pure - records and the Host's
@@ -58,6 +61,8 @@ export class Reconciler {
     records: readonly SessionRecord[],
     listing: RuntimeListResult | null,
     now: number = Date.now(),
+    /** When this client process began; the first cleanup judgement after it is always due. */
+    clientStartedAt = 0,
   ): ReconcileChange[] {
     // Unreachable is NOT lost. Without an answer the records keep saying what they last knew, and
     // nothing is relabelled: a client that cannot see the Host has learnt nothing about a session.
@@ -82,6 +87,9 @@ export class Reconciler {
       )
       if (judged) changes.push(judged)
     }
+    for (const record of records)
+      if (Reconciler.cleanupDue(record, now, clientStartedAt))
+        changes.push({ kind: 'clean-worktree', sessionId: record.sessionId })
     for (const record of records) {
       if (record.life !== 'live' && record.life !== 'starting') continue
       const found = live.get(record.sessionId)
@@ -186,6 +194,18 @@ export class Reconciler {
     if (record.setupFor === undefined) return false
     const owner = records.find((other) => other.sessionId === record.setupFor)
     return owner?.pendingSetup?.setupSessionId !== record.sessionId
+  }
+
+  /**
+   * A pending cleanup of an SVN worktree, once nothing can still run in it: the process is gone and
+   * its handles had time to go, no finish owns the record, and no launch is on its way.
+   */
+  private static cleanupDue(record: SessionRecord, now: number, clientStartedAt: number): boolean {
+    const cleanup = record.worktreeCleanup
+    if (cleanup?.phase !== 'pending' || record.worktree?.kind !== 'svn') return false
+    if (record.worktreeFinish !== undefined || record.pendingOperationId !== undefined) return false
+    if (!WorktreeCleanupPacing.processGone(record) || !WorktreeCleanupPacing.settled(record, now, clientStartedAt)) return false
+    return WorktreeCleanupPacing.due(cleanup, now, clientStartedAt)
   }
 
   /** A running terminal may select a different thread without launching a new process. */

@@ -61,7 +61,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/versioni
     fireEvent.change(view.container.querySelector('select')!, { target: { value: 'checkpoints' } })
 
     expect(view.container.textContent).toContain('.checkpoints/store.git')
-    expect(view.container.textContent).toContain('no version control at all')
+    expect(view.container.textContent).toContain('fresh SVN checkout')
   })
 
   it('resets git to the checkpoints default without saving immediately', async () => {

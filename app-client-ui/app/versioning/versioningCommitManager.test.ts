@@ -133,6 +133,39 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(f.manager.status(f.draftId)).toMatchObject({ state: 'committed', closed: true, revision: '43' })
   })
 
+  // A Finish waits for the outcome of the review it opens; an ended review still in its pane would
+  // answer the old outcome at once.
+  it('gives a caller that waits for a fresh review a new draft instead of one that ended in an open pane', async () => {
+    const f = await fixture()
+    await f.manager.run('window', f.request)
+    expect(f.manager.status(f.draftId)).toMatchObject({ state: 'committed', closed: false })
+    expect(await f.manager.prepare('session', 'svn', null, 'Again')).toMatchObject({ ok: true, value: { draftId: f.draftId } })
+
+    const fresh = await f.manager.prepare('session', 'svn', null, 'Next proposal', undefined, { fresh: true })
+    if (!fresh.ok) throw new Error(fresh.detail)
+
+    expect(fresh.value.draftId).not.toBe(f.draftId)
+    expect(f.manager.status(fresh.value.draftId)).toMatchObject({ state: 'editing', closed: false })
+    expect(f.manager.status(f.draftId)).toMatchObject({ state: 'committed', closed: true, revision: '42' })
+    expect(f.manager.read('window', f.draftId)).toBeNull()
+    // The pane finds its draft gone and opens the scope again.
+    expect(await f.manager.prepare('session', 'svn', null, null)).toMatchObject({ ok: true, value: { draftId: fresh.value.draftId } })
+  })
+
+  it('replaces a review taken to Tortoise for a fresh caller and keeps one still open for editing', async () => {
+    const f = await fixture()
+    f.deps.tortoise.open = async () => ({ ok: true, closed: Promise.resolve() })
+    expect(await f.manager.prepare('session', 'svn', null, 'Still editing', undefined, { fresh: true }))
+      .toMatchObject({ ok: true, value: { draftId: f.draftId } })
+    expect(await f.manager.openTortoise('window', f.draftId, 'Message')).toMatchObject({ ok: true })
+    expect(f.manager.status(f.draftId)?.state).toBe('external-closed')
+
+    const fresh = await f.manager.prepare('session', 'svn', null, 'Next proposal', undefined, { fresh: true })
+
+    expect(fresh.ok && fresh.value.draftId).not.toBe(f.draftId)
+    expect(f.manager.status(f.draftId)).toMatchObject({ state: 'external-closed', closed: true })
+  })
+
   it('retains a failed commit after closing and allows a retry while still open', async () => {
     const f = await fixture()
     f.deps.svn.commit = async () => ({ ok: false, code: 'locked', detail: 'locked' })
@@ -166,7 +199,6 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
       messages: new VersioningCommitMessageStore(messageFile, report),
       sessions: { workingContext: async (sessionId) => ({ ok: true, value: { sessionId, cwd: root, agent: null, worktree: null } }), settleVcs: (cwd) => { settled.push(cwd) } },
       vcsStatus: { detect: async (cwd, id) => ({ id, root, cwd, scopeRelativePath: '.', scopeUrl: null, repositoryPathPrefix: null }) },
-      checkpointStore: { worktreeBelongsToStore: async () => false },
       tortoise: { open: async () => { throw new Error('Unexpected Tortoise dialog') } },
       snapshotOf: (owner, id) => owner === 'window' && id === snapshot.snapshotId ? snapshot : null,
       fileAccess: (owner, id, fileId) => owner === 'window' && id === snapshot.snapshotId && fileId === 'file'
@@ -864,6 +896,31 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(await f.manager.run('window', f.request)).toMatchObject({ ok: false, code: 'busy' })
   })
 
+  // A worktree session whose review committed may have its worktree removed once it ended.
+  it('names the scope of an SVN review that committed or went to Tortoise, and of nothing else', async () => {
+    const committed: string[] = []
+    const f = await fixture()
+    f.deps.worktreeCommitted = (scopeRoot) => committed.push(scopeRoot)
+    f.deps.svn.commit = async () => ({ ok: false, code: 'locked', detail: 'E155004: the working copy is locked' })
+    expect(await f.manager.run('window', f.request)).toMatchObject({ ok: false })
+    expect(committed).toEqual([])
+    f.deps.svn.commit = async () => ({ ok: true, value: { committedPaths: [], revision: '42', output: 'Committed revision 42.' } })
+    expect(await f.manager.run('window', f.request)).toEqual({ ok: true, revision: '42' })
+    expect(committed).toEqual([f.root])
+
+    const tortoise = await fixture()
+    tortoise.deps.worktreeCommitted = (scopeRoot) => committed.push(scopeRoot)
+    tortoise.deps.tortoise.open = async () => ({ ok: true, closed: Promise.resolve() })
+    expect(await tortoise.manager.openTortoise('window', tortoise.draftId, 'Message')).toMatchObject({ ok: true })
+    expect(committed).toEqual([f.root, tortoise.root])
+
+    const git = await fixture('git')
+    git.deps.worktreeCommitted = (scopeRoot) => committed.push(scopeRoot)
+    git.deps.git.commit = async () => ({ ok: true, value: { hash: 'abc1234', output: '' } })
+    expect(await git.manager.run('window', git.request)).toMatchObject({ ok: true })
+    expect(committed).toEqual([f.root, tortoise.root])
+  })
+
   it('rejects stale, vanished and reappeared files before any write', async () => {
     const f = await fixture()
     await utimes(f.path, new Date(), new Date(Date.now() + 10_000))
@@ -1089,14 +1146,10 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
       .toMatchObject({ ok: true, value: { scopeRoot: join(f.root, '.aidocs'), paths: [file] } })
   })
 
-  it('allows explicit outside scopes and still refuses missing VCS and checkpoint worktrees', async () => {
+  it('allows explicit outside scopes and still refuses a missing VCS', async () => {
     const f = await fixture()
     expect(await f.manager.prepare('session', 'svn', '..', null)).toMatchObject({ ok: true })
     f.deps.vcsStatus.detect = async () => null
     expect(await f.manager.prepare('session', 'svn', null, null)).toMatchObject({ ok: false, code: 'no-working-copy' })
-    f.deps.vcsStatus.detect = async (cwd, id) => ({ id, cwd, root: f.root, scopeRelativePath: '.', scopeUrl: null, repositoryPathPrefix: null })
-    f.deps.checkpointStore.worktreeBelongsToStore = async () => true
-    await mkdir(join(f.root, 'nested'))
-    expect(await f.manager.prepare('session', 'git', 'nested', null)).toMatchObject({ ok: false, code: 'store-worktree' })
   })
 })

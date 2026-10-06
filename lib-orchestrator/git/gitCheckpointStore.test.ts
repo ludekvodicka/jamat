@@ -9,8 +9,6 @@ import { CheckpointLayout } from './checkpointLayout'
 import { GitCheckpointStore } from './gitCheckpointStore'
 import type { GitCommandOutcome, GitCommandRunner, GitResult } from './git.types'
 import { GitInvoker } from './gitInvoker'
-import { GitMergeManager } from './gitMergeManager'
-import { GitWorktreeManager } from './gitWorktreeManager'
 
 describe('lib-orchestrator/git/gitCheckpointStore', () => {
   const created: string[] = []
@@ -77,11 +75,10 @@ describe('lib-orchestrator/git/gitCheckpointStore', () => {
   }
 
   /**
-   * The four byte sequences the line-ending cases are written against: one LF file and one CRLF
-   * file, each before and after a session appends a line to it.
+   * The byte sequences the line-ending cases are written against: one LF file and one CRLF file,
+   * and the CRLF file after a line was appended to it.
    */
   const unixBeforeConst = 'alpha\nbeta\ngamma\n'
-  const unixAfterConst = 'alpha\nbeta\ngamma\ndelta\n'
   const dosBeforeConst = 'alpha\r\nbeta\r\ngamma\r\n'
   const dosAfterConst = 'alpha\r\nbeta\r\ngamma\r\ndelta\r\n'
 
@@ -113,6 +110,14 @@ describe('lib-orchestrator/git/gitCheckpointStore', () => {
   async function convertLineEndings(invoker: GitInvoker, root: string, storeDir: string): Promise<void> {
     const set = await invoker.run(root, ['--git-dir', storeDir, 'config', 'core.autocrlf', 'true'])
     expect(set.code, set.stderr).toBe(0)
+  }
+
+  /** The store's main line checked out beside the project, as any reader of the store gets it. */
+  async function checkoutOf(invoker: GitInvoker, root: string, storeDir: string, name: string): Promise<string> {
+    const checkout = join(root, '.worktrees', name)
+    const added = await invoker.run(root, ['--git-dir', storeDir, 'worktree', 'add', '--detach', checkout, CheckpointLayout.branchConst])
+    expect(added.code, added.stderr).toBe(0)
+    return checkout
   }
 
   describe('rootOf', () => {
@@ -170,23 +175,35 @@ describe('lib-orchestrator/git/gitCheckpointStore', () => {
       expect(answer.value.exists).toBe(true)
     })
 
-    it('keeps a worktree cut from a store attached to that store', async () => {
-      // A worktree's own git toplevel IS the worktree, so the boundary must not apply to it.
-      const root = temporaryDirectory('jamat-v3-store-')
-      const storeDir = storeMarker(root)
-      const worktree = join(root, '.worktrees', 'try')
-      mkdirSync(worktree, { recursive: true })
-      writeFileSync(join(worktree, '.git'), `gitdir: ${join(storeDir, 'worktrees', 'try')}\n`, 'utf8')
+    it('takes a worktree as a root of its own and never asks git above it', async () => {
+      // An SVN worktree below a human .git and the owner's store: neither may claim its checkpoints.
+      const owner = temporaryDirectory('jamat-v3-store-')
+      storeMarker(owner)
+      const worktree = join(owner, '.worktrees', '014-try')
+      const nested = join(worktree, 'src')
+      mkdirSync(nested, { recursive: true })
       const runner = scripted((args) =>
-        args.join(' ') === 'rev-parse --show-toplevel' ? { stdout: `${worktree}\n` } : null)
+        args.join(' ') === 'rev-parse --show-toplevel' ? { stdout: `${owner}\n` } : null)
 
-      const answer = await new GitCheckpointStore(runner).rootOf(worktree)
+      const fresh = await new GitCheckpointStore(runner).rootOf(nested)
+      storeMarker(worktree)
+      const own = await new GitCheckpointStore(runner).rootOf(nested)
 
-      expect(answer.ok).toBe(true)
-      if (!answer.ok) return
-      expect(answer.value.root).toBe(root)
-      // The pointer answered, so git was never asked for a toplevel that would have misled it.
+      expect(fresh).toEqual({ ok: true, value: { root: worktree, storeDir: join(worktree, CheckpointLayout.storeRelativeConst), exists: false } })
+      expect(own).toMatchObject({ ok: true, value: { root: worktree, exists: true } })
       expect(runner.calls).toHaveLength(0)
+    })
+
+    it('takes a worktree of a product group as a root, although it carries the group marker', async () => {
+      const group = temporaryDirectory('jamat-v3-store-')
+      writeFileSync(join(group, '.appgroup'), '', 'utf8')
+      const worktree = join(group, '.worktrees', '014-group')
+      mkdirSync(worktree, { recursive: true })
+      writeFileSync(join(worktree, '.appgroup'), '', 'utf8')
+
+      const answer = await new GitCheckpointStore(outsideGit()).rootOf(join(worktree, 'Member'))
+
+      expect(answer).toMatchObject({ ok: true, value: { root: worktree } })
     })
 
     it('refuses a group directory, because a checkpoint belongs to a project', async () => {
@@ -620,39 +637,6 @@ describe('lib-orchestrator/git/gitCheckpointStore', () => {
     })
   })
 
-  describe('worktreeBelongsToStore', () => {
-    it('recognizes a worktree cut from a checkpoint store', async () => {
-      const worktree = temporaryDirectory('jamat-v3-store-')
-      writeFileSync(
-        join(worktree, '.git'),
-        `gitdir: C:/projects/app/${CheckpointLayout.storeRelativeConst}/worktrees/042-feat\n`,
-        'utf8',
-      )
-
-      expect(await new GitCheckpointStore(scripted()).worktreeBelongsToStore(worktree)).toBe(true)
-    })
-
-    it('refuses a worktree cut from a project git, which is what the hard cut needs', async () => {
-      const worktree = temporaryDirectory('jamat-v3-store-')
-      writeFileSync(join(worktree, '.git'), 'gitdir: C:/projects/app/.git/worktrees/042-feat\n', 'utf8')
-
-      expect(await new GitCheckpointStore(scripted()).worktreeBelongsToStore(worktree)).toBe(false)
-    })
-
-    it('answers false for a directory with no .git at all', async () => {
-      const plain = temporaryDirectory('jamat-v3-store-')
-
-      expect(await new GitCheckpointStore(scripted()).worktreeBelongsToStore(plain)).toBe(false)
-    })
-
-    it('answers false for a main copy, whose .git is a directory rather than a pointer', async () => {
-      const root = temporaryDirectory('jamat-v3-store-')
-      mkdirSync(join(root, '.git'), { recursive: true })
-
-      expect(await new GitCheckpointStore(scripted()).worktreeBelongsToStore(root)).toBe(false)
-    })
-  })
-
   /**
    * A dozen real git subprocesses per case against a real working directory, so these are the
    * cases in this file that say their own budget, the way the real-git cases in gitMergeManager and
@@ -728,7 +712,7 @@ describe('lib-orchestrator/git/gitCheckpointStore', () => {
       expect(seeded.split('\n')).not.toContain('/.svn/')
     })
 
-    it('hands a worktree the bytes the project holds, and lands an edit as one line', {
+    it('hands a checkout from the store the bytes the project holds', {
       timeout: 120_000,
     }, async () => {
       const root = temporaryDirectory('jamat-v3-store-eol-')
@@ -737,27 +721,17 @@ describe('lib-orchestrator/git/gitCheckpointStore', () => {
       const store = new GitCheckpointStore(invoker)
       const storeDir = valueOf(await store.ensure(root)).storeDir
       await convertLineEndings(invoker, root, storeDir)
-      const context = { modeOf: () => 'checkpoints' as const, store }
 
-      const facts = valueOf(await new GitWorktreeManager(invoker, context).create(root, 'EOL'))
+      expect((await store.checkpoint(root, 'checkpoint: line endings')).ok).toBe(true)
+      const checkout = await checkoutOf(invoker, root, storeDir, 'eol')
 
-      expect(bytesOf(join(facts.worktreePath, 'unix.txt'))).toBe(unixBeforeConst)
-      expect(bytesOf(join(facts.worktreePath, 'dos.txt'))).toBe(dosBeforeConst)
-
-      writeFileSync(join(facts.worktreePath, 'unix.txt'), unixAfterConst, 'utf8')
-      expect((await store.checkpointWorktree(facts.worktreePath, 'the session appends a line')).ok)
-        .toBe(true)
-      expect(await new GitMergeManager(invoker, context)
-        .mergeToMain(facts.repositoryRoot, facts.branch))
-        .toEqual({ ok: true, value: { conflict: false, diverged: false } })
-
-      expect(bytesOf(join(root, 'unix.txt'))).toBe(unixAfterConst)
       // The file nobody touched is the one a conversion rewrites end to end, and that is the damage:
       // a 59-line addition arrived for review as a 1733-line SVN diff.
-      expect(bytesOf(join(root, 'dos.txt'))).toBe(dosBeforeConst)
+      expect(bytesOf(join(checkout, 'unix.txt'))).toBe(unixBeforeConst)
+      expect(bytesOf(join(checkout, 'dos.txt'))).toBe(dosBeforeConst)
     })
 
-    it('repairs a store seeded before the rule and names the worktree cut before it', {
+    it('repairs a store seeded before the rule', {
       timeout: 120_000,
     }, async () => {
       const root = temporaryDirectory('jamat-v3-store-eol-old-')
@@ -796,9 +770,6 @@ describe('lib-orchestrator/git/gitCheckpointStore', () => {
       expect((await store.checkpoint(root, 'the checkpoint that repairs it')).ok).toBe(true)
 
       expect(messages.join('\n')).toContain('byte-transparent')
-      // That worktree was checked out converted and carries those bytes home whatever the store
-      // now says, so the repair names it instead of reaching into it.
-      expect(messages.join('\n')).toContain(stale)
       // The repair touches the index and nothing else: no file on disk and no earlier commit.
       expect(bytesOf(join(root, 'unix.txt'))).toBe(unixBeforeConst)
       expect(bytesOf(join(root, 'dos.txt'))).toBe(dosBeforeConst)
@@ -806,21 +777,11 @@ describe('lib-orchestrator/git/gitCheckpointStore', () => {
       expect(log.stdout.split('\n').map((line) => line.trim()))
         .toContain('checkpoint before the rule')
 
-      const context = { modeOf: () => 'checkpoints' as const, store }
-      const facts = valueOf(
-        await new GitWorktreeManager(invoker, context).create(root, 'After repair'),
-      )
-      expect(bytesOf(join(facts.worktreePath, 'unix.txt'))).toBe(unixBeforeConst)
-      expect(bytesOf(join(facts.worktreePath, 'dos.txt'))).toBe(dosBeforeConst)
-
-      writeFileSync(join(facts.worktreePath, 'dos.txt'), dosAfterConst, 'utf8')
-      expect((await store.checkpointWorktree(facts.worktreePath, 'the session appends a line')).ok)
-        .toBe(true)
-      expect(await new GitMergeManager(invoker, context)
-        .mergeToMain(facts.repositoryRoot, facts.branch))
-        .toEqual({ ok: true, value: { conflict: false, diverged: false } })
-      expect(bytesOf(join(root, 'dos.txt'))).toBe(dosAfterConst)
-      expect(bytesOf(join(root, 'unix.txt'))).toBe(unixBeforeConst)
+      writeFileSync(join(root, 'dos.txt'), dosAfterConst, 'utf8')
+      expect((await store.checkpoint(root, 'a line appended after the repair')).ok).toBe(true)
+      const checkout = await checkoutOf(invoker, root, storeDir, 'after-repair')
+      expect(bytesOf(join(checkout, 'unix.txt'))).toBe(unixBeforeConst)
+      expect(bytesOf(join(checkout, 'dos.txt'))).toBe(dosAfterConst)
     })
   })
 })

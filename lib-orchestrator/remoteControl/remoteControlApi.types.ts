@@ -8,10 +8,12 @@ import type {
 import type {
   SessionAgentId,
   SessionColorName,
+  SessionCreated,
   SessionCreateSpec,
   SessionGroup,
   SessionInfo,
   SessionsSnapshot,
+  SessionWorktreeState,
   TerminalComposerState,
   TerminalFrame,
 } from '../sessionManager/sessionManagerApi.types'
@@ -230,7 +232,11 @@ export type RemoteControlStepResult<T> =
   | { ok: false; error: RemoteControlError }
 
 export interface RemoteControlSessionCreateDto {
-  session: { sessionId: string; tabTitle: string }
+  /**
+   * `number` and `worktree` are absent from an older target, and absent where the session has none:
+   * a session outside a catalog project carries no number, and one without a worktree no place.
+   */
+  session: SessionCreated
   tabOpen: RemoteControlStepResult<RemoteControlTabCommandDto> | null
   /**
    * Null when no group was asked for. A group that was asked for and could not be written is a
@@ -240,6 +246,8 @@ export interface RemoteControlSessionCreateDto {
    */
   groupAssign: RemoteControlStepResult<{ group: SessionGroup }> | null
 }
+
+export type RemoteControlSessionWorktreeDto = SessionWorktreeState
 
 export interface RemoteControlSessionTranscriptDto {
   sessionId: string
@@ -437,9 +445,24 @@ export interface RemoteControlOperationMap {
     request: { session: RemoteControlSessionSelector }
     response: { sessionId: string }
   }
+  /**
+   * `expect: 'stop'` finishes only a session whose next Finish step is the stop, and refuses any
+   * other step with `conflict` (source code `live-refused`): a script that means to stop a running
+   * session never starts the Finish Commit of one that ended meanwhile. An older target refuses the
+   * key, so a caller sends it only to a target that offered `sessions.worktree`.
+   */
   'sessions.finalize': {
-    request: { session: RemoteControlSessionSelector }
+    request: { session: RemoteControlSessionSelector; expect?: 'stop' }
     response: { sessionId: string }
+  }
+  /**
+   * One session's worktree, read from its record: where it stands, where it went once removed, the
+   * SVN finish that runs, the last outcome and the cleanup. Its capability is also the version marker
+   * of `worktree.owner` and `worktree.removeWhenEnded` on a create and of `expect` on a finalize.
+   */
+  'sessions.worktree': {
+    request: { session: RemoteControlSessionSelector }
+    response: RemoteControlSessionWorktreeDto
   }
   /**
    * Delete an ended record from the list, the tree's Remove. A live runtime is refused with
@@ -447,6 +470,32 @@ export interface RemoteControlOperationMap {
    * A worktree is left on disk, as the tree's Remove leaves it.
    */
   'sessions.remove': {
+    request: { session: RemoteControlSessionSelector }
+    response: { sessionId: string }
+  }
+  /**
+   * The Finish overlay's Discard: the worktree goes and nothing is brought home, uncommitted work
+   * included. A running session or a finish in progress is refused with `conflict`. Local only, as
+   * the overlay offers it only on this computer.
+   */
+  'sessions.discardWorktree': {
+    request: { session: RemoteControlSessionSelector }
+    response: { sessionId: string }
+  }
+  /**
+   * The row's Retry setup after a failed install. An unacknowledged setup is refused with its
+   * `setup` agreement in `data`; the caller repeats the request with that `hash` as `acknowledgeSetup`.
+   */
+  'sessions.retrySetup': {
+    request: { session: RemoteControlSessionSelector; acknowledgeSetup?: string }
+    response: { sessionId: string }
+  }
+  /**
+   * Removes an SVN worktree once the session's process ended, judged at the next pass. It never
+   * removes changes or a commit the main copy lacks: those keep the worktree with the reason in
+   * `sessions.worktree`. A `kept` worktree is judged again only after this request.
+   */
+  'sessions.cleanupWorktree': {
     request: { session: RemoteControlSessionSelector }
     response: { sessionId: string }
   }

@@ -6,6 +6,11 @@ import type {
   SessionInfo,
   SessionOutcome,
   SessionsSnapshot,
+  SessionWorktreeCleanupPhase,
+  SessionWorktreeInfo,
+  SessionWorktreeKind,
+  SvnFinishPhase,
+  SvnFinishResult,
 } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { PathText } from '../../../shared/pathText'
 import { SessionsGroupsState, type SessionGroup } from '../../../shared/sessionsGroupsState'
@@ -23,6 +28,9 @@ import {
 
 /** `null` diff = nothing has measured this worktree yet; zero changes is a measurement, absence is not. */
 export interface WorktreeBadge {
+  kind: SessionWorktreeKind
+  path: string
+  /** git: the branch; svn: the checked-out URL. */
   branch: string
   /*
    * `changedFiles` was here until 2026-08-24 and is not any more: `WorktreeMark` draws `added`
@@ -33,6 +41,12 @@ export interface WorktreeBadge {
   diff: { added: number; removed: number } | null
   /** The branch this worktree was cut from has moved on: the `BASE` chip of the rail design. */
   baseMoved: boolean
+  /** A running SVN finish, or null; the title names the scope a review waits for. */
+  finish: { phase: SvnFinishPhase; title: string } | null
+  /** How the last SVN finish ended, or null while one runs or none has; the title is its lines. */
+  outcome: { result: SvnFinishResult; title: string } | null
+  /** Why the worktree is still there after the session's end, or null; the title is the library's sentence. */
+  cleanup: { phase: SessionWorktreeCleanupPhase; title: string } | null
 }
 
 /**
@@ -106,6 +120,8 @@ export type TreeNode = { group: SessionGroup } & (
       tabTitle: string
       /** The person's note, or null. Never a label: the row offers it only as its tooltip. */
       note: string | null
+      /** Where its worktree is or what became of it, or null; the tooltip carries it. */
+      worktreeLine: string | null
       /** The name of the colour this session was given, or null. The row paints itself with it. */
       color: SessionColorName | null
       glyph: SessionGlyph
@@ -269,6 +285,44 @@ export class SessionsTreeModel {
     })
   }
 
+  private static worktreeBadgeOf(worktree: SessionWorktreeInfo): WorktreeBadge {
+    const phase = SessionNodeState.finishBadgeOf(worktree.finish)
+    const result = SessionNodeState.outcomeBadgeOf(worktree)
+    const cleanup = SessionNodeState.cleanupBadgeOf(worktree)
+    return {
+      kind: worktree.kind,
+      path: worktree.worktreePath,
+      branch: worktree.branch,
+      diff: worktree.diff ? { added: worktree.diff.added, removed: worktree.diff.removed } : null,
+      baseMoved: worktree.baseMoved,
+      finish: phase === null
+        ? null
+        : { phase, title: SessionNodeState.finishTitleOf(worktree.finish) ?? phase },
+      outcome: result === null
+        ? null
+        : { result, title: SessionNodeState.outcomeTitleOf(worktree) ?? result },
+      cleanup: cleanup === null ? null : { phase: cleanup, title: worktree.cleanup?.summary ?? cleanup },
+    }
+  }
+
+  /**
+   * Where the session runs or ran, for the row's tooltip: the worktree with its kind, or where a
+   * removed worktree's work went. Null for a session that never had one.
+   */
+  static worktreeLineOf(info: Pick<SessionInfo, 'worktree' | 'retiredWorktree'>): string | null {
+    if (info.worktree !== undefined) {
+      const kind = SessionNodeState.worktreeKindLabelOf(info.worktree.kind)
+      const cleanup = info.worktree.cleanup === undefined ? '' : `; ${info.worktree.cleanup.summary}`
+      return `${kind} worktree ${info.worktree.worktreePath}${cleanup}`
+    }
+    if (info.retiredWorktree !== undefined) {
+      const revisions = info.retiredWorktree.revisions
+      return `Worktree ${info.retiredWorktree.worktreePath} removed after ${
+        revisions.length === 0 ? 'no commit' : revisions.join(', ')}`
+    }
+    return null
+  }
+
   private static entryOf(
     info: SessionInfo,
     marks: ReadonlySet<string>,
@@ -282,18 +336,7 @@ export class SessionsTreeModel {
     const badges: SessionBadges = {
       commitOpen: options.target.kind === 'local' && commitOpen.has(info.sessionId),
       agentId: info.agent?.agentId ?? null,
-      worktree: info.worktree
-        ? {
-            branch: info.worktree.branch,
-            diff: info.worktree.diff
-              ? {
-                  added: info.worktree.diff.added,
-                  removed: info.worktree.diff.removed,
-                }
-              : null,
-            baseMoved: info.worktree.baseMoved,
-          }
-        : null,
+      worktree: info.worktree ? SessionsTreeModel.worktreeBadgeOf(info.worktree) : null,
       vcs: info.vcs?.dirty === true ? info.vcs.vcsId : null,
       attention: marks.has(targetKey),
       completed: info.completed === true,
@@ -593,6 +636,7 @@ export class SessionsTreeModel {
       title: info.title,
       tabTitle: info.tabTitle,
       note: info.note ?? null,
+      worktreeLine: SessionsTreeModel.worktreeLineOf(info),
       color: info.color ?? null,
       glyph: SessionNodeState.glyphOf(info.life, info.kind, info.activity, info.activityDetail, info.compacting),
       badges: entry.badges,

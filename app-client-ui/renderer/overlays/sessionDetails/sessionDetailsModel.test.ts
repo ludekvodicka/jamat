@@ -89,6 +89,8 @@ describe('app-client-ui/renderer/overlays/sessionDetails/sessionDetailsModel', (
         worktreePath: 'C:/Projects/NodeJs/AppJamatV3/.worktrees/alpha',
         branch: 'feature/alpha',
         baseCommit: 'aa11bb22',
+        kind: 'git',
+        choices: ['merge', 'keep', 'discard'],
         diff: null,
         baseMoved: false,
       },

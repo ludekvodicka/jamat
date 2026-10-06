@@ -40,6 +40,10 @@ export class RemoteControlConst {
     'sessions.setNote',
     'terminal.deliver',
     'sessions.remove',
+    'sessions.worktree',
+    'sessions.discardWorktree',
+    'sessions.retrySetup',
+    'sessions.cleanupWorktree',
   ] as const
   static readonly operations = RemoteControlConst.descriptorOperations
   static readonly mutatingOperations = [
@@ -48,6 +52,9 @@ export class RemoteControlConst {
     'sessions.reopen',
     'sessions.finalize',
     'sessions.remove',
+    'sessions.discardWorktree',
+    'sessions.retrySetup',
+    'sessions.cleanupWorktree',
     'sessions.color',
     'sessions.group',
     'sessions.setNote',

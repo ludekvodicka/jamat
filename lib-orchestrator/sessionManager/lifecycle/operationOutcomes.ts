@@ -1,6 +1,6 @@
 import type { HostCallErrorCode, HostCallFailure } from '../../hostClient/hostClient.types'
 import type { RuntimeRef } from '../../../app-host/app/wire/hostWire.js'
-import type { SessionRecord } from '../records/sessionRecord.types'
+import type { SessionRecord, SessionRecordWorktree } from '../records/sessionRecord.types'
 import type { SessionsOpErrorCode } from '../sessionManagerApi.types'
 import type { SessionDirectoryRef } from '../records/sessionRecord.types'
 
@@ -75,6 +75,32 @@ export class OperationOutcomes {
       detail: 'The session records could not be written, so this change was not recorded; the file '
         + 'was left as this write found it, and why the write failed is on the error channel',
     }
+  }
+
+  /**
+   * What a worktree leaves on disk when its record stops naming it, as the subject and verb of the
+   * sentence that says so: a Git worktree leaves a branch beside its directory, an SVN worktree is
+   * one checkout and has no branch to name.
+   */
+  static leftBehindOf(worktree: SessionRecordWorktree): string {
+    const kind = worktree.kind ?? 'git'
+    if (kind === 'git')
+      return `the worktree ${worktree.worktreePath} and the branch ${worktree.branch} are left in `
+        + worktree.repositoryRoot
+    else if (kind === 'svn')
+      return `the SVN worktree ${worktree.worktreePath}, a checkout of ${worktree.branch}, is left in `
+        + worktree.repositoryRoot
+    else
+      throw new Error(`Unknown worktree kind: ${JSON.stringify(kind satisfies never)}`)
+  }
+
+  /** What the next create over the same name meets while that worktree stays on disk. */
+  static nameReuseOf(worktree: SessionRecordWorktree): string {
+    const kind = worktree.kind ?? 'git'
+    if (kind === 'git') return 'the same slug is refused to the next create over it'
+    else if (kind === 'svn') return 'the next create over the same name takes the next free folder'
+    else
+      throw new Error(`Unknown worktree kind: ${JSON.stringify(kind satisfies never)}`)
   }
 
   static notFound(sessionId: string): { ok: false; code: SessionsOpErrorCode; detail: string } {

@@ -433,6 +433,78 @@ describe('lib-orchestrator/remoteControl/remoteControlRequestValidation', () => 
     expect(strayBaseRef).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
   })
 
+  it('takes a worktree owner as a path, and refuses one that is no text', () => {
+    const owned = RemoteControlRequestValidation.parse(RemoteControlRequestValidationTest.create({
+      spec: { ...RemoteControlRequestValidationTest.shell, worktree: { slug: 'fix', owner: 'C:/Apps/Group/Member' } },
+    }))
+    expect(owned).toMatchObject({
+      ok: true,
+      request: { body: { spec: { worktree: { slug: 'fix', owner: 'C:/Apps/Group/Member' } } } },
+    })
+    for (const owner of ['', 7, null])
+      expect(RemoteControlRequestValidation.parse(RemoteControlRequestValidationTest.create({
+        spec: { ...RemoteControlRequestValidationTest.shell, worktree: { slug: 'fix', owner } },
+      }))).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+  })
+
+  it('takes removeWhenEnded as true alone', () => {
+    const removed = RemoteControlRequestValidation.parse(RemoteControlRequestValidationTest.create({
+      spec: { ...RemoteControlRequestValidationTest.shell, worktree: { slug: 'fix', removeWhenEnded: true } },
+    }))
+    expect(removed).toMatchObject({
+      ok: true,
+      request: { body: { spec: { worktree: { slug: 'fix', removeWhenEnded: true } } } },
+    })
+    for (const removeWhenEnded of [false, 'true', 1, null])
+      expect(RemoteControlRequestValidation.parse(RemoteControlRequestValidationTest.create({
+        spec: { ...RemoteControlRequestValidationTest.shell, worktree: { slug: 'fix', removeWhenEnded } },
+      }))).toMatchObject({ ok: false, error: { code: 'invalid-request', detail: expect.stringMatching(/removeWhenEnded/) } })
+  })
+
+  it('takes expect stop on a finalize, refuses any other expectation, and reads sessions.worktree', () => {
+    const session = { kind: 'number', number: '014' }
+    expect(RemoteControlRequestValidation.parse(
+      RemoteControlRequestValidationTest.of('sessions.finalize', { session, expect: 'stop' }),
+    )).toMatchObject({ ok: true, request: { body: { session, expect: 'stop' } } })
+    expect(RemoteControlRequestValidation.parse(
+      RemoteControlRequestValidationTest.of('sessions.finalize', { session }),
+    )).toEqual({ ok: true, request: RemoteControlRequestValidationTest.of('sessions.finalize', { session }) })
+    for (const expect_ of ['finish', true, null])
+      expect(RemoteControlRequestValidation.parse(
+        RemoteControlRequestValidationTest.of('sessions.finalize', { session, expect: expect_ }),
+      )).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+
+    const read = RemoteControlRequestValidationTest.of('sessions.worktree', { session }, null)
+    expect(RemoteControlRequestValidation.parse(read)).toEqual({ ok: true, request: read })
+    for (const input of [
+      RemoteControlRequestValidationTest.of('sessions.worktree', { session }),
+      RemoteControlRequestValidationTest.of('sessions.worktree', { session, path: 'x' }, null),
+    ])
+      expect(RemoteControlRequestValidation.parse(input)).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+    expect(RemoteControlConst.optionalOperations).toContain('sessions.worktree')
+    expect(RemoteControlConst.mutatingOperations).not.toContain('sessions.worktree')
+  })
+
+  it('takes the worktree endings as mutations, with an acknowledgement only on a setup retry', () => {
+    const session = { kind: 'number', number: '014' }
+    for (const operation of ['sessions.discardWorktree', 'sessions.cleanupWorktree', 'sessions.retrySetup'] as const) {
+      const input = RemoteControlRequestValidationTest.of(operation, { session })
+      expect(RemoteControlRequestValidation.parse(input)).toEqual({ ok: true, request: input })
+      expect(RemoteControlRequestValidation.parse(RemoteControlRequestValidationTest.of(operation, { session }, null)))
+        .toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+      expect(RemoteControlConst.optionalOperations).toContain(operation)
+      expect(RemoteControlConst.mutatingOperations).toContain(operation)
+    }
+    const acknowledged = RemoteControlRequestValidationTest.of('sessions.retrySetup', { session, acknowledgeSetup: 'hash-1' })
+    expect(RemoteControlRequestValidation.parse(acknowledged)).toEqual({ ok: true, request: acknowledged })
+    for (const input of [
+      RemoteControlRequestValidationTest.of('sessions.retrySetup', { session, acknowledgeSetup: 7 }),
+      RemoteControlRequestValidationTest.of('sessions.discardWorktree', { session, acknowledgeSetup: 'hash-1' }),
+      RemoteControlRequestValidationTest.of('sessions.cleanupWorktree', { session, force: true }),
+    ])
+      expect(RemoteControlRequestValidation.parse(input)).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+  })
+
   /*
    * The additive field of Unit 7, and both halves of what "additive" has to mean here. This body is
    * validated with EXACT keys, so a target that predates the key refuses the whole request rather
