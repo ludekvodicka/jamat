@@ -1,5 +1,6 @@
 import { DetectionRefusal } from '../shared/detectionRefusal'
 import { realpath } from 'node:fs/promises'
+import { basename } from 'node:path'
 
 import type { WebContents } from 'electron'
 
@@ -14,6 +15,7 @@ import { ServiceIpcBase } from '../shared/serviceIpcBase'
 import { ExternalOpener } from './externalOpener'
 import type { ServiceTerminalIpc } from './serviceTerminalIpc'
 import { VsCodeLauncher } from './vsCodeLauncher'
+import { VsCodeWorkspace } from './vsCodeWorkspace'
 
 /**
  * The action half of the terminal menu, and the reason the renderer never names a path here.
@@ -30,8 +32,10 @@ import { VsCodeLauncher } from './vsCodeLauncher'
  * also holds `terminal.input`, so it can type any command into the agent's own shell.
  *
  * `terminal:menu-open-project-vscode` has neither proof and does not need the first: it names a
- * session rather than a detection, and the path it opens is the one the library reports as that
- * session's cwd. The only check it makes is that the sender is a window this app knows.
+ * session rather than a detection, and the path it opens is the one the library reports for that
+ * session: its cwd, or for a worktree session the worktree root or the workspace file there, since
+ * the cwd of such a session may be one member of a product group. The only check it makes is that
+ * the sender is a window this app knows.
  */
 export class ServiceTerminalMenuIpc extends ServiceIpcBase<
   typeof ServiceTerminalMenuIpc.channelsConst
@@ -151,7 +155,9 @@ export class ServiceTerminalMenuIpc extends ServiceIpcBase<
       this.ownerId(event.sender)
       const context = await this.sessions.workingContext(sessionId)
       if (!context.ok) return false
-      VsCodeLauncher.open(context.value.cwd, null)
+      const worktree = context.value.worktree
+      if (worktree === null) VsCodeLauncher.open(context.value.cwd, null)
+      else await VsCodeWorkspace.open(VsCodeLauncher, worktree.worktreePath, basename(worktree.repositoryRoot))
       return true
     })
     this.assertComplete(ServiceTerminalMenuIpc.channelsConst)

@@ -83,15 +83,19 @@ describe('app-client-ui/renderer/fileViewer/useFileViewerDocument', () => {
     delete (window as unknown as { appClient?: unknown }).appClient
   })
 
-  it('reads and reloads the commit scope baseline even when the session tree has no matching file', async () => {
-    const document: FileViewerDocument = { ...FileViewerDocumentHarness.document('outside.txt'), path: 'Q:/other/outside.txt',
-      source: { kind: 'workspace', sessionId: 'session-1', path: 'Q:/other/outside.txt', workingTree: { scopeRoot: 'Q:/other', source: 'svn' } }, modes: ['raw', 'diff'] }
+  it.each([
+    { scopeRoot: 'Q:/other', name: 'outside.txt', status: 'modified' },
+    { scopeRoot: 'C:/work', name: 'new/child.ts', status: 'untracked' },
+  ] as const)('reads and reloads the commit baseline for $name when the session tree has no matching file', async ({ scopeRoot, name, status }) => {
+    const path = `${scopeRoot}/${name}`
+    const document: FileViewerDocument = { ...FileViewerDocumentHarness.document(name), path,
+      source: { kind: 'workspace', sessionId: 'session-1', path, workingTree: { scopeRoot, source: 'svn' } }, modes: ['raw', 'diff'] }
     const { fileChanges, fileViewer } = FileViewerDocumentHarness.install(document)
     const snapshot: FileChangesWorkingTreeSnapshot = {
       snapshotId: 'scoped-1', sessionId: 'session-1', createdAt: 1, externalRoots: [], warnings: [],
       source: { requested: 'svn', selected: 'svn', available: ['svn'], fallbackReason: null },
       defaultBaseline: { baselineId: 'base', kind: 'svn-base', label: 'BASE', revision: '5', createdAt: null },
-      entries: [{ fileId: 'file', path: document.path, displayPath: 'outside.txt', nodeKind: 'file', location: 'workspace', status: 'modified',
+      entries: [{ fileId: 'file', path: document.path, displayPath: name, nodeKind: 'file', location: 'workspace', status,
         previousPath: null, previousDisplayPath: null, modifiedAt: null, sources: ['vcs'], gitState: null }],
     }
     fileChanges.scopedWorkingTree.mockImplementation(async () => ({ ok: true, value: { ok: true, value: { ...snapshot } } }))

@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { FileChangesWorkingTreeSnapshot } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
+import type { SessionCommitReceipt } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { VersioningCommitLimits } from '../../shared/versioningCommit'
 import { VersioningCommitManager, type VersioningCommitManagerDeps } from './versioningCommitManager'
 import { VersioningCommitMessageStore } from './versioningCommitMessageStore'
@@ -173,6 +174,61 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(f.manager.status(f.draftId)).toMatchObject({ state: 'failed', closed: false, detail: 'locked' })
     f.manager.release(f.draftId, 'window')
     expect(f.manager.status(f.draftId)).toMatchObject({ state: 'failed', closed: true, revision: null })
+  })
+
+  // `commit propose`: a worker's message waits for the person's review; nothing opens and nothing commits.
+  it('keeps a proposal for the working copy of a session without opening a review, also across a restart', async () => {
+    const f = await fixture()
+    expect(await f.manager.propose('worker', f.root, 'Fix orders\r\n\r\nBody')).toEqual({ ok: true, scopeRoot: f.root })
+    expect(f.manager.openSessions().sessionIds).toEqual(['session'])
+    expect(f.manager.proposalOf('worker', f.root)).toBe('Fix orders\n\nBody')
+    expect(f.manager.proposalOf('worker', join(f.root, 'elsewhere'))).toBeNull()
+    expect(f.manager.proposalOf('session', f.root)).toBe('proposal')
+
+    const restarted = restart(f)
+    expect(restarted.proposalOf('worker', f.root)).toBe('Fix orders\n\nBody')
+    // The worker's own split of that root starts with the proposal, like any proposal it was handed.
+    const split = await restarted.prepare('worker', 'svn', null, null)
+    if (!split.ok) throw new Error(split.detail)
+    restarted.attach(split.value.draftId, 'window')
+    expect(restarted.read('window', split.value.draftId)).toMatchObject({ message: 'Fix orders\n\nBody', proposedByAgent: true, editedByPerson: false })
+    expect(f.writes).toEqual([])
+  })
+
+  it('shows a proposal in the open review of its scope and never replaces what a person wrote', async () => {
+    const f = await fixture()
+    const before = f.manager.read('window', f.draftId)?.revision ?? 0
+    expect(await f.manager.propose('session', f.root, 'Agent text')).toEqual({ ok: true, scopeRoot: f.root })
+    expect(f.manager.read('window', f.draftId)).toMatchObject({ message: 'Agent text', proposedByAgent: true })
+    expect(f.manager.read('window', f.draftId)?.revision).toBeGreaterThan(before)
+
+    f.manager.setMessage('window', f.draftId, 'Person text')
+    expect(await f.manager.propose('session', f.root, 'Again')).toMatchObject({ ok: false, code: 'message-edited' })
+    expect(f.manager.read('window', f.draftId)?.message).toBe('Person text')
+    expect(restart(f).proposalOf('session', f.root)).toBe('Person text')
+  })
+
+  it('refuses an empty or oversized proposal and a directory outside any SVN working copy', async () => {
+    const f = await fixture()
+    expect(await f.manager.propose('worker', f.root, ' \n ')).toMatchObject({ ok: false, code: 'message-empty' })
+    expect(await f.manager.propose('worker', f.root, 'x'.repeat(VersioningCommitLimits.messageMaxCharactersConst + 1)))
+      .toMatchObject({ ok: false, code: 'message-too-long' })
+    f.deps.vcsStatus.detect = async () => null
+    expect(await f.manager.propose('worker', f.root, 'Fix')).toMatchObject({ ok: false, code: 'no-working-copy' })
+    expect(f.manager.proposalOf('worker', f.root)).toBeNull()
+  })
+
+  it('forgets the proposal of one session and root once a Finish committed it, and keeps every other', async () => {
+    const f = await fixture()
+    await f.manager.propose('worker', f.root, 'Fix orders')
+    await f.manager.propose('other', f.root, 'Other work')
+
+    f.manager.forgetProposal('worker', f.root)
+    expect(f.manager.proposalOf('worker', f.root)).toBeNull()
+    expect(f.manager.proposalOf('other', f.root)).toBe('Other work')
+    expect(restart(f).proposalOf('worker', f.root)).toBeNull()
+    // Nothing kept is nothing to forget.
+    f.manager.forgetProposal('worker', f.root)
   })
   const roots: string[] = []
   afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
@@ -369,7 +425,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(f.manager.read('other', f.draftId)).toBeNull()
   })
 
-  it('keeps a single-file draft distinct and rejects sibling ids from a wider snapshot', async () => {
+  it('keeps a single-file draft distinct, hides its sibling and rejects the sibling id from a wider snapshot', async () => {
     const f = await fixture()
     const sibling = await addSecondFile(f)
     const opened = await f.manager.prepare('session', 'svn', f.path, 'one file')
@@ -377,13 +433,87 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(opened.value).toMatchObject({ scopeRoot: f.root, paths: [f.path] })
     expect(opened.value.draftId).not.toBe(f.draftId)
     f.manager.attach(opened.value.draftId, 'window')
-    expect(f.manager.files('window', opened.value.draftId, f.snapshot).entries.map((entry) => entry.fileId)).toEqual(['file'])
+    const shown = f.manager.files('window', opened.value.draftId, f.snapshot)
+    expect(shown.entries.map((entry) => entry.fileId)).toEqual(['file'])
+    expect(f.manager.checkedPaths('window', opened.value.draftId, shown)).toEqual([f.path])
     const commit = vi.spyOn(f.deps.svn, 'commit')
     const request = { ...f.request, draftId: opened.value.draftId }
     expect(await f.manager.run('window', { ...request, fileIds: [sibling.fileId] })).toMatchObject({ ok: false, code: 'invalid-target' })
     expect(commit).not.toHaveBeenCalled()
     expect(await f.manager.run('window', request)).toMatchObject({ ok: true })
     expect(commit.mock.calls[0][1].map((target) => target.absolutePath)).toEqual([f.path])
+  })
+
+  /** r345: the review of a product group's `svn:ignore` started with 123 foreign paths checked. */
+  it('checks a named file, a named subtree and a node-only directory, and every row of a plain scope', async () => {
+    const f = await fixture()
+    const project = join(f.root, 'Project')
+    const other = join(f.root, 'Other')
+    await mkdir(project)
+    await mkdir(other)
+    const row = (path: string, nodeKind: 'file' | 'directory') => ({ ...f.snapshot.entries[0], fileId: path, path, displayPath: path, nodeKind })
+    f.snapshot.entries = [row(f.root, 'directory'), row(f.path, 'file'), row(project, 'directory'), row(join(project, 'a.ts'), 'file'),
+      row(join(project, 'deep', 'b.ts'), 'file'), row(join(other, 'c.ts'), 'file')]
+    const checked = async (paths: Parameters<VersioningCommitManager['prepare']>[4]) => {
+      const opened = await f.manager.prepare('session', 'svn', null, null, paths)
+      if (!opened.ok) throw new Error(opened.detail)
+      f.manager.attach(opened.value.draftId, 'window')
+      return { opened: opened.value, checked: f.manager.checkedPaths('window', opened.value.draftId,
+        f.manager.files('window', opened.value.draftId, f.snapshot)) }
+    }
+    expect(f.manager.checkedPaths('window', f.draftId, f.snapshot)).toBeNull()
+    expect((await checked([{ path: f.root, depth: 'infinity' }])).checked).toBeNull()
+    const node = await checked([{ path: f.root, depth: 'empty' }])
+    expect(node.opened).toMatchObject({ scopeRoot: f.root, paths: [{ path: f.root, depth: 'empty' }] })
+    expect(node.checked).toEqual([f.root])
+    expect(f.manager.read('window', node.opened.draftId)?.scopeTooltip).toBe(`${f.root}\n  . (this folder only)`)
+    expect((await checked([{ path: f.root, depth: 'empty' }, project, f.path])).checked)
+      .toEqual([f.root, f.path, project, join(project, 'a.ts'), join(project, 'deep', 'b.ts')])
+    // Only what the targets reach is read into the review: below a node-only directory its other
+    // work is shown unchecked, and nothing beside the targets appears.
+    const mixed = await checked([{ path: project, depth: 'empty' }, join(other, 'c.ts')])
+    expect(mixed.checked).toEqual([project, join(other, 'c.ts')])
+    expect(f.manager.files('window', mixed.opened.draftId, f.snapshot).entries.map((entry) => entry.path))
+      .toEqual([project, join(project, 'a.ts'), join(project, 'deep', 'b.ts'), join(other, 'c.ts')])
+    // Named twice, a directory keeps the wider selection; a file has no depth to keep.
+    expect((await checked([{ path: project, depth: 'empty' }, project, f.path])).opened.paths).toEqual([project, f.path])
+    expect((await checked([{ path: f.path, depth: 'empty' }])).opened.paths).toEqual([f.path])
+  })
+
+  it.each([
+    [[{ path: 'file.txt' }]], [[{ path: 'file.txt', depth: 'files' }]], [[{ path: 'file.txt', depth: 'empty', recursive: false }]],
+    [[{ path: '', depth: 'empty' }]], [['a\nb']], [[42]],
+  ])('refuses the requested targets %j before reading anything', async (paths) => {
+    const f = await fixture()
+    const detect = vi.spyOn(f.deps.vcsStatus, 'detect')
+    expect(await f.manager.prepare('session', 'svn', null, null, paths as never))
+      .toMatchObject({ ok: false, code: 'no-working-copy', detail: 'Supply a nonempty list of literal commit paths' })
+    expect(detect).not.toHaveBeenCalled()
+  })
+
+  it('keeps a node-only and a subtree review of one directory apart, also in their saved messages', async () => {
+    const f = await fixture()
+    const project = join(f.root, 'Project')
+    await mkdir(project)
+    const node = await f.manager.prepare('session', 'svn', null, 'Ignore data', [{ path: project, depth: 'empty' }])
+    const subtree = await f.manager.prepare('session', 'svn', null, 'Whole project', [project, f.path])
+    if (!node.ok || !subtree.ok) throw new Error('Not opened')
+    expect(node.value.draftId).not.toBe(subtree.value.draftId)
+    expect(await f.manager.prepare('session', 'svn', node.value.scopeRoot, null, node.value.paths)).toMatchObject({ value: { draftId: node.value.draftId } })
+    f.manager.revokeOwner('window')
+    const manager = restart(f)
+    const reopened = await manager.prepare('session', 'svn', null, null, [{ path: project, depth: 'empty' }])
+    if (!reopened.ok) throw new Error(reopened.detail)
+    manager.attach(reopened.value.draftId, 'window')
+    expect(manager.read('window', reopened.value.draftId)?.message).toBe('Ignore data')
+  })
+
+  it('updates only the checked nodes of an out-of-date plain scope, each at depth empty', async () => {
+    const f = await fixture()
+    f.deps.svn.commit = async () => ({ ok: false, code: 'out-of-date', detail: 'E155011' })
+    f.deps.svn.update = vi.fn(async () => ({ ok: true as const, value: { output: 'Updated' } }))
+    await f.manager.run('window', f.request)
+    expect(f.deps.svn.update).toHaveBeenCalledExactlyOnceWith(f.root, [f.path])
   })
 
   it('deduplicates explicit file lists and keeps them when the same review is reopened', async () => {
@@ -443,6 +573,19 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     f.manager.attach(opened.value.draftId, 'window')
     const child = { ...f.snapshot.entries[0], path: join(f.path, 'child.txt') }
     expect(f.manager.files('window', opened.value.draftId, { ...f.snapshot, entries: [child] }).entries).toEqual([])
+    expect(f.manager.checkedPaths('window', opened.value.draftId, { ...f.snapshot, entries: [child] })).toEqual([])
+  })
+
+  it('refuses to hand a node-only selection to Tortoise, which would show and check the work below it', async () => {
+    const f = await fixture()
+    f.deps.tortoise.open = vi.fn(async () => { throw new Error('Unexpected Tortoise dialog') })
+    const opened = await f.manager.prepare('session', 'svn', null, null, [{ path: f.root, depth: 'empty' }])
+    if (!opened.ok) throw new Error(opened.detail)
+    f.manager.attach(opened.value.draftId, 'window')
+    expect(await f.manager.openTortoise('window', opened.value.draftId, 'Message'))
+      .toMatchObject({ ok: false, code: 'invalid-target', detail: expect.stringContaining('own node') })
+    expect(f.deps.tortoise.open).not.toHaveBeenCalled()
+    expect(f.manager.status(opened.value.draftId)).toMatchObject({ state: 'editing' })
   })
 
   it('updates only the reviewed file after an out-of-date single-file commit', async () => {
@@ -615,7 +758,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     f.deps.svn.update = vi.fn(async () => ({ ok: true as const, value: { output: 'Updated' } }))
     const result = await f.manager.run('window', { ...f.request, fileIds: ['file', a.entry.fileId, b.entry.fileId], includeExternals: true })
     expect(result).toMatchObject({ ok: false, reloadRequired: true, detail: expect.stringContaining(`${a.root}: 60`) })
-    expect(f.deps.svn.update).toHaveBeenCalledExactlyOnceWith(b.root)
+    expect(f.deps.svn.update).toHaveBeenCalledExactlyOnceWith(b.root, [b.entry.path])
     expect(f.deps.svn.commit).toHaveBeenCalledTimes(3)
     expect(f.manager.status(f.draftId)?.state).toBe('failed')
   })
@@ -897,28 +1040,55 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
   })
 
   // A worktree session whose review committed may have its worktree removed once it ended.
-  it('names the scope of an SVN review that committed or went to Tortoise, and of nothing else', async () => {
-    const committed: string[] = []
+  it('reports the receipt of an SVN review that committed or went to Tortoise, and of nothing else', async () => {
+    const committed: SessionCommitReceipt[] = []
     const f = await fixture()
-    f.deps.worktreeCommitted = (scopeRoot) => committed.push(scopeRoot)
+    f.deps.committed = (receipt) => committed.push(receipt)
     f.deps.svn.commit = async () => ({ ok: false, code: 'locked', detail: 'E155004: the working copy is locked' })
     expect(await f.manager.run('window', f.request)).toMatchObject({ ok: false })
     expect(committed).toEqual([])
-    f.deps.svn.commit = async () => ({ ok: true, value: { committedPaths: [], revision: '42', output: 'Committed revision 42.' } })
+    f.deps.svn.commit = async () => ({ ok: true, value: { committedPaths: [f.path], revision: '42', output: 'Committed revision 42.' } })
     expect(await f.manager.run('window', f.request)).toEqual({ ok: true, revision: '42' })
-    expect(committed).toEqual([f.root])
+    expect(committed).toEqual([{ sessionId: 'session', scopes: [{ scopeRoot: f.root, revision: 42 }], paths: [f.path] }])
 
     const tortoise = await fixture()
-    tortoise.deps.worktreeCommitted = (scopeRoot) => committed.push(scopeRoot)
+    tortoise.deps.committed = (receipt) => committed.push(receipt)
     tortoise.deps.tortoise.open = async () => ({ ok: true, closed: Promise.resolve() })
     expect(await tortoise.manager.openTortoise('window', tortoise.draftId, 'Message')).toMatchObject({ ok: true })
-    expect(committed).toEqual([f.root, tortoise.root])
+    expect(committed.slice(1)).toEqual([{ sessionId: 'session', scopes: [{ scopeRoot: tortoise.root, revision: null }], paths: [] }])
 
     const git = await fixture('git')
-    git.deps.worktreeCommitted = (scopeRoot) => committed.push(scopeRoot)
+    git.deps.committed = (receipt) => committed.push(receipt)
     git.deps.git.commit = async () => ({ ok: true, value: { hash: 'abc1234', output: '' } })
     expect(await git.manager.run('window', git.request)).toMatchObject({ ok: true })
-    expect(committed).toEqual([f.root, tortoise.root])
+    expect(committed).toHaveLength(2)
+  })
+
+  it('gives each scope of a mount-then-root commit its own revision and reports every committed path', async () => {
+    const committed: SessionCommitReceipt[] = []
+    const f = await fixture()
+    const mount = await addExternal(f, 'mount')
+    f.deps.committed = (receipt) => committed.push(receipt)
+    f.deps.svn.commit = async (scope, targets) => ({ ok: true, value: {
+      committedPaths: targets.map((target) => target.absolutePath), revision: scope === mount.root ? '1234' : '1235', output: 'done' } })
+    expect(await f.manager.run('window', { ...f.request, fileIds: ['file', mount.entry.fileId], includeExternals: true }))
+      .toEqual({ ok: true, revision: '1234, 1235' })
+    expect(committed).toEqual([{ sessionId: 'session',
+      scopes: [{ scopeRoot: mount.root, revision: 1234 }, { scopeRoot: f.root, revision: 1235 }],
+      paths: [mount.entry.path, f.path] }])
+  })
+
+  it('reports the scopes committed before a later scope failed', async () => {
+    const committed: SessionCommitReceipt[] = []
+    const f = await fixture()
+    const mount = await addExternal(f, 'mount')
+    f.deps.committed = (receipt) => committed.push(receipt)
+    f.deps.svn.commit = vi.fn<VersioningCommitManagerDeps['svn']['commit']>()
+      .mockResolvedValueOnce({ ok: true, value: { committedPaths: [mount.entry.path], revision: '70', output: 'done' } })
+      .mockResolvedValueOnce({ ok: false, code: 'locked', detail: 'the root is locked' })
+    expect(await f.manager.run('window', { ...f.request, fileIds: ['file', mount.entry.fileId], includeExternals: true }))
+      .toMatchObject({ ok: false, code: 'vcs-failed' })
+    expect(committed).toEqual([{ sessionId: 'session', scopes: [{ scopeRoot: mount.root, revision: 70 }], paths: [mount.entry.path] }])
   })
 
   it('rejects stale, vanished and reappeared files before any write', async () => {

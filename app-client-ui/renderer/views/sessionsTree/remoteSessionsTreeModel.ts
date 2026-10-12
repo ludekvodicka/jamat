@@ -3,7 +3,7 @@ import type {
   RemoteInboundConnectionDto,
   RemoteOutboundEndpointDto,
 } from '../../../../lib-orchestrator/remoteControl/remoteConnectionsApi.types'
-import type { SessionsSnapshot } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
+import type { SessionInfo, SessionsSnapshot } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import {
   SessionsTreeModel,
   type TreeResult,
@@ -71,7 +71,7 @@ export class RemoteSessionsTreeModel {
       if (selected.size === 0 || entry.sessions === null) continue
       const key = `remote:${entry.remoteEndpointId}`
       const tree = SessionsTreeModel.build(
-        { ...entry.sessions, sessions: entry.sessions.sessions.filter((session) => selected.has(session.sessionId)), orphans: [] },
+        { ...entry.sessions, sessions: RemoteSessionsTreeModel.shown(entry.sessions.sessions, selected), orphans: [] },
         view,
         marks,
         previous.get(key) ?? null,
@@ -114,7 +114,7 @@ export class RemoteSessionsTreeModel {
       const key = `inbound:${entry.identity.remoteEndpointId}`
       const active = new Set(entry.activeSessionIds)
       const tree = SessionsTreeModel.build(
-        { ...local, sessions: local.sessions.filter((session) => active.has(session.sessionId)) },
+        { ...local, sessions: RemoteSessionsTreeModel.shown(local.sessions, active) },
         view,
         marks,
         previous.get(key) ?? null,
@@ -142,6 +142,15 @@ export class RemoteSessionsTreeModel {
       })
     }
     return RemoteSessionsTreeModel.sortedComputers(computers)
+  }
+
+  /**
+   * The sessions named, and the script runs of those: a run is part of the session it runs for, so
+   * it comes with it the way it is nested under it on the computer that runs both.
+   */
+  private static shown(sessions: readonly SessionInfo[], named: ReadonlySet<string>): SessionInfo[] {
+    return sessions.filter((session) => named.has(session.sessionId)
+      || (session.script !== undefined && named.has(session.script.parentId)))
   }
 
   private static push(

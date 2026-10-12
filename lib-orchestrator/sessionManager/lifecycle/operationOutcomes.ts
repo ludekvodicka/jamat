@@ -2,7 +2,6 @@ import type { HostCallErrorCode, HostCallFailure } from '../../hostClient/hostCl
 import type { RuntimeRef } from '../../../app-host/app/wire/hostWire.js'
 import type { SessionRecord, SessionRecordWorktree } from '../records/sessionRecord.types'
 import type { SessionsOpErrorCode } from '../sessionManagerApi.types'
-import type { SessionDirectoryRef } from '../records/sessionRecord.types'
 
 /**
  * What an OPERATION on a session answers, and how a Host failure is read.
@@ -105,13 +104,6 @@ export class OperationOutcomes {
 
   static notFound(sessionId: string): { ok: false; code: SessionsOpErrorCode; detail: string } {
     return { ok: false, code: 'not-found', detail: `No session ${sessionId}` }
-  }
-
-  /** Only a project directory ever reaches a worktree; `specProblem` is what makes that true. */
-  static projectRootOf(directory: SessionDirectoryRef): string {
-    if (directory.mode === 'project') return directory.projectPath
-    throw new Error(`A worktree spec passed validation without a project directory: ${
-      JSON.stringify(directory)}`)
   }
 
   static targetOf(record: SessionRecord): RuntimeRef | null {

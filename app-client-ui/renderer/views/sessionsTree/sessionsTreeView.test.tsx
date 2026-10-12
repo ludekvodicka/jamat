@@ -5,7 +5,7 @@ import {
   type SessionGroupDefinition,
 } from '../../../shared/sessionsGroupsState'
 import { CommitOpenStore } from '../../versioning/commitOpenStore'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type {
@@ -207,6 +207,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     readonly calls: string[] = []
     readonly errors: string[] = []
     readonly savedViews: SessionsTabsView[] = []
+    readonly savedScriptRuns: boolean[] = []
     savedFilters: readonly SavedSessionsFilter[] = []
     savedGroups: readonly SessionGroupAssignment[] = []
     /** The seeded sections, so a test that says nothing draws the panel a fresh install draws. */
@@ -245,6 +246,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     readonly answers = new Map<string, IpcResult<SessionsOpResult>>()
     /** What the store holds before this panel is drawn; null is a client that never stored one. */
     storedView: SessionsTabsView | null = null
+    storedScriptRuns = false
     private changed: (() => void) | null = null
     /** Held answers, for the tests that are about the window while a call is still out. */
     private held: (() => void)[] | null = null
@@ -257,6 +259,19 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
 
     saveView(view: SessionsTabsView): Promise<IpcResult<boolean>> {
       this.savedViews.push(view)
+      return Promise.resolve({ ok: true, value: true })
+    }
+
+    loadScriptRuns(): boolean {
+      return this.storedScriptRuns
+    }
+
+    subscribeScriptRuns(): () => void {
+      return () => {}
+    }
+
+    saveScriptRuns(shown: boolean): Promise<IpcResult<boolean>> {
+      this.savedScriptRuns.push(shown)
       return Promise.resolve({ ok: true, value: true })
     }
 
@@ -300,6 +315,15 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
       return this.record(`adoptOrphan:${runtimeSessionId}`)
     }
 
+    /** What an UPDATE answers; a test sets a `live-sessions` refusal here. */
+    updateAnswer: IpcResult<SessionsOpResult<{ sessionId: string; actionId: string }>> =
+      { ok: true, value: { ok: true, value: { sessionId: 'test-session', actionId: 'update-1' } } }
+
+    updateMain(sessionId: string, confirmLive?: readonly string[]): Promise<IpcResult<SessionsOpResult<{ sessionId: string; actionId: string }>>> {
+      this.calls.push(confirmLive === undefined ? `updateMain:${sessionId}` : `updateMain:${sessionId}:${confirmLive.join(',')}`)
+      return Promise.resolve(this.updateAnswer)
+    }
+
     /** Nothing answers until `release` is called: the window a second click would land in. */
     hold(): void {
       this.held = []
@@ -336,18 +360,22 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     commitSessionIds: string[] = [],
     storedGroups: readonly SessionGroupAssignment[] = [],
     sections: readonly SessionGroupDefinition[] = SessionsGroupsState.defaultsConst,
+    storedScriptRuns = false,
   ) {
     const ports = new Ports(snapshot)
     ports.storedView = storedView
+    ports.storedScriptRuns = storedScriptRuns
     ports.savedFilters = storedFilters
     ports.savedGroups = storedGroups
     ports.sections = sections
     const onLaunch = vi.fn()
     const onOpenSettings = vi.fn()
     const onOpenTerminal = vi.fn()
+    const onOpenScriptLog = vi.fn()
     const onCloseTerminal = vi.fn()
     const onRerunTerminal = vi.fn()
     const onFinalizeAsk = vi.fn()
+    const onUpdateMainAsk = vi.fn()
     const onFocusTerminal = vi.fn()
     const commands = new CommandRegistry()
     /**
@@ -434,9 +462,11 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
         onLaunch={onLaunch}
         onOpenSettings={onOpenSettings}
         onOpenTerminal={onOpenTerminal}
+        onOpenScriptLog={onOpenScriptLog}
         onCloseTerminal={onCloseTerminal}
         onRerunTerminal={onRerunTerminal}
         onFinalizeAsk={onFinalizeAsk}
+        onUpdateMainAsk={onUpdateMainAsk}
         onFocusTerminal={onFocusTerminal}
       />
     )
@@ -449,9 +479,11 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
       onLaunch,
       onOpenSettings,
       onOpenTerminal,
+      onOpenScriptLog,
       onCloseTerminal,
       onRerunTerminal,
       onFinalizeAsk,
+      onUpdateMainAsk,
       onFocusTerminal,
       remoteCalls,
       container: view.container,
@@ -1608,6 +1640,47 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(onCloseTerminal).not.toHaveBeenCalled()
   })
 
+  // A running SVN worktree session asks its question at once; its action stops the session first.
+  it('opens the Finish dialog of a running SVN worktree session on the first click, and stops nothing itself', async () => {
+    const snapshot = SessionsFixtures.svnWorktrees()
+    snapshot.sessions = snapshot.sessions.map((session) => session.sessionId !== 's-svn' || session.worktree === undefined ? session : {
+      ...session, life: 'live', activity: 'waiting', outcome: undefined, endedAt: undefined, exitCode: undefined,
+      admits: ['newBeside', 'fork', 'restart', 'compact', 'finalize'],
+      worktree: { ...session.worktree, liveFinish: true },
+    })
+    const automation = [{ key: SessionsGroupsState.sessionKeyOf({ kind: 'local', sessionId: 's-svn' }), group: 'automation' }]
+    const { ports, onCloseTerminal, onFinalizeAsk, container } = await mount(snapshot, null, undefined, [], [], automation)
+    showAll(container)
+
+    expect(labelsOf(container, 's-svn')[0]).toBe('Finish…')
+    fireEvent.click(actionNamed(container, 's-svn', 'Finish…'))
+
+    expect(onFinalizeAsk).toHaveBeenCalledOnce()
+    // The dialog is told the section the row is drawn in, by its title; the assignment stays as it was.
+    expect(onFinalizeAsk).toHaveBeenCalledWith(expect.objectContaining({
+      target: { kind: 'local', sessionId: 's-svn' },
+      session: expect.objectContaining({ glyph: 'waiting', group: 'Automation' }),
+      questions: [expect.objectContaining({ specId: 'worktree' })],
+    }))
+    expect(ports.savedGroups).toEqual(automation)
+    expect(ports.calls).toEqual([])
+    expect(onCloseTerminal).not.toHaveBeenCalled()
+  })
+
+  it('says on the row that a Finish waits for the person, and why', async () => {
+    const snapshot = SessionsFixtures.svnWorktrees()
+    snapshot.sessions = snapshot.sessions.map((session) => session.sessionId !== 's-svn' ? session : {
+      ...session,
+      svnAction: { kind: 'finish', stage: 'checks', needs: 'the check tests failed (exit 1)', needsKind: 'check-failed', review: null },
+    })
+    const { container } = await mount(snapshot)
+    showAll(container)
+
+    const mark = rowOf(container, 's-svn').querySelector('[data-finish-needs="true"]')
+    expect(mark?.textContent).toBe('finish waits for you')
+    expect(mark?.getAttribute('title')).toBe('the check tests failed (exit 1)')
+  })
+
   it('restores stopped Finish after an armed Remove is cancelled', async () => {
     const { ports, onFinalizeAsk, container } = await mount(SessionsFixtures.stoppedWorktree())
     showAll(container)
@@ -1732,6 +1805,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
       expect(onFinalizeAsk).toHaveBeenCalledWith(expect.objectContaining({
         target: { kind: 'local', sessionId: 's-working' },
         scope: 'local',
+        session: expect.objectContaining({ group: 'None' }),
       }))
     })
 
@@ -2484,8 +2558,10 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
   it('says a session is waiting on its install and draws the install underneath it', async () => {
     const { container } = await mount(SessionsFixtures.setupPending())
 
-    expect(container.querySelector('[data-session="s-primary"] [data-setup]')?.textContent)
-      .toBe('installing…')
+    const badge = rowOf(container, 's-primary').querySelector('[data-script-badge]')
+    expect(badge?.textContent).toBe('installing dependencies')
+    expect(badge?.getAttribute('title')).toBe('Installing dependencies:\npnpm install')
+    expect(badge?.classList.contains('jamat-sessions__script--running')).toBe(true)
     expect(container.querySelector('[data-session="s-primary"] [data-session="s-install"]'))
       .toBeTruthy()
     // The waiting session is still `starting`: what the install is doing is a second sentence.
@@ -2606,12 +2682,213 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
 
     showAll(container)
 
-    expect(container.querySelector('[data-session="s-failed"] [data-setup]')?.textContent)
-      .toBe('install failed')
-    expect(container.querySelector('[data-session="s-skipped"] [data-setup]')?.textContent)
-      .toBe('∅')
+    expect(rowOf(container, 's-failed').querySelector('[data-script-badge="failed"]')?.textContent)
+      .toBe('setup failed')
+    const skipped = rowOf(container, 's-skipped').querySelector('[data-script-badge="skipped"]')
+    expect(skipped?.textContent).toBe('setup skipped')
+    expect(skipped?.tagName).toBe('SPAN')
     expect(container.querySelector('[data-session="s-failed"] [data-session="s-failed-install"]'))
       .toBeTruthy()
+  })
+
+  it('opens the run terminal from a running or failed badge, and the saved log from a succeeded one', async () => {
+    const pending = await mount(SessionsFixtures.setupPending())
+    fireEvent.click(rowOf(pending.container, 's-primary').querySelector('[data-script-badge]')!)
+    expect(pending.onOpenTerminal).toHaveBeenLastCalledWith(
+      { kind: 'local', sessionId: 's-install' }, 'AppJamatV3 - Setup alpha', 'preview')
+    pending.unmount()
+
+    const outcomes = await mount(SessionsFixtures.setupOutcomes())
+    showAll(outcomes.container)
+    fireEvent.click(rowOf(outcomes.container, 's-failed').querySelector('[data-script-badge]')!)
+    expect(outcomes.onOpenTerminal).toHaveBeenLastCalledWith(
+      { kind: 'local', sessionId: 's-failed-install' }, 'AppJamatV3 - Setup beta', 'preview')
+    outcomes.unmount()
+
+    const collapsed = await mount(SessionsFixtures.setupCollapsed())
+    const succeeded = rowOf(collapsed.container, 's-installed').querySelector('[data-script-badge]')!
+    expect(succeeded.textContent).toBe('setup ✓ 23.6 s')
+    expect(succeeded.getAttribute('title')).toBe('Setup succeeded in 23.6 s')
+    expect(succeeded.classList.contains('jamat-sessions__script--succeeded')).toBe(true)
+    expect(succeeded.tagName).toBe('BUTTON')
+    fireEvent.click(succeeded)
+    expect(collapsed.onOpenScriptLog).toHaveBeenCalledWith('s-installed', 'r-second')
+    expect(collapsed.onOpenTerminal).not.toHaveBeenCalled()
+  })
+
+  it('opens the run terminal from a row whose launch waits on it, in the row mode', async () => {
+    const { container, onOpenTerminal } = await mount(SessionsFixtures.setupPending())
+
+    fireEvent.click(buttonNamed(rowOf(container, 's-primary'), 'Alpha worktree'))
+    expect(onOpenTerminal).toHaveBeenLastCalledWith(
+      { kind: 'local', sessionId: 's-install' }, 'AppJamatV3 - Setup alpha', 'preview')
+    fireEvent.doubleClick(rowOf(container, 's-primary'))
+    expect(onOpenTerminal).toHaveBeenLastCalledWith(
+      { kind: 'local', sessionId: 's-install' }, 'AppJamatV3 - Setup alpha', 'permanent')
+    showAll(container)
+    fireEvent.click(buttonNamed(rowOf(container, 's-neighbour'), 'Zulu shell'))
+    expect(onOpenTerminal).toHaveBeenLastCalledWith(
+      { kind: 'local', sessionId: 's-neighbour' }, 'AppJamatV3 - Zulu shell', 'preview')
+  })
+
+  it('lists every run in the Scripts submenu, newest first, a saved log opened and a lost one disabled', async () => {
+    const { container, onOpenTerminal, onOpenScriptLog } = await mount(SessionsFixtures.setupCollapsed())
+
+    fireEvent.contextMenu(rowOf(container, 's-installed'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Scripts' }))
+    const items = within(screen.getByRole('menu', { name: 'Scripts' })).getAllByRole('menuitem')
+    expect(items.map((item) => item.textContent)).toEqual([
+      'Setup gamma · succeeded · 23.6 s',
+      'Setup gamma · failed · exit 1 · 4.1 s',
+    ])
+    expect(items.map((item) => item.hasAttribute('disabled'))).toEqual([false, true])
+    expect(items[1].getAttribute('title')).toBe('the Host restarted before the output was saved')
+    fireEvent.click(items[0])
+    expect(onOpenScriptLog).toHaveBeenCalledWith('s-installed', 'r-second')
+    expect(onOpenTerminal).not.toHaveBeenCalled()
+  })
+
+  it('draws finished runs as rows under their session once the Scripts switch is on', async () => {
+    const { container, ports, onOpenScriptLog } = await mount(SessionsFixtures.setupCollapsed())
+    const finishedRows = (): Element[] =>
+      [...container.querySelectorAll('[data-session="s-installed"] [data-script-run]')]
+    expect(finishedRows()).toEqual([])
+
+    fireEvent.contextMenu(rowOf(container, 's-installed'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Scripts' }))
+    const toggle = within(screen.getByRole('menu', { name: 'Scripts' }))
+      .getByRole('menuitemcheckbox', { name: 'Show as sub-tasks' })
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(toggle)
+
+    await waitFor(() => expect(finishedRows().map((row) => row.textContent)).toEqual([
+      '✓Setup gamma · succeeded · 23.6 s',
+      '×Setup gamma · failed · exit 1 · 4.1 s',
+    ]))
+    expect(ports.savedScriptRuns).toEqual([true])
+    const [saved, lost] = finishedRows().map((row) => row.querySelector('button')!)
+    expect(lost.hasAttribute('disabled')).toBe(true)
+    fireEvent.click(saved)
+    expect(onOpenScriptLog).toHaveBeenCalledWith('s-installed', 'r-second')
+
+    fireEvent.contextMenu(rowOf(container, 's-installed'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Scripts' }))
+    fireEvent.click(within(screen.getByRole('menu', { name: 'Scripts' }))
+      .getByRole('menuitemcheckbox', { name: 'Show as sub-tasks' }))
+    await waitFor(() => expect(finishedRows()).toEqual([]))
+    expect(ports.savedScriptRuns).toEqual([true, false])
+  })
+
+  it('reads the stored Scripts switch when the panel opens', async () => {
+    const { container } = await mount(
+      SessionsFixtures.setupCollapsed(), null, undefined, [], [], [], undefined, true)
+
+    await waitFor(() =>
+      expect(container.querySelectorAll('[data-session="s-installed"] [data-script-run]')).toHaveLength(2))
+  })
+
+  it('opens a run row from the Scripts submenu', async () => {
+    const { container, onOpenTerminal } = await mount(SessionsFixtures.setupPending())
+
+    fireEvent.contextMenu(rowOf(container, 's-primary'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Scripts' }))
+    fireEvent.click(within(screen.getByRole('menu', { name: 'Scripts' }))
+      .getByRole('menuitem', { name: 'Setup alpha · running' }))
+    expect(onOpenTerminal).toHaveBeenLastCalledWith(
+      { kind: 'local', sessionId: 's-install' }, 'AppJamatV3 - Setup alpha', 'preview')
+  })
+
+  it('follows the snapshot in an open Scripts submenu: a run that collapsed opens its log', async () => {
+    const pending = SessionsFixtures.setupPending()
+    const { container, ports, onOpenTerminal, onOpenScriptLog } = await mount(pending)
+    fireEvent.contextMenu(rowOf(container, 's-primary'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Scripts' }))
+    expect(within(screen.getByRole('menu', { name: 'Scripts' })).getByRole('menuitem', { name: 'Setup alpha · running' }))
+      .toBeTruthy()
+
+    ports.push({
+      ...pending,
+      revision: pending.revision + 1,
+      sessions: pending.sessions.filter((session) => session.sessionId !== 's-install').map((session) =>
+        session.sessionId !== 's-primary' ? session : {
+          ...session,
+          life: 'live' as const,
+          setup: undefined,
+          scripts: {
+            runs: [{
+              ...session.scripts!.runs[0]!, state: 'succeeded' as const, summary: 'Setup alpha · succeeded · 23.6 s',
+              exitCode: 0, row: false, log: 'saved' as const,
+            }],
+          },
+        }),
+    })
+
+    if (screen.queryByRole('menu', { name: 'Scripts' }) === null)
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Scripts' }))
+    fireEvent.click(await within(screen.getByRole('menu', { name: 'Scripts' }))
+      .findByRole('menuitem', { name: 'Setup alpha · succeeded · 23.6 s' }))
+    expect(onOpenScriptLog).toHaveBeenCalledWith('s-primary', 's-install')
+    expect(onOpenTerminal).not.toHaveBeenCalled()
+  })
+
+  it('closes the menu of a run row that went into its parent', async () => {
+    const pending = SessionsFixtures.setupPending()
+    const { container, ports } = await mount(pending)
+    fireEvent.contextMenu(rowOf(container, 's-install'))
+    expect(screen.queryByRole('menu')).toBeTruthy()
+
+    ports.push({
+      ...pending,
+      revision: pending.revision + 1,
+      sessions: pending.sessions.filter((session) => session.sessionId !== 's-install'),
+    })
+
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+  })
+
+  it('offers a run no group of its own: it is filed where its parent is', async () => {
+    const { container } = await mount(SessionsFixtures.setupPending())
+
+    fireEvent.contextMenu(rowOf(container, 's-install'))
+    expect(menuTitles()).not.toContain('Groups')
+    fireEvent.keyDown(document, { key: 'Escape' })
+    fireEvent.contextMenu(rowOf(container, 's-primary'))
+    expect(menuTitles()).toContain('Groups')
+  })
+
+  it('removes a failed run through its own row', async () => {
+    const { ports, container } = await mount(SessionsFixtures.setupOutcomes())
+    showAll(container)
+
+    chooseSessionMenuAction(container, 's-failed-install', 'Remove…')
+    fireEvent.click(actionNamed(container, 's-failed-install', 'Remove?'))
+    await waitFor(() => expect(ports.calls).toContain('remove:s-failed-install'))
+  })
+
+  it('lists only the rows of a remote session in its Scripts submenu', async () => {
+    const collapsed = SessionsFixtures.setupCollapsed()
+    const pending = SessionsFixtures.setupPending()
+    const { container } = await mount(
+      SessionsFixtures.mixed(),
+      null,
+      remoteSnapshot([
+        outboundEndpoint(collapsed, 'endpoint-a'),
+        outboundEndpoint(pending, 'endpoint-b', { selectedSessionIds: ['s-primary'] }),
+      ]),
+    )
+    const remote = sectionAfter(container, 'Remote')
+
+    // The install was never selected on its own; it comes with the session it installs for.
+    expect(remote.querySelector('[data-session*="s-primary"] [data-session*="s-install"]')).not.toBeNull()
+    // A log is local to the computer that ran it, so a remote succeeded badge opens nothing.
+    expect(remote.querySelector('[data-session*="s-installed"] [data-script-badge="succeeded"]')?.tagName).toBe('SPAN')
+    fireEvent.contextMenu(remote.querySelector('[data-session*="s-installed"] > .jamat-sessions__row')!)
+    expect(menuTitles()).not.toContain('Scripts')
+    fireEvent.keyDown(document, { key: 'Escape' })
+    fireEvent.contextMenu(remote.querySelector('[data-session*="s-primary"] > .jamat-sessions__row')!)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Scripts' }))
+    expect(within(screen.getByRole('menu', { name: 'Scripts' })).getAllByRole('menuitem')
+      .map((item) => item.textContent)).toEqual(['Setup alpha · running'])
   })
 
   it('draws a worktree diff only where something has measured one', async () => {
@@ -2666,6 +2943,40 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(kept?.getAttribute('title')).toBe('kept: 2 changes')
     expect(row?.querySelector('[data-finish-outcome="partial"]')).toBeTruthy()
     expect(container.querySelector('[data-session="s-svn"] [data-cleanup]')).toBeNull()
+  })
+
+  it('draws a landed row with how far its main copy is behind and Update main copy in place of Finish', async () => {
+    const { container, ports, onUpdateMainAsk } = await mount(SessionsFixtures.svnWorktrees())
+    const rowOf = (sessionId: string): Element | null =>
+      container.querySelector(`[data-session="${sessionId}"] > .jamat-sessions__row`)
+
+    const landing = rowOf('s-landed')?.querySelector('[data-landing]')
+    expect(landing?.textContent).toBe('main copy 3 behind')
+    expect(landing?.getAttribute('title')).toContain('does not hold r4131 yet')
+    expect(labelsOf(container, 's-landed')).toEqual(['Update main copy', 'Remove'])
+    expect(rowOf('s-landed-offline')?.querySelector('[data-landing]')?.textContent).toBe('main copy behind (unknown)')
+    // An UPDATE that runs says so instead, and the row offers nothing beside it.
+    const updating = rowOf('s-landed-updating')?.querySelector('[data-main-update="running"]')
+    expect(updating?.textContent).toBe('updating main…')
+    expect(updating?.getAttribute('title')).toBe('Updating the main copy')
+    expect(rowOf('s-landed-updating')?.querySelector('[data-landing]')).toBeNull()
+    expect(labelsOf(container, 's-landed-updating')).toEqual([])
+
+    fireEvent.click(actionNamed(container, 's-landed', 'Update main copy'))
+    await waitFor(() => expect(ports.calls).toEqual(['updateMain:s-landed']))
+    expect(onUpdateMainAsk).not.toHaveBeenCalled()
+
+    // Live sessions in the main copy turn the refusal into the confirmation.
+    const live = [{ sessionId: 's-coordinator', title: '020 - coordinator', number: '020' }]
+    ports.updateAnswer = { ok: true, value: { ok: false, code: 'live-sessions', detail: '1 live session', liveSessions: live } }
+    fireEvent.click(actionNamed(container, 's-landed', 'Update main copy'))
+    await waitFor(() => expect(onUpdateMainAsk).toHaveBeenCalledWith({ sessionId: 's-landed', sessionTitle: 'Landed worktree', live }))
+    expect(container.querySelector('.jamat-sessions__error')).toBeNull()
+
+    // Any other refusal is the row's error line.
+    ports.updateAnswer = { ok: true, value: { ok: false, code: 'merge-pending', detail: 'An UPDATE of C:/w runs' } }
+    chooseSessionMenuAction(container, 's-landed', 'Update main copy')
+    await waitFor(() => expect(container.textContent).toContain('Update main copy failed: merge-pending: An UPDATE of C:/w runs'))
   })
 
   it('collapses a root and takes its sessions off the screen with it', async () => {

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { readdir, realpath, rm, stat } from 'node:fs/promises'
+import { readdir, realpath, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import type { RuntimeCategory } from '../catalog/catalog.types'
@@ -11,6 +11,7 @@ import type {
 } from '../providers/providerContract.types'
 import { ErrorText } from '../../shared/errorText'
 import { PathCompare } from '../../shared/pathCompare'
+import { type TreeRemove, TreeRemoval } from '../../shared/treeRemoval'
 import type { DeletePreview, DeleteReport, ProjectsOpResult } from '../projectManagerApi.types'
 import { ProjectOperationGuard } from './projectOperationGuard'
 
@@ -46,6 +47,8 @@ export interface ProjectDeletionDeps {
   guard: ProjectOperationGuard
   invalidateAll: () => void
   report: (message: string) => void
+  /** How the project directory goes; Node's own `rm` when absent (`TreeRemoval`). */
+  removeTree?: TreeRemove
   io?: DeletionIo
 }
 
@@ -61,9 +64,6 @@ export class ProjectDeletion {
   private static readonly tokenTtlMillisecondsConst = 5 * 60_000
   private static readonly projectsDirectoryNameConst = 'projects'
   private static readonly sessionsDirectoryNameConst = 'sessions'
-  private static readonly nodeIoConst: DeletionIo = {
-    remove: (path) => rm(path, { recursive: true, force: true }),
-  }
 
   private readonly claudeHome: string
   private readonly codexHome: string
@@ -85,7 +85,7 @@ export class ProjectDeletion {
     this.guard = deps.guard
     this.invalidateAll = deps.invalidateAll
     this.report = deps.report
-    this.io = deps.io ?? ProjectDeletion.nodeIoConst
+    this.io = deps.io ?? { remove: deps.removeTree ?? TreeRemoval.node }
   }
 
   /** Enumerates before it promises anything, and promises nothing it did not enumerate. */

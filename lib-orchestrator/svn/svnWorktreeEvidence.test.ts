@@ -9,10 +9,9 @@ import { SvnWorktreeEvidence } from './svnWorktreeEvidence'
 // Captured by `pnpm smoke:svn-worktree --capture` from a disposable svnadmin repository; the smoke
 // also proves on every run that this svn still writes what they hold.
 const root = resolve('fixture-worktree')
-const main = resolve('fixture-main')
 const fixture = (name: string): string =>
   readFileSync(join(import.meta.dirname, 'fixtures', 'worktree', name), 'utf8')
-    .replaceAll('{ROOT}', root).replaceAll('{MAIN}', main).replaceAll('\\', sep)
+    .replaceAll('{ROOT}', root).replaceAll('{MAIN}', resolve('fixture-main')).replaceAll('\\', sep)
 
 const logs: Record<number, string> = { 6: 'log-committed.xml', 7: 'log-foreign.xml' }
 const revisionLog = async (revision: number): Promise<SvnLoggedRow[]> => {
@@ -20,9 +19,6 @@ const revisionLog = async (revision: number): Promise<SvnLoggedRow[]> => {
   if (name === undefined) throw new Error(`no fixture log for r${revision}`)
   return SvnWorktreeEvidence.loggedRows(fixture(name), '/Project', '')
 }
-const mainBases = new Map(SvnWorktreeEvidence.infoEntries(fixture('info-main.xml'))
-  .map((entry) => [SvnWorktreeEvidence.relativeTo(main, entry.path), entry.revision]))
-const mainBaseOf = async (path: string): Promise<number> => mainBases.get(path) ?? 0
 const committed = (): SvnVerboseItem[] => SvnWorktreeEvidence.statusVerboseRows(fixture('status-verbose-committed.xml'), root)
 const foreign = (): SvnVerboseItem[] => SvnWorktreeEvidence.statusVerboseRows(fixture('status-verbose-foreign.xml'), root)
 const noHistory = async (): Promise<SvnLoggedRow[]> => { throw new Error('history must not be read') }
@@ -133,57 +129,70 @@ describe('lib-orchestrator/svn/svnWorktreeEvidence', () => {
         path: '.', kind: 'dir', revision: 5, url: '{REPO}/Project', repository: '{REPO}', base: '/Project',
       }])
       expect(SvnWorktreeEvidence.infoEntries(fixture('info-repository.xml'))[0]).toMatchObject({ revision: 7, base: '' })
+      const main = resolve('fixture-main')
+      const mainBases = new Map(SvnWorktreeEvidence.infoEntries(fixture('info-main.xml'))
+        .map((entry) => [SvnWorktreeEvidence.relativeTo(main, entry.path), entry.revision]))
       expect(mainBases.get('src/a.txt')).toBe(4)
       expect(mainBases.get('src/b.txt')).toBe(7)
     })
   })
 
-  describe('update', () => {
-    it('reads added, deleted, updated, merged and conflicted rows for files, properties and trees', () => {
-      const rows = SvnWorktreeEvidence.updateRows(fixture('update.txt'), root)
-      const row = (path: string) => rows.find((entry) => entry.path === path)
-      expect(rows.map((entry) => entry.path)).toEqual(['tree.txt', 'gone.txt', '.aidocs/note.md', 'conflict.txt', 'keep.txt',
-        'props.txt', 'src/a.txt', 'src/b.txt', 'src/new.txt', 'src', 'mount/l.txt'])
-      expect(row('tree.txt')).toEqual({ text: 'none', props: 'none', lockBroken: false, treeConflict: true, path: 'tree.txt', inside: true })
-      expect(row('gone.txt')?.text).toBe('deleted')
-      expect(row('src/new.txt')?.text).toBe('added')
-      expect(row('src/b.txt')?.text).toBe('updated')
-      expect(row('src/a.txt')?.text).toBe('merged')
-      expect(row('conflict.txt')?.text).toBe('conflicted')
-      expect(row('keep.txt')?.props).toBe('updated')
-      expect(row('src')?.props).toBe('merged')
-      expect(row('props.txt')?.props).toBe('conflicted')
+  // Removed with the main-copy landing: the plain-text update rows; conflicts come from status XML and incoming paths from `svn log -v`.
+  describe('conflicts and locks', () => {
+    it('tells a text conflict, which a resolver may settle, from a tree or property conflict', () => {
+      expect(SvnWorktreeEvidence.conflicts(fixture('status-after-update.xml'), root)).toEqual([
+        { path: 'conflict.txt', text: true, other: false },
+        { path: 'props.txt', text: false, other: true },
+        { path: 'tree.txt', text: false, other: true },
+      ])
     })
 
-    it('reads absolute paths, the root itself and a path that no longer resolves below the root', () => {
-      const outside = resolve('elsewhere', 'x.txt')
-      const rows = SvnWorktreeEvidence.updateRows(`U    ${join(root, 'a.txt')}\n U   ${root}\nA B  ${outside}\nAt revision 9.\n`, root)
-      expect(rows).toEqual([
-        { text: 'updated', props: 'none', lockBroken: false, treeConflict: false, path: 'a.txt', inside: true },
-        { text: 'none', props: 'updated', lockBroken: false, treeConflict: false, path: '.', inside: true },
-        { text: 'added', props: 'none', lockBroken: true, treeConflict: false, path: outside, inside: false },
-      ])
+    it('names the directories svn marks as locked', () => {
+      const xml = `<status><target path="${root}"><entry path="${root}"><wc-status item="normal" props="none" wc-locked="true"/></entry>`
+        + `<entry path="${join(root, 'a.txt')}"><wc-status item="modified" props="none"/></entry></target></status>`
+      expect(SvnWorktreeEvidence.lockedPaths(xml, root)).toEqual(['.'])
+      expect(SvnWorktreeEvidence.lockedPaths(fixture('status-after-update.xml'), root)).toEqual([])
+    })
+  })
+
+  describe('pinned externals', () => {
+    const properties = (target: string, value: string): string =>
+      `<properties><target path="${target}"><property name="svn:externals">${value}</property></target></properties>`
+
+    it('reads a revision in both definition formats and a peg revision, and nothing from a floating one', () => {
+      const value = [
+        '^/libs/pinned@12 pinned-peg',
+        '-r 7 https://svn.test/repos/libs/old pinned-r',
+        '-r9 //svn.test/repos/libs/tight pinned-tight',
+        'old-style -r 5 https://svn.test/repos/libs/legacy',
+        '^/libs/floating floating',
+        '# ^/libs/comment@3 commented',
+        '',
+      ].join('\n')
+      expect(SvnWorktreeEvidence.pinnedExternals(properties(root, value), root))
+        .toEqual(['pinned-peg', 'pinned-r', 'pinned-tight', 'old-style'])
+    })
+
+    it('places a definition on a subdirectory below it, and refuses a document that is no property list', () => {
+      expect(SvnWorktreeEvidence.pinnedExternals(properties(join(root, 'shared'), '../../libs/x@3 clients/coinGecko'), root))
+        .toEqual(['shared/clients/coinGecko'])
+      expect(() => SvnWorktreeEvidence.pinnedExternals('<status/>', root)).toThrow(/no <properties> document/)
     })
   })
 
   describe('incoming', () => {
-    const updated = () => SvnWorktreeEvidence.updateRows(`${fixture('update.txt')} U   .\n`, root)
+    const logged = () => SvnWorktreeEvidence.loggedRows(fixture('log-range.xml'), '/Project', '')
 
-    it('counts every incoming path of a changed project except the root and .aidocs', () => {
-      expect(SvnWorktreeEvidence.incoming(['src/a.txt'], updated(), 'whole')).toEqual(['tree.txt', 'gone.txt', 'conflict.txt',
-        'keep.txt', 'props.txt', 'src/a.txt', 'src/b.txt', 'src/new.txt', 'src', 'mount/l.txt'])
-      expect(SvnWorktreeEvidence.incoming([], updated(), 'whole')).toEqual([])
+    it('counts every logged path of a changed project except the root and .aidocs, each once', () => {
+      expect(SvnWorktreeEvidence.incoming(['src/a.txt'], logged(), 'whole')).toEqual(['conflict.txt', 'gone.txt', 'keep.txt',
+        'props.txt', 'src', 'src/a.txt', 'src/b.txt', 'src/new.txt', 'tree.txt'])
+      expect(SvnWorktreeEvidence.incoming([], logged(), 'whole')).toEqual([])
     })
 
     it('in a product group counts only a member project the session changed', () => {
-      expect(SvnWorktreeEvidence.incoming(['src/added.txt'], updated(), 'first-segment'))
-        .toEqual(['src/a.txt', 'src/b.txt', 'src/new.txt', 'src'])
-      expect(SvnWorktreeEvidence.incoming(['mount/x.txt', '.aidocs/n.md'], updated(), 'first-segment')).toEqual(['mount/l.txt'])
-    })
-
-    it('counts a path that no longer maps, whatever changed', () => {
-      const rows = SvnWorktreeEvidence.updateRows(`U    ${resolve('elsewhere', 'x.txt')}\n`, root)
-      expect(SvnWorktreeEvidence.incoming([], rows, 'first-segment')).toEqual([resolve('elsewhere', 'x.txt')])
+      expect(SvnWorktreeEvidence.incoming(['src/added.txt'], logged(), 'first-segment'))
+        .toEqual(['src', 'src/a.txt', 'src/b.txt', 'src/new.txt'])
+      expect(SvnWorktreeEvidence.incoming(['mount/x.txt', '.aidocs/n.md'], logged(), 'first-segment')).toEqual([])
     })
   })
 
@@ -249,14 +258,12 @@ describe('lib-orchestrator/svn/svnWorktreeEvidence', () => {
     })
   })
 
-  describe('recovery', () => {
-    it('finds a clean commit from this working copy that the main copy lacks, and not a foreign revision taken in by a single-path update', async () => {
-      await expect(SvnWorktreeEvidence.recoverableRows({ items: foreign(), revisionLog, mainBaseOf }))
+  describe('own commits', () => {
+    it('finds a clean commit from this working copy, and not a foreign revision taken in by a single-path update', async () => {
+      await expect(SvnWorktreeEvidence.ownCommitRows({ items: foreign(), revisionLog }))
         .resolves.toEqual([{ revision: 6, action: 'M', path: 'src/a.txt' }])
-    })
-
-    it('skips a path the main copy already holds at that revision', async () => {
-      await expect(SvnWorktreeEvidence.recoverableRows({ items: foreign(), revisionLog, mainBaseOf: async () => 6 })).resolves.toEqual([])
+      await expect(SvnWorktreeEvidence.ownCommitRows({ items: committed(), revisionLog }))
+        .resolves.toEqual([{ revision: 6, action: 'M', path: 'src/a.txt' }])
     })
 
     it('reports an added directory for the items below it and reads no history when the working copy sits at one BASE', async () => {
@@ -264,20 +271,9 @@ describe('lib-orchestrator/svn/svnWorktreeEvidence', () => {
         { path: 'new', item: 'normal', props: 'none', base: 15, changed: 15 },
         { path: 'new/n.txt', item: 'normal', props: 'none', base: 15, changed: 15 }]
       const added = [{ revision: 15, action: 'A' as const, path: 'new' }]
-      await expect(SvnWorktreeEvidence.recoverableRows({ items, revisionLog: async () => added, mainBaseOf: async () => 0 })).resolves.toEqual(added)
-      await expect(SvnWorktreeEvidence.recoverableRows({ items: [{ path: '.', item: 'normal', props: 'none', base: 10, changed: 10 }],
-        revisionLog: noHistory, mainBaseOf })).resolves.toEqual([])
-    })
-  })
-
-  describe('unlanded candidates', () => {
-    it('names a commit from here whose path the main copy holds at an older BASE', async () => {
-      await expect(SvnWorktreeEvidence.unlandedCandidates(foreign(), mainBaseOf)).resolves.toEqual([{ path: 'src/a.txt', revision: 6 }])
-    })
-
-    it('does not name it once the main copy holds that revision or a newer one', async () => {
-      for (const base of [6, 7])
-        await expect(SvnWorktreeEvidence.unlandedCandidates(foreign(), async (path) => path === 'src/a.txt' ? base : mainBaseOf(path))).resolves.toEqual([])
+      await expect(SvnWorktreeEvidence.ownCommitRows({ items, revisionLog: async () => added })).resolves.toEqual(added)
+      await expect(SvnWorktreeEvidence.ownCommitRows({ items: [{ path: '.', item: 'normal', props: 'none', base: 10, changed: 10 }],
+        revisionLog: noHistory })).resolves.toEqual([])
     })
   })
 

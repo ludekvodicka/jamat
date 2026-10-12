@@ -1,6 +1,11 @@
 import type { RuntimeListResult, RuntimeSessionInfo } from '../../../app-host/app/wire/hostWire.js'
 import type { SessionExitReason, SessionRecord } from '../records/sessionRecord.types'
+import { ScriptRunOutcome } from '../scripts/scriptRunOutcome'
+import { ScriptRunPlanning, type ScriptRunChange } from '../scripts/scriptRunPlanning'
+import { SessionScriptDefinitions, type SessionScriptGate } from '../scripts/sessionScriptDefinitions'
 import { LaunchBackoff } from './launchBackoff'
+import { SvnActionStages } from './svnActionStages'
+import { SvnResolverLauncher } from './svnResolverLauncher'
 import { WorktreeCleanupPacing } from './worktreeCleanupPacing'
 
 export type ReconcileChange =
@@ -31,26 +36,31 @@ export type ReconcileChange =
   }
   | { kind: 'orphan'; runtimeSessionId: string }
   /**
-   * The setup session finished cleanly, so the launch that was waiting for it can run. `sessionId`
-   * is the PRIMARY session's, never the setup's: the setup is the evidence, not the subject.
+   * A script run that a gate of its parent waits for finished cleanly. `sessionId` is the PARENT's,
+   * never the run's: the run is the evidence, not the subject. `before`: the launch that was waiting
+   * can run. `finish`: the next check starts, or the Finish continues. `merge`: the merge carries on
+   * from whatever the resolver left in the worktree.
    */
-  | { kind: 'setup-succeeded'; sessionId: string }
+  | { kind: 'script-succeeded'; sessionId: string; gate: SessionScriptGate }
   /**
-   * The setup failed, or there is no longer anything to say it succeeded. The primary session ends
-   * with this reason; its worktree, its branch and its link to the setup session all stay.
+   * The run failed, or there is no longer anything to say it succeeded. `before`: the parent ends
+   * with this reason; its worktree, its branch and its link to the run all stay. `finish`: the Finish
+   * stops and the chain keeps the reason. `merge`: the phase stays, so the manual path is still open.
+   * `action`: the SVN action writes the verdict and its next client step reads the disk.
    */
-  | { kind: 'setup-failed'; sessionId: string; reason: string }
+  | { kind: 'script-failed'; sessionId: string; gate: SessionScriptGate; reason: string }
   /**
-   * The session resolving a merge conflict exited cleanly, so the merge can carry on from whatever
-   * it left in the worktree. `sessionId` is the PRIMARY session's, as with the setup pair.
+   * An SVN action has a client step to take that no drive of this process holds: a client stage, a
+   * verdict to judge, a relaunch whose wait is over, or a resolver past its time limit to stop. After
+   * a client restart this is how it goes on.
    */
-  | { kind: 'merge-resolve-succeeded'; sessionId: string }
-  /** The resolver did not finish cleanly. The phase stays, so the manual path is still open. */
-  | { kind: 'merge-resolve-failed'; sessionId: string; reason: string }
+  | { kind: 'svn-action-due'; sessionId: string }
   /** Read the current launch confirmation without searching provider history. */
   | { kind: 'name-codex-conversation'; sessionId: string }
   /** The process of an SVN worktree session is gone and its cleanup is due: judge and remove it off this loop. */
   | { kind: 'clean-worktree'; sessionId: string }
+  /** A run that is over: its log and history entry are written, or its record goes. See `ScriptRunPlanning`. */
+  | ScriptRunChange
 
 /**
  * The one place that decides what a session's record should say. It is pure - records and the Host's
@@ -63,6 +73,8 @@ export class Reconciler {
     now: number = Date.now(),
     /** When this client process began; the first cleanup judgement after it is always due. */
     clientStartedAt = 0,
+    /** The SVN actions a drive of this process holds now. */
+    held: ReadonlySet<string> = new Set(),
   ): ReconcileChange[] {
     // Unreachable is NOT lost. Without an answer the records keep saying what they last knew, and
     // nothing is relabelled: a client that cannot see the Host has learnt nothing about a session.
@@ -73,32 +85,36 @@ export class Reconciler {
     // FIRST, and over every record rather than only the live ones: a session whose merge is being
     // resolved is `ended` almost by definition - it was stopped before the merge could start - so
     // the loop below would skip exactly the records this judgement is about.
-    for (const record of records) {
-      const merge = record.worktreeMerge
-      if (merge?.phase !== 'resolving' || merge.resolveSessionId === undefined) continue
-      // A failure already written is a judgement already made; judging again every two seconds
-      // would rewrite the same record for ever.
-      if (merge.failure !== undefined) continue
-      const judged = Reconciler.resolveJudgement(
-        record.sessionId,
-        merge.resolveSessionId,
-        records,
-        live,
-      )
-      if (judged) changes.push(judged)
-    }
     for (const record of records)
-      if (Reconciler.cleanupDue(record, now, clientStartedAt))
+      for (const { gate, runId, words } of SessionScriptDefinitions.gatesOf(record)) {
+        // A parent whose OWN runtime the Host has is left to the general rules: see the live loop.
+        if (!SessionScriptDefinitions.judging(gate, record) || (gate === 'before' && live.has(record.sessionId))) continue
+        const judged = ScriptRunOutcome.judge(runId, records, live, words)
+        if (judged.kind === 'running') continue
+        else if (judged.kind === 'succeeded')
+          changes.push({ kind: 'script-succeeded', sessionId: record.sessionId, gate })
+        else if (judged.kind === 'failed')
+          changes.push({ kind: 'script-failed', sessionId: record.sessionId, gate, reason: judged.reason })
+        else
+          throw new Error(`Unknown run judgement: ${JSON.stringify(judged satisfies never)}`)
+      }
+    for (const record of records) {
+      if (Reconciler.cleanupDue(record, records, now, clientStartedAt))
         changes.push({ kind: 'clean-worktree', sessionId: record.sessionId })
+      const action = record.svnAction
+      if (action !== undefined && !held.has(record.sessionId)
+        && (SvnActionStages.clientDue(action, now) || SvnResolverLauncher.overdue(action, now)))
+        changes.push({ kind: 'svn-action-due', sessionId: record.sessionId })
+    }
     for (const record of records) {
       if (record.life !== 'live' && record.life !== 'starting') continue
       const found = live.get(record.sessionId)
       /*
-       * The gate, and it stands in front of every general rule below. A `starting` record whose own
-       * launch is waiting for a setup session is judged by that setup and by nothing else: replaying
-       * it would start the session in a worktree whose dependencies are still being installed, which
-       * is the whole reason the setup exists, and losing it would throw away a session that has an
-       * install running behind it.
+       * The before gate, judged above, stands in front of every general rule below. A `starting`
+       * record whose own launch is waiting for a setup session is judged by that setup and by
+       * nothing else: replaying it would start the session in a worktree whose dependencies are
+       * still being installed, which is the whole reason the setup exists, and losing it would throw
+       * away a session that has an install running behind it.
        *
        * A record whose OWN runtime the Host does have falls through to the general rules on purpose.
        * The Host is the authority over what is running, so a runtime that exists anyway beats what
@@ -112,24 +128,14 @@ export class Reconciler {
        * each field and no invariant across two of them. So it falls through instead, and the rule
        * below reads it for what it is: starting, no runtime, no launch it can name. That is lost.
        */
-      if (record.life === 'starting' && record.pendingSetup
-        && record.pendingOperationId && record.pendingOperationKind && !found) {
-        const judged = Reconciler.setupJudgement(
-          record.sessionId,
-          record.pendingSetup.setupSessionId,
-          records,
-          live,
-        )
-        if (judged) changes.push(judged)
-        continue
-      }
+      if (SessionScriptDefinitions.judging('before', record) && !found) continue
       if (!found) {
         // The Host answered and does not have it. A launch that crashed between the record write and
         // the Host's answer replays the SAME operationId, which the Host itself dedupes. Both halves
         // of the pending pair are required: an id with no kind cannot say which launch to repeat, so
         // the record is lost rather than replayed as a guess.
         if (record.life === 'starting' && record.pendingOperationId && record.pendingOperationKind
-          && !Reconciler.isOrphanedSetup(record, records)) {
+          && !Reconciler.isOrphanedRun(record, records)) {
           // A Host that has refused this launch already sets the pace for the next attempt. Skipping
           // the pass rather than dropping the record is the whole point: the record stays pending and
           // is replayed the moment its wait is up, which is what a refusal that lifts deserves.
@@ -164,6 +170,9 @@ export class Reconciler {
           changes.push({ kind: 'name-codex-conversation', sessionId: record.sessionId })
       }
     }
+    // After the live loop, so a run is settled from the record a previous pass marked ended: the
+    // exit code is on it by then, and the Host still holds the dead runtime the log is read from.
+    changes.push(...ScriptRunPlanning.changes(records, new Set(live.keys())))
     const known = new Set(records.map((record) => record.sessionId))
     for (const session of listing.sessions)
       if (session.alive && !known.has(session.runtimeSessionId))
@@ -172,39 +181,56 @@ export class Reconciler {
   }
 
   /**
-   * An install is worth launching only while the session it names is still waiting for THIS one.
+   * A script run is worth launching only while its parent still names THIS one through its gate.
    *
-   * `mintSetup` and `rearmSetup` write the install record first and arm the waiting record second,
+   * `mintSetup` writes the install record first and arms the waiting record second,
    * which is the right order - it is what stops a waiting record ever pointing at a setup that is
    * already condemned - but it leaves a state on disk between the two writes: an install `starting`
    * under its own pending pair, and an owner that still names the OLD install or none at all. The
    * general rule above reads that install as a launch that never reached the Host and runs it, so
    * `pnpm install` executes in a worktree with nobody waiting on it and nobody to judge its exit
-   * code. `setupJudgement` does not catch it either: it is asked by the OWNER, and there is no owner.
+   * code. The gate loop does not catch it either: it is asked by the PARENT, and there is no parent.
+   * A starting resolver whose parent cleared its pointer is the same shape: an agent committing
+   * into a worktree that no merge waits on.
    *
-   * Three shapes answer true and they are one question asked once: no owner record at all, an owner
-   * that is no longer waiting for a setup, and an owner waiting for a DIFFERENT one. Marking the
-   * install lost rather than launching it leaves the record and everything it printed readable,
-   * which is what `lost` means everywhere else in this file.
+   * Three shapes answer true and they are one question asked once: no parent record at all, a parent
+   * that names no run through the gate, and a parent naming a DIFFERENT one. Marking the run lost
+   * rather than launching it leaves the record and everything it printed readable, which is what
+   * `lost` means everywhere else in this file.
+   *
+   * A run that is not replayable is never launched from here at all: the session that asked for it
+   * did so once, and a run started for it after a client restart would be a run nobody reads.
    */
-  private static isOrphanedSetup(
+  private static isOrphanedRun(
     record: SessionRecord,
     records: readonly SessionRecord[],
   ): boolean {
-    if (record.setupFor === undefined) return false
-    const owner = records.find((other) => other.sessionId === record.setupFor)
-    return owner?.pendingSetup?.setupSessionId !== record.sessionId
+    const link = record.scriptOf
+    if (link === undefined) return false
+    const definition = SessionScriptDefinitions.of(link)
+    if (!definition.replayable) return true
+    const parent = records.find((other) => other.sessionId === link.sessionId)
+    return parent === undefined || definition.pointerOf(parent) !== record.sessionId
   }
 
   /**
    * A pending cleanup of an SVN worktree, once nothing can still run in it: the process is gone and
-   * its handles had time to go, no finish owns the record, and no launch is on its way.
+   * its handles had time to go, no run of it can still stand in the worktree, no SVN action (running
+   * or waiting for the person) or Finish check owns the record, and no launch is on its way.
    */
-  private static cleanupDue(record: SessionRecord, now: number, clientStartedAt: number): boolean {
+  private static cleanupDue(
+    record: SessionRecord,
+    records: readonly SessionRecord[],
+    now: number,
+    clientStartedAt: number,
+  ): boolean {
     const cleanup = record.worktreeCleanup
     if (cleanup?.phase !== 'pending' || record.worktree?.kind !== 'svn') return false
-    if (record.worktreeFinish !== undefined || record.pendingOperationId !== undefined) return false
-    if (!WorktreeCleanupPacing.processGone(record) || !WorktreeCleanupPacing.settled(record, now, clientStartedAt)) return false
+    if (record.svnAction !== undefined || record.pendingOperationId !== undefined) return false
+    // Between two steps no run of the chain is live, and the next one is about to start in there.
+    if (SessionScriptDefinitions.judging('finish', record)) return false
+    if (!WorktreeCleanupPacing.processGone(record) || !WorktreeCleanupPacing.runsGone(record, records)
+      || !WorktreeCleanupPacing.settled(record, now, clientStartedAt)) return false
     return WorktreeCleanupPacing.due(cleanup, now, clientStartedAt)
   }
 
@@ -212,86 +238,6 @@ export class Reconciler {
   private static wantsCodexName(record: SessionRecord): boolean {
     return record.agent?.agentId === 'codex' && record.agent.identityLaunchId !== undefined
       && record.endedReason === undefined
-  }
-
-  /**
-   * What the setup session says about the session waiting for it, in the order of who knows more:
-   * the Host's runtime first, and only where the Host has none, the setup's own record.
-   *
-   * A dead runtime and an ended record are the same fact at two moments, the second being what
-   * survives a Host that restarted once the install was over, and both are read the same way: exit 0
-   * is success and nothing else is. A session started in a half-installed worktree is the failure
-   * this whole path exists to prevent, so anything less certain than a clean exit ends it instead.
-   */
-  /**
-   * One session that ran FOR another, judged by how it ended. Two of them exist - an install that
-   * prepares a session, and a resolver that settles its merge - and they read the same ladder in the
-   * same order for the same reasons, so it is written once. The pair of nouns is all that differs,
-   * and the messages are what a person sees, so both are named rather than derived.
-   */
-  private static childJudgement(
-    sessionId: string,
-    childId: string,
-    records: readonly SessionRecord[],
-    live: ReadonlyMap<string, RuntimeSessionInfo>,
-    words: {
-      /** How the CHILD's own row is named: "its <session> session record is gone". */
-      session: string
-      /** How the thing that ran is named: "the <actor> exited with 1". */
-      actor: string
-      succeeded: ReconcileChange['kind']
-      failed: (sessionId: string, reason: string) => ReconcileChange
-    },
-  ): ReconcileChange | null {
-    const { session, actor, failed } = words
-    const succeeded = { kind: words.succeeded, sessionId } as ReconcileChange
-    const child = records.find((record) => record.sessionId === childId)
-    if (!child) return failed(sessionId, `its ${session} session record is gone`)
-    // Asked before the exit code, because a stopped child did not finish whatever code the platform
-    // reports for a killed process - and on POSIX a signalled process reports 0, which would read
-    // here as a clean run and start the session in a half-installed worktree.
-    if (child.stopRequested) return failed(sessionId, `its ${actor} was stopped`)
-    const runtime = live.get(childId)
-    if (runtime) {
-      if (runtime.alive) return null
-      return runtime.exitCode === 0
-        ? succeeded
-        : failed(sessionId, `the ${actor} exited with ${runtime.exitCode ?? 'no exit code'}`)
-    }
-    if (child.life === 'starting') {
-      // The Host has no runtime for it either, so the child's own replay is what this pass is about:
-      // judging it now would end a session over a launch that is being repeated as we speak.
-      if (child.pendingOperationId && child.pendingOperationKind) return null
-      return failed(sessionId, `its ${session} session names no launch to replay`)
-    }
-    else if (child.life === 'ended')
-      return child.exitCode === 0
-        ? succeeded
-        : failed(sessionId, `the ${actor} ended with ${child.exitCode ?? 'no exit code'}`)
-    else if (child.life === 'live')
-      return failed(sessionId, `its ${session} session is not on the Host any more`)
-    else if (child.life === 'lost')
-      return failed(sessionId, `its ${session} session was lost`)
-    else
-      throw new Error(`Unknown session life: ${JSON.stringify(child.life)}`)
-  }
-
-  private static setupJudgement(
-    sessionId: string,
-    setupSessionId: string,
-    records: readonly SessionRecord[],
-    live: ReadonlyMap<string, RuntimeSessionInfo>,
-  ): ReconcileChange | null {
-    return Reconciler.childJudgement(sessionId, setupSessionId, records, live, {
-      session: 'setup',
-      actor: 'setup',
-      succeeded: 'setup-succeeded',
-      failed: Reconciler.setupFailed,
-    })
-  }
-
-  private static setupFailed(sessionId: string, reason: string): ReconcileChange {
-    return { kind: 'setup-failed', sessionId, reason }
   }
 
   /**
@@ -316,28 +262,5 @@ export class Reconciler {
       || declared === 'host-lost' || declared === 'spawn-failed')
       return declared
     return undefined
-  }
-
-  /**
-   * The same reading as the setup's, for the same reason: a one-shot agent run is judged by how it
-   * exited and by nothing else. Anything less certain than a clean exit leaves the merge where it
-   * is, with the manual path open, rather than continuing over a resolution nobody confirmed.
-   */
-  private static resolveJudgement(
-    sessionId: string,
-    resolveSessionId: string,
-    records: readonly SessionRecord[],
-    live: ReadonlyMap<string, RuntimeSessionInfo>,
-  ): ReconcileChange | null {
-    return Reconciler.childJudgement(sessionId, resolveSessionId, records, live, {
-      session: 'resolve',
-      actor: 'resolver',
-      succeeded: 'merge-resolve-succeeded',
-      failed: Reconciler.resolveFailed,
-    })
-  }
-
-  private static resolveFailed(sessionId: string, reason: string): ReconcileChange {
-    return { kind: 'merge-resolve-failed', sessionId, reason }
   }
 }

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { FileViewerSourceShape } from './fileViewerSourceShape'
 
 describe('app-client-ui/renderer/fileViewer/fileViewerSourceShape', () => {
-  it('reads each of the four source kinds', () => {
+  it('reads each of the five source kinds', () => {
     expect(FileViewerSourceShape.read({ kind: 'workspace', sessionId: 's1', path: 'a.md' }))
       .toEqual({ kind: 'workspace', sessionId: 's1', path: 'a.md' })
     expect(FileViewerSourceShape.read({
@@ -13,6 +13,14 @@ describe('app-client-ui/renderer/fileViewer/fileViewerSourceShape', () => {
       .toEqual({ kind: 'filesystem', sessionId: 's1', path: 'a.md' })
     expect(FileViewerSourceShape.read({ kind: 'detected', sessionId: 's1', path: 'a.md' }))
       .toEqual({ kind: 'detected', sessionId: 's1', path: 'a.md' })
+    expect(FileViewerSourceShape.read({ kind: 'scriptLog', sessionId: 's1', runId: 'r1', path: '' }))
+      .toEqual({ kind: 'scriptLog', sessionId: 's1', runId: 'r1', path: '' })
+  })
+
+  it('refuses a script log source without the run it names, which is what main proves', () => {
+    expect(FileViewerSourceShape.read({ kind: 'scriptLog', sessionId: 's1', path: '' })).toBe(null)
+    expect(FileViewerSourceShape.read({ kind: 'scriptLog', sessionId: 's1', runId: '', path: '' })).toBe(null)
+    expect(FileViewerSourceShape.read({ kind: 'scriptLog', sessionId: 's1', runId: 7, path: '' })).toBe(null)
   })
 
   it('refuses what a layout file could hold and this build cannot read', () => {

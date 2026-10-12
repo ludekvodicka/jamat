@@ -45,6 +45,7 @@ import type {
   ConfigurationTabId,
 } from '../../overlays/configuration/configurationTab.types'
 import { type FinalizeAsk, FinalizeAsks } from '../../overlays/finalize/finalizeModel'
+import { type UpdateMainAsk, UpdateMainAsks } from '../../overlays/updateMain/updateMainOverlay'
 import type { LauncherIntent } from '../../overlays/launcher/launcherIntentStore'
 import type { ActiveTerminalStore } from '../../shell/activeTerminalStore'
 import { AgentGlyph } from '../../sessions/agentGlyph'
@@ -60,26 +61,30 @@ import {
   type RemoteSessionsSections,
   RemoteSessionsTreeModel,
 } from './remoteSessionsTreeModel'
-import { FinalizeAwait } from './finalizeAwait'
+import { FinalizeAwait, type FinalizeAwaited } from './finalizeAwait'
 import { type QuestionRevealTree, SessionsQuestionReveal } from './sessionsQuestionReveal'
 import { SessionRowTooltip, useSessionRowTooltip } from './sessionRowTooltip'
 import { SessionsTreeActionButton } from './sessionsTreeActionButton'
 import {
   type SessionAction,
   type SessionGlyph,
+  type SessionLandingBadge,
+  type SessionMainUpdateBadge,
   type SessionMergeBadge,
   SessionNodeState,
   type SessionLaunchBadge,
-  type SessionSetupBadge,
 } from './sessionNodeState'
 import './sessionsTree.css'
-import { SessionsTreeContextMenu } from './sessionsTreeContextMenu'
+import { SessionsTreeContextMenu, SessionsTreeScriptsMenu } from './sessionsTreeContextMenu'
 import {
   type GroupRowFacts,
   SessionsTreeGroupItems,
   SessionsTreeGroupMenu,
 } from './sessionsTreeGroupMenu'
 import {
+  type ScriptRunNode,
+  type ScriptRunOpen,
+  type ScriptsBadgeNode,
   type SessionBadges,
   SessionsTreeModel,
   type TreeNode,
@@ -103,6 +108,8 @@ export interface SessionsTreePorts extends SavedSessionsFiltersPorts, SessionsGr
   remove(sessionId: string): Promise<IpcResult<SessionsOpResult>>
   /** The hash answers a `setup-not-acknowledged` refusal, and travels no further than one call. */
   retrySetup(sessionId: string, acknowledgeSetup?: string): Promise<IpcResult<SessionsOpResult>>
+  /** A refusal over live sessions in the main copy names them; the confirmation overlay asks again with their ids. */
+  updateMain(sessionId: string, confirmLive?: readonly string[]): Promise<IpcResult<SessionsOpResult<{ sessionId: string; actionId: string }>>>
   adoptOrphan(runtimeSessionId: string): Promise<IpcResult<SessionsOpResult>>
   /**
    * The remembered arrangement of the panel: together, by tab presentation, or by work state. It is
@@ -111,6 +118,10 @@ export interface SessionsTreePorts extends SavedSessionsFiltersPorts, SessionsGr
    */
   loadView(): Promise<IpcResult<LoadSessionsViewResult>>
   saveView(view: SessionsTabsView): Promise<IpcResult<boolean>>
+  /** The `Show as sub-tasks` choice, kept in the `ui` section of config.json for every window. */
+  loadScriptRuns(): boolean
+  subscribeScriptRuns(onChanged: (shown: boolean) => void): () => void
+  saveScriptRuns(shown: boolean): Promise<IpcResult<boolean>>
 }
 
 export interface SessionsTreeRemotePorts {
@@ -149,6 +160,8 @@ export interface SessionsTreeViewProps extends SidebarViewProps {
   onLaunch(intent: LauncherIntent): void
   /** A row is how a session already running is looked at; the tab is the only place it is visible. */
   onOpenTerminal(target: TerminalTarget, tabTitle: string, intent: SessionOpenIntent): void
+  /** The saved log of a finished run of this computer's own session, in FileViewer; main proves it. */
+  onOpenScriptLog(parentId: string, runId: string): void
   /**
    * And the way back out: a stop that the library accepted leaves nothing to look at, so whatever
    * was drawing that session goes with it. Called on the stop alone - a session that ends by itself
@@ -163,6 +176,8 @@ export interface SessionsTreeViewProps extends SidebarViewProps {
   onRerunTerminal(target: TerminalTarget): void
   /** Opens the finalize dialog with questions captured from the snapshot at click time. */
   onFinalizeAsk(ask: FinalizeAsk): void
+  /** Opens the confirmation an UPDATE needs while live sessions work in its main copy. */
+  onUpdateMainAsk(ask: UpdateMainAsk): void
   /**
    * Opens the settings card on one of its screens. A prop rather than a command, for the same reason
    * `onLaunch` beside it is one: the tab a row asks for is a renderer type, and the command catalog
@@ -220,8 +235,11 @@ interface PendingConfirm {
 
 /**
  * The row menu's whole world, captured when it opens: a short-lived menu does not follow the
- * snapshot. Two kinds, because the tree has two kinds of row - a session, and the category or
- * project above it - and never more than one menu on screen at a time.
+ * snapshot. Except for a session's script runs, read again from every new tree: a run the menu
+ * listed may have gone into its parent's history since, and an item for it would open a tab on a
+ * session that no longer exists. A menu whose row is gone closes. Two kinds, because the tree has two
+ * kinds of row - a session, and the category or project above it - and never more than one menu on
+ * screen at a time.
  */
 type TreeMenuState =
   | {
@@ -259,6 +277,9 @@ interface SessionsTreeChrome {
   groupItem(key: string, group: SessionGroup): ContextMenuSubmenu
   pending: PendingConfirm | null
   collapsed: ReadonlySet<string>
+  /** Whether finished script runs are drawn as rows under their session, for every session at once. */
+  scriptRuns: boolean
+  switchScriptRuns(shown: boolean): void
   /** The one target THIS workspace window has in front. */
   inFront: string | null
   /**
@@ -268,11 +289,12 @@ interface SessionsTreeChrome {
    */
   inFlight: ReadonlySet<string>
   /** Accepted live Finish calls waiting for their snapshot to reach an ended state. */
-  awaitingAsk: ReadonlyMap<string, TerminalTarget>
+  awaitingAsk: ReadonlyMap<string, FinalizeAwaited>
   toggle(nodeId: string): void
   request(node: SessionTreeNode, action: SessionAction): void
   launch(intent: LauncherIntent): void
   openTerminal(target: TerminalTarget, tabTitle: string, intent: SessionOpenIntent): void
+  openScriptLog(parentId: string, runId: string): void
   openMenu(node: SessionTreeNode, position: ContextMenuPosition): void
   openGroupMenu(facts: GroupRowFacts, position: ContextMenuPosition): void
   openRemoteMenu: RemoteRowMenu
@@ -298,6 +320,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     onOpenSettings,
     sessionFacts,
     onFinalizeAsk,
+    onUpdateMainAsk,
   } = props
   const { snapshot, error, refresh } = useSessionsSnapshot(snapshotStore)
   const {
@@ -333,6 +356,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
   const [filterMenu, setFilterMenu] = useState<{ position: ContextMenuPosition; savedId: string | null } | null>(null)
   const [groupingMenu, setGroupingMenu] = useState<ContextMenuPosition | null>(null)
   const [view, setView] = useState<SessionsTabsView>(SessionsViewState.defaultConst)
+  const [scriptRuns, setScriptRuns] = useState(() => ports.loadScriptRuns())
   const [filterText, setFilterText] = useState('')
   // ONE set for both trees. A project node keeps its id wherever it is drawn, because it is the same
   // project: folding it away is a statement about that project, not about the section it happens to
@@ -360,7 +384,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
   const [inFlight, setInFlight] = useState<ReadonlySet<string>>(() => new Set())
   const [awaitingAsk, changeAwaitingAsk] = useReducer(
     FinalizeAwait.reduce,
-    new Map<string, TerminalTarget>(),
+    new Map<string, FinalizeAwaited>(),
   )
   const cursors = useRef(new SessionsTreeCursors())
   const currentSnapshots = useRef({ snapshot, remoteSnapshot })
@@ -469,8 +493,8 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
   useEffect(() => {
     if (awaitingAsk.size === 0) return
     const settled: string[] = []
-    for (const [targetKey, target] of awaitingAsk) {
-      const found = FinalizeAwait.findOf(target, snapshot, remoteSnapshot)
+    for (const [targetKey, awaited] of awaitingAsk) {
+      const found = FinalizeAwait.findOf(awaited.target, snapshot, remoteSnapshot)
       if (found.state === 'unknown-yet') continue
       else if (found.state === 'gone') {
         settled.push(targetKey)
@@ -479,7 +503,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       else if (found.state === 'found') {
         if (SessionNodeState.isLive(found.info.life)) continue
         settled.push(targetKey)
-        const ask = FinalizeAwait.askOf(target, snapshot, remoteSnapshot)
+        const ask = FinalizeAwait.askOf(awaited, snapshot, remoteSnapshot)
         if (ask !== null) onFinalizeAsk(ask)
       }
       else
@@ -518,6 +542,20 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       })
       .catch((thrown: unknown) =>
         ports.reportError(`The sessions view could not be stored: ${ErrorText.of(thrown)}`))
+  }, [ports])
+
+  useEffect(() => ports.subscribeScriptRuns(setScriptRuns), [ports])
+
+  const switchScriptRuns = useCallback((shown: boolean): void => {
+    setScriptRuns(shown)
+    void ports.saveScriptRuns(shown)
+      .then((answer) => {
+        if (answer.ok) return
+        setScriptRuns(!shown)
+        ports.reportError(`The script runs choice could not be stored: ${answer.error}`)
+      })
+      .catch((thrown: unknown) =>
+        ports.reportError(`The script runs choice could not be stored: ${ErrorText.of(thrown)}`))
   }, [ports])
 
   // `onDone` runs only when the library accepted: a stop that was refused leaves a session running,
@@ -594,7 +632,39 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       })
   }, [ports])
 
-  const { onCloseTerminal, onOpenTerminal, onRerunTerminal } = props
+  /**
+   * UPDATE asks nothing on its first press; live sessions in the main copy turn the refusal into the
+   * confirmation overlay, which asks again naming them.
+   */
+  const updateMain = useCallback((key: string, sessionId: string, sessionTitle: string) => {
+    setInFlight((current) => new Set(current).add(key))
+    const settle = (failure: string | null): void => {
+      setInFlight((current) => {
+        const next = new Set(current)
+        next.delete(key)
+        return next
+      })
+      setOpError((current) => {
+        if (failure !== null) return { key, text: failure }
+        return current?.key === key ? null : current
+      })
+    }
+    void ports.updateMain(sessionId)
+      .then((answer) => {
+        const live = UpdateMainAsks.liveOf(answer)
+        settle(live === null ? IpcFailure.of(answer, 'Update main copy') : null)
+        if (live !== null) onUpdateMainAsk({ sessionId, sessionTitle, live })
+      })
+      .catch((thrown: unknown) => settle(`Update main copy failed: ${ErrorText.of(thrown)}`))
+  }, [ports, onUpdateMainAsk])
+
+  const { onCloseTerminal, onOpenTerminal, onOpenScriptLog, onRerunTerminal } = props
+  // The Finish dialog names the section a row is drawn in. Assignments are pruned to the sections
+  // they were read with, so an id missing here is a section removed since, shown by its id.
+  const sectionLabelOf = useCallback((group: SessionGroup): string => {
+    const section = sections.find((candidate) => candidate.id === group)
+    return section === undefined ? group : SessionsGroupsState.labelOf(section)
+  }, [sections])
   const perform = useCallback((
     node: SessionTreeNode,
     action: SessionAction,
@@ -613,7 +683,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     const onStopped = node.live
       ? () => {
           onCloseTerminal(node.target)
-          changeAwaitingAsk({ kind: 'accepted', targetKey, target: node.target })
+          changeAwaitingAsk({ kind: 'accepted', targetKey, awaited: { target: node.target, group: sectionLabelOf(node.group) } })
         }
       : undefined
     if (node.operationScope === 'local') {
@@ -632,6 +702,8 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
         run(key, 'Remove', () => ports.remove(sessionId), () => onCloseTerminal(node.target))
       else if (action === 'retrySetup')
         retrySetup(key, sessionId)
+      else if (action === 'updateMain')
+        updateMain(key, sessionId, node.title)
       else
         throw new Error(`Unknown local session action: ${JSON.stringify(action)}`)
     } else if (node.operationScope === 'remote') {
@@ -656,7 +728,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
         throw new Error(`Unknown remote session action: ${JSON.stringify(action)}`)
     } else
       throw new Error(`Unknown operation scope: ${JSON.stringify(node.operationScope)}`)
-  }, [ports, remotePorts, run, onCloseTerminal, onRerunTerminal])
+  }, [ports, remotePorts, run, retrySetup, updateMain, onCloseTerminal, onRerunTerminal, sectionLabelOf])
 
   // A confirmed action acts on the second click of the same button. Ended Finish returns through
   // the dialog path before confirmation; live Finish and Remove remain armed.
@@ -684,9 +756,10 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
           live,
           endedAt: found.info.endedAt ?? null,
         }
-        if (!live) {
+        // A running session with a question of its own (an SVN worktree) opens the dialog too.
+        const ask = FinalizeAsks.of(found.info, node.target, found.scope, sectionLabelOf(node.group))
+        if (!live || ask !== null) {
           setPending(null)
-          const ask = FinalizeAsks.of(found.info, node.target, found.scope)
           if (ask !== null) {
             onOpenTerminal(node.target, found.info.tabTitle, 'preview')
             onFinalizeAsk(ask)
@@ -718,7 +791,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       live: currentNode.live,
       endedAt: currentNode.endedAt,
     })
-  }, [pending, perform, onOpenTerminal, inFlight, awaitingAsk, onFinalizeAsk])
+  }, [pending, perform, onOpenTerminal, inFlight, awaitingAsk, onFinalizeAsk, sectionLabelOf])
 
   const toggle = useCallback((nodeId: string) => {
     setCollapsed((current) => SessionsTreeChoices.toggled(current, nodeId))
@@ -761,6 +834,14 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     setMenu({ kind: 'remote-computer', position, remoteEndpointId, displayName })
   }, [])
 
+  const shownMenu = useMemo(
+    () => menu === null || trees === null ? menu : SessionsTreeChoices.currentMenu(menu, trees),
+    [menu, trees],
+  )
+  useEffect(() => {
+    if (menu !== null && shownMenu === null) setMenu(null)
+  }, [menu, shownMenu])
+
   /*
    * Held stable across a tick, which is the other half of the identity `SessionsTreeModel.build`
    * keeps. `TreeRow` is memoized, so a row is re-rendered when its node OR this object moves; a
@@ -779,6 +860,8 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     }),
     pending,
     collapsed,
+    scriptRuns,
+    switchScriptRuns,
     inFront: activeTargetKey,
     inFlight,
     awaitingAsk,
@@ -786,6 +869,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     request,
     launch: onLaunch,
     openTerminal: onOpenTerminal,
+    openScriptLog: onOpenScriptLog,
     openMenu,
     openGroupMenu,
     openRemoteMenu,
@@ -799,8 +883,8 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       }).catch((error: unknown) => AppClientUiReport.error(String(error)))
     },
   }), [
-    pending, collapsed, activeTargetKey, inFlight, awaitingAsk,
-    toggle, request, onLaunch, onOpenTerminal, openMenu, openGroupMenu, openRemoteMenu,
+    pending, collapsed, scriptRuns, switchScriptRuns, activeTargetKey, inFlight, awaitingAsk,
+    toggle, request, onLaunch, onOpenTerminal, onOpenScriptLog, openMenu, openGroupMenu, openRemoteMenu,
     onOpenSettings, remotePorts, remoteSnapshot, onCloseTerminal,
     groupState.ready, groupState.saving, groupState.assign, sections,
   ])
@@ -983,9 +1067,9 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
         onClose={() => setFilterMenu(null)}
       />}
 
-      {menu !== null && (
+      {shownMenu !== null && (
         <TreeMenu
-          menu={menu}
+          menu={shownMenu}
           commands={props.commands}
           chrome={chrome}
           onClose={() => setMenu(null)}
@@ -1011,7 +1095,17 @@ function TreeMenu(props: {
         sessionId={menu.node.sessionId}
         facts={menu.facts}
         actions={menu.node.actions}
-        groupItem={props.chrome.groupItem(SessionsTreeModel.groupKeyOf(menu.node), menu.node.group)}
+        scripts={SessionsTreeScriptsMenu.itemOf(
+          menu.node.scriptRuns,
+          'local',
+          ScriptRunOpens.opener(props.chrome),
+          (runId) => props.chrome.openScriptLog(menu.node.sessionId, runId),
+          { shown: props.chrome.scriptRuns, onSwitch: props.chrome.switchScriptRuns },
+        )}
+        // A run is filed in its parent's group, so a group of its own would change nothing on screen.
+        groupItem={menu.node.scriptRun
+          ? undefined
+          : props.chrome.groupItem(SessionsTreeModel.groupKeyOf(menu.node), menu.node.group)}
         onAction={(action) => props.chrome.request(menu.node, action)}
         onClose={onClose}
       />
@@ -1460,6 +1554,9 @@ function SessionRow(props: {
     SessionsTreeActions.isArmed(node, action, chrome.pending))
   const flash = useSessionStateFlash(node.glyph)
   const tooltip = useSessionRowTooltip()
+  const finishedRuns = chrome.scriptRuns && node.target.kind === 'local'
+    ? node.scriptRuns.filter((run) => !run.row)
+    : []
   return (
     <div className="jamat-sessions__session" data-session={targetKey}>
       {/* On the row rather than on this container, so a right-click on a nested install lands on
@@ -1472,11 +1569,11 @@ function SessionRow(props: {
         data-interactive={node.interactive}
         onClick={(event) => {
           if (node.interactive && event.target instanceof Element && !event.target.closest('button'))
-            chrome.openTerminal(node.target, node.tabTitle, 'preview')
+            ScriptRunOpens.openRow(node, chrome, 'preview')
         }}
         onDoubleClick={(event) => {
           if (node.interactive && event.target instanceof Element && !event.target.closest('button'))
-            chrome.openTerminal(node.target, node.tabTitle, 'permanent')
+            ScriptRunOpens.openRow(node, chrome, 'permanent')
         }}
         onContextMenu={(event) => {
           event.preventDefault()
@@ -1505,8 +1602,8 @@ function SessionRow(props: {
           className="jamat-sessions__title"
           disabled={!node.interactive}
           {...tooltip.anchorProps}
-          onClick={() => chrome.openTerminal(node.target, node.tabTitle, 'preview')}
-          onDoubleClick={() => chrome.openTerminal(node.target, node.tabTitle, 'permanent')}
+          onClick={() => ScriptRunOpens.openRow(node, chrome, 'preview')}
+          onDoubleClick={() => ScriptRunOpens.openRow(node, chrome, 'permanent')}
         >
           {node.title}
         </button>
@@ -1517,6 +1614,7 @@ function SessionRow(props: {
             title={node.title}
             note={node.note}
             worktree={node.worktreeLine}
+            landing={node.badges.landing?.title ?? null}
           />
         )}
         <Badges badges={node.badges} />
@@ -1528,14 +1626,13 @@ function SessionRow(props: {
             endedReason={node.endedReason}
           />
         )}
-        {node.setup !== null && (
-          <span
-            className={`jamat-sessions__setup jamat-sessions__setup--${node.setup}`}
-            data-setup={node.setup}
-            title={node.setupTitle ?? undefined}
-          >
-            {SessionsTreeGlyphs.setupTextOf(node.setup)}
-          </span>
+        {node.scriptsBadge !== null && (
+          <ScriptsBadge
+            parentId={node.sessionId}
+            badge={node.scriptsBadge}
+            interactive={node.interactive}
+            chrome={chrome}
+          />
         )}
         {node.launch !== null && (
           <span
@@ -1558,6 +1655,8 @@ function SessionRow(props: {
         )}
         {node.badges.worktree !== null && <WorktreeFinishMark worktree={node.badges.worktree} />}
         {node.badges.worktree !== null && <WorktreeCleanupMark worktree={node.badges.worktree} />}
+        {node.badges.mainUpdate !== null && <MainUpdateMark update={node.badges.mainUpdate} />}
+        {node.badges.landing !== null && node.badges.mainUpdate === null && <LandingMark landing={node.badges.landing} />}
         <span className="jamat-sessions__actions">
           {inlineActions.map((action) => (
             <ActionButton
@@ -1570,12 +1669,97 @@ function SessionRow(props: {
           ))}
         </span>
       </div>
-      {node.children.length > 0 && (
+      {(node.children.length > 0 || finishedRuns.length > 0) && (
         <div className="jamat-sessions__children">
           {node.children.map((child) => <TreeRow key={child.id} node={child} chrome={chrome} />)}
+          {finishedRuns.map((run) => (
+            <ScriptRunRow key={run.runId} parentId={node.sessionId} run={run} interactive={node.interactive} chrome={chrome} />
+          ))}
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * A finished run with no record left, drawn under its session when the person asked for it. Its
+ * saved log is all that remains to open, and a log is local, so only a local row draws these.
+ */
+function ScriptRunRow(props: {
+  parentId: string
+  run: ScriptRunNode
+  interactive: boolean
+  chrome: SessionsTreeChrome
+}): React.JSX.Element {
+  const { parentId, run, chrome } = props
+  const opens = props.interactive && run.log === 'saved'
+  const paint = SessionNodeState.runPaintOf(run.state)
+  return (
+    <div className="jamat-sessions__session" data-script-run={run.runId}>
+      <div
+        className="jamat-sessions__row"
+        data-interactive={opens}
+        title={run.logDetail ?? run.summary}
+        onClick={(event) => {
+          if (opens && event.target instanceof Element && !event.target.closest('button'))
+            chrome.openScriptLog(parentId, run.runId)
+        }}
+      >
+        <span className={`jamat-sessions__glyph jamat-sessions__glyph--paint-${paint}`} data-paint={paint} aria-hidden="true">
+          <SignalGlyph glyph={SessionNodeState.runCharacterOf(run.state)} />
+        </span>
+        <button
+          type="button"
+          className="jamat-sessions__title"
+          disabled={!opens}
+          onClick={() => chrome.openScriptLog(parentId, run.runId)}
+        >
+          {run.summary}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The library's one badge about a session's scripts, in its words. A badge with a terminal or a
+ * saved log behind it is a button that opens it; the others are words only.
+ */
+function ScriptsBadge(props: {
+  parentId: string
+  badge: ScriptsBadgeNode
+  interactive: boolean
+  chrome: SessionsTreeChrome
+}): React.JSX.Element {
+  const { badge, chrome } = props
+  const className = `jamat-sessions__script jamat-sessions__script--${badge.state}`
+  const open = props.interactive ? badge.open : null
+  const logRunId = props.interactive ? badge.logRunId : null
+  if (logRunId !== null)
+    return (
+      <button
+        type="button"
+        className={className}
+        data-script-badge={badge.state}
+        title={badge.title}
+        onClick={() => chrome.openScriptLog(props.parentId, logRunId)}
+      >
+        {badge.text}
+      </button>
+    )
+  if (open === null)
+    return <span className={className} data-script-badge={badge.state} title={badge.title}>{badge.text}</span>
+  return (
+    <button
+      type="button"
+      className={className}
+      data-script-badge={badge.state}
+      title={badge.title}
+      onClick={() => chrome.openTerminal(open.target, open.tabTitle, 'preview')}
+      onDoubleClick={() => chrome.openTerminal(open.target, open.tabTitle, 'permanent')}
+    >
+      {badge.text}
+    </button>
   )
 }
 
@@ -1734,9 +1918,45 @@ function WorktreeCleanupMark(props: { worktree: WorktreeBadge }): React.JSX.Elem
   )
 }
 
-/** What a running SVN finish is doing, or else how the last one ended; nothing for neither. */
+/** A landed row: how far its main copy is behind HEAD; the title says what it lacks and what brings it in. */
+function LandingMark(props: { landing: SessionLandingBadge }): React.JSX.Element {
+  const { landing } = props
+  return (
+    <span className="jamat-sessions__landing" data-landing="true" title={landing.title} aria-label={landing.title}>
+      {landing.text}
+    </span>
+  )
+}
+
+/** An UPDATE of a main copy that runs, or that waits for the person. */
+function MainUpdateMark(props: { update: SessionMainUpdateBadge }): React.JSX.Element {
+  const { update } = props
+  return (
+    <span
+      className={`jamat-sessions__finish jamat-sessions__finish--${update.waiting ? 'needs' : 'updating'}`}
+      data-main-update={update.waiting ? 'waiting' : 'running'}
+      title={update.title}
+      aria-label={update.title}
+    >
+      {update.waiting ? 'update waits for you' : 'updating main…'}
+    </span>
+  )
+}
+
+/** What a running SVN finish is doing, why one waits for you, or else how the last one ended. */
 function WorktreeFinishMark(props: { worktree: WorktreeBadge }): React.JSX.Element | null {
-  const { finish, outcome } = props.worktree
+  const { finish, outcome, needs } = props.worktree
+  if (needs !== null)
+    return (
+      <span
+        className="jamat-sessions__finish jamat-sessions__finish--needs"
+        data-finish-needs="true"
+        title={needs.title}
+        aria-label={needs.title}
+      >
+        finish waits for you
+      </span>
+    )
   if (finish !== null)
     return (
       <span
@@ -1848,6 +2068,32 @@ class SessionsTreeChoices {
     return next
   }
 
+  /** The open menu with the script runs its session's row has now, or null when that row is gone. */
+  static currentMenu(menu: TreeMenuState, trees: SessionsTrees): TreeMenuState | null {
+    if (menu.kind === 'session' || menu.kind === 'remote-session') {
+      const node = SessionsTreeChoices.sessionNodeOf(trees, TerminalTargetCodec.key(menu.node.target))
+      if (node === null) return null
+      return node.scriptRuns === menu.node.scriptRuns ? menu : { ...menu, node: { ...menu.node, scriptRuns: node.scriptRuns } }
+    } else if (menu.kind === 'group' || menu.kind === 'remote-computer') return menu
+    else throw new Error(`Unknown tree menu: ${JSON.stringify(menu)}`)
+  }
+
+  private static sessionNodeOf(trees: SessionsTrees, targetKey: string): SessionTreeNode | null {
+    const find = (nodes: readonly TreeNode[]): SessionTreeNode | null => {
+      for (const node of nodes) {
+        if (node.kind === 'session' && TerminalTargetCodec.key(node.target) === targetKey) return node
+        const found = find(node.children)
+        if (found !== null) return found
+      }
+      return null
+    }
+    for (const tree of SessionsTreeChoices.revealTreesOf(trees)) {
+      const found = find(tree.nodes)
+      if (found !== null) return found
+    }
+    return null
+  }
+
   /**
    * Every tree on screen, each with the groups standing above it. Which trees exist is the view's
    * choice, and the remote sections hang two group rows deeper than the local ones.
@@ -1907,7 +2153,7 @@ class SessionsTreeActions {
     const targetKey = TerminalTargetCodec.key(node.target)
     if (pending?.targetKey === targetKey && pending.action === 'remove') return ['remove']
     return node.actions.filter((action) => {
-      if (action === 'finalize' || action === 'close') return true
+      if (action === 'finalize' || action === 'close' || action === 'updateMain') return true
       else if (action === 'remove')
         return !node.live && !node.actions.includes('finalize')
           && (node.outcome === 'finished' || node.badges.completed)
@@ -1919,6 +2165,21 @@ class SessionsTreeActions {
 
   static confirmLabelOf(action: SessionAction, label: string | null): string {
     return `${label ?? SessionNodeState.actionLabelOf(action)}?`
+  }
+}
+
+class ScriptRunOpens {
+  /**
+   * A session whose own launch waits on a run has nothing on its own terminal yet, so the row opens
+   * the run's, in the mode the row's own terminal would have taken.
+   */
+  static openRow(node: SessionTreeNode, chrome: SessionsTreeChrome, intent: SessionOpenIntent): void {
+    const opened = node.waitingOn ?? { target: node.target, tabTitle: node.tabTitle }
+    chrome.openTerminal(opened.target, opened.tabTitle, intent)
+  }
+
+  static opener(chrome: SessionsTreeChrome): (open: ScriptRunOpen) => void {
+    return (open) => chrome.openTerminal(open.target, open.tabTitle, 'preview')
   }
 }
 
@@ -1980,7 +2241,10 @@ class RemoteSessionMenu {
           : SessionNodeState.actionLabelOf(action),
         onSelect: () => chrome.request(node, action),
       })
-    items.push({ kind: 'separator', key: 'tree-groups' }, chrome.groupItem(SessionsTreeModel.groupKeyOf(node), node.group))
+    const scripts = SessionsTreeScriptsMenu.itemOf(node.scriptRuns, 'remote', ScriptRunOpens.opener(chrome), null, null)
+    if (scripts !== null) items.push(scripts)
+    if (!node.scriptRun)
+      items.push({ kind: 'separator', key: 'tree-groups' }, chrome.groupItem(SessionsTreeModel.groupKeyOf(node), node.group))
     return items
   }
 }
@@ -2071,7 +2335,7 @@ class SessionsTreeGlyphs {
       throw new Error(`Unknown cleanup phase: ${JSON.stringify(phase satisfies never)}`)
   }
 
-  /** One word, the same shape the install badge beside it uses. */
+  /** One word, the same shape the scripts badge beside it uses. */
   static mergeTextOf(merge: SessionMergeBadge): string {
     if (merge === 'merging') return 'merging…'
     else if (merge === 'conflict') return 'conflict'
@@ -2089,16 +2353,5 @@ class SessionsTreeGlyphs {
     if (launch === 'waiting') return 'waiting for the host'
     else
       throw new Error(`Unknown session launch badge: ${JSON.stringify(launch)}`)
-  }
-
-  static setupTextOf(setup: SessionSetupBadge): string {
-    if (setup === 'installing') return 'installing…'
-    else if (setup === 'install-failed') return 'install failed'
-    // One character and not two words: a skipped setup is the steady state of every project with no
-    // known family, so it sat on most rows and crowded out the marks that change. The words it lost
-    // are in the title, which is why `setupTitleOf` says what happened as well as why.
-    else if (setup === 'install-skipped') return '∅'
-    else
-      throw new Error(`Unknown session setup badge: ${JSON.stringify(setup)}`)
   }
 }

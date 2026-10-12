@@ -1,7 +1,7 @@
 import { JsonDocumentStore, type JsonDocumentReading } from '../../../lib-orchestrator/shared/jsonDocumentStore'
 import { JsonShape } from '../../../lib-orchestrator/shared/jsonShape'
 import { PathCompare } from '../../../lib-orchestrator/shared/pathCompare'
-import { VersioningCommitLimits, type VersioningCommitDraftDto } from '../../shared/versioningCommit'
+import { VersioningCommitLimits, VersioningCommitPaths, type VersioningCommitDraftDto } from '../../shared/versioningCommit'
 
 type CommitScope = Pick<VersioningCommitDraftDto, 'sessionId' | 'vcs' | 'scopeRoot' | 'paths'>
 type CommitMessage = Pick<VersioningCommitDraftDto, 'message' | 'editedByPerson' | 'proposedByAgent'>
@@ -66,6 +66,8 @@ export class VersioningCommitMessageStore extends JsonDocumentStore<MessageDocum
 
   private static key(scope: CommitScope): string {
     return JSON.stringify([scope.sessionId, scope.vcs, PathCompare.comparable(scope.scopeRoot),
-      scope.paths === undefined ? null : [...new Set(scope.paths.map(PathCompare.comparable))].sort()])
+      // A node-only directory keys apart from the same directory with its subtree; files keep their old key.
+      scope.paths === undefined ? null : [...new Set(scope.paths.map((path) => `${PathCompare.comparable(VersioningCommitPaths.pathOf(path))}${
+        VersioningCommitPaths.nodeOnly(path) ? '\u0000empty' : ''}`))].sort()])
   }
 }

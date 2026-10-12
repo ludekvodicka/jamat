@@ -28,6 +28,9 @@ export class RemoteControlConst {
     'terminal.send',
   ] as const
   static readonly optionalOperations = [
+    'system.operations',
+    'system.calls',
+    'system.events',
     'tabs.commitStatus',
     'tabs.cancelCommit',
     'tabs.openFile',
@@ -44,6 +47,40 @@ export class RemoteControlConst {
     'sessions.discardWorktree',
     'sessions.retrySetup',
     'sessions.cleanupWorktree',
+    'sessions.fork',
+    'sessions.restart',
+    'sessions.setDetails',
+    'sessions.adoptOrphan',
+    'sessions.reference',
+    'sessions.historyReferences',
+    'sessions.openHistory',
+    'sessions.nextNumber',
+    'sessions.allocateNumber',
+    'host.status',
+    'host.ping',
+    'host.start',
+    'host.restart',
+    'host.stop',
+    'projects.config',
+    'projects.saveConfig',
+    'projects.categories',
+    'projects.listing',
+    'projects.sessions',
+    'projects.create',
+    'projects.rename',
+    'projects.movePrefix',
+    'projects.archive',
+    'projects.deletePreview',
+    'projects.delete',
+    'sessions.scripts',
+    'sessions.runScript',
+    'sessions.finishWorktree',
+    'sessions.updateMain',
+    'sessions.worktreeReview',
+    'sessions.worktreeResults',
+    'sessions.notifies',
+    'sessions.acknowledgeWorktreeResult',
+    'sessions.proposeCommit',
   ] as const
   static readonly operations = RemoteControlConst.descriptorOperations
   static readonly mutatingOperations = [
@@ -55,6 +92,22 @@ export class RemoteControlConst {
     'sessions.discardWorktree',
     'sessions.retrySetup',
     'sessions.cleanupWorktree',
+    'sessions.fork',
+    'sessions.restart',
+    'sessions.setDetails',
+    'sessions.adoptOrphan',
+    'sessions.openHistory',
+    'sessions.allocateNumber',
+    'host.start',
+    'host.restart',
+    'host.stop',
+    'projects.saveConfig',
+    'projects.create',
+    'projects.rename',
+    'projects.movePrefix',
+    'projects.archive',
+    'projects.deletePreview',
+    'projects.delete',
     'sessions.color',
     'sessions.group',
     'sessions.setNote',
@@ -65,6 +118,12 @@ export class RemoteControlConst {
     'tabs.close',
     'terminal.send',
     'terminal.deliver',
+    'sessions.runScript',
+    'sessions.finishWorktree',
+    'sessions.updateMain',
+    'sessions.worktreeReview',
+    'sessions.acknowledgeWorktreeResult',
+    'sessions.proposeCommit',
   ] as const
   static readonly socketOperations = [
     'events.subscribe',
@@ -110,8 +169,18 @@ export class RemoteControlCapabilities {
   static of(descriptor: {
     operations: readonly string[]
     optionalOperations?: readonly string[]
+    registryOperations?: readonly string[]
   }): readonly string[] {
-    return [...descriptor.operations, ...(descriptor.optionalOperations ?? [])]
+    return [...descriptor.operations, ...(descriptor.optionalOperations ?? []), ...(descriptor.registryOperations ?? [])]
+  }
+
+  /**
+   * The optional operations of a list that this build knows, in order. A newer client may offer more;
+   * this build cannot call them, so they are dropped rather than refusing the client that offers them.
+   */
+  static known(names: readonly string[]): string[] {
+    const known: readonly string[] = RemoteControlConst.optionalOperations
+    return names.filter((name) => known.includes(name))
   }
 }
 

@@ -7,6 +7,7 @@ import type {
   SessionGroupsSettingsEffect,
   SessionGroupsSettingsInput,
 } from './sessionGroupsSettingsModel'
+import { AppControl } from '../../../../ipc/appControl'
 
 export type SessionGroupsSettingsPorts = SettingsCardPorts<SessionGroupsSettingsInput>
 
@@ -18,7 +19,7 @@ export class SessionGroupsSettingsEffects {
   ): Promise<void> {
     if (effect.effect === 'load')
       return SettingsCardEffects.load(
-        () => window.appClient.sessionGroups.getGroups(),
+        () => AppControl.value('sessionGroups.list', {}),
         ports,
         {
           loaded: (value: SessionGroupsList) => ({ input: 'loaded' as const, value }),
@@ -28,7 +29,7 @@ export class SessionGroupsSettingsEffects {
     else if (effect.effect === 'save')
       return SettingsCardEffects.save(
         effect.value,
-        (value: SessionGroupsList) => window.appClient.sessionGroups.saveGroups(value),
+        (value: SessionGroupsList) => AppControl.library('sessionGroups.save', { groups: value }),
         ports,
         {
           failed: (detail: string) => ({ input: 'failed' as const, detail }),

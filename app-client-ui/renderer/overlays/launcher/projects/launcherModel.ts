@@ -5,7 +5,7 @@ import type {
   ProjectListResult,
   VirtualFolderDef,
 } from '../../../../../lib-orchestrator/projectManager/projectManagerApi.types'
-import type { AppClientUiBridge } from '../../../../shared/appClientUiIpc'
+import type { AppControlRequest } from '../../../../shared/appOperationMap'
 import type { LauncherBinding } from '../launcherBinding'
 import { LauncherLabels } from '../launcherLabels'
 import type { LauncherRemoteTarget } from '../launcherTarget'
@@ -27,7 +27,7 @@ export type LauncherRow =
    */
   | { kind: 'groupRoot'; categoryId: string; name: string; path: string }
 
-export type LauncherSort = Parameters<AppClientUiBridge['projects']['list']>[1]
+export type LauncherSort = AppControlRequest<'projects.listing'>['sort']
 
 export interface LauncherSearchResults {
   current: readonly Extract<LauncherRow, { kind: 'project' }>[]

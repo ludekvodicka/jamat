@@ -57,6 +57,7 @@ class SmokeRemoteControl extends SmokeHarness {
   private static readonly controllerIdConst = 'jamat-remote-control-smoke'
   private static readonly waitMillisecondsConst = 30_000
   private static readonly markerConst = 'smoke-remote-control-marker'
+  private static readonly scriptMarkerConst = 'smoke-script-run-marker'
   private static readonly forkSessionIdConst = 'smoke-fork-session'
   private static readonly nativeSessionIdConst = 'smoke-native'
   private static readonly repoRootConst = join(import.meta.dirname, '..', '..')
@@ -225,7 +226,9 @@ class SmokeRemoteControl extends SmokeHarness {
     const panelId = await this.checkTabs(sessionId)
     await this.checkTerminal(sessionId)
     await this.checkDeliver(sessionId)
+    await this.checkScripts(sessionId)
     await this.checkFinalize(sessionId)
+    await this.checkRegistry(sessionId)
     this.check('the fake renderer tab was closed', !this.tabs.some((tab) => tab.panelId === panelId))
 
     await this.server.stop()
@@ -735,6 +738,50 @@ class SmokeRemoteControl extends SmokeHarness {
       && data.typed === false)
   }
 
+  /**
+   * An inner run end to end through the shipped wrapper: started for a live session, judged by the
+   * real Host's exit code, settled into its parent's history with its log, and read back. Each command
+   * lasts about a second, because the Host refuses a process that ends before it proved its start.
+   */
+  private async checkScripts(sessionId: string): Promise<void> {
+    const windows = process.platform === 'win32'
+    const pause = windows ? 'ping -n 2 127.0.0.1 >nul' : 'sleep 1'
+    const then = windows ? ' & ' : '; '
+    const succeeded = await this.cli('sessions', 'scripts', 'run', '--session-id', sessionId,
+      '--command', `${pause}${then}echo ${SmokeRemoteControl.scriptMarkerConst}`,
+      '--title', 'smoke check', '--wait', '--timeout-ms', '25000', '--operation-id', 'smoke-script-run-1')
+    const verdict = CliClient.object(succeeded.value, 'sessions scripts run --wait')
+    const log = CliClient.object(verdict.log, 'script run log')
+    this.check('a requested run waited for through the wrapper succeeded with exit 0 and its untrusted log',
+      succeeded.operation === 'sessions.runScript' && verdict.state === 'succeeded' && verdict.exitCode === 0
+      && verdict.logContentUntrusted === true && String(log.text).includes(SmokeRemoteControl.scriptMarkerConst))
+    const runId = CliClient.text(verdict.runId, 'script run id')
+
+    const failed = await this.cliFailure(7, 'sessions', 'scripts', 'run', '--session-id', sessionId,
+      '--command', `${pause}${then}exit ${windows ? '/b 3' : '3'}`,
+      '--wait', '--timeout-ms', '25000', '--operation-id', 'smoke-script-run-2')
+    const failure = CliClient.object(failed.error?.data, 'failed script run data')
+    const failedRun = CliClient.object(failure.run, 'failed script run')
+    this.check('a requested run that exited 3 answers operation-failed with the run',
+      failed.error?.code === 'operation-failed' && failedRun.state === 'failed' && failedRun.exitCode === 3)
+
+    const listed = CliClient.valueOf(await this.cli('sessions', 'scripts', '--session-id', sessionId), 'sessions.scripts')
+    const runs = CliClient.array(listed.runs, 'script runs').map((run) => CliClient.object(run, 'script run'))
+    this.check('sessions scripts lists both runs newest first, the failed one still a row',
+      runs.length === 2 && runs[0]?.runId === failedRun.runId && runs[0]?.row === true
+      && runs[1]?.runId === runId && runs[1]?.state === 'succeeded')
+    const read = CliClient.valueOf(await this.cli('sessions', 'scripts', '--session-id', sessionId, '--run-id', runId),
+      'sessions.scripts')
+    this.check('sessions scripts --run-id reads the saved log as untrusted text',
+      read.logContentUntrusted === true
+      && String(CliClient.object(read.log, 'saved log').text).includes(SmokeRemoteControl.scriptMarkerConst))
+    const unknown = await this.cliFailure(3, 'sessions', 'scripts', '--session-id', sessionId, '--run-id', 'no-such-run')
+    this.check('an unknown run is not-found', unknown.error?.code === 'not-found')
+    // The wrapper runs with no JAMAT_V3_* variable, as a process outside any Jamat terminal does.
+    const self = await this.cliFailure(2, 'sessions', 'scripts', 'run', '--self', '--command', 'echo never')
+    this.check('--self outside a Jamat terminal is refused as invalid-request', self.error?.code === 'invalid-request')
+  }
+
   /** `--expect stop` stops a running session, and refuses the press after it, whose step is no stop. */
   private async checkFinalize(sessionId: string): Promise<void> {
     await this.cli(
@@ -759,8 +806,8 @@ class SmokeRemoteControl extends SmokeHarness {
       again.error?.code === 'conflict' && CliClient.object(again.error.data, 'finalize refusal').sourceCode === 'live-refused')
     const worktree = await this.cli('sessions', 'worktree', '--session-id', sessionId)
     const state = CliClient.object(worktree.value, 'sessions worktree')
-    this.check('sessions worktree reads a session without a worktree as nulls',
-      state.sessionId === sessionId && state.worktree === null && state.retired === null && state.cleanup === null)
+    this.check('sessions worktree reads a session without a worktree as nulls with its receipts',
+      state.sessionId === sessionId && state.worktree === null && state.retired === null && state.cleanup === null && Array.isArray(state.receipts))
   }
 
   private control(identity: RemoteControlSystemIdentity): RemoteControl {
@@ -778,8 +825,18 @@ class SmokeRemoteControl extends SmokeHarness {
             available: true,
           },
         }),
+      getConfig: () => Promise.resolve({ ok: true, value: [] }),
+      saveConfig: () => Promise.resolve({ ok: false, code: 'catalog-latched', detail: 'this smoke keeps no catalog' }),
+      listProjectSessions: () => Promise.resolve({ ok: true, value: { claude: [], codex: [], merged: [] } }),
+      createProject: () => Promise.resolve({ ok: false, code: 'category-not-found', detail: 'this smoke keeps no catalog' }),
+      renameProject: () => Promise.resolve({ ok: false, code: 'category-not-found', detail: 'this smoke keeps no catalog' }),
+      moveProjectPrefix: () => Promise.resolve({ ok: false, code: 'category-not-found', detail: 'this smoke keeps no catalog' }),
+      archiveProject: () => Promise.resolve({ ok: false, code: 'category-not-found', detail: 'this smoke keeps no catalog' }),
+      previewDelete: () => Promise.resolve({ ok: false, code: 'category-not-found', detail: 'this smoke keeps no catalog' }),
+      executeDelete: () => Promise.resolve({ ok: false, code: 'stale-preview', detail: 'this smoke keeps no catalog' }),
       },
       sessions: this.sessionPort(),
+      host: this.manager,
       groups: this.groupPort(),
       tabs: this.tabPort(),
       terminal: this.terminal,
@@ -816,9 +873,26 @@ class SmokeRemoteControl extends SmokeHarness {
       finalizeSession: (sessionId, options) => this.manager.finalizeSession(sessionId, options),
       removeSession: (sessionId) => this.manager.removeSession(sessionId),
       discardWorktree: (sessionId) => this.manager.discardWorktree(sessionId),
+      finishWorktreeSession: (sessionId, press) => this.manager.finishWorktreeSession(sessionId, press),
+      updateMain: (sessionId, confirmLive, requestedBy) => this.manager.updateMain(sessionId, confirmLive, requestedBy),
+      openActionReview: (runId) => this.manager.openActionReview(runId),
+      worktreeResults: (filter) => this.manager.worktreeResults(filter),
+      notifies: (filter) => this.manager.notifies(filter),
+      acknowledgeWorktreeResult: (actionId) => this.manager.acknowledgeWorktreeResult(actionId),
+      proposeCommit: (sessionId, message) => this.manager.proposeCommit(sessionId, message),
       retrySetup: (sessionId, acknowledgeSetup) => this.manager.retrySetup(sessionId, acknowledgeSetup),
       requestWorktreeCleanup: (sessionId) => this.manager.requestWorktreeCleanup(sessionId),
+      forkSession: (sessionId, options) => this.manager.forkSession(sessionId, options),
+      restartSession: (sessionId) => this.manager.restartSession(sessionId),
+      adoptOrphan: (runtimeSessionId) => this.manager.adoptOrphan(runtimeSessionId),
+      sessionReference: (sessionId) => this.manager.sessionReference(sessionId),
+      historyReferences: (directory) => this.manager.historyReferences(directory),
+      openHistorySession: (spec) => this.manager.openHistorySession(spec),
+      nextSessionNumber: (projectPath) => this.manager.nextSessionNumber(projectPath),
+      allocateSessionNumber: (projectPath) => this.manager.allocateSessionNumber(projectPath),
       worktreeOf: (sessionId) => this.manager.worktreeOf(sessionId),
+      runScript: (parentId, request) => this.manager.runScript(parentId, request),
+      scriptsOf: (parentId, runId) => this.manager.scriptsOf(parentId, runId),
       setSessionColor: (sessionId, color) => this.manager.setSessionColor(sessionId, color),
       setSessionDetails: (sessionId, update) => this.manager.setSessionDetails(sessionId, update),
     }
@@ -839,6 +913,7 @@ class SmokeRemoteControl extends SmokeHarness {
           this.groupAssigns.push({ key, group })
           return true
         },
+        inheritSessionGroup: () => false,
       },
       () => {},
     )
@@ -1019,6 +1094,36 @@ class SmokeRemoteControl extends SmokeHarness {
    * sitting next to a wait somebody has to notice.
    */
   /** The same pair as the base's, and it names its own failure: these run over a wire. */
+  /**
+   * The registry as a script meets it: the catalog names every operation with its schema, a call by
+   * name reaches the same operation the window uses, and the activity log reports the write.
+   */
+  private async checkRegistry(sessionId: string): Promise<void> {
+    const catalog = await this.cli('operations', 'list')
+    const operations = (CliClient.object(catalog.value, 'operations list').operations ?? []) as { name: string; kind: string }[]
+    this.check('the catalog lists the protocol and its schemas, writes marked as writes',
+      operations.some((entry) => entry.name === 'sessions.reference' && entry.kind === 'read')
+      && operations.some((entry) => entry.name === 'sessions.fork' && entry.kind === 'write')
+      && operations.some((entry) => entry.name === 'system.events'))
+    const before = CliClient.object((await this.cli('events', 'poll')).value, 'events poll').last as number
+    const reference = await this.cli('call', '--operation', 'sessions.reference',
+      '--body', JSON.stringify({ session: { kind: 'sessionId', sessionId } }))
+    this.check('a call by name reads the session reference the window copies',
+      typeof CliClient.object(reference.value, 'sessions.reference').text === 'string')
+    await this.cli('call', '--operation', 'sessions.setDetails',
+      '--body', JSON.stringify({ session: { kind: 'sessionId', sessionId }, update: { note: 'registry smoke' } }))
+    const events = CliClient.object((await this.cli('events', 'poll', '--after', String(before), '--wait-ms', '2000')).value, 'events poll')
+    const entries = (events.entries ?? []) as { kind: string; data: { operation?: string; callerKind?: string } }[]
+    this.check('the activity log reports the write with its operation and caller',
+      entries.some((entry) => entry.kind === 'operation.completed'
+        && entry.data.operation === 'sessions.setDetails' && entry.data.callerKind === 'local-cli'))
+    const calls = (CliClient.object((await this.cli('calls', 'list')).value, 'calls list').calls ?? []) as { operation: string; ok: boolean }[]
+    this.check('the call log holds the calls of this run', calls.some((call) => call.operation === 'sessions.setDetails' && call.ok))
+    const refused = await this.cliFailure(2, 'call', '--operation', 'sessions.setDetails', '--body', '{"update":{}}')
+    this.check('a body the schema refuses names the field and runs nothing',
+      refused.error?.code === 'invalid-request' && String(refused.error.detail).includes('session'))
+  }
+
   private async checkWaiting(
     description: string,
     condition: () => boolean,

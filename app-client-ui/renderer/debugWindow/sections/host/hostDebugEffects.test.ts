@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import type { HostPingResult } from '../../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type { AppClientUiBridge, IpcResult } from '../../../../shared/appClientUiIpc'
+import { ControlBridgeFixture } from '../../../ipc/fixtures/controlBridgeFixture'
 import { HostDebugEffects } from './hostDebugEffects'
 import type { HostDebugEffect, HostDebugInput } from './hostDebugModel'
 
@@ -30,17 +31,17 @@ describe('app-client-ui/renderer/debugWindow/sections/host/hostDebugEffects', ()
   }
 
   function installBridge(answers: Partial<Bridge>): HostDebugInput[] {
-    const bridge = {
-      debug: {
-        pingHost: () => Promise.resolve(answers.ping ?? { ok: true as const, value: pingedConst }),
-      },
-      sessions: {
-        startHost: () =>
-          Promise.resolve(answers.startHost ?? { ok: true as const, value: { ok: true } }),
-      },
-    }
-    ;(window as unknown as { appClient: unknown }).appClient = bridge as unknown as
-      Pick<AppClientUiBridge, 'debug' | 'sessions'>
+    const control = new ControlBridgeFixture()
+    const ping = answers.ping ?? { ok: true as const, value: pingedConst }
+    if (ping.ok) control.on('host.ping', { ok: true, value: ping.value })
+    else control.failChannel('host.ping', ping.error)
+    const start = answers.startHost ?? { ok: true as const, value: { ok: true } }
+    if (!start.ok) control.failChannel('host.start', start.error)
+    else control.on('host.start', start.value.ok
+      ? ControlBridgeFixture.done()
+      : ControlBridgeFixture.library({ ok: false, code: start.value.code ?? '', detail: start.value.detail ?? '' }))
+    ;(window as unknown as { appClient: unknown }).appClient = { control: control.bridge() } as unknown as
+      Pick<AppClientUiBridge, 'control'>
     return []
   }
 

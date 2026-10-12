@@ -1,6 +1,7 @@
 import type { IpcMainInvokeEvent, WebContents } from 'electron'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { RemoteControlRequestUnion } from '../../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import type { RemoteControlPeerApplicationMessage } from '../../../lib-orchestrator/remoteControl/remoteControlPeerApi.types'
 import type { AppClientUiIpcInvokeMap } from '../../shared/appClientUiIpc'
 import type { RemoteControlInboundRegistry } from './remoteControlInboundRegistry'
@@ -119,6 +120,22 @@ describe('app-client-ui/app/remoteControl/serviceRemoteControlIpc', () => {
       { operation: 'sessions.create', operationId: 'operation-id' },
       { operation: 'sessions.reopen', body: { session: { sessionId: 'session-a' } } },
       { operation: 'sessions.finalize', body: { session: { sessionId: 'session-a' } } },
+    ])
+  })
+
+  /** An older target refuses an unknown key with the whole request, so a press nobody agreed on sends none. */
+  it('carries the agreed hash on a finalize only when the overlay sends one', async () => {
+    const sender = new ServiceRemoteControlIpcTestSender()
+
+    await ServiceRemoteControlIpcTest.invoke('remote:sessions-finalize', sender, 'endpoint-a', 'session-a')
+    await ServiceRemoteControlIpcTest.invoke(
+      'remote:sessions-finalize', sender, 'endpoint-a', 'session-a', 'hash-1')
+
+    const bodies = calls.filter((call) => call.method === 'execute')
+      .map((call) => (call.args[1] as RemoteControlRequestUnion).body)
+    expect(bodies).toEqual([
+      { session: { kind: 'sessionId', sessionId: 'session-a' } },
+      { session: { kind: 'sessionId', sessionId: 'session-a' }, acknowledgeSetup: 'hash-1' },
     ])
   })
 
@@ -257,7 +274,7 @@ class ServiceRemoteControlIpcTest {
         calls.push({ method: 'sessionReference', args })
         return { ok: true, value: { text: `AppJamatV3 session remote ${String(args[1])}` } }
       },
-      isSessionSelected: () => true,
+      admitsTerminal: () => true,
       selectSession: () => ({ ok: true, value: undefined }),
       disconnectSessions: (...args: unknown[]) => { calls.push({ method: 'disconnectSessions', args }) },
       attachTerminal: (...args: unknown[]) => {

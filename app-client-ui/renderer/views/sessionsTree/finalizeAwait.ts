@@ -17,18 +17,24 @@ type FinalizeAwaitFinding =
   | { state: 'gone' }
   | { state: 'found'; info: SessionInfo; scope: FinalizeScope }
 
+/** A live Finish the library accepted, and the label of the tree section its row was in when it was pressed. */
+export interface FinalizeAwaited {
+  target: TerminalTarget
+  group: string
+}
+
 type FinalizeAwaitAction =
-  | { kind: 'accepted'; targetKey: string; target: TerminalTarget }
+  | { kind: 'accepted'; targetKey: string; awaited: FinalizeAwaited }
   | { kind: 'settled'; targetKeys: readonly string[] }
 
 /** Looks up one awaited target without turning an unread snapshot into a disappearance. */
 export class FinalizeAwait {
   static reduce(
-    current: ReadonlyMap<string, TerminalTarget>,
+    current: ReadonlyMap<string, FinalizeAwaited>,
     action: FinalizeAwaitAction,
-  ): ReadonlyMap<string, TerminalTarget> {
+  ): ReadonlyMap<string, FinalizeAwaited> {
     if (action.kind === 'accepted')
-      return new Map(current).set(action.targetKey, action.target)
+      return new Map(current).set(action.targetKey, action.awaited)
     else if (action.kind === 'settled') {
       const next = new Map(current)
       for (const targetKey of action.targetKeys) next.delete(targetKey)
@@ -70,13 +76,13 @@ export class FinalizeAwait {
   }
 
   static askOf(
-    target: TerminalTarget,
+    awaited: FinalizeAwaited,
     snapshot: SessionsSnapshot | null,
     remoteSnapshot: RemoteConnectionsSnapshot | null,
   ): FinalizeAsk | null {
-    const found = FinalizeAwait.findOf(target, snapshot, remoteSnapshot)
+    const found = FinalizeAwait.findOf(awaited.target, snapshot, remoteSnapshot)
     if (found.state === 'unknown-yet' || found.state === 'gone') return null
-    else if (found.state === 'found') return FinalizeAsks.of(found.info, target, found.scope)
+    else if (found.state === 'found') return FinalizeAsks.of(found.info, awaited.target, found.scope, awaited.group)
     else
       throw new Error(`Unknown finalize await state: ${JSON.stringify(found)}`)
   }

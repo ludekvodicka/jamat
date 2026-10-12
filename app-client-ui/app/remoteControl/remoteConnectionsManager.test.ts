@@ -351,6 +351,50 @@ describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
     harness.manager.stop()
   })
 
+  it('admits the terminal of a script run through its selected parent, and its disconnect detaches it', async () => {
+    const harness = new RemoteConnectionsManagerTest()
+    harness.manager.start()
+    await harness.manager.connectComputer('dialog', 'target-endpoint')
+    expect(harness.manager.admitsTerminal('target-endpoint', 'run-a')).toBe(false)
+    expect(harness.manager.admitsTerminal('target-endpoint', 'session-a')).toBe(false)
+    await harness.manager.selectSession('target-endpoint', 'session-a')
+    expect(harness.manager.admitsTerminal('target-endpoint', 'session-a')).toBe(true)
+    expect(harness.manager.admitsTerminal('target-endpoint', 'run-a')).toBe(true)
+    expect(harness.manager.admitsTerminal('target-endpoint', 'run-unknown')).toBe(false)
+    expect(harness.manager.admitsTerminal('endpoint-gone', 'run-a')).toBe(false)
+    expect(await harness.manager.attachTerminal('target-endpoint', 'run', { sessionId: 'run-a', size: null }, () => {}))
+      .toMatchObject({ ok: true })
+    await harness.manager.disconnectSessions('target-endpoint', ['session-a'])
+    await harness.settle()
+    expect(harness.manager.admitsTerminal('target-endpoint', 'run-a')).toBe(false)
+    expect(harness.transports[0]?.detachRequests).toBe(1)
+    harness.manager.stop()
+  })
+
+  it('detaches a script run terminal with its parent after the peer collapsed the run', async () => {
+    const harness = new RemoteConnectionsManagerTest()
+    harness.manager.start()
+    await harness.manager.connectComputer('dialog', 'target-endpoint')
+    await harness.manager.selectSession('target-endpoint', 'session-a')
+    const transport = harness.transports[0]
+    if (!transport) throw new Error('Transport was not created')
+    const frames: TerminalFrame[] = []
+    await harness.manager.attachTerminal('target-endpoint', 'run', { sessionId: 'run-a', size: null }, (frame) => frames.push(frame))
+    const listed = transport.sessionLists
+    transport.runCollapsed = true
+    transport.emitEvent(5)
+    await harness.waitUntil(() => transport.sessionLists > listed)
+    await harness.settle()
+    expect(harness.manager.admitsTerminal('target-endpoint', 'run-a')).toBe(false)
+
+    await harness.manager.disconnectSessions('target-endpoint', ['session-a'])
+    await harness.settle()
+
+    expect(frames.at(-1)).toMatchObject({ type: 'terminal.status', status: 'lost' })
+    expect(transport.detachRequests).toBe(1)
+    harness.manager.stop()
+  })
+
   it('waits for a reconciled peer snapshot before reattaching after a restart', async () => {
     const harness = new RemoteConnectionsManagerTest()
     harness.manager.start()
@@ -578,6 +622,8 @@ class RemoteConnectionsManagerTestTransport implements RemoteControlPeerTranspor
   hellos = 0
   poisonSnapshot = false
   reconciled = true
+  /** The peer has collapsed its script run: the run is gone from what it lists. */
+  runCollapsed = false
   refuseAttach = false
   attachGate: Promise<void> | null = null
   attachRequests = 0
@@ -690,7 +736,7 @@ class RemoteConnectionsManagerTestTransport implements RemoteControlPeerTranspor
                 ...RemoteConnectionsManagerTestTransport.snapshot(this.snapshotRevision),
                 sessions: [null],
               } as unknown as SessionsSnapshot
-            : { ...RemoteConnectionsManagerTestTransport.snapshot(this.snapshotRevision), reconciled: this.reconciled },
+            : this.listed(),
         },
       })
     } else if (message.type === 'socket-request') {
@@ -734,6 +780,15 @@ class RemoteConnectionsManagerTestTransport implements RemoteControlPeerTranspor
       throw new Error(`Unexpected response from manager: ${message.type}`)
     else
       throw new Error(`Unknown manager message: ${JSON.stringify(message)}`)
+  }
+
+  private listed(): SessionsSnapshot {
+    const snapshot = RemoteConnectionsManagerTestTransport.snapshot(this.snapshotRevision)
+    return {
+      ...snapshot,
+      reconciled: this.reconciled,
+      sessions: this.runCollapsed ? snapshot.sessions.filter((session) => session.script === undefined) : snapshot.sessions,
+    }
   }
 
   private emit(message: RemoteControlPeerApplicationMessage): void {
@@ -787,6 +842,23 @@ class RemoteConnectionsManagerTestTransport implements RemoteControlPeerTranspor
         life: 'live',
         activity: 'idle',
         admits: [],
+      }, {
+        sessionId: 'run-a',
+        kind: 'shell',
+        title: 'Setup remote work',
+        titleParts: { number: null, name: 'Setup remote work' },
+        tabTitle: 'Alpha - Setup remote work',
+        directory: { mode: 'project', categoryId: 'code', projectPath: 'D:/code/Alpha' },
+        project: {
+          kind: 'project',
+          categoryId: 'code',
+          projectName: 'Alpha',
+          projectPath: 'D:/code/Alpha',
+        },
+        life: 'live',
+        activity: 'idle',
+        admits: [],
+        script: { parentId: 'session-a', phase: 'before', scriptId: 'setup' },
       }],
       orphans: [],
     }

@@ -16,6 +16,7 @@ import type { SessionRecord } from '../records/sessionRecord.types'
 import { AgentPresets } from './agentPresets'
 import type { Win32SpanningLaunch } from './launchPlanner'
 import { LaunchPlanner } from './launchPlanner'
+import { RunTools } from './runTools'
 
 describe('lib-orchestrator/sessionManager/launch/launchPlanner', () => {
   const environmentConst: NodeJS.ProcessEnv = {
@@ -185,7 +186,7 @@ describe('lib-orchestrator/sessionManager/launch/launchPlanner', () => {
    * nothing, which is the one outcome worse than an interactive one.
    */
   it('never scripts a command list with nothing in it', () => {
-    const empty = record({ commands: [], setupFor: 'p1' })
+    const empty = record({ commands: [], scriptOf: { sessionId: 'p1', phase: 'before', scriptId: 'setup', name: 'setup' } })
     expect(plan(empty, 'win32').args).toEqual([])
     expect(plan(empty, 'linux').args).toEqual([])
     expect(plan(empty, 'linux').command).toBe('/bin/zsh')
@@ -403,6 +404,21 @@ describe('lib-orchestrator/sessionManager/launch/launchPlanner', () => {
           expect(yoloPlan(value, platform)).toEqual(plan(value, platform))
     })
 
+    it('starts the SVN resolver in accept-edits mode and never with YOLO, on create and on replay', () => {
+      const resolver = record({
+        kind: 'agent',
+        agent: { agentId: 'claude', launchMode: 'fork', nativeSessionId: 'r1', forkParentId: 'p1', initialPrompt: 'resolve', oneShot: true, permission: 'accept-edits' },
+      })
+      const agentArgs = AgentPresets.replayArgs(resolver.agent!)
+      expect(agentArgs).toEqual(['--disallowedTools', 'Bash', '--permission-mode', 'acceptEdits', '-p', '--resume', 'p1', '--fork-session', '--session-id', 'r1', 'resolve'])
+      for (const platform of ['win32', 'linux'] as const) {
+        const args = yoloPlan(resolver, platform, agentArgs).args
+        expect(args).not.toContain('--dangerously-skip-permissions')
+        expect(args).toEqual(plan(resolver, platform, agentArgs).args)
+      }
+      expect(() => AgentPresets.replayArgs({ agentId: 'codex', launchMode: 'new', permission: 'accept-edits' })).toThrow(/Codex has no accept-edits/)
+    })
+
     it('refuses an agent it has no policy for', () => {
       const unknown = record({
         kind: 'agent',
@@ -439,6 +455,23 @@ describe('lib-orchestrator/sessionManager/launch/launchPlanner', () => {
     })
     expect(plan(worktree, 'linux').cwd).toBe('Q:\\apps\\one\\.worktrees\\fix')
     expect(LaunchPlanner.cwdOf(worktree)).toBe('Q:\\apps\\one\\.worktrees\\fix')
+  })
+
+  it('runs a session of a directory below its SVN owner at that place inside the worktree', () => {
+    const below = record({
+      directory: { mode: 'adHoc', path: join('Q:', 'apps', 'Group', 'Member', 'src') },
+      worktree: {
+        worktreePath: join('Q:', 'apps', 'Group', '.worktrees', '014-fix'),
+        branch: 'file:///repository/Group',
+        baseCommit: 'r41',
+        repositoryRoot: join('Q:', 'apps', 'Group'),
+        kind: 'svn',
+        cwdSubpath: 'Member/src',
+      },
+    })
+    expect(LaunchPlanner.cwdOf(below)).toBe(join('Q:', 'apps', 'Group', '.worktrees', '014-fix', 'Member', 'src'))
+    expect(plan(below, 'linux').cwd).toBe(LaunchPlanner.cwdOf(below))
+    expect(LaunchPlanner.worktreeCwdOf({ worktreePath: join('Q:', 'w') })).toBe(join('Q:', 'w'))
   })
 
   // A launch that slipped past the refusal fails in the gone directory rather than running in the
@@ -899,6 +932,61 @@ describe('lib-orchestrator/sessionManager/launch/launchPlanner', () => {
       })
       expect(launch.command).toBe('claude')
       expect(launch.args.at(-1)).toBe(promptConst)
+    })
+  })
+
+  describe('a direct-process run', () => {
+    const tools: Pick<RunTools, 'resolve'> = {
+      resolve: (tool) => tool === 'svn'
+        ? { ok: true, command: 'C:\\svn\\svn.exe', prefixArgs: [], env: {} as Record<string, string> }
+        : { ok: true, command: 'R:\\launcher\\node.exe', prefixArgs: ['R:\\cli\\jamat-v3.cjs'], env: { TOOL_ONLY: '1' } },
+    }
+
+    it('spawns the svn image from PATH with the given arguments and no cmd.exe', () => {
+      const bin = mkdtempSync(join(tmpdir(), 'jamat-v3-planner-svn-'))
+      try {
+        writeFileSync(join(bin, 'svn.exe'), '')
+        const environment = { ...environmentConst, PATH: bin, PATHEXT: '.EXE;.CMD' }
+        const machine = new RunTools({ resourcesRoot: null, applicationRoot: bin, environment, platform: 'win32' })
+        const launch = LaunchPlanner.plan(record({ process: { tool: 'svn', args: ['update', '-q', '--', '.'] } }), {
+          platform: 'win32', environment, tools: machine, controller: { configIdentity: 'cfg-1', channel: 'development' },
+        })
+        expect(launch.command).toBe(join(bin, 'svn.exe'))
+        expect(launch.args).toEqual(['update', '-q', '--', '.'])
+        expect(launch.cwd).toBe('D:\\work')
+        expect(launch.env).toMatchObject({ JAMAT_V3_SESSION_ID: 's1', JAMAT_V3_SESSION_CONTROLLER: 'cfg-1' })
+        expect(JSON.stringify([launch.command, launch.args])).not.toContain('cmd.exe')
+      } finally {
+        rmSync(bin, { recursive: true, force: true })
+      }
+    })
+
+    // cmd.exe would expand `%20` and split at `&`; with no shell the URL is one argv element as written.
+    it('hands a URL with a percent escape and an ampersand over byte for byte', () => {
+      const url = 'https://svn.example/repo/a%20b&c=1/trunk@307'
+      const launch = LaunchPlanner.plan(record({ process: { tool: 'svn', args: ['checkout', '-q', '--', url, '.'] } }), {
+        platform: 'win32', environment: environmentConst, tools,
+      })
+      expect(launch.args).toEqual(['checkout', '-q', '--', url, '.'])
+    })
+
+    it('puts the tool\'s own arguments first and adds its environment', () => {
+      const launch = LaunchPlanner.plan(record({ process: { tool: 'jamat-cli', args: ['sessions', 'worktree-review', '--self'] } }), {
+        platform: 'win32', environment: environmentConst, tools,
+      })
+      expect(launch.command).toBe('R:\\launcher\\node.exe')
+      expect(launch.args).toEqual(['R:\\cli\\jamat-v3.cjs', 'sessions', 'worktree-review', '--self'])
+      expect(launch.env).toMatchObject({ TOOL_ONLY: '1', JAMAT_V3_SESSION_ID: 's1' })
+    })
+
+    // The lifecycle refuses such a launch with the tool's reason before it plans one.
+    it('throws rather than reaching for a shell when the tool cannot be resolved', () => {
+      const run = record({ process: { tool: 'svn', args: ['update'] } })
+      expect(() => LaunchPlanner.plan(run, {
+        platform: 'win32', environment: environmentConst, tools: { resolve: () => ({ ok: false, detail: 'svn.exe was not found on PATH' }) },
+      })).toThrow('svn.exe was not found on PATH')
+      expect(() => LaunchPlanner.plan(run, { platform: 'win32', environment: environmentConst }))
+        .toThrow('Session s1 runs a tool, and no run tools were given')
     })
   })
 })

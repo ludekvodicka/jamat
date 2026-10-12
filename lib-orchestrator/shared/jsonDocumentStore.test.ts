@@ -124,7 +124,7 @@ describe('lib-orchestrator/shared/jsonDocumentStore', () => {
   /*
    * The half a parse check cannot see. The document came back USABLE - the store can answer from it
    * - and it is still one a write would erase the rest of, because the file said things this store
-   * dropped. `SetupTrustStore` is the case: an entry of a shape it does not understand is somebody's
+   * dropped. `CommandTrustStore` is the case: an entry of a shape it does not understand is somebody's
    * agreement, and writing over it withdraws an answer a person already gave.
    */
   it('latches a document that parsed but was only partly understood', async () => {

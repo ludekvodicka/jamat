@@ -55,6 +55,8 @@ class SmokeHost extends SmokeHarness {
         descriptor, 'controller.acquire', { controllerId: 'smoke' },
       )
       SmokeHost.check('controller lease acquired', typeof lease.controllerLeaseId === 'string')
+      await SmokeHost.checkFastExit(descriptor, lease.controllerLeaseId, configDir, 0)
+      await SmokeHost.checkFastExit(descriptor, lease.controllerLeaseId, configDir, 3)
 
       const created = await SmokeHost.op<RuntimeResult>(descriptor, 'runtime.create', {
         controllerLeaseId: lease.controllerLeaseId,
@@ -193,6 +195,40 @@ class SmokeHost extends SmokeHarness {
       body: '{}',
     })
     SmokeHost.check(`op without a token is refused (${response.status})`, response.status === 401)
+  }
+
+  /**
+   * A command over before the Host can read its start identity is created and answered already dead
+   * with its own exit code, never refused: refusing it judged `git status` a failed run.
+   */
+  private static async checkFastExit(
+    descriptor: HostDescriptor,
+    controllerLeaseId: string,
+    cwd: string,
+    exitCode: number,
+  ): Promise<void> {
+    const [command, args] = process.platform === 'win32'
+      ? [process.env.ComSpec ?? 'cmd.exe', ['/d', '/c', `exit ${exitCode}`]]
+      : ['/bin/sh', ['-c', `exit ${exitCode}`]]
+    const created = await SmokeHost.op<RuntimeResult>(descriptor, 'runtime.create', {
+      controllerLeaseId,
+      operationId: `smoke-fast-${exitCode}`,
+      runtimeSessionId: `smoke-fast-${exitCode}`,
+      launch: { command, args, cwd, env: SmokeHost.childEnv(), cols: 80, rows: 24 },
+    })
+    SmokeHost.check(`a fast exit ${exitCode} is created dead with exit code ${exitCode}`
+      + ` (alive ${created.session.alive}, exitCode ${created.session.exitCode})`,
+      !created.session.alive && created.session.exitCode === exitCode
+        && created.session.processStartedAt === undefined)
+    const removed = await SmokeHost.op<RuntimeMutationAck>(descriptor, 'runtime.remove', {
+      controllerLeaseId,
+      target: {
+        hostInstanceId: created.hostInstanceId,
+        runtimeSessionId: created.session.runtimeSessionId,
+        generation: created.session.generation,
+      },
+    })
+    SmokeHost.check(`the dead fast runtime is removed (${removed.diagnostic})`, removed.diagnostic === 'removed')
   }
 
   private static async checkProjectionContains(

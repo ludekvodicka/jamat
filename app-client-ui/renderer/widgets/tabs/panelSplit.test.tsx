@@ -30,6 +30,14 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
     expect(opened.state.history).toEqual([])
   })
 
+  it('restores a commit selection with a node-only directory and drops one whose depth is unknown', () => {
+    const paths = [{ path: 'Q:/Group', depth: 'empty' }, 'Q:/Group/notes.md']
+    const commit = (value: unknown) => ({ kind: 'commit', key: 'c', title: 'c', vcs: 'svn', scopeRoot: 'Q:/Group', paths: value })
+    expect(PanelSplitParams.of({ split: { items: [commit(paths)] } }).items).toMatchObject([{ paths }])
+    for (const invalid of [[{ path: 'Q:/Group' }], [{ path: 'Q:/Group', depth: 'files' }], [{ path: 'Q:/Group', depth: 'empty', extra: 1 }]])
+      expect(PanelSplitParams.of({ split: { items: [commit(invalid)] } }).items).toEqual([])
+  })
+
   it('never replaces a commit with a preview and refuses the ninth commit', () => {
     let state = PanelSplitParams.default()
     for (let i = 0; i < 8; i++) {
@@ -48,11 +56,14 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
 
   it('shows the commit scope and offers Close without Detach', () => {
     render(<PanelSplitStrip items={[{ kind: 'commit', key: 'c', title: 'Commit SVN', vcs: 'svn', scopeRoot: 'Q:/app' }]}
-      active="c" preview={null} onActivate={vi.fn()} onKeepOpen={vi.fn()} onSetPinned={vi.fn()} onClose={vi.fn()} onDetach={vi.fn()} />)
+      active="c" preview={null} onActivate={vi.fn()} onKeepOpen={vi.fn()} onSetPinned={vi.fn()} onReload={vi.fn()} onCopyPath={vi.fn()}
+      onClose={vi.fn()} onDetach={vi.fn()} />)
     fireEvent.contextMenu(screen.getByTitle('Q:/app'))
     expect(screen.getByRole('menuitem', { name: 'Close' })).toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: 'Detach from split' })).toBeNull()
     expect(screen.queryByRole('menuitem', { name: 'Pin' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'Reload' })).toBeNull()
+    expect(screen.queryByRole('separator')).toBeNull()
   })
 
   function sourceFixture(path: string): FileViewerDocumentSource {
@@ -599,12 +610,16 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
       activated: string[]
       keptOpen: string[]
       pinned: [string, boolean][]
+      reloaded: string[]
+      copied: string[]
       closed: string[]
       detached: string[]
     } {
       const activated: string[] = []
       const keptOpen: string[] = []
       const pinned: [string, boolean][] = []
+      const reloaded: string[] = []
+      const copied: string[] = []
       const closed: string[] = []
       const detached: string[] = []
       render(
@@ -615,11 +630,13 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
           onActivate={(key) => activated.push(key)}
           onKeepOpen={(key) => keptOpen.push(key)}
           onSetPinned={(key, value) => pinned.push([key, value])}
+          onReload={(key) => reloaded.push(key)}
+          onCopyPath={(key) => copied.push(key)}
           onClose={(key) => closed.push(key)}
           onDetach={(key) => detached.push(key)}
         />,
       )
-      return { activated, keptOpen, pinned, closed, detached }
+      return { activated, keptOpen, pinned, reloaded, copied, closed, detached }
     }
 
     it('draws one tab per item and marks the active one', () => {
@@ -651,17 +668,27 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
       expect(activated).toEqual([])
     })
 
-    it('offers Pin, Detach and Close on a right click', async () => {
-      const { detached, pinned } = stripFixture()
+    it('offers the file verbs, Pin and Detach, then Close, in blocks split by lines', async () => {
+      const { detached, pinned, reloaded, copied } = stripFixture()
       fireEvent.contextMenu(screen.getAllByRole('tab')[1])
       const menu = screen.getByRole('menu', { name: 'Split tab actions' })
-      const items = menu.querySelectorAll('[role="menuitem"]')
-      expect(Array.from(items).map((item) => item.textContent)).toEqual([
+      expect(Array.from(menu.querySelectorAll('[role="menuitem"], [role="separator"]')).map((item) =>
+        item.getAttribute('role') === 'separator' ? '---' : item.textContent)).toEqual([
+        'Reload',
+        'Copy path',
+        '---',
         'Pin',
         'Detach from split',
+        '---',
         'Close',
       ])
-      fireEvent.click(items[1])
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Reload' }))
+      expect(reloaded).toEqual(['key:b.md'])
+      fireEvent.contextMenu(screen.getAllByRole('tab')[1])
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Copy path' }))
+      expect(copied).toEqual(['key:b.md'])
+      fireEvent.contextMenu(screen.getAllByRole('tab')[1])
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Detach from split' }))
       await waitFor(() => expect(detached).toEqual(['key:b.md']))
       fireEvent.contextMenu(screen.getAllByRole('tab')[1])
       fireEvent.click(screen.getByRole('menuitem', { name: 'Pin' }))
@@ -692,6 +719,8 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
           onActivate={() => {}}
           onKeepOpen={() => {}}
           onSetPinned={() => {}}
+          onReload={() => {}}
+          onCopyPath={() => {}}
           onClose={() => {}}
           onDetach={() => detached.focus()}
         />,

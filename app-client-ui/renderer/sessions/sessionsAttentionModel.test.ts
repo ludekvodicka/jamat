@@ -85,6 +85,79 @@ describe('app-client-ui/renderer/sessions/sessionsAttentionModel', () => {
     expect(unknown.has('s-1')).toBe(false)
   })
 
+  it('raises nothing for a script run, whatever its life does', () => {
+    const model = new SessionsAttentionModel()
+    const run = sessionOf({ kind: 'shell', activity: null, script: { parentId: 's-parent', phase: 'before', scriptId: 'setup' } })
+    model.apply({ sessions: [run], activeSessionIds: new Set() })
+    const ended = model.apply({
+      sessions: [{ ...run, life: 'ended', exitCode: 1 }],
+      activeSessionIds: new Set(),
+    })
+
+    expect(ended.has('s-1')).toBe(false)
+  })
+
+  it('raises a parent whose scripts badge turns failed, once, even while its life stays', () => {
+    const model = new SessionsAttentionModel()
+    const badge = { phase: 'after' as const, text: 'checks: tests', title: 'Checks: tests', runId: 'r-1' }
+    const parent = (state: 'running' | 'failed' | 'succeeded'): SessionInfo => sessionOf({
+      activity: 'idle', scripts: { runs: [], badge: { ...badge, state } },
+    })
+    model.apply({ sessions: [parent('running')], activeSessionIds: new Set() })
+    const failed = model.apply({ sessions: [parent('failed')], activeSessionIds: new Set() })
+    model.apply({ sessions: [parent('failed')], activeSessionIds: new Set(['s-1']) })
+    const still = model.apply({ sessions: [parent('failed')], activeSessionIds: new Set() })
+
+    expect(failed.has('s-1')).toBe(true)
+    expect(still.has('s-1')).toBe(false)
+  })
+
+  it('raises nothing on a parent whose failing run is in front, and takes its mark while it is', () => {
+    const model = new SessionsAttentionModel()
+    const badge = { phase: 'before' as const, text: 'setup', title: 'Setup', runId: 'r-1' }
+    const parent = (state: 'running' | 'failed', life: SessionInfo['life']): SessionInfo => sessionOf({
+      life, activity: 'unknown', scripts: { runs: [], badge: { ...badge, state } },
+    })
+    const run = (life: SessionInfo['life']): SessionInfo => sessionOf({
+      sessionId: 'r-1', kind: 'shell', life, activity: null,
+      script: { parentId: 's-1', phase: 'before', scriptId: 'setup' },
+    })
+    model.apply({ sessions: [parent('running', 'starting'), run('live')], activeSessionIds: new Set(['r-1']) })
+
+    const failed = model.apply({
+      sessions: [parent('failed', 'ended'), run('ended')],
+      activeSessionIds: new Set(['r-1']),
+    })
+
+    expect(failed.has('s-1')).toBe(false)
+  })
+
+  it('takes a parent mark once one of its runs is in front', () => {
+    const model = new SessionsAttentionModel()
+    const run = sessionOf({
+      sessionId: 'r-1', kind: 'shell', activity: null,
+      script: { parentId: 's-1', phase: 'inner', scriptId: 'requested' },
+    })
+    model.apply({ sessions: [sessionOf(), run], activeSessionIds: new Set() })
+    const settled = model.apply({ sessions: [sessionOf({ activity: 'waiting' }), run], activeSessionIds: new Set() })
+
+    const looked = model.apply({ sessions: [sessionOf({ activity: 'waiting' }), run], activeSessionIds: new Set(['r-1']) })
+
+    expect(settled.has('s-1')).toBe(true)
+    expect(looked.has('s-1')).toBe(false)
+  })
+
+  it('raises nothing for a badge that was already failed when first seen', () => {
+    const model = new SessionsAttentionModel()
+    const failed = sessionOf({
+      activity: 'idle',
+      scripts: { runs: [], badge: { phase: 'before', state: 'failed', text: 'setup failed', title: 'Setup failed' } },
+    })
+    model.apply({ sessions: [failed], activeSessionIds: new Set() })
+
+    expect(model.apply({ sessions: [failed], activeSessionIds: new Set() }).has('s-1')).toBe(false)
+  })
+
   it('raises attention when a runtime stops, including a session whose install failed', () => {
     const exited = new SessionsAttentionModel()
     exited.apply({ sessions: [sessionOf()], activeSessionIds: new Set() })

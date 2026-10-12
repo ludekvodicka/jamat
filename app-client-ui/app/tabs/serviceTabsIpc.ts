@@ -4,11 +4,16 @@ import { randomUUID } from 'node:crypto'
 import type { WebContents } from 'electron'
 
 import { ErrorText } from '../../shared/errorText'
+import type { ClaimPanelResult, WorkspacePanelPresence } from '../../shared/tabTransfer'
+import { type TerminalTarget, TerminalTargetCodec } from '../../shared/terminalTarget'
 import { ServiceIpcBase } from '../shared/serviceIpcBase'
 import type { WorkspaceWindows } from '../shell/workspaceWindows'
 import type { TabControlBroker } from './tabControlBroker'
 import type { TabTransferBroker } from './tabTransferBroker'
-import type { WorkspacePanelIndex } from './workspacePanelIndex'
+import { WorkspacePanelIndex } from './workspacePanelIndex'
+
+/** Where the tabs of a collapsed script run go: to this session, or nowhere when it is null. */
+export type ScriptRunHandOff = { target: TerminalTarget; title: string } | null
 
 /** Panel ownership and cross-window transfer routing. */
 export class ServiceTabsIpc extends ServiceIpcBase<typeof ServiceTabsIpc.channelsConst> {
@@ -28,6 +33,14 @@ export class ServiceTabsIpc extends ServiceIpcBase<typeof ServiceTabsIpc.channel
     'tabs:control-ack': true,
   } as const
 
+  private static readonly collapsedRunsMaxConst = 64
+  /**
+   * The script runs that collapsed, oldest first. A hand-off is published once, to the windows that
+   * hold the run's tab at that moment; a tab asked for later (a stale menu, a click before the next
+   * snapshot, a restored layout, a tab dropped into another window) is answered from here.
+   */
+  private readonly collapsedRuns = new Map<string, ScriptRunHandOff>()
+
   constructor(
     private readonly windows: WorkspaceWindows,
     private readonly index: WorkspacePanelIndex,
@@ -45,7 +58,7 @@ export class ServiceTabsIpc extends ServiceIpcBase<typeof ServiceTabsIpc.channel
         return { kind: 'refused', detail: 'Unknown workspace renderer' }
       if (!this.windows.acceptsRenderer(event.sender))
         return { kind: 'refused', detail: 'The workspace window is closing' }
-      const answer = this.index.claimOpen(windowId, panel)
+      const answer = this.collapsedRunAnswer(panel) ?? this.index.claimOpen(windowId, panel)
       if (answer.kind === 'owned') {
         if (activate === false) return answer
         this.windows.focusOrRecreate(answer.windowId)
@@ -74,9 +87,16 @@ export class ServiceTabsIpc extends ServiceIpcBase<typeof ServiceTabsIpc.channel
       const windowId = this.windows.windowIdOf(event.sender)
       if (windowId === null || !this.windows.acceptsRenderer(event.sender))
         return { acceptedPanelIds: [], rejectedPanelIds: panels.map((panel) => panel.panelId) }
-      const answer = this.index.reconcile(windowId, panels)
+      const admitted = panels.filter((panel) => this.collapsedRunAnswer(panel) === null)
+      const answer = this.index.reconcile(windowId, admitted)
       this.announcePresence()
-      return answer
+      return {
+        acceptedPanelIds: answer.acceptedPanelIds,
+        rejectedPanelIds: [
+          ...answer.rejectedPanelIds,
+          ...panels.filter((panel) => !admitted.includes(panel)).map((panel) => panel.panelId),
+        ],
+      }
     })
     this.register('tabs:release-panel', (event, panelId) => {
       this.index.release(panelId, this.requireWindowId(event.sender))
@@ -118,8 +138,13 @@ export class ServiceTabsIpc extends ServiceIpcBase<typeof ServiceTabsIpc.channel
     this.register('tabs:transfer-prepare', (event, token) =>
       this.broker.prepare(token, this.requireAcceptingWindowId(event.sender)))
     this.register('tabs:transfer-commit', (event, token) => {
-      this.broker.commit(token, this.requireWindowId(event.sender))
+      const windowId = this.requireWindowId(event.sender)
+      this.broker.commit(token, windowId)
       this.announcePresence()
+      for (const [runKey, handOff] of this.collapsedRuns)
+        for (const owner of this.index.panelsOfTerminalTarget(runKey))
+          if (owner.windowId === windowId)
+            this.publishCollapsed(owner, handOff)
     })
     this.register('tabs:transfer-abort', (event, token) => {
       this.broker.abort(token, this.requireWindowId(event.sender))
@@ -164,6 +189,52 @@ export class ServiceTabsIpc extends ServiceIpcBase<typeof ServiceTabsIpc.channel
   closeTerminalPanels(targetKey: string): void {
     for (const owner of this.index.panelsOfTerminalTarget(targetKey))
       this.windows.publishTo(owner.windowId, 'tabs:close-panel', owner.panel.panelId)
+  }
+
+  /**
+   * A script run went into its parent's history: every window drawing it gives that panel to the
+   * hand-off target, or closes it when there is none. A window already drawing the target closes it.
+   */
+  scriptRunCollapsed(runKey: string, handOff: ScriptRunHandOff): void {
+    this.collapsedRuns.delete(runKey)
+    this.collapsedRuns.set(runKey, handOff)
+    for (const oldest of this.collapsedRuns.keys()) {
+      if (this.collapsedRuns.size <= ServiceTabsIpc.collapsedRunsMaxConst)
+        break
+      this.collapsedRuns.delete(oldest)
+    }
+    for (const owner of this.index.panelsOfTerminalTarget(runKey))
+      this.publishCollapsed(owner, handOff)
+  }
+
+  private publishCollapsed(owner: { windowId: string; panel: WorkspacePanelPresence }, handOff: ScriptRunHandOff): void {
+    if (handOff === null)
+      this.windows.publishTo(owner.windowId, 'tabs:close-panel', owner.panel.panelId)
+    else
+      this.windows.publishTo(
+        owner.windowId,
+        'tabs:hand-off-panel',
+        owner.panel.panelId,
+        TerminalTargetCodec.params(handOff.target),
+        handOff.title,
+      )
+  }
+
+  /**
+   * A tab asked for a run that has already collapsed. It is answered with its parent's tab where one
+   * is open, and refused otherwise; null for every other panel.
+   */
+  private collapsedRunAnswer(panel: WorkspacePanelPresence): ClaimPanelResult | null {
+    const targetKey = WorkspacePanelIndex.terminalTargetKeyOf(panel)
+    const handOff = targetKey === null ? undefined : this.collapsedRuns.get(targetKey)
+    if (handOff === undefined)
+      return null
+    const parent = handOff === null
+      ? undefined
+      : this.index.panelsOfTerminalTarget(TerminalTargetCodec.key(handOff.target))[0]
+    return parent === undefined
+      ? { kind: 'refused', detail: 'The script run has finished; its session lists it under Scripts' }
+      : { kind: 'owned', windowId: parent.windowId, panelId: parent.panel.panelId }
   }
 
   private requireMain(sender: WebContents): void {

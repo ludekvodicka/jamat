@@ -244,6 +244,23 @@ describe('app-client-ui/app/fileChanges/serviceFileChangesIpc', () => {
     expect(reads.map((read) => read.args[2]).sort()).toEqual([false, true])
   })
 
+  it.each([
+    { source: 'svn', scopeRoot: 'C:/work' },
+    { source: 'git', scopeRoot: 'C:/work' },
+    { source: 'svn', scopeRoot: undefined },
+    { source: 'git', scopeRoot: undefined },
+  ] as const)('preserves the $source commit reader when opening a session file with scope $scopeRoot', async ({ source, scopeRoot }) => {
+    await service.workingTree('window-1', 'session-1', source, scopeRoot, true)
+    await invoke('fileChanges:open-file', sender, workingSnapshot.snapshotId, 'file-1')
+
+    expect(calls.find((call) => call.method === 'openChanged')?.args).toEqual([
+      'window-1',
+      expect.objectContaining({
+        workingTree: { scopeRoot: 'C:/work', source },
+      }),
+    ])
+  })
+
   /**
    * A listing detects both VCS, runs a status, reads a hundred commits and parses the session's whole
    * transcript. Four panels mounting at once on a restored layout used to start four of them, and

@@ -1,7 +1,7 @@
 import type { AutoUpdateController } from "../autoUpdate/renderer/useAutoUpdate";
 import "./autoUpdateWidgets.css";
 
-export function AutoUpdateIndicator(props: { update: AutoUpdateController; onOpen(): void; className?: string })
+export function AutoUpdateIndicator(props: { update: AutoUpdateController; onOpen: () => void; className?: string })
 {
   const view = props.update.view;
   if (!view)

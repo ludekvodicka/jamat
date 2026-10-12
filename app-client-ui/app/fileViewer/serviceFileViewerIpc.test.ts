@@ -1,4 +1,4 @@
-import { mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, parse } from 'node:path'
 
@@ -180,6 +180,37 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
     expect(workingTree).toHaveBeenLastCalledWith({ sessionId: 'session-1', cwd: scopeRoot, agent: null, worktree: null }, 'svn', true, path)
     expect(await invoke('fileViewer:open-workspace', sender, 'session-1', path, true)).toMatchObject({ ok: true, value: { ok: false } })
     expect(await files.scopedWorkingTree('window-1', { ...document.source, path: join(cwd, 'unapproved.txt') })).toMatchObject({ ok: false })
+  })
+
+  it('restores a script log only through the history that proves it, never through its own path', async () => {
+    const logs = await root()
+    await mkdir(join(logs, 'p'))
+    const log = join(logs, 'p', 'r-saved.log')
+    await writeFile(log, 'Setup p\ndone\n')
+    const elsewhere = join(logs, 'elsewhere.txt')
+    await writeFile(elsewhere, 'not a log')
+    const viewer = new FileViewer()
+    const scriptLogOf = vi.fn(async (parentId: string, runId: string) => parentId === 'p' && runId === 'r-saved'
+      ? { ok: true as const, value: { path: log } }
+      : { ok: false as const, code: 'not-found' as const, detail: `No proof for ${parentId}/${runId}` })
+    const sessions = { scriptLogOf } as unknown as SessionManager
+    new ServiceFileViewerIpc(viewer, sessions, () => 'window-1', vi.fn(), vi.fn(), () => false, vi.fn()).initialize()
+
+    const restored = await invoke('fileViewer:restore', sender,
+      { kind: 'scriptLog', sessionId: 'p', runId: 'r-saved', path: elsewhere }, true)
+    expect(restored).toMatchObject({ ok: true, value: { ok: true, value: {
+      path: log, source: { kind: 'scriptLog', sessionId: 'p', runId: 'r-saved', path: log }, kind: { kind: 'text' },
+    } } })
+    const opened = (restored as { value: { value: { modes: readonly string[]; documentId: string } } }).value.value
+    expect(opened.modes).not.toContain('diff')
+    expect(await viewer.text('window-1', opened.documentId)).toMatchObject({ ok: true, text: 'Setup p\ndone\n' })
+
+    // A real file is no proof: the history must name the run.
+    expect(await invoke('fileViewer:restore', sender, { kind: 'scriptLog', sessionId: 'p', runId: 'r-stray', path: log }, true))
+      .toEqual({ ok: true, value: { ok: false, code: 'invalid-source', detail: 'No proof for p/r-stray' } })
+    // A restored panel whose parent was removed since answers the refusal, not a file.
+    expect(await invoke('fileViewer:restore', sender, { kind: 'scriptLog', sessionId: 'gone', runId: 'r-saved', path: log }, true))
+      .toEqual({ ok: true, value: { ok: false, code: 'invalid-source', detail: 'No proof for gone/r-saved' } })
   })
 
   it('opens workspace files and directories only against the trusted session cwd', async () => {

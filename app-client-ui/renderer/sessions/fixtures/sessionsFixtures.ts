@@ -226,6 +226,18 @@ export class SessionsFixtures {
           // on the Host is exactly the session that could once be neither started nor deleted.
           admits: ['newBeside', 'fork', 'finalize', 'remove'],
           setup: { state: 'running', setupSessionId: 's-install', commands: ['pnpm install'] },
+          scripts: {
+            runs: [{
+              runId: 's-install', phase: 'before', scriptId: 'setup', name: 'setup', title: 'Setup alpha',
+              state: 'running', summary: 'Setup alpha · running', startedAt: 1754318990000,
+              commands: ['pnpm install'], row: true, log: 'none',
+            }],
+            badge: {
+              phase: 'before', state: 'running', text: 'installing dependencies',
+              title: 'Installing dependencies:\npnpm install', runId: 's-install',
+            },
+            waitingOn: 's-install',
+          },
         },
         {
           // The install carries the worktree as its DIRECTORY and no worktree field of its own,
@@ -241,6 +253,7 @@ export class SessionsFixtures {
           // An install session is another flow's, and restarting it would restart that flow's step.
           admits: ['finalize'],
           setupFor: 's-primary',
+          script: { parentId: 's-primary', phase: 'before', scriptId: 'setup' },
         },
         {
           sessionId: 's-neighbour',
@@ -295,6 +308,13 @@ export class SessionsFixtures {
           // A skipped install left a marker, not a wait: nothing is holding this record.
           admits: ['newBeside', 'fork', 'compact', 'restart', 'finalize'],
           setup: { state: 'skipped', reason: 'the project declares no setup steps' },
+          scripts: {
+            runs: [],
+            badge: {
+              phase: 'before', state: 'skipped', text: 'setup skipped',
+              title: 'Setup skipped: the project declares no setup steps',
+            },
+          },
         },
         {
           sessionId: 's-failed',
@@ -321,6 +341,18 @@ export class SessionsFixtures {
           endedAt: 1754331000000,
           endedReason: 'the setup session exited with 1',
           setup: { state: 'failed', setupSessionId: 's-failed-install', commands: ['pnpm install'] },
+          scripts: {
+            runs: [{
+              runId: 's-failed-install', phase: 'before', scriptId: 'setup', name: 'setup', title: 'Setup beta',
+              state: 'failed', summary: 'Setup beta · failed · exit 1 · 50 s', startedAt: 1754330900000,
+              endedAt: 1754330950000, durationText: '50 s', exitCode: 1, commands: ['pnpm install'],
+              row: true, log: 'saved',
+            }],
+            badge: {
+              phase: 'before', state: 'failed', text: 'setup failed',
+              title: 'The setup session exited with 1', runId: 's-failed-install',
+            },
+          },
         },
         {
           sessionId: 's-failed-install',
@@ -336,6 +368,69 @@ export class SessionsFixtures {
           endedAt: 1754330950000,
           exitCode: 1,
           setupFor: 's-failed',
+          script: { parentId: 's-failed', phase: 'before', scriptId: 'setup' },
+        },
+      ],
+      orphans: [],
+    }
+  }
+
+  /**
+   * A setup that succeeded and collapsed into its parent's badge, with the history the `Scripts` menu
+   * lists: the success with its saved log, and the earlier failed attempt whose log the Host lost.
+   */
+  static setupCollapsed(): SessionsSnapshot {
+    return {
+      revision: 5,
+      reconciled: true,
+      host: {
+        presence: 'running',
+        hostVersion: '2026.08.04.09.30',
+        hostInstanceId: 'host-a',
+        liveCount: 1,
+        lastStartError: null,
+      },
+      categories: [{ id: 'nodejs', label: 'NodeJs', path: 'C:/Projects/NodeJs' }],
+      sessions: [
+        {
+          sessionId: 's-installed',
+          kind: 'agent',
+          ...SessionsFixtures.titled('Gamma worktree'),
+          tabTitle: 'AppJamatV3 - Gamma worktree',
+          ...SessionsFixtures.inProject('nodejs', 'AppJamatV3', SessionsFixtures.jamatConst),
+          agent: { agentId: 'claude', nativeSessionId: 'native-installed' },
+          worktree: {
+            worktreePath: `${SessionsFixtures.jamatConst}/.worktrees/gamma`,
+            branch: 'feature/gamma',
+            baseCommit: 'ee55ff66',
+            kind: 'git',
+            choices: ['merge', 'keep', 'discard'],
+            diff: null,
+            baseMoved: false,
+          },
+          life: 'live',
+          activity: 'working',
+          admits: ['newBeside', 'fork', 'compact', 'restart', 'finalize'],
+          scripts: {
+            runs: [
+              {
+                runId: 'r-second', phase: 'before', scriptId: 'setup', name: 'setup', title: 'Setup gamma',
+                state: 'succeeded', summary: 'Setup gamma · succeeded · 23.6 s', startedAt: 1754340100000,
+                endedAt: 1754340123600, durationText: '23.6 s', exitCode: 0, commands: ['pnpm install'],
+                row: false, log: 'saved',
+              },
+              {
+                runId: 'r-first', phase: 'before', scriptId: 'setup', name: 'setup', title: 'Setup gamma',
+                state: 'failed', summary: 'Setup gamma · failed · exit 1 · 4.1 s', startedAt: 1754340000000,
+                endedAt: 1754340004100, durationText: '4.1 s', exitCode: 1, commands: ['pnpm install'],
+                row: false, log: 'unavailable', logDetail: 'the Host restarted before the output was saved',
+              },
+            ],
+            badge: {
+              phase: 'before', state: 'succeeded', text: 'setup ✓ 23.6 s',
+              title: 'Setup succeeded in 23.6 s', runId: 'r-second',
+            },
+          },
         },
       ],
       orphans: [],
@@ -546,6 +641,46 @@ export class SessionsFixtures {
           completed: true,
           admits: ['newBeside', 'remove'],
         },
+        {
+          ...ended,
+          sessionId: 's-landed',
+          ...SessionsFixtures.titled('Landed worktree'),
+          tabTitle: 'AppJamatV3 - Landed worktree',
+          agent: { agentId: 'claude', nativeSessionId: 'native-landed' },
+          retiredWorktree: {
+            worktreePath: `${ownerConst}/.worktrees/016-landed`,
+            revisions: ['http://svn.local/applications:r4131'],
+            landing: { mainCopy: ownerConst, behind: 3, newest: ['http://svn.local/applications:r4131'] },
+          },
+          admits: ['newBeside', 'updateMain', 'remove'],
+        },
+        {
+          ...ended,
+          sessionId: 's-landed-offline',
+          ...SessionsFixtures.titled('Landed offline'),
+          tabTitle: 'AppJamatV3 - Landed offline',
+          agent: { agentId: 'claude', nativeSessionId: 'native-landed-offline' },
+          retiredWorktree: {
+            worktreePath: `${ownerConst}/.worktrees/017-offline`,
+            revisions: ['http://svn.local/applications:r4132'],
+            landing: { mainCopy: ownerConst, behind: null, newest: ['http://svn.local/applications:r4132'] },
+          },
+          admits: ['newBeside', 'updateMain', 'remove'],
+        },
+        {
+          ...ended,
+          sessionId: 's-landed-updating',
+          ...SessionsFixtures.titled('Landed updating'),
+          tabTitle: 'AppJamatV3 - Landed updating',
+          agent: { agentId: 'claude', nativeSessionId: 'native-landed-updating' },
+          retiredWorktree: {
+            worktreePath: `${ownerConst}/.worktrees/018-updating`,
+            revisions: ['http://svn.local/applications:r4133'],
+            landing: { mainCopy: ownerConst, behind: 1, newest: ['http://svn.local/applications:r4133'] },
+          },
+          svnAction: { kind: 'update-main', stage: 'updating', needs: null, needsKind: null, review: null },
+          admits: ['newBeside'],
+        },
       ],
       orphans: [],
     }
@@ -637,6 +772,7 @@ export class SessionsFixtures {
           activity: 'working',
           admits: ['finalize'],
           resolveFor: 's-conflicted',
+          script: { parentId: 's-conflicted', phase: 'after', scriptId: 'merge-resolve' },
         },
         {
           sessionId: 's-merge-failed',

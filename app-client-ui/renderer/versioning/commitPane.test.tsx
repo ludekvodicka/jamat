@@ -95,6 +95,45 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     expect(f.ports.versioning.runCommit).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: 'Commit files' })).toBeDisabled()
   })
+  /**
+   * r345: a review of one folder's `svn:ignore` started with every change below it checked, and
+   * Commit files published 123 paths of other sessions' unfinished work. Main names the rows to
+   * check; the other work below a node-only folder stays in view, unchecked.
+   */
+  it('shows the other work of a named review unchecked and commits only the row main checked', async () => {
+    const f = CommitPaneTest.fixture()
+    const node = { ...CommitPaneTest.entry('', 'modified', 'directory'), fileId: 'node', path: 'Q:/app', displayPath: '' }
+    const snapshot = { ...f.snapshot, entries: [node, ...f.snapshot.entries] }
+    const paths = [{ path: 'Q:/app', depth: 'empty' as const }]
+    vi.mocked(f.ports.versioning.readCommit).mockImplementation(async () => ({ ok: true, value: { draftId: 'draft', sessionId: 'session',
+      vcs: 'svn', source: 'svn', scopeRoot: 'Q:/app', scopeTooltip: 'Q:/app\n  . (this folder only)', paths, message: 'Ignore data',
+      proposedByAgent: true, editedByPerson: false, phase: { kind: 'editing' }, revision: 1 } }))
+    vi.mocked(f.ports.versioning.commitFiles).mockResolvedValue({ ok: true, value: { ok: true, value: snapshot, checkedPaths: ['Q:/app'] } })
+    render(<CommitPane sessionId="session" item={{ ...f.item, paths }} ports={f.ports} onClose={vi.fn()} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    await waitFor(() => expect(screen.getByLabelText('Include .')).toBeChecked())
+    for (const other of ['a.txt', 'b.txt', 'shared/external.txt']) {
+      expect(screen.getByText(other)).toBeVisible()
+      expect(screen.getByLabelText(`Include ${other}`)).not.toBeChecked()
+    }
+    expect(screen.getByRole('status')).toHaveTextContent('1 selected')
+    fireEvent.click(screen.getByRole('button', { name: 'Commit files' }))
+    await waitFor(() => expect(f.ports.versioning.runCommit).toHaveBeenCalledOnce())
+    expect(vi.mocked(f.ports.versioning.runCommit).mock.calls[0]![0]).toMatchObject({ fileIds: ['node'] })
+  })
+
+  it('checks nothing in a named review whose list arrived without the rows main checks', async () => {
+    const f = CommitPaneTest.fixture()
+    const paths = ['Q:/app/a.txt']
+    vi.mocked(f.ports.versioning.readCommit).mockImplementation(async () => ({ ok: true, value: { draftId: 'draft', sessionId: 'session',
+      vcs: 'svn', source: 'svn', scopeRoot: 'Q:/app', scopeTooltip: 'Q:/app', paths, message: 'One file',
+      proposedByAgent: true, editedByPerson: false, phase: { kind: 'editing' }, revision: 1 } }))
+    render(<CommitPane sessionId="session" item={{ ...f.item, paths }} ports={f.ports} onClose={vi.fn()} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    await screen.findByLabelText('Include a.txt')
+    expect(screen.getByLabelText('Include a.txt')).not.toBeChecked()
+    expect(screen.getByLabelText('Include b.txt')).not.toBeChecked()
+    expect(screen.getByRole('button', { name: 'Commit files' })).toBeDisabled()
+  })
+
   it('refreshes an expired commit snapshot and opens the same path with fresh tokens while preserving the selection', async () => {
     const f = CommitPaneTest.fixture()
     const open = vi.fn(() => null)

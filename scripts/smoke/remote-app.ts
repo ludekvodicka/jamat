@@ -41,6 +41,7 @@ import {
   type RemoteControlAgentsPort,
   type RemoteControlProjectsPort,
   type RemoteControlSessionGroupsPort,
+  type RemoteControlHostPort,
   type RemoteControlSessionsPort,
   type RemoteControlTabsPort,
   type RemoteControlTranscriptPort,
@@ -79,6 +80,11 @@ import type {
   SessionCreateSpec,
   SessionDetailsSaved,
   SessionDetailsUpdate,
+  SessionHistoryOpenSpec,
+  SessionHistoryReference,
+  SessionScriptRequest,
+  SessionScriptsReading,
+  SessionFinishPress,
   SessionsOpResult,
   SessionsSnapshot,
   SessionWorktreeState,
@@ -86,6 +92,8 @@ import type {
   TerminalComposerContentResult,
   TerminalComposerResult,
   TerminalFrame,
+  WorktreeResultDto,
+  WorktreeResultsFilter,
 } from '../../lib-orchestrator/sessionManager/sessionManagerApi.types.js'
 import type {
   TerminalAttachOwner,
@@ -1021,6 +1029,7 @@ class SmokeTargetApp {
       system: { identity: () => identity },
       projects: SmokeRemoteAppPorts.projects(),
       sessions: this.remoteSessions,
+      host: this.sessions,
       groups: SmokeRemoteAppPorts.groups(),
       tabs: SmokeRemoteAppPorts.tabs(),
       terminal,
@@ -1207,6 +1216,35 @@ class SmokeSessionsObserver implements RemoteControlSessionsPort {
     return this.sessions.discardWorktree(sessionId)
   }
 
+  finishWorktreeSession(sessionId: string, press: SessionFinishPress): Promise<SessionsOpResult<{ sessionId: string; actionId: string | null }>> {
+    return this.sessions.finishWorktreeSession(sessionId, press)
+  }
+
+  updateMain(sessionId: string, confirmLive: readonly string[] | undefined, requestedBy: SessionFinishPress['requestedBy'])
+    : Promise<SessionsOpResult<{ sessionId: string; actionId: string }>> {
+    return this.sessions.updateMain(sessionId, confirmLive, requestedBy)
+  }
+
+  openActionReview(runId: string): Promise<SessionsOpResult<{ commitSessionId: string; scopeRoot: string }>> {
+    return this.sessions.openActionReview(runId)
+  }
+
+  worktreeResults(filter: WorktreeResultsFilter): Promise<SessionsOpResult<{ results: WorktreeResultDto[] }>> {
+    return this.sessions.worktreeResults(filter)
+  }
+
+  notifies(filter: { sessionId?: string }): ReturnType<SessionManager['notifies']> {
+    return this.sessions.notifies(filter)
+  }
+
+  acknowledgeWorktreeResult(actionId: string): Promise<SessionsOpResult<{ actionId: string }>> {
+    return this.sessions.acknowledgeWorktreeResult(actionId)
+  }
+
+  proposeCommit(sessionId: string, message: string): Promise<SessionsOpResult<{ scopeRoot: string }>> {
+    return this.sessions.proposeCommit(sessionId, message)
+  }
+
   retrySetup(sessionId: string, acknowledgeSetup?: string): Promise<SessionsOpResult> {
     return this.sessions.retrySetup(sessionId, acknowledgeSetup)
   }
@@ -1215,11 +1253,51 @@ class SmokeSessionsObserver implements RemoteControlSessionsPort {
     return this.sessions.requestWorktreeCleanup(sessionId)
   }
 
+  forkSession(sessionId: string, options?: { name?: string }): Promise<SessionsOpResult<{ sessionId: string; tabTitle: string }>> {
+    return this.sessions.forkSession(sessionId, options)
+  }
+
+  restartSession(sessionId: string): Promise<SessionsOpResult> {
+    return this.sessions.restartSession(sessionId)
+  }
+
+  adoptOrphan(runtimeSessionId: string): Promise<SessionsOpResult> {
+    return this.sessions.adoptOrphan(runtimeSessionId)
+  }
+
+  sessionReference(sessionId: string): Promise<SessionsOpResult<{ text: string }>> {
+    return this.sessions.sessionReference(sessionId)
+  }
+
+  historyReferences(directory: SessionHistoryOpenSpec['directory']): Promise<SessionsOpResult<{ references: SessionHistoryReference[] }>> {
+    return this.sessions.historyReferences(directory)
+  }
+
+  openHistorySession(spec: SessionHistoryOpenSpec): Promise<SessionsOpResult<{ sessionId: string; tabTitle: string }>> {
+    return this.sessions.openHistorySession(spec)
+  }
+
+  nextSessionNumber(projectPath: string): Promise<SessionsOpResult<{ token: string }>> {
+    return this.sessions.nextSessionNumber(projectPath)
+  }
+
+  allocateSessionNumber(projectPath: string): Promise<SessionsOpResult<{ token: string }>> {
+    return this.sessions.allocateSessionNumber(projectPath)
+  }
+
   worktreeOf(sessionId: string): Promise<SessionsOpResult<SessionWorktreeState>> {
     return this.sessions.worktreeOf(sessionId)
   }
 
-  setSessionColor(sessionId: string, color: SessionColorName): Promise<SessionsOpResult> {
+  runScript(parentId: string, request: SessionScriptRequest): Promise<SessionsOpResult<{ runId: string }>> {
+    return this.sessions.runScript(parentId, request)
+  }
+
+  scriptsOf(parentId: string, runId?: string): Promise<SessionsOpResult<SessionScriptsReading>> {
+    return this.sessions.scriptsOf(parentId, runId)
+  }
+
+  setSessionColor(sessionId: string, color: SessionColorName | null): Promise<SessionsOpResult> {
     return this.sessions.setSessionColor(sessionId, color)
   }
 
@@ -1319,6 +1397,7 @@ class SmokeControllerApp {
       system: { identity: () => identity },
       projects: SmokeRemoteAppPorts.projects(),
       sessions: unavailableSessions,
+      host: SmokeRemoteAppPorts.noHost(),
       groups: SmokeRemoteAppPorts.groups(),
       tabs: SmokeRemoteAppPorts.tabs(),
       terminal,
@@ -1536,6 +1615,35 @@ class SmokeUnavailableSessions implements RemoteControlSessionsPort, RemoteContr
     return Promise.resolve(SmokeUnavailableSessions.refused())
   }
 
+  finishWorktreeSession(_sessionId: string, _press: SessionFinishPress): Promise<SessionsOpResult<{ sessionId: string; actionId: string | null }>> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  updateMain(_sessionId: string, _confirmLive: readonly string[] | undefined, _requestedBy: SessionFinishPress['requestedBy'])
+    : Promise<SessionsOpResult<{ sessionId: string; actionId: string }>> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  openActionReview(_runId: string): Promise<SessionsOpResult<{ commitSessionId: string; scopeRoot: string }>> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  worktreeResults(_filter: WorktreeResultsFilter): Promise<SessionsOpResult<{ results: WorktreeResultDto[] }>> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  notifies(_filter: { sessionId?: string }): ReturnType<SessionManager['notifies']> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  acknowledgeWorktreeResult(_actionId: string): Promise<SessionsOpResult<{ actionId: string }>> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  proposeCommit(_sessionId: string, _message: string): Promise<SessionsOpResult<{ scopeRoot: string }>> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
   retrySetup(_sessionId: string, _acknowledgeSetup?: string): Promise<SessionsOpResult> {
     return Promise.resolve(SmokeUnavailableSessions.refused())
   }
@@ -1544,11 +1652,51 @@ class SmokeUnavailableSessions implements RemoteControlSessionsPort, RemoteContr
     return Promise.resolve(SmokeUnavailableSessions.refused())
   }
 
+  forkSession(_sessionId: string): Promise<SessionsOpResult<{ sessionId: string; tabTitle: string }>> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  restartSession(_sessionId: string): Promise<SessionsOpResult> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  adoptOrphan(_runtimeSessionId: string): Promise<SessionsOpResult> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  sessionReference(_sessionId: string): Promise<SessionsOpResult<{ text: string }>> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  historyReferences(): Promise<SessionsOpResult<{ references: SessionHistoryReference[] }>> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  openHistorySession(): Promise<SessionsOpResult<{ sessionId: string; tabTitle: string }>> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  nextSessionNumber(_projectPath: string): Promise<SessionsOpResult<{ token: string }>> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  allocateSessionNumber(_projectPath: string): Promise<SessionsOpResult<{ token: string }>> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
   worktreeOf(_sessionId: string): Promise<SessionsOpResult<SessionWorktreeState>> {
     return Promise.resolve(SmokeUnavailableSessions.refused())
   }
 
-  setSessionColor(_sessionId: string, _color: SessionColorName): Promise<SessionsOpResult> {
+  runScript(_parentId: string, _request: SessionScriptRequest): Promise<SessionsOpResult<{ runId: string }>> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  scriptsOf(_parentId: string, _runId?: string): Promise<SessionsOpResult<SessionScriptsReading>> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  setSessionColor(_sessionId: string, _color: SessionColorName | null): Promise<SessionsOpResult> {
     return Promise.resolve(SmokeUnavailableSessions.refused())
   }
 
@@ -1746,6 +1894,28 @@ class SmokeRemoteAppPorts {
           available: true,
         },
       }),
+      getConfig: () => Promise.resolve({ ok: true, value: [] }),
+      saveConfig: () => Promise.resolve({ ok: false, code: 'catalog-latched', detail: 'this smoke keeps no catalog' }),
+      listProjectSessions: () => Promise.resolve({ ok: true, value: { claude: [], codex: [], merged: [] } }),
+      createProject: () => Promise.resolve({ ok: false, code: 'category-not-found', detail: 'this smoke keeps no catalog' }),
+      renameProject: () => Promise.resolve({ ok: false, code: 'category-not-found', detail: 'this smoke keeps no catalog' }),
+      moveProjectPrefix: () => Promise.resolve({ ok: false, code: 'category-not-found', detail: 'this smoke keeps no catalog' }),
+      archiveProject: () => Promise.resolve({ ok: false, code: 'category-not-found', detail: 'this smoke keeps no catalog' }),
+      previewDelete: () => Promise.resolve({ ok: false, code: 'category-not-found', detail: 'this smoke keeps no catalog' }),
+      executeDelete: () => Promise.resolve({ ok: false, code: 'stale-preview', detail: 'this smoke keeps no catalog' }),
+    }
+  }
+
+  /** The controller side runs no Host of its own. */
+  static noHost(): RemoteControlHostPort {
+    const refused = (): Promise<SessionsOpResult> =>
+      Promise.resolve({ ok: false, code: 'host-unreachable', detail: 'controller smoke has no local Host' })
+    return {
+      debugStatus: () => { throw new Error('controller smoke has no local Host') },
+      pingHost: () => Promise.reject(new Error('controller smoke has no local Host')),
+      startHost: refused,
+      restartHost: refused,
+      stopHost: refused,
     }
   }
 
@@ -1755,7 +1925,11 @@ class SmokeRemoteAppPorts {
    * assignment is accepted and forgotten.
    */
   static groups(): RemoteControlSessionGroupsPort {
-    return { read: () => new Map(), assign: (_sessionId, group) => ({ ok: true, value: { group } }) }
+    return {
+      read: () => new Map(),
+      assign: (_sessionId, group) => ({ ok: true, value: { group } }),
+      inherit: () => undefined,
+    }
   }
 
   static tabs(): RemoteControlTabsPort {

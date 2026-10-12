@@ -7,6 +7,7 @@ import type {
 import type { AppClientUiBridge, IpcResult } from '../../../../shared/appClientUiIpc'
 import type { FileChangesViewModel } from '../../../fileViewer/fileViewerPanel.types'
 import { TerminalPostMortem } from './terminalPostMortem'
+import { ControlBridgeFixture } from '../../../ipc/fixtures/controlBridgeFixture'
 
 /**
  * The block a panel shows once the Host no longer has the runtime this session died on. Its three
@@ -36,12 +37,18 @@ describe('app-client-ui/renderer/panels/terminal/terminalPostMortem', () => {
     answer = () => undefined
     pending = new Promise((resolve) => { answer = resolve })
     const bridge = {
-      sessionTranscript: {
-        get: (sessionId: string) => {
-          reads.push(sessionId)
-          return pending
+      control: ControlBridgeFixture.routes({
+        // The transcript as the control API answers it: the reading inside, for the session asked about.
+        'sessions.transcript': {
+          value: async (body: { session: { sessionId: string } }) => {
+            reads.push(body.session.sessionId)
+            const reading = await pending
+            return reading.ok
+              ? { ok: true, value: { sessionId: body.session.sessionId, transcriptContentUntrusted: true, reading: reading.value } }
+              : reading
+          },
         },
-      },
+      }),
     }
     ;(window as unknown as { appClient: AppClientUiBridge })
       .appClient = bridge as unknown as AppClientUiBridge

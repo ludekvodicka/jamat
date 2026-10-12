@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import type { AppClientUiBridge } from '../../../shared/appClientUiIpc'
 import type { TerminalTarget } from '../../../shared/terminalTarget'
@@ -8,6 +8,7 @@ import { CreateScreenModel } from './create/createScreenModel'
 import { LauncherFixtures } from './fixtures/launcherFixtures'
 import { LauncherEffects, type LauncherPorts } from './launcherEffects'
 import type { LauncherInput } from './projects/launcherModel'
+import { ControlBridgeFixture } from '../../ipc/fixtures/controlBridgeFixture'
 
 /**
  * The I/O layer of the launcher, and the one thing about it that cannot be seen from the models: an
@@ -21,34 +22,17 @@ describe('app-client-ui/renderer/overlays/launcher/launcherEffects', () => {
 
   /** Only what a history read touches; everything else on the bridge would be noise here. */
   function install(answer: 'ok' | 'refused' | 'unreachable'): void {
-    const sessions = (): Promise<unknown> => {
-      if (answer === 'unreachable')
-        return Promise.resolve({ ok: false as const, error: 'the main process is gone' })
-      if (answer === 'refused')
-        return Promise.resolve({
-          ok: true as const,
-          value: { ok: false as const, code: 'not-found', detail: 'no such project' },
-        })
-      return Promise.resolve({
-        ok: true as const,
-        value: { ok: true as const, value: { merged: [], claude: [], codex: [] } },
-      })
-    }
-    const historyReferences = (): Promise<unknown> => Promise.resolve({
-      ok: true as const,
-      value: { ok: true as const, value: { references: [] } },
-    })
-    ;(window as unknown as {
-      appClient: {
-        projects: Pick<AppClientUiBridge['projects'], 'sessions'>
-        sessions: Pick<AppClientUiBridge['sessions'], 'historyReferences'>
-      }
-    }).appClient = {
-      projects: { sessions } as Pick<AppClientUiBridge['projects'], 'sessions'>,
-      sessions: {
-        historyReferences,
-      } as Pick<AppClientUiBridge['sessions'], 'historyReferences'>,
-    }
+    const control = new ControlBridgeFixture()
+      .on('sessions.historyReferences', { ok: true, value: { references: [] } })
+    if (answer === 'unreachable') control.failChannel('projects.sessions', 'the main process is gone')
+    else if (answer === 'refused')
+      control.on('projects.sessions', ControlBridgeFixture.library({ ok: false, code: 'not-found', detail: 'no such project' }))
+    else control.on('projects.sessions', { ok: true, value: { merged: [], claude: [], codex: [] } })
+    installControl(control)
+  }
+
+  function installControl(control: ControlBridgeFixture): void {
+    ;(window as unknown as { appClient: Pick<AppClientUiBridge, 'control'> }).appClient = { control: control.bridge() }
   }
 
   async function read(answer: 'ok' | 'refused' | 'unreachable'): Promise<CreateScreenInput[]> {
@@ -85,15 +69,8 @@ describe('app-client-ui/renderer/overlays/launcher/launcherEffects', () => {
   })
 
   it('returns the sort that produced a project listing', async () => {
-    const list = vi.fn(async () => ({
-      ok: true as const,
-      value: { ok: true as const, value: LauncherFixtures.web() },
-    }))
-    ;(window as unknown as {
-      appClient: { projects: Pick<AppClientUiBridge['projects'], 'list'> }
-    }).appClient = {
-      projects: { list } as Pick<AppClientUiBridge['projects'], 'list'>,
-    }
+    const control = new ControlBridgeFixture().on('projects.listing', { ok: true, value: LauncherFixtures.web() })
+    installControl(control)
     const reported: LauncherInput[] = []
 
     await LauncherEffects.run(
@@ -101,7 +78,7 @@ describe('app-client-ui/renderer/overlays/launcher/launcherEffects', () => {
       { dispatch: (input: LauncherInput) => reported.push(input) } as unknown as LauncherPorts,
     )
 
-    expect(list).toHaveBeenCalledWith('web', 'alpha')
+    expect(control.bodiesOf('projects.listing')).toEqual([{ categoryId: 'web', sort: 'alpha' }])
     expect(reported).toEqual([{
       input: 'projectsLoaded',
       categoryId: 'web',
@@ -111,12 +88,7 @@ describe('app-client-ui/renderer/overlays/launcher/launcherEffects', () => {
   })
 
   it('returns the category and sort that a project listing failure belongs to', async () => {
-    const list = vi.fn(async () => ({ ok: false as const, error: 'bridge down' }))
-    ;(window as unknown as {
-      appClient: { projects: Pick<AppClientUiBridge['projects'], 'list'> }
-    }).appClient = {
-      projects: { list } as Pick<AppClientUiBridge['projects'], 'list'>,
-    }
+    installControl(new ControlBridgeFixture().failChannel('projects.listing', 'bridge down'))
     const reported: LauncherInput[] = []
 
     await LauncherEffects.run(

@@ -4,8 +4,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type {
   CatalogCategoryDto,
 } from '../../../../../../lib-orchestrator/projectManager/projectManagerApi.types'
-import type { AppClientUiBridge } from '../../../../../shared/appClientUiIpc'
+import type { AppClientUiBridge, IpcResult } from '../../../../../shared/appClientUiIpc'
 import { ProjectsSettingsTab } from './projectsSettingsTab'
+import { ControlBridgeFixture } from '../../../../ipc/fixtures/controlBridgeFixture'
 
 describe('app-client-ui/renderer/overlays/configuration/tabs/projects/projectsSettingsTab', () => {
   function roots(): CatalogCategoryDto[] {
@@ -25,19 +26,24 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/projects/projectsSe
     private saveAnswer: unknown = { ok: true, value: { ok: true, value: undefined } }
     private pickAnswer: unknown = { ok: true, value: null }
 
+    /** What the catalog read answers; a test swaps it to read an empty or unreadable catalog. */
+    getConfig: () => Promise<unknown> = () => Promise.resolve({ ok: true, value: { ok: true, value: roots() } })
+
     install(): void {
       const bridge = {
-        projects: {
-          getConfig: () => Promise.resolve({ ok: true, value: { ok: true, value: roots() } }),
-          saveConfig: (candidate: CatalogCategoryDto[]) => {
-            this.saved.push(candidate)
-            return Promise.resolve(this.saveAnswer)
+        control: ControlBridgeFixture.routes({
+          'projects.config': { library: () => this.getConfig() as Promise<IpcResult<unknown>> },
+          'projects.saveConfig': {
+            library: (body: { categories: CatalogCategoryDto[] }) => {
+              this.saved.push(body.categories)
+              return Promise.resolve(this.saveAnswer as IpcResult<unknown>)
+            },
           },
-        },
+        }),
         dialog: { pickDirectory: () => Promise.resolve(this.pickAnswer) },
       }
       ;(window as unknown as { appClient: unknown }).appClient = bridge as unknown as
-        Pick<AppClientUiBridge, 'projects' | 'dialog'>
+        Pick<AppClientUiBridge, 'control' | 'dialog'>
     }
 
     refusesSaveWith(code: string, detail: string): this {
@@ -252,8 +258,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/projects/projectsSe
   it('says why the list is empty rather than drawing nothing', async () => {
     const stub = new BridgeStub()
     stub.install()
-    ;(window as unknown as { appClient: { projects: { getConfig(): unknown } } }).appClient.projects
-      .getConfig = () => Promise.resolve({ ok: true, value: { ok: true, value: [] } })
+    stub.getConfig = () => Promise.resolve({ ok: true, value: { ok: true, value: [] } })
 
     const view = render(<ProjectsSettingsTab onDirtyChange={vi.fn()} />)
 
@@ -423,10 +428,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/projects/projectsSe
   it('shows a catalog that could not be read, and can be asked to read it again', async () => {
     const stub = new BridgeStub()
     stub.install()
-    const projects = (window as unknown as {
-      appClient: { projects: { getConfig(): unknown } }
-    }).appClient.projects
-    projects.getConfig = () => Promise.resolve({ ok: false, error: 'main process is gone' })
+    stub.getConfig = () => Promise.resolve({ ok: false, error: 'main process is gone' })
 
     const view = render(<ProjectsSettingsTab onDirtyChange={vi.fn()} />)
 
@@ -434,7 +436,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/projects/projectsSe
       .toContain('The main process did not answer: main process is gone'))
     expect(view.container.querySelector('.jamat-configuration-projects__row')).toBeNull()
 
-    projects.getConfig = () => Promise.resolve({ ok: true, value: { ok: true, value: roots() } })
+    stub.getConfig = () => Promise.resolve({ ok: true, value: { ok: true, value: roots() } })
     fireEvent.click(buttonNamed(view.container, 'Reload'))
 
     await waitFor(() => expect(labels(view.container))

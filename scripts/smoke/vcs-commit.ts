@@ -41,6 +41,7 @@ class SmokeVcsCommit extends SmokeHarness {
     await this.checkExplicitScopes(message)
     await this.checkSvnKeptLocalDeletion(message)
     await this.checkSvnGitIgnoredDirectory(message)
+    await this.checkSvnNodeOnlyDirectory(message)
     console.log(`\nsmoke-vcs-commit: ${this.passed} checks passed`)
   }
 
@@ -116,6 +117,67 @@ class SmokeVcsCommit extends SmokeHarness {
   }
 
   /**
+   * A product group directory reviewed for its own `svn:ignore`: r345 showed every change below it
+   * checked, and the person's Commit published 123 paths of other sessions' unfinished work. The
+   * node-only target shows that work unchecked, commits the property alone, and an out-of-date
+   * retry updates that node and nothing of the work below it.
+   */
+  private async checkSvnNodeOnlyDirectory(message: string): Promise<void> {
+    const repository = join(this.root, 'node-repository')
+    const created = await new CommandInvoker().run({ command: 'svnadmin', args: ['create', repository], cwd: this.root, env: process.env })
+    if (created.failure !== null || created.code !== 0) throw new Error(created.stderr)
+    const working = join(this.root, 'node-working')
+    const other = join(this.root, 'node-other')
+    await this.svnRun(this.root, ['checkout', pathToFileURL(repository).href, working])
+    const group = join(working, 'Group')
+    await mkdir(join(group, 'Project'), { recursive: true })
+    await writeFile(join(group, 'Project', 'work.txt'), 'base\n')
+    await this.svnRun(working, ['add', '--', 'Group'])
+    await this.svnRun(working, ['commit', '--file', message])
+    await this.svnRun(working, ['update'])
+    await this.svnRun(this.root, ['checkout', pathToFileURL(repository).href, other])
+    await writeFile(join(other, 'Group', 'incoming.txt'), 'incoming\n')
+    await this.svnRun(other, ['add', '--', join(other, 'Group', 'incoming.txt')])
+    await this.svnRun(other, ['commit', '--file', message])
+    await this.svnRun(group, ['propset', 'svn:ignore', 'data', '--', '.'])
+    await writeFile(join(group, 'Project', 'work.txt'), 'unfinished\n')
+    await writeFile(join(group, 'Project', 'draft.txt'), 'unfinished\n')
+    const manager = new VersioningCommitManager({
+      messages: new VersioningCommitMessageStore(join(this.root, 'node-messages.json'), (detail) => console.error(detail)),
+      sessions: { workingContext: async () => ({ ok: true, value: { sessionId: 'node', cwd: working, agent: null, worktree: null } }), settleVcs: () => {} },
+      vcsStatus: new VcsStatusView(),
+      fileAccess: (_owner, snapshot, file) => this.files.fileAccess(snapshot, file),
+      snapshotOf: (_owner, snapshot) => this.files.workingSnapshot(snapshot),
+      git: this.commits, svn: this.svnCommits,
+      tortoise: { open: async () => { throw new Error('Unexpected Tortoise fallback') } }, onChanged: () => {},
+    })
+    const prepared = await manager.prepare('node', 'svn', null, null, [{ path: group, depth: 'empty' }])
+    if (!prepared.ok) throw new Error(prepared.detail)
+    manager.attach(prepared.value.draftId, 'owner')
+    const read = await this.files.workingTree({ sessionId: 'node', cwd: prepared.value.scopeRoot, agent: null, worktree: null }, 'svn', true)
+    if (!read.ok) throw new Error(read.detail)
+    const snapshot = manager.files('owner', prepared.value.draftId, read.value)
+    const checked = manager.checkedPaths('owner', prepared.value.draftId, snapshot)
+    this.check('A node-only directory review shows the work below it and checks only the directory row',
+      prepared.value.scopeRoot === group && JSON.stringify(checked) === JSON.stringify([group])
+      && snapshot.entries.some((entry) => entry.path === join(group, 'Project', 'work.txt'))
+      && snapshot.entries.some((entry) => entry.path === join(group, 'Project', 'draft.txt')))
+    const result = await manager.run('owner', { draftId: prepared.value.draftId, snapshotId: snapshot.snapshotId,
+      fileIds: snapshot.entries.filter((entry) => checked?.includes(entry.path)).map((entry) => entry.fileId), message: await readFile(message, 'utf8') })
+    if (!result.ok) throw new Error(result.detail)
+    const log = await this.svnRun(working, ['log', '--verbose', '-r', result.revision, pathToFileURL(repository).href])
+    const phase = manager.read('owner', prepared.value.draftId)?.phase
+    this.check('The out-of-date node commit published the property alone after updating that node only',
+      phase?.kind === 'done' && phase.output.includes('Updating')
+      && (await this.svnRun(working, ['propget', 'svn:ignore', `${pathToFileURL(repository).href}/Group`])).trim() === 'data'
+      && log.includes('/Group') && !log.includes('/Group/Project')
+      && (await this.svnRun(working, ['status', '--', join(group, 'Project', 'work.txt')])).trim().startsWith('M')
+      && (await this.svnRun(working, ['status', '--', join(group, 'Project', 'draft.txt')])).trim().startsWith('?')
+      && await readFile(join(group, 'incoming.txt'), 'utf8').then(() => false, () => true))
+    manager.release(prepared.value.draftId, 'owner')
+  }
+
+  /**
    * A project's own Git can ignore what SVN versions: a public mirror excludes `/.aidocs/`, while SVN
    * keeps it. Git then lists nothing inside a new `.aidocs` directory, the review drew the directory
    * alone, and the commit published an empty directory (applications/Jamat#35, r158 and r162).
@@ -160,8 +222,10 @@ class SmokeVcsCommit extends SmokeHarness {
         this.check('Other file lists evict the shared snapshot while the Markdown commit review stays open',
           this.files.workingSnapshot(snapshot.snapshotId) === null)
       }
+      const checked = manager.checkedPaths('owner', prepared.value.draftId, snapshot)
       const result = await manager.run('owner', { draftId: prepared.value.draftId, snapshotId: snapshot.snapshotId,
-        fileIds: snapshot.entries.filter((entry) => !unchecked.includes(entry.path)).map((entry) => entry.fileId),
+        fileIds: snapshot.entries.filter((entry) => (checked === null || checked.includes(entry.path)) && !unchecked.includes(entry.path))
+          .map((entry) => entry.fileId),
         message: await readFile(message, 'utf8') })
       if (!result.ok) throw new Error(result.detail)
       const committed = manager.status(prepared.value.draftId)?.committedPaths ?? []
@@ -236,7 +300,9 @@ class SmokeVcsCommit extends SmokeHarness {
       const read = await this.files.workingTree({ sessionId: 'selection', cwd: prepared.value.scopeRoot, agent: null, worktree: null }, 'svn', true)
       if (!read.ok) throw new Error(read.detail)
       const snapshot = manager.files('owner', prepared.value.draftId, read.value)
-      this.check('Explicit file preview excludes the modified sibling', !snapshot.entries.some((entry) => entry.path === join(working, 'unchecked.txt')))
+      const checked = manager.checkedPaths('owner', prepared.value.draftId, snapshot) ?? []
+      this.check('Explicit file preview excludes the modified sibling', !snapshot.entries.some((entry) => entry.path === join(working, 'unchecked.txt'))
+        && !checked.includes(join(working, 'unchecked.txt')))
       for (const path of paths) {
         if (absent.includes(path)) continue
         const single = await this.files.workingTree({ sessionId: 'selection', cwd: prepared.value.scopeRoot,
@@ -251,7 +317,7 @@ class SmokeVcsCommit extends SmokeHarness {
             baselineId: single.value.defaultBaseline.baselineId })).ok)
       }
       const result = await manager.run('owner', { draftId: prepared.value.draftId, snapshotId: snapshot.snapshotId,
-        fileIds: snapshot.entries.map((entry) => entry.fileId), message: await readFile(message, 'utf8') })
+        fileIds: snapshot.entries.filter((entry) => checked.includes(entry.path)).map((entry) => entry.fileId), message: await readFile(message, 'utf8') })
       if (!result.ok) throw new Error(result.detail)
       const revision = manager.status(prepared.value.draftId)?.revision
       if (revision === null || revision === undefined) throw new Error('The completed review has no revision')

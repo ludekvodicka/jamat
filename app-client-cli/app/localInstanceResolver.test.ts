@@ -93,6 +93,20 @@ describe('app-client-cli/app/localInstanceResolver', () => {
     await expect(test.resolve({})).resolves.toEqual({ ok: true, value: valid })
   })
 
+  it('matches a newer client whose hello offers optional operations this build does not know', async () => {
+    const newer = {
+      ...LocalInstanceResolverTest.descriptor('newer', 'development'),
+      optionalOperations: ['sessions.transcript'] as const,
+    }
+    const test = new LocalInstanceResolverTest([newer])
+    test.answers.set('newer', { ok: true, value: {
+      ...LocalInstanceResolverTest.hello(newer),
+      optionalOperations: ['sessions.transcript', 'unknown.operation'] as unknown as RemoteControlHelloDto['optionalOperations'],
+    } })
+
+    await expect(test.resolve({})).resolves.toEqual({ ok: true, value: newer })
+  })
+
   it('bounds concurrent identity probes', async () => {
     const descriptors = Array.from({ length: 40 }, (_, index) =>
       LocalInstanceResolverTest.descriptor(`instance-${index}`, 'development'))

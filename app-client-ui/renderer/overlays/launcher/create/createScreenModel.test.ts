@@ -652,17 +652,14 @@ describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', ()
    * also how the number is read back out of the records without a field of its own. No branch: the
    * library decides by versioning mode whether there is one.
    */
-  it('builds the worktree path from the title, and no branch', () => {
+  it('builds the worktree folder from the title, and no branch', () => {
     const run = Run.numbered().on(
       { input: 'nameChanged', name: 'session wizard' },
       { input: 'chooseIsolation', worktree: true },
     )
     const preview = CreateScreenModel.worktreePreviewOf(run.state, '015')
 
-    expect(preview).toEqual({
-      slug: '015-session-wizard',
-      path: 'C:\\Projects\\NodeJs\\AppJamatV3\\.worktrees\\015-session-wizard',
-    })
+    expect(preview).toEqual({ slug: '015-session-wizard', folder: '.worktrees/015-session-wizard' })
   })
 
   it('puts the title on the spec as the slug and never a base ref', () => {
@@ -695,12 +692,22 @@ describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', ()
     expect(shell.agent).toBeUndefined()
   })
 
-  it('refuses a worktree outside a catalog project, and says so', () => {
-    const run = Run.opened({ mode: 'adHoc', path: 'D:\\w' })
-      .on({ input: 'chooseIsolation', worktree: true })
+  /**
+   * Whether the directory can carry a worktree is the library's owner rule, so the card offers one
+   * for any directory and shows the library's refusal as the submit error.
+   */
+  it('offers a worktree for an ad-hoc directory and sends it with the directory, and shows the library refusal', () => {
+    const run = Run.opened({ mode: 'adHoc', path: 'D:\\w\\src' })
+      .on({ input: 'nameChanged', name: 'fix' }, { input: 'chooseIsolation', worktree: true })
 
-    expect(CreateScreenModel.worktreeRefusal(run.state)).toBe('a worktree needs a catalog project')
-    expect(run.state.worktree).toBe(false)
+    expect(CreateScreenModel.worktreeRefusal(run.state)).toBeNull()
+    expect(run.state.worktree).toBe(true)
+    expect(CreateScreenModel.worktreePreviewOf(run.state, null)).toEqual({ slug: 'fix', folder: '.worktrees/fix' })
+    expect(CreateScreenModel.specOf(run.state, null)).toMatchObject({ directory: { mode: 'adHoc', path: 'D:\\w\\src' }, worktree: { slug: 'fix' } })
+
+    const detail = 'checkpoints mode makes SVN worktrees and D:\\w\\src is in no SVN working copy'
+    const refused = run.on({ input: 'submitFailed', code: 'invalid-spec', detail })
+    expect(refused.state.submitError).toMatchObject({ code: 'invalid-spec', detail })
   })
 
   /**

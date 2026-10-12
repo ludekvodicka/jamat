@@ -3,7 +3,6 @@ import { NodeSetupDetector } from './detectors/nodeSetupDetector'
 import { PythonSetupDetector } from './detectors/pythonSetupDetector'
 import { RustSetupDetector } from './detectors/rustSetupDetector'
 import type {
-  DeclaredSetup,
   PlatformSettingsValue,
   SetupDetector,
   SetupResolution,
@@ -12,8 +11,7 @@ import type {
 } from './projectSetup.types'
 import { SetupFamilies } from './setupFamilies'
 import { SetupPaths } from './setupPaths'
-import { SetupTrustStore } from './setupTrust'
-import { WorktreeConfig } from './worktreeConfig'
+import type { WorktreeConfigRead } from './worktreeConfig'
 
 /**
  * The member's whole surface: hand it a project root, hear what the project is and what installs its
@@ -27,8 +25,8 @@ import { WorktreeConfig } from './worktreeConfig'
  *
  * **That first tier is also the only foreign one, and `origin` is what says so.** A `.worktree.json`
  * arrives with a clone and was written by whoever authored the repository, while the other two tiers
- * are this machine's own answers. `declaredSetup` is how a caller asks about it before running
- * anything, and `acknowledgeSetup` is how a person's answer is remembered.
+ * are this machine's own answers. Whether a person agreed to run it is not this class's question:
+ * `CommandAgreement` in the session manager asks it over every command the file declares.
  *
  * Ambiguity anywhere fails everything. A repository of two families where one of them cannot be
  * decided would otherwise be provisioned half installed, which is a worktree that is broken quietly
@@ -38,22 +36,16 @@ export class ProjectSetupManager {
   /** Fixed array, order binding: a repository of several families installs in this order. */
   private readonly detectors: readonly SetupDetector[]
   private readonly platformSettingsOf: () => PlatformSettingsValue
-  private readonly trust: SetupTrustStore
 
   constructor(deps: {
-    /** Machine state, not configuration: what a person answered here does not travel with a config
-     *  directory copied to another machine. */
-    trustFile: string
     /**
      * This machine's tier, read per call rather than captured. It arrives as a function because the
      * client owns the file it lives in: the manager decides the command and never where the option
      * came from, the same split `versioningModeOf` already makes for the session manager.
      */
     platformSettingsOf: () => PlatformSettingsValue
-    report?: (message: string) => void
   }) {
     this.platformSettingsOf = deps.platformSettingsOf
-    this.trust = SetupTrustStore.load(deps.trustFile, deps.report)
     this.detectors = [
       new NodeSetupDetector(),
       new PythonSetupDetector(),
@@ -65,9 +57,11 @@ export class ProjectSetupManager {
   /**
    * Read in the main copy, run in the worktree: the steps come back with repository-relative
    * directories, so the caller maps them into whichever worktree it just created.
+   *
+   * `config` is what the project's `.worktree.json` says about `setup`, read by the caller: the caller
+   * checks the agreement over that same read, so what resolves here is what was agreed to.
    */
-  async resolve(projectRoot: string, repositoryRoot: string): Promise<SetupResolution> {
-    const config = await WorktreeConfig.read(projectRoot)
+  async resolve(projectRoot: string, repositoryRoot: string, config: WorktreeConfigRead): Promise<SetupResolution> {
     if (!config.ok) return { kind: 'none', reason: config.problem }
     // The step's directory is repository-relative or there is no step: a project outside the
     // repository its worktree was cut from would otherwise be installed in the real checkout.
@@ -106,28 +100,6 @@ export class ProjectSetupManager {
         reason: 'no known project family detected; add a .worktree.json with a "setup" array',
       }
     return { kind: 'setup', origin: 'machine', steps }
-  }
-
-  /**
-   * What the project itself declares, and whether this machine has agreed to run it. Null when the
-   * project declares nothing of its own - a damaged file included, because a file that cannot be read
-   * cannot be agreed to either, and `resolve` is where that refusal is already spelled out.
-   *
-   * This is the one question that can be answered before a worktree exists: `.worktree.json` is read
-   * at the project root, and the repository root the steps are relative to matters only once they
-   * are about to run.
-   */
-  async declaredSetup(projectRoot: string): Promise<DeclaredSetup | null> {
-    const config = await WorktreeConfig.read(projectRoot)
-    if (!config.ok || !config.value || config.value.setup.length === 0) return null
-    const commands = config.value.setup
-    const hash = SetupTrustStore.hashOf(commands)
-    return { commands, hash, acknowledged: this.trust.acknowledgedHashOf(projectRoot) === hash }
-  }
-
-  /** Remembered per project AND per command list, so moving a command asks the question again. */
-  acknowledgeSetup(projectRoot: string, hash: string): void {
-    this.trust.acknowledge(projectRoot, hash)
   }
 
   /**

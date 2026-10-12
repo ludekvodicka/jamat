@@ -1,21 +1,37 @@
 import type { RemoteControlConst, RemoteControlLocalConst } from './remoteControlProtocol'
 
 import type {
+  CatalogCategoryDto,
   CategoryInfo,
+  DeletePreview,
+  DeleteReport,
+  ProjectEntry,
   ProjectListResult,
+  ProjectSessionsResult,
   ProjectsOpResult,
+  RelocationReport,
 } from '../projectManager/projectManagerApi.types'
 import type {
+  HostDebugStatus,
+  HostPingResult,
   SessionAgentId,
   SessionColorName,
   SessionCreated,
   SessionCreateSpec,
+  SessionDetailsSaved,
+  SessionDetailsUpdate,
   SessionGroup,
+  SessionHistoryOpenSpec,
+  SessionHistoryReference,
   SessionInfo,
+  SessionNotifyDto,
+  SessionScriptRequest,
+  SessionScriptsReading,
   SessionsSnapshot,
   SessionWorktreeState,
   TerminalComposerState,
   TerminalFrame,
+  WorktreeResultDto,
 } from '../sessionManager/sessionManagerApi.types'
 import type { AgentWorkHint } from '../sessionManager/workState/agentWorkInspector.types'
 import type { RuntimeChannel } from '../shared/configIdentity.types'
@@ -62,6 +78,12 @@ export interface RemoteControlDescriptor extends RemoteControlSystemIdentity {
   token: string
   operations: readonly RemoteControlDescriptorOperation[]
   optionalOperations?: readonly RemoteControlOptionalOperation[]
+  /**
+   * The operations the client registered beside the protocol's, by name. A field of its own because a
+   * build validates `optionalOperations` against the names it knows and refuses the whole descriptor
+   * over one it does not; an older build ignores this field and sees the protocol it knows.
+   */
+  registryOperations?: readonly string[]
   localOperations?: readonly RemoteControlLocalOperation[]
   websocket: true
 }
@@ -195,6 +217,13 @@ export interface RemoteControlTabOpenFileDto {
   path: string
 }
 
+/**
+ * One target of a commit review. A string is a file, or a directory with everything below it. The
+ * object names the depth: `empty` is the directory's own node (its property change) and nothing
+ * below it, `infinity` is the same as the string.
+ */
+export type RemoteControlCommitPath = string | { path: string; depth: 'empty' | 'infinity' }
+
 export interface RemoteControlTabOpenCommitDto {
   kind: 'commit-opened'
   commitSessionId?: string
@@ -253,6 +282,11 @@ export interface RemoteControlSessionTranscriptDto {
   sessionId: string
   transcriptContentUntrusted: true
   reading: SessionTranscriptReading
+}
+
+/** A session's script runs; a log is output of a command, so it is untrusted text. */
+export interface RemoteControlSessionScriptsDto extends SessionScriptsReading {
+  logContentUntrusted: true
 }
 
 export interface RemoteControlTerminalPeekDto {
@@ -327,6 +361,72 @@ export interface RemoteControlTerminalDeliverFailureData {
 }
 
 export type RemoteControlEventKind = 'sessions.changed' | 'tabs.changed'
+
+/**
+ * What the activity log carries. `operation.completed` is every successful write, from any caller;
+ * the others are the same changes the WebSocket stream names, plus commit reviews.
+ */
+export type RemoteControlActivityKind =
+  | 'operation.completed' | 'sessions.changed' | 'tabs.changed' | 'commits.changed'
+
+export interface RemoteControlActivityEntry {
+  revision: number
+  kind: RemoteControlActivityKind
+  at: number
+  data: Record<string, unknown>
+}
+
+/** `last` is the `after` of the next read. */
+export interface RemoteControlActivityPage {
+  entries: readonly RemoteControlActivityEntry[]
+  last: number
+  truncated: boolean
+}
+
+/** Who called: a process of this machine over HTTP, a paired computer, or this client's own window. */
+export type RemoteControlCallerKind = 'local-cli' | 'remote-peer' | 'window'
+
+export type RemoteControlOperationKind = 'read' | 'write'
+
+/** The envelope of any registered operation, the client's own included, read without its typed map. */
+export type RemoteControlAnswer =
+  | {
+      protocol: RemoteControlProtocol
+      requestId: string | null
+      operation: string | null
+      operationId: string | null
+      ok: true
+      value: unknown
+    }
+  | {
+      protocol: RemoteControlProtocol
+      requestId: string | null
+      operation: string | null
+      operationId: string | null
+      ok: false
+      error: RemoteControlError
+    }
+
+export interface RemoteControlCatalogEntryDto {
+  name: string
+  kind: RemoteControlOperationKind
+  description: string
+  /** The JSON Schema of the body, from the same schema the registry validates with. */
+  inputSchema: unknown
+}
+
+export interface RemoteControlCallRecordDto {
+  at: number
+  /** Null for a request whose operation could not be read. */
+  operation: string | null
+  callerKind: RemoteControlCallerKind
+  callerId: string
+  ok: boolean
+  code: RemoteControlErrorCode | null
+  /** The library's own code behind `code`, where the operation named one. */
+  sourceCode: string | null
+  durationMs: number
+}
 
 export interface RemoteControlEventDto {
   revision: number
@@ -426,9 +526,81 @@ export interface RemoteControlOperationMap {
     request: Record<string, never>
     response: RemoteControlStatusDto
   }
+  /** Every operation this client offers, with its kind, description and the JSON Schema of its body. */
+  'system.operations': {
+    request: Record<string, never>
+    response: { operations: readonly RemoteControlCatalogEntryDto[] }
+  }
+  /** The latest 100 calls of every caller, the window included, oldest first. */
+  'system.calls': {
+    request: Record<string, never>
+    response: { calls: readonly RemoteControlCallRecordDto[] }
+  }
+  /**
+   * The activity log after `after`, waiting at most `waitMs` (30 s) for a first entry. Local only:
+   * the WebSocket `events.subscribe` stays the stream a paired computer and an older CLI read.
+   */
+  'system.events': {
+    request: { after?: number; waitMs?: number }
+    response: RemoteControlActivityPage
+  }
   'projects.list': {
     request: { categoryId?: string; sort?: 'alpha' | 'recent' }
     response: RemoteControlProjectsDto
+  }
+  /** The catalog's roots as the settings edit them. */
+  'projects.config': {
+    request: Record<string, never>
+    response: readonly CatalogCategoryDto[]
+  }
+  /** Replace the catalog's roots; every other section of the config stays as it is. */
+  'projects.saveConfig': {
+    request: { categories: readonly CatalogCategoryDto[] }
+    response: Record<string, never>
+  }
+  'projects.categories': {
+    request: Record<string, never>
+    response: readonly CategoryInfo[]
+  }
+  /**
+   * One category's projects with its groups, as the launcher draws them. `projects.list` flattens
+   * the groups for an older peer; this read keeps them.
+   */
+  'projects.listing': {
+    request: { categoryId: string; sort: 'alpha' | 'recent' }
+    response: ProjectListResult
+  }
+  /** The provider conversations of one project, Claude and Codex. */
+  'projects.sessions': {
+    request: { categoryId: string; projectName: string }
+    response: ProjectSessionsResult
+  }
+  'projects.create': {
+    request: { categoryId: string; name: string; virtualFolderPrefix: string | null }
+    response: ProjectEntry
+  }
+  /** Rename the directory and carry its Claude and Codex history along. */
+  'projects.rename': {
+    request: { categoryId: string; oldName: string; newName: string }
+    response: RelocationReport
+  }
+  'projects.movePrefix': {
+    request: { categoryId: string; name: string; targetPrefix: string | null }
+    response: RelocationReport
+  }
+  'projects.archive': {
+    request: { categoryId: string; name: string }
+    response: RelocationReport
+  }
+  /** What a delete would remove, and the token that alone can confirm it, for five minutes. */
+  'projects.deletePreview': {
+    request: { categoryId: string; name: string }
+    response: DeletePreview
+  }
+  /** Delete the project and its histories; only a preview's token names what goes. */
+  'projects.delete': {
+    request: { token: string }
+    response: DeleteReport
   }
   'sessions.list': {
     request: Record<string, never>
@@ -450,14 +622,22 @@ export interface RemoteControlOperationMap {
    * other step with `conflict` (source code `live-refused`): a script that means to stop a running
    * session never starts the Finish Commit of one that ended meanwhile. An older target refuses the
    * key, so a caller sends it only to a target that offered `sessions.worktree`.
+   *
+   * A worktree whose project declares `scripts.after` runs them first: that press answers success
+   * at once and merges nothing, and the Finish continues by itself once they pass. Commands this
+   * machine has not agreed to are refused with their `setup` agreement in `data`; the caller repeats
+   * the request with that `hash` as `acknowledgeSetup`. Only a target that asked ever meets the key;
+   * the CLI sends it only to a target that offers `sessions.scripts`.
    */
   'sessions.finalize': {
-    request: { session: RemoteControlSessionSelector; expect?: 'stop' }
+    request: { session: RemoteControlSessionSelector; expect?: 'stop'; acknowledgeSetup?: string }
     response: { sessionId: string }
   }
   /**
    * One session's worktree, read from its record: where it stands, where it went once removed, the
-   * SVN finish that runs, the last outcome and the cleanup. Its capability is also the version marker
+   * SVN finish that runs, the last outcome, the cleanup and the receipts of the SVN commits made from
+   * its commit split or into its worktree. A session without a worktree answers its receipts too; a
+   * build before 3.11 leaves `receipts` out. Its capability is also the version marker
    * of `worktree.owner` and `worktree.removeWhenEnded` on a create and of `expect` on a finalize.
    */
   'sessions.worktree': {
@@ -483,6 +663,73 @@ export interface RemoteControlOperationMap {
     response: { sessionId: string }
   }
   /**
+   * One press of the Finish dialog on an SVN worktree: Commit, Keep or Discard. It answers once the
+   * action is written; the stages go on in the client and are read with `sessions.worktree`.
+   * `actionId` is null where nothing goes on. A session that still works is refused with `conflict`
+   * (source code `session-working`) until the caller sends `confirmWorking`; an agreement to the
+   * project's checks travels as `acknowledgeSetup`. A Git worktree takes `discard` only. Local only.
+   */
+  'sessions.finishWorktree': {
+    request: {
+      session: RemoteControlSessionSelector
+      choice: 'commit' | 'discard' | 'keep'
+      acknowledgeSetup?: string
+      confirmWorking?: true
+    }
+    response: { sessionId: string; actionId: string | null }
+  }
+  /**
+   * UPDATE of a main copy as an action of the selected session: a landed row updates the main copy
+   * its worktree was cut from, any other session the main copy it works in. The runs (`svn update`,
+   * the conflict resolver, `svn diff` of what it resolved) are children of that session. Live
+   * sessions in the main copy refuse it with `conflict` (source code `live-sessions`, the sessions
+   * in `data.liveSessions`) until `confirmLive` names exactly them. Local only.
+   */
+  'sessions.updateMain': {
+    request: { session: RemoteControlSessionSelector; confirmLive?: string[] }
+    response: { sessionId: string; actionId: string }
+  }
+  /**
+   * The review run of an SVN action asks for its review: the commit split opens once on its own tab,
+   * for the root the action reviews now, and a second call answers the same review. The run then
+   * waits with `tabs.commitStatus`. `jamat-v3 sessions worktree-review --self --wait` is its only
+   * caller. Local only.
+   */
+  'sessions.worktreeReview': {
+    request: { session: RemoteControlSessionSelector }
+    response: { commitSessionId: string; scopeRoot: string }
+  }
+  /** Local only. Its capability marks support for SessionCreateSpec.notify. */
+  'sessions.notifies': {
+    request: { sessionId?: string }
+    response: { notifies: SessionNotifyDto[] }
+  }
+  /**
+   * The durable results of SVN worktrees, also of sessions removed since: every Finish, Discard, Keep
+   * and cleanup that ended one, oldest first. `tag` matches the create's `worktree.tag`, `sessionId`
+   * the session the worktree belonged to. Its capability is also the version marker of
+   * `worktree.tag` and `worktree.notify` on a create. Local only.
+   */
+  'sessions.worktreeResults': {
+    request: { tag?: string; sessionId?: string; unacknowledged?: true }
+    response: { results: WorktreeResultDto[] }
+  }
+  /** The caller read a result and acted on it: it goes a day later instead of after 30. Local only. */
+  'sessions.acknowledgeWorktreeResult': {
+    request: { actionId: string }
+    response: { actionId: string }
+  }
+  /**
+   * A worker's commit message, stored for its worktree root (or the working copy of its directory)
+   * under its session; nothing opens and nothing is committed. The review of that worktree starts
+   * with it. A message a person already wrote there is refused with `conflict` (source code
+   * `message-edited`). `jamat-v3 commit propose --self` is its caller. Local only.
+   */
+  'sessions.proposeCommit': {
+    request: { session: RemoteControlSessionSelector; message: string }
+    response: { scopeRoot: string }
+  }
+  /**
    * The row's Retry setup after a failed install. An unacknowledged setup is refused with its
    * `setup` agreement in `data`; the caller repeats the request with that `hash` as `acknowledgeSetup`.
    */
@@ -504,6 +751,92 @@ export interface RemoteControlOperationMap {
     response: RemoteControlSessionTranscriptDto
   }
   /**
+   * The script runs of a session, newest first, rows and history together. With `runId`, also the
+   * tail of that run's saved log; a run still going answers `log: null` with `logDetail`, and its
+   * terminal is the place to read it. Local only.
+   */
+  'sessions.scripts': {
+    request: { session: RemoteControlSessionSelector; runId?: string }
+    response: RemoteControlSessionScriptsDto
+  }
+  /**
+   * Run one shell command for a running session, as its child, judged by its exit code. It runs
+   * through the Host, outside the caller's own sandbox. Local only; read the verdict with
+   * `sessions.scripts`.
+   */
+  'sessions.runScript': {
+    request: { session: RemoteControlSessionSelector } & SessionScriptRequest
+    response: { sessionId: string; runId: string }
+  }
+  /** Fork the session's conversation into a new session; `name` replaces the name the fork would take. */
+  'sessions.fork': {
+    request: { session: RemoteControlSessionSelector; name?: string }
+    response: { sessionId: string; tabTitle: string }
+  }
+  /** Stop what runs and resume the same conversation in a fresh process. */
+  'sessions.restart': {
+    request: { session: RemoteControlSessionSelector }
+    response: { sessionId: string }
+  }
+  /** The details dialog's Save: name, note and colour as one write. */
+  'sessions.setDetails': {
+    request: { session: RemoteControlSessionSelector; update: SessionDetailsUpdate }
+    response: SessionDetailsSaved
+  }
+  /** Take a runtime the Host runs and no record names into the list. */
+  'sessions.adoptOrphan': {
+    request: { runtimeSessionId: string }
+    response: { runtimeSessionId: string }
+  }
+  /** The session written down for a second agent: machine, agent, conversation id, directory, transcript. */
+  'sessions.reference': {
+    request: { session: RemoteControlSessionSelector }
+    response: { text: string }
+  }
+  /** The sessions of this list that ran a provider conversation in one project. */
+  'sessions.historyReferences': {
+    request: { directory: SessionHistoryOpenSpec['directory'] }
+    response: { references: SessionHistoryReference[] }
+  }
+  /** Open a provider conversation from the project history as a session, resumed or forked. */
+  'sessions.openHistory': {
+    request: { spec: SessionHistoryOpenSpec }
+    response: { sessionId: string; tabTitle: string }
+  }
+  /** The number the next session of a project would take; takes nothing. */
+  'sessions.nextNumber': {
+    request: { projectPath: string }
+    response: { token: string }
+  }
+  /** Take the next number of a project for a session about to be created. */
+  'sessions.allocateNumber': {
+    request: { projectPath: string }
+    response: { token: string }
+  }
+  /** The Host as this client sees it, without its token. */
+  'host.status': {
+    request: Record<string, never>
+    response: HostDebugStatus
+  }
+  /** One `GET /hello` to the Host, timed. */
+  'host.ping': {
+    request: Record<string, never>
+    response: HostPingResult
+  }
+  'host.start': {
+    request: Record<string, never>
+    response: Record<string, never>
+  }
+  /** Refused unless the running Host is the one the caller saw, so a stale press stops nothing new. */
+  'host.restart': {
+    request: { expectedHostInstanceId: string }
+    response: Record<string, never>
+  }
+  'host.stop': {
+    request: { expectedHostInstanceId: string }
+    response: Record<string, never>
+  }
+  /**
    * What a session LOOKS like after it exists, which a create could already say and nothing could
    * say afterwards. The caller they are for is a scheduler: a worker that finishes its automatic
    * work and starts waiting for a person has become a different kind of session, and the tree is
@@ -514,9 +847,10 @@ export interface RemoteControlOperationMap {
    * once. `color` has no way to say "no colour": clearing one is a person's gesture in the menu and
    * no caller has asked for it.
    */
+  /** `null` takes the colour away, as the row menu's None does; an older target refuses it. */
   'sessions.color': {
-    request: { session: RemoteControlSessionSelector; color: SessionColorName }
-    response: { sessionId: string; color: SessionColorName }
+    request: { session: RemoteControlSessionSelector; color: SessionColorName | null }
+    response: { sessionId: string; color: SessionColorName | null }
   }
   'sessions.group': {
     request: { session: RemoteControlSessionSelector; group: SessionGroup }
@@ -558,7 +892,7 @@ export interface RemoteControlOperationMap {
     response: RemoteControlTabOpenFileDto
   }
   'tabs.openCommit': {
-    request: { session: RemoteControlSessionSelector; vcs: 'svn' | 'git'; scope?: string; paths?: readonly string[]; message?: string }
+    request: { session: RemoteControlSessionSelector; vcs: 'svn' | 'git'; scope?: string; paths?: readonly RemoteControlCommitPath[]; message?: string }
     response: RemoteControlTabOpenCommitDto
   }
   'tabs.commitStatus': {

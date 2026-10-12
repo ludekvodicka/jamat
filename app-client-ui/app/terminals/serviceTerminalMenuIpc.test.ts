@@ -126,7 +126,11 @@ describe('app-client-ui/app/terminals/serviceTerminalMenuIpc', () => {
     const sessions = {
       workingContext: (sessionId: string) => Promise.resolve(sessionId === 'session-gone'
         ? { ok: false as const, code: 'unknown-session', detail: 'no such session' }
-        : { ok: true as const, value: { sessionId, cwd: workspace, agent: null, worktree: null } }),
+        : sessionId === 'session-worktree'
+          // A member of a product group: the session works one level below the worktree root.
+          ? { ok: true as const, value: { sessionId, cwd: join(elsewhere, 'WebMirabiaAdmin'), agent: null,
+            worktree: { worktreePath: elsewhere, repositoryRoot: join('Q:', 'Applications', 'Mirabia'), baseCommit: 'r41', kind: 'svn' } } }
+          : { ok: true as const, value: { sessionId, cwd: workspace, agent: null, worktree: null } }),
     } as unknown as SessionManager
     const terminals = {
       ownsAttach: (sender: WebContents, attachId: string) =>
@@ -420,6 +424,20 @@ describe('app-client-ui/app/terminals/serviceTerminalMenuIpc', () => {
     expect(await invoke('terminal:menu-open-project-vscode', owner, 'session-gone'))
       .toEqual({ ok: true, value: false })
     expect(launcherMock.opens).toHaveLength(1)
+  })
+
+  it('opens the workspace file at the root of a worktree session, never the member it works in', async () => {
+    await writeFile(join(elsewhere, 'Mirabia.code-workspace'), '{}')
+    await writeFile(join(elsewhere, 'Other.code-workspace'), '{}')
+    expect(await invoke('terminal:menu-open-project-vscode', owner, 'session-worktree'))
+      .toEqual({ ok: true, value: true })
+    expect(launcherMock.opens).toEqual([{ path: join(elsewhere, 'Mirabia.code-workspace'), line: null }])
+  })
+
+  it('opens the worktree root when it holds no workspace file', async () => {
+    expect(await invoke('terminal:menu-open-project-vscode', owner, 'session-worktree'))
+      .toEqual({ ok: true, value: true })
+    expect(launcherMock.opens).toEqual([{ path: elsewhere, line: null }])
   })
 
   it('refuses a project launch from an unknown workspace', async () => {

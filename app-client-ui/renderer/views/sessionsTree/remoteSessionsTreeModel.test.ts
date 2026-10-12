@@ -246,6 +246,34 @@ describe('app-client-ui/renderer/views/sessionsTree/remoteSessionsTreeModel', ()
       .toEqual(['shared-session'])
   })
 
+  it('brings the runs of a selected or attached session along, nested under it', () => {
+    const run = (sessionId: string, parentId: string): SessionInfo => ({
+      ...RemoteSessionsTreeFixtures.session(sessionId, `Setup ${parentId}`),
+      script: { parentId, phase: 'before', scriptId: 'setup' },
+    })
+    const sessions = RemoteSessionsTreeFixtures.snapshot([
+      RemoteSessionsTreeFixtures.session('chosen', 'Alpha'),
+      run('chosen-install', 'chosen'),
+      RemoteSessionsTreeFixtures.session('not-chosen', 'Beta'),
+      run('other-install', 'not-chosen'),
+    ])
+    const endpoint = RemoteSessionsTreeFixtures.outbound('profile', 'computer', 'endpoint', 'Computer', sessions)
+    const remote = RemoteSessionsTreeFixtures.remote(
+      [{ ...endpoint, selectedSessionIds: ['chosen'] }],
+      [RemoteSessionsTreeFixtures.inbound('connection-a', 'computer-a', 'endpoint-a', ['chosen'])],
+    )
+
+    const result = RemoteSessionsTreeModel.build(remote, sessions, RemoteSessionsTreeFixtures.view(), new Set(), new Map())
+
+    for (const nodes of [result.outbound[0]?.endpoints[0]?.tree.nodes, result.inbound[0]?.endpoints[0]?.tree.nodes]) {
+      const parent = RemoteSessionsTreeFixtures.sessionNode(nodes)
+      expect(parent.sessionId).toBe('chosen')
+      expect(parent.children.map((child) => child.kind === 'session' ? child.sessionId : child.id))
+        .toEqual(['chosen-install'])
+      expect(RemoteSessionsTreeFixtures.sessionIds(nodes)).toEqual(['chosen', 'chosen-install'])
+    }
+  })
+
   it('keeps an inbound connection visible when it has no active attach', () => {
     const remote = RemoteSessionsTreeFixtures.remote([], [
       RemoteSessionsTreeFixtures.inbound('connection-a', 'computer-a', 'endpoint-a', []),

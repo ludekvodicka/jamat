@@ -1,12 +1,11 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 
 import type { FileViewerDocumentSource } from '../../../lib-orchestrator/fileViewer/fileViewerApi.types'
 import type { PanelSplitFileItem } from '../widgets/tabs/panelSplit'
 import { FileViewerContent } from './fileViewerContent'
 import {
-  FileViewerCopyPathButton,
   FileViewerDiffControl,
-  FileViewerReloadControl,
+  FileViewerGoneNote,
   FileViewerViewControl,
   FileViewerZoomControl,
 } from './fileViewerControls'
@@ -26,6 +25,8 @@ export function FileViewerPane(props: {
   changes: FileChangesViewModel
   workingTree: FileChangesWorkingTreeViewModel
   backPath: string | null
+  /** Raised by the split tab's Reload; each new value reads the file from disk again. */
+  reloadRequest: number
   onBack(): void
   onClose(): void
   onOpenItem(item: PanelSplitFileItem): string | null
@@ -38,6 +39,14 @@ export function FileViewerPane(props: {
     props.workingTree,
   )
   const freshness = useFileViewerFreshness(model.document?.documentId ?? null, model.reload)
+  // The value the pane mounted with is not a request: a freshly mounted pane has just read the file.
+  const servedReload = useRef(props.reloadRequest)
+  const reload = model.reload
+  useEffect(() => {
+    if (servedReload.current === props.reloadRequest) return
+    servedReload.current = props.reloadRequest
+    reload()
+  }, [props.reloadRequest, reload])
   // A file that is gone has nothing left to show; a refusal of any other kind stays readable.
   const onClose = props.onClose
   useEffect(() => { if (model.sourceMissing) onClose() }, [model.sourceMissing, onClose])
@@ -106,8 +115,7 @@ export function FileViewerPane(props: {
               />
             )}
             <FileViewerZoomControl percent={zoomPercent} onChange={changeZoom} />
-            <FileViewerReloadControl missing={freshness.missing} onReload={model.reload} />
-            <FileViewerCopyPathButton documentId={model.document.documentId} />
+            {freshness.missing && <FileViewerGoneNote />}
           </>
         )}
       </div>

@@ -141,6 +141,59 @@ describe('lib-orchestrator/projectSetup/worktreeConfig', () => {
     }
   })
 
+  it('keeps a section owned elsewhere exactly as it was on a save', async () => {
+    const scripts = {
+      before: [{ name: 'codegen', command: 'pnpm codegen' }],
+      after: [{ name: 'tests', command: 'pnpm test', cwd: 'packages/app' }],
+    }
+    const { projectRoot, configFile } = project({ setup: ['npm install'], scripts })
+    expect(await WorktreeConfig.save(projectRoot, ['pnpm install'])).toEqual({ ok: true })
+    expect(JSON.parse(readFileSync(configFile, 'utf8'))).toEqual({ setup: ['pnpm install'], scripts })
+  })
+
+  describe('sectionOf', () => {
+    const accept = (value: unknown) => ({ ok: true as const, value })
+
+    it('reads a missing file and an absent key as nothing declared, without asking the owner', async () => {
+      const coerce = vi.fn(accept)
+      const missing = project()
+      const absent = project({ setup: ['pnpm install'] })
+      expect(WorktreeConfig.sectionOf(await WorktreeConfig.load(missing.projectRoot), 'scripts', coerce))
+        .toEqual({ ok: true, value: null })
+      expect(WorktreeConfig.sectionOf(await WorktreeConfig.load(absent.projectRoot), 'scripts', coerce))
+        .toEqual({ ok: true, value: null })
+      expect(coerce).not.toHaveBeenCalled()
+    })
+
+    it('hands the value and the file to the owner and returns its answer', async () => {
+      const { projectRoot, configFile } = project({ scripts: { before: [] } })
+      const coerce = vi.fn(accept)
+      const loaded = await WorktreeConfig.load(projectRoot)
+      expect(WorktreeConfig.sectionOf(loaded, 'scripts', coerce))
+        .toEqual({ ok: true, value: { before: [] } })
+      expect(coerce).toHaveBeenCalledWith({ before: [] }, configFile)
+      const refused = WorktreeConfig.sectionOf(
+        loaded,
+        'scripts',
+        (_value, file) => ({ ok: false, problem: `${file}: no` }),
+      )
+      expect(refused).toEqual({ ok: false, problem: `${configFile}: no` })
+    })
+
+    // The file is the custodian's to judge, so every owner refuses a broken one in the same words.
+    it('refuses a broken file itself, before the owner sees anything', async () => {
+      const coerce = vi.fn(accept)
+      const broken = project('{ "scripts": ')
+      const notAnObject = project(['pnpm install'])
+      const read = WorktreeConfig.sectionOf(await WorktreeConfig.load(broken.projectRoot), 'scripts', coerce)
+      expect(read).toMatchObject({ ok: false, problem: expect.stringContaining('not valid JSON') })
+      expect(read).toMatchObject({ problem: expect.stringContaining(broken.configFile) })
+      expect(WorktreeConfig.sectionOf(await WorktreeConfig.load(notAnObject.projectRoot), 'scripts', coerce).ok)
+        .toBe(false)
+      expect(coerce).not.toHaveBeenCalled()
+    })
+  })
+
   // Writing over a file that failed to parse would drop the rest of what the user wrote in it.
   it('refuses to write over a file it could not read', async () => {
     const { projectRoot, configFile } = project('{ "dev": ')

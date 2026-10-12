@@ -6,6 +6,7 @@ import type {
 import type { AppClientUiBridge } from '../../../../shared/appClientUiIpc'
 import type { TerminalTarget } from '../../../../shared/terminalTarget'
 import { TerminalTransports } from './terminalTransport'
+import { ControlBridgeFixture } from '../../../ipc/fixtures/controlBridgeFixture'
 
 /**
  * The two channels, as the bridge would answer them: every call recorded, every answer settable.
@@ -45,14 +46,16 @@ class BridgeStub {
       this.calls.push({ method, args })
     }
     const bridge = {
-      sessions: {
-        reopen: (sessionId: string) => {
-          record('reopen', sessionId)
-          return this.localRefusal === null
-            ? local({ ok: true as const })
-            : local({ ok: false as const, ...this.localRefusal })
+      control: ControlBridgeFixture.routes({
+        'sessions.reopen': {
+          library: (body: { session: { sessionId: string } }) => {
+            record('reopen', body.session.sessionId)
+            return this.localRefusal === null
+              ? local({ ok: true as const })
+              : local({ ok: false as const, ...this.localRefusal })
+          },
         },
-      },
+      }),
       terminal: {
         attach: (attachId: string, spec: unknown) => {
           record('attach', attachId, spec)

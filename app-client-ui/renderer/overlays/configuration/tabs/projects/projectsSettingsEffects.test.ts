@@ -3,9 +3,10 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type {
   CatalogCategoryDto,
 } from '../../../../../../lib-orchestrator/projectManager/projectManagerApi.types'
-import type { AppClientUiBridge } from '../../../../../shared/appClientUiIpc'
+import type { AppClientUiBridge, IpcResult } from '../../../../../shared/appClientUiIpc'
 import { ProjectsSettingsEffects, type ProjectsSettingsPorts } from './projectsSettingsEffects'
 import type { ProjectsSettingsEffect, ProjectsSettingsInput } from './projectsSettingsModel'
+import { ControlBridgeFixture } from '../../../../ipc/fixtures/controlBridgeFixture'
 
 describe('app-client-ui/renderer/overlays/configuration/tabs/projects/projectsSettingsEffects', () => {
   const categoriesConst: CatalogCategoryDto[] = [{
@@ -25,13 +26,15 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/projects/projectsSe
 
     install(): void {
       const bridge = {
-        projects: {
-          getConfig: () => Promise.resolve(this.getAnswer),
-          saveConfig: (categories: CatalogCategoryDto[]) => {
-            this.saved.push(categories)
-            return Promise.resolve(this.saveAnswer)
+        control: ControlBridgeFixture.routes({
+          'projects.config': { library: () => Promise.resolve(this.getAnswer as IpcResult<unknown>) },
+          'projects.saveConfig': {
+            library: (body: { categories: CatalogCategoryDto[] }) => {
+              this.saved.push(body.categories)
+              return Promise.resolve(this.saveAnswer as IpcResult<unknown>)
+            },
           },
-        },
+        }),
         dialog: {
           pickDirectory: (title: string) => {
             this.pickTitles.push(title)
@@ -40,7 +43,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/projects/projectsSe
         },
       }
       ;(window as unknown as { appClient: unknown }).appClient = bridge as unknown as
-        Pick<AppClientUiBridge, 'projects' | 'dialog'>
+        Pick<AppClientUiBridge, 'control' | 'dialog'>
     }
 
     answersGetWith(answer: unknown): this {

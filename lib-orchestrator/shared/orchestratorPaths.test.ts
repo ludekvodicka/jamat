@@ -69,6 +69,10 @@ describe('lib-orchestrator/shared/orchestratorPaths', () => {
       .toBe(join(directory, 'codex-rollout-cwd.json'))
     expect(OrchestratorPaths.rateMonitorCacheFile('identity-a', 'production'))
       .toBe(join(directory, 'rate-monitor-cache.json'))
+    expect(OrchestratorPaths.scriptLogsDirectory('identity-a', 'production'))
+      .toBe(join(directory, 'script-logs'))
+    expect(OrchestratorPaths.worktreeResultsDirectory('identity-a', 'production'))
+      .toBe(join(directory, 'worktree-results'))
   })
 
   // One file, one latch. A counter sharing the records file would be lost to the records' damage,

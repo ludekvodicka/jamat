@@ -1,4 +1,5 @@
 import type { RateDebugEffect, RateDebugInput } from './rateDebugModel'
+import { AppControl } from '../../../ipc/appControl'
 
 export interface RateDebugPorts {
   dispatch(input: RateDebugInput): void
@@ -41,7 +42,7 @@ export class RateDebugEffects {
    * which is why nothing is reported on the way back beyond the read that follows it.
    */
   private static async refresh(ports: RateDebugPorts): Promise<void> {
-    const answer = await window.appClient.rateMonitor.refresh()
+    const answer = await AppControl.value('rate.refresh', {})
     if (!answer.ok)
       return ports.dispatch({ input: 'failed', detail: RateDebugEffects.silent(answer.error) })
     ports.dispatch({ input: 'refresh-answered' })

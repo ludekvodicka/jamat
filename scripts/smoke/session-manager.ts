@@ -25,6 +25,7 @@
 import { SmokeHarness, SmokeRun } from './smokeHarness.js'
 import { spawn, type ChildProcess } from 'node:child_process'
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -35,7 +36,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import type {
@@ -50,10 +51,13 @@ import type { VersioningMode } from '../../lib-orchestrator/git/git.types.js'
 import { GitInvoker } from '../../lib-orchestrator/git/gitInvoker.js'
 import { HostDescriptorPaths } from '../../lib-orchestrator/hostClient/hostDescriptorPaths.js'
 import { LaunchPlanner } from '../../lib-orchestrator/sessionManager/launch/launchPlanner.js'
-import type { SessionRecord } from '../../lib-orchestrator/sessionManager/records/sessionRecord.types.js'
+import type {
+  SessionRecord,
+  SessionRecordScriptRun,
+} from '../../lib-orchestrator/sessionManager/records/sessionRecord.types.js'
 import { SessionRecordsStore } from '../../lib-orchestrator/sessionManager/records/sessionRecordsStore.js'
 import { ChildEnvironment } from '../../lib-orchestrator/shared/childEnvironment.js'
-import { SessionManager } from '../../lib-orchestrator/sessionManager/sessionManager.js'
+import { SessionManager, SessionNotifier } from '../../lib-orchestrator/sessionManager/sessionManager.js'
 import type {
   HostDebugRuntimeRow,
   SessionCreateSpec,
@@ -73,6 +77,8 @@ class SmokeSessionManager extends SmokeHarness {
 
   private static readonly channelConst = 'development'
   private static readonly orphanRuntimeIdConst = 'smoke-orphan-1'
+  /** The caller's tag of the SVN worktree, which reads its result back after the session is gone. */
+  private static readonly worktreeTagConst = 'smoke-run:1'
   /** The session a client died in the middle of creating, and the operation it never heard back on. */
   private static readonly crashedSessionIdConst = 'smoke-crashed-create-1'
   private static readonly crashedOperationIdConst = 'smoke-crashed-operation-1'
@@ -85,10 +91,11 @@ class SmokeSessionManager extends SmokeHarness {
   private static readonly hostBootMillisecondsConst = 30_000
   private static readonly settleMillisecondsConst = 30_000
   private static readonly repoRootConst = join(import.meta.dirname, '..', '..')
-  /** The three worktrees this run cuts, one per ending of an install. */
+  /** The worktrees this run cuts for the setup: one per ending of an install, and one chain. */
   private static readonly setupOkSlugConst = 'setup-ok'
   private static readonly setupFailingSlugConst = 'setup-failing'
   private static readonly setupFirstStepFailsSlugConst = 'setup-first-step-fails'
+  private static readonly beforeChainSlugConst = 'before-chain'
   /**
    * The awkward name is the point: the space and the `&` are what the win32 caret escaping and the
    * POSIX single quoting exist for, and the worktree cut from this repository inherits both into the
@@ -102,7 +109,13 @@ class SmokeSessionManager extends SmokeHarness {
   /** The per-step proofs of the two-step install, so each step can be told apart from the other. */
   private static readonly firstStepProofConst = 'first-step-ran.txt'
   private static readonly secondStepProofConst = 'second-step-ran.txt'
+  /** Written by the declared before step of the chain scenario. */
+  private static readonly codegenProofConst = 'codegen-ran.txt'
+  /** Written by the declared after check, in the worktree; the merge brings it home. */
+  private static readonly finishCheckProofConst = 'finish-check-ran.txt'
   private static readonly projectFileConst = 'README.md'
+  /** What the requested runs execute: it exits with its argument, or waits when told to. */
+  private static readonly requestedScriptConst = 'requested.cjs'
   private static readonly setupExitCodeConst = 7
   /** Deliberately not `setupExitCodeConst`: the session has to end with the code of THAT step. */
   private static readonly firstStepExitCodeConst = 9
@@ -130,6 +143,8 @@ class SmokeSessionManager extends SmokeHarness {
   private readonly manager: SessionManager
   private readonly git = new GitInvoker()
   private readonly crashedRecord: SessionRecord
+  /** Where this run's stand-in `claude` lives, ahead of every other one on PATH. */
+  private readonly agentsDir: string
   private host: ChildProcess | null = null
   /** What `acquireLease` holds the Host to: one lease id per Host process, never a second. */
   private heldLease: { hostInstanceId: string; controllerLeaseId: string } | null = null
@@ -156,6 +171,11 @@ class SmokeSessionManager extends SmokeHarness {
     this.svnRepository = join(realpathSync.native(root), 'svn-repository')
     this.svnProjectRoot = join(realpathSync.native(root), 'svn-project')
     mkdirSync(this.workDir, { recursive: true })
+    this.agentsDir = join(root, 'agents')
+    SmokeSessionManager.writeStandInClaude(this.agentsDir)
+    // Read per launch by the planner, so every agent this run starts is the stand-in. No scenario
+    // before the resolver one starts an agent, and the machine's own claude is never reached.
+    process.env.PATH = `${this.agentsDir}${delimiter}${process.env.PATH ?? ''}`
     // Named before anything resolves a path: both the Host's state scope and the orchestrator's hang
     // off it, and the Host child inherits it through its environment. The Host scope is pinned to
     // its default place inside that root rather than inherited, so an exported
@@ -183,6 +203,8 @@ class SmokeSessionManager extends SmokeHarness {
       // A source tree: the Host starts from `app-host/start.ts`, never from a packaged bundle.
       resourcesRoot: null,
       versioningModeOf: () => this.versioningMode,
+      // The stand-in agent's sessions must not write titles into the machine's own Claude home.
+      claudeHome: join(root, 'claude'),
     })
     this.crashedRecord = {
       sessionId: SmokeSessionManager.crashedSessionIdConst,
@@ -232,21 +254,25 @@ class SmokeSessionManager extends SmokeHarness {
     await this.checkReopenAfterEnd(sessionId)
     await this.checkOrphan()
     await this.checkStopAndRemove(sessionId)
+    await this.checkRequestedRuns()
     await this.prepareProject()
     await this.checkSetupSucceeds()
     await this.checkRetrySetup(await this.checkSetupFails())
-    await this.checkSetupFirstStepFails()
+    await this.checkRemoveTakesItsRuns(await this.checkSetupFirstStepFails())
+    await this.checkBeforeChain()
     await this.checkMergeAndTeardown()
     await this.checkMergeAlreadyLanded()
     await this.checkMergeConflict()
+    await this.checkMergeConflictResolver()
     await this.checkDiscardWorktree()
+    await this.checkFinishChecks()
     await this.checkCheckpointsMode()
     await this.checkSessionNumbers()
-    await this.checkDetachKillsNothing()
+    await this.checkSessionNotify()
 
     this.check(`the snapshot changed as the run went along (${this.changes} times)`, this.changes > 0)
     // The merge checks run against a project with no package.json and no `setup`, so the setup
-    // manager truthfully says it installed nothing in each of their worktrees. Those three lines are
+    // manager truthfully says it installed nothing in each of their worktrees. Those lines are
     // this run's own doing; anything else reaching the error channel is a fault.
     const unexpected = this.errors
       .filter((line) => !line.includes('nothing was installed in the worktree'))
@@ -489,6 +515,87 @@ class SmokeSessionManager extends SmokeHarness {
   }
 
   /**
+   * Runs a live session asks for, on a real Host: one that exits 0 goes into the session's history
+   * with its log at once, one that fails stays a row until the session asks for the next one, and a
+   * run still going when the session stops or restarts is stopped with it.
+   *
+   * The commands carry no quotes on purpose: a `"` inside the one argument cmd.exe gets arrives as
+   * `\"`, which cmd does not read (see `LaunchPlanner.caretEscaped`). Most runs last a moment, so a
+   * check sees them running; one exits at once, which the Host records as a runtime that already
+   * ended with its exit code.
+   */
+  private async checkRequestedRuns(): Promise<void> {
+    writeFileSync(join(this.workDir, SmokeSessionManager.requestedScriptConst), [
+      'const arg = process.argv[2]',
+      "if (arg === 'wait') setTimeout(() => {}, 30000)",
+      'else setTimeout(() => { console.log(`requested run exits ${arg}`); process.exit(Number(arg)) }, '
+        + `${SmokeSessionManager.setupDelayMillisecondsConst})`,
+      '',
+    ].join('\n'), 'utf8')
+    const command = (arg: string): string => `node ${SmokeSessionManager.requestedScriptConst} ${arg}`
+    const parent = SmokeSessionManager.valueOf(
+      await this.manager.createSession({ kind: 'shell', directory: { mode: 'adHoc', path: this.workDir } }),
+      'createSession',
+    ).sessionId
+
+    const succeeded = SmokeSessionManager.valueOf(
+      await this.manager.runScript(parent, { command: command('0'), title: 'requested ok' }), 'runScript').runId
+    await this.checkWait('a requested run that exits 0 leaves the session list once it is settled',
+      () => this.sessionOf(succeeded) === undefined)
+    const entry = this.scriptRunsOf(parent).find((candidate) => candidate.runId === succeeded)
+    this.check(`its history entry on the session says it succeeded with a saved log (${entry?.outcome}, ${
+      entry?.log.state})`, entry?.outcome === 'succeeded' && entry.phase === 'inner' && entry.log.state === 'saved')
+    this.check('the saved log holds what the run printed',
+      SmokeSessionManager.bodyOf(this.logOf(parent, succeeded)).includes('requested run exits 0'))
+
+    const fast = SmokeSessionManager.valueOf(
+      await this.manager.runScript(parent, { command: 'exit 0', title: 'requested at once' }), 'runScript').runId
+    await this.waitUntil(() => this.scriptRunsOf(parent).some((candidate) => candidate.runId === fast),
+      'the requested run that exits at once was never settled')
+    const fastEntry = this.scriptRunsOf(parent).find((candidate) => candidate.runId === fast)
+    this.check(`a requested run that exits at once is judged by its exit code (${fastEntry?.outcome}, ${
+      fastEntry?.exitCode})`, fastEntry?.outcome === 'succeeded' && fastEntry.exitCode === 0)
+
+    const failed = SmokeSessionManager.valueOf(
+      await this.manager.runScript(parent, { command: command('3'), title: 'requested failing' }), 'runScript').runId
+    await this.waitUntil(() => this.scriptRunsOf(parent).some((candidate) => candidate.runId === failed),
+      'the failed requested run was never settled')
+    // Two poll passes after the settle, which is where a collapse would have come.
+    await SmokeSessionManager.sleep(4_500)
+    this.check(`a requested run that exits 3 stays a row of its session (${this.sessionOf(failed)?.life})`,
+      this.sessionOf(failed)?.script?.parentId === parent && this.sessionOf(failed)?.exitCode === 3)
+
+    const running = SmokeSessionManager.valueOf(
+      await this.manager.runScript(parent, { command: command('wait'), title: 'requested waiting' }), 'runScript').runId
+    await this.checkWait('the failed run goes once the session asks for the next one',
+      () => this.sessionOf(failed) === undefined)
+    this.check('the next one is running', this.sessionOf(running)?.life === 'live')
+
+    // A restart brings the session back before any poll pass sees it ended; the stop inside it is
+    // what ends the run.
+    SmokeSessionManager.valueOf(await this.manager.restartSession(parent), 'restartSession')
+    await this.waitUntil(() => this.scriptRunsOf(parent).some((candidate) => candidate.runId === running),
+      'the run the restart stopped was never settled')
+    const restarted = this.scriptRunsOf(parent).find((candidate) => candidate.runId === running)
+    this.check(`restarting the session stops the run it asked for (${restarted?.outcome}), and the session `
+      + `runs again (${this.sessionOf(parent)?.life})`,
+      restarted?.outcome === 'stopped' && this.sessionOf(parent)?.life === 'live')
+
+    const again = SmokeSessionManager.valueOf(
+      await this.manager.runScript(parent, { command: command('wait'), title: 'requested again' }), 'runScript').runId
+    await this.checkWait('the stopped run goes once the session asks for the next one',
+      () => this.sessionOf(running) === undefined)
+    this.check('the run asked for after the restart is running', this.sessionOf(again)?.life === 'live')
+
+    SmokeSessionManager.valueOf(await this.manager.stopSession(parent), 'stopSession')
+    await this.checkWait('stopping the session stops the run it asked for, and the run leaves the list',
+      () => this.sessionOf(again) === undefined)
+    const stopped = this.scriptRunsOf(parent).find((candidate) => candidate.runId === again)
+    this.check(`its history entry says it was stopped (${stopped?.outcome})`, stopped?.outcome === 'stopped')
+    SmokeSessionManager.valueOf(await this.manager.removeSession(parent), 'removeSession')
+  }
+
+  /**
    * The setup path with nothing faked: a real repository, a real worktree cut from it, a real shell
    * running the install and a real Host owning both PTYs.
    *
@@ -537,9 +644,17 @@ class SmokeSessionManager extends SmokeHarness {
       this.sessionOf(created.sessionId)?.setup === undefined)
     this.check(`the install really ran inside the worktree (${worktreePath})`,
       existsSync(join(worktreePath, SmokeSessionManager.setupProofConst)))
-    const finished = this.setupSessionOf(created.sessionId)
-    this.check(`the install session is left ended, with its terminal and its exit code (${
-      finished?.exitCode})`, finished?.life === 'ended' && finished.exitCode === 0)
+    const installId = install?.sessionId ?? ''
+    await this.checkWait('the finished install leaves the session list once it is settled',
+      () => this.sessionOf(installId) === undefined)
+    const entry = this.scriptRunsOf(created.sessionId).find((candidate) => candidate.runId === installId)
+    this.check(`its history entry on the session says it succeeded with exit 0 and a saved log (${
+      entry?.outcome}, ${entry?.log.state})`,
+      entry?.outcome === 'succeeded' && entry.exitCode === 0 && entry.log.state === 'saved')
+    this.check('the saved log holds what the install printed, below its header',
+      SmokeSessionManager.bodyOf(this.logOf(created.sessionId, installId)).includes('installing'))
+    this.check('and the Host no longer holds its dead runtime',
+      !(await this.listRuntimes()).sessions.some((session) => session.runtimeSessionId === installId))
 
     // Cleared away because this root is deleted at the end: a live shell holds its worktree open.
     SmokeSessionManager.valueOf(await this.manager.stopSession(created.sessionId), 'stopSession')
@@ -579,6 +694,15 @@ class SmokeSessionManager extends SmokeHarness {
       && marker.setupSessionId === this.setupSessionOf(created.sessionId)?.sessionId)
     this.check(`the worktree it made is left on disk with the commit in it (${worktreePath})`,
       existsSync(join(worktreePath, SmokeSessionManager.projectFileConst)))
+    const failedInstall = marker?.state === 'failed' ? marker.setupSessionId : ''
+    await this.checkWait('the failed install is settled into the session history with its exit code and log',
+      () => this.scriptRunsOf(created.sessionId).some((entry) => entry.runId === failedInstall
+        && entry.outcome === 'failed' && entry.exitCode === SmokeSessionManager.setupExitCodeConst
+        && entry.log.state === 'saved'))
+    // Two more passes, each of which could have collapsed it.
+    await SmokeHarness.sleep(5_000)
+    this.check('and it stays in the session list, because its session is blocked on it',
+      this.sessionOf(failedInstall) !== undefined)
     // The failure is announced on the error channel as well. Taking it here is what turns it into an
     // assertion instead of a surprise for the run's own "nothing was reported" check.
     const announced = this.takeReports((message) => message.includes(worktreePath))
@@ -623,6 +747,10 @@ class SmokeSessionManager extends SmokeHarness {
       ),
       'retrySetup',
     )
+    const waitingOn = this.sessionOf(failed.sessionId)?.setup
+    const retried = waitingOn?.state === 'running' ? waitingOn.setupSessionId : undefined
+    this.check(`the retry starts a new install under an id of its own (${retried})`,
+      retried !== undefined && retried !== install)
 
     await this.waitUntil(
       () => this.sessionOf(failed.sessionId)?.life === 'live',
@@ -631,8 +759,10 @@ class SmokeSessionManager extends SmokeHarness {
     this.check('a retried setup resolves the project again, so the session starts on the fixed '
       + '.worktree.json and not on the commands that failed',
       this.sessionOf(failed.sessionId)?.setup === undefined)
-    this.check('the retry reopens the same install session instead of making a second one',
-      install !== undefined && this.setupSessionOf(failed.sessionId)?.sessionId === install)
+    await this.checkWait('the failed install collapses as superseded, and both attempts are in the '
+      + 'session history', () => this.sessionOf(install ?? '') === undefined
+      && JSON.stringify(this.scriptRunsOf(failed.sessionId).map((entry) => [entry.runId, entry.outcome]))
+        === JSON.stringify([[install, 'failed'], [retried, 'succeeded']]))
     this.check(`the retried install ran in the worktree that was already there (${
       failed.worktreePath})`,
       existsSync(join(failed.worktreePath, SmokeSessionManager.setupProofConst)))
@@ -653,7 +783,7 @@ class SmokeSessionManager extends SmokeHarness {
    * its own is what the three checks below are for: the code the session ends with, the proof that
    * step one really ran, and the absence of any trace that step two did.
    */
-  private async checkSetupFirstStepFails(): Promise<void> {
+  private async checkSetupFirstStepFails(): Promise<string> {
     this.writeWorktreeConfig({
       setup: [
         `node ${SmokeSessionManager.setupScriptConst} ${
@@ -696,6 +826,96 @@ class SmokeSessionManager extends SmokeHarness {
     const announced = this.takeReports((message) => message.includes(worktreePath))
     this.check('what it leaves behind is named on the error channel, once',
       announced.length === 1 && announced[0].includes('the setup failed'))
+    return created.sessionId
+  }
+
+  /**
+   * A session's runs were only ever working for it, so its removal takes them: the failed install
+   * its record still names, the dead runtime the Host kept for it, and the logs of its history.
+   */
+  private async checkRemoveTakesItsRuns(sessionId: string): Promise<void> {
+    const install = this.setupSessionOf(sessionId)?.sessionId ?? ''
+    await this.waitUntil(() => this.scriptRunsOf(sessionId).some((entry) => entry.runId === install),
+      'the failed install of the two-step setup was never settled')
+    const logs = join(OrchestratorPaths.scriptLogsDirectory(this.configIdentity, SmokeSessionManager.channelConst),
+      sessionId)
+    this.check(`the session has a folder of saved logs (${logs})`, existsSync(logs))
+
+    SmokeSessionManager.valueOf(await this.manager.removeSession(sessionId), 'removeSession')
+    this.check('removing a session takes its failed install with it',
+      this.sessionOf(sessionId) === undefined && this.sessionOf(install) === undefined)
+    this.check('and the dead runtime the Host kept for the install',
+      !(await this.listRuntimes()).sessions.some((session) => session.runtimeSessionId === install))
+    this.check('and its saved logs', !existsSync(logs))
+    const announced = this.takeReports((message) => message.startsWith(`Session ${sessionId} is gone`))
+    this.check('the worktree it leaves is named on the error channel, once', announced.length === 1)
+  }
+
+  /**
+   * The before chain: the setup, then a step the project declared in `scripts.before`, each a run of
+   * its own. The declared step fails, so the session never starts; the fix changes only that step,
+   * so the retry runs only that step - the install that passed is not run again - and the session
+   * starts after it.
+   */
+  private async checkBeforeChain(): Promise<void> {
+    const setup = `node ${SmokeSessionManager.setupScriptConst} 0`
+    const codegen = (exitCode: number): string =>
+      `node ${SmokeSessionManager.setupScriptConst} ${exitCode} ${SmokeSessionManager.codegenProofConst}`
+    this.writeWorktreeConfig({ setup: [setup], scripts: { before: [{ name: 'codegen', command: codegen(2) }] } })
+    const created = await this.createThroughSetupGate({
+      kind: 'shell',
+      directory: { mode: 'project', categoryId: 'smoke', projectPath: this.projectRoot },
+      worktree: { slug: SmokeSessionManager.beforeChainSlugConst },
+    }, [setup, `before codegen: ${codegen(2)}`])
+    const worktreePath = this.sessionOf(created.sessionId)?.worktree?.worktreePath
+    if (worktreePath === undefined)
+      throw new Error('FAILED: the session created with a before chain names no worktree')
+    await this.waitUntil(() => this.sessionOf(created.sessionId)?.life === 'ended',
+      'the session whose declared before step failed never ended')
+    const reason = this.sessionOf(created.sessionId)?.endedReason ?? ''
+    this.check(`a failed declared step ends the session naming that step and its code (${reason})`,
+      reason.startsWith('setup failed:') && reason.includes('codegen script') && reason.includes('2'))
+    const badge = this.sessionOf(created.sessionId)?.scripts?.badge
+    this.check(`the badge names the step that failed (${badge?.text})`, badge?.text === 'setup failed: codegen')
+    this.check('the setup ran first, then the declared step, both in the worktree',
+      existsSync(join(worktreePath, SmokeSessionManager.setupProofConst))
+      && existsSync(join(worktreePath, SmokeSessionManager.codegenProofConst)))
+    await this.checkWait('the setup that passed is settled into the history with its step key',
+      () => this.scriptRunsOf(created.sessionId).some((entry) => entry.scriptId === 'setup'
+        && entry.outcome === 'succeeded' && entry.stepKey !== undefined))
+    const announced = this.takeReports((message) => message.includes(worktreePath))
+    this.check('what it leaves behind is named on the error channel once, with the step',
+      announced.length === 1 && announced[0].includes('the before script codegen failed'))
+
+    // The fix touches the declared step alone, and the proofs go so a second run of each would show.
+    this.writeWorktreeConfig({ setup: [setup], scripts: { before: [{ name: 'codegen', command: codegen(0) }] } })
+    rmSync(join(worktreePath, SmokeSessionManager.setupProofConst), { force: true })
+    rmSync(join(worktreePath, SmokeSessionManager.codegenProofConst), { force: true })
+    const refused = await this.manager.retrySetup(created.sessionId)
+    this.check(`the retry asks about the changed step first (${refused.ok ? 'accepted' : refused.code})`,
+      !refused.ok && refused.code === 'setup-not-acknowledged')
+    SmokeSessionManager.valueOf(
+      await this.manager.retrySetup(created.sessionId, refused.ok ? undefined : refused.setup?.hash),
+      'retrySetup',
+    )
+    const waitingOn = this.sessionOf(created.sessionId)?.scripts?.waitingOn
+    const retried = this.manager.snapshot().sessions.find((session) => session.sessionId === waitingOn)
+    this.check(`the retry starts at the declared step (${retried?.title})`,
+      retried?.script?.scriptId === 'declared' && retried.script.parentId === created.sessionId)
+
+    await this.waitUntil(() => this.sessionOf(created.sessionId)?.life === 'live',
+      'the session never started after its before chain was retried')
+    this.check('the retried step ran and the session started after it',
+      existsSync(join(worktreePath, SmokeSessionManager.codegenProofConst)))
+    this.check('and the setup that had passed did not run again',
+      !existsSync(join(worktreePath, SmokeSessionManager.setupProofConst)))
+    await this.checkWait('the history holds the setup, the failed step and its retry, in order',
+      () => JSON.stringify(this.scriptRunsOf(created.sessionId).map((entry) => [entry.name, entry.outcome]))
+        === JSON.stringify([['setup', 'succeeded'], ['codegen', 'failed'], ['codegen', 'succeeded']]))
+
+    SmokeSessionManager.valueOf(await this.manager.stopSession(created.sessionId), 'stopSession')
+    await this.waitUntil(() => this.sessionOf(created.sessionId)?.life === 'ended',
+      'the session the before chain started never stopped')
   }
 
   /**
@@ -797,6 +1017,45 @@ class SmokeSessionManager extends SmokeHarness {
     this.check('and the session goes once it landed', await this.removedOnItsOwn(session.sessionId))
   }
 
+  /**
+   * The automatic resolver against real git and a real Host: a conflict in an agent's worktree
+   * launches a one-shot fork of that agent, its exit 0 carries the merge home, and the landed Finish
+   * removes the session with its resolver in the same write, so no resolver row is left behind.
+   * The agent is the stand-in `claude`, which resolves by keeping one line and commits.
+   */
+  private async checkMergeConflictResolver(): Promise<void> {
+    const contested = 'resolver-contested.txt'
+    writeFileSync(join(this.projectRoot, contested), 'the original line\n', 'utf8')
+    await this.runGit(['add', '--', contested])
+    await this.commitSmoke('the line the resolver will be asked about')
+
+    const session = await this.worktreeSession('merge-resolver', contested, 'the worktree line', 'agent')
+    this.check('the agent session names its conversation, which the resolver forks',
+      this.sessionOf(session.sessionId)?.agent?.nativeSessionId !== undefined)
+    writeFileSync(join(this.projectRoot, contested), 'the main copy line\n', 'utf8')
+    await this.runGit(['add', '--', contested])
+    await this.commitSmoke('the main copy changes it too')
+
+    const refused = await this.manager.mergeSession(session.sessionId)
+    this.check(`a conflict in an agent's worktree hands itself to a resolver (${
+      refused.ok ? 'ok' : `${refused.code}: ${refused.detail}`})`,
+    !refused.ok && refused.code === 'merge-conflict' && refused.detail.includes('being resolved'))
+    const resolverId = this.manager.snapshot().sessions
+      .find((candidate) => candidate.script?.parentId === session.sessionId)?.sessionId
+    this.check(`the resolver is a script run of the session (${resolverId ?? 'none'})`, resolverId !== undefined)
+
+    this.check('the resolver exit 0 carries the merge home, and the session goes once it landed',
+      await this.removedOnItsOwn(session.sessionId, SmokeSessionManager.settleMillisecondsConst))
+    this.check('the resolution the resolver committed is what the main copy has now',
+      readFileSync(join(this.projectRoot, contested), 'utf8').includes('resolved by the resolver'))
+    this.check('and the worktree is gone', !existsSync(session.worktreePath))
+    this.check('no resolver row is left behind, in the snapshot or in the records file',
+      !this.manager.snapshot().sessions.some((candidate) => candidate.script?.parentId === session.sessionId
+        || candidate.sessionId === resolverId)
+      && !readFileSync(OrchestratorPaths.sessionRecordsFile(this.configIdentity, SmokeSessionManager.channelConst), 'utf8')
+        .includes(resolverId ?? session.sessionId))
+  }
+
   private async checkDiscardWorktree(): Promise<void> {
     const session = await this.worktreeSession('merge-discard', 'thrown-away.txt', 'never merged')
     const discarded = await this.manager.discardWorktree(session.sessionId)
@@ -813,6 +1072,51 @@ class SmokeSessionManager extends SmokeHarness {
   }
 
   /**
+   * The after chain against real git and a real Host: a Finish whose declared check fails merges
+   * nothing and keeps the failed check a row; once the file is fixed and agreed, the next press runs
+   * the check again and its pass continues the Finish into the merge by itself.
+   */
+  private async checkFinishChecks(): Promise<void> {
+    const session = await this.worktreeSession('finish-checks', 'checked.txt', 'merged after its checks')
+    const check = (exitCode: number): string =>
+      `node ${SmokeSessionManager.setupScriptConst} ${exitCode} ${SmokeSessionManager.finishCheckProofConst}`
+    const press = async (): Promise<void> => {
+      const refused = await this.manager.finalizeSession(session.sessionId)
+      this.check(`a Finish press asks about the changed after checks first (${refused.ok ? 'accepted' : refused.code})`,
+        !refused.ok && refused.code === 'setup-not-acknowledged')
+      SmokeSessionManager.valueOf(await this.manager.finalizeSession(session.sessionId,
+        { acknowledgeSetup: refused.ok ? undefined : refused.setup?.hash }), 'finalizeSession')
+    }
+    this.writeWorktreeConfig({ scripts: { after: [{ name: 'tests', command: check(3) }] } })
+    await press()
+    this.check(`the press started the check and merged nothing (${this.sessionOf(session.sessionId)?.scripts?.badge?.text})`,
+      this.sessionOf(session.sessionId)?.scripts?.badge?.state === 'running'
+      && !existsSync(join(this.projectRoot, 'checked.txt')))
+
+    await this.waitUntil(() => this.sessionOf(session.sessionId)?.scripts?.badge?.state === 'failed',
+      'the failed after check never blocked the Finish')
+    const badge = this.sessionOf(session.sessionId)?.scripts?.badge
+    this.check(`the badge names the check that failed (${badge?.text})`, badge?.text === 'checks failed: tests')
+    this.check('the failed check stays a row of the session',
+      this.manager.snapshot().sessions.some((candidate) => candidate.script?.parentId === session.sessionId
+        && candidate.script.phase === 'after' && candidate.life === 'ended'))
+    this.check('nothing reached the main copy and the worktree stays',
+      !existsSync(join(this.projectRoot, 'checked.txt')) && existsSync(session.worktreePath))
+    const stopped = this.takeReports((message) => message.includes(session.sessionId) && message.includes('the Finish stopped'))
+    this.check('the stop is said once on the error channel', stopped.length === 1)
+
+    this.writeWorktreeConfig({ scripts: { after: [{ name: 'tests', command: check(0) }] } })
+    await press()
+    this.check('the check passed and the Finish continued into the merge by itself, taking the session',
+      await this.removedOnItsOwn(session.sessionId, SmokeSessionManager.settleMillisecondsConst))
+    this.check('the merged work is in the main copy, with the proof the check ran in the worktree before it',
+      existsSync(join(this.projectRoot, 'checked.txt'))
+      && existsSync(join(this.projectRoot, SmokeSessionManager.finishCheckProofConst)))
+    this.check('no check row is left behind',
+      !this.manager.snapshot().sessions.some((candidate) => candidate.script?.parentId === session.sessionId))
+  }
+
+  /**
    * A worktree session with one commit in it, stopped and ready to be merged. The session itself is
    * a shell that does nothing: what is under test is the git, not the agent.
    */
@@ -820,15 +1124,15 @@ class SmokeSessionManager extends SmokeHarness {
     slug: string,
     file: string,
     line: string,
+    kind: 'shell' | 'agent' = 'shell',
   ): Promise<{ sessionId: string; worktreePath: string; branch: string }> {
     // The setup checks above left a `.worktree.json` behind, and a session that has to wait for an
     // install is not what these three are about. With no `setup` key there is no gate and no wait.
     this.writeWorktreeConfig({})
-    const created = SmokeSessionManager.valueOf(await this.manager.createSession({
-      kind: 'shell',
-      directory: { mode: 'project', categoryId: 'smoke', projectPath: this.projectRoot },
-      worktree: { slug },
-    }), 'createSession')
+    const directory = { mode: 'project', categoryId: 'smoke', projectPath: this.projectRoot } as const
+    const created = SmokeSessionManager.valueOf(await this.manager.createSession(kind === 'agent'
+      ? { kind, directory, worktree: { slug }, agent: { agentId: 'claude', mode: 'new' } }
+      : { kind, directory, worktree: { slug } }), 'createSession')
     const info = this.sessionOf(created.sessionId)
     const worktreePath = info?.worktree?.worktreePath
     const branch = info?.worktree?.branch
@@ -930,12 +1234,20 @@ class SmokeSessionManager extends SmokeHarness {
     // A human .git beside it changes nothing: the SVN working copy decides.
     await this.runGitIn(this.svnProjectRoot, ['init'])
 
+    // The coordinator a worker's result wakes up: a session of its own, in the main copy.
+    const coordinator = SmokeSessionManager.valueOf(await this.manager.createSession({
+      kind: 'shell',
+      directory: { mode: 'adHoc', path: this.svnProjectRoot },
+    }), 'createSession')
+    const wakeLine = 'svn-smoke worktree ended'
     const session = SmokeSessionManager.valueOf(await this.manager.createSession({
       kind: 'shell',
       directory: { mode: 'project', categoryId: 'smoke', projectPath: this.svnProjectRoot },
-      worktree: { slug: 'svn-smoke' },
+      worktree: { slug: 'svn-smoke', tag: SmokeSessionManager.worktreeTagConst, notify: { sessionId: coordinator.sessionId, text: wakeLine } },
     }), 'createSession')
     const worktree = this.sessionOf(session.sessionId)?.worktree
+    // The checkout is the first run of the before chain; the session starts once it exited cleanly.
+    await this.waitUntil(() => this.sessionOf(session.sessionId)?.life === 'live', 'the SVN worktree session never started after its checkout')
 
     this.check(`an SVN working copy gets an SVN worktree, also beside a human .git (${worktree?.kind})`,
       worktree?.kind === 'svn' && worktree.branch === url && /^r\d+$/.test(worktree.baseCommit))
@@ -946,6 +1258,181 @@ class SmokeSessionManager extends SmokeHarness {
       && readFileSync(join(worktree.worktreePath, 'tracked.txt'), 'utf8').includes('from SVN'))
     SmokeSessionManager.valueOf(await this.manager.stopSession(session.sessionId), 'stopSession')
     await this.waitUntil(() => this.sessionOf(session.sessionId)?.life === 'ended', 'the SVN worktree session never ended')
+
+    const discarded = await this.manager.discardWorktree(session.sessionId)
+    this.check(`the Discard of the SVN worktree removes it (${discarded.ok ? 'ok' : `${discarded.code}: ${discarded.detail}`})`,
+      discarded.ok && worktree !== undefined && !existsSync(worktree.worktreePath))
+    await this.waitUntil(() => this.sessionOf(session.sessionId) === undefined, 'the discarded SVN worktree session was never removed')
+    const results = SmokeSessionManager.valueOf(
+      await this.manager.worktreeResults({ tag: SmokeSessionManager.worktreeTagConst }), 'worktreeResults').results
+    this.check(`its result is read by the caller's tag after the session is gone (${results.map((result) => result.result).join()})`,
+      results.length === 1 && results[0].sessionId === session.sessionId && results[0].action === 'discard'
+      && results[0].result === 'discarded' && results[0].removal === 'removed' && results[0].mainCopy === this.svnProjectRoot)
+    const acknowledged = await this.manager.acknowledgeWorktreeResult(results[0]?.actionId ?? 'none')
+    const unacknowledged = SmokeSessionManager.valueOf(
+      await this.manager.worktreeResults({ tag: SmokeSessionManager.worktreeTagConst, unacknowledged: true }), 'worktreeResults').results
+    this.check('an acknowledged result leaves the unacknowledged ones', acknowledged.ok && unacknowledged.length === 0)
+    await this.checkWorktreeNotify(coordinator.sessionId, session.sessionId, wakeLine)
+  }
+
+  /**
+   * The wake-up line of a result, typed into a fake terminal of the coordinator: never over a draft
+   * in its composer, again on the pace once the draft is gone, and only once.
+   */
+  private async checkWorktreeNotify(coordinatorId: string, workerId: string, text: string): Promise<void> {
+    const terminal = { composer: 'a half-written line', typed: [] as string[], asked: 0 }
+    const clock = { now: Date.now() }
+    const notifier = new SessionNotifier({
+      sources: [this.manager.worktreeResultsStore().notifySource(), this.manager.sessionNotifyStore()],
+      watch: this.manager.sessionNotifyStore(),
+      sessions: () => this.manager.snapshot().sessions,
+      groups: () => new Map(),
+      port: {
+        deliver: async (sessionId, line) => {
+          terminal.asked += 1
+          if (sessionId !== coordinatorId) return 'gone'
+          if (terminal.composer !== '') return 'retry'
+          terminal.typed.push(line)
+          return 'delivered'
+        },
+      },
+      now: () => clock.now,
+      report: (message) => { throw new Error(`FAILED: the notifier reported: ${message}`) },
+    })
+    const notifyOf = async () => SmokeSessionManager.valueOf(
+      await this.manager.worktreeResults({ sessionId: workerId }), 'worktreeResults').results[0]?.notify ?? null
+    await notifier.tick()
+    this.check(`a draft in the coordinator's composer keeps the wake-up line pending (${(await notifyOf())?.state})`,
+      terminal.asked === 1 && terminal.typed.length === 0 && (await notifyOf())?.state === 'pending')
+    terminal.composer = ''
+    await notifier.tick()
+    this.check('the next try waits for its pace, also with the composer empty', terminal.asked === 1 && terminal.typed.length === 0)
+    clock.now += SessionNotifier.paceMillisecondsConst[1] + 1_000
+    await notifier.tick()
+    await notifier.tick()
+    const notify = await notifyOf()
+    this.check(`on its pace the line is typed into the coordinator once and the result says delivered (${notify?.state})`,
+      JSON.stringify(terminal.typed) === JSON.stringify([text]) && notify?.sessionId === coordinatorId && notify.state === 'delivered')
+    SmokeSessionManager.valueOf(await this.manager.stopSession(coordinatorId), 'stopSession')
+  }
+
+  private async checkSessionNotify(): Promise<void> {
+    const title = `pp-u3-${new Date().toISOString().replace(/\D/g, '').slice(0, 12)}`
+    const target = SmokeSessionManager.valueOf(await this.manager.createSession({
+      kind: 'shell', directory: { mode: 'adHoc', path: this.workDir }, title: `${title}-target`,
+    }), 'createSession').sessionId
+    const text = `${title} session changed`
+    const worker = SmokeSessionManager.valueOf(await this.manager.createSession({
+      kind: 'shell', directory: { mode: 'adHoc', path: this.workDir }, title: `${title}-worker`,
+      notify: { sessionId: target, text, onGroups: ['waiting'] },
+    }), 'createSession').sessionId
+    const groups = new Map([[worker, 'working']])
+    const terminal = { composer: '', typed: [] as string[], asked: 0 }
+    const clock = { now: Date.now() }
+    const notifierFor = (manager: SessionManager) => new SessionNotifier({
+      sources: [manager.worktreeResultsStore().notifySource(), manager.sessionNotifyStore()],
+      watch: manager.sessionNotifyStore(),
+      sessions: () => manager.snapshot().sessions,
+      groups: () => groups,
+      port: {
+        deliver: async (sessionId, line) => {
+          terminal.asked += 1
+          if (sessionId !== target) return 'gone'
+          if (terminal.composer !== '') return 'retry'
+          terminal.typed.push(line)
+          return 'delivered'
+        },
+      },
+      now: () => clock.now,
+      report: (message) => { throw new Error(`FAILED: the notifier reported: ${message}`) },
+    })
+    const eventsOf = async (manager: SessionManager, sessionId: string) => SmokeSessionManager.valueOf(
+      await manager.notifies({ sessionId }), 'notifies').notifies[0]?.events ?? []
+    const notifier = notifierFor(this.manager)
+    await notifier.tick()
+    this.check('a created session notify waits for a watched group or an end',
+      terminal.asked === 0 && (await eventsOf(this.manager, worker)).length === 0)
+
+    terminal.composer = 'an unfinished target draft'
+    groups.set(worker, 'waiting')
+    await notifier.tick()
+    const pending = await eventsOf(this.manager, worker)
+    this.check('a move into waiting records one pending event and leaves the target draft alone',
+      pending.length === 1 && pending[0].cause === 'group:waiting' && pending[0].state === 'pending'
+      && pending[0].attempts === 1 && terminal.asked === 1 && terminal.typed.length === 0
+      && terminal.composer === 'an unfinished target draft')
+    terminal.composer = ''
+    await notifier.tick()
+    this.check('the session notify waits for its next try after the draft clears', terminal.asked === 1)
+    clock.now += SessionNotifier.paceMillisecondsConst[1] + 1_000
+    await notifier.tick()
+    await notifier.tick()
+    const moved = await eventsOf(this.manager, worker)
+    this.check('the waiting line reaches the fake target once and an unchanged group does not repeat it',
+      JSON.stringify(terminal.typed) === JSON.stringify([text]) && terminal.asked === 2
+      && moved.length === 1 && moved[0].state === 'delivered' && moved[0].settledAt === clock.now)
+
+    SmokeSessionManager.valueOf(await this.manager.stopSession(worker), 'stopSession')
+    await this.waitUntil(() => this.sessionOf(worker)?.life === 'ended', 'the notify worker never ended')
+    await notifier.tick()
+    await notifier.tick()
+    const ended = await eventsOf(this.manager, worker)
+    this.check('the watched session end types the same line once more and both events are delivered',
+      JSON.stringify(terminal.typed) === JSON.stringify([text, text]) && terminal.asked === 3
+      && ended.length === 2 && ended[1].cause === 'ended'
+      && ended.every((event) => event.state === 'delivered' && event.settledAt !== null))
+
+    const offline = SmokeSessionManager.valueOf(await this.manager.createSession({
+      kind: 'shell', directory: { mode: 'adHoc', path: this.workDir }, title: `${title}-offline`,
+      notify: { sessionId: target, text, onGroups: [] },
+    }), 'createSession').sessionId
+    await notifier.tick()
+    const runtime = await this.runtimeOf(offline)
+    if (runtime.pid === undefined) throw new Error('FAILED: the offline notify worker has no PID')
+    const hostInstanceId = this.manager.snapshot().host.hostInstanceId
+    notifier.stop()
+    await this.checkDetachKillsNothing()
+    // The test owns this shell. Its death while no manager runs must be found by reconciliation.
+    process.kill(runtime.pid)
+    await this.waitUntilAsync(async () => !(await this.runtimeOf(offline)).alive,
+      'the offline notify worker stayed alive')
+    this.check('an end while the client is down is not recorded by the stopped notifier',
+      (await eventsOf(this.manager, offline)).length === 0 && terminal.typed.length === 2)
+
+    const recovered = new SessionManager({
+      configDir: this.configDir, configIdentity: this.configIdentity, channel: SmokeSessionManager.channelConst,
+      autoStartHost: false, controllerId: SmokeSessionManager.controllerIdConst,
+      applicationRoot: SmokeSessionManager.repoRootConst, resourcesRoot: null,
+      versioningModeOf: () => this.versioningMode, claudeHome: join(this.configDir, 'claude'),
+      onChanged: () => { this.changes += 1 },
+      onError: (message) => { this.errors.push(message) },
+    })
+    const recoveredNotifier = notifierFor(recovered)
+    try {
+      await recovered.start()
+      await this.waitUntil(() => recovered.snapshot().sessions.some((session) =>
+        session.sessionId === offline && session.life === 'ended'), 'the restarted client never found the end')
+      this.check('a fresh client loads the notify spec and observes the end on the same Host',
+        recovered.snapshot().host.hostInstanceId === hostInstanceId
+        && recovered.sessionNotifyStore() !== this.manager.sessionNotifyStore()
+        && recovered.sessionNotifyStore().watched().some((record) => record.sessionId === offline && record.seenLife === 'live'))
+      clock.now += 10_000
+      await recoveredNotifier.tick()
+      await recoveredNotifier.tick()
+      const restored = await eventsOf(recovered, offline)
+      this.check('the end found after a client restart is recorded and typed once without replaying delivered events',
+        JSON.stringify(terminal.typed) === JSON.stringify([text, text, text]) && terminal.asked === 4
+        && restored.length === 1 && restored[0].cause === 'ended' && restored[0].state === 'delivered'
+        && restored[0].settledAt === clock.now && (await eventsOf(recovered, worker)).length === 2)
+      SmokeSessionManager.valueOf(await recovered.stopSession(target), 'stopSession')
+      await this.waitUntil(() => recovered.snapshot().sessions.some((session) =>
+        session.sessionId === target && session.life === 'ended'), 'the notify target never ended')
+      for (const sessionId of [target, worker, offline])
+        SmokeSessionManager.valueOf(await recovered.removeSession(sessionId), 'removeSession')
+    } finally {
+      recoveredNotifier.stop()
+      await recovered.stop()
+    }
   }
 
   /** A project with its own Git repository: the worktree of git mode, landed the same way. */
@@ -1142,6 +1629,26 @@ class SmokeSessionManager extends SmokeHarness {
     )
   }
 
+  /** A session's script history as the records file holds it; the snapshot does not carry it yet. */
+  private scriptRunsOf(sessionId: string): readonly SessionRecordScriptRun[] {
+    const file = OrchestratorPaths.sessionRecordsFile(this.configIdentity, SmokeSessionManager.channelConst)
+    const document = JSON.parse(readFileSync(file, 'utf8')) as { records: SessionRecord[] }
+    return document.records.find((record) => record.sessionId === sessionId)?.scriptRuns ?? []
+  }
+
+  private logOf(parentId: string, runId: string): string {
+    const file = join(OrchestratorPaths.scriptLogsDirectory(this.configIdentity, SmokeSessionManager.channelConst),
+      parentId, `${runId}.log`)
+    return existsSync(file) ? readFileSync(file, 'utf8') : ''
+  }
+
+  /** What the run printed: everything below the separator line that ends a log's header. */
+  private static bodyOf(log: string): string {
+    const separator = `${'-'.repeat(60)}\n`
+    const at = log.indexOf(separator)
+    return at === -1 ? '' : log.slice(at + separator.length)
+  }
+
   /** The install session of a session, which is the only place the pair is visible from outside. */
   private setupSessionOf(sessionId: string): SessionInfo | undefined {
     return this.manager.snapshot().sessions.find((session) => session.setupFor === sessionId)
@@ -1318,13 +1825,47 @@ class SmokeSessionManager extends SmokeHarness {
   }
 
   /** A Merge outside Finish removes the session detached, so this waits for it a little. */
-  private async removedOnItsOwn(sessionId: string): Promise<boolean> {
-    const deadline = Date.now() + 5_000
+  private async removedOnItsOwn(sessionId: string, waitMilliseconds = 5_000): Promise<boolean> {
+    const deadline = Date.now() + waitMilliseconds
     while (Date.now() < deadline) {
       if (this.removedItself.includes(sessionId) && this.sessionOf(sessionId) === undefined) return true
       await SmokeHarness.sleep(50)
     }
     return false
+  }
+
+  /**
+   * A `claude` that answers in print mode the way the merge resolver is asked to: it takes one line
+   * for every conflicted file, stages it and commits. Without `-p` it waits until it is stopped.
+   */
+  private static writeStandInClaude(directory: string): void {
+    mkdirSync(directory, { recursive: true })
+    writeFileSync(join(directory, 'stand-in-claude.cjs'), [
+      "const { execFileSync } = require('node:child_process')",
+      "const { writeFileSync } = require('node:fs')",
+      // Interactive, it waits like an agent at its prompt until somebody stops it.
+      "if (!process.argv.includes('-p')) setInterval(() => {}, 60_000)",
+      // The pause only keeps the resolver's row running for a moment, the way a real agent's is.
+      "else setTimeout(() => {",
+      "const git = (args) => execFileSync('git', args, { encoding: 'utf8' })",
+      "const unmerged = git(['diff', '--name-only', '--diff-filter=U']).split('\\n').filter(Boolean)",
+      'for (const file of unmerged) {',
+      "  writeFileSync(file, 'both lines, resolved by the resolver\\n', 'utf8')",
+      "  git(['add', '--', file])",
+      '}',
+      "git(['-c', 'user.name=Jamat Smoke', '-c', 'user.email=smoke@jamat.invalid', '-c', 'commit.gpgsign=false',",
+      "  'commit', '--no-verify', '--quiet', '--no-edit'])",
+      'console.log(`resolved ${unmerged.length} conflicted file(s)`)',
+      '}, 1_000)',
+      '',
+    ].join('\n'), 'utf8')
+    if (process.platform === 'win32')
+      writeFileSync(join(directory, 'claude.cmd'), `@"${process.execPath}" "%~dp0stand-in-claude.cjs" %*\r\n`, 'utf8')
+    else {
+      const shim = join(directory, 'claude')
+      writeFileSync(shim, `#!/bin/sh\nexec "${process.execPath}" "$(dirname "$0")/stand-in-claude.cjs" "$@"\n`, 'utf8')
+      chmodSync(shim, 0o755)
+    }
   }
 
   private sessionOf(sessionId: string): SessionInfo | undefined {

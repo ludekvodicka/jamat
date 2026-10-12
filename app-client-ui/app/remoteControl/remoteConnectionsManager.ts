@@ -50,6 +50,12 @@ export interface RemoteConnectionsManagerDeps {
 interface ManagedRemoteAttachment {
   attachId: string
   spec: TerminalAttachSpec
+  /**
+   * The selected session a script run's terminal was admitted through, or null. Kept from the attach
+   * because the peer drops the run from its snapshot when the run collapses, and its tab must still
+   * go with its parent's disconnect.
+   */
+  parentId: string | null
   onFrame(frame: TerminalFrame): void
   attached: boolean
   attachPromise: Promise<RemoteControlStepResult<{ attachId: string; sessionId: string }>> | null
@@ -156,8 +162,15 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
     return { ok: true, value: undefined }
   }
 
-  isSessionSelected(remoteEndpointId: string, sessionId: string): boolean {
-    return this.byEndpoint.get(remoteEndpointId)?.selectedSessionIds.has(sessionId) ?? false
+  /**
+   * A selected session's terminal, or the terminal of a script run whose parent is selected: a run
+   * is never selected on its own, it is shown with its parent. The link is read off the peer's
+   * validated snapshot.
+   */
+  admitsTerminal(remoteEndpointId: string, sessionId: string): boolean {
+    const state = this.byEndpoint.get(remoteEndpointId)
+    if (!state) return false
+    return RemoteConnectionsManager.reachedThrough(state, sessionId, state.selectedSessionIds)
   }
 
   async disconnectSessions(remoteEndpointId: string, sessionIds?: readonly string[]): Promise<void> {
@@ -170,7 +183,9 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
         if (endpointId === remoteEndpointId) this.holders.delete(holder)
     this.changed()
     const attachments = [...state.attachments.values()].filter((attachment) =>
-      sessionIds === undefined || removed.has(attachment.spec.sessionId))
+      sessionIds === undefined
+      || (attachment.parentId !== null && removed.has(attachment.parentId))
+      || RemoteConnectionsManager.reachedThrough(state, attachment.spec.sessionId, removed))
     await Promise.all(attachments.map(async (attachment) => {
       RemoteConnectionsManager.safeFrame(attachment, {
         type: 'terminal.status', status: 'lost', detail: 'Disconnected locally. The remote session continues running.',
@@ -355,6 +370,7 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
     const attachment: ManagedRemoteAttachment = {
       attachId,
       spec: structuredClone(spec),
+      parentId: RemoteConnectionsManager.parentOf(state, spec.sessionId),
       onFrame,
       attached: false,
       attachPromise: null,
@@ -771,6 +787,17 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
   private changed(): void {
     this.revision += 1
     this.deps.onChanged()
+  }
+
+  /** The session is one of `sessionIds`, or a script run whose parent is. */
+  private static reachedThrough(state: RemoteOutboundState, sessionId: string, sessionIds: ReadonlySet<string>): boolean {
+    if (sessionIds.has(sessionId)) return true
+    const parentId = RemoteConnectionsManager.parentOf(state, sessionId)
+    return parentId !== null && sessionIds.has(parentId)
+  }
+
+  private static parentOf(state: RemoteOutboundState, sessionId: string): string | null {
+    return state.sessions?.sessions.find((session) => session.sessionId === sessionId)?.script?.parentId ?? null
   }
 
   private static state(profile: RemoteControlPeerProfile): RemoteOutboundState {

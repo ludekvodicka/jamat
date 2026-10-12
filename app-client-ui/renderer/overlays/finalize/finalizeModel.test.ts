@@ -8,7 +8,7 @@ import {
   FinalizeCatalog,
   type SessionFinalizeQuestionSpec,
 } from './finalizeCatalog'
-import { FinalizeAsks } from './finalizeModel'
+import { FinalizeAgreements, FinalizeAsks } from './finalizeModel'
 
 function sessionOf(sessions: readonly SessionInfo[], sessionId: string): SessionInfo {
   const session = sessions.find((candidate) => candidate.sessionId === sessionId)
@@ -33,7 +33,7 @@ describe('app-client-ui/renderer/overlays/finalize/finalizeModel', () => {
   it('builds one captured ask from the applicable catalog questions', () => {
     const session = sessionOf(SessionsFixtures.stoppedWorktree().sessions, 's-dirty')
     const target = { kind: 'local' as const, sessionId: session.sessionId }
-    const ask = FinalizeAsks.of(session, target, 'local')
+    const ask = FinalizeAsks.of(session, target, 'local', 'Sessions')
 
     expect(ask).toMatchObject({
       target,
@@ -43,22 +43,51 @@ describe('app-client-ui/renderer/overlays/finalize/finalizeModel', () => {
     })
   })
 
+  it('carries the activity and note from the snapshot and the group label the opener names', () => {
+    const base = sessionOf(SessionsFixtures.svnWorktrees().sessions, 's-svn')
+    if (base.worktree === undefined) throw new Error('The SVN worktree fixture has no worktree')
+    const live: SessionInfo = {
+      ...base,
+      life: 'live',
+      activity: 'working',
+      note: 'ready for review soon',
+      worktree: { ...base.worktree, liveFinish: true },
+    }
+    const target = { kind: 'local' as const, sessionId: live.sessionId }
+
+    expect(FinalizeAsks.of(live, target, 'local', 'Automation')?.session)
+      .toEqual({ glyph: 'working', group: 'Automation', note: 'ready for review soon' })
+    expect(FinalizeAsks.of({ ...live, activity: 'waiting', note: undefined }, target, 'local', 'None')?.session)
+      .toEqual({ glyph: 'waiting', group: 'None', note: null })
+  })
+
+  it('offers a Finish exactly when it builds an ask', () => {
+    const svn = SessionsFixtures.svnWorktrees().sessions
+    const mixed = SessionsFixtures.mixed().sessions
+    for (const session of [...svn, ...mixed])
+      expect(FinalizeAsks.offered(session, 'local'))
+        .toBe(FinalizeAsks.of(session, { kind: 'local', sessionId: session.sessionId }, 'local', 'Sessions') !== null)
+  })
+
   it('returns null without an applicable question', () => {
     const mixed = SessionsFixtures.mixed().sessions
     expect(FinalizeAsks.of(
       sessionOf(mixed, 's-ended'),
       { kind: 'local', sessionId: 's-ended' },
       'local',
+      'Sessions',
     )).toBeNull()
     expect(FinalizeAsks.of(
       sessionOf(mixed, 's-working'),
       { kind: 'local', sessionId: 's-working' },
       'local',
+      'Sessions',
     )).toBeNull()
     expect(FinalizeAsks.of(
       sessionOf(mixed, 's-tab'),
       { kind: 'local', sessionId: 's-tab' },
       'local',
+      'Sessions',
     )).toBeNull()
   })
 
@@ -69,6 +98,7 @@ describe('app-client-ui/renderer/overlays/finalize/finalizeModel', () => {
       session,
       { kind: 'local', sessionId: session.sessionId },
       'local',
+      'Sessions',
       catalog,
     )
 
@@ -85,7 +115,7 @@ describe('app-client-ui/renderer/overlays/finalize/finalizeModel', () => {
   it('answers the selected action verb, Close for no-op selections, and Finish for several verbs', () => {
     const session = sessionOf(SessionsFixtures.stoppedWorktree().sessions, 's-dirty')
     const target = { kind: 'local' as const, sessionId: session.sessionId }
-    const ask = FinalizeAsks.of(session, target, 'local')
+    const ask = FinalizeAsks.of(session, target, 'local', 'Sessions')
     if (ask === null) throw new Error('The worktree ask was not built')
 
     expect(FinalizeAsks.submitLabelOf(ask, new Map([['worktree', 'merge']]))).toBe('Merge')
@@ -95,6 +125,7 @@ describe('app-client-ui/renderer/overlays/finalize/finalizeModel', () => {
       session,
       target,
       'local',
+      'Sessions',
       FinalizeCatalog.questions([specOf('first', 1), specOf('second', 2)]),
     )
     if (two === null) throw new Error('The injected ask was not built')
@@ -107,6 +138,7 @@ describe('app-client-ui/renderer/overlays/finalize/finalizeModel', () => {
       session,
       { kind: 'local', sessionId: session.sessionId },
       'local',
+      'Sessions',
     )
     if (ask === null) throw new Error('The worktree ask was not built')
 
@@ -117,5 +149,30 @@ describe('app-client-ui/renderer/overlays/finalize/finalizeModel', () => {
   it('answers the registered question by id and refuses an unknown id', () => {
     expect(FinalizeCatalog.byId('worktree').id).toBe('worktree')
     expect(() => FinalizeCatalog.byId('missing')).toThrow(/Unknown finalize question/)
+  })
+
+  it('reads an agreement from a local and a remote refusal, and only a well-formed one', () => {
+    const setup = { commands: ['pnpm install'], hash: 'hash-1' }
+    const detail = 'asks to run 1 command'
+    expect(FinalizeAgreements.of({ ok: true, value: { ok: false, code: 'setup-not-acknowledged', detail, setup } }))
+      .toEqual(setup)
+    expect(FinalizeAgreements.of({ ok: true, value: { ok: false, code: 'merge-pending', detail, setup } })).toBeNull()
+    expect(FinalizeAgreements.of({ ok: true, value: { ok: true, value: undefined } })).toBeNull()
+    expect(FinalizeAgreements.of({ ok: false, error: 'closed' })).toBeNull()
+    const remote = (data: Record<string, unknown>) => FinalizeAgreements.of({
+      ok: true,
+      value: {
+        protocol: 'appjamat-v3-control.v1',
+        requestId: 'request-1',
+        operation: 'sessions.finalize',
+        operationId: null,
+        ok: false,
+        error: { code: 'operation-failed', detail, data },
+      },
+    })
+    expect(remote({ sourceCode: 'setup-not-acknowledged', setup })).toEqual(setup)
+    expect(remote({ sourceCode: 'svn-failed', setup })).toBeNull()
+    expect(remote({ sourceCode: 'setup-not-acknowledged', setup: { commands: [7], hash: 'hash-1' } })).toBeNull()
+    expect(remote({ sourceCode: 'setup-not-acknowledged', setup: { commands: [] } })).toBeNull()
   })
 })

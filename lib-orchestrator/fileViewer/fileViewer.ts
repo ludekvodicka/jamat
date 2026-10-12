@@ -43,13 +43,14 @@ export interface FileViewerDeps {
 /**
  * Every door into a document or a directory, and the proof each one needs.
  *
- * **The five doors keep their own cascades on purpose.** They look alike - resolve, prove the path
+ * **The six doors keep their own cascades on purpose.** They look alike - resolve, prove the path
  * is inside a root, open - and what differs between them is exactly the part that matters: which
  * root the path is proved against, and when. `openWorkspace` proves against the session's own root;
  * `openFilesystem` proves against the volume root and does it TWICE, before and after `realpath`,
  * because a path that resolves out of the volume is a different question from one that was written
  * out of it; `openChanged` proves against an anchor's parent; `openDetected` walks a cascade of
- * roots and takes the narrowest that can prove itself again on restore. Folding them into one helper
+ * roots and takes the narrowest that can prove itself again on restore; `openScriptLog` proves
+ * against the folder of the log a session's history named. Folding them into one helper
  * would hide the differences behind a parameter, and the differences are the security.
  *
  * What they DO share is here rather than repeated: the containment check itself is
@@ -245,6 +246,33 @@ export class FileViewer {
     catch (error) { return FileViewer.openFailure(error) }
   }
 
+  /**
+   * Main-only path boundary: `logPath` comes from `SessionManager.scriptLogOf`, which proved that the
+   * parent's history names the run with a saved log. The grant root is that parent's log folder and
+   * nothing wider. No diff mode: a log has no baseline.
+   */
+  async openScriptLog(
+    ownerId: string,
+    sessionId: string,
+    runId: string,
+    logPath: string,
+  ): Promise<FileViewerOpenResult> {
+    try {
+      const rootPath = await realpath(dirname(logPath))
+      const realPath = await realpath(logPath)
+      if (!PathCompare.isInside(rootPath, realPath))
+        return { ok: false, code: 'outside-root', detail: 'The log is outside its folder' }
+      return await this.openExisting(
+        ownerId,
+        rootPath,
+        realPath,
+        { kind: 'scriptLog', sessionId, runId, path: realPath },
+        false,
+      )
+    }
+    catch (error) { return FileViewer.openFailure(error) }
+  }
+
   async text(ownerId: string, documentId: string): Promise<FileViewerTextResult> {
     const found = this.grants.document(documentId, ownerId)
     if (!found.ok) return found
@@ -394,6 +422,9 @@ export class FileViewer {
     if (!found.ok) return found
     if (found.value.document.kind.kind === 'missing')
       return { ok: false, code: 'not-directory', detail: 'A missing file has no directory grant' }
+    // A file opened out of that folder would carry this log's run id, and a restore reopens that run's log.
+    if (found.value.document.source.kind === 'scriptLog')
+      return { ok: false, code: 'not-directory', detail: 'A script log has no folder to browse' }
     try {
       const path = await realpath(dirname(found.value.document.path))
       if (!PathCompare.isInside(found.value.rootPath, path))
@@ -634,7 +665,7 @@ export class FileViewer {
    */
   private static assertKnownSource(source: FileViewerDocumentSource): void {
     if (source.kind === 'workspace' || source.kind === 'external'
-      || source.kind === 'filesystem' || source.kind === 'detected')
+      || source.kind === 'filesystem' || source.kind === 'detected' || source.kind === 'scriptLog')
       return
     throw new Error(`Unknown file viewer source: ${JSON.stringify(source)}`)
   }

@@ -317,6 +317,107 @@ describe('app-client-ui/app/tabs/serviceTabsIpc', () => {
     expect(windows.published).toEqual([{ windowId: 'holder', channel: 'tabs:close-panel', args: ['ended'] }])
   })
 
+  describe('a collapsed script run', () => {
+    const toParent = { target: { kind: 'local' as const, sessionId: 'parent-1' }, title: 'Work - 014' }
+
+    // An install that went into its parent's history: the window drawing it draws the parent there instead.
+    it('hands the panels of a collapsed run to its parent', () => {
+      index.claimOpen('holder', panel('install', 'run-1'))
+      index.claimOpen('main', panel('agent', 'parent-1'))
+
+      ipc.scriptRunCollapsed('run-1', toParent)
+
+      expect(windows.published).toEqual([{
+        windowId: 'holder',
+        channel: 'tabs:hand-off-panel',
+        args: ['install', { sessionId: 'parent-1' }, 'Work - 014'],
+      }])
+    })
+
+    it('closes the panels of a collapsed run that goes to nobody', () => {
+      index.claimOpen('holder', panel('resolver', 'run-1'))
+
+      ipc.scriptRunCollapsed('run-1', null)
+
+      expect(windows.published).toEqual([{ windowId: 'holder', channel: 'tabs:close-panel', args: ['resolver'] }])
+    })
+
+    it('publishes no hand-off when no window draws the run', () => {
+      index.claimOpen('main', panel('agent', 'parent-1'))
+
+      ipc.scriptRunCollapsed('run-1', toParent)
+
+      expect(windows.published).toEqual([])
+    })
+
+    // A stale Scripts menu, or a click between the collapse and the next snapshot.
+    it('refuses a later claim of the run while its parent has no tab', async () => {
+      ipc.scriptRunCollapsed('run-1', toParent)
+
+      expect(await invoke(windows.mainSender, 'tabs:claim-panel', panel('install', 'run-1')))
+        .toMatchObject({ ok: true, value: { kind: 'refused' } })
+      expect(index.ownerOf('install')).toBeNull()
+    })
+
+    it('answers a later claim of the run with the tab its parent has, without raising it on a hand-off', async () => {
+      index.claimOpen('holder', panel('agent', 'parent-1'))
+      ipc.scriptRunCollapsed('run-1', toParent)
+
+      expect(await invoke(windows.mainSender, 'tabs:claim-panel', panel('install', 'run-1')))
+        .toMatchObject({ ok: true, value: { kind: 'owned', windowId: 'holder', panelId: 'agent' } })
+      expect(windows.focused).toEqual(['holder'])
+      expect(windows.published).toEqual([{ windowId: 'holder', channel: 'tabs:activate-panel', args: ['agent'] }])
+
+      expect(await invoke(windows.mainSender, 'tabs:claim-panel', panel('install', 'run-1'), false))
+        .toMatchObject({ ok: true, value: { kind: 'owned' } })
+      expect(windows.focused).toEqual(['holder'])
+      expect(index.ownerOf('install')).toBeNull()
+    })
+
+    it('refuses a run that closed instead of going to its parent', async () => {
+      index.claimOpen('holder', panel('agent', 'parent-1'))
+      ipc.scriptRunCollapsed('run-1', null)
+
+      expect(await invoke(windows.mainSender, 'tabs:claim-panel', panel('resolver', 'run-1')))
+        .toMatchObject({ ok: true, value: { kind: 'refused' } })
+    })
+
+    // A restored window whose layout still holds the tab of a run that collapsed while it was gone.
+    it('rejects the run tab of a restored layout and keeps the rest', async () => {
+      ipc.scriptRunCollapsed('run-1', toParent)
+
+      expect(await invoke(windows.mainSender, 'tabs:reconcile-panels', [panel('install', 'run-1'), panel('agent', 'parent-1')]))
+        .toEqual({ ok: true, value: { acceptedPanelIds: ['agent'], rejectedPanelIds: ['install'] } })
+      expect(index.ownerOf('install')).toBeNull()
+    })
+
+    // Dragged into another window while the hand-off went to the window it left.
+    it('hands off a run tab that arrives by transfer after the collapse', async () => {
+      index.claimOpen('main', panel('install', 'run-1'))
+      ipc.scriptRunCollapsed('run-1', toParent)
+      windows.published.length = 0
+      index.transfer('main', 'holder', panel('install', 'run-1'))
+
+      await invoke(windows.holderSender, 'tabs:transfer-commit', 'token-1')
+
+      expect(windows.published).toEqual([{
+        windowId: 'holder',
+        channel: 'tabs:hand-off-panel',
+        args: ['install', { sessionId: 'parent-1' }, 'Work - 014'],
+      }])
+    })
+
+    it('remembers only the newest collapsed runs', async () => {
+      for (let n = 0; n <= 64; n += 1)
+        ipc.scriptRunCollapsed(`run-${n}`, null)
+
+      expect(await invoke(windows.mainSender, 'tabs:claim-panel', panel('oldest', 'run-0')))
+        .toMatchObject({ ok: true, value: { kind: 'granted' } })
+      expect(await invoke(windows.mainSender, 'tabs:claim-panel', panel('newest', 'run-1')))
+        .toMatchObject({ ok: true, value: { kind: 'refused' } })
+    })
+  })
+
   it('routes a remote target only to the window that owns that endpoint session', async () => {
     const target = { kind: 'remote' as const, remoteEndpointId: 'endpoint-a', sessionId: 'session-1' }
     const panelId = 'terminal:remote-a'

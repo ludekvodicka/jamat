@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -19,7 +20,9 @@ import { CheckpointLayout } from '../git/checkpointLayout'
 import { GitInvoker } from '../git/gitInvoker'
 import { FakeHost } from '../hostClient/fixtures/fakeHost'
 import { HostDescriptorPaths } from '../hostClient/hostDescriptorPaths'
+import { CommandInvoker } from '../shared/commandInvoker'
 import { OrchestratorPaths } from '../shared/orchestratorPaths'
+import { SvnInvoker } from '../svn/svnInvoker'
 import type { SessionRecord, SessionRecordsDocument } from './records/sessionRecord.types'
 import type { SessionInfo, SessionsOpResult } from './sessionManagerApi.types'
 import { SessionManager, type SessionManagerDeps } from './sessionManager'
@@ -217,6 +220,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       versioningModeOf?: SessionManagerDeps['versioningModeOf']
       terminalSocketFactory?: SessionManagerDeps['terminalSocketFactory']
       onRemovedItself?: SessionManagerDeps['onRemovedItself']
+      onScriptCollapsed?: SessionManagerDeps['onScriptCollapsed']
     },
   ): Client {
     const errors: string[] = []
@@ -244,6 +248,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       versioningModeOf: options?.versioningModeOf,
       terminalSocketFactory: options?.terminalSocketFactory,
       onRemovedItself: options?.onRemovedItself,
+      onScriptCollapsed: options?.onScriptCollapsed,
       // The machine's real name would put the host running the suite into an asserted block.
       computerName: () => 'TEST-PC',
     })
@@ -364,7 +369,10 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
 
   it.each([
     { kind: 'agent' as const, agent: { agentId: 'codex' as const, launchMode: 'new' as const } },
-    { commands: [{ command: 'install', cwd: 'unused' }], setupFor: 'parent' },
+    {
+      commands: [{ command: 'install', cwd: 'unused' }],
+      scriptOf: { sessionId: 'parent', phase: 'before' as const, scriptId: 'setup' as const, name: 'setup' },
+    },
   ])('keeps the old Host alive if a running session cannot be restored: %j', async (overrides) => {
     const context = await world()
     seedRecords(context, [recordOf(context, 's1', { life: 'live', ...overrides })])
@@ -405,6 +413,72 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(context.host.calls.some((call) => call.name === 'host.stop')).toBe(false)
     for (const id of ['legacy', 'unnamed', 'shell']) expect(sessionOf(client, id)?.life).toBe('live')
     expect(client.spawns()).toBe(0)
+  })
+
+  it('answers the path of a saved log only for a run its parent history names', async () => {
+    const context = await world()
+    const entry = {
+      runId: 'r-saved', phase: 'before' as const, scriptId: 'setup' as const, name: 'setup', title: 'Setup p',
+      commands: ['pnpm install'], startedAt: 1_000, endedAt: 2_000, exitCode: 0, outcome: 'succeeded' as const,
+      log: { state: 'saved' as const, bytes: 4, truncated: false },
+    }
+    seedRecords(context, [recordOf(context, 'p', { scriptRuns: [entry] })])
+    const folder = join(OrchestratorPaths.scriptLogsDirectory(context.configIdentity, 'development'), 'p')
+    mkdirSync(folder, { recursive: true })
+    writeFileSync(join(folder, 'r-saved.log'), 'done', 'utf8')
+    writeFileSync(join(folder, 'r-stray.log'), 'never settled', 'utf8')
+    const client = clientOf(context)
+
+    expect(await client.manager.scriptLogOf('p', 'r-saved')).toEqual({ ok: true, value: { path: join(folder, 'r-saved.log') } })
+    expect(await client.manager.scriptLogOf('p', 'r-stray')).toMatchObject({ ok: false, code: 'not-found' })
+    expect(await client.manager.scriptLogOf('gone', 'r-saved')).toMatchObject({ ok: false, code: 'not-found' })
+  })
+
+  it('answers the worktree results of sessions that are gone, sweeps the stale ones and acknowledges one', async () => {
+    const context = await world()
+    const directory = OrchestratorPaths.worktreeResultsDirectory(context.configIdentity, 'development')
+    mkdirSync(directory, { recursive: true })
+    const resultOf = (actionId: string, at: number): Record<string, unknown> => ({
+      actionId, action: 'discard', result: 'discarded', sessionId: 'removed-long-ago', title: 'gone', tag: 'run-7',
+      worktreePath: 'Q:/Work/App/.worktrees/014-gone', mainCopy: 'Q:/Work/App', directoryId: null, removal: 'removed',
+      revisions: [], lines: [], logs: [], notify: null, at, acknowledgedAt: null,
+    })
+    writeFileSync(join(directory, 'fresh.json'), JSON.stringify(resultOf('fresh', Date.now())), 'utf8')
+    writeFileSync(join(directory, 'stale.json'), JSON.stringify(resultOf('stale', Date.now() - 31 * 86_400_000)), 'utf8')
+    const client = clientOf(context)
+
+    expect(valueOf(await client.manager.worktreeResults({ tag: 'run-7' })).results).toEqual([
+      expect.objectContaining({ actionId: 'fresh', sessionId: 'removed-long-ago', holdsLanded: null }),
+    ])
+    expect(existsSync(join(directory, 'stale.json'))).toBe(false)
+    expect(await client.manager.acknowledgeWorktreeResult('fresh')).toEqual({ ok: true, value: { actionId: 'fresh' } })
+    expect(valueOf(await client.manager.worktreeResults({ unacknowledged: true })).results).toEqual([])
+    expect(client.manager.worktreeResultsStore().list({}).map((result) => result.actionId)).toEqual(['fresh'])
+  })
+
+  it('starts a requested run under a live session on the operation queue, and draws it as its child', async () => {
+    const context = await world()
+    seedRecords(context, [recordOf(context, 'p', { life: 'live' })])
+    context.runtimes.set('p', runtime('p'))
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.manager.start()
+    await writable(client)
+    await reconciled(client)
+
+    const { runId } = valueOf(await client.manager.runScript('p', { command: 'pnpm test', title: 'tests' }))
+
+    expect(context.host.calls.filter((call) => call.name === 'runtime.create')).toHaveLength(1)
+    // The snapshot is true by the time the call returns: the operation queue reconciled after it.
+    expect(sessionOf(client, runId)).toMatchObject({
+      life: 'live',
+      title: 'tests',
+      script: { parentId: 'p', phase: 'inner', scriptId: 'requested' },
+      setupFor: 'p',
+    })
+    expect(sessionOf(client, 'p')?.scripts?.runs).toEqual([expect.objectContaining({ runId, state: 'running', row: true })])
+    expect(sessionOf(client, 'p')?.scripts?.badge).toBeUndefined()
+    expect(await client.manager.runScript('nobody', { command: 'pnpm test' })).toMatchObject({ ok: false, code: 'not-found' })
   })
 
   function sessionOf(client: Client, sessionId: string): SessionInfo | undefined {
@@ -1029,6 +1103,42 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(client.errors).toEqual([])
   }, 20_000)
 
+  it('registers notify only after a successful create and reads durable events by session id', async () => {
+    const context = await world()
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.manager.start()
+    await writable(client)
+    const notify = { sessionId: 'parent', text: 'child moved or ended', onGroups: ['waiting', 'unknown-group'] }
+    expect(await client.manager.createSession({ kind: 'agent', directory: { mode: 'default' }, notify }))
+      .toMatchObject({ ok: false })
+    expect(valueOf(await client.manager.notifies({})).notifies).toEqual([])
+    const plain = valueOf(await client.manager.createSession({ kind: 'shell', directory: { mode: 'default' } }))
+    expect(valueOf(await client.manager.notifies({ sessionId: plain.sessionId })).notifies).toEqual([])
+    const first = valueOf(await client.manager.createSession({ kind: 'shell', directory: { mode: 'default' }, notify }))
+    const second = valueOf(await client.manager.createSession({ kind: 'shell', directory: { mode: 'default' }, notify: { ...notify, onGroups: [] } }))
+    const store = client.manager.sessionNotifyStore()
+    await store.watch(first.sessionId, { ...notify, text: 'must not replace the original watch' })
+    await store.observe(first.sessionId, { life: 'live', group: 'waiting' }, 10)
+    await store.note(store.pending().map((event) => event.id), 'delivered', 11)
+    await store.observe(first.sessionId, { life: 'live', group: 'completed' }, 12)
+    await store.observe(first.sessionId, { life: 'gone', group: 'completed' }, Date.now())
+    await store.note(store.pending().map((event) => event.id), 'delivered', Date.now())
+    const expected = { sessionId: first.sessionId, target: 'parent', text: notify.text, onGroups: notify.onGroups, events: [
+      { cause: 'group:waiting', at: 10, state: 'delivered', attempts: 0, settledAt: 11 },
+      { cause: 'ended', at: expect.any(Number), state: 'delivered', attempts: 0, settledAt: expect.any(Number) },
+    ] }
+    expect(valueOf(await client.manager.notifies({})).notifies).toEqual([
+      expected, { sessionId: second.sessionId, target: 'parent', text: notify.text, onGroups: [], events: [] },
+    ])
+    expect(valueOf(await client.manager.notifies({ sessionId: first.sessionId })).notifies).toEqual([expected])
+    expect(valueOf(await client.manager.notifies({ sessionId: 'unknown' })).notifies).toEqual([])
+    const reloaded = clientOf(context)
+    expect(valueOf(await reloaded.manager.notifies({ sessionId: first.sessionId })).notifies).toEqual([expected])
+    expect(client.errors).toEqual([])
+    expect(reloaded.errors).toEqual([])
+  }, 20_000)
+
   it('carries a colour to the snapshot, and takes it off the record when it is cleared', async () => {
     const context = await world()
     context.publishDescriptor()
@@ -1161,12 +1271,12 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
           nativeSessionId: 'native-4', oneShot: true,
         },
         life: 'ended',
-        resolveFor: 'claude-live',
+        scriptOf: { sessionId: 'claude-live', phase: 'after', scriptId: 'merge-resolve', name: 'resolver' },
       }),
       recordOf(context, 'shell-lost', { life: 'lost' }),
       recordOf(context, 'shell-installing', {
         life: 'live',
-        setupFor: 'claude-waiting',
+        scriptOf: { sessionId: 'claude-waiting', phase: 'before', scriptId: 'setup', name: 'setup' },
         binding: { hostInstanceId: 'fake-host-1', generation: 1 },
       }),
       recordOf(context, 'claude-waiting', {
@@ -1174,6 +1284,12 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
         agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'native-2' },
         life: 'ended',
         pendingSetup: { setupSessionId: 'shell-installing' },
+        worktree: {
+          worktreePath: join(context.root, 'repo', '.worktrees', 'waiting'),
+          branch: 'jamat/waiting',
+          baseCommit: 'abc1234',
+          repositoryRoot: join(context.root, 'repo'),
+        },
       }),
     ])
     // Without a runtime behind it the reconciler relabels that record `lost`, and the compact this
@@ -1251,7 +1367,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       recordOf(context, 'resolver', {
         kind: 'agent',
         agent: { agentId: 'claude', launchMode: 'fork', oneShot: true },
-        resolveFor: 'merging',
+        scriptOf: { sessionId: 'merging', phase: 'after', scriptId: 'merge-resolve', name: 'resolver' },
         life: 'live',
         binding: { hostInstanceId: 'fake-host-1', generation: 1 },
       }),
@@ -1261,10 +1377,18 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
         life: 'ended',
         worktree,
       }),
+      recordOf(context, 'installed-for', { life: 'ended', worktree }),
+      recordOf(context, 'install', {
+        scriptOf: { sessionId: 'installed-for', phase: 'before', scriptId: 'setup', name: 'setup' },
+        commands: [{ command: 'pnpm install', cwd: worktree.worktreePath }],
+        life: 'live',
+        binding: { hostInstanceId: 'fake-host-1', generation: 1 },
+      }),
     ])
     // The resolver needs a RUNTIME, or the reconciler relabels it and the guard has nothing
     // live to refuse for.
     context.runtimes.set('resolver', runtime('resolver'))
+    context.runtimes.set('install', runtime('install'))
     context.publishDescriptor()
     const client = clientOf(context)
     await client.manager.start()
@@ -1274,6 +1398,43 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     // And the same record with nobody resolving it does admit one, so this is the resolver's doing
     // rather than the worktree's.
     expect(sessionOf(client, 'settled')?.admits).toContain('discardWorktree')
+    // Any run of the session, not only the resolver: an install still running stands in it too.
+    expect(sessionOf(client, 'installed-for')?.admits).not.toContain('discardWorktree')
+    // The wire keeps the old name for the link the record now carries as `scriptOf`.
+    expect(sessionOf(client, 'resolver')?.resolveFor).toBe('merging')
+    expect(sessionOf(client, 'resolver')?.setupFor).toBeUndefined()
+    expect(client.errors).toEqual([])
+  }, 20_000)
+
+  // An install waiting out a refused launch names nothing on the Host, and its gate still waits on it:
+  // `dismiss` refuses it, so the row must not offer Remove.
+  it('admits no remove on a run its gate still waits for', async () => {
+    const context = await world()
+    seedRecords(context, [
+      recordOf(context, 'waiting', {
+        life: 'starting',
+        pendingSetup: { setupSessionId: 'install' },
+        pendingOperationId: 'operation-waiting',
+        pendingOperationKind: 'create',
+      }),
+      recordOf(context, 'install', {
+        life: 'starting',
+        commands: [{ command: 'pnpm install', cwd: context.root }],
+        scriptOf: { sessionId: 'waiting', phase: 'before', scriptId: 'setup', name: 'setup' },
+        pendingOperationId: 'operation-install',
+        pendingOperationKind: 'create',
+        launchWait: { attempts: 6, lastAttemptAt: Date.now(), reason: 'the Host refused the launch' },
+      }),
+    ])
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.manager.start()
+    await writable(client)
+
+    const install = sessionOf(client, 'install')
+    expect(install?.life).toBe('starting')
+    expect(install?.admits).not.toContain('remove')
+    expect(await client.manager.removeSession('install')).toMatchObject({ ok: false, code: 'live-refused' })
     expect(client.errors).toEqual([])
   }, 20_000)
 
@@ -1337,6 +1498,180 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
   }, 20_000)
 
   /*
+   * A committed Finish leaves a landed row until its main copy holds what it committed. The main copy
+   * here is no working copy, so svn answers nothing: the row stays, "behind" is unknown, and an
+   * UPDATE that starts waits for the person. Which live sessions an UPDATE would change files under
+   * is the part this test is about.
+   */
+  it('keeps a landed row with UPDATE and Remove, and starts an UPDATE only once the live sessions in its main copy are confirmed', async () => {
+    const context = await world()
+    const owner = join(context.root, 'owner')
+    mkdirSync(join(owner, 'src'), { recursive: true })
+    mkdirSync(join(context.root, 'elsewhere'), { recursive: true })
+    const landed = { repository: 'https://svn.example.test/repos/app', revision: 52, label: 'receipt' as const }
+    seedRecords(context, [recordOf(context, 'landed', {
+      kind: 'agent',
+      agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'native-1' },
+      directory: { mode: 'adHoc', path: owner },
+      retiredWorktree: {
+        worktreePath: join(owner, '.worktrees', '014-fix'), kind: 'svn', revisions: ['https://svn.example.test/repos/app:r52'],
+        removedAt: 2_000, ownerDir: owner, landed: [landed],
+      },
+    })])
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.manager.start()
+    await writable(client)
+
+    const row = sessionOf(client, 'landed')
+    expect(row?.retiredWorktree?.landing).toEqual({ mainCopy: owner, behind: null, newest: ['https://svn.example.test/repos/app:r52'] })
+    expect(row?.completed).toBeUndefined()
+    expect(row?.admits).toEqual(expect.arrayContaining(['updateMain', 'remove']))
+    for (const operation of ['finalize', 'restart', 'fork'] as const) expect(row?.admits).not.toContain(operation)
+
+    const first = valueOf(await client.manager.createSession({ kind: 'shell', directory: { mode: 'adHoc', path: owner }, title: 'one' }))
+    const second = valueOf(await client.manager.createSession({ kind: 'shell', directory: { mode: 'adHoc', path: join(owner, 'src') }, title: 'two' }))
+    valueOf(await client.manager.createSession({ kind: 'shell', directory: { mode: 'adHoc', path: join(context.root, 'elsewhere') }, title: 'away' }))
+    const live = [
+      { sessionId: first.sessionId, title: 'one', number: null },
+      { sessionId: second.sessionId, title: 'two', number: null },
+    ]
+    expect(await client.manager.updateMain('landed', undefined, 'cli')).toMatchObject({ ok: false, code: 'live-sessions', liveSessions: live })
+    expect(await client.manager.updateMain('landed', [first.sessionId], 'cli')).toMatchObject({ ok: false, code: 'live-sessions' })
+    // A third session started meanwhile is not in the confirmation, so it refuses again.
+    const third = valueOf(await client.manager.createSession({ kind: 'shell', directory: { mode: 'adHoc', path: owner }, title: 'three' }))
+    const twoConfirmed = await client.manager.updateMain('landed', [second.sessionId, first.sessionId], 'cli')
+    expect(twoConfirmed).toMatchObject({ ok: false, code: 'live-sessions' })
+    expect(twoConfirmed.ok ? [] : twoConfirmed.liveSessions?.map((brief) => brief.sessionId)).toEqual([first.sessionId, second.sessionId, third.sessionId])
+
+    // Confirmed: the UPDATE is an action of the landed row; svn cannot read this main copy, so it waits for the person.
+    expect(await client.manager.updateMain('landed', [first.sessionId, second.sessionId, third.sessionId], 'cli'))
+      .toMatchObject({ ok: true, value: { sessionId: 'landed' } })
+    expect(storedRecord(context, 'landed')?.svnAction).toMatchObject({ kind: 'update-main', root: owner, needs: { kind: 'svn-failed' } })
+    expect(sessionOf(client, 'landed')?.svnAction).toMatchObject({ kind: 'update-main', needsKind: 'svn-failed' })
+
+    // A live session in the main copy has no landed row; svn decides whether its directory is a main copy.
+    expect(await client.manager.updateMain(first.sessionId, [], 'cli')).toMatchObject({ ok: false, code: 'invalid-spec' })
+
+    // Remove takes the landed row away at once.
+    expect(await client.manager.removeSession('landed')).toEqual({ ok: true, value: undefined })
+    expect(sessionOf(client, 'landed')).toBeUndefined()
+  }, 20_000)
+
+  /*
+   * The person updates the main copy with another client. The poll reads "behind" from the server
+   * and whether the main copy holds the landed revision locally; once it does, the row goes the way
+   * a Remove takes it. Real svn on a disposable repository; skipped where svnadmin is missing.
+   */
+  it('removes a landed row on its own once its main copy holds the landed revision, whoever updated it', { timeout: 60_000 }, async (runner) => {
+    const context = await world()
+    const repository = join(context.root, 'repository')
+    const created = await new CommandInvoker().run({ command: 'svnadmin', args: ['create', repository], cwd: context.root, env: process.env })
+    if (created.failure !== null || created.code !== 0) return runner.skip()
+    const svn = new SvnInvoker()
+    const run = async (cwd: string, args: string[]): Promise<string> => {
+      const outcome = await svn.run(cwd, [args[0], '--non-interactive', ...args.slice(1)])
+      expect(outcome.code, outcome.stderr).toBe(0)
+      return outcome.stdout
+    }
+    const owner = join(context.root, 'owner')
+    const other = join(context.root, 'other')
+    const url = pathToFileURL(repository).href
+    await run(context.root, ['checkout', url, owner])
+    await run(context.root, ['checkout', url, other])
+    writeFileSync(join(other, 'a.txt'), 'landed\n')
+    await run(other, ['add', '--', 'a.txt'])
+    await run(other, ['commit', '--username', 'fixture', '-m', 'landed', '--', '.'])
+    const root = (await run(owner, ['info', '--show-item', 'repos-root-url', '--', '.'])).trim()
+    seedRecords(context, [recordOf(context, 'landed', {
+      directory: { mode: 'adHoc', path: owner },
+      retiredWorktree: {
+        worktreePath: join(owner, '.worktrees', '014-fix'), kind: 'svn', revisions: [`${root}:r1`], removedAt: 2_000,
+        ownerDir: owner, landed: [{ repository: root, revision: 1, label: 'receipt' }],
+      },
+    })])
+    context.publishDescriptor()
+    const removedItself: string[] = []
+    const client = clientOf(context, { onRemovedItself: (sessionId) => removedItself.push(sessionId) })
+    await client.manager.start()
+    await writable(client)
+
+    await vi.waitFor(() => expect(sessionOf(client, 'landed')?.retiredWorktree?.landing?.behind).toBe(1), { timeout: 15_000 })
+    expect(removedItself).toEqual([])
+    await run(owner, ['update'])
+    await vi.waitFor(() => expect(sessionOf(client, 'landed')).toBeUndefined(), { timeout: 30_000, interval: 250 })
+    expect(removedItself).toEqual(['landed'])
+    expect(storedRecord(context, 'landed')).toBeUndefined()
+  })
+
+  /*
+   * Any directory of a product group: the worktree is the whole group, its checkout is a child run of
+   * the session, and the session starts at its place below. A session working in the main copy of the
+   * same member updates the whole group. Real svn for the reservation; the Host is the fake.
+   */
+  it('creates the worktree of a group member directory as the group, with a checkout run, and updates the group from a member', { timeout: 60_000 }, async (runner) => {
+    const context = await world()
+    const repository = join(context.root, 'repository')
+    const created = await new CommandInvoker().run({ command: 'svnadmin', args: ['create', repository], cwd: context.root, env: process.env })
+    if (created.failure !== null || created.code !== 0) return runner.skip()
+    const svn = new SvnInvoker()
+    const run = async (cwd: string, args: string[]): Promise<string> => {
+      const outcome = await svn.run(cwd, [args[0], '--non-interactive', ...args.slice(1)])
+      expect(outcome.code, outcome.stderr).toBe(0)
+      return outcome.stdout
+    }
+    const url = pathToFileURL(repository).href
+    await run(context.root, ['mkdir', '--parents', '--username', 'fixture', '-m', 'layout', '--', `${url}/Group/Member/src`])
+    const group = join(context.root, 'Group')
+    await run(context.root, ['checkout', '-q', '--', `${url}/Group`, group])
+    await run(group, ['propset', 'svn:global-ignores', '.worktrees', '--', '.'])
+    writeFileSync(join(group, '.appgroup'), '')
+    const directory = join(group, 'Member', 'src')
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.manager.start()
+    await writable(client)
+
+    const session = valueOf(await client.manager.createSession({ kind: 'shell', directory: { mode: 'adHoc', path: directory }, worktree: { slug: 'fix' } }))
+    const stored = storedRecord(context, session.sessionId)
+    const worktreePath = join(group, '.worktrees', 'fix')
+    expect(stored?.worktree).toMatchObject({ worktreePath, branch: `${url}/Group`, baseCommit: 'r1', repositoryRoot: group, kind: 'svn', cwdSubpath: 'Member/src' })
+    expect(existsSync(join(worktreePath, '.svn'))).toBe(false)
+    const checkout = client.manager.snapshot().sessions.find((info) => info.script?.parentId === session.sessionId)
+    expect(checkout).toMatchObject({ title: 'Checkout fix', script: { phase: 'before', scriptId: 'svn' } })
+    expect(storedRecord(context, checkout?.sessionId ?? '')?.process).toEqual({
+      tool: 'svn', args: ['--non-interactive', 'checkout', '-q', '--', `${url}/Group@1`, '.'],
+    })
+    expect(sessionOf(client, session.sessionId)?.worktree).toMatchObject({ worktreePath, cwdSubpath: 'Member/src' })
+    expect(sessionOf(client, session.sessionId)?.scripts?.badge).toMatchObject({ state: 'running', text: 'checking out' })
+
+    const plain = valueOf(await client.manager.createSession({ kind: 'shell', directory: { mode: 'adHoc', path: directory }, title: 'plain' }))
+    expect(await client.manager.updateMain(plain.sessionId, [], 'cli')).toMatchObject({ ok: true })
+    expect(storedRecord(context, plain.sessionId)?.svnAction).toMatchObject({ kind: 'update-main', root: group })
+  })
+
+  it('notes a commit as a receipt and answers the receipts of a session without a worktree', async () => {
+    const context = await world()
+    seedRecords(context, [recordOf(context, 'plain', {
+      commitReceipts: [{ scopeRoot: context.root, revision: 7, paths: ['a.txt'], at: 5 }],
+    })])
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.manager.start()
+    await writable(client)
+
+    client.manager.noteCommitted({ sessionId: 'plain', scopes: [{ scopeRoot: context.root, revision: null }], paths: [] })
+
+    await vi.waitFor(async () => expect(await client.manager.worktreeOf('plain')).toEqual({
+      ok: true,
+      value: {
+        sessionId: 'plain', worktree: null, retired: null, finish: null, action: null, outcome: null, cleanup: null,
+        receipts: [{ scopeRoot: context.root, revision: 7, at: 5 }, { scopeRoot: context.root, revision: null, at: expect.any(Number) }],
+      },
+    }), { timeout: 5_000 })
+  })
+
+  /*
    * The finisher is chosen by the worktree's kind: an SVN one goes to the SVN twin, which needs the
    * client's commit dialog for Commit and nothing for Discard. Every path here stays inside the
    * test's own directory, and the owner does not exist, so nothing reaches a real working copy.
@@ -1381,6 +1716,21 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
         },
         worktreeCleanup: { phase: 'kept', trigger: 'committed', reason: '2 changes', requestedAt: 1, attempts: 1, lastAttemptAt: 2 },
       }),
+      // Ended just now, so the cleanup's grace keeps the reconciler from judging it during the test.
+      recordOf(context, 'svn-auto', {
+        kind: 'shell',
+        life: 'ended',
+        exitReason: 'stopped',
+        endedAt: Date.now(),
+        worktree: {
+          worktreePath: join(context.root, 'owner', '.worktrees', '017-auto'),
+          branch: 'https://svn.example.test/repos/app/trunk',
+          baseCommit: 'r41',
+          repositoryRoot: join(context.root, 'owner'),
+          kind: 'svn',
+        },
+        worktreeCleanup: { phase: 'pending', trigger: 'remove-when-ended', requestedAt: 1, attempts: 0 },
+      }),
       recordOf(context, 'svn-unconfirmed', {
         kind: 'shell',
         life: 'ended',
@@ -1403,6 +1753,10 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
 
     expect(sessionOf(client, 'svn')?.worktree?.choices).toEqual(['commit', 'keep', 'discard'])
     expect(sessionOf(client, 'git')?.worktree?.choices).toEqual(['merge', 'keep', 'discard'])
+    // The cleanup after the end removes this worktree by itself and nothing is known to land, so no Commit.
+    expect(sessionOf(client, 'svn-auto')?.worktree?.choices).toEqual(['keep', 'discard'])
+    expect(sessionOf(client, 'svn-auto')?.worktree?.cleanup)
+      .toEqual({ phase: 'pending', summary: 'removed once the session has ended and nothing is left in it' })
     expect(await client.manager.worktreeOf('svn')).toEqual({
       ok: true,
       value: {
@@ -1410,8 +1764,10 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
         worktree: { kind: 'svn', worktreePath, url: 'https://svn.example.test/repos/app/trunk', baseRevision: 41 },
         retired: null,
         finish: null,
+        action: null,
         outcome: null,
         cleanup: null,
+        receipts: [],
       },
     })
     expect(await client.manager.worktreeOf('git')).toMatchObject({
@@ -1441,11 +1797,18 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(await client.manager.finalizeSession('svn')).toMatchObject({ ok: false, code: 'review-unavailable' })
     client.manager.setReviewPort({
       open: () => Promise.reject(new Error('no review may open for an owner that is gone')),
-      settled: () => Promise.reject(new Error('no review was opened')),
+      known: () => false,
+      propose: () => Promise.reject(new Error('nothing proposes here')),
+      proposalOf: () => null,
+      forgetProposal: () => undefined,
     })
-    expect(await client.manager.finalizeSession('svn')).toMatchObject({ ok: false, code: 'invalid-spec' })
-    // A finish with a problem keeps the session, its outcome on the row.
-    expect(sessionOf(client, 'svn')?.worktree?.outcome).toMatchObject({ result: 'failed', worktree: 'kept' })
+    // The press answers once the action is written; the action then finds the owner gone and waits for the person.
+    expect(await client.manager.finalizeSession('svn')).toEqual({ ok: true, value: undefined })
+    await vi.waitFor(() => expect(sessionOf(client, 'svn')?.svnAction?.needsKind).toBe('svn-failed'), { timeout: 5_000 })
+    expect(sessionOf(client, 'svn')?.svnAction?.needs).toMatch(/^REFUSED: The owner .* is gone$/)
+    // A waiting action holds nothing: the legacy finish phase is gone, and the row keeps its Finish.
+    expect(sessionOf(client, 'svn')?.worktree?.finish).toBeUndefined()
+    expect(sessionOf(client, 'svn')?.admits).toContain('finalize')
     expect(removedItself).toEqual([])
 
     // A successful ending removes the session the way Remove does, before the answer comes back.
@@ -1464,6 +1827,208 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(storedRecord(context, 'svn-kept')?.completed).toBe(true)
     expect(client.errors.join('\n')).toContain('Session svn-kept: its worktree ended as asked, and the session stays because it could not be removed: the disk is full')
     expect(removedItself).toEqual(['svn'])
+  }, 20_000)
+
+  /*
+   * The press of the Finish dialog and the review a review run asks for. The review port is a fake
+   * that counts what it opens; the owner does not exist, so no svn reaches a real working copy.
+   */
+  it('takes a Finish press on an SVN worktree, refuses one on a Git worktree, and opens a review run\'s review once', async () => {
+    const context = await world()
+    const worktreePath = join(context.root, 'owner', '.worktrees', '014-fix')
+    const svnWorktree = {
+      worktreePath, branch: 'https://svn.example.test/repos/app/trunk', baseCommit: 'r41', repositoryRoot: join(context.root, 'owner'), kind: 'svn' as const,
+    }
+    const reviewing: NonNullable<SessionRecord['svnAction']> = {
+      kind: 'finish', actionId: 'action-1', stage: 'reviewing', runId: 'review-run', root: worktreePath, checks: [], checkCursor: 0,
+      roots: [{ path: worktreePath, own: '', changed: ['a.txt'] }], rootCursor: 0, rounds: { incoming: 0, outOfDate: 0, lock: 0 },
+      evidence: [], requestedBy: 'window', startedAt: 5,
+    }
+    // A Finish a script pressed: its first review is a mount, and the worker proposed for the whole worktree.
+    const scriptedPath = join(context.root, 'Mirabia', '.worktrees', 'i42-orders')
+    const mountPath = join(scriptedPath, 'shared')
+    const scripted: NonNullable<SessionRecord['svnAction']> = {
+      ...reviewing, actionId: 'action-2', runId: 'review-run-cli', root: scriptedPath, requestedBy: 'cli',
+      roots: [{ path: mountPath, own: 'shared', changed: ['b.txt'] }, { path: scriptedPath, own: '', changed: ['a.txt'] }],
+    }
+    seedRecords(context, [
+      recordOf(context, 'acting', { kind: 'agent', agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'native-a' },
+        life: 'ended', title: '014 - fix login', worktree: svnWorktree, svnAction: reviewing }),
+      recordOf(context, 'review-run', { life: 'starting', binding: null, pendingOperationId: 'op-r', pendingOperationKind: 'create',
+        process: { tool: 'jamat-cli', args: ['sessions', 'worktree-review', '--self', '--wait'] },
+        scriptOf: { sessionId: 'acting', phase: 'after', scriptId: 'review', name: '.' } }),
+      recordOf(context, 'acting-cli', { kind: 'agent', agent: { agentId: 'codex', launchMode: 'new', nativeSessionId: 'native-c' },
+        life: 'ended', title: 'i42 - orders', svnAction: scripted,
+        worktree: { ...svnWorktree, worktreePath: scriptedPath, repositoryRoot: join(context.root, 'Mirabia'), cwdSubpath: 'WebMirabiaAdmin' } }),
+      recordOf(context, 'review-run-cli', { life: 'starting', binding: null, pendingOperationId: 'op-c', pendingOperationKind: 'create',
+        process: { tool: 'jamat-cli', args: ['sessions', 'worktree-review', '--self', '--wait'] },
+        scriptOf: { sessionId: 'acting-cli', phase: 'after', scriptId: 'review', name: 'shared' } }),
+      recordOf(context, 'plain', {}),
+      recordOf(context, 'git', {
+        kind: 'agent', agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'native-2' }, life: 'ended',
+        worktree: { worktreePath: join(context.root, 'repo', '.worktrees', 'task'), branch: 'jamat/task', baseCommit: 'abc1234', repositoryRoot: join(context.root, 'repo') },
+      }),
+    ])
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.manager.start()
+    await writable(client)
+    const opened: { sessionId: string; scopeRoot: string; proposal: string }[] = []
+    const proposed: { sessionId: string; directory: string; message: string }[] = []
+    const proposals = new Map([[`acting-cli|${scriptedPath}`, 'Fix the orders page']])
+    const editors: [string, string][] = []
+    let known = true
+    expect(await client.manager.proposeCommit('acting', 'Fix login')).toMatchObject({ ok: false, code: 'review-unavailable' })
+    client.manager.setReviewPort({
+      open: async (input) => {
+        opened.push(input)
+        return { ok: true, value: { commitSessionId: `commit-${opened.length}` } }
+      },
+      known: () => known,
+      propose: async (input) => {
+        proposed.push(input)
+        return { ok: true, value: { scopeRoot: input.directory } }
+      },
+      proposalOf: (sessionId, scopeRoot) => proposals.get(`${sessionId}|${scopeRoot}`) ?? null,
+      forgetProposal: (sessionId, scopeRoot) => { proposals.delete(`${sessionId}|${scopeRoot}`) },
+    })
+    client.manager.setEditor({ openWorktree: (path, ownerName) => editors.push([path, ownerName]) })
+
+    expect(sessionOf(client, 'acting')?.svnAction).toEqual({
+      kind: 'finish', stage: 'reviewing', needs: null, needsKind: null, review: { index: 1, count: 1, scopeRoot: worktreePath },
+    })
+    expect(sessionOf(client, 'acting')?.worktree?.finish).toEqual({ phase: 'reviewing', scopeRoot: worktreePath })
+    expect(sessionOf(client, 'acting')?.admits).toEqual(['newBeside'])
+    expect(sessionOf(client, 'review-run')?.setupFor).toBe('acting')
+
+    expect(await client.manager.openActionReview('review-run')).toEqual({ ok: true, value: { commitSessionId: 'commit-1', scopeRoot: worktreePath } })
+    expect(await client.manager.openActionReview('review-run')).toEqual({ ok: true, value: { commitSessionId: 'commit-1', scopeRoot: worktreePath } })
+    // Without a proposal the review starts with the title; the window's Finish shows the worktree once.
+    expect(opened).toEqual([{ sessionId: 'review-run', scopeRoot: worktreePath, proposal: 'fix login' }])
+    expect(editors).toEqual([[worktreePath, 'owner']])
+    expect(storedRecord(context, 'acting')?.svnAction?.reviewCommitId).toBe('commit-1')
+    // A scripted Finish never opens the editor, and its mount review falls back to the worktree's proposal.
+    expect(await client.manager.openActionReview('review-run-cli')).toEqual({ ok: true, value: { commitSessionId: 'commit-2', scopeRoot: mountPath } })
+    expect(opened[1]).toEqual({ sessionId: 'review-run-cli', scopeRoot: mountPath, proposal: 'Fix the orders page' })
+    expect(editors).toHaveLength(1)
+    known = false
+    expect(await client.manager.openActionReview('review-run')).toMatchObject({ ok: false, code: 'review-unavailable' })
+    expect(await client.manager.openActionReview('git')).toMatchObject({ ok: false, code: 'not-found' })
+    expect(editors).toHaveLength(1)
+
+    // A proposal is kept for the worktree root, never the member the session works in; without a worktree, for its directory.
+    expect(await client.manager.proposeCommit('acting-cli', 'Fix the orders page')).toEqual({ ok: true, value: { scopeRoot: scriptedPath } })
+    expect(await client.manager.proposeCommit('plain', 'Tidy')).toEqual({ ok: true, value: { scopeRoot: context.root } })
+    expect(proposed).toEqual([
+      { sessionId: 'acting-cli', directory: scriptedPath, message: 'Fix the orders page' },
+      { sessionId: 'plain', directory: context.root, message: 'Tidy' },
+    ])
+    expect(await client.manager.proposeCommit('nobody', 'x')).toMatchObject({ ok: false, code: 'not-found' })
+
+    expect(await client.manager.finishWorktreeSession('acting', { choice: 'commit', requestedBy: 'window' }))
+      .toMatchObject({ ok: false, code: 'merge-pending' })
+    expect(await client.manager.finishWorktreeSession('git', { choice: 'commit', requestedBy: 'cli' }))
+      .toMatchObject({ ok: false, code: 'invalid-spec', detail: expect.stringMatching(/Git worktree; finish it with sessions finalize/) })
+    expect(await client.manager.finishWorktreeSession('nobody', { choice: 'keep', requestedBy: 'cli' })).toMatchObject({ ok: false, code: 'not-found' })
+  }, 20_000)
+
+  /*
+   * A failed setup never ran a process of its own, so the cleanup of a session removed when it ends
+   * judges the worktree like any ended session. The session stays with the tombstone, because its row
+   * and its reason are the only evidence of why it never started. The worktrees here do not exist, so
+   * the removal reaches no real working copy.
+   */
+  it('removes the worktree of a failed setup and keeps the session, and an ordinary ended session goes as before', async () => {
+    const context = await world()
+    const svnWorktree = (folder: string): SessionRecord['worktree'] => ({
+      worktreePath: join(context.root, 'owner', '.worktrees', folder),
+      branch: 'https://svn.example.test/repos/app/trunk',
+      baseCommit: 'r41',
+      repositoryRoot: join(context.root, 'owner'),
+      kind: 'svn',
+    })
+    const failedSetup = (sessionId: string, folder: string, endedAt: number): SessionRecord => recordOf(context, sessionId, {
+      kind: 'agent',
+      agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: `native-${sessionId}` },
+      directory: { mode: 'project', categoryId: 'c1', projectPath: context.root },
+      endedAt,
+      endedReason: 'setup failed: the setup exited with 1',
+      pendingSetup: { setupSessionId: `${sessionId}-install` },
+      worktree: svnWorktree(folder),
+      worktreeCleanup: { phase: 'pending', trigger: 'remove-when-ended', reason: 'in use', requestedAt: 1, attempts: 1, lastAttemptAt: 2 },
+    })
+    const install = (parentId: string): SessionRecord => recordOf(context, `${parentId}-install`, {
+      exitCode: 1,
+      exitReason: 'process-exit',
+      endedAt: 1_500,
+      commands: [{ command: 'pnpm install', cwd: context.root }],
+      scriptOf: { sessionId: parentId, phase: 'before', scriptId: 'setup', name: 'setup' },
+    })
+    seedRecords(context, [
+      failedSetup('failed', '018-failed', 2_000),
+      install('failed'),
+      // Ended just now, so the cleanup's grace keeps the reconciler from judging it during the test.
+      failedSetup('failed-recent', '019-recent', Date.now()),
+      install('failed-recent'),
+      recordOf(context, 'plain', {
+        exitReason: 'process-exit',
+        endedAt: 2_000,
+        worktree: svnWorktree('020-plain'),
+        worktreeCleanup: { phase: 'pending', trigger: 'remove-when-ended', requestedAt: 1, attempts: 0 },
+      }),
+    ])
+    context.publishDescriptor()
+    const removedItself: string[] = []
+    const client = clientOf(context, { onRemovedItself: (sessionId) => removedItself.push(sessionId) })
+    await client.manager.start()
+    await writable(client)
+
+    await vi.waitFor(() => {
+      expect(storedRecord(context, 'failed')?.retiredWorktree?.worktreePath).toBe(join(context.root, 'owner', '.worktrees', '018-failed'))
+      expect(removedItself).toEqual(['plain'])
+    }, { timeout: 5_000 })
+    expect(storedRecord(context, 'failed')?.worktree).toBeUndefined()
+    expect(storedRecord(context, 'plain')).toBeUndefined()
+    const failed = sessionOf(client, 'failed')
+    expect(failed?.endedReason).toBe('setup failed: the setup exited with 1')
+    expect(failed?.admits).not.toContain('retrySetup')
+    expect(failed?.admits).toContain('remove')
+    expect(await client.manager.retrySetup('failed')).toMatchObject({
+      ok: false, code: 'worktree-removed', detail: expect.stringContaining(join(context.root, 'owner', '.worktrees', '018-failed')),
+    })
+    // The session never ran, so its end needs no confirmation, and the row says what the cleanup waits for.
+    expect(sessionOf(client, 'failed-recent')?.worktree?.cleanup)
+      .toEqual({ phase: 'pending', reason: 'in use', summary: 'waiting to remove (in use)' })
+    expect(sessionOf(client, 'failed-recent')?.admits).toContain('retrySetup')
+  }, 20_000)
+
+  it('tells the composer where the tab of each collapsed run goes', async () => {
+    const context = await world()
+    const install = (sessionId: string, parentId: string): SessionRecord => recordOf(context, sessionId, {
+      exitCode: 0,
+      exitReason: 'process-exit',
+      endedAt: 1_500,
+      commands: [{ command: 'pnpm install', cwd: context.root }],
+      scriptOf: { sessionId: parentId, phase: 'before', scriptId: 'setup', name: 'setup' },
+    })
+    seedRecords(context, [
+      recordOf(context, 'parent', { exitReason: 'process-exit', endedAt: 2_000 }),
+      install('parent-install', 'parent'),
+      install('orphan-install', 'gone'),
+    ])
+    context.publishDescriptor()
+    const collapsed: Parameters<NonNullable<SessionManagerDeps['onScriptCollapsed']>>[0][] = []
+    const client = clientOf(context, { onScriptCollapsed: (event) => collapsed.push(event) })
+    await client.manager.start()
+    await writable(client)
+
+    await vi.waitFor(() => expect(collapsed).toHaveLength(2), { timeout: 5_000 })
+    expect(collapsed).toEqual(expect.arrayContaining([
+      { runId: 'parent-install', parentId: 'parent', handoff: 'parent-tab', handoffTo: 'parent' },
+      // Nobody is left to take it over.
+      { runId: 'orphan-install', parentId: 'gone', handoff: 'close', handoffTo: 'gone' },
+    ]))
+    expect(storedRecord(context, 'parent-install')).toBeUndefined()
   }, 20_000)
 
   /** `runtime.stop`, with a switch for whether the process actually goes away afterwards. */
@@ -1990,7 +2555,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       recordOf(context, 'setup-1', {
         life: 'starting',
         commands: [{ command: 'echo installed', cwd: context.root }],
-        setupFor: 'waiting-1',
+        scriptOf: { sessionId: 'waiting-1', phase: 'before', scriptId: 'setup', name: 'setup' },
         pendingOperationId: 'operation-setup-1',
         pendingOperationKind: 'create',
       }),
@@ -2039,6 +2604,33 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     if (plain === undefined) throw new Error('the seeded record is missing from the snapshot')
     expect(Object.keys(plain)).not.toContain('setup')
     expect(Object.keys(plain)).not.toContain('setupFor')
+
+    // The same waits in the words this build's tree draws, composed beside the legacy fields.
+    expect(sessionOf(client, 'setup-1')?.script).toEqual({ parentId: 'waiting-1', phase: 'before', scriptId: 'setup' })
+    expect(sessionOf(client, 'waiting-1')?.scripts).toMatchObject({
+      runs: [{ runId: 'setup-1', state: 'running', row: true, summary: 'setup-1 · running' }],
+      badge: { phase: 'before', state: 'running', text: 'installing dependencies', runId: 'setup-1' },
+      waitingOn: 'setup-1',
+    })
+    expect(sessionOf(client, 'failed-1')?.scripts).toEqual({
+      runs: [],
+      badge: {
+        phase: 'before',
+        state: 'failed',
+        text: 'setup failed',
+        title: 'Setup failed: the setup exited with 7',
+        runId: 'setup-2',
+      },
+    })
+    expect(sessionOf(client, 'skipped-1')?.scripts?.badge).toMatchObject({ state: 'skipped', text: 'setup skipped' })
+    expect(sessionOf(client, 'live-1')?.scripts).toBeUndefined()
+    expect(Object.keys(plain)).not.toContain('scripts')
+    expect(Object.keys(plain)).not.toContain('script')
+
+    // Another full pass over a setup still running changes nothing the snapshot says.
+    const revision = client.manager.snapshot().revision
+    expect(await client.manager.removeSession('never-existed')).toMatchObject({ code: 'not-found' })
+    expect(client.manager.snapshot().revision).toBe(revision)
     expect(client.errors).toEqual([])
   }, 20_000)
 
@@ -2060,7 +2652,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
         life: 'live',
         binding: { hostInstanceId: 'fake-host-1', generation: 1 },
         commands: [{ command: 'exit 7', cwd: context.root }],
-        setupFor: 'waiting-2',
+        scriptOf: { sessionId: 'waiting-2', phase: 'before', scriptId: 'setup', name: 'setup' },
       }),
     ])
     context.runtimes.set('setup-5', runtime('setup-5'))
@@ -2307,6 +2899,63 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       const merges = await new GitInvoker().run(project, ['log', '--merges', '--format=%s'])
       expect(merges.stdout.trim().split('\n')).toHaveLength(2)
       expect(existsSync(join(project, CheckpointLayout.folderNameConst))).toBe(false)
+    })
+
+    /*
+     * The after chain end to end through the manager: the press that starts the checks answers at
+     * once and merges nothing, the worktree is held while they run, and their pass presses Finish
+     * again, which merges and removes the session with its check run.
+     */
+    it('runs the declared after checks before a Finish, and merges once they pass', {
+      timeout: 120_000,
+    }, async (runner) => {
+      await skipWithoutGit(runner)
+      const context = await world()
+      handleStop(context, { exits: true })
+      context.publishDescriptor()
+      const client = clientOf(context)
+      await client.manager.start()
+      await writable(client)
+      const project = await gitProject(context)
+      writeFileSync(join(project, '.worktree.json'), JSON.stringify({
+        scripts: { after: [{ name: 'tests', command: 'pnpm test' }] },
+      }), 'utf8')
+      const spec = {
+        kind: 'shell' as const,
+        directory: { mode: 'project' as const, categoryId: 'code', projectPath: project },
+        worktree: { slug: 'checked' },
+      }
+      const asked = await client.manager.createSession(spec)
+      if (asked.ok) throw new Error('a project with after checks was created without an agreement')
+      expect(asked).toMatchObject({ code: 'setup-not-acknowledged', setup: { commands: ['after tests: pnpm test'] } })
+      const created = valueOf(await client.manager.createSession({ ...spec, acknowledgeSetup: asked.setup?.hash }))
+      const worktreePath = sessionOf(client, created.sessionId)?.worktree?.worktreePath ?? ''
+      writeFileSync(join(worktreePath, 'checked.txt'), 'from the session\n', 'utf8')
+
+      valueOf(await client.manager.finalizeSession(created.sessionId))
+      valueOf(await client.manager.finalizeSession(created.sessionId))
+      const runOf = () => client.manager.snapshot().sessions.find((session) => session.script?.parentId === created.sessionId)
+      const runId = runOf()?.sessionId ?? ''
+      expect(runOf()).toMatchObject({ script: { phase: 'after', scriptId: 'declared' }, life: 'live' })
+      expect(existsSync(join(project, 'checked.txt'))).toBe(false)
+      const parent = sessionOf(client, created.sessionId)
+      expect(parent?.scripts?.badge).toMatchObject({ phase: 'after', state: 'running', text: 'checks: tests' })
+      expect(parent?.admits).not.toContain('discardWorktree')
+      expect(parent?.admits).not.toContain('restart')
+      expect(await client.manager.discardWorktree(created.sessionId)).toMatchObject({ ok: false, code: 'merge-pending' })
+      // A press while the checks run starts nothing more.
+      valueOf(await client.manager.finalizeSession(created.sessionId))
+      expect(client.manager.snapshot().sessions.filter((session) => session.script?.parentId === created.sessionId))
+        .toHaveLength(1)
+
+      context.runtimes.set(runId, runtime(runId, { alive: false, exitCode: 0, exitedAt: Date.now() }))
+      await vi.waitFor(() => expect(sessionOf(client, created.sessionId)).toBeUndefined(), { timeout: 20_000 })
+      expect(readFileSync(join(project, 'checked.txt'), 'utf8')).toContain('from the session')
+      expect(existsSync(worktreePath)).toBe(false)
+      expect(sessionOf(client, runId)).toBeUndefined()
+      // This fake Host answers an inspect without rows, so the run is settled without a log.
+      expect(client.errors.filter((message) => !message.includes('nothing was installed')
+        && !message.includes('settled without a saved log'))).toEqual([])
     })
 
     /** The escape hatch, for somebody running AppJamatV3 without the shared instructions. */

@@ -3,10 +3,11 @@ import { describe, expect, it } from 'vitest'
 import type {
   SessionActivity,
   SessionInfo,
-  SessionSetupInfo,
+  SessionScriptsBadge,
   SessionWorktreeInfo,
   SvnFinishPhase,
   SvnFinishResult,
+  SessionSvnActionInfo,
 } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { type SessionAction, type SessionGlyph, SessionNodeState } from './sessionNodeState'
 
@@ -188,9 +189,9 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionNodeState', () => {
 
   it('uses one label for each action across the row and its menu', () => {
     const actions: readonly SessionAction[] =
-      ['finalize', 'close', 'retrySetup', 'reopen', 'remove']
+      ['finalize', 'close', 'retrySetup', 'reopen', 'remove', 'updateMain']
     expect(actions.map((action) => SessionNodeState.actionLabelOf(action)))
-      .toEqual(['Finish', 'Close', 'Retry setup', 'Rerun', 'Remove'])
+      .toEqual(['Finish', 'Close', 'Retry setup', 'Rerun', 'Remove', 'Update main copy'])
     expect(() => SessionNodeState.actionLabelOf('discardWorktree' as SessionAction))
       .toThrow('Unknown session action: "discardWorktree"')
   })
@@ -352,34 +353,25 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionNodeState', () => {
       .toThrow('Unknown session life: "zombie"')
   })
 
-  it('names what an install did, and nothing when there was no install', () => {
-    expect(SessionNodeState.setupBadgeOf(undefined)).toBe(null)
-    expect(SessionNodeState.setupBadgeOf({ state: 'running', setupSessionId: 's-1', commands: [] }))
-      .toBe('installing')
-    expect(SessionNodeState.setupBadgeOf({ state: 'failed', setupSessionId: 's-1', commands: [] }))
-      .toBe('install-failed')
-    expect(SessionNodeState.setupBadgeOf({ state: 'skipped', reason: 'nothing to run' }))
-      .toBe('install-skipped')
-    expect(() => SessionNodeState.setupBadgeOf({ state: 'queued' } as unknown as SessionSetupInfo))
-      .toThrow('Unknown session setup state')
+  it('draws the scripts badge the library composed, and nothing without one', () => {
+    const badge: SessionScriptsBadge = {
+      phase: 'before', state: 'failed', text: 'setup failed', title: 'Setup failed', runId: 'r-1',
+    }
+    expect(SessionNodeState.scriptsBadgeOf(undefined)).toBe(null)
+    expect(SessionNodeState.scriptsBadgeOf({ runs: [] })).toBe(null)
+    expect(SessionNodeState.scriptsBadgeOf({ runs: [], badge })).toBe(badge)
+    expect(() => SessionNodeState.scriptsBadgeOf({
+      runs: [], badge: { ...badge, state: 'queued' } as unknown as SessionScriptsBadge,
+    })).toThrow('Unknown scripts badge state: "queued"')
   })
 
-  /* An install runs with echo off, so until a terminal exists this tooltip is the only place the
-     commands can be read - which is what makes an agreed-to setup auditable after it started. */
-  it('puts the commands behind the badge, and the reason when nothing ran', () => {
-    expect(SessionNodeState.setupTitleOf(undefined)).toBe(null)
-    expect(SessionNodeState.setupTitleOf({
-      state: 'running',
-      setupSessionId: 's-1',
-      commands: ['./bootstrap.sh', 'pnpm install'],
-    })).toBe('./bootstrap.sh\npnpm install')
-    expect(SessionNodeState.setupTitleOf({ state: 'skipped', reason: 'nothing to run' }))
-      .toBe('Nothing was installed: nothing to run')
-    // A record written before the commands were on the wire has nothing to say, and says nothing.
-    expect(SessionNodeState.setupTitleOf({ state: 'failed', setupSessionId: 's-1', commands: [] }))
-      .toBe(null)
-    expect(() => SessionNodeState.setupTitleOf({ state: 'queued' } as unknown as SessionSetupInfo))
-      .toThrow('Unknown session setup state')
+  it('routes a badge click by its state: a running or failed run opens its terminal, a succeeded one its log', () => {
+    expect(SessionNodeState.scriptsBadgeClickOf('running')).toBe('terminal')
+    expect(SessionNodeState.scriptsBadgeClickOf('failed')).toBe('terminal')
+    expect(SessionNodeState.scriptsBadgeClickOf('succeeded')).toBe('log')
+    expect(SessionNodeState.scriptsBadgeClickOf('skipped')).toBe('none')
+    expect(() => SessionNodeState.scriptsBadgeClickOf('queued' as SessionScriptsBadge['state']))
+      .toThrow('Unknown scripts badge state: "queued"')
   })
 
   /**
@@ -446,5 +438,69 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionNodeState', () => {
       .toBe('Stopped on conflicts; a resolve session is settling them')
     expect(SessionNodeState.mergeTitleOf({ phase: 'main-merging', startedAt: 1, failure: 'the base moved' }))
       .toBe('the base moved')
+  })
+
+  describe('an SVN action', () => {
+    it('labels a running SVN worktree session Finish… because its Finish opens a dialog', () => {
+      expect(SessionNodeState.finalizeLabelOf('live', true)).toBe('Finish…')
+      expect(SessionNodeState.finalizeLabelOf('live')).toBe('Finish')
+      expect(SessionNodeState.finalizeLabelOf('ended', true)).toBe('Finish…')
+    })
+
+    it('titles the finish mark with the stage of the action, and a review with its place among the roots', () => {
+      const action = (stage: SessionSvnActionInfo['stage'], review: SessionSvnActionInfo['review'] = null): SessionSvnActionInfo =>
+        ({ kind: 'finish', stage, needs: null, needsKind: null, review })
+      expect(SessionNodeState.finishTitleOf({ phase: 'updating' }, action('checks'))).toBe("Running the project's checks")
+      expect(SessionNodeState.finishTitleOf({ phase: 'reviewing' }, action('reviewing', { index: 1, count: 2, scopeRoot: 'C:/w/lib' })))
+        .toBe('Waiting for the commit review 1 of 2: C:/w/lib')
+      expect(SessionNodeState.finishTitleOf({ phase: 'removing' }, action('recording'))).toBe('Writing how the Finish ended')
+      expect(SessionNodeState.finishTitleOf({ phase: 'updating' }, action('resolving'))).toBe('Claude resolves the conflicts of the update')
+      expect(SessionNodeState.finishTitleOf({ phase: 'updating' }, action('verifying'))).toBe('Checking the files the conflict resolver edited')
+      expect(SessionNodeState.finishTitleOf(undefined, action('checks'))).toBe(null)
+      expect(() => SessionNodeState.actionTitleOf(action('landing' as SessionSvnActionInfo['stage']))).toThrow(/Unknown SVN action stage/)
+    })
+
+    it('names why an action waits, and nothing while it runs', () => {
+      expect(SessionNodeState.actionNeedsOf({ kind: 'finish', stage: 'checks', needs: 'tests failed', needsKind: 'check-failed', review: null }))
+        .toBe('tests failed')
+      expect(SessionNodeState.actionNeedsOf({ kind: 'finish', stage: 'checks', needs: null, needsKind: null, review: null })).toBe(null)
+      expect(SessionNodeState.actionNeedsOf(undefined)).toBe(null)
+    })
+  })
+
+  describe('a landed row', () => {
+    const landing = (behind: number | null) => ({
+      worktreePath: 'C:/w/.worktrees/016-fix',
+      revisions: ['http://svn/repo:r52'],
+      landing: { mainCopy: 'C:/w', behind, newest: ['http://svn/repo:r52'] },
+    })
+
+    it('offers Update main copy first on an ended row, where the library admitted it', () => {
+      expect(SessionNodeState.actionsOf({ life: 'ended', admits: ['newBeside', 'updateMain', 'remove'] }, false))
+        .toEqual(['updateMain', 'remove'])
+      expect(SessionNodeState.actionsOf({ life: 'ended', admits: ['remove'] }, false)).toEqual(['remove'])
+    })
+
+    it('says how far the main copy is behind, unknown while it is unknown, and what brings the revisions in', () => {
+      expect(SessionNodeState.landingOf(landing(3))?.text).toBe('main copy 3 behind')
+      expect(SessionNodeState.landingOf(landing(1))?.title)
+        .toBe('The main copy C:/w does not hold r52 yet; it is 1 revision behind HEAD. Update main copy brings them in; '
+          + 'the row goes once the main copy holds them, whoever updates it.')
+      expect(SessionNodeState.landingOf(landing(null))?.text).toBe('main copy behind (unknown)')
+      expect(SessionNodeState.landingOf({ worktreePath: 'C:/w/.worktrees/013', revisions: [] })).toBeNull()
+      expect(SessionNodeState.landingOf(undefined)).toBeNull()
+    })
+
+    it('draws an UPDATE by its stage, or why it waits, and leaves a Finish to the worktree marks', () => {
+      const update = (stage: SessionSvnActionInfo['stage'], needs: string | null = null): SessionSvnActionInfo =>
+        ({ kind: 'update-main', stage, needs, needsKind: needs === null ? null : 'locked', review: null })
+      expect(SessionNodeState.mainUpdateOf(update('updating'))).toEqual({ waiting: false, title: 'Updating the main copy' })
+      expect(SessionNodeState.mainUpdateOf(update('diffing'))).toEqual({ waiting: false, title: 'Showing the merge of the resolved files' })
+      expect(SessionNodeState.mainUpdateOf(update('updating', 'C:/w is locked'))).toEqual({ waiting: true, title: 'C:/w is locked' })
+      expect(SessionNodeState.mainUpdateOf({ kind: 'finish', stage: 'checks', needs: null, needsKind: null, review: null })).toBeNull()
+      expect(SessionNodeState.mainUpdateOf(undefined)).toBeNull()
+      expect(() => SessionNodeState.mainUpdateOf({ ...update('updating'), kind: 'merge' as SessionSvnActionInfo['kind'] }))
+        .toThrow(/Unknown SVN action kind/)
+    })
   })
 })

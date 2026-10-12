@@ -34,6 +34,7 @@ import {
   type ManageState,
 } from './projects/manageModel'
 import { ProjectSummaryLoader, type SummaryRequest } from './projects/projectSummaries'
+import { AppControl } from '../../ipc/appControl'
 
 /**
  * Which screen the card is showing. A union rather than one nullable state per screen: three screens
@@ -190,7 +191,7 @@ function SessionLauncherOverlay(props: LauncherOverlayProps & { intent: Launcher
   openRemoteSettingsRef.current = props.onOpenRemoteSettings
 
   const [summaries] = useState(() => new ProjectSummaryLoader(async (categoryId, name) => {
-    const answer = await window.appClient.projects.sessions(categoryId, name)
+    const answer = await AppControl.projects('projects.sessions', { categoryId: categoryId, projectName: name })
     if (!answer.ok || !answer.value.ok)
       return null
     return answer.value.value

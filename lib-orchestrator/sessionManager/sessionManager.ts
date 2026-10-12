@@ -26,6 +26,7 @@ import { HostTreeVersion } from '../hostControl/hostTreeVersion'
 import { type CatalogReading, CatalogView } from '../projectManager/catalogView'
 import { ClaudeTitleWriter } from '../projectManager/claudeTitleWriter'
 import { CodexSessionFiles } from './launch/codexSessionFiles'
+import { RunTools } from './launch/runTools'
 import type { ProjectBinding } from '../projectManager/projectManagerApi.types'
 import type { ProviderTranscriptView } from '../projectManager/providerTranscriptView'
 import type { PlatformSettingsValue } from '../projectSetup/projectSetup.types'
@@ -35,17 +36,30 @@ import type { RuntimeChannel } from '../shared/configIdentity.types'
 import { ErrorText } from '../shared/errorText'
 import { OrchestratorPaths } from '../shared/orchestratorPaths'
 import { PathCompare } from '../shared/pathCompare'
+import { ProductGroup } from '../shared/productGroup'
+import type { TreeRemove } from '../shared/treeRemoval'
 import { SvnInvoker } from '../svn/svnInvoker'
 import { SvnWorktreeManager } from '../svn/svnWorktreeManager'
 import { AgentPresets } from './launch/agentPresets'
 import { FinalizeSteps } from './lifecycle/finalizeSteps'
+import { LandedRows } from './lifecycle/landedRows'
 import { LaunchBackoff } from './lifecycle/launchBackoff'
 import type { ReconcileChange } from './lifecycle/reconciler'
 import { SessionLifecycle, type SessionWorktreePort } from './lifecycle/sessionLifecycle'
+import { SvnActionFlow } from './lifecycle/svnActionFlow'
+import { SvnActionStages } from './lifecycle/svnActionStages'
+import { SvnResolverLauncher } from './lifecycle/svnResolverLauncher'
+import { SvnRevisionLabels } from './lifecycle/svnRevisionLabels'
 import { SvnWorktreeFinishFlow } from './lifecycle/svnWorktreeFinishFlow'
-import type { WorktreeFinishFacts, WorktreeFinisher } from './lifecycle/worktreeFinish.types'
+import { SvnWorktreeRemoval } from './lifecycle/svnWorktreeRemoval'
+import type {
+  WorktreeChoicesInput,
+  WorktreeFinishFacts,
+  WorktreeFinisher,
+} from './lifecycle/worktreeFinish.types'
 import { WorktreeCleanupPacing } from './lifecycle/worktreeCleanupPacing'
 import { WorktreeMergeFlow } from './lifecycle/worktreeMergeFlow'
+import { WorktreeOwner, type WorktreeOwnerDeps } from './lifecycle/worktreeOwner'
 import {
   CheckpointsWorktreeProvisioner,
   GitWorktreeProvisioner,
@@ -57,10 +71,19 @@ import { SessionOutcomes } from './records/sessionOutcomes'
 import type {
   SessionRecord,
   SessionRecordAgent,
+  SessionRecordScriptLink,
   SessionRecordWorktree,
 } from './records/sessionRecord.types'
 import { SessionRecordsStore } from './records/sessionRecordsStore'
 import { SessionTitle } from './records/sessionTitle'
+import { CommandAgreement } from './scripts/commandAgreement'
+import { CommandTrustStore } from './scripts/commandTrustStore'
+import { WorktreeResultsStore } from './results/worktreeResultsStore'
+import { SessionNotifyStore } from './notifies/sessionNotifyStore'
+import type { SessionNotifyDto } from './sessionManagerApi.types'
+import { ScriptLogStore } from './scripts/scriptLogStore'
+import { type ScriptCollapsed, SessionScriptsManager } from './scripts/sessionScriptsManager'
+import { SessionScriptDefinitions } from './scripts/sessionScriptDefinitions'
 import type {
   HostDebugRuntimeRow,
   HostDebugStatus,
@@ -69,16 +92,21 @@ import type {
   SessionActivity,
   SessionAgentId,
   SessionColorName,
+  SessionCommitReceipt,
   SessionCreated,
   SessionCreateSpec,
   SessionDetailsSaved,
   SessionDetailsUpdate,
   SessionFinishChoice,
+  SessionFinishPress,
   SessionHistoryOpenSpec,
   SessionHistoryReference,
   SessionInfo,
+  SessionLiveBrief,
   SessionLocalHistoryEntry,
   SessionOperation,
+  SessionScriptRequest,
+  SessionScriptsReading,
   SessionSetupInfo,
   SessionsOpErrorCode,
   SessionsOpResult,
@@ -87,12 +115,15 @@ import type {
   SessionWorktreeKind,
   SessionWorktreePlace,
   SessionWorktreeState,
+  SvnLabelledRevision,
   TerminalAttachResult,
   TerminalAttachSpec,
   TerminalComposerContentResult,
   TerminalComposerResult,
+  WorktreeResultDto,
+  WorktreeResultsFilter,
 } from './sessionManagerApi.types'
-import type { SessionReviewPort } from './sessionReviewPort.types'
+import type { SessionEditorPort, SessionReviewPort } from './sessionReviewPort.types'
 import { SessionReference } from './sessionReference'
 import { SessionWorkingDirectory } from './sessionWorkingDirectory'
 import type { TerminalRefResolution, TerminalSocketFactory } from './terminals/terminalAttachment'
@@ -106,6 +137,8 @@ import { VcsFactsCache } from './vcsFacts/vcsFactsCache'
 import { AgentComposerReader } from './workState/agentComposerReader'
 import { ScreenTail } from './workState/screenTail'
 import { WorkStateMonitor } from './workState/workStateMonitor'
+
+export { SessionNotifier, type SessionNotifyPort } from './notifies/sessionNotifier'
 
 export interface SessionManagerDeps {
   /** Passed straight to `HostController`: the directory `app-host` stands in, named by the client. */
@@ -129,6 +162,11 @@ export interface SessionManagerDeps {
    */
   onRemovedItself?: (sessionId: string) => void
   /**
+   * A script run went into its parent's history. Its tab is the composer's: `parent-tab` gives it to
+   * the parent, `close` closes it. Optional for the same reason as the one above.
+   */
+  onScriptCollapsed?: (event: ScriptCollapsed) => void
+  /**
    * How a working copy is asked whether it is dirty. Optional: a manager built without it runs
    * exactly as before, minus the facts and minus every process they would cost.
    */
@@ -144,6 +182,11 @@ export interface SessionManagerDeps {
   spawnImpl?: HostControllerDeps['spawnImpl']
   /** The tests hand attaches a socket of their own; nothing in production passes it. */
   terminalSocketFactory?: TerminalSocketFactory
+  /**
+   * How a worktree directory goes after its session. Optional: Node's own `rm` when absent
+   * (`TreeRemoval`), which is wrong only inside Electron, so the client passes its own.
+   */
+  removeTree?: TreeRemove
   /** @deprecated Identity is confirmed by app-server. Retained for existing library callers. */
   codexHome?: string
   /** Where Claude keeps its config home. The tests and the smokes point it at a fixture; production does not. */
@@ -292,27 +335,49 @@ export class SessionManager {
   private readonly versioningModeOf: () => VersioningMode
   private readonly worktrees: GitWorktreeManager
   private readonly svnWorktrees: SvnWorktreeManager
+  /** Where `svn` and the Jamat CLI are on this machine, for runs and for the refusal of an SVN Commit. */
+  private readonly tools: RunTools
   /** Reads the mode once per create and hands the create to that mode's provisioner. */
   private readonly worktreePort: SessionWorktreePort
+  /** What the owner rule of an SVN worktree and of an UPDATE reads: groups, the catalog and svn. */
+  private readonly ownerDeps: WorktreeOwnerDeps
   /** Shared with the merge flow: two instances would ask the same repositories the same questions. */
   private readonly merge: GitMergeManager
   private readonly catalog: CatalogView
   private readonly projectSetup: ProjectSetupManager
+  private readonly agreement: CommandAgreement
   private readonly monitor: WorkStateMonitor
   private readonly terminals: TerminalGateway
   private readonly worktreeFacts = new Map<string, WorktreeFactsView>()
   private readonly vcsFacts: VcsFactsCache | null
+  private readonly scriptLogs: ScriptLogStore
+  /** Outlives the sessions it reports; loaded and swept at start. */
+  private readonly results: WorktreeResultsStore
+  private readonly notifyStore: SessionNotifyStore
+  /** What the landed rows wait for and how far their main copies are behind; memory only, fed by the poll. */
+  private readonly landedRows: LandedRows
+  private landedPass: Promise<void> | null = null
+  /** An ending asked for another round while one was running. */
+  private landedAgain = false
   /** Previous activity per session, read only to spot the settle that nudges a re-probe. */
   private readonly lastVcsActivity = new Map<string, SessionActivity | null>()
   private records: SessionRecordsStore | null = null
+  /** Built with the records, which it writes. */
+  private scripts: SessionScriptsManager | null = null
   private lifecycleLoad: Promise<SessionLifecycle> | null = null
   private numbersLoad: Promise<SessionNumberStore> | null = null
   /** False until a reconcile the Host answered has run; an unreachable Host never sets it. */
   private reconciled = false
   private mergeFlowValue: WorktreeMergeFlow | null = null
   private svnFinishFlowValue: SvnWorktreeFinishFlow | null = null
+  /** Built with the records, which it writes; an SVN action and the cleanup share it. */
+  private svnRemoval: SvnWorktreeRemoval | null = null
+  /** One open per review run in flight, so a second call of the same run joins the first. */
+  private readonly reviewOpening = new Map<string, Promise<SessionsOpResult<{ commitSessionId: string; scopeRoot: string }>>>()
   /** Bound late: the client builds its commit dialog after the sessions. */
   private reviewPort: SessionReviewPort | null = null
+  /** Bound late like the review port; without one a Finish started from the window opens no editor. */
+  private editor: SessionEditorPort | null = null
   private readonly finishers = new Map<SessionWorktreeKind, () => Promise<WorktreeFinisher>>([
     ['git', () => this.mergeFlow()],
     ['svn', () => this.svnFinishFlow()],
@@ -370,36 +435,52 @@ export class SessionManager {
     this.treeVersion = new HostTreeVersion(deps.applicationRoot)
     this.versioningModeOf = deps.versioningModeOf ?? (() => 'checkpoints')
     this.worktrees = new GitWorktreeManager(new GitInvoker())
-    this.svnWorktrees = new SvnWorktreeManager(new SvnInvoker())
+    this.svnWorktrees = new SvnWorktreeManager(new SvnInvoker(), deps.removeTree)
+    this.landedRows = new LandedRows({ svn: this.svnWorktrees, now: () => Date.now() })
+    this.tools = new RunTools({
+      applicationRoot: deps.applicationRoot,
+      resourcesRoot: deps.resourcesRoot,
+      environment: process.env,
+    })
     this.merge = new GitMergeManager(new GitInvoker())
     // Read-only by construction: with no snapshots directory every save is refused. The catalog has
     // one writer, the ProjectManager, and this is its second reader.
     this.catalog = CatalogView.load(deps.configDir, { report: deps.onError })
+    this.ownerDeps = {
+      groupRootOf: (dir) => ProductGroup.rootOf(dir),
+      catalogProjectOf: (dir) => SessionManager.projectPathOf(this.catalog.read().bind(dir)),
+      holdsCatalogProject: (dir) => this.holdsCategory(dir),
+      workingCopyRootOf: (dir) => this.svnWorktrees.workingCopyRootOf(dir),
+    }
     const gitWorktrees = new GitWorktreeProvisioner(this.worktrees)
-    const provisioners: Record<VersioningMode, SessionWorktreePort> = {
-      checkpoints: new CheckpointsWorktreeProvisioner({
-        svn: this.svnWorktrees,
-        git: this.worktrees,
-        svnWorktrees: new SvnWorktreeProvisioner(this.svnWorktrees, (dir) => this.holdsCategory(dir)),
-        gitWorktrees,
-      }),
+    const svnWorktrees = new SvnWorktreeProvisioner(this.svnWorktrees, this.ownerDeps)
+    const placers: Record<VersioningMode, Pick<SessionWorktreePort, 'place'>> = {
+      checkpoints: new CheckpointsWorktreeProvisioner({ svn: this.svnWorktrees, git: this.worktrees, svnWorktrees, gitWorktrees }),
       git: gitWorktrees,
     }
+    const kinds: Record<SessionWorktreeKind, Pick<SessionWorktreePort, 'create'>> = { git: gitWorktrees, svn: svnWorktrees }
+    // The mode decides the place once per create; the kind it placed decides the create, so a mode
+    // switched between the two cannot cut a worktree of the other kind.
     this.worktreePort = {
-      create: (request) => {
+      place: (request) => {
         const mode = this.versioningModeOf()
-        const provisioner = Object.hasOwn(provisioners, mode) ? provisioners[mode] : undefined
-        if (provisioner === undefined) throw new Error(`Unknown versioning mode: ${JSON.stringify(mode)}`)
-        return provisioner.create(request)
+        const placer = Object.hasOwn(placers, mode) ? placers[mode] : undefined
+        if (placer === undefined) throw new Error(`Unknown versioning mode: ${JSON.stringify(mode)}`)
+        return placer.place(request)
       },
+      create: (request) => kinds[request.placement.kind].create(request),
+      purgeReserved: (worktree) => svnWorktrees.purgeReserved(worktree),
     }
     // Built here the way the worktree manager is, and narrowed to `SessionSetupPort` where the
     // lifecycle takes it: this class owns the member, the lifecycle sees one method of it.
     this.projectSetup = new ProjectSetupManager({
-      trustFile: OrchestratorPaths.setupTrustFile(deps.configIdentity, deps.channel),
       platformSettingsOf: deps.platformSettingsOf
         ?? (() => SetupFamilies.defaultPlatformSettings()),
-      report: deps.onError,
+    })
+    // Machine state, not configuration: what a person answered here does not travel with a config
+    // directory copied to another machine. The file keeps its name, so no agreement is lost.
+    this.agreement = new CommandAgreement({
+      trust: CommandTrustStore.load(OrchestratorPaths.setupTrustFile(deps.configIdentity, deps.channel), deps.onError),
     })
     this.monitor = new WorkStateMonitor({
       client: this.client,
@@ -423,6 +504,15 @@ export class SessionManager {
         view: deps.vcsStatusView,
         preferredVcsOf: deps.preferredVcsOf ?? (() => 'git'),
       })
+    this.scriptLogs = new ScriptLogStore(OrchestratorPaths.scriptLogsDirectory(deps.configIdentity, deps.channel))
+    this.results = new WorktreeResultsStore(OrchestratorPaths.worktreeResultsDirectory(deps.configIdentity, deps.channel), {
+      now: () => Date.now(),
+      logs: this.scriptLogs,
+      report: deps.onError,
+    })
+    this.notifyStore = new SessionNotifyStore(OrchestratorPaths.sessionNotifiesDirectory(deps.configIdentity, deps.channel), {
+      now: () => Date.now(), report: deps.onError,
+    })
   }
 
   /**
@@ -438,6 +528,10 @@ export class SessionManager {
       // The records are read before anything else can run: a reconcile over an unloaded store would
       // find no sessions at all and call every live runtime on the Host an orphan.
       const lifecycle = await this.lifecycle()
+      // Only folders: the runs an older build left are settled by the ordinary planning.
+      await this.scripts?.sweep()
+      await this.results.load()
+      await this.notifyStore.load()
       this.client.start()
       this.armPoll()
       this.changed()
@@ -466,9 +560,6 @@ export class SessionManager {
     this.terminals.closeAll()
     await this.records?.flushUserInput()
     await this.client.stop()
-    // A review waits for a person, and nobody is coming: the finish keeps its phase and loads as
-    // interrupted, and the next Finish recovers from the disk.
-    this.svnFinishFlowValue?.stop()
     await this.settleWork()
     await this.records?.settled()
   }
@@ -515,7 +606,7 @@ export class SessionManager {
         default: throw new Error(`Unknown session kind: ${JSON.stringify(record.kind)}`)
       }
       if (!record.agent?.nativeSessionId) continue
-      const project = catalog.bind(SessionWorkingDirectory.ofRecord(record), record.worktree?.repositoryRoot)
+      const project = catalog.bind(SessionWorkingDirectory.ofRecord(record), SessionManager.bindRootOf(record))
       switch (project.kind) {
         case 'adHoc':
         case 'none': continue
@@ -547,6 +638,20 @@ export class SessionManager {
       })
     }
     return entries
+  }
+
+  /** The saved log of a run in its parent's history, proved by the manager that wrote it; for FileViewer. */
+  async scriptLogOf(parentId: string, runId: string): Promise<SessionsOpResult<{ path: string }>> {
+    await this.lifecycle()
+    if (this.scripts === null) return { ok: false, code: 'not-found', detail: `No session ${parentId}` }
+    return this.scripts.scriptLogOf(parentId, runId)
+  }
+
+  /** A session's runs and, with `runId`, one run's saved log text; for the control API. */
+  async scriptsOf(parentId: string, runId?: string): Promise<SessionsOpResult<SessionScriptsReading>> {
+    await this.lifecycle()
+    if (this.scripts === null) return { ok: false, code: 'not-found', detail: `No session ${parentId}` }
+    return this.scripts.scriptsOf(parentId, runId)
   }
 
   async workingContext(sessionId: string): Promise<SessionWorkingContextResult> {
@@ -643,6 +748,7 @@ export class SessionManager {
   async createSession(spec: SessionCreateSpec): Promise<SessionsOpResult<SessionCreated>> {
     const created = await this.tabTitled(this.operate((lifecycle) => lifecycle.create(spec)))
     if (!created.ok) return created
+    if (spec.notify !== undefined) await this.notifyStore.watch(created.value.sessionId, spec.notify)
     const record = this.records?.get(created.value.sessionId) ?? null
     const number = record === null ? null : SessionTitle.partsOf(record.title).number
     return {
@@ -655,13 +761,51 @@ export class SessionManager {
     }
   }
 
+  /** The durable results of SVN worktrees, also of sessions that were removed since. */
+  async worktreeResults(filter: WorktreeResultsFilter): Promise<SessionsOpResult<{ results: WorktreeResultDto[] }>> {
+    await this.results.load()
+    const results: WorktreeResultDto[] = []
+    const held = new Map<string, boolean | null>()
+    for (const record of this.results.list(filter)) {
+      const dto = WorktreeResultsStore.dtoOf(record)
+      if (record.result === 'committed' && record.revisions.length > 0) {
+        // Read when answered, once per main copy and newest revisions: the main copy moves on its own.
+        const key = `${PathCompare.comparable(record.mainCopy)}\t${LandedRows.newestOf(record.revisions).map(SvnRevisionLabels.textOf).join(',')}`
+        if (!held.has(key)) held.set(key, await this.landedRows.holds(record.mainCopy, record.revisions))
+        dto.holdsLanded = held.get(key) ?? null
+      }
+      results.push(dto)
+    }
+    return { ok: true, value: { results } }
+  }
+
+  /** The caller read the result and acted on it; it goes a day later instead of after 30. */
+  async acknowledgeWorktreeResult(actionId: string): Promise<SessionsOpResult<{ actionId: string }>> {
+    await this.results.load()
+    return this.results.acknowledge(actionId)
+  }
+
+  /** The store the client's notifier reads its wake-up lines from. */
+  worktreeResultsStore(): WorktreeResultsStore {
+    return this.results
+  }
+
+  sessionNotifyStore(): SessionNotifyStore {
+    return this.notifyStore
+  }
+
+  async notifies(filter: { sessionId?: string }): Promise<SessionsOpResult<{ notifies: SessionNotifyDto[] }>> {
+    await this.notifyStore.load()
+    return { ok: true, value: { notifies: this.notifyStore.list(filter) } }
+  }
+
   /** The worktree facts of one session, read from its record. */
   async worktreeOf(sessionId: string): Promise<SessionsOpResult<SessionWorktreeState>> {
     await this.lifecycle()
     const record = this.records?.get(sessionId)
     if (!record) return { ok: false, code: 'not-found', detail: `No session ${sessionId}` }
     const retired = record.retiredWorktree
-    const finish = record.worktreeFinish
+    const finish = SessionManager.legacyFinishOf(record)
     return {
       ok: true,
       value: {
@@ -671,25 +815,42 @@ export class SessionManager {
           ? null
           : { worktreePath: retired.worktreePath, revisions: retired.revisions, removedAt: retired.removedAt },
         finish: finish === undefined ? null : { phase: finish.phase, scopeRoot: finish.scopeRoot ?? null },
+        action: record.svnAction === undefined ? null : SvnActionStages.infoOf(record.svnAction),
         outcome: record.worktreeOutcome ?? null,
         cleanup: record.worktreeCleanup === undefined
           ? null
           : { phase: record.worktreeCleanup.phase, reason: record.worktreeCleanup.reason ?? null },
+        receipts: (record.commitReceipts ?? []).map(({ scopeRoot, revision, at }) => ({ scopeRoot, revision, at })),
       },
     }
   }
 
   /**
-   * A Jamat review committed from a directory, so an SVN worktree session that holds it has its
-   * worktree removed once its process ended. A review of a main copy holds no worktree and writes
-   * nothing. Detached: the commit that reports it waits for nobody.
+   * A Jamat review committed, or went to TortoiseSVN and closed: the session of the split and the
+   * session whose SVN worktree holds a scope each keep a receipt, and that worktree is removed once its
+   * process ended. Detached: the commit that reports it waits for nobody.
    */
-  noteWorktreeCommitted(scopeRoot: string): void {
-    const noted = this.operate((lifecycle) => lifecycle.noteWorktreeCommitted(scopeRoot)).then((result) => {
+  noteCommitted(receipt: SessionCommitReceipt): void {
+    const scopes = receipt.scopes.map((scope) => scope.scopeRoot).join(', ')
+    const noted = this.operate((lifecycle) => lifecycle.noteCommitted(receipt)).then((result) => {
       if (!result.ok)
-        this.deps.onError(`The commit from ${scopeRoot} could not be noted for the removal of its worktree: ${result.detail}`)
+        this.deps.onError(`The commit from ${scopes} could not be noted on its sessions: ${result.detail}`)
     })
-    this.detach(noted, `Noting the commit from ${scopeRoot}`)
+    this.detach(noted, `Noting the commit from ${scopes}`)
+  }
+
+  /**
+   * A worker's commit message, stored for its worktree root, or for the working copy of its directory
+   * when it has no worktree. Nothing opens and nothing is committed: the review uses it later.
+   */
+  async proposeCommit(sessionId: string, message: string): Promise<SessionsOpResult<{ scopeRoot: string }>> {
+    await this.lifecycle()
+    const record = this.records?.get(sessionId)
+    if (!record) return { ok: false, code: 'not-found', detail: `No session ${sessionId}` }
+    if (this.reviewPort === null)
+      return { ok: false, code: 'review-unavailable', detail: 'This client has no commit dialog to keep a proposal for' }
+    const directory = record.worktree?.worktreePath ?? SessionWorkingDirectory.ofRecord(record)
+    return this.reviewPort.propose({ sessionId, directory, message })
   }
 
   /** SVN keeps its URL in `branch` and `r<rev>` in `baseCommit`, because older peers require both. */
@@ -759,7 +920,7 @@ export class SessionManager {
       record,
       this.catalog.read().bind(
         SessionWorkingDirectory.ofRecord(record),
-        record.worktree?.repositoryRoot,
+        SessionManager.bindRootOf(record),
       ),
     )
   }
@@ -786,8 +947,15 @@ export class SessionManager {
    *
    * `expect: 'stop'` is for a script that means to stop a session and nothing more: a session that
    * ended meanwhile would otherwise start its Finish Commit on that press.
+   *
+   * A worktree whose project declares `scripts.after` runs them first: the press that starts them
+   * answers at once, and the Finish continues by itself once they pass. `acknowledgeSetup` is the
+   * hash a person agreed to when the press was refused `setup-not-acknowledged`.
    */
-  async finalizeSession(sessionId: string, options?: { expect?: 'stop' }): Promise<SessionsOpResult> {
+  async finalizeSession(
+    sessionId: string,
+    options?: { expect?: 'stop'; acknowledgeSetup?: string },
+  ): Promise<SessionsOpResult> {
     await this.lifecycle()
     const record = this.records?.get(sessionId)
     if (!record) return { ok: false, code: 'not-found', detail: `No session ${sessionId}` }
@@ -806,8 +974,7 @@ export class SessionManager {
       if (stopped.ok) this.worktreeFacts.delete(sessionId)
       return stopped
     }
-    else if (step === 'finish-worktree')
-      return this.whileFinishing(sessionId, () => this.finisherOf(record).then((finisher) => finisher.finish(sessionId)))
+    else if (step === 'finish-worktree') return this.finishWorktree(record, options?.acknowledgeSetup)
     else if (step === 'already-finalized') return { ok: true, value: undefined }
     else if (step === 'never-started')
       return {
@@ -818,6 +985,52 @@ export class SessionManager {
       }
     else
       throw new Error(`Unknown finalize step: ${JSON.stringify(step)}`)
+  }
+
+  /**
+   * A finisher that owns its checks takes the press at once (SVN: an action that answers once it is
+   * written). Otherwise the after checks first, on the operation queue because they launch runs, and
+   * the finisher once they passed.
+   */
+  private async finishWorktree(record: SessionRecord, acknowledgeSetup: string | undefined): Promise<SessionsOpResult> {
+    const sessionId = record.sessionId
+    const finisher = await this.finisherOf(record)
+    if (finisher.ownsChecks) {
+      const pressed = await finisher.finish(sessionId, {
+        choice: 'commit',
+        ...acknowledgeSetup === undefined ? {} : { acknowledgeSetup },
+        requestedBy: 'cli',
+      })
+      this.changed()
+      return pressed.ok ? { ok: true, value: undefined } : pressed
+    }
+    const gated = await this.operate(async (lifecycle) => ({
+      ok: true as const,
+      value: await lifecycle.finishChecks(sessionId, acknowledgeSetup, finisher.finishRefusal()),
+    }))
+    if (!gated.ok) return gated
+    const checks = gated.value
+    if (checks.kind === 'refused') return checks.result
+    else if (checks.kind === 'started' || checks.kind === 'running') return { ok: true, value: undefined }
+    else if (checks.kind === 'none' || checks.kind === 'passed')
+      return this.whileFinishing(sessionId, async () => {
+        const finished = await finisher.finish(sessionId, { choice: 'merge', requestedBy: 'cli' })
+        return finished.ok ? { ok: true, value: undefined } : finished
+      })
+    else throw new Error(`Unknown Finish checks gate: ${JSON.stringify(checks satisfies never)}`)
+  }
+
+  /**
+   * A chain that passed in this process presses Finish once more. Only while the next step is still
+   * that Finish: a reopen or a removal that came first is the newer word.
+   */
+  private async continueFinish(sessionId: string): Promise<void> {
+    await this.lifecycle()
+    const record = this.records?.get(sessionId)
+    if (!record || FinalizeSteps.planOf(record) !== 'finish-worktree') return
+    const result = await this.finishWorktree(record, undefined)
+    if (!result.ok)
+      this.deps.onError(`Session ${sessionId}: its Finish checks passed and the Finish could not continue: ${result.detail}`)
   }
 
   /**
@@ -915,6 +1128,14 @@ export class SessionManager {
     })
   }
 
+  /**
+   * A shell run the live session `parentId` asks for, drawn as its child and judged by its exit code.
+   * On the operation queue because it writes a record and launches a runtime.
+   */
+  async runScript(parentId: string, request: SessionScriptRequest): Promise<SessionsOpResult<{ runId: string }>> {
+    return this.operate((lifecycle) => lifecycle.runScript(parentId, request))
+  }
+
   /** The one way out of a failed setup: the install is resolved again and run again. */
   async retrySetup(sessionId: string, acknowledgeSetup?: string): Promise<SessionsOpResult> {
     return this.operate((lifecycle) => lifecycle.retrySetup(sessionId, acknowledgeSetup))
@@ -937,7 +1158,226 @@ export class SessionManager {
     await this.lifecycle()
     const record = this.records?.get(sessionId)
     if (!record) return { ok: false, code: 'not-found', detail: `No session ${sessionId}` }
+    // The checks run in the worktree a Discard would take away under them.
+    if (SessionScriptDefinitions.judging('finish', record))
+      return {
+        ok: false,
+        code: 'merge-pending',
+        detail: `Session ${sessionId}: its Finish checks are running; wait for them to end, or stop the check`,
+      }
     return this.whileFinishing(sessionId, () => this.finisherOf(record).then((finisher) => finisher.discard(sessionId)))
+  }
+
+  /**
+   * One press of the Finish dialog or of `sessions finish-worktree` on an SVN worktree: Commit, Keep
+   * or Discard, answered once the action is written. A Git worktree takes Discard here and finishes
+   * through `finalizeSession`, which runs its checks first.
+   */
+  async finishWorktreeSession(sessionId: string, press: SessionFinishPress): Promise<SessionsOpResult<{ sessionId: string; actionId: string | null }>> {
+    await this.lifecycle()
+    const record = this.records?.get(sessionId)
+    if (!record) return { ok: false, code: 'not-found', detail: `No session ${sessionId}` }
+    const worktree = record.worktree
+    if (worktree === undefined) return { ok: false, code: 'invalid-spec', detail: `Session ${sessionId} has no worktree` }
+    const kind = worktree.kind ?? 'git'
+    if (kind === 'git') {
+      if (press.choice !== 'discard')
+        return { ok: false, code: 'invalid-spec', detail: `${worktree.worktreePath} is a Git worktree; finish it with sessions finalize` }
+      const discarded = await this.discardWorktree(sessionId)
+      return discarded.ok ? { ok: true, value: { sessionId, actionId: null } } : discarded
+    }
+    else if (kind !== 'svn') throw new Error(`Unknown worktree kind: ${JSON.stringify(kind satisfies never)}`)
+    const pressed = await (await this.finisherOf(record)).finish(sessionId, press)
+    this.changed()
+    return pressed.ok ? { ok: true, value: { sessionId, actionId: pressed.value.actionId } } : pressed
+  }
+
+  /**
+   * UPDATE of a main copy, as an action of this session: a landed row updates the main copy its
+   * worktree was cut from, any other session the main copy it works in. Live sessions in that main
+   * copy (no worktree sessions, no runs, not this one) refuse it with `live-sessions` until
+   * `confirmLive` names exactly them; a third one started meanwhile refuses it again.
+   */
+  async updateMain(sessionId: string, confirmLive: readonly string[] | undefined, requestedBy: SessionFinishPress['requestedBy'])
+    : Promise<SessionsOpResult<{ sessionId: string; actionId: string }>> {
+    await this.lifecycle()
+    const record = this.records?.get(sessionId)
+    if (!record) return { ok: false, code: 'not-found', detail: `No session ${sessionId}` }
+    const mainCopy = await this.mainCopyOf(record)
+    if (!mainCopy.ok) return mainCopy
+    const live = this.liveIn(mainCopy.value, sessionId)
+    if (live.length > 0 && !SessionManager.sameIds(live.map((other) => other.sessionId), confirmLive ?? []))
+      return {
+        ok: false,
+        code: 'live-sessions',
+        detail: `${live.length} live session${live.length === 1 ? '' : 's'} work in ${mainCopy.value} `
+          + `(${live.map((other) => other.title || other.sessionId).join(', ')}); confirm them to update it under them`,
+        liveSessions: live,
+      }
+    const running = (this.records?.list() ?? []).find((other) => other.svnAction?.kind === 'update-main'
+      && SvnActionFlow.running(other) && PathCompare.comparable(other.svnAction.root) === PathCompare.comparable(mainCopy.value))
+    if (running !== undefined)
+      return { ok: false, code: 'merge-pending', detail: `An UPDATE of ${mainCopy.value} runs for session ${running.sessionId}; wait for it to end` }
+    const started = await this.operate((lifecycle) => lifecycle.svnActions.startUpdate(sessionId, mainCopy.value, requestedBy))
+    return started.ok ? { ok: true, value: { sessionId, actionId: started.value.actionId } } : started
+  }
+
+  /**
+   * The main copy an UPDATE of this session updates: the one a landed row's worktree was cut from;
+   * for any other session the main copy of a landed row that holds its directory, else the owner a
+   * worktree of its directory would check out (`WorktreeOwner`). A worktree session stands in none.
+   */
+  private async mainCopyOf(record: SessionRecord): Promise<SessionsOpResult<string>> {
+    const landing = LandedRows.landingOf(record)
+    if (landing !== null) return { ok: true, value: landing.mainCopy }
+    if (record.worktree !== undefined || record.retiredWorktree !== undefined)
+      return { ok: false, code: 'invalid-spec', detail: `Session ${record.sessionId} works in a worktree, not in a main copy` }
+    if (record.directory.mode === 'default')
+      return { ok: false, code: 'invalid-spec', detail: `Session ${record.sessionId} has no directory of its own` }
+    const cwd = SessionWorkingDirectory.ofRecord(record)
+    const landed = (this.records?.list() ?? []).flatMap((other) => {
+      const owner = LandedRows.landingOf(other)?.mainCopy
+      return owner !== undefined && PathCompare.isInside(owner, cwd) ? [owner] : []
+    }).sort((a, b) => PathCompare.normalized(b).length - PathCompare.normalized(a).length)
+    // A landed row's main copy is the owner its worktree was cut from, which the rule below may not
+    // give again: pp 7.3 cut member worktrees inside a group.
+    if (landed[0] !== undefined) {
+      const versioned = await this.svnWorktrees.inWorkingCopy(landed[0])
+      if (!versioned.ok) return { ok: false, code: 'svn-failed', detail: versioned.detail }
+      if (!versioned.value) return { ok: false, code: 'invalid-spec', detail: `${landed[0]} is in no SVN working copy` }
+      return { ok: true, value: landed[0] }
+    }
+    const owner = await WorktreeOwner.of(cwd, this.ownerDeps)
+    return owner.ok ? { ok: true, value: owner.ownerDir } : owner
+  }
+
+  /**
+   * Where a worktree session belongs in the catalog: its owner, or its place below the owner, never
+   * the `.worktrees` folder its directory lies in.
+   */
+  private static bindRootOf(record: SessionRecord): string | undefined {
+    const worktree = record.worktree
+    if (worktree === undefined) return undefined
+    return worktree.cwdSubpath === undefined ? worktree.repositoryRoot : join(worktree.repositoryRoot, ...worktree.cwdSubpath.split('/'))
+  }
+
+  /** The catalog project a binding names, or null for every binding that names none. */
+  private static projectPathOf(binding: ProjectBinding): string | null {
+    switch (binding.kind) {
+      case 'project': return binding.projectPath
+      case 'adHoc': case 'none': return null
+      default: throw new Error(`Unknown project binding: ${JSON.stringify(binding satisfies never)}`)
+    }
+  }
+
+  /** The live sessions an update of the main copy would change files under: no worktree sessions, no runs, not `exceptId`. */
+  private liveIn(mainCopy: string, exceptId: string): SessionLiveBrief[] {
+    return (this.records?.list() ?? [])
+      .filter((other) => other.sessionId !== exceptId && (other.life === 'live' || other.life === 'starting')
+        && other.scriptOf === undefined && other.worktree === undefined
+        && PathCompare.isInside(mainCopy, SessionWorkingDirectory.ofRecord(other)))
+      .map((other) => ({ sessionId: other.sessionId, title: other.title, number: SessionTitle.partsOf(other.title).number }))
+  }
+
+  private static sameIds(left: readonly string[], right: readonly string[]): boolean {
+    const wanted = new Set(right)
+    return left.length === wanted.size && left.every((id) => wanted.has(id))
+  }
+
+  /** An ending moved a main copy: its landed rows are judged and its distance read again at once. */
+  private landedDue(mainCopy: string): void {
+    this.landedRows.markStale(mainCopy)
+    this.detach(this.refreshLanded(), `Reading the landed rows of ${mainCopy}`)
+  }
+
+  /** One pass at a time; a request while one runs asks it for another round. */
+  private refreshLanded(): Promise<void> {
+    if (this.landedPass !== null) {
+      this.landedAgain = true
+      return this.landedPass
+    }
+    this.landedPass = this.landedRounds().finally(() => { this.landedPass = null })
+    return this.landedPass
+  }
+
+  private async landedRounds(): Promise<void> {
+    do {
+      this.landedAgain = false
+      await this.landedOnce()
+    } while (this.landedAgain)
+  }
+
+  /**
+   * A landed row whose main copy holds what it waits for goes the way a Remove takes it, whoever
+   * updated the main copy. Local reads at most every 10 s per main copy; the server distance every
+   * 10 minutes, and at once after an ending moved the main copy.
+   */
+  private async landedOnce(): Promise<void> {
+    const byMainCopy = new Map<string, { mainCopy: string; rows: { record: SessionRecord; landed: readonly SvnLabelledRevision[] }[] }>()
+    for (const record of this.records?.list() ?? []) {
+      const landing = LandedRows.landingOf(record)
+      if (landing === null) continue
+      const key = PathCompare.comparable(landing.mainCopy)
+      const group = byMainCopy.get(key) ?? { mainCopy: landing.mainCopy, rows: [] }
+      group.rows.push({ record, landed: landing.landed })
+      byMainCopy.set(key, group)
+    }
+    this.landedRows.retain([...byMainCopy.values()].map((group) => group.mainCopy))
+    let moved = false
+    for (const { mainCopy, rows } of byMainCopy.values()) {
+      if (this.landedRows.claimHolds(mainCopy))
+        for (const row of rows) {
+          // An UPDATE of this row judges the main copy itself once it ends.
+          if (SvnActionFlow.running(row.record)) continue
+          if (await this.landedRows.holds(mainCopy, row.landed) === true) await this.removeEnded(row.record.sessionId)
+        }
+      if (this.landedRows.behindDue(mainCopy)) moved = await this.landedRows.refreshBehind(mainCopy) || moved
+    }
+    if (moved) this.changed()
+  }
+
+  /**
+   * What a review run of an SVN action asks for once: the commit split on its own tab, for the root
+   * its action reviews now. A second call of the same run opens nothing and answers the same review,
+   * or that the review is gone with the client that opened it.
+   */
+  async openActionReview(runId: string): Promise<SessionsOpResult<{ commitSessionId: string; scopeRoot: string }>> {
+    await this.lifecycle()
+    const opening = this.reviewOpening.get(runId)
+    if (opening !== undefined) return opening
+    const work = this.openReviewOnce(runId).finally(() => { this.reviewOpening.delete(runId) })
+    this.reviewOpening.set(runId, work)
+    return work
+  }
+
+  private async openReviewOnce(runId: string): Promise<SessionsOpResult<{ commitSessionId: string; scopeRoot: string }>> {
+    const run = this.records?.get(runId)
+    const parent = run?.scriptOf === undefined ? undefined : this.records?.get(run.scriptOf.sessionId) ?? undefined
+    const action = parent?.svnAction
+    const root = action?.roots?.[action.rootCursor]
+    if (!parent || action?.stage !== 'reviewing' || action.runId !== runId || root === undefined)
+      return { ok: false, code: 'not-found', detail: `Run ${runId} reviews nothing now` }
+    if (action.reviewCommitId !== undefined)
+      return this.reviewPort?.known(action.reviewCommitId) === true
+        ? { ok: true, value: { commitSessionId: action.reviewCommitId, scopeRoot: root.path } }
+        : { ok: false, code: 'review-unavailable', detail: 'The review of this run was lost with the client that opened it' }
+    const review = this.reviewPort
+    if (review === null)
+      return { ok: false, code: 'review-unavailable', detail: 'This client has no commit dialog to review in' }
+    // A mount reviews alone, and the worker proposed for the worktree root.
+    const proposal = review.proposalOf(parent.sessionId, root.path)
+      ?? review.proposalOf(parent.sessionId, action.root)
+      ?? (SessionTitle.partsOf(parent.title).name.trim() || parent.title)
+    const opened = await review.open({ sessionId: runId, scopeRoot: root.path, proposal })
+    if (!opened.ok) return opened
+    const commitSessionId = opened.value.commitSessionId
+    await this.records?.update(parent.sessionId, (latest) => latest.svnAction?.runId === runId
+      ? { ...latest, svnAction: { ...latest.svnAction, reviewCommitId: commitSessionId } }
+      : null)
+    this.changed()
+    if (action.requestedBy === 'window' && action.rootCursor === 0 && parent.worktree !== undefined)
+      this.editor?.openWorktree(action.root, basename(parent.worktree.repositoryRoot))
+    return { ok: true, value: { commitSessionId, scopeRoot: root.path } }
   }
 
   /** A caller's request to remove an SVN worktree once its session ended, judged at the next pass. */
@@ -948,6 +1388,11 @@ export class SessionManager {
   /** Where Commit opens its reviews. Without one, an SVN Commit is refused by name. */
   setReviewPort(port: SessionReviewPort): void {
     this.reviewPort = port
+  }
+
+  /** Where a Finish started from the window shows the worktree, once, when its first review opens. */
+  setEditor(port: SessionEditorPort): void {
+    this.editor = port
   }
 
   private finisherOf(record: SessionRecord): Promise<WorktreeFinisher> {
@@ -989,6 +1434,10 @@ export class SessionManager {
 
   /** A finisher's ending did all it promised, so the session goes the way a Remove takes it. */
   private worktreeEnded(sessionId: string): void {
+    // A session whose last attempt never started keeps its row, its reason and its runs' history after
+    // the cleanup took its worktree; Retry setup then answers worktree-removed and Remove takes the row away.
+    const record = this.records?.get(sessionId)
+    if (record?.life === 'ended' && record.endedReason !== undefined) return this.changed()
     if (this.finishing.has(sessionId)) this.endedWhileFinishing.add(sessionId)
     else this.detach(this.removeEnded(sessionId), `Removing session ${sessionId} after its worktree ended`)
   }
@@ -1019,7 +1468,7 @@ export class SessionManager {
       records,
       merge: this.merge,
       measure: this.worktrees,
-      storeCut: new StoreCutWorktrees(new GitInvoker()),
+      storeCut: new StoreCutWorktrees(new GitInvoker(), this.deps.removeTree),
       report: this.deps.onError,
       ended: (sessionId) => this.worktreeEnded(sessionId),
       launchResolve: async (spec, marks) => {
@@ -1031,23 +1480,46 @@ export class SessionManager {
   }
 
   private async svnFinishFlow(): Promise<SvnWorktreeFinishFlow> {
-    await this.lifecycle()
+    const lifecycle = await this.lifecycle()
     const records = this.records
-    if (!records) throw new Error('The records store was not loaded before a finish')
+    const removal = this.svnRemoval
+    if (!records || !removal) throw new Error('The records store was not loaded before a finish')
     this.svnFinishFlowValue ??= new SvnWorktreeFinishFlow({
       records,
       svn: this.svnWorktrees,
-      reviewOf: () => this.reviewPort,
-      // The passes that run svn inside a worktree are this client's only holders below one; the
-      // inventory found no watcher or open handle elsewhere in the client.
-      releaseBelow: () => this.settleProbes(),
-      onQueue: (work) => this.serialize(work),
-      detach: (work, what) => this.detach(work, what),
-      report: this.deps.onError,
+      removal,
+      landedDue: (mainCopy) => this.landedDue(mainCopy),
+      actions: {
+        start: (sessionId, press) => this.operate((current) => current.svnActions.start(sessionId, press)),
+        // Off the queue: the removal it drives takes its own turn of it.
+        settled: (sessionId) => lifecycle.svnActions.settled(sessionId),
+      },
+      labels: new SvnRevisionLabels(this.svnWorktrees),
+      results: this.results,
+      finishRefusal: () => this.svnFinishRefusal(),
       changed: () => this.changed(),
       ended: (sessionId) => this.worktreeEnded(sessionId),
+      report: this.deps.onError,
     })
     return this.svnFinishFlowValue
+  }
+
+  /** Commit opens its reviews in the commit dialog, hosted by the Jamat CLI; Keep and Discard need neither. */
+  private svnFinishRefusal(): SessionsOpResult<never> | null {
+    if (this.reviewPort === null)
+      return {
+        ok: false,
+        code: 'review-unavailable',
+        detail: 'Commit needs the AppJamatV3 commit dialog, and this client has none; Keep and Discard still work',
+      }
+    const cli = this.tools.resolve('jamat-cli')
+    if (!cli.ok)
+      return {
+        ok: false,
+        code: 'review-unavailable',
+        detail: `Commit reviews through the Jamat CLI, which this client cannot start (${cli.detail}); Keep and Discard still work`,
+      }
+    return null
   }
 
   async adoptOrphan(runtimeSessionId: string): Promise<SessionsOpResult> {
@@ -1433,12 +1905,33 @@ export class SessionManager {
       },
     )
     this.records = records
+    const logs = this.scriptLogs
+    const scripts = new SessionScriptsManager({
+      records,
+      host: this.client,
+      logs,
+      onCollapsed: (event) => this.deps.onScriptCollapsed?.(event),
+      report: this.deps.onError,
+      now: () => Date.now(),
+    })
+    this.scripts = scripts
+    const removal = new SvnWorktreeRemoval({
+      records,
+      svn: this.svnWorktrees,
+      // The passes that run svn inside a worktree are this client's only holders below one; the
+      // inventory found no watcher or open handle elsewhere in the client.
+      releaseBelow: () => this.settleProbes(),
+      onQueue: (work) => this.serialize(work),
+      changed: () => this.changed(),
+    })
+    this.svnRemoval = removal
     const lifecycle = new SessionLifecycle({
       controller: { configIdentity: this.deps.configIdentity, channel: this.deps.channel },
       records,
       host: this.client,
       worktrees: this.worktreePort,
       setup: this.projectSetup,
+      agreement: this.agreement,
       // Deferred rather than the store itself: the numbers file is read on first use, and only a
       // create, a promotion, a history resume or a fork ever asks it anything.
       numbers: {
@@ -1452,10 +1945,35 @@ export class SessionManager {
         resourcesRoot: this.deps.resourcesRoot,
         report: this.deps.onError,
       }),
+      tools: this.tools,
       claudeTitles: ClaudeTitleWriter.load({
         claudeHome: this.deps.claudeHome,
         report: this.deps.onError,
       }),
+      scripts,
+      svnActions: {
+        svn: this.svnWorktrees,
+        labels: new SvnRevisionLabels(this.svnWorktrees),
+        removal,
+        resolver: {
+          unavailable: () => SvnResolverLauncher.claudeProblem(process.platform, process.env),
+          briefs: logs,
+          withMarkers: (root, paths) => SvnResolverLauncher.markersIn(root, paths),
+        },
+        results: this.results,
+        finishRefusal: () => this.svnFinishRefusal(),
+        activityOf: (sessionId) => {
+          const record = records.get(sessionId)
+          return record === null ? null : this.activityOf(record)
+        },
+        ended: (sessionId) => this.worktreeEnded(sessionId),
+        landedDue: (mainCopy) => this.landedDue(mainCopy),
+        proposalsSpent: (sessionId, scopeRoots) => {
+          for (const scopeRoot of scopeRoots) this.reviewPort?.forgetProposal(sessionId, scopeRoot)
+        },
+        detach: (work, what) => this.detach(work, what),
+        changed: () => this.changed(),
+      },
       report: this.deps.onError,
       yoloFor: this.deps.yoloFor,
       modelFor: this.deps.modelFor,
@@ -1472,6 +1990,10 @@ export class SessionManager {
     })
     lifecycle.setCleanWorktree((sessionId) => {
       this.detach(this.cleanWorktree(sessionId), `Removing the worktree of ${sessionId}`)
+    })
+    // Fired rather than awaited for the reason a resumed merge is, and the Finish queues its own turn.
+    lifecycle.setContinueFinish((sessionId) => {
+      this.detach(this.continueFinish(sessionId), `Finishing session ${sessionId} after its checks passed`)
     })
     return lifecycle
   }
@@ -1504,6 +2026,7 @@ export class SessionManager {
       await this.records?.flushUserInput()
       this.detach(this.probe(this.refreshWorktreeFacts()), 'The worktree facts')
       this.detach(this.probe(this.refreshVcsFacts()), 'The VCS facts')
+      this.detach(this.refreshLanded(), 'The landed rows')
       await this.refresh('poll')
     } finally {
       this.armPoll()
@@ -1549,8 +2072,8 @@ export class SessionManager {
         const worktree = record.worktree
         if (!worktree) continue
         known.add(record.sessionId)
-        // A finish is working in it and may be about to remove it; the last reading stands meanwhile.
-        if (record.worktreeFinish !== undefined) continue
+        // An action is working in it and may be about to remove it; the last reading stands meanwhile.
+        if (SvnActionFlow.running(record)) continue
         const captured = this.worktreeFacts.get(record.sessionId)
         if (captured && now - captured.capturedAt < SessionManager.worktreeFactsMillisecondsConst)
           continue
@@ -1611,7 +2134,7 @@ export class SessionManager {
         this.vcsFacts.markStale(cwd)
       this.lastVcsActivity.set(record.sessionId, activity)
       // A worktree session stays measured after it ends: what Finish promises is drawn from this.
-      if (SessionManager.measuredLife(record.life) || (record.worktree && record.worktreeFinish === undefined)) cwds.add(cwd)
+      if (SessionManager.measuredLife(record.life) || (record.worktree && !SvnActionFlow.running(record))) cwds.add(cwd)
     }
     for (const sessionId of [...this.lastVcsActivity.keys()])
       if (!alive.has(sessionId)) this.lastVcsActivity.delete(sessionId)
@@ -1732,7 +2255,7 @@ export class SessionManager {
     // belongs to the project, not to a project called `.worktrees`.
     const project = catalog.bind(
       SessionWorkingDirectory.ofRecord(record),
-      record.worktree?.repositoryRoot,
+      SessionManager.bindRootOf(record),
     )
     const info: SessionInfo = {
       sessionId: record.sessionId,
@@ -1755,17 +2278,23 @@ export class SessionManager {
         nativeSessionId: record.agent.nativeSessionId,
       }
     if (record.worktree) info.worktree = this.worktreeInfoOf(record, record.worktree)
-    if (record.retiredWorktree)
+    if (record.svnAction) info.svnAction = SvnActionStages.infoOf(record.svnAction)
+    if (record.retiredWorktree) {
       info.retiredWorktree = {
         worktreePath: record.retiredWorktree.worktreePath,
         revisions: record.retiredWorktree.revisions,
       }
+      const landing = LandedRows.landingOf(record)
+      if (landing !== null) info.retiredWorktree.landing = this.landedRows.infoOf(landing.mainCopy, landing.landed)
+    }
     const vcs = this.vcsFacts?.factOf(SessionManager.vcsKeyOf(record))
     if (vcs) info.vcs = vcs
     const setup = this.setupInfoOf(record)
     if (setup) info.setup = setup
-    if (record.setupFor !== undefined) info.setupFor = record.setupFor
-    if (record.resolveFor !== undefined) info.resolveFor = record.resolveFor
+    if (record.scriptOf !== undefined) SessionManager.legacyLinkInto(info, record.scriptOf)
+    const scripts = this.scripts?.infoOf(record)
+    if (scripts?.script !== undefined) info.script = scripts.script
+    if (scripts?.scripts !== undefined) info.scripts = scripts.scripts
     if (record.worktreeMerge)
       info.merge = {
         phase: record.worktreeMerge.phase,
@@ -1830,9 +2359,9 @@ export class SessionManager {
    */
   private admitsOf(record: SessionRecord): SessionOperation[] {
     const admits: SessionOperation[] = []
-    // A running finish owns the record and the worktree under it; starting another session beside
+    // A running action owns the record and the worktree under it; starting another session beside
     // it touches neither.
-    if (record.worktreeFinish !== undefined) {
+    if (SvnActionFlow.running(record)) {
       if (record.kind === 'agent') admits.push('newBeside')
       return admits
     }
@@ -1844,19 +2373,19 @@ export class SessionManager {
       // opens the create card rather than calling a create of its own.
       admits.push('newBeside')
       // No id, nothing to fork from. A Claude session is told its id at launch, a Codex one earns
-      // this the moment its id is found, and a fork of either now has one of its own. Not a
-      // resolver: its worktree goes when the merge it is settling is done.
-      if (record.agent?.nativeSessionId !== undefined && record.resolveFor === undefined && !retired)
+      // this the moment its id is found, and a fork of either now has one of its own. Not a run:
+      // a resolver's worktree goes when the merge it is settling is done.
+      if (record.agent?.nativeSessionId !== undefined && record.scriptOf === undefined && !retired)
         admits.push('fork')
       if (record.life === 'live') admits.push('compact')
     }
     // Another flow is holding this record, and restarting under it would race whoever owns it:
-    // `starting` belongs to the reconciler, the other four to setup and to the merge.
+    // `starting` belongs to the reconciler, the others to setup and to the merge.
     const held = record.life === 'starting'
       || record.pendingSetup !== undefined
       || record.worktreeMerge !== undefined
-      || record.setupFor !== undefined
-      || record.resolveFor !== undefined
+      || record.scriptOf !== undefined
+      || SessionScriptDefinitions.judging('finish', record)
     // The same gate the reopen itself applies, asked before the item is drawn rather than after it
     // is clicked. A shell has no conversation to name, so nothing can be wrong with resuming it.
     const reopenable = record.kind === 'shell'
@@ -1869,30 +2398,42 @@ export class SessionManager {
     // The row's four, each mirroring the refusal the operation itself would give. They are read
     // off the record like the rest; the one that needs a SECOND record says so where it does.
     if (FinalizeSteps.offers(record)) admits.push('finalize')
+    // A landed row's main copy lacks what its worktree committed until somebody updates it.
+    if (LandedRows.landingOf(record) !== null) admits.push('updateMain')
     // What `remove` refuses: a live session, and a `starting` one the Host has a runtime for.
     // A `starting` record with no binding names nothing on the Host and is removable.
-    if (record.life !== 'live' && !(record.life === 'starting' && record.binding !== null))
+    // A run row needs its parent too: `dismiss` refuses a run its gate still waits on.
+    if (record.life !== 'live' && !(record.life === 'starting' && record.binding !== null)
+      && !this.awaitedRun(record))
       admits.push('remove')
     if (this.discardable(record)) admits.push('discardWorktree')
     // The one way out of a failed install: the wait is still on the record and the session it
-    // was preparing has ended, which is what `setupInfoOf` reads as `failed`.
-    if (record.pendingSetup !== undefined && (record.life === 'ended' || record.life === 'lost'))
+    // was preparing has ended, which is what `setupInfoOf` reads as `failed`. A retired worktree
+    // leaves nothing to install into, so the retry would only refuse.
+    if (record.pendingSetup !== undefined && (record.life === 'ended' || record.life === 'lost')
+      && record.worktree !== undefined)
       admits.push('retrySetup')
     return admits
   }
 
   /**
    * Whether a discard would be taken rather than refused, which is the one row action that needs
-   * more than this record: `WorktreeMergeFlow.refuse` also refuses while the RESOLVER is live - a
-   * second session standing in that same directory, whose life the primary record says nothing
-   * about. A conflicted merge is `ended` by then and the agent resolving it is very much not.
+   * more than this record: a run of this session - the resolver, or an install - may be standing in
+   * that same directory, and the parent's own life says nothing about it. A conflicted merge is
+   * `ended` by then and the agent resolving it is very much not.
    */
+  private awaitedRun(record: SessionRecord): boolean {
+    if (record.scriptOf === undefined) return false
+    const parent = this.records?.get(record.scriptOf.sessionId) ?? null
+    return parent !== null && SessionScriptDefinitions.awaitsVerdictOf(record.sessionId, record.scriptOf, parent)
+  }
+
   private discardable(record: SessionRecord): boolean {
     if (record.worktree === undefined) return false
     if (record.life === 'live' || record.life === 'starting') return false
-    const resolver = record.worktreeMerge?.resolveSessionId
-    const resolving = resolver === undefined ? undefined : this.records?.get(resolver)
-    return resolving?.life !== 'live' && resolving?.life !== 'starting'
+    if (SessionScriptDefinitions.judging('finish', record)) return false
+    return !(this.records?.list() ?? []).some((run) => run.scriptOf?.sessionId === record.sessionId
+      && (run.life === 'live' || run.life === 'starting'))
   }
 
   /**
@@ -1928,37 +2469,63 @@ export class SessionManager {
     const facts = this.worktreeFacts.get(record.sessionId)
     const info: SessionWorktreeInfo = {
       worktreePath: worktree.worktreePath,
+      ...worktree.cwdSubpath === undefined ? {} : { cwdSubpath: worktree.cwdSubpath },
       branch: worktree.branch,
       baseCommit: worktree.baseCommit,
       kind: worktree.kind ?? 'git',
-      choices: this.choicesOf(worktree),
+      choices: this.choicesOf({ record, worktree, diff: facts?.diff ?? null }),
       diff: facts?.diff ?? null,
       baseMoved: facts?.baseMoved ?? false,
     }
-    if (record.worktreeFinish)
-      info.finish = {
-        phase: record.worktreeFinish.phase,
-        ...record.worktreeFinish.scopeRoot === undefined ? {} : { scopeRoot: record.worktreeFinish.scopeRoot },
-      }
+    const finish = SessionManager.legacyFinishOf(record)
+    if (finish !== undefined) info.finish = finish
     if (record.worktreeOutcome) info.outcome = record.worktreeOutcome
+    // The dialog opens on a running SVN session, and the action stops it first.
+    if (info.kind === 'svn' && record.life === 'live') info.liveFinish = true
     if (record.worktreeCleanup)
       info.cleanup = {
         phase: record.worktreeCleanup.phase,
         ...record.worktreeCleanup.reason === undefined ? {} : { reason: record.worktreeCleanup.reason },
-        summary: WorktreeCleanupPacing.summaryOf(record.worktreeCleanup, WorktreeCleanupPacing.endUnconfirmed(record)),
+        summary: this.svnFinishFlowValue?.cleaningNow(record.sessionId) === true
+          ? WorktreeCleanupPacing.runningSummaryConst
+          : WorktreeCleanupPacing.summaryOf(record.worktreeCleanup, WorktreeCleanupPacing.endUnconfirmed(record)),
       }
     return info
+  }
+
+  /**
+   * A running SVN action in the four legacy finish words, which a peer before 3.11 accepts; the full
+   * stage travels in `SessionInfo.svnAction`.
+   */
+  private static legacyFinishOf(record: SessionRecord): SessionWorktreeInfo['finish'] {
+    const action = record.svnAction
+    if (action === undefined || action.needs !== undefined) return undefined
+    const scopeRoot = SvnActionStages.scopeRootOf(action)
+    return { phase: SvnActionStages.legacyPhaseOf(action.stage), ...scopeRoot === undefined ? {} : { scopeRoot } }
   }
 
   /**
    * Read on the snapshot path, which must not wait. Until the first facts pass has built a finisher,
    * Git offers its usual three and SVN its own.
    */
-  private choicesOf(worktree: SessionRecordWorktree): readonly SessionFinishChoice[] {
-    const kind = worktree.kind ?? 'git'
-    if (kind === 'git') return this.mergeFlowValue?.choicesOf(worktree) ?? ['merge', 'keep', 'discard']
-    else if (kind === 'svn') return this.svnFinishFlowValue?.choicesOf() ?? ['commit', 'keep', 'discard']
+  private choicesOf(input: WorktreeChoicesInput): readonly SessionFinishChoice[] {
+    const kind = input.worktree.kind ?? 'git'
+    if (kind === 'git') return this.mergeFlowValue?.choicesOf(input) ?? ['merge', 'keep', 'discard']
+    else if (kind === 'svn')
+      return this.svnFinishFlowValue?.choicesOf(input) ?? SvnWorktreeFinishFlow.choicesFor(input.record, input.diff, false)
     else throw new Error(`Unknown worktree kind: ${JSON.stringify(kind satisfies never)}`)
+  }
+
+  /**
+   * The wire keeps naming the two runs it always named, with their old meaning: an older peer nests
+   * every run but the resolver by `setupFor`, so a new kind of run joins the `setupFor` branch.
+   */
+  private static legacyLinkInto(info: SessionInfo, link: SessionRecordScriptLink): void {
+    if (link.scriptId === 'setup' || link.scriptId === 'declared' || link.scriptId === 'requested'
+      || link.scriptId === 'svn' || link.scriptId === 'checks' || link.scriptId === 'svn-resolve' || link.scriptId === 'review')
+      info.setupFor = link.sessionId
+    else if (link.scriptId === 'merge-resolve') info.resolveFor = link.sessionId
+    else throw new Error(`Unknown script ${JSON.stringify(link.scriptId satisfies never)}`)
   }
 
   /**

@@ -125,8 +125,8 @@ export function useSessionRowTooltip(): SessionRowTooltipState {
 }
 
 /**
- * The card itself: the row's title, under it where its worktree is or what became of it, and the
- * note as a paragraph of its own.
+ * The card itself: the row's title, under it where its worktree is or what became of it, what a
+ * landed row's main copy still lacks, and the note as a paragraph of its own.
  *
  * Portalled to the body so the tree's scroller cannot clip it, and fitted inside the window after it
  * is measured, which the layout effect does before the first paint.
@@ -137,6 +137,8 @@ export function SessionRowTooltip(props: {
   title: string
   note: string | null
   worktree: string | null
+  /** A landed row: what its main copy lacks and what brings it in; absent for every other row. */
+  landing?: string | null
 }): React.JSX.Element {
   const element = useRef<HTMLDivElement>(null)
   const [placement, setPlacement] = useState<SessionRowTooltipPosition>({ x: 0, y: 0 })
@@ -147,7 +149,7 @@ export function SessionRowTooltip(props: {
     if (anchor && box)
       setPlacement(SessionRowTooltipPlacement.beside(
         anchor, box.width, box.height, window.innerWidth, window.innerHeight))
-  }, [props.anchor, props.title, props.note, props.worktree])
+  }, [props.anchor, props.title, props.note, props.worktree, props.landing])
 
   return createPortal(
     <div
@@ -160,6 +162,9 @@ export function SessionRowTooltip(props: {
       <div className="jamat-sessions__tooltip-title">{props.title}</div>
       {props.worktree !== null && (
         <div className="jamat-sessions__tooltip-worktree">{props.worktree}</div>
+      )}
+      {props.landing !== undefined && props.landing !== null && (
+        <div className="jamat-sessions__tooltip-worktree" data-tooltip-landing="true">{props.landing}</div>
       )}
       {props.note !== null && <p className="jamat-sessions__tooltip-note">{props.note}</p>}
     </div>,

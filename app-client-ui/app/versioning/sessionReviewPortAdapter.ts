@@ -1,35 +1,27 @@
-import { setTimeout as sleep } from 'node:timers/promises'
-
-import type { RemoteControlCommitStatusDto } from '../../../lib-orchestrator/remoteControl/remoteControlApi.types'
-import type { SessionReviewPort, SessionReviewSettled } from '../../../lib-orchestrator/sessionManager/sessionReviewPort.types'
-import type { SessionsOpResult } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
+import type { SessionReviewPort } from '../../../lib-orchestrator/sessionManager/sessionReviewPort.types'
+import type { SessionsOpErrorCode, SessionsOpResult } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { PathCompare } from '../../../lib-orchestrator/shared/pathCompare'
 import type { TabControlBroker } from '../tabs/tabControlBroker'
-import type { VersioningCommitManager } from './versioningCommitManager'
+import type { VersioningCommitManager, VersioningCommitProposeResult } from './versioningCommitManager'
 
 /**
- * The commit dialog as the sessions library sees it: a review opened in the session's own tab, and
- * the state it ended in. The status object of the review is the receipt, read in this process, so
- * no envelope crosses a wire on the way.
+ * The commit dialog as the sessions library sees it: a review opened in a session's own tab, whether
+ * it is still known, and the message a worker proposed for it. The review run that asked for it waits
+ * for its status itself.
  */
 export class SessionReviewPortAdapter implements SessionReviewPort {
-  private static readonly pollMillisecondsConst = 1_000
-  private static readonly outOfDateConst = /out.of.date|E155011|E160028|E170004|newer content/i
   private readonly broker: Pick<TabControlBroker, 'openCommit'>
-  private readonly commits: Pick<VersioningCommitManager, 'status'>
+  private readonly commits: Pick<VersioningCommitManager, 'status' | 'propose' | 'proposalOf' | 'forgetProposal'>
   private readonly tabTitleOf: (sessionId: string) => string | null
-  private readonly pause: (milliseconds: number, signal: AbortSignal) => Promise<void>
 
   constructor(
     broker: Pick<TabControlBroker, 'openCommit'>,
-    commits: Pick<VersioningCommitManager, 'status'>,
+    commits: Pick<VersioningCommitManager, 'status' | 'propose' | 'proposalOf' | 'forgetProposal'>,
     tabTitleOf: (sessionId: string) => string | null,
-    pause?: (milliseconds: number, signal: AbortSignal) => Promise<void>,
   ) {
     this.broker = broker
     this.commits = commits
     this.tabTitleOf = tabTitleOf
-    this.pause = pause ?? ((milliseconds, signal) => sleep(milliseconds, undefined, { signal }))
   }
 
   async open(input: { sessionId: string; scopeRoot: string; proposal: string }): Promise<SessionsOpResult<{ commitSessionId: string }>> {
@@ -50,32 +42,29 @@ export class SessionReviewPortAdapter implements SessionReviewPort {
     return { ok: true, value: { commitSessionId } }
   }
 
-  /**
-   * Polled like `commit-svn-jamat --wait`, and ended by the same rule: a failed attempt leaves the
-   * review open for another try, so only a review that closed, committed or went to an external
-   * client is settled.
-   */
-  async settled(commitSessionId: string, signal: AbortSignal): Promise<SessionReviewSettled> {
-    for (;;) {
-      signal.throwIfAborted()
-      const status = this.commits.status(commitSessionId)
-      if (status === null) return { state: 'lost' }
-      const settled = SessionReviewPortAdapter.settledOf(status)
-      if (settled !== null) return settled
-      await this.pause(SessionReviewPortAdapter.pollMillisecondsConst, signal)
-    }
+  known(commitSessionId: string): boolean {
+    return this.commits.status(commitSessionId) !== null
   }
 
-  private static settledOf(status: RemoteControlCommitStatusDto): SessionReviewSettled | null {
-    if (status.state === 'committed') return { state: 'committed', revision: status.revision ?? '' }
-    else if (status.state === 'external-closed') return { state: 'external-closed' }
-    else if (status.state === 'cancelled') return status.closed ? { state: 'cancelled' } : null
-    else if (status.state === 'failed') {
-      if (!status.closed) return null
-      const reason = status.detail ?? 'The commit failed'
-      return { state: 'failed', reason, outOfDate: SessionReviewPortAdapter.outOfDateConst.test(reason) }
-    }
-    else if (status.state === 'editing' || status.state === 'running') return null
-    else throw new Error(`Unknown commit state: ${JSON.stringify(status.state satisfies never)}`)
+  async propose(input: { sessionId: string; directory: string; message: string }): Promise<SessionsOpResult<{ scopeRoot: string }>> {
+    const result = await this.commits.propose(input.sessionId, input.directory, input.message)
+    if (result.ok) return { ok: true, value: { scopeRoot: result.scopeRoot } }
+    return { ok: false, code: SessionReviewPortAdapter.codeOf(result.code), detail: result.detail }
+  }
+
+  proposalOf(sessionId: string, scopeRoot: string): string | null {
+    return this.commits.proposalOf(sessionId, scopeRoot)
+  }
+
+  forgetProposal(sessionId: string, scopeRoot: string): void {
+    this.commits.forgetProposal(sessionId, scopeRoot)
+  }
+
+  private static codeOf(code: Extract<VersioningCommitProposeResult, { ok: false }>['code']): SessionsOpErrorCode {
+    if (code === 'message-empty' || code === 'message-too-long') return 'invalid-spec'
+    else if (code === 'no-working-copy') return 'not-a-repo'
+    else if (code === 'message-edited') return 'message-edited'
+    else if (code === 'busy') return 'already-running'
+    else throw new Error(`Unknown proposal refusal: ${JSON.stringify(code satisfies never)}`)
   }
 }

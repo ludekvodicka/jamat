@@ -17,6 +17,7 @@ import {
   SessionDetailsModel,
   type SessionDetailsOpenRequest,
 } from './sessionDetailsModel'
+import { AppControl } from '../../ipc/appControl'
 
 /**
  * The third overlay of this shell, and the same shape as the other two: no registry key, nothing
@@ -79,7 +80,7 @@ export function SessionDetailsOverlay(props: {
       return
     }
     setSaving(true)
-    const answer = await window.appClient.sessions.setDetails(baseline.sessionId, update)
+    const answer = await AppControl.sessions('sessions.setDetails', { session: AppControl.sessionOf(baseline.sessionId), update: update })
     // ONE branch for both refusals, the channel's and the library's: `IpcFailure.of` reads them
     // both, and a failed answer always carries a reason - the fallback is for the type alone.
     if (!answer.ok || !answer.value.ok) {

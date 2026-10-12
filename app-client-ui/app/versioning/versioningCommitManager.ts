@@ -5,17 +5,18 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join, relative, resolve } from 'node:path'
 
 import type { FileChangesFileAccessResult } from '../../../lib-orchestrator/fileChangesManager/fileChangesManager'
-import type { FileChangeEntry, FileChangesVcsId, FileChangesWorkingTreeSnapshot } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
+import type { FileChangeEntry, FileChangesVcsDetection, FileChangesVcsId, FileChangesWorkingTreeSnapshot } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import type { VcsStatusView } from '../../../lib-orchestrator/fileChangesManager/vcsStatusView'
 import type { GitCommitManager } from '../../../lib-orchestrator/git/gitCommitManager'
 import type { SessionManager } from '../../../lib-orchestrator/sessionManager/sessionManager'
+import type { SessionCommitReceipt } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { ErrorText } from '../../../lib-orchestrator/shared/errorText'
 import type { CommitProgress } from '../../../lib-orchestrator/shared/commitProgress.types'
 import { PathCompare } from '../../../lib-orchestrator/shared/pathCompare'
 import type { TortoiseCommitDialog } from '../../../lib-orchestrator/shared/tortoiseCommitDialog'
 import type { SvnCommitManager } from '../../../lib-orchestrator/svn/svnCommitManager'
-import { VersioningCommitLimits, VersioningCommitMessage, VersioningRevert } from '../../shared/versioningCommit'
-import type { VersioningRevertRequest, VersioningRevertResult, VersioningTortoiseResult } from '../../shared/versioningCommit'
+import { VersioningCommitLimits, VersioningCommitMessage, VersioningCommitPaths, VersioningRevert } from '../../shared/versioningCommit'
+import type { VersioningCommitPath, VersioningRevertRequest, VersioningRevertResult, VersioningTortoiseResult } from '../../shared/versioningCommit'
 import type { VersioningCommitDraftDto, VersioningCommitOpenResult, VersioningCommitOpenSessions, VersioningCommitRunRequest, VersioningCommitRunResult } from '../../shared/versioningCommit'
 import type { VersioningCommitMessageStore } from './versioningCommitMessageStore'
 
@@ -29,8 +30,11 @@ export interface VersioningCommitManagerDeps {
   svn: Pick<SvnCommitManager, 'commit' | 'revertFile' | 'update'>
   tortoise: Pick<TortoiseCommitDialog, 'open'>
   onChanged(): void
-  /** An SVN review of this scope committed, or went to TortoiseSVN and closed; a worktree session there may go once it ended. */
-  worktreeCommitted?(scopeRoot: string): void
+  /**
+   * An SVN review committed one or more scopes, or went to TortoiseSVN and closed (revision null:
+   * TortoiseSVN does not say whether it committed). A worktree session there may go once it ended.
+   */
+  committed?(receipt: SessionCommitReceipt): void
   now?(): number
   newId?(): string
 }
@@ -45,7 +49,8 @@ interface Draft {
   }>
   cwd: string
   lockRoot: string
-  targets?: readonly { path: string; recursive: boolean }[]
+  /** What the request named; a directory that is not `recursive` names its own node only. */
+  targets?: readonly { path: string; directory: boolean; recursive: boolean }[]
   externalReview?: 'running' | 'closed'
   rejectedSnapshotId?: string
 }
@@ -57,6 +62,10 @@ interface CommitTarget {
 }
 
 type CancelResult = RemoteControlStepResult<RemoteControlCommitStatusDto>
+
+export type VersioningCommitProposeResult =
+  | { ok: true; scopeRoot: string }
+  | { ok: false; code: 'message-empty' | 'message-too-long' | 'no-working-copy' | 'message-edited' | 'busy'; detail: string }
 
 export class VersioningCommitManager {
   private static readonly retentionMillisecondsConst = 86_400_000
@@ -78,7 +87,7 @@ export class VersioningCommitManager {
    * scope that already ended, still shown in a pane, would answer its old outcome at once.
    */
   async prepare(sessionId: string, vcs: FileChangesVcsId, scope: string | null, proposal: string | null,
-    paths?: readonly string[], options: { fresh?: true } = {}): Promise<VersioningCommitOpenResult> {
+    paths?: readonly VersioningCommitPath[], options: { fresh?: true } = {}): Promise<VersioningCommitOpenResult> {
     if (vcs !== 'svn' && vcs !== 'git') throw new Error(`Unknown commit VCS: ${JSON.stringify(vcs)}`)
     const proposed = proposal === null ? null : VersioningCommitMessage.normalize(proposal)
     if (proposed !== null && proposed.length > VersioningCommitLimits.messageMaxCharactersConst)
@@ -86,49 +95,54 @@ export class VersioningCommitManager {
     const context = await this.deps.sessions.workingContext(sessionId)
     if (!context.ok) return { ok: false, code: 'unknown-session', detail: context.detail }
     const cwd = context.value.cwd
-    const input = paths ?? [scope ?? '.']
+    const input: readonly unknown[] = paths ?? [scope ?? '.']
     if (!Array.isArray(input) || input.length === 0 || input.length > VersioningCommitLimits.targetsMaxConst
-      || input.some((path) => typeof path !== 'string' || !path.trim() || /[\0\r\n]/.test(path)))
+      || !input.every(VersioningCommitPaths.valid))
       return { ok: false, code: 'no-working-copy', detail: 'Supply a nonempty list of literal commit paths' }
-    const selected = [...new Map(input.map((path) => {
-      const absolute = resolve(cwd, path)
-      return [PathCompare.comparable(absolute), absolute]
-    })).values()].sort()
+    const requests = new Map<string, { path: string; nodeOnly: boolean }>()
+    for (const request of input) {
+      const path = resolve(cwd, VersioningCommitPaths.pathOf(request))
+      const key = PathCompare.comparable(path)
+      // The same directory named twice keeps the wider selection.
+      requests.set(key, { path, nodeOnly: VersioningCommitPaths.nodeOnly(request) && (requests.get(key)?.nodeOnly ?? true) })
+    }
+    const selected = [...requests.values()].sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0)
+    const requestedKey = VersioningCommitManager.keyOf(selected.map(({ path, nodeOnly }) => nodeOnly ? { path, depth: 'empty' } : path))
     const retained = [...this.drafts.values()].find((draft) => draft.dto.sessionId === sessionId && draft.dto.vcs === vcs
-      && draft.dto.paths !== undefined
-      && JSON.stringify(draft.dto.paths.map(PathCompare.comparable)) === JSON.stringify(selected.map(PathCompare.comparable)))
-    const targets = retained?.targets ?? await Promise.all(selected.map(async (path) => ({ path,
-      recursive: await lstat(path).then((stat) => stat.isDirectory()).catch(() => false) })))
-    const directories = targets.map((target) => target.recursive ? target.path : dirname(target.path))
+      && draft.dto.paths !== undefined && VersioningCommitManager.keyOf(draft.dto.paths) === requestedKey)
+    const targets = retained?.targets ?? await Promise.all(selected.map(async ({ path, nodeOnly }) => {
+      const directory = await lstat(path).then((stat) => stat.isDirectory()).catch(() => false)
+      return { path, directory, recursive: directory && !nodeOnly }
+    }))
+    const normalized: readonly VersioningCommitPath[] = targets.map((target) =>
+      target.directory && !target.recursive ? { path: target.path, depth: 'empty' } : target.path)
+    const directories = targets.map((target) => target.directory ? target.path : dirname(target.path))
     let requested = retained?.dto.scopeRoot ?? directories[0]
     while (directories.some((directory) => !PathCompare.isInside(requested, directory))) {
       const parent = dirname(requested)
       if (parent === requested) return { ok: false, code: 'no-working-copy', detail: 'Commit paths must share one working-copy directory' }
       requested = parent
     }
-    let detection = await this.deps.vcsStatus.detect(requested, vcs)
-    // A directory SVN does not know yet answers to the project's own Git instead, so a file inside a
-    // new SVN directory has to climb past that answer to the working copy that will version it.
-    while (detection?.id !== vcs && dirname(requested) !== requested) {
-      requested = dirname(requested)
-      detection = await this.deps.vcsStatus.detect(requested, vcs)
-    }
-    if (detection === null || detection.id !== vcs || await realpath(requested).catch(() => null) === null)
+    const workingCopy = await this.workingCopyOf(requested, vcs)
+    if (workingCopy === null)
       return { ok: false, code: 'no-working-copy', detail: `The requested paths are not inside a ${vcs.toUpperCase()} working copy` }
+    requested = workingCopy.scopeRoot
+    const detection = workingCopy.detection
     const restricted = targets.length !== 1 || !targets[0].recursive
       || PathCompare.comparable(targets[0].path) !== PathCompare.comparable(requested)
-    const selectedPaths = restricted ? selected : undefined
+    const selectedPaths = restricted ? normalized : undefined
     const matching = [...this.drafts.values()].find((draft) => draft.dto.sessionId === sessionId && draft.dto.vcs === vcs
       && PathCompare.comparable(draft.dto.scopeRoot) === PathCompare.comparable(requested)
-      && JSON.stringify(draft.dto.paths?.map(PathCompare.comparable)) === JSON.stringify(selectedPaths?.map(PathCompare.comparable)))
+      && (draft.dto.paths === undefined ? null : VersioningCommitManager.keyOf(draft.dto.paths))
+        === (selectedPaths === undefined ? null : VersioningCommitManager.keyOf(selectedPaths)))
     const existing = matching !== undefined && options.fresh === true && VersioningCommitManager.ended(matching) ? undefined : matching
     // Its pane finds the draft gone and opens this scope again, which reaches the fresh draft.
     if (matching !== undefined && existing === undefined) this.close(matching)
     const draft: Draft = existing ?? {
       dto: {
         draftId: this.deps.newId?.() ?? randomUUID(), sessionId, vcs, scopeRoot: requested,
-        scopeTooltip: VersioningCommitManager.tooltipOf(requested, restricted ? selected : null),
-        ...(restricted ? { paths: selected } : {}),
+        scopeTooltip: VersioningCommitManager.tooltipOf(requested, selectedPaths ?? null),
+        ...(selectedPaths === undefined ? {} : { paths: selectedPaths }),
         source: vcs, message: '', editedByPerson: false, proposedByAgent: false,
         ...this.deps.messages.read({ sessionId, vcs, scopeRoot: requested, paths: selectedPaths }),
         phase: { kind: 'editing' }, revision: 0,
@@ -144,8 +158,75 @@ export class VersioningCommitManager {
     this.drafts.set(draft.dto.draftId, draft)
     this.bump(draft)
     return { ok: true, value: { draftId: draft.dto.draftId, scopeRoot: requested,
-      ...(restricted ? { paths: selected } : {}),
-      title: `Commit ${vcs.toUpperCase()} · ${selected.length === 1 ? basename(selected[0]) : `${selected.length} paths`}` }, messageApplied }
+      ...(selectedPaths === undefined ? {} : { paths: selectedPaths }),
+      title: `Commit ${vcs.toUpperCase()} · ${selected.length === 1 ? basename(selected[0].path) : `${selected.length} paths`}` }, messageApplied }
+  }
+
+  /** One comparable spelling of a selection, so a reopened review finds the draft it left. */
+  private static keyOf(paths: readonly VersioningCommitPath[]): string {
+    return JSON.stringify(paths.map((path) => VersioningCommitPaths.nodeOnly(path)
+      ? [PathCompare.comparable(VersioningCommitPaths.pathOf(path)), 'empty'] : PathCompare.comparable(VersioningCommitPaths.pathOf(path))))
+  }
+
+  /**
+   * A worker's message for the SVN working copy at or above `directory`, kept under its session the
+   * way the split keeps a proposal, and nothing opens. An open split of that scope shows it at once.
+   * A message a person wrote there wins, as it wins over every proposal.
+   */
+  async propose(sessionId: string, directory: string, message: string): Promise<VersioningCommitProposeResult> {
+    const proposed = VersioningCommitMessage.normalize(message)
+    if (!proposed.trim()) return { ok: false, code: 'message-empty', detail: 'The proposed commit message is empty' }
+    if (proposed.length > VersioningCommitLimits.messageMaxCharactersConst)
+      return { ok: false, code: 'message-too-long', detail: `The commit message is limited to ${VersioningCommitLimits.messageMaxCharactersConst} characters` }
+    const workingCopy = await this.workingCopyOf(directory, 'svn')
+    if (workingCopy === null) return { ok: false, code: 'no-working-copy', detail: `${directory} is not inside an SVN working copy` }
+    const scopeRoot = workingCopy.scopeRoot
+    const scope = { sessionId, vcs: 'svn' as const, scopeRoot }
+    const open = [...this.drafts.values()].find((draft) => draft.dto.sessionId === sessionId && draft.dto.vcs === 'svn'
+      && draft.dto.paths === undefined && PathCompare.comparable(draft.dto.scopeRoot) === PathCompare.comparable(scopeRoot)
+      && !VersioningCommitManager.ended(draft))
+    if ((open?.dto.editedByPerson ?? this.deps.messages.read(scope)?.editedByPerson) === true)
+      return { ok: false, code: 'message-edited', detail: `A person already wrote the commit message for ${scopeRoot}; the proposal was not stored` }
+    if (open?.dto.phase.kind === 'running')
+      return { ok: false, code: 'busy', detail: `A commit of ${scopeRoot} is running; propose again after it` }
+    if (open === undefined) {
+      if (!this.deps.messages.save({ ...scope, message: proposed, editedByPerson: false, proposedByAgent: true }))
+        throw new Error('The commit message could not be saved')
+      return { ok: true, scopeRoot }
+    }
+    open.dto.message = proposed
+    open.dto.proposedByAgent = true
+    if (!this.deps.messages.save(open.dto)) throw new Error('The commit message could not be saved')
+    this.bump(open)
+    return { ok: true, scopeRoot }
+  }
+
+  /** The message kept for the session's whole working copy at `scopeRoot`, or null when there is none to use. */
+  proposalOf(sessionId: string, scopeRoot: string): string | null {
+    const saved = this.deps.messages.read({ sessionId, vcs: 'svn', scopeRoot })
+    return saved === undefined || !saved.message.trim() ? null : saved.message
+  }
+
+  /** A Finish committed the worktree at `scopeRoot`, so the message kept for it there has served. */
+  forgetProposal(sessionId: string, scopeRoot: string): void {
+    if (!this.deps.messages.remove({ sessionId, vcs: 'svn', scopeRoot }))
+      throw new Error('The commit message could not be removed')
+  }
+
+  /**
+   * The directory a review of `start` stands on, and what detected it there. A directory SVN does not
+   * know yet answers to the project's own Git instead, so a file inside a new SVN directory has to
+   * climb past that answer to the working copy that will version it.
+   */
+  private async workingCopyOf(start: string, vcs: FileChangesVcsId): Promise<{ scopeRoot: string; detection: FileChangesVcsDetection } | null> {
+    let scopeRoot = start
+    let detection = await this.deps.vcsStatus.detect(scopeRoot, vcs)
+    while (detection?.id !== vcs && dirname(scopeRoot) !== scopeRoot) {
+      scopeRoot = dirname(scopeRoot)
+      detection = await this.deps.vcsStatus.detect(scopeRoot, vcs)
+    }
+    if (detection === null || detection.id !== vcs || await realpath(scopeRoot).catch(() => null) === null) return null
+    return { scopeRoot, detection }
   }
 
   /** Whether a draft can no longer settle any other way than it already did. */
@@ -163,11 +244,17 @@ export class VersioningCommitManager {
    * newline that `white-space: nowrap` then folded into one unreadable line. The paths are listed
    * relative to the root because the root is the line directly above them.
    */
-  private static tooltipOf(root: string, paths: readonly string[] | null): string {
+  private static tooltipOf(root: string, paths: readonly VersioningCommitPath[] | null): string {
     if (paths === null) return root
-    return [root, ...paths.map((path) => `  ${relative(root, path) || '.'}`)].join('\n')
+    return [root, ...paths.map((path) => `  ${relative(root, VersioningCommitPaths.pathOf(path)) || '.'}${
+      VersioningCommitPaths.nodeOnly(path) ? ' (this folder only)' : ''}`)].join('\n')
   }
 
+  /**
+   * The rows the review shows, which are also the only rows a write accepts: a plain scope shows
+   * all of it, a selection only what its targets reach (`allows`). Which of them start checked is
+   * `checkedPaths`.
+   */
   files(ownerId: string, draftId: string, snapshot: FileChangesWorkingTreeSnapshot): FileChangesWorkingTreeSnapshot {
     const draft = this.owned(ownerId, draftId)
     if (draft === null) throw new Error('The commit dialog no longer exists')
@@ -180,6 +267,22 @@ export class VersioningCommitManager {
     draft.fileReviews.set(ownerId, structuredClone({ snapshot: filtered,
       files: new Map(entries.map((entry) => [entry.fileId, this.deps.fileAccess(ownerId, snapshot.snapshotId, entry.fileId)])) }))
     return filtered
+  }
+
+  /**
+   * The rows a review that named its targets starts with checked: a named file, a named directory
+   * with every row below it, a node-only directory alone. Null for a plain scope, whose eligible rows
+   * all start checked. r345 committed 123 paths of other sessions' unfinished work because a
+   * review of one directory's property change started with the whole scope below it checked.
+   */
+  checkedPaths(ownerId: string, draftId: string, snapshot: FileChangesWorkingTreeSnapshot): readonly string[] | null {
+    const draft = this.owned(ownerId, draftId)
+    if (draft === null) throw new Error('The commit dialog no longer exists')
+    const targets = draft.targets
+    if (targets === undefined) return null
+    return snapshot.entries.filter((entry) => targets.some((target) =>
+      PathCompare.comparable(target.path) === PathCompare.comparable(entry.path)
+      || (target.recursive && PathCompare.isInside(target.path, entry.path)))).map((entry) => entry.path)
   }
 
   read(ownerId: string, draftId: string): VersioningCommitDraftDto | null {
@@ -226,7 +329,7 @@ export class VersioningCommitManager {
     else if (phase.kind === 'editing') state = closed ? 'cancelled' : 'editing'
     else throw new Error(`Unknown commit phase: ${JSON.stringify(phase)}`)
     return { kind: 'commit-status', commitSessionId, sessionId, vcs, scopeRoot, state, closed,
-      ...(draft.dto.paths === undefined ? {} : { paths: [...draft.dto.paths] }),
+      ...(draft.dto.paths === undefined ? {} : { paths: draft.dto.paths.map(VersioningCommitPaths.pathOf) }),
       ...(draft.committedPaths === undefined ? {} : { committedPaths: [...draft.committedPaths] }),
       revision: phase.kind === 'done' ? phase.revision : null, detail: state === 'failed' && phase.kind === 'failed' ? phase.detail : null }
   }
@@ -329,6 +432,8 @@ export class VersioningCommitManager {
         const remaining = groups.slice(completed.length).map(([scope]) => scope).join('\n')
         detail = `Committed:\n${committed}\n\nRemaining or unconfirmed:\n${remaining}\n\n${detail}\n\nReview the refreshed files before trying again.`
       }
+      // The scopes committed before the failure are in the repository all the same.
+      if (completed.length > 0) this.svnSettled(draft, completed)
       return this.failed(draft, detail, reloadRequired || groups.length > 1)
     }
     // Lock before the async preflight so sibling scopes cannot both pass it and start staging.
@@ -426,7 +531,7 @@ export class VersioningCommitManager {
       draft.dto.phase = { kind: 'done', revision, output, finishedAt: this.now() }
       this.deps.messages.remove(draft.dto)
       this.bump(draft)
-      this.svnSettled(draft)
+      this.svnSettled(draft, completed)
       return { ok: true, revision }
     }
     catch (error) { return fail(ErrorText.of(error)) }
@@ -503,6 +608,9 @@ export class VersioningCommitManager {
       return { ok: false, code: 'busy', detail: 'Another change is running or this dialog has already committed' }
     if (typeof message !== 'string' || message.length > VersioningCommitLimits.messageMaxCharactersConst)
       return { ok: false, code: 'message-too-long', detail: `The commit message is limited to ${VersioningCommitLimits.messageMaxCharactersConst} characters` }
+    // Tortoise has no depth per target: it would list the work below the folder and check it.
+    if (draft.targets?.some((target) => target.directory && !target.recursive))
+      return { ok: false, code: 'invalid-target', detail: 'Tortoise cannot keep a folder to its own node; it would show and check the work below it. Commit this review here.' }
     this.running.add(draft.lockRoot)
     let temporary: string | null = null
     try {
@@ -516,7 +624,7 @@ export class VersioningCommitManager {
       draft.externalReview = 'running'
       this.bump(draft)
       const opened = await this.deps.tortoise.open({ vcs: draft.dto.vcs, scope: draft.dto.scopeRoot, messageFile,
-        ...(draft.dto.paths === undefined ? {} : { paths: draft.dto.paths }) })
+        ...(draft.dto.paths === undefined ? {} : { paths: draft.dto.paths.map(VersioningCommitPaths.pathOf) }) })
       if (!opened.ok) {
         delete draft.externalReview
         this.bump(draft)
@@ -526,7 +634,8 @@ export class VersioningCommitManager {
       finally { draft.externalReview = 'closed'; this.bump(draft) }
       this.settle(draft, draft.dto.scopeRoot)
       // TortoiseSVN does not say whether it committed; the cleanup reads the worktree before it removes anything.
-      this.svnSettled(draft)
+      if (draft.dto.vcs === 'svn')
+        this.deps.committed?.({ sessionId: draft.dto.sessionId, scopes: [{ scopeRoot: draft.dto.scopeRoot, revision: null }], paths: [] })
       return { ok: true }
     } catch (error) {
       if (draft.externalReview === 'running') { draft.externalReview = 'closed'; this.bump(draft) }
@@ -642,23 +751,32 @@ export class VersioningCommitManager {
     return draft?.owners.has(ownerId) && draft.dto.phase.kind !== 'cancelled' ? draft : null
   }
 
+  /**
+   * Whether a selection reaches the row: a named path, the subtree of a named directory, or a new
+   * parent a named path needs. Below a node-only directory the other work is shown unchecked, so
+   * the person sees what stays local; nothing outside the named targets is read into the review,
+   * which keeps a list across projects from showing their whole common directory.
+   */
   private static allows(draft: Draft, entry: FileChangeEntry): boolean {
     return draft.targets === undefined || draft.targets.some((target) =>
       PathCompare.comparable(target.path) === PathCompare.comparable(entry.path)
-      || (target.recursive && PathCompare.isInside(target.path, entry.path))
+      || (target.directory && PathCompare.isInside(target.path, entry.path))
       || (entry.nodeKind === 'directory' && (entry.status === 'added' || entry.status === 'untracked')
         && PathCompare.isInside(entry.path, target.path)))
   }
 
-  /** Updating is the only way past an out-of-date scope. Whether a retry follows is the caller's. */
+  /**
+   * Updating is the only way past an out-of-date scope. Whether a retry follows is the caller's.
+   * Only the nodes this commit sends move, each at depth empty: an update of the whole scope brought
+   * other sessions' incoming changes into their unfinished work.
+   */
   private async updateOutdated(draft: Draft, scope: string, entries: readonly CommitTarget[]):
     Promise<{ ok: true; output: string } | { ok: false; detail: string }> {
     const startedAt = draft.dto.phase.kind === 'running' ? draft.dto.phase.startedAt : this.now()
     draft.dto.phase = { kind: 'running', startedAt, detail: 'SVN is out of date. Updating this commit scope...' }
     this.bump(draft)
     try {
-      const result = draft.targets === undefined ? await this.deps.svn.update(scope)
-        : await this.deps.svn.update(scope, entries.map(({ entry }) => entry.path))
+      const result = await this.deps.svn.update(scope, entries.map(({ entry }) => entry.path))
       return result.ok ? { ok: true, output: result.value.output }
         : { ok: false, detail: `SVN update failed or left conflicts:\n${result.detail}` }
     }
@@ -672,8 +790,13 @@ export class VersioningCommitManager {
     return { ok: false, code: 'vcs-failed', detail, ...(reloadRequired ? { reloadRequired: true } : {}) }
   }
 
-  private svnSettled(draft: Draft): void {
-    if (draft.dto.vcs === 'svn') this.deps.worktreeCommitted?.(draft.dto.scopeRoot)
+  private svnSettled(draft: Draft, completed: readonly { scope: string; revision: string }[]): void {
+    if (draft.dto.vcs !== 'svn') return
+    this.deps.committed?.({
+      sessionId: draft.dto.sessionId,
+      scopes: completed.map((item) => ({ scopeRoot: item.scope, revision: /^[1-9]\d*$/.test(item.revision) ? Number(item.revision) : null })),
+      paths: [...(draft.committedPaths ?? [])],
+    })
   }
 
   private now(): number { return this.deps.now?.() ?? Date.now() }

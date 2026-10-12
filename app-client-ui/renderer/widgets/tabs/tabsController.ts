@@ -23,7 +23,6 @@ import { PanelKeysConst, TabTransferDrag } from '../../../shared/tabTransfer'
 import { WorkspaceSaveLimits } from '../workspaceSaveLimits'
 import type { PanelOpenOutcome } from '../../shell/appShell.types'
 import type { PanelRegistry } from './panelRegistry'
-import { PanelSplitParams } from './panelSplit'
 import { type MoveDirection, type TabGroupBox, TabGroupNeighbour } from './tabGroupNeighbour'
 
 type LayoutWrite = { kind: 'save'; layout: string } | { kind: 'clear' }
@@ -82,9 +81,8 @@ export class TabsController {
    * panels, and the layout, the index and the transfer payload would all carry it back.
    */
   private previewPanelId: string | null = null
-  private previewParametersSubscription: DockviewIDisposable | null = null
   private readonly previewListeners = new Set<() => void>()
-  /** User-closed panels can return with their last sidebar and inner split state in this window. */
+  /** Closed and replaced previews return with their last panel state in this window. */
   private readonly closedPanelParameters = new Map<string, Record<string, unknown>>()
   /** Latched on a failed restore: saving now would overwrite the layout we could not read. */
   private restoreFailed = false
@@ -205,20 +203,8 @@ export class TabsController {
   }
 
   private setPreviewPanelId(next: string | null): void {
-    const panel = next === null ? undefined : this.api?.getPanel(next)
-    if (panel?.view.contentComponent === PanelKeysConst.terminal
-      && PanelSplitParams.of(panel.params).items.length > 0)
-      next = null
     const changed = next !== this.previewPanelId
-    this.previewParametersSubscription?.dispose()
-    this.previewParametersSubscription = null
     this.previewPanelId = next
-    // Parameter events are synchronous; the next preview must not replace a just-opened split.
-    if (next !== null && panel?.view.contentComponent === PanelKeysConst.terminal)
-      this.previewParametersSubscription = panel.api.onDidParametersChange(() => {
-        if (PanelSplitParams.of(panel.params).items.length > 0)
-          this.keepOpen(panel.id)
-      })
     if (changed)
       for (const listener of this.previewListeners)
         listener()
@@ -229,7 +215,8 @@ export class TabsController {
     title: string,
     params: Record<string, unknown> = {},
     panelId?: string,
-    options?: { preview?: true; activate?: boolean },
+    /** `inPlaceOf`: the panel whose place in its group a new panel takes, wherever that group is. */
+    options?: { preview?: true; activate?: boolean; inPlaceOf?: string; preservePreview?: true },
   ): Promise<PanelOpenOutcome> {
     let granted: string | null = null
     try {
@@ -249,7 +236,9 @@ export class TabsController {
         this.closedPanelParameters.delete(presence.panelId)
         return this.focusExisting(existing, presence.panelId, title, params, panelId !== undefined, options)
       }
-      const claim = await this.ports.claimPanel(presence, options?.activate)
+      // A hand-off follows a collapse in the background, so it never raises the window that owns the
+      // session already.
+      const claim = await this.ports.claimPanel(presence, options?.inPlaceOf === undefined ? options?.activate : false)
       if (claim.kind === 'owned')
         return {
           kind: 'focusedExisting',
@@ -273,24 +262,33 @@ export class TabsController {
       // Read here rather than before the claim: what this window was holding provisionally may have
       // changed while the claim was in flight.
       const oldPreviewId = this.previewPanelId
-      const position = this.replacementPositionOf(oldPreviewId)
+      const position = options?.inPlaceOf === undefined
+        ? this.replacementPositionOf(oldPreviewId)
+        : TabsController.placeOf(api.getPanel(options.inPlaceOf))
+      if (options?.inPlaceOf !== undefined && position === null)
+        throw new Error('The tab it was to replace has closed')
+      const opening = this.openingOf(options)
+      const focused = api.activePanel
       api.addPanel({
         id: presence.panelId,
         component: key,
         title,
         params: openingParameters,
-        ...(options?.activate === false ? { inactive: true } : {}),
+        ...(opening.activate ? {} : { inactive: true }),
         ...(position === null ? {} : { position }),
       })
       this.closedPanelParameters.delete(presence.panelId)
-      if (options?.preview === true) {
+      if (options?.inPlaceOf !== undefined)
+        this.giveFocusBack(focused, options.inPlaceOf, presence.panelId)
+      if (opening.preview) {
         // The new flag is set BEFORE the old panel goes, so the cleanup in `onDidRemovePanel` -
         // which only fires on a matching id - cannot wipe the one just written. The close carries
         // its own catch: losing the old tab must not turn an open that SUCCEEDED into a failure,
-        // which would release a claim this window is now using.
+        // which would release a claim this window is now using. A hand-off closes only the tab it
+        // replaces, and its caller does that.
         this.setPreviewPanelId(presence.panelId)
-        if (oldPreviewId !== null && oldPreviewId !== presence.panelId)
-          await this.hidePanel(oldPreviewId, { silent: true })
+        if (options?.inPlaceOf === undefined && oldPreviewId !== null && oldPreviewId !== presence.panelId)
+          await this.hidePanel(oldPreviewId)
             .catch((error: unknown) => this.report('The previous preview tab could not be closed', error))
       }
       return { kind: 'opened', panelId: presence.panelId }
@@ -315,16 +313,48 @@ export class TabsController {
     title: string,
     params: Record<string, unknown>,
     rewrite: boolean,
-    options?: { preview?: true; activate?: boolean },
+    options?: { preview?: true; activate?: boolean; inPlaceOf?: string; preservePreview?: true },
   ): PanelOpenOutcome {
     if (rewrite) {
       panel.api.updateParameters(params)
       panel.api.setTitle(title)
     }
-    if (options?.activate !== false) panel.api.setActive()
-    if (options?.preview !== true && panelId === this.previewPanelId)
+    const opening = this.openingOf(options)
+    const focused = this.api?.activePanel
+    if (opening.activate) panel.api.setActive()
+    if (options?.inPlaceOf !== undefined)
+      this.giveFocusBack(focused, options.inPlaceOf, panelId)
+    if (!opening.preview && options?.preservePreview !== true && panelId === this.previewPanelId)
       this.setPreviewPanelId(null)
     return { kind: 'opened', panelId }
+  }
+
+  /**
+   * A hand-off takes what the outgoing tab has NOW, not what it had when the hand-off began: the
+   * claim is awaited, and the person goes on working meanwhile. The new panel is a preview only while
+   * the outgoing tab still is one, and it is shown only where the outgoing tab is shown.
+   */
+  private openingOf(
+    options?: { preview?: true; activate?: boolean; inPlaceOf?: string },
+  ): { preview: boolean; activate: boolean } {
+    if (options?.inPlaceOf === undefined)
+      return { preview: options?.preview === true, activate: options?.activate !== false }
+    const outgoing = this.api?.getPanel(options.inPlaceOf)
+    return {
+      preview: this.previewPanelId === options.inPlaceOf,
+      activate: outgoing !== undefined && outgoing.group.activePanel === outgoing,
+    }
+  }
+
+  /**
+   * Showing a panel in a group that is not the focused one moves the focus there, so a hand-off gives
+   * it back to the panel that had it, unless that was the outgoing tab or the focus has moved since.
+   */
+  private giveFocusBack(focused: IDockviewPanel | undefined, inPlaceOf: string, activated: string): void {
+    const api = this.api
+    if (!api || focused === undefined || focused.id === inPlaceOf || api.activePanel?.id !== activated)
+      return
+    api.getPanel(focused.id)?.api.setActive()
   }
 
   focusPanelContent(panelId: string): void {
@@ -343,11 +373,38 @@ export class TabsController {
     const old = api.getPanel(oldPreviewId)
     if (!old || old.group !== api.activeGroup)
       return null
+    return TabsController.placeOf(old)
+  }
+
+  private static placeOf(panel: IDockviewPanel | undefined): AddPanelPositionOptions | null {
+    if (!panel)
+      return null
     return {
-      referenceGroup: old.group,
+      referenceGroup: panel.group,
       direction: 'within',
-      index: old.group.panels.indexOf(old),
+      index: panel.group.panels.indexOf(panel),
     }
+  }
+
+  /**
+   * A script run's tab given to the session the run was for: that session's panel takes the run
+   * panel's place and preview state, is shown where the run panel was shown, and the run panel goes
+   * without being remembered. A session already on screen in this window is brought forward instead;
+   * one that another window owns stays where it is, and the run panel only closes.
+   */
+  async replacePanel(
+    panelId: string,
+    key: string,
+    title: string,
+    params: Record<string, unknown>,
+  ): Promise<void> {
+    if (!this.api?.getPanel(panelId))
+      return
+    const outcome = await this.openPanel(key, title, params, undefined, { inPlaceOf: panelId })
+    // A run tab that closed while the claim was answered has nothing left to hand over.
+    if (outcome.kind === 'failed' && this.api?.getPanel(panelId))
+      this.ports.reportError(`The tab could not be handed to ${title}: ${outcome.detail}`)
+    await this.hidePanel(panelId, { silent: true })
   }
 
   /** The one way in, so a reset, a failed restore and the watermark all open the same panel. */
@@ -705,8 +762,6 @@ export class TabsController {
 
   /** Every subscription goes together, whichever way this controller lets go of its api. */
   private releaseSubscriptions(): void {
-    this.previewParametersSubscription?.dispose()
-    this.previewParametersSubscription = null
     for (const subscription of this.subscriptions)
       subscription.dispose()
     this.subscriptions = []

@@ -1,8 +1,9 @@
 import type { FileViewerDocumentSource } from '../../lib-orchestrator/fileViewer/fileViewerApi.types'
 import type { FileChangesVcsId } from '../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
+import type { VersioningCommitPath } from './versioningCommit'
 
 export type TabControlCommand =
-  | { kind: 'open-commit'; requestId: string; panelId: string; vcs: FileChangesVcsId; scopeRoot: string; paths?: readonly string[]; title: string; messageApplied: boolean; activate?: boolean; existingOnly?: true }
+  | { kind: 'open-commit'; requestId: string; panelId: string; vcs: FileChangesVcsId; scopeRoot: string; paths?: readonly VersioningCommitPath[]; title: string; messageApplied: boolean; activate?: boolean; existingOnly?: true }
   | {
       kind: 'open-session'
       requestId: string

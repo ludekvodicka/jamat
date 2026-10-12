@@ -33,6 +33,7 @@ import type { AgentSettingsStore } from '../contextCompaction/agentSettingsStore
 import type { ContextCompactionController } from '../contextCompaction/contextCompactionController'
 import type { WorktreeSetupIntentStore } from '../overlays/configuration/worktreeSetupIntentStore'
 import type { FinalizeAsk } from '../overlays/finalize/finalizeModel'
+import type { UpdateMainAsk } from '../overlays/updateMain/updateMainOverlay'
 import type { LauncherIntentStore } from '../overlays/launcher/launcherIntentStore'
 import type { ConfigurationTabId } from '../overlays/configuration/configurationTab.types'
 import type { ActiveTerminalStore } from './activeTerminalStore'
@@ -130,6 +131,7 @@ export interface WorkspaceShellWiring {
   settingsCommands: LateBoundCommandPort<ConfigurationTabId | null>
   detailsCommands: LateBoundCommandPort<string>
   finalizeCommands: LateBoundCommandPort<FinalizeAsk>
+  updateMainCommands: LateBoundCommandPort<UpdateMainAsk>
   remarkableCommands: LateBoundCommandPort<void>
   intents: LauncherIntentStore
   worktreeSetupIntents: WorktreeSetupIntentStore

@@ -445,12 +445,30 @@
   background: var(--color-attention);
   border-radius: 2px;
 }
-.jamat-sessions__setup {
+/* The library's one badge about a session's scripts. A button only where a terminal is behind it. */
+.jamat-sessions__script {
+  padding: 0;
+  font: inherit;
   font-size: var(--fs-chip);
   color: var(--color-text-4);
+  white-space: nowrap;
+  background: none;
+  border: none;
 }
-.jamat-sessions__setup--install-failed {
+button.jamat-sessions__script {
+  cursor: pointer;
+}
+button.jamat-sessions__script:hover {
+  text-decoration: underline;
+}
+.jamat-sessions__script--running {
+  color: var(--color-accent);
+}
+.jamat-sessions__script--failed {
   color: var(--color-danger);
+}
+.jamat-sessions__script--succeeded {
+  color: var(--color-ok);
 }
 /* A launch nothing has accepted yet: attention rather than danger, because it still lifts. */
 .jamat-sessions__launch {
@@ -484,7 +502,7 @@
 .jamat-sessions__pill--exit-clean {
   color: var(--color-text-5);
 }
-/* One word beside the install badge, in the same place and the same size: what the merge is doing. */
+/* One word beside the scripts badge, in the same place and the same size: what the merge is doing. */
 .jamat-sessions__merge {
   font-size: var(--fs-chip);
   color: var(--color-accent);
@@ -511,11 +529,17 @@
 .jamat-sessions__finish--out-of-date,
 .jamat-sessions__finish--updated,
 .jamat-sessions__finish--conflict,
-.jamat-sessions__finish--interrupted {
+.jamat-sessions__finish--interrupted,
+.jamat-sessions__finish--needs {
   color: var(--color-attention);
 }
 .jamat-sessions__finish--failed {
   color: var(--color-danger);
+}
+/* A landed row: its main copy lacks what the Finish committed until somebody updates it. */
+.jamat-sessions__landing {
+  font-size: var(--fs-chip);
+  color: var(--color-attention);
 }
 /* Why a worktree outlived its session: kept with changes needs a person, a wait clears by itself. */
 .jamat-sessions__cleanup {

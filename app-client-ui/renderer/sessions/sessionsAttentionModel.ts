@@ -1,6 +1,7 @@
 import type {
   SessionActivity,
   SessionInfo,
+  SessionScriptsBadge,
 } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 
 export interface AttentionInput {
@@ -34,26 +35,34 @@ export interface AttentionInput {
  * the first snapshot after a start, where every session is first seen at once - a tree that lights
  * up completely on every start trains the user to ignore the one row that meant something.
  *
+ * **A script run raises nothing; its parent does.** An install, a check or a resolver runs FOR a
+ * session, and the news it carries is that session's: its badge turning `failed` raises the parent.
+ * A run that ends is how every successful run goes away, so raising it would light a row on every
+ * install that worked.
+ *
  * Nothing is stored, so attention is measured from the first snapshot this model saw rather than
  * from the last one the user actually read.
  */
 export class SessionsAttentionModel {
   private readonly previousActivity = new Map<string, SessionActivity | null>()
   private readonly previousLife = new Map<string, SessionInfo['life']>()
+  private readonly previousBadge = new Map<string, SessionScriptsBadge['state'] | null>()
   private attention: ReadonlySet<string> = new Set()
 
   apply(input: AttentionInput): ReadonlySet<string> {
     const attention = new Set(this.attention)
     const alive = new Set<string>()
+    const lookedAt = SessionsAttentionModel.lookedAt(input)
 
     for (const session of input.sessions) {
       alive.add(session.sessionId)
-      if (this.raises(session) && !input.activeSessionIds.has(session.sessionId))
+      if (this.raises(session) && !lookedAt.has(session.sessionId))
         attention.add(session.sessionId)
       this.previousActivity.set(session.sessionId, session.activity)
       this.previousLife.set(session.sessionId, session.life)
+      this.previousBadge.set(session.sessionId, session.scripts?.badge?.state ?? null)
       // Looked at is read: the mark goes out on the session in front, whatever raised it.
-      if (input.activeSessionIds.has(session.sessionId))
+      if (lookedAt.has(session.sessionId))
         attention.delete(session.sessionId)
     }
 
@@ -64,8 +73,23 @@ export class SessionsAttentionModel {
     return attention
   }
 
+  /**
+   * The sessions in front, and the parent of every run in front: a click on a starting session opens
+   * its install, so a failure of that install is already on screen when the parent's badge turns.
+   */
+  private static lookedAt(input: AttentionInput): ReadonlySet<string> {
+    const lookedAt = new Set(input.activeSessionIds)
+    for (const session of input.sessions)
+      if (session.script !== undefined && input.activeSessionIds.has(session.sessionId))
+        lookedAt.add(session.script.parentId)
+    return lookedAt
+  }
+
   private raises(session: SessionInfo): boolean {
-    return SessionsAttentionModel.settled(
+    if (session.script !== undefined) return false
+    return SessionsAttentionModel.badgeFailed(this.previousLife.has(session.sessionId),
+      this.previousBadge.get(session.sessionId), session.scripts?.badge?.state)
+      || SessionsAttentionModel.settled(
       this.previousActivity.get(session.sessionId),
       session.activity,
     ) || SessionsAttentionModel.exited(this.previousLife.get(session.sessionId), session.life)
@@ -107,11 +131,28 @@ export class SessionsAttentionModel {
       throw new Error(`Unknown session life: ${JSON.stringify(after)}`)
   }
 
+  /**
+   * A run of this session failed: the before chain that holds its start, or the checks that hold its
+   * Finish. Only a change raises, so a badge that was already `failed` when first seen does not.
+   */
+  private static badgeFailed(
+    seen: boolean,
+    before: SessionScriptsBadge['state'] | null | undefined,
+    after: SessionScriptsBadge['state'] | undefined,
+  ): boolean {
+    if (!seen || after === undefined || before === 'failed') return false
+    if (after === 'failed') return true
+    else if (after === 'running' || after === 'skipped' || after === 'succeeded') return false
+    else
+      throw new Error(`Unknown scripts badge state: ${JSON.stringify(after satisfies never)}`)
+  }
+
   private forget(alive: ReadonlySet<string>, attention: Set<string>): void {
     for (const sessionId of [...this.previousLife.keys()])
       if (!alive.has(sessionId)) {
         this.previousLife.delete(sessionId)
         this.previousActivity.delete(sessionId)
+        this.previousBadge.delete(sessionId)
       }
     for (const sessionId of [...attention])
       if (!alive.has(sessionId))

@@ -23,6 +23,16 @@ describe('app-client-ui/shared/uiSettings', () => {
     expect(messages).toEqual([])
   })
 
+  it('reads the sessions script runs choice as hidden when absent or unusable, and keeps a stored one', () => {
+    const { messages, report } = reported()
+    expect(UiSettings.coerce({}, report).sessionsScriptRuns).toBe(false)
+    expect(UiSettings.coerce({ sessionsScriptRuns: true }, report).sessionsScriptRuns).toBe(true)
+    expect(messages).toEqual([])
+    expect(UiSettings.coerce({ sessionsScriptRuns: 'yes' }, report).sessionsScriptRuns).toBe(false)
+    expect(messages).toHaveLength(1)
+    expect(UiSettings.isValid({ ...UiSettings.defaultValue(), sessionsScriptRuns: 'yes' })).toBe(false)
+  })
+
   it('reports invalid document activation on read and refuses it on write', () => {
     const { messages, report } = reported()
     expect(UiSettings.coerce({ activateSessionOnDocument: 'yes' }, report).activateSessionOnDocument).toBe(false)
@@ -39,6 +49,7 @@ describe('app-client-ui/shared/uiSettings', () => {
       scrollSpeedPercent: 100,
       terminalScrollSpeedPercent: 100,
       activateSessionOnDocument: false,
+      sessionsScriptRuns: false,
     })
   })
 
@@ -71,6 +82,7 @@ describe('app-client-ui/shared/uiSettings', () => {
       scrollSpeedPercent: 100,
       terminalScrollSpeedPercent: 100,
       activateSessionOnDocument: false,
+      sessionsScriptRuns: false,
     })
     expect(messages).toHaveLength(1)
     expect(messages[0]).toContain('fontScalePercent')
@@ -97,6 +109,7 @@ describe('app-client-ui/shared/uiSettings', () => {
         scrollSpeedPercent: 100,
         terminalScrollSpeedPercent: 100,
         activateSessionOnDocument: false,
+        sessionsScriptRuns: false,
       })
       expect(messages).toHaveLength(3)
     }
@@ -128,6 +141,7 @@ describe('app-client-ui/shared/uiSettings', () => {
       scrollSpeedPercent: 250,
       terminalScrollSpeedPercent: 50,
       activateSessionOnDocument: false,
+      sessionsScriptRuns: false,
     }
     expect(UiSettings.coerce(stored, report)).toEqual(stored)
     expect(messages).toEqual([])
@@ -237,6 +251,7 @@ describe('app-client-ui/shared/uiSettings', () => {
       scrollSpeedPercent: 175,
       terminalScrollSpeedPercent: 300,
       activateSessionOnDocument: false,
+      sessionsScriptRuns: false,
       _note: 'hand written',
     }
 
@@ -265,6 +280,7 @@ describe('app-client-ui/shared/uiSettings', () => {
       scrollSpeedPercent: 100,
       terminalScrollSpeedPercent: 100,
       activateSessionOnDocument: false,
+      sessionsScriptRuns: false,
       _note: 'hand written',
     })
   })
@@ -279,6 +295,7 @@ describe('app-client-ui/shared/uiSettings', () => {
       scrollSpeedPercent: 100,
       terminalScrollSpeedPercent: 100,
       activateSessionOnDocument: false,
+      sessionsScriptRuns: false,
     }
   }
 
@@ -291,6 +308,7 @@ describe('app-client-ui/shared/uiSettings', () => {
       fontScalePercent: 100,
       terminalScrollSpeedPercent: 100,
       activateSessionOnDocument: false,
+      sessionsScriptRuns: false,
       scrollSpeedPercent: 100,
     })).toBe(true)
     expect(UiSettings.isValid({ fontScalePercent: 100 })).toBe(false)

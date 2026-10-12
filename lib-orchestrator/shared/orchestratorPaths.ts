@@ -17,6 +17,9 @@ export class OrchestratorPaths {
   private static readonly sessionRecordsFileNameConst = 'session-records.json'
   private static readonly sessionNumbersFileNameConst = 'session-numbers.json'
   private static readonly sessionSnapshotsNameConst = 'session-snapshots'
+  private static readonly scriptLogsNameConst = 'script-logs'
+  private static readonly worktreeResultsNameConst = 'worktree-results'
+  private static readonly sessionNotifiesNameConst = 'session-notifies'
   private static readonly setupTrustFileNameConst = 'setup-trust.json'
   private static readonly codexRolloutCwdFileNameConst = 'codex-rollout-cwd.json'
   private static readonly rateMonitorCacheFileNameConst = 'rate-monitor-cache.json'
@@ -149,5 +152,31 @@ export class OrchestratorPaths {
       OrchestratorPaths.directory(configIdentity, channel),
       OrchestratorPaths.sessionSnapshotsNameConst,
     )
+  }
+
+  /**
+   * The saved output of finished script runs, one folder per parent session. Machine state: the
+   * output of a repository's commands on this machine, owner-only like the records beside it.
+   */
+  static scriptLogsDirectory(configIdentity: string, channel: RuntimeChannel): string {
+    return join(
+      OrchestratorPaths.directory(configIdentity, channel),
+      OrchestratorPaths.scriptLogsNameConst,
+    )
+  }
+
+  /**
+   * How each SVN worktree ended, `<actionId>.json` with copies of its run logs beside it. Apart from
+   * `script-logs` because a result outlives its session, whose removal takes that folder.
+   */
+  static worktreeResultsDirectory(configIdentity: string, channel: RuntimeChannel): string {
+    return join(
+      OrchestratorPaths.directory(configIdentity, channel),
+      OrchestratorPaths.worktreeResultsNameConst,
+    )
+  }
+
+  static sessionNotifiesDirectory(configIdentity: string, channel: RuntimeChannel): string {
+    return join(OrchestratorPaths.directory(configIdentity, channel), OrchestratorPaths.sessionNotifiesNameConst)
   }
 }

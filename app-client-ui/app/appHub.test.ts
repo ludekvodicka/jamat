@@ -30,6 +30,7 @@ import { ServiceRemarkableIpc } from './remarkable/serviceRemarkableIpc'
 import { ServiceShellIpc } from './shell/serviceShellIpc'
 import { ServiceTabsIpc } from './tabs/serviceTabsIpc'
 import { SessionReviewPortAdapter } from './versioning/sessionReviewPortAdapter'
+import type { VersioningCommitManagerDeps } from './versioning/versioningCommitManager'
 
 /** Hoisted with the mock factories: `vi.mock` runs before any top-level statement of this file. */
 const { FakeWindow, captured, updaterMock } = vi.hoisted(() => {
@@ -133,8 +134,11 @@ const { FakeWindow, captured, updaterMock } = vi.hoisted(() => {
     sessionDeps: null as null | {
       onChanged: () => void
       onError: (message: string) => void
+      onScriptCollapsed?: (event: { runId: string; parentId: string; handoff: 'parent-tab' | 'close'; handoffTo: string }) => void
     },
     reviewPort: null as unknown,
+    editor: null as unknown,
+    receipts: [] as unknown[],
     rateDeps: null as null | {
       onChanged: () => void
       onError: (message: string) => void
@@ -282,7 +286,8 @@ vi.mock('./remarkable/sidecar/remarkableCli', () => ({
   },
 }))
 
-vi.mock('../../lib-orchestrator/sessionManager/sessionManager', () => ({
+vi.mock('../../lib-orchestrator/sessionManager/sessionManager', async (importOriginal) => ({
+  SessionNotifier: (await importOriginal<typeof import('../../lib-orchestrator/sessionManager/sessionManager')>()).SessionNotifier,
   SessionManager: class {
     constructor(deps: {
       onChanged: () => void
@@ -300,6 +305,19 @@ vi.mock('../../lib-orchestrator/sessionManager/sessionManager', () => ({
       return Promise.resolve({ ok: false, code: 'unknown-session', detail: 'no session under test' })
     }
 
+    /** One session to fork: the control API names a session by the snapshot before it acts on it. */
+    snapshot(): unknown {
+      return {
+        revision: 1, reconciled: true, categories: [], orphans: [],
+        host: { presence: 'running', hostVersion: null, hostInstanceId: null, liveCount: 0, lastStartError: null },
+        sessions: [{
+          sessionId: 'parent-1', kind: 'shell', title: 'Work - 014', tabTitle: 'Work - 014',
+          titleParts: { number: '014', name: 'Work' }, directory: { mode: 'default' },
+          project: { kind: 'none' }, life: 'ended', activity: null, admits: [],
+        }],
+      }
+    }
+
     /** The one operation whose answer the hub reads rather than forwards; see the fork case below. */
     forkSession(): Promise<{ ok: true; value: { sessionId: string; tabTitle: string } }> {
       return Promise.resolve({ ok: true, value: { sessionId: 'fork-1', tabTitle: 'Work - 014-015' } })
@@ -307,6 +325,22 @@ vi.mock('../../lib-orchestrator/sessionManager/sessionManager', () => ({
 
     setReviewPort(port: unknown): void {
       captured.reviewPort = port
+    }
+
+    setEditor(port: unknown): void {
+      captured.editor = port
+    }
+
+    noteCommitted(receipt: unknown): void {
+      captured.receipts.push(receipt)
+    }
+
+    worktreeResultsStore(): unknown {
+      return { notifySource: () => ({ pending: () => [], note: async () => undefined }) }
+    }
+
+    sessionNotifyStore(): unknown {
+      return { pending: () => [], note: async () => undefined, watched: () => [], observe: async () => [] }
     }
 
     async start(): Promise<void> {}
@@ -503,6 +537,8 @@ describe('app-client-ui/app/appHub', () => {
     FakeWindow.created = []
     captured.sessionDeps = null
     captured.reviewPort = null
+    captured.editor = null
+    captured.receipts = []
     captured.rateDeps = null
     captured.visible = []
     captured.rateVisible = []
@@ -651,6 +687,16 @@ describe('app-client-ui/app/appHub', () => {
     hubUnderTest()
 
     expect(captured.reviewPort).toBeInstanceOf(SessionReviewPortAdapter)
+    expect(captured.editor).toEqual({ openWorktree: expect.any(Function) })
+  })
+
+  it('hands every receipt of the commit dialog to the sessions', () => {
+    const hub = hubUnderTest() as unknown as { commits: { deps: VersioningCommitManagerDeps } }
+    const receipt = { sessionId: 'parent-1', scopes: [{ scopeRoot: 'C:/work/app', revision: 12 }], paths: ['C:/work/app/main.ts'] }
+
+    hub.commits.deps.committed?.(receipt)
+
+    expect(captured.receipts).toEqual([receipt])
   })
 
   it('owns one lazy diff worker and gives it to the file changes manager', () => {
@@ -722,16 +768,31 @@ describe('app-client-ui/app/appHub', () => {
     const hub = hubUnderTest()
     const services = hub as unknown as {
       contextCompactionIpc: { terminal: unknown }
-      directoryNotesIpc: { terminal: unknown }
+      directoryNotes: { terminal: unknown }
     }
 
-    expect(services.directoryNotesIpc.terminal).toBeDefined()
-    expect(services.directoryNotesIpc.terminal).toBe(services.contextCompactionIpc.terminal)
+    expect(services.directoryNotes.terminal).toBeDefined()
+    expect(services.directoryNotes.terminal).toBe(services.contextCompactionIpc.terminal)
+  })
+
+  it('wakes coordinators through the terminal the control API delivers through, and stops with the hub', async () => {
+    const hub = hubUnderTest()
+    const services = hub as unknown as {
+      directoryNotes: { terminal: unknown }
+      sessionNotifier: { port: { terminal: unknown }; started: boolean; sources: readonly unknown[] }
+    }
+
+    expect(services.sessionNotifier.port.terminal).toBe(services.directoryNotes.terminal)
+    expect(services.sessionNotifier.sources).toHaveLength(2)
+    hub.initialize()
+    expect(services.sessionNotifier.started).toBe(true)
+    await hub.dispose()
+    expect(services.sessionNotifier.started).toBe(false)
   })
 
   it('holds the final IPC parity counts', () => {
-    expect(Object.keys(AppHub.ipcChannelsConst)).toHaveLength(190)
-    expect(Object.keys(AppClientUiBridgeEventsConst)).toHaveLength(23)
+    expect(Object.keys(AppHub.ipcChannelsConst)).toHaveLength(133)
+    expect(Object.keys(AppClientUiBridgeEventsConst)).toHaveLength(24)
     expect(Object.keys(ServiceTabsIpc.channelsConst)).toHaveLength(13)
     expect(Object.keys(ServiceRemarkableIpc.channelsConst)).toHaveLength(16)
   })
@@ -952,6 +1013,22 @@ describe('app-client-ui/app/appHub', () => {
     expect(captured.remoteEvents).toContain('sessions.changed')
   })
 
+  it('hands a collapsed run tab to its parent, and closes it when nobody can take it', () => {
+    hubUnderTest()
+    const collapsed = vi.spyOn(ServiceTabsIpc.prototype, 'scriptRunCollapsed').mockImplementation(() => {})
+
+    captured.sessionDeps?.onScriptCollapsed?.({ runId: 'run-1', parentId: 'parent-1', handoff: 'parent-tab', handoffTo: 'parent-1' })
+    captured.sessionDeps?.onScriptCollapsed?.({ runId: 'run-2', parentId: 'parent-1', handoff: 'close', handoffTo: 'parent-1' })
+    // The snapshot no longer names the parent, so there is no title to open its tab under.
+    captured.sessionDeps?.onScriptCollapsed?.({ runId: 'run-3', parentId: 'gone', handoff: 'parent-tab', handoffTo: 'gone' })
+
+    expect(collapsed.mock.calls).toEqual([
+      ['run-1', { target: { kind: 'local', sessionId: 'parent-1' }, title: 'Work - 014' }],
+      ['run-2', null],
+      ['run-3', null],
+    ])
+  })
+
   it('broadcasts session changes to every workspace window and Debug', () => {
     const hub = hubUnderTest()
     hub.initialize()
@@ -1102,16 +1179,19 @@ describe('app-client-ui/app/appHub', () => {
     hub.initialize()
     const sender = FakeWindow.created[0].webContents
     const assign = captured.ipcHandlers.get('state:assign-session-group')
-    const fork = captured.ipcHandlers.get('sessions:fork')
+    const control = captured.ipcHandlers.get('control:call')
     const load = captured.ipcHandlers.get('state:load-session-groups')
-    if (!assign || !fork || !load)
-      throw new Error('The hub registered no session group or fork handler')
+    if (!assign || !control || !load)
+      throw new Error('The hub registered no session group or control handler')
 
     await assign({ sender }, 'session:parent-1', 'priority')
     FakeWindow.created[0].sent.length = 0
-    expect(await fork({ sender }, 'parent-1', { name: 'refactor' })).toEqual({
+    expect(await control({ sender }, 'sessions.fork', {
+      session: { kind: 'sessionId', sessionId: 'parent-1' },
+      name: 'refactor',
+    })).toMatchObject({
       ok: true,
-      value: { ok: true, value: { sessionId: 'fork-1', tabTitle: 'Work - 014-015' } },
+      value: { ok: true, operation: 'sessions.fork', value: { sessionId: 'fork-1', tabTitle: 'Work - 014-015' } },
     })
 
     expect(await load({ sender })).toEqual({
@@ -1129,12 +1209,12 @@ describe('app-client-ui/app/appHub', () => {
     const hub = hubUnderTest()
     hub.initialize()
     const sender = FakeWindow.created[0].webContents
-    const fork = captured.ipcHandlers.get('sessions:fork')
+    const control = captured.ipcHandlers.get('control:call')
     const load = captured.ipcHandlers.get('state:load-session-groups')
-    if (!fork || !load) throw new Error('The hub registered no session group or fork handler')
+    if (!control || !load) throw new Error('The hub registered no session group or control handler')
 
     FakeWindow.created[0].sent.length = 0
-    await fork({ sender }, 'parent-1', undefined)
+    await control({ sender }, 'sessions.fork', { session: { kind: 'sessionId', sessionId: 'parent-1' } })
 
     expect(await load({ sender })).toEqual({ ok: true, value: [] })
     expect(FakeWindow.created[0].sent).not.toContainEqual(['state:session-groups-changed'])

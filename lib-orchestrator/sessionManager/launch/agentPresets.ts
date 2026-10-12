@@ -4,11 +4,12 @@ import type { SessionAgentId, SessionCreateSpec } from '../sessionManagerApi.typ
 export type SessionAgentSpec = NonNullable<SessionCreateSpec['agent']>
 
 /**
- * What a launch is actually built from: the wire spec plus the one flag that never comes off the
+ * What a launch is actually built from: the wire spec plus the two flags that never come off the
  * wire. Print mode is chosen by this library for its own one-shot runs, and a session a person
- * started is not one anybody is waiting on the exit code of.
+ * started is not one anybody is waiting on the exit code of. The permission mode is the SVN
+ * resolver's, which edits files and runs no command.
  */
-export type AgentLaunchSpec = SessionAgentSpec & { oneShot?: true }
+export type AgentLaunchSpec = SessionAgentSpec & { oneShot?: true; permission?: SessionRecordAgent['permission'] }
 
 /**
  * The command line each launch mode turns into, one agent at a time.
@@ -54,6 +55,7 @@ export class AgentPresets {
     // In FRONT of the mode flags, because print mode is what the whole invocation is, and after the
     // prompt it would be read as more prompt.
     if (agent.oneShot) args.unshift(...AgentPresets.oneShotArgsOf(agent.agentId))
+    if (agent.permission !== undefined) args.unshift(...AgentPresets.permissionArgsOf(agent.agentId, agent.permission))
     // LAST, and positional: both CLIs read a trailing bare argument as the first thing to answer.
     // Anything appended after it would be read as more prompt rather than as a flag.
     if (agent.initialPrompt) args.push(agent.initialPrompt)
@@ -83,6 +85,7 @@ export class AgentPresets {
         // interactive one would leave a process nobody is waiting on sitting at a prompt.
         initialPrompt: agent.initialPrompt,
         oneShot: agent.oneShot,
+        permission: agent.permission,
       },
       agent.nativeSessionId,
     )
@@ -181,6 +184,21 @@ export class AgentPresets {
     else if (agentId === 'codex')
       throw new Error('Codex has no print mode this build can judge; see headlessUnsupported')
     else throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+  }
+
+  /**
+   * Claude Code 2.1.294, `claude --help`: "--permission-mode <mode>  Permission mode to use for the
+   * session (choices: "acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan")".
+   * In print mode nothing can answer a permission prompt, so accept-edits edits files and refuses
+   * every command the person's Claude settings do not allow already. A command those settings allow
+   * (`Bash(svn:*)`) would still run, so Bash is refused outright. `--disallowedTools <tools...>` is
+   * variadic: `--permission-mode` after it ends its list.
+   */
+  private static permissionArgsOf(agentId: SessionAgentId, permission: NonNullable<SessionRecordAgent['permission']>): string[] {
+    if (permission !== 'accept-edits') throw new Error(`Unknown agent permission: ${JSON.stringify(permission satisfies never)}`)
+    if (agentId === 'claude') return ['--disallowedTools', 'Bash', '--permission-mode', 'acceptEdits']
+    else if (agentId === 'codex') throw new Error('Codex has no accept-edits mode this build starts; the SVN resolver is always Claude')
+    else throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 
   /**

@@ -45,7 +45,10 @@ export class ServiceVersioningCommitIpc extends ServiceIpcBase<typeof ServiceVer
       const draft = this.manager.read(ownerId, draftId)
       if (draft === null) return { ok: false, code: 'invalid-context', detail: 'The commit dialog no longer exists' }
       const result = await this.files.workingTree(ownerId, draft.sessionId, draft.source, draft.scopeRoot, true)
-      return result.ok ? { ok: true, value: this.manager.files(ownerId, draftId, result.value) } : result
+      if (!result.ok) return result
+      const snapshot = this.manager.files(ownerId, draftId, result.value)
+      const checkedPaths = this.manager.checkedPaths(ownerId, draftId, snapshot)
+      return { ok: true, value: snapshot, ...(checkedPaths === null ? {} : { checkedPaths }) }
     })
     this.register('versioning:commit-set-message', (event, draftId, message) => this.manager.setMessage(this.owner(event.sender), draftId, message))
     this.register('versioning:commit-run', (event, request) => this.manager.run(this.owner(event.sender), request))

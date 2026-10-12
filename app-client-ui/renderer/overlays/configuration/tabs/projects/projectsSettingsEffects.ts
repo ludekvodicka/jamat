@@ -4,6 +4,7 @@ import type {
 } from '../../../../../../lib-orchestrator/projectManager/projectManagerApi.types'
 import type { IpcResult } from '../../../../../shared/appClientUiIpc'
 import type { ProjectsSettingsEffect, ProjectsSettingsInput } from './projectsSettingsModel'
+import { AppControl } from '../../../../ipc/appControl'
 
 export interface ProjectsSettingsPorts {
   dispatch(input: ProjectsSettingsInput): void
@@ -30,7 +31,7 @@ export class ProjectsSettingsEffects {
   }
 
   private static async load(ports: ProjectsSettingsPorts): Promise<void> {
-    const answer = await window.appClient.projects.getConfig()
+    const answer = await AppControl.projects('projects.config', {})
     if (!answer.ok)
       return ports.dispatch({ input: 'failed', detail: ProjectsSettingsEffects.silent(answer.error) })
     if (!answer.value.ok)
@@ -50,7 +51,7 @@ export class ProjectsSettingsEffects {
     categories: readonly CatalogCategoryDto[],
     ports: ProjectsSettingsPorts,
   ): Promise<void> {
-    const answer: IpcResult<ProjectsOpResult> = await window.appClient.projects.saveConfig(categories)
+    const answer: IpcResult<ProjectsOpResult> = await AppControl.projectsDone('projects.saveConfig', { categories: categories })
     if (!answer.ok)
       return ports.dispatch({ input: 'failed', detail: ProjectsSettingsEffects.silent(answer.error) })
     if (!answer.value.ok)

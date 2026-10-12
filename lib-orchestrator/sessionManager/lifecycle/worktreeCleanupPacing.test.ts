@@ -49,14 +49,15 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeCleanupPacing', () =
     expect(after(40, 10 * minute)).toBe(true)
   })
 
-  it('asks about an unlanded commit every ten minutes from the first time', () => {
-    const waiting = cleanup({ attempts: 1, lastAttemptAt: 1_000, reason: 'unlanded r12: src/a.txt' })
-    expect(WorktreeCleanupPacing.due(waiting, 1_000 + 10 * minute - 1, 0)).toBe(false)
-    expect(WorktreeCleanupPacing.due(waiting, 1_000 + 10 * minute, 0)).toBe(true)
+  // Removed with the main-copy landing: an `unlanded` reason a 3.10 build wrote is paced like any other.
+  it('paces a legacy unlanded reason like any other, so a clean worktree goes at its next due attempt', () => {
+    const legacy = cleanup({ attempts: 1, lastAttemptAt: 1_000, reason: 'unlanded r12: src/a.txt' })
+    expect(WorktreeCleanupPacing.due(legacy, 1_000, 0)).toBe(true)
+    expect(WorktreeCleanupPacing.summaryOf(legacy, false)).toBe('waiting to remove (unlanded r12: src/a.txt)')
   })
 
   it('makes the first judgement after a client start due, whatever the wait', () => {
-    const waiting = cleanup({ attempts: 1, lastAttemptAt: 1_000, reason: 'unlanded r12: src/a.txt' })
+    const waiting = cleanup({ attempts: 5, lastAttemptAt: 1_000, reason: 'in use' })
     expect(WorktreeCleanupPacing.due(waiting, 2_000, 1_500)).toBe(true)
     expect(WorktreeCleanupPacing.due({ ...waiting, lastAttemptAt: 1_600 }, 2_000, 1_500)).toBe(false)
   })
@@ -65,20 +66,11 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeCleanupPacing', () =
     expect(WorktreeCleanupPacing.due(cleanup({ attempts: 5, lastAttemptAt: 9_000, reason: 'in use' }), 1_000, 0)).toBe(true)
   })
 
-  it('names the newest unlanded revision and at most five paths', () => {
-    expect(WorktreeCleanupPacing.unlandedReason([{ path: 'a', revision: 11 }, { path: 'b', revision: 12 }]))
-      .toBe('unlanded r12: a b')
-    const many = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((path) => ({ path, revision: 3 }))
-    expect(WorktreeCleanupPacing.unlandedReason(many)).toBe('unlanded r3: a b c d e (+2 more)')
-  })
-
   it('says why a worktree is still there in the words a row, a tab and a script show', () => {
     const summary = (phase: 'pending' | 'kept', reason?: string) =>
       WorktreeCleanupPacing.summaryOf(reason === undefined ? { phase } : { phase, reason }, false)
     expect(summary('kept', '2 changes')).toBe('kept: 2 changes')
     expect(summary('pending', 'in use')).toBe('waiting to remove (in use)')
-    expect(summary('pending', 'unlanded r4127: src/a.txt'))
-      .toBe('r4127 is not in the main copy; Finish brings it in and removes the worktree')
     expect(summary('pending', 'undeleted')).toBe('waiting to remove (undeleted)')
     expect(summary('pending')).toBe('removed once the session has ended and nothing is left in it')
     expect(() => summary('gone' as 'kept')).toThrow(/Unknown cleanup phase/)
@@ -109,6 +101,29 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeCleanupPacing', () =
     expect(gone({ life: 'live' })).toBe(false)
     expect(gone({ life: 'starting' })).toBe(false)
     expect(() => gone({ exitReason: 'vanished' as 'stopped' })).toThrow(/Unknown exit reason/)
+  })
+
+  it('counts a process gone for an end that never had one, which a host-lost end without a reason is not', () => {
+    const failedSetup = { ...ended(1_000), endedReason: 'setup failed: exit 1' }
+    expect(WorktreeCleanupPacing.processGone(failedSetup)).toBe(true)
+    expect(WorktreeCleanupPacing.endUnconfirmed(failedSetup)).toBe(false)
+    expect(WorktreeCleanupPacing.summaryOf({ phase: 'pending' }, WorktreeCleanupPacing.endUnconfirmed(failedSetup)))
+      .toBe('removed once the session has ended and nothing is left in it')
+    expect(WorktreeCleanupPacing.processGone({ ...ended(1_000), exitReason: 'host-lost' })).toBe(false)
+  })
+
+  it('counts the runs of a parent gone only when none of them can still run', () => {
+    const parent = ended(1_000)
+    const run = (life: SessionRecord['life'], overrides?: Partial<SessionRecord>): SessionRecord => ({
+      ...ended(1_000), sessionId: `run-${life}`, life,
+      scriptOf: { sessionId: 's1', phase: 'before', scriptId: 'setup', name: 'setup' }, ...overrides,
+    })
+    const other = { ...run('live'), scriptOf: { sessionId: 's2', phase: 'before' as const, scriptId: 'setup' as const, name: 'setup' } }
+    expect(WorktreeCleanupPacing.runsGone(parent, [parent, other])).toBe(true)
+    expect(WorktreeCleanupPacing.runsGone(parent, [parent, run('ended', { exitReason: 'process-exit', exitCode: 1 }), run('lost')])).toBe(true)
+    expect(WorktreeCleanupPacing.runsGone(parent, [parent, run('ended', { exitReason: 'host-lost' })])).toBe(false)
+    expect(WorktreeCleanupPacing.runsGone(parent, [parent, run('live')])).toBe(false)
+    expect(WorktreeCleanupPacing.runsGone(parent, [parent, run('starting')])).toBe(false)
   })
 
   it('turns an unfinished Discard into a change-checking request at a launch, and leaves every other cleanup alone', () => {

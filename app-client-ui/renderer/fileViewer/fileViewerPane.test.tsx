@@ -157,6 +157,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
 
     render(
       <FileViewerPane
+        reloadRequest={0}
         backPath={null}
         onBack={vi.fn()}
         onClose={vi.fn()}
@@ -180,6 +181,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
 
     render(
       <FileViewerPane
+        reloadRequest={0}
         backPath={null}
         onBack={vi.fn()}
         onClose={vi.fn()}
@@ -195,12 +197,12 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
     expect(screen.queryByLabelText('Diff against')).toBeNull()
   })
 
-  it('copies the active document path through its grant', async () => {
+  it('reads the file from disk again for each new reload request, and not on mount', async () => {
     const document = FileViewerPaneHarness.document()
     const { fileViewer } = FileViewerPaneHarness.install([document])
-
-    render(
+    const pane = (reloadRequest: number) => (
       <FileViewerPane
+        reloadRequest={reloadRequest}
         backPath={null}
         onBack={vi.fn()}
         onClose={vi.fn()}
@@ -209,12 +211,17 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
         workingTree={FileViewerPaneHarness.workingTree()}
         onOpenItem={vi.fn(() => null)}
         onRefused={vi.fn()}
-      />,
+      />
     )
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Copy path' }))
+    const view = render(pane(3))
+    await screen.findByRole('button', { name: 'Raw' })
+    expect(fileViewer.restore).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('button', { name: 'Reload' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Copy path' })).toBeNull()
 
-    expect(fileViewer.copyPath).toHaveBeenCalledWith('document-a')
+    view.rerender(pane(4))
+    await waitFor(() => expect(fileViewer.restore).toHaveBeenCalledTimes(2))
   })
 
   it('keeps a refused proof as readable pane text', async () => {
@@ -229,6 +236,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
     const onClose = vi.fn()
     const view = render(
       <FileViewerPane
+        reloadRequest={0}
         backPath="C:/work/previous.md"
         onBack={onBack}
         onClose={onClose}
@@ -246,6 +254,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
     expect(onClose).not.toHaveBeenCalled()
     view.rerender(
       <FileViewerPane
+        reloadRequest={0}
         backPath={null}
         onBack={onBack}
         onClose={onClose}
@@ -271,6 +280,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
     const onClose = vi.fn()
     render(
       <FileViewerPane
+        reloadRequest={0}
         backPath={null}
         onBack={vi.fn()}
         onClose={onClose}
@@ -302,6 +312,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
       if (item === undefined) return <p>Terminal</p>
       return (
         <FileViewerPane
+          reloadRequest={0}
           key={item.key}
           item={item.kind === 'file' ? item : (() => { throw new Error('Expected file') })()}
           changes={FileViewerPaneHarness.changes()}
@@ -359,6 +370,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
 
     render(
       <FileViewerPane
+        reloadRequest={0}
         backPath={null}
         onBack={vi.fn()}
         onClose={vi.fn()}

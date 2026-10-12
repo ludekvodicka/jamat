@@ -10,7 +10,7 @@ import type {
 import { ProcessStartIdentity } from '../shared/processStartIdentity.js'
 import { TerminalProjection } from './terminalProjection.js'
 import { TerminalLaunchError } from './terminalLaunchError.js'
-import type { TerminalInstanceEvent } from './terminal.types.js'
+import type { TerminalExit, TerminalInstanceEvent } from './terminal.types.js'
 
 export class TerminalInstance {
   /**
@@ -29,7 +29,8 @@ export class TerminalInstance {
   private static readonly killConfirmMsConst = 2_000
   private static readonly hardKillConfirmMsConst = 3_000
   /**
-   * How long a spawn has to expose a start identity before it is killed and refused.
+   * How long a spawn has to expose a start identity before it is killed and refused. A process that
+   * exits inside it is not refused: see `ready`.
    *
    * It is long because the answer is a real query about a real process - on Windows a PowerShell
    * one - and short because whoever asked for the session is waiting on it: a `sessions.create`
@@ -45,6 +46,7 @@ export class TerminalInstance {
   private aliveValue = true
   private stopping = false
   private processStartedAtValue: number | null = null
+  private exitValue: TerminalExit | null = null
   readonly projection: TerminalProjection
 
   constructor(
@@ -96,6 +98,18 @@ export class TerminalInstance {
     return this.processStartedAtValue
   }
 
+  get exit(): TerminalExit | null {
+    return this.exitValue
+  }
+
+  /**
+   * A process that exits before the probe sees it alive - on Windows the probe is a PowerShell
+   * process of about half a second, and a fast child can be gone before node-pty even exposes its
+   * pid - is a run that happened, not a launch that failed: `git status`
+   * or `exit 0` ends inside that window, and refusing it made its caller read a clean exit as a
+   * failure. It resolves with `exit` set, and its caller answers a runtime that is already dead.
+   * Only a process still running without a provable identity is killed and refused.
+   */
   async ready(): Promise<void> {
     const deadline = Date.now() + TerminalInstance.readyDeadlineMsConst
     let reason = 'PTY process ID is not assigned'
@@ -114,6 +128,7 @@ export class TerminalInstance {
       }
       await TerminalInstance.sleep(TerminalInstance.readyPollMsConst)
     }
+    if (!this.aliveValue) return
     try { this.process.kill() } catch {}
     throw new TerminalLaunchError(`PTY process did not expose a stable start identity: ${reason}`)
   }
@@ -226,6 +241,7 @@ export class TerminalInstance {
   private onExit(exitCode: number): void {
     if (!this.aliveValue) return
     this.aliveValue = false
+    this.exitValue = { exitCode, exitedAt: Date.now() }
     this.resolveExit()
     this.onEvent({
       type: 'exit',

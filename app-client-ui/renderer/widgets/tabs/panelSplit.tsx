@@ -6,10 +6,11 @@ import type {
   FileViewerDocumentSource,
   FileViewerLocation,
 } from '../../../../lib-orchestrator/fileViewer/fileViewerApi.types'
+import { VersioningCommitPaths, type VersioningCommitPath } from '../../../shared/versioningCommit'
 import { FileViewerSourceShape } from '../../fileViewer/fileViewerSourceShape'
 import type { FileViewerBaselineHint } from '../../fileViewer/fileViewerPanel.types'
 import { FileViewerZoom } from '../../fileViewer/fileViewerZoom'
-import { ContextMenu, type ContextMenuPosition } from '../contextMenu'
+import { ContextMenu, type ContextMenuEntry, type ContextMenuPosition } from '../contextMenu'
 import { usePanelParameters } from './panelParameters'
 import './panelSplit.css'
 
@@ -35,7 +36,7 @@ export interface PanelSplitCommitItem {
   title: string
   vcs: FileChangesVcsId
   scopeRoot: string
-  paths?: readonly string[]
+  paths?: readonly VersioningCommitPath[]
 }
 
 export type PanelSplitItem = PanelSplitFileItem | PanelSplitCommitItem
@@ -95,7 +96,7 @@ export class PanelSplitParams {
     return { ratio: PanelSplitParams.ratioDefaultConst, active: null, preview: null, items: [], history: [] }
   }
 
-  static commitKeyOf(vcs: FileChangesVcsId, scopeRoot: string, paths?: readonly string[]): string {
+  static commitKeyOf(vcs: FileChangesVcsId, scopeRoot: string, paths?: readonly VersioningCommitPath[]): string {
     return `commit:${vcs}:${scopeRoot}${paths === undefined ? '' : `:${JSON.stringify(paths)}`}`
   }
 
@@ -350,9 +351,9 @@ export class PanelSplitParams {
       if (typeof candidate.key !== 'string' || !candidate.key || typeof candidate.title !== 'string'
         || (candidate.vcs !== 'svn' && candidate.vcs !== 'git') || typeof candidate.scopeRoot !== 'string' || !candidate.scopeRoot) return null
       if (candidate.paths !== undefined && (!Array.isArray(candidate.paths) || candidate.paths.length === 0
-        || candidate.paths.length > 2_000 || candidate.paths.some((path) => typeof path !== 'string' || !path.trim()))) return null
+        || candidate.paths.length > 2_000 || !candidate.paths.every(VersioningCommitPaths.valid))) return null
       return { kind, key: candidate.key, title: candidate.title, vcs: candidate.vcs, scopeRoot: candidate.scopeRoot,
-        ...(candidate.paths === undefined ? {} : { paths: candidate.paths as string[] }) }
+        ...(candidate.paths === undefined ? {} : { paths: candidate.paths as VersioningCommitPath[] }) }
     }
     else if (kind !== 'file') return null
     const source = FileViewerSourceShape.read(candidate.source)
@@ -637,7 +638,7 @@ export function PanelSplitLayout(props: {
 }
 
 /** The inner tabs. A strip and not the real tab widget: these carry no signals, no badges and no
- *  session colour, and their menu is two verbs over one document rather than the command catalog. */
+ *  session colour, and their menu is a few verbs over one document rather than the command catalog. */
 export function PanelSplitStrip(props: {
   items: readonly PanelSplitItem[]
   active: string | null
@@ -645,6 +646,8 @@ export function PanelSplitStrip(props: {
   onActivate(key: string): void
   onKeepOpen(key: string): void
   onSetPinned(key: string, pinned: boolean): void
+  onReload(key: string): void
+  onCopyPath(key: string): void
   onClose(key: string): void
   onDetach(key: string): void
 }): React.JSX.Element {
@@ -652,6 +655,8 @@ export function PanelSplitStrip(props: {
   const onDetach = props.onDetach
   const onClose = props.onClose
   const onSetPinned = props.onSetPinned
+  const onReload = props.onReload
+  const onCopyPath = props.onCopyPath
   const menuItem = menu === null ? undefined : props.items.find((item) => item.key === menu.key)
 
   return (
@@ -690,24 +695,44 @@ export function PanelSplitStrip(props: {
         <ContextMenu
           position={menu.position}
           ariaLabel="Split tab actions"
-          items={[
-            ...(menuItem.kind === 'file' ? [
-              PanelSplitParams.isPinnedItem(menuItem)
-                ? { key: 'split.unpin', label: 'Unpin', onSelect: () => onSetPinned(menu.key, false) }
-                : { key: 'split.pin', label: 'Pin', onSelect: () => onSetPinned(menu.key, true) },
-              {
-                key: 'split.detach',
-                label: 'Detach from split',
-                onSelect: () => queueMicrotask(() => onDetach(menu.key)),
-              },
-            ] : []),
-            { key: 'split.close', label: 'Close', onSelect: () => onClose(menu.key) },
-          ]}
+          items={PanelSplitMenu.entries(menuItem, {
+            reload: () => onReload(menu.key),
+            copyPath: () => onCopyPath(menu.key),
+            setPinned: (pinned) => onSetPinned(menu.key, pinned),
+            detach: () => queueMicrotask(() => onDetach(menu.key)),
+            close: () => onClose(menu.key),
+          })}
           onClose={() => setMenu(null)}
         />
       )}
     </div>
   )
+}
+
+/** The file's own verbs, then where the tab lives, then closing it, a line between each block. */
+class PanelSplitMenu {
+  static entries(item: PanelSplitItem, actions: {
+    reload(): void
+    copyPath(): void
+    setPinned(pinned: boolean): void
+    detach(): void
+    close(): void
+  }): readonly ContextMenuEntry[] {
+    const close: ContextMenuEntry = { key: 'split.close', label: 'Close', onSelect: actions.close }
+    if (item.kind === 'commit') return [close]
+    else if (item.kind !== 'file') throw new Error(`Unknown split item: ${JSON.stringify(item)}`)
+    return [
+      { key: 'split.reload', label: 'Reload', onSelect: actions.reload },
+      { key: 'split.copyPath', label: 'Copy path', onSelect: actions.copyPath },
+      { kind: 'separator', key: 'split.separator.file' },
+      PanelSplitParams.isPinnedItem(item)
+        ? { key: 'split.unpin', label: 'Unpin', onSelect: () => actions.setPinned(false) }
+        : { key: 'split.pin', label: 'Pin', onSelect: () => actions.setPinned(true) },
+      { key: 'split.detach', label: 'Detach from split', onSelect: actions.detach },
+      { kind: 'separator', key: 'split.separator.place' },
+      close,
+    ]
+  }
 }
 
 /** Text glyphs draw as colour emoji on Windows, so the pin is a path in the tab's own colour. */

@@ -4,6 +4,7 @@ import type {
   RateProviderDebug,
 } from '../../../../../../lib-orchestrator/rateMonitor/rateMonitorApi.types'
 import type { AppClientUiBridge } from '../../../../../shared/appClientUiIpc'
+import { ControlBridgeFixture } from '../../../../ipc/fixtures/controlBridgeFixture'
 
 /** What a test can ask the stubbed bridge about afterwards, and the one push it can make. */
 export interface RateBridgeStub {
@@ -25,28 +26,31 @@ export class RateDebugFixtures {
   ): RateBridgeStub {
     const stub: RateBridgeStub = { reads: 0, refreshes: 0, pushChanged: () => {} }
     const bridge = {
-      rateMonitor: {
-        debugStatus: () => {
-          stub.reads += 1
-          return Promise.resolve({ ok: true as const, value: status })
+      control: ControlBridgeFixture.routes({
+        'rate.debugStatus': {
+          value: () => {
+            stub.reads += 1
+            return Promise.resolve({ ok: true as const, value: status })
+          },
         },
-        refresh: () => {
-          stub.refreshes += 1
-          return Promise.resolve({
-            ok: true as const,
-            value: { revision: 3, providers: { claude: { kind: 'never-read' as const },
-              codex: { kind: 'never-read' as const } } } satisfies RateMonitorSnapshot,
-          })
+        'rate.refresh': {
+          value: () => {
+            stub.refreshes += 1
+            return Promise.resolve({
+              ok: true as const,
+              value: { revision: 3, providers: { claude: { kind: 'never-read' as const },
+                codex: { kind: 'never-read' as const } } } satisfies RateMonitorSnapshot,
+            })
+          },
         },
-        get: () => Promise.resolve({ ok: false as const, error: 'the section never asks for this' }),
-      },
+      }),
       onRateChanged: (callback: () => void) => {
         stub.pushChanged = callback
         return () => { stub.pushChanged = () => {} }
       },
     }
     ;(window as unknown as { appClient: unknown }).appClient = bridge as unknown as
-      Pick<AppClientUiBridge, 'rateMonitor' | 'onRateChanged'>
+      Pick<AppClientUiBridge, 'control' | 'onRateChanged'>
     return stub
   }
 

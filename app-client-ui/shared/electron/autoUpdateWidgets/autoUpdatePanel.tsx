@@ -1,7 +1,7 @@
 import type { AutoUpdateController } from "../autoUpdate/renderer/useAutoUpdate";
 import "./autoUpdateWidgets.css";
 
-export function AutoUpdatePanel(props: { update: AutoUpdateController; open: boolean; onClose(): void })
+export function AutoUpdatePanel(props: { update: AutoUpdateController; open: boolean; onClose: () => void })
 {
   const view = props.update.view;
   if (!props.open || !view)

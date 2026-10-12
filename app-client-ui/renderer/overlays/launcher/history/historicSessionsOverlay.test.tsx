@@ -1,7 +1,10 @@
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { AppClientUiBridge } from '../../../../shared/appClientUiIpc'
-import type { HistoricSession } from '../../../../shared/historicSessions'
+import type { ProjectsOpResult } from '../../../../../lib-orchestrator/projectManager/projectManagerApi.types'
+import type { SessionHistoryOpenSpec } from '../../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
+import type { AppClientUiBridge, IpcResult } from '../../../../shared/appClientUiIpc'
+import type { HistoricSession, HistoricSessionGroup } from '../../../../shared/historicSessions'
+import { ControlBridgeFixture } from '../../../ipc/fixtures/controlBridgeFixture'
 import type { PanelOpenOutcome } from '../../../shell/appShell.types'
 import { LauncherIntentStore } from '../launcherIntentStore'
 import { LauncherOverlay } from '../launcherOverlay'
@@ -14,8 +17,9 @@ describe('app-client-ui/renderer/overlays/launcher/history/historicSessionsOverl
 
   function mount(options?: {
     rows?: HistoricSession[]
-    project?: AppClientUiBridge['historicSessions']['project']
-    appJamat?: AppClientUiBridge['historicSessions']['appJamat']
+    project?: (categoryId: string, projectName: string, lastUsedSince?: number | null) =>
+      Promise<IpcResult<ProjectsOpResult<HistoricSession[]>>>
+    appJamat?: (lastUsedSince?: number | null) => Promise<IpcResult<HistoricSessionGroup[]>>
     projectNames?: string[]
     openTerminal?: () => Promise<PanelOpenOutcome>
   }) {
@@ -25,14 +29,27 @@ describe('app-client-ui/renderer/overlays/launcher/history/historicSessionsOverl
       project: { name: 'App', path: 'Q:/Apps/App' },
       sessions: options?.rows ?? [session('old', 2_000, 'Old task'), session('new', 3_000, 'New task', 'codex')],
     }] })))
-    const openHistory = vi.fn(async () => ({ ok: true as const, value: { ok: true as const, value: { sessionId: 'opened', tabTitle: 'App - 014' } } }))
+    const openHistory = vi.fn(async (_spec: SessionHistoryOpenSpec) =>
+      ({ ok: true as const, value: { ok: true as const, value: { sessionId: 'opened', tabTitle: 'App - 014' } } }))
+    const listing = { projects: (options?.projectNames ?? ['App']).map((name) => ({ name, path: `Q:/Apps/${name}`, lastActivity: null })), entries: [], virtualFolders: [], available: true, truncated: false }
     const bridge = {
-      projects: {
-        categories: async () => ({ ok: true, value: [{ id: 'root', label: 'Applications', path: 'Q:/Apps', available: true }] }),
-        list: async () => ({ ok: true, value: { ok: true, value: { projects: (options?.projectNames ?? ['App']).map((name) => ({ name, path: `Q:/Apps/${name}`, lastActivity: null })), entries: [], virtualFolders: [], available: true, truncated: false } } }),
+      control: {
+        call: async (operation: string, body: Record<string, unknown>) => {
+          if (operation === 'projects.categories')
+            return ControlBridgeFixture.valueOf(operation, { ok: true, value: [{ id: 'root', label: 'Applications', path: 'Q:/Apps', available: true }] })
+          else if (operation === 'projects.listing')
+            return ControlBridgeFixture.valueOf(operation, { ok: true, value: listing })
+          else if (operation === 'historicSessions.project')
+            return ControlBridgeFixture.answerOf(operation, await project(
+              body.categoryId as string, body.projectName as string, body.lastUsedSince as number | null | undefined))
+          else if (operation === 'historicSessions.appJamat')
+            return ControlBridgeFixture.valueOf(operation, await appJamat(body.lastUsedSince as number | null | undefined))
+          else if (operation === 'sessions.openHistory')
+            return ControlBridgeFixture.answerOf(operation, await openHistory(body.spec as SessionHistoryOpenSpec))
+          else
+            return { ok: false, error: `No stub for ${operation}` }
+        },
       },
-      historicSessions: { project, appJamat },
-      sessions: { openHistory },
       tabs: { publishTerminalRestarted: vi.fn(async () => ({ ok: true as const, value: undefined })) },
     }
     Object.defineProperty(window, 'appClient', { configurable: true, value: bridge as unknown as AppClientUiBridge })

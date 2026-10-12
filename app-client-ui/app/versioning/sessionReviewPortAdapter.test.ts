@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { RemoteControlCommitStatusDto } from '../../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import type { TabControlBroker } from '../tabs/tabControlBroker'
 import { SessionReviewPortAdapter } from './sessionReviewPortAdapter'
+import type { VersioningCommitProposeResult } from './versioningCommitManager'
 
 describe('app-client-ui/app/versioning/sessionReviewPortAdapter', () => {
   const scopeConst = 'Q:/Work/App/.worktrees/014-fix'
@@ -15,9 +16,9 @@ describe('app-client-ui/app/versioning/sessionReviewPortAdapter', () => {
   }
 
   /** Each status read takes the next answer; the last one repeats. */
-  function adapterOf(answers: (RemoteControlCommitStatusDto | null)[], opened?: Awaited<ReturnType<TabControlBroker['openCommit']>>) {
+  function adapterOf(answers: (RemoteControlCommitStatusDto | null)[], opened?: Awaited<ReturnType<TabControlBroker['openCommit']>>,
+    proposeAnswer: VersioningCommitProposeResult = { ok: true, scopeRoot: scopeConst }) {
     const calls: unknown[][] = []
-    let pauses = 0
     let read = 0
     const adapter = new SessionReviewPortAdapter(
       {
@@ -29,11 +30,18 @@ describe('app-client-ui/app/versioning/sessionReviewPortAdapter', () => {
           })
         },
       },
-      { status: () => answers[Math.min(read++, answers.length - 1)] },
+      {
+        status: () => answers[Math.min(read++, answers.length - 1)],
+        propose: async (...args) => {
+          calls.push(['propose', ...args])
+          return proposeAnswer
+        },
+        proposalOf: (sessionId, scopeRoot) => sessionId === 's1' && scopeRoot === scopeConst ? 'Fix login' : null,
+        forgetProposal: (...args) => { calls.push(['forget', ...args]) },
+      },
       (sessionId) => sessionId === 's1' ? 'App - 014 - fix login' : null,
-      () => { pauses += 1; return Promise.resolve() },
     )
-    return { adapter, calls, pauses: () => pauses }
+    return { adapter, calls }
   }
 
   it('opens an SVN review of the scope in the session tab with the proposal', async () => {
@@ -72,32 +80,29 @@ describe('app-client-ui/app/versioning/sessionReviewPortAdapter', () => {
     expect(unknown.calls).toEqual([])
   })
 
-  // A failed attempt with the pane still open is a step of the review, never its outcome.
-  it('waits through editing, running and an open failure for the commit and its revision', async () => {
-    const { adapter, pauses } = adapterOf([
-      statusOf('editing'), statusOf('running'), statusOf('failed', { detail: 'File is locked' }),
-      statusOf('committed', { revision: '4127', closed: true }),
-    ])
-
-    expect(await adapter.settled('c1', new AbortController().signal)).toEqual({ state: 'committed', revision: '4127' })
-    expect(pauses()).toBe(3)
+  // The review run waits for the status itself; the library only asks whether the dialog still knows it.
+  it('knows a review the commit dialog holds and forgets one it lost with a restart', () => {
+    expect(adapterOf([statusOf('editing')]).adapter.known('c1')).toBe(true)
+    expect(adapterOf([null]).adapter.known('c1')).toBe(false)
   })
 
-  it('reads a closed review as cancelled, failed, external or lost', async () => {
-    const signal = new AbortController().signal
-    expect(await adapterOf([statusOf('cancelled', { closed: true })]).adapter.settled('c1', signal)).toEqual({ state: 'cancelled' })
-    expect(await adapterOf([statusOf('external-closed')]).adapter.settled('c1', signal)).toEqual({ state: 'external-closed' })
-    expect(await adapterOf([null]).adapter.settled('c1', signal)).toEqual({ state: 'lost' })
-    expect(await adapterOf([statusOf('failed', { closed: true, detail: 'svn: E155011: File is out of date' })]).adapter.settled('c1', signal))
-      .toEqual({ state: 'failed', reason: 'svn: E155011: File is out of date', outOfDate: true })
-    expect(await adapterOf([statusOf('failed', { closed: true, detail: 'File is locked' })]).adapter.settled('c1', signal))
-      .toEqual({ state: 'failed', reason: 'File is locked', outOfDate: false })
+  it('keeps a proposal through the commit dialog without opening a review, and reads it back', async () => {
+    const { adapter, calls } = adapterOf([])
+    expect(await adapter.propose({ sessionId: 's1', directory: scopeConst, message: 'Fix login' }))
+      .toEqual({ ok: true, value: { scopeRoot: scopeConst } })
+    expect(calls).toEqual([['propose', 's1', scopeConst, 'Fix login']])
+    expect(adapter.proposalOf('s1', scopeConst)).toBe('Fix login')
+    expect(adapter.proposalOf('s1', 'Q:/Work/App')).toBeNull()
+    adapter.forgetProposal('s1', scopeConst)
+    expect(calls.at(-1)).toEqual(['forget', 's1', scopeConst])
   })
 
-  it('stops waiting once the client stops', async () => {
-    const stopping = new AbortController()
-    stopping.abort()
-
-    await expect(adapterOf([statusOf('editing')]).adapter.settled('c1', stopping.signal)).rejects.toThrow()
+  it.each([
+    ['message-empty', 'invalid-spec'], ['message-too-long', 'invalid-spec'], ['no-working-copy', 'not-a-repo'],
+    ['message-edited', 'message-edited'], ['busy', 'already-running'],
+  ] as const)('names a %s proposal as %s', async (code, expected) => {
+    const { adapter } = adapterOf([], undefined, { ok: false, code, detail: 'refused' })
+    expect(await adapter.propose({ sessionId: 's1', directory: scopeConst, message: 'x' }))
+      .toEqual({ ok: false, code: expected, detail: 'refused' })
   })
 })

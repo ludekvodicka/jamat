@@ -15,6 +15,7 @@ import type {
   SessionsOpErrorCode,
 } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type { AppClientUiBridge } from '../../../shared/appClientUiIpc'
+import { ControlBridgeFixture } from '../../ipc/fixtures/controlBridgeFixture'
 import { LauncherFixtures } from './fixtures/launcherFixtures'
 import { LauncherIntentStore } from './launcherIntentStore'
 import { LauncherOverlay } from './launcherOverlay'
@@ -60,55 +61,37 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
     }
 
     install(): void {
-      const projects = {
-        getConfig: ProjectsStub.unused('getConfig'),
-        saveConfig: ProjectsStub.unused('saveConfig'),
-        categories: () => Promise.resolve(this.categoriesFail
-          ? { ok: false as const, error: 'main process is gone' }
-          : { ok: true as const, value: [...LauncherFixtures.categories()] }),
-        list: (categoryId: string) => {
+      const control = new ControlBridgeFixture()
+        .on('projects.categories', { ok: true, value: [...LauncherFixtures.categories()] })
+        .on('projects.listing', (body) => {
+          const { categoryId } = body as { categoryId: string }
           this.listed.push(categoryId)
-          return Promise.resolve({ ok: true as const, value: this.listingOf(categoryId) })
-        },
-        sessions: (categoryId: string, projectName: string) => {
+          return ControlBridgeFixture.library(this.listingOf(categoryId))
+        })
+        .on('projects.sessions', (body) => {
+          const { categoryId, projectName } = body as { categoryId: string; projectName: string }
           this.asked.push(`${categoryId}/${projectName}`)
-          return Promise.resolve({
-            ok: true as const,
-            value: {
-              ok: true as const,
-              value: this.sessionsResult ?? ProjectsStub.sessionsOf(projectName),
-            },
-          })
-        },
-        create: (categoryId: string, name: string, virtualFolderPrefix: string | null) => {
+          return { ok: true, value: this.sessionsResult ?? ProjectsStub.sessionsOf(projectName) }
+        })
+        .on('projects.create', (body) => {
+          const { categoryId, name, virtualFolderPrefix } = body as { categoryId: string; name: string; virtualFolderPrefix: string | null }
           this.created.push({ categoryId, name, prefix: virtualFolderPrefix })
-          return Promise.resolve({
-            ok: true as const,
-            value: {
-              ok: true as const,
-              value: { name, path: `Q:/${name}`, lastActivity: null },
-            },
-          })
-        },
-        rename: (categoryId: string, oldName: string, newName: string) => {
+          return { ok: true, value: { name, path: `Q:/${name}`, lastActivity: null } }
+        })
+        .on('projects.rename', (body) => {
+          const { categoryId, oldName, newName } = body as { categoryId: string; oldName: string; newName: string }
           this.renamed.push(`${categoryId}/${oldName}->${newName}`)
-          return Promise.resolve({
-            ok: true as const,
-            value: { ok: true as const, value: ProjectsStub.reportConst },
-          })
-        },
-        movePrefix: (categoryId: string, name: string, targetPrefix: string | null) => {
+          return { ok: true, value: ProjectsStub.reportConst }
+        })
+        .on('projects.movePrefix', (body) => {
+          const { categoryId, name, targetPrefix } = body as { categoryId: string; name: string; targetPrefix: string | null }
           this.moved.push(`${categoryId}/${name}->${targetPrefix ?? '(root)'}`)
-          return Promise.resolve({
-            ok: true as const,
-            value: { ok: true as const, value: ProjectsStub.reportConst },
-          })
-        },
-        archive: ProjectsStub.unused('archive'),
-        deletePreview: (categoryId: string, name: string) => Promise.resolve({
-          ok: true as const,
-          value: {
-            ok: true as const,
+          return { ok: true, value: ProjectsStub.reportConst }
+        })
+        .on('projects.deletePreview', (body) => {
+          const { categoryId, name } = body as { categoryId: string; name: string }
+          return {
+            ok: true,
             value: {
               token: `token-for-${categoryId}/${name}`,
               expiresAt: Date.now() + 300_000,
@@ -117,67 +100,32 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
               claude: { encodedDirectory: null, transcriptFiles: ['a'] },
               codex: { rolloutFiles: [] },
             },
-          },
-        }),
-        deleteProject: (token: string) => {
-          this.deleted.push(token)
-          return Promise.resolve({
-            ok: true as const,
-            value: { ok: true as const, value: { deletedPaths: 13, leftoverCount: 0 } },
-          })
-        },
-      } satisfies AppClientUiBridge['projects']
-      const sessions = {
-        snapshot: ProjectsStub.unused('snapshot'),
-        create: (spec: SessionCreateSpec) => {
+          }
+        })
+        .on('projects.delete', (body) => {
+          this.deleted.push((body as { token: string }).token)
+          return { ok: true, value: { deletedPaths: 13, leftoverCount: 0 } }
+        })
+        .on('sessions.create', (body) => {
+          const { spec } = body as { spec: SessionCreateSpec }
           this.started.push(spec)
-          if (this.createRefusal)
-            return Promise.resolve({ ok: true as const, value: { ok: false as const, ...this.createRefusal } })
-          return Promise.resolve({
-            ok: true as const,
-            value: {
-              ok: true as const,
-              value: { sessionId: 'session-1', tabTitle: 'AppJamat - 015' },
-            },
-          })
-        },
-        historyReferences: () => Promise.resolve({
-          ok: true as const,
-          value: { ok: true as const, value: { references: this.localHistory } },
-        }),
-        openHistory: (spec: SessionHistoryOpenSpec) => {
-          this.openedHistory.push(spec)
-          return Promise.resolve({
-            ok: true as const,
-            value: {
-              ok: true as const,
-              value: { sessionId: 'history-1', tabTitle: 'AppJamat - continued' },
-            },
-          })
-        },
-        reopen: ProjectsStub.unused('reopen'),
-        finalize: ProjectsStub.unused('finalize'),
-        remove: ProjectsStub.unused('remove'),
-        discardWorktree: ProjectsStub.unused('discardWorktree'),
-        retrySetup: ProjectsStub.unused('retrySetup'),
-        fork: ProjectsStub.unused('fork'),
-        restart: ProjectsStub.unused('restart'),
-        setColor: ProjectsStub.unused('setColor'),
-        setDetails: ProjectsStub.unused('setDetails'),
-        adoptOrphan: ProjectsStub.unused('adoptOrphan'),
-        nextNumber: (projectPath: string) => {
-          this.peeked.push(projectPath)
+          if (this.createRefusal) return ControlBridgeFixture.library({ ok: false, ...this.createRefusal })
+          return { ok: true, value: { session: { sessionId: 'session-1', tabTitle: 'AppJamat - 015' }, tabOpen: null, groupAssign: null } }
+        })
+        .on('sessions.historyReferences', { ok: true, value: { references: this.localHistory } })
+        .on('sessions.openHistory', (body) => {
+          this.openedHistory.push((body as { spec: SessionHistoryOpenSpec }).spec)
+          return { ok: true, value: { sessionId: 'history-1', tabTitle: 'AppJamat - continued' } }
+        })
+        .on('sessions.nextNumber', (body) => {
+          this.peeked.push((body as { projectPath: string }).projectPath)
           return ProjectsStub.number(this.nextToken)
-        },
-        allocateNumber: (projectPath: string) => {
-          this.allocated.push(projectPath)
+        })
+        .on('sessions.allocateNumber', (body) => {
+          this.allocated.push((body as { projectPath: string }).projectPath)
           return ProjectsStub.number(this.allocatedToken)
-        },
-        startHost: ProjectsStub.unused('startHost'),
-        restartHost: ProjectsStub.unused('restartHost'),
-        stopHost: ProjectsStub.unused('stopHost'),
-        reference: ProjectsStub.unused('reference'),
-      } satisfies AppClientUiBridge['sessions']
+        })
+      if (this.categoriesFail) control.failChannel('projects.categories', 'main process is gone')
       const dialog = {
         pickDirectory: () => Promise.resolve({
           ok: true as const,
@@ -268,11 +216,10 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
         'snapshot' | 'connect' | 'selectSession' | 'release' | 'describeAgents' | 'listProjects'>
       ;(window as unknown as {
         appClient:
-          Pick<AppClientUiBridge, 'projects' | 'sessions' | 'dialog'>
+          Pick<AppClientUiBridge, 'control' | 'dialog'>
           & { state: typeof state; remote: typeof remote; onRemoteChanged: () => () => void }
       }).appClient = {
-        projects,
-        sessions,
+        control: control.bridge(),
         dialog,
         state,
         remote,
@@ -332,15 +279,12 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
 
     private static number(token: string | null) {
       if (token === null)
-        return Promise.resolve({
-          ok: true as const,
-          value: {
-            ok: false as const,
-            code: 'numbers-unavailable' as const,
-            detail: 'the session numbers could not be read',
-          },
+        return ControlBridgeFixture.library({
+          ok: false,
+          code: 'numbers-unavailable',
+          detail: 'the session numbers could not be read',
         })
-      return Promise.resolve({ ok: true as const, value: { ok: true as const, value: { token } } })
+      return ControlBridgeFixture.library({ ok: true, value: { token } })
     }
 
     private listingOf(categoryId: string) {
@@ -1677,7 +1621,8 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
       expect(view.container.querySelector('[role="tab"]')).toBeNull()
     })
 
-    it('offers no worktree on a root that is no catalog project, and says why', async () => {
+    // Whether the directory can carry one is the library's owner rule; the card only needs a name.
+    it('offers a worktree on a root that is no catalog project once it has a name, and counts nothing', async () => {
       const { stub, view } = await mount()
 
       moveTo(view.container, 'Root project (NodeJs)')
@@ -1686,7 +1631,7 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
       await waitFor(() => expect(view.container.querySelector('.jamat-launcher-create__path')
         ?.textContent).toBe('C:\\Projects\\NodeJs'))
       expect(view.container.querySelector('.jamat-launcher-create__refusal')?.textContent)
-        .toBe('a worktree needs a catalog project')
+        .toBe('a worktree needs a name to be called after')
       // Nothing is counted outside a catalog project, so nothing was asked for either.
       expect(stub.peeked).toEqual([])
     })

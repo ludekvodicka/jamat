@@ -5,6 +5,7 @@ import { join } from 'node:path'
 
 import { WebSocket } from 'ws'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { z } from 'zod'
 
 import type { ProjectListResult } from '../../../lib-orchestrator/projectManager/projectManagerApi.types'
 import { RemoteControl, type RemoteControlDeps } from '../../../lib-orchestrator/remoteControl/remoteControl'
@@ -194,6 +195,15 @@ class RemoteControlServerHarness {
       projects: {
         listCategories: async () => [],
         listProjects: async () => ({ ok: true, value: listing }),
+        getConfig: async () => ({ ok: true, value: [] }),
+        saveConfig: async () => ({ ok: true, value: undefined }),
+        listProjectSessions: async () => ({ ok: true, value: { claude: [], codex: [], merged: [] } }),
+        createProject: async () => ({ ok: false, code: 'category-not-found', detail: 'unused' }),
+        renameProject: async () => ({ ok: false, code: 'category-not-found', detail: 'unused' }),
+        moveProjectPrefix: async () => ({ ok: false, code: 'category-not-found', detail: 'unused' }),
+        archiveProject: async () => ({ ok: false, code: 'category-not-found', detail: 'unused' }),
+        previewDelete: async () => ({ ok: false, code: 'category-not-found', detail: 'unused' }),
+        executeDelete: async () => ({ ok: false, code: 'stale-preview', detail: 'unused' }),
       },
       sessions: {
         snapshot: () => RemoteControlServerHarness.snapshot(sessions),
@@ -205,16 +215,40 @@ class RemoteControlServerHarness {
         finalizeSession: async () => ({ ok: true, value: undefined }),
         removeSession: async () => ({ ok: true, value: undefined }),
         discardWorktree: async () => ({ ok: true, value: undefined }),
+        finishWorktreeSession: async (sessionId) => ({ ok: true, value: { sessionId, actionId: null } }),
+        updateMain: async (sessionId) => ({ ok: true, value: { sessionId, actionId: 'update-1' } }),
+        openActionReview: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        worktreeResults: async () => ({ ok: true, value: { results: [] } }),
+        notifies: async () => ({ ok: true, value: { notifies: [] } }),
+        acknowledgeWorktreeResult: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        proposeCommit: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         retrySetup: async () => ({ ok: true, value: undefined }),
         requestWorktreeCleanup: async () => ({ ok: true, value: undefined }),
+        forkSession: async () => ({ ok: true, value: { sessionId: 'forked-1', tabTitle: 'Forked' } }),
+        restartSession: async () => ({ ok: true, value: undefined }),
+        adoptOrphan: async () => ({ ok: true, value: undefined }),
+        sessionReference: async () => ({ ok: true, value: { text: 'reference' } }),
+        historyReferences: async () => ({ ok: true, value: { references: [] } }),
+        openHistorySession: async () => ({ ok: true, value: { sessionId: 'history-1', tabTitle: 'History' } }),
+        nextSessionNumber: async () => ({ ok: true, value: { token: '002' } }),
+        allocateSessionNumber: async () => ({ ok: true, value: { token: '002' } }),
         worktreeOf: async (sessionId) => ({
           ok: true,
-          value: { sessionId, worktree: null, retired: null, finish: null, outcome: null, cleanup: null },
+          value: { sessionId, worktree: null, retired: null, finish: null, action: null, outcome: null, cleanup: null, receipts: [] },
         }),
+        runScript: async () => ({ ok: true, value: { runId: 'run-1' } }),
+        scriptsOf: async (sessionId) => ({ ok: true, value: { sessionId, runs: [], log: null } }),
         setSessionColor: async () => ({ ok: true, value: undefined }),
         setSessionDetails: async () => ({ ok: true, value: { titleChanged: false, notifyAgent: null } }),
       },
-      groups: { read: () => new Map(), assign: (_sessionId, group) => ({ ok: true, value: { group } }) },
+      host: {
+        debugStatus: () => { throw new Error('unused') },
+        pingHost: async () => { throw new Error('unused') },
+        startHost: async () => ({ ok: true, value: undefined }),
+        restartHost: async () => ({ ok: true, value: undefined }),
+        stopHost: async () => ({ ok: true, value: undefined }),
+      },
+      groups: { read: () => new Map(), assign: (_sessionId, group) => ({ ok: true, value: { group } }), inherit: () => undefined },
       tabs: {
         list: async () => [],
         open: async () => ({
@@ -771,6 +805,46 @@ describe('app-client-ui/app/remoteControl/remoteControlServer', () => {
     expect(audit).not.toContain('Q:\\Project')
     expect(audit).not.toContain('transcriptContentUntrusted')
     expect(audit).not.toContain('reading')
+  })
+
+  it('serves the catalog and the activity log on GET, and an operation the client registered on POST', async () => {
+    const harness = new RemoteControlServerHarness()
+    harnesses.push(harness)
+    harness.control.registry.register('notes.ping', {
+      kind: 'read',
+      description: 'Answer pong.',
+      input: z.strictObject({}),
+      run: async () => ({ ok: true, value: { pong: true } }),
+    })
+    const descriptor = await harness.start()
+    // Beside the protocol's list, which an older CLI validates name by name and would refuse over it.
+    expect(descriptor.optionalOperations).toEqual(RemoteControlConst.optionalOperations)
+    expect(descriptor.registryOperations).toEqual(['notes.ping'])
+
+    const catalog = await (await harness.fetch('/api/v3/operations')).json() as {
+      value: { operations: { name: string; kind: string; inputSchema: unknown }[] }
+    }
+    expect(catalog.value.operations.map((entry) => entry.name)).toEqual(
+      expect.arrayContaining(['notes.ping', 'sessions.fork', 'system.events']))
+    expect(catalog.value.operations.find((entry) => entry.name === 'sessions.fork')).toMatchObject({
+      kind: 'write',
+      inputSchema: { type: 'object', required: ['session'] },
+    })
+
+    const ping = await harness.fetch('/api/v3/op/notes.ping', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocol: RemoteControlConst.protocol, requestId: 'r-ping', operation: 'notes.ping', body: {} }),
+    })
+    expect(ping.status).toBe(200)
+    expect(await ping.json()).toMatchObject({ ok: true, operation: 'notes.ping', value: { pong: true } })
+
+    harness.control.activity.publish('sessions.changed')
+    const events = await (await harness.fetch('/api/v3/events?after=0&waitMs=0')).json()
+    expect(events).toMatchObject({ ok: true, value: { entries: [{ revision: 1, kind: 'sessions.changed' }], last: 1 } })
+    const refused = await harness.fetch('/api/v3/events?waitMs=forever')
+    expect(refused.status).toBe(400)
+    expect(await refused.json()).toMatchObject({ ok: false, error: { code: 'invalid-request', detail: expect.stringContaining('waitMs') } })
   })
 
   it('requires bearer auth, the exact loopback Host and no browser Origin', async () => {

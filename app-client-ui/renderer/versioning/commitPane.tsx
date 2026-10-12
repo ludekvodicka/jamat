@@ -28,22 +28,36 @@ export function CommitPane(props: {
   const model = useCommitDraft(props.sessionId, props.item, ports)
   const draft = model.draft
   const draftId = draft?.draftId
-  const read = useCallback(() => ports.versioning.commitFiles(draftId ?? ''), [ports, draftId])
+  // The rows main checks by default, kept per list: a review that named its targets starts with
+  // only those checked; the other rows main shows (work below a node-only folder) stay unchecked.
+  const checkedByDefault = useRef<{ snapshotId: string; paths: ReadonlySet<string> } | null>(null)
+  const read = useCallback(async () => {
+    const answer = await ports.versioning.commitFiles(draftId ?? '')
+    if (answer.ok && answer.value.ok)
+      checkedByDefault.current = answer.value.checkedPaths === undefined ? null
+        : { snapshotId: answer.value.value.snapshotId, paths: new Set(answer.value.checkedPaths) }
+    return answer
+  }, [ports, draftId])
   const working = useWorkingTreeChanges(props.sessionId, draft !== null, draft?.source, read)
   useEffect(() => { if (draft !== null) working.select(draft.source) }, [draft?.source])
   const snapshot = draft === null ? null : working.snapshotFor(draft.source)
   const latestSnapshot = useRef(snapshot)
   useEffect(() => { latestSnapshot.current = snapshot }, [snapshot])
   const [selection, setSelection] = useState<{ draftId: string; paths: ReadonlySet<string> } | null>(null)
+  const namedTargets = draft?.paths !== undefined
   // SVN recovery can introduce conflict backups after the person reviewed the original paths.
   useEffect(() => {
     if (draftId === undefined || snapshot === null || working.loading || working.requiredLoading
       || working.error !== null || working.requiredError !== null) return
+    const named = checkedByDefault.current?.snapshotId === snapshot.snapshotId ? checkedByDefault.current.paths : null
+    // A list whose default rows are unknown never falls back to checking the whole scope.
+    if (namedTargets && named === null) return
     setSelection((held) => held?.draftId === draftId ? held
-      : { draftId, paths: new Set(CommitTargets.eligible(snapshot).map((entry) => entry.path)) })
-  }, [draftId, snapshot, working.loading, working.requiredLoading, working.error, working.requiredError])
-  const checked = new Set(snapshot === null ? [] : CommitTargets.eligible(snapshot)
-    .filter((entry) => selection === null || selection.draftId !== draftId || selection.paths.has(entry.path)).map((entry) => entry.fileId))
+      : { draftId, paths: new Set(CommitTargets.eligible(snapshot).filter((entry) => named === null || named.has(entry.path)).map((entry) => entry.path)) })
+  }, [draftId, namedTargets, snapshot, working.loading, working.requiredLoading, working.error, working.requiredError])
+  const held = selection?.draftId === draftId ? selection : null
+  const checked = new Set(snapshot === null || (namedTargets && held === null) ? [] : CommitTargets.eligible(snapshot)
+    .filter((entry) => held === null || held.paths.has(entry.path)).map((entry) => entry.fileId))
   const selectedCount = snapshot === null ? 0 : CommitTargets.selected(CommitTargets.eligible(snapshot), checked).length
   const revertible = snapshot === null ? [] : CommitTargets.eligible(snapshot)
     .filter((entry) => checked.has(entry.fileId) && VersioningRevert.allows(entry)

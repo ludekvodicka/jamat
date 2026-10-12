@@ -13,7 +13,6 @@ import type {
   RemoteControlError,
   RemoteControlErrorCode,
   RemoteControlEventKind,
-  RemoteControlHelloDto,
   RemoteControlLocalOperation,
   RemoteControlLocalResponse,
   RemoteControlOperation,
@@ -46,7 +45,7 @@ import { JsonShape } from '../../../lib-orchestrator/shared/jsonShape'
 
 export interface RemoteControlServerDeps {
   identity: RemoteControlSystemIdentity
-  control: Pick<RemoteControl, 'execute'>
+  control: Pick<RemoteControl, 'execute' | 'clientOperations' | 'registry'>
   terminal: Pick<
     RemoteControlTerminal,
     'attachLive' | 'inputLive' | 'resizeLive' | 'setLiveActive' | 'detachLive' | 'detachOwner'
@@ -197,6 +196,7 @@ export class RemoteControlServer {
       token: this.token,
       operations: RemoteControlConst.descriptorOperations,
       optionalOperations: RemoteControlConst.optionalOperations,
+      registryOperations: this.deps.control.clientOperations(),
       ...(this.deps.local === undefined
         ? {}
         : { localOperations: RemoteControlLocalConst.operations }),
@@ -296,6 +296,12 @@ export class RemoteControlServer {
       } else if (request.method === 'GET' && pathname === '/api/v3/status') {
         await this.executeHttp(this.readRequest('system.status'), response)
         return
+      } else if (request.method === 'GET' && pathname === '/api/v3/operations') {
+        await this.executeHttp(this.readRequest('system.operations'), response)
+        return
+      } else if (request.method === 'GET' && pathname === '/api/v3/events') {
+        await this.executeHttp(RemoteControlServer.eventsRequest(request.url ?? ''), response)
+        return
       } else if (request.method !== 'POST') {
         RemoteControlHttpBoundary.json(
           response,
@@ -342,7 +348,7 @@ export class RemoteControlServer {
     response: ServerResponse,
     operationName: string,
   ): Promise<void> {
-    if (!RemoteControlServer.isOperation(operationName)) {
+    if (!this.deps.control.registry.has(operationName)) {
       RemoteControlHttpBoundary.json(
         response,
         RemoteControlServer.failure(null, null, null, 'not-found', 'Operation not found'),
@@ -350,7 +356,7 @@ export class RemoteControlServer {
       )
       return
     }
-    const body = await this.httpBody(request, operationName)
+    const body = await this.httpBody(request, operationName as RemoteControlOperation)
     if (!body.ok) {
       this.audit.http(body.input, body.response as RemoteControlResponse, this.httpCaller())
       RemoteControlHttpBoundary.json(response, body.response, body.status)
@@ -399,7 +405,7 @@ export class RemoteControlServer {
       )
       return
     }
-    if (!RemoteControlServer.isOperation(route.operationName)) {
+    if (!RemoteControlServer.isProtocolOperation(route.operationName)) {
       RemoteControlHttpBoundary.json(
         response,
         RemoteControlServer.failure(null, null, null, 'not-found', 'Operation not found'),
@@ -485,20 +491,10 @@ export class RemoteControlServer {
   }
 
   private async executeHttp(input: unknown, response: ServerResponse): Promise<void> {
-    const executed = await this.deps.control.execute(input, {
+    const answer = await this.deps.control.execute(input, {
       ...this.httpCaller(),
-      allowedOperations: [...RemoteControlConst.operations, ...RemoteControlConst.optionalOperations],
+      allowedOperations: this.deps.control.registry.names(),
     })
-    const envelope = JsonShape.record(input)
-    const answer: RemoteControlResponse = envelope?.operation === 'system.hello' && executed.ok
-      ? {
-          ...executed,
-          value: {
-            ...(executed.value as RemoteControlHelloDto),
-            optionalOperations: RemoteControlConst.optionalOperations,
-          },
-        } as RemoteControlResponse
-      : executed
     this.audit.http(input, answer, this.httpCaller())
     RemoteControlHttpBoundary.json(response, answer, RemoteControlServer.statusOf(answer))
   }
@@ -653,14 +649,38 @@ export class RemoteControlServer {
   }
 
   private readRequest(
-    operation: 'system.hello' | 'system.status',
-  ): RemoteControlRequest<'system.hello'> | RemoteControlRequest<'system.status'> {
+    operation: 'system.hello' | 'system.status' | 'system.operations',
+  ): RemoteControlRequest<'system.hello' | 'system.status' | 'system.operations'> {
     return {
       protocol: RemoteControlConst.protocol,
       requestId: `server:${randomUUID()}`,
       operation,
       body: {},
-    } as RemoteControlRequest<'system.hello'> | RemoteControlRequest<'system.status'>
+    } as RemoteControlRequest<'system.hello' | 'system.status' | 'system.operations'>
+  }
+
+  /**
+   * `GET /api/v3/events?after=N&waitMs=M`: the activity log for a caller with nothing but curl. A query
+   * value that is not a number reaches the schema as text and is refused there, with its field named.
+   */
+  private static eventsRequest(url: string): RemoteControlRequest<'system.events'> {
+    const query = new URL(url, 'http://127.0.0.1').searchParams
+    const number = (name: string): unknown => {
+      const raw = query.get(name)
+      if (raw === null) return undefined
+      return /^\d+$/.test(raw) ? Number(raw) : raw
+    }
+    const after = number('after')
+    const waitMs = number('waitMs')
+    return {
+      protocol: RemoteControlConst.protocol,
+      requestId: `server:${randomUUID()}`,
+      operation: 'system.events',
+      body: {
+        ...(after === undefined ? {} : { after }),
+        ...(waitMs === undefined ? {} : { waitMs }),
+      },
+    } as RemoteControlRequest<'system.events'>
   }
 
   private httpCaller(): RemoteControlAuditCaller {
@@ -718,7 +738,7 @@ export class RemoteControlServer {
     return response.ok ? 200 : RemoteControlServer.httpStatusConst[response.error.code]
   }
 
-  private static isOperation(value: string): value is RemoteControlOperation {
+  private static isProtocolOperation(value: string): value is RemoteControlOperation {
     return ([...RemoteControlConst.operations, ...RemoteControlConst.optionalOperations] as readonly string[])
       .includes(value)
   }

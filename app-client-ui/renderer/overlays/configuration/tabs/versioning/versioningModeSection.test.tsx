@@ -3,11 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { AppClientUiBridge } from '../../../../../shared/appClientUiIpc'
 import { VersioningModeSection } from './versioningModeSection'
+import { ControlBridgeFixture } from '../../../../ipc/fixtures/controlBridgeFixture'
 
 describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/versioningModeSection', () => {
-  type BridgeStub = {
-    versioning: Pick<AppClientUiBridge['versioning'], 'getSettings' | 'saveSettings'>
-  }
+  type BridgeStub = Pick<AppClientUiBridge, 'control'>
 
   afterEach(() => {
     cleanup()
@@ -17,22 +16,24 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/versioni
   async function mount(answer: { ok: boolean; detail?: string } = { ok: true }) {
     const saved: unknown[] = []
     ;(window as unknown as { appClient: BridgeStub }).appClient = {
-      versioning: {
-        getSettings: () => Promise.resolve({ ok: true, value: { mode: 'git', diffTool: { kind: 'internal' } } }),
-        saveSettings: (value) => {
-          saved.push(value)
-          return Promise.resolve(answer.ok
-            ? { ok: true as const, value: { ok: true as const } }
-            : {
-              ok: true as const,
-              value: {
-                ok: false as const,
-                code: 'config-latched' as const,
-                detail: answer.detail ?? 'latched',
-              },
-            })
+      control: ControlBridgeFixture.routes({
+        'versioningSettings.get': { value: () => Promise.resolve({ ok: true, value: { mode: 'git', diffTool: { kind: 'internal' } } }) },
+        'versioningSettings.save': {
+          library: (body: { value: unknown }) => {
+            saved.push(body.value)
+            return Promise.resolve(answer.ok
+              ? { ok: true as const, value: { ok: true as const } }
+              : {
+                ok: true as const,
+                value: {
+                  ok: false as const,
+                  code: 'config-latched' as const,
+                  detail: answer.detail ?? 'latched',
+                },
+              })
+          },
         },
-      },
+      }),
     }
     const onDirtyChange = vi.fn()
     const view = render(<VersioningModeSection onDirtyChange={onDirtyChange} />)
@@ -85,15 +86,17 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/versioni
   it('ignores a failed save after the section was retired', async () => {
     let finish = (): void => undefined
     ;(window as unknown as { appClient: BridgeStub }).appClient = {
-      versioning: {
-        getSettings: async () => ({ ok: true, value: { mode: 'git', diffTool: { kind: 'internal' } } }),
-        saveSettings: () => new Promise((resolve) => {
-          finish = () => resolve({
-            ok: true,
-            value: { ok: false, code: 'config-latched', detail: 'late refusal' },
-          })
-        }),
-      },
+      control: ControlBridgeFixture.routes({
+        'versioningSettings.get': { value: async () => ({ ok: true, value: { mode: 'git', diffTool: { kind: 'internal' } } }) },
+        'versioningSettings.save': {
+          library: () => new Promise((resolve) => {
+            finish = () => resolve({
+              ok: true,
+              value: { ok: false, code: 'config-latched', detail: 'late refusal' },
+            })
+          }),
+        },
+      }),
     }
     const onDirtyChange = vi.fn()
     const view = render(<VersioningModeSection onDirtyChange={onDirtyChange} />)

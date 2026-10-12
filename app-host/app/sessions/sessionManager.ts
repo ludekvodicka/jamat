@@ -86,12 +86,11 @@ export class SessionManager {
     if (this.store.get(request.runtimeSessionId))
       throw new SessionError('conflict', `Runtime already exists: ${request.runtimeSessionId}`)
     const generation = this.nextGeneration(request.runtimeSessionId)
-    const startedAt = Date.now()
-    const terminal = await this.startTerminal(
+    const session = await this.startTerminal(
       request.runtimeSessionId,
+      Date.now(),
       () => this.terminals.create(request.runtimeSessionId, generation, 1, request.launch),
     )
-    const session = terminal.info(startedAt)
     this.store.upsert(session, false)
     this.store.recordOperation(request.operationId, {
       kind: 'create',
@@ -99,6 +98,7 @@ export class SessionManager {
       target: this.ref(session),
     })
     this.events.publish({ kind: 'runtime-created', session })
+    this.publishExitedAtStart(session)
     return session
   }
 
@@ -141,8 +141,9 @@ export class SessionManager {
       }
     }
     const generation = this.nextGeneration(request.target.runtimeSessionId)
-    const terminal = await this.startTerminal(
+    const session = await this.startTerminal(
       request.target.runtimeSessionId,
+      Date.now(),
       () => this.terminals.replace(
         request.target.runtimeSessionId,
         generation,
@@ -150,7 +151,6 @@ export class SessionManager {
         request.launch,
       ),
     )
-    const session = terminal.info(Date.now())
     this.stopReasons.delete(request.target.runtimeSessionId)
     this.store.upsert(session, false)
     this.store.recordOperation(request.operationId, {
@@ -159,6 +159,7 @@ export class SessionManager {
       target: this.ref(session),
     })
     this.events.publish({ kind: 'runtime-replaced', session })
+    this.publishExitedAtStart(session)
     return session
   }
 
@@ -383,17 +384,46 @@ export class SessionManager {
    */
   private async startTerminal(
     runtimeSessionId: string,
+    startedAt: number,
     start: () => TerminalInstanceDriver,
-  ): Promise<TerminalInstanceDriver> {
+  ): Promise<RuntimeSessionInfo> {
     let terminal: TerminalInstanceDriver
     try { terminal = start() }
     catch (error) { throw SessionManager.launchFailure(error) }
-    try { await terminal.ready() }
-    catch (error) {
+    try {
+      await terminal.ready()
+      return SessionManager.startedSession(terminal, startedAt)
+    } catch (error) {
       this.terminals.remove(runtimeSessionId)
       throw SessionManager.launchFailure(error)
     }
-    return terminal
+  }
+
+  /**
+   * A child that exited while `ready` waited for its identity is answered as created and already
+   * dead, with its exit code, the shape `runtime.list` gives any exited runtime: no pid and no
+   * `processStartedAt`, so nothing can take it for a live one. Its exit event found no stored
+   * runtime to update, which is why the answer is composed here and not by `onTerminalEvent`.
+   */
+  private static startedSession(
+    terminal: TerminalInstanceDriver,
+    startedAt: number,
+  ): RuntimeSessionInfo {
+    const session = terminal.info(startedAt)
+    if (session.alive) return session
+    if (terminal.exit === null)
+      throw new Error(`Runtime ${terminal.runtimeSessionId} is neither alive nor exited after its start`)
+    return {
+      ...session,
+      exitedAt: terminal.exit.exitedAt,
+      exitCode: terminal.exit.exitCode,
+      exitReason: 'process-exit',
+    }
+  }
+
+  /** A client that learns endings from `runtime-exited` hears of this one too. */
+  private publishExitedAtStart(session: RuntimeSessionInfo): void {
+    if (!session.alive) this.events.publish({ kind: 'runtime-exited', session })
   }
 
   private static launchFailure(error: unknown): unknown {

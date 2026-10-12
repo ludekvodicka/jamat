@@ -3,6 +3,9 @@ import type { AutoUpdateApi } from "../common/autoUpdateApi";
 
 export class AutoUpdateStore
 {
+  // useSyncExternalStore calls these unbound and compares their identity.
+  readonly subscribe: (listener: () => void) => () => void;
+  readonly getSnapshot: () => DtoAutoUpdateStatus | null;
   private readonly api: AutoUpdateApi;
   private readonly listeners: Set<() => void>;
   private status: DtoAutoUpdateStatus | null;
@@ -14,9 +17,12 @@ export class AutoUpdateStore
     this.listeners = new Set();
     this.status = null;
     this.unsubscribe = undefined;
-    // useSyncExternalStore calls these unbound and compares their identity.
-    this.subscribe = this.subscribe.bind(this);
-    this.getSnapshot = this.getSnapshot.bind(this);
+    this.subscribe = listener =>
+    {
+      this.listeners.add(listener);
+      return () => this.listeners.delete(listener);
+    };
+    this.getSnapshot = () => this.status;
   }
 
   start(): void
@@ -40,17 +46,6 @@ export class AutoUpdateStore
   {
     this.unsubscribe?.();
     this.unsubscribe = undefined;
-  }
-
-  subscribe(listener: () => void): () => void
-  {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
-  }
-
-  getSnapshot(): DtoAutoUpdateStatus | null
-  {
-    return this.status;
   }
 
   private set(status: DtoAutoUpdateStatus): void

@@ -1,15 +1,24 @@
 import { describe, expect, it } from 'vitest'
+import { z } from 'zod'
 
 import type { ProjectListResult } from '../projectManager/projectManagerApi.types'
 import type {
+  HostDebugStatus,
+  HostPingResult,
+  SessionsOpErrorCode,
   SessionColorName,
   SessionDetailsSaved,
   SessionGroup,
   SessionCreated,
   SessionInfo,
+  SessionCreateSpec,
+  SessionNotifyDto,
+  SessionScriptRequest,
+  SessionScriptsReading,
   SessionsOpResult,
   SessionsSnapshot,
   SessionWorktreeState,
+  WorktreeResultDto,
 } from '../sessionManager/sessionManagerApi.types'
 import {
   RemoteControl,
@@ -25,7 +34,8 @@ import type {
   RemoteControlTabCommandDto,
   RemoteControlTabOpenFileDto,
 } from './remoteControlApi.types'
-import { RemoteControlConst } from './remoteControlProtocol'
+import { RemoteControlConst, RemoteControlDeliverConst } from './remoteControlProtocol'
+import { SessionLimits } from '../sessionManager/sessionLimits'
 import { RemoteControlPeerConst } from './remoteControlPeerProtocol'
 import { SessionsSnapshotValidation } from '../sessionManager/sessionsSnapshotValidation'
 
@@ -33,17 +43,20 @@ interface World {
   control: RemoteControl
   sessions: SessionInfo[]
   creates: () => number
-  colored: { sessionId: string; color: SessionColorName }[]
+  colored: { sessionId: string; color: SessionColorName | null }[]
   noted: { sessionId: string; note: string | null }[]
   groupAssigns: { sessionId: string; group: SessionGroup }[]
   reopened: string[]
   finalized: string[]
-  finalizeOptions: ({ expect?: 'stop' } | undefined)[]
+  finalizeOptions: ({ expect?: 'stop'; acknowledgeSetup?: string } | undefined)[]
   removed: string[]
   worktreeCalls: { method: string; sessionId: string; acknowledgeSetup?: string }[]
+  sessionCalls: { method: string; args: unknown[] }[]
+  groupInherits: { parentSessionId: string; sessionId: string }[]
   tabCalls: { method: string; args: unknown[] }[]
   terminalCalls: { method: string; args: unknown[] }[]
   transcriptReads: string[]
+  scriptCalls: { method: string; parentId: string; runId?: string; request?: SessionScriptRequest }[]
   errors: string[]
 }
 
@@ -84,6 +97,42 @@ function snapshot(sessions: SessionInfo[]): SessionsSnapshot {
   }
 }
 
+/** Every project read answers empty and every write succeeds, unless a test says otherwise. */
+function projectsPort(overrides: Partial<RemoteControlDeps['projects']>): RemoteControlDeps['projects'] {
+  const report = { operationId: null, directoryRenamed: true, providers: { claude: 'done', codex: 'done' }, leftoverCount: 0 } as const
+  return {
+    listCategories: async () => [],
+    listProjects: async () => ({ ok: false, code: 'category-not-found', detail: 'unused' }),
+    getConfig: async () => ({ ok: true, value: [] }),
+    saveConfig: async () => ({ ok: true, value: undefined }),
+    listProjectSessions: async () => ({ ok: true, value: { claude: [], codex: [], merged: [] } }),
+    createProject: async (_categoryId, name) => ({ ok: true, value: { name, path: `Q:/Apps/${name}`, lastActivity: null } }),
+    renameProject: async () => ({ ok: true, value: report }),
+    moveProjectPrefix: async () => ({ ok: true, value: report }),
+    archiveProject: async () => ({ ok: true, value: report }),
+    previewDelete: async (_categoryId, name) => ({
+      ok: true,
+      value: {
+        token: 'token-1', expiresAt: 1, projectPath: `Q:/Apps/${name}`, projectFileCount: 1,
+        claude: { encodedDirectory: null, transcriptFiles: [] }, codex: { rolloutFiles: [] },
+      },
+    }),
+    executeDelete: async () => ({ ok: true, value: { deletedPaths: 1, leftoverCount: 0 } }),
+    ...overrides,
+  }
+}
+
+function unusedHost(): RemoteControlDeps['host'] {
+  const refused = async (): Promise<SessionsOpResult> => ({ ok: false, code: 'host-unreachable', detail: 'unused' })
+  return {
+    debugStatus: () => { throw new Error('unused') },
+    pingHost: async () => { throw new Error('unused') },
+    startHost: refused,
+    restartHost: refused,
+    stopHost: refused,
+  }
+}
+
 function successTab(kind: RemoteControlTabCommandDto['kind']):
 RemoteControlStepResult<RemoteControlTabCommandDto> {
   return { ok: true, value: { kind, panelId: 'terminal:{}', windowId: 'main' } }
@@ -104,23 +153,36 @@ function world(options?: {
   setNote?: SessionsOpResult<SessionDetailsSaved>
   remove?: SessionsOpResult
   worktreeEnding?: SessionsOpResult
+  /** What a press of Finish on an SVN worktree and a review run's review answer. */
+  finishPress?: SessionsOpResult<{ sessionId: string; actionId: string | null }>
+  updateMain?: SessionsOpResult<{ sessionId: string; actionId: string }>
+  actionReview?: SessionsOpResult<{ commitSessionId: string; scopeRoot: string }>
+  proposeCommit?: SessionsOpResult<{ scopeRoot: string }>
   finalize?: SessionsOpResult
   created?: Partial<SessionCreated>
   worktree?: SessionsOpResult<SessionWorktreeState>
+  scripts?: SessionsOpResult<SessionScriptsReading>
+  runScript?: SessionsOpResult<{ runId: string }>
+  results?: WorktreeResultDto[]
+  notifies?: SessionNotifyDto[]
+  create?: (spec: SessionCreateSpec) => Promise<SessionsOpResult<SessionCreated>>
 }): World {
   const sessions = options?.sessions ?? [session('session-1', '001')]
   let creates = 0
-  const colored: { sessionId: string; color: SessionColorName }[] = []
+  const colored: { sessionId: string; color: SessionColorName | null }[] = []
   const noted: { sessionId: string; note: string | null }[] = []
   const groupAssigns: { sessionId: string; group: SessionGroup }[] = []
   const reopened: string[] = []
   const finalized: string[] = []
-  const finalizeOptions: ({ expect?: 'stop' } | undefined)[] = []
+  const finalizeOptions: ({ expect?: 'stop'; acknowledgeSetup?: string } | undefined)[] = []
   const removed: string[] = []
   const worktreeCalls: { method: string; sessionId: string; acknowledgeSetup?: string }[] = []
+  const sessionCalls: { method: string; args: unknown[] }[] = []
+  const groupInherits: { parentSessionId: string; sessionId: string }[] = []
   const tabCalls: { method: string; args: unknown[] }[] = []
   const terminalCalls: { method: string; args: unknown[] }[] = []
   const transcriptReads: string[] = []
+  const scriptCalls: World['scriptCalls'] = []
   const errors: string[] = []
   const one = { name: 'One', path: 'Q:\\Apps\\One', lastActivity: null }
   const grouped = { name: 'Bots/Two', path: 'Q:\\Apps\\Bots\\Two', lastActivity: null }
@@ -150,7 +212,7 @@ function world(options?: {
         applicationVersion: '1.0.0',
       }),
     },
-    projects: {
+    projects: projectsPort({
       listCategories: async () => [
         { id: 'code', label: 'Code', path: 'Q:\\Apps', available: true },
         { id: 'other', label: 'Other', path: 'Q:\\Other', available: false },
@@ -158,11 +220,12 @@ function world(options?: {
       listProjects: async (categoryId) => categoryId === 'code'
         ? { ok: true, value: listing }
         : { ok: false, code: 'category-unavailable', detail: 'offline' },
-    },
+    }),
     sessions: {
       snapshot: () => snapshot(sessions),
-      createSession: async () => {
+      createSession: async (spec) => {
         creates += 1
+        if (options?.create !== undefined) return options.create(spec)
         const created = session(`created-${creates}`, '002')
         sessions.push(created)
         return { ok: true, value: { sessionId: created.sessionId, tabTitle: created.tabTitle, ...options?.created } }
@@ -178,7 +241,7 @@ function world(options?: {
       },
       worktreeOf: async (sessionId) => options?.worktree ?? {
         ok: true,
-        value: { sessionId, worktree: null, retired: null, finish: null, outcome: null, cleanup: null },
+        value: { sessionId, worktree: null, retired: null, finish: null, action: null, outcome: null, cleanup: null, receipts: [] },
       },
       removeSession: async (sessionId) => {
         removed.push(sessionId)
@@ -187,6 +250,40 @@ function world(options?: {
       discardWorktree: async (sessionId) => {
         worktreeCalls.push({ method: 'discardWorktree', sessionId })
         return options?.worktreeEnding ?? { ok: true, value: undefined }
+      },
+      finishWorktreeSession: async (sessionId, press) => {
+        worktreeCalls.push({
+          method: `finishWorktree ${press.choice}${press.confirmWorking === true ? ' confirmed' : ''}${press.requestedBy === 'cli' ? '' : ` by ${press.requestedBy}`}`,
+          sessionId,
+          ...press.acknowledgeSetup === undefined ? {} : { acknowledgeSetup: press.acknowledgeSetup },
+        })
+        return options?.finishPress ?? { ok: true, value: { sessionId, actionId: 'action-1' } }
+      },
+      updateMain: async (sessionId, confirmLive, requestedBy) => {
+        worktreeCalls.push({ method: `updateMain ${requestedBy} [${(confirmLive ?? []).join(',')}]`, sessionId })
+        return options?.updateMain ?? { ok: true, value: { sessionId, actionId: 'update-1' } }
+      },
+      openActionReview: async (runId) => {
+        worktreeCalls.push({ method: 'openActionReview', sessionId: runId })
+        return options?.actionReview ?? { ok: true, value: { commitSessionId: 'commit-1', scopeRoot: 'Q:/Apps/One/.worktrees/014-fix' } }
+      },
+      worktreeResults: async (filter) => {
+        sessionCalls.push({ method: 'worktreeResults', args: [filter] })
+        return { ok: true, value: { results: (options?.results ?? []).filter((result) => filter.tag === undefined || result.tag === filter.tag) } }
+      },
+      notifies: async (filter) => {
+        sessionCalls.push({ method: 'notifies', args: [filter] })
+        return { ok: true, value: { notifies: (options?.notifies ?? []).filter((notify) => filter.sessionId === undefined || notify.sessionId === filter.sessionId) } }
+      },
+      proposeCommit: async (sessionId, message) => {
+        sessionCalls.push({ method: 'proposeCommit', args: [sessionId, message] })
+        return options?.proposeCommit ?? { ok: true, value: { scopeRoot: 'Q:/Apps/One/.worktrees/014-fix' } }
+      },
+      acknowledgeWorktreeResult: async (actionId) => {
+        sessionCalls.push({ method: 'acknowledgeWorktreeResult', args: [actionId] })
+        return options?.results === undefined || options.results.some((result) => result.actionId === actionId)
+          ? { ok: true, value: { actionId } }
+          : { ok: false, code: 'not-found', detail: `No worktree result ${actionId}` }
       },
       retrySetup: async (sessionId, acknowledgeSetup) => {
         worktreeCalls.push({
@@ -199,6 +296,34 @@ function world(options?: {
       requestWorktreeCleanup: async (sessionId) => {
         worktreeCalls.push({ method: 'requestWorktreeCleanup', sessionId })
         return options?.worktreeEnding ?? { ok: true, value: undefined }
+      },
+      forkSession: async (sessionId, forkOptions) => {
+        sessionCalls.push({ method: 'forkSession', args: [sessionId, forkOptions] })
+        return { ok: true, value: { sessionId: 'forked-1', tabTitle: 'One - 001-002' } }
+      },
+      restartSession: async (sessionId) => {
+        sessionCalls.push({ method: 'restartSession', args: [sessionId] })
+        return { ok: true, value: undefined }
+      },
+      adoptOrphan: async (runtimeSessionId) => {
+        sessionCalls.push({ method: 'adoptOrphan', args: [runtimeSessionId] })
+        return { ok: true, value: undefined }
+      },
+      sessionReference: async (sessionId) => ({ ok: true, value: { text: `reference of ${sessionId}` } }),
+      historyReferences: async () => ({ ok: true, value: { references: [] } }),
+      openHistorySession: async () => ({ ok: true, value: { sessionId: 'history-1', tabTitle: 'One - 003' } }),
+      nextSessionNumber: async () => ({ ok: true, value: { token: '002' } }),
+      allocateSessionNumber: async (projectPath) => {
+        sessionCalls.push({ method: 'allocateSessionNumber', args: [projectPath] })
+        return { ok: true, value: { token: '002' } }
+      },
+      runScript: async (parentId, scriptRequest) => {
+        scriptCalls.push({ method: 'runScript', parentId, request: scriptRequest })
+        return options?.runScript ?? { ok: true, value: { runId: 'run-1' } }
+      },
+      scriptsOf: async (parentId, runId) => {
+        scriptCalls.push({ method: 'scriptsOf', parentId, ...(runId === undefined ? {} : { runId }) })
+        return options?.scripts ?? { ok: true, value: { sessionId: parentId, runs: [], log: null } }
       },
       setSessionColor: async (sessionId, color) => {
         colored.push({ sessionId, color })
@@ -223,6 +348,16 @@ function world(options?: {
         groupAssigns.push({ sessionId, group })
         return options?.groupAssign ?? { ok: true, value: { group } }
       },
+      inherit: (parentSessionId, sessionId) => { groupInherits.push({ parentSessionId, sessionId }) },
+    },
+    host: {
+      debugStatus: () => ({ capturedAt: 1 } as HostDebugStatus),
+      pingHost: async () => ({ at: 1, ok: false, detail: 'unreachable' } as unknown as HostPingResult),
+      startHost: async () => ({ ok: true, value: undefined }),
+      restartHost: async (expected) => expected === 'host-1'
+        ? { ok: true, value: undefined }
+        : { ok: false, code: 'host-mismatch' as SessionsOpErrorCode, detail: 'another Host runs' },
+      stopHost: async () => ({ ok: true, value: undefined }),
     },
     tabs: {
       list: async () => [{
@@ -379,9 +514,12 @@ function world(options?: {
     finalizeOptions,
     removed,
     worktreeCalls,
+    sessionCalls,
+    groupInherits,
     tabCalls,
     terminalCalls,
     transcriptReads,
+    scriptCalls,
     errors,
   }
 }
@@ -428,6 +566,9 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     const requests: RemoteControlRequestUnion[] = [
       request('system.hello', {}),
       request('system.status', {}),
+      request('system.operations', {}),
+      request('system.calls', {}),
+      request('system.events', { waitMs: 0 }),
       request('projects.list', {}),
       request('sessions.list', {}),
       request('sessions.create', { spec: { kind: 'shell', directory: { mode: 'default' } } }, 'op-1'),
@@ -436,11 +577,41 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
       request('sessions.remove', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-remove'),
       request('sessions.worktree', { session: { kind: 'sessionId', sessionId: 'session-1' } }),
       request('sessions.discardWorktree', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-discard'),
+      request('sessions.fork', { session: { kind: 'sessionId', sessionId: 'session-1' }, name: 'Branch' }, 'op-fork'),
+      request('sessions.restart', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-restart'),
+      request('sessions.setDetails', { session: { kind: 'sessionId', sessionId: 'session-1' }, update: { note: 'n' } }, 'op-details'),
+      request('sessions.adoptOrphan', { runtimeSessionId: 'orphan-1' }, 'op-adopt'),
+      request('sessions.reference', { session: { kind: 'sessionId', sessionId: 'session-1' } }),
+      request('sessions.historyReferences', { directory: { mode: 'project', categoryId: 'code', projectPath: 'Q:\Apps\One' } }),
+      request('sessions.openHistory', { spec: {
+        directory: { mode: 'project', categoryId: 'code', projectPath: 'Q:\Apps\One' },
+        agentId: 'claude', nativeSessionId: 'native-1', providerName: 'One', providerActive: false,
+      } }, 'op-history'),
+      request('sessions.nextNumber', { projectPath: 'Q:\Apps\One' }),
+      request('sessions.allocateNumber', { projectPath: 'Q:\Apps\One' }, 'op-number'),
+      request('host.status', {}),
+      request('host.ping', {}),
+      request('host.start', {}, 'op-host-start'),
+      request('host.restart', { expectedHostInstanceId: 'host-1' }, 'op-host-restart'),
+      request('host.stop', { expectedHostInstanceId: 'host-1' }, 'op-host-stop'),
+      request('projects.config', {}),
+      request('projects.saveConfig', { categories: [{ id: 'code', label: 'Code', path: 'Q:/Apps' }] }, 'op-config'),
+      request('projects.categories', {}),
+      request('projects.listing', { categoryId: 'code', sort: 'alpha' }),
+      request('projects.sessions', { categoryId: 'code', projectName: 'One' }),
+      request('projects.create', { categoryId: 'code', name: 'Two', virtualFolderPrefix: null }, 'op-project-create'),
+      request('projects.rename', { categoryId: 'code', oldName: 'Two', newName: 'Three' }, 'op-project-rename'),
+      request('projects.movePrefix', { categoryId: 'code', name: 'Three', targetPrefix: null }, 'op-project-move'),
+      request('projects.archive', { categoryId: 'code', name: 'Three' }, 'op-project-archive'),
+      request('projects.deletePreview', { categoryId: 'code', name: 'Three' }, 'op-project-preview'),
+      request('projects.delete', { token: 'token-1' }, 'op-project-delete'),
       request('sessions.retrySetup', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-retry'),
       request('sessions.cleanupWorktree', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-cleanup'),
       request('sessions.transcript', {
         session: { kind: 'sessionId', sessionId: 'session-1' },
       }),
+      request('sessions.scripts', { session: { kind: 'sessionId', sessionId: 'session-1' } }),
+      request('sessions.runScript', { session: { kind: 'sessionId', sessionId: 'session-1' }, command: 'pnpm test' }, 'op-run'),
       request('sessions.color', {
         session: { kind: 'sessionId', sessionId: 'session-1' },
         color: 'cyan',
@@ -455,6 +626,13 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
         note: 'waiting for the review',
       }, 'op-note'),
       request('agents.describe', {}),
+      request('sessions.finishWorktree', { session: { kind: 'sessionId', sessionId: 'session-1' }, choice: 'keep' }, 'op-finish-worktree'),
+      request('sessions.updateMain', { session: { kind: 'sessionId', sessionId: 'session-1' }, confirmLive: ['session-2'] }, 'op-update-main'),
+      request('sessions.worktreeReview', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-worktree-review'),
+      request('sessions.worktreeResults', { tag: 'run-7' }),
+      request('sessions.notifies', {}),
+      request('sessions.acknowledgeWorktreeResult', { actionId: 'action-1' }, 'op-acknowledge-result'),
+      request('sessions.proposeCommit', { session: { kind: 'sessionId', sessionId: 'session-1' }, message: 'Fix login' }, 'op-propose'),
       request('tabs.list', {}),
       request('tabs.open', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-4'),
       request('tabs.openFile', {
@@ -501,7 +679,7 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     expect(found.transcriptReads).toEqual(['session-1', 'agent-9'])
     expect(found.colored).toEqual([{ sessionId: 'session-1', color: 'cyan' }])
     expect(found.groupAssigns).toEqual([{ sessionId: 'session-1', group: 'waiting' }])
-    expect(found.noted).toEqual([{ sessionId: 'session-1', note: 'waiting for the review' }])
+    expect(found.noted).toEqual([{ sessionId: 'session-1', note: 'n' }, { sessionId: 'session-1', note: 'waiting for the review' }])
     expect(found.tabCalls.map((call) => call.method)).toEqual([
       'open',
       'openFile',
@@ -706,7 +884,39 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     await expect(plain.control.execute(request('sessions.finalize', {
       session: { kind: 'sessionId', sessionId: 'session-1' },
     }, 'stop-2'), context())).resolves.toMatchObject({ ok: true, value: { sessionId: 'session-1' } })
-    expect(plain.finalizeOptions).toEqual([undefined])
+    expect(plain.finalizeOptions).toEqual([{}])
+  })
+
+  it('passes the agreed hash on a finalize, and answers an unagreed after script with its agreement', async () => {
+    const setup = { commands: ['after tests: pnpm test'], hash: 'hash-1' }
+    const refused = world({ finalize: {
+      ok: false,
+      code: 'setup-not-acknowledged',
+      detail: 'Q:/Apps/One asks to run 1 command in its worktrees, and this machine has not agreed to them',
+      setup,
+    } })
+    await expect(refused.control.execute(request('sessions.finalize', {
+      session: { kind: 'sessionId', sessionId: 'session-1' },
+    }, 'finish-ask'), context())).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'operation-failed', data: { sourceCode: 'setup-not-acknowledged', setup } },
+    })
+
+    const agreed = world()
+    await expect(agreed.control.execute(request('sessions.finalize', {
+      session: { kind: 'sessionId', sessionId: 'session-1' },
+      acknowledgeSetup: 'hash-1',
+    }, 'finish-agreed'), context())).resolves.toMatchObject({ ok: true, value: { sessionId: 'session-1' } })
+    expect(agreed.finalizeOptions).toEqual([{ acknowledgeSetup: 'hash-1' }])
+
+    // The peer reaches the same operation, hash and all.
+    const peer = context(RemoteControlPeerConst.controlOperations)
+    peer.callerKind = 'remote-peer'
+    await expect(agreed.control.execute(request('sessions.finalize', {
+      session: { kind: 'sessionId', sessionId: 'session-1' },
+      acknowledgeSetup: 'hash-2',
+    }, 'finish-peer'), peer)).resolves.toMatchObject({ ok: true })
+    expect(agreed.finalizeOptions).toEqual([{ acknowledgeSetup: 'hash-1' }, { acknowledgeSetup: 'hash-2' }])
   })
 
   it('maps a worktree state that stands in the way to a conflict, with the finish lines as the detail', async () => {
@@ -736,8 +946,10 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
       worktree: { kind: 'svn', worktreePath: 'Q:/Apps/One/.worktrees/014-fix', url: 'file:///repo/One', baseRevision: 12 },
       retired: null,
       finish: { phase: 'reviewing', scopeRoot: 'Q:/Apps/One/.worktrees/014-fix' },
+      action: { kind: 'finish', stage: 'reviewing', needs: null, needsKind: null, review: { index: 1, count: 1, scopeRoot: 'Q:/Apps/One/.worktrees/014-fix' } },
       outcome: null,
       cleanup: { phase: 'pending', reason: 'in use' },
+      receipts: [{ scopeRoot: 'Q:/Apps/One/.worktrees/014-fix', revision: 15, at: 3 }],
     }
     const found = world({
       worktree: { ok: true, value: state },
@@ -803,6 +1015,225 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
         .resolves.toMatchObject({ ok: false, error: { code: 'forbidden' } })
     }
     expect(found.worktreeCalls).toHaveLength(3)
+  })
+
+  it('takes a press of Finish on an SVN worktree and the review of a review run, for a local caller only', async () => {
+    const found = world()
+    const one = { session: { kind: 'number', number: '001' } } as const
+    await expect(found.control.execute(request('sessions.finishWorktree', { ...one, choice: 'commit', acknowledgeSetup: 'hash-1' }, 'press-1'), context()))
+      .resolves.toMatchObject({ ok: true, value: { sessionId: 'session-1', actionId: 'action-1' } })
+    await expect(found.control.execute(request('sessions.finishWorktree', { ...one, choice: 'discard', confirmWorking: true }, 'press-2'), context()))
+      .resolves.toMatchObject({ ok: true })
+    await expect(found.control.execute(request('sessions.worktreeReview', one, 'review-1'), context()))
+      .resolves.toMatchObject({ ok: true, value: { commitSessionId: 'commit-1', scopeRoot: 'Q:/Apps/One/.worktrees/014-fix' } })
+    expect(found.worktreeCalls).toEqual([
+      { method: 'finishWorktree commit', sessionId: 'session-1', acknowledgeSetup: 'hash-1' },
+      { method: 'finishWorktree discard confirmed', sessionId: 'session-1' },
+      { method: 'openActionReview', sessionId: 'session-1' },
+    ])
+    await expect(found.control.execute(request('sessions.finishWorktree', { ...one, choice: 'merge' as 'commit' }, 'press-3'), context()))
+      .resolves.toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+
+    // A session that still works, a running action or a running session is a conflict the caller confirms or waits out.
+    for (const code of ['session-working', 'merge-pending', 'live-refused'] as const) {
+      const busy = world({ finishPress: { ok: false, code, detail: 'busy' } })
+      await expect(busy.control.execute(request('sessions.finishWorktree', { ...one, choice: 'commit' }, `press-${code}`), context()))
+        .resolves.toMatchObject({ ok: false, error: { code: 'conflict', data: { sourceCode: code } } })
+    }
+    const lost = world({ actionReview: { ok: false, code: 'review-unavailable', detail: 'lost with the client' } })
+    await expect(lost.control.execute(request('sessions.worktreeReview', one, 'review-lost'), context()))
+      .resolves.toMatchObject({ ok: false, error: { code: 'unavailable', data: { sourceCode: 'review-unavailable' } } })
+
+    const peer = context(RemoteControlPeerConst.controlOperations)
+    peer.callerKind = 'remote-peer'
+    for (const operation of ['sessions.finishWorktree', 'sessions.worktreeReview'] as const) {
+      expect(RemoteControlPeerConst.controlOperations).not.toContain(operation)
+      const body = operation === 'sessions.finishWorktree' ? { ...one, choice: 'keep' } : one
+      await expect(found.control.execute(request(operation, body as never, `peer-${operation}`), peer))
+        .resolves.toMatchObject({ ok: false, error: { code: 'forbidden' } })
+    }
+  })
+
+  // Only a press from a window opens VS Code on the worktree, so the press carries who made it.
+  it('tells the sessions which caller pressed Finish or UPDATE', async () => {
+    const found = world()
+    const one = { session: { kind: 'number', number: '001' } } as const
+    const window = { ...context(), callerKind: 'window' as const }
+    await expect(found.control.execute(request('sessions.finishWorktree', { ...one, choice: 'commit' }, 'press-window'), window))
+      .resolves.toMatchObject({ ok: true })
+    await expect(found.control.execute(request('sessions.updateMain', one, 'update-window'), window))
+      .resolves.toMatchObject({ ok: true })
+    expect(found.worktreeCalls).toEqual([
+      { method: 'finishWorktree commit by window', sessionId: 'session-1' },
+      { method: 'updateMain window []', sessionId: 'session-1' },
+    ])
+  })
+
+  it('stores the commit proposal of a worker for a local caller only, and names a message a person wrote as a conflict', async () => {
+    const found = world()
+    const one = { session: { kind: 'number', number: '001' } } as const
+    await expect(found.control.execute(request('sessions.proposeCommit', { ...one, message: 'Fix login\n\nBody' }, 'propose-1'), context()))
+      .resolves.toMatchObject({ ok: true, value: { scopeRoot: 'Q:/Apps/One/.worktrees/014-fix' } })
+    expect(found.sessionCalls).toContainEqual({ method: 'proposeCommit', args: ['session-1', 'Fix login\n\nBody'] })
+    await expect(found.control.execute(request('sessions.proposeCommit', one as never, 'propose-2'), context()))
+      .resolves.toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+
+    const edited = world({ proposeCommit: { ok: false, code: 'message-edited', detail: 'A person already wrote it' } })
+    await expect(edited.control.execute(request('sessions.proposeCommit', { ...one, message: 'x' }, 'propose-3'), context()))
+      .resolves.toMatchObject({ ok: false, error: { code: 'conflict', data: { sourceCode: 'message-edited' } } })
+    const none = world({ proposeCommit: { ok: false, code: 'review-unavailable', detail: 'no commit dialog' } })
+    await expect(none.control.execute(request('sessions.proposeCommit', { ...one, message: 'x' }, 'propose-4'), context()))
+      .resolves.toMatchObject({ ok: false, error: { code: 'unavailable', data: { sourceCode: 'review-unavailable' } } })
+
+    const peer = context(RemoteControlPeerConst.controlOperations)
+    peer.callerKind = 'remote-peer'
+    expect(RemoteControlPeerConst.controlOperations).not.toContain('sessions.proposeCommit')
+    await expect(found.control.execute(request('sessions.proposeCommit', { ...one, message: 'x' }, 'propose-peer'), peer))
+      .resolves.toMatchObject({ ok: false, error: { code: 'forbidden' } })
+  })
+
+  it('takes an UPDATE of a main copy and names the live sessions a confirmation has to name, for a local caller only', async () => {
+    const found = world()
+    const one = { session: { kind: 'number', number: '001' } } as const
+    await expect(found.control.execute(request('sessions.updateMain', one, 'update-1'), context()))
+      .resolves.toMatchObject({ ok: true, value: { sessionId: 'session-1', actionId: 'update-1' } })
+    await expect(found.control.execute(request('sessions.updateMain', { ...one, confirmLive: ['a', 'b'] }, 'update-2'), context()))
+      .resolves.toMatchObject({ ok: true })
+    expect(found.worktreeCalls).toEqual([
+      { method: 'updateMain cli []', sessionId: 'session-1' },
+      { method: 'updateMain cli [a,b]', sessionId: 'session-1' },
+    ])
+    await expect(found.control.execute(request('sessions.updateMain', { ...one, confirmLive: 'a' as never }, 'update-3'), context()))
+      .resolves.toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+
+    const liveSessions = [{ sessionId: 'a', title: '002 - coordinator', number: '002' }]
+    const crowded = world({ updateMain: { ok: false, code: 'live-sessions', detail: '1 live session', liveSessions } })
+    await expect(crowded.control.execute(request('sessions.updateMain', one, 'update-4'), context()))
+      .resolves.toMatchObject({ ok: false, error: { code: 'conflict', data: { sourceCode: 'live-sessions', liveSessions } } })
+    const running = world({ updateMain: { ok: false, code: 'merge-pending', detail: 'an update runs' } })
+    await expect(running.control.execute(request('sessions.updateMain', one, 'update-5'), context()))
+      .resolves.toMatchObject({ ok: false, error: { code: 'conflict', data: { sourceCode: 'merge-pending' } } })
+
+    const peer = context(RemoteControlPeerConst.controlOperations)
+    peer.callerKind = 'remote-peer'
+    expect(RemoteControlPeerConst.controlOperations).not.toContain('sessions.updateMain')
+    await expect(found.control.execute(request('sessions.updateMain', one, 'peer-update'), peer))
+      .resolves.toMatchObject({ ok: false, error: { code: 'forbidden' } })
+  })
+
+  it('answers the results of SVN worktrees and their acknowledgement, for a local caller only', async () => {
+    const committed: WorktreeResultDto = {
+      actionId: 'action-1', action: 'finish', result: 'committed', sessionId: 'gone-1', title: '014 - fix', tag: 'run-7',
+      worktreePath: 'Q:/Apps/One/.worktrees/014-fix', mainCopy: 'Q:/Apps/One', directoryId: '1:2:3', removal: 'removed',
+      revisions: [{ repository: 'https://svn.test/repos/app', revision: 51, label: 'receipt' }], lines: [], logs: [],
+      notify: null, holdsLanded: null, at: 5, acknowledgedAt: null,
+    }
+    const found = world({ results: [committed, { ...committed, actionId: 'action-2', tag: null }] })
+
+    await expect(found.control.execute(request('sessions.worktreeResults', { tag: 'run-7', unacknowledged: true }), context()))
+      .resolves.toMatchObject({ ok: true, value: { results: [committed] } })
+    await expect(found.control.execute(request('sessions.acknowledgeWorktreeResult', { actionId: 'action-1' }, 'ack-1'), context()))
+      .resolves.toMatchObject({ ok: true, value: { actionId: 'action-1' } })
+    await expect(found.control.execute(request('sessions.acknowledgeWorktreeResult', { actionId: 'action-9' }, 'ack-2'), context()))
+      .resolves.toMatchObject({ ok: false, error: { code: 'not-found' } })
+    expect(found.sessionCalls).toEqual([
+      { method: 'worktreeResults', args: [{ tag: 'run-7', unacknowledged: true }] },
+      { method: 'acknowledgeWorktreeResult', args: ['action-1'] },
+      { method: 'acknowledgeWorktreeResult', args: ['action-9'] },
+    ])
+    await expect(found.control.execute(request('sessions.worktreeResults', { tag: 'two words' }), context()))
+      .resolves.toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+
+    const peer = context(RemoteControlPeerConst.controlOperations)
+    peer.callerKind = 'remote-peer'
+    expect(RemoteControlPeerConst.controlOperations).not.toContain('sessions.worktreeResults')
+    expect(RemoteControlPeerConst.controlOperations).not.toContain('sessions.acknowledgeWorktreeResult')
+    await expect(found.control.execute(request('sessions.worktreeResults', {}), peer))
+      .resolves.toMatchObject({ ok: false, error: { code: 'forbidden' } })
+    await expect(found.control.execute(request('sessions.acknowledgeWorktreeResult', { actionId: 'action-1' }, 'peer-ack'), peer))
+      .resolves.toMatchObject({ ok: false, error: { code: 'forbidden' } })
+  })
+
+  it('passes a notify create once on replay and refuses it from a peer', async () => {
+    const specs: SessionCreateSpec[] = []
+    const found = world({ create: async (spec) => {
+      specs.push(spec)
+      return { ok: true, value: { sessionId: 'child', tabTitle: 'child' } }
+    } })
+    const spec: SessionCreateSpec = { kind: 'shell', directory: { mode: 'default' },
+      notify: { sessionId: 'parent', text: 'child moved or ended', onGroups: ['waiting', 'unknown-group'] } }
+    const create = request('sessions.create', { spec }, 'create-notify')
+    expect(await found.control.execute(create, context())).toMatchObject({ ok: true })
+    expect(await found.control.execute({ ...create, requestId: 'replay' }, context())).toMatchObject({ ok: true })
+    expect(specs).toEqual([spec])
+    expect(found.creates()).toBe(1)
+    const peer = { ...context(RemoteControlPeerConst.controlOperations), callerKind: 'remote-peer' as const }
+    expect(await found.control.execute(request('sessions.create', { spec }, 'peer-notify'), peer))
+      .toMatchObject({ ok: false, error: { code: 'forbidden', detail: expect.stringContaining('local only') } })
+    expect(found.creates()).toBe(1)
+    expect(await found.control.execute(request('sessions.create', { spec: { kind: 'shell', directory: { mode: 'default' } } }, 'peer-plain'), peer))
+      .toMatchObject({ ok: true })
+  })
+
+  it('validates notify text, group shapes and bounds before creating anything', async () => {
+    const found = world()
+    const notify = { sessionId: 'parent', text: 'wake', onGroups: ['waiting'] }
+    for (const invalid of [
+      { ...notify, sessionId: '' }, { ...notify, text: '' },
+      { ...notify, text: 'x'.repeat(SessionLimits.worktreeNotifyCharacters + 1) },
+      ...['\n', '\r', '\t', '\x00', '\x1b', '\x7f', '\u2028', '\u2029'].map((control) => ({ ...notify, text: `a${control}b` })),
+      { ...notify, onGroups: ['Wrong Shape'] }, { ...notify, onGroups: [''] },
+      { ...notify, onGroups: Array.from({ length: 9 }, (_, i) => `group-${i}`) },
+    ])
+      expect(await found.control.execute(request('sessions.create', {
+        spec: { kind: 'shell', directory: { mode: 'default' }, notify: invalid },
+      }, 'invalid-notify'), context())).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+    expect(found.creates()).toBe(0)
+    expect(await found.control.execute(request('sessions.create', {
+      spec: { kind: 'shell', directory: { mode: 'default' }, notify: {
+        ...notify, text: 'x'.repeat(SessionLimits.worktreeNotifyCharacters), onGroups: Array.from({ length: 8 }, (_, i) => `unknown-${i}`),
+      } },
+    }, 'boundary-notify'), context())).toMatchObject({ ok: true })
+  })
+
+  it('lists notify events with optional session filtering for local callers only', async () => {
+    const one: SessionNotifyDto = { sessionId: 'child-1', target: 'parent', text: 'wake', onGroups: ['waiting'], events: [
+      { cause: 'group:waiting', at: 10, state: 'delivered', attempts: 0, settledAt: 11 },
+      { cause: 'ended', at: 20, state: 'delivered', attempts: 0, settledAt: 21 },
+    ] }
+    const two = { ...one, sessionId: 'child-2', events: [] }
+    const found = world({ notifies: [one, two] })
+    for (const [filter, expected] of [[{}, [one, two]], [{ sessionId: 'child-1' }, [one]], [{ sessionId: 'missing' }, []]] as const)
+      expect(await found.control.execute(request('sessions.notifies', filter), context()))
+        .toMatchObject({ ok: true, value: { notifies: expected } })
+    const peer = { ...context(RemoteControlPeerConst.controlOperations), callerKind: 'remote-peer' as const }
+    expect(RemoteControlPeerConst.controlOperations).not.toContain('sessions.notifies')
+    expect(await found.control.execute(request('sessions.notifies', {}), peer)).toMatchObject({ ok: false, error: { code: 'forbidden' } })
+  })
+
+  it('takes a tag and a wake-up line on a create, which a 3.10 target refuses by name', async () => {
+    const found = world()
+    const spec = {
+      kind: 'shell', directory: { mode: 'default' },
+      worktree: { slug: 'fix', tag: '7f3a9c2e-run', notify: { sessionId: 'session-1', text: '$pp:work-tickets watch' } },
+    } as const
+    await expect(found.control.execute(request('sessions.create', { spec }, 'create-tagged'), context())).resolves.toMatchObject({ ok: true })
+    // The line is typed by the deliver rules, so it can never be longer than one delivery.
+    expect(SessionLimits.worktreeNotifyCharacters).toBe(RemoteControlDeliverConst.textLengthConst)
+    for (const worktree of [{ ...spec.worktree, tag: 'x'.repeat(129) }, { ...spec.worktree, notify: { sessionId: 'session-1', text: 'x'.repeat(801) } }])
+      await expect(found.control.execute(request('sessions.create', { spec: { ...spec, worktree } }, 'create-bad'), context()))
+        .resolves.toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+
+    // The worktree keys Jamat 3.10.0 accepted (RemoteControlRequestValidation.worktree at git 7f1bac7): exact keys, so a tag is refused, never dropped.
+    const worktree310 = z.strictObject({
+      slug: z.string().min(1).max(256),
+      baseRef: z.string().min(1).max(1_024).optional(),
+      owner: z.string().min(1).optional(),
+      removeWhenEnded: z.literal(true).optional(),
+    })
+    const refused = worktree310.safeParse(spec.worktree)
+    expect(refused.success).toBe(false)
+    expect(JSON.stringify(refused.error?.issues)).toMatch(/"tag"/)
   })
 
   it('opens a file on the tab of the session it names', async () => {
@@ -1176,6 +1607,50 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     expect(found.transcriptReads).toEqual(['unique', 'unique'])
   })
 
+  it('reads script runs with an untrusted log, starts a run once per operation id, and refuses a peer both', async () => {
+    const reading: SessionScriptsReading = {
+      sessionId: 'session-1',
+      runs: [],
+      log: { runId: 'run-1', text: 'untrusted output', truncated: false },
+    }
+    const found = world({ scripts: { ok: true, value: reading } })
+    const one = { kind: 'number', number: '001' } as const
+    await expect(found.control.execute(request('sessions.scripts', { session: one, runId: 'run-1' }), context()))
+      .resolves.toMatchObject({ ok: true, operationId: null, value: { ...reading, logContentUntrusted: true } })
+    const run = request('sessions.runScript', {
+      session: one,
+      command: 'pnpm test',
+      cwd: 'packages/app',
+      title: 'tests',
+    }, 'run-once')
+    for (let attempt = 0; attempt < 2; attempt += 1)
+      await expect(found.control.execute(run, context()))
+        .resolves.toMatchObject({ ok: true, operationId: 'run-once', value: { sessionId: 'session-1', runId: 'run-1' } })
+    expect(found.scriptCalls).toEqual([
+      { method: 'scriptsOf', parentId: 'session-1', runId: 'run-1' },
+      { method: 'runScript', parentId: 'session-1', request: { command: 'pnpm test', cwd: 'packages/app', title: 'tests' } },
+    ])
+    await expect(found.control.execute(request('sessions.runScript', { session: one, command: 'pnpm test' }), context()))
+      .resolves.toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+
+    const unknown = world({ scripts: { ok: false, code: 'not-found', detail: 'Session session-1 has no script run nope' } })
+    await expect(unknown.control.execute(request('sessions.scripts', { session: one, runId: 'nope' }), context()))
+      .resolves.toMatchObject({ ok: false, error: { code: 'not-found', data: { sourceCode: 'not-found' } } })
+    const refused = world({ runScript: { ok: false, code: 'invalid-spec', detail: 'Session session-1 is not running' } })
+    await expect(refused.control.execute(request('sessions.runScript', { session: one, command: 'pnpm test' }, 'run-refused'), context()))
+      .resolves.toMatchObject({ ok: false, error: { code: 'operation-failed', data: { sourceCode: 'invalid-spec' } } })
+
+    const peer = context(RemoteControlPeerConst.controlOperations)
+    peer.callerKind = 'remote-peer'
+    for (const operation of ['sessions.scripts', 'sessions.runScript'] as const)
+      expect(RemoteControlPeerConst.controlOperations).not.toContain(operation)
+    await expect(found.control.execute(request('sessions.scripts', { session: one }), peer))
+      .resolves.toMatchObject({ ok: false, error: { code: 'forbidden' } })
+    await expect(found.control.execute(request('sessions.runScript', { session: one, command: 'pnpm test' }, 'run-peer'), peer))
+      .resolves.toMatchObject({ ok: false, error: { code: 'forbidden' } })
+    expect(found.scriptCalls).toHaveLength(2)
+  })
+
   /*
    * The offer a remote create is composed from, and the reason it comes from HERE: the catalog and
    * the configured value describe THIS computer's CLIs, and the asking side's own list would name
@@ -1277,14 +1752,7 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     const found = world()
     const broken = new RemoteControl({
       system: { identity: () => { throw new Error('secret failure detail') } },
-      projects: {
-        listCategories: async () => [],
-        listProjects: async () => ({
-          ok: false,
-          code: 'category-not-found',
-          detail: 'unused',
-        }),
-      },
+      projects: projectsPort({}),
       sessions: {
         snapshot: () => snapshot(found.sessions),
         createSession: async () => ({ ok: false, code: 'invalid-spec', detail: 'unused' }),
@@ -1292,13 +1760,31 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
         finalizeSession: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         removeSession: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         discardWorktree: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        finishWorktreeSession: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        updateMain: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        openActionReview: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        worktreeResults: async () => ({ ok: true, value: { results: [] } }),
+        notifies: async () => ({ ok: true, value: { notifies: [] } }),
+        acknowledgeWorktreeResult: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        proposeCommit: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         retrySetup: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         requestWorktreeCleanup: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        forkSession: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        restartSession: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        adoptOrphan: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        sessionReference: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        historyReferences: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        openHistorySession: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        nextSessionNumber: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        allocateSessionNumber: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         worktreeOf: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        runScript: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        scriptsOf: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         setSessionColor: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         setSessionDetails: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
       },
-      groups: { read: () => new Map(), assign: (_sessionId, group) => ({ ok: true, value: { group } }) },
+      host: unusedHost(),
+      groups: { read: () => new Map(), assign: (_sessionId, group) => ({ ok: true, value: { group } }), inherit: () => undefined },
       tabs: {
         list: async () => [],
         open: async () => successTab('opened'),

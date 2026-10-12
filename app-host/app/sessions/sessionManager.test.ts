@@ -288,6 +288,66 @@ describe('app-host/app/sessions/sessionManager', () => {
     expect(harness.manager.get('runtime-1')).toBeUndefined()
   })
 
+  describe('a child that exits before ready sees it alive', () => {
+    it.each([0, 3])('answers a created runtime that is already dead with exit code %i', async (exitCode) => {
+      const events = new EventHub()
+      const terminals = new FakeTerminalInstances({ exitsDuringReady: exitCode })
+      const harness = SessionManagerTest.harness(directories, terminals, terminals.factory, events)
+
+      const created = await harness.manager.create(SessionManagerTest.createRequest('create-fast'))
+
+      expect(created).toMatchObject({
+        runtimeSessionId: 'runtime-1',
+        generation: 1,
+        alive: false,
+        exitCode,
+        exitReason: 'process-exit',
+      })
+      expect(created.exitedAt).toEqual(expect.any(Number))
+      expect(created).not.toHaveProperty('pid')
+      expect(created).not.toHaveProperty('processStartedAt')
+      expect(harness.manager.get('runtime-1')).toEqual(created)
+      expect(harness.manager.liveCount()).toBe(0)
+      expect(events.subscribe({ send: () => undefined }, 0).replay.map((event) => event.kind))
+        .toEqual(['runtime-created', 'runtime-exited'])
+      // The output stays readable and the dead runtime is stopped and removed like any other.
+      expect((await harness.manager.inspect(SessionManagerTest.ref(1), null)).projection).not.toBeNull()
+      expect((await harness.manager.stop(SessionManagerTest.ref(1))).diagnostic).toBe('already-dead')
+      expect((await harness.manager.remove(SessionManagerTest.ref(1))).diagnostic).toBe('removed')
+    })
+
+    it('replays the dead answer to a retried create without a second spawn', async () => {
+      const terminals = new FakeTerminalInstances({ exitsDuringReady: 0 })
+      const harness = SessionManagerTest.harness(directories, terminals)
+      const first = await harness.manager.create(SessionManagerTest.createRequest('create-fast'))
+
+      const replay = await harness.manager.create(SessionManagerTest.createRequest('create-fast'))
+
+      expect(replay).toEqual(first)
+      expect(terminals.records).toHaveLength(1)
+    })
+
+    it('answers a replace whose successor already exited as dead', async () => {
+      const steady = new FakeTerminalInstances()
+      const fast = new FakeTerminalInstances({ exitsDuringReady: 2 })
+      let next = steady
+      const harness = SessionManagerTest.harness(directories, steady, (...args) => next.factory(...args))
+      await harness.manager.create(SessionManagerTest.createRequest('create-1'))
+      await harness.manager.stop(SessionManagerTest.ref(1))
+      next = fast
+
+      const replaced = await harness.manager.replace({
+        controllerLeaseId: 'lease-1',
+        operationId: 'replace-1',
+        target: SessionManagerTest.ref(1),
+        launch: SessionManagerTest.launch({ A: 'one' }),
+      })
+
+      expect(replaced).toMatchObject({ generation: 2, alive: false, exitCode: 2, exitReason: 'process-exit' })
+      expect(harness.manager.get('runtime-1')).toEqual(replaced)
+    })
+  })
+
   // Only a launch failure is the caller's fault. A defect in this Host has to keep reading as one.
   it('does not blame the caller for a non-launch failure', async () => {
     const terminals = new FakeTerminalInstances({ readyError: new Error('projection exploded') })
@@ -318,12 +378,13 @@ class SessionManagerTest {
     directories: string[],
     terminals = new FakeTerminalInstances(),
     factory: TerminalInstanceFactory = terminals.factory,
+    events = new EventHub(),
   ) {
     const directory = mkdtempSync(join(tmpdir(), 'jamat-v3-host-manager-'))
     directories.push(directory)
     const manager = new SessionManager(
       new SessionStore(join(directory, 'host-state.json'), () => undefined),
-      new EventHub(),
+      events,
       'host-1',
       factory,
     )

@@ -43,6 +43,12 @@ export interface TerminalProjectionDriver {
   dispose(): void
 }
 
+/** How the child process ended, as node-pty reported it. */
+export interface TerminalExit {
+  exitCode: number
+  exitedAt: number
+}
+
 export interface TerminalInstanceDriver {
   readonly runtimeSessionId: string
   readonly generation: number
@@ -50,7 +56,13 @@ export interface TerminalInstanceDriver {
   readonly pid: number
   readonly alive: boolean
   readonly processStartedAt: number | null
+  /** Null while the process runs, and after a `dispose` that no exit preceded. */
+  readonly exit: TerminalExit | null
   readonly projection: TerminalProjectionDriver
+  /**
+   * Resolves once the process has a start identity or has already exited (`exit` then says how);
+   * rejects only for a process that is still running and cannot prove which process it is.
+   */
   ready(): Promise<void>
   write(data: string): void
   resize(cols: number, rows: number): void

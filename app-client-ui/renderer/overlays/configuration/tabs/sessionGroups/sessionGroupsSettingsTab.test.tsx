@@ -4,11 +4,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AppClientUiBridge } from '../../../../../shared/appClientUiIpc'
 import { SessionsGroupsState, type SessionGroupDefinition } from '../../../../../shared/sessionsGroupsState'
 import { SessionGroupsSettingsTab } from './sessionGroupsSettingsTab'
+import { ControlBridgeFixture } from '../../../../ipc/fixtures/controlBridgeFixture'
 
 describe('app-client-ui/renderer/overlays/configuration/tabs/sessionGroups/sessionGroupsSettingsTab', () => {
-  type BridgeStub = {
-    sessionGroups: Pick<AppClientUiBridge['sessionGroups'], 'getGroups' | 'saveGroups'>
-  }
+  type BridgeStub = Pick<AppClientUiBridge, 'control'>
 
   afterEach(() => {
     cleanup()
@@ -18,13 +17,15 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/sessionGroups/sessi
   async function mount(stored: readonly SessionGroupDefinition[] = SessionsGroupsState.defaultsConst) {
     const saved: unknown[] = []
     ;(window as unknown as { appClient: BridgeStub }).appClient = {
-      sessionGroups: {
-        getGroups: () => Promise.resolve({ ok: true, value: stored }),
-        saveGroups: (value) => {
-          saved.push(value)
-          return Promise.resolve({ ok: true, value: { ok: true } })
+      control: ControlBridgeFixture.routes({
+        'sessionGroups.list': { value: () => Promise.resolve({ ok: true, value: stored }) },
+        'sessionGroups.save': {
+          library: (body: { groups: unknown }) => {
+            saved.push(body.groups)
+            return Promise.resolve({ ok: true, value: { ok: true } })
+          },
         },
-      },
+      }),
     }
     const onDirtyChange = vi.fn()
     const view = render(<SessionGroupsSettingsTab onDirtyChange={onDirtyChange} />)

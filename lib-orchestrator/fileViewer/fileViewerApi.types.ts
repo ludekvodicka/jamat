@@ -18,6 +18,8 @@ export type FileViewerDocumentSource = (
   | { kind: 'external'; sessionId: string; path: string; anchorPath: string }
   | { kind: 'filesystem'; sessionId: string; path: string }
   | { kind: 'detected'; sessionId: string; path: string }
+  /** `sessionId` is the parent the run ran for; `path` is never trusted, the parent's history proves it. */
+  | { kind: 'scriptLog'; sessionId: string; runId: string; path: string }
 ) & { workingTree?: { scopeRoot: string; source: 'svn' | 'git' } }
 
 export interface FileViewerLocation {

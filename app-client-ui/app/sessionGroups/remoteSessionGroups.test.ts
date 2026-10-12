@@ -20,6 +20,7 @@ describe('app-client-ui/app/sessionGroups/remoteSessionGroups', () => {
         assignments = [...SessionsGroupsState.assigned(assignments, key, group)]
         return true
       },
+      inheritSessionGroup: () => false,
     }, () => {})
 
     expect(port.read([session]).get('session-1')).toBeNull()

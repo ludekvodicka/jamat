@@ -4,6 +4,7 @@ import {
   type SettingsCardPorts,
 } from '../../settingsCard'
 import type { UiSettingsEffect, UiSettingsInput } from './uiSettingsModel'
+import { AppControl } from '../../../../ipc/appControl'
 
 export type UiSettingsPorts = SettingsCardPorts<UiSettingsInput>
 
@@ -12,7 +13,7 @@ export class UiSettingsEffects {
   static async run(effect: UiSettingsEffect, ports: UiSettingsPorts): Promise<void> {
     if (effect.effect === 'load')
       return SettingsCardEffects.load(
-        () => window.appClient.ui.getSettings(),
+        () => AppControl.value('uiSettings.get', {}),
         ports,
         {
           loaded: (value: UiSettingsValue) => ({ input: 'loaded' as const, value }),
@@ -22,7 +23,7 @@ export class UiSettingsEffects {
     else if (effect.effect === 'save')
       return SettingsCardEffects.save(
         effect.value,
-        (value: UiSettingsValue) => window.appClient.ui.saveSettings(value),
+        (value: UiSettingsValue) => AppControl.library('uiSettings.save', { value: value }),
         ports,
         {
           failed: (detail: string) => ({ input: 'failed' as const, detail }),

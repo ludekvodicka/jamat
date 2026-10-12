@@ -5,10 +5,11 @@ import type { AppClientUiBridge, IpcResult } from '../../../../../shared/appClie
 import type { UiSettingsSaveResult, UiSettingsValue } from '../../../../../shared/uiSettings'
 import { UiSettingsStore } from '../../../../uiSettings/uiSettingsStore'
 import { UiSettingsTab } from './uiSettingsTab'
+import { ControlBridgeFixture } from '../../../../ipc/fixtures/controlBridgeFixture'
 
 describe('app-client-ui/renderer/overlays/configuration/tabs/ui/uiSettingsTab', () => {
   /** The members of the bridge this screen reaches, typed off it so a rename is a compile error. */
-  type UiBridgeStub = Pick<AppClientUiBridge, 'ui' | 'onUiSettingsChanged'>
+  type UiBridgeStub = Pick<AppClientUiBridge, 'control' | 'onUiSettingsChanged'>
 
   const storedConst: UiSettingsValue = {
     fontScalePercent: 110,
@@ -28,15 +29,17 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/ui/uiSettingsTab', 
 
     install(): void {
       const bridge: UiBridgeStub = {
-        ui: {
-          getSettings: () => Promise.resolve({ ok: true, value: storedConst }),
-          saveSettings: (value) => {
-            this.saved.push(value)
-            return new Promise<IpcResult<UiSettingsSaveResult>>(
-              (resolve) => this.waiting.push(resolve),
-            )
+        control: ControlBridgeFixture.routes({
+          'uiSettings.get': { value: () => Promise.resolve({ ok: true, value: storedConst }) },
+          'uiSettings.save': {
+            library: (body: { value: UiSettingsValue }) => {
+              this.saved.push(body.value)
+              return new Promise<IpcResult<UiSettingsSaveResult>>(
+                (resolve) => this.waiting.push(resolve),
+              )
+            },
           },
-        },
+        }),
         // Nothing is ever pushed here: what the window knows after its own save is what it was told.
         onUiSettingsChanged: () => () => {},
       }

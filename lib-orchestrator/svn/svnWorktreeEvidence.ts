@@ -1,23 +1,20 @@
-import { isAbsolute, relative, resolve } from 'node:path'
+import { relative, resolve } from 'node:path'
 
 import { XMLParser } from 'fast-xml-parser'
 
 import { JsonShape } from '../shared/jsonShape'
 import type {
   SvnAttribution,
+  SvnConflictRow,
   SvnGroupMembers,
   SvnInfoEntry,
   SvnLogAction,
   SvnLoggedRow,
+  SvnOwnCommitInput,
   SvnProofInput,
   SvnReceiptInput,
-  SvnRecoveryInput,
   SvnStatusKind,
   SvnStatusRow,
-  SvnUnlanded,
-  SvnUpdateProps,
-  SvnUpdateRow,
-  SvnUpdateText,
   SvnVerboseItem,
   SvnWcItem,
   SvnWcProps,
@@ -27,12 +24,11 @@ const wcItems: readonly SvnWcItem[] = ['added', 'conflicted', 'deleted', 'extern
   'missing', 'modified', 'none', 'normal', 'obstructed', 'replaced', 'unversioned']
 const wcProps: readonly SvnWcProps[] = ['none', 'normal', 'modified', 'conflicted']
 const logActions: readonly SvnLogAction[] = ['A', 'D', 'M', 'R']
-const listElements = new Set(['target', 'changelist', 'entry', 'logentry', 'path'])
+const listElements = new Set(['target', 'changelist', 'entry', 'logentry', 'path', 'property'])
 
 /**
- * What a worktree finish knows about SVN, as pure reads: XML or text in, rows out. The meaning is
- * the `worktree-finish` v2 contract of the bash helper this twins; every read of the repository is a
- * callback, so nothing here starts a process.
+ * What an SVN action knows about SVN, as pure reads: XML in, rows out. Every read of the repository
+ * is a callback, so nothing here starts a process.
  *
  * Paths come from XML, never from plain-text output, where they are printed in the ANSI code page
  * and a non-ASCII name could no longer be matched to the file that holds a change.
@@ -135,37 +131,54 @@ export class SvnWorktreeEvidence {
     })
   }
 
-  /**
-   * The path lines of plain-text `svn update` output. Columns: text, properties, broken lock, tree
-   * conflict, then a space and the path. A path that no longer resolves below `root` (svn printed it
-   * in the ANSI code page) stays as printed with `inside: false`.
-   */
-  static updateRows(text: string, root: string): SvnUpdateRow[] {
-    const rows: SvnUpdateRow[] = []
-    for (const line of text.split(/\r?\n/)) {
-      const match = /^([ADUCGER ])([UCG ])([B ])([C ]) (.+)$/.exec(line)
-      if (match === null) continue
-      const [, textColumn, propsColumn, lockColumn, treeColumn, printed] = match
-      const rel = relative(root, resolve(root, printed))
-      const inside = rel === '' || (!isAbsolute(rel) && rel.split(/[\\/]/)[0] !== '..')
-      rows.push({
-        text: SvnWorktreeEvidence.updateTextOf(textColumn),
-        props: SvnWorktreeEvidence.updatePropsOf(propsColumn),
-        lockBroken: lockColumn === 'B',
-        treeConflict: treeColumn === 'C',
-        path: inside ? SvnWorktreeEvidence.relativeTo(root, printed) : printed,
-        inside,
-      })
-    }
-    return rows
+  /** The conflicted rows of `svn status --xml`: a text conflict apart from a tree or property conflict. */
+  static conflicts(xml: string, root: string): SvnConflictRow[] {
+    return SvnWorktreeEvidence.statusEntries(xml).flatMap(({ path, status }) => {
+      const text = SvnWorktreeEvidence.itemOf(status['@_item']) === 'conflicted'
+      const other = SvnWorktreeEvidence.propsOf(status['@_props']) === 'conflicted' || status['@_tree-conflicted'] === 'true'
+      return text || other ? [{ path: SvnWorktreeEvidence.relativeTo(root, path), text, other }] : []
+    })
+  }
+
+  /** The directories `svn status --xml` marks as locked by an svn process (E155004 once it is gone). */
+  static lockedPaths(xml: string, root: string): string[] {
+    return SvnWorktreeEvidence.statusEntries(xml)
+      .filter(({ status }) => status['@_wc-locked'] === 'true')
+      .map(({ path }) => SvnWorktreeEvidence.relativeTo(root, path))
   }
 
   /**
-   * The paths an update brought in that share a project with the change set `changed`. Tests passed
-   * before such an update prove nothing. The root and `.aidocs` never count. A path svn printed that
-   * no longer maps counts too: a needless test run costs less than a missed change.
+   * The externals whose definition names a revision (`-r N` or a peg `@N`), from `svn propget
+   * svn:externals -R --xml` of the worktree, worktree-relative. Such a mount checks out an old
+   * revision, so a review of it cannot commit. Both definition formats are read: `[-r N] URL[@N] DIR`
+   * and the old `DIR [-r N] URL`.
    */
-  static incoming(changed: readonly string[], updated: readonly SvnUpdateRow[], members: SvnGroupMembers): string[] {
+  static pinnedExternals(xml: string, root: string): string[] {
+    const properties = JsonShape.record(JsonShape.record(SvnWorktreeEvidence.parser.parse(xml))?.properties)
+    if (properties === null) throw new Error('svn propget gave no <properties> document')
+    const pinned: string[] = []
+    for (const value of SvnWorktreeEvidence.list(properties.target, 'target')) {
+      const target = SvnWorktreeEvidence.node(value, 'target')
+      const path = target['@_path']
+      if (typeof path !== 'string') throw new Error('svn propget gave a target without a path')
+      const own = SvnWorktreeEvidence.relativeTo(root, path)
+      for (const propertyValue of SvnWorktreeEvidence.list(target.property, 'property')) {
+        const property = SvnWorktreeEvidence.node(propertyValue, 'property')
+        if (property['@_name'] !== 'svn:externals') continue
+        for (const line of SvnWorktreeEvidence.text(property).split(/\r?\n/)) {
+          const definition = SvnWorktreeEvidence.externalOf(line)
+          if (definition?.pinned === true) pinned.push(own === '.' ? definition.dir : `${own}/${definition.dir}`)
+        }
+      }
+    }
+    return pinned
+  }
+
+  /**
+   * The logged paths other commits brought in that share a project with the change set `changed`.
+   * Tests passed before such an update prove nothing. The root and `.aidocs` never count.
+   */
+  static incoming(changed: readonly string[], logged: readonly SvnLoggedRow[], members: SvnGroupMembers): string[] {
     const projectOf = (rel: string): string => {
       switch (members) {
         case 'whole': return '.'
@@ -175,13 +188,9 @@ export class SvnWorktreeEvidence {
     }
     const touched = new Set(changed.map(projectOf))
     const paths: string[] = []
-    for (const row of updated) {
-      if (!row.inside) {
-        paths.push(row.path)
-        continue
-      }
+    for (const row of logged) {
       if (row.path === '.' || row.path.split('/').includes('.aidocs')) continue
-      if (touched.has(projectOf(row.path))) paths.push(row.path)
+      if (touched.has(projectOf(row.path)) && !paths.includes(row.path)) paths.push(row.path)
     }
     return paths
   }
@@ -262,40 +271,25 @@ export class SvnWorktreeEvidence {
   }
 
   /**
-   * Step 0 of a finish: rows of clean items this working copy committed after its last full update
-   * whose BASE in the main copy is below that revision.
+   * The rows of this working copy's own commits since its checkout: clean items whose BASE is their
+   * last change, above the lowest BASE. A foreign revision taken in by updating a single path is
+   * skipped, because a commit from here leaves each of its paths at that revision or later.
    */
-  static async recoverableRows(input: SvnRecoveryInput): Promise<SvnLoggedRow[]> {
+  static async ownCommitRows(input: SvnOwnCommitInput): Promise<SvnLoggedRow[]> {
     const { items } = input
     const rows: SvnLoggedRow[] = []
     for (const [revision, paths] of SvnWorktreeEvidence.candidates(items)) {
       const logged = await input.revisionLog(revision)
-      // A commit from this working copy leaves each of its paths still here at BASE N or later; a
-      // foreign revision taken in by updating a single path does not.
       if (logged.some((entry) => entry.action !== 'D'
         && items.some((item) => item.path === entry.path && item.base < revision)))
         continue
       for (const path of paths) {
-        if (await input.mainBaseOf(path) >= revision) continue
         const entry = logged.find((row) => row.path === path)
           ?? logged.find((row) => (row.action === 'A' || row.action === 'R') && path.startsWith(`${row.path}/`))
         if (entry !== undefined && !rows.includes(entry)) rows.push(entry)
       }
     }
     return rows
-  }
-
-  /**
-   * The local half of `recoverableRows`, without its server read: the cleanup may not reach the
-   * repository. A foreign revision taken in by a single-path update is a candidate too, which keeps
-   * a worktree that could go; the main copy moving past it clears that.
-   */
-  static async unlandedCandidates(items: readonly SvnVerboseItem[], mainBaseOf: (path: string) => Promise<number>): Promise<SvnUnlanded[]> {
-    const unlanded: SvnUnlanded[] = []
-    for (const [revision, paths] of SvnWorktreeEvidence.candidates(items))
-      for (const path of paths)
-        if (await mainBaseOf(path) < revision) unlanded.push({ path, revision })
-    return unlanded
   }
 
   /**
@@ -389,28 +383,27 @@ export class SvnWorktreeEvidence {
     return action
   }
 
-  private static updateTextOf(column: string): SvnUpdateText {
-    switch (column) {
-      case 'A': return 'added'
-      case 'D': return 'deleted'
-      case 'U': return 'updated'
-      case 'C': return 'conflicted'
-      case 'G': return 'merged'
-      case 'E': return 'existed'
-      case 'R': return 'replaced'
-      case ' ': return 'none'
-      default: throw new Error(`Unknown svn update column ${column}`)
+  /** One line of an `svn:externals` value: its directory and whether it names a revision; null for a blank or a comment. */
+  private static externalOf(line: string): { dir: string; pinned: boolean } | null {
+    const tokens = line.trim().match(/"[^"]*"|\S+/g)?.map((token) => token.replace(/^"(.*)"$/, '$1')) ?? []
+    if (tokens.length === 0 || tokens[0].startsWith('#')) return null
+    const isUrl = (token: string): boolean => /^([a-z][a-z0-9+.-]*:\/\/|\^\/|\/\/|\/|\.\.\/)/i.test(token)
+    let revision = false
+    const rest: string[] = []
+    for (let index = 0; index < tokens.length; index += 1) {
+      const token = tokens[index]
+      if (token === '-r' && index + 1 < tokens.length) {
+        revision = true
+        index += 1
+      }
+      else if (/^-r\S+$/.test(token)) revision = true
+      else rest.push(token)
     }
-  }
-
-  private static updatePropsOf(column: string): SvnUpdateProps {
-    switch (column) {
-      case 'U': return 'updated'
-      case 'C': return 'conflicted'
-      case 'G': return 'merged'
-      case ' ': return 'none'
-      default: throw new Error(`Unknown svn update property column ${column}`)
-    }
+    if (rest.length < 2) return null
+    const [first, second] = rest
+    const url = isUrl(first) ? first : second
+    const dir = isUrl(first) ? second : first
+    return { dir: dir.replace(/\\/g, '/').replace(/\/+$/, ''), pinned: revision || /@\d+$/.test(url) }
   }
 
   private static revisionOf(value: unknown): number {

@@ -10,4 +10,10 @@
 export class SessionLimits {
   /** Characters, after trimming. The refusal quotes this number, so the form must not exceed it. */
   static readonly noteCharacters = 4_000
+  /** A requested run's command line: the control API refuses a longer one before the library is asked. */
+  static readonly scriptCommandCharacters = 4_096
+  /** The caller's tag of a worktree, echoed on its results; a word a script can match without quoting. */
+  static readonly worktreeTagShape = /^[A-Za-z0-9._:-]{1,128}$/
+  /** The wake-up line of a worktree's results: `RemoteControlDeliverConst.textLengthConst`, the deliver limit. */
+  static readonly worktreeNotifyCharacters = 800
 }

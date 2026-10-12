@@ -6,6 +6,7 @@ import type {
   FileChangesSettingsEffect,
   FileChangesSettingsInput,
 } from './fileChangesSettingsModel'
+import { AppControl } from '../../../../ipc/appControl'
 
 export type FileChangesSettingsPorts = SettingsCardPorts<FileChangesSettingsInput>
 
@@ -17,7 +18,7 @@ export class FileChangesSettingsEffects {
   ): Promise<void> {
     if (effect.effect === 'load')
       return SettingsCardEffects.load(
-        () => window.appClient.fileChanges.getSettings(),
+        () => AppControl.value('fileChangesSettings.get', {}),
         ports,
         {
           loaded: (value) => ({ input: 'loaded' as const, value }),
@@ -27,7 +28,7 @@ export class FileChangesSettingsEffects {
     else if (effect.effect === 'save')
       return SettingsCardEffects.save(
         effect.value,
-        (value) => window.appClient.fileChanges.saveSettings(value),
+        (value) => AppControl.library('fileChangesSettings.save', { value: value }),
         ports,
         {
           failed: (detail) => ({ input: 'failed' as const, detail }),

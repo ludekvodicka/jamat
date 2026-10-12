@@ -29,6 +29,9 @@ interface FakeGroup {
   /** Where the group sits, which is the only thing the direction search reads off dockview. */
   element: { getBoundingClientRect(): { left: number; top: number; width: number; height: number } }
   bounds: { left: number; top: number; width: number; height: number }
+  /** The tab this group shows, which dockview keeps per group beside the one panel in focus. */
+  shownId: string | null
+  readonly activePanel: FakePanel | undefined
 }
 
 interface FakeMove {
@@ -173,7 +176,9 @@ class FakeDockview {
       const reference = this.groupList.find((candidate) => candidate.id === referenceId)
       if (!reference)
         throw new Error(`Unknown fake reference group: ${referenceId}`)
-      group = position.direction === undefined ? reference : this.createGroup()
+      group = position.direction === undefined || position.direction === 'within'
+        ? reference
+        : this.createGroup()
     } else if (position && 'direction' in position)
       group = this.createGroup()
     else
@@ -187,6 +192,7 @@ class FakeDockview {
       group.panels.splice(index, 0, panel)
     if (!options.inactive) {
       this.activeId = panel.id
+      group.shownId = panel.id
       this.emitActivePanelChange()
     }
     this.emitLayoutChange()
@@ -196,6 +202,8 @@ class FakeDockview {
   removePanel(panel: FakePanel): void {
     this.removed.push(panel.id)
     panel.group.panels = panel.group.panels.filter((candidate) => candidate.id !== panel.id)
+    if (panel.group.shownId === panel.id)
+      panel.group.shownId = panel.group.panels[0]?.id ?? null
     this.groupList = this.groupList.filter((group) => group.panels.length > 0)
     if (this.activeId === panel.id) {
       this.activeId = this.panels[0]?.id ?? null
@@ -345,6 +353,7 @@ class FakeDockview {
       const group = this.createGroup()
       for (const panelId of panelIds)
         group.panels.push(this.createPanel(panelId, group))
+      group.shownId = panelIds.includes(activeId) ? activeId : panelIds[0] ?? null
     }
     this.activeId = activeId
   }
@@ -359,6 +368,7 @@ class FakeDockview {
     const panel = this.createPanel(id, group, component, title)
     panel.params = { ...params }
     group.panels.push(panel)
+    group.shownId = id
     this.activeId = id
   }
 
@@ -411,6 +421,10 @@ class FakeDockview {
       panels: [],
       bounds,
       element: { getBoundingClientRect: () => group.bounds },
+      shownId: null,
+      get activePanel() {
+        return group.panels.find((panel) => panel.id === group.shownId)
+      },
     }
     this.groupList.push(group)
     return group
@@ -441,6 +455,7 @@ class FakeDockview {
         setActive: () => {
           this.activated.push(id)
           this.activeId = id
+          panel.group.shownId = id
           this.emitActivePanelChange()
         },
         setTitle: (value) => {
@@ -471,6 +486,7 @@ class TabsControllerHarness {
   readonly saved: string[] = []
   readonly cleared: string[] = []
   readonly claimed: WorkspacePanelPresence[] = []
+  readonly claimActivations: (boolean | undefined)[] = []
   readonly reconciled: (readonly WorkspacePanelPresence[])[] = []
   readonly released: string[] = []
   readonly active: (string | null)[] = []
@@ -485,6 +501,8 @@ class TabsControllerHarness {
   storeAccepts = true
   clearAccepts = true
   claimAnswer: ClaimPanelResult = { kind: 'granted' }
+  /** Answers a claim in place of `claimAnswer`, for a test that acts while a claim is in flight. */
+  claimOperation: ((panel: WorkspacePanelPresence) => Promise<ClaimPanelResult> | null) | null = null
   reconcileAnswer: ReconcilePanelsResult | null = null
   saveOperation: ((layout: string) => Promise<boolean>) | null = null
   clearOperation: (() => Promise<boolean>) | null = null
@@ -512,9 +530,10 @@ class TabsControllerHarness {
         this.transferSequence.push('clear')
         return this.clearOperation?.() ?? Promise.resolve(this.clearAccepts)
       },
-      claimPanel: (panel) => {
+      claimPanel: (panel, activate) => {
         this.claimed.push(panel)
-        return Promise.resolve(this.claimAnswer)
+        this.claimActivations.push(activate)
+        return this.claimOperation?.(panel) ?? Promise.resolve(this.claimAnswer)
       },
       reconcilePanels: (panels) => {
         this.reconciled.push(panels)
@@ -1779,8 +1798,7 @@ describe('app-client-ui/renderer/widgets/tabs/tabsController', () => {
 
       expect(replacementWasThere).toBe(true)
       expect(harness.dockview.removed).toEqual([sessionPanelId('s1')])
-      // Silent: the session behind a preview keeps running, so nothing is asked and nothing is ended.
-        expect(harness.controller.isPreview(sessionPanelId('s2'))).toBe(true)
+      expect(harness.controller.isPreview(sessionPanelId('s2'))).toBe(true)
       expect(harness.controller.isPreview(sessionPanelId('s1'))).toBe(false)
     })
 
@@ -1846,7 +1864,7 @@ describe('app-client-ui/renderer/widgets/tabs/tabsController', () => {
       { kind: 'commit', key: 'git', title: 'Commit Git', vcs: 'git', scopeRoot: 'Q:/app' },
     ]
 
-    it.each(splitItems)('keeps a preview permanently when its split opens $title', async (item) => {
+    it.each(splitItems)('replaces and restores a preview whose split opens $title', async (item) => {
       const harness = TabsControllerHarness.fresh()
       await openPreview(harness, 's1')
       const panelId = sessionPanelId('s1')
@@ -1855,18 +1873,23 @@ describe('app-client-ui/renderer/widgets/tabs/tabsController', () => {
       harness.controller.applyPanelParameters(panelId, (params) => PanelSplitParams.merged(params, {
         ...PanelSplitParams.default(), items: [item], active: item.key,
       }))
-      expect(harness.controller.isPreview(panelId)).toBe(false)
-      expect(changed).toHaveBeenCalledOnce()
+      expect(harness.controller.isPreview(panelId)).toBe(true)
+      expect(changed).not.toHaveBeenCalled()
 
       await openPreview(harness, 's2')
+      expect(harness.dockview.getPanel(panelId)).toBeUndefined()
+      expect(harness.controller.isPreview(sessionPanelId('s2'))).toBe(true)
+
+      await openPreview(harness, 's1')
       expect(harness.dockview.getPanel(panelId)?.params.split).toMatchObject({ items: [item] })
-      expect(harness.controller.isPreview(sessionPanelId('s2'))).toBe(true)
+      expect(harness.controller.isPreview(panelId)).toBe(true)
       harness.controller.applyPanelParameters(panelId, (params) => PanelSplitParams.merged(params, PanelSplitParams.default()))
-      expect(harness.controller.isPreview(panelId)).toBe(false)
-      expect(harness.controller.isPreview(sessionPanelId('s2'))).toBe(true)
+      await openPreview(harness, 's2')
+      await openPreview(harness, 's1')
+      expect(PanelSplitParams.of(harness.dockview.getPanel(panelId)?.params)).toEqual(PanelSplitParams.default())
     })
 
-    it('keeps a reopened split permanent even when the tree asks for a preview', async () => {
+    it('keeps a manually closed split provisional when the tree reopens it as a preview', async () => {
       const harness = TabsControllerHarness.fresh()
       await openPreview(harness, 's1')
       const panelId = sessionPanelId('s1')
@@ -1875,25 +1898,36 @@ describe('app-client-ui/renderer/widgets/tabs/tabsController', () => {
       }))
       await harness.controller.hidePanel(panelId)
       await openPreview(harness, 's1')
-      expect(harness.controller.isPreview(panelId)).toBe(false)
+      expect(harness.controller.isPreview(panelId)).toBe(true)
       await openPreview(harness, 's2')
+      expect(harness.dockview.getPanel(panelId)).toBeUndefined()
+      await openPreview(harness, 's1')
       expect(harness.dockview.getPanel(panelId)?.params.split).toMatchObject({ items: [splitItems[0]] })
     })
 
-    it('leaves sidebar and empty split changes provisional after reattaching', async () => {
-      const harness = TabsControllerHarness.fresh()
-      await openPreview(harness, 's1')
-      const panelId = sessionPanelId('s1')
-      harness.controller.attach(harness.dockview.asApi())
-      harness.controller.applyPanelParameters(panelId, (params) => ({ ...params,
-        sidebar: { visible: true }, split: { ...PanelSplitParams.default(), ratio: 0.6 },
-      }))
-      expect(harness.controller.isPreview(panelId)).toBe(true)
-      harness.controller.applyPanelParameters(panelId, (params) => PanelSplitParams.merged(params, {
-        ...PanelSplitParams.default(), items: [splitItems[0]], active: 'file',
-      }))
-      expect(harness.controller.isPreview(panelId)).toBe(false)
-    })
+    it.each(['workingTree', 'fileChanges', 'directoryExplorer', 'notes'])(
+      'restores the %s sidebar and every split parameter after repeated preview replacements', async (activeView) => {
+        const harness = TabsControllerHarness.fresh()
+        await openPreview(harness, 's1')
+        const panelId = sessionPanelId('s1')
+        harness.controller.attach(harness.dockview.asApi())
+        const file = { ...splitItems[0], location: { line: 23 }, zoomPercent: 125, pinned: true }
+        const preview = { ...splitItems[0], key: 'preview-file' }
+        const state = {
+          sidebar: { visible: true, width: 440, activeView },
+          split: { ratio: 0.6, items: [file, preview, ...splitItems.slice(1)], active: 'git', preview: preview.key, history: [splitItems[0]] },
+        }
+        harness.controller.applyPanelParameters(panelId, (params) => ({ ...params, ...state }))
+        expect(harness.controller.isPreview(panelId)).toBe(true)
+
+        for (let index = 0; index < 2; index += 1) {
+          await openPreview(harness, 's2')
+          expect(harness.dockview.getPanel(panelId)).toBeUndefined()
+          await openPreview(harness, 's1')
+          expect(harness.dockview.getPanel(panelId)?.params).toEqual({ ...sessionParams('s1'), ...state })
+          expect(harness.controller.isPreview(panelId)).toBe(true)
+        }
+      })
 
     it('promotes the panel when the same thing is opened deliberately', async () => {
       const harness = TabsControllerHarness.fresh()
@@ -1980,6 +2014,23 @@ describe('app-client-ui/renderer/widgets/tabs/tabsController', () => {
       expect(harness.released).toEqual([])
     })
 
+    it('preserves a preview created while an automatic open awaits its claim', async () => {
+      const harness = TabsControllerHarness.fresh()
+      let releaseClaim: ((answer: ClaimPanelResult) => void) | undefined
+      harness.claimOperation = () => new Promise((resolve) => { releaseClaim = resolve })
+      const opening = harness.controller.openPanel('terminal', 's1', sessionParams('s1'), undefined,
+        { preservePreview: true, activate: false })
+      harness.claimOperation = null
+      await openPreview(harness, 's1')
+      if (releaseClaim === undefined) throw new Error('The automatic open did not claim its panel')
+      releaseClaim({ kind: 'granted' })
+
+      expect(await opening).toEqual({ kind: 'opened', panelId: sessionPanelId('s1') })
+      expect(harness.controller.isPreview(sessionPanelId('s1'))).toBe(true)
+      expect(harness.dockview.added).toHaveLength(1)
+      expect(harness.released).toEqual([])
+    })
+
     it('stops listening for moves when it is disposed', () => {
       const harness = TabsControllerHarness.fresh()
       expect(harness.dockview.movePanelListenerCount).toBe(1)
@@ -1995,6 +2046,209 @@ describe('app-client-ui/renderer/widgets/tabs/tabsController', () => {
       harness.controller.attach(harness.dockview.asApi())
 
       expect(harness.dockview.movePanelListenerCount).toBe(1)
+    })
+  })
+
+  describe('handing a script run tab to its session', () => {
+    const terminalId = (sessionId: string): string => TabsController.panelIdOf('terminal', { sessionId })
+
+    async function openRun(harness: TabsControllerHarness, options?: { preview?: true }): Promise<void> {
+      await harness.controller.openPanel('terminal', 'install', { sessionId: 'run-1' }, undefined, options)
+    }
+
+    function handOff(harness: TabsControllerHarness): Promise<void> {
+      return harness.controller.replacePanel(terminalId('run-1'), 'terminal', 'Work - 014', { sessionId: 'parent-1' })
+    }
+
+    it('puts the parent where the run preview was, still a preview', async () => {
+      const harness = TabsControllerHarness.fresh()
+      harness.dockview.seed([['a', 'b']], 'a')
+      await openRun(harness, { preview: true })
+      // Dragged between the two, so its place is neither end of the group.
+      const group = harness.dockview.getPanel(terminalId('run-1'))?.group
+      group?.panels.splice(1, 0, ...group.panels.splice(2, 1))
+
+      await handOff(harness)
+
+      expect(harness.dockview.panels.map((panel) => panel.id)).toEqual(['a', terminalId('parent-1'), 'b'])
+      expect(harness.dockview.getPanel(terminalId('parent-1'))?.title).toBe('Work - 014')
+      expect(harness.controller.isPreview(terminalId('parent-1'))).toBe(true)
+      expect(harness.controller.activePanelId()).toBe(terminalId('parent-1'))
+      expect(harness.released).toEqual([terminalId('run-1')])
+    })
+
+    it('keeps a kept run tab kept', async () => {
+      const harness = TabsControllerHarness.fresh()
+      await openRun(harness)
+
+      await handOff(harness)
+
+      expect(harness.dockview.panels.map((panel) => panel.id)).toEqual([terminalId('parent-1')])
+      expect(harness.controller.isPreview(terminalId('parent-1'))).toBe(false)
+    })
+
+    it('brings forward the tab the parent already has and closes the run tab', async () => {
+      const harness = TabsControllerHarness.fresh()
+      await harness.controller.openPanel('terminal', 'Work - 014', { sessionId: 'parent-1' })
+      await openRun(harness, { preview: true })
+
+      await handOff(harness)
+
+      expect(harness.dockview.added).toHaveLength(2)
+      expect(harness.dockview.panels.map((panel) => panel.id)).toEqual([terminalId('parent-1')])
+      expect(harness.controller.activePanelId()).toBe(terminalId('parent-1'))
+      expect(harness.controller.isPreview(terminalId('parent-1'))).toBe(false)
+    })
+
+    it('closes the run tab when another window draws the parent', async () => {
+      const harness = TabsControllerHarness.fresh()
+      await openRun(harness)
+      harness.claimAnswer = { kind: 'owned', windowId: 'holder', panelId: terminalId('parent-1') }
+
+      await handOff(harness)
+
+      expect(harness.dockview.panels).toEqual([])
+      expect(harness.errors).toEqual([])
+    })
+
+    it('closes the run tab and says so when the parent tab is refused', async () => {
+      const harness = TabsControllerHarness.fresh()
+      await openRun(harness)
+      harness.claimAnswer = { kind: 'refused', detail: 'The workspace window is closing' }
+
+      await handOff(harness)
+
+      expect(harness.dockview.panels).toEqual([])
+      expect(harness.errors).toEqual(['The tab could not be handed to Work - 014: The workspace window is closing'])
+    })
+
+    it('shows the parent in a background group and gives the focus back', async () => {
+      const harness = TabsControllerHarness.fresh()
+      await openRun(harness)
+      harness.dockview.seed([['elsewhere']], 'elsewhere')
+
+      await handOff(harness)
+
+      const parent = harness.dockview.getPanel(terminalId('parent-1'))
+      expect(parent?.group.activePanel).toBe(parent)
+      expect(harness.controller.activePanelId()).toBe('elsewhere')
+    })
+
+    it('adds a hidden run tab without showing it', async () => {
+      const harness = TabsControllerHarness.fresh()
+      await openRun(harness)
+      await harness.controller.openPanel('probe', 'Probe', { n: 1 })
+
+      await handOff(harness)
+
+      expect(harness.dockview.added.at(-1)).toMatchObject({ id: terminalId('parent-1'), inactive: true })
+      expect(harness.controller.activePanelId()).toBe(TabsController.panelIdOf('probe', { n: 1 }))
+    })
+
+    /** Holds the parent's claim until the test answers it, so the test can act in between. */
+    function holdParentClaim(harness: TabsControllerHarness): () => void {
+      let answer: (() => void) | null = null
+      harness.claimOperation = (panel) => panel.panelId === terminalId('parent-1')
+        ? new Promise<ClaimPanelResult>((resolve) => { answer = () => resolve({ kind: 'granted' }) })
+        : null
+      return () => {
+        if (answer === null) throw new Error('The parent was never claimed')
+        answer()
+      }
+    }
+
+    it('keeps a preview the person opened while the claim was answered', async () => {
+      const harness = TabsControllerHarness.fresh()
+      await openRun(harness, { preview: true })
+      const answer = holdParentClaim(harness)
+
+      const handing = handOff(harness)
+      await harness.controller.openPanel('terminal', 'Other', { sessionId: 'other' }, undefined, { preview: true })
+      answer()
+      await handing
+
+      expect(harness.dockview.panels.map((panel) => panel.id)).toEqual([terminalId('other')])
+      expect(harness.controller.isPreview(terminalId('other'))).toBe(true)
+      expect(harness.released).toContain(terminalId('parent-1'))
+      expect(harness.errors).toEqual([])
+    })
+
+    it('takes the preview only while the run tab is still the preview', async () => {
+      const harness = TabsControllerHarness.fresh()
+      await openRun(harness, { preview: true })
+      const answer = holdParentClaim(harness)
+
+      const handing = handOff(harness)
+      harness.controller.keepOpen(terminalId('run-1'))
+      answer()
+      await handing
+
+      expect(harness.dockview.panels.map((panel) => panel.id)).toEqual([terminalId('parent-1')])
+      expect(harness.controller.isPreview(terminalId('parent-1'))).toBe(false)
+    })
+
+    it('releases the claim and adds nothing when the run tab closed during the claim', async () => {
+      const harness = TabsControllerHarness.fresh()
+      await harness.controller.openPanel('probe', 'Probe', { n: 1 })
+      await openRun(harness)
+      const answer = holdParentClaim(harness)
+
+      const handing = handOff(harness)
+      await harness.controller.hidePanel(terminalId('run-1'))
+      answer()
+      await handing
+
+      expect(harness.dockview.panels.map((panel) => panel.id)).toEqual([TabsController.panelIdOf('probe', { n: 1 })])
+      expect(harness.released).toEqual([terminalId('run-1'), terminalId('parent-1')])
+      expect(harness.errors).toEqual([])
+    })
+
+    it('shows the parent only if the run tab is still shown when the claim answers', async () => {
+      const harness = TabsControllerHarness.fresh()
+      await harness.controller.openPanel('probe', 'Probe', { n: 1 })
+      await openRun(harness)
+      const answer = holdParentClaim(harness)
+
+      const handing = handOff(harness)
+      harness.controller.activatePanel(TabsController.panelIdOf('probe', { n: 1 }))
+      answer()
+      await handing
+
+      expect(harness.dockview.added.at(-1)).toMatchObject({ id: terminalId('parent-1'), inactive: true })
+      expect(harness.controller.activePanelId()).toBe(TabsController.panelIdOf('probe', { n: 1 }))
+    })
+
+    it('leaves the focus where the person moved it during the claim', async () => {
+      const harness = TabsControllerHarness.fresh()
+      await openRun(harness)
+      harness.dockview.seed([['elsewhere', 'later']], 'elsewhere')
+      const answer = holdParentClaim(harness)
+
+      const handing = handOff(harness)
+      harness.controller.activatePanel(terminalId('run-1'))
+      answer()
+      await handing
+
+      expect(harness.controller.activePanelId()).toBe(terminalId('parent-1'))
+    })
+
+    it('claims the parent without raising the window that owns it', async () => {
+      const harness = TabsControllerHarness.fresh()
+      await openRun(harness)
+      harness.claimAnswer = { kind: 'owned', windowId: 'holder', panelId: terminalId('parent-1') }
+
+      await handOff(harness)
+
+      expect(harness.claimActivations).toEqual([undefined, false])
+    })
+
+    it('does nothing for a run tab this window does not have', async () => {
+      const harness = TabsControllerHarness.fresh()
+
+      await handOff(harness)
+
+      expect(harness.claimed).toEqual([])
+      expect(harness.dockview.added).toEqual([])
     })
   })
 })

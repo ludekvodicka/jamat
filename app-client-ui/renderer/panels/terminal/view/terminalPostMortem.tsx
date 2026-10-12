@@ -4,6 +4,7 @@ import type { SessionTranscriptReading } from '../../../../../lib-orchestrator/s
 import type { SessionOutcome } from '../../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { ErrorText } from '../../../../shared/errorText'
 import type { FileChangesViewModel } from '../../../fileViewer/fileViewerPanel.types'
+import { AppControl } from '../../../ipc/appControl'
 
 /**
  * What is left of a session once the screen it exited on is gone.
@@ -32,11 +33,11 @@ export function TerminalPostMortem(props: {
   useEffect(() => {
     let live = true
     setTranscript(null)
-    void window.appClient.sessionTranscript.get(sessionId)
+    void AppControl.value('sessions.transcript', { session: AppControl.sessionOf(sessionId) })
       .then((answer) => {
         if (!live) return
         setTranscript(answer.ok
-          ? answer.value
+          ? answer.value.reading
           : { kind: 'none', code: 'transcript-unreadable', reason: answer.error })
       })
       .catch((thrown: unknown) => {

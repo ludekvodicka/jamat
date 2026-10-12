@@ -5,8 +5,20 @@ import { isAbsolute, join } from 'node:path'
 import { AtomicJsonFile } from '../../shared/atomicJsonFile'
 import { ErrorText } from '../../shared/errorText'
 import { type JsonDocumentReading, JsonDocumentStore } from '../../shared/jsonDocumentStore'
-import type { SessionWorktreeKind } from '../sessionManagerApi.types'
-import type { SessionRecord, SessionRecordsDocument } from './sessionRecord.types'
+import { SessionLimits } from '../sessionLimits'
+import type { SessionWorktreeKind, SvnLabelledRevision } from '../sessionManagerApi.types'
+import { SessionScriptDefinitions } from '../scripts/sessionScriptDefinitions'
+import type {
+  SessionRecord,
+  SessionRecordCommitReceipt,
+  SessionRecordProcess,
+  SessionRecordScriptLink,
+  SessionRecordScriptRun,
+  SessionRecordScriptStep,
+  SessionRecordSvnAction,
+  SessionRecordsDocument,
+  SessionRecordWorktreeCaller,
+} from './sessionRecord.types'
 
 export interface SessionRecordsStoreOptions {
   snapshotsDirectory: string
@@ -32,10 +44,16 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
   private static readonly finishResultsConst: readonly unknown[] = ['committed', 'partial',
     'not-committed', 'out-of-date', 'updated', 'conflict', 'nothing', 'failed', 'interrupted']
   private static readonly finishMainPatternConst = /^(?:none|updated|failed|merged:\d+|conflict:\d+)$/
+  private static readonly svnActionStagesConst: readonly unknown[] = ['stopping', 'evidence', 'checks', 'updating',
+    'cleaning', 'resolving', 'verifying', 'diffing', 'reviewing', 'removing', 'recording']
+  private static readonly svnActionNeedsConst: readonly unknown[] = ['check-failed', 'conflict', 'resolver-failed', 'incoming',
+    'out-of-date', 'review-cancelled', 'review-interrupted', 'partial', 'pinned-external', 'locked', 'svn-failed', 'not-stopped']
+  private static readonly revisionLabelsConst: readonly unknown[] = ['receipt', 'base-proof', 'inferred']
   private records: SessionRecord[] = []
   private readonly pendingUserInput = new Map<string, number>()
   /** How many records the read turned from a cut-short finish into an `interrupted` outcome. */
   private interruptedFinishes = 0
+  private documentRead = false
 
   private constructor(
     file: string,
@@ -89,6 +107,15 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     return this.records
   }
 
+  /**
+   * Whether the load read a document out of the file. False for a missing file and for one that
+   * could not be read or used: an empty list then says nothing about which sessions exist, so
+   * nothing may be deleted for not being in it.
+   */
+  get loadedFromFile(): boolean {
+    return this.documentRead
+  }
+
   get(sessionId: string): SessionRecord | null {
     return this.records.find((record) => record.sessionId === sessionId) ?? null
   }
@@ -133,33 +160,39 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     })
   }
 
-  /** A record disappears for good, so the previous file is kept as a recovery point first. */
-  async remove(sessionId: string): Promise<boolean> {
-    // The latch is checked before the no-op short-circuit on purpose: after a failed read the
-    // in-memory list is empty because nothing could be read, so "there was nothing to remove" is
-    // exactly the answer this store cannot honestly give.
-    if (!this.mayWrite()) return false
+  /**
+   * Read-modify-write of one record with the read INSIDE the turn, so a write queued meanwhile is
+   * never undone by a stale copy. `change` answers null to write nothing, and so does a missing
+   * record; either answers false. Routine, so it spends no recovery point.
+   */
+  async update(sessionId: string, change: (record: SessionRecord) => SessionRecord | null): Promise<boolean> {
     return this.inTurn(() => {
-      const next = this.records.filter((record) => record.sessionId !== sessionId)
-      if (next.length === this.records.length) return Promise.resolve(true)
-      return this.commit(next, true)
+      const current = this.get(sessionId)
+      const next = current === null ? null : change(current)
+      if (next === null) return Promise.resolve(false)
+      if (next.sessionId !== sessionId) throw new Error(`An update of ${sessionId} answered ${next.sessionId}`)
+      SessionRecordsStore.assertValid(next)
+      return this.commit(this.records.map((record) => record.sessionId === sessionId ? next : record), false)
     })
   }
 
   /**
-   * A finish whose closing write failed twice would hold its session until a restart. Memory lets go
-   * of the phase; the file keeps it until the next write of any record lands, and a load before that
-   * reads the finish as interrupted.
+   * Records disappear for good, so the previous file is kept as a recovery point first. A caller
+   * whose removal is already recorded elsewhere may spend none; one write takes every id.
    */
-  async forgetFinish(sessionId: string): Promise<void> {
-    await this.inTurn(() => {
-      this.records = this.records.map((record) => {
-        if (record.sessionId !== sessionId || record.worktreeFinish === undefined) return record
-        const next = { ...record }
-        delete next.worktreeFinish
-        return next
-      })
-      return Promise.resolve(true)
+  async remove(
+    sessionIds: string | readonly string[],
+    options: { recoveryPoint: boolean } = { recoveryPoint: true },
+  ): Promise<boolean> {
+    // The latch is checked before the no-op short-circuit on purpose: after a failed read the
+    // in-memory list is empty because nothing could be read, so "there was nothing to remove" is
+    // exactly the answer this store cannot honestly give.
+    if (!this.mayWrite()) return false
+    const gone = new Set(typeof sessionIds === 'string' ? [sessionIds] : sessionIds)
+    return this.inTurn(() => {
+      const next = this.records.filter((record) => !gone.has(record.sessionId))
+      if (next.length === this.records.length) return Promise.resolve(true)
+      return this.commit(next, options.recoveryPoint)
     })
   }
 
@@ -249,7 +282,9 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
    * file is still every other session, and losing one record is not a reason to stop writing.
    */
   protected coerce(parsed: unknown): JsonDocumentReading<SessionRecord[]> {
-    return { document: this.recordsOf(parsed), damaged: false }
+    const document = this.recordsOf(parsed)
+    this.documentRead = true
+    return { document, damaged: false }
   }
 
   /** Unknown fields ride through untouched; a record that cannot be used is dropped aloud. */
@@ -265,6 +300,8 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     const records: SessionRecord[] = []
     let unverified = 0
     for (const candidate of document.records ?? []) {
+      SessionRecordsStore.migrateScriptLink(candidate)
+      this.dropDamagedAnnotations(candidate)
       const reason = SessionRecordsStore.problemOf(candidate, seen)
       if (reason) {
         this.report(`Session records at ${this.file}: dropping a record (${reason})`)
@@ -297,6 +334,79 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       this.report(`Codex identity migration: ${unverified} old inferred bindings are unverified; `
         + 'their original IDs are preserved. Open the intended conversation explicitly from Codex history to resume it')
     return records
+  }
+
+  /**
+   * Before 2026-10-07 a setup run said `setupFor` and a resolver `resolveFor`. Each becomes the one
+   * link, BEFORE validation, so a malformed old value is dropped aloud by the link's own check rather
+   * than read as an ordinary session. The next write of any record writes the whole document, so this
+   * migration retires itself.
+   */
+  private static migrateScriptLink(candidate: unknown): void {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return
+    const legacy = candidate as { scriptOf?: unknown; setupFor?: unknown; resolveFor?: unknown }
+    if (legacy.scriptOf === undefined && legacy.setupFor !== undefined)
+      legacy.scriptOf = { sessionId: legacy.setupFor, phase: 'before', scriptId: 'setup', name: 'setup' }
+    else if (legacy.scriptOf === undefined && legacy.resolveFor !== undefined)
+      legacy.scriptOf = { sessionId: legacy.resolveFor, phase: 'after', scriptId: 'merge-resolve', name: 'resolver' }
+    delete legacy.setupFor
+    delete legacy.resolveFor
+  }
+
+  /**
+   * The script history and the Finish checks annotate a session; one value an older or newer build
+   * wrote that this one cannot read costs that annotation, said aloud, never the session with its
+   * worktree pointer and its gates. Written records still have to be whole: `assertValid` refuses.
+   */
+  private dropDamagedAnnotations(candidate: unknown): void {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return
+    const record = candidate as Partial<SessionRecord>
+    const subject = `Session records at ${this.file}: record ${JSON.stringify(record.sessionId)}`
+    if (record.scriptRuns !== undefined && !Array.isArray(record.scriptRuns)) {
+      this.report(`${subject}: dropping its script history (scriptRuns must be an array)`)
+      delete record.scriptRuns
+    }
+    else if (record.scriptRuns !== undefined) {
+      const problems = record.scriptRuns.map((entry) => SessionRecordsStore.scriptRunProblem(entry))
+      const first = problems.find((problem) => problem !== null)
+      if (first !== undefined) {
+        record.scriptRuns = record.scriptRuns.filter((_entry, index) => problems[index] === null)
+        this.report(`${subject}: dropping ${problems.length - record.scriptRuns.length} script history `
+          + `entries it cannot read (${first})`)
+      }
+    }
+    if (record.commitReceipts !== undefined && !Array.isArray(record.commitReceipts)) {
+      this.report(`${subject}: dropping its commit receipts (commitReceipts must be an array)`)
+      delete record.commitReceipts
+    }
+    else if (record.commitReceipts !== undefined) {
+      const problems = record.commitReceipts.map((entry) => SessionRecordsStore.commitReceiptProblem(entry))
+      const first = problems.find((problem) => problem !== null)
+      if (first !== undefined) {
+        record.commitReceipts = record.commitReceipts.filter((_entry, index) => problems[index] === null)
+        this.report(`${subject}: dropping ${problems.length - record.commitReceipts.length} commit receipts `
+          + `it cannot read (${first})`)
+      }
+    }
+    const checks = SessionRecordsStore.finishChecksProblem(record.finishChecks)
+    if (checks !== null) {
+      this.report(`${subject}: dropping its Finish checks (${checks})`)
+      delete record.finishChecks
+    }
+    // The worktree stays and Finish starts again; only the action this build cannot read goes.
+    const action = SessionRecordsStore.svnActionProblem(record.svnAction)
+    if (action !== null) {
+      this.report(`${subject}: dropping its SVN action (${action})`)
+      delete record.svnAction
+    }
+    // The tag and the wake-up line ride on the results; the worktree itself stays.
+    for (const holder of [record.worktree, record.retiredWorktree]) {
+      if (!holder || typeof holder !== 'object') continue
+      const caller = SessionRecordsStore.callerProblem(holder.caller)
+      if (caller === null) continue
+      this.report(`${subject}: dropping the caller of its worktree (${caller})`)
+      delete holder.caller
+    }
   }
 
   private static assertValid(record: SessionRecord): void {
@@ -340,17 +450,21 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     // Named for what it is rather than for the four setup checks it began as: it now carries
     // flowId, completed, stopRequested and note, none of which is a setup field.
     const problem = SessionRecordsStore.pendingSetupProblem(record.pendingSetup)
+      ?? SessionRecordsStore.finishChecksProblem(record.finishChecks)
       ?? SessionRecordsStore.transcriptCwdProblem(record.transcriptCwd, record.kind)
       ?? SessionRecordsStore.setupSkippedProblem(record.setupSkipped)
       ?? SessionRecordsStore.commandsProblem(record.commands)
-      ?? SessionRecordsStore.setupForProblem(record.setupFor)
+      ?? SessionRecordsStore.recordProcessProblem(record)
+      ?? SessionRecordsStore.scriptOfProblem(record.scriptOf)
+      ?? SessionRecordsStore.scriptRunsProblem(record.scriptRuns)
+      ?? SessionRecordsStore.commitReceiptsProblem(record.commitReceipts)
       ?? SessionRecordsStore.worktreeProblem(record.worktree)
       ?? SessionRecordsStore.worktreeMergeProblem(record.worktreeMerge)
       ?? SessionRecordsStore.worktreeFinishProblem(record.worktreeFinish)
+      ?? SessionRecordsStore.svnActionProblem(record.svnAction)
       ?? SessionRecordsStore.worktreeOutcomeProblem(record.worktreeOutcome)
       ?? SessionRecordsStore.retiredWorktreeProblem(record.retiredWorktree)
       ?? SessionRecordsStore.worktreeCleanupProblem(record.worktreeCleanup)
-      ?? SessionRecordsStore.resolveForProblem(record.resolveFor)
       ?? SessionRecordsStore.flowIdProblem(record.flowId)
       ?? SessionRecordsStore.completedProblem(record.completed)
       ?? SessionRecordsStore.stopRequestedProblem(record.stopRequested)
@@ -400,6 +514,28 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       return `unknown worktree kind ${JSON.stringify(value.kind)}`
     if (value.directoryId !== undefined && !SessionRecordsStore.isFilledString(value.directoryId))
       return 'worktree directoryId must be a non-empty string'
+    if (value.cwdSubpath !== undefined && !SessionRecordsStore.isSubpath(value.cwdSubpath))
+      return 'worktree cwdSubpath must be a relative path of named segments joined by /'
+    return SessionRecordsStore.callerProblem(value.caller)
+  }
+
+  /** A launch joins it onto the worktree path, so it must never climb out of the worktree or replace it. */
+  private static isSubpath(value: unknown): boolean {
+    return typeof value === 'string' && value.length > 0 && !/[\\:]/.test(value)
+      && value.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..')
+  }
+
+  private static callerProblem(value: SessionRecordWorktreeCaller | undefined): string | null {
+    if (value === undefined) return null
+    if (!value || typeof value !== 'object') return 'caller must be an object'
+    if (value.tag !== undefined && (typeof value.tag !== 'string' || !SessionLimits.worktreeTagShape.test(value.tag)))
+      return 'caller tag has an invalid shape'
+    if (value.notify === undefined) return null
+    if (!value.notify || typeof value.notify !== 'object') return 'caller notify must be an object'
+    if (!SessionRecordsStore.isFilledString(value.notify.sessionId)) return 'caller notify needs a sessionId string'
+    if (typeof value.notify.text !== 'string' || value.notify.text.length === 0
+      || value.notify.text.length > SessionLimits.worktreeNotifyCharacters)
+      return 'caller notify needs a text within the deliver limit'
     return null
   }
 
@@ -433,7 +569,81 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       return 'worktreeOutcome lines must be a list of strings'
     if (typeof value.at !== 'number' || !Number.isFinite(value.at))
       return 'worktreeOutcome needs an at number'
+    if (value.labelled !== undefined && !SessionRecordsStore.isLabelledList(value.labelled))
+      return 'worktreeOutcome labelled must be a list of labelled revisions'
     return null
+  }
+
+  /** Shape only, like the other gates: the cursors must name an entry, the stage and the reason one of their sets. */
+  private static svnActionProblem(value: SessionRecord['svnAction']): string | null {
+    if (value === undefined) return null
+    if (!value || typeof value !== 'object') return 'svnAction must be an object'
+    const action = value as Partial<SessionRecordSvnAction>
+    if (action.kind !== 'finish' && action.kind !== 'discard' && action.kind !== 'update-main')
+      return `unknown SVN action kind ${JSON.stringify(action.kind)}`
+    if (!SessionRecordsStore.isFilledString(action.actionId)) return 'svnAction needs an actionId'
+    if (!SessionRecordsStore.svnActionStagesConst.includes(action.stage)) return `unknown SVN action stage ${JSON.stringify(action.stage)}`
+    if (!SessionRecordsStore.isFilledString(action.root)) return 'svnAction needs a root'
+    for (const field of ['runId', 'reviewCommitId'] as const)
+      if (action[field] !== undefined && !SessionRecordsStore.isFilledString(action[field]))
+        return `svnAction ${field} must be a non-empty string`
+    if (!Array.isArray(action.checks)) return 'svnAction checks must be an array'
+    for (const step of action.checks) {
+      const problem = SessionRecordsStore.scriptStepProblem(step)
+      if (problem) return `svnAction checks: ${problem}`
+      if (step.scriptId !== 'checks') return `svnAction checks: a ${JSON.stringify(step.scriptId)} step is not a check`
+    }
+    if (!SessionRecordsStore.isIndex(action.checkCursor, Math.max(action.checks.length, 1)))
+      return 'svnAction checkCursor must be an index into its checks'
+    if (action.roots !== undefined && (!Array.isArray(action.roots) || !action.roots.every((root) => root && typeof root === 'object'
+      && SessionRecordsStore.isFilledString(root.path) && typeof root.own === 'string' && SessionRecordsStore.isStringList(root.changed))))
+      return 'svnAction roots must be a list of roots'
+    if (!SessionRecordsStore.isIndex(action.rootCursor, Math.max(action.roots?.length ?? 0, 1)))
+      return 'svnAction rootCursor must be an index into its roots'
+    const rounds = action.rounds
+    if (!rounds || typeof rounds !== 'object'
+      || ![rounds.incoming, rounds.outOfDate, rounds.lock].every((count) => Number.isSafeInteger(count) && count >= 0))
+      return 'svnAction needs its rounds'
+    if (!SessionRecordsStore.isLabelledList(action.evidence)) return 'svnAction evidence must be a list of labelled revisions'
+    for (const field of ['startedAt', 'retryAt', 'baseRevision'] as const)
+      if ((field === 'startedAt' || action[field] !== undefined)
+        && (typeof action[field] !== 'number' || !Number.isFinite(action[field])))
+        return `svnAction ${field} must be a number`
+    if (action.requestedBy !== 'window' && action.requestedBy !== 'cli' && action.requestedBy !== 'peer')
+      return `unknown SVN action caller ${JSON.stringify(action.requestedBy)}`
+    if (action.removal !== undefined && action.removal !== 'removed' && action.removal !== 'kept'
+      && action.removal !== 'in-use' && action.removal !== 'undeleted')
+      return `unknown SVN action removal ${JSON.stringify(action.removal)}`
+    const needs = action.needs
+    if (needs !== undefined && (!needs || typeof needs !== 'object' || !SessionRecordsStore.svnActionNeedsConst.includes(needs.kind)
+      || typeof needs.reason !== 'string' || typeof needs.at !== 'number'))
+      return 'svnAction needs must name a known reason'
+    const verdict = action.verdict
+    if (verdict !== undefined && (!verdict || typeof verdict !== 'object'
+      || (verdict.kind !== 'succeeded' && !(verdict.kind === 'failed' && typeof verdict.reason === 'string'))
+      || (verdict.exitCode !== undefined && !Number.isSafeInteger(verdict.exitCode))))
+      return 'svnAction verdict must be a known verdict'
+    const passed = action.checksPassed
+    if (passed !== undefined && (!passed || typeof passed !== 'object' || !SessionRecordsStore.isFilledString(passed.fingerprint)
+      || typeof passed.at !== 'number'))
+      return 'svnAction checksPassed needs a fingerprint and an at number'
+    const conflicts = action.conflicts
+    if (conflicts !== undefined && (!conflicts || typeof conflicts !== 'object' || !SessionRecordsStore.isStringList(conflicts.paths)
+      || !SessionRecordsStore.isStringList(conflicts.before) || typeof conflicts.at !== 'number' || !Number.isFinite(conflicts.at)))
+      return 'svnAction conflicts need their paths, the changes before the resolver and an at number'
+    if (action.resolverSpent !== undefined && action.resolverSpent !== true)
+      return `svnAction resolverSpent must be true or absent, not ${JSON.stringify(action.resolverSpent)}`
+    return null
+  }
+
+  private static isIndex(value: unknown, length: number): boolean {
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value < length
+  }
+
+  private static isLabelledList(value: unknown): value is readonly SvnLabelledRevision[] {
+    return Array.isArray(value) && value.every((entry) => entry && typeof entry === 'object'
+      && SessionRecordsStore.isFilledString(entry.repository) && Number.isSafeInteger(entry.revision) && entry.revision > 0
+      && SessionRecordsStore.revisionLabelsConst.includes(entry.label))
   }
 
   private static retiredWorktreeProblem(value: SessionRecord['retiredWorktree']): string | null {
@@ -447,7 +657,13 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       return 'retiredWorktree revisions must be a list of strings'
     if (typeof value.removedAt !== 'number' || !Number.isFinite(value.removedAt))
       return 'retiredWorktree needs a removedAt number'
-    return null
+    if (value.directoryId !== undefined && !SessionRecordsStore.isFilledString(value.directoryId))
+      return 'retiredWorktree directoryId must be a non-empty string'
+    if (value.ownerDir !== undefined && !SessionRecordsStore.isFilledString(value.ownerDir))
+      return 'retiredWorktree ownerDir must be a non-empty string'
+    if (value.landed !== undefined && (!SessionRecordsStore.isLabelledList(value.landed) || value.ownerDir === undefined))
+      return 'retiredWorktree landed must be a list of labelled revisions beside an ownerDir'
+    return SessionRecordsStore.callerProblem(value.caller)
   }
 
   private static worktreeCleanupProblem(value: SessionRecord['worktreeCleanup']): string | null {
@@ -522,12 +738,6 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     if (value.failure !== undefined && typeof value.failure !== 'string')
       return 'worktreeMerge failure must be a string'
     return null
-  }
-
-  /** The other direction of the same link `setupFor` names, and checked the same way. */
-  private static resolveForProblem(value: SessionRecord['resolveFor']): string | null {
-    if (value === undefined || SessionRecordsStore.isFilledString(value)) return null
-    return `resolveFor must be a non-empty string, not ${JSON.stringify(value)}`
   }
 
   private static completedProblem(value: SessionRecord['completed']): string | null {
@@ -605,6 +815,8 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     // says yes, and a session wrongly read as one-shot is one nothing ever reopens.
     if (value.oneShot !== undefined && value.oneShot !== true)
       return `oneShot must be true or absent, not ${JSON.stringify(value.oneShot)}`
+    if (value.permission !== undefined && value.permission !== 'accept-edits')
+      return `unknown agent permission ${JSON.stringify(value.permission)}`
     if (value.nativeSessionIdSource !== undefined && value.nativeSessionIdSource !== 'provided'
       && value.nativeSessionIdSource !== 'codex-app-server') return 'unknown native identity source'
     for (const id of [value.identityLaunchId, value.unverifiedNativeSessionId])
@@ -624,6 +836,76 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     if (!value || typeof value !== 'object') return 'pendingSetup must be an object'
     if (!SessionRecordsStore.isFilledString(value.setupSessionId))
       return 'pendingSetup needs a setupSessionId'
+    // A wait without steps is one an older build wrote: a single setup step.
+    if (value.steps === undefined && value.cursor === undefined) return null
+    if (!Array.isArray(value.steps) || value.steps.length === 0)
+      return 'pendingSetup steps must be a non-empty array'
+    for (const step of value.steps) {
+      const problem = SessionRecordsStore.scriptStepProblem(step)
+      if (problem) return `pendingSetup steps: ${problem}`
+    }
+    if (typeof value.cursor !== 'number' || !Number.isSafeInteger(value.cursor)
+      || value.cursor < 0 || value.cursor >= value.steps.length)
+      return `pendingSetup cursor must be an index into its ${value.steps.length} steps`
+    return null
+  }
+
+  /** Shape only, like the before gate beside it: the cursor must name one of its steps. */
+  private static finishChecksProblem(value: SessionRecord['finishChecks']): string | null {
+    if (value === undefined) return null
+    if (!value || typeof value !== 'object') return 'finishChecks must be an object'
+    if (!SessionRecordsStore.isFilledString(value.runId)) return 'finishChecks needs a runId'
+    if (!Array.isArray(value.steps) || value.steps.length === 0)
+      return 'finishChecks steps must be a non-empty array'
+    for (const step of value.steps) {
+      const problem = SessionRecordsStore.scriptStepProblem(step)
+      if (problem) return `finishChecks steps: ${problem}`
+      // Only the project's own checks run after: any other step has no definition to judge it by.
+      if (step.scriptId !== 'declared') return `finishChecks steps: a ${JSON.stringify(step.scriptId)} step is not a check`
+    }
+    if (typeof value.cursor !== 'number' || !Number.isSafeInteger(value.cursor)
+      || value.cursor < 0 || value.cursor >= value.steps.length)
+      return `finishChecks cursor must be an index into its ${value.steps.length} steps`
+    if (typeof value.startedAt !== 'number' || !Number.isFinite(value.startedAt))
+      return 'finishChecks needs a startedAt number'
+    const result = value.result
+    if (result === undefined) return null
+    if (!result || typeof result !== 'object') return 'finishChecks result must be an object'
+    if (typeof result.at !== 'number' || !Number.isFinite(result.at)) return 'finishChecks result needs an at number'
+    if (result.kind === 'passed') return null
+    else if (result.kind === 'failed')
+      return typeof result.reason === 'string' ? null : 'a failed finishChecks result needs a reason'
+    else return `unknown finishChecks result ${JSON.stringify((result as { kind?: unknown }).kind)}`
+  }
+
+  private static scriptStepProblem(value: unknown): string | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return 'a step must be an object'
+    const step = value as Partial<SessionRecordScriptStep>
+    if (!SessionRecordsStore.isFilledString(step.key)) return 'a step needs a key'
+    if (step.scriptId !== 'setup' && step.scriptId !== 'declared' && step.scriptId !== 'checks' && step.scriptId !== 'svn')
+      return `unknown step script ${JSON.stringify(step.scriptId)}`
+    if (!SessionRecordsStore.isFilledString(step.name)) return 'a step needs a name'
+    if (step.commands === undefined) return 'a step needs commands'
+    if (step.scriptId === 'svn' && step.process === undefined) return 'an svn step runs a process'
+    if (step.process === undefined) return SessionRecordsStore.commandsProblem(step.commands)
+    if (!Array.isArray(step.commands) || step.commands.length > 0) return 'a process step runs no commands'
+    if (!step.process || typeof step.process !== 'object') return 'a step process must be an object'
+    if (!SessionRecordsStore.isFilledString(step.process.cwd)) return 'a step process needs a cwd'
+    return SessionRecordsStore.processProblem(step.process)
+  }
+
+  /** A launch plans either a shell line or a tool; a record that names both cannot say which it meant. */
+  private static recordProcessProblem(record: Partial<SessionRecord>): string | null {
+    if (record.process === undefined) return null
+    if (record.kind !== 'shell') return 'only a shell record runs a process'
+    if (record.commands !== undefined) return 'a record runs commands or a process, never both'
+    return SessionRecordsStore.processProblem(record.process)
+  }
+
+  private static processProblem(value: SessionRecordProcess): string | null {
+    if (!value || typeof value !== 'object') return 'process must be an object'
+    if (value.tool !== 'svn' && value.tool !== 'jamat-cli') return `unknown process tool ${JSON.stringify(value.tool)}`
+    if (!SessionRecordsStore.isStringList(value.args)) return 'process args must be a list of strings'
     return null
   }
 
@@ -670,9 +952,88 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     return null
   }
 
-  private static setupForProblem(value: SessionRecord['setupFor']): string | null {
+  /** Every reader decides what a run is from this link, so a shape it does not know is no run at all. */
+  private static scriptOfProblem(value: SessionRecord['scriptOf']): string | null {
     if (value === undefined) return null
-    if (!SessionRecordsStore.isFilledString(value)) return 'setupFor must be a non-empty string'
+    if (!value || typeof value !== 'object') return 'scriptOf must be an object'
+    const link = value as Partial<SessionRecordScriptLink>
+    if (!SessionRecordsStore.isFilledString(link.sessionId))
+      return `scriptOf sessionId must be a non-empty string, not ${JSON.stringify(link.sessionId)}`
+    if (link.phase !== 'before' && link.phase !== 'after' && link.phase !== 'inner')
+      return `unknown script phase ${JSON.stringify(link.phase)}`
+    if (link.scriptId !== 'setup' && link.scriptId !== 'declared' && link.scriptId !== 'merge-resolve'
+      && link.scriptId !== 'requested' && link.scriptId !== 'svn' && link.scriptId !== 'checks' && link.scriptId !== 'svn-resolve'
+      && link.scriptId !== 'review')
+      return `unknown script ${JSON.stringify(link.scriptId)}`
+    if (!SessionRecordsStore.isFilledString(link.name)) return 'scriptOf needs a name string'
+    if (link.stepKey !== undefined && !SessionRecordsStore.isFilledString(link.stepKey))
+      return 'scriptOf stepKey must be a non-empty string'
+    // A pair no definition answers would throw in every reconcile pass that reads it.
+    if (!SessionScriptDefinitions.known({ phase: link.phase, scriptId: link.scriptId }))
+      return `unknown script ${JSON.stringify(`${link.phase}/${link.scriptId}`)}`
+    return null
+  }
+
+  /** Shape only: the history is read by the snapshot, whose words switch over the outcome and the log state. */
+  private static scriptRunsProblem(value: SessionRecord['scriptRuns']): string | null {
+    if (value === undefined) return null
+    if (!Array.isArray(value)) return 'scriptRuns must be an array'
+    for (const entry of value) {
+      const problem = SessionRecordsStore.scriptRunProblem(entry)
+      if (problem) return `scriptRuns: ${problem}`
+    }
+    return null
+  }
+
+  private static scriptRunProblem(value: unknown): string | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return 'an entry must be an object'
+    const entry = value as Partial<SessionRecordScriptRun>
+    if (!SessionRecordsStore.isFilledString(entry.runId)) return 'an entry needs a runId'
+    if (entry.phase === undefined || entry.scriptId === undefined
+      || !SessionScriptDefinitions.known({ phase: entry.phase, scriptId: entry.scriptId }))
+      return `unknown script ${JSON.stringify(`${entry.phase}/${entry.scriptId}`)}`
+    if (typeof entry.name !== 'string' || typeof entry.title !== 'string') return 'an entry needs a name and a title'
+    if (entry.stepKey !== undefined && !SessionRecordsStore.isFilledString(entry.stepKey))
+      return 'an entry stepKey must be a non-empty string'
+    if (!SessionRecordsStore.isStringList(entry.commands)) return 'an entry needs a list of commands'
+    for (const field of ['startedAt', 'endedAt'] as const)
+      if (typeof entry[field] !== 'number' || !Number.isFinite(entry[field])) return `an entry needs a ${field} number`
+    if (entry.exitCode !== undefined && (typeof entry.exitCode !== 'number' || !Number.isFinite(entry.exitCode)))
+      return 'an entry exitCode must be a number'
+    if (entry.outcome !== 'succeeded' && entry.outcome !== 'failed'
+      && entry.outcome !== 'stopped' && entry.outcome !== 'lost')
+      return `unknown run outcome ${JSON.stringify(entry.outcome)}`
+    if (entry.reason !== undefined && typeof entry.reason !== 'string') return 'an entry reason must be a string'
+    const log = entry.log
+    if (!log || typeof log !== 'object') return 'an entry needs a log'
+    if (log.state === 'saved')
+      return typeof log.bytes === 'number' && Number.isSafeInteger(log.bytes) && log.bytes >= 0
+        && typeof log.truncated === 'boolean' ? null : 'a saved log needs a bytes count and a truncated flag'
+    else if (log.state === 'unavailable')
+      return typeof log.reason === 'string' ? null : 'an unavailable log needs a reason'
+    else
+      return `unknown log state ${JSON.stringify((log as { state?: unknown }).state)}`
+  }
+
+  private static commitReceiptsProblem(value: SessionRecord['commitReceipts']): string | null {
+    if (value === undefined) return null
+    if (!Array.isArray(value)) return 'commitReceipts must be an array'
+    for (const entry of value) {
+      const problem = SessionRecordsStore.commitReceiptProblem(entry)
+      if (problem) return `commitReceipts: ${problem}`
+    }
+    return null
+  }
+
+  private static commitReceiptProblem(value: unknown): string | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return 'a receipt must be an object'
+    const receipt = value as Partial<SessionRecordCommitReceipt>
+    if (!SessionRecordsStore.isFilledString(receipt.scopeRoot)) return 'a receipt needs a scopeRoot'
+    if (receipt.revision !== null && (typeof receipt.revision !== 'number' || !Number.isSafeInteger(receipt.revision)
+      || receipt.revision <= 0))
+      return 'a receipt revision must be a positive integer or null'
+    if (!SessionRecordsStore.isStringList(receipt.paths)) return 'a receipt needs a list of paths'
+    if (typeof receipt.at !== 'number' || !Number.isFinite(receipt.at)) return 'a receipt needs an at number'
     return null
   }
 

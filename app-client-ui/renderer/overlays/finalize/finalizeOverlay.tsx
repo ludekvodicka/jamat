@@ -1,12 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
 
+import type { SessionSetupAgreement } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { ErrorText } from '../../../shared/errorText'
 import type { TerminalTarget } from '../../../shared/terminalTarget'
 import { IpcFailure } from '../../ipc/ipcFailure'
+import { SessionNodeState } from '../../views/sessionsTree/sessionNodeState'
 import { ChoiceCard, ChoiceRow } from '../../widgets/choiceCards'
-import { FinalizeCatalog, type SessionFinalizePorts } from './finalizeCatalog'
-import { FinalizeAsks, type FinalizeOpenRequest } from './finalizeModel'
+import { type FinalizeAgreement, FinalizeCatalog, type SessionFinalizePorts } from './finalizeCatalog'
+import {
+  FinalizeAgreements,
+  FinalizeAsks,
+  FinalizeWorking,
+  type FinalizeOpenRequest,
+  type FinalizeSessionFacts,
+} from './finalizeModel'
 import './finalize.css'
+import { AppControl } from '../../ipc/appControl'
 
 export function FinalizeOverlay(props: {
   request: FinalizeOpenRequest
@@ -22,6 +31,13 @@ export function FinalizeOverlay(props: {
   )
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /**
+   * The commands a question's target asked this person to agree to. The hash travels with the ONE
+   * press that answers it, and only after the target asked, so an older target never meets the key.
+   */
+  const [agreement, setAgreement] = useState<{ specId: string; setup: SessionSetupAgreement } | null>(null)
+  /** A session that still works: the person reads why and finishes it anyway, or cancels. */
+  const [working, setWorking] = useState<{ specId: string; detail: string } | null>(null)
   const ports = FinalizePorts.of(ask.target)
   const remainingAsk = {
     ...ask,
@@ -51,13 +67,17 @@ export function FinalizeOverlay(props: {
     if (inFlight.current || completed.current.has(specId)) return
     setChosen((current) => new Map(current).set(specId, choiceId))
     setError(null)
+    setAgreement(null)
+    setWorking(null)
   }
 
-  const submit = async (): Promise<void> => {
+  const submit = async (agreed?: { specId: string; agreement: FinalizeAgreement }): Promise<void> => {
     if (inFlight.current) return
     inFlight.current = true
     setBusy(true)
     setError(null)
+    setAgreement(null)
+    setWorking(null)
     for (const entry of ask.questions) {
       if (completed.current.has(entry.specId)) continue
       const choiceId = chosen.get(entry.specId) ?? entry.question.chosenDefault
@@ -66,8 +86,23 @@ export function FinalizeOverlay(props: {
         throw new Error(`Unknown finalize choice: ${JSON.stringify(choiceId)}`)
       if (choice.submitLabel === null) continue
       try {
-        const answer = await FinalizeCatalog.byId(entry.specId).perform(choiceId, ports)
+        const answer = await FinalizeCatalog.byId(entry.specId)
+          .perform(choiceId, ports, agreed?.specId === entry.specId ? agreed.agreement : {})
         if (!mounted.current) return
+        const asked = FinalizeAgreements.of(answer)
+        if (asked !== null) {
+          inFlight.current = false
+          setBusy(false)
+          setAgreement({ specId: entry.specId, setup: asked })
+          return
+        }
+        const stillWorking = FinalizeWorking.of(answer)
+        if (stillWorking !== null) {
+          inFlight.current = false
+          setBusy(false)
+          setWorking({ specId: entry.specId, detail: stillWorking })
+          return
+        }
         const failure = IpcFailure.of(answer, choice.title)
         if (failure !== null) {
           inFlight.current = false
@@ -102,7 +137,8 @@ export function FinalizeOverlay(props: {
         aria-label={`Finish ${ask.sessionTitle}`}
         tabIndex={-1}
         onKeyDown={(event) => FinalizeKeys.handle(event, {
-          submit: () => void submit(),
+          // Agreeing to run commands is a click on the button that names it, never a stray Enter.
+          submit: () => { if (agreement === null && working === null) void submit() },
           close,
         })}
       >
@@ -120,8 +156,11 @@ export function FinalizeOverlay(props: {
           </button>
         </header>
         <div className="jamat-finalize__body">
+          <FinalizeSessionFactsLine facts={ask.session} />
           {ask.questions.map((entry) => (
             <ChoiceRow key={entry.specId} label={entry.question.label} current={false}>
+              {entry.question.note !== undefined
+                && <p className="jamat-finalize__note" role="status">{entry.question.note}</p>}
               <div className="jamat-choice__cards">
                 {entry.question.choices.map((choice) => (
                   <ChoiceCard
@@ -139,16 +178,52 @@ export function FinalizeOverlay(props: {
             </ChoiceRow>
           ))}
           {error !== null && <p className="jamat-finalize__error" role="alert">{error}</p>}
+          {agreement !== null && (
+            <div className="jamat-finalize__agreement" role="group" aria-label="Command agreement">
+              <p>This project asks to run these commands in its worktrees before the Finish goes on:</p>
+              <ul>
+                {agreement.setup.commands.map((command, index) =>
+                  <li key={index}><code>{command}</code></li>)}
+              </ul>
+            </div>
+          )}
+          {working !== null && (
+            <p className="jamat-finalize__agreement" role="alert">{working.detail}</p>
+          )}
           <div className="jamat-finalize__actions">
-            <button
-              className={`jamat-finalize__button jamat-finalize__button--primary${
-                danger ? ' jamat-finalize__button--danger' : ''}`}
-              type="button"
-              disabled={busy}
-              onClick={() => void submit()}
-            >
-              {busy ? 'Working…' : submitLabel}
-            </button>
+            {working !== null
+              ? (
+                  <button
+                    className="jamat-finalize__button jamat-finalize__button--primary"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void submit({ specId: working.specId, agreement: { confirmWorking: true } })}
+                  >
+                    Finish anyway
+                  </button>
+                )
+              : agreement === null
+              ? (
+                  <button
+                    className={`jamat-finalize__button jamat-finalize__button--primary${
+                      danger ? ' jamat-finalize__button--danger' : ''}`}
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void submit()}
+                  >
+                    {busy ? 'Working…' : submitLabel}
+                  </button>
+                )
+              : (
+                  <button
+                    className="jamat-finalize__button jamat-finalize__button--primary"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void submit({ specId: agreement.specId, agreement: { acknowledgeSetup: agreement.setup.hash } })}
+                  >
+                    Agree and finish
+                  </button>
+                )}
             <button
               className="jamat-finalize__button"
               type="button"
@@ -164,21 +239,63 @@ export function FinalizeOverlay(props: {
   )
 }
 
+/** Read-only: the dialog shows where the session stands and never moves it between groups. */
+function FinalizeSessionFactsLine(props: { facts: FinalizeSessionFacts }): React.JSX.Element {
+  const { glyph, group, note } = props.facts
+  return (
+    <dl className="jamat-finalize__facts" aria-label="Session state">
+      <div className="jamat-finalize__fact">
+        <dt>Activity</dt>
+        <dd>
+          <span
+            className={`jamat-finalize__glyph jamat-finalize__glyph--paint-${SessionNodeState.paintOf(glyph, false)}`}
+            aria-hidden="true"
+          >
+            {SessionNodeState.characterOf(glyph, false)}
+          </span>
+          {SessionNodeState.glyphTitleOf(glyph, false)}
+        </dd>
+      </div>
+      <div className="jamat-finalize__fact">
+        <dt>Group</dt>
+        <dd>{group}</dd>
+      </div>
+      {note !== null && (
+        <div className="jamat-finalize__fact jamat-finalize__fact--note">
+          <dt>Note</dt>
+          <dd>{note}</dd>
+        </div>
+      )}
+    </dl>
+  )
+}
+
 export class FinalizePorts {
   static of(target: TerminalTarget): SessionFinalizePorts {
     if (target.kind === 'local')
       return {
-        finalize: () => window.appClient.sessions.finalize(target.sessionId),
-        discardWorktree: () => window.appClient.sessions.discardWorktree(target.sessionId),
+        finalize: (acknowledgeSetup) => AppControl.sessionsDone('sessions.finalize', {
+          session: AppControl.sessionOf(target.sessionId),
+          ...(acknowledgeSetup === undefined ? {} : { acknowledgeSetup }),
+        }),
+        finishWorktree: (choice, agreement) => AppControl.sessionsDone('sessions.finishWorktree', {
+          session: AppControl.sessionOf(target.sessionId),
+          choice,
+          ...(agreement.acknowledgeSetup === undefined ? {} : { acknowledgeSetup: agreement.acknowledgeSetup }),
+          ...(agreement.confirmWorking === true ? { confirmWorking: true } : {}),
+        }),
       }
     else if (target.kind === 'remote')
       return {
-        finalize: () => window.appClient.remote.finalizeSession(
+        finalize: (acknowledgeSetup) => window.appClient.remote.finalizeSession(
           target.remoteEndpointId,
           target.sessionId,
+          acknowledgeSetup,
         ),
-        discardWorktree: () => {
-          throw new Error('A remote finalize ask cannot discard a worktree')
+        // A peer finishes through `sessions.finalize`: Commit is its only worktree press.
+        finishWorktree: (choice, agreement) => {
+          if (choice !== 'commit') throw new Error(`A remote finalize ask cannot ${choice} a worktree`)
+          return window.appClient.remote.finalizeSession(target.remoteEndpointId, target.sessionId, agreement.acknowledgeSetup)
         },
       }
     else

@@ -45,6 +45,7 @@ import type {
 } from '../overlays/configuration/configurationTab.types'
 import { WorktreeSetupIntentStore } from '../overlays/configuration/worktreeSetupIntentStore'
 import type { FinalizeAsk, FinalizeOpenRequest } from '../overlays/finalize/finalizeModel'
+import { type UpdateMainAsk, UpdateMainAsks, UpdateMainOverlay, type UpdateMainOpenRequest } from '../overlays/updateMain/updateMainOverlay'
 import { FinalizeOverlay } from '../overlays/finalize/finalizeOverlay'
 import type { LauncherBinding } from '../overlays/launcher/launcherBinding'
 import {
@@ -100,6 +101,8 @@ import { TerminalDraftRegistry } from './terminalDraftRegistry'
 import { TerminalInputRegistry } from './terminalInputRegistry'
 import { SessionRestartChain } from './sessionRestartChain'
 import { WindowInfoStore } from './windowInfoStore'
+import { AppControl } from '../ipc/appControl'
+import { UiSettingsStore } from '../uiSettings/uiSettingsStore'
 
 interface WorkspaceShellProps {
   wiring: WorkspaceShellWiring
@@ -142,6 +145,7 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
   const [settingsRequest, setSettingsRequest] = useState<ConfigurationOpenRequest | null>(null)
   const [detailsRequest, setDetailsRequest] = useState<SessionDetailsOpenRequest | null>(null)
   const [finalizeRequest, setFinalizeRequest] = useState<FinalizeOpenRequest | null>(null)
+  const [updateMainRequest, setUpdateMainRequest] = useState<UpdateMainOpenRequest | null>(null)
   const [remarkableRequest, setRemarkableRequest] = useState<RemarkableOpenRequest | null>(null)
   const overlayOpen = useRef(false)
   const { wiring } = props
@@ -239,8 +243,9 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
       || settingsRequest !== null
       || detailsRequest !== null
       || finalizeRequest !== null
+      || updateMainRequest !== null
       || remarkableRequest !== null
-  }, [launcherOpen, settingsRequest, detailsRequest, finalizeRequest, remarkableRequest])
+  }, [launcherOpen, settingsRequest, detailsRequest, finalizeRequest, updateMainRequest, remarkableRequest])
   useEffect(() => wiring.launcherCommands.bind(() => {
     if (claimOverlay())
       setLauncherOpen(true)
@@ -256,6 +261,10 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
   useEffect(() => wiring.finalizeCommands.bind((ask) => {
     if (claimOverlay())
       setFinalizeRequest((current) => ({ requestId: (current?.requestId ?? 0) + 1, ask }))
+  }), [wiring, claimOverlay])
+  useEffect(() => wiring.updateMainCommands.bind((ask) => {
+    if (claimOverlay())
+      setUpdateMainRequest((current) => ({ requestId: (current?.requestId ?? 0) + 1, ask }))
   }), [wiring, claimOverlay])
   useEffect(() => wiring.remarkableCommands.bind(() => {
     const target = wiring.activeTerminal.current()
@@ -317,6 +326,10 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
   }), [wiring])
   useEffect(() => window.appClient.onTabsClosePanel((panelId) => {
     void wiring.controller.hidePanel(panelId, { silent: true })
+      .catch((error: unknown) => WorkspacePanels.reportTabsError(error))
+  }), [wiring])
+  useEffect(() => window.appClient.onTabsHandOffPanel((panelId, params, title) => {
+    void wiring.controller.replacePanel(panelId, PanelKeysConst.terminal, title, params)
       .catch((error: unknown) => WorkspacePanels.reportTabsError(error))
   }), [wiring])
   useEffect(() => window.appClient.onTabsTerminalRestarted((targetKey) => {
@@ -430,6 +443,13 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
           onClose={() => setFinalizeRequest(null)}
         />
       )}
+      {updateMainRequest !== null && (
+        <UpdateMainOverlay
+          key={updateMainRequest.requestId}
+          request={updateMainRequest}
+          onClose={() => setUpdateMainRequest(null)}
+        />
+      )}
       {remarkableRequest !== null && (
         <RemarkableOverlay
           key={remarkableRequest.requestId}
@@ -484,7 +504,7 @@ class AppShellComposition {
         subscribe: (onChanged) => sessionsSnapshot.subscribe(onChanged),
         // Straight from the bridge, like the two below it: reopening left the tree's own ports
         // when Rerun became `Resume session`, and this chain is the other caller.
-        reopen: (sessionId) => window.appClient.sessions.reopen(sessionId),
+        reopen: (sessionId) => AppControl.sessionsDone('sessions.reopen', { session: AppControl.sessionOf(sessionId) }),
         reportError: (message) => sessionPorts.reportError(message),
         openSessionIds: () => WorkspaceChannels.openSessionIds(),
         publishSessionRestarted: (sessionId) =>
@@ -518,12 +538,19 @@ class AppShellComposition {
               onOpenTerminal={(target, title, intent) =>
                 void common.openTerminal(target, title, WorkspacePanels.openOptionsOf(intent))
                   .then((outcome) => WorkspacePanels.reportPanelOpen(outcome))}
+              // The path is left empty: main reads the log's path off the parent's history.
+              onOpenScriptLog={(parentId, runId) => void WorkspacePanels.openFileViewer(
+                common.controller,
+                { kind: 'scriptLog', sessionId: parentId, runId, path: '' },
+                `scriptLog:${parentId}:${runId}`,
+              )}
               // The tree never keeps the caret: what it puts in front is what gets typed into.
               onFocusTerminal={() =>
                 common.panelFocus.focus(common.controller.activePanelId())}
               onCloseTerminal={(target) => AppShellComposition.closeTerminal(target)}
               onRerunTerminal={(target) => AppShellComposition.rerunTerminal(target)}
               onFinalizeAsk={(ask) => common.finalizeCommands.open(ask)}
+              onUpdateMainAsk={(ask) => common.updateMainCommands.open(ask)}
             />
           )
         },
@@ -579,10 +606,10 @@ class AppShellComposition {
     const activeTerminal = new ActiveTerminalStore()
     const sessionModel = new SessionModelStore(AppShellComposition.sessionModelPorts())
     const agentSettings = new AgentSettingsStore({
-      read: () => window.appClient.agents.getSettings(),
+      read: () => AppControl.value('agentSettings.get', {}),
       subscribe: (onChanged) => window.appClient.onAgentSettingsChanged(onChanged),
       setAutoCompact: (agentId, enabled) =>
-        window.appClient.agents.setAutoCompact(agentId, enabled),
+        AppControl.library('agentSettings.setAutoCompact', { agentId: agentId, enabled: enabled }),
       reportError: (message) => AppClientUiReport.error(message),
     })
     let controller: TabsController
@@ -685,6 +712,7 @@ class AppShellComposition {
     const settingsCommands = new LateBoundCommand<ConfigurationTabId | null>('settings')
     const detailsCommands = new LateBoundCommand<string>('session details')
     const finalizeCommands = new LateBoundCommand<FinalizeAsk>('finalize')
+    const updateMainCommands = new LateBoundCommand<UpdateMainAsk>('update main copy')
     const remarkableCommands = new LateBoundCommand('reMarkable')
     const intents = new LauncherIntentStore()
     const worktreeSetupIntents = new WorktreeSetupIntentStore()
@@ -748,6 +776,7 @@ class AppShellComposition {
       settingsCommands,
       detailsCommands,
       finalizeCommands,
+      updateMainCommands,
       remarkableCommands,
       intents,
       worktreeSetupIntents,
@@ -764,25 +793,26 @@ class AppShellComposition {
 
   private static sessionPorts(): AppShellSessionPorts {
     return {
-      read: () => window.appClient.sessions.snapshot(),
+      read: () => AppControl.snapshot(),
       subscribe: (onChanged) => window.appClient.onSessionsChanged(onChanged),
       reportError: (message) => AppClientUiReport.error(`${message}`),
-      finalize: (sessionId) => window.appClient.sessions.finalize(sessionId),
-      remove: (sessionId) => window.appClient.sessions.remove(sessionId),
+      finalize: (sessionId) => AppControl.sessionsDone('sessions.finalize', { session: AppControl.sessionOf(sessionId) }),
+      remove: (sessionId) => AppControl.sessionsDone('sessions.remove', { session: AppControl.sessionOf(sessionId) }),
       retrySetup: (sessionId, acknowledgeSetup) =>
-        window.appClient.sessions.retrySetup(sessionId, acknowledgeSetup),
-      adoptOrphan: (runtimeSessionId) => window.appClient.sessions.adoptOrphan(runtimeSessionId),
-      startHost: () => window.appClient.sessions.startHost(),
+        AppControl.sessionsDone('sessions.retrySetup', { session: AppControl.sessionOf(sessionId), ...(acknowledgeSetup === undefined ? {} : { acknowledgeSetup: acknowledgeSetup }) }),
+      adoptOrphan: (runtimeSessionId) => AppControl.sessionsDone('sessions.adoptOrphan', { runtimeSessionId: runtimeSessionId }),
+      updateMain: (sessionId, confirmLive) => UpdateMainAsks.localPorts.updateMain(sessionId, confirmLive),
+      startHost: () => AppControl.sessionsDone('host.start', {}),
       restartHost: async (hostInstanceId) => {
-        const answer = await window.appClient.sessions.restartHost(hostInstanceId)
-        const snapshot = await window.appClient.sessions.snapshot()
+        const answer = await AppControl.sessionsDone('host.restart', { expectedHostInstanceId: hostInstanceId })
+        const snapshot = await AppControl.snapshot()
         if (snapshot.ok && snapshot.value.host.hostInstanceId !== hostInstanceId)
           for (const session of snapshot.value.sessions)
             if (session.life === 'live')
               await WorkspaceChannels.publishTerminalRestarted(session.sessionId)
         return answer
       },
-      stopHost: (hostInstanceId) => window.appClient.sessions.stopHost(hostInstanceId),
+      stopHost: (hostInstanceId) => AppControl.sessionsDone('host.stop', { expectedHostInstanceId: hostInstanceId }),
       confirmHostStop: (liveCount) => window.appClient.dialog.confirm(
         'Stop AppHost?',
         `This will end all ${liveCount} running terminal${liveCount === 1 ? '' : 's'}. Running commands will be interrupted and the sessions will not be reopened. Start the AppHost again from the status bar menu.`,
@@ -793,9 +823,20 @@ class AppShellComposition {
       ),
       loadView: () => window.appClient.state.loadSessionsView(),
       saveView: (view) => window.appClient.state.saveSessionsView(view),
+      loadScriptRuns: () => UiSettingsStore.stored().sessionsScriptRuns === true,
+      subscribeScriptRuns: (onChanged) =>
+        UiSettingsStore.subscribe((value) => onChanged(value.sessionsScriptRuns === true)),
+      saveScriptRuns: async (shown) => {
+        const value = { ...UiSettingsStore.stored(), sessionsScriptRuns: shown }
+        const answer = await AppControl.library('uiSettings.save', { value })
+        if (!answer.ok) return answer
+        if (!answer.value.ok) return { ok: false, error: answer.value.detail }
+        UiSettingsStore.committed(value)
+        return { ok: true, value: true }
+      },
       loadFilters: () => window.appClient.state.loadSessionFilters(),
       saveFilters: (filters) => window.appClient.state.saveSessionFilters(filters),
-      loadGroupDefinitions: () => window.appClient.sessionGroups.getGroups(),
+      loadGroupDefinitions: () => AppControl.value('sessionGroups.list', {}),
       loadGroups: () => window.appClient.state.loadSessionGroups(),
       assignGroup: (key, group) => window.appClient.state.assignSessionGroup(key, group),
       subscribeGroups: (onChanged) => window.appClient.onSessionGroupsChanged(onChanged),
@@ -831,9 +872,9 @@ class AppShellComposition {
 
   private static ratePorts(): AppShellRatePorts {
     return {
-      read: () => window.appClient.rateMonitor.get(),
+      read: () => AppControl.value('rate.get', {}),
       subscribe: (onChanged) => window.appClient.onRateChanged(onChanged),
-      refresh: () => window.appClient.rateMonitor.refresh(),
+      refresh: () => AppControl.value('rate.refresh', {}),
       reportError: (message) => AppClientUiReport.error(`${message}`),
     }
   }
@@ -855,7 +896,7 @@ class AppShellComposition {
    */
   private static sessionModelPorts(): SessionModelPorts {
     return {
-      read: (sessionId) => window.appClient.sessionModel.get(sessionId),
+      read: (sessionId) => AppControl.value('sessions.model', { sessionId }),
       reportError: (message) => AppClientUiReport.error(`${message}`),
     }
   }
@@ -1072,7 +1113,7 @@ class AppShellComposition {
       WorkspacePanels.started('session.setColor',
         SessionOperations.onSession(
           WorkspacePanels.commandTargetOf(controller, arg),
-          (sessionId) => window.appClient.sessions.setColor(sessionId, arg.color))))
+          (sessionId) => AppControl.sessionsDone('sessions.color', { session: AppControl.sessionOf(sessionId), color: arg.color }))))
     // The same launcher again, opened ON a session: the four below differ only in which agent they
     // fill in and whether they carry the conversation to fork.
     commands.register('session.newBeside', (arg) =>

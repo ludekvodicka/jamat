@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useReducer, useRef } from 'react'
 
+import type { IpcResult } from '../../../../shared/appClientUiIpc'
+import type { DirectoryNotesGetResult, DirectoryNotesSaveResult } from '../../../../shared/directoryNotes'
 import { PathText } from '../../../../shared/pathText'
 import { TerminalNotesMessages } from './terminalNotesMessages'
 import { TerminalNotesSaveQueue } from './terminalNotesSaveQueue'
 import { TerminalNotesState } from './terminalNotesState'
 import type { TerminalNoteEntry, TerminalNotesPhase, TerminalNotesView } from './terminalNotesState'
+import { AppControl } from '../../../ipc/appControl'
 
 export interface TerminalNotesModel {
   phase: TerminalNotesPhase
@@ -55,7 +58,7 @@ class TerminalNotesScope {
     this.current = TerminalNotesState.initial()
     this.queue = new TerminalNotesSaveQueue(
       async (notes) => TerminalNotesMessages.saveOutcomeOf(
-        await window.appClient.directoryNotes.save(sessionId, notes)),
+        await AppControl.library('directoryNotes.save', { sessionId, notes }) as IpcResult<DirectoryNotesSaveResult>),
       (outcome) => this.publish({ ...this.current, error: outcome.ok ? null : outcome.detail }),
     )
   }
@@ -131,7 +134,7 @@ class TerminalNotesScope {
         this.publish({ ...this.current, notice: TerminalNotesMessages.importStopped(flushed.detail) })
         return
       }
-      const answer = await window.appClient.directoryNotes.importPrompt(this.sessionId)
+      const answer = await AppControl.value('directoryNotes.importPrompt', { sessionId: this.sessionId })
       if (!this.alive) return
       if (!answer.ok) {
         this.publish({ ...this.current, notice: TerminalNotesMessages.importFailed(answer.error) })
@@ -186,7 +189,7 @@ class TerminalNotesScope {
     const revision = this.revision
     const read = ++this.reads
     this.publish(TerminalNotesState.loading(this.current))
-    const answer = await window.appClient.directoryNotes.get(this.sessionId)
+    const answer = await AppControl.library('directoryNotes.get', { sessionId: this.sessionId }) as IpcResult<DirectoryNotesGetResult>
     // An edit made while the read was out wins, and so does a later read.
     if (!this.alive || revision !== this.revision || read !== this.reads) return
     const snapshot = TerminalNotesMessages.snapshotOf(answer)

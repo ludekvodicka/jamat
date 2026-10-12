@@ -145,6 +145,13 @@ describe('lib-orchestrator/remoteControl/remoteControlRequestValidation', () => 
     expect(RemoteControlRequestValidation.parse(selected)).toEqual({ ok: true, request: selected })
     for (const paths of [[], [''], [1], null, 'file.txt', Array(2_001).fill('file.txt')])
       expect(RemoteControlRequestValidation.parse({ ...valid, body: { ...valid.body, paths } }).ok).toBe(false)
+    const depths = { ...valid, body: { ...valid.body,
+      paths: [{ path: 'Q:/Group', depth: 'empty' }, { path: 'Q:/Group/Project', depth: 'infinity' }, 'Q:/Group/file.txt'] } }
+    expect(RemoteControlRequestValidation.parse(depths)).toEqual({ ok: true, request: depths })
+    for (const target of [{ path: 'Q:/Group' }, { path: 'Q:/Group', depth: 'files' }, { path: '', depth: 'empty' },
+      { path: 'Q:/Group', depth: 'empty', recursive: false }, { depth: 'empty' }])
+      expect(RemoteControlRequestValidation.parse({ ...valid, body: { ...valid.body, paths: [target] } }))
+        .toMatchObject({ ok: false, error: { code: 'invalid-request' } })
     expect(RemoteControlConst.optionalOperations).toContain('tabs.openCommit')
     expect(RemoteControlConst.mutatingOperations).toContain('tabs.openCommit')
     expect(RemoteControlRequestValidation.parse({ ...valid, operation: 'vcs.commit' }).ok).toBe(false)
@@ -485,7 +492,7 @@ describe('lib-orchestrator/remoteControl/remoteControlRequestValidation', () => 
     expect(RemoteControlConst.mutatingOperations).not.toContain('sessions.worktree')
   })
 
-  it('takes the worktree endings as mutations, with an acknowledgement only on a setup retry', () => {
+  it('takes the worktree endings as mutations, with an acknowledgement only on a setup retry or a Finish', () => {
     const session = { kind: 'number', number: '014' }
     for (const operation of ['sessions.discardWorktree', 'sessions.cleanupWorktree', 'sessions.retrySetup'] as const) {
       const input = RemoteControlRequestValidationTest.of(operation, { session })
@@ -495,10 +502,13 @@ describe('lib-orchestrator/remoteControl/remoteControlRequestValidation', () => 
       expect(RemoteControlConst.optionalOperations).toContain(operation)
       expect(RemoteControlConst.mutatingOperations).toContain(operation)
     }
-    const acknowledged = RemoteControlRequestValidationTest.of('sessions.retrySetup', { session, acknowledgeSetup: 'hash-1' })
-    expect(RemoteControlRequestValidation.parse(acknowledged)).toEqual({ ok: true, request: acknowledged })
+    for (const operation of ['sessions.retrySetup', 'sessions.finalize'] as const) {
+      const acknowledged = RemoteControlRequestValidationTest.of(operation, { session, acknowledgeSetup: 'hash-1' })
+      expect(RemoteControlRequestValidation.parse(acknowledged)).toEqual({ ok: true, request: acknowledged })
+    }
     for (const input of [
       RemoteControlRequestValidationTest.of('sessions.retrySetup', { session, acknowledgeSetup: 7 }),
+      RemoteControlRequestValidationTest.of('sessions.finalize', { session, acknowledgeSetup: 7 }),
       RemoteControlRequestValidationTest.of('sessions.discardWorktree', { session, acknowledgeSetup: 'hash-1' }),
       RemoteControlRequestValidationTest.of('sessions.cleanupWorktree', { session, force: true }),
     ])

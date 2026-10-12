@@ -24,7 +24,7 @@ package, and one that has neither fails the generator, so nothing reaches this l
 
 ## Licenses in use
 
-330 npm components across the three graphs.
+331 npm components across the three graphs.
 
 | License | Components |
 | --- | --- |
@@ -34,7 +34,7 @@ package, and one that has neither fails the generator, so nothing reaches this l
 | BlueOak-1.0.0 | 1 |
 | BSD-3-Clause | 40 |
 | ISC | 43 |
-| MIT | 239 |
+| MIT | 240 |
 | MPL-2.0 | 2 |
 | Python-2.0 | 1 |
 | Unlicense | 1 |
@@ -375,4 +375,5 @@ the package declares none in its manifest and the id was read from its license f
 | `yaml` | 2.9.0 | ISC | app-client-ui |
 | `yargs` | 18.0.0 | MIT | app-client-ui |
 | `yargs-parser` | 22.0.0 | ISC | app-client-ui |
+| `zod` | 4.6.5 | MIT | app-client-ui, lib-orchestrator |
 | `zwitch` | 2.0.4 | MIT | app-client-ui |

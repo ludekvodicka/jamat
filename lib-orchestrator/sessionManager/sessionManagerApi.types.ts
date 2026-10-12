@@ -64,11 +64,29 @@ export interface SessionCreateSpec {
     model?: string
   }
   /**
-   * `owner` is the directory the worktree is cut from: the project or a directory below it. Absent
-   * means the project itself. `removeWhenEnded` has an SVN worktree removed once the session's
-   * process ended and nothing is left in it; a Git worktree ignores it and keeps its Finish.
+   * The worktree of the session's directory: in `checkpoints` mode inside an SVN working copy any
+   * directory, which checks out its product group, else its catalog project, else itself, and the
+   * session starts at its place below (`WorktreeOwner`); otherwise a catalog project only.
+   *
+   * `owner` (dormant, pp 7.3 only) names the directory an SVN worktree checks out instead: the
+   * project or a directory below it, where the session starts. `removeWhenEnded` (dormant, pp 7.3
+   * only) has an SVN worktree removed once the session's process ended and nothing is left in it; a
+   * Git worktree ignores it and keeps its Finish. Register: `lib-orchestrator.md`, dormant code.
+   *
+   * `tag` is the caller's opaque word (`SessionLimits.worktreeTagShape`), echoed on every result of
+   * the worktree. `notify` names a local session that gets `text` typed once into its empty composer
+   * when a result is written. A build before 3.11 refuses both by name (exact keys).
    */
-  worktree?: { slug: string; baseRef?: string; owner?: string; removeWhenEnded?: true }
+  worktree?: {
+    slug: string
+    baseRef?: string
+    owner?: string
+    removeWhenEnded?: true
+    tag?: string
+    notify?: { sessionId: string; text: string }
+  }
+  /** Local only; wakes the target on end or a move into a named group. Version marker: sessions.notifies. */
+  notify?: { sessionId: string; text: string; onGroups: string[] }
   title?: string
   /**
    * The number this session is to carry INSTEAD of one from the project's counter: `i34` for issue
@@ -109,9 +127,11 @@ export interface SessionCreateSpec {
    */
   flowId?: string
   /**
-   * The hash of the setup commands the person was shown and agreed to run. Present only on the second
-   * attempt, after a create came back `setup-not-acknowledged` carrying that hash: the first attempt
-   * is what asks the question, this is the answer travelling back with it.
+   * The hash of the commands the person was shown and agreed to run. It covers every command the
+   * project's `.worktree.json` authors - `setup` and both `scripts` phases - not only the setup the
+   * name says. Present only on the second attempt, after a create came back `setup-not-acknowledged`
+   * carrying that hash: the first attempt is what asks the question, this is the answer travelling
+   * back with it.
    */
   acknowledgeSetup?: string
 }
@@ -241,6 +261,8 @@ export type SessionOperation =
   | 'remove'
   | 'discardWorktree'
   | 'retrySetup'
+  /** A landed row: update the main copy that lacks the revisions its worktree committed. */
+  | 'updateMain'
 
 export interface SessionMergeInfo {
   phase: 'base-merging' | 'resolving' | 'main-merging' | 'tearing-down'
@@ -272,6 +294,16 @@ export type SessionWorktreeKind = 'svn' | 'git'
 /** What Finish offers for a worktree, composed by the library; a surface never derives it from the kind. */
 export type SessionFinishChoice = 'commit' | 'merge' | 'keep' | 'discard'
 
+/** One press of Finish on a worktree: the choice, what the person agreed to, and where it came from. */
+export interface SessionFinishPress {
+  choice: SessionFinishChoice
+  /** The hash of the command agreement the press answers. */
+  acknowledgeSetup?: string
+  /** The person finishes a session that is still working. */
+  confirmWorking?: true
+  requestedBy: 'window' | 'cli' | 'peer'
+}
+
 export type SvnFinishPhase = 'updating' | 'reviewing' | 'main-updating' | 'removing'
 
 export type SvnFinishResult = 'committed' | 'partial' | 'not-committed' | 'out-of-date'
@@ -281,20 +313,68 @@ export type SvnFinishMainResult = 'none' | 'updated' | `merged:${number}` | `con
 
 export type SvnFinishWorktreeResult = 'removed' | 'kept' | 'in-use' | 'undeleted'
 
+/**
+ * How a revision of an SVN action is known to be this worktree's: a commit receipt the log confirmed,
+ * the worktree's own BASE, or the log of the paths the action saw changed. No label decides a removal.
+ */
+export type SvnRevisionLabel = 'receipt' | 'base-proof' | 'inferred'
+
+export interface SvnLabelledRevision {
+  /** Repository root URL. */
+  repository: string
+  revision: number
+  label: SvnRevisionLabel
+}
+
+/**
+ * Where an SVN action is. Run stages wait on a script run of the session; client stages are short
+ * writes this client makes (`SvnActionStages`).
+ */
+export type SvnActionStage =
+  | 'stopping' | 'evidence' | 'checks' | 'updating' | 'cleaning' | 'resolving' | 'verifying' | 'diffing' | 'reviewing'
+  | 'removing' | 'recording'
+
+/** `update-main` runs in a main copy, on the session that started it, which may hold no worktree. */
+export type SvnActionKind = 'finish' | 'discard' | 'update-main'
+
+/** Why an SVN action waits for the person; Finish again, Keep and Discard are the ways on. */
+export type SvnActionNeed =
+  | 'check-failed' | 'conflict' | 'resolver-failed' | 'incoming' | 'out-of-date' | 'review-cancelled'
+  | 'review-interrupted' | 'partial' | 'pinned-external' | 'locked' | 'svn-failed' | 'not-stopped'
+
+/** The full stage of an SVN action; `SessionWorktreeInfo.finish.phase` keeps the four legacy words for older peers. */
+export interface SessionSvnActionInfo {
+  kind: SvnActionKind
+  stage: SvnActionStage
+  /** The reason a person must act, or null while it runs. */
+  needs: string | null
+  needsKind: SvnActionNeed | null
+  /** The review open now: its place among the roots to review, from 1. */
+  review: { index: number; count: number; scopeRoot: string } | null
+}
+
 /** The result of the last SVN finish of a session, the twin of the bash helper's RESULT line. */
 export interface SessionWorktreeOutcome {
   result: SvnFinishResult
   /** `<repository URL>:r<N>`, ordered by repository URL, then revision. */
   revisions: readonly string[]
+  /** Always `none` since 3.11: landing is the commit, and nothing writes the main copy after it. */
   main: SvnFinishMainResult
   worktree: SvnFinishWorktreeResult
-  /** RECOVERED, UPDATED, CONFLICT, UNVERIFIED, EXTERNAL PUBLISHED, MAIN ... lines, verbatim. */
+  /** The lines of the ending, verbatim. */
   lines: readonly string[]
   at: number
+  /** The revisions of an SVN action with how each is known; absent before 3.11. */
+  labelled?: readonly SvnLabelledRevision[]
 }
 
 export interface SessionWorktreeInfo {
   worktreePath: string
+  /**
+   * svn: where the session runs below the worktree, '/'-separated; absent at the worktree itself and
+   * from peers before 3.11.
+   */
+  cwdSubpath?: string
   /** git: the branch; svn: the checked-out URL. */
   branch: string
   /** git: the commit; svn: `r<rev>`. */
@@ -306,9 +386,11 @@ export interface SessionWorktreeInfo {
   diff: { added: number; removed: number; changedFiles: number; capturedAt: number } | null
   /** Always false for svn: an SVN worktree takes everyone else's commits when it finishes. */
   baseMoved: boolean
-  /** Present only while an SVN finish of this worktree runs. */
+  /** Present only while an SVN action of this worktree runs, its stage in the four legacy words. */
   finish?: { phase: SvnFinishPhase; scopeRoot?: string }
   outcome?: SessionWorktreeOutcome
+  /** A live SVN worktree: Finish opens its dialog at once, and the action stops the session first. */
+  liveFinish?: true
   /**
    * Present while the worktree waits to be removed after the session's end, or was kept by that
    * removal. `summary` is the sentence a surface shows; `reason` is the record's own word.
@@ -328,6 +410,27 @@ export interface SessionWorktreeCleanupInfo {
 export interface SessionRetiredWorktreeInfo {
   worktreePath: string
   revisions: readonly string[]
+  /**
+   * A landed row: the Finish committed, and the main copy does not hold the newest revision of each
+   * repository yet. The row goes once it does; `behind` is null while the server was not read or
+   * could not be reached. Absent on every other tombstone and from peers before 3.11.
+   */
+  landing?: SessionLandingInfo
+}
+
+export interface SessionLandingInfo {
+  mainCopy: string
+  /** Revisions of the main copy's path between its root revision and HEAD; null: unknown. */
+  behind: number | null
+  /** `<repository URL>:r<N>`, the newest landed revision of each repository. */
+  newest: readonly string[]
+}
+
+/** A live session that works in a main copy an UPDATE would change under it. */
+export interface SessionLiveBrief {
+  sessionId: string
+  title: string
+  number: string | null
 }
 
 /** The directory a session's worktree occupies, as a script reads it: git names no URL and no revision. */
@@ -357,8 +460,91 @@ export interface SessionWorktreeState {
   worktree: SessionWorktreePlace | null
   retired: { worktreePath: string; revisions: readonly string[]; removedAt: number } | null
   finish: { phase: SvnFinishPhase; scopeRoot: string | null } | null
+  /** The SVN action running or waiting for the person; a build before 3.11 leaves the field out. */
+  action: SessionSvnActionInfo | null
   outcome: SessionWorktreeOutcome | null
   cleanup: { phase: SessionWorktreeCleanupPhase; reason: string | null } | null
+  /**
+   * The SVN commits made from this session's commit split, or into its worktree, oldest first.
+   * Answered for any session, with or without a worktree. A build before 3.11 leaves the field out.
+   */
+  receipts: readonly SessionCommitReceiptInfo[]
+}
+
+/** How an SVN worktree ended, as its durable result says it. */
+export type WorktreeResultKind = 'committed' | 'nothing' | 'partial' | 'not-committed' | 'discarded' | 'kept' | 'failed'
+
+/** `pending`: the worktree is still on disk and the cleanup removes it once nothing holds it. */
+export type WorktreeResultRemoval = 'removed' | 'pending' | 'kept'
+
+/**
+ * The durable result of a Finish, a Discard, a Keep or a cleanup of an SVN worktree. It outlives the
+ * session: `sessions worktree-results` answers it after the session was removed, for 30 days, or 1
+ * day after it was acknowledged. `logs` are copies of the action's run logs beside the result.
+ */
+export interface WorktreeResultDto {
+  actionId: string
+  action: 'finish' | 'discard' | 'cleanup'
+  result: WorktreeResultKind
+  sessionId: string
+  title: string
+  tag: string | null
+  worktreePath: string
+  mainCopy: string
+  directoryId: string | null
+  removal: WorktreeResultRemoval
+  revisions: readonly SvnLabelledRevision[]
+  lines: readonly string[]
+  logs: readonly { runId: string; title: string; path: string }[]
+  notify: { sessionId: string; state: 'pending' | 'delivered' | 'expired'; at: number | null } | null
+  /** Whether the main copy holds every committed revision; null until the landed check reads it. */
+  holdsLanded: boolean | null
+  at: number
+  acknowledgedAt: number | null
+}
+
+export type SessionNotifyCause = 'ended' | `group:${string}`
+
+export interface SessionNotifyEventDto {
+  cause: SessionNotifyCause
+  at: number
+  state: 'pending' | 'delivered' | 'expired'
+  attempts: number
+  settledAt: number | null
+}
+
+export interface SessionNotifyDto {
+  sessionId: string
+  target: string
+  text: string
+  onGroups: string[]
+  events: SessionNotifyEventDto[]
+}
+
+/** What `sessions worktree-results` filters on; every field narrows, none is required. */
+export interface WorktreeResultsFilter {
+  tag?: string
+  sessionId?: string
+  unacknowledged?: true
+}
+
+/** One receipt as `sessions worktree` answers it; revision null: TortoiseSVN closed, which proves nothing. */
+export interface SessionCommitReceiptInfo {
+  scopeRoot: string
+  revision: number | null
+  at: number
+}
+
+/**
+ * What the commit dialog reports once an SVN review settles (`SessionManager.noteCommitted`): every
+ * scope it committed with its own revision, in commit order, and the committed paths.
+ */
+export interface SessionCommitReceipt {
+  /** The session of the split; a script run's receipt goes to the session it runs for. */
+  sessionId: string
+  scopes: readonly { scopeRoot: string; revision: number | null }[]
+  /** Absolute committed paths of every scope. */
+  paths: readonly string[]
 }
 
 /**
@@ -390,6 +576,96 @@ export type SessionSetupInfo =
   | { state: 'failed'; setupSessionId: string; commands: readonly string[] }
   /** Nothing ran, and this says why. */
   | { state: 'skipped'; reason: string }
+
+/** When a script run runs for its parent: before the parent starts, after its work, or inside it on request. */
+export type SessionScriptPhase = 'before' | 'after' | 'inner'
+
+/**
+ * Which kind of script a run is. Each kind belongs to one phase and is owned by one flow. `svn`,
+ * `checks`, `svn-resolve` and `review` are the runs of an SVN action; an older peer drops them and
+ * nests them by `setupFor`.
+ */
+export type SessionScriptId = 'setup' | 'declared' | 'merge-resolve' | 'requested' | 'svn' | 'checks' | 'svn-resolve' | 'review'
+
+/** On a script run: the session it runs for, and which script it is. The tree nests the run under it. */
+export interface SessionScriptLinkInfo {
+  parentId: string
+  phase: SessionScriptPhase
+  scriptId: SessionScriptId
+}
+
+export type SessionScriptRunState = 'running' | 'succeeded' | 'failed' | 'stopped' | 'lost'
+
+/** One run of a parent, still a row or already history, as the `Scripts` menu lists it. */
+export interface SessionScriptRunInfo {
+  runId: string
+  phase: SessionScriptPhase
+  scriptId: SessionScriptId
+  name: string
+  title: string
+  state: SessionScriptRunState
+  /**
+   * The menu line, composed by the library: "Setup i12-x · failed · exit 1 · 24 s". A running run
+   * carries no elapsed time, because a field that moves on every poll mints a revision on every poll.
+   */
+  summary: string
+  startedAt: number
+  endedAt?: number
+  durationText?: string
+  exitCode?: number
+  /**
+   * Empty for a requested run in `SessionInfo.scripts`, which reaches paired peers: an agent's command
+   * may carry a token. The local-only `sessions.scripts` reading and the log header keep it.
+   */
+  commands: readonly string[]
+  /** The run's own record still exists, so the tree draws it as a child row with a terminal. */
+  row: boolean
+  /** `none`: the run has not been settled yet, so nothing was saved or found missing. */
+  log: 'saved' | 'unavailable' | 'none'
+  /** Why the log is unavailable. */
+  logDetail?: string
+}
+
+/** The one badge a parent row carries about its before or after scripts, in the library's words. */
+export interface SessionScriptsBadge {
+  phase: 'before' | 'after'
+  state: 'running' | 'failed' | 'skipped' | 'succeeded'
+  /** `installing dependencies`, `setup: codegen`, `setup failed`, `setup ✓ 23.6 s`, `checks: tests`. */
+  text: string
+  title: string
+  /** Running or failed: the run row. Succeeded: the history entry that holds the log. */
+  runId?: string
+}
+
+/** On a parent only, and only where it has anything: runs, a badge, or a launch waiting on a run. */
+export interface SessionScriptsInfo {
+  /** Rows and history together, newest first. */
+  runs: readonly SessionScriptRunInfo[]
+  badge?: SessionScriptsBadge
+  /** The run the parent's own launch waits for; a click on the parent opens its terminal. */
+  waitingOn?: string
+}
+
+/**
+ * A shell run a live session asks for, judged by its exit code and drawn as its child. `cwd` is
+ * relative to the session's own directory, or absolute inside it; absent is that directory.
+ * `title` names the run; absent, the command does.
+ */
+export interface SessionScriptRequest {
+  command: string
+  cwd?: string
+  title?: string
+}
+
+/** A session's runs, newest first, and the saved log of the one run asked for. */
+export interface SessionScriptsReading {
+  sessionId: string
+  runs: readonly SessionScriptRunInfo[]
+  /** The tail of the saved log, at most the 256 KiB a log keeps; null when no run was named or it has none. */
+  log: { runId: string; text: string; truncated: boolean } | null
+  /** Why the run that was named has no log text. */
+  logDetail?: string
+}
 
 /** The library's split of a session's title; `SessionTitle` is the one thing that computes it. */
 export interface SessionTitleParts {
@@ -490,13 +766,20 @@ export interface SessionInfo {
    * twice, which is what a Host restarting looks like and is not worth a word.
    */
   launchWait?: { reason: string; attempts: number }
+  /** Still composed for older peers, which draw it; `scripts.badge` says the same and more. */
   setup?: SessionSetupInfo
-  /** On the installing session only: the session it is installing for. */
+  /** For older peers: on every script run except the resolver, the session it runs for. */
   setupFor?: string
   /** Present only while this session's worktree is being merged back. */
   merge?: SessionMergeInfo
-  /** On a resolve session only: whose merge it is settling. The tree nests it under that one. */
+  /** For older peers: on a resolve session only, whose merge it is settling. */
   resolveFor?: string
+  /** On a script run only. */
+  script?: SessionScriptLinkInfo
+  /** On a parent only. */
+  scripts?: SessionScriptsInfo
+  /** An SVN action of this session, running or waiting for the person. */
+  svnAction?: SessionSvnActionInfo
 }
 
 export interface OrphanInfo {
@@ -524,7 +807,9 @@ export interface SessionsSnapshot {
 }
 
 /**
- * What a client must show and hand back to agree to a project's setup commands.
+ * What a client must show and hand back to agree to a project's own commands. `commands` is the
+ * display list: setup commands verbatim, then `before <name>: <command>` and `after <name>: <command>`,
+ * so an older client that shows the list shows everything it agrees to.
  *
  * Named rather than left inline on the refusal arm, which is where it was: a renderer that wanted to
  * carry it through its own model had nothing to import and wrote the shape out, seven times over five
@@ -562,9 +847,9 @@ export type SessionsOpErrorCode =
   | 'spawn-failed'
   | 'boot-timeout'
   /**
-   * The project declares its own `setup` in a `.worktree.json`, and nobody on this machine has agreed
-   * to run it. That file arrives with a clone, so its commands are the one input this library would
-   * execute that nobody here wrote.
+   * The project declares its own commands in a `.worktree.json` (`setup` or `scripts`), and nobody on
+   * this machine has agreed to run them. That file arrives with a clone, so its commands are the one
+   * input this library would execute that nobody here wrote.
    */
   | 'setup-not-acknowledged'
   /**
@@ -598,6 +883,12 @@ export type SessionsOpErrorCode =
   | 'worktree-conflict'
   /** Committing an SVN worktree needs this client's commit dialog, and there is none to open. */
   | 'review-unavailable'
+  /** The session still works; the press is repeated with `confirmWorking` to finish it anyway. */
+  | 'session-working'
+  /** Other live sessions work in the main copy; the UPDATE is repeated with `confirmLive` naming them. */
+  | 'live-sessions'
+  /** A person already wrote the commit message of that scope; a proposal never replaces it. */
+  | 'message-edited'
 
 export type SessionsOpResult<T = void> =
   | { ok: true; value: T }
@@ -607,6 +898,8 @@ export type SessionsOpResult<T = void> =
       detail: string
       /** Only on `setup-not-acknowledged`; see `SessionSetupAgreement` for why it is not a string. */
       setup?: SessionSetupAgreement
+      /** Only on `live-sessions`: the sessions a confirmation has to name. */
+      liveSessions?: readonly SessionLiveBrief[]
     }
 
 /**

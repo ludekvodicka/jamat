@@ -96,8 +96,8 @@ export class ServiceRemoteControlIpc
       this.outbound.execute(endpointId, this.createRequest(spec, operationId)))
     this.register('remote:sessions-reopen', (_event, endpointId, sessionId) =>
       this.outbound.execute(endpointId, this.sessionRequest('sessions.reopen', sessionId)))
-    this.register('remote:sessions-finalize', (_event, endpointId, sessionId) =>
-      this.outbound.execute(endpointId, this.sessionRequest('sessions.finalize', sessionId)))
+    this.register('remote:sessions-finalize', (_event, endpointId, sessionId, acknowledgeSetup) =>
+      this.outbound.execute(endpointId, this.sessionRequest('sessions.finalize', sessionId, acknowledgeSetup)))
     // The one remote channel that sends nothing over the wire: what it answers is composed from the
     // snapshot that computer already pushed.
     this.register('remote:sessions-reference', (_event, endpointId, sessionId) =>
@@ -105,7 +105,7 @@ export class ServiceRemoteControlIpc
     this.register('remote:terminal-attach', async (event, endpointId, attachId, spec) => {
       if (!this.deps.acceptsRenderer(event.sender))
         throw new Error('The workspace window is closing')
-      if (!this.outbound.isSessionSelected(endpointId, spec.sessionId))
+      if (!this.outbound.admitsTerminal(endpointId, spec.sessionId))
         return { ok: false, error: { code: 'unavailable', detail: 'Select this session in Remote computers to connect it.' } }
       const key = ServiceRemoteControlIpc.attachKey(endpointId, attachId)
       if (this.attaches.has(key))
@@ -188,6 +188,7 @@ export class ServiceRemoteControlIpc
   private sessionRequest(
     operation: 'sessions.reopen' | 'sessions.finalize',
     sessionId: string,
+    acknowledgeSetup?: string,
   ): RemoteControlRequestUnion {
     const common = {
       protocol: RemoteControlConst.protocol,
@@ -198,7 +199,11 @@ export class ServiceRemoteControlIpc
     if (operation === 'sessions.reopen')
       return { ...common, operation }
     else if (operation === 'sessions.finalize')
-      return { ...common, operation }
+      return {
+        ...common,
+        operation,
+        body: { ...common.body, ...(acknowledgeSetup === undefined ? {} : { acknowledgeSetup }) },
+      }
     else
       throw new Error(`Unknown remote session operation: ${JSON.stringify(operation)}`)
   }

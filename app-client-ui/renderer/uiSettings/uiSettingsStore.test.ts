@@ -4,10 +4,11 @@ import type { AppClientUiBridge, IpcResult } from '../../shared/appClientUiIpc'
 import type { TerminalThemeName, UiSettingsValue } from '../../shared/uiSettings'
 import { IpcSnapshotReader } from '../ipc/ipcSnapshotReader'
 import { UiSettingsStore } from './uiSettingsStore'
+import { ControlBridgeFixture } from '../ipc/fixtures/controlBridgeFixture'
 
 describe('app-client-ui/renderer/uiSettings/uiSettingsStore', () => {
   /** The two members of the bridge the store reaches, typed off it so a rename is a compile error. */
-  type UiBridgeStub = Pick<AppClientUiBridge, 'ui' | 'onUiSettingsChanged'>
+  type UiBridgeStub = Pick<AppClientUiBridge, 'control' | 'onUiSettingsChanged'>
 
   interface Harness {
     /** The main process saying "something changed"; the answer is the read it schedules. */
@@ -32,6 +33,7 @@ describe('app-client-ui/renderer/uiSettings/uiSettingsStore', () => {
       scrollSpeedPercent: 100,
       terminalScrollSpeedPercent: 100,
       activateSessionOnDocument: false,
+      sessionsScriptRuns: false,
     }
   }
 
@@ -53,13 +55,11 @@ describe('app-client-ui/renderer/uiSettings/uiSettingsStore', () => {
     const pending: ((result: IpcResult<UiSettingsValue>) => void)[] = []
     let notify: (() => void) | null = null
     const stub: UiBridgeStub = {
-      ui: {
-        getSettings: () =>
-          new Promise<IpcResult<UiSettingsValue>>((resolve) => pending.push(resolve)),
-        saveSettings: () => {
-          throw new Error('The store never writes; the settings tab does')
+      control: ControlBridgeFixture.routes({
+        'uiSettings.get': {
+          value: () => new Promise<IpcResult<UiSettingsValue>>((resolve) => pending.push(resolve)),
         },
-      },
+      }),
       onUiSettingsChanged: (callback) => {
         notify = callback
         return () => { notify = null }

@@ -106,19 +106,43 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
       .toEqual(['session:s-adhoc', 'session:s-adhoc-cased'])
   })
 
-  it('keeps a child in its own pin group when its parent is elsewhere and still applies filters', () => {
+  it('files a run in its parent group whatever its own assignment says, and still applies filters', () => {
     const source = SessionsFixtures.mixed()
     const parent = source.sessions.find((session) => session.sessionId === 's-working')!
-    const snapshot = { ...source, sessions: [parent, { ...parent, sessionId: 'child', setupFor: parent.sessionId }] }
+    const child: SessionInfo = {
+      ...parent, sessionId: 'child', script: { parentId: parent.sessionId, phase: 'before', scriptId: 'setup' },
+    }
+    const snapshot = { ...source, sessions: [parent, child] }
     const assignments = new Map<string, SessionGroup>([['session:child', 'pinned']])
-    const pinned = build(snapshot, { ...all, assignments, group: 'pinned' })
-    expect(everyId(pinned.nodes)).toContain('session:child')
-    expect(everyId(pinned.nodes)).not.toContain('session:s-working')
-    expect(everyId(build(snapshot, { ...all, assignments, group: 'none' }).nodes)).not.toContain('session:child')
-    expect(build(snapshot, { ...all, assignments, group: 'pinned', filterText: 'missing' }).nodes).toEqual([])
-    const byProject = new Map<string, SessionGroup>([[pinned.nodes[0].children[0].id, 'pinned']])
-    const together = build(snapshot, { ...all, assignments: byProject, group: 'pinned' })
-    expect(find(together.nodes, 'session:s-working').children.map((node) => node.id)).toEqual(['session:child'])
+    expect(build(snapshot, { ...all, assignments, group: 'pinned' }).emptyState).toBe('noMatch')
+    const rest = build(snapshot, { ...all, assignments, group: 'none' })
+    expect(find(rest.nodes, 'session:s-working').children.map((node) => node.id)).toEqual(['session:child'])
+    expect(build(snapshot, { ...all, assignments, group: 'none', filterText: 'missing' }).nodes).toEqual([])
+  })
+
+  // The observed case: the scheduler files its sessions in an automation group, and the install it
+  // starts for one has no group at all. It used to be a root of the default section.
+  it('nests an install without a group under its parent in the parent group, and roots it nowhere', () => {
+    const snapshot = SessionsFixtures.setupPending()
+    const assignments = new Map<string, SessionGroup>([['session:s-primary', 'automation']])
+    const grouped = build(snapshot, { ...all, assignments, group: 'automation' })
+    const rest = build(snapshot, { ...all, assignments, group: 'none' })
+
+    expect(titles(find(grouped.nodes, 'session:s-primary'))).toEqual(['Setup alpha'])
+    expect(everyId(rest.nodes)).not.toContain('session:s-install')
+    expect(everyId(rest.nodes)).toContain('session:s-neighbour')
+  })
+
+  it('files an ended install under a starting parent in Running, never in Needs attention', () => {
+    const source = SessionsFixtures.setupPending()
+    const snapshot: SessionsSnapshot = { ...source, sessions: source.sessions.map((session) => session.sessionId === 's-install'
+      ? { ...session, life: 'ended' as const, outcome: 'failed' as const, exitCode: 1, endedAt: 1754319100000 }
+      : session) }
+    const running = build(snapshot, { ...all, stateGroup: 'running' })
+    const attention = build(snapshot, { ...all, stateGroup: 'attention' })
+
+    expect(titles(find(running.nodes, 'session:s-primary'))).toEqual(['Setup alpha'])
+    expect(everyId(attention.nodes)).not.toContain('session:s-install')
   })
 
   it('uses session then project then root assignments, including new sessions', () => {
@@ -208,11 +232,11 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
   it('keeps matching children when their parent is filtered away and treats None as uncolored only', () => {
     const source = SessionsFixtures.setupPending()
     const snapshot = { ...source, sessions: source.sessions.map((session) => ({
-      ...session, color: session.setupFor === undefined ? 'red' as const : 'blue' as const,
+      ...session, color: session.script === undefined ? 'red' as const : 'blue' as const,
     })) }
     const result = build(snapshot, { ...all, filters: { ...all.filters, colors: ['blue'] } })
     expect(everyId(result.nodes).filter((id) => id.startsWith('session:')))
-      .toEqual(snapshot.sessions.filter((session) => session.setupFor !== undefined).map((session) => `session:${session.sessionId}`))
+      .toEqual(snapshot.sessions.filter((session) => session.script !== undefined).map((session) => `session:${session.sessionId}`))
     expect(build(snapshot, { ...all, filters: { ...all.filters, colors: [null] } }).emptyState).toBe('noMatch')
   })
 
@@ -408,6 +432,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
         baseMoved: true,
         finish: null,
         outcome: null,
+        needs: null,
         cleanup: null,
       })
     // Nothing has measured this worktree yet, which is not the same as no changes.
@@ -732,8 +757,66 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
 
     expect(titles(project)).toEqual(['Alpha worktree', 'Zulu shell'])
     expect(titles(primary)).toEqual(['Setup alpha'])
-    expect(primary.setup).toBe('installing')
     expect(primary.glyph).toBe('starting')
+  })
+
+  it('draws the library badge, the waiting run and the run list off the snapshot', () => {
+    const result = build(SessionsFixtures.setupPending())
+    const primary = find(result.nodes, 'session:s-primary')
+    const install = find(result.nodes, 'session:s-install')
+    if (primary.kind !== 'session' || install.kind !== 'session') throw new Error('no session nodes')
+    const open = { target: { kind: 'local', sessionId: 's-install' }, tabTitle: 'AppJamatV3 - Setup alpha' }
+
+    expect(primary.scriptsBadge).toEqual({
+      phase: 'before', state: 'running', text: 'installing dependencies',
+      title: 'Installing dependencies:\npnpm install', runId: 's-install', open, logRunId: null,
+    })
+    expect(primary.waitingOn).toEqual(open)
+    expect(primary.scriptRuns.map((run) => [run.summary, run.open])).toEqual([['Setup alpha · running', open]])
+    expect(primary.scriptRun).toBe(false)
+    expect(install.scriptRun).toBe(true)
+    expect(install.scriptsBadge).toBe(null)
+    expect(install.waitingOn).toBe(null)
+  })
+
+  it('gives a succeeded badge and the history no terminal to open, and the badge its saved log', () => {
+    const installed = find(build(SessionsFixtures.setupCollapsed()).nodes, 'session:s-installed')
+    if (installed.kind !== 'session') throw new Error('no session node')
+
+    expect(installed.scriptsBadge?.text).toBe('setup ✓ 23.6 s')
+    expect(installed.scriptsBadge?.open).toBe(null)
+    expect(installed.scriptsBadge?.logRunId).toBe('r-second')
+    expect(installed.waitingOn).toBe(null)
+    expect(installed.children).toEqual([])
+    expect(installed.scriptRuns.map((run) => [run.runId, run.open])).toEqual([['r-second', null], ['r-first', null]])
+  })
+
+  it('opens a remote run on the computer that runs it', () => {
+    const options: SessionsTreeBuildOptions = {
+      namespace: 'remote:endpoint-a',
+      target: { kind: 'remote', remoteEndpointId: 'endpoint-a' },
+      operationScope: 'remote',
+      interactive: true,
+      allowLocalPaths: false,
+    }
+    const primary = find(build(SessionsFixtures.setupPending(), all, noMarks, null, options).nodes, 'remote:endpoint-a/session:s-primary')
+    if (primary.kind !== 'session') throw new Error('no session node')
+
+    expect(primary.waitingOn?.target).toEqual({ kind: 'remote', remoteEndpointId: 'endpoint-a', sessionId: 's-install' })
+  })
+
+  it('gives a remote succeeded badge no log: the log stays on the computer that ran it', () => {
+    const options: SessionsTreeBuildOptions = {
+      namespace: 'remote:endpoint-a',
+      target: { kind: 'remote', remoteEndpointId: 'endpoint-a' },
+      operationScope: 'remote',
+      interactive: true,
+      allowLocalPaths: false,
+    }
+    const installed = find(build(SessionsFixtures.setupCollapsed(), all, noMarks, null, options).nodes, 'remote:endpoint-a/session:s-installed')
+    if (installed.kind !== 'session') throw new Error('no session node')
+
+    expect(installed.scriptsBadge).toMatchObject({ state: 'succeeded', open: null, logRunId: null })
   })
 
   it('draws an install on its own once its session is filtered away', () => {
@@ -752,9 +835,12 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
     if (skipped.kind !== 'session' || failed.kind !== 'session')
       throw new Error('The outcome fixture drew no session nodes')
 
-    expect(skipped.setup).toBe('install-skipped')
+    expect(skipped.scriptsBadge).toMatchObject({ state: 'skipped', text: 'setup skipped', open: null })
     expect(skipped.glyph).toBe('idle')
-    expect(failed.setup).toBe('install-failed')
+    expect(failed.scriptsBadge).toMatchObject({
+      state: 'failed', text: 'setup failed', title: 'The setup session exited with 1',
+      open: { target: { kind: 'local', sessionId: 's-failed-install' }, tabTitle: 'AppJamatV3 - Setup beta' },
+    })
     expect(failed.glyph).toBe('ended')
     expect(titles(failed)).toEqual(['Setup beta'])
   })

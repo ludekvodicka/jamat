@@ -6,6 +6,7 @@ import type {
   WorktreesSettingsEffect,
   WorktreesSettingsInput,
 } from './worktreesSettingsModel'
+import { AppControl } from '../../../../ipc/appControl'
 
 export type WorktreesSettingsPorts = SettingsCardPorts<WorktreesSettingsInput>
 
@@ -17,7 +18,7 @@ export class WorktreesSettingsEffects {
   ): Promise<void> {
     if (effect.effect === 'load')
       return SettingsCardEffects.load(
-        () => window.appClient.worktrees.getSettings(),
+        () => AppControl.value('worktreeSettings.get', {}),
         ports,
         {
           loaded: (value) => ({ input: 'loaded' as const, value }),
@@ -27,7 +28,7 @@ export class WorktreesSettingsEffects {
     else if (effect.effect === 'save')
       return SettingsCardEffects.save(
         effect.value,
-        (value) => window.appClient.worktrees.saveSettings(value),
+        (value) => AppControl.library('worktreeSettings.save', { value: value }),
         ports,
         {
           failed: (detail) => ({ input: 'failed' as const, detail }),
@@ -35,19 +36,18 @@ export class WorktreesSettingsEffects {
         },
       )
     else if (effect.effect === 'project-load') {
-      const answer = await window.appClient.worktrees.getProjectSetup(effect.projectPath)
+      const answer = await AppControl.library('projectSetup.get', { projectPath: effect.projectPath })
       if (!answer.ok)
         return ports.dispatch({
           input: 'project-unreadable',
           problem: `The main process did not answer: ${answer.error}`,
         })
       if (!answer.value.ok)
-        return ports.dispatch({ input: 'project-unreadable', problem: answer.value.problem })
-      return ports.dispatch({ input: 'project-loaded', setup: answer.value.setup })
+        return ports.dispatch({ input: 'project-unreadable', problem: answer.value.detail })
+      return ports.dispatch({ input: 'project-loaded', setup: answer.value.value.setup })
     }
     else if (effect.effect === 'project-save') {
-      const answer = await window.appClient.worktrees
-        .saveProjectSetup(effect.projectPath, effect.setup)
+      const answer = await AppControl.library('projectSetup.save', { projectPath: effect.projectPath, setup: effect.setup })
       if (!answer.ok)
         return ports.dispatch({
           input: 'project-saved',
@@ -58,7 +58,7 @@ export class WorktreesSettingsEffects {
         return ports.dispatch({
           input: 'project-saved',
           ok: false,
-          problem: answer.value.problem,
+          problem: answer.value.detail,
         })
       return ports.dispatch({ input: 'project-saved', ok: true })
     }

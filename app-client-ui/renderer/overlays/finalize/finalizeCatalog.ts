@@ -8,9 +8,22 @@ import { CatalogEntries } from '../../../shared/catalogEntries'
 import type { FinalizeScope, SessionFinalizeQuestion } from './finalizeModel'
 import { WorktreeQuestion } from './worktreeQuestion'
 
+/** What the person agreed to on the press that answers a target's question, and nothing before it asked. */
+export interface FinalizeAgreement {
+  /** The hash of the commands the target asked about. */
+  acknowledgeSetup?: string
+  /** The person finishes a session that is still working. */
+  confirmWorking?: true
+}
+
 export interface SessionFinalizePorts {
-  finalize(): Promise<IpcResult<SessionsOpResult | RemoteControlResponse>>
-  discardWorktree(): Promise<IpcResult<SessionsOpResult>>
+  /** `acknowledgeSetup` is the hash of an agreement the target asked for, on the press that answers it. */
+  finalize(acknowledgeSetup?: string): Promise<IpcResult<SessionsOpResult | RemoteControlResponse>>
+  /** One press of an SVN worktree's Finish, answered once its action is written; Discard of a Git one too. */
+  finishWorktree(
+    choice: 'commit' | 'discard' | 'keep',
+    agreement: FinalizeAgreement,
+  ): Promise<IpcResult<SessionsOpResult | RemoteControlResponse>>
 }
 
 export interface SessionFinalizeQuestionSpec {
@@ -20,6 +33,7 @@ export interface SessionFinalizeQuestionSpec {
   perform(
     choiceId: string,
     ports: SessionFinalizePorts,
+    agreement: FinalizeAgreement,
   ): Promise<IpcResult<SessionsOpResult | RemoteControlResponse>>
 }
 

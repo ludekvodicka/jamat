@@ -3,11 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { AppClientUiBridge } from '../../../../../shared/appClientUiIpc'
 import { FileChangesSettingsSection } from './fileChangesSettingsSection'
+import { ControlBridgeFixture } from '../../../../ipc/fixtures/controlBridgeFixture'
 
 describe('app-client-ui/renderer/overlays/configuration/tabs/fileChanges/fileChangesSettingsSection', () => {
-  type BridgeStub = {
-    fileChanges: Pick<AppClientUiBridge['fileChanges'], 'getSettings' | 'saveSettings'>
-  }
+  type BridgeStub = Pick<AppClientUiBridge, 'control'>
 
   afterEach(() => {
     cleanup()
@@ -17,13 +16,15 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/fileChanges/fileCha
   async function mount() {
     const saved: unknown[] = []
     ;(window as unknown as { appClient: BridgeStub }).appClient = {
-      fileChanges: {
-        getSettings: () => Promise.resolve({ ok: true, value: { primaryVcs: 'svn' } }),
-        saveSettings: (value) => {
-          saved.push(value)
-          return Promise.resolve({ ok: true, value: { ok: true } })
+      control: ControlBridgeFixture.routes({
+        'fileChangesSettings.get': { value: () => Promise.resolve({ ok: true, value: { primaryVcs: 'svn' } }) },
+        'fileChangesSettings.save': {
+          library: (body: { value: unknown }) => {
+            saved.push(body.value)
+            return Promise.resolve({ ok: true, value: { ok: true } })
+          },
         },
-      },
+      }),
     }
     const onDirtyChange = vi.fn()
     const view = render(<FileChangesSettingsSection onDirtyChange={onDirtyChange} />)

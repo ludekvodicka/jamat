@@ -110,6 +110,8 @@ export function CommitTargetsList(props: {
     if (!props.disabled && entry.nodeKind === 'file') props.onOpen(entry)
   }
   const row = (entry: FileChangeEntry): React.JSX.Element => {
+    // The scope directory's own row, a property change of the folder under review, has no relative path.
+    const name = entry.displayPath === '' ? '.' : `${entry.displayPath}${entry.nodeKind === 'directory' ? '/' : ''}`
     const requiredParent = CommitTargets.requiredParent(entry, entries, props.checked)
     const carrier = CommitTargets.carrier(entry, entries)
     const removedBy = CommitTargets.removedBy(entry, entries)
@@ -151,12 +153,12 @@ export function CommitTargetsList(props: {
           setMenu({ path: entry.path, position: { x: box.left, y: box.bottom } })
         }
       }}>
-      <span role="gridcell"><input type="checkbox" aria-label={`Include ${entry.displayPath}`}
+      <span role="gridcell"><input type="checkbox" aria-label={`Include ${entry.displayPath || '.'}`}
         checked={requiredParent || props.checked.has(carrier?.fileId ?? entry.fileId)}
         disabled={props.disabled || CommitTargets.blocked(entry) || requiredParent || carrier !== null || removedBy !== null}
         onChange={(event) => change(entry, event.target.checked)} /></span>
       <span role="gridcell" className={`file-tools-status file-tools-status--${entry.status}`} title={entry.status} aria-label={entry.status}>{FileChangesStatusMark.of(entry.status)}</span>
-      <span role="gridcell" className={`commit-target-path commit-target-path--${entry.status}`}>{entry.displayPath}{entry.nodeKind === 'directory' ? '/' : ''}
+      <span role="gridcell" className={`commit-target-path commit-target-path--${entry.status}`}>{name}
         {entry.carriedItems !== undefined && <span className="commit-target-previous"> ({entry.carriedItems} items)</span>}
         {entry.previousDisplayPath !== null && <span className="commit-target-previous"> (from {entry.previousDisplayPath})</span>}
         {hint !== null && <span className="commit-target-hint" title={hint} aria-label={hint}>ⓘ</span>}

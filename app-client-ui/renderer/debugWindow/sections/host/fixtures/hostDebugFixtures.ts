@@ -4,6 +4,7 @@ import type {
   HostPingResult,
 } from '../../../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type { AppClientUiBridge } from '../../../../../shared/appClientUiIpc'
+import { ControlBridgeFixture } from '../../../../ipc/fixtures/controlBridgeFixture'
 
 /** What a test can ask the stubbed bridge about afterwards, and the one push it can make. */
 export interface HostBridgeStub {
@@ -27,28 +28,22 @@ export class HostDebugFixtures {
    */
   static installBridge(status: HostDebugStatus = HostDebugFixtures.status()): HostBridgeStub {
     const stub: HostBridgeStub = { pings: 0, startHosts: 0, sections: [], pushPing: () => {} }
+    const control = new ControlBridgeFixture()
+      .on('host.status', { ok: true, value: status })
+      .on('host.ping', () => {
+        stub.pings += 1
+        return { ok: true, value: { at: 1, ok: false, detail: 'nothing there' } satisfies HostPingResult }
+      })
+      .on('host.start', () => {
+        stub.startHosts += 1
+        return ControlBridgeFixture.done()
+      })
     const bridge = {
+      control: control.bridge(),
       debug: {
-        hostStatus: () => Promise.resolve({ ok: true as const, value: status }),
-        pingHost: () => {
-          stub.pings += 1
-          return Promise.resolve({
-            ok: true as const,
-            value: { at: 1, ok: false, detail: 'nothing there' } satisfies HostPingResult,
-          })
-        },
         sectionActive: (section: string | null) => {
           stub.sections.push(section)
           return Promise.resolve({ ok: true as const, value: undefined })
-        },
-      },
-      sessions: {
-        startHost: () => {
-          stub.startHosts += 1
-          return Promise.resolve({
-            ok: true as const,
-            value: { ok: true as const, value: undefined },
-          })
         },
       },
       onSessionsChanged: () => () => undefined,
@@ -58,7 +53,7 @@ export class HostDebugFixtures {
       },
     }
     ;(window as unknown as { appClient: unknown }).appClient = bridge as unknown as
-      Pick<AppClientUiBridge, 'debug' | 'sessions' | 'onSessionsChanged' | 'onHostPingResult'>
+      Pick<AppClientUiBridge, 'control' | 'debug' | 'onSessionsChanged' | 'onHostPingResult'>
     return stub
   }
 

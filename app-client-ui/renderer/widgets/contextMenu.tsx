@@ -18,6 +18,8 @@ interface ContextMenuRow {
   key: string
   label: string
   className?: string
+  /** What the row says when it is pointed at; a disabled row uses it to say why. */
+  title?: string
   disabled?: boolean
   checked?: boolean
   keepOpenOnSelect?: boolean
@@ -176,6 +178,7 @@ function ContextMenuRowView(props: {
         role={item.checked === undefined ? 'menuitem' : 'menuitemcheckbox'}
         aria-checked={item.checked}
         disabled={item.disabled}
+        title={item.title}
         aria-haspopup={children === undefined ? undefined : 'menu'}
         aria-expanded={children === undefined ? undefined : props.open}
         onClick={() => {

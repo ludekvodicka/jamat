@@ -135,8 +135,8 @@ export function LauncherCreateScreen(props: {
         {state.worktree && preview !== null && (
           <p className="jamat-launcher-create__note">
             {'Runs in '}
-            <code>{preview.path}</code>
-            {', from HEAD'}
+            <code>{preview.folder}</code>
+            {' of its product group, catalog project or directory, from HEAD'}
           </p>
         )}
         {!state.worktree && worktreeRefusal !== null && (

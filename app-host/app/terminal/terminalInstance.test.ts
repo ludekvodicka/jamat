@@ -98,12 +98,13 @@ describe('app-host/app/terminal/terminalInstance', () => {
       expect((outcome as Error).message).toContain('did not expose a stable start identity')
       expect((outcome as Error).message).toContain('no start time yet')
       expect(fakePty.killed).toBe(true)
+      expect(instance.exit).toBeNull()
       probe.mockRestore()
       instance.dispose()
     })
 
-    /** A dead process is not retried into the deadline for nothing: it is refused the same way. */
-    it('refuses a process the probe reports as already dead', async () => {
+    /** Without the exit node-pty reports there is no exit code to answer, so it is refused the same way. */
+    it('refuses a process the probe reports as dead when no exit is reported', async () => {
       vi.useFakeTimers()
       const probe = vi.spyOn(ProcessStartIdentity, 'probeAsync')
         .mockResolvedValue({ state: 'dead' })
@@ -114,6 +115,44 @@ describe('app-host/app/terminal/terminalInstance', () => {
 
       expect(await settled).toBeInstanceOf(Error)
       expect(fakePty.killed).toBe(true)
+      probe.mockRestore()
+      instance.dispose()
+    })
+
+    // The probe takes about half a second on Windows; `exit 0` is over before it answers.
+    it('resolves with the exit of a process that ends before the probe sees it', async () => {
+      vi.useFakeTimers()
+      const probe = vi.spyOn(ProcessStartIdentity, 'probeAsync')
+        .mockResolvedValue({ state: 'dead' })
+      const instance = TerminalInstanceTest.instance()
+
+      const settled = instance.ready().then(() => 'resolved').catch((error: unknown) => error)
+      await vi.advanceTimersByTimeAsync(100)
+      fakePty.reportExit(3)
+      await vi.advanceTimersByTimeAsync(100)
+
+      expect(await settled).toBe('resolved')
+      expect(instance.alive).toBe(false)
+      expect(instance.exit?.exitCode).toBe(3)
+      expect(instance.info(1)).not.toHaveProperty('processStartedAt')
+      expect(fakePty.killed).toBe(false)
+      probe.mockRestore()
+      instance.dispose()
+    })
+
+    it('resolves with the exit that lands while a probe still answers alive', async () => {
+      const probe = vi.spyOn(ProcessStartIdentity, 'probeAsync')
+        .mockImplementation(async () => {
+          fakePty.reportExit(0)
+          return { state: 'alive', processStartedAt: 1_700_000_000_000 }
+        })
+      const instance = TerminalInstanceTest.instance()
+
+      await instance.ready()
+
+      expect(instance.alive).toBe(false)
+      expect(instance.exit?.exitCode).toBe(0)
+      expect(instance.info(1)).not.toHaveProperty('pid')
       probe.mockRestore()
       instance.dispose()
     })

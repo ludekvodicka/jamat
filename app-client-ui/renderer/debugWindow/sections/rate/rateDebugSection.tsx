@@ -10,6 +10,7 @@ import { IpcSnapshotReader } from '../../../ipc/ipcSnapshotReader'
 import { DebugTimeFormat } from '../debugTimeFormat'
 import { RateDebugEffects, type RateDebugPorts } from './rateDebugEffects'
 import { RateDebugModel, type RateDebugState } from './rateDebugModel'
+import { AppControl } from '../../../ipc/appControl'
 
 export function RateDebugSection(): React.JSX.Element {
   return <RateDebugPage />
@@ -70,7 +71,7 @@ function RateDebugPage(props: { agentId?: RateAgentId }): React.JSX.Element {
     const engine = new IpcSnapshotReader<RateMonitorDebugStatus>(
       {
         subject: 'The rate limits debug status',
-        read: () => window.appClient.rateMonitor.debugStatus(),
+        read: () => AppControl.value('rate.debugStatus', {}),
         subscribe: (onChanged) => window.appClient.onRateChanged(onChanged),
         reportError: (message) => console.error(message),
       },

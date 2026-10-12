@@ -2,20 +2,23 @@ import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type {
+  SessionDetailsSaved,
   SessionDetailsUpdate,
+  SessionsOpResult,
   SessionsSnapshot,
 } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
-import type { AppClientUiBridge } from '../../../shared/appClientUiIpc'
+import type { AppClientUiBridge, IpcResult } from '../../../shared/appClientUiIpc'
 import { SnapshotStore } from '../../ipc/snapshotStore'
 import { TerminalInputRegistry } from '../../shell/terminalInputRegistry'
 import { SessionsFixtures } from '../../sessions/fixtures/sessionsFixtures'
 import { SessionDetailsOverlay } from './sessionDetailsOverlay'
+import { ControlBridgeFixture } from '../../ipc/fixtures/controlBridgeFixture'
 
 /** Only what the card reaches: one save channel, one clipboard write. */
 class DetailsClientStub {
   readonly saved: { sessionId: string; update: SessionDetailsUpdate }[] = []
   readonly copied: string[] = []
-  answer: Awaited<ReturnType<AppClientUiBridge['sessions']['setDetails']>> =
+  answer: IpcResult<SessionsOpResult<SessionDetailsSaved>> =
     { ok: true, value: { ok: true, value: { titleChanged: true, notifyAgent: null } } }
 
   /**
@@ -32,12 +35,14 @@ class DetailsClientStub {
 
   install(): void {
     const bridge = {
-      sessions: {
-        setDetails: (sessionId: string, update: SessionDetailsUpdate) => {
-          this.saved.push({ sessionId, update })
-          return Promise.resolve(this.answer)
+      control: ControlBridgeFixture.routes({
+        'sessions.setDetails': {
+          library: (body: { session: { sessionId: string }; update: SessionDetailsUpdate }) => {
+            this.saved.push({ sessionId: body.session.sessionId, update: body.update })
+            return Promise.resolve(this.answer)
+          },
         },
-      },
+      }),
       clipboard: {
         writeText: (text: string) => {
           this.copied.push(text)
@@ -46,7 +51,7 @@ class DetailsClientStub {
       },
     }
     ;(window as unknown as { appClient: unknown }).appClient = bridge as unknown as
-      Pick<AppClientUiBridge, 'sessions' | 'clipboard'>
+      Pick<AppClientUiBridge, 'control' | 'clipboard'>
   }
 }
 

@@ -1,9 +1,18 @@
 import type {
   OrphanInfo,
   SessionInfo,
+  SessionScriptId,
+  SessionScriptPhase,
+  SessionScriptRunInfo,
+  SessionScriptRunState,
+  SessionScriptsBadge,
+  SessionScriptsInfo,
   SessionsSnapshot,
+  SvnActionNeed,
+  SvnActionStage,
   SvnFinishResult,
 } from './sessionManagerApi.types'
+import { ScriptBadges } from './scripts/scriptBadges'
 import { JsonShape } from '../shared/jsonShape'
 
 /**
@@ -22,6 +31,18 @@ import { JsonShape } from '../shared/jsonShape'
 export class SessionsSnapshotValidation {
   private static readonly finishResultsConst: readonly string[] = ['committed', 'partial', 'not-committed',
     'out-of-date', 'updated', 'conflict', 'nothing', 'failed', 'interrupted'] satisfies readonly SvnFinishResult[]
+  private static readonly scriptPhasesConst: readonly string[] = ['before', 'after', 'inner'] satisfies readonly SessionScriptPhase[]
+  private static readonly scriptIdsConst: readonly string[] =
+    ['setup', 'declared', 'merge-resolve', 'requested', 'svn', 'checks', 'svn-resolve', 'review'] satisfies readonly SessionScriptId[]
+  private static readonly actionStagesConst: readonly string[] = ['stopping', 'evidence', 'checks', 'updating', 'cleaning',
+    'resolving', 'verifying', 'diffing', 'reviewing', 'removing', 'recording'] satisfies readonly SvnActionStage[]
+  private static readonly actionNeedsConst: readonly string[] = ['check-failed', 'conflict', 'resolver-failed', 'incoming',
+    'out-of-date', 'review-cancelled', 'review-interrupted', 'partial', 'pinned-external', 'locked', 'svn-failed',
+    'not-stopped'] satisfies readonly SvnActionNeed[]
+  private static readonly runStatesConst: readonly string[] =
+    ['running', 'succeeded', 'failed', 'stopped', 'lost'] satisfies readonly SessionScriptRunState[]
+  private static readonly badgeStatesConst: readonly string[] =
+    ['running', 'failed', 'skipped', 'succeeded'] satisfies readonly SessionScriptsBadge['state'][]
 
   static parse(value: unknown): SessionsSnapshot | null {
     const snapshot = JsonShape.record(value)
@@ -44,7 +65,120 @@ export class SessionsSnapshotValidation {
           ? ['commit', 'keep', 'discard']
           : ['merge', 'keep', 'discard']
     }
+    for (const session of parsed.sessions) {
+      SessionsSnapshotValidation.scriptsInto(session)
+      // Optional and newer than many peers: a value this build cannot draw costs the field, never the session.
+      if (session.svnAction !== undefined && !SessionsSnapshotValidation.svnAction(session.svnAction)) delete session.svnAction
+      if (session.worktree?.liveFinish !== undefined && session.worktree.liveFinish !== true) delete session.worktree.liveFinish
+      if (session.retiredWorktree?.landing !== undefined && !SessionsSnapshotValidation.landing(session.retiredWorktree.landing))
+        delete session.retiredWorktree.landing
+    }
     return parsed
+  }
+
+  private static svnAction(value: unknown): boolean {
+    const action = JsonShape.record(value)
+    if (action === null || (action.kind !== 'finish' && action.kind !== 'discard' && action.kind !== 'update-main')
+      || !SessionsSnapshotValidation.actionStagesConst.includes(action.stage as string)) return false
+    if (action.needs !== null && typeof action.needs !== 'string') return false
+    if (action.needsKind !== null && !SessionsSnapshotValidation.actionNeedsConst.includes(action.needsKind as string)) return false
+    if (action.review === null) return true
+    const review = JsonShape.record(action.review)
+    return review !== null && Number.isSafeInteger(review.index) && Number.isSafeInteger(review.count)
+      && typeof review.scopeRoot === 'string'
+  }
+
+  private static landing(value: unknown): boolean {
+    const landing = JsonShape.record(value)
+    return landing !== null && SessionsSnapshotValidation.filledText(landing.mainCopy)
+      && (landing.behind === null || SessionsSnapshotValidation.nonNegativeInteger(landing.behind))
+      && SessionsSnapshotValidation.every(landing.newest, (revision) => typeof revision === 'string')
+  }
+
+  /**
+   * The script fields are optional, so a value this build does not know is dropped rather than the
+   * snapshot refused: a newer peer's new phase costs its badge, never the connection. An older peer
+   * sends only the legacy fields, and they become the new ones here, so the tree reads one shape.
+   */
+  private static scriptsInto(session: SessionInfo): void {
+    // An unknown setup state made an older renderer throw where it drew the badge.
+    if (session.setup !== undefined && !SessionsSnapshotValidation.setupInfo(session.setup)) delete session.setup
+    if (session.script !== undefined && !SessionsSnapshotValidation.scriptLink(session.script)) delete session.script
+    // Also after a link of an unknown phase was dropped: every run but the resolver still carries
+    // `setupFor`, so it stays nested under its parent.
+    if (session.script === undefined) {
+      if (typeof session.setupFor === 'string')
+        session.script = { parentId: session.setupFor, phase: 'before', scriptId: 'setup' }
+      else if (typeof session.resolveFor === 'string')
+        session.script = { parentId: session.resolveFor, phase: 'after', scriptId: 'merge-resolve' }
+    }
+    if (session.scripts !== undefined) {
+      const scripts = SessionsSnapshotValidation.scripts(session.scripts)
+      if (scripts === null) delete session.scripts
+      else session.scripts = scripts
+    }
+    if (session.scripts === undefined && session.setup !== undefined) session.scripts = ScriptBadges.legacyOf(session.setup)
+  }
+
+  private static setupInfo(value: unknown): boolean {
+    const setup = JsonShape.record(value)
+    if (setup === null) return false
+    else if (setup.state === 'running' || setup.state === 'failed')
+      return typeof setup.setupSessionId === 'string'
+        && SessionsSnapshotValidation.every(setup.commands, (command) => typeof command === 'string')
+    else if (setup.state === 'skipped') return typeof setup.reason === 'string'
+    else return false
+  }
+
+  private static scriptLink(value: unknown): boolean {
+    const link = JsonShape.record(value)
+    return link !== null
+      && typeof link.parentId === 'string'
+      && SessionsSnapshotValidation.scriptPhasesConst.includes(link.phase as string)
+      && SessionsSnapshotValidation.scriptIdsConst.includes(link.scriptId as string)
+  }
+
+  /** Null where it is not an object at all; otherwise what of it this build can draw. */
+  private static scripts(value: unknown): SessionScriptsInfo | null {
+    const scripts = JsonShape.record(value)
+    if (scripts === null) return null
+    const runs = Array.isArray(scripts.runs) ? scripts.runs : []
+    const out: SessionScriptsInfo = {
+      runs: runs.filter((run) => SessionsSnapshotValidation.scriptRun(run)) as SessionScriptRunInfo[],
+    }
+    if (SessionsSnapshotValidation.scriptsBadge(scripts.badge)) out.badge = scripts.badge as SessionScriptsBadge
+    if (typeof scripts.waitingOn === 'string') out.waitingOn = scripts.waitingOn
+    return out
+  }
+
+  private static scriptRun(value: unknown): boolean {
+    const run = JsonShape.record(value)
+    return run !== null
+      && typeof run.runId === 'string'
+      && SessionsSnapshotValidation.scriptPhasesConst.includes(run.phase as string)
+      && SessionsSnapshotValidation.scriptIdsConst.includes(run.scriptId as string)
+      && typeof run.name === 'string'
+      && typeof run.title === 'string'
+      && SessionsSnapshotValidation.runStatesConst.includes(run.state as string)
+      && typeof run.summary === 'string'
+      && typeof run.startedAt === 'number'
+      && (run.endedAt === undefined || typeof run.endedAt === 'number')
+      && (run.durationText === undefined || typeof run.durationText === 'string')
+      && (run.exitCode === undefined || typeof run.exitCode === 'number')
+      && SessionsSnapshotValidation.every(run.commands, (command) => typeof command === 'string')
+      && typeof run.row === 'boolean'
+      && (run.log === 'saved' || run.log === 'unavailable' || run.log === 'none')
+      && (run.logDetail === undefined || typeof run.logDetail === 'string')
+  }
+
+  private static scriptsBadge(value: unknown): boolean {
+    const badge = JsonShape.record(value)
+    return badge !== null
+      && (badge.phase === 'before' || badge.phase === 'after')
+      && SessionsSnapshotValidation.badgeStatesConst.includes(badge.state as string)
+      && typeof badge.text === 'string'
+      && typeof badge.title === 'string'
+      && (badge.runId === undefined || typeof badge.runId === 'string')
   }
 
   private static host(value: unknown): boolean {
@@ -149,6 +283,7 @@ export class SessionsSnapshotValidation {
     const worktree = JsonShape.record(value)
     if (worktree === null
       || !SessionsSnapshotValidation.filledText(worktree.worktreePath)
+      || (worktree.cwdSubpath !== undefined && !SessionsSnapshotValidation.filledText(worktree.cwdSubpath))
       || !SessionsSnapshotValidation.filledText(worktree.branch)
       || !SessionsSnapshotValidation.filledText(worktree.baseCommit)
       || typeof worktree.baseMoved !== 'boolean'

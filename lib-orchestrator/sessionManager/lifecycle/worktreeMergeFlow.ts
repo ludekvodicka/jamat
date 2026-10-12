@@ -5,9 +5,15 @@ import type { MergeStatus } from '../../git/gitMergeManager'
 import type { GitWorktreeManager } from '../../git/gitWorktreeManager'
 import type { StoreCutWorktrees } from '../../git/storeCutWorktrees'
 import { PathCompare } from '../../shared/pathCompare'
-import type { SessionMergePhase, SessionRecord, SessionRecordWorktree } from '../records/sessionRecord.types'
+import type {
+  SessionMergePhase,
+  SessionRecord,
+  SessionRecordScriptLink,
+  SessionRecordWorktree,
+} from '../records/sessionRecord.types'
 import type { SessionRecordsStore } from '../records/sessionRecordsStore'
 import { AgentPresets } from '../launch/agentPresets'
+import { SessionScriptDefinitions } from '../scripts/sessionScriptDefinitions'
 import type {
   SessionCreateSpec,
   SessionFinishChoice,
@@ -15,7 +21,7 @@ import type {
   SessionsOpResult,
 } from '../sessionManagerApi.types'
 import { GitCodes } from './gitCodes'
-import type { WorktreeEnded, WorktreeFinishFacts, WorktreeFinisher } from './worktreeFinish.types'
+import type { WorktreeChoicesInput, WorktreeEnded, WorktreeFinishFacts, WorktreeFinisher } from './worktreeFinish.types'
 
 /** The git calls this flow makes, named so a test can hand it a scripted set instead. */
 export interface SessionMergePort {
@@ -32,7 +38,7 @@ export interface SessionMergePort {
 /** What launching a resolve session takes, kept narrow so the flow never sees the whole lifecycle. */
 export type ResolveLauncher = (
   spec: SessionCreateSpec,
-  marks: { sessionId: string; oneShot: true; resolveFor: string },
+  marks: { sessionId: string; oneShot: true; scriptOf: SessionRecordScriptLink },
 ) => Promise<SessionsOpResult<{ sessionId: string }>>
 
 export interface WorktreeMergeFlowDeps {
@@ -77,6 +83,8 @@ export interface WorktreeMergeFlowDeps {
  * project's own repository whichever mode created it, so it lands there the same way.
  */
 export class WorktreeMergeFlow implements WorktreeFinisher {
+  /** The Finish checks gate of `SessionManager` runs `scripts.after` before a merge. */
+  readonly ownsChecks = false
   /**
    * One merge at a time per repository. Two worktrees of one repository merging into the same branch
    * at once is the case git does NOT protect against - 009e measured that worktree add and remove
@@ -126,7 +134,17 @@ export class WorktreeMergeFlow implements WorktreeFinisher {
    * codes rather than the one ref a merge happens to leave. Both fall through to `run`, which refuses
    * the tree as dirty and leaves the manual way out - resolve, commit, Finish again - open.
    */
-  async finish(sessionId: string): Promise<SessionsOpResult> {
+  async finish(sessionId: string): Promise<SessionsOpResult<{ actionId: string | null }>> {
+    const merged = await this.commitAndMerge(sessionId)
+    return merged.ok ? { ok: true, value: { actionId: null } } : merged
+  }
+
+  /** A merge has no waiting state to end; the worktree stays as it is. */
+  keep(): Promise<SessionsOpResult> {
+    return Promise.resolve({ ok: true, value: undefined })
+  }
+
+  private async commitAndMerge(sessionId: string): Promise<SessionsOpResult> {
     return this.underRepositoryLock(sessionId, async (record) => {
       const worktree = record.worktree
       if (!worktree) throw new Error('A refused finalize reached the work itself')
@@ -147,6 +165,11 @@ export class WorktreeMergeFlow implements WorktreeFinisher {
       }
       return this.run(record)
     })
+  }
+
+  /** A merge needs nothing of this client beyond git, which the merge itself asks for. */
+  finishRefusal(): SessionsOpResult<never> | null {
+    return null
   }
 
   /**
@@ -194,8 +217,8 @@ export class WorktreeMergeFlow implements WorktreeFinisher {
   }
 
   /** Until `facts` has looked, a legacy worktree is offered Merge back, which refuses it by name. */
-  choicesOf(worktree: SessionRecordWorktree): readonly SessionFinishChoice[] {
-    return this.legacyPaths.get(PathCompare.comparable(worktree.worktreePath)) === true
+  choicesOf(input: Pick<WorktreeChoicesInput, 'worktree'>): readonly SessionFinishChoice[] {
+    return this.legacyPaths.get(PathCompare.comparable(input.worktree.worktreePath)) === true
       ? ['keep', 'discard']
       : ['merge', 'keep', 'discard']
   }
@@ -371,11 +394,12 @@ export class WorktreeMergeFlow implements WorktreeFinisher {
       }
     }
     /*
-     * One automatic attempt per merge, and this is where that is enforced. `merge-resolve-succeeded`
-     * is the one reconcile change that writes nothing of its own, so its trigger - a `resolving`
-     * phase, a pointer, and no failure - survives it. Coming back here without a failure beside the
-     * phase would leave exactly that shape on disk, and the reconciler would reach the same verdict
-     * and resume the same merge every two seconds, for ever, on a record that never moves.
+     * One automatic attempt per merge, and this is where that is enforced. `script-succeeded` on
+     * the merge gate is the one reconcile change that writes nothing of its own, so its trigger - a
+     * `resolving` phase, a pointer, and no failure - survives it. Coming back here without a
+     * failure beside the phase would leave exactly that shape on disk, and the reconciler would reach
+     * the same verdict and resume the same merge every two seconds, for ever, on a record that never
+     * moves.
      *
      * The pointer is kept rather than cleared: the tree still nests the resolver under the session
      * it ran for, and clearing it would only mint a second resolver on the next pass, which is the
@@ -431,7 +455,11 @@ export class WorktreeMergeFlow implements WorktreeFinisher {
         },
         title: `Resolve merge ${worktree.branch}`,
       },
-      { sessionId: resolveSessionId, oneShot: true, resolveFor: record.sessionId },
+      {
+        sessionId: resolveSessionId,
+        oneShot: true,
+        scriptOf: SessionScriptDefinitions.linkOf(record.sessionId, 'after', 'merge-resolve', 'resolver'),
+      },
     )
     if (!created.ok) {
       /*

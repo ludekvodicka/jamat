@@ -5,9 +5,10 @@ import { SetupFamilies } from '../../../../../../lib-orchestrator/projectSetup/s
 import type { AppClientUiBridge } from '../../../../../shared/appClientUiIpc'
 import { WorktreeSetupIntentStore } from '../../worktreeSetupIntentStore'
 import { WorktreesSettingsTab } from './worktreesSettingsTab'
+import { ControlBridgeFixture } from '../../../../ipc/fixtures/controlBridgeFixture'
 
 describe('app-client-ui/renderer/overlays/configuration/tabs/worktrees/worktreesSettingsTab', () => {
-  type BridgeStub = { worktrees: AppClientUiBridge['worktrees'] }
+  type BridgeStub = Pick<AppClientUiBridge, 'control'>
   const intentConst = { projectName: 'AppJamatV3', projectPath: 'Q:/x/AppJamatV3' }
 
   afterEach(() => {
@@ -25,13 +26,12 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/worktrees/worktrees
     const saved: unknown[] = []
     const savedProject: unknown[] = []
     ;(window as unknown as { appClient: BridgeStub }).appClient = {
-      worktrees: {
-        getSettings: () => Promise.resolve({
-          ok: true,
-          value: { node: { pnpm: { globalVirtualStore: false } } },
-        }),
-        saveSettings: (value) => {
-          saved.push(value)
+      control: ControlBridgeFixture.routes({
+        'worktreeSettings.get': {
+          value: () => Promise.resolve({ ok: true, value: { node: { pnpm: { globalVirtualStore: false } } } }),
+        },
+        'worktreeSettings.save': { library: (body: { value: unknown }) => {
+          saved.push(body.value)
           return Promise.resolve(answer.ok !== false
             ? { ok: true as const, value: { ok: true as const } }
             : {
@@ -42,18 +42,22 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/worktrees/worktrees
                 detail: answer.detail ?? 'latched',
               },
             })
+        } },
+        'projectSetup.get': {
+          library: () => Promise.resolve({
+            ok: true as const,
+            value: answer.projectProblem === undefined
+              ? { ok: true as const, value: { setup: answer.projectSetup ?? null } }
+              : { ok: false as const, code: 'project-setup', detail: answer.projectProblem },
+          }),
         },
-        getProjectSetup: () => Promise.resolve({
-          ok: true as const,
-          value: answer.projectProblem === undefined
-            ? { ok: true as const, setup: answer.projectSetup ?? null }
-            : { ok: false as const, problem: answer.projectProblem },
-        }),
-        saveProjectSetup: (projectPath, setup) => {
-          savedProject.push({ projectPath, setup })
-          return Promise.resolve({ ok: true as const, value: { ok: true as const } })
+        'projectSetup.save': {
+          library: (body: { projectPath: string; setup: string[] }) => {
+            savedProject.push({ projectPath: body.projectPath, setup: body.setup })
+            return Promise.resolve({ ok: true as const, value: { ok: true as const } })
+          },
         },
-      },
+      }),
     }
     const intents = new WorktreeSetupIntentStore()
     if (answer.intent === true) intents.write(intentConst)
@@ -173,20 +177,21 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/worktrees/worktrees
   it('ignores a failed machine save after the tab was retired', async () => {
     let finish = (): void => undefined
     ;(window as unknown as { appClient: BridgeStub }).appClient = {
-      worktrees: {
-        getSettings: async () => ({
-          ok: true,
-          value: { node: { pnpm: { globalVirtualStore: false } } },
-        }),
-        saveSettings: () => new Promise((resolve) => {
-          finish = () => resolve({
-            ok: true,
-            value: { ok: false, code: 'config-latched', detail: 'late refusal' },
-          })
-        }),
-        getProjectSetup: async () => ({ ok: true, value: { ok: true, setup: null } }),
-        saveProjectSetup: async () => ({ ok: true, value: { ok: true } }),
-      },
+      control: ControlBridgeFixture.routes({
+        'worktreeSettings.get': {
+          value: async () => ({ ok: true, value: { node: { pnpm: { globalVirtualStore: false } } } }),
+        },
+        'worktreeSettings.save': {
+          library: () => new Promise((resolve) => {
+            finish = () => resolve({
+              ok: true,
+              value: { ok: false, code: 'config-latched', detail: 'late refusal' },
+            })
+          }),
+        },
+        'projectSetup.get': { library: async () => ({ ok: true, value: { ok: true, value: { setup: null } } }) },
+        'projectSetup.save': { library: async () => ({ ok: true, value: { ok: true } }) },
+      }),
     }
     const onDirtyChange = vi.fn()
     const view = render(<WorktreesSettingsTab onDirtyChange={onDirtyChange} />)

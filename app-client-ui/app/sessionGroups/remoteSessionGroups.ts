@@ -19,12 +19,12 @@ import type { ClientStateStore } from '../clientState/clientStateStore'
  */
 export class RemoteSessionGroups implements RemoteControlSessionGroupsPort {
   private readonly sections: () => readonly SessionGroupDefinition[]
-  private readonly store: Pick<ClientStateStore, 'assignSessionGroup' | 'loadSessionGroups'>
+  private readonly store: Pick<ClientStateStore, 'assignSessionGroup' | 'loadSessionGroups' | 'inheritSessionGroup'>
   private readonly onChanged: () => void
 
   constructor(
     sections: () => readonly SessionGroupDefinition[],
-    store: Pick<ClientStateStore, 'assignSessionGroup' | 'loadSessionGroups'>,
+    store: Pick<ClientStateStore, 'assignSessionGroup' | 'loadSessionGroups' | 'inheritSessionGroup'>,
     onChanged: () => void,
   ) {
     this.sections = sections
@@ -66,5 +66,17 @@ export class RemoteSessionGroups implements RemoteControlSessionGroupsPort {
     // read the file back and find exactly what it already holds.
     this.onChanged()
     return { ok: true, value: { group } }
+  }
+
+  /**
+   * A fork keeps the section its parent was put in by hand. In the main process rather than in the
+   * window that asked: the tree is drawn in the main window alone, and a holder window forks too.
+   */
+  inherit(parentSessionId: string, sessionId: string): void {
+    if (this.store.inheritSessionGroup(
+      SessionsGroupsState.sessionKeyOf({ kind: 'local', sessionId: parentSessionId }),
+      SessionsGroupsState.sessionKeyOf({ kind: 'local', sessionId }),
+    ))
+      this.onChanged()
   }
 }

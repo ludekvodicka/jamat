@@ -7,7 +7,6 @@ import type {
   RemoteControlDescriptor,
   RemoteControlDescriptorOperation,
   RemoteControlLocalOperation,
-  RemoteControlOptionalOperation,
   RemoteControlStepResult,
   RemoteControlSystemIdentity,
 } from './remoteControlApi.types'
@@ -15,7 +14,7 @@ import {
   RemoteControlInstanceRegistry,
   type RemoteControlInstanceRegistration,
 } from './remoteControlInstanceRegistry'
-import { RemoteControlConst, RemoteControlLocalConst } from './remoteControlProtocol'
+import { RemoteControlCapabilities, RemoteControlConst, RemoteControlLocalConst } from './remoteControlProtocol'
 
 export interface RemoteControlDiscoveredInstance {
   descriptor: RemoteControlDescriptor
@@ -210,6 +209,8 @@ export class RemoteControlDescriptorDiscovery {
       || !RemoteControlDescriptorDiscovery.operations(value.operations)
       || (value.optionalOperations !== undefined
         && !RemoteControlDescriptorDiscovery.optionalOperations(value.optionalOperations))
+      || (value.registryOperations !== undefined
+        && !RemoteControlDescriptorDiscovery.registryOperations(value.registryOperations))
       || (value.localOperations !== undefined
         && !RemoteControlDescriptorDiscovery.localOperations(value.localOperations)))
       return RemoteControlDescriptorDiscovery.invalid()
@@ -218,7 +219,20 @@ export class RemoteControlDescriptorDiscovery {
         'unavailable',
         'The AppClientUI that published this control descriptor is gone',
       )
-    return { ok: true, value: value as RemoteControlDescriptor }
+    return { ok: true, value: RemoteControlDescriptorDiscovery.known(value as RemoteControlDescriptor) }
+  }
+
+  /**
+   * A newer AppClientUI may offer optional operations this build does not know. They are dropped
+   * rather than refusing the descriptor, as a peer's are: this CLI cannot call what it does not know,
+   * and a client one release ahead must still be reachable.
+   */
+  private static known(descriptor: RemoteControlDescriptor): RemoteControlDescriptor {
+    if (descriptor.optionalOperations === undefined) return descriptor
+    return {
+      ...descriptor,
+      optionalOperations: RemoteControlCapabilities.known(descriptor.optionalOperations) as RemoteControlDescriptor['optionalOperations'],
+    }
   }
 
   /**
@@ -244,14 +258,24 @@ export class RemoteControlDescriptorDiscovery {
       && input.every((value, index) => value === RemoteControlConst.descriptorOperations[index])
   }
 
-  private static optionalOperations(
-    input: unknown,
-  ): input is readonly RemoteControlOptionalOperation[] {
+  /** Unique operation names; the ones this build does not know are dropped by `known`. */
+  private static optionalOperations(input: unknown): input is readonly string[] {
     return Array.isArray(input)
-      && input.length <= RemoteControlConst.optionalOperations.length
+      && input.length <= 1_024
       && new Set(input).size === input.length
-      && input.every((value) => (RemoteControlConst.optionalOperations as readonly unknown[])
-        .includes(value))
+      && input.every((value) => RemoteControlDescriptorDiscovery.operationName(value))
+  }
+
+  private static operationName(value: unknown): value is string {
+    return typeof value === 'string' && /^[a-z][A-Za-z]*(\.[a-z][A-Za-z]*)+$/.test(value)
+  }
+
+  /** Names only: what each one takes is the catalog's to say, read from the running client. */
+  private static registryOperations(input: unknown): input is readonly string[] {
+    return Array.isArray(input)
+      && input.length <= 1_024
+      && new Set(input).size === input.length
+      && input.every((value) => RemoteControlDescriptorDiscovery.operationName(value))
   }
 
   private static localOperations(input: unknown): input is readonly RemoteControlLocalOperation[] {

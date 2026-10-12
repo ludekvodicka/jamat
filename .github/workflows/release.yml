@@ -96,23 +96,19 @@ jobs:
         run: pnpm install --frozen-lockfile
         working-directory: app-client-cli
 
-      # Downloads the pinned Node runtime and the reMarkable CLI for THIS platform into
-      # out/remarkable-sidecar/<os>-<arch>/current, which is where the build block's FileSet reads.
-      - name: Seed the reMarkable sidecar (this platform)
-        run: pnpm setup:remarkable-sidecar
-
-      - name: Bundle Autolauncher with the prepared Node runtime
-        run: pnpm release:launcher
+      # Every extraResources source in app-client-ui/package.json, prepared by the same script the
+      # local package build runs, so the two lists cannot drift apart again. 3.10.0 was built from a
+      # copy of that list without the Codex bridge and the Jamat CLI, and electron-builder skipped
+      # the two missing sources silently. For THIS platform: the pinned Node runtime and the
+      # reMarkable CLI, the Autolauncher, the Codex bridge, the Host bundle (node-pty pruned to this
+      # platform-arch) and the skills with the bundled Jamat CLI.
+      - name: Prepare the packaged resources (this platform)
+        run: pnpm release:resources
 
       # Platform-neutral by design: on macOS and Linux it is the only proof the seed actually runs,
       # because no packaged smoke can execute there.
       - name: Check the sidecar seed runs
         run: pnpm check:remarkable-sidecar-seed
-
-      # esbuild-bundles app-host into out/host-bundle/current, node-pty copied beside it and pruned
-      # to this platform-arch. Ships to resources/host; an installed client starts the Host from it.
-      - name: Bundle the Host
-        run: pnpm release:host-bundle
 
       - name: Build main / preload / renderer (electron-vite)
         run: pnpm -C app-client-ui run build
@@ -137,6 +133,11 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false" # do not attempt macOS signing or notarization yet
         run: pnpm -C app-client-ui exec electron-builder --${{ matrix.platform }} --publish never
+
+      # electron-builder does not fail on a missing extraResources source; this does. It reads the
+      # sources from app-client-ui/package.json, so a new entry is checked without editing the gate.
+      - name: Check the packaged resources are complete
+        run: pnpm check:packaged-resources
 
       # `error` rather than a warning: a leg that built nothing is exactly the failure the dry run
       # exists to catch, and an empty artifact would let it pass unnoticed.

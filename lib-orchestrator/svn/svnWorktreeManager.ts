@@ -1,5 +1,6 @@
+import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { lstat, mkdir, readdir, rename, rm, rmdir, stat } from 'node:fs/promises'
+import { lstat, mkdir, readdir, rename, rmdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import type { CommandOutcome, CommandRunner } from '../shared/commandInvoker.types'
@@ -8,22 +9,22 @@ import { ErrorText } from '../shared/errorText'
 import { PathCompare } from '../shared/pathCompare'
 import { ProductGroup } from '../shared/productGroup'
 import { Slug } from '../shared/slug'
+import { type TreeRemove, TreeRemoval } from '../shared/treeRemoval'
 import type {
   SvnBounds,
   SvnCheckout,
   SvnErrorCode,
   SvnInfoEntry,
   SvnLoggedRow,
-  SvnMainUpdate,
   SvnResult,
+  SvnReviewRoot,
   SvnRoot,
   SvnRootBounds,
   SvnStatusRow,
-  SvnUnlanded,
   SvnVerboseItem,
   SvnWorktreeFacts,
   SvnWorktreeLocation,
-  SvnWorktreeUpdate,
+  SvnWorktreeStatus,
 } from './svn.types'
 import { SvnWorktreeEvidence } from './svnWorktreeEvidence'
 
@@ -38,9 +39,9 @@ class SvnRunFailure extends Error {
 }
 
 /**
- * Every SVN and disk write of an SVN worktree, and the reads a finish proves its work with: the
- * TypeScript twin of the `worktree-*` commands of the agent_extensions bash helper, which shares no
- * code with it (`docs/architecture/svn-worktrees.md`).
+ * Every SVN and disk write of an SVN worktree, and the reads an SVN action decides its next stage
+ * and proves its work with (`docs/architecture/svn-worktrees.md`). The update, the cleanup and the
+ * checks are runs of the action; this class only reads around them.
  *
  * svn.exe reads its arguments in the ANSI code page and maps a character outside it to a look-alike,
  * which names another file without an error. Every command therefore runs with its working directory
@@ -50,18 +51,20 @@ class SvnRunFailure extends Error {
 export class SvnWorktreeManager {
   static readonly worktreesDirConst = '.worktrees'
   private static readonly asideSuffixConst = '.deleting'
-  /** svn holds a working-copy lock (E155004) while another client, a pp helper say, updates the same main copy. */
-  private static readonly lockRetryDelaysConst: readonly number[] = [1000, 2000, 2000]
-  /** Windows refuses a command line beyond 32767 characters; the rest is headroom for the fixed arguments. */
-  private static readonly argumentBudgetConst = 8000
+  /** svn holds a working-copy lock (E155004) while another client works in the same working copy. */
+  static readonly lockRetryDelaysConst: readonly number[] = [1000, 2000, 2000]
+  /** Paths per `svn resolve`, so a long conflict list stays below the Windows command-line limit. */
+  private static readonly resolveBatchConst = 50
   private readonly svn: CommandRunner
+  private readonly removeTree: TreeRemove
   /** Creates under way per owner: `.worktrees` stays while one runs, or its reservation loses its parent. */
   private readonly creating = new Map<string, number>()
   /** The removal of an empty `.worktrees` per owner, which a create waits out before it makes the directory. */
   private readonly removing = new Map<string, Promise<void>>()
 
-  constructor(svn: CommandRunner) {
+  constructor(svn: CommandRunner, removeTree: TreeRemove = TreeRemoval.node) {
     this.svn = svn
+    this.removeTree = removeTree
   }
 
   /**
@@ -75,17 +78,30 @@ export class SvnWorktreeManager {
     if (PathCompare.normalized(ownerDir).split('/').includes(SvnWorktreeManager.worktreesDirConst))
       return `${ownerDir} lies inside a worktree; cut worktrees from the project itself`
     if (!await SvnWorktreeManager.isDirectory(ownerDir)) return `${ownerDir} is no directory`
-    const info = await this.run(ownerDir, ['info', '--xml', '--', '.'])
-    if (!info.ok) {
-      if (info.code === 'svn-missing') return `svn is not installed: ${info.detail}`
-      if (info.code === 'not-a-working-copy') return `checkpoints mode makes SVN worktrees and ${ownerDir} is in no SVN working copy`
-      return `${ownerDir} is not a versioned SVN directory: ${info.detail}`
+    const wcRoot = await this.workingCopyRootOf(ownerDir)
+    if (!wcRoot.ok) {
+      if (wcRoot.code === 'svn-missing') return `svn is not installed: ${wcRoot.detail}`
+      if (wcRoot.code === 'not-a-working-copy') return `checkpoints mode makes SVN worktrees and ${ownerDir} is in no SVN working copy`
+      return `${ownerDir} is not a versioned SVN directory: ${wcRoot.detail}`
     }
-    const wcRoot = /<wcroot-abspath>([^<]*)<\/wcroot-abspath>/.exec(info.value.stdout)?.[1]
-      ?.replace(/&(amp|lt|gt|quot|apos);/g, (_, name: string) => ({ amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" })[name] ?? '')
-    if (wcRoot !== undefined && PathCompare.comparable(wcRoot) === PathCompare.comparable(ownerDir) && input.holdsOtherProject(ownerDir))
+    if (PathCompare.comparable(wcRoot.value) === PathCompare.comparable(ownerDir) && input.holdsOtherProject(ownerDir))
       return `${ownerDir} is a working-copy root that holds other projects, not a project`
     return null
+  }
+
+  /**
+   * The root of the working copy that holds the versioned directory `dir`, read from `svn info --xml`,
+   * which keeps a non-ASCII name intact. An unversioned directory inside a working copy fails with
+   * svn's own words.
+   */
+  async workingCopyRootOf(dir: string): Promise<SvnResult<string>> {
+    if (!await SvnWorktreeManager.isDirectory(dir)) return { ok: false, code: 'refused', detail: `${dir} is no directory` }
+    const info = await this.run(dir, ['info', '--xml', '--', '.'])
+    if (!info.ok) return info
+    const wcRoot = /<wcroot-abspath>([^<]*)<\/wcroot-abspath>/.exec(info.value.stdout)?.[1]
+      ?.replace(/&(amp|lt|gt|quot|apos);/g, (_, name: string) => ({ amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" })[name] ?? '')
+    if (wcRoot === undefined) return { ok: false, code: 'svn-failed', detail: `svn info names no working-copy root for ${dir}` }
+    return { ok: true, value: wcRoot }
   }
 
   /**
@@ -110,21 +126,72 @@ export class SvnWorktreeManager {
   }
 
   /**
-   * A fresh checkout of the owner's URL at HEAD in `<owner>/.worktrees/<folder>`, or the first free
-   * `<folder>-2`, `<folder>-3`; a name with a `.deleting` rest counts as taken. The `.worktrees`
-   * directory must be ignored by SVN, because the commit review stages every unversioned file of its
-   * scope and would publish the whole worktree with the owner's next change. A failure leaves nothing
-   * this call made, or names the folder it could not delete.
+   * The local half of a create: the empty folder `<owner>/.worktrees/<folder>`, or the first free
+   * `<folder>-2`, `<folder>-3` (a name with a `.deleting` rest counts as taken), the owner's URL, the
+   * HEAD revision the checkout is to take and the folder's identity. The `.worktrees` directory must
+   * be ignored by SVN, because the commit review stages every unversioned file of its scope and would
+   * publish the whole worktree with the owner's next change. The checkout itself is the first run of
+   * the session's before chain (`checkoutArgsOf`). A failure leaves nothing this call made.
+   */
+  async reserve(input: { ownerDir: string; folder: string }): Promise<SvnResult<SvnCheckout>> {
+    return this.underCreate(input.ownerDir, () => this.reserveNow(input.ownerDir, input.folder))
+  }
+
+  /**
+   * A reservation and its checkout in this process, for a caller that wants the worktree at once.
+   * A failed checkout deletes the folder it reserved, or names it when it cannot.
    */
   async create(input: { ownerDir: string; folder: string }): Promise<SvnResult<SvnCheckout>> {
-    const { ownerDir, folder } = input
-    if (folder === '' || Slug.of(folder) !== folder)
-      return { ok: false, code: 'refused', detail: `${JSON.stringify(folder)} is no worktree folder name` }
+    return this.underCreate(input.ownerDir, async () => {
+      const reserved = await this.reserveNow(input.ownerDir, input.folder)
+      if (!reserved.ok) return reserved
+      const { worktreePath, url, baseRevision } = reserved.value
+      const checkout = await this.run(worktreePath, SvnWorktreeManager.checkoutArgsOf(url, baseRevision))
+      if (checkout.ok) return reserved
+      const purge = await this.removeTree(worktreePath).then(() => null, (error: unknown) => ErrorText.of(error))
+      if (purge !== null || existsSync(worktreePath))
+        return { ok: false, code: checkout.code, detail: `Checkout of ${url} into ${worktreePath} failed, and ${worktreePath} is left behind`
+          + `${purge === null ? '' : ` (${purge})`}; delete it by hand: ${checkout.detail}` }
+      await rmdir(join(input.ownerDir, SvnWorktreeManager.worktreesDirConst)).catch(() => undefined)
+      return { ok: false, code: checkout.code, detail: `Checkout of ${url} into ${worktreePath} failed; nothing was left behind: ${checkout.detail}` }
+    })
+  }
+
+  /**
+   * The svn arguments that check `url` out at `revision` into the current directory, the reserved
+   * folder. A run passes them after `--non-interactive`; `run` here inserts that itself.
+   */
+  static checkoutArgsOf(url: string, revision: number): string[] {
+    return ['checkout', '-q', '--', `${url}@${revision}`, '.']
+  }
+
+  /**
+   * Empties a reserved folder whose checkout failed, so the checkout can run there again. The folder
+   * itself stays, so its identity does too. Only the folder this create reserved: without its file
+   * ID, or with another one, nothing is deleted.
+   */
+  async purgeReserved(location: { worktreePath: string; directoryId?: string }): Promise<SvnResult<void>> {
+    const { worktreePath, directoryId } = location
+    if (directoryId === undefined)
+      return { ok: false, code: 'refused', detail: `${worktreePath} carries no file ID, so nothing proves it is the folder this session reserved; nothing was deleted` }
+    const current = await SvnWorktreeManager.directoryIdOf(worktreePath)
+    if (current === null) return { ok: false, code: 'refused', detail: `The reserved folder ${worktreePath} is gone` }
+    if (current !== directoryId)
+      return { ok: false, code: 'refused', detail: `${worktreePath} is another directory than the folder this session reserved; nothing was deleted` }
+    for (const entry of await readdir(worktreePath)) {
+      try { await this.removeTree(join(worktreePath, entry)) }
+      catch (error) { return { ok: false, code: 'io-failed', detail: `Cannot empty ${worktreePath} for the checkout: ${ErrorText.of(error)}` } }
+    }
+    return { ok: true, value: undefined }
+  }
+
+  /** A create under way keeps `.worktrees`, or its reservation loses its parent; it waits out a removal already under way. */
+  private async underCreate<T>(ownerDir: string, work: () => Promise<T>): Promise<T> {
     const key = PathCompare.comparable(ownerDir)
     this.creating.set(key, (this.creating.get(key) ?? 0) + 1)
     try {
       await this.removing.get(key)
-      return await this.createNow(ownerDir, folder)
+      return await work()
     } finally {
       const left = (this.creating.get(key) ?? 1) - 1
       if (left === 0) this.creating.delete(key)
@@ -132,12 +199,16 @@ export class SvnWorktreeManager {
     }
   }
 
-  private async createNow(ownerDir: string, folder: string): Promise<SvnResult<SvnCheckout>> {
+  private async reserveNow(ownerDir: string, folder: string): Promise<SvnResult<SvnCheckout>> {
+    if (folder === '' || Slug.of(folder) !== folder)
+      return { ok: false, code: 'refused', detail: `${JSON.stringify(folder)} is no worktree folder name` }
     const info = await this.infoOf(ownerDir, '.')
     if (!info.ok) return info
     const url = info.value.url
     if (!SvnWorktreeEvidence.takesArgument(url))
       return { ok: false, code: 'refused', detail: `svn cannot take the URL ${url} as an argument` }
+    const head = await this.infoOf(ownerDir, url)
+    if (!head.ok) return { ...head, detail: `Cannot read the HEAD revision of ${url}: ${head.detail}` }
     const worktreesDir = join(ownerDir, SvnWorktreeManager.worktreesDirConst)
     let madeWorktreesDir: boolean
     try {
@@ -159,26 +230,13 @@ export class SvnWorktreeManager {
         ? { ok: false, code: 'refused', detail: `SVN does not ignore ${worktreesDir}; add ${SvnWorktreeManager.worktreesDirConst} to global-ignores in the Subversion config` }
         : ignored
     }
-    const reserved = await SvnWorktreeManager.reserve(worktreesDir, folder)
+    const reserved = await SvnWorktreeManager.reserveFolder(worktreesDir, folder)
     if (!reserved.ok) {
       await dropWorktreesDir()
       return reserved
     }
     const worktreePath = join(worktreesDir, reserved.value)
-    const fail = async (detail: string, code: SvnErrorCode): Promise<SvnResult<SvnCheckout>> => {
-      const purge = await rm(worktreePath, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 })
-        .then(() => null, (error: unknown) => ErrorText.of(error))
-      if (purge !== null || existsSync(worktreePath))
-        return { ok: false, code, detail: `Checkout of ${url} into ${worktreePath} failed, and ${worktreePath} is left behind`
-          + `${purge === null ? '' : ` (${purge})`}; delete it by hand: ${detail}` }
-      await dropWorktreesDir()
-      return { ok: false, code, detail: `Checkout of ${url} into ${worktreePath} failed; nothing was left behind: ${detail}` }
-    }
-    const checkout = await this.run(worktreesDir, ['checkout', '-q', '--', `${url}@HEAD`, reserved.value])
-    if (!checkout.ok) return fail(checkout.detail, checkout.code)
-    const checkedOut = await this.infoOf(worktreePath, '.')
-    if (!checkedOut.ok) return fail(checkedOut.detail, checkedOut.code)
-    return { ok: true, value: { worktreePath, url, baseRevision: checkedOut.value.revision, directoryId: await SvnWorktreeManager.directoryIdOf(worktreePath) } }
+    return { ok: true, value: { worktreePath, url, baseRevision: head.value.revision, directoryId: await SvnWorktreeManager.directoryIdOf(worktreePath) } }
   }
 
   /** The owner still checks out the worktree's URL, and the worktree is the checkout made for it. */
@@ -206,15 +264,14 @@ export class SvnWorktreeManager {
   /** Every working copy of the worktree, nested mounts first and the worktree last, with its changed rows. */
   async roots(worktreePath: string): Promise<SvnResult<SvnRoot[]>> {
     const rows = await this.statusOf(worktreePath)
-    return rows.ok ? { ok: true, value: SvnWorktreeManager.rootsOf(worktreePath, rows.value) } : rows
+    return rows.ok ? { ok: true, value: await SvnWorktreeManager.rootsOf(worktreePath, rows.value) } : rows
   }
 
   /**
-   * Step 1 of a finish: everyone else's commits, inside the worktree. A file deleted from disk is
-   * scheduled for deletion first, because `svn update` would restore it. Conflicts come from the status
-   * after the update, never from its text, which svn prints in the ANSI code page.
+   * Schedules the deletion of every file deleted from disk, because the update run would restore it.
+   * A name svn cannot take is refused rather than passed.
    */
-  async updateWorktree(worktreePath: string): Promise<SvnResult<SvnWorktreeUpdate>> {
+  async scheduleMissing(worktreePath: string): Promise<SvnResult<void>> {
     const before = await this.statusOf(worktreePath)
     if (!before.ok) return before
     let top: string | null = null
@@ -226,54 +283,154 @@ export class SvnWorktreeManager {
       const deleted = await this.run(worktreePath, ['delete', '-q', '--force', '--', `${row.path}@`])
       if (!deleted.ok) return { ...deleted, detail: `Cannot schedule the deletion of ${row.path}: ${deleted.detail}` }
     }
-    const updated = await this.run(worktreePath, ['update', '--accept', 'postpone', '--', '.'])
-    if (!updated.ok) return { ...updated, detail: `svn update of ${worktreePath} failed; nothing was committed: ${updated.detail}` }
-    const after = await this.statusOf(worktreePath)
-    if (!after.ok) return after
-    const conflicts = after.value.filter((row) => row.conflict).map((row) => row.path)
-    if (conflicts.length > 0) return { ok: true, value: { kind: 'conflict', paths: conflicts } }
-    const changed = SvnWorktreeEvidence.changed(after.value)
-    const members = existsSync(join(worktreePath, ProductGroup.markerConst)) ? 'first-segment' : 'whole'
-    const incoming = SvnWorktreeEvidence.incoming(changed.map((row) => row.path),
-      SvnWorktreeEvidence.updateRows(updated.value.stdout, worktreePath), members)
-    if (incoming.length > 0) {
-      const info = await this.infoOf(worktreePath, '.')
-      if (!info.ok) return info
-      return { ok: true, value: { kind: 'updated', toRevision: info.value.revision, paths: incoming } }
-    }
-    const roots = SvnWorktreeManager.rootsOf(worktreePath, after.value).filter((root) => root.changed.length > 0)
-    return { ok: true, value: { kind: 'current', changed, roots } }
+    return { ok: true, value: undefined }
   }
 
-  /** Step 0 of a finish for one root: its own commits the main copy lacks. Reads `svn log -v -r N`. */
-  async recoverable(root: SvnRoot, mainCopy: string): Promise<SvnResult<SvnLoggedRow[]>> {
-    return this.attempt(async () => {
-      const items = await this.mustVerbose(root)
-      const location = SvnWorktreeManager.must(await this.infoOf(root.path, '.'))
-      return SvnWorktreeEvidence.recoverableRows({
-        items,
-        revisionLog: (revision) => this.revisionLog(root, location, revision),
-        mainBaseOf: (path) => this.mainBaseOf(mainCopy, path),
-      })
-    })
+  /** The conflicts and the changes after an update, from status XML, never from the update's text. */
+  async status(worktreePath: string): Promise<SvnResult<SvnWorktreeStatus>> {
+    const status = await this.run(worktreePath, ['status', '--xml', '--', '.'])
+    if (!status.ok) return status
+    try {
+      const conflicts = SvnWorktreeEvidence.conflicts(status.value.stdout, worktreePath)
+      return {
+        ok: true,
+        value: {
+          textConflicts: conflicts.filter((row) => row.text && !row.other).map((row) => row.path),
+          otherConflicts: conflicts.filter((row) => row.other).map((row) => row.path),
+          changed: SvnWorktreeEvidence.changed(SvnWorktreeEvidence.statusRows(status.value.stdout, worktreePath)).map((row) => row.path),
+        },
+      }
+    }
+    catch (error) { return { ok: false, code: 'svn-failed', detail: ErrorText.of(error) } }
   }
 
   /**
-   * The local half of `recoverable` over every root: clean items committed here that the main copy
-   * holds at an older BASE. No server call, so a cleanup may run it at any time.
+   * Marks text conflicts resolved as the files now stand, in the worktree root. A name svn cannot
+   * take is refused before any path is passed, so no other file is marked by a best-fit mapping.
    */
-  async unlanded(worktreePath: string, mainCopy: string): Promise<SvnResult<SvnUnlanded[]>> {
-    const roots = await this.roots(worktreePath)
-    if (!roots.ok) return roots
+  async resolveWorking(worktreePath: string, paths: readonly string[]): Promise<SvnResult<void>> {
+    const unsafe = paths.filter((path) => !SvnWorktreeEvidence.takesArgument(path))
+    if (unsafe.length > 0) return { ok: false, code: 'refused', detail: `svn cannot take the names ${unsafe.join(', ')}` }
+    for (let start = 0; start < paths.length; start += SvnWorktreeManager.resolveBatchConst) {
+      const batch = paths.slice(start, start + SvnWorktreeManager.resolveBatchConst).map((path) => `${path}@`)
+      const resolved = await this.run(worktreePath, ['resolve', '--accept', 'working', '--', ...batch])
+      if (!resolved.ok) return resolved
+    }
+    return { ok: true, value: undefined }
+  }
+
+  /**
+   * The paths other commits between `baseRevision` and the worktree's revision now changed in a
+   * project of `changed`, from `svn log -v --xml`. `own` are this worktree's commits, which never
+   * count. In a product group only a member the change set touches counts.
+   */
+  async incoming(worktreePath: string, baseRevision: number, changed: readonly string[], own: readonly number[]): Promise<SvnResult<string[]>> {
     return this.attempt(async () => {
-      const unlanded: SvnUnlanded[] = []
-      for (const root of roots.value)
-        unlanded.push(...await SvnWorktreeEvidence.unlandedCandidates(await this.mustVerbose(root), (path) => this.mainBaseOf(mainCopy, path)))
-      return unlanded
+      const info = SvnWorktreeManager.must(await this.infoOf(worktreePath, '.'))
+      if (info.revision <= baseRevision) return []
+      if (!SvnWorktreeEvidence.takesArgument(info.url))
+        throw new SvnRunFailure('refused', `svn cannot take the URL ${info.url} as an argument`)
+      const log = SvnWorktreeManager.must(await this.run(worktreePath,
+        ['log', '-v', '--xml', '-r', `${baseRevision + 1}:${info.revision}`, '--', info.url]))
+      const rows = SvnWorktreeEvidence.loggedRows(log.stdout, info.base, '').filter((row) => !own.includes(row.revision))
+      const members = existsSync(join(worktreePath, ProductGroup.markerConst)) ? 'first-segment' : 'whole'
+      return SvnWorktreeEvidence.incoming(changed, rows, members)
     })
   }
 
-  /** Step 2 of a finish: per root its repository and BASE, per repository its youngest revision. */
+  /** Whether an svn process holds the working copy, or one that died left it for `svn cleanup`. */
+  async locked(worktreePath: string): Promise<boolean> {
+    const status = await this.run(worktreePath, ['status', '--xml', '--', '.'])
+    if (!status.ok) return status.code === 'locked'
+    try { return SvnWorktreeEvidence.lockedPaths(status.value.stdout, worktreePath).length > 0 }
+    catch { return false }
+  }
+
+  /** The BASE revision of a working copy's root. */
+  async revisionOf(path: string): Promise<SvnResult<number>> {
+    const info = await this.infoOf(path, '.')
+    return info.ok ? { ok: true, value: info.value.revision } : info
+  }
+
+  /** The repository root and the revision of a working copy's root directory; local, no server call. */
+  async rootRevisionOf(path: string): Promise<SvnResult<{ repository: string; revision: number }>> {
+    const info = await this.infoOf(path, '.')
+    return info.ok ? { ok: true, value: { repository: info.value.repository, revision: info.value.revision } } : info
+  }
+
+  /** The working copies of the external mounts below `path`, absolute, nested ones first. */
+  async mountRootsOf(path: string): Promise<SvnResult<string[]>> {
+    const rows = await this.statusOf(path)
+    if (!rows.ok) return rows
+    return { ok: true, value: (await SvnWorktreeManager.rootsOf(path, rows.value)).filter((root) => root.own !== '').map((root) => root.path) }
+  }
+
+  /**
+   * How many revisions of the server changed `path` after its root revision, from `svn log -q`. svn
+   * answers E160006 when the root revision is HEAD already, which is none behind.
+   */
+  async behind(path: string): Promise<SvnResult<number>> {
+    const root = await this.infoOf(path, '.')
+    if (!root.ok) return root
+    const log = await this.run(path, ['log', '-q', '--xml', '-r', `${root.value.revision + 1}:HEAD`, '--', '.'])
+    if (!log.ok) return /E160006/.test(log.detail) ? { ok: true, value: 0 } : log
+    return { ok: true, value: (log.value.stdout.match(/<logentry\b/g) ?? []).length }
+  }
+
+  /** Every root with its changes, mounts first, and whether a mount is pinned to a revision. */
+  async reviewRoots(worktreePath: string): Promise<SvnResult<SvnReviewRoot[]>> {
+    const rows = await this.statusOf(worktreePath)
+    if (!rows.ok) return rows
+    const roots = await SvnWorktreeManager.rootsOf(worktreePath, rows.value)
+    if (roots.length === 1) return { ok: true, value: roots.map((root) => ({ ...root, pinned: false })) }
+    const properties = await this.run(worktreePath, ['propget', 'svn:externals', '-R', '--xml', '--', '.'])
+    if (!properties.ok) return properties
+    try {
+      const pinned = SvnWorktreeEvidence.pinnedExternals(properties.value.stdout, worktreePath)
+      return { ok: true, value: roots.map((root) => ({ ...root, pinned: root.own !== '' && pinned.includes(root.own) })) }
+    }
+    catch (error) { return { ok: false, code: 'svn-failed', detail: ErrorText.of(error) } }
+  }
+
+  /**
+   * What the worktree holds now, as one hash: `status -v` of every root and the size and time of
+   * every changed file. Two equal fingerprints mean the checks that ran on the first one still hold.
+   */
+  async fingerprint(worktreePath: string): Promise<SvnResult<string>> {
+    const rows = await this.statusOf(worktreePath)
+    if (!rows.ok) return rows
+    const hash = createHash('sha256')
+    for (const root of await SvnWorktreeManager.rootsOf(worktreePath, rows.value)) {
+      const status = await this.run(root.path, ['status', '-v', '--xml', '--ignore-externals', '--', '.'])
+      if (!status.ok) return status
+      hash.update(`${root.own}\n${status.value.stdout}\n`)
+    }
+    for (const row of SvnWorktreeEvidence.changed(rows.value)) {
+      const info = await lstat(join(worktreePath, ...row.path.split('/'))).catch(() => null)
+      hash.update(`${row.path}:${info === null ? '-' : `${info.size}:${info.mtimeMs}`}\n`)
+    }
+    return { ok: true, value: hash.digest('hex') }
+  }
+
+  /** This root's own commits since its checkout, from `status -v` confirmed by `svn log -v -r N`. */
+  async ownCommits(root: SvnRoot): Promise<SvnResult<{ repository: string; rows: SvnLoggedRow[] }>> {
+    return this.attempt(async () => {
+      const items = await this.mustVerbose(root)
+      const location = SvnWorktreeManager.must(await this.infoOf(root.path, '.'))
+      const rows = await SvnWorktreeEvidence.ownCommitRows({
+        items,
+        revisionLog: (revision) => this.revisionLog(root, location, revision),
+      })
+      return { repository: location.repository, rows }
+    })
+  }
+
+  /** Paths changed below the root's URL after `bound.since`, placed in the worktree. */
+  async changedSince(root: SvnRoot, bound: SvnRootBounds): Promise<SvnResult<SvnLoggedRow[]>> {
+    return this.attempt(() => this.historyAfter(root, bound))
+  }
+
+  /** Per root its repository and BASE, per repository its youngest revision. */
   async lowerBounds(roots: readonly SvnRoot[]): Promise<SvnResult<SvnBounds>> {
     const youngest = new Map<string, number>()
     const bounds: Record<string, SvnRootBounds> = {}
@@ -318,57 +475,6 @@ export class SvnWorktreeManager {
     }))
   }
 
-  /**
-   * Brings the landed paths, and only them, into the main copy, so files another session edits there
-   * take only this change. A path the log modified takes its own content or properties (`--depth
-   * empty`); an added, replaced or deleted one arrives whole (`--parents`). A locally edited file is
-   * merged, never skipped or reverted. The result of each path is read from the status afterwards.
-   */
-  async updateMain(mainCopy: string, landed: readonly SvnLoggedRow[]): Promise<SvnResult<SvnMainUpdate>> {
-    const newest = new Map<string, SvnLoggedRow>()
-    for (const row of landed) {
-      const known = newest.get(row.path)
-      if (known === undefined || known.revision < row.revision) newest.set(row.path, row)
-    }
-    if (newest.size === 0) return { ok: true, value: { main: 'none', lines: [] } }
-    const lines: string[] = []
-    let conflicts = 0
-    let merged = 0
-    const rows = [...newest.values()].filter((row) => {
-      if (SvnWorktreeEvidence.takesArgument(row.path)) return true
-      lines.push(`MAIN SKIPPED ${row.path}: svn cannot take this name`)
-      conflicts += 1
-      return false
-    })
-    const flat = rows.filter((row) => !SvnWorktreeManager.arrivesWhole(row)).map((row) => row.path)
-    const deepAll = rows.filter((row) => SvnWorktreeManager.arrivesWhole(row)).map((row) => row.path)
-    // A path below another deep target arrives with it; listing it again makes svn skip it.
-    const deep = deepAll.filter((path) => !deepAll.some((other) => path.startsWith(`${other}/`)))
-    const updated = await this.updateTargets(mainCopy, ['update', '--parents', '--accept', 'postpone'], deep)
-    const flatUpdated = updated.ok ? await this.updateTargets(mainCopy, ['update', '--depth', 'empty', '--accept', 'postpone'], flat) : updated
-    if (!flatUpdated.ok) {
-      lines.push(`MAIN UPDATE FAILED: svn update in ${mainCopy} failed; the commit stands. Update these paths by hand:`,
-        ...[...deep, ...flat].map((path) => `  ${path}`),
-        ...flatUpdated.detail.split(/\r?\n/).filter((line) => line.trim() !== '').slice(-5).map((line) => `  svn: ${line}`))
-      return { ok: true, value: { main: 'failed', lines } }
-    }
-    const states = await this.pathStates(mainCopy, rows.map((row) => row.path))
-    if (!states.ok) {
-      lines.push(`MAIN UPDATE FAILED: svn cannot report the main copy ${mainCopy} after the update; check these paths by hand:`,
-        ...rows.map((row) => `  ${row.path}`), `  svn: ${states.detail}`)
-      return { ok: true, value: { main: 'failed', lines } }
-    }
-    for (const row of rows) {
-      const verdict = SvnWorktreeManager.mainVerdictOf(row, states.value.get(row.path))
-      if (verdict === null) continue
-      lines.push(verdict.line)
-      if (verdict.merged) merged += 1
-      else conflicts += 1
-    }
-    const main = conflicts > 0 ? `conflict:${conflicts}` as const : merged > 0 ? `merged:${merged}` as const : 'updated'
-    return { ok: true, value: { main, lines } }
-  }
-
   /** Whether the worktree directory is still there; a removal cut short leaves only `<name>.deleting`. */
   async present(worktreePath: string): Promise<boolean> {
     return SvnWorktreeManager.isDirectory(worktreePath)
@@ -408,8 +514,7 @@ export class SvnWorktreeManager {
 
   /**
    * Deletes `<name>.deleting`. Node unlinks a junction instead of descending into it, so links into a
-   * shared package store survive, and it reaches paths beyond 260 characters; Windows keeps a
-   * just-closed file locked for a moment, which is what the retries are for.
+   * shared package store survive, and it reaches paths beyond 260 characters.
    */
   async purgeAside(location: SvnWorktreeLocation): Promise<SvnResult<'removed' | 'undeleted'>> {
     const aside = `${location.worktreePath}${SvnWorktreeManager.asideSuffixConst}`
@@ -417,7 +522,7 @@ export class SvnWorktreeManager {
     const asideId = await SvnWorktreeManager.directoryIdOf(aside)
     if (location.directoryId !== undefined && asideId !== null && asideId !== location.directoryId)
       return { ok: false, code: 'refused', detail: `${aside} is another directory than the worktree this session created` }
-    try { await rm(aside, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 }) }
+    try { await this.removeTree(aside) }
     catch { return { ok: true, value: 'undeleted' } }
     return { ok: true, value: existsSync(aside) ? 'undeleted' : 'removed' }
   }
@@ -454,7 +559,7 @@ export class SvnWorktreeManager {
     catch (error) { return { ok: false, code: 'svn-failed', detail: ErrorText.of(error) } }
     let added = 0
     let removed = 0
-    for (const root of SvnWorktreeManager.rootsOf(worktreePath, rows)) {
+    for (const root of await SvnWorktreeManager.rootsOf(worktreePath, rows)) {
       const diff = await this.run(root.path, ['diff', '--internal-diff', '--', '.'])
       if (!diff.ok) return diff
       const counted = SvnWorktreeManager.diffLines(diff.value.stdout)
@@ -469,8 +574,8 @@ export class SvnWorktreeManager {
     return { ok: true, value: { added, removed, changedFiles } }
   }
 
-  private static rootsOf(worktreePath: string, rows: readonly SvnStatusRow[]): SvnRoot[] {
-    const mounts = rows.filter((row) => row.kind === 'external').map((row) => row.path)
+  private static async rootsOf(worktreePath: string, rows: readonly SvnStatusRow[]): Promise<SvnRoot[]> {
+    const mounts = (await SvnWorktreeManager.mountsOf(worktreePath, rows))
       .sort((a, b) => b.split('/').length - a.split('/').length || a.localeCompare(b))
     const changed = SvnWorktreeEvidence.changed(rows)
     const innermost = (path: string): string => mounts.find((mount) => path === mount || path.startsWith(`${mount}/`)) ?? ''
@@ -481,35 +586,27 @@ export class SvnWorktreeManager {
     }))
   }
 
-  /** A modified path takes only its own content or properties; the root is never updated whole. */
-  private static arrivesWhole(row: SvnLoggedRow): boolean {
-    if (row.path === '.') return false
-    switch (row.action) {
-      case 'A':
-      case 'D':
-      case 'R':
-        return true
-      case 'M':
-        return false
-      default: throw new Error(`Unknown svn log action ${String(row.action satisfies never)}`)
+  /**
+   * The working copies the `external` rows stand for. svn marks the first directory of a target it
+   * created, so `clients/coinGecko` defined on `shared` gives the row `shared/clients`: a plain
+   * directory svn holds no node of, with the mounts below it. A directory with its own `.svn` is a
+   * mount; one without is searched for the mounts below it, and a row with no directory gives none.
+   */
+  private static async mountsOf(worktreePath: string, rows: readonly SvnStatusRow[]): Promise<string[]> {
+    const mounts = new Set<string>()
+    const visit = async (path: string): Promise<void> => {
+      const directory = join(worktreePath, ...path.split('/'))
+      if (await SvnWorktreeManager.isDirectory(join(directory, '.svn'))) {
+        mounts.add(path)
+        return
+      }
+      // A junction is no Dirent directory, so the search never leaves the worktree.
+      for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => []))
+        if (entry.isDirectory()) await visit(`${path}/${entry.name}`)
     }
-  }
-
-  /** What the main copy shows of one landed path after the update; null when it simply took it. */
-  private static mainVerdictOf(row: SvnLoggedRow, state: { item: SvnVerboseItem; conflict: boolean } | undefined): { line: string; merged: boolean } | null {
-    if (state?.conflict === true) return { line: `MAIN CONFLICT ${row.path}`, merged: false }
-    const versioned = state !== undefined && state.item.item !== 'unversioned' && state.item.item !== 'none'
-    switch (row.action) {
-      case 'D':
-        return versioned && state.item.item !== 'deleted' ? { line: `MAIN SKIPPED ${row.path}: the main copy still holds it`, merged: false } : null
-      case 'A':
-      case 'M':
-      case 'R':
-        if (!versioned || state.item.base < row.revision)
-          return { line: `MAIN SKIPPED ${row.path}: the main copy did not take r${row.revision}`, merged: false }
-        return state.item.item === 'modified' || state.item.props === 'modified' ? { line: `MAIN MERGED ${row.path}`, merged: true } : null
-      default: throw new Error(`Unknown svn log action ${String(row.action satisfies never)}`)
-    }
+    for (const row of rows)
+      if (row.kind === 'external') await visit(row.path)
+    return [...mounts]
   }
 
   private static diffLines(text: string): { added: number; removed: number } {
@@ -563,7 +660,7 @@ export class SvnWorktreeManager {
   }
 
   /** Makes the first free folder of `folder`, `folder-2`, ...; the directory itself is the reservation. */
-  private static async reserve(worktreesDir: string, folder: string): Promise<SvnResult<string>> {
+  private static async reserveFolder(worktreesDir: string, folder: string): Promise<SvnResult<string>> {
     for (let index = 1; index <= 99; index += 1) {
       const name = index === 1 ? folder : `${folder}-${index}`
       if (existsSync(join(worktreesDir, `${name}${SvnWorktreeManager.asideSuffixConst}`))) continue
@@ -625,78 +722,6 @@ export class SvnWorktreeManager {
     return SvnWorktreeEvidence.loggedRows(log.stdout, bound.base, root.own)
   }
 
-  /** The main copy's BASE of a worktree-relative path, 0 when it does not hold it. */
-  private async mainBaseOf(mainCopy: string, path: string): Promise<number> {
-    const target = path === '.' ? mainCopy : join(mainCopy, ...path.split('/'))
-    if (!existsSync(target)) return 0
-    // A name svn cannot take is found in the info of its nearest ancestor that it can.
-    let anchor = path
-    while (anchor !== '.' && !SvnWorktreeEvidence.takesArgument(anchor))
-      anchor = anchor.includes('/') ? anchor.slice(0, anchor.lastIndexOf('/')) : '.'
-    const depth = anchor === path ? [] : ['--depth', 'infinity']
-    const outcome = await this.svn.run(mainCopy, ['info', '--xml', '--non-interactive', ...depth, '--', anchor === '.' ? '.' : `${anchor}@`])
-    // W155010 and E200009: the main copy holds the path unversioned.
-    const notVersioned = outcome.failure === null && outcome.stderr.split(/\r?\n/).filter((line) => line.trim() !== '')
-      .every((line) => /^svn: (warning: W155010|E200009):/.test(line))
-    if (outcome.failure !== null || (outcome.code !== 0 && !notVersioned))
-      throw new SvnRunFailure(SvnWorktreeManager.failureOf(outcome).code, SvnWorktreeManager.failureOf(outcome).detail)
-    const entry = SvnWorktreeEvidence.infoEntries(outcome.stdout)
-      .find((candidate) => SvnWorktreeEvidence.relativeTo(mainCopy, candidate.path) === path)
-    return entry?.revision ?? 0
-  }
-
-  /** Each path's state after an update, read as XML, so a non-ASCII name below a target keeps its own name. */
-  private async pathStates(mainCopy: string, paths: readonly string[]): Promise<SvnResult<Map<string, { item: SvnVerboseItem; conflict: boolean }>>> {
-    const states = new Map<string, { item: SvnVerboseItem; conflict: boolean }>()
-    for (const chunk of SvnWorktreeManager.chunks(paths)) {
-      const status = await this.run(mainCopy, ['status', '-v', '--xml', '--depth', 'empty', '--', ...chunk.map(SvnWorktreeManager.argOf)])
-      if (!status.ok) return status
-      try {
-        const rows = SvnWorktreeEvidence.statusRows(status.value.stdout, mainCopy)
-        const items = SvnWorktreeEvidence.statusVerboseRows(status.value.stdout, mainCopy)
-        for (const [index, item] of items.entries()) states.set(item.path, { item, conflict: rows[index].conflict })
-      }
-      catch (error) { return { ok: false, code: 'svn-failed', detail: ErrorText.of(error) } }
-    }
-    return { ok: true, value: states }
-  }
-
-  /** An update of `targets` in chunks; a working-copy lock is waited out about five seconds. */
-  private async updateTargets(mainCopy: string, command: readonly string[], targets: readonly string[]): Promise<SvnResult<void>> {
-    for (const chunk of SvnWorktreeManager.chunks(targets)) {
-      const args = [...command, '--', ...chunk.map(SvnWorktreeManager.argOf)]
-      let updated = await this.run(mainCopy, args)
-      for (const delay of SvnWorktreeManager.lockRetryDelaysConst) {
-        if (updated.ok || updated.code !== 'locked') break
-        await new Promise((resolve) => setTimeout(resolve, delay))
-        updated = await this.run(mainCopy, args)
-      }
-      if (!updated.ok) return updated
-    }
-    return { ok: true, value: undefined }
-  }
-
-  private static chunks(paths: readonly string[]): string[][] {
-    const chunks: string[][] = []
-    let current: string[] = []
-    let length = 0
-    for (const path of paths) {
-      if (current.length > 0 && length + path.length + 2 > SvnWorktreeManager.argumentBudgetConst) {
-        chunks.push(current)
-        current = []
-        length = 0
-      }
-      current.push(path)
-      length += path.length + 2
-    }
-    if (current.length > 0) chunks.push(current)
-    return chunks
-  }
-
-  private static argOf(path: string): string {
-    return path === '.' ? '.' : `${path}@`
-  }
-
   private async attempt<T>(read: () => Promise<T>): Promise<SvnResult<T>> {
     try { return { ok: true, value: await read() } }
     catch (error) {
@@ -721,7 +746,7 @@ export class SvnWorktreeManager {
     const detail = [outcome.stdout.trim(), outcome.stderr.trim()].filter(Boolean).join('\n') || `svn could not run (${outcome.failure ?? outcome.code})`
     const code = outcome.failure === 'command-missing' ? 'svn-missing'
       : /E155011|E160028|E170004|out.of.date/i.test(detail) ? 'out-of-date'
-      : /E155004|locked/i.test(detail) ? 'locked'
+      : /E155004|E155037|locked/i.test(detail) ? 'locked'
       : /E155007|not a working copy/i.test(detail) ? 'not-a-working-copy'
       : 'svn-failed'
     return { code, detail }

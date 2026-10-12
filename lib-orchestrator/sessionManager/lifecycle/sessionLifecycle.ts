@@ -11,35 +11,51 @@ import type {
   RuntimeSessionInfo,
 } from '../../../app-host/app/wire/hostWire.js'
 import type { HostCallResult } from '../../hostClient/hostClient.types'
-import type { DeclaredSetup, SetupResolution } from '../../projectSetup/projectSetup.types'
+import type { SetupResolution } from '../../projectSetup/projectSetup.types'
+import type { WorktreeConfigRead } from '../../projectSetup/worktreeConfig'
 import { AgentPresets, type SessionAgentSpec } from '../launch/agentPresets'
 import { ClaudeTrustSeed, type ClaudeTrustSeedResult } from '../launch/claudeTrustSeed'
 import type { CodexSessionFiles } from '../launch/codexSessionFiles'
 import { PathCompare } from '../../shared/pathCompare'
 import { Slug } from '../../shared/slug'
-import { SetupFlow } from './setupFlow'
+import type { CommandAgreement } from '../scripts/commandAgreement'
+import { ScriptChain } from '../scripts/scriptChain'
+import { FinishScriptsFlow, type FinishChecksGate } from './finishScriptsFlow'
+import { InnerRunFlow } from './innerRunFlow'
+import { ScriptRunLauncher } from './scriptRunLauncher'
+import { SetupFlow, type SetupSkip } from './setupFlow'
+import { SvnActionFlow, type SvnActionPorts } from './svnActionFlow'
 import { OperationOutcomes } from './operationOutcomes'
 import { LaunchPlanner, type LaunchPlanOptions } from '../launch/launchPlanner'
+import type { RunTools } from '../launch/runTools'
 import type {
   SessionRecord,
   SessionRecordAgent,
-  SessionRecordSetupCommand,
+  SessionRecordCommitReceipt,
+  SessionRecordProcess,
+  SessionRecordScriptLink,
   SessionRecordWorktree,
+  SessionRecordWorktreeCaller,
 } from '../records/sessionRecord.types'
 import { SessionColors } from '../sessionColors'
 import { SessionLimits } from '../sessionLimits'
 import { SessionOutcomes } from '../records/sessionOutcomes'
 import type { SessionRecordsStore } from '../records/sessionRecordsStore'
 import { SessionTitle } from '../records/sessionTitle'
+import { SessionScriptDefinitions, type SessionScriptGate } from '../scripts/sessionScriptDefinitions'
+import type { SessionScriptsManager } from '../scripts/sessionScriptsManager'
 import type {
   SessionAgentId,
   SessionColorName,
+  SessionCommitReceipt,
   SessionCreateSpec,
   SessionDetailsSaved,
   SessionDetailsUpdate,
   SessionHistoryOpenSpec,
   SessionHistoryReference,
+  SessionScriptRequest,
   SessionTitleParts,
+  SessionWorktreeKind,
   SessionsOpErrorCode,
   SessionsOpResult,
 } from '../sessionManagerApi.types'
@@ -65,28 +81,59 @@ export interface SessionHostPort {
 }
 
 /**
- * What a worktree create asks for. `folder` is the final directory name, the session number already
- * in front; `owner` is the directory an SVN worktree checks out, at or below `projectRoot`.
+ * Where a worktree of a session's directory is wanted. `projectRoot` is the catalog project the
+ * directory was chosen as, null for an ad-hoc directory; `owner` is pp 7.3's explicit SVN owner at
+ * or below it (dormant register, `lib-orchestrator.md`).
  */
-export interface WorktreeRequest {
-  projectRoot: string
+export interface WorktreePlaceRequest {
+  directory: string
+  projectRoot: string | null
   owner?: string
+}
+
+/**
+ * Where a worktree stands, decided before its number and its agreement so a refusal leaves nothing:
+ * the kind, the directory it checks out or cuts from (whose `.worktree.json` drives setup and
+ * checks), the session's place below it, and the catalog project whose counter numbers it.
+ */
+export interface WorktreePlacement {
+  kind: SessionWorktreeKind
+  ownerDir: string
+  /** '/'-separated, `''` at the owner. */
+  cwdSubpath: string
+  catalogProject: string | null
+}
+
+export type WorktreePlacing =
+  | { ok: true; value: WorktreePlacement }
+  | { ok: false; code: SessionsOpErrorCode; detail: string }
+
+/** What a worktree create asks for. `folder` is the final directory name, the session number already in front. */
+export interface WorktreeRequest {
+  placement: WorktreePlacement
   folder: string
   baseRef?: string
 }
 
+/**
+ * The worktree as the record keeps it, and for an SVN worktree the checkout that leads the before
+ * chain: the create reserves the folder, and the checkout is a visible run.
+ */
 export type WorktreeProvision =
-  | { ok: true; value: SessionRecordWorktree }
+  | { ok: true; value: { worktree: SessionRecordWorktree; checkout: (SessionRecordProcess & { cwd: string }) | null } }
   | { ok: false; code: SessionsOpErrorCode; detail: string }
 
 /**
- * The one thing a session wants of a worktree at create. Tearing one down is deliberately not on
- * it: that is a finish, under a person who has said what should happen to the work inside, and it
- * belongs to the finish flows rather than to a record being deleted. What `remove` does instead is
- * SAY what it leaves - see there.
+ * What a session wants of a worktree at create. Tearing one down is deliberately not on it: that is
+ * a finish, under a person who has said what should happen to the work inside, and it belongs to
+ * the finish flows rather than to a record being deleted. What `remove` does instead is SAY what it
+ * leaves - see there.
  */
 export interface SessionWorktreePort {
+  place(request: WorktreePlaceRequest): Promise<WorktreePlacing>
   create(request: WorktreeRequest): Promise<WorktreeProvision>
+  /** Empties the reserved folder of an SVN worktree whose checkout failed, by identity, before the checkout runs again. */
+  purgeReserved(worktree: SessionRecordWorktree): Promise<SessionsOpResult>
 }
 
 /**
@@ -96,13 +143,8 @@ export interface SessionWorktreePort {
  * takes time.
  */
 export interface SessionSetupPort {
-  resolve(projectRoot: string, repositoryRoot: string): Promise<SetupResolution>
-  /**
-   * What the project declares on its own, answerable before a worktree exists - which is what lets a
-   * create be refused without leaving one behind.
-   */
-  declaredSetup(projectRoot: string): Promise<DeclaredSetup | null>
-  acknowledgeSetup(projectRoot: string, hash: string): void
+  /** `config` is the `setup` of the same `.worktree.json` read the agreement was checked over. */
+  resolve(projectRoot: string, repositoryRoot: string, config: WorktreeConfigRead): Promise<SetupResolution>
 }
 
 /**
@@ -125,15 +167,37 @@ export interface SessionClaudeTitlesPort {
   appendTitle(input: { cwd: string; nativeSessionId: string; title: string }): Promise<boolean>
 }
 
+/**
+ * The marks of a session this library starts for itself, which the wire spec refuses to carry: a
+ * one-shot run, the permission mode it runs in, and the parent it is a script run of.
+ */
+export interface SessionInternalMarks {
+  sessionId: string
+  oneShot: true
+  permission?: SessionRecordAgent['permission']
+  scriptOf: SessionRecordScriptLink
+}
+
 export interface SessionLifecycleDeps {
   controller: NonNullable<LaunchPlanOptions['controller']>
   records: SessionRecordsStore
   host: SessionHostPort
   worktrees: SessionWorktreePort
   setup: SessionSetupPort
+  /**
+   * Whether this machine agreed to the commands a project declares, answerable before a worktree
+   * exists - which is what lets a create be refused without leaving one behind.
+   */
+  agreement: Pick<CommandAgreement, 'gate' | 'agreed' | 'declared'>
   numbers: SessionNumbersPort
   codexSessions: Pick<CodexSessionFiles, 'launch' | 'identity'>
+  /** Where the tool of a direct-process run is on this machine, asked at every launch of one. */
+  tools: Pick<RunTools, 'resolve'>
   claudeTitles: SessionClaudeTitlesPort
+  /** Settles and collapses runs that are over, and takes a parent's runs with it when it goes. */
+  scripts: SessionScriptsManager
+  /** What an SVN action of a worktree session reads and writes beside the records and the runs. */
+  svnActions: SvnActionPorts
   /** Where a fact the user has to know but cannot act on through the result goes. */
   report: (message: string) => void
   /**
@@ -179,15 +243,14 @@ export type ReopenRoute =
   | { kind: 'create' }
   | { kind: 'live' }
 
-/** What a resolution means for the worktree that was just made: run these, or install nothing. */
-export type SetupPlan =
-  | { kind: 'run'; commands: SessionRecordSetupCommand[] }
-  /**
-   * `reason` is what the record keeps and what a refusal quotes; `announcement` is the sentence for
-   * the user, and it is null only where the project itself already said it needs nothing. They are
-   * two strings rather than one because only some of these have anything to advise.
-   */
-  | { kind: 'skip'; reason: string; announcement: string | null }
+/**
+ * What happens when a gate's run is judged, one entry per gate, so a new gate does not compile until
+ * it has both. `succeeded` answers the change that landed, or null.
+ */
+type ScriptGateHandlers = Record<SessionScriptGate, {
+  succeeded(parentId: string): Promise<ReconcileChange | null>
+  failed(parentId: string, reason: string): Promise<boolean>
+}>
 
 /**
  * Create, reopen, stop, remove, adopt and retry a failed setup, plus the reconcile pass that applies
@@ -216,7 +279,9 @@ export class SessionLifecycle {
   private readonly setup: SessionSetupPort
   private readonly numbers: SessionNumbersPort
   private readonly codexSessions: SessionLifecycleDeps['codexSessions']
+  private readonly tools: SessionLifecycleDeps['tools']
   private readonly claudeTitles: SessionClaudeTitlesPort
+  private readonly scripts: SessionScriptsManager
   private readonly report: (message: string) => void
   private resumeMerge: ((sessionId: string) => void) | null
   /** Judges and removes a worktree whose cleanup is due, detached; unwired, a pending cleanup waits. */
@@ -232,10 +297,18 @@ export class SessionLifecycle {
   private readonly startedAt: number
   private codexStartupNamingDone = false
   /**
-   * The install machine, carved out of this class. It launches records the way this class does, so
-   * it is handed exactly those five methods and nothing else - never `this`.
+   * The before chain, carved out of this class. It launches its runs through `runs`, which is handed
+   * exactly the record writes a launch needs and nothing else - never `this`.
    */
   private readonly setupFlow: SetupFlow
+  /** The after chain of a Finish, launched through the same `runs`. */
+  private readonly finishScripts: FinishScriptsFlow
+  /** The runs a live session asks for, launched through the same `runs`. */
+  private readonly innerRuns: InnerRunFlow
+  private readonly runs: ScriptRunLauncher
+  /** Finish (Commit) and Discard of SVN worktrees, launched through the same `runs`. */
+  readonly svnActions: SvnActionFlow
+  private readonly gateHandlers: ScriptGateHandlers
 
   constructor(deps: SessionLifecycleDeps) {
     this.controller = deps.controller
@@ -245,7 +318,9 @@ export class SessionLifecycle {
     this.setup = deps.setup
     this.numbers = deps.numbers
     this.codexSessions = deps.codexSessions
+    this.tools = deps.tools
     this.claudeTitles = deps.claudeTitles
+    this.scripts = deps.scripts
     this.report = deps.report
     this.resumeMerge = deps.resumeMerge ?? null
     this.yoloFor = deps.yoloFor ?? (() => false)
@@ -257,22 +332,79 @@ export class SessionLifecycle {
     this.newId = deps.newId ?? (() => randomUUID())
     this.now = deps.now ?? (() => Date.now())
     this.startedAt = this.now()
+    this.runs = new ScriptRunLauncher({
+      host: this.host,
+      launch: {
+        plannedLaunch: (record, launch) => this.plannedLaunch(record, launch),
+        launchProblem: (record) => this.launchProblemOf(record),
+        bindLive: (record, result) => this.bindLive(record, result),
+        endRefused: (record, detail) => this.endRefused(record, detail),
+        markLaunchWait: (sessionId, reason) => this.markLaunchWait(sessionId, reason),
+      },
+    })
     this.setupFlow = new SetupFlow({
       records: this.records,
-      host: this.host,
       setup: this.setup,
+      worktrees: this.worktrees,
+      agreement: deps.agreement,
+      scripts: this.scripts,
+      runs: this.runs,
       report: this.report,
       newId: this.newId,
       now: this.now,
       launch: {
-        plannedLaunch: (record, launch) => this.plannedLaunch(record, launch),
-        bindLive: (record, result) => this.bindLive(record, result),
-        endRefused: (record, detail) => this.endRefused(record, detail),
         replayLaunch: (change) => this.replayLaunch(change),
-        hostRouteOf: (sessionId) => this.hostRouteOf(sessionId),
         unrecordedWorktree: (facts) => this.unrecordedWorktree(facts),
+        startRefusal: async (record) => this.finishingRefusal(record)
+          ?? SessionLifecycle.goneOrNull(record.sessionId, await SessionLifecycle.worktreeGone(record)),
       },
     })
+    this.finishScripts = new FinishScriptsFlow({
+      records: this.records,
+      agreement: deps.agreement,
+      runs: this.runs,
+      report: this.report,
+      newId: this.newId,
+      now: this.now,
+      startedAt: this.startedAt,
+      launch: {
+        startRefusal: async (record) => this.finishingRefusal(record)
+          ?? SessionLifecycle.goneOrNull(record.sessionId, await SessionLifecycle.worktreeGone(record)),
+      },
+    })
+    this.innerRuns = new InnerRunFlow({ records: this.records, runs: this.runs, newId: this.newId, now: this.now })
+    this.svnActions = new SvnActionFlow({
+      ...deps.svnActions,
+      records: this.records,
+      runs: this.runs,
+      createResolver: (spec, marks) => this.createInternal(spec, marks),
+      stopRun: (runId) => this.scripts.stopRun(runId),
+      checks: this.finishScripts,
+      stop: (sessionId) => this.stop(sessionId),
+      report: this.report,
+      newId: this.newId,
+      now: this.now,
+    })
+    this.gateHandlers = {
+      before: {
+        succeeded: (parentId) => this.setupFlow.applyBeforeSucceeded(parentId),
+        failed: (parentId, reason) => this.setupFlow.applyBeforeFailed(parentId, reason),
+      },
+      finish: {
+        succeeded: (parentId) => this.finishScripts.applyPassed(parentId),
+        failed: (parentId, reason) => this.finishScripts.applyFailed(parentId, reason),
+      },
+      merge: {
+        succeeded: async (parentId) => this.resumeMergeOf(parentId),
+        failed: (parentId, reason) => this.applyResolveFailed(parentId, reason),
+      },
+      action: {
+        succeeded: async (parentId) => await this.svnActions.noteVerdict(parentId, { kind: 'succeeded' })
+          ? { kind: 'script-succeeded', sessionId: parentId, gate: 'action' }
+          : null,
+        failed: (parentId, reason) => this.svnActions.noteVerdict(parentId, { kind: 'failed', reason }),
+      },
+    }
   }
 
   /**
@@ -298,7 +430,7 @@ export class SessionLifecycle {
   ): RuntimeLaunchSpec {
     options = { ...options, controller: this.controller }
     if (record.kind === 'shell')
-      return LaunchPlanner.plan(record, options)
+      return LaunchPlanner.plan(record, { ...options, tools: this.tools })
     else if (record.kind === 'agent') {
       // A record with no agent is refused by LaunchPlanner itself, which already owns that invariant.
       const agentId = record.agent?.agentId
@@ -331,6 +463,17 @@ export class SessionLifecycle {
       throw new Error(`Unknown session kind: ${JSON.stringify(record.kind)}`)
   }
 
+  /**
+   * Why a direct-process run cannot start on this machine, in the tool's own words, or null. Asked
+   * before a launch is planned, which would throw instead: a missing tool ends the run with this
+   * reason and never falls back to a shell that might find something else.
+   */
+  private launchProblemOf(record: SessionRecord): string | null {
+    if (record.process === undefined) return null
+    const resolved = this.tools.resolve(record.process.tool)
+    return resolved.ok ? null : resolved.detail
+  }
+
   /** Best effort: the worst a failure may do is cost one sentence, never the launch. */
   private seedTrust(record: SessionRecord): void {
     const seeded = this.seedClaudeTrust(LaunchPlanner.cwdOf(record))
@@ -347,26 +490,97 @@ export class SessionLifecycle {
     this.resumeMerge = resume
   }
 
+  /** Presses Finish again once its checks passed; unwired, a passed chain waits for the next press. */
+  setContinueFinish(resume: (sessionId: string) => void): void {
+    this.finishScripts.setContinueFinish(resume)
+  }
+
+  /** Asked by a Finish press before the finisher runs; see `FinishScriptsFlow.gate`. */
+  async finishChecks(
+    sessionId: string,
+    acknowledgeSetup: string | undefined,
+    finisherRefusal: SessionsOpResult<never> | null,
+  ): Promise<FinishChecksGate> {
+    return this.finishScripts.gate(sessionId, acknowledgeSetup, finisherRefusal)
+  }
+
+  /** A shell run the live session `parentId` asks for; see `InnerRunFlow.start`. */
+  async runScript(parentId: string, request: SessionScriptRequest): Promise<SessionsOpResult<{ runId: string }>> {
+    return this.innerRuns.start(parentId, request)
+  }
+
   /** Wired after construction for the reason `setResumeMerge` is: the finish flow needs this store loaded. */
   setCleanWorktree(clean: (sessionId: string) => void): void {
     this.cleanWorktree = clean
   }
 
+  static readonly commitReceiptsMaxConst = 50
+  static readonly receiptPathsMaxConst = 200
+
   /**
-   * A Jamat review committed from `scopeRoot`. When that lies in a session's SVN worktree, the
-   * worktree is removed once the session's process ended and nothing is left in it. A Finish removes
-   * its own worktree, and a cleanup already pending keeps its trigger: a Discard that did not finish
-   * must not start counting the changes it threw away.
+   * A Jamat review committed, or went to TortoiseSVN and closed. The session of the split takes a
+   * receipt for every scope (a run's goes to the session it runs for), and so does the session whose
+   * SVN worktree holds a scope. That worktree is removed once the session's process ended and nothing
+   * is left in it. A Finish removes its own worktree, and a cleanup already pending keeps its trigger:
+   * a Discard that did not finish must not start counting the changes it threw away.
    */
-  async noteWorktreeCommitted(scopeRoot: string): Promise<SessionsOpResult> {
-    const record = this.records.list().find((candidate) => candidate.worktree?.kind === 'svn'
-      && PathCompare.isInside(candidate.worktree.worktreePath, scopeRoot))
-    if (!record || record.worktreeFinish !== undefined || this.finishing(record.sessionId)
-      || record.worktreeCleanup?.phase === 'pending')
-      return { ok: true, value: undefined }
-    if (!await this.records.put({ ...record, worktreeCleanup: WorktreeCleanupPacing.pending('committed', this.now()) }))
-      return OperationOutcomes.latched()
-    return { ok: true, value: undefined }
+  async noteCommitted(receipt: SessionCommitReceipt): Promise<SessionsOpResult> {
+    const at = this.now()
+    const entries = SessionLifecycle.receiptsOf(receipt, at)
+    const targets = new Map<string, { entries: SessionRecordCommitReceipt[]; holds: boolean }>()
+    const split = this.records.get(receipt.sessionId)
+    const owner = split?.scriptOf?.sessionId ?? split?.sessionId
+    if (owner !== undefined && this.records.get(owner)) targets.set(owner, { entries: [...entries], holds: false })
+    const records = this.records.list()
+    for (const entry of entries) {
+      const holder = records.find((candidate) => candidate.worktree?.kind === 'svn'
+        && PathCompare.isInside(candidate.worktree.worktreePath, entry.scopeRoot))
+      if (!holder) continue
+      const target = targets.get(holder.sessionId) ?? { entries: [], holds: false }
+      if (!target.entries.includes(entry)) target.entries.push(entry)
+      target.holds = true
+      targets.set(holder.sessionId, target)
+    }
+    let latched = false
+    for (const [sessionId, target] of targets) {
+      const landed = await this.writeTwice(sessionId, (current) => {
+        const next: SessionRecord = { ...current,
+          commitReceipts: [...current.commitReceipts ?? [], ...target.entries].slice(-SessionLifecycle.commitReceiptsMaxConst) }
+        // An SVN action reviews and removes the worktree itself.
+        if (target.holds && current.worktree?.kind === 'svn' && current.svnAction === undefined
+          && !this.finishing(sessionId) && current.worktreeCleanup?.phase !== 'pending')
+          next.worktreeCleanup = WorktreeCleanupPacing.pending('committed', at)
+        return next
+      })
+      latched ||= !landed
+    }
+    return latched ? OperationOutcomes.latched() : { ok: true, value: undefined }
+  }
+
+  /** One receipt per scope, in commit order; a path belongs to the deepest scope that holds it. */
+  private static receiptsOf(receipt: SessionCommitReceipt, at: number): SessionRecordCommitReceipt[] {
+    const deepestFirst = [...receipt.scopes].sort((left, right) =>
+      PathCompare.normalized(right.scopeRoot).length - PathCompare.normalized(left.scopeRoot).length)
+    const paths = new Map<string, string[]>()
+    for (const path of receipt.paths) {
+      const scope = deepestFirst.find((candidate) => PathCompare.isInside(candidate.scopeRoot, path))
+      if (scope === undefined) continue
+      const list = paths.get(scope.scopeRoot) ?? []
+      if (list.length < SessionLifecycle.receiptPathsMaxConst)
+        list.push(PathCompare.normalized(path).slice(PathCompare.normalized(scope.scopeRoot).length + 1) || '.')
+      paths.set(scope.scopeRoot, list)
+    }
+    return receipt.scopes.map((scope) => ({ scopeRoot: scope.scopeRoot, revision: scope.revision,
+      paths: paths.get(scope.scopeRoot) ?? [], at }))
+  }
+
+  /** Tried twice: a failed atomic rename is often transient. A record gone meanwhile needs nothing. */
+  private async writeTwice(sessionId: string, compose: (current: SessionRecord) => SessionRecord): Promise<boolean> {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const current = this.records.get(sessionId)
+      if (!current || await this.records.put(compose(current))) return true
+    }
+    return false
   }
 
   /**
@@ -415,12 +629,12 @@ export class SessionLifecycle {
   /**
    * A session this library starts for itself: same create, with the id already chosen and the two
    * marks that say what it is. Only the merge flow uses it, and the marks are exactly what the wire
-   * spec refuses to carry - a person cannot ask for a one-shot run, nor claim a session resolves
-   * somebody else's merge.
+   * spec refuses to carry - a person cannot ask for a one-shot run, nor claim a session is a script
+   * run of somebody else's.
    */
   async createInternal(
     spec: SessionCreateSpec,
-    marks: { sessionId: string; oneShot: true; resolveFor: string },
+    marks: SessionInternalMarks,
   ): Promise<SessionsOpResult<{ sessionId: string }>> {
     return this.createWith(spec, { marks })
   }
@@ -531,7 +745,7 @@ export class SessionLifecycle {
   private async createWith(
     spec: SessionCreateSpec,
     options?: {
-      marks?: { sessionId: string; oneShot: true; resolveFor: string }
+      marks?: SessionInternalMarks
       /** Set by `createComposed` alone: the title has already been through the counter. */
       titleFinal?: true
     },
@@ -539,47 +753,61 @@ export class SessionLifecycle {
     const marks = options?.marks
     const problem = SessionLifecycle.specProblem(spec)
     if (problem) return { ok: false, code: 'invalid-spec', detail: problem }
+    const notified = spec.worktree?.notify?.sessionId
+    if (notified !== undefined && this.records.get(notified) === null)
+      return { ok: false, code: 'invalid-spec', detail: `The worktree notify names session ${notified}, which this computer does not have` }
     // The READ latch, and only that: a file that could not be read refuses every write for the rest
     // of the session, so asking here is what stops a worktree being cut for a record that could
     // never be written. It says NOTHING about a file that read cleanly and cannot be written - that
     // one is only visible when the write itself comes back false, and it is answered where it
     // happens, by naming what the worktree left behind.
     if (this.records.latched) return OperationOutcomes.latched()
+    // First, because the number and the agreement are both read for the place the worktree stands,
+    // and a refusal here leaves nothing behind.
+    const placed = await this.placeWorktree(spec)
+    if (!placed.ok) return { ok: false, code: placed.code, detail: placed.detail }
+    const placement = placed.value
+    const counted = SessionLifecycle.countedProjectOf(spec, placement)
     // Before the worktree for the same reason as the agreement below: a refused create leaves
     // nothing behind, neither a checkout nor a number.
-    const claim = await this.numberClaimProblem(spec)
+    const claim = await this.numberClaimProblem(spec, counted)
     if (claim) return { ok: false, code: 'invalid-spec', detail: claim }
     // Before the worktree, not after: a refusal here has to leave nothing behind, and what it asks
-    // about is readable at the project root alone.
-    const agreement = await this.setupFlow.setupAgreement(spec)
+    // about is readable at the owner alone.
+    const agreement = await this.setupFlow.setupAgreement(spec, placement)
     if (agreement) return agreement
     // Before the cut, so the worktree folder carries the number; a refused cut spends it.
-    const token = options?.titleFinal === true ? null : await this.numberFor(spec)
-    const worktree = await this.provisionWorktree(spec, token)
-    if (!worktree.ok) return { ok: false, code: worktree.code, detail: worktree.detail }
+    const token = options?.titleFinal === true ? null : await this.numberFor(spec, counted)
+    const provision = await this.provisionWorktree(spec, placement, token)
+    if (!provision.ok) return { ok: false, code: provision.code, detail: provision.detail }
 
-    const facts = worktree.value
+    const facts = provision.value?.worktree ?? null
     const sessionId = marks?.sessionId ?? this.newId()
     const operationId = this.newId()
     const record = this.recordOf(spec, sessionId, facts, operationId, token, marks)
     /*
      * Only a worktree is empty enough to need this, and only a worktree create can name the
-     * repository the steps come back relative to. The resolution itself is a couple of file reads,
-     * which is why it may sit on the one queue every operation shares; the install it decides on
-     * runs as a runtime on the Host, where nothing waits for it.
+     * repository the steps come back relative to. The resolution itself is a couple of file reads in
+     * the main copy, which is why it may sit on the one queue every operation shares and needs no
+     * checkout yet; the chain it decides on runs as runtimes on the Host, where nothing waits for it.
+     * An SVN checkout leads that chain, so the record names the worktree before a file is in it.
      */
     if (facts !== null) {
-      const projectRoot = SetupFlow.setupProjectOf(OperationOutcomes.projectRootOf(spec.directory), facts)
-      const plan = await this.setupFlow.setupPlanFor(projectRoot, facts.repositoryRoot, facts.worktreePath)
-      if (plan.kind === 'run') return this.setupFlow.createWithSetup(record, facts, plan.commands)
+      const setupProject = SetupFlow.setupProjectOf(spec.directory, facts)
+      if (setupProject === null) throw new Error(`Session ${sessionId}: a worktree was placed with no project to set it up from`)
+      const plan = await this.setupFlow.beforePlanFor(setupProject, facts.repositoryRoot, facts.worktreePath)
+      const checkout = provision.value?.checkout ?? null
+      const lead = checkout === null ? [] : [ScriptChain.processStepOf('svn', 'checkout', checkout)]
+      if (plan.kind === 'run') {
+        if (plan.skipped !== null) this.markSetupSkipped(record, plan.skipped)
+        return this.setupFlow.createWithSetup(record, facts, [...lead, ...plan.steps])
+      }
       else if (plan.kind === 'skip') {
-        // A marker rather than silence: a worktree that had nothing installed into it looks exactly
-        // like one that did, right up to the moment the session inside it fails to build.
-        record.setupSkipped = { reason: plan.reason }
-        if (plan.announcement !== null) this.report(`Session ${sessionId}: ${plan.announcement}`)
+        this.markSetupSkipped(record, plan)
+        if (lead.length > 0) return this.setupFlow.createWithSetup(record, facts, lead)
       }
       else
-        throw new Error(`Unknown setup plan: ${JSON.stringify(plan)}`)
+        throw new Error(`Unknown before plan: ${JSON.stringify(plan satisfies never)}`)
     }
     // The write that can fail with a worktree already on disk. A create with no worktree has left
     // nothing anywhere, so it says the plain thing; one with a worktree says where that worktree is.
@@ -608,6 +836,15 @@ export class SessionLifecycle {
     }
     await this.bindLive(record, created.value)
     return { ok: true, value: { sessionId } }
+  }
+
+  /**
+   * A marker rather than silence: a worktree that had nothing installed into it looks exactly like
+   * one that did, right up to the moment the session inside it fails to build.
+   */
+  private markSetupSkipped(record: SessionRecord, skip: SetupSkip): void {
+    record.setupSkipped = { reason: skip.reason }
+    if (skip.announcement !== null) this.report(`Session ${record.sessionId}: ${skip.announcement}`)
   }
 
   /**
@@ -675,10 +912,13 @@ export class SessionLifecycle {
       }
       const record = await this.withCapturedCodexId(stored)
       const gone = await SessionLifecycle.worktreeGone(record)
-      const problem = record.pendingSetup || record.setupFor || record.commands || record.resolveFor || record.agent?.oneShot
-        ? 'a setup or one-shot task is still running; let it finish before restarting the Host'
-        : gone !== null ? SessionLifecycle.goneDetailOf(gone)
-          : record.agent ? AgentPresets.reopenProblem(record.agent) : null
+      // A restart would kill the run's process and lose its verdict.
+      const problem = record.scriptOf !== undefined
+        ? `the script run ${record.title} is still running; let it finish or stop it before restarting the Host`
+        : record.pendingSetup || record.commands || record.agent?.oneShot
+          ? 'a setup or one-shot task is still running; let it finish before restarting the Host'
+          : gone !== null ? SessionLifecycle.goneDetailOf(gone)
+            : record.agent ? AgentPresets.reopenProblem(record.agent) : null
       if (problem)
         problems.push(`${record.title} (${record.sessionId}): ${problem}`)
       else
@@ -692,6 +932,14 @@ export class SessionLifecycle {
   async reopen(sessionId: string): Promise<SessionsOpResult> {
     let record = this.records.get(sessionId)
     if (!record) return OperationOutcomes.notFound(sessionId)
+    // A run is judged by its exit code for its parent; a run nobody's flow asked for judges nothing.
+    if (record.scriptOf !== undefined)
+      return {
+        ok: false,
+        code: 'invalid-spec',
+        detail: `Session ${sessionId} cannot be reopened: it is a script run for `
+          + `${record.scriptOf.sessionId}, and a run is started by its flow`,
+      }
     /*
      * A record carrying `pendingSetup` has a worktree that exists and is NOT installed. Reopening it
      * would launch the session into exactly the half-provisioned directory this whole path exists to
@@ -716,6 +964,15 @@ export class SessionLifecycle {
         detail: `Session ${sessionId} cannot be reopened: its setup has not finished, so its worktree `
           + 'is not installed; it starts by itself when the setup exits cleanly, and retrySetup runs '
           + 'the setup again after one that failed',
+      }
+    // The checks of a Finish run in the worktree on behalf of the ended session; running the session
+    // in it meanwhile would change what they check.
+    if (SessionScriptDefinitions.judging('finish', record))
+      return {
+        ok: false,
+        code: 'merge-pending',
+        detail: `Session ${sessionId} cannot be reopened: its Finish checks are running; wait for them `
+          + 'to end, or stop the check',
       }
     /*
      * A launch already in flight is refused rather than joined. The record would otherwise be
@@ -785,6 +1042,8 @@ export class SessionLifecycle {
       endedReason: undefined,
       exitReason: undefined,
       stopRequested: undefined,
+      // A pass of the checks counts only until the session runs again, and a failure stops nothing now.
+      finishChecks: undefined,
       // Running it again is the opposite of being done with it, so the mark goes. Without this a
       // reopened session would be live and still filed as finished, which is to say invisible.
       completed: undefined,
@@ -847,13 +1106,12 @@ export class SessionLifecycle {
          * which is the one thing this whole action exists to stop happening. Measured on 2026-08-19:
          * stop asked for at 14:53:23.625, process gone at 14:53:24.974, row red.
          *
-         * NOT for the two roles somebody else is waiting on. An install and a merge resolver are
+         * NOT for a script run: somebody else is waiting on it. An install and a merge resolver are
          * judged by how they ended, and a stop the Host refused may have reached neither: a marked
          * install would fail the session it was preparing while it is still installing. For those the
          * mark stays where it has always been, after a stop the Host confirmed.
          */
-        if (record.setupFor === undefined && record.resolveFor === undefined
-          && !record.stopRequested)
+        if (record.scriptOf === undefined && !record.stopRequested)
           await this.records.put({ ...this.records.get(sessionId) ?? record, stopRequested: true })
         return OperationOutcomes.failureOf(stopped)
       }
@@ -880,6 +1138,8 @@ export class SessionLifecycle {
           `Session ${sessionId} was stopped, but the record could not be written; its ending may `
           + 'read as a crash, and a stopped install or merge resolver may read as a clean run',
         )
+      // A run that could not be stopped is said on the error channel; the parent's stop stands.
+      await this.scripts.stopWithParent(sessionId)
       return { ok: true, value: undefined }
     }
     else
@@ -905,6 +1165,8 @@ export class SessionLifecycle {
   async remove(sessionId: string): Promise<SessionsOpResult> {
     const record = this.records.get(sessionId)
     if (!record) return OperationOutcomes.notFound(sessionId)
+    // A run row's Remove keeps what the run left: its history entry and its log stay on the parent.
+    if (record.scriptOf !== undefined) return this.scripts.dismiss(sessionId)
     const target = OperationOutcomes.targetOf(record)
     // A `starting` record with no binding names nothing on the Host: its launch either never ran or
     // was never answered, so there is no runtime to stop first and the record is all there is to
@@ -918,13 +1180,16 @@ export class SessionLifecycle {
     const finishing = this.finishingRefusal(record)
     if (finishing !== null) return finishing
     else if (record.life === 'starting' || record.life === 'ended' || record.life === 'lost') {
+      // Asked before the cascade, which stops runs: a removal that cannot be written stops nothing.
+      if (this.records.latched) return OperationOutcomes.latched()
       // Best effort, and deliberately not a reason to refuse: the Host's dead entry is only a
       // diagnostic once the record is gone, and it does not survive the Host's next start anyway.
       if (record.life === 'ended' && target) await this.host.runtimeRemove(target)
-      if (!await this.records.remove(sessionId)) return OperationOutcomes.latched()
-      // The install was only ever preparing THIS session, so it goes with it. Best effort, and its
-      // own record stays: it ends like any other shell session, with what it printed still readable.
-      if (record.pendingSetup) await this.setupFlow.stopSetup(record.pendingSetup.setupSessionId)
+      // Its runs were only ever working for THIS session, so they go with it in the same write. A
+      // run still holding a process is stopped instead, and its record goes once it has ended.
+      const { removeWith } = await this.scripts.cascadeOf(record)
+      if (!await this.records.remove([sessionId, ...removeWith])) return OperationOutcomes.latched()
+      await this.scripts.parentRemoved(sessionId)
       if (record.worktree)
         this.report(
           `Session ${sessionId} is gone; ${OperationOutcomes.leftBehindOf(record.worktree)} for you `
@@ -959,19 +1224,20 @@ export class SessionLifecycle {
   ): Promise<SessionsOpResult<{ sessionId: string }>> {
     const record = this.records.get(sessionId)
     if (!record) return OperationOutcomes.notFound(sessionId)
+    // A run works for its parent and ends with that work: a resolver runs in the worktree the merge
+    // tears down the moment it is finished, and a fork of it would still be standing there. The same
+    // shape `admitsOf` withholds `fork` for.
+    if (record.scriptOf !== undefined)
+      return {
+        ok: false,
+        code: 'invalid-spec',
+        detail: `Session ${sessionId} is a script run for ${record.scriptOf.sessionId}, and its work ends with that session's, so nothing may fork it`,
+      }
     if (record.kind !== 'agent' || record.agent === undefined)
       return {
         ok: false,
         code: 'invalid-spec',
         detail: `Session ${sessionId} is a shell, and a shell holds no conversation to fork`,
-      }
-    // A resolver runs in the worktree the merge tears down the moment it is finished, and a fork of
-    // it would still be standing there. The same shape `admitsOf` withholds `fork` for.
-    if (record.resolveFor !== undefined)
-      return {
-        ok: false,
-        code: 'invalid-spec',
-        detail: `Session ${sessionId} resolves a merge for ${record.resolveFor}, and its worktree goes when that merge is done, so nothing may fork it`,
       }
     const finishing = this.finishingRefusal(record)
     if (finishing !== null) return finishing
@@ -1281,7 +1547,8 @@ export class SessionLifecycle {
   async reconcile(listing: RuntimeListResult | null): Promise<ReconcileChange[]> {
     if (this.records.latched) return []
     const applied: ReconcileChange[] = []
-    for (const change of Reconciler.plan(this.records.list(), listing, this.now(), this.startedAt)) {
+    const planned = Reconciler.plan(this.records.list(), listing, this.now(), this.startedAt, this.svnActions.held())
+    for (const change of planned) {
       if (change.kind === 'orphan')
         applied.push(change)
       else if (change.kind === 'bind-live') {
@@ -1319,25 +1586,12 @@ export class SessionLifecycle {
         const landed = await this.replayLaunch(change)
         if (landed) applied.push(landed)
       }
-      else if (change.kind === 'setup-succeeded') {
-        const landed = await this.setupFlow.applySetupSucceeded(change.sessionId)
+      else if (change.kind === 'script-succeeded') {
+        const landed = await this.gateHandlers[change.gate].succeeded(change.sessionId)
         if (landed) applied.push(landed)
       }
-      else if (change.kind === 'setup-failed') {
-        if (await this.setupFlow.applySetupFailed(change.sessionId, change.reason)) applied.push(change)
-      }
-      else if (change.kind === 'merge-resolve-succeeded') {
-        // The resolver committed, so the merge can carry on from what it left in the worktree. It
-        // is fired and not awaited on purpose: the merge does git work, and this loop holds the one
-        // queue every operation shares. Its own idempotence is what makes that safe - it re-reads
-        // the disk, so starting it twice does the remaining work once.
-        if (this.resumeMerge) {
-          this.resumeMerge(change.sessionId)
-          applied.push(change)
-        }
-      }
-      else if (change.kind === 'merge-resolve-failed') {
-        if (await this.applyResolveFailed(change.sessionId, change.reason)) applied.push(change)
+      else if (change.kind === 'script-failed') {
+        if (await this.gateHandlers[change.gate].failed(change.sessionId, change.reason)) applied.push(change)
       }
       else if (change.kind === 'name-codex-conversation') {
         if (await this.applyCodexName(change.sessionId)) applied.push(change)
@@ -1349,10 +1603,46 @@ export class SessionLifecycle {
           applied.push(change)
         }
       }
+      else if (change.kind === 'svn-action-due') {
+        // Driven off this loop, like a cleanup: its client steps read svn.
+        this.svnActions.due(change.sessionId)
+        applied.push(change)
+      }
+      else if (change.kind === 'stop-script-run') {
+        if (await this.scripts.stopRun(change.runId)) applied.push(change)
+      }
+      else if (change.kind === 'settle-script-run') {
+        if (await this.scripts.settle(change.runId)) applied.push(change)
+      }
+      else if (change.kind === 'collapse-script-run') {
+        if (await this.scripts.collapse(change.runId)) applied.push(change)
+      }
       else
         throw new Error(`Unknown reconcile change: ${JSON.stringify(change)}`)
     }
+    // Once nothing is left to settle, so the runs an upgrade settles over several passes are one line.
+    if (!planned.some((change) => change.kind === 'settle-script-run')) this.scripts.reportUnlogged()
     return applied
+  }
+
+  /**
+   * The resolver committed, so the merge can carry on from what it left in the worktree. It is fired
+   * and not awaited on purpose: the merge does git work, and the reconcile loop holds the one queue
+   * every operation shares. Its own idempotence is what makes that safe - it re-reads the disk, so
+   * starting it twice does the remaining work once. Read at the call, because it is wired late.
+   *
+   * Not while the resolver's own record still says it runs. The verdict is read off the Host's dead
+   * runtime in the same pass that marks that record ended, and before it, and the merge refuses a
+   * worktree a running resolver stands in: resumed now, it would write that refusal as the merge's
+   * failure. Nothing is written here, so the next pass judges again from the ended record.
+   */
+  private resumeMergeOf(parentId: string): ReconcileChange | null {
+    if (!this.resumeMerge) return null
+    const runId = this.records.get(parentId)?.worktreeMerge?.resolveSessionId
+    const run = runId === undefined ? null : this.records.get(runId)
+    if (run?.life === 'live' || run?.life === 'starting') return null
+    this.resumeMerge(parentId)
+    return { kind: 'script-succeeded', sessionId: parentId, gate: 'merge' }
   }
 
   /**
@@ -1416,6 +1706,8 @@ export class SessionLifecycle {
       pendingOperationKind: undefined,
       launchWait: undefined,
       pendingSetup: undefined,
+      // The next Finish checks again: the session ran since any chain this record holds.
+      finishChecks: undefined,
       endedAt: undefined,
       exitCode: undefined,
       endedReason: undefined,
@@ -1464,6 +1756,13 @@ export class SessionLifecycle {
       return await this.markLost(change.sessionId)
         ? { kind: 'mark-lost', sessionId: change.sessionId }
         : null
+    // The tool is resolved again at every replay, so a client updated since the create finds its
+    // current bundle, and one that lost the tool ends the run as a decided refusal would.
+    const toolProblem = this.launchProblemOf(record)
+    if (toolProblem !== null) {
+      await this.endRefused(record, toolProblem)
+      return null
+    }
     const agentArgs = record.agent
       ? SessionLifecycle.replayArgsOf(record.agent, change.operation)
       : undefined
@@ -1525,6 +1824,7 @@ export class SessionLifecycle {
       pendingOperationKind: undefined,
       launchWait: undefined,
       pendingSetup: undefined,
+      finishChecks: undefined,
       endedAt: undefined,
       exitCode: undefined,
       endedReason: undefined,
@@ -1540,17 +1840,34 @@ export class SessionLifecycle {
    */
   private provisionWorktree(
     spec: SessionCreateSpec,
+    placement: WorktreePlacement | null,
     token: string | null,
   ): Promise<WorktreeProvision | { ok: true; value: null }> {
-    if (!spec.worktree) return Promise.resolve({ ok: true, value: null })
+    if (!spec.worktree || placement === null) return Promise.resolve({ ok: true, value: null })
     const slug = Slug.of(spec.worktree.slug)
     const folder = token !== null && !slug.startsWith(`${Slug.of(token)}-`) ? Slug.of(`${token} ${slug}`) : slug
-    return this.worktrees.create({
-      projectRoot: OperationOutcomes.projectRootOf(spec.directory),
-      owner: spec.worktree.owner,
-      folder,
-      baseRef: spec.worktree.baseRef,
-    })
+    return this.worktrees.create({ placement, folder, baseRef: spec.worktree.baseRef })
+  }
+
+  /** A catalog project names its own directory; an ad-hoc directory may carry a worktree in SVN only, which the port decides. */
+  private placeWorktree(spec: SessionCreateSpec): Promise<WorktreePlacing | { ok: true; value: null }> {
+    if (!spec.worktree) return Promise.resolve({ ok: true, value: null })
+    const directory = spec.directory
+    const owner = spec.worktree.owner
+    if (directory.mode === 'project')
+      return this.worktrees.place({ directory: directory.projectPath, projectRoot: directory.projectPath, owner })
+    else if (directory.mode === 'adHoc') return this.worktrees.place({ directory: directory.path, projectRoot: null, owner })
+    else if (directory.mode === 'default') throw new Error('A worktree spec passed validation without a directory')
+    else throw new Error(`Unknown session directory: ${JSON.stringify(directory satisfies never)}`)
+  }
+
+  /**
+   * The project whose counter numbers the session: the catalog project it was opened on, or for a
+   * worktree of an ad-hoc directory the catalog project that holds it. Null counts nothing.
+   */
+  private static countedProjectOf(spec: SessionCreateSpec, placement: WorktreePlacement | null): string | null {
+    if (spec.directory.mode === 'project') return spec.directory.projectPath
+    return placement?.catalogProject ?? null
   }
 
   /**
@@ -1562,18 +1879,18 @@ export class SessionLifecycle {
    *
    * Asked after every refusal that reads the spec and the project alone, and before the worktree is
    * cut, whose folder carries it. Null is every case that is not counted: a title that already
-   * carries one, a binding that names a directory rather than a project, and a counter that could
-   * not answer, which is never a reason to refuse a session.
+   * carries one, a directory no catalog project counts for (`countedProjectOf`), and a counter that
+   * could not answer, which is never a reason to refuse a session.
    *
    * A custom number short-circuits every one of those, because none of them is about it: they all
    * ask whether this session should SPEND a number, and `i34` spends nothing. It is taken for an
    * ad-hoc directory too, and `specProblem` has already proved its shape.
    */
-  private async numberFor(spec: SessionCreateSpec): Promise<string | null> {
+  private async numberFor(spec: SessionCreateSpec, counted: string | null): Promise<string | null> {
     if (spec.number !== undefined) return spec.number
-    if (spec.directory.mode !== 'project') return null
+    if (counted === null) return null
     if (SessionTitle.partsOf(spec.title?.trim() ?? '').number !== null) return null
-    return this.numbers.allocate(spec.directory.projectPath, this.records.list())
+    return this.numbers.allocate(counted, this.records.list())
   }
 
   /**
@@ -1596,13 +1913,13 @@ export class SessionLifecycle {
    *
    * Only a catalog project is asked, because only a project has a count: the seed ignores every
    * other binding, and a fork into an ad-hoc directory deliberately keeps the number of the session
-   * it came out of.
+   * it came out of. A worktree of an ad-hoc directory is counted by the catalog project holding it.
    */
-  private async numberClaimProblem(spec: SessionCreateSpec): Promise<string | null> {
-    if (spec.directory.mode !== 'project') return null
+  private async numberClaimProblem(spec: SessionCreateSpec, counted: string | null): Promise<string | null> {
+    if (counted === null) return null
     const claimed = SessionTitle.allocatedNumberOf(spec.title?.trim() ?? '')
     if (claimed === null) return null
-    const issued = await this.numbers.highestIssued(spec.directory.projectPath, this.records.list())
+    const issued = await this.numbers.highestIssued(counted, this.records.list())
     if (claimed <= issued) return null
     return 'A title must not begin like a session number'
   }
@@ -1613,10 +1930,10 @@ export class SessionLifecycle {
     worktree: SessionRecordWorktree | null,
     operationId: string,
     token: string | null,
-    marks?: { oneShot: true; resolveFor: string },
+    marks?: SessionInternalMarks,
   ): SessionRecord {
-    const agent = spec.agent ? this.recordAgentOf(spec.agent, sessionId, marks?.oneShot) : undefined
-    const cwd = worktree?.worktreePath ?? LaunchPlanner.directoryOf(spec.directory)
+    const agent = spec.agent ? this.recordAgentOf(spec.agent, sessionId, marks) : undefined
+    const cwd = worktree === null ? LaunchPlanner.directoryOf(spec.directory) : LaunchPlanner.worktreeCwdOf(worktree)
     const record: SessionRecord = {
       sessionId,
       kind: spec.kind,
@@ -1637,17 +1954,25 @@ export class SessionLifecycle {
       record.transcriptCwd = cwd
       if (agent.initialPrompt) record.lastUserInputAt = record.createdAt
     }
-    if (marks) record.resolveFor = marks.resolveFor
+    if (marks) record.scriptOf = marks.scriptOf
     if (spec.flowId) record.flowId = spec.flowId
     if (spec.color) record.color = spec.color
-    if (worktree) record.worktree = worktree
+    if (worktree) record.worktree = SessionLifecycle.withCaller(worktree, spec.worktree)
     // Only an SVN worktree has a removal after the end; a Git one keeps its Finish.
     if (worktree?.kind === 'svn' && spec.worktree?.removeWhenEnded === true)
       record.worktreeCleanup = WorktreeCleanupPacing.pending('remove-when-ended', record.createdAt)
     return record
   }
 
-  private recordAgentOf(agent: SessionAgentSpec, sessionId: string, oneShot?: true): SessionRecordAgent {
+  private static withCaller(worktree: SessionRecordWorktree, spec: SessionCreateSpec['worktree']): SessionRecordWorktree {
+    const caller: SessionRecordWorktreeCaller = {
+      ...spec?.tag === undefined ? {} : { tag: spec.tag },
+      ...spec?.notify === undefined ? {} : { notify: { sessionId: spec.notify.sessionId, text: spec.notify.text } },
+    }
+    return caller.tag === undefined && caller.notify === undefined ? worktree : { ...worktree, caller }
+  }
+
+  private recordAgentOf(agent: SessionAgentSpec, sessionId: string, marks?: SessionInternalMarks): SessionRecordAgent {
     const nativeSessionId = agent.nativeSessionId
       ?? (AgentPresets.mintsNativeSessionId(agent) ? sessionId : undefined)
     const stored: SessionRecordAgent = { agentId: agent.agentId, launchMode: agent.mode }
@@ -1661,7 +1986,8 @@ export class SessionLifecycle {
     // one still wins - it is answering for the machine that runs the session, not for this one.
     const model = agent.model ?? this.modelFor(agent.agentId)
     if (model) stored.model = model
-    if (oneShot) stored.oneShot = oneShot
+    if (marks?.oneShot) stored.oneShot = marks.oneShot
+    if (marks?.permission !== undefined) stored.permission = marks.permission
     return stored
   }
 
@@ -1688,14 +2014,20 @@ export class SessionLifecycle {
     return { worktreePath: record.worktree.worktreePath, revisions: record.worktreeOutcome?.revisions ?? [] }
   }
 
-  /** A running SVN finish owns the record and the worktree under it until its outcome is written. */
+  /**
+   * A running SVN action, or a Finish or Discard of this client, owns the record and the worktree
+   * under it until its ending is written. An action that waits for the person holds nothing.
+   */
   private finishingRefusal(record: SessionRecord): SessionsOpResult<never> | null {
-    const phase = record.worktreeFinish?.phase ?? (this.finishing(record.sessionId) ? 'starting' : null)
+    const action = record.svnAction
+    const phase = action !== undefined && action.needs === undefined ? action.stage
+      : this.finishing(record.sessionId) ? 'starting' : null
     if (phase === null) return null
+    const what = action?.kind === 'update-main' ? `the UPDATE of ${action.root}` : 'the finish of its worktree'
     return {
       ok: false,
       code: 'merge-pending',
-      detail: `Session ${record.sessionId}: the finish of its worktree is ${phase}; wait for it to end`,
+      detail: `Session ${record.sessionId}: ${what} is ${phase}; wait for it to end`,
     }
   }
 
@@ -1706,6 +2038,10 @@ export class SessionLifecycle {
 
   private static goneRefusal(sessionId: string, gone: GoneWorktree): SessionsOpResult<never> {
     return { ok: false, code: 'worktree-removed', detail: `Session ${sessionId}: ${SessionLifecycle.goneDetailOf(gone)}` }
+  }
+
+  private static goneOrNull(sessionId: string, gone: GoneWorktree | null): SessionsOpResult<never> | null {
+    return gone === null ? null : SessionLifecycle.goneRefusal(sessionId, gone)
   }
 
   private static reopenRoute(
@@ -1721,17 +2057,35 @@ export class SessionLifecycle {
     }
   }
 
+  /** The tag is a word a script matches without quoting; the line is one the deliver rules can type. */
+  private static callerProblem(worktree: NonNullable<SessionCreateSpec['worktree']>): string | null {
+    if (worktree.tag !== undefined && (typeof worktree.tag !== 'string' || !SessionLimits.worktreeTagShape.test(worktree.tag)))
+      return 'a worktree tag is 1 to 128 letters, digits, dots, underscores, colons or hyphens'
+    const notify = worktree.notify
+    if (notify === undefined) return null
+    if (!notify || typeof notify !== 'object' || !SessionLifecycle.filled(notify.sessionId))
+      return 'a worktree notify needs the id of the session to wake'
+    if (typeof notify.text !== 'string' || notify.text.trim().length === 0)
+      return 'a worktree notify needs a text'
+    if (notify.text.length > SessionLimits.worktreeNotifyCharacters)
+      return `a worktree notify text exceeds ${SessionLimits.worktreeNotifyCharacters} characters`
+    if (/[\u0000-\u001f\u007f]/.test(notify.text)) return 'a worktree notify text must not hold control characters'
+    return null
+  }
+
   private static specProblem(spec: SessionCreateSpec): string | null {
     if (!spec || typeof spec !== 'object') return 'a create spec is required'
     const directory = SessionLifecycle.directoryProblem(spec.directory)
     if (directory) return directory
     if (spec.worktree) {
-      if (spec.directory.mode !== 'project')
-        return 'a worktree can only be created for a project directory'
+      if (spec.directory.mode === 'default')
+        return 'a worktree is created for a catalog project or a directory, never for the default one'
       if (!SessionLifecycle.filled(spec.worktree.slug)) return 'a worktree needs a slug'
       if (Slug.of(spec.worktree.slug) === '') return 'a worktree slug needs at least one letter or digit'
       if (spec.worktree.removeWhenEnded !== undefined && spec.worktree.removeWhenEnded !== true)
         return 'removeWhenEnded is either true or absent'
+      const caller = SessionLifecycle.callerProblem(spec.worktree)
+      if (caller) return caller
     }
     const number = SessionLifecycle.numberProblem(spec)
     if (number) return number

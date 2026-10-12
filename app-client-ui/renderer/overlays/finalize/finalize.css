@@ -64,12 +64,88 @@
   padding: var(--space-3);
   overflow: auto;
 }
+/* What the session is doing, its group and its note, read when the dialog opened. */
+.jamat-finalize__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+  font-size: var(--fs-secondary);
+}
+.jamat-finalize__fact {
+  display: flex;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.jamat-finalize__fact--note {
+  flex-basis: 100%;
+}
+.jamat-finalize__fact dt {
+  color: var(--color-text-4);
+}
+.jamat-finalize__fact dd {
+  display: flex;
+  gap: var(--space-1);
+  min-width: 0;
+  margin: 0;
+  color: var(--color-text-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* The tree's state character in the tree's paint: `SessionNodeState.paintOf` names the meaning. */
+.jamat-finalize__glyph--paint-ok {
+  color: var(--color-ok);
+}
+.jamat-finalize__glyph--paint-attention {
+  color: var(--color-attention);
+}
+.jamat-finalize__glyph--paint-danger {
+  color: var(--color-danger);
+}
+.jamat-finalize__glyph--paint-accent {
+  color: var(--color-accent);
+}
+.jamat-finalize__glyph--paint-idle {
+  color: var(--color-idle);
+}
+.jamat-finalize__glyph--paint-muted {
+  color: var(--color-text-4);
+}
 /* An SVN finish answers with its RESULT lines, one path per line. */
 .jamat-finalize__error {
   margin: 0;
   white-space: pre-wrap;
   font-size: var(--fs-secondary);
   color: var(--color-danger);
+}
+/* Why a Finish waits for the person, above the choices that go on from there. */
+.jamat-finalize__note {
+  margin: 0 0 var(--space-2);
+  white-space: pre-wrap;
+  font-size: var(--fs-secondary);
+  color: var(--color-attention);
+}
+/* The commands a target asked to be agreed to; the Finish goes on only after Agree. */
+.jamat-finalize__agreement {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  font-size: var(--fs-secondary);
+  color: var(--color-text-2);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.jamat-finalize__agreement p,
+.jamat-finalize__agreement ul {
+  margin: 0;
+}
+.jamat-finalize__agreement ul {
+  padding-left: var(--space-4);
+}
+.jamat-finalize__agreement code {
+  color: var(--color-text-1);
 }
 .jamat-finalize__actions {
   display: flex;

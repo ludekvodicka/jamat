@@ -9,6 +9,7 @@ import { ConfigurationOverlay } from './configurationOverlay'
 import { WorktreeSetupIntentStore } from './worktreeSetupIntentStore'
 import type { ConfigurationOpenRequest } from './configurationTab.types'
 import { ConfigurationTabs } from './configurationTabs'
+import { ControlBridgeFixture } from '../../ipc/fixtures/controlBridgeFixture'
 
 describe('app-client-ui/renderer/overlays/configuration/configurationOverlay', () => {
   /**
@@ -31,12 +32,9 @@ describe('app-client-ui/renderer/overlays/configuration/configurationOverlay', (
         },
       },
       onWindowChanged: () => () => undefined,
-      projects: {
-        getConfig: () => Promise.resolve({ ok: true, value: { ok: true, value: categoriesConst } }),
-        saveConfig: () => {
-          throw new Error('No test of the frame saves anything')
-        },
-      },
+      control: ControlBridgeFixture.routes({
+        'projects.config': { library: () => Promise.resolve({ ok: true, value: { ok: true, value: categoriesConst } }) },
+      }),
       dialog: {
         pickDirectory: () => {
           throw new Error('No test of the frame picks a directory')
@@ -44,7 +42,7 @@ describe('app-client-ui/renderer/overlays/configuration/configurationOverlay', (
       },
     }
     ;(window as unknown as { appClient: unknown }).appClient = bridge as unknown as
-      Pick<AppClientUiBridge, 'projects' | 'dialog'>
+      Pick<AppClientUiBridge, 'control' | 'dialog'>
   }
 
   afterEach(() => {

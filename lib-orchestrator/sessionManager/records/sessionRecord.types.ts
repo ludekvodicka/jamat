@@ -1,9 +1,16 @@
 import type {
   SessionAgentId,
   SessionColorName,
+  SessionScriptId,
+  SessionScriptPhase,
   SessionWorktreeKind,
   SessionWorktreeOutcome,
+  SvnActionKind,
+  SvnActionNeed,
+  SvnActionStage,
   SvnFinishPhase,
+  SvnFinishWorktreeResult,
+  SvnLabelledRevision,
 } from '../sessionManagerApi.types'
 
 /**
@@ -69,6 +76,11 @@ export interface SessionRecordAgent {
    * is not one anybody is waiting on the exit code of.
    */
   oneShot?: true
+  /**
+   * Internal like `oneShot`: the SVN conflict resolver edits files and runs no command, so it starts
+   * in Claude's accept-edits permission mode and never with YOLO, whatever the setting says.
+   */
+  permission?: 'accept-edits'
 }
 
 /**
@@ -104,12 +116,24 @@ export interface SessionRecordWorktree {
   kind?: SessionWorktreeKind
   /** svn: `dev:ino:birthtimeNs` of the checkout, so a removal never deletes a reused name. */
   directoryId?: string
+  /**
+   * svn: where the session's directory lies below the owner, '/'-separated; absent at the owner
+   * itself and on every record older than 3.11. The session starts in `worktreePath` joined with it.
+   */
+  cwdSubpath?: string
+  /** What the create's caller asked of the results: its tag and its wake-up line. */
+  caller?: SessionRecordWorktreeCaller
+}
+
+/** The create's `worktree.tag` and `worktree.notify`, kept for every result the worktree writes. */
+export interface SessionRecordWorktreeCaller {
+  tag?: string
+  notify?: { sessionId: string; text: string }
 }
 
 /**
- * How far an SVN finish got. Write-ahead evidence like `SessionRecordMerge`, never a program
- * counter: no finish outlives the client process that ran it, so a record loaded with one reads as
- * an `interrupted` outcome and the next Finish recovers from the disk.
+ * How far an SVN finish of a build before 3.11 got. Nothing writes it any more: a record loaded with
+ * one reads as an `interrupted` outcome, and the next Finish starts an SVN action.
  */
 export interface SessionRecordWorktreeFinish {
   phase: SvnFinishPhase
@@ -127,6 +151,18 @@ export interface SessionRecordRetiredWorktree {
   kind: SessionWorktreeKind
   revisions: readonly string[]
   removedAt: number
+  /** svn: the identity the checkout had, so a result written after the removal still names it. */
+  directoryId?: string
+  /** The caller of the removed worktree, so a later result still carries its tag. */
+  caller?: SessionRecordWorktreeCaller
+  /** svn: the main copy the worktree was cut from; absent on records older than 3.11. */
+  ownerDir?: string
+  /**
+   * A landed row: what the worktree committed, which the main copy must hold before the session goes
+   * by itself. Written with `ownerDir` by the ending of a committed Finish or cleanup; such a record
+   * is not `completed`, so the daily view shows it.
+   */
+  landed?: SvnLabelledRevision[]
 }
 
 /** What asked for the removal of an SVN worktree after its session's process ended. */
@@ -156,6 +192,180 @@ export interface SessionRecordWorktreeCleanup {
 export interface SessionRecordSetupCommand {
   command: string
   cwd: string
+}
+
+/**
+ * The link from a script run to the session it runs for. A run is a runtime judged by its exit code
+ * on behalf of its parent; this one field is how every reader tells a run from an ordinary session.
+ */
+export interface SessionRecordScriptLink {
+  /** The parent. */
+  sessionId: string
+  phase: SessionScriptPhase
+  scriptId: SessionScriptId
+  /** 'setup' for the worktree setup, the entry name of a declared script, 'resolver' for either resolver. */
+  name: string
+  /** Chain steps only: the `SessionRecordScriptStep.key` this run attempts. */
+  stepKey?: string
+}
+
+/**
+ * A run that spawns an executable directly, with no shell between: `tool` is resolved on this machine
+ * at every launch (`RunTools`), and each argument reaches the process as one argv element, byte for byte.
+ */
+export interface SessionRecordProcess {
+  tool: 'svn' | 'jamat-cli'
+  /** Only what `SvnWorktreeEvidence.takesArgument` admits; `ScriptRunRecords.processRun` enforces it. */
+  args: string[]
+}
+
+/** One step of a chain, resolved when the chain starts. `key` is its identity for resume and evidence. */
+export interface SessionRecordScriptStep {
+  /** `ScriptChain.keyOf({ scriptId, name, commands, process })`. */
+  key: string
+  /**
+   * `checks`: a `scripts.after` entry frozen on an SVN action; `declared` serves the before chain and
+   * Git's Finish checks; `svn`: the checkout that leads the before chain of an SVN worktree.
+   */
+  scriptId: 'setup' | 'declared' | 'checks' | 'svn'
+  /** 'setup', 'checkout', or the `.worktree.json` entry name. */
+  name: string
+  /** Absolute directories inside the worktree; empty for a process step. */
+  commands: SessionRecordSetupCommand[]
+  /** A direct-process step and the absolute directory it runs in. */
+  process?: SessionRecordProcess & { cwd: string }
+}
+
+/** A commit made from a session's commit split or into its worktree, written when the commit dialog settles. */
+export interface SessionRecordCommitReceipt {
+  scopeRoot: string
+  /** Null: TortoiseSVN closed, which proves nothing. */
+  revision: number | null
+  /** Relative to `scopeRoot`, '/'-separated, at most 200 (`SessionLifecycle.receiptPathsMaxConst`). */
+  paths: string[]
+  at: number
+}
+
+/** One working copy an SVN action reviews: an external mount, or the worktree itself. */
+export interface SvnActionRoot {
+  /** Absolute directory. */
+  path: string
+  /** Its place in the worktree: `''` for the worktree itself, else the mount path. */
+  own: string
+  /** Its changed paths, worktree-relative with `/`. */
+  changed: string[]
+  /** What a proof of its review needs, read when its review run is launched. */
+  bounds?: { repository: string; base: string; rootBase: number; since: number }
+}
+
+/** What the SVN conflict resolver of an action was started on; paths are worktree-relative with `/`. */
+export interface SvnActionConflicts {
+  paths: string[]
+  before: string[]
+  at: number
+}
+
+/** How the run a run stage waited on ended, written by the gate verdict and judged by the next client step. */
+export type SvnActionVerdict =
+  | { kind: 'succeeded'; exitCode?: number }
+  | { kind: 'failed'; reason: string; exitCode?: number }
+
+/**
+ * Finish (Commit) or Discard of an SVN worktree, or the UPDATE of a main copy, as a chain of stages
+ * (`SvnActionFlow`). Run stages
+ * wait on `runId` through the `action` gate; client stages are driven by this client and resumed
+ * from the disk after a restart.
+ */
+export interface SessionRecordSvnAction {
+  kind: SvnActionKind
+  /** Also the name of its result. */
+  actionId: string
+  stage: SvnActionStage
+  /** The run a run stage waits on, or the last run of a stage that moved on. */
+  runId?: string
+  /** Absent while the run is judged; then the next client step reads the disk. */
+  verdict?: SvnActionVerdict
+  /** The worktree the action works in; the main copy for `update-main`. */
+  root: string
+  /** `scripts.after` frozen at the press, scriptId `checks`. */
+  checks: SessionRecordScriptStep[]
+  checkCursor: number
+  /** The worktree the checks passed on, so Finish again reviews without running them. */
+  checksPassed?: { fingerprint: string; at: number }
+  /** BASE of `root` before the last update. */
+  baseRevision?: number
+  /**
+   * The text conflicts the resolver was started on, the changed paths before it started (its edits
+   * outside the conflicts are measured against them) and when it was started (its time limit).
+   */
+  conflicts?: SvnActionConflicts
+  /** One resolver per press: a conflict after its checks and update needs the person. */
+  resolverSpent?: true
+  /** The review plan, mounts first. */
+  roots?: SvnActionRoot[]
+  rootCursor: number
+  /** The review the current review run opened. */
+  reviewCommitId?: string
+  rounds: { incoming: number; outOfDate: number; lock: number }
+  /** A locked working copy relaunches the update then. */
+  retryAt?: number
+  /** This worktree's commits, labelled. */
+  evidence: SvnLabelledRevision[]
+  removal?: SvnFinishWorktreeResult
+  needs?: { kind: SvnActionNeed; reason: string; at: number }
+  requestedBy: 'window' | 'cli' | 'peer'
+  /** When this press started; the stop limit and the receipts of its reviews are counted from it. */
+  startedAt: number
+}
+
+/** The before gate on a parent; see `SessionRecord.pendingSetup`. `steps` and `cursor` come together. */
+export interface SessionRecordPendingSetup {
+  setupSessionId: string
+  steps?: SessionRecordScriptStep[]
+  cursor?: number
+}
+
+/** How an after chain of a Finish ended: every step passed, or the step at the cursor failed. */
+export type SessionRecordFinishChecksResult =
+  | { kind: 'passed'; at: number }
+  | { kind: 'failed'; reason: string; at: number }
+
+/** The after chain of a Finish press on a parent; see `SessionRecord.finishChecks`. */
+export interface SessionRecordFinishChecks {
+  /** The run judged now, or the last run of an ended chain. */
+  runId: string
+  steps: SessionRecordScriptStep[]
+  cursor: number
+  startedAt: number
+  /** Absent while the chain runs. */
+  result?: SessionRecordFinishChecksResult
+}
+
+/** Where a run's output went: a saved log file, or why there is none. */
+export type SessionRecordScriptLog =
+  | { state: 'saved'; bytes: number; truncated: boolean }
+  | { state: 'unavailable'; reason: string }
+
+/**
+ * A history entry on the parent: one run attempt, written when the run settles. It outlives the run's
+ * own record, which goes once nothing waits on it, so it is what says afterwards how the run went.
+ */
+export interface SessionRecordScriptRun {
+  runId: string
+  phase: SessionScriptPhase
+  scriptId: SessionScriptId
+  name: string
+  title: string
+  /** Chain steps only. */
+  stepKey?: string
+  /** A display copy, at most 8 of at most 300 characters each; the log header keeps them in full. */
+  commands: string[]
+  startedAt: number
+  endedAt: number
+  exitCode?: number
+  outcome: 'succeeded' | 'failed' | 'stopped' | 'lost'
+  reason?: string
+  log: SessionRecordScriptLog
 }
 
 /**
@@ -204,16 +414,25 @@ export interface SessionRecord {
   worktree?: SessionRecordWorktree
   /** Present only while this session's worktree is being merged back. Cleared by the teardown. */
   worktreeMerge?: SessionRecordMerge
-  /** Present only while an SVN finish of this session's worktree runs. */
+  /** Written by builds before 3.11 only; see `SessionRecordWorktreeFinish`. */
   worktreeFinish?: SessionRecordWorktreeFinish
+  /** An SVN action of this session's worktree, running or waiting for the person. */
+  svnAction?: SessionRecordSvnAction
   /** The result of the last finish of this record; a later finish replaces it. */
   worktreeOutcome?: SessionWorktreeOutcome
   /** Set once the worktree was removed, together with `worktree` going. */
   retiredWorktree?: SessionRecordRetiredWorktree
   /** SVN only: the worktree goes once the process ended; the removal clears it with `worktree`. */
   worktreeCleanup?: SessionRecordWorktreeCleanup
-  /** On a resolve session only: whose merge conflict it was launched to settle. */
-  resolveFor?: string
+  /** On a script run only: the session it runs for, and which script it is. */
+  scriptOf?: SessionRecordScriptLink
+  /**
+   * On a parent only: its settled runs, oldest first, at most `SessionScriptsManager.historyMaxConst`
+   * plus the entries whose run records still exist.
+   */
+  scriptRuns?: SessionRecordScriptRun[]
+  /** Oldest first, at most 50 (`SessionLifecycle.commitReceiptsMaxConst`). */
+  commitReceipts?: SessionRecordCommitReceipt[]
   binding: { hostInstanceId: string; generation: number } | null
   life: SessionLife
   /**
@@ -252,14 +471,24 @@ export interface SessionRecord {
    * starting record carrying it is never replayed - its setup is judged instead. Success clears it;
    * failure leaves it on the ended record, where it is both the link to the setup session and the
    * only marker `retrySetup` has to work from, and where the reconciler never looks at it again.
+   *
+   * `steps` is the before chain resolved when it started (the setup, then the declared before
+   * scripts) and `cursor` the step `setupSessionId` attempts. A wait written before chains existed
+   * has neither and is one setup step.
    */
-  pendingSetup?: { setupSessionId: string }
+  pendingSetup?: SessionRecordPendingSetup
+  /**
+   * Primary record only: the project's `scripts.after` that a Git Finish press runs before the finisher.
+   * Without `result` the chain runs and the Finish waits; a pass counts only until the session runs
+   * again, so every bind and a reopen clear it.
+   */
+  finishChecks?: SessionRecordFinishChecks
   /** Primary record only: a worktree create that ran no setup - a marker, rather than silence. */
   setupSkipped?: { reason: string }
   /** Shell record only: run these instead of an interactive shell, each in its own directory. */
   commands?: SessionRecordSetupCommand[]
-  /** Shell record only: the session this setup is preparing. */
-  setupFor?: string
+  /** Shell record only, never together with `commands`: spawn this tool directly in the record's directory. */
+  process?: SessionRecordProcess
   /**
    * Somebody asked for this runtime to stop, so its exit code is not a verdict on what it was doing.
    * Written for every session, because that is the one fact a killed process cannot carry itself:
@@ -269,7 +498,7 @@ export interface SessionRecord {
    * read it for exactly that reason, and so does the outcome.
    *
    * **Written for a resolver as well as for an install**, which it once was not: `stop()` marked
-   * only records carrying `setupFor`, so a resolver somebody stopped was judged on the exit code
+   * only setup runs, so a resolver somebody stopped was judged on the exit code
    * the platform gives a killed process - 0 on POSIX - and read as a clean resolution.
    */
   stopRequested?: true

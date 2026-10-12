@@ -3,12 +3,18 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AppClientUiBridge } from '../../../../../shared/appClientUiIpc'
 import { VersioningSettings } from '../../../../../shared/versioningSettings'
 import { DiffToolSection } from './diffToolSection'
+import { ControlBridgeFixture } from '../../../../ipc/fixtures/controlBridgeFixture'
 
 afterEach(() => cleanup())
 describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/diffToolSection', () => {
   it('validates external settings, fills the preset and saves only the diff tool field', async () => {
-    const saveSettings = vi.fn(async () => ({ ok: true as const, value: { ok: true as const } }))
-    const bridge = { versioning: { getSettings: async () => ({ ok: true, value: VersioningSettings.defaultValue() }), saveSettings } }
+    const saveSettings = vi.fn(async (_value: unknown, _field?: unknown) => ({ ok: true as const, value: { ok: true as const } }))
+    const bridge = {
+      control: ControlBridgeFixture.routes({
+        'versioningSettings.get': { value: async () => ({ ok: true, value: VersioningSettings.defaultValue() }) },
+        'versioningSettings.save': { library: (body: { value: unknown; field?: unknown }) => saveSettings(body.value, body.field) },
+      }),
+    }
     ;(window as unknown as { appClient: AppClientUiBridge }).appClient = bridge as unknown as AppClientUiBridge
     const dirty = vi.fn()
     render(<DiffToolSection onDirtyChange={dirty} />)

@@ -1,12 +1,13 @@
-import { readFile, rename, rm } from 'node:fs/promises'
+import { readFile, rename } from 'node:fs/promises'
 import { isAbsolute, join, resolve } from 'node:path'
 
 import { ErrnoCode } from '../shared/errnoCode'
 import { ErrorText } from '../shared/errorText'
 import { PathCompare } from '../shared/pathCompare'
+import { type TreeRemove, TreeRemoval } from '../shared/treeRemoval'
 import { CheckpointLayout } from './checkpointLayout'
 import { GitManager } from './gitManager'
-import type { GitResult, WorktreeFacts } from './git.types'
+import type { GitCommandRunner, GitResult, WorktreeFacts } from './git.types'
 
 /**
  * The worktrees `checkpoints` mode cut from the checkpoint store before that was retired: recognized
@@ -18,6 +19,12 @@ import type { GitResult, WorktreeFacts } from './git.types'
  */
 export class StoreCutWorktrees extends GitManager {
   private static readonly asideSuffixConst = '.deleting'
+  private readonly removeTree: TreeRemove
+
+  constructor(invoker: GitCommandRunner, removeTree: TreeRemove = TreeRemoval.node) {
+    super(invoker)
+    this.removeTree = removeTree
+  }
 
   /** The store a worktree's `.git` pointer names, or null for any other directory. */
   async recognize(worktreePath: string): Promise<{ storeDir: string } | null> {
@@ -49,7 +56,7 @@ export class StoreCutWorktrees extends GitManager {
         return { ok: false, code: 'git-failed', detail: `${path} is not the worktree ${storeDir} cut; it was left alone` }
     }
     if (await GitManager.exists(worktree.worktreePath)) {
-      await rm(aside, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 })
+      await this.removeTree(aside)
       try { await rename(worktree.worktreePath, aside) }
       catch (error) {
         const code = ErrnoCode.of(error)
@@ -58,7 +65,7 @@ export class StoreCutWorktrees extends GitManager {
         return { ok: false, code: 'git-failed', detail: `Cannot move ${worktree.worktreePath} aside: ${ErrorText.of(error)}` }
       }
     }
-    try { await rm(aside, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 }) }
+    try { await this.removeTree(aside) }
     catch (error) { return { ok: false, code: 'git-failed', detail: `Cannot remove ${aside}: ${ErrorText.of(error)}` } }
     const pruned = await this.invoker.run(worktree.repositoryRoot, ['--git-dir', storeDir, 'worktree', 'prune'])
     const pruneFailure = GitManager.failureOf(pruned, 'git-failed')

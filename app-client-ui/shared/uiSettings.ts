@@ -42,6 +42,8 @@ export interface UiSettingsValue {
    */
   terminalScrollSpeedPercent: number
   activateSessionOnDocument?: boolean
+  /** The sessions tree draws finished script runs as rows under their session (`Show as sub-tasks`). */
+  sessionsScriptRuns?: boolean
 }
 
 /**
@@ -105,6 +107,7 @@ export class UiSettings {
       scrollSpeedPercent: UiSettings.scrollRangeConst.defaultPercent,
       terminalScrollSpeedPercent: UiSettings.scrollRangeConst.defaultPercent,
       activateSessionOnDocument: false,
+      sessionsScriptRuns: false,
     }
   }
 
@@ -138,6 +141,9 @@ export class UiSettings {
     const activateSessionOnDocument = document.activateSessionOnDocument === true
     if (document.activateSessionOnDocument !== undefined && typeof document.activateSessionOnDocument !== 'boolean')
       report('The document activation setting is unusable; reading it as disabled')
+    const sessionsScriptRuns = document.sessionsScriptRuns === true
+    if (document.sessionsScriptRuns !== undefined && typeof document.sessionsScriptRuns !== 'boolean')
+      report('The sessions script runs setting is unusable; reading it as hidden')
     // The RAW object first, because what a save writes back is what a read returned: `config.json`
     // is meant to be edited by hand and its own README promises that a key this build does not know
     // is preserved, so a note or a field of a later version written inside `ui` has to come back out
@@ -146,6 +152,7 @@ export class UiSettings {
     return {
       ...document,
       activateSessionOnDocument,
+      sessionsScriptRuns,
       fontScalePercent:
         UiSettings.coercePercent(document.fontScalePercent, 'fontScalePercent', font, report),
       fileViewerFontScalePercent: UiSettings.coercePercent(
@@ -206,6 +213,7 @@ export class UiSettings {
       && UiSettings.isValidPercent(document.scrollSpeedPercent, scroll)
       && UiSettings.isValidPercent(document.terminalScrollSpeedPercent, scroll)
       && (document.activateSessionOnDocument === undefined || typeof document.activateSessionOnDocument === 'boolean')
+      && (document.sessionsScriptRuns === undefined || typeof document.sessionsScriptRuns === 'boolean')
   }
 
   /** Into the range first, then onto the step: both ends are multiples of it, so that order holds. */

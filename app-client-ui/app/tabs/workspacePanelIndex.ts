@@ -190,7 +190,7 @@ export class WorkspacePanelIndex {
       WorkspacePanelIndex.terminalTargetKeyOf(owner.panel) === targetKey) ?? null
   }
 
-  private static terminalTargetKeyOf(panel: WorkspacePanelPresence): string | null {
+  static terminalTargetKeyOf(panel: WorkspacePanelPresence): string | null {
     if (panel.key !== PanelKeysConst.terminal) return null
     const reading = TerminalTargetCodec.read(panel.params)
     return reading === null ? null : TerminalTargetCodec.key(reading.target)

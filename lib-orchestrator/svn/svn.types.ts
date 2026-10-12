@@ -68,20 +68,6 @@ export interface SvnLoggedRow {
   path: string
 }
 
-export type SvnUpdateText = 'added' | 'deleted' | 'updated' | 'conflicted' | 'merged' | 'existed' | 'replaced' | 'none'
-export type SvnUpdateProps = 'updated' | 'conflicted' | 'merged' | 'none'
-
-/** One path line of plain-text `svn update` output; svn has no XML form of it. */
-export interface SvnUpdateRow {
-  text: SvnUpdateText
-  props: SvnUpdateProps
-  lockBroken: boolean
-  treeConflict: boolean
-  /** Relative to the root with `/` when `inside`, else the text svn printed. */
-  path: string
-  inside: boolean
-}
-
 /**
  * How a changed path names its project: `whole` the worktree is one project, `first-segment` a
  * product group whose member project is the first path segment.
@@ -97,12 +83,6 @@ export interface SvnInfoEntry {
   repository: string
   /** The repository path the entry checks out, decoded, without `^` and a trailing `/`. */
   base: string
-}
-
-/** A clean item this working copy committed at `revision` that the main copy holds at an older BASE. */
-export interface SvnUnlanded {
-  path: string
-  revision: number
 }
 
 /** The BASE proof of what a review committed when it gave no receipt. */
@@ -132,12 +112,10 @@ export interface SvnReceiptInput {
   revisionLog(revision: number): Promise<SvnLoggedRow[]>
 }
 
-/** Step 0 of a finish: this working copy's own commits the main copy lacks. */
-export interface SvnRecoveryInput {
+/** This working copy's own commits since its checkout: clean items whose BASE is their last change. */
+export interface SvnOwnCommitInput {
   items: readonly SvnVerboseItem[]
   revisionLog(revision: number): Promise<SvnLoggedRow[]>
-  /** The main copy's BASE of a worktree-relative path, 0 when it does not hold it. */
-  mainBaseOf(path: string): Promise<number>
 }
 
 export interface SvnAttribution {
@@ -158,6 +136,7 @@ export interface SvnWorktreeLocation {
   directoryId?: string
 }
 
+/** A reserved worktree folder and what its checkout takes: the owner's URL at the HEAD read at the reservation. */
 export interface SvnCheckout {
   worktreePath: string
   url: string
@@ -176,12 +155,26 @@ export interface SvnRoot {
   changed: SvnStatusRow[]
 }
 
-export type SvnWorktreeUpdate =
-  | { kind: 'conflict'; paths: string[] }
-  /** Other commits changed a project of this change set; the tests ran without them. */
-  | { kind: 'updated'; toRevision: number; paths: string[] }
-  /** Roots that hold a change, nested mounts first and the worktree last. */
-  | { kind: 'current'; changed: SvnStatusRow[]; roots: SvnRoot[] }
+/** One conflicted path after an update: a text conflict a resolver may settle, or a tree or property conflict. */
+export interface SvnConflictRow {
+  path: string
+  text: boolean
+  /** A tree or property conflict, which always needs the person. */
+  other: boolean
+}
+
+/** A worktree's state after an update, read from status XML. */
+export interface SvnWorktreeStatus {
+  textConflicts: string[]
+  otherConflicts: string[]
+  /** Every changed path, mounts included, worktree-relative. */
+  changed: string[]
+}
+
+/** A root to review: `pinned` an external whose definition names a revision, which no review may commit. */
+export interface SvnReviewRoot extends SvnRoot {
+  pinned: boolean
+}
 
 /** What a proof needs of one root, read before its review. */
 export interface SvnRootBounds {
@@ -197,15 +190,6 @@ export interface SvnRootBounds {
 
 /** By `SvnRoot.own`. */
 export type SvnBounds = Readonly<Record<string, SvnRootBounds>>
-
-/** The main copy after a finish updated it; a conflict count includes the paths svn skipped. */
-export type SvnMainState = 'none' | 'updated' | `merged:${number}` | `conflict:${number}` | 'failed'
-
-export interface SvnMainUpdate {
-  main: SvnMainState
-  /** `MAIN CONFLICT`, `MAIN MERGED`, `MAIN SKIPPED` and `MAIN UPDATE FAILED` lines. */
-  lines: string[]
-}
 
 export interface SvnWorktreeFacts {
   added: number

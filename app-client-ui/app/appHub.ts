@@ -2,7 +2,8 @@ import { CatalogSection } from '../../lib-orchestrator/projectManager/catalog/ca
 import { AppClientUiReport } from '../shared/appClientUiReport'
 import { DetectionRefusal } from './shared/detectionRefusal'
 import { randomUUID } from 'node:crypto'
-import { homedir } from 'node:os'
+import { createRequire } from 'node:module'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
 import { app, net, safeStorage, type WebContents } from 'electron'
@@ -22,11 +23,12 @@ import { RemoteControl } from '../../lib-orchestrator/remoteControl/remoteContro
 import { RemoteControlInstanceRegistry } from '../../lib-orchestrator/remoteControl/remoteControlInstanceRegistry'
 import { RemoteControlPeerClient } from '../../lib-orchestrator/remoteControl/remoteControlPeerClient'
 import { RemoteControlTerminal } from '../../lib-orchestrator/remoteControl/remoteControlTerminal'
-import { SessionManager } from '../../lib-orchestrator/sessionManager/sessionManager'
+import { SessionManager, SessionNotifier, type SessionManagerDeps } from '../../lib-orchestrator/sessionManager/sessionManager'
 import { SessionModelReader } from '../../lib-orchestrator/sessionModelReader/sessionModelReader'
 import { SessionTranscriptReader } from '../../lib-orchestrator/sessionTranscriptReader/sessionTranscriptReader'
 import { OrchestratorPaths } from '../../lib-orchestrator/shared/orchestratorPaths'
 import { TortoiseCommitDialog } from '../../lib-orchestrator/shared/tortoiseCommitDialog'
+import { TreeRemoval } from '../../lib-orchestrator/shared/treeRemoval'
 import { OpenedPathsStore } from '../../lib-orchestrator/terminalDetector/register/openedPathsStore'
 import {
   TerminalDetector,
@@ -45,9 +47,8 @@ import { ErrorText } from '../shared/errorText'
 import { FileViewerProtocolUrl } from '../shared/fileViewerProtocol'
 import { TerminalTargetCodec } from '../shared/terminalTarget'
 import type { RemoteControlListenerSettings } from '../shared/remoteControlSettings'
-import { SessionsGroupsState } from '../shared/sessionsGroupsState'
 import { AgentSettingsSection } from './agents/agentSettingsSection'
-import { ServiceAgentSettingsIpc } from './agents/serviceAgentSettingsIpc'
+import { AgentSettingsOperations } from './agents/agentSettingsOperations'
 import type { AppContext } from './appContext'
 import { AutolauncherConnection } from './autolauncher/autolauncherConnection'
 import { AutolauncherManager } from './autolauncher/autolauncherManager'
@@ -58,26 +59,26 @@ import { ClientStatePaths } from './clientState/clientStatePaths'
 import { VersioningCommitMessageStore } from './versioning/versioningCommitMessageStore'
 import { ClientStateStore } from './clientState/clientStateStore'
 import { ServiceContextCompactionIpc } from './contextCompaction/serviceContextCompactionIpc'
-import { ServiceDirectoryNotesIpc } from './directoryNotes/serviceDirectoryNotesIpc'
+import { DirectoryNotesOperations } from './directoryNotes/directoryNotesOperations'
 import { HostPingLoop } from './debug/hostPingLoop'
 import { ServiceDebugIpc } from './debug/serviceDebugIpc'
 import { FileChangesSettingsSection } from './fileChanges/fileChangesSettingsSection'
 import { FileDiffWorker } from './fileChanges/diff/fileDiffWorker'
-import { ServiceFileChangesSettingsIpc } from './fileChanges/serviceFileChangesSettingsIpc'
-import { ServiceVersioningSettingsIpc } from './versioning/serviceVersioningSettingsIpc'
+import { FileChangesSettingsOperations } from './fileChanges/fileChangesSettingsOperations'
+import { VersioningSettingsOperations } from './versioning/versioningSettingsOperations'
 import { ServiceVersioningCommitIpc } from './versioning/serviceVersioningCommitIpc'
 import { ExternalDiffLauncher } from './versioning/externalDiffLauncher'
 import { VersioningCommitManager } from './versioning/versioningCommitManager'
 import { SessionReviewPortAdapter } from './versioning/sessionReviewPortAdapter'
-import { ServiceWorktreeSettingsIpc } from './worktrees/serviceWorktreeSettingsIpc'
+import { WorktreeSettingsOperations } from './worktrees/worktreeSettingsOperations'
 import { VersioningSettings } from '../shared/versioningSettings'
 import { VersioningSettingsSection } from './versioning/versioningSettingsSection'
 import { WorktreeSettingsSection } from './worktrees/worktreeSettingsSection'
 import { ServiceFileChangesIpc } from './fileChanges/serviceFileChangesIpc'
 import { ServiceFileViewerIpc } from './fileViewer/serviceFileViewerIpc'
 import { FileViewerProtocol } from './fileViewer/fileViewerProtocol'
-import { ServiceProjectsIpc } from './projects/serviceProjectsIpc'
-import { ServiceRateMonitorIpc } from './rateMonitor/serviceRateMonitorIpc'
+import { RateMonitorOperations } from './rateMonitor/rateMonitorOperations'
+import { SessionNotifyDelivery } from './sessions/sessionNotifyDelivery'
 import { RemarkableManager } from './remarkable/remarkableManager'
 import { ServiceRemarkableIpc } from './remarkable/serviceRemarkableIpc'
 import { RemarkableSettingsSection } from './remarkable/settings/remarkableSettingsSection'
@@ -101,11 +102,10 @@ import { RemotePeerListenerManager } from './remoteControl/remotePeerListenerMan
 import { RemoteProfileLifecycle } from './remoteControl/remoteProfileLifecycle'
 import { ServiceRemoteControlIpc } from './remoteControl/serviceRemoteControlIpc'
 import { ServiceRemoteSettingsIpc } from './remoteControl/serviceRemoteSettingsIpc'
-import { ServiceSessionModelIpc } from './sessionModel/serviceSessionModelIpc'
-import { ServiceSessionTranscriptIpc } from './sessionTranscript/serviceSessionTranscriptIpc'
+import { SessionModelOperations } from './sessionModel/sessionModelOperations'
 import { SessionTranscriptAccess } from './sessionTranscript/sessionTranscriptAccess'
-import { ServiceSessionsIpc } from './sessions/serviceSessionsIpc'
-import { ServiceHistoricSessionsIpc } from './sessions/serviceHistoricSessionsIpc'
+import { ServiceControlIpc } from './remoteControl/serviceControlIpc'
+import { HistoricSessionsOperations } from './sessions/historicSessionsOperations'
 import { HistoricSessions } from './sessions/history/historicSessions'
 import { SkillLinkInstaller } from './skills/skillLinkInstaller'
 import { AppMenu } from './shell/appMenu'
@@ -124,10 +124,12 @@ import { TabTransferBroker } from './tabs/tabTransferBroker'
 import { WorkspacePanelIndex } from './tabs/workspacePanelIndex'
 import { ServiceTerminalIpc } from './terminals/serviceTerminalIpc'
 import { ServiceTerminalMenuIpc } from './terminals/serviceTerminalMenuIpc'
+import { VsCodeLauncher } from './terminals/vsCodeLauncher'
+import { VsCodeWorkspace } from './terminals/vsCodeWorkspace'
 import { RemoteSessionGroups } from './sessionGroups/remoteSessionGroups'
-import { ServiceSessionGroupsIpc } from './sessionGroups/serviceSessionGroupsIpc'
+import { SessionGroupsOperations } from './sessionGroups/sessionGroupsOperations'
 import { SessionGroupsSection } from './sessionGroups/sessionGroupsSection'
-import { ServiceUiSettingsIpc } from './uiSettings/serviceUiSettingsIpc'
+import { UiSettingsOperations } from './uiSettings/uiSettingsOperations'
 import { UiSettingsSection } from './uiSettings/uiSettingsSection'
 
 type TerminalDetectorPathHints = Awaited<ReturnType<TerminalDetectorDeps['changedPaths']>>
@@ -162,31 +164,19 @@ export class AppHub {
     ServiceWindowsIpc.channelsConst,
     ServiceDialogIpc.channelsConst,
     ServiceClipboardIpc.channelsConst,
-    ServiceProjectsIpc.channelsConst,
-    ServiceSessionsIpc.channelsConst,
-    ServiceHistoricSessionsIpc.channelsConst,
     ServiceRemoteControlIpc.channelsConst,
     ServiceRemoteSettingsIpc.channelsConst,
     ServiceTabsIpc.channelsConst,
     ServiceTerminalIpc.channelsConst,
     ServiceTerminalMenuIpc.channelsConst,
     ServiceDebugIpc.channelsConst,
-    ServiceVersioningSettingsIpc.channelsConst,
     ServiceVersioningCommitIpc.channelsConst,
-    ServiceWorktreeSettingsIpc.channelsConst,
     ServiceAutolauncherIpc.channelsConst,
-    ServiceFileChangesSettingsIpc.channelsConst,
     ServiceFileChangesIpc.channelsConst,
     ServiceFileViewerIpc.channelsConst,
     ServiceRemarkableIpc.channelsConst,
-    ServiceUiSettingsIpc.channelsConst,
-    ServiceSessionGroupsIpc.channelsConst,
-    ServiceAgentSettingsIpc.channelsConst,
     ServiceContextCompactionIpc.channelsConst,
-    ServiceRateMonitorIpc.channelsConst,
-    ServiceSessionModelIpc.channelsConst,
-    ServiceSessionTranscriptIpc.channelsConst,
-    ServiceDirectoryNotesIpc.channelsConst,
+    ServiceControlIpc.channelsConst,
   ] as const) satisfies Record<keyof AppClientUiIpcInvokeMap, true>
 
   /**
@@ -207,9 +197,10 @@ export class AppHub {
   private readonly dialogIpc: ServiceDialogIpc
   private readonly clipboardIpc = new ServiceClipboardIpc()
   private readonly projects: ProjectManager
-  private readonly projectsIpc: ServiceProjectsIpc
   private readonly sessions: SessionManager
   private readonly remoteControlServer: RemoteControlServer
+  private readonly remoteControl: RemoteControl
+  private readonly controlIpc: ServiceControlIpc
   private readonly remoteConnections: RemoteConnectionsManager
   private readonly remoteInbound: RemoteControlInboundRegistry
   private readonly remoteIpc: ServiceRemoteControlIpc
@@ -220,19 +211,14 @@ export class AppHub {
   /** Read where it is used, never cached: the listener is applied again whenever it changes. */
   private readonly remoteListenerSettings: () => RemoteControlListenerSettings
   private readonly skillLinks: SkillLinkInstaller
-  private readonly sessionsIpc: ServiceSessionsIpc
-  private readonly historicSessionsIpc: ServiceHistoricSessionsIpc
   private readonly tabsIpc: ServiceTabsIpc
   private readonly terminalsIpc: ServiceTerminalIpc
   private readonly terminalDetector: TerminalDetector
   private readonly terminalMenuIpc: ServiceTerminalMenuIpc
   private readonly debugIpc: ServiceDebugIpc
-  private readonly versioningSettingsIpc: ServiceVersioningSettingsIpc
   private readonly commits: VersioningCommitManager
   private readonly versioningCommitIpc: ServiceVersioningCommitIpc
-  private readonly worktreeSettingsIpc: ServiceWorktreeSettingsIpc
   private readonly autolauncherIpc: ServiceAutolauncherIpc
-  private readonly fileChangesSettingsIpc: ServiceFileChangesSettingsIpc
   private readonly fileDiffWorker: FileDiffWorker
   private readonly fileChanges: FileChangesManager
   private readonly fileViewer: FileViewer
@@ -241,15 +227,12 @@ export class AppHub {
   private readonly fileViewerProtocol: FileViewerProtocol
   private readonly remarkable: RemarkableManager
   private readonly remarkableIpc: ServiceRemarkableIpc
-  private readonly uiSettingsIpc: ServiceUiSettingsIpc
-  private readonly sessionGroupsIpc: ServiceSessionGroupsIpc
-  private readonly agentSettingsIpc: ServiceAgentSettingsIpc
+  /** The settings sections the window edits, registered as operations once the registry exists. */
+  private readonly settingsOperations: readonly { register(registry: RemoteControl['registry']): void }[]
   private readonly contextCompactionIpc: ServiceContextCompactionIpc
-  private readonly directoryNotesIpc: ServiceDirectoryNotesIpc
+  private readonly directoryNotes: DirectoryNotesOperations
   private readonly rateMonitor: RateMonitor
-  private readonly rateMonitorIpc: ServiceRateMonitorIpc
-  private readonly sessionModelIpc: ServiceSessionModelIpc
-  private readonly sessionTranscriptIpc: ServiceSessionTranscriptIpc
+  private readonly sessionNotifier: SessionNotifier
   private readonly pingLoop: HostPingLoop
   private readonly menu: AppMenu
   private readonly appRestart: AppRestart
@@ -322,13 +305,8 @@ export class AppHub {
       configIdentity,
       channel,
       onError: (message) => this.report(message),
+      removeTree: (path) => AppHub.removeTree(path),
     })
-    this.projectsIpc = new ServiceProjectsIpc(this.projects)
-    this.versioningSettingsIpc = new ServiceVersioningSettingsIpc(configStore)
-    this.worktreeSettingsIpc = new ServiceWorktreeSettingsIpc(
-      configStore,
-      (projectPath) => this.projects.authorizeProjectPath(projectPath),
-    )
     const launcherDirectory = join(dirname(OrchestratorPaths.defaultMachineRoot()), 'JamatLauncher')
     this.autolauncherIpc = new ServiceAutolauncherIpc(new AutolauncherManager({
       configDir: context.config.configDir, configIdentity, runtimeChannel: channel,
@@ -339,7 +317,6 @@ export class AppHub {
       launcherDirectory,
     ), new AutolauncherConnection(), snapshot => this.broadcast('autolauncher:changed', snapshot)),
     sender => this.workspaceWindows.acceptsRenderer(sender))
-    this.fileChangesSettingsIpc = new ServiceFileChangesSettingsIpc(configStore)
     this.fileDiffWorker = new FileDiffWorker(context.fileDiffWorkerPath)
     // The project manager's view, not one of its own: it is the only one in this process whose
     // Codex index carries a memo, and the resolve happens on every read this manager makes.
@@ -349,18 +326,17 @@ export class AppHub {
     })
     this.fileViewer = new FileViewer()
     this.fileViewerProtocol = new FileViewerProtocol(this.fileViewer)
-    this.uiSettingsIpc = new ServiceUiSettingsIpc(
-      configStore,
-      () => this.broadcast('ui:settings-changed'),
-    )
-    // The same event an assignment sends, because a tree reads both back together: which sections
-    // exist and which session is in one are two halves of one picture, and a window that learned
-    // about the first alone would redraw with rows still filed under a section it just lost.
-    this.sessionGroupsIpc = new ServiceSessionGroupsIpc(
-      configStore,
-      this.store,
-      () => this.broadcast('state:session-groups-changed'),
-    )
+    this.settingsOperations = [
+      new UiSettingsOperations(configStore, () => this.broadcast('ui:settings-changed')),
+      // The same event an assignment sends, because a tree reads both back together: which sections
+      // exist and which session is in one are two halves of one picture, and a window that learned
+      // about the first alone would redraw with rows still filed under a section it just lost.
+      new SessionGroupsOperations(configStore, this.store, () => this.broadcast('state:session-groups-changed')),
+      new AgentSettingsOperations(configStore, () => this.broadcast('agents:settings-changed')),
+      new WorktreeSettingsOperations(configStore, (projectPath) => this.projects.authorizeProjectPath(projectPath)),
+      new FileChangesSettingsOperations(configStore),
+      new VersioningSettingsOperations(configStore),
+    ]
     this.rateMonitor = new RateMonitor({
       configIdentity,
       channel,
@@ -369,11 +345,6 @@ export class AppHub {
       onChanged: () => this.broadcast('rate:changed'),
       onError: (message) => this.report(message),
     })
-    this.rateMonitorIpc = new ServiceRateMonitorIpc(this.rateMonitor)
-    this.agentSettingsIpc = new ServiceAgentSettingsIpc(
-      configStore,
-      () => this.broadcast('agents:settings-changed'),
-    )
     this.sessions = new SessionManager({
       // Electron's app path is this package; `app-host` stands beside it. It is named here rather
       // than measured in the library, which is bundled into `out/main` and can only measure that.
@@ -392,6 +363,8 @@ export class AppHub {
       // A session whose worktree ended goes as Remove takes it, and Remove's caller closes the tab.
       onRemovedItself: (sessionId) =>
         this.tabsIpc.closeTerminalPanels(TerminalTargetCodec.key({ kind: 'local', sessionId })),
+      onScriptCollapsed: (event) => this.scriptCollapsed(event),
+      removeTree: (path) => AppHub.removeTree(path),
       // Read per launch rather than captured once: `readSection` re-reads whenever the file's mtime
       // moved, so the switch in the tab reaches the next launch without a notification of its own.
       // The same shape and the same reason as `yoloFor` below: read per operation, so switching
@@ -412,28 +385,14 @@ export class AppHub {
       // rollout is not free, and a view of one's own has no memo behind its index.
       transcripts: this.projects.transcripts,
     })
-    // A fork keeps the section of the tree its parent was put in. Here rather than in the renderer
-    // that asked: the tree is drawn in the main window alone, and the tab menu of a holder window
-    // forks just as well. The event is what tells a tree that IS open about a write it did not make.
-    this.sessionsIpc = new ServiceSessionsIpc(this.sessions, (parentSessionId, sessionId) => {
-      if (this.store.inheritSessionGroup(
-        SessionsGroupsState.sessionKeyOf({ kind: 'local', sessionId: parentSessionId }),
-        SessionsGroupsState.sessionKeyOf({ kind: 'local', sessionId }),
-      ))
-        this.broadcast('state:session-groups-changed')
-    })
     const modelReader = new SessionModelReader({ transcripts: this.projects.transcripts })
-    this.historicSessionsIpc = new ServiceHistoricSessionsIpc(new HistoricSessions(this.projects, this.sessions, modelReader))
+    const historicSessions = new HistoricSessions(this.projects, this.sessions, modelReader)
     // Each reader is handed over rather than held: there is no timer to stop and no child to end.
     // The transcript view is the project manager's, because resolving a Codex rollout is not free -
     // a view of one's own has no memo behind its index, and this pair is POLLED.
-    this.sessionModelIpc = new ServiceSessionModelIpc(
-      modelReader,
-      this.sessions,
-    )
+    const sessionModel = new SessionModelOperations(modelReader, this.sessions)
     const transcriptReader = new SessionTranscriptReader({ transcripts: this.projects.transcripts })
     const transcriptAccess = new SessionTranscriptAccess(this.sessions, transcriptReader)
-    this.sessionTranscriptIpc = new ServiceSessionTranscriptIpc(transcriptAccess)
     const workspaceOwnerIdOf = (sender: WebContents): string | null =>
       this.workspaceWindows.acceptsRenderer(sender)
         ? this.workspaceWindows.windowIdOf(sender)
@@ -494,8 +453,9 @@ export class AppHub {
       onChanged: () => {
         this.broadcast('versioning:commit-changed')
         this.tabControlBroker.commitsChanged()
+        this.remoteControl.activity.publish('commits.changed')
       },
-      worktreeCommitted: (scopeRoot) => this.sessions.noteWorktreeCommitted(scopeRoot),
+      committed: (receipt) => this.sessions.noteCommitted(receipt),
     })
     this.versioningCommitIpc = new ServiceVersioningCommitIpc(this.commits, workspaceOwnerIdOf, this.fileChangesIpc, async (sessionId, vcs, scope) => {
       const info = this.sessions.snapshot().sessions.find((session) => session.sessionId === sessionId)
@@ -532,7 +492,11 @@ export class AppHub {
     // Bound late, like the resumed merge: the sessions are built before the commit dialog and its
     // broker, and an SVN worktree's Commit opens its reviews there.
     this.sessions.setReviewPort(new SessionReviewPortAdapter(this.tabControlBroker, this.commits,
-      (sessionId) => this.sessions.snapshot().sessions.find((session) => session.sessionId === sessionId)?.tabTitle ?? null))
+      (sessionId) => this.tabTitleOf(sessionId)))
+    this.sessions.setEditor({
+      openWorktree: (worktreePath, ownerName) => void VsCodeWorkspace.open(VsCodeLauncher, worktreePath, ownerName)
+        .catch((error: unknown) => this.report(`VS Code could not open ${worktreePath}: ${ErrorText.of(error)}`)),
+    })
     this.fileViewerIpc = new ServiceFileViewerIpc(
       this.fileViewer,
       this.sessions,
@@ -577,8 +541,6 @@ export class AppHub {
       publish: (result) => this.debugWindow.publish('debug:host-ping-result', result),
     })
     this.debugIpc = new ServiceDebugIpc({
-      debugStatusOf: () => this.sessions.debugStatus(),
-      pingHost: () => this.sessions.pingHost(),
       sectionActive: (section) => this.pingLoop.setActiveSection(section),
     })
     this.menu = new AppMenu(
@@ -615,23 +577,35 @@ export class AppHub {
     this.contextCompactionIpc = new ServiceContextCompactionIpc(remoteTerminal, transcriptAccess)
     // The same terminal again, so an import never erases a prompt a compact or a remote deliver is
     // typing into.
-    this.directoryNotesIpc = new ServiceDirectoryNotesIpc(
+    this.directoryNotes = new DirectoryNotesOperations(
       configStore,
       this.sessions,
       remoteTerminal,
       (directory) => this.broadcast('directoryNotes:changed', directory),
     )
+    const sessionGroups = new RemoteSessionGroups(
+      () => configStore.readSection(SessionGroupsSection.spec),
+      this.store,
+      () => this.broadcast('state:session-groups-changed'),
+    )
+    // The same terminal once more: a wake-up line never types into a prompt another delivery holds.
+    this.sessionNotifier = new SessionNotifier({
+      sources: [this.sessions.worktreeResultsStore().notifySource(), this.sessions.sessionNotifyStore()],
+      watch: this.sessions.sessionNotifyStore(),
+      sessions: () => this.sessions.snapshot().sessions,
+      groups: (sessions) => sessionGroups.read(sessions),
+      port: new SessionNotifyDelivery(this.sessions, remoteTerminal, transcriptAccess),
+      now: () => Date.now(),
+      report: (message) => this.report(message),
+    })
     const remoteControl = new RemoteControl({
       system: { identity: () => remoteIdentity },
       projects: this.projects,
       sessions: this.sessions,
+      host: this.sessions,
       // A create or a repaint may name the section its session is filed under. Read per call, like
       // every other section of the config this object takes: a person may have just edited it.
-      groups: new RemoteSessionGroups(
-        () => configStore.readSection(SessionGroupsSection.spec),
-        this.store,
-        () => this.broadcast('state:session-groups-changed'),
-      ),
+      groups: sessionGroups,
       tabs: this.tabControlBroker,
       terminal: remoteTerminal,
       transcript: transcriptAccess,
@@ -660,6 +634,16 @@ export class AppHub {
       },
       onError: (message) => this.report(message),
     })
+    this.remoteControl = remoteControl
+    HistoricSessionsOperations.register(remoteControl.registry, historicSessions)
+    for (const operations of this.settingsOperations) operations.register(remoteControl.registry)
+    new RateMonitorOperations(this.rateMonitor).register(remoteControl.registry)
+    sessionModel.register(remoteControl.registry)
+    this.directoryNotes.register(remoteControl.registry)
+    this.controlIpc = new ServiceControlIpc(
+      remoteControl.registry,
+      (sender) => this.workspaceWindows.windowIdOf(sender),
+    )
     const credentials = RemotePeerCredentialStore.loadOrCreate(
       ClientStatePaths.remotePeerCredentialsFile(),
       ClientStatePaths.remoteMachineIdentityFile(),
@@ -817,32 +801,20 @@ export class AppHub {
     this.windowsIpc.initialize()
     this.dialogIpc.initialize()
     this.clipboardIpc.initialize()
-    this.projectsIpc.initialize()
-    this.sessionsIpc.initialize()
-    this.historicSessionsIpc.initialize()
+    this.controlIpc.initialize()
     this.remoteIpc.initialize()
     this.remoteSettingsIpc.initialize()
     this.tabsIpc.initialize()
     this.terminalsIpc.initialize()
     this.terminalMenuIpc.initialize()
     this.debugIpc.initialize()
-    this.versioningSettingsIpc.initialize()
     this.versioningCommitIpc.initialize()
-    this.worktreeSettingsIpc.initialize()
     this.autolauncherIpc.initialize()
-    this.fileChangesSettingsIpc.initialize()
     this.fileChangesIpc.initialize()
     this.fileViewerIpc.initialize()
     this.fileViewerProtocol.initialize()
     this.remarkableIpc.initialize()
-    this.uiSettingsIpc.initialize()
-    this.sessionGroupsIpc.initialize()
-    this.agentSettingsIpc.initialize()
     this.contextCompactionIpc.initialize()
-    this.rateMonitorIpc.initialize()
-    this.sessionModelIpc.initialize()
-    this.sessionTranscriptIpc.initialize()
-    this.directoryNotesIpc.initialize()
     // Its channels return raw values rather than IpcResult, so they sit outside the contract above.
     this.autoUpdate.start()
     this.menu.install()
@@ -865,6 +837,7 @@ export class AppHub {
     // now, and on a machine with no cache at all that is both of them. The monitor reports its own
     // failures.
     void this.rateMonitor.start()
+    this.sessionNotifier.start()
   }
 
   /**
@@ -884,6 +857,7 @@ export class AppHub {
     await this.settleStep('the reMarkable manager', () => this.remarkable.stop())
     await this.settleStep('the file diff worker', () => this.fileDiffWorker.stop())
     await this.settleStep('the rate monitor', () => { this.rateMonitor.stop() })
+    await this.settleStep('the session notifier', () => { this.sessionNotifier.stop() })
     await this.settleStep('the updater', () => { this.autoUpdate.stop() })
     await this.settleStep('the control server', () => this.remoteControlServer.stop())
     await this.settleStep('the peer listener', () => this.remoteListener.stop())
@@ -918,6 +892,20 @@ export class AppHub {
    * boot check it replaces: a duplicate is a programming mistake and there is nothing to be gained
    * from letting the process reach a window first.
    */
+  /**
+   * Electron's `fs` reads every `*.asar` as an archive and keeps one it opened locked until this
+   * process exits, so Node's `rm` could not delete a worktree that holds the `electron` package.
+   * `original-fs` is the unpatched `fs`; it is required on the first removal, because the node tests
+   * import this file and plain Node has no such module.
+   */
+  private static removeTree(path: string): Promise<void> {
+    return AppHub.originalFs().promises.rm(path, TreeRemoval.rmOptionsConst)
+  }
+
+  private static originalFs(): typeof import('original-fs') {
+    return createRequire(__filename)('original-fs') as typeof import('original-fs')
+  }
+
   private static mergedChannelsOf<T extends readonly Record<string, true>[]>(
     tables: T,
   ): MergedChannels<T> {
@@ -1064,10 +1052,28 @@ export class AppHub {
     )
   }
 
+  private tabTitleOf(sessionId: string): string | null {
+    return this.sessions.snapshot().sessions.find((session) => session.sessionId === sessionId)?.tabTitle ?? null
+  }
+
+  /** A run that went into its parent's history: its tab goes to the parent or closes. */
+  private scriptCollapsed(event: Parameters<NonNullable<SessionManagerDeps['onScriptCollapsed']>>[0]): void {
+    const runKey = TerminalTargetCodec.key({ kind: 'local', sessionId: event.runId })
+    if (event.handoff === 'parent-tab') {
+      const title = this.tabTitleOf(event.handoffTo)
+      this.tabsIpc.scriptRunCollapsed(
+        runKey,
+        title === null ? null : { target: { kind: 'local', sessionId: event.handoffTo }, title },
+      )
+    } else if (event.handoff === 'close') this.tabsIpc.scriptRunCollapsed(runKey, null)
+    else throw new Error(`Unknown script handoff: ${JSON.stringify(event.handoff)}`)
+  }
+
   private sessionsChanged(): void {
     this.broadcast('sessions:changed')
     this.remoteControlServer.publishEvent('sessions.changed')
     this.remoteInbound.publishEvent('sessions.changed')
+    this.remoteControl.activity.publish('sessions.changed')
   }
 
   private remoteChanged(): void {
@@ -1104,6 +1110,7 @@ export class AppHub {
       this.panelIndex.openTerminalTargetKeys(),
     )
     this.remoteControlServer.publishEvent('tabs.changed')
+    this.remoteControl.activity.publish('tabs.changed')
   }
 
   private updateWindowMenu(): void {
@@ -1145,6 +1152,7 @@ export class AppHub {
     AppHub.assertSmokeIcon('tinted', WindowIcon.of('#336699'))
     await this.checkSmokeFileDiffWorker()
     await this.checkSmokeFileProtocol()
+    await AppHub.checkSmokeTreeRemoval()
 
     const before = new Set(this.panelIndex.entries().map((entry) => entry.panelId))
     this.workspaceWindows.publishTo('main', 'menu:command', 'debug.newProbe')
@@ -1213,6 +1221,29 @@ export class AppHub {
     }
     else
       throw new Error(`Unknown smoke file diff result: ${JSON.stringify(result)}`)
+  }
+
+  /**
+   * The client's remover against a tree that holds a real `*.asar`, as every worktree with the
+   * `electron` package does. Only Electron's own `fs` reads it as an archive, so no plain Node smoke
+   * can see the difference. The fixture is made with `original-fs` too: touching the archive through
+   * the patched `fs` would open it and keep it locked for the rest of the run.
+   */
+  private static async checkSmokeTreeRemoval(): Promise<void> {
+    const fs = AppHub.originalFs()
+    const tree = await fs.promises.mkdtemp(join(tmpdir(), 'jamat-v3-smoke-asar-'))
+    const resources = join(tree, 'node_modules', 'electron', 'dist', 'resources')
+    await fs.promises.mkdir(resources, { recursive: true })
+    await fs.promises.copyFile(join(process.resourcesPath, 'default_app.asar'), join(resources, 'default_app.asar'))
+    let timer: NodeJS.Timeout | undefined
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`Smoke tree removal of ${tree} did not finish`)),
+        AppHub.smokePhaseTimeoutMillisecondsConst)
+    })
+    try { await Promise.race([AppHub.removeTree(tree), deadline]) }
+    finally { clearTimeout(timer) }
+    if (fs.existsSync(tree))
+      throw new Error(`Smoke tree removal left ${tree} behind`)
   }
 
   private async checkSmokeFileProtocol(): Promise<void> {

@@ -130,6 +130,8 @@ export class ServiceFileViewerIpc extends ServiceIpcBase<
       return this.openFilesystem(ownerId, source, supportsDiff)
     else if (source.kind === 'detected')
       return this.restoreDetectedDocument(ownerId, source, supportsDiff)
+    else if (source.kind === 'scriptLog')
+      return this.openScriptLog(ownerId, source)
     else
       throw new Error(`Unknown file viewer source: ${JSON.stringify(source)}`)
   }
@@ -149,6 +151,17 @@ export class ServiceFileViewerIpc extends ServiceIpcBase<
       source.path,
       supportsDiff,
     )
+  }
+
+  /** The source's own path is never read: the parent's history proves the run and names the file. */
+  private async openScriptLog(
+    ownerId: string,
+    source: Extract<FileViewerDocumentSource, { kind: 'scriptLog' }>,
+  ): Promise<FileViewerOpenResult> {
+    const proven = await this.sessions.scriptLogOf(source.sessionId, source.runId)
+    if (!proven.ok)
+      return { ok: false, code: 'invalid-source', detail: proven.detail }
+    return this.viewer.openScriptLog(ownerId, source.sessionId, source.runId, proven.value.path)
   }
 
   private async rootDirectory(ownerId: string, sessionId: string) {

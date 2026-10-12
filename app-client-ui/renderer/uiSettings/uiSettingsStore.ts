@@ -1,5 +1,6 @@
 import { UiSettings, type UiSettingsValue } from '../../shared/uiSettings'
 import { IpcSnapshotReader } from '../ipc/ipcSnapshotReader'
+import { AppControl } from '../ipc/appControl'
 
 /**
  * The appearance of one document: what is on disk, what a slider is showing while it is dragged,
@@ -47,7 +48,7 @@ export class UiSettingsStore {
     const reader = new IpcSnapshotReader<UiSettingsValue>(
       {
         subject: 'The UI settings',
-        read: () => window.appClient.ui.getSettings(),
+        read: () => AppControl.value('uiSettings.get', {}),
         subscribe: (onChanged) => window.appClient.onUiSettingsChanged(onChanged),
         reportError: (message) => console.error(message),
       },
@@ -61,6 +62,11 @@ export class UiSettingsStore {
 
   static current(): UiSettingsValue {
     return UiSettingsStore.previewValue ?? UiSettingsStore.persisted
+  }
+
+  /** What is on disk, never a preview: a write of one field starts from this. */
+  static stored(): UiSettingsValue {
+    return UiSettingsStore.persisted
   }
 
   /** A slider being dragged: seen at once and by everything, without anything being written. */
@@ -137,6 +143,7 @@ export class UiSettingsStore {
       && one.scrollSpeedPercent === other.scrollSpeedPercent
       && one.terminalScrollSpeedPercent === other.terminalScrollSpeedPercent
       && (one.activateSessionOnDocument === true) === (other.activateSessionOnDocument === true)
+      && (one.sessionsScriptRuns === true) === (other.sessionsScriptRuns === true)
   }
 
   private static apply(value: UiSettingsValue): void {

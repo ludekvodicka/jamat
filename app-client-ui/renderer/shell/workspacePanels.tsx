@@ -191,7 +191,7 @@ export class WorkspacePanels {
     controller: TabsController,
     target: TerminalTarget,
     title: string,
-    options?: { preview?: true; activate?: boolean },
+    options?: { preview?: true; activate?: boolean; preservePreview?: true },
   ): Promise<PanelOpenOutcome> {
     return controller.openPanel(
       PanelKeysConst.terminal,
@@ -229,7 +229,7 @@ export class WorkspacePanels {
         controller,
         { kind: 'local', sessionId: command.sessionId },
         command.tabTitle,
-        command.activate === undefined ? undefined : { activate: command.activate },
+        { preservePreview: true, ...(command.activate === undefined ? {} : { activate: command.activate }) },
       )
       if (outcome.kind === 'opened')
         return { kind: 'opened', panelId: outcome.panelId }

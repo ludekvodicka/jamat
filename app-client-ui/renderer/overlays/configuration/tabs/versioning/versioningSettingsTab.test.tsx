@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { AppClientUiBridge } from '../../../../../shared/appClientUiIpc'
 import { VersioningSettingsTab } from './versioningSettingsTab'
+import { ControlBridgeFixture } from '../../../../ipc/fixtures/controlBridgeFixture'
 
 /**
  * The tab is a composition and nothing else: what each section DOES is its own test's business, and
@@ -10,10 +11,7 @@ import { VersioningSettingsTab } from './versioningSettingsTab'
  * the two of them together.
  */
 describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/versioningSettingsTab', () => {
-  type BridgeStub = {
-    versioning: Pick<AppClientUiBridge['versioning'], 'getSettings' | 'saveSettings'>
-    fileChanges: Pick<AppClientUiBridge['fileChanges'], 'getSettings' | 'saveSettings'>
-  }
+  type BridgeStub = Pick<AppClientUiBridge, 'control'>
 
   afterEach(() => {
     cleanup()
@@ -24,21 +22,23 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/versioni
     const saved: unknown[] = []
     const fields: unknown[] = []
     ;(window as unknown as { appClient: BridgeStub }).appClient = {
-      versioning: {
-        getSettings: () => Promise.resolve({ ok: true, value: { mode: 'git', diffTool: { kind: 'internal' } } }),
-        saveSettings: (value, field) => {
-          saved.push(value)
-          fields.push(field)
-          return Promise.resolve({ ok: true, value: { ok: true } })
+      control: ControlBridgeFixture.routes({
+        'versioningSettings.get': { value: () => Promise.resolve({ ok: true, value: { mode: 'git', diffTool: { kind: 'internal' } } }) },
+        'versioningSettings.save': {
+          library: (body: { value: unknown; field?: unknown }) => {
+            saved.push(body.value)
+            fields.push(body.field)
+            return Promise.resolve({ ok: true, value: { ok: true } })
+          },
         },
-      },
-      fileChanges: {
-        getSettings: () => Promise.resolve({ ok: true, value: { primaryVcs: 'svn' } }),
-        saveSettings: (value) => {
-          saved.push(value)
-          return Promise.resolve({ ok: true, value: { ok: true } })
+        'fileChangesSettings.get': { value: () => Promise.resolve({ ok: true, value: { primaryVcs: 'svn' } }) },
+        'fileChangesSettings.save': {
+          library: (body: { value: unknown }) => {
+            saved.push(body.value)
+            return Promise.resolve({ ok: true, value: { ok: true } })
+          },
         },
-      },
+      }),
     }
     const onDirtyChange = vi.fn()
     const view = render(<VersioningSettingsTab onDirtyChange={onDirtyChange} />)

@@ -61,17 +61,3 @@ export type SetupResolution =
   /** An explicit `"setup": []`: the project needs nothing, and says so in a file that travels with it. */
   | { kind: 'empty' }
   | { kind: 'none'; reason: string }
-
-/**
- * What a project declares about its own setup, and whether this machine has ever agreed to run it.
- *
- * The hash covers the commands and nothing else, so re-indenting `.worktree.json` or adding a key
- * beside `setup` keeps an agreement, while changing a command - or its order, which changes what runs
- * when - withdraws it. Answering this needs the project root alone, which is what lets the decision be
- * made before a worktree is cut for it.
- */
-export interface DeclaredSetup {
-  commands: readonly string[]
-  hash: string
-  acknowledged: boolean
-}

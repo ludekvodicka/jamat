@@ -12,6 +12,7 @@ import type { SnapshotStore } from '../ipc/snapshotStore'
 import { SessionFolder } from '../sessions/sessionFolder'
 import type { TabSessionFacts } from '../widgets/tabs/tabContextMenu'
 import { SessionTabOpener, type OpenTerminalPort } from './sessionTabOpener'
+import { AppControl } from '../ipc/appControl'
 
 /**
  * What the commands DO to a session, once something has decided which session they are about.
@@ -85,7 +86,7 @@ export class SessionOperations {
       )
       if (!asked.ok || !asked.value) return
     }
-    const answer = await window.appClient.sessions.restart(info.sessionId)
+    const answer = await AppControl.sessionsDone('sessions.restart', { session: AppControl.sessionOf(info.sessionId) })
     const refusal = IpcFailure.of(answer, 'Restarting the session')
     if (refusal !== null) {
       AppClientUiReport.error(`${refusal}`)
@@ -102,7 +103,7 @@ export class SessionOperations {
   ): Promise<void> {
     const info = SessionOperations.sessionInfoOf(sessions, target)
     if (info === null) return
-    const answer = await window.appClient.sessions.reopen(info.sessionId)
+    const answer = await AppControl.sessionsDone('sessions.reopen', { session: AppControl.sessionOf(info.sessionId) })
     const refusal = IpcFailure.of(answer, 'Resuming the session')
     if (refusal !== null) {
       AppClientUiReport.error(refusal)
@@ -155,7 +156,7 @@ export class SessionOperations {
   ): Promise<void> {
     if (target === null) return
     const answer = remoteEndpointId === null
-      ? await window.appClient.sessions.reference(target.sessionId)
+      ? await AppControl.sessions('sessions.reference', { session: AppControl.sessionOf(target.sessionId) })
       : await window.appClient.remote.sessionReference(remoteEndpointId, target.sessionId)
     const refusal = IpcFailure.of(answer, 'Copying the session id')
     if (refusal !== null) {

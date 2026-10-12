@@ -4,7 +4,7 @@ import type { SessionInfo } from './sessionManagerApi.types'
 
 export class SessionWorkingDirectory {
   static of(info: SessionInfo): string | null {
-    if (info.worktree !== undefined) return info.worktree.worktreePath
+    if (info.worktree !== undefined) return LaunchPlanner.worktreeCwdOf(info.worktree)
     if (info.directory.mode === 'project') return info.directory.projectPath
     else if (info.directory.mode === 'adHoc') return info.directory.path
     else if (info.directory.mode === 'default') return null

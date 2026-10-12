@@ -9,7 +9,7 @@ import {
   RemoteControlInstanceRegistration,
   RemoteControlInstanceRegistry,
 } from './remoteControlInstanceRegistry'
-import { RemoteControlConst } from './remoteControlProtocol'
+import { RemoteControlCapabilities, RemoteControlConst } from './remoteControlProtocol'
 import {
   RemoteControlCandidate,
   RemoteControlDescriptorDiscovery,
@@ -82,7 +82,24 @@ describe('lib-orchestrator/remoteControl/remoteControlDescriptorDiscovery', () =
     expect(JSON.stringify([missing, wrongIdentity, unreadable])).not.toContain('x'.repeat(32))
   })
 
-  it('accepts old and new capability shapes and rejects unknown or duplicate optional operations', () => {
+  it('reads the client operations from their own field and refuses a name that is not <domain>.<verb>', () => {
+    const file = join(root, 'registry.json')
+    const descriptor = RemoteControlDescriptorDiscoveryTest.oldDescriptor({
+      optionalOperations: RemoteControlConst.optionalOperations,
+      registryOperations: ['uiSettings.get', 'directoryNotes.importPrompt'],
+    })
+    writeFileSync(file, JSON.stringify(descriptor), 'utf8')
+    expect(RemoteControlDescriptorDiscovery.read('config-1', 'development', file)).toEqual({ ok: true, value: descriptor })
+    expect(RemoteControlCapabilities.of(descriptor)).toEqual(expect.arrayContaining(['uiSettings.get', 'sessions.fork']))
+
+    for (const registryOperations of [['ui settings'], ['uiSettings.get', 'uiSettings.get'], [7]]) {
+      writeFileSync(file, JSON.stringify({ ...descriptor, registryOperations }), 'utf8')
+      expect(RemoteControlDescriptorDiscovery.read('config-1', 'development', file))
+        .toMatchObject({ ok: false, error: { code: 'unavailable' } })
+    }
+  })
+
+  it('accepts old and new capability shapes, drops optional operations it does not know and rejects duplicates', () => {
     const oldFile = join(root, 'old.json')
     const newFile = join(root, 'new.json')
     const unknownFile = join(root, 'unknown.json')
@@ -95,7 +112,7 @@ describe('lib-orchestrator/remoteControl/remoteControlDescriptorDiscovery', () =
       writeFileSync(file, JSON.stringify(descriptor), 'utf8')
     writeFileSync(unknownFile, JSON.stringify({
       ...oldDescriptor,
-      optionalOperations: ['unknown.operation'],
+      optionalOperations: ['sessions.transcript', 'unknown.operation'],
     }), 'utf8')
     writeFileSync(duplicateFile, JSON.stringify({
       ...oldDescriptor,
@@ -106,8 +123,9 @@ describe('lib-orchestrator/remoteControl/remoteControlDescriptorDiscovery', () =
       .toEqual({ ok: true, value: oldDescriptor })
     expect(RemoteControlDescriptorDiscovery.read('config-1', 'development', newFile))
       .toEqual({ ok: true, value: newDescriptor })
+    // A client one release ahead stays reachable: what this build cannot call is simply not offered.
     expect(RemoteControlDescriptorDiscovery.read('config-1', 'development', unknownFile))
-      .toMatchObject({ ok: false, error: { code: 'unavailable' } })
+      .toEqual({ ok: true, value: { ...oldDescriptor, optionalOperations: ['sessions.transcript'] } })
     expect(RemoteControlDescriptorDiscovery.read('config-1', 'development', duplicateFile))
       .toMatchObject({ ok: false, error: { code: 'unavailable' } })
     expect(oldDescriptor.operations).toEqual(RemoteControlConst.descriptorOperations)

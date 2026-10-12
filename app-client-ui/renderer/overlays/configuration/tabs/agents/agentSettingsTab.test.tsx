@@ -5,9 +5,10 @@ import { AgentModels } from '../../../../../shared/agentModels'
 import type { AgentSettingsValue } from '../../../../../shared/agentSettings'
 import type { AppClientUiBridge } from '../../../../../shared/appClientUiIpc'
 import { AgentSettingsTab } from './agentSettingsTab'
+import { ControlBridgeFixture } from '../../../../ipc/fixtures/controlBridgeFixture'
 
 describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSettingsTab', () => {
-  type BridgeStub = { agents: Pick<AppClientUiBridge['agents'], 'getSettings' | 'saveSettings'> }
+  type BridgeStub = Pick<AppClientUiBridge, 'control'>
   type ProviderLabel = 'Claude' | 'Codex'
   type View = ReturnType<typeof render>
 
@@ -19,18 +20,20 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
   async function mount(stored: AgentSettingsValue, refusal?: string) {
     const saved: unknown[] = []
     ;(window as unknown as { appClient: BridgeStub }).appClient = {
-      agents: {
-        getSettings: () => Promise.resolve({ ok: true, value: stored }),
-        saveSettings: (value) => {
-          saved.push(value)
-          return Promise.resolve(refusal === undefined
-            ? { ok: true as const, value: { ok: true as const } }
-            : {
-              ok: true as const,
-              value: { ok: false as const, code: 'section-damaged' as const, detail: refusal },
-            })
+      control: ControlBridgeFixture.routes({
+        'agentSettings.get': { value: () => Promise.resolve({ ok: true, value: stored }) },
+        'agentSettings.save': {
+          library: (body: { value: AgentSettingsValue }) => {
+            saved.push(body.value)
+            return Promise.resolve(refusal === undefined
+              ? { ok: true as const, value: { ok: true as const } }
+              : {
+                ok: true as const,
+                value: { ok: false as const, code: 'section-damaged' as const, detail: refusal },
+              })
+          },
         },
-      },
+      }),
     }
     const onDirtyChange = vi.fn()
     const view = render(<AgentSettingsTab onDirtyChange={onDirtyChange} />)

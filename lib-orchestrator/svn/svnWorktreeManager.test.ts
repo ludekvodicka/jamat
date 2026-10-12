@@ -7,7 +7,7 @@ import { join, sep } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { CommandOutcome, CommandRunner } from '../shared/commandInvoker.types'
-import type { SvnLoggedRow, SvnRoot, SvnWorktreeLocation } from './svn.types'
+import type { SvnRoot, SvnWorktreeLocation } from './svn.types'
 import { SvnWorktreeManager } from './svnWorktreeManager'
 
 /** Paths whose next purge fails, the way a file another process holds makes it fail. */
@@ -39,7 +39,7 @@ function scripted(handler: Handler) {
     if (reply === undefined) throw new Error(`unexpected svn ${args.join(' ')} in ${cwd}`)
     return { code: 0, stdout: '', stderr: '', failure: null, ...reply }
   } }
-  return { manager: new SvnWorktreeManager(runner), calls }
+  return { manager: new SvnWorktreeManager(runner), runner, calls }
 }
 
 const failed = (stderr: string): Reply => ({ code: 1, stderr })
@@ -129,9 +129,10 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
   })
 
   describe('create', () => {
-    function creating(owner: string, options: { ignored?: boolean; checkoutFails?: boolean; whileChecking?: () => Promise<void> } = {}) {
+    function creating(_owner: string, options: { ignored?: boolean; checkoutFails?: boolean; whileChecking?: () => Promise<void> } = {}) {
       return scripted(async (cwd, args) => {
-        if (args[0] === 'info') return { stdout: infoXml({ revision: cwd === owner ? 40 : 41 }) }
+        // The owner stands at r40; its URL is at r41 on the server.
+        if (args[0] === 'info') return { stdout: infoXml({ revision: args.at(-1) === url ? 41 : 40 }) }
         if (args[0] === 'status' && has(args, '--no-ignore', '--depth', 'immediates')) {
           await options.whileChecking?.()
           return { stdout: statusXml([{ path: '.worktrees', item: options.ignored === false ? 'unversioned' : 'ignored' }]) }
@@ -145,16 +146,39 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
       })
     }
 
-    it('checks the owner URL out at HEAD into .worktrees/<folder> and names its revision and identity', async () => {
+    it('reserves .worktrees/<folder> with the owner URL, the HEAD revision and the folder identity, and checks out nothing', async () => {
+      const owner = join(temporary, 'owner')
+      await mkdir(owner)
+      const { manager, calls } = creating(owner)
+      const reserved = await manager.reserve({ ownerDir: owner, folder: '014-fix-login' })
+      const worktreePath = join(owner, '.worktrees', '014-fix-login')
+      expect(reserved).toEqual({ ok: true, value: { worktreePath, url, baseRevision: 41, directoryId: expect.stringMatching(/^\d+:\d+:\d+$/) } })
+      expect(calls.find((call) => call.args[0] === 'checkout')).toBeUndefined()
+      expect(calls.filter((call) => call.args[0] === 'info').map((call) => call.args.at(-1))).toEqual(['.', url])
+      expect(existsSync(worktreePath)).toBe(true)
+      expect(existsSync(join(worktreePath, '.svn'))).toBe(false)
+    })
+
+    it('leaves nothing behind when the HEAD of the owner URL cannot be read', async () => {
+      const owner = join(temporary, 'owner')
+      await mkdir(owner)
+      const { manager } = scripted((_cwd, args) => args[0] !== 'info' ? undefined
+        : args.at(-1) === url ? failed('svn: E170013: Unable to connect') : { stdout: infoXml() })
+      expect(await manager.reserve({ ownerDir: owner, folder: 'x' }))
+        .toMatchObject({ ok: false, code: 'svn-failed', detail: expect.stringMatching(/HEAD revision.*E170013/s) })
+      expect(existsSync(join(owner, '.worktrees'))).toBe(false)
+    })
+
+    it('checks the owner URL out at the reserved HEAD into the folder and names its revision and identity', async () => {
       const owner = join(temporary, 'owner')
       await mkdir(owner)
       const { manager, calls } = creating(owner)
       const created = await manager.create({ ownerDir: owner, folder: '014-fix-login' })
       const worktreePath = join(owner, '.worktrees', '014-fix-login')
       expect(created).toEqual({ ok: true, value: { worktreePath, url, baseRevision: 41, directoryId: expect.any(String) } })
-      if (created.ok) expect(created.value.directoryId).toMatch(/^\d+:\d+:\d+$/)
-      expect(calls.find((call) => call.args[0] === 'checkout')).toEqual({ cwd: join(owner, '.worktrees'),
-        args: ['checkout', '--non-interactive', '-q', '--', `${url}@HEAD`, '014-fix-login'] })
+      expect(calls.find((call) => call.args[0] === 'checkout')).toEqual({ cwd: worktreePath,
+        args: ['checkout', '--non-interactive', '-q', '--', `${url}@41`, '.'] })
+      expect(SvnWorktreeManager.checkoutArgsOf(url, 41)).toEqual(['checkout', '-q', '--', `${url}@41`, '.'])
     })
 
     it('takes the next free name when the folder or its .deleting rest is taken', async () => {
@@ -217,71 +241,189 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
 
     it('refuses a folder that is no slug', async () => {
       expect(await creating(temporary).manager.create({ ownerDir: temporary, folder: '../x' })).toMatchObject({ ok: false, code: 'refused' })
+      expect(await creating(temporary).manager.reserve({ ownerDir: temporary, folder: '../x' })).toMatchObject({ ok: false, code: 'refused' })
     })
   })
 
-  describe('update of the worktree', () => {
+  describe('a reserved folder', () => {
+    it('is emptied for another checkout and keeps its identity', async () => {
+      const worktreePath = join(temporary, 'owner', '.worktrees', 'x')
+      await mkdir(join(worktreePath, '.svn', 'tmp'), { recursive: true })
+      await writeFile(join(worktreePath, 'half.txt'), 'half\n', 'utf8')
+      const directoryId = await SvnWorktreeManager.directoryIdOf(worktreePath) ?? undefined
+      const { manager, calls } = scripted(() => undefined)
+
+      expect(await manager.purgeReserved({ worktreePath, directoryId })).toEqual({ ok: true, value: undefined })
+      expect(existsSync(join(worktreePath, '.svn'))).toBe(false)
+      expect(existsSync(join(worktreePath, 'half.txt'))).toBe(false)
+      expect(await SvnWorktreeManager.directoryIdOf(worktreePath)).toBe(directoryId ?? null)
+      expect(calls).toEqual([])
+    })
+
+    it('is never emptied when it is another directory, carries no identity or is gone', async () => {
+      const worktreePath = join(temporary, 'owner', '.worktrees', 'x')
+      await mkdir(worktreePath, { recursive: true })
+      await writeFile(join(worktreePath, 'keep.txt'), 'keep\n', 'utf8')
+      const { manager } = scripted(() => undefined)
+
+      expect(await manager.purgeReserved({ worktreePath, directoryId: '1:2:3' }))
+        .toMatchObject({ ok: false, code: 'refused', detail: expect.stringMatching(/another directory.*nothing was deleted/) })
+      expect(await manager.purgeReserved({ worktreePath }))
+        .toMatchObject({ ok: false, code: 'refused', detail: expect.stringMatching(/no file ID.*nothing was deleted/) })
+      expect(existsSync(join(worktreePath, 'keep.txt'))).toBe(true)
+      expect(await manager.purgeReserved({ worktreePath: join(temporary, 'gone'), directoryId: '1:2:3' }))
+        .toMatchObject({ ok: false, code: 'refused', detail: expect.stringMatching(/is gone/) })
+    })
+  })
+
+  describe('working-copy root', () => {
+    it('reads the root of the working copy holding a directory from svn info XML', async () => {
+      const directory = join(temporary, 'Group', 'Member')
+      await mkdir(directory, { recursive: true })
+      const { manager } = scripted(() => ({ stdout: infoXml({ wcRoot: 'C:/Zone/R&amp;D' }) }))
+      expect(await manager.workingCopyRootOf(directory)).toEqual({ ok: true, value: 'C:/Zone/R&D' })
+    })
+
+    it('answers no directory and an unversioned directory with their reasons', async () => {
+      const { manager } = scripted(() => failed('svn: E155007: not a working copy'))
+      expect(await manager.workingCopyRootOf(join(temporary, 'absent'))).toMatchObject({ ok: false, code: 'refused', detail: expect.stringMatching(/no directory/) })
+      expect(await manager.workingCopyRootOf(temporary)).toMatchObject({ ok: false, code: 'not-a-working-copy' })
+    })
+  })
+
+  // The update itself is a run of the SVN action now; these are the reads and writes around it.
+  describe('around the update run', () => {
     const changedBefore: Entry[] = [{ path: 'src/a.txt', item: 'modified', revision: 5 }, { path: 'gone', item: 'missing', revision: 5 },
       { path: 'gone/inner.txt', item: 'missing', revision: 5 }, { path: 'mount', item: 'external' }]
 
-    function updating(worktree: string, after: readonly Entry[], updateText: string, before: readonly Entry[] = changedBefore) {
-      let updated = false
-      return scripted((cwd, args) => {
-        if (cwd !== worktree) return undefined
-        if (args[0] === 'status') return { stdout: statusXml(updated ? after : before) }
-        if (args[0] === 'delete') return {}
-        if (args[0] === 'update') {
-          updated = true
-          return { stdout: updateText }
-        }
-        if (args[0] === 'info') return { stdout: infoXml({ revision: 9 }) }
-        return undefined
-      })
-    }
-
-    it('schedules a deletion from disk before the update and answers the changed roots, mounts first', async () => {
-      const after: Entry[] = [{ path: 'src/a.txt', item: 'modified', revision: 9 }, { path: 'gone', item: 'deleted', revision: 9 },
-        { path: 'mount', item: 'external' }, { path: 'mount/l.txt', item: 'modified', revision: 4 }]
-      const { manager, calls } = updating(temporary, after, 'Updating \'.\':\nAt revision 9.\n')
-      const result = await manager.updateWorktree(temporary)
+    it('schedules each deletion from disk once, at its top, before the update', async () => {
+      const { manager, calls } = scripted((cwd, args) => cwd !== temporary ? undefined
+        : args[0] === 'status' ? { stdout: statusXml(changedBefore) } : args[0] === 'delete' ? {} : undefined)
+      expect(await manager.scheduleMissing(temporary)).toEqual({ ok: true, value: undefined })
       expect(calls.map((call) => call.args)).toEqual([
         ['status', '--non-interactive', '--xml', '--', '.'],
         ['delete', '--non-interactive', '-q', '--force', '--', 'gone@'],
-        ['update', '--non-interactive', '--accept', 'postpone', '--', '.'],
-        ['status', '--non-interactive', '--xml', '--', '.'],
       ])
-      expect(result).toEqual({ ok: true, value: { kind: 'current',
-        changed: [{ kind: 'item', conflict: false, path: 'src/a.txt' }, { kind: 'item', conflict: false, path: 'gone' },
-          { kind: 'item', conflict: false, path: 'mount/l.txt' }],
-        roots: [
-          { path: join(temporary, 'mount'), own: 'mount', changed: [{ kind: 'item', conflict: false, path: 'mount/l.txt' }] },
-          { path: temporary, own: '', changed: [{ kind: 'item', conflict: false, path: 'src/a.txt' }, { kind: 'item', conflict: false, path: 'gone' }] },
-        ] } })
     })
 
-    it('answers updated with the incoming paths of a changed project, and conflict with the conflicted paths', async () => {
-      const after: Entry[] = [{ path: 'src/a.txt', item: 'modified', revision: 9 }]
-      expect(await updating(temporary, after, `U    src${sep}b.txt\nU    .aidocs${sep}n.md\nAt revision 9.\n`, after).manager.updateWorktree(temporary))
-        .toEqual({ ok: true, value: { kind: 'updated', toRevision: 9, paths: ['src/b.txt'] } })
-      const conflicted: Entry[] = [{ path: 'src/a.txt', item: 'conflicted', revision: 9 }, { path: 'tree.txt', item: 'normal', tree: true }]
-      expect(await updating(temporary, conflicted, `C    src${sep}a.txt\n`, after).manager.updateWorktree(temporary))
-        .toEqual({ ok: true, value: { kind: 'conflict', paths: ['src/a.txt', 'tree.txt'] } })
+    it('names a file deleted from disk whose name svn cannot take, and passes nothing', async () => {
+      const { manager, calls } = scripted((_cwd, args) => args[0] === 'status'
+        ? { stdout: statusXml([{ path: 'složka/ř.txt', item: 'missing', revision: 5 }]) } : undefined)
+      expect(await manager.scheduleMissing(temporary)).toMatchObject({ ok: false, code: 'refused', detail: expect.stringMatching(/složka\/ř.txt/) })
+      expect(calls).toHaveLength(1)
+    })
+
+    it('marks conflicts resolved as the files stand, in batches, and passes no name svn cannot take', async () => {
+      const { manager, calls } = scripted((cwd, args) => cwd === temporary && args[0] === 'resolve' ? {} : undefined)
+      const many = Array.from({ length: 51 }, (_, index) => `src/f${index}.txt`)
+      expect(await manager.resolveWorking(temporary, ['a.txt', ...many])).toEqual({ ok: true, value: undefined })
+      expect(calls.map((call) => call.args.slice(0, 6))).toEqual([
+        ['resolve', '--non-interactive', '--accept', 'working', '--', 'a.txt@'],
+        ['resolve', '--non-interactive', '--accept', 'working', '--', 'src/f49.txt@'],
+      ])
+      expect(calls.map((call) => call.args.length - 5)).toEqual([50, 2])
+
+      const refused = scripted(() => undefined)
+      expect(await refused.manager.resolveWorking(temporary, ['a.txt', 'složka/ř.txt']))
+        .toMatchObject({ ok: false, code: 'refused', detail: expect.stringMatching(/složka\/ř.txt/) })
+      expect(refused.calls).toEqual([])
+
+      const failing = scripted(() => failed('svn: E155010: The node was not found'))
+      expect(await failing.manager.resolveWorking(temporary, ['a.txt'])).toMatchObject({ ok: false, code: 'svn-failed' })
+    })
+
+    it('reads text conflicts apart from tree and property conflicts, and the changes beside them', async () => {
+      const after: Entry[] = [{ path: 'src/a.txt', item: 'conflicted', revision: 9 }, { path: 'tree.txt', item: 'normal', tree: true },
+        { path: 'props.txt', item: 'normal', props: 'conflicted' }, { path: 'src/b.txt', item: 'modified', revision: 9 }]
+      const { manager } = scripted((_cwd, args) => args[0] === 'status' ? { stdout: statusXml(after) } : undefined)
+      expect(await manager.status(temporary)).toEqual({ ok: true, value: {
+        textConflicts: ['src/a.txt'],
+        otherConflicts: ['tree.txt', 'props.txt'],
+        changed: ['src/a.txt', 'props.txt', 'src/b.txt'],
+      } })
+    })
+
+    it('reads incoming paths of a changed project from svn log -v between the BASE before and after, never its own commits', async () => {
+      const { manager, calls } = scripted((_cwd, args) => {
+        if (args[0] === 'info') return { stdout: infoXml({ revision: 9 }) }
+        if (args[0] === 'log') return { stdout: '<?xml version="1.0"?><log>'
+          + '<logentry revision="6"><paths><path action="M" kind="file">/Project/src/a.txt</path></paths></logentry>'
+          + '<logentry revision="8"><paths><path action="M" kind="file">/Project/src/b.txt</path>'
+          + '<path action="M" kind="file">/Project/.aidocs/n.md</path></paths></logentry></log>' }
+        return undefined
+      })
+      expect(await manager.incoming(temporary, 5, ['src/a.txt'], [6])).toEqual({ ok: true, value: ['src/b.txt'] })
+      expect(calls.find((call) => call.args[0] === 'log')?.args).toEqual(['log', '--non-interactive', '-v', '--xml', '-r', '6:9', '--', url])
+      expect(await manager.incoming(temporary, 9, ['src/a.txt'], [])).toEqual({ ok: true, value: [] })
+      expect(calls.filter((call) => call.args[0] === 'log')).toHaveLength(1)
     })
 
     it('in a product group counts only the member projects the session changed', async () => {
       await writeFile(join(temporary, '.appgroup'), '')
-      const after: Entry[] = [{ path: 'MemberA/a.txt', item: 'modified', revision: 9 }]
-      expect(await updating(temporary, after, `U    MemberB${sep}b.txt\n`, after).manager.updateWorktree(temporary))
-        .toMatchObject({ ok: true, value: { kind: 'current' } })
-      expect(await updating(temporary, after, `U    MemberA${sep}b.txt\n`, after).manager.updateWorktree(temporary))
-        .toMatchObject({ ok: true, value: { kind: 'updated', paths: ['MemberA/b.txt'] } })
+      const { manager } = scripted((_cwd, args) => args[0] === 'info' ? { stdout: infoXml({ revision: 9 }) }
+        : args[0] === 'log' ? { stdout: logXml(8, [{ action: 'M', path: '/Project/MemberB/b.txt' }]) } : undefined)
+      expect(await manager.incoming(temporary, 5, ['MemberA/a.txt'], [])).toEqual({ ok: true, value: [] })
+      expect(await manager.incoming(temporary, 5, ['MemberB/x.txt'], [])).toEqual({ ok: true, value: ['MemberB/b.txt'] })
     })
 
-    it('names a file deleted from disk whose name svn cannot take, and passes nothing', async () => {
-      const { manager, calls } = updating(temporary, [], '', [{ path: 'složka/ř.txt', item: 'missing', revision: 5 }])
-      expect(await manager.updateWorktree(temporary)).toMatchObject({ ok: false, code: 'refused', detail: expect.stringMatching(/složka\/ř.txt/) })
-      expect(calls).toHaveLength(1)
+    it('reads a working copy as locked by an svn lock error or a locked directory', async () => {
+      const locked = scripted(() => failed(`svn: E155004: Working copy '${temporary}' locked.`)).manager
+      expect(await locked.locked(temporary)).toBe(true)
+      const marked = scripted(() => ({ stdout: `<status><target path="."><entry path="."><wc-status item="normal" props="none" wc-locked="true"/></entry></target></status>` })).manager
+      expect(await marked.locked(temporary)).toBe(true)
+      const free = scripted(() => ({ stdout: statusXml([{ path: 'a.txt', item: 'modified' }]) })).manager
+      expect(await free.locked(temporary)).toBe(false)
+      expect(await scripted(() => failed('svn: E170013: Unable to connect')).manager.locked(temporary)).toBe(false)
     })
+
+    it('marks a mount whose external definition names a revision, and asks for definitions only when a mount exists', async () => {
+      await mkdir(join(temporary, 'pinned', '.svn'), { recursive: true })
+      await mkdir(join(temporary, 'floating', '.svn'), { recursive: true })
+      const rows: Entry[] = [{ path: 'pinned', item: 'external' }, { path: 'floating', item: 'external' },
+        { path: 'pinned/p.txt', item: 'modified', revision: 4 }]
+      const { manager, calls } = scripted((_cwd, args) => args[0] === 'status' ? { stdout: statusXml(rows) }
+        : args[0] === 'propget' ? { stdout: `<properties><target path="."><property name="svn:externals">^/libs/p@3 pinned\n^/libs/f floating</property></target></properties>` }
+          : undefined)
+      const roots = await manager.reviewRoots(temporary)
+      expect(roots.ok && roots.value.map((root) => ({ own: root.own, pinned: root.pinned, changed: root.changed.length }))).toEqual([
+        { own: 'floating', pinned: false, changed: 0 },
+        { own: 'pinned', pinned: true, changed: 1 },
+        { own: '', pinned: false, changed: 0 },
+      ])
+      expect(calls.find((call) => call.args[0] === 'propget')?.args).toEqual(['propget', '--non-interactive', 'svn:externals', '-R', '--xml', '--', '.'])
+
+      const plain = scripted((_cwd, args) => args[0] === 'status' ? { stdout: statusXml([{ path: 'a.txt', item: 'modified' }]) } : undefined)
+      expect(await plain.manager.reviewRoots(temporary)).toMatchObject({ ok: true, value: [{ own: '', pinned: false }] })
+      expect(plain.calls.some((call) => call.args[0] === 'propget')).toBe(false)
+    })
+
+    it('fingerprints the worktree by its status and the size and time of each changed file', async () => {
+      await writeFile(join(temporary, 'a.txt'), 'one\n')
+      const { manager } = scripted((_cwd, args) => args[0] === 'status' ? { stdout: statusXml([{ path: 'a.txt', item: 'modified', revision: 5 }]) } : undefined)
+      const first = await manager.fingerprint(temporary)
+      expect(await manager.fingerprint(temporary)).toEqual(first)
+      await writeFile(join(temporary, 'a.txt'), 'one and two\n')
+      const second = await manager.fingerprint(temporary)
+      expect(second.ok && first.ok && second.value !== first.value).toBe(true)
+    })
+
+    it('takes the working copies below a plain directory svn marks as external, never that directory itself', async () => {
+      // `clients/coinGecko` and `clients/telegram` defined on `shared` make svn mark `shared/clients`,
+      // a directory svn created and holds no node of; `shared/gone` names an external not on disk.
+      for (const mount of [['shared', 'app'], ['shared', 'clients', 'coinGecko'], ['shared', 'clients', 'telegram']])
+        await mkdir(join(temporary, ...mount, '.svn'), { recursive: true })
+      const rows: Entry[] = [{ path: 'shared/app', item: 'external' }, { path: 'shared/clients', item: 'external' },
+        { path: 'shared/gone', item: 'external' }, { path: 'shared/clients/telegram/t.ts', item: 'modified', revision: 4 }]
+      const { manager } = scripted((cwd, args) => cwd === temporary && args[0] === 'status' ? { stdout: statusXml(rows) } : undefined)
+      const telegram = [{ kind: 'item', conflict: false, path: 'shared/clients/telegram/t.ts' }]
+      expect(await manager.roots(temporary)).toEqual({ ok: true, value: [
+        { path: join(temporary, 'shared', 'clients', 'coinGecko'), own: 'shared/clients/coinGecko', changed: [] },
+        { path: join(temporary, 'shared', 'clients', 'telegram'), own: 'shared/clients/telegram', changed: telegram },
+        { path: join(temporary, 'shared', 'app'), own: 'shared/app', changed: [] },
+        { path: temporary, own: '', changed: [] },
+      ] })
+    })
+
   })
 
   describe('proofs', () => {
@@ -290,44 +432,20 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
         .replaceAll('{ROOT}', root).replaceAll('{MAIN}', main).replaceAll('{REPO}', repository).replaceAll('\\', sep)
     const root = (path: string, changed: SvnRoot['changed'] = []): SvnRoot => ({ path, own: '', changed })
 
-    it('recovers a clean commit from the worktree that the main copy lacks, reading the main copy by relative names', async () => {
+    it('finds the commits of the worktree itself since its checkout, confirmed by svn log -v', async () => {
       const worktree = join(temporary, 'worktree')
       const main = join(temporary, 'main')
-      await mkdir(join(main, 'src'), { recursive: true })
-      await writeFile(join(main, 'src', 'a.txt'), 'main\n')
-      await writeFile(join(main, 'src', 'b.txt'), 'main\n')
       const { manager, calls } = scripted((cwd, args) => {
         if (cwd === worktree && args[0] === 'status') return { stdout: fixture('status-verbose-foreign.xml', worktree, main) }
-        if (cwd === join(worktree, 'mount') && args[0] === 'status') return { stdout: statusXml([]) }
         if (cwd === worktree && args[0] === 'info') return { stdout: fixture('info-worktree.xml', worktree, main) }
         if (args[0] === 'log') return { stdout: fixture(args.includes('6:6') ? 'log-committed.xml' : 'log-foreign.xml', worktree, main) }
-        if (cwd === main && args[0] === 'info') return { stdout: fixture('info-main.xml', worktree, main) }
         return undefined
       })
-      expect(await manager.recoverable(root(worktree), main)).toEqual({ ok: true, value: [{ revision: 6, action: 'M', path: 'src/a.txt' }] })
-      expect(calls.find((call) => call.cwd === main)?.args).toEqual(['info', '--xml', '--non-interactive', '--', 'src/a.txt@'])
-      expect(await manager.unlanded(worktree, main)).toEqual({ ok: true, value: [{ path: 'src/a.txt', revision: 6 }] })
+      expect(await manager.ownCommits(root(worktree))).toEqual({ ok: true, value: {
+        repository, rows: [{ revision: 6, action: 'M', path: 'src/a.txt' }],
+      } })
       expect(calls.filter((call) => call.args[0] === 'log')).toHaveLength(2)
-    })
-
-    it('finds nothing unlanded once the main copy holds the revision, without asking the server', async () => {
-      const worktree = join(temporary, 'worktree')
-      const main = join(temporary, 'main')
-      await mkdir(join(main, 'src'), { recursive: true })
-      await writeFile(join(main, 'src', 'a.txt'), 'main\n')
-      await writeFile(join(main, 'src', 'b.txt'), 'main\n')
-      const { manager, calls } = scripted((cwd, args) => {
-        if (cwd === worktree && args[0] === 'status') return { stdout: fixture('status-verbose-foreign.xml', worktree, main) }
-        if (cwd === join(worktree, 'mount') && args[0] === 'status') return { stdout: statusXml([]) }
-        if (cwd === main && args[0] === 'info') {
-          const target = args.at(-1)!.replace(/@$/, '')
-          return { stdout: infoXml({ revision: 7, path: join(...target.split('/')), entryUrl: `${url}/${target}` }) }
-        }
-        return undefined
-      })
-
-      expect(await manager.unlanded(worktree, main)).toEqual({ ok: true, value: [] })
-      expect(calls.some((call) => call.args[0] === 'log' || call.args.some((arg) => arg.startsWith('file:')))).toBe(false)
+      expect(calls.some((call) => call.cwd === main)).toBe(false)
     })
 
     it('reports a worktree directory present until it is gone', async () => {
@@ -364,81 +482,11 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
 
     it('answers a failed svn read inside a proof with its code', async () => {
       const { manager } = scripted(() => failed('svn: E170013: Unable to connect'))
-      expect(await manager.recoverable(root(temporary), temporary)).toMatchObject({ ok: false, code: 'svn-failed', detail: expect.stringMatching(/E170013/) })
+      expect(await manager.ownCommits(root(temporary))).toMatchObject({ ok: false, code: 'svn-failed', detail: expect.stringMatching(/E170013/) })
     })
   })
 
-  describe('main-copy update', () => {
-    const landed: SvnLoggedRow[] = [
-      { revision: 6, action: 'M', path: 'src/a.txt' },
-      { revision: 6, action: 'M', path: 'src' },
-      { revision: 6, action: 'A', path: 'new' },
-      { revision: 6, action: 'A', path: 'new/n.txt' },
-      { revision: 6, action: 'D', path: 'old.txt' },
-    ]
-
-    function mainCopy(states: readonly Entry[], update: (args: string[]) => Reply = () => ({})) {
-      return scripted((_cwd, args) => {
-        if (args[0] === 'update') return update(args)
-        if (args[0] === 'status') return { stdout: statusXml(states.filter((state) => args.includes(state.path === '.' ? '.' : `${state.path}@`))) }
-        return undefined
-      })
-    }
-
-    it('updates added and deleted paths whole, modified ones flat, and names a merge', async () => {
-      const { manager, calls } = mainCopy([{ path: 'src/a.txt', item: 'modified', revision: 6 }, { path: 'src', item: 'normal', revision: 6 },
-        { path: 'new', item: 'normal', revision: 6 }, { path: 'new/n.txt', item: 'normal', revision: 6 }])
-      expect(await manager.updateMain(temporary, landed)).toEqual({ ok: true, value: { main: 'merged:1', lines: ['MAIN MERGED src/a.txt'] } })
-      expect(calls.filter((call) => call.args[0] === 'update').map((call) => call.args)).toEqual([
-        ['update', '--non-interactive', '--parents', '--accept', 'postpone', '--', 'new@', 'old.txt@'],
-        ['update', '--non-interactive', '--depth', 'empty', '--accept', 'postpone', '--', 'src/a.txt@', 'src@'],
-      ])
-    })
-
-    it('names conflicts, paths the main copy did not take and names svn cannot take', async () => {
-      const { manager } = mainCopy([{ path: 'src/a.txt', item: 'conflicted', revision: 6 }, { path: 'src', item: 'normal', revision: 5 },
-        { path: 'new', item: 'normal', revision: 6 }, { path: 'new/n.txt', item: 'normal', tree: true, revision: 6 },
-        { path: 'old.txt', item: 'normal', revision: 5 }])
-      const result = await manager.updateMain(temporary, [...landed, { revision: 6, action: 'A', path: 'new/ž.txt' }])
-      expect(result).toEqual({ ok: true, value: { main: 'conflict:5', lines: [
-        'MAIN SKIPPED new/ž.txt: svn cannot take this name',
-        'MAIN CONFLICT src/a.txt',
-        'MAIN SKIPPED src: the main copy did not take r6',
-        'MAIN CONFLICT new/n.txt',
-        'MAIN SKIPPED old.txt: the main copy still holds it',
-      ] } })
-    })
-
-    it('answers updated for a clean update and none without landed paths', async () => {
-      const { manager } = mainCopy([{ path: '.', item: 'normal', props: 'normal', revision: 7 }])
-      expect(await manager.updateMain(temporary, [{ revision: 7, action: 'M', path: '.' }])).toEqual({ ok: true, value: { main: 'updated', lines: [] } })
-      expect(await manager.updateMain(temporary, [])).toEqual({ ok: true, value: { main: 'none', lines: [] } })
-    })
-
-    it('waits out a working-copy lock, then names the paths to update by hand', async () => {
-      vi.useFakeTimers()
-      let attempts = 0
-      const locked = (): Reply => {
-        attempts += 1
-        return failed(`svn: E155004: Run 'svn cleanup' to remove locks\nsvn: E155004: Working copy '${temporary}' locked.`)
-      }
-      const { manager } = mainCopy([], locked)
-      const pending = manager.updateMain(temporary, [{ revision: 6, action: 'A', path: 'new' }])
-      await vi.runAllTimersAsync()
-      const result = await pending
-      expect(attempts).toBe(4)
-      expect(result).toMatchObject({ ok: true, value: { main: 'failed' } })
-      if (result.ok) expect(result.value.lines.slice(0, 2)).toEqual([
-        `MAIN UPDATE FAILED: svn update in ${temporary} failed; the commit stands. Update these paths by hand:`, '  new'])
-
-      attempts = 0
-      const recovering = mainCopy([{ path: 'new', item: 'normal', revision: 6 }], () => attempts++ === 0 ? locked() : {}).manager
-        .updateMain(temporary, [{ revision: 6, action: 'A', path: 'new' }])
-      await vi.runAllTimersAsync()
-      expect(await recovering).toEqual({ ok: true, value: { main: 'updated', lines: [] } })
-    })
-  })
-
+  // Removed with the main-copy landing: no step writes the main copy after a commit any more.
   describe('removal', () => {
     async function worktree(name = '014-x'): Promise<SvnWorktreeLocation> {
       const owner = join(temporary, 'owner')
@@ -497,6 +545,28 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
       expect(await scripted(noSvn).manager.renameAside(location)).toEqual({ ok: true, value: 'renamed' })
     })
 
+    it('purges through the remover its composer hands in', async () => {
+      const location = await worktree()
+      const removed: string[] = []
+      const manager = new SvnWorktreeManager(scripted(noSvn).runner, async (path) => {
+        removed.push(path)
+        await rm(path, { recursive: true, force: true })
+      })
+      expect(await manager.renameAside(location)).toEqual({ ok: true, value: 'renamed' })
+      expect(await manager.purgeAside(location)).toEqual({ ok: true, value: 'removed' })
+      expect(removed).toEqual([`${location.worktreePath}.deleting`])
+    })
+
+    it('answers undeleted when the remover fails, and keeps the rest for the next pass', async () => {
+      const location = await worktree()
+      const manager = new SvnWorktreeManager(scripted(noSvn).runner, async () => {
+        throw new Error('EBUSY: resource busy or locked')
+      })
+      expect(await manager.renameAside(location)).toEqual({ ok: true, value: 'renamed' })
+      expect(await manager.purgeAside(location)).toEqual({ ok: true, value: 'undeleted' })
+      expect(existsSync(`${location.worktreePath}.deleting`)).toBe(true)
+    })
+
     it('unlinks a junction into a shared store without touching the store, and removes a path beyond 260 characters', async () => {
       const store = join(temporary, 'store', 'package')
       await mkdir(store, { recursive: true })
@@ -516,6 +586,45 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
     })
   })
 
+  describe('landed rows', () => {
+    it('reads the root revision and repository of a main copy locally', async () => {
+      const { manager, calls } = scripted((_cwd, args) => args[0] === 'info' ? { stdout: infoXml({ revision: 57 }) } : undefined)
+      expect(await manager.rootRevisionOf(temporary)).toEqual({ ok: true, value: { repository, revision: 57 } })
+      expect(calls.map((call) => call.args)).toEqual([['info', '--non-interactive', '--xml', '--', '.']])
+    })
+
+    it('counts the revisions after the root revision from svn log -q, and reads E160006 as none behind', async () => {
+      const entries = '<?xml version="1.0"?><log><logentry revision="58"><author>a</author></logentry>'
+        + '<logentry revision="60"><author>a</author></logentry><logentry\n   revision="61"></logentry></log>'
+      const behind = scripted((_cwd, args) => {
+        if (args[0] === 'info') return { stdout: infoXml({ revision: 57 }) }
+        if (args[0] === 'log') return { stdout: entries }
+        return undefined
+      })
+      expect(await behind.manager.behind(temporary)).toEqual({ ok: true, value: 3 })
+      expect(behind.calls[1].args).toEqual(['log', '--non-interactive', '-q', '--xml', '-r', '58:HEAD', '--', '.'])
+      const current = scripted((_cwd, args) => {
+        if (args[0] === 'info') return { stdout: infoXml({ revision: 61 }) }
+        if (args[0] === 'log') return { code: 1, stdout: '<?xml version="1.0"?>\n<log>\n', stderr: 'svn: E160006: No such revision 62' }
+        return undefined
+      })
+      expect(await current.manager.behind(temporary)).toEqual({ ok: true, value: 0 })
+      const offline = scripted((_cwd, args) => {
+        if (args[0] === 'info') return { stdout: infoXml({ revision: 61 }) }
+        if (args[0] === 'log') return failed('svn: E170013: Unable to connect to a repository')
+        return undefined
+      })
+      expect(await offline.manager.behind(temporary)).toMatchObject({ ok: false, code: 'svn-failed' })
+    })
+
+    it('lists the working copies of the mounts below a main copy, never the main copy itself', async () => {
+      await mkdir(join(temporary, 'shared', 'frontend', '.svn'), { recursive: true })
+      const rows: Entry[] = [{ path: 'shared/frontend', item: 'external' }, { path: 'a.txt', item: 'modified', revision: 3 }]
+      const { manager } = scripted((_cwd, args) => args[0] === 'status' ? { stdout: statusXml(rows) } : undefined)
+      expect(await manager.mountRootsOf(temporary)).toEqual({ ok: true, value: [join(temporary, 'shared', 'frontend')] })
+    })
+  })
+
   describe('facts', () => {
     it('counts diff lines per working copy and each file of an unversioned directory, never an ignored one', async () => {
       await mkdir(join(temporary, 'newdir', 'inner'), { recursive: true })
@@ -523,6 +632,7 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
       await writeFile(join(temporary, 'newdir', 'inner', 'two.txt'), '2\n')
       await writeFile(join(temporary, 'u.txt'), 'u\n')
       await mkdir(join(temporary, 'src'))
+      await mkdir(join(temporary, 'mount', '.svn'), { recursive: true })
       const status = statusXml([{ path: 'a.txt', item: 'modified', revision: 3 }, { path: 'newdir', item: 'unversioned' },
         { path: 'u.txt', item: 'unversioned' }, { path: 'build', item: 'ignored' }, { path: 'src', item: 'normal', props: 'modified', revision: 3 },
         { path: 'mount', item: 'external' }, { path: 'mount/l.txt', item: 'modified', revision: 2 }])

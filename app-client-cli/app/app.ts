@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
 
 import type {
+  RemoteControlCatalogEntryDto,
+  RemoteControlCommitPath,
   RemoteControlComputerDto,
   RemoteControlComputersDto,
   RemoteControlDescriptor,
@@ -48,6 +50,8 @@ import { SelfSession } from './selfSession'
 import { CommitMessageFile } from './commitMessageFile'
 import { CommitAsideLauncher, type CommitAsideRequest } from './commitAsideLauncher'
 import { CommitStatusReader } from './commitStatusReader'
+import { ScriptRunReader } from './scriptRunReader'
+import { ReviewRunExit } from '../../lib-orchestrator/shared/reviewRunExit'
 
 export interface AppClientCliClientPort {
   execute(request: RemoteControlRequestUnion): Promise<RemoteControlResponse>
@@ -85,15 +89,21 @@ export interface AppClientCliDeps {
 type AppClientCliPlan =
   | CommitPlan
   | { kind: 'commit-status'; id: string; wait: boolean; timeoutMs: number }
+  /** `sessions worktree-review`: the review run's own review, and with `wait` its ending as the exit code. */
+  | { kind: 'worktree-review'; request: RemoteControlRequest<'sessions.worktreeReview'>; wait: boolean; timeoutMs: number }
   | {
       kind: 'request'
       request: RemoteControlRequestUnion
       computer: string | null
       workingDirectory: string | null
       clientTimeoutMs?: number
+      /** `sessions scripts run --wait`: how long to wait for the run's verdict. */
+      scriptWaitMs?: number
     }
   | { kind: 'local'; request: RemoteControlLocalRequestUnion }
   | { kind: 'events'; afterRevision?: number }
+  | { kind: 'operation'; request: RemoteControlRequest<'system.operations'>; name: string }
+  | { kind: 'call'; operation: string; body: unknown; requestId: string; operationId: string | null }
 
 interface CommitPlan {
   kind: 'commit'
@@ -101,7 +111,7 @@ interface CommitPlan {
   vcs: 'svn' | 'git'
   selector: RemoteControlSessionSelector | null
   scope: string | null
-  paths?: readonly string[]
+  paths?: readonly RemoteControlCommitPath[]
   workingDirectory: string | null
   message: string | null
   messageFile: string | null
@@ -160,6 +170,7 @@ export class AppClientCli {
           return this.finishFailure(plan, { code: 'unavailable', detail: 'tabs.commitStatus is not exposed by this AppClientUI' })
         return await this.readCommitStatus(client, plan.id, plan.wait, plan.timeoutMs)
       }
+      if (plan.kind === 'worktree-review') return await this.worktreeReview(client, plan)
       if (plan.kind === 'request') {
         if (AppClientCli.capabilityGatedConst.includes(plan.request.operation)
           && !RemoteControlCapabilities.of(descriptor.value).includes(plan.request.operation))
@@ -189,6 +200,8 @@ export class AppClientCli {
         const response: RemoteControlResponse = remoteEndpointId === null
           ? await client.execute(canonical.value)
           : await client.executeRemote(remoteEndpointId, canonical.value)
+        if (plan.scriptWaitMs !== undefined && response.ok)
+          return await this.waitScriptRun(client, response, plan.scriptWaitMs)
         if (plan.request.operation === 'tabs.cancelCommit' && response.ok
           && (!CommitStatusReader.valid(response.value, plan.request.body.commitSessionId)
             || response.value.state !== 'cancelled' || !response.value.closed))
@@ -197,6 +210,34 @@ export class AppClientCli {
         return AppClientCli.exitCode(response.ok ? null : response.error.code)
       } else if (plan.kind === 'local') {
         const response = await client.executeLocal(plan.request)
+        this.write(response)
+        return AppClientCli.exitCode(response.ok ? null : response.error.code)
+      } else if (plan.kind === 'operation') {
+        const catalog = await this.catalog(client, descriptor.value, plan.request)
+        if (!catalog.ok) return this.finishFailure(plan, catalog.error)
+        const name = plan.name
+        const entry = catalog.value.find((candidate) => candidate.name === name)
+        if (entry === undefined)
+          return this.finishFailure(plan, { code: 'not-found', detail: `No operation ${JSON.stringify(plan.name)}` })
+        this.write({ ...AppClientCli.answerIds(plan.request), ok: true, value: entry })
+        return 0
+      } else if (plan.kind === 'call') {
+        const catalog = await this.catalog(client, descriptor.value, this.request('system.operations', {}, this.deps.requestId()))
+        if (!catalog.ok) return this.finishFailure(plan, catalog.error)
+        const operation = plan.operation
+        const entry = catalog.value.find((candidate) => candidate.name === operation)
+        if (entry === undefined)
+          return this.finishFailure(plan, { code: 'not-found', detail: `No operation ${JSON.stringify(plan.operation)}` })
+        if (entry.kind === 'read' && plan.operationId !== null)
+          return this.finishFailure(plan, { code: 'invalid-request', detail: `${plan.operation} reads; --operation-id is for a write` })
+        const request = {
+          protocol: RemoteControlConst.protocol,
+          requestId: plan.requestId,
+          operation: plan.operation,
+          ...(entry.kind === 'write' ? { operationId: plan.operationId ?? this.deps.operationId() } : {}),
+          body: plan.body,
+        } as RemoteControlRequestUnion
+        const response = await client.execute(request)
         this.write(response)
         return AppClientCli.exitCode(response.ok ? null : response.error.code)
       } else if (plan.kind === 'events') {
@@ -223,6 +264,39 @@ export class AppClientCli {
     else if (args.command === 'commit status') {
       const id = this.commitId(args)
       return { kind: 'commit-status', id, wait: args.has('--wait'), timeoutMs: this.commitTimeout(args) }
+    }
+    else if (args.command === 'sessions worktree-review') {
+      if (!args.has('--self'))
+        throw new AppClientCliError('invalid-request', 'sessions worktree-review is the command of a review run and needs --self')
+      return {
+        kind: 'worktree-review',
+        request: this.request('sessions.worktreeReview', { session: this.selfOrSelector(args) }, this.deps.requestId(), this.operationId(args)),
+        wait: args.has('--wait'),
+        timeoutMs: this.commitTimeout(args),
+      }
+    }
+    if (args.command === 'operations get')
+      return {
+        kind: 'operation',
+        request: this.request('system.operations', {}, this.deps.requestId()),
+        name: args.required('--operation'),
+      }
+    if (args.command === 'call') {
+      const bodyText = args.option('--body')
+      const bodyFile = args.option('--body-file')
+      let body: unknown = {}
+      if (bodyText !== null)
+        try { body = JSON.parse(bodyText) } catch (error) {
+          throw new AppClientCliError('invalid-request', `--body is not JSON: ${ErrorText.of(error)}`)
+        }
+      else if (bodyFile !== null) body = this.deps.readJson(bodyFile)
+      return {
+        kind: 'call',
+        operation: args.required('--operation'),
+        body,
+        requestId: this.deps.requestId(),
+        operationId: args.option('--operation-id'),
+      }
     }
     if (args.command === 'events watch') {
       const afterRevision = args.integer('--after-revision', 0, Number.MAX_SAFE_INTEGER)
@@ -252,6 +326,18 @@ export class AppClientCli {
       }
     } else if (args.command === 'status')
       return this.requestPlan(args, this.request('system.status', {}, requestId))
+    else if (args.command === 'operations list')
+      return this.requestPlan(args, this.request('system.operations', {}, requestId))
+    else if (args.command === 'calls list')
+      return this.requestPlan(args, this.request('system.calls', {}, requestId))
+    else if (args.command === 'events poll') {
+      const after = args.integer('--after', 0, Number.MAX_SAFE_INTEGER)
+      const waitMs = args.integer('--wait-ms', 0, 30_000)
+      return this.requestPlan(args, this.request('system.events', {
+        ...(after === undefined ? {} : { after }),
+        ...(waitMs === undefined ? {} : { waitMs }),
+      }, requestId))
+    }
     else if (args.command === 'projects list') {
       const categoryId = args.option('--category-id')
       const sort = args.option('--sort')
@@ -286,9 +372,14 @@ export class AppClientCli {
       const expect = args.option('--expect')
       if (expect !== null && expect !== 'stop')
         throw new AppClientCliError('invalid-request', '--expect must be stop')
+      const acknowledgeSetup = args.option('--acknowledge-setup')
       return this.requestPlan(args, this.request(
           'sessions.finalize',
-          { session: this.selector(args), ...(expect === null ? {} : { expect }) },
+          {
+            session: this.selector(args),
+            ...(expect === null ? {} : { expect }),
+            ...(acknowledgeSetup === null ? {} : { acknowledgeSetup }),
+          },
           requestId,
           this.operationId(args),
         ))
@@ -320,7 +411,58 @@ export class AppClientCli {
           requestId,
           this.operationId(args),
         ))
-    } else if (args.command === 'sessions cleanup-worktree')
+    } else if (args.command === 'sessions finish-worktree') {
+      const choice = args.required('--choice')
+      if (choice !== 'commit' && choice !== 'discard' && choice !== 'keep')
+        throw new AppClientCliError('invalid-request', '--choice must be commit, discard or keep')
+      const acknowledgeSetup = args.option('--acknowledge-setup')
+      return this.requestPlan(args, this.request(
+          'sessions.finishWorktree',
+          {
+            session: this.selfOrSelector(args),
+            choice,
+            ...(acknowledgeSetup === null ? {} : { acknowledgeSetup }),
+            ...(args.has('--confirm-working') ? { confirmWorking: true as const } : {}),
+          },
+          requestId,
+          this.operationId(args),
+        ))
+    } else if (args.command === 'sessions update-main') {
+      const confirmLive = args.option('--confirm-live')
+      return this.requestPlan(args, this.request(
+          'sessions.updateMain',
+          {
+            session: this.selfOrSelector(args),
+            ...(confirmLive === null ? {} : { confirmLive: confirmLive.split(',').map((id) => id.trim()).filter((id) => id !== '') }),
+          },
+          requestId,
+          this.operationId(args),
+        ))
+    } else if (args.command === 'sessions notifies') {
+      const sessionId = args.option('--session-id')
+      return this.requestPlan(args, this.request('sessions.notifies', {
+        ...(sessionId === null ? {} : { sessionId }),
+      }, requestId))
+    } else if (args.command === 'sessions worktree-results') {
+      const tag = args.option('--tag')
+      const sessionId = args.option('--session-id')
+      return this.requestPlan(args, this.request(
+          'sessions.worktreeResults',
+          {
+            ...(tag === null ? {} : { tag }),
+            ...(sessionId === null ? {} : { sessionId }),
+            ...(args.has('--unacknowledged') ? { unacknowledged: true as const } : {}),
+          },
+          requestId,
+        ))
+    } else if (args.command === 'sessions acknowledge-worktree-result')
+      return this.requestPlan(args, this.request(
+          'sessions.acknowledgeWorktreeResult',
+          { actionId: args.required('--action-id') },
+          requestId,
+          this.operationId(args),
+        ))
+    else if (args.command === 'sessions cleanup-worktree')
       return this.requestPlan(args, this.request(
           'sessions.cleanupWorktree',
           { session: this.selector(args) },
@@ -371,9 +513,52 @@ export class AppClientCli {
           { session: this.selector(args) },
           requestId,
         ))
-    else if (args.command === 'commit cancel')
+    else if (args.command === 'sessions scripts') {
+      const runId = args.option('--run-id')
+      return this.requestPlan(args, this.request(
+          'sessions.scripts',
+          { session: this.selfOrSelector(args), ...(runId === null ? {} : { runId }) },
+          requestId,
+        ))
+    } else if (args.command === 'sessions scripts run') {
+      const wait = args.has('--wait')
+      if (args.option('--timeout-ms') !== null && !wait)
+        throw new AppClientCliError('invalid-request', '--timeout-ms requires --wait for sessions scripts run')
+      const timeoutMs = args.integer('--timeout-ms', 1, ScriptRunReader.timeoutMaximumMillisecondsConst)
+        ?? ScriptRunReader.timeoutMillisecondsConst
+      const cwd = args.option('--cwd')
+      const title = args.option('--title')
+      return {
+        ...this.requestPlan(args, this.request(
+          'sessions.runScript',
+          {
+            session: this.selfOrSelector(args),
+            command: args.required('--command'),
+            ...(cwd === null ? {} : { cwd }),
+            ...(title === null ? {} : { title }),
+          },
+          requestId,
+          this.operationId(args),
+        )),
+        ...(wait ? { scriptWaitMs: timeoutMs } : {}),
+      }
+    } else if (args.command === 'commit cancel')
       return this.requestPlan(args, this.request('tabs.cancelCommit',
         { commitSessionId: this.commitId(args) }, requestId, this.operationId(args)))
+    else if (args.command === 'commit propose') {
+      if (!args.has('--self'))
+        throw new AppClientCliError('invalid-request', 'commit propose is the command of a worker and needs --self')
+      const messageFile = args.option('--message-file')
+      const message = messageFile === null ? args.option('--message') : this.deps.readMessage(messageFile)
+      if (message === null) throw new AppClientCliError('invalid-request', 'commit propose needs --message or --message-file')
+      if (!message.trim()) throw new AppClientCliError('invalid-request', 'The proposed commit message is empty')
+      return this.requestPlan(args, this.request(
+          'sessions.proposeCommit',
+          { session: this.selfOrSelector(args), message: CommitMessageFile.validate(message) },
+          requestId,
+          this.operationId(args),
+        ))
+    }
     else if (args.command === 'tabs list')
       return this.requestPlan(args, this.request('tabs.list', {}, requestId))
     else if (args.command === 'tabs open')
@@ -465,15 +650,21 @@ export class AppClientCli {
     const scope = args.option('--path')
     if (scope !== null && !scope.trim()) throw new AppClientCliError('invalid-request', '--path cannot be empty')
     const pathsFile = args.option('--paths-file')
-    let paths: string[] | undefined
+    let paths: RemoteControlCommitPath[] | undefined
     if (pathsFile !== null) {
       const input = this.deps.readJson(pathsFile)
       if (scope !== null || !Array.isArray(input) || input.length === 0 || input.length > 2_000)
         throw new AppClientCliError('invalid-request', '--paths-file must contain a JSON array of 1 to 2000 paths and cannot be combined with --path')
-      paths = input.map((path) => {
-        if (typeof path !== 'string' || !path.trim() || /[\0\r\n]/.test(path))
-          throw new AppClientCliError('invalid-request', '--paths-file contains an invalid literal path')
-        return resolve(this.deps.cwd(), path)
+      paths = input.map((entry: unknown) => {
+        const target = JsonShape.record(entry)
+        const path = typeof entry === 'string' ? entry : target?.path
+        // Exact keys: a misspelled depth must never fall back to a whole directory.
+        if (typeof path !== 'string' || !path.trim() || /[\0\r\n]/.test(path)
+          || (typeof entry !== 'string' && (target === null || Object.keys(target).length !== 2
+            || (target.depth !== 'empty' && target.depth !== 'infinity'))))
+          throw new AppClientCliError('invalid-request', '--paths-file entries must be literal paths or { "path": "...", "depth": "empty" | "infinity" }')
+        const absolute = resolve(this.deps.cwd(), path)
+        return typeof entry === 'string' ? absolute : { path: absolute, depth: target?.depth as 'empty' | 'infinity' }
       })
     }
     const fallback = args.option('--fallback') ?? 'tortoise'
@@ -542,17 +733,62 @@ export class AppClientCli {
     return AppClientCli.exitCode(response.ok ? null : response.error.code)
   }
 
+  /**
+   * The review run of an SVN action: its review opens once, and the run exits with how it ended
+   * (`ReviewRunExit`). Whatever leaves the ending unknown, a client that went away included, is
+   * an interrupted review, which the action never opens again by itself.
+   */
+  private async worktreeReview(
+    client: AppClientCliClientPort,
+    plan: Extract<AppClientCliPlan, { kind: 'worktree-review' }>,
+  ): Promise<number> {
+    const opened = await client.execute(plan.request).catch((error: unknown) => ({
+      ok: false as const,
+      error: { code: 'operation-failed' as const, detail: `The review could not be asked for: ${ErrorText.of(error)}` },
+    }))
+    if (!opened.ok) {
+      this.write({ ...AppClientCli.answerIds(plan.request), ok: false, error: opened.error })
+      return ReviewRunExit.interruptedConst
+    }
+    if (!plan.wait) {
+      this.write(opened)
+      return 0
+    }
+    const review = JsonShape.record(opened.value)
+    if (typeof review?.commitSessionId !== 'string') {
+      this.write({ ...AppClientCli.answerIds(plan.request), ok: false,
+        error: { code: 'operation-failed', detail: 'The review opened without a trackable UUID; its outcome is unknown' } })
+      return ReviewRunExit.interruptedConst
+    }
+    const reader = new CommitStatusReader({
+      read: () => client.execute(this.request('tabs.commitStatus', { commitSessionId: review.commitSessionId as string }, this.deps.requestId())),
+      now: this.deps.now,
+      pause: this.deps.pause,
+    })
+    const status = await reader.read(review.commitSessionId, true, plan.timeoutMs, this.deps.signal).catch((error: unknown) => {
+      this.write({ ...AppClientCli.answerIds(plan.request), ok: false, error: { code: 'operation-failed', detail: ErrorText.of(error) } })
+      return null
+    })
+    if (status === null) return ReviewRunExit.interruptedConst
+    this.write(status)
+    if (!status.ok || !CommitStatusReader.valid(status.value, review.commitSessionId)) return ReviewRunExit.interruptedConst
+    return ReviewRunExit.codeOf(status.value.state, status.value.closed, status.value.detail)
+  }
+
   private async finishAside(plan: CommitPlan, reason: CommitAsideRequest['reason'], scope = resolve(this.deps.cwd(), plan.scope ?? '.')): Promise<number> {
     if (plan.fallback === 'report') {
       this.write({ ok: true, value: { kind: 'fallback-required', reason, scope,
         ...(plan.paths === undefined ? {} : { paths: plan.paths }) } })
       return 0
     } else if (plan.fallback !== 'tortoise') throw new Error(`Unknown commit fallback: ${JSON.stringify(plan.fallback)}`)
+    // Tortoise has no depth per target, so it would open the directory with its subtree.
+    if (plan.paths?.some((path) => typeof path !== 'string' && path.depth === 'empty'))
+      return this.finishFailure(plan, { code: 'invalid-request', detail: 'Tortoise cannot keep a directory to its own node; open this review in Jamat' })
     const messageFile = plan.messageFile === null
       ? plan.message === null ? null : await this.deps.writeMessageFile(plan.message)
       : resolve(this.deps.cwd(), plan.messageFile)
     const result = await this.deps.aside.open({ vcs: plan.vcs, scope, messageFile, reason,
-      ...(plan.paths === undefined ? {} : { paths: plan.paths }) })
+      ...(plan.paths === undefined ? {} : { paths: plan.paths.map((path) => typeof path === 'string' ? path : path.path) }) })
     this.write(result)
     return AppClientCli.exitCode(result.ok ? null : result.error.code)
   }
@@ -564,6 +800,8 @@ export class AppClientCli {
     const computer = args.option('--computer')
     if (computer !== null && computer.trim().length === 0)
       throw new AppClientCliError('invalid-request', '--computer must not be empty')
+    if (computer !== null && request.operation === 'sessions.create' && request.body.spec.notify !== undefined)
+      throw new AppClientCliError('invalid-request', '--notify-* options are local only and cannot be used with --computer')
     if (computer !== null
       && request.operation === 'sessions.create'
       && args.has('--open-tab'))
@@ -625,6 +863,22 @@ export class AppClientCli {
     const removeWhenEnded = args.has('--worktree-remove-when-ended')
     if (removeWhenEnded && worktree === null)
       throw new AppClientCliError('invalid-request', '--worktree-remove-when-ended requires --worktree')
+    const tag = args.option('--worktree-tag')
+    if (tag !== null && worktree === null)
+      throw new AppClientCliError('invalid-request', '--worktree-tag requires --worktree')
+    const notifySession = args.option('--worktree-notify-session')
+    const notifyText = args.option('--worktree-notify-text')
+    if ((notifySession === null) !== (notifyText === null))
+      throw new AppClientCliError('invalid-request', '--worktree-notify-session and --worktree-notify-text must be provided together')
+    if (notifySession !== null && worktree === null)
+      throw new AppClientCliError('invalid-request', '--worktree-notify-session requires --worktree')
+    const sessionNotifyTarget = args.option('--notify-session')
+    const sessionNotifyText = args.option('--notify-text')
+    const sessionNotifyGroups = args.option('--notify-on-group')
+    if ((sessionNotifyTarget === null) !== (sessionNotifyText === null))
+      throw new AppClientCliError('invalid-request', '--notify-session and --notify-text must be provided together')
+    if (sessionNotifyGroups !== null && sessionNotifyTarget === null)
+      throw new AppClientCliError('invalid-request', '--notify-on-group requires --notify-session and --notify-text')
     const title = args.option('--title')
     const number = AppClientCli.customNumberOf(args.option('--number'))
     const color = AppClientCli.colorOf(args.option('--color'))
@@ -648,6 +902,15 @@ export class AppClientCli {
           ...(baseRef === null ? {} : { baseRef }),
           ...(owner === null ? {} : { owner: resolve(this.deps.cwd(), owner) }),
           ...(removeWhenEnded ? { removeWhenEnded: true as const } : {}),
+          ...(tag === null ? {} : { tag }),
+          ...(notifySession === null || notifyText === null ? {} : { notify: { sessionId: notifySession, text: notifyText } }),
+        },
+      }),
+      ...(sessionNotifyTarget === null || sessionNotifyText === null ? {} : {
+        notify: {
+          sessionId: sessionNotifyTarget,
+          text: sessionNotifyText,
+          onGroups: sessionNotifyGroups === null ? [] : sessionNotifyGroups.split(',').map((id) => id.trim()),
         },
       }),
       ...(title === null ? {} : { title }),
@@ -740,6 +1003,43 @@ export class AppClientCli {
     )
   }
 
+  /** `--self` is the session whose terminal runs this CLI, named by the variable Jamat gave it. */
+  private selfOrSelector(args: CliArguments): RemoteControlSessionSelector {
+    if (!args.has('--self')) return this.selector(args)
+    const self = SelfSession.of(this.deps.env)
+    if (self === null)
+      throw new AppClientCliError('invalid-request', `--self needs JAMAT_V3_SESSION_ID, which only a Jamat session's terminal has; name the session for ${args.command}`)
+    return { kind: 'sessionId', sessionId: self.sessionId }
+  }
+
+  private async waitScriptRun(
+    client: AppClientCliClientPort,
+    started: Extract<RemoteControlResponse, { ok: true }>,
+    timeoutMs: number,
+  ): Promise<number> {
+    const value = JsonShape.record(started.value)
+    const sessionId = value?.sessionId
+    const runId = value?.runId
+    if (typeof sessionId !== 'string' || typeof runId !== 'string')
+      throw new AppClientCliError('operation-failed', 'The run started without a run id; read sessions scripts for its outcome')
+    const verdict = await new ScriptRunReader({
+      read: () => client.execute(this.request('sessions.scripts', {
+        session: { kind: 'sessionId', sessionId },
+        runId,
+      }, this.deps.requestId())),
+      now: this.deps.now,
+      pause: this.deps.pause,
+    }).read(runId, timeoutMs, this.deps.signal)
+    const ids = {
+      protocol: started.protocol,
+      requestId: started.requestId,
+      operation: started.operation,
+      operationId: started.operationId,
+    }
+    this.write(verdict.ok ? { ...ids, ok: true, value: verdict.value } : { ...ids, ok: false, error: verdict.error })
+    return AppClientCli.exitCode(verdict.ok ? null : verdict.error.code)
+  }
+
   private async canonicalRequest(
     client: AppClientCliClientPort,
     remoteEndpointId: string | null,
@@ -753,11 +1053,17 @@ export class AppClientCli {
       || request.operation === 'sessions.discardWorktree'
       || request.operation === 'sessions.retrySetup'
       || request.operation === 'sessions.cleanupWorktree'
+      || request.operation === 'sessions.finishWorktree'
+      || request.operation === 'sessions.updateMain'
+      || request.operation === 'sessions.worktreeReview'
+      || request.operation === 'sessions.proposeCommit'
       || request.operation === 'sessions.color'
       || request.operation === 'sessions.group'
       || request.operation === 'sessions.note'
       || request.operation === 'sessions.setNote'
       || request.operation === 'sessions.transcript'
+      || request.operation === 'sessions.scripts'
+      || request.operation === 'sessions.runScript'
       || request.operation === 'tabs.open'
       || request.operation === 'tabs.openFile'
       || request.operation === 'tabs.openCommit'
@@ -789,9 +1095,15 @@ export class AppClientCli {
       }
     } else if (request.operation === 'system.hello'
       || request.operation === 'system.status'
+      || request.operation === 'system.operations'
+      || request.operation === 'system.calls'
+      || request.operation === 'system.events'
       || request.operation === 'projects.list'
       || request.operation === 'sessions.list'
       || request.operation === 'sessions.create'
+      || request.operation === 'sessions.worktreeResults'
+      || request.operation === 'sessions.notifies'
+      || request.operation === 'sessions.acknowledgeWorktreeResult'
       || request.operation === 'tabs.list'
       || request.operation === 'tabs.cancelCommit'
       || request.operation === 'tabs.focus'
@@ -809,12 +1121,23 @@ export class AppClientCli {
   private static featureOf(
     request: RemoteControlRequestUnion,
   ): { option: string; operation: RemoteControlOperation } | null {
+    if (request.operation === 'sessions.create' && request.body.spec.notify !== undefined)
+      return { option: '--notify-*', operation: 'sessions.notifies' }
+    if (request.operation === 'sessions.scripts') return { option: 'sessions scripts', operation: 'sessions.scripts' }
+    if (request.operation === 'sessions.runScript') return { option: 'sessions scripts run', operation: 'sessions.scripts' }
+    // Before `--expect`: a build that offers sessions.scripts also offers sessions.worktree.
+    if (request.operation === 'sessions.finalize' && request.body.acknowledgeSetup !== undefined)
+      return { option: '--acknowledge-setup', operation: 'sessions.scripts' }
     if (request.operation === 'sessions.create' && request.body.spec.worktree?.owner !== undefined)
       return { option: '--worktree-owner', operation: 'sessions.worktree' }
     if (request.operation === 'sessions.create' && request.body.spec.worktree?.removeWhenEnded !== undefined)
       return { option: '--worktree-remove-when-ended', operation: 'sessions.worktree' }
     if (request.operation === 'sessions.finalize' && request.body.expect !== undefined)
       return { option: '--expect', operation: 'sessions.worktree' }
+    if (request.operation === 'sessions.create' && request.body.spec.worktree?.tag !== undefined)
+      return { option: '--worktree-tag', operation: 'sessions.worktreeResults' }
+    if (request.operation === 'sessions.create' && request.body.spec.worktree?.notify !== undefined)
+      return { option: '--worktree-notify-session', operation: 'sessions.worktreeResults' }
     return null
   }
 
@@ -913,10 +1236,44 @@ export class AppClientCli {
     } as RemoteControlLocalRequest<K>
   }
 
+  /** The catalog the call is checked against, from a target that offers it. */
+  private async catalog(
+    client: AppClientCliClientPort,
+    descriptor: RemoteControlDescriptor,
+    request: RemoteControlRequest<'system.operations'>,
+  ): Promise<RemoteControlStepResult<readonly RemoteControlCatalogEntryDto[]>> {
+    if (!RemoteControlCapabilities.of(descriptor).includes('system.operations'))
+      return { ok: false, error: { code: 'unavailable', detail: 'system.operations is not exposed by this AppClientUI; update AppJamatV3' } }
+    const response = await client.execute(request)
+    if (!response.ok) return { ok: false, error: response.error }
+    return { ok: true, value: (response.value as { operations: readonly RemoteControlCatalogEntryDto[] }).operations }
+  }
+
+  private static answerIds(request: { requestId: string; operation: string; operationId?: string }): {
+    protocol: typeof RemoteControlConst.protocol
+    requestId: string
+    operation: string
+    operationId: string | null
+  } {
+    return {
+      protocol: RemoteControlConst.protocol,
+      requestId: request.requestId,
+      operation: request.operation,
+      operationId: request.operationId ?? null,
+    }
+  }
+
   private finishFailure(
     plan: AppClientCliPlan | null,
     error: RemoteControlError,
   ): number {
+    if (plan?.kind === 'call' || plan?.kind === 'operation') {
+      const ids = plan.kind === 'call'
+        ? { requestId: plan.requestId, operation: plan.operation, operationId: plan.operationId }
+        : AppClientCli.answerIds(plan.request)
+      this.write({ protocol: RemoteControlConst.protocol, ...ids, ok: false, error })
+      return AppClientCli.exitCode(error.code)
+    }
     const request = plan?.kind === 'request' || plan?.kind === 'local' ? plan.request : null
     this.write({
       protocol: RemoteControlConst.protocol,
@@ -944,6 +1301,9 @@ export class AppClientCli {
    * the two disagreeing is the ordinary case rather than the strange one.
    */
   private static readonly capabilityGatedConst: readonly RemoteControlOperation[] = [
+    'system.operations',
+    'system.calls',
+    'system.events',
     'sessions.transcript',
     'tabs.cancelCommit',
     'sessions.color',
@@ -956,6 +1316,12 @@ export class AppClientCli {
     'sessions.discardWorktree',
     'sessions.retrySetup',
     'sessions.cleanupWorktree',
+    'sessions.finishWorktree',
+    'sessions.updateMain',
+    'sessions.worktreeResults',
+    'sessions.notifies',
+    'sessions.acknowledgeWorktreeResult',
+    'sessions.proposeCommit',
   ]
 
   private static readonly deliverMarginMillisecondsConst = 5_000

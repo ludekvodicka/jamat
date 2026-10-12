@@ -40,7 +40,7 @@ describe("electron/autoUpdateWidgets/AutoUpdateIndicator", () =>
   {
     const html = renderToStaticMarkup(<AutoUpdateIndicator update={controller({ running: "1.0.0", mode: "automatic", releasePage: true, state: { kind: "ready", release } })} onOpen={() => undefined} />);
     const classes = [...html.matchAll(/class="([^"]*)"/g)].flatMap(match => (match[1] ?? "").split(" "));
-    expect(classes).to.not.be.empty;
+    expect(classes).to.have.length.above(0);
     expect(classes.filter(name => !name.startsWith("auto-update-"))).to.deep.equal([]);
   });
 });

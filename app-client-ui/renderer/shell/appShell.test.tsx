@@ -34,6 +34,7 @@ import { LateBoundCommand } from './lateBoundCommand'
 import { TerminalInputRegistry } from './terminalInputRegistry'
 import { WindowInfoStore } from './windowInfoStore'
 import { WorkspacePanels } from './workspacePanels'
+import { ControlBridgeFixture } from '../ipc/fixtures/controlBridgeFixture'
 
 const remarkableOverlayMock = vi.hoisted(() => ({
   outputPath: 'Q:\\Jamat\\remarkable\\imports\\page 1.png',
@@ -87,6 +88,9 @@ vi.mock('@xterm/xterm', () => ({
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} } }))
 
 /** Only what the shell reaches for, so a channel it stops calling shows up as an unused stub. */
+/** The session and project answers of the stub, by the names the shell's operations reach them. */
+type ShellStubCalls = Record<string, (...args: any[]) => Promise<IpcResult<any>>>
+
 class AppClientStub {
   /** One provider answering and one that never will: both halves of the bar's widget at once. */
   private static readonly rateSnapshotConst: RateMonitorSnapshot = {
@@ -166,6 +170,8 @@ class AppClientStub {
   /** What the tab menu's handlers asked for, and the answer this stub gives the one question. */
   readonly restarted: string[] = []
   readonly reopened: string[] = []
+  /** Every UPDATE the window asked for, with the live sessions it confirmed. */
+  readonly updates: { sessionId: string; confirmLive: readonly string[] | null }[] = []
   /** Every session a tab was told to attach to again, in the order it was told. */
   readonly restartsPublished: string[] = []
   readonly forked: { sessionId: string; name?: string }[] = []
@@ -259,8 +265,7 @@ class AppClientStub {
           return Promise.resolve({ ok: true as const, value: this.confirmAnswer })
         },
       },
-      projects: AppClientStub.projects(),
-      sessions: this.sessions(),
+      control: this.control(),
       tabs: {
         claimPanel: (panel) => {
           this.claimedPanels.push({ panelId: panel.panelId, title: panel.title })
@@ -322,12 +327,6 @@ class AppClientStub {
       },
       // The workspace shell reaches none of it: the bridge is one superset for both documents.
       debug: {
-        hostStatus: () => {
-          throw new Error('No test of the shell reads the Host debug status')
-        },
-        pingHost: () => {
-          throw new Error('No test of the shell pings the Host')
-        },
         sectionActive: () => Promise.resolve({ ok: true as const, value: undefined }),
       },
       versioning: {
@@ -342,34 +341,8 @@ class AppClientStub {
         runCommit: async () => { throw new Error('unused') },
         closeCommit: async () => ({ ok: true, value: undefined }),
         openCommitSessions: async () => ({ ok: true, value: { revision: 0, sessionIds: [] } }),
-        getSettings: () => {
-          throw new Error('No test of the shell reads the versioning settings')
-        },
-        saveSettings: () => {
-          throw new Error('No test of the shell saves the versioning settings')
-        },
-      },
-      worktrees: {
-        getSettings: () => {
-          throw new Error('No test of the shell reads the worktree settings')
-        },
-        saveSettings: () => {
-          throw new Error('No test of the shell saves the worktree settings')
-        },
-        getProjectSetup: () => {
-          throw new Error("No test of the shell reads a project's own setup")
-        },
-        saveProjectSetup: () => {
-          throw new Error("No test of the shell writes a project's own setup")
-        },
       },
       fileChanges: {
-        getSettings: () => {
-          throw new Error('No test of the shell reads the file changes settings')
-        },
-        saveSettings: () => {
-          throw new Error('No test of the shell saves the file changes settings')
-        },
         list: () => {
           throw new Error('No test of the shell lists file changes')
         },
@@ -459,37 +432,6 @@ class AppClientStub {
         openExternal: () => { throw new Error('No test of the shell opens an external URL') },
         release: () => { throw new Error('No test of the shell releases a file') },
       },
-      ui: {
-        getSettings: () => {
-          throw new Error('No test of the shell reads the UI settings')
-        },
-        saveSettings: () => {
-          throw new Error('No test of the shell saves the UI settings')
-        },
-      },
-      // Answered rather than thrown, for the reason the keyboard settings below are: the sessions
-      // tree reads which sections it has before it can draw one.
-      sessionGroups: {
-        getGroups: () => Promise.resolve({
-          ok: true as const,
-          value: SessionsGroupsState.defaultsConst,
-        }),
-        saveGroups: () => {
-          throw new Error('No test of the shell saves the session groups')
-        },
-      },
-      agents: {
-        getSettings: () => Promise.resolve({
-          ok: true as const,
-          value: { claude: { yolo: false }, codex: { yolo: false } },
-        }),
-        saveSettings: () => {
-          throw new Error('No test of the shell saves the agent settings')
-        },
-        setAutoCompact: () => {
-          throw new Error('No test of the shell changes auto-compact yet')
-        },
-      },
       contextCompaction: {
         claimAutomatic: () => Promise.resolve({ ok: true as const, value: true }),
         cooldown: () => Promise.resolve({ ok: true, value: null }),
@@ -567,6 +509,7 @@ class AppClientStub {
         this.tabsClosePanel = callback
         return () => { this.tabsClosePanel = null }
       },
+      onTabsHandOffPanel: () => () => undefined,
       onTabsTerminalRestarted: (callback: (targetKey: string) => void) => {
         this.tabsSessionRestarted = callback
         return () => { this.tabsSessionRestarted = null }
@@ -589,45 +532,6 @@ class AppClientStub {
       onTabsControlCommand: (callback) => {
         this.tabsControlCommand = callback
         return () => { this.tabsControlCommand = null }
-      },
-      rateMonitor: {
-        get: () => {
-          this.rateSnapshotReads += 1
-          return Promise.resolve({ ok: true as const, value: AppClientStub.rateSnapshotConst })
-        },
-        refresh: () => { throw new Error('No test of the shell refreshes the rate limits') },
-        debugStatus: () => { throw new Error('The rate debug view belongs to the Debug window') },
-      },
-      historicSessions: {
-        project: () => Promise.resolve({ ok: true as const, value: { ok: true as const, value: [] } }),
-        appJamat: () => Promise.resolve({ ok: true as const, value: [] }),
-      },
-      sessionModel: {
-        get: (sessionId: string) => {
-          this.sessionModelReads.push(sessionId)
-          const info = AppClientStub.sessionModelConst[sessionId]
-          return Promise.resolve({
-            ok: true as const,
-            value: info === undefined
-              ? { kind: 'none' as const, reason: 'nothing has been written yet' }
-              : { kind: 'ok' as const, info },
-          })
-        },
-      },
-      sessionTranscript: {
-        get: () => Promise.resolve({
-          ok: true as const,
-          value: {
-            kind: 'none' as const,
-            code: 'transcript-not-found' as const,
-            reason: 'nothing has been written yet',
-          },
-        }),
-      },
-      directoryNotes: {
-        get: () => { throw new Error('No test of the shell reads directory notes') },
-        save: () => { throw new Error('No test of the shell saves directory notes') },
-        importPrompt: () => { throw new Error('No test of the shell imports a prompt') },
       },
       onDirectoryNotesChanged: () => () => undefined,
       onUiSettingsChanged: () => () => undefined,
@@ -807,7 +711,7 @@ class AppClientStub {
    * soon as it is drawn; the rest still throw, so the day the shell reaches one the test says which
    * rather than handing back an answer nothing produced.
    */
-  private static projects(): AppClientUiBridge['projects'] {
+  private static projects(): ShellStubCalls {
     const refuse = (name: string) => () => {
       throw new Error(`The shell called projects.${name}, which nothing in the renderer uses yet`)
     }
@@ -850,7 +754,88 @@ class AppClientStub {
    * because it is what the shell closes a session's tab from; the rest still names itself when it
    * is reached.
    */
-  private sessions(): AppClientUiBridge['sessions'] {
+  /** What the shell's session operations answer; a test spies on one through `sessionCalls`. */
+  readonly sessionCalls: ShellStubCalls = this.sessions()
+
+  /**
+   * The control channel, each operation handed to the session or project stub below in the shape
+   * the window reads it.
+   */
+  private control(): AppClientUiBridge['control'] {
+    const sessions = this.sessionCalls
+    const projects = AppClientStub.projects()
+    type Body = Record<string, any>
+    const session = (body: Body): string => body.session.sessionId
+    return ControlBridgeFixture.routes({
+      'sessions.list': { value: () => sessions.snapshot() },
+      'sessions.create': { library: (body: Body) => sessions.create(body.spec) },
+      'sessions.historyReferences': { library: (body: Body) => sessions.historyReferences(body.directory) },
+      'sessions.openHistory': { library: (body: Body) => sessions.openHistory(body.spec) },
+      'sessions.reopen': { library: (body: Body) => sessions.reopen(session(body)) },
+      'sessions.finalize': { library: (body: Body) => sessions.finalize(session(body)) },
+      'sessions.remove': { library: (body: Body) => sessions.remove(session(body)) },
+      'sessions.fork': {
+        library: (body: Body) => sessions.fork(session(body), body.name === undefined ? undefined : { name: body.name }),
+      },
+      'sessions.restart': { library: (body: Body) => sessions.restart(session(body)) },
+      'sessions.color': { library: (body: Body) => sessions.setColor(session(body), body.color) },
+      'sessions.setDetails': { library: (body: Body) => sessions.setDetails(session(body), body.update) },
+      'sessions.discardWorktree': { library: (body: Body) => sessions.discardWorktree(session(body)) },
+      'sessions.retrySetup': { library: (body: Body) => sessions.retrySetup(session(body), body.acknowledgeSetup) },
+      'sessions.adoptOrphan': { library: (body: Body) => sessions.adoptOrphan(body.runtimeSessionId) },
+      'sessions.updateMain': { library: (body: Body) => sessions.updateMain(session(body), body.confirmLive) },
+      'sessions.nextNumber': { library: (body: Body) => sessions.nextNumber(body.projectPath) },
+      'sessions.allocateNumber': { library: (body: Body) => sessions.allocateNumber(body.projectPath) },
+      'sessions.reference': { library: (body: Body) => sessions.reference(session(body)) },
+      'host.start': { library: () => sessions.startHost() },
+      'host.stop': { library: (body: Body) => sessions.stopHost(body.expectedHostInstanceId) },
+      'host.restart': { library: (body: Body) => sessions.restartHost(body.expectedHostInstanceId) },
+      'projects.config': { library: () => projects.getConfig() },
+      'projects.saveConfig': { library: (body: Body) => projects.saveConfig(body.categories) },
+      'projects.categories': { value: () => projects.categories() },
+      'projects.listing': { library: (body: Body) => projects.list(body.categoryId, body.sort) },
+      'projects.sessions': { library: (body: Body) => projects.sessions(body.categoryId, body.projectName) },
+      'historicSessions.project': { library: () => Promise.resolve({ ok: true, value: { ok: true, value: [] } }) },
+      // Answered rather than thrown: the sessions tree reads which sections it has before it can draw one.
+      'sessionGroups.list': { value: () => Promise.resolve({ ok: true, value: SessionsGroupsState.defaultsConst }) },
+      'rate.get': {
+        value: () => {
+          this.rateSnapshotReads += 1
+          return Promise.resolve({ ok: true, value: AppClientStub.rateSnapshotConst })
+        },
+      },
+      'sessions.model': {
+        value: (body: Body) => {
+          this.sessionModelReads.push(body.sessionId)
+          const info = AppClientStub.sessionModelConst[body.sessionId]
+          return Promise.resolve({
+            ok: true,
+            value: info === undefined
+              ? { kind: 'none', reason: 'nothing has been written yet' }
+              : { kind: 'ok', info },
+          })
+        },
+      },
+      'sessions.transcript': {
+        value: (body: Body) => Promise.resolve({
+          ok: true,
+          value: {
+            sessionId: body.session.sessionId,
+            transcriptContentUntrusted: true,
+            reading: { kind: 'none', code: 'transcript-not-found', reason: 'nothing has been written yet' },
+          },
+        }),
+      },
+      // The commit review reads its split and its close options when it opens.
+      'versioningSettings.get': { value: () => Promise.resolve({ ok: true, value: { mode: 'checkpoints', diffTool: { kind: 'internal' } } }) },
+      'agentSettings.get': {
+        value: () => Promise.resolve({ ok: true, value: { claude: { yolo: false }, codex: { yolo: false } } }),
+      },
+      'historicSessions.appJamat': { value: () => Promise.resolve({ ok: true, value: [] }) },
+    })
+  }
+
+  private sessions(): ShellStubCalls {
     const refuse = (name: string) => () => {
       throw new Error(`The shell called sessions.${name}, which nothing in the renderer uses yet`)
     }
@@ -897,6 +882,17 @@ class AppClientStub {
       discardWorktree: refuse('discardWorktree'),
       retrySetup: refuse('retrySetup'),
       adoptOrphan: refuse('adoptOrphan'),
+      // A coordinator works in the main copy: the first press is refused with it, a confirmation naming it starts.
+      updateMain: (sessionId: string, confirmLive?: readonly string[]) => {
+        this.updates.push({ sessionId, confirmLive: confirmLive ?? null })
+        return Promise.resolve({
+          ok: true as const,
+          value: confirmLive?.includes('s-coordinator') === true
+            ? { ok: true as const, value: { sessionId, actionId: 'update-1' } }
+            : { ok: false as const, code: 'live-sessions', detail: '1 live session works in the main copy',
+              liveSessions: [{ sessionId: 's-coordinator', title: '020 - coordinator', number: '020' }] },
+        })
+      },
       nextNumber: () => Promise.resolve({
         ok: true as const,
         value: { ok: true as const, value: { token: 'number-4' } },
@@ -1035,7 +1031,9 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     expect(Sidebars.hidden(view.container, 'Right Probe')).toBe(true)
   })
 
-  it.each(['svn', 'git'] as const)('restores a %s commit diff after restart so Escape closes only the file', async (vcs) => {
+  it.each([
+    ['svn', 'restart'], ['git', 'restart'], ['svn', 'preview replacement'], ['git', 'preview replacement'],
+  ] as const)('restores a %s commit diff after %s so Escape closes only the file', async (vcs, reopen) => {
     const { client, view } = await mount({ sidebars: null, failed: false })
     const draft: VersioningCommitDraftDto = { draftId: 'focus-review', sessionId: 's-working', vcs, source: vcs,
       scopeRoot: 'C:/work', scopeTooltip: 'C:/work', message: 'Review this change', editedByPerson: false,
@@ -1053,7 +1051,6 @@ describe('app-client-ui/renderer/shell/appShell', () => {
       value: { ok: true, value: { draftId: draft.draftId, scopeRoot: draft.scopeRoot, title: 'Commit review' }, messageApplied: true } })
     vi.spyOn(window.appClient.versioning, 'readCommit').mockResolvedValue({ ok: true, value: draft })
     vi.spyOn(window.appClient.versioning, 'commitFiles').mockResolvedValue({ ok: true, value: { ok: true, value: snapshot } })
-    vi.spyOn(window.appClient.versioning, 'getSettings').mockResolvedValue({ ok: true, value: { mode: 'checkpoints', diffTool: { kind: 'internal' } } })
     const run = vi.spyOn(window.appClient.versioning, 'runCommit')
     const close = vi.spyOn(window.appClient.versioning, 'closeCommit')
     vi.spyOn(window.appClient.fileChanges, 'list').mockResolvedValue({ ok: true,
@@ -1074,22 +1071,38 @@ describe('app-client-ui/renderer/shell/appShell', () => {
       vcs, scopeRoot: draft.scopeRoot, title: 'Commit review', messageApplied: true })
     const row = (await view.findByLabelText('Include report.ts')).closest('[role="row"]')
     if (!(row instanceof HTMLElement)) throw new Error('Commit file row is missing')
-    expect(AppShellTest.previewTabTitles(view.container)).toEqual([])
+    expect(AppShellTest.previewTabTitles(view.container)).toEqual(['AppJamatV3 - Alpha worktree'])
     row.focus()
     fireEvent.doubleClick(row)
     const viewer = await view.findByLabelText('Split file')
     await waitFor(() => expect(viewer).toHaveFocus())
-    act(() => void window.dispatchEvent(new Event('beforeunload')))
-    await waitFor(() => expect(client.savedLayouts.at(-1)).toContain('focus-file'))
-    const saved = client.savedLayouts.at(-1)!
-    view.unmount()
+    let restored = view
+    if (reopen === 'restart') {
+      act(() => void window.dispatchEvent(new Event('beforeunload')))
+      await waitFor(() => expect(client.savedLayouts.at(-1)).toContain('focus-file'))
+      const saved = client.savedLayouts.at(-1)!
+      view.unmount()
+      vi.spyOn(window.appClient.state, 'loadLayout').mockResolvedValue({ ok: true, value: { layout: saved, failed: false } })
+    } else if (reopen === 'preview replacement') {
+      AppShellTest.openSession(view.container, 'Beta worktree')
+      await view.findByLabelText('Terminal for session s-waiting')
+      await waitFor(() => expect(view.queryByLabelText('Terminal for session s-working')).toBeNull())
+      expect(view.queryByLabelText('Split file')).toBeNull()
+    } else
+      throw new Error(`Unknown reopen path: ${reopen}`)
     await waitFor(() => expect(close).toHaveBeenCalledOnce())
     close.mockClear()
-    vi.spyOn(window.appClient.state, 'loadLayout').mockResolvedValue({ ok: true, value: { layout: saved, failed: false } })
     const openDraft = vi.mocked(window.appClient.versioning.openDraft)
     openDraft.mockClear()
-    const restored = render(<MainShell />)
+    if (reopen === 'restart')
+      restored = render(<MainShell />)
+    else if (reopen === 'preview replacement')
+      AppShellTest.openSession(view.container, 'Alpha worktree')
+    else
+      throw new Error(`Unknown reopen path: ${reopen}`)
     const restoredViewer = await restored.findByLabelText('Split file')
+    expect(AppShellTest.previewTabTitles(restored.container))
+      .toEqual(reopen === 'preview replacement' ? ['AppJamatV3 - Alpha worktree'] : [])
     const terminal = restored.getByLabelText('Terminal for session s-working')
     await waitFor(() => expect(openDraft).toHaveBeenCalledWith('s-working', vcs, 'C:/work', undefined))
     await waitFor(() => expect(restoredViewer).toHaveFocus())
@@ -1817,6 +1830,31 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     expect(finish.textContent).toBe('Finish…')
   })
 
+  it('confirms an UPDATE of a landed row in an overlay that names the live sessions, and closes once it started', async () => {
+    const client = new AppClientStub({ sidebars: null, failed: false }, false, SessionsFixtures.svnWorktrees())
+    client.install()
+    const view = render(<MainShell />)
+    const tree = await waitFor(() => Sidebars.of(view.container, 'Sessions'))
+    const row = await waitFor(() => {
+      const found = tree.querySelector('[data-session="s-landed"]')
+      if (!(found instanceof HTMLElement)) throw new Error('The tree drew no landed row')
+      return found
+    })
+    const update = [...row.querySelectorAll('button')].find((button) => button.textContent === 'Update main copy')
+    if (!(update instanceof HTMLElement)) throw new Error('The landed row offered no Update main copy')
+
+    fireEvent.click(update)
+
+    await waitFor(() => expect(view.container.querySelector('.jamat-update-main')).toBeTruthy())
+    expect(view.container.querySelector('.jamat-update-main__live')?.textContent).toBe('020020 - coordinator')
+    fireEvent.click(view.getByRole('button', { name: 'Update' }))
+    await waitFor(() => expect(view.container.querySelector('.jamat-update-main')).toBeNull())
+    expect(client.updates).toEqual([
+      { sessionId: 's-landed', confirmLive: null },
+      { sessionId: 's-landed', confirmLive: ['s-coordinator'] },
+    ])
+  })
+
   it('does not open finalize while another overlay owns the shell', async () => {
     const openFinalize = AppShellTest.captureLateBound<FinalizeAsk>('finalize')
     const { client, view } = await mount({ sidebars: null, failed: false })
@@ -2421,7 +2459,7 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     AppShellTest.openSession(view.container, 'Ended codex')
     await view.findByLabelText('Terminal for session s-ended')
     const published = vi.spyOn(window.appClient.tabs, 'publishTerminalRestarted')
-    const reopened = vi.spyOn(window.appClient.sessions, 'reopen')
+    const reopened = vi.spyOn(client.sessionCalls, 'reopen')
 
     client.run('session.resume')
 
@@ -2435,9 +2473,9 @@ describe('app-client-ui/renderer/shell/appShell', () => {
 
   it('reports a refused resume without publishing a restart or opening its terminal', async () => {
     const commandsOf = AppShellTest.captureCommands()
-    const { view } = await mount({ sidebars: null, failed: false })
+    const { client, view } = await mount({ sidebars: null, failed: false })
     await waitFor(() => expect(view.container.textContent).toContain('Ended codex'))
-    const reopened = vi.spyOn(window.appClient.sessions, 'reopen').mockResolvedValue({
+    const reopened = vi.spyOn(client.sessionCalls, 'reopen').mockResolvedValue({
       ok: true, value: { ok: false, code: 'live-refused', detail: 'The session is already running.' },
     })
     const published = vi.spyOn(window.appClient.tabs, 'publishTerminalRestarted')
@@ -2505,6 +2543,42 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     await view.findByLabelText('Split file')
     expect(await view.findByText('proof-expired: Open the path again.')).toBeVisible()
     expect(activeTitle()).toBe('AppJamatV3 - Beta worktree')
+    expect(AppShellTest.previewTabTitles(view.container)).toEqual(['AppJamatV3 - Alpha worktree'])
+  })
+
+  it.each([false, true])('keeps an existing preview replaceable after a CLI document open with activation %s', async (activate) => {
+    const { client, view } = await mount({ sidebars: null, failed: false })
+    vi.spyOn(window.appClient.fileViewer, 'restore').mockResolvedValue({
+      ok: true, value: { ok: false, code: 'proof-expired', detail: 'Open the path again.' },
+    })
+    vi.spyOn(window.appClient.fileChanges, 'list').mockResolvedValue({
+      ok: true, value: { ok: false, code: 'invalid-context', detail: 'File changes unavailable' },
+    })
+    AppShellTest.openSession(view.container, 'Alpha worktree')
+    await view.findByLabelText('Terminal for session s-working')
+    AppShellTest.keepSession(view.container, 'Beta worktree')
+    await view.findByLabelText('Terminal for session s-waiting')
+    const panelId = 'terminal:{"sessionId":"s-working"}'
+    client.controlTabs({ kind: 'open-session', requestId: 'preview-session', sessionId: 's-working',
+      tabTitle: 'AppJamatV3 - Alpha worktree', activate })
+    await waitFor(() => expect(client.tabControlAcks).toContainEqual({ requestId: 'preview-session', result: { kind: 'opened', panelId } }))
+    expect(AppShellTest.previewTabTitles(view.container)).toEqual(['AppJamatV3 - Alpha worktree'])
+    client.controlTabs({ kind: 'open-file', requestId: 'preview-file', panelId,
+      source: { kind: 'workspace', sessionId: 's-working', path: 'C:/work/report.md' }, documentKey: 'preview-file', title: 'report.md' })
+    await waitFor(() => expect(client.tabControlAcks).toContainEqual({ requestId: 'preview-file', result: { kind: 'file-opened', panelId } }))
+    expect(view.container.querySelector('.jamat-tab.is-active .jamat-tab__title')?.textContent)
+      .toBe(activate ? 'AppJamatV3 - Alpha worktree' : 'AppJamatV3 - Beta worktree')
+    expect(AppShellTest.previewTabTitles(view.container)).toEqual(['AppJamatV3 - Alpha worktree'])
+
+    client.controlTabs({ kind: 'close-panel', requestId: 'close-beta', panelId: 'terminal:{"sessionId":"s-waiting"}' })
+    await waitFor(() => expect(view.queryByLabelText('Terminal for session s-waiting')).toBeNull())
+    AppShellTest.openSession(view.container, 'Beta worktree')
+    await view.findByLabelText('Terminal for session s-waiting')
+    expect(view.queryByLabelText('Terminal for session s-working')).toBeNull()
+    AppShellTest.openSession(view.container, 'Alpha worktree')
+    await view.findByLabelText('Split file')
+    expect(await view.findByText('proof-expired: Open the path again.')).toBeVisible()
+    expect(AppShellTest.previewTabTitles(view.container)).toEqual(['AppJamatV3 - Alpha worktree'])
   })
 
   it('opens a tab from the tree as a preview', async () => {
@@ -2629,6 +2703,7 @@ class AppShellTest {
       target: { kind: 'local', sessionId: 's-dirty' },
       scope: 'local',
       sessionTitle: 'Dirty worktree',
+      session: { glyph: 'ended', group: 'Sessions', note: null },
       questions: [{
         specId: 'worktree',
         question: {

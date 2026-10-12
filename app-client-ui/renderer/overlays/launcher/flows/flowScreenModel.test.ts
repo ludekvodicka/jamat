@@ -155,11 +155,14 @@ describe('app-client-ui/renderer/overlays/launcher/flows/flowScreenModel', () =>
 
   /**
    * A suggestion cannot put a worktree somewhere one is refused. The flow does not know where the
-   * session will run; the create screen's own rules still decide.
+   * session will run; the create screen's own rules still decide, and an ad-hoc directory may carry
+   * one (the library's owner rule answers for it).
    */
-  it('drops the suggested worktree where the binding cannot carry one', () => {
+  it('drops the suggested worktree where the card cannot carry one, and keeps it for an ad-hoc directory', () => {
     const adHoc = options({ mode: 'adHoc', path: 'D:\\work' }, { token: null })
-    expect(FlowScreenModel.specOf(Run.filled(adHoc).state, null).worktree).toBeUndefined()
+    expect(FlowScreenModel.specOf(Run.filled(adHoc).state, null).worktree).toEqual({ slug: 'Merge a worktree back' })
+    const remote = options(undefined, { target: { kind: 'remote', remoteEndpointId: 'endpoint-a', displayName: 'Other' } })
+    expect(FlowScreenModel.specOf(Run.filled(remote).state, null).worktree).toBeUndefined()
   })
 
   it('keeps a worktree the person had already chosen', () => {

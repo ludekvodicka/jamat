@@ -27,6 +27,8 @@ export class CliArguments {
     'commit-git-jamat': { options: ['--session-id', '--number', '--working-directory', '--path', '--paths-file', '--message', '--message-file', '--fallback', '--timeout-ms'], flags: ['--self', '--wait'], mutation: true },
     'commit status': { options: ['--commit-session-id', '--timeout-ms'], flags: ['--wait'], mutation: false },
     'commit cancel': { options: ['--commit-session-id'], flags: [], mutation: true },
+    /* A worker's message for its worktree's review; nothing opens and nothing is committed. */
+    'commit propose': { options: ['--message', '--message-file'], flags: ['--self'], mutation: true },
     'status': { options: [CliArguments.remoteComputerOptionConst], flags: [], mutation: false },
     'projects list': {
       options: ['--category-id', '--sort', CliArguments.remoteComputerOptionConst],
@@ -50,6 +52,12 @@ export class CliArguments {
         '--prompt',
         '--worktree',
         '--worktree-owner',
+        '--worktree-tag',
+        '--worktree-notify-session',
+        '--worktree-notify-text',
+        '--notify-session',
+        '--notify-text',
+        '--notify-on-group',
         '--base-ref',
         '--title',
         '--number',
@@ -78,6 +86,7 @@ export class CliArguments {
         '--number',
         '--working-directory',
         '--expect',
+        '--acknowledge-setup',
         CliArguments.remoteComputerOptionConst,
       ],
       flags: [],
@@ -108,10 +117,35 @@ export class CliArguments {
       flags: [],
       mutation: true,
     },
+    'sessions finish-worktree': {
+      options: ['--session-id', '--number', '--working-directory', '--choice', '--acknowledge-setup'],
+      flags: ['--self', '--confirm-working'],
+      mutation: true,
+    },
+    'sessions update-main': {
+      options: ['--session-id', '--number', '--working-directory', '--confirm-live'],
+      flags: ['--self'],
+      mutation: true,
+    },
+    /* The command of a review run of an SVN action; agents never call it. */
+    'sessions worktree-review': { options: ['--timeout-ms'], flags: ['--self', '--wait'], mutation: true },
+    'sessions worktree-results': { options: ['--tag', '--session-id'], flags: ['--unacknowledged'], mutation: false },
+    'sessions notifies': { options: ['--session-id'], flags: [], mutation: false },
+    'sessions acknowledge-worktree-result': { options: ['--action-id'], flags: [], mutation: true },
     'sessions transcript': {
       options: ['--session-id', '--number', '--working-directory'],
       flags: [],
       mutation: false,
+    },
+    'sessions scripts': {
+      options: ['--session-id', '--number', '--working-directory', '--run-id'],
+      flags: ['--self'],
+      mutation: false,
+    },
+    'sessions scripts run': {
+      options: ['--session-id', '--number', '--working-directory', '--command', '--cwd', '--title', '--timeout-ms'],
+      flags: ['--self', '--wait'],
+      mutation: true,
     },
     'sessions color': {
       options: [
@@ -202,6 +236,15 @@ export class CliArguments {
       mutation: true,
     },
     'events watch': { options: ['--after-revision'], flags: [], mutation: false },
+    /*
+     * The registry's own surface: every operation by name, the window's included. `call` takes the
+     * body as JSON text or a file and adds an operation id when the catalog says the call writes.
+     */
+    'operations list': { options: [], flags: [], mutation: false },
+    'operations get': { options: ['--operation'], flags: [], mutation: false },
+    'call': { options: ['--operation', '--body', '--body-file'], flags: [], mutation: true },
+    'calls list': { options: [], flags: [], mutation: false },
+    'events poll': { options: ['--after', '--wait-ms'], flags: [], mutation: false },
     'remote computers list': { options: [], flags: [], mutation: false },
     'remote pairing export': { options: [], flags: [], mutation: false },
     'remote pairing import': { options: ['--file'], flags: [], mutation: true },
@@ -272,6 +315,8 @@ export class CliArguments {
       throw CliArguments.usage('--self cannot be combined with a session or controller selector')
     if (options.has('--message') && options.has('--message-file'))
       throw CliArguments.usage('--message and --message-file are mutually exclusive')
+    if (options.has('--body') && options.has('--body-file'))
+      throw CliArguments.usage('--body and --body-file are mutually exclusive')
     return new CliArguments(command, options, flags, spec.mutation)
   }
 

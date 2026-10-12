@@ -2,7 +2,9 @@ import type {
   SessionActivity,
   SessionInfo,
   SessionOperation,
-  SessionSetupInfo,
+  SessionScriptRunState,
+  SessionScriptsBadge,
+  SessionSvnActionInfo,
   SessionWorktreeCleanupPhase,
   SessionWorktreeInfo,
   SessionWorktreeKind,
@@ -39,20 +41,32 @@ export type SessionAction =
   | 'reopen'
   | 'remove'
   | 'retrySetup'
+  | 'updateMain'
+
+/** What a landed row says about its main copy: how far behind HEAD it is, and why it is still here. */
+export interface SessionLandingBadge {
+  text: string
+  title: string
+}
+
+/** An UPDATE of a main copy that runs, or waits for the person; the title says which stage or why. */
+export interface SessionMainUpdateBadge {
+  waiting: boolean
+  title: string
+}
 
 /** What a merge is doing, as the one word the row shows for it. */
 export type SessionMergeBadge = 'merging' | 'conflict' | 'merge-failed'
 
 /**
- * The install a session had to wait for, as the one thing a row draws about it. It is a fact BESIDE
- * the glyph and never folded into it: a session waiting for its dependencies is still `starting`,
- * and a failed install is still an `ended` session - what the install did is a second sentence.
+ * What a click on the scripts badge does, by the badge's state. A running or failed run has a
+ * terminal to read; a succeeded one has its saved log; a skipped one has nothing behind it.
  */
-export type SessionSetupBadge = 'installing' | 'install-failed' | 'install-skipped'
+export type SessionScriptsBadgeClick = 'terminal' | 'log' | 'none'
 
 /**
  * A launch the Host keeps refusing, as the one word a row says about it. Beside the glyph and never
- * folded into it, for the reason the install badge is: the session is still `starting` in the sense
+ * folded into it, for the reason the scripts badge is: the session is still `starting` in the sense
  * that nothing has ended, and what is holding it up is a second sentence.
  */
 export type SessionLaunchBadge = 'waiting'
@@ -111,7 +125,7 @@ export class SessionNodeState {
     // shape is the one operation that cannot work, because there is nothing to stop.
     const order: readonly SessionAction[] = running
       ? ['finalize', 'close', 'remove']
-      : ['finalize', 'close', 'retrySetup', 'reopen', 'remove']
+      : ['updateMain', 'finalize', 'close', 'retrySetup', 'reopen', 'remove']
     return order.filter((action) => {
       // The person's verdict, not the runtime's: a session they have called finished is one they
       // are done reading, whatever its life says. `admits` has nothing to say about it, because
@@ -129,7 +143,7 @@ export class SessionNodeState {
    */
   private static operationOf(action: SessionAction): SessionOperation {
     if (action === 'reopen') return 'restart'
-    else if (action === 'finalize' || action === 'remove' || action === 'retrySetup')
+    else if (action === 'finalize' || action === 'remove' || action === 'retrySetup' || action === 'updateMain')
       return action
     // Named rather than swallowed by the throw below: this one HAS no library operation, and a
     // caller that reaches here has filtered the tab action through the admits gate by mistake.
@@ -145,13 +159,47 @@ export class SessionNodeState {
     else if (action === 'reopen') return 'Rerun'
     else if (action === 'remove') return 'Remove'
     else if (action === 'retrySetup') return 'Retry setup'
+    else if (action === 'updateMain') return 'Update main copy'
     else
       throw new Error(`Unknown session action: ${JSON.stringify(action)}`)
   }
 
-  /** A running Finish stops; an ended Finish opens a dialog, which the ellipsis promises. */
-  static finalizeLabelOf(life: SessionInfo['life']): string {
-    if (life === 'live' || life === 'starting') return 'Finish'
+  /**
+   * A landed row: the Finish committed, and the main copy does not hold it yet. Unknown is drawn
+   * as unknown: offline, or not read yet, never as zero.
+   */
+  static landingOf(retired: SessionInfo['retiredWorktree']): SessionLandingBadge | null {
+    const landing = retired?.landing
+    if (landing === undefined) return null
+    const behind = landing.behind === null ? 'behind (unknown)' : `${landing.behind} behind`
+    const newest = landing.newest.map((revision) => revision.replace(/^.*:(r\d+)$/, '$1')).join(', ') || 'the landed revisions'
+    return {
+      text: `main copy ${behind}`,
+      title: `The main copy ${landing.mainCopy} does not hold ${newest} yet; it is ${landing.behind === null
+        ? 'an unknown number of revisions' : `${landing.behind} revision${landing.behind === 1 ? '' : 's'}`} behind HEAD. `
+        + 'Update main copy brings them in; the row goes once the main copy holds them, whoever updates it.',
+    }
+  }
+
+  /** An UPDATE of a main copy on this session, or null; a Finish or Discard draws on the worktree instead. */
+  static mainUpdateOf(action: SessionSvnActionInfo | undefined): SessionMainUpdateBadge | null {
+    if (action === undefined) return null
+    const kind = action.kind
+    if (kind === 'finish' || kind === 'discard') return null
+    else if (kind === 'update-main')
+      return action.needs === null
+        ? { waiting: false, title: SessionNodeState.actionTitleOf(action) }
+        : { waiting: true, title: action.needs }
+    else
+      throw new Error(`Unknown SVN action kind: ${JSON.stringify(kind satisfies never)}`)
+  }
+
+  /**
+   * A running Finish stops; an ended Finish opens a dialog, which the ellipsis promises. A running
+   * SVN worktree session opens the dialog too (`liveFinish`): its action stops it first.
+   */
+  static finalizeLabelOf(life: SessionInfo['life'], liveFinish = false): string {
+    if (life === 'live' || life === 'starting') return liveFinish ? 'Finish…' : 'Finish'
     else if (life === 'ended' || life === 'lost') return 'Finish…'
     else
       throw new Error(`Unknown session life: ${JSON.stringify(life)}`)
@@ -159,7 +207,7 @@ export class SessionNodeState {
 
   /**
    * A failure outranks the phase: a merge that stopped is what the row has to say, whatever it was
-   * doing when it stopped. The three words mirror the install badge beside them.
+   * doing when it stopped. The three words sit beside the scripts badge, in its size.
    */
   static mergeBadgeOf(merge: SessionInfo['merge']): SessionMergeBadge | null {
     if (merge === undefined) return null
@@ -207,9 +255,10 @@ export class SessionNodeState {
   }
 
   /** What the finish word says when it is pointed at; a review names the scope it waits for. */
-  static finishTitleOf(finish: SessionWorktreeInfo['finish']): string | null {
+  static finishTitleOf(finish: SessionWorktreeInfo['finish'], action?: SessionSvnActionInfo): string | null {
     const phase = SessionNodeState.finishBadgeOf(finish)
     if (phase === null) return null
+    if (action !== undefined) return SessionNodeState.actionTitleOf(action)
     if (phase === 'updating') return 'Updating the worktree to HEAD before the review'
     else if (phase === 'reviewing')
       return `Waiting for the commit review of ${finish?.scopeRoot ?? 'the worktree'}`
@@ -217,6 +266,39 @@ export class SessionNodeState {
     else if (phase === 'removing') return 'Removing the worktree'
     else
       throw new Error(`Unknown finish phase: ${JSON.stringify(phase satisfies never)}`)
+  }
+
+  /** The stage of an SVN action in the words a person reads; a review says which of how many. */
+  static actionTitleOf(action: SessionSvnActionInfo): string {
+    const stage = action.stage
+    if (action.kind === 'update-main') {
+      if (stage === 'updating') return 'Updating the main copy'
+      else if (stage === 'resolving') return 'Claude resolves the conflicts of the main-copy update'
+      else if (stage === 'verifying') return 'Checking the files the conflict resolver edited in the main copy'
+      else if (stage === 'diffing') return 'Showing the merge of the resolved files'
+      else if (stage === 'recording') return 'Reading whether the main copy holds the landed revisions'
+    }
+    if (stage === 'stopping') return 'Stopping the session before its Finish'
+    else if (stage === 'evidence') return 'Reading what the worktree committed'
+    else if (stage === 'checks') return "Running the project's checks"
+    else if (stage === 'updating') return 'Updating the worktree to HEAD before the review'
+    else if (stage === 'cleaning') return 'Running svn cleanup in the worktree'
+    else if (stage === 'resolving') return 'Claude resolves the conflicts of the update'
+    else if (stage === 'verifying') return 'Checking the files the conflict resolver edited'
+    else if (stage === 'diffing') return 'Showing the merge of the resolved files'
+    else if (stage === 'reviewing')
+      return action.review === null
+        ? 'Waiting for the commit review'
+        : `Waiting for the commit review ${action.review.index} of ${action.review.count}: ${action.review.scopeRoot}`
+    else if (stage === 'removing') return 'Removing the worktree'
+    else if (stage === 'recording') return 'Writing how the Finish ended'
+    else
+      throw new Error(`Unknown SVN action stage: ${JSON.stringify(stage satisfies never)}`)
+  }
+
+  /** Why an SVN action waits for the person, or null while it runs or when there is none. */
+  static actionNeedsOf(action: SessionSvnActionInfo | undefined): string | null {
+    return action?.needs ?? null
   }
 
   /**
@@ -318,6 +400,26 @@ export class SessionNodeState {
       throw new Error(`Unknown session glyph: ${JSON.stringify(glyph)}`)
   }
 
+  /** A script run drawn as a row of its own history: its outcome as one character. */
+  static runCharacterOf(state: SessionScriptRunState): string {
+    if (state === 'running') return '●'
+    else if (state === 'succeeded') return '✓'
+    else if (state === 'failed') return '×'
+    else if (state === 'stopped') return '■'
+    else if (state === 'lost') return '!'
+    else
+      throw new Error(`Unknown script run state: ${JSON.stringify(state satisfies never)}`)
+  }
+
+  static runPaintOf(state: SessionScriptRunState): SessionPaint {
+    if (state === 'running') return 'accent'
+    else if (state === 'succeeded') return 'ok'
+    else if (state === 'failed' || state === 'lost') return 'danger'
+    else if (state === 'stopped') return 'muted'
+    else
+      throw new Error(`Unknown script run state: ${JSON.stringify(state satisfies never)}`)
+  }
+
   /**
    * What the character says when it is pointed at. One wording for both surfaces, and the place the
    * unseen half is spelled out: `working` keeps its colour when marked, so the tooltip is where
@@ -359,29 +461,25 @@ export class SessionNodeState {
       launchWait.reason}`
   }
 
-  static setupBadgeOf(setup: SessionSetupInfo | undefined): SessionSetupBadge | null {
-    if (setup === undefined) return null
-    if (setup.state === 'running') return 'installing'
-    else if (setup.state === 'failed') return 'install-failed'
-    else if (setup.state === 'skipped') return 'install-skipped'
+  /**
+   * The badge the library composed, drawn as it stands. A state this build does not know is thrown
+   * on rather than drawn: the snapshot validator already drops one, so reaching here is a bug.
+   */
+  static scriptsBadgeOf(scripts: SessionInfo['scripts']): SessionScriptsBadge | null {
+    const badge = scripts?.badge
+    if (badge === undefined) return null
+    const state = badge.state
+    if (state === 'running' || state === 'failed' || state === 'skipped' || state === 'succeeded') return badge
     else
-      throw new Error(`Unknown session setup state: ${JSON.stringify(setup)}`)
+      throw new Error(`Unknown scripts badge state: ${JSON.stringify(state satisfies never)}`)
   }
 
-  /**
-   * What the badge says when it is pointed at. An install runs with echo off, so the commands are not
-   * readable anywhere else until a terminal exists: a repository-authored setup is agreed to before it
-   * starts, and this is where it can be read afterwards.
-   */
-  static setupTitleOf(setup: SessionSetupInfo | undefined): string | null {
-    if (setup === undefined) return null
-    if (setup.state === 'running' || setup.state === 'failed')
-      return setup.commands.length === 0 ? null : setup.commands.join('\n')
-    // The skipped badge is one character, so this is the only place that says what happened; the
-    // reason alone named a cause for an effect the reader could no longer see.
-    else if (setup.state === 'skipped') return `Nothing was installed: ${setup.reason}`
+  static scriptsBadgeClickOf(state: SessionScriptsBadge['state']): SessionScriptsBadgeClick {
+    if (state === 'running' || state === 'failed') return 'terminal'
+    else if (state === 'succeeded') return 'log'
+    else if (state === 'skipped') return 'none'
     else
-      throw new Error(`Unknown session setup state: ${JSON.stringify(setup)}`)
+      throw new Error(`Unknown scripts badge state: ${JSON.stringify(state satisfies never)}`)
   }
 
   private static liveGlyphOf(

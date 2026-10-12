@@ -1,14 +1,10 @@
-import { basename, isAbsolute, join, normalize, sep } from 'node:path'
+import { isAbsolute, join, normalize, sep } from 'node:path'
 
-import type {
-  RuntimeLaunchSpec,
-  RuntimeResult,
-} from '../../../app-host/app/wire/hostWire.js'
 import type { WorktreeFacts } from '../../git/git.types'
-import type { HostCallResult } from '../../hostClient/hostClient.types'
-import { LaunchPlanner } from '../launch/launchPlanner'
 import type {
+  SessionDirectoryRef,
   SessionRecord,
+  SessionRecordScriptStep,
   SessionRecordSetupCommand,
   SessionRecordWorktree,
 } from '../records/sessionRecord.types'
@@ -19,40 +15,60 @@ import type {
   SessionsOpErrorCode,
   SessionsOpResult,
 } from '../sessionManagerApi.types'
-import type { DeclaredSetup, SetupResolution } from '../../projectSetup/projectSetup.types'
-import type {
-  ReopenRoute,
-  SessionHostPort,
-  SessionSetupPort,
-  SetupPlan,
-} from './sessionLifecycle'
+import type { SetupResolution } from '../../projectSetup/projectSetup.types'
+import type { CommandAgreement, DeclaredCommandsRead } from '../scripts/commandAgreement'
+import { DeclaredScripts } from '../scripts/declaredScripts'
+import { ScriptChain } from '../scripts/scriptChain'
+import { ScriptRunPlanning } from '../scripts/scriptRunPlanning'
+import { ScriptRunRecords } from '../scripts/scriptRunRecords'
+import type { SessionScriptsManager } from '../scripts/sessionScriptsManager'
+import { SessionScriptDefinitions } from '../scripts/sessionScriptDefinitions'
+import { ScriptRunLauncher } from './scriptRunLauncher'
+import type { SessionSetupPort, SessionWorktreePort, WorktreePlacement } from './sessionLifecycle'
 import { OperationOutcomes } from './operationOutcomes'
 import { WorktreeCleanupPacing } from './worktreeCleanupPacing'
 
+/** What the setup resolution means for one worktree: run these commands, or install nothing. */
+type SetupPlan =
+  | { kind: 'run'; commands: SessionRecordSetupCommand[] }
+  /**
+   * `reason` is what the record keeps and what a refusal quotes; `announcement` is the sentence for
+   * the user, and it is null only where the project itself already said it needs nothing. They are
+   * two strings rather than one because only some of these have anything to advise.
+   */
+  | { kind: 'skip'; reason: string; announcement: string | null }
+
+export type SetupSkip = Extract<SetupPlan, { kind: 'skip' }>
+
+/**
+ * The before chain of a worktree: the setup step when one resolves, then the project's declared
+ * before scripts, one run per step. `skipped` is why no setup step leads a chain of declared steps.
+ */
+export type BeforePlan =
+  | { kind: 'run'; steps: SessionRecordScriptStep[]; skipped: SetupSkip | null }
+  | SetupSkip
+
 /**
  * What the lifecycle around this flow does for it, kept narrow so the flow never sees the whole
- * class. Every one is about a RECORD reaching the Host and what is written down when it does, which
- * is the one thing an install shares with every other session: an install IS a session, with a
- * script where the prompt would be.
+ * class. The launch of a run itself goes through `ScriptRunLauncher`.
  */
 export interface SetupLaunchPort {
-  plannedLaunch(record: SessionRecord, launch: 'create' | 'reopen'): RuntimeLaunchSpec
-  bindLive(record: SessionRecord, result: RuntimeResult): Promise<boolean>
-  endRefused(record: SessionRecord, detail: string): Promise<void>
   replayLaunch(
     change: Extract<ReconcileChange, { kind: 'retry-launch' }>,
   ): Promise<ReconcileChange | null>
-  hostRouteOf(sessionId: string): Promise<SessionsOpResult<ReopenRoute>>
   unrecordedWorktree(
     facts: WorktreeFacts,
   ): { ok: false; code: SessionsOpErrorCode; detail: string }
+  /** Why no launch may go into the record's worktree now: a finish or cleanup holds it, or it is gone. */
+  startRefusal(record: SessionRecord): Promise<SessionsOpResult<never> | null>
 }
 
 /**
- * Installing a worktree's dependencies before the session that waits on them starts.
+ * The before chain of a worktree session: its dependency install, then the project's declared
+ * `scripts.before`, before the session that waits on them starts.
  *
- * An install runs as a session of its own - a shell with a script instead of a prompt - and the
- * session that needs it waits, recorded, naming the setup by id. That is what makes every step here
+ * Each step runs as a session of its own - a shell with a script instead of a prompt - and the
+ * session that needs it waits, recorded, naming the step's run by id. That is what makes every step here
  * a record write plus a launch rather than a process this class babysits: a client that dies mid
  * install leaves a record saying what was being attempted, and the next reconcile pass judges it.
  *
@@ -63,9 +79,15 @@ export interface SetupLaunchPort {
  */
 export interface SetupFlowDeps {
   records: SessionRecordsStore
-  host: SessionHostPort
   setup: SessionSetupPort
+  /** The gate in front of every repository-authored command, and the second look before one runs. */
+  agreement: Pick<CommandAgreement, 'declared' | 'gate' | 'agreed'>
+  /** Which steps succeeded, read off the parent's history, for a gate an older build wrote without its steps. */
+  scripts: Pick<SessionScriptsManager, 'succeededKeys'>
+  runs: Pick<ScriptRunLauncher, 'launch'>
   launch: SetupLaunchPort
+  /** Empties the reserved folder of a failed checkout before the checkout runs again. */
+  worktrees: Pick<SessionWorktreePort, 'purgeReserved'>
   /** Where a fact the user has to know but cannot act on through the result goes. */
   report: (message: string) => void
   newId: () => string
@@ -74,18 +96,24 @@ export interface SetupFlowDeps {
 
 export class SetupFlow {
   private readonly records: SessionRecordsStore
-  private readonly host: SessionHostPort
   private readonly setup: SessionSetupPort
+  private readonly agreement: Pick<CommandAgreement, 'declared' | 'gate' | 'agreed'>
+  private readonly scripts: Pick<SessionScriptsManager, 'succeededKeys'>
+  private readonly runs: Pick<ScriptRunLauncher, 'launch'>
   private readonly launch: SetupLaunchPort
+  private readonly worktrees: Pick<SessionWorktreePort, 'purgeReserved'>
   private readonly report: (message: string) => void
   private readonly newId: () => string
   private readonly now: () => number
 
   constructor(deps: SetupFlowDeps) {
     this.records = deps.records
-    this.host = deps.host
     this.setup = deps.setup
+    this.agreement = deps.agreement
+    this.scripts = deps.scripts
+    this.runs = deps.runs
     this.launch = deps.launch
+    this.worktrees = deps.worktrees
     this.report = deps.report
     this.newId = deps.newId
     this.now = deps.now
@@ -94,81 +122,55 @@ export class SetupFlow {
   /**
    * Two records and ONE runtime: the session's own launch is not started here at all. It waits on
    * disk under the pending pair its record was already written with, named by `pendingSetup`, until a
-   * reconcile pass sees the install exit cleanly - so the caller is handed the session's id the
-   * moment both records are written, however long the install takes.
+   * reconcile pass sees the last step of its chain exit cleanly - so the caller is handed the
+   * session's id the moment both records are written, however long the chain takes.
    *
-   * The waiting record is written before the install is launched, for the same reason every launch
+   * The waiting record is written before the first step is launched, for the same reason every launch
    * here writes its record first: a client that dies while the Host is installing must leave
    * something on disk that says what that install belongs to.
    *
-   * The setup is an ordinary shell session, which is what makes it visible in the list, attachable
+   * Every step is an ordinary shell session, which is what makes it visible in the list, attachable
    * while it runs and readable after it fails, with no infrastructure of its own.
    */
   async createWithSetup(
     record: SessionRecord,
     facts: WorktreeFacts,
-    commands: SessionRecordSetupCommand[],
+    steps: SessionRecordScriptStep[],
   ): Promise<SessionsOpResult<{ sessionId: string }>> {
-    const setupSessionId = this.newId()
-    const operationId = this.newId()
-    const setupRecord = this.setupRecordOf(
-      setupSessionId,
-      record.sessionId,
-      operationId,
-      facts,
-      commands,
-    )
+    const run = this.runOf(record.sessionId, steps, 0, facts.worktreePath)
     // Two writes, two different things left behind, so two different answers. The first one failing
     // is `create`'s own case: the worktree is on disk and no record names it. The second one failing
-    // leaves the waiting session recorded - it names the worktree itself - and only the install
-    // missing, which is the shape `setupJudgement` already reads as a setup that is gone.
-    if (!await this.records.put({ ...record, pendingSetup: { setupSessionId } }))
+    // leaves the waiting session recorded - it names the worktree itself - and only the run missing,
+    // which is the shape the ladder already reads as a setup that is gone.
+    if (!await this.records.put({ ...record, pendingSetup: { setupSessionId: run.sessionId, steps, cursor: 0 } }))
       return this.launch.unrecordedWorktree(facts)
-    if (!await this.records.put(setupRecord))
+    if (!await this.records.put(run))
       return SetupFlow.unrecordedSetup(record.sessionId, facts)
-    const created = await this.host.runtimeCreate({
-      operationId,
-      runtimeSessionId: setupSessionId,
-      launch: this.launch.plannedLaunch(setupRecord, 'create'),
-    })
-    // Only the setup's own record answers for the setup's launch, exactly as every other create does:
-    // a refusal the Host DECIDED ends it, anything undecided leaves its pending pair for the replay.
-    // The waiting session needs no special case either way - the next reconcile judges it by what the
-    // setup record then says, which is what it would do for an install that had run and failed.
-    if (created.ok) await this.launch.bindLive(setupRecord, created.value)
-    else if (OperationOutcomes.decided(created)) await this.launch.endRefused(setupRecord, created.detail)
+    // Only the run's own record answers for its launch, exactly as every other create does. The
+    // waiting session needs no special case either way: the next reconcile judges it by what the run
+    // record then says.
+    await this.runs.launch(run)
     return { ok: true, value: { sessionId: record.sessionId } }
   }
 
-  /**
-   * The install as a shell session with a script instead of a prompt.
-   *
-   * It carries NO `worktree` field although it runs inside one, and that is the point of writing it
-   * by hand: `LaunchPlanner.cwdOf` prefers a record's worktree path over its directory, so the field
-   * would silently move a step that asked for a directory inside the worktree - a pnpm workspace root
-   * above the project, say - back to the top of it. The directory is the first step's own, and every
-   * step cd's to its own anyway.
-   */
-  private setupRecordOf(
-    setupSessionId: string,
-    forSessionId: string,
-    operationId: string,
-    facts: WorktreeFacts,
-    commands: SessionRecordSetupCommand[],
+  /** The run of one step of a parent's before chain, not yet written. */
+  private runOf(
+    parentId: string,
+    steps: readonly SessionRecordScriptStep[],
+    cursor: number,
+    worktreePath: string,
   ): SessionRecord {
-    return {
-      sessionId: setupSessionId,
-      kind: 'shell',
-      title: `Setup ${basename(facts.worktreePath)}`,
-      directory: { mode: 'adHoc', path: commands[0].cwd },
-      commands,
-      setupFor: forSessionId,
-      binding: null,
-      life: 'starting',
-      pendingOperationId: operationId,
-      pendingOperationKind: 'create',
-      createdAt: this.now(),
+    const step = steps[cursor]
+    const run = {
+      runId: this.newId(),
+      operationId: this.newId(),
+      link: SessionScriptDefinitions.linkOf(parentId, 'before', step.scriptId, step.name, step.key),
+      title: ScriptRunRecords.titleOf(step, worktreePath),
+      now: this.now(),
     }
+    return step.process === undefined
+      ? ScriptRunRecords.shellRun({ ...run, commands: step.commands })
+      : ScriptRunRecords.processRun({ ...run, process: step.process })
   }
 
   /**
@@ -255,15 +257,18 @@ export class SetupFlow {
    * The way back from a failed setup, and the only one there is: the worktree and its branch are
    * still on disk, so creating the session again over the same slug is refused as `worktree-exists`.
    *
-   * It RE-RESOLVES instead of replaying the commands the setup record still holds. What the user did
+   * It RE-RESOLVES instead of replaying the commands the run records still hold. What the user did
    * between the failure and this call is remove the cause, and the usual way to remove it is a
    * `.worktree.json` that says something different from what was resolved the first time; replaying
    * the stored commands would walk into the same wall for ever.
    *
+   * The chain resumes at its first step the failed chain had not passed, so a failed `codegen` does
+   * not install again; a step whose command changed is a different step and runs.
+   *
    * Which is why what the fresh resolution says decides between two endings, and NEITHER of them is a
-   * refusal: something to install runs again, and nothing to install starts the session that was
-   * waiting - see `startWithoutSetup`. A retry that answered "nothing to run" would be the trap this
-   * method exists to open, one door further along.
+   * refusal: something to run runs again, and nothing to run starts the session that was waiting -
+   * see `startWithoutSetup`. A retry that answered "nothing to run" would be the trap this method
+   * exists to open, one door further along.
    */
   async retrySetup(sessionId: string, acknowledgeSetup?: string): Promise<SessionsOpResult> {
     const record = this.records.get(sessionId)
@@ -276,21 +281,26 @@ export class SetupFlow {
         code: 'invalid-spec',
         detail: `Session ${sessionId} has no failed setup to retry`,
       }
+    const held = await this.launch.startRefusal(record)
+    if (held) return held
     /*
-     * A setup record that is no longer there is minted afresh rather than refused, and the record
-     * that waits is all it takes: `setupRecordOf` asks for the worktree, the session it prepares and
-     * the commands, and the fresh resolution below answers the last of those. Removing the dead
-     * install from the list - or a crash between the two writes `createWithSetup` makes - would
-     * otherwise leave the session with every door shut at once: `reopen` refuses it for the wait, a
-     * fresh create is refused the slug its worktree already took, and this was the third refusal.
+     * Every retry is a new run under a new id, so each attempt keeps its own history entry and its own
+     * log, and the failed one collapses as superseded once its parent names the new one. It also means
+     * a missing run record - removed from the list, or a crash between the two writes of
+     * `createWithSetup` - needs nothing of its own: the waiting record is all a new run is built
+     * from. Only a run that may still be running refuses it: two runs in one worktree race.
      */
-    const setupRecord = this.records.get(record.pendingSetup.setupSessionId)
+    const previous = this.records.get(record.pendingSetup.setupSessionId)
+    if (previous && ScriptRunPlanning.liveOrBound(previous))
+      return {
+        ok: false,
+        code: 'live-refused',
+        detail: `The setup of session ${sessionId} is still running; stop it before retrying it`,
+      }
     // Both come off a file the store checks field by field and never for agreement between fields, so
     // a waiting record that names no worktree is answered rather than resolved against nothing.
     const worktree = record.worktree
-    const projectRoot = record.directory.mode === 'project' && worktree
-      ? SetupFlow.setupProjectOf(record.directory.projectPath, worktree)
-      : null
+    const projectRoot = worktree ? SetupFlow.setupProjectOf(record.directory, worktree) : null
     if (!worktree || projectRoot === null)
       return {
         ok: false,
@@ -302,24 +312,56 @@ export class SetupFlow {
     // that appeared, or changed, after the create is what this asks about. It is asked rather than
     // skipped, unlike the create path's second look, because a retry is somebody deciding to run this
     // again - there is a caller here who can answer, and the fix for a refused install is often the
-    // very edit that moved the hash.
-    const agreement = await this.setupAgreementFor(projectRoot, acknowledgeSetup)
+    // very edit that moved the hash. A damaged `scripts` key is refused here as `invalid-spec`. One
+    // read answers both the question and what runs, so nothing can change the file in between.
+    const read = await this.agreement.declared(projectRoot)
+    const agreement = this.agreement.gate(projectRoot, read, acknowledgeSetup)
     if (agreement) return agreement
-    const plan = await this.setupPlanFor(projectRoot, worktree.repositoryRoot, worktree.worktreePath)
-    if (plan.kind === 'skip') return this.startWithoutSetup(record, plan)
-    else if (plan.kind === 'run')
-      return setupRecord
-        ? this.rearmSetup(record, setupRecord, plan.commands)
-        : this.mintSetup(record, worktree, plan.commands)
-    else throw new Error(`Unknown setup plan: ${JSON.stringify(plan)}`)
+    const plan = await this.beforePlanOf(read, projectRoot, worktree.repositoryRoot, worktree.worktreePath)
+    // The checkout is no resolution of the file: the one the chain was created with leads it again.
+    const first = record.pendingSetup.steps?.[0]
+    const lead = first?.scriptId === 'svn' ? [first] : []
+    let steps: SessionRecordScriptStep[]
+    let skipped: SetupSkip | null
+    if (plan.kind === 'skip') {
+      if (lead.length === 0) return this.startWithoutSetup(record, plan, plan)
+      steps = lead
+      skipped = plan
+    }
+    else if (plan.kind === 'run') {
+      steps = [...lead, ...plan.steps]
+      skipped = plan.skipped
+    }
+    else throw new Error(`Unknown before plan: ${JSON.stringify(plan satisfies never)}`)
+    const cursor = ScriptChain.firstDue(steps, this.chainEvidenceOf(record))
+    // Every step already succeeded: what failed was a run whose step a later attempt had passed.
+    if (cursor === steps.length) return this.startWithoutSetup(record, skipped, plan.kind === 'skip' ? plan : null)
+    // A failed checkout may leave half a working copy, which a second checkout cannot take.
+    if (steps[cursor].scriptId === 'svn') {
+      const purged = await this.worktrees.purgeReserved(worktree)
+      if (!purged.ok) return purged
+    }
+    return this.restart(record, worktree, steps, cursor, skipped)
   }
 
   /**
-   * A retry that resolves to nothing to install is not a retry that failed: it is the session being
-   * told it may start. The wait goes, the marker takes its place, and the record is left `starting`
-   * with a fresh pending pair - which is exactly the shape the reconciler's own `retry-launch` rule
-   * picks up on its next pass and hands to `replayLaunch`. There is no launch to write here; the one
-   * `applySetupSucceeded` leans on is reached from this side too.
+   * The steps the failed chain already passed. The cursor only moves past a step whose run exited
+   * cleanly, and a retry only starts past steps that already had, so every step before it succeeded;
+   * this survives any number of failures, where the capped history would lose the oldest successes.
+   * A gate an older build wrote names no steps, and only the history can say anything for it.
+   */
+  private chainEvidenceOf(record: SessionRecord): ReadonlySet<string> {
+    const gate = record.pendingSetup
+    if (gate?.steps === undefined) return this.scripts.succeededKeys(record, 'before', 0)
+    return new Set(gate.steps.slice(0, gate.cursor ?? 0).map((step) => step.key))
+  }
+
+  /**
+   * A retry with nothing left to run is not a retry that failed: it is the session being told it may
+   * start. The wait goes, the marker takes its place, and the record is left `starting` with a fresh
+   * pending pair - which is exactly the shape the reconciler's own `retry-launch` rule picks up on its
+   * next pass and hands to `replayLaunch`. There is no launch to write here; the one
+   * `applyBeforeSucceeded` leans on is reached from this side too.
    *
    * The asymmetry with `create` is deliberate and this is the sentence that says so: at create time
    * an unresolvable setup is a session that starts anyway carrying `setupSkipped`, and at retry time
@@ -330,123 +372,49 @@ export class SetupFlow {
    */
   private async startWithoutSetup(
     record: SessionRecord,
-    plan: Extract<SetupPlan, { kind: 'skip' }>,
+    skipped: SetupSkip | null,
+    announced: SetupSkip | null,
   ): Promise<SessionsOpResult> {
     if (!await this.records.put({
       ...this.rearmed(record, this.newId()),
       pendingSetup: undefined,
-      setupSkipped: { reason: plan.reason },
+      setupSkipped: skipped === null ? undefined : { reason: skipped.reason },
     }))
       return OperationOutcomes.latched()
     // The result says the retry was accepted and nothing more, so what did not happen is said here,
     // for the same reason and in the same words `create` says it.
-    if (plan.announcement !== null) this.report(`Session ${record.sessionId}: ${plan.announcement}`)
+    if (announced?.announcement) this.report(`Session ${record.sessionId}: ${announced.announcement}`)
     return { ok: true, value: undefined }
   }
 
   /**
-   * The setup record takes the fresh commands AND a launch of its own BEFORE the waiting session is
-   * armed, because the gap between the two writes is a state a reconcile pass reads. A session armed
-   * over a setup record that still says `ended` with the exit code that failed is condemned on that
-   * old exit code: the retry is thrown away without a word, and `endedReason` then names a run that
-   * no longer matches the commands on disk. A setup that is `starting` and names a launch to replay
-   * is exactly what `setupJudgement` waits for, so a crash anywhere in here is finished by the next
-   * pass rather than judged by it.
-   *
-   * What the Host has is asked BEFORE either write, so a Host that cannot answer - or one still
-   * running the install - leaves both records exactly as the failure left them, with the retry still
-   * there to be asked for again.
+   * The retry: the step it resumes at is built again from what the fresh resolution says, and the
+   * wait is pointed at the new run. It is the create path in the other order - the run first, the
+   * session that waits for it second - because the gap between the two writes is a state a reconcile
+   * pass reads: a session armed over the OLD run, still `ended` with the exit code that failed, would
+   * be condemned on it, while a run that is `starting` and named by nobody yet is marked lost by the
+   * orphan rule. The Host can hold nothing under an id minted a line ago.
    */
-  private async rearmSetup(
-    record: SessionRecord,
-    setupRecord: SessionRecord,
-    commands: SessionRecordSetupCommand[],
-  ): Promise<SessionsOpResult> {
-    const routed = await this.launch.hostRouteOf(setupRecord.sessionId)
-    if (!routed.ok) return routed
-    const route = routed.value
-    if (route.kind === 'live')
-      return {
-        ok: false,
-        code: 'live-refused',
-        detail: `The setup of session ${record.sessionId} is still running; stop it before retrying it`,
-      }
-    // Minted rather than reused: the id the failed install ran under is in the Host's own operation
-    // ledger, and replaying it would be answered with that dead runtime instead of installing again.
-    const operationId = this.newId()
-    const armed: SessionRecord = {
-      ...this.rearmed(setupRecord, operationId),
-      commands,
-      directory: { mode: 'adHoc', path: commands[0].cwd },
-    }
-    if (!await this.records.put(armed)) return OperationOutcomes.latched()
-    if (!await this.records.put(this.rearmed(record, this.newId())))
-      return OperationOutcomes.latched()
-    return this.launchSetup(armed, route, operationId)
-  }
-
-  /**
-   * The retry for a session whose setup record is gone: the install is built again from what the
-   * waiting record itself says, and the wait is pointed at the new one. It is the create path in the
-   * other order - the install first, the session that waits for it second - for the same reason
-   * `rearmSetup` uses that order, and the Host can hold nothing under an id minted a line ago.
-   */
-  private async mintSetup(
+  private async restart(
     record: SessionRecord,
     worktree: SessionRecordWorktree,
-    commands: SessionRecordSetupCommand[],
+    steps: SessionRecordScriptStep[],
+    cursor: number,
+    skipped: SetupSkip | null,
   ): Promise<SessionsOpResult> {
-    const setupSessionId = this.newId()
-    const operationId = this.newId()
-    const setupRecord = this.setupRecordOf(
-      setupSessionId,
-      record.sessionId,
-      operationId,
-      worktree,
-      commands,
-    )
-    if (!await this.records.put(setupRecord)) return OperationOutcomes.latched()
+    const run = this.runOf(record.sessionId, steps, cursor, worktree.worktreePath)
+    if (!await this.records.put(run)) return OperationOutcomes.latched()
     if (!await this.records.put({
       ...this.rearmed(record, this.newId()),
-      pendingSetup: { setupSessionId },
+      pendingSetup: { setupSessionId: run.sessionId, steps, cursor },
+      setupSkipped: skipped === null ? undefined : { reason: skipped.reason },
     }))
       return OperationOutcomes.latched()
-    return this.launchSetup(setupRecord, { kind: 'create' }, operationId)
-  }
-
-  /**
-   * The armed install is put back on the Host the way `reopen` puts any record back - a replace where
-   * the Host still holds the dead runtime, a create where it holds nothing. It is NOT `reopen`
-   * itself, and that is the whole point: the record is deliberately already `starting` under the pair
-   * this call carries, which is the shape `reopen` refuses and the shape a crash here leaves behind
-   * for the reconciler to finish.
-   */
-  private async launchSetup(
-    armed: SessionRecord,
-    route: Exclude<ReopenRoute, { kind: 'live' }>,
-    operationId: string,
-  ): Promise<SessionsOpResult> {
-    const launch = this.launch.plannedLaunch(armed, 'reopen')
-    let result: HostCallResult<RuntimeResult>
-    if (route.kind === 'replace')
-      result = await this.host.runtimeReplace({ target: route.target, operationId, launch })
-    else if (route.kind === 'create')
-      result = await this.host.runtimeCreate({
-        operationId,
-        runtimeSessionId: armed.sessionId,
-        launch,
-      })
-    else
-      throw new Error(`Unknown reopen route: ${JSON.stringify(route)}`)
-    if (!result.ok) {
-      // Exactly what a refused install at create time does: a decision ends the setup record carrying
-      // the Host's words, and the next pass condemns the waiting session with them. Anything
-      // undecided keeps the pending pair, which is what the reconciler replays under the same id.
-      if (OperationOutcomes.decided(result)) await this.launch.endRefused(armed, result.detail)
-      return OperationOutcomes.failureOf(result)
-    }
-    await this.launch.bindLive(armed, result.value)
-    return { ok: true, value: undefined }
+    if (skipped?.announcement) this.report(`Session ${record.sessionId}: ${skipped.announcement}`)
+    const launched = await this.runs.launch(run)
+    return launched.ok || ScriptRunLauncher.replayArmed(this.records.get(run.sessionId))
+      ? { ok: true, value: undefined }
+      : launched
   }
 
   /**
@@ -474,59 +442,28 @@ export class SetupFlow {
   }
 
   /**
-   * The install was only ever preparing the session that is going away.
+   * A step of the chain exited cleanly: the next step starts, or after the last one the launch that
+   * was waiting runs. A wait written before chains existed names one setup step and nothing after it.
    *
-   * Where it has a runtime, that runtime is stopped and the Host's own exit event ends the record
-   * like any other. Where it has none - `starting` and unbound, which is what a Host that never
-   * answered the install's create leaves behind - stopping reaches nothing, and the pending pair
-   * would make the next reconcile pass START it: `pnpm install` running in a worktree that belongs to
-   * no session at all. So the pair goes and the record ends here instead, saying why.
-   */
-  async stopSetup(setupSessionId: string): Promise<void> {
-    const setup = this.records.get(setupSessionId)
-    if (!setup) return
-    const target = OperationOutcomes.targetOf(setup)
-    if (target) {
-      // The record this stop is for is already gone by the time this runs, so nothing will ever
-      // judge that install again: a refusal here - an unreachable Host, a lost lease, a 409 - leaves
-      // `pnpm install` running in a worktree that belongs to no session, and used to leave it
-      // silently, because this was the one Host call in this file whose answer was dropped.
-      const stopped = await this.host.runtimeStop(target)
-      if (!stopped.ok)
-        this.report(
-          `The install ${setupSessionId} could not be stopped (${stopped.code}: ${stopped.detail}); `
-          + `it may still be running in ${LaunchPlanner.cwdOf(setup)}`,
-        )
-      return
-    }
-    if (setup.pendingOperationId === undefined && setup.pendingOperationKind === undefined) return
-    await this.records.put({
-      ...setup,
-      life: 'ended',
-      pendingOperationId: undefined,
-      pendingOperationKind: undefined,
-      endedAt: this.now(),
-      endedReason: 'the session it was installing for was removed before the Host answered its launch',
-    })
-  }
-
-  /**
-   * The install is done, so the launch that was waiting for it is nothing more than the ordinary
-   * replay of the pending pair the create already wrote - under the id the Host deduplicates by,
-   * never a fresh one. Minting a new id here would be a second create of the same session for any
-   * Host that had already run the first.
+   * That launch is nothing more than the ordinary replay of the pending pair the create already
+   * wrote - under the id the Host deduplicates by, never a fresh one. Minting a new id here would be a
+   * second create of the same session for any Host that had already run the first.
    *
    * `pendingSetup` is cleared FIRST and the replay follows, because that is the order both crashes
    * survive. A client that dies between the two leaves an ordinary `starting` record with its
    * pending pair, which the next pass replays like any other interrupted launch. One that dies
-   * before the clear finds the setup still ended at 0 next pass and judges it succeeded again, which
+   * before the clear finds the run still ended at 0 next pass and judges it succeeded again, which
    * costs nothing. The other order can leave a session running while its record still says it is
    * waiting for a setup that is over.
    */
-  async applySetupSucceeded(sessionId: string): Promise<ReconcileChange | null> {
+  async applyBeforeSucceeded(sessionId: string): Promise<ReconcileChange | null> {
     const record = this.records.get(sessionId)
-    if (!record?.pendingSetup || !record.pendingOperationId || !record.pendingOperationKind)
+    const gate = record?.pendingSetup
+    if (!record || !gate || !record.pendingOperationId || !record.pendingOperationKind)
       return null
+    const next = (gate.cursor ?? 0) + 1
+    if (gate.steps !== undefined && next < gate.steps.length)
+      return this.startStep(record, gate.setupSessionId, gate.steps, next)
     if (!await this.records.put({ ...record, pendingSetup: undefined })) return null
     return this.launch.replayLaunch({
       kind: 'retry-launch',
@@ -537,17 +474,42 @@ export class SetupFlow {
   }
 
   /**
+   * The next step: run first, gate second, launch third, the order `restart` keeps for crash safety.
+   * A client that dies after the run's write leaves it named by nobody, so the orphan rule marks it
+   * lost, the step before it is judged succeeded once more, and exactly one new run is launched.
+   */
+  private async startStep(
+    parent: SessionRecord,
+    judgedRunId: string,
+    steps: SessionRecordScriptStep[],
+    cursor: number,
+  ): Promise<ReconcileChange | null> {
+    const worktreePath = parent.worktree?.worktreePath ?? steps[cursor].process?.cwd ?? steps[cursor].commands[0].cwd
+    const run = this.runOf(parent.sessionId, steps, cursor, worktreePath)
+    if (!await this.records.put(run)) return null
+    const advanced = await this.records.update(parent.sessionId, (current) =>
+      current.pendingSetup?.setupSessionId === judgedRunId
+        ? { ...current, pendingSetup: { setupSessionId: run.sessionId, steps, cursor } }
+        : null)
+    if (!advanced) return null
+    await this.runs.launch(run)
+    return { kind: 'script-succeeded', sessionId: parent.sessionId, gate: 'before' }
+  }
+
+  /**
    * The session ends where it stands, never having run. The worktree and the branch the create made
    * for it stay and are NAMED, the way `remove` names what it leaves behind: what is on disk is a
    * directory a user may want, and a retry needs it exactly where it is.
    *
-   * `pendingSetup` deliberately stays on the ended record. It is the link to the setup session whose
-   * terminal holds what actually went wrong, and the only marker a retry has to work from; the
-   * reconciler skips ended records, so it decides nothing there ever again.
+   * `pendingSetup` deliberately stays on the ended record. It is the link to the run whose terminal
+   * holds what actually went wrong, and the only marker a retry has to work from; the reconciler
+   * skips ended records, so it decides nothing there ever again. `endedReason` says the session
+   * never ran, which is what lets the cleanup of a `removeWhenEnded` worktree judge it.
    */
-  async applySetupFailed(sessionId: string, reason: string): Promise<boolean> {
+  async applyBeforeFailed(sessionId: string, reason: string): Promise<boolean> {
     const record = this.records.get(sessionId)
-    if (!record?.pendingSetup || record.life === 'ended') return false
+    const gate = record?.pendingSetup
+    if (!record || !gate || record.life === 'ended') return false
     const done = await this.records.put({
       ...record,
       life: 'ended',
@@ -557,104 +519,132 @@ export class SetupFlow {
       endedAt: this.now(),
       endedReason: `setup failed: ${reason}`,
     })
+    const failed = SetupFlow.failedStepOf(gate.steps?.[gate.cursor ?? 0])
     if (done && record.worktree)
       this.report(
-        `Session ${sessionId}: the setup failed (${reason}); `
+        `Session ${sessionId}: ${failed} failed (${reason}); `
         + `${OperationOutcomes.leftBehindOf(record.worktree)} for a retry or for you to remove`,
       )
     return done
   }
 
-  /**
-   * The resolution, and the second look at the agreement that goes with it.
-   *
-   * The gate read `.worktree.json` before the worktree was cut and this reads it again to resolve it,
-   * so the file has had a moment in which to change. Asking once more is what stops that moment from
-   * being the way in: what runs is only ever a command list this machine agreed to. A mismatch is not
-   * a refusal here - the worktree already exists - but a skip, which is the same answer the session
-   * gets for a project that declares nothing.
-   */
-  async setupPlanFor(
-    projectRoot: string,
-    repositoryRoot: string,
-    worktreePath: string,
-  ): Promise<SetupPlan> {
-    const resolution = await this.setup.resolve(projectRoot, repositoryRoot)
-    if (resolution.kind === 'setup' && resolution.origin === 'project') {
-      const declared = await this.setup.declaredSetup(projectRoot)
-      if (!declared?.acknowledged) {
-        // Two ways to arrive here and one sentence for both: the file changed after the gate agreed
-        // to it, or a retry met a setup that was never put in front of anybody.
-        const reason = `${join(projectRoot, '.worktree.json')} declares a setup this machine has `
-          + 'not agreed to run'
-        return {
-          kind: 'skip',
-          reason,
-          announcement: SetupFlow.installedNothing(worktreePath, reason),
-        }
-      }
+  /** What failed, as the report names it; a gate an older build wrote names no step and was the setup. */
+  private static failedStepOf(step: SessionRecordScriptStep | undefined): string {
+    if (step === undefined) return 'the setup'
+    const scriptId = step.scriptId
+    switch (scriptId) {
+      case 'setup': return 'the setup'
+      case 'declared': return `the before script ${step.name}`
+      case 'svn': return 'the checkout'
+      case 'checks': throw new Error('A check of an SVN action never runs before its session')
+      default: throw new Error(`Unknown chain step: ${JSON.stringify(scriptId satisfies never)}`)
     }
-    return SetupFlow.setupPlanOf(resolution, worktreePath, projectRoot)
   }
 
   /**
-   * The gate in front of a repository's own `setup`, and the only thing between a clone somebody
+   * The chain a worktree runs before its session starts, and the second look at the agreement that
+   * goes with it. Both come from the main copy's `.worktree.json`, never the worktree's own copy, so
+   * an agent cannot author the commands that run outside its sandbox.
+   *
+   * The gate read `.worktree.json` before the worktree was cut and this reads it again to resolve it,
+   * so the file has had a moment in which to change. Asking once more, over the very read the steps
+   * are built from, is what stops that moment from being the way in: what runs is only ever a command
+   * list this machine agreed to. A mismatch is not a refusal here - the worktree already exists - but
+   * a skip, which is the same answer the session gets for a project that declares nothing. The look
+   * covers every command the file declares, so a machine install is skipped too when the file beside
+   * it moved: the chain runs whole or not at all.
+   */
+  async beforePlanFor(
+    projectRoot: string,
+    repositoryRoot: string,
+    worktreePath: string,
+  ): Promise<BeforePlan> {
+    return this.beforePlanOf(await this.agreement.declared(projectRoot), projectRoot, repositoryRoot, worktreePath)
+  }
+
+  private async beforePlanOf(
+    read: DeclaredCommandsRead,
+    projectRoot: string,
+    repositoryRoot: string,
+    worktreePath: string,
+  ): Promise<BeforePlan> {
+    if (read.kind === 'read') return this.beforePlanOfRead(read, projectRoot, repositoryRoot, worktreePath)
+    // Nothing of a file that cannot be read, or whose scripts nobody can be shown, runs; not even a
+    // machine install, since the file is the project's word on what replaces it.
+    else if (read.kind === 'unreadable' || read.kind === 'damaged') return SetupFlow.skipOf(worktreePath, read.problem)
+    else throw new Error(`Unknown declared commands read: ${JSON.stringify(read satisfies never)}`)
+  }
+
+  private async beforePlanOfRead(
+    read: Extract<DeclaredCommandsRead, { kind: 'read' }>,
+    projectRoot: string,
+    repositoryRoot: string,
+    worktreePath: string,
+  ): Promise<BeforePlan> {
+    const resolution = await this.setup.resolve(projectRoot, repositoryRoot, read.config)
+    const declared = read.value?.scripts.before ?? []
+    const runsAnything = resolution.kind === 'setup' || declared.length > 0
+    if (runsAnything && !this.agreement.agreed(projectRoot, read)) {
+      // Two ways to arrive here and one sentence for both: the file changed after the gate agreed
+      // to it, or a retry met commands that were never put in front of anybody.
+      const reason = `${join(projectRoot, '.worktree.json')} declares commands this machine has `
+        + 'not agreed to run'
+      return SetupFlow.skipOf(worktreePath, reason)
+    }
+    const setup = SetupFlow.setupPlanOf(resolution, worktreePath, projectRoot)
+    const before = DeclaredScripts.stepsOf(declared, { projectRoot, repositoryRoot, worktreePath })
+    if (!before.ok) return SetupFlow.skipOf(worktreePath, before.problem)
+    if (setup.kind === 'run')
+      return { kind: 'run', steps: [SetupFlow.setupStepOf(setup.commands), ...before.steps], skipped: null }
+    else if (setup.kind === 'skip')
+      // A skipped setup with declared steps still runs them, and keeps saying why nothing installed.
+      return before.steps.length === 0 ? setup : { kind: 'run', steps: before.steps, skipped: setup }
+    else throw new Error(`Unknown setup plan: ${JSON.stringify(setup satisfies never)}`)
+  }
+
+  private static setupStepOf(commands: SessionRecordSetupCommand[]): SessionRecordScriptStep {
+    return {
+      key: ScriptChain.keyOf({ scriptId: 'setup', name: 'setup', commands }),
+      scriptId: 'setup',
+      name: 'setup',
+      commands,
+    }
+  }
+
+  private static skipOf(worktreePath: string, reason: string): SetupSkip {
+    return { kind: 'skip', reason, announcement: SetupFlow.installedNothing(worktreePath, reason) }
+  }
+
+  /**
+   * The gate in front of a repository's own commands, and the only thing between a clone somebody
    * dropped into a category root and a shell running what its `.worktree.json` says.
    *
    * Answers a refusal to be returned, or null to carry on. Three ways to carry on: the session asks
-   * for no worktree at all, the project declares no setup of its own - the detected tiers are this
+   * for no worktree at all, the project declares nothing of its own - the detected tiers are this
    * machine's own answers and are not foreign - or this machine has already agreed to exactly these
    * commands. The agreement travels back in the spec, so the answer belongs to the person who was
    * shown the commands rather than to a flag somebody could set without ever seeing them.
    */
   async setupAgreement(
     spec: SessionCreateSpec,
+    placement: WorktreePlacement | null,
   ): Promise<SessionsOpResult<never> | null> {
-    if (!spec.worktree) return null
-    return this.setupAgreementFor(
-      spec.worktree.owner ?? OperationOutcomes.projectRootOf(spec.directory),
-      spec.acknowledgeSetup,
-    )
+    if (!spec.worktree || placement === null) return null
+    const projectRoot = placement.ownerDir
+    return this.agreement.gate(projectRoot, await this.agreement.declared(projectRoot), spec.acknowledgeSetup)
   }
 
   /**
-   * Whose `.worktree.json` and dependencies a worktree installs. A Git worktree copies the whole
-   * repository, so the project inside it decides. An SVN worktree checks out its owner, which is
-   * the project or a member of it below, and only the owner is there to install.
+   * Whose `.worktree.json` and dependencies a worktree installs, or null. A Git worktree copies the
+   * whole repository, so the catalog project inside it decides. An SVN worktree checks out its
+   * owner - a product group, a catalog project or an ad-hoc directory - and only the owner is there
+   * to install.
    */
-  static setupProjectOf(projectRoot: string, worktree: SessionRecordWorktree): string {
+  static setupProjectOf(directory: SessionDirectoryRef, worktree: SessionRecordWorktree): string | null {
     const kind = worktree.kind ?? 'git'
-    if (kind === 'git') return projectRoot
+    if (kind === 'git') return directory.mode === 'project' ? directory.projectPath : null
     else if (kind === 'svn') return worktree.repositoryRoot
-    else throw new Error(`Unknown worktree kind: ${JSON.stringify(kind)}`)
-  }
-
-  /** The same question for the retry, which resolves afresh and can be answered by its caller too. */
-  private async setupAgreementFor(
-    projectRoot: string,
-    acknowledgeSetup: string | undefined,
-  ): Promise<SessionsOpResult<never> | null> {
-    const declared = await this.setup.declaredSetup(projectRoot)
-    if (!declared || declared.acknowledged) return null
-    if (acknowledgeSetup === declared.hash) {
-      this.setup.acknowledgeSetup(projectRoot, declared.hash)
-      return null
-    }
-    return SetupFlow.setupRefusal(projectRoot, declared)
-  }
-
-  private static setupRefusal(
-    projectRoot: string,
-    declared: DeclaredSetup,
-  ): SessionsOpResult<never> {
-    return {
-      ok: false,
-      code: 'setup-not-acknowledged',
-      detail: `${join(projectRoot, '.worktree.json')} asks to run ${declared.commands.length} `
-        + `command${declared.commands.length === 1 ? '' : 's'} in a fresh worktree, and this machine `
-        + 'has not agreed to them',
-      setup: { commands: declared.commands, hash: declared.hash },
-    }
+    else throw new Error(`Unknown worktree kind: ${JSON.stringify(kind satisfies never)}`)
   }
 
   /**

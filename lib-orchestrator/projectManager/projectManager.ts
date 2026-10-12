@@ -22,6 +22,7 @@ import type { RuntimeChannel } from '../shared/configIdentity.types'
 import { ErrorText } from '../shared/errorText'
 import { OrchestratorPaths } from '../shared/orchestratorPaths'
 import { PathCompare } from '../shared/pathCompare'
+import type { TreeRemove } from '../shared/treeRemoval'
 import { DisplayGrouping } from './projects/displayGrouping'
 import { ProjectDeletion } from './projects/projectDeletion'
 import { ProjectLifecycle } from './projects/projectLifecycle'
@@ -51,6 +52,8 @@ export interface ProjectManagerDeps {
   onError: (message: string) => void
   claudeHome?: string
   codexHome?: string
+  /** How a project directory or a relocation leftover goes; Node's own `rm` when absent (`TreeRemoval`). */
+  removeTree?: TreeRemove
 }
 
 /**
@@ -136,6 +139,7 @@ export class ProjectManager {
       invalidateAll: () => this.invalidateAll(),
       forgetRewritten: (provider, file) => this.forgetRewritten(provider, file),
       report,
+      removeTree: deps.removeTree,
     })
     this.deletion = new ProjectDeletion({
       claudeHome,
@@ -146,6 +150,7 @@ export class ProjectManager {
       guard,
       invalidateAll: () => this.invalidateAll(),
       report,
+      removeTree: deps.removeTree,
     })
   }
 

@@ -1,11 +1,12 @@
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { AppClientUiBridge } from '../../../../shared/appClientUiIpc'
+import type { AppClientUiBridge, IpcResult } from '../../../../shared/appClientUiIpc'
 import type { DirectoryNote } from '../../../../shared/directoryNotes'
 import { TerminalNotesMessages } from './terminalNotesMessages'
 import { useTerminalNotes } from './useTerminalNotes'
 import type { TerminalNotesModel } from './useTerminalNotes'
+import { ControlBridgeFixture } from '../../../ipc/fixtures/controlBridgeFixture'
 
 describe('app-client-ui/renderer/panels/terminal/notes/useTerminalNotes', () => {
   interface Call {
@@ -51,7 +52,16 @@ describe('app-client-ui/renderer/panels/terminal/notes/useTerminalNotes', () => 
     taken = 0
     model = null
     const bridge = {
-      directoryNotes: { get: called(gets), save: called(saves), importPrompt: called(imports) },
+      control: ControlBridgeFixture.routes({
+        'directoryNotes.get': { library: (body: { sessionId: string }) => called(gets)(body.sessionId) as Promise<IpcResult<unknown>> },
+        'directoryNotes.save': {
+          library: (body: { sessionId: string; notes: readonly DirectoryNote[] }) =>
+            called(saves)(body.sessionId, body.notes) as Promise<IpcResult<unknown>>,
+        },
+        'directoryNotes.importPrompt': {
+          value: (body: { sessionId: string }) => called(imports)(body.sessionId) as Promise<IpcResult<unknown>>,
+        },
+      }),
       onDirectoryNotesChanged: (callback: (directory: string) => void) => {
         listeners.push(callback)
         return () => { listeners = listeners.filter((listener) => listener !== callback) }

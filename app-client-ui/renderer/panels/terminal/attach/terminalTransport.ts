@@ -12,6 +12,7 @@ import type { IpcResult } from '../../../../shared/appClientUiIpc'
 import { AppClientUiReport } from '../../../../shared/appClientUiReport'
 import type { TerminalTarget } from '../../../../shared/terminalTarget'
 import { IpcFailure } from '../../../ipc/ipcFailure'
+import { AppControl } from '../../../ipc/appControl'
 
 /**
  * Why a screen was lost, where the answer had a code to give.
@@ -93,7 +94,7 @@ export class TerminalTransports {
     return {
       localTools: true,
       label: `Terminal for session ${sessionId}`,
-      reopen: async () => IpcFailure.of(await window.appClient.sessions.reopen(sessionId)),
+      reopen: async () => IpcFailure.of(await AppControl.sessionsDone('sessions.reopen', { session: AppControl.sessionOf(sessionId) })),
       attachment: (attachId) => ({
         attach: async (size) => {
           const answer = await window.appClient.terminal.attach(attachId, { sessionId, size })

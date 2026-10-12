@@ -10,6 +10,7 @@ import type {
 } from '../../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import type { RemoteControlTabsPort } from '../../../lib-orchestrator/remoteControl/remoteControl'
 import type { TabControlAck, TabControlCommand } from '../../shared/tabControl'
+import type { VersioningCommitPath } from '../../shared/versioningCommit'
 import type { WorkspaceWindows } from '../shell/workspaceWindows'
 import type { WorkspacePanelIndex } from './workspacePanelIndex'
 import type { TabFileOpenResolver } from './tabFileOpenResolver'
@@ -88,7 +89,7 @@ export class TabControlBroker implements RemoteControlTabsPort {
   }
 
   async openCommit(sessionId: string, tabTitle: string, vcs: 'svn' | 'git', scope: string | null,
-    proposal: string | null, options: { showRefusal?: true; paths?: readonly string[]; fresh?: true }): Promise<RemoteControlStepResult<RemoteControlTabOpenCommitDto>> {
+    proposal: string | null, options: { showRefusal?: true; paths?: readonly VersioningCommitPath[]; fresh?: true }): Promise<RemoteControlStepResult<RemoteControlTabOpenCommitDto>> {
     return this.withCommitTurn(() => this.openCommitNow(sessionId, tabTitle, vcs, scope, proposal, options))
   }
 

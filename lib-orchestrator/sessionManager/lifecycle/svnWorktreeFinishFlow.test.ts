@@ -4,116 +4,56 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import type {
-  SvnBounds,
-  SvnLoggedRow,
-  SvnMainUpdate,
-  SvnResult,
-  SvnRoot,
-  SvnStatusRow,
-  SvnUnlanded,
-  SvnWorktreeFacts,
-  SvnWorktreeLocation,
-  SvnWorktreeUpdate,
-} from '../../svn/svn.types'
+import type { SvnResult, SvnStatusRow, SvnWorktreeFacts, SvnWorktreeLocation } from '../../svn/svn.types'
 import type { SessionRecord } from '../records/sessionRecord.types'
 import { SessionRecordsStore } from '../records/sessionRecordsStore'
-import type { SessionsOpResult } from '../sessionManagerApi.types'
-import type { SessionReviewPort, SessionReviewSettled } from '../sessionReviewPort.types'
-import { type SvnFinishPort, SvnWorktreeFinishFlow } from './svnWorktreeFinishFlow'
+import { WorktreeResultsStore } from '../results/worktreeResultsStore'
+import type { SessionFinishPress, SessionsOpResult, SvnFinishWorktreeResult, SvnLabelledRevision } from '../sessionManagerApi.types'
+import { type SvnActionsPort, type SvnCleanupPort, SvnWorktreeFinishFlow } from './svnWorktreeFinishFlow'
+import { type SvnRemovalPort, SvnWorktreeRemoval } from './svnWorktreeRemoval'
 import { WorktreeCleanupPacing } from './worktreeCleanupPacing'
 
 describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow', () => {
   const ownerConst = 'Q:\\Work\\App'
   const worktreeConst = `${ownerConst}\\.worktrees\\014-fix-login`
-  const mountConst = `${worktreeConst}\\lib`
   const urlConst = 'https://svn.test/repos/app/trunk'
-  const repositoryConst = 'https://svn.test/repos/app'
-  const sharedConst = 'https://svn.test/repos/shared'
   const created: string[] = []
 
   afterEach(() => {
     for (const directory of created.splice(0)) rmSync(directory, { recursive: true, force: true })
   })
 
-  const row = (path: string, kind: SvnStatusRow['kind'] = 'item'): SvnStatusRow => ({ kind, conflict: false, path })
-  const logged = (revision: number, path: string, action: SvnLoggedRow['action'] = 'M'): SvnLoggedRow => ({ revision, action, path })
-  const worktreeRoot = (changed: SvnStatusRow[]): SvnRoot => ({ path: worktreeConst, own: '', changed })
-  const mountRoot = (changed: SvnStatusRow[]): SvnRoot => ({ path: mountConst, own: 'lib', changed })
+  const row = (path: string): SvnStatusRow => ({ kind: 'item', conflict: false, path })
   const ok = <T>(value: T): SvnResult<T> => ({ ok: true, value })
 
-  /** Every call in order, the shared log of the svn fake, the holders and the review port. */
-  class FakeSvn implements SvnFinishPort {
+  /** The svn reads of the cleanup and the disk writes of the removal, logged in one list. */
+  class FakeSvn implements SvnCleanupPort, SvnRemovalPort {
     readonly log: string[]
-    ownerRefusal: string | null = null
-    rootsValue: SvnRoot[] = [worktreeRoot([])]
-    recoverableByOwn: Record<string, SvnLoggedRow[]> = {}
-    updates: SvnWorktreeUpdate[] = []
-    bounds: SvnBounds = { '': { repository: repositoryConst, base: '/trunk', rootBase: 10, since: 11 } }
-    reviewedByRevision: Record<number, SvnLoggedRow[]> = {}
-    provenByOwn: Record<string, SvnLoggedRow[] | string> = {}
-    changesByPath: Record<string, SvnStatusRow[]> = {}
-    main: SvnMainUpdate = { main: 'updated', lines: [] }
-    readonly mainRows: SvnLoggedRow[][] = []
+    changesByPath: Record<string, SvnStatusRow[] | string> = {}
     rename: 'renamed' | 'in-use' | 'absent' | Error = 'renamed'
     purge: 'removed' | 'undeleted' = 'removed'
-    unlandedValue: SvnUnlanded[] | string = []
     presentValue = true
+    /** Holds every `changes` read until it settles, the way a slow `svn status` of a large worktree does. */
+    gate: Promise<void> | null = null
 
     constructor(log: string[]) {
       this.log = log
     }
 
-    ownerCheck(): Promise<SvnResult<void>> {
-      this.log.push('ownerCheck')
-      return Promise.resolve(this.ownerRefusal === null ? ok(undefined) : { ok: false, code: 'refused', detail: this.ownerRefusal })
-    }
-
-    roots(): Promise<SvnResult<SvnRoot[]>> {
-      this.log.push('roots')
-      return Promise.resolve(ok(this.rootsValue))
-    }
-
-    recoverable(root: SvnRoot): Promise<SvnResult<SvnLoggedRow[]>> {
-      this.log.push(`recoverable ${root.own}`)
-      return Promise.resolve(ok(this.recoverableByOwn[root.own] ?? []))
-    }
-
-    updateWorktree(): Promise<SvnResult<SvnWorktreeUpdate>> {
-      this.log.push('updateWorktree')
-      const next = this.updates.length > 1 ? this.updates.shift() : this.updates[0]
-      if (next === undefined) throw new Error('no update scripted')
-      return Promise.resolve(ok(next))
-    }
-
-    lowerBounds(roots: readonly SvnRoot[]): Promise<SvnResult<SvnBounds>> {
-      this.log.push(`lowerBounds ${roots.map((root) => root.own || '.').join(',')}`)
-      return Promise.resolve(ok(this.bounds))
-    }
-
-    proven(root: SvnRoot): Promise<SvnResult<SvnLoggedRow[]>> {
-      this.log.push(`proven ${root.own}`)
-      const proof = this.provenByOwn[root.own] ?? []
-      return Promise.resolve(typeof proof === 'string' ? { ok: false, code: 'refused', detail: proof } : ok(proof))
-    }
-
-    reviewed(root: SvnRoot, _bounds: SvnBounds, revision: number): Promise<SvnResult<SvnLoggedRow[]>> {
-      this.log.push(`reviewed ${root.own} r${revision}`)
-      const rows = this.reviewedByRevision[revision]
-      return Promise.resolve(rows === undefined
-        ? { ok: false, code: 'refused', detail: `SVN history does not confirm review revision r${revision}` }
-        : ok(rows))
-    }
-
-    changes(path: string): Promise<SvnResult<SvnStatusRow[]>> {
+    async changes(path: string): Promise<SvnResult<SvnStatusRow[]>> {
       this.log.push(`changes ${path}`)
-      return Promise.resolve(ok(this.changesByPath[path] ?? []))
+      await this.gate
+      const value = this.changesByPath[path] ?? []
+      return typeof value === 'string' ? { ok: false, code: 'svn-failed', detail: value } : ok(value)
     }
 
-    updateMain(mainCopy: string, landed: readonly SvnLoggedRow[]): Promise<SvnResult<SvnMainUpdate>> {
-      this.log.push(`updateMain ${mainCopy}`)
-      this.mainRows.push([...landed])
-      return Promise.resolve(ok(this.main))
+    present(worktreePath: string): Promise<boolean> {
+      this.log.push(`present ${worktreePath}`)
+      return Promise.resolve(this.presentValue)
+    }
+
+    facts(): Promise<SvnResult<SvnWorktreeFacts>> {
+      return Promise.resolve(ok({ added: 3, removed: 1, changedFiles: 2 }))
     }
 
     renameAside(location: SvnWorktreeLocation): Promise<SvnResult<'renamed' | 'in-use' | 'absent'>> {
@@ -130,59 +70,23 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow', () =
       this.log.push(`removeEmptyWorktreesDir ${ownerDir}`)
       return Promise.resolve()
     }
-
-    facts(): Promise<SvnResult<SvnWorktreeFacts>> {
-      return Promise.resolve(ok({ added: 3, removed: 1, changedFiles: 2 }))
-    }
-
-    unlanded(worktreePath: string, mainCopy: string): Promise<SvnResult<SvnUnlanded[]>> {
-      this.log.push(`unlanded ${worktreePath} ${mainCopy}`)
-      const value = this.unlandedValue
-      return Promise.resolve(typeof value === 'string' ? { ok: false, code: 'svn-failed', detail: value } : ok(value))
-    }
-
-    present(worktreePath: string): Promise<boolean> {
-      this.log.push(`present ${worktreePath}`)
-      return Promise.resolve(this.presentValue)
-    }
   }
 
-  /** Reviews open as c1, c2, ...; each settles when the test says so, or at once when scripted. */
-  class FakeReview implements SessionReviewPort {
-    readonly log: string[]
-    readonly opened: { sessionId: string; scopeRoot: string; proposal: string }[] = []
-    readonly scripted = new Map<string, SessionReviewSettled>()
-    private readonly waiting = new Map<string, (settled: SessionReviewSettled) => void>()
+  /** The SVN action as the facade reaches it: every press is logged and answered as a case says. */
+  class FakeActions implements SvnActionsPort {
+    readonly presses: { sessionId: string; press: SessionFinishPress }[] = []
+    answer: SessionsOpResult<{ actionId: string | null }> = { ok: true, value: { actionId: 'action-1' } }
+    ending: SvnFinishWorktreeResult | null = 'removed'
+    settledCalls: string[] = []
 
-    constructor(log: string[]) {
-      this.log = log
+    start(sessionId: string, press: SessionFinishPress): Promise<SessionsOpResult<{ actionId: string | null }>> {
+      this.presses.push({ sessionId, press })
+      return Promise.resolve(this.answer)
     }
 
-    open(input: { sessionId: string; scopeRoot: string; proposal: string }): Promise<SessionsOpResult<{ commitSessionId: string }>> {
-      this.opened.push(input)
-      const commitSessionId = `c${this.opened.length}`
-      this.log.push(`open ${commitSessionId} ${input.scopeRoot}`)
-      return Promise.resolve({ ok: true, value: { commitSessionId } })
-    }
-
-    settled(commitSessionId: string, signal: AbortSignal): Promise<SessionReviewSettled> {
-      const answer = this.scripted.get(commitSessionId)
-      if (answer !== undefined) return Promise.resolve(answer)
-      return new Promise((resolve, reject) => {
-        this.waiting.set(commitSessionId, resolve)
-        signal.addEventListener('abort', () => reject(new Error('stopped waiting')))
-      })
-    }
-
-    isWaiting(commitSessionId: string): boolean {
-      return this.waiting.has(commitSessionId)
-    }
-
-    settle(commitSessionId: string, settled: SessionReviewSettled): void {
-      const resolve = this.waiting.get(commitSessionId)
-      if (resolve === undefined) throw new Error(`nobody waits for ${commitSessionId}`)
-      this.waiting.delete(commitSessionId)
-      resolve(settled)
+    settled(sessionId: string): Promise<SvnFinishWorktreeResult | null> {
+      this.settledCalls.push(sessionId)
+      return Promise.resolve(this.ending)
     }
   }
 
@@ -190,55 +94,74 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow', () =
     flow: SvnWorktreeFinishFlow
     store: SessionRecordsStore
     svn: FakeSvn
-    review: FakeReview
+    actions: FakeActions
     log: string[]
-    reports: string[]
-    /** Each call of `ended`, with the outcome the record held at that moment. */
-    ended: { sessionId: string; outcome: string | null }[]
+    ended: string[]
+    /** The main copies a cleanup that left a landed row asked the manager to read again. */
+    landedDue: string[]
     record: () => SessionRecord | null
-    /** Until every detached finish has ended. */
-    settled: () => Promise<void>
+    results: WorktreeResultsStore
+    /** What `ownCommits` answers for the worktree before the cleanup removes it. */
+    own: { value: SvnLabelledRevision[]; reads: number }
   }
 
   async function harness(options: {
     overrides?: Partial<SessionRecord>
-    withoutReview?: true
+    refusal?: SessionsOpResult<never>
     /** Runs before each step on the operation queue, the way a reopen queued ahead of it would. */
     beforeQueue?: (store: SessionRecordsStore) => Promise<void>
   } = {}): Promise<Harness> {
     const root = mkdtempSync(join(tmpdir(), 'jamat-v3-svn-finish-flow-'))
     created.push(root)
-    const reports: string[] = []
     const log: string[] = []
     const store = await SessionRecordsStore.load(join(root, 'session-records.json'), {
       snapshotsDirectory: join(root, 'snapshots'),
-      report: (message) => reports.push(message),
+      report: () => undefined,
     })
     await store.put(recordOf(options.overrides))
     const svn = new FakeSvn(log)
-    const review = new FakeReview(log)
-    const detached: Promise<unknown>[] = []
-    const ended: Harness['ended'] = []
-    const flow = new SvnWorktreeFinishFlow({
+    const actions = new FakeActions()
+    const ended: string[] = []
+    const landedDue: string[] = []
+    const removal = new SvnWorktreeRemoval({
       records: store,
       svn,
-      reviewOf: () => options.withoutReview ? null : review,
       releaseBelow: (path) => { log.push(`releaseBelow ${path}`); return Promise.resolve() },
       onQueue: async (work) => {
         await options.beforeQueue?.(store)
         return work()
       },
-      detach: (work) => { detached.push(work) },
-      report: (message) => reports.push(message),
       changed: () => undefined,
-      ended: (sessionId) => { ended.push({ sessionId, outcome: store.get(sessionId)?.worktreeOutcome?.result ?? null }) },
       now: () => 5_000,
     })
-    return {
-      flow, store, svn, review, log, reports, ended,
-      record: () => store.get('s1'),
-      settled: async () => { await Promise.all(detached) },
-    }
+    const own: Harness['own'] = { value: [], reads: 0 }
+    const results = new WorktreeResultsStore(join(root, 'results'), {
+      now: () => 5_000,
+      logs: { existingPathOf: async () => null, briefPathOf: (parentId, actionId) => join(root, parentId, `${actionId}-conflicts.txt`) },
+      report: () => undefined,
+    })
+    let minted = 0
+    const flow = new SvnWorktreeFinishFlow({
+      records: store,
+      svn,
+      removal,
+      actions,
+      labels: {
+        ownCommits: async () => {
+          own.reads += 1
+          return { ok: true, value: own.value }
+        },
+      },
+      results,
+      finishRefusal: () => options.refusal ?? null,
+      changed: () => undefined,
+      ended: (sessionId) => { ended.push(sessionId) },
+      landedDue: (mainCopy) => { landedDue.push(mainCopy) },
+      report: () => undefined,
+      now: () => 5_000,
+      newId: () => `cleanup-${++minted}`,
+    })
+    return { flow, store, svn, actions, log, ended, landedDue, record: () => store.get('s1'), results, own }
   }
 
   function recordOf(overrides: Partial<SessionRecord> = {}): SessionRecord {
@@ -263,18 +186,6 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow', () =
     }
   }
 
-  /** One changed file in the worktree itself, which a review commits as r12 unless a case says otherwise. */
-  function oneChange(it_: Harness, changed = [row('a.txt')]): void {
-    it_.svn.rootsValue = [worktreeRoot([])]
-    it_.svn.updates = [{ kind: 'current', changed, roots: [worktreeRoot(changed)] }]
-    it_.svn.reviewedByRevision[12] = [logged(12, 'a.txt')]
-  }
-
-  function refusalOf(result: SessionsOpResult): { code: string; detail: string } {
-    if (result.ok) throw new Error('expected a refusal')
-    return { code: result.code, detail: result.detail }
-  }
-
   async function until(predicate: () => boolean): Promise<void> {
     for (let attempt = 0; attempt < 500; attempt += 1) {
       if (predicate()) return
@@ -283,440 +194,94 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow', () =
     throw new Error('the condition never held')
   }
 
-  it('commits through the receipt, updates the main copy and removes the worktree', async () => {
+  it('takes Commit, Keep and Discard as presses of the SVN action, which runs the checks itself', async () => {
     const it_ = await harness()
-    oneChange(it_)
 
-    // The answer comes while the person is still in the review.
-    expect(await it_.flow.finish('s1')).toEqual({ ok: true, value: undefined })
-    expect(it_.review.opened).toEqual([{ sessionId: 's1', scopeRoot: worktreeConst, proposal: 'fix login' }])
-    expect(it_.record()?.worktreeFinish).toMatchObject({ phase: 'reviewing', scopeRoot: worktreeConst, commitSessionId: 'c1' })
-    await until(() => it_.review.isWaiting('c1'))
-
-    it_.review.settle('c1', { state: 'committed', revision: '12' })
-    await it_.settled()
-
-    const record = it_.record()
-    expect(record?.worktreeOutcome).toEqual({
-      result: 'committed',
-      revisions: [`${repositoryConst}:r12`],
-      main: 'updated',
-      worktree: 'removed',
-      lines: [`-> committed app:r12 from ${worktreeConst}`, '   worktree removed'],
-      at: 5_000,
-    })
-    expect(it_.svn.mainRows).toEqual([[logged(12, 'a.txt')]])
-    expect(record?.worktree).toBeUndefined()
-    expect(record?.worktreeFinish).toBeUndefined()
-    expect(record?.completed).toBe(true)
-    expect(record?.retiredWorktree).toEqual({ worktreePath: worktreeConst, kind: 'svn', revisions: [`${repositoryConst}:r12`], removedAt: 5_000 })
-    expect(it_.log.indexOf(`releaseBelow ${worktreeConst}`)).toBeLessThan(it_.log.indexOf(`renameAside ${worktreeConst} 1:2:3`))
-    expect(it_.reports).toEqual([])
-    // Only at the end of the detached part, once the outcome is on the record.
-    expect(it_.ended).toEqual([{ sessionId: 's1', outcome: 'committed' }])
+    expect(it_.flow.ownsChecks).toBe(true)
+    expect(await it_.flow.finish('s1', { choice: 'commit', acknowledgeSetup: 'hash-1', requestedBy: 'window' }))
+      .toEqual({ ok: true, value: { actionId: 'action-1' } })
+    expect(await it_.flow.keep('s1')).toEqual({ ok: true, value: undefined })
+    expect(it_.actions.presses).toEqual([
+      { sessionId: 's1', press: { choice: 'commit', acknowledgeSetup: 'hash-1', requestedBy: 'window' } },
+      { sessionId: 's1', press: { choice: 'keep', requestedBy: 'window' } },
+    ])
   })
 
-  it('keeps the worktree and the main copy when the review was cancelled', async () => {
-    const it_ = await harness()
-    oneChange(it_)
-    it_.svn.changesByPath[worktreeConst] = [row('a.txt')]
-    it_.review.scripted.set('c1', { state: 'cancelled' })
-
-    await it_.flow.finish('s1')
-    await it_.settled()
-
-    expect(it_.record()?.worktreeOutcome).toMatchObject({
-      result: 'not-committed', worktree: 'kept', main: 'none',
-      lines: [`NOT COMMITTED: the review ended without a commit; ${worktreeConst} is kept`],
-    })
-    expect(it_.log.some((entry) => entry.startsWith('updateMain'))).toBe(false)
-    expect(it_.log.some((entry) => entry.startsWith('renameAside'))).toBe(false)
-    expect(it_.record()?.worktree).toBeDefined()
-    expect(it_.record()?.worktreeFinish).toBeUndefined()
-    expect(it_.ended).toEqual([])
-  })
-
-  it('lands what the receipt names and keeps the rest as partial', async () => {
-    const it_ = await harness()
-    oneChange(it_, [row('a.txt'), row('b.txt')])
-    it_.svn.changesByPath[worktreeConst] = [row('b.txt')]
-    it_.review.scripted.set('c1', { state: 'committed', revision: '12' })
-
-    await it_.flow.finish('s1')
-    await it_.settled()
-
-    expect(it_.record()?.worktreeOutcome).toMatchObject({
-      result: 'partial', worktree: 'kept', main: 'updated', revisions: [`${repositoryConst}:r12`],
-      lines: [`PARTIAL: app:r12 left 1 change(s) in ${worktreeConst}; the worktree is kept`, '  b.txt'],
-    })
-    expect(it_.svn.mainRows).toEqual([[logged(12, 'a.txt')]])
-    expect(it_.reports).toHaveLength(1)
-    expect(it_.ended).toEqual([])
-  })
-
-  it('stops on an update conflict before any review, naming at most twenty paths', async () => {
-    const it_ = await harness()
-    const paths = Array.from({ length: 25 }, (_, index) => `src/file${index}.ts`)
-    it_.svn.updates = [{ kind: 'conflict', paths }]
-
-    const refusal = refusalOf(await it_.flow.finish('s1'))
-
-    expect(refusal.code).toBe('worktree-conflict')
-    const lines = refusal.detail.split('\n')
-    expect(lines[0]).toBe(`CONFLICT: ${worktreeConst}`)
-    expect(lines.filter((line) => line.startsWith('  src/'))).toHaveLength(20)
-    expect(it_.review.opened).toEqual([])
-    expect(it_.record()?.worktreeOutcome).toMatchObject({ result: 'conflict', worktree: 'kept' })
-    expect(it_.record()?.worktreeFinish).toBeUndefined()
-    expect(it_.ended).toEqual([])
-  })
-
-  it('stops after taking in other commits, and the next press opens the review', async () => {
-    const it_ = await harness()
-    oneChange(it_)
-    it_.svn.updates = [{ kind: 'updated', toRevision: 15, paths: ['src/shared.ts'] }, ...it_.svn.updates]
-
-    const refusal = refusalOf(await it_.flow.finish('s1'))
-    expect(refusal.code).toBe('worktree-updated')
-    expect(refusal.detail).toContain('UPDATED to r15: other commits changed the project of this change set:')
-    expect(refusal.detail).toContain('Reopen the session to rerun the tests, or press Finish again to commit as it is')
-    expect(it_.review.opened).toEqual([])
-    expect(it_.ended).toEqual([])
-
-    expect(await it_.flow.finish('s1')).toEqual({ ok: true, value: undefined })
-    expect(it_.review.opened).toHaveLength(1)
-  })
-
-  it('removes the worktree after a main-copy conflict and says so', async () => {
-    const it_ = await harness()
-    oneChange(it_)
-    it_.svn.main = { main: 'conflict:1', lines: ['MAIN CONFLICT a.txt'] }
-    it_.review.scripted.set('c1', { state: 'committed', revision: '12' })
-
-    await it_.flow.finish('s1')
-    await it_.settled()
-
-    expect(it_.record()?.worktreeOutcome).toMatchObject({ result: 'committed', main: 'conflict:1', worktree: 'removed' })
-    expect(it_.record()?.worktreeOutcome?.lines).toContain('MAIN CONFLICT a.txt')
-    expect(it_.reports.join('\n')).toContain('MAIN CONFLICT a.txt')
-    expect(it_.ended).toEqual([])
-  })
-
-  describe('external mounts', () => {
-    function withMount(it_: Harness): void {
-      const mounted = [row('lib/x.txt')]
-      const own = [row('a.txt')]
-      it_.svn.rootsValue = [mountRoot([]), worktreeRoot([])]
-      it_.svn.updates = [{ kind: 'current', changed: [...mounted, ...own], roots: [mountRoot(mounted), worktreeRoot(own)] }]
-      it_.svn.bounds = {
-        lib: { repository: sharedConst, base: '/lib', rootBase: 30, since: 31 },
-        '': { repository: repositoryConst, base: '/trunk', rootBase: 10, since: 11 },
-      }
-      it_.svn.reviewedByRevision[32] = [logged(32, 'lib/x.txt')]
-      it_.svn.reviewedByRevision[12] = [logged(12, 'a.txt')]
-    }
-
-    it('reviews a changed mount first and stops before the parent when it was not committed', async () => {
-      const it_ = await harness()
-      withMount(it_)
-      it_.svn.changesByPath[mountConst] = [row('lib/x.txt')]
-      it_.svn.changesByPath[worktreeConst] = [row('lib/x.txt'), row('a.txt')]
-      it_.review.scripted.set('c1', { state: 'cancelled' })
-
-      await it_.flow.finish('s1')
-      await it_.settled()
-
-      expect(it_.review.opened.map((opened) => opened.scopeRoot)).toEqual([mountConst])
-      expect(it_.record()?.worktreeOutcome).toMatchObject({
-        result: 'not-committed', worktree: 'kept',
-        lines: [`NOT COMMITTED: external lib; ${worktreeConst} is kept and nothing outside that mount was reviewed`],
-      })
-    })
-
-    it('publishes a clean mount, then reviews the parent', async () => {
-      const it_ = await harness()
-      withMount(it_)
-      it_.review.scripted.set('c1', { state: 'committed', revision: '32' })
-      it_.review.scripted.set('c2', { state: 'committed', revision: '12' })
-
-      await it_.flow.finish('s1')
-      await it_.settled()
-
-      expect(it_.review.opened.map((opened) => opened.scopeRoot)).toEqual([mountConst, worktreeConst])
-      expect(it_.record()?.worktreeOutcome).toMatchObject({
-        result: 'committed', worktree: 'removed',
-        revisions: [`${repositoryConst}:r12`, `${sharedConst}:r32`],
-      })
-      expect(it_.record()?.worktreeOutcome?.lines).toContain('EXTERNAL PUBLISHED r32 shared lib/x.txt')
-    })
-  })
-
-  describe('a review without a receipt', () => {
-    it('commits on the BASE proof after an external client closed', async () => {
-      const it_ = await harness()
-      oneChange(it_)
-      it_.svn.provenByOwn[''] = [logged(13, 'a.txt')]
-      it_.review.scripted.set('c1', { state: 'external-closed' })
-
-      await it_.flow.finish('s1')
-      await it_.settled()
-
-      expect(it_.log).toContain('proven ')
-      expect(it_.record()?.worktreeOutcome).toMatchObject({ result: 'committed', revisions: [`${repositoryConst}:r13`] })
-    })
-
-    it('stops UNVERIFIED without a proof, and keeps the worktree', async () => {
-      const it_ = await harness()
-      oneChange(it_)
-      it_.svn.provenByOwn[''] = 'a.txt left BASE r10 for r14 during the review; no proof without a review receipt'
-      it_.svn.changesByPath[worktreeConst] = [row('a.txt')]
-      it_.review.scripted.set('c1', { state: 'external-closed' })
-
-      await it_.flow.finish('s1')
-      await it_.settled()
-
-      const outcome = it_.record()?.worktreeOutcome
-      expect(outcome).toMatchObject({ result: 'failed', worktree: 'kept' })
-      expect(outcome?.lines[0]).toMatch(/^UNVERIFIED: the review of /)
-      expect(outcome?.lines).toContain('ERROR: no verified revision can be attributed to this review')
-    })
-
-    it('reads a comma list of several scopes as no receipt', async () => {
-      const it_ = await harness()
-      oneChange(it_)
-      it_.svn.provenByOwn[''] = [logged(12, 'a.txt')]
-      it_.review.scripted.set('c1', { state: 'committed', revision: '12, 13' })
-
-      await it_.flow.finish('s1')
-      await it_.settled()
-
-      expect(it_.log.some((entry) => entry.startsWith('reviewed'))).toBe(false)
-      expect(it_.record()?.worktreeOutcome?.result).toBe('committed')
-    })
-  })
-
-  it('recovers a commit the main copy lacks and finishes without a review', async () => {
-    const it_ = await harness()
-    it_.svn.recoverableByOwn[''] = [logged(11, 'a.txt')]
-    it_.svn.updates = [{ kind: 'current', changed: [], roots: [] }]
-
-    expect(await it_.flow.finish('s1')).toEqual({ ok: true, value: undefined })
-
-    expect(it_.review.opened).toEqual([])
-    expect(it_.svn.mainRows).toEqual([[logged(11, 'a.txt')]])
-    expect(it_.record()?.worktreeOutcome).toMatchObject({
-      result: 'committed', main: 'updated', worktree: 'removed', revisions: [`${repositoryConst}:r11`],
-      lines: ['RECOVERED app:r11 a.txt', `-> committed app:r11 from ${worktreeConst}`, '   worktree removed'],
-    })
-    expect(it_.ended).toEqual([{ sessionId: 's1', outcome: 'committed' }])
-  })
-
-  it('finishes a worktree with nothing to commit by removing it', async () => {
-    const it_ = await harness()
-    it_.svn.updates = [{ kind: 'current', changed: [], roots: [] }]
-
-    expect(await it_.flow.finish('s1')).toEqual({ ok: true, value: undefined })
-
-    expect(it_.record()?.worktreeOutcome).toMatchObject({
-      result: 'nothing', worktree: 'removed', lines: [`NOTHING TO COMMIT: ${worktreeConst} matches ${urlConst}`, '   worktree removed'],
-    })
-    expect(it_.ended).toEqual([{ sessionId: 's1', outcome: 'nothing' }])
-  })
-
-  it('keeps a worktree something holds, after releasing its own handles first, and answers locked', async () => {
-    const it_ = await harness()
-    it_.svn.updates = [{ kind: 'current', changed: [], roots: [] }]
-    it_.svn.rename = 'in-use'
-
-    const refusal = refusalOf(await it_.flow.finish('s1'))
-
-    expect(refusal.code).toBe('locked')
-    expect(refusal.detail).toContain(`IN USE: ${worktreeConst}`)
-    expect(it_.reports.join('\n')).toContain(`IN USE: ${worktreeConst}`)
-    expect(it_.record()?.worktreeOutcome).toMatchObject({ result: 'nothing', worktree: 'in-use' })
-    expect(it_.record()?.worktree).toBeDefined()
-    expect(it_.log.slice(-2)).toEqual([`releaseBelow ${worktreeConst}`, `renameAside ${worktreeConst} 1:2:3`])
-    expect(it_.ended).toEqual([])
-  })
-
-  it('answers a failure when a finish without a review leaves the main copy in conflict', async () => {
-    const it_ = await harness()
-    it_.svn.recoverableByOwn[''] = [logged(11, 'a.txt')]
-    it_.svn.updates = [{ kind: 'current', changed: [], roots: [] }]
-    it_.svn.main = { main: 'conflict:1', lines: ['MAIN CONFLICT a.txt'] }
-
-    const refusal = refusalOf(await it_.flow.finish('s1'))
-
-    expect(refusal.code).toBe('svn-failed')
-    expect(refusal.detail).toContain('MAIN CONFLICT a.txt')
-    expect(it_.reports.join('\n')).toContain('MAIN CONFLICT a.txt')
-    expect(it_.record()?.worktreeOutcome).toMatchObject({ result: 'committed', main: 'conflict:1', worktree: 'removed' })
-    expect(it_.ended).toEqual([])
-  })
-
-  it('keeps the revisions of an earlier committed finish whose removal found the worktree in use', async () => {
-    const it_ = await harness({
-      overrides: {
-        worktreeOutcome: {
-          result: 'committed', revisions: [`${repositoryConst}:r12`], main: 'updated', worktree: 'in-use', lines: [], at: 1,
-        },
-      },
-    })
-    it_.svn.updates = [{ kind: 'current', changed: [], roots: [] }]
-
-    expect(await it_.flow.finish('s1')).toEqual({ ok: true, value: undefined })
-
-    expect(it_.record()?.worktreeOutcome).toMatchObject({ result: 'nothing', worktree: 'removed', revisions: [`${repositoryConst}:r12`] })
-    expect(it_.record()?.retiredWorktree?.revisions).toEqual([`${repositoryConst}:r12`])
-  })
-
-  it('names what reviews and the recovery landed when a finish then throws', async () => {
-    const it_ = await harness()
-    oneChange(it_)
-    it_.svn.recoverableByOwn[''] = [logged(11, 'b.txt')]
-    it_.svn.rename = new Error('disk gone')
-    it_.review.scripted.set('c1', { state: 'committed', revision: '12' })
-
-    await it_.flow.finish('s1')
-    await expect(it_.settled()).rejects.toThrow('disk gone')
-
-    expect(it_.record()?.worktreeOutcome).toMatchObject({
-      result: 'failed', main: 'updated', worktree: 'kept',
-      revisions: [`${repositoryConst}:r11`, `${repositoryConst}:r12`],
-    })
-    expect(it_.record()?.worktreeFinish).toBeUndefined()
-    expect(it_.ended).toEqual([])
-  })
-
-  describe('a closing write that does not land', () => {
-    /** Every write without a finish phase fails, which is the closing write of a finish or a Discard. */
-    function failClosingWrites(it_: Harness): SessionRecord[] {
-      const refused: SessionRecord[] = []
-      const put = it_.store.put.bind(it_.store)
-      it_.store.put = (record) => {
-        if (record.worktreeFinish !== undefined) return put(record)
-        refused.push(record)
-        return Promise.resolve(false)
-      }
-      return refused
-    }
-
-    it('is tried twice, then frees the session in memory and reports what the records lack', async () => {
-      const it_ = await harness()
-      it_.svn.updates = [{ kind: 'current', changed: [], roots: [] }]
-      it_.svn.rename = 'in-use'
-      const refused = failClosingWrites(it_)
-
-      expect(refusalOf(await it_.flow.finish('s1')).code).toBe('locked')
-
-      expect(refused).toHaveLength(2)
-      expect(it_.record()?.worktreeFinish).toBeUndefined()
-      expect(it_.reports.join('\n')).toContain('the session records could not be written, so they do not hold the end of the finish (nothing)')
-      expect(refusalOf(await it_.flow.finish('s1')).code).toBe('locked')
-    })
-
-    it('frees the session after a Discard the same way', async () => {
-      const it_ = await harness()
-      it_.svn.rename = 'in-use'
-      const refused = failClosingWrites(it_)
-
-      expect(refusalOf(await it_.flow.discard('s1')).code).toBe('locked')
-
-      expect(refused).toHaveLength(2)
-      expect(it_.record()?.worktreeFinish).toBeUndefined()
-      expect(it_.reports.join('\n')).toContain('do not hold the end of the Discard')
-      expect(refusalOf(await it_.flow.discard('s1')).code).toBe('locked')
-    })
-  })
-
-  it('holds the session against a second Finish, a Discard and a running session while it reviews', async () => {
-    const it_ = await harness()
-    oneChange(it_)
-
-    await it_.flow.finish('s1')
-
-    expect(refusalOf(await it_.flow.finish('s1')).code).toBe('merge-pending')
-    expect(refusalOf(await it_.flow.discard('s1')).code).toBe('merge-pending')
-    expect(it_.review.opened).toHaveLength(1)
-    await until(() => it_.review.isWaiting('c1'))
-    it_.review.settle('c1', { state: 'cancelled' })
-    await it_.settled()
-  })
-
-  it('refuses Commit by name without a commit dialog, while Discard still works', async () => {
-    const it_ = await harness({ withoutReview: true })
-
-    expect(refusalOf(await it_.flow.finish('s1')).code).toBe('review-unavailable')
-    expect(it_.log).toEqual([])
-
-    expect(await it_.flow.discard('s1')).toEqual({ ok: true, value: undefined })
-    expect(it_.record()?.retiredWorktree?.worktreePath).toBe(worktreeConst)
-    expect(it_.record()?.worktreeFinish).toBeUndefined()
-    expect(it_.ended).toEqual([{ sessionId: 's1', outcome: null }])
-  })
-
-  it('refuses a Discard of a running session and names a holder', async () => {
-    const live = await harness({ overrides: { life: 'live', binding: { hostInstanceId: 'h', generation: 1 } } })
-    expect(refusalOf(await live.flow.discard('s1')).code).toBe('live-refused')
-    expect(live.log).toEqual([])
+  it('answers the Discard of sessions.discardWorktree once the action removed the worktree, and names a holder', async () => {
+    const removed = await harness()
+    expect(await removed.flow.discard('s1')).toEqual({ ok: true, value: undefined })
+    expect(removed.actions.presses).toEqual([{ sessionId: 's1', press: { choice: 'discard', requestedBy: 'cli' } }])
+    expect(removed.actions.settledCalls).toEqual(['s1'])
 
     const held = await harness()
-    held.svn.rename = 'in-use'
-    expect(refusalOf(await held.flow.discard('s1')).code).toBe('locked')
-    expect(held.record()?.worktree).toBeDefined()
-    expect(held.record()?.worktreeFinish).toBeUndefined()
-    expect([...live.ended, ...held.ended]).toEqual([])
+    held.actions.ending = 'in-use'
+    expect(await held.flow.discard('s1')).toMatchObject({ ok: false, code: 'locked' })
+    held.actions.ending = 'undeleted'
+    expect(await held.flow.discard('s1')).toMatchObject({ ok: false, code: 'svn-failed' })
   })
 
-  it('carries the earlier revisions into the tombstone of a Discard', async () => {
-    const it_ = await harness({
-      overrides: {
-        worktreeOutcome: {
-          result: 'partial', revisions: [`${repositoryConst}:r12`], main: 'updated', worktree: 'kept', lines: [], at: 1,
-        },
-      },
-    })
+  it('refuses the Discard of a running session as before; the window stops it first through Finish', async () => {
+    const it_ = await harness({ overrides: { life: 'live', binding: { hostInstanceId: 'h', generation: 1 } } })
 
-    await it_.flow.discard('s1')
-
-    expect(it_.record()?.retiredWorktree?.revisions).toEqual([`${repositoryConst}:r12`])
+    expect(await it_.flow.discard('s1')).toEqual({ ok: false, code: 'live-refused', detail: 'This session is still running; stop it first' })
+    expect(it_.actions.presses).toEqual([])
   })
 
-  it('stops waiting when the client stops, leaving the phase for the next load to read', async () => {
-    const it_ = await harness()
-    oneChange(it_)
+  it('names the refusal of Commit its composer gives, before any stage', async () => {
+    const refusal: SessionsOpResult<never> = { ok: false, code: 'review-unavailable', detail: 'no commit dialog' }
+    const it_ = await harness({ refusal })
 
-    await it_.flow.finish('s1')
-    await until(() => it_.review.isWaiting('c1'))
-    it_.flow.stop()
-    await it_.settled()
-
-    expect(it_.record()?.worktreeFinish?.phase).toBe('reviewing')
-    expect(it_.record()?.worktreeOutcome).toBeUndefined()
-  })
-
-  it('fails without touching anything when the owner no longer checks out the worktree URL', async () => {
-    const it_ = await harness()
-    it_.svn.ownerRefusal = `The owner ${ownerConst} checks out ${repositoryConst}/branches/x, not ${urlConst}`
-
-    expect(refusalOf(await it_.flow.finish('s1')).code).toBe('invalid-spec')
-    expect(it_.log).toEqual(['ownerCheck'])
-    expect(it_.record()?.worktreeOutcome).toMatchObject({ result: 'failed', worktree: 'kept' })
+    expect(it_.flow.finishRefusal()).toEqual(refusal)
   })
 
   it('offers Commit, Keep and Discard and measures against BASE', async () => {
     const it_ = await harness()
 
-    expect(it_.flow.choicesOf()).toEqual(['commit', 'keep', 'discard'])
+    expect(it_.flow.choicesOf({ record: it_.record()!, diff: null })).toEqual(['commit', 'keep', 'discard'])
     expect(await it_.flow.facts(it_.record()!.worktree!))
       .toEqual({ diff: { added: 3, removed: 1, changedFiles: 2, capturedAt: 5_000 }, baseMoved: false })
   })
 
-  describe('the cleanup after the session ended', () => {
-    const pending = (trigger: NonNullable<SessionRecord['worktreeCleanup']>['trigger'] = 'committed') =>
-      ({ worktreeCleanup: { phase: 'pending' as const, trigger, requestedAt: 1, attempts: 1, lastAttemptAt: 2 } })
+  describe('the choices of Finish while the cleanup after the end owns the worktree', () => {
+    const removeWhenEnded = {
+      life: 'ended' as const,
+      exitReason: 'stopped' as const,
+      endedAt: 4_000,
+      worktreeCleanup: { phase: 'pending' as const, trigger: 'remove-when-ended' as const, requestedAt: 0, attempts: 0 },
+    }
+    const diff = (changedFiles: number) => ({ added: changedFiles, removed: 0, changedFiles, capturedAt: 1 })
+    const choicesOf = (record: SessionRecord, changed: ReturnType<typeof diff> | null) =>
+      SvnWorktreeFinishFlow.choicesFor(record, changed, false)
 
-    it('removes a clean worktree with nothing unlanded, leaves a tombstone and ends the session', async () => {
+    it('offers no Commit for a clean worktree: the cleanup removes it', () => {
+      const record = recordOf(removeWhenEnded)
+      expect(choicesOf(record, null)).toEqual(['keep', 'discard'])
+      expect(choicesOf(record, diff(0))).toEqual(['keep', 'discard'])
+      expect(choicesOf({ ...record, worktreeCleanup: { ...removeWhenEnded.worktreeCleanup, reason: 'in use' } }, diff(0)))
+        .toEqual(['keep', 'discard'])
+    })
+
+    it('offers Commit when something is left to land, when the cleanup will not judge the worktree, or when an action waits', () => {
+      const record = recordOf(removeWhenEnded)
+      expect(choicesOf(record, diff(2))).toEqual(['commit', 'keep', 'discard'])
+      expect(choicesOf({ ...record, worktreeCleanup: { ...removeWhenEnded.worktreeCleanup, phase: 'kept', reason: '2 changes' } }, null))
+        .toEqual(['commit', 'keep', 'discard'])
+      expect(choicesOf({ ...record, exitReason: 'host-lost' }, diff(0))).toEqual(['commit', 'keep', 'discard'])
+      expect(choicesOf(recordOf(), diff(0))).toEqual(['commit', 'keep', 'discard'])
+      const waiting: SessionRecord['svnAction'] = {
+        kind: 'finish', actionId: 'a', stage: 'reviewing', root: worktreeConst, checks: [], checkCursor: 0, rootCursor: 0,
+        rounds: { incoming: 0, outOfDate: 0, lock: 0 }, evidence: [], requestedBy: 'window', startedAt: 1,
+        needs: { kind: 'review-cancelled', reason: 'no commit', at: 2 },
+      }
+      expect(choicesOf({ ...record, svnAction: waiting }, diff(0))).toEqual(['commit', 'keep', 'discard'])
+    })
+  })
+
+  describe('the cleanup after the session ended', () => {
+    const pending = (trigger: NonNullable<SessionRecord['worktreeCleanup']>['trigger'] = 'committed', reason?: string) =>
+      ({ worktreeCleanup: { phase: 'pending' as const, trigger, requestedAt: 1, attempts: 1, lastAttemptAt: 2, ...reason === undefined ? {} : { reason } } })
+
+    it('removes a clean worktree, leaves a tombstone and ends the session', async () => {
       const it_ = await harness({ overrides: pending() })
 
       await it_.flow.cleanUp('s1')
@@ -724,22 +289,32 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow', () =
       const record = it_.record()
       expect(record?.worktree).toBeUndefined()
       expect(record?.worktreeCleanup).toBeUndefined()
-      expect(record?.worktreeFinish).toBeUndefined()
       expect(record?.completed).toBe(true)
-      expect(record?.retiredWorktree).toEqual({ worktreePath: worktreeConst, kind: 'svn', revisions: [], removedAt: 5_000 })
+      expect(record?.retiredWorktree).toEqual({
+        worktreePath: worktreeConst, kind: 'svn', revisions: [], removedAt: 5_000, ownerDir: ownerConst, directoryId: '1:2:3',
+      })
       expect(it_.log).toEqual([
         `present ${worktreeConst}`,
         `changes ${worktreeConst}`,
-        `unlanded ${worktreeConst} ${ownerConst}`,
         `releaseBelow ${worktreeConst}`,
         `renameAside ${worktreeConst} 1:2:3`,
         'purgeAside',
         `removeEmptyWorktreesDir ${ownerConst}`,
       ])
-      expect(it_.ended).toEqual([{ sessionId: 's1', outcome: null }])
+      expect(it_.ended).toEqual(['s1'])
     })
 
-    it('keeps a worktree with one unversioned file for good, and never writes the main copy', async () => {
+    // Removed with the main-copy landing: a 3.10 `unlanded` verdict no longer waits for the main copy.
+    it('removes a clean worktree whose cleanup a 3.10 build left waiting as unlanded', async () => {
+      const it_ = await harness({ overrides: pending('committed', 'unlanded r12: src/a.txt') })
+
+      await it_.flow.cleanUp('s1')
+
+      expect(it_.record()?.retiredWorktree?.worktreePath).toBe(worktreeConst)
+      expect(it_.ended).toEqual(['s1'])
+    })
+
+    it('keeps a worktree with one unversioned file for good', async () => {
       const it_ = await harness({ overrides: pending() })
       it_.svn.changesByPath[worktreeConst] = [row('notes.txt')]
 
@@ -747,7 +322,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow', () =
 
       expect(it_.record()?.worktreeCleanup).toMatchObject({ phase: 'kept', reason: '1 change', trigger: 'committed' })
       expect(it_.record()?.worktree).toBeDefined()
-      expect(it_.log.some((entry) => entry.startsWith('renameAside') || entry.startsWith('updateMain'))).toBe(false)
+      expect(it_.log.some((entry) => entry.startsWith('renameAside'))).toBe(false)
       expect(it_.ended).toEqual([])
 
       // Terminal: a second apply finds nothing pending and reads nothing.
@@ -756,26 +331,9 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow', () =
       expect(it_.log).toEqual([])
     })
 
-    it('waits while the main copy lacks a commit of the worktree, and removes it once the main copy holds it', async () => {
-      const it_ = await harness({ overrides: pending() })
-      it_.svn.unlandedValue = [{ path: 'src/a.txt', revision: 12 }, { path: 'src/b.txt', revision: 11 }]
-
-      await it_.flow.cleanUp('s1')
-
-      expect(it_.record()?.worktreeCleanup).toMatchObject({ phase: 'pending', reason: 'unlanded r12: src/a.txt src/b.txt' })
-      expect(it_.record()?.worktree).toBeDefined()
-      expect(it_.log.some((entry) => entry.startsWith('updateMain'))).toBe(false)
-
-      it_.svn.unlandedValue = []
-      await it_.flow.cleanUp('s1')
-
-      expect(it_.record()?.retiredWorktree?.worktreePath).toBe(worktreeConst)
-      expect(it_.ended).toEqual([{ sessionId: 's1', outcome: null }])
-    })
-
     it('stays pending when svn cannot read the worktree', async () => {
       const it_ = await harness({ overrides: pending() })
-      it_.svn.unlandedValue = 'E155037: previous operation has not finished'
+      it_.svn.changesByPath[worktreeConst] = 'E155037: previous operation has not finished'
 
       await it_.flow.cleanUp('s1')
 
@@ -784,14 +342,13 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow', () =
       })
     })
 
-    it('stays pending as in use while a process holds the directory, and lets the finish phase go', async () => {
+    it('stays pending as in use while a process holds the directory', async () => {
       const it_ = await harness({ overrides: pending() })
       it_.svn.rename = 'in-use'
 
       await it_.flow.cleanUp('s1')
 
       expect(it_.record()?.worktreeCleanup).toMatchObject({ phase: 'pending', reason: 'in use', attempts: 1 })
-      expect(it_.record()?.worktreeFinish).toBeUndefined()
       expect(it_.record()?.worktree).toBeDefined()
       expect(it_.ended).toEqual([])
     })
@@ -810,7 +367,6 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow', () =
       expect(it_.log.some((entry) => entry.startsWith('renameAside'))).toBe(false)
       expect(it_.record()?.worktree).toBeDefined()
       expect(it_.record()?.worktreeCleanup).toEqual(pending().worktreeCleanup)
-      expect(it_.record()?.worktreeFinish).toBeUndefined()
       expect(it_.ended).toEqual([])
     })
 
@@ -820,9 +376,9 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow', () =
 
       await it_.flow.cleanUp('s1')
 
-      expect(it_.log.some((entry) => entry.startsWith('changes') || entry.startsWith('unlanded'))).toBe(false)
+      expect(it_.log.some((entry) => entry.startsWith('changes'))).toBe(false)
       expect(it_.record()?.retiredWorktree).toBeDefined()
-      expect(it_.ended).toEqual([{ sessionId: 's1', outcome: null }])
+      expect(it_.ended).toEqual(['s1'])
     })
 
     it('counts a worktree already gone as removed', async () => {
@@ -834,64 +390,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow', () =
 
       expect(it_.log.some((entry) => entry.startsWith('changes'))).toBe(false)
       expect(it_.record()?.retiredWorktree).toBeDefined()
-      expect(it_.ended).toEqual([{ sessionId: 's1', outcome: null }])
-    })
-
-    it('asks for the cleanup after a Finish Commit whose removal found the worktree in use, which removes it once free', async () => {
-      const it_ = await harness()
-      oneChange(it_)
-      it_.review.scripted.set('c1', { state: 'committed', revision: '12' })
-      it_.svn.rename = 'in-use'
-
-      await it_.flow.finish('s1')
-      await it_.settled()
-
-      expect(it_.record()?.worktreeOutcome).toMatchObject({ result: 'committed', worktree: 'in-use' })
-      expect(it_.record()?.worktreeCleanup)
-        .toEqual({ phase: 'pending', trigger: 'removal-unfinished', requestedAt: 5_000, attempts: 0 })
-      expect(it_.ended).toEqual([])
-
-      it_.svn.rename = 'renamed'
-      await it_.flow.cleanUp('s1')
-
-      expect(it_.record()?.retiredWorktree?.revisions).toEqual([`${repositoryConst}:r12`])
-      expect(it_.record()?.worktreeCleanup).toBeUndefined()
-      expect(it_.ended).toEqual([{ sessionId: 's1', outcome: 'committed' }])
-    })
-
-    it('asks for the cleanup after a half-purged Finish removal, and for none after one that kept the worktree', async () => {
-      const undeleted = await harness()
-      undeleted.svn.updates = [{ kind: 'current', changed: [], roots: [] }]
-      undeleted.svn.purge = 'undeleted'
-      await undeleted.flow.finish('s1')
-      expect(undeleted.record()?.worktreeCleanup).toMatchObject({ phase: 'pending', trigger: 'removal-unfinished' })
-
-      const cancelled = await harness()
-      oneChange(cancelled)
-      cancelled.review.scripted.set('c1', { state: 'cancelled' })
-      cancelled.svn.changesByPath[worktreeConst] = [row('a.txt')]
-      await cancelled.flow.finish('s1')
-      await cancelled.settled()
-      expect(cancelled.record()?.worktreeOutcome).toMatchObject({ result: 'not-committed', worktree: 'kept' })
-      expect(cancelled.record()?.worktreeCleanup).toBeUndefined()
-    })
-
-    it('asks for the cleanup after a Discard whose rename was refused, which removes it although it has changes', async () => {
-      const it_ = await harness()
-      it_.svn.rename = 'in-use'
-      it_.svn.changesByPath[worktreeConst] = [row('a.txt')]
-
-      expect(refusalOf(await it_.flow.discard('s1')).code).toBe('locked')
-      expect(it_.record()?.worktreeCleanup)
-        .toEqual({ phase: 'pending', trigger: 'discard-unfinished', requestedAt: 5_000, attempts: 0 })
-
-      it_.svn.rename = 'renamed'
-      it_.log.length = 0
-      await it_.flow.cleanUp('s1')
-
-      expect(it_.log.some((entry) => entry.startsWith('changes'))).toBe(false)
-      expect(it_.record()?.retiredWorktree).toBeDefined()
-      expect(it_.ended).toEqual([{ sessionId: 's1', outcome: null }])
+      expect(it_.ended).toEqual(['s1'])
     })
 
     it('checks the changes of an unfinished Discard once the session ran after it, and keeps the new work', async () => {
@@ -906,12 +405,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow', () =
       expect(it_.ended).toEqual([])
     })
 
-    it('keeps a changed worktree after Discard IN USE, a reopen and a stop', async () => {
-      const it_ = await harness()
-      it_.svn.rename = 'in-use'
-      expect(refusalOf(await it_.flow.discard('s1')).code).toBe('locked')
-      expect(it_.record()?.worktreeCleanup?.trigger).toBe('discard-unfinished')
-
+    it('keeps a changed worktree after an unfinished Discard, a reopen and a stop', async () => {
+      const it_ = await harness({ overrides: pending('discard-unfinished') })
       // What the lifecycle writes for the reopen, and then for the stop that ends the new run.
       const discarded = it_.record()
       if (discarded === null) throw new Error('the record is gone')
@@ -919,7 +414,6 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow', () =
       const reopened = it_.record()
       if (reopened === null) throw new Error('the record is gone')
       await it_.store.put({ ...reopened, life: 'ended', exitReason: 'stopped', pendingOperationId: undefined, pendingOperationKind: undefined })
-      it_.svn.rename = 'renamed'
       it_.svn.changesByPath[worktreeConst] = [row('after-reopen.txt')]
 
       await it_.flow.cleanUp('s1')
@@ -929,46 +423,86 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow', () =
       expect(it_.ended).toEqual([])
     })
 
-    for (const main of ['conflict:1', 'failed'] as const)
-      it(`removes the worktree after a Finish whose main copy ended ${main}, and keeps the session`, async () => {
-        const it_ = await harness()
-        oneChange(it_)
-        it_.svn.main = { main, lines: [`MAIN ${main}`] }
-        it_.review.scripted.set('c1', { state: 'committed', revision: '12' })
-        it_.svn.rename = 'in-use'
-        await it_.flow.finish('s1')
-        await it_.settled()
-        expect(it_.record()?.worktreeOutcome).toMatchObject({ result: 'committed', main, worktree: 'in-use' })
+    it('keeps the revisions of the last outcome in the tombstone of a removal that finishes later', async () => {
+      const it_ = await harness({ overrides: {
+        ...pending('removal-unfinished'),
+        worktreeOutcome: { result: 'committed', revisions: ['https://svn.test/repos/app:r12'], main: 'none', worktree: 'in-use', lines: [], at: 3 },
+      } })
 
-        it_.svn.rename = 'renamed'
-        await it_.flow.cleanUp('s1')
+      await it_.flow.cleanUp('s1')
 
-        expect(it_.record()?.worktree).toBeUndefined()
-        expect(it_.record()?.retiredWorktree?.worktreePath).toBe(worktreeConst)
-        expect(it_.record()?.worktreeOutcome?.main).toBe(main)
-        expect(it_.ended).toEqual([])
-      })
+      expect(it_.record()?.retiredWorktree?.revisions).toEqual(['https://svn.test/repos/app:r12'])
+      expect(it_.ended).toEqual(['s1'])
+    })
 
-    it('lets the cleanup phase go when the removal throws, so the session is not held', async () => {
+    it('lets go of the worktree when the removal throws, so the session is not held', async () => {
       const it_ = await harness({ overrides: pending() })
       it_.svn.rename = new Error('EBUSY: the disk went away')
 
       await expect(it_.flow.cleanUp('s1')).rejects.toThrow(/the disk went away/)
 
-      expect(it_.record()?.worktreeFinish).toBeUndefined()
+      expect(it_.flow.cleaningNow('s1')).toBe(false)
       expect(it_.record()?.worktree).toBeDefined()
       expect(it_.ended).toEqual([])
 
       it_.svn.rename = 'renamed'
       await it_.flow.cleanUp('s1')
       expect(it_.record()?.retiredWorktree).toBeDefined()
-      expect(it_.ended).toEqual([{ sessionId: 's1', outcome: null }])
+      expect(it_.ended).toEqual(['s1'])
     })
 
-    it('leaves a running session, a running finish and a kept or missing cleanup alone', async () => {
+    it('makes a Finish and a Discard pressed while it judges wait, then answer what it left without an action of their own', async () => {
+      const it_ = await harness({ overrides: pending('remove-when-ended') })
+      let open!: () => void
+      it_.svn.gate = new Promise((resolve) => { open = resolve })
+
+      const cleaning = it_.flow.cleanUp('s1')
+      await until(() => it_.log.includes(`changes ${worktreeConst}`))
+      expect(it_.flow.cleaningNow('s1')).toBe(true)
+      // The removal under way owns the worktree, so Finish offers nothing to land even with a stale count.
+      expect(it_.flow.choicesOf({ record: it_.record()!, diff: { added: 1, removed: 0, changedFiles: 1, capturedAt: 1 } }))
+        .toEqual(['keep', 'discard'])
+      const finish = it_.flow.finish('s1', { choice: 'commit', requestedBy: 'window' })
+      const discard = it_.flow.discard('s1')
+      open()
+      await cleaning
+
+      expect(await finish).toEqual({ ok: true, value: { actionId: null } })
+      expect(await discard).toEqual({ ok: true, value: undefined })
+      expect(it_.flow.cleaningNow('s1')).toBe(false)
+      expect(it_.actions.presses).toEqual([])
+      expect(it_.log.filter((entry) => entry.startsWith('renameAside'))).toHaveLength(1)
+      expect(it_.record()?.retiredWorktree?.worktreePath).toBe(worktreeConst)
+      expect(it_.ended).toEqual(['s1'])
+    })
+
+    it('lets a Finish pressed while it judges go to the action after it kept a changed worktree', async () => {
+      const it_ = await harness({ overrides: pending('remove-when-ended') })
+      it_.svn.changesByPath[worktreeConst] = [row('a.txt')]
+      let open!: () => void
+      it_.svn.gate = new Promise((resolve) => { open = resolve })
+
+      const cleaning = it_.flow.cleanUp('s1')
+      await until(() => it_.log.includes(`changes ${worktreeConst}`))
+      const finish = it_.flow.finish('s1', { choice: 'commit', requestedBy: 'window' })
+      open()
+      await cleaning
+
+      expect(await finish).toEqual({ ok: true, value: { actionId: 'action-1' } })
+      expect(it_.record()?.worktreeCleanup).toMatchObject({ phase: 'kept', reason: '1 change' })
+      expect(it_.actions.presses).toHaveLength(1)
+      expect(it_.log.some((entry) => entry.startsWith('renameAside'))).toBe(false)
+    })
+
+    it('leaves a running session, an SVN action and a kept or missing cleanup alone', async () => {
+      const action: SessionRecord['svnAction'] = {
+        kind: 'finish', actionId: 'a', stage: 'reviewing', root: worktreeConst, checks: [], checkCursor: 0, rootCursor: 0,
+        rounds: { incoming: 0, outOfDate: 0, lock: 0 }, evidence: [], requestedBy: 'window', startedAt: 1,
+      }
       for (const overrides of [
         { ...pending(), life: 'live' as const },
-        { ...pending(), worktreeFinish: { phase: 'reviewing' as const, startedAt: 1 } },
+        { ...pending(), svnAction: action },
+        { ...pending(), svnAction: { ...action, needs: { kind: 'review-cancelled' as const, reason: 'no commit', at: 2 } } },
         { worktreeCleanup: { ...pending().worktreeCleanup, phase: 'kept' as const } },
         {},
       ]) {
@@ -977,25 +511,75 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow', () =
         expect(it_.log).toEqual([])
       }
     })
-  })
 
-  it('ranks main-copy states the way the bash helper does', () => {
-    expect(SvnWorktreeFinishFlow.worse('none', 'updated')).toBe('updated')
-    expect(SvnWorktreeFinishFlow.worse('merged:1', 'conflict:2')).toBe('conflict:2')
-    expect(SvnWorktreeFinishFlow.worse('conflict:1', 'conflict:2')).toBe('conflict:3')
-    expect(SvnWorktreeFinishFlow.worse('failed', 'merged:4')).toBe('failed')
-  })
+    it('writes a cleanup result for a session that committed from its split and stopped, labelled by the receipt, and keeps a landed row', async () => {
+      const receipt: SvnLabelledRevision = { repository: 'https://svn.test/repos/app', revision: 51, label: 'receipt' }
+      const it_ = await harness({ overrides: {
+        ...pending(),
+        commitReceipts: [{ scopeRoot: worktreeConst, revision: 51, paths: ['a.txt'], at: 3 }],
+        worktree: { ...recordOf().worktree!, caller: { tag: 'run-9', notify: { sessionId: 'coordinator', text: 'wake' } } },
+      } })
+      it_.own.value = [receipt]
 
-  it('classifies with the v2 precedence', () => {
-    const of = (input: Partial<Parameters<typeof SvnWorktreeFinishFlow.classify>[0]>) =>
-      SvnWorktreeFinishFlow.classify({ proofFailure: false, outdated: false, landed: 0, remaining: 0, ...input })
-    expect(of({ proofFailure: true, landed: 1, remaining: 1 })).toBe('partial')
-    expect(of({ proofFailure: true, outdated: true })).toBe('out-of-date')
-    expect(of({ proofFailure: true })).toBe('failed')
-    expect(of({ outdated: true, remaining: 1 })).toBe('out-of-date')
-    expect(of({ remaining: 1 })).toBe('not-committed')
-    expect(of({ landed: 1, remaining: 1 })).toBe('partial')
-    expect(of({ landed: 1 })).toBe('committed')
-    expect(of({})).toBe('failed')
+      await it_.flow.cleanUp('s1')
+
+      expect(it_.record()?.retiredWorktree).toMatchObject({
+        revisions: ['https://svn.test/repos/app:r51'],
+        caller: { tag: 'run-9', notify: { sessionId: 'coordinator', text: 'wake' } },
+      })
+      expect(it_.results.list({ tag: 'run-9' })).toEqual([expect.objectContaining({
+        actionId: 'cleanup-1', action: 'cleanup', result: 'committed', removal: 'removed', revisions: [receipt],
+        mainCopy: ownerConst, worktreePath: worktreeConst, notify: expect.objectContaining({ state: 'pending' }),
+      })])
+      expect(it_.record()?.retiredWorktree).toMatchObject({ ownerDir: ownerConst, landed: [receipt] })
+      expect(it_.record()?.completed).toBeUndefined()
+      expect(it_.ended).toEqual([])
+      expect(it_.landedDue).toEqual([ownerConst])
+    })
+
+    it('writes no result for a worktree that never committed', async () => {
+      const it_ = await harness({ overrides: pending('remove-when-ended') })
+
+      await it_.flow.cleanUp('s1')
+
+      expect(it_.own.reads).toBe(1)
+      expect(it_.results.list({})).toEqual([])
+      expect(it_.ended).toEqual(['s1'])
+    })
+
+    it('finishes the result of a Finish whose removal a holder stopped, writes no second result and keeps a landed row', async () => {
+      const receipt: SvnLabelledRevision = { repository: 'https://svn.test/repos/app', revision: 51, label: 'receipt' }
+      const it_ = await harness({ overrides: pending('removal-unfinished', 'in use') })
+      await it_.results.put(WorktreeResultsStore.recordOf({
+        actionId: 'finish-1', action: 'finish', result: 'committed', sessionId: 's1', title: '014 - fix login',
+        worktreePath: worktreeConst, mainCopy: ownerConst, directoryId: '1:2:3', removal: 'pending', revisions: [receipt],
+        lines: ['-> committed app:r51'], logs: [], at: 4_000, caller: undefined,
+      }))
+
+      await it_.flow.cleanUp('s1')
+
+      expect(it_.own.reads).toBe(0)
+      expect(it_.results.list({})).toEqual([expect.objectContaining({
+        actionId: 'finish-1', removal: 'removed', lines: ['-> committed app:r51', '   worktree removed after the session'],
+      })])
+      expect(it_.record()?.retiredWorktree).toMatchObject({ ownerDir: ownerConst, landed: [receipt] })
+      expect(it_.ended).toEqual([])
+      expect(it_.landedDue).toEqual([ownerConst])
+    })
+
+    it('removes the session of a Discard whose removal a holder stopped: nothing landed', async () => {
+      const it_ = await harness({ overrides: pending('discard-unfinished', 'in use') })
+      await it_.results.put(WorktreeResultsStore.recordOf({
+        actionId: 'discard-1', action: 'discard', result: 'discarded', sessionId: 's1', title: '014 - fix login',
+        worktreePath: worktreeConst, mainCopy: ownerConst, directoryId: '1:2:3', removal: 'pending', revisions: [],
+        lines: ['DISCARDED'], logs: [], at: 4_000, caller: undefined,
+      }))
+
+      await it_.flow.cleanUp('s1')
+
+      expect(it_.record()?.retiredWorktree?.landed).toBeUndefined()
+      expect(it_.ended).toEqual(['s1'])
+      expect(it_.landedDue).toEqual([])
+    })
   })
 })

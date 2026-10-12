@@ -472,6 +472,32 @@ describe('fileViewer/fileViewer', () => {
     expect(listing.value.canGoParent).to.equal(false)
   })
 
+  it('opens a saved script log granted to its parent folder alone, without a diff mode', async () => {
+    const logs = await root()
+    const folder = join(logs, 'parent-one')
+    const other = join(logs, 'parent-two')
+    await mkdir(folder)
+    await mkdir(other)
+    await writeFile(join(folder, 'run-one.log'), 'Setup alpha\npnpm install\n')
+    await writeFile(join(other, 'pixel.png'), Buffer.from([137, 80, 78, 71]))
+    const viewer = new FileViewer()
+
+    const opened = await viewer.openScriptLog('window-one', 'parent-one', 'run-one', join(folder, 'run-one.log'))
+    if (!opened.ok) throw new Error(opened.detail)
+    const realLog = await realpath(join(folder, 'run-one.log'))
+    expect(opened.value.source).to.deep.equal({ kind: 'scriptLog', sessionId: 'parent-one', runId: 'run-one', path: realLog })
+    expect(opened.value.modes).to.not.include('diff')
+    expect(await viewer.text('window-one', opened.value.documentId))
+      .to.deep.include({ ok: true, kind: 'text', text: 'Setup alpha\npnpm install\n' })
+    expect(await viewer.relativeResource('window-one', opened.value.documentId, '../parent-two/pixel.png'))
+      .to.deep.include({ ok: false, code: 'outside-root' })
+    // A file opened out of the folder would carry this run's id, so there is no folder to browse.
+    expect(await viewer.directoryForDocument('window-one', opened.value.documentId))
+      .to.deep.include({ ok: false, code: 'not-directory' })
+    expect(await viewer.openScriptLog('window-one', 'parent-one', 'run-gone', join(folder, 'run-gone.log')))
+      .to.deep.include({ ok: false, code: 'not-found' })
+  })
+
   it('opens a detected path inside cwd as a workspace source', async () => {
     const cwd = await root()
     const path = join(cwd, 'notes.md')

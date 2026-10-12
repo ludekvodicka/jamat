@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { RuntimeListResult, RuntimeSessionInfo } from '../../../app-host/app/wire/hostWire.js'
-import type { SessionRecord } from '../records/sessionRecord.types'
+import type { SessionRecord, SessionRecordScriptStep } from '../records/sessionRecord.types'
 import { Reconciler, type ReconcileChange } from './reconciler'
 
 describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
@@ -65,7 +65,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
       pendingOperationId: 'op-r',
       pendingOperationKind: 'create',
       agent: { agentId: 'claude', launchMode: 'fork', oneShot: true },
-      resolveFor: 'm',
+      scriptOf: { sessionId: 'm', phase: 'after', scriptId: 'merge-resolve', name: 'resolver' },
       ...overrides,
     })
   }
@@ -90,14 +90,14 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
       pendingOperationId: 'op-s',
       pendingOperationKind: 'create',
       commands: [{ command: 'pnpm install', cwd: 'C:\\worktrees\\fix' }],
-      setupFor: 'p',
+      scriptOf: { sessionId: 'p', phase: 'before', scriptId: 'setup', name: 'setup' },
       ...overrides,
     })
   }
 
   /** Everything the plan says about one session, so a case can assert the OTHER record is untouched. */
   function forSession(changes: readonly ReconcileChange[], sessionId: string): ReconcileChange[] {
-    return changes.filter((change) => change.kind !== 'orphan' && change.sessionId === sessionId)
+    return changes.filter((change) => 'sessionId' in change && change.sessionId === sessionId)
   }
 
   // The whole point of the distinction: a client that cannot see the Host has learnt nothing.
@@ -255,7 +255,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
         const records = [merging(), resolver({ life })]
         const [judged] = forSession(Reconciler.plan(records, listing([])), 'm')
 
-        expect(judged?.kind, life).toBe('merge-resolve-failed')
+        expect(judged?.kind, life).toBe('script-failed')
         expect(judged !== undefined && 'reason' in judged && judged.reason, life)
           .toContain(reason)
       }
@@ -278,7 +278,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
       })]
       const [judged] = forSession(Reconciler.plan(records, listing([])), 'm')
 
-      expect(judged?.kind).toBe('merge-resolve-failed')
+      expect(judged?.kind).toBe('script-failed')
       expect(judged !== undefined && 'reason' in judged && judged.reason)
         .toContain('names no launch to replay')
     })
@@ -287,7 +287,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
       const records = [merging(), resolver({ life: 'ended', exitCode: 0, stopRequested: true })]
       const [judged] = forSession(Reconciler.plan(records, listing([])), 'm')
 
-      expect(judged?.kind).toBe('merge-resolve-failed')
+      expect(judged?.kind).toBe('script-failed')
       expect(judged !== undefined && 'reason' in judged && judged.reason).toContain('was stopped')
     })
   })
@@ -327,7 +327,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
         }])
     })
 
-    // The guard asks about `setupFor` and nothing else: an ordinary session has none, and a replay
+    // The guard asks about the setup link and nothing else: an ordinary session has none, and a replay
     // of one must not depend on any other record existing.
     it('leaves a session that is no install alone', () => {
       const records = [record('a', {
@@ -418,7 +418,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
       [waiting(), setup()],
       listing([runtime('s', { alive: false, exitCode: 0, exitedAt: 9_000 })]),
     )
-    expect(forSession(changes, 'p')).toEqual([{ kind: 'setup-succeeded', sessionId: 'p' }])
+    expect(forSession(changes, 'p')).toEqual([{ kind: 'script-succeeded', sessionId: 'p', gate: 'before' }])
   })
 
   /*
@@ -433,7 +433,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
       listing([runtime('s', { alive: false, exitCode: 0, exitedAt: 9_000 })]),
     )
     expect(forSession(changes, 'p'))
-      .toEqual([{ kind: 'setup-failed', sessionId: 'p', reason: 'its setup was stopped' }])
+      .toEqual([{ kind: 'script-failed', sessionId: 'p', gate: 'before', reason: 'its setup was stopped' }])
   })
 
   // Which record the store happens to list first must not change the verdict: the setup's own
@@ -441,7 +441,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
   it('judges the setup the same whichever record comes first', () => {
     const answer = listing([runtime('s', { alive: false, exitCode: 0, exitedAt: 9_000 })])
     expect(forSession(Reconciler.plan([setup(), waiting()], answer), 'p'))
-      .toEqual([{ kind: 'setup-succeeded', sessionId: 'p' }])
+      .toEqual([{ kind: 'script-succeeded', sessionId: 'p', gate: 'before' }])
   })
 
   it('ends the waiting session when the setup runtime exited non-zero', () => {
@@ -450,8 +450,9 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
       listing([runtime('s', { alive: false, exitCode: 7, exitedAt: 9_000 })]),
     )
     expect(forSession(changes, 'p')).toEqual([{
-      kind: 'setup-failed',
+      kind: 'script-failed',
       sessionId: 'p',
+      gate: 'before',
       reason: expect.stringContaining('7'),
     }])
   })
@@ -460,8 +461,9 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
   it('ends the waiting session when the setup runtime died without an exit code', () => {
     const changes = Reconciler.plan([waiting(), setup()], listing([runtime('s', { alive: false })]))
     expect(forSession(changes, 'p')).toEqual([{
-      kind: 'setup-failed',
+      kind: 'script-failed',
       sessionId: 'p',
+      gate: 'before',
       reason: expect.stringContaining('no exit code'),
     }])
   })
@@ -488,8 +490,9 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
       listing([]),
     )
     expect(forSession(changes, 'p')).toEqual([{
-      kind: 'setup-failed',
+      kind: 'script-failed',
       sessionId: 'p',
+      gate: 'before',
       reason: expect.stringContaining('no launch'),
     }])
   })
@@ -500,7 +503,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
       [waiting(), setup({ life: 'ended', exitCode: 0, endedAt: 9_000 })],
       listing([]),
     )
-    expect(forSession(changes, 'p')).toEqual([{ kind: 'setup-succeeded', sessionId: 'p' }])
+    expect(forSession(changes, 'p')).toEqual([{ kind: 'script-succeeded', sessionId: 'p', gate: 'before' }])
   })
 
   it('ends the waiting session for a setup record that ended badly or said nothing', () => {
@@ -511,8 +514,9 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
     for (const { ended, reason } of cases) {
       const changes = Reconciler.plan([waiting(), setup(ended)], listing([]))
       expect(forSession(changes, 'p')).toEqual([{
-        kind: 'setup-failed',
+        kind: 'script-failed',
         sessionId: 'p',
+        gate: 'before',
         reason: expect.stringContaining(reason),
       }])
     }
@@ -524,8 +528,9 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
     for (const life of ['live', 'lost'] as const) {
       const changes = Reconciler.plan([waiting(), setup({ life })], listing([]))
       expect(forSession(changes, 'p')).toEqual([{
-        kind: 'setup-failed',
+        kind: 'script-failed',
         sessionId: 'p',
+        gate: 'before',
         reason: expect.stringContaining('setup session'),
       }])
     }
@@ -546,13 +551,14 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
       ],
       listing([]),
     )
-    expect(changes).toEqual([{ kind: 'mark-lost', sessionId: 'p' }])
+    expect(forSession(changes, 'p')).toEqual([{ kind: 'mark-lost', sessionId: 'p' }])
   })
 
   it('ends the waiting session when its setup record is gone entirely', () => {
     expect(Reconciler.plan([waiting()], listing([]))).toEqual([{
-      kind: 'setup-failed',
+      kind: 'script-failed',
       sessionId: 'p',
+      gate: 'before',
       reason: expect.stringContaining('gone'),
     }])
   })
@@ -564,15 +570,15 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
    */
   it('runs the general rules when the waiting session has a runtime of its own', () => {
     const failed = setup({ life: 'ended', exitCode: 9, endedAt: 9_000 })
-    expect(Reconciler.plan([waiting(), failed], listing([runtime('p')]))).toEqual([{
+    expect(forSession(Reconciler.plan([waiting(), failed], listing([runtime('p')])), 'p')).toEqual([{
       kind: 'bind-live',
       sessionId: 'p',
       binding: { hostInstanceId: 'host-1', generation: 1 },
     }])
-    expect(Reconciler.plan(
+    expect(forSession(Reconciler.plan(
       [waiting(), failed],
       listing([runtime('p', { alive: false, exitCode: 0, exitedAt: 9_000 })]),
-    )).toEqual([{ kind: 'mark-ended', sessionId: 'p', exitCode: 0, endedAt: 9_000 }])
+    ), 'p')).toEqual([{ kind: 'mark-ended', sessionId: 'p', exitCode: 0, endedAt: 9_000 }])
   })
 
   it('changes nothing about a waiting session when the Host could not be reached', () => {
@@ -584,13 +590,129 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
   it('never judges the setup of a record that has already ended or been lost', () => {
     const finished = setup({ life: 'ended', exitCode: 1, endedAt: 5 })
     for (const life of ['ended', 'lost'] as const)
-      expect(Reconciler.plan([waiting({ life, endedAt: 5 }), finished], listing([]))).toEqual([])
+      expect(forSession(Reconciler.plan([waiting({ life, endedAt: 5 }), finished], listing([])), 'p')).toEqual([])
+  })
+
+  describe('the before chain', () => {
+    const cwd = 'C:\\worktrees\\fix'
+    const steps: SessionRecordScriptStep[] = [
+      { key: 'k-setup', scriptId: 'setup', name: 'setup', commands: [{ command: 'pnpm install', cwd }] },
+      { key: 'k-codegen', scriptId: 'declared', name: 'codegen', commands: [{ command: 'pnpm codegen', cwd }] },
+    ]
+
+    function step(sessionId: string, overrides?: Partial<SessionRecord>): SessionRecord {
+      return setup({
+        sessionId,
+        commands: steps[1].commands,
+        scriptOf: { sessionId: 'p', phase: 'before', scriptId: 'declared', name: 'codegen', stepKey: 'k-codegen' },
+        ...overrides,
+      })
+    }
+
+    // One gate for the chain, judged once, in the words of the step its cursor names.
+    it('judges the declared step the cursor names, once, and names it in the reason', () => {
+      const changes = Reconciler.plan(
+        [waiting({ pendingSetup: { setupSessionId: 'c', steps, cursor: 1 } }), step('c')],
+        listing([runtime('c', { alive: false, exitCode: 2, exitedAt: 9_000 })]),
+      )
+      expect(forSession(changes, 'p')).toEqual([{
+        kind: 'script-failed',
+        sessionId: 'p',
+        gate: 'before',
+        reason: 'the codegen script exited with 2',
+      }])
+    })
+
+    it('advances on a declared step that exited cleanly', () => {
+      const changes = Reconciler.plan(
+        [waiting({ pendingSetup: { setupSessionId: 'c', steps, cursor: 1 } }), step('c')],
+        listing([runtime('c', { alive: false, exitCode: 0, exitedAt: 9_000 })]),
+      )
+      expect(forSession(changes, 'p')).toEqual([{ kind: 'script-succeeded', sessionId: 'p', gate: 'before' }])
+    })
+
+    /*
+     * A client that died between the next step's write and the gate's advance: the new run is named by
+     * nobody, so it is lost rather than launched, and the step before it is judged succeeded again,
+     * which mints exactly one new run.
+     */
+    it('loses a step written before its gate moved, and judges the earlier step again', () => {
+      const changes = Reconciler.plan(
+        [
+          waiting({ pendingSetup: { setupSessionId: 's', steps, cursor: 0 } }),
+          setup({
+            life: 'ended',
+            exitCode: 0,
+            endedAt: 9_000,
+            pendingOperationId: undefined,
+            pendingOperationKind: undefined,
+          }),
+          step('c'),
+        ],
+        listing([]),
+      )
+      expect(forSession(changes, 'p')).toEqual([{ kind: 'script-succeeded', sessionId: 'p', gate: 'before' }])
+      expect(forSession(changes, 'c')).toEqual([{ kind: 'mark-lost', sessionId: 'c' }])
+    })
+  })
+
+  describe('the after chain of a Finish', () => {
+    const cwd = 'C:\\worktrees\\fix'
+    const steps: SessionRecordScriptStep[] = [
+      { key: 'k-lint', scriptId: 'declared', name: 'lint', commands: [{ command: 'pnpm lint', cwd }] },
+      { key: 'k-tests', scriptId: 'declared', name: 'tests', commands: [{ command: 'pnpm test', cwd }] },
+    ]
+
+    /** A worktree session that ended and whose Finish press started its checks. */
+    function finishing(overrides?: Partial<SessionRecord>): SessionRecord {
+      return record('f', {
+        life: 'ended',
+        binding: null,
+        exitCode: 0,
+        endedAt: 5_000,
+        finishChecks: { runId: 't', steps, cursor: 1, startedAt: 6_000 },
+        ...overrides,
+      })
+    }
+
+    function check(overrides?: Partial<SessionRecord>): SessionRecord {
+      return record('t', {
+        commands: steps[1].commands,
+        scriptOf: { sessionId: 'f', phase: 'after', scriptId: 'declared', name: 'tests', stepKey: 'k-tests' },
+        ...overrides,
+      })
+    }
+
+    it('judges the check the cursor names, in its own words, while the session itself is ended', () => {
+      const failed = Reconciler.plan([finishing(), check()], listing([runtime('t', { alive: false, exitCode: 1, exitedAt: 9_000 })]))
+      expect(forSession(failed, 'f')).toEqual([{
+        kind: 'script-failed',
+        sessionId: 'f',
+        gate: 'finish',
+        reason: 'the tests check exited with 1',
+      }])
+      const passed = Reconciler.plan([finishing(), check()], listing([runtime('t', { alive: false, exitCode: 0, exitedAt: 9_000 })]))
+      expect(forSession(passed, 'f')).toEqual([{ kind: 'script-succeeded', sessionId: 'f', gate: 'finish' }])
+    })
+
+    it('says nothing while the check runs, and nothing once the chain has its result', () => {
+      expect(forSession(Reconciler.plan([finishing(), check()], listing([runtime('t')])), 'f')).toEqual([])
+      const judged = finishing({ finishChecks: { runId: 't', steps, cursor: 1, startedAt: 6_000, result: { kind: 'failed', reason: 'x', at: 9_000 } } })
+      expect(forSession(Reconciler.plan([judged, check({ life: 'ended', binding: null, exitCode: 1 })], listing([])), 'f')).toEqual([])
+    })
+
+    it('loses a check its chain no longer names, rather than launching it', () => {
+      const unnamed = check({ life: 'starting', binding: null, pendingOperationId: 'op-u', pendingOperationKind: 'create', sessionId: 'u' })
+      expect(forSession(Reconciler.plan([finishing(), check(), unnamed], listing([runtime('t')])), 'u'))
+        .toEqual([{ kind: 'mark-lost', sessionId: 'u' }])
+    })
   })
 
   describe('the merge resolver', () => {
     /** The rest of a pass is about other records; these tests are about the merge judgement alone. */
     function mergeChanges(changes: readonly ReconcileChange[]): readonly ReconcileChange[] {
-      return changes.filter((change) => change.kind.startsWith('merge-resolve-'))
+      return changes.filter((change) =>
+        (change.kind === 'script-succeeded' || change.kind === 'script-failed') && change.gate === 'merge')
     }
 
     /** The record being merged is `ended`, which the general loop skips - hence a pass of its own. */
@@ -601,7 +723,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
         listing([]),
       )
 
-      expect(changes).toContainEqual({ kind: 'merge-resolve-succeeded', sessionId: 'm' })
+      expect(changes).toContainEqual({ kind: 'script-succeeded', sessionId: 'm', gate: 'merge' })
     })
 
     it('says nothing about the merge while the resolver is still running', () => {
@@ -611,15 +733,16 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
 
     it('reads a clean exit as resolved and any other as not', () => {
       expect(Reconciler.plan([merging(), resolver()], listing([runtime('r', { alive: false, exitCode: 0 })])))
-        .toContainEqual({ kind: 'merge-resolve-succeeded', sessionId: 'm' })
+        .toContainEqual({ kind: 'script-succeeded', sessionId: 'm', gate: 'merge' })
 
       const failed = Reconciler.plan(
         [merging(), resolver()],
         listing([runtime('r', { alive: false, exitCode: 1 })]),
       )
       expect(failed).toContainEqual({
-        kind: 'merge-resolve-failed',
+        kind: 'script-failed',
         sessionId: 'm',
+        gate: 'merge',
         reason: 'the resolver exited with 1',
       })
     })
@@ -632,8 +755,9 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
       )
 
       expect(changes).toContainEqual({
-        kind: 'merge-resolve-failed',
+        kind: 'script-failed',
         sessionId: 'm',
+        gate: 'merge',
         reason: 'its resolver was stopped',
       })
     })
@@ -641,8 +765,9 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
     /** The crash window between the pointer write and the launch. */
     it('reads a resolver whose record is gone as a failure, leaving the manual path', () => {
       expect(Reconciler.plan([merging()], listing([]))).toContainEqual({
-        kind: 'merge-resolve-failed',
+        kind: 'script-failed',
         sessionId: 'm',
+        gate: 'merge',
         reason: 'its resolve session record is gone',
       })
     })
@@ -661,6 +786,23 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
         operationId: 'op-r',
         operation: 'create',
       })
+    })
+
+    /**
+     * The orphan guard of the install, asked of the resolver too: a parent whose merge was taken
+     * back, or that names another resolver, waits for nothing this one would commit.
+     */
+    it('loses a starting resolver its session no longer names, rather than replaying it', () => {
+      for (const parent of [
+        merging({ worktreeMerge: { phase: 'resolving', startedAt: 1 } }),
+        merging({ worktreeMerge: { phase: 'resolving', resolveSessionId: 'r2', startedAt: 1 } }),
+        merging({ worktreeMerge: undefined }),
+        null,
+      ]) {
+        const records = parent === null ? [resolver()] : [parent, resolver()]
+        expect(forSession(Reconciler.plan(records, listing([])), 'r'))
+          .toEqual([{ kind: 'mark-lost', sessionId: 'r' }])
+      }
     })
 
     /** Judging again every two seconds would rewrite the same record for ever. */
@@ -692,6 +834,37 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
    * having from the rollout it wrote. This decides when it is worth looking, and the whole of the
    * bound is data: the record's own fields and how old it is.
    */
+  describe('a requested run', () => {
+    function requested(overrides?: Partial<SessionRecord>): SessionRecord {
+      return record('q', {
+        life: 'starting',
+        binding: null,
+        pendingOperationId: 'op-q',
+        pendingOperationKind: 'create',
+        commands: [{ command: 'pnpm test', cwd: 'C:\w' }],
+        scriptOf: { sessionId: 'p', phase: 'inner', scriptId: 'requested', name: 'tests' },
+        ...overrides,
+      })
+    }
+
+    // The session asked once; a launch found unanswered after a client restart runs for nobody.
+    it('is marked lost rather than replayed, even while its parent runs', () => {
+      expect(forSession(Reconciler.plan([record('p'), requested()], listing([runtime('p')])), 'q'))
+        .toEqual([{ kind: 'mark-lost', sessionId: 'q' }])
+      expect(forSession(Reconciler.plan([record('p', { life: 'ended' }), requested()], listing([])), 'q'))
+        .toEqual([{ kind: 'mark-lost', sessionId: 'q' }])
+    })
+
+    it('is stopped once its parent no longer runs', () => {
+      const run = requested({ life: 'live', binding: { hostInstanceId: 'host-1', generation: 1 }, pendingOperationId: undefined, pendingOperationKind: undefined })
+      const changes = Reconciler.plan([record('p', { life: 'ended', binding: null }), run], listing([runtime('q')]))
+      expect(changes.filter((change) => !('sessionId' in change)))
+        .toEqual([{ kind: 'stop-script-run', runId: 'q' }])
+      expect(Reconciler.plan([record('p'), run], listing([runtime('p'), runtime('q')]))
+        .filter((change) => change.kind === 'stop-script-run')).toEqual([])
+    })
+  })
+
   describe('reading Codex identity confirmations', () => {
     function codex(overrides?: Partial<SessionRecord>): SessionRecord {
       return record('c', {
@@ -751,6 +924,18 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
       })
     }
 
+    function action(overrides?: Partial<NonNullable<SessionRecord['svnAction']>>): NonNullable<SessionRecord['svnAction']> {
+      return {
+        kind: 'finish', actionId: 'a', stage: 'checks', runId: 'run', root: 'C:\\repo\\.worktrees\\014-fix', checks: [check],
+        checkCursor: 0, rootCursor: 0, rounds: { incoming: 0, outOfDate: 0, lock: 0 }, evidence: [], requestedBy: 'window',
+        startedAt: 1, ...overrides,
+      }
+    }
+
+    const check: SessionRecordScriptStep = {
+      key: 'k', scriptId: 'checks', name: 'tests', commands: [{ command: 'pnpm test', cwd: 'C:\\repo\\.worktrees\\014-fix' }],
+    }
+
     function cleans(records: readonly SessionRecord[], now = start + 1_000, clientStartedAt = start): boolean {
       return Reconciler.plan(records, listing([]), now, clientStartedAt)
         .some((change) => change.kind === 'clean-worktree' && change.sessionId === 'w')
@@ -775,8 +960,10 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
       expect(cleans([cleaning({ life: 'lost', endedAt: undefined })], start + 29_999)).toBe(false)
     })
 
-    it('leaves a record that a finish or a pending launch holds, a kept one and a Git one alone', () => {
-      expect(cleans([cleaning({ worktreeFinish: { phase: 'removing', startedAt: 1 } })])).toBe(false)
+    it('leaves a record that an SVN action or a pending launch holds, a kept one and a Git one alone', () => {
+      // A waiting action holds the worktree too: the person decides with Finish again, Keep or Discard.
+      expect(cleans([cleaning({ svnAction: action({ stage: 'removing' }) })])).toBe(false)
+      expect(cleans([cleaning({ svnAction: action({ needs: { kind: 'review-cancelled', reason: 'no commit', at: 2 } }) })])).toBe(false)
       expect(cleans([cleaning({ pendingOperationId: 'op', pendingOperationKind: 'reopen' })])).toBe(false)
       expect(cleans([cleaning({ worktreeCleanup: { phase: 'kept', trigger: 'committed', reason: '1 change', requestedAt: 1, attempts: 1 } })])).toBe(false)
       const git = cleaning()
@@ -784,17 +971,112 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
       expect(cleans([cleaning({ worktreeCleanup: undefined })])).toBe(false)
     })
 
-    it('paces an unlanded commit to ten minutes, except for the first judgement after a client start', () => {
+    // Between two checks no run is live, and the next one is about to start in the worktree.
+    it('waits while the checks of a Finish run, and judges once they have a result', () => {
+      const steps: SessionRecordScriptStep[] = [
+        { key: 'k', scriptId: 'declared', name: 'tests', commands: [{ command: 'pnpm test', cwd: 'C:\\repo\\.worktrees\\014-fix' }] },
+      ]
+      expect(cleans([cleaning({ finishChecks: { runId: 'gone', steps, cursor: 0, startedAt: 1 } })])).toBe(false)
+      expect(cleans([cleaning({ finishChecks: { runId: 'gone', steps, cursor: 0, startedAt: 1, result: { kind: 'failed', reason: 'x', at: 2 } } })]))
+        .toBe(true)
+    })
+
+    // Removed with the main-copy landing: a 3.10 `unlanded` reason waits no ten minutes any more.
+    it('paces a legacy unlanded reason like any other attempt', () => {
       const waiting = cleaning({ worktreeCleanup: {
         phase: 'pending', trigger: 'committed', reason: 'unlanded r12: a.txt', requestedAt: 1, attempts: 1, lastAttemptAt: start + 1_000,
       } })
-      expect(cleans([waiting], start + 9 * 60_000)).toBe(false)
-      expect(cleans([waiting], start + 1_000 + 10 * 60_000)).toBe(true)
-      expect(cleans([waiting], start + 2_000, start + 1_500)).toBe(true)
+      expect(cleans([waiting], start + 2_000)).toBe(true)
     })
 
     it('judges nothing without an answer from the Host', () => {
       expect(Reconciler.plan([cleaning()], null, start + 1_000, start)).toEqual([])
+    })
+
+    describe('an SVN action', () => {
+      const parent = (overrides?: Partial<NonNullable<SessionRecord['svnAction']>>): SessionRecord =>
+        cleaning({ worktreeCleanup: undefined, svnAction: action(overrides) })
+      const run = (overrides?: Partial<SessionRecord>): SessionRecord => record('run', {
+        life: 'ended', binding: null, exitCode: 0, exitReason: 'process-exit', endedAt: start,
+        commands: check.commands, scriptOf: { sessionId: 'w', phase: 'after', scriptId: 'checks', name: 'tests', stepKey: 'k' },
+        ...overrides,
+      })
+      const plan = (records: readonly SessionRecord[], now = start + 1_000, held: ReadonlySet<string> = new Set()) =>
+        Reconciler.plan(records, listing([]), now, start, held)
+          .filter((change) => change.kind === 'script-succeeded' || change.kind === 'script-failed' || change.kind === 'svn-action-due')
+
+      it('judges the run of a run stage through the action gate, whatever life its parent has', () => {
+        expect(plan([parent(), run()])).toEqual([{ kind: 'script-succeeded', sessionId: 'w', gate: 'action' }])
+        expect(plan([parent(), run({ exitCode: 1 })]))
+          .toEqual([{ kind: 'script-failed', sessionId: 'w', gate: 'action', reason: 'the tests check ended with 1' }])
+        expect(plan([cleaning({ life: 'live', binding: { hostInstanceId: 'host-1', generation: 1 }, worktreeCleanup: undefined, svnAction: action() }), run()]))
+          .toEqual([{ kind: 'script-succeeded', sessionId: 'w', gate: 'action' }])
+      })
+
+      it('judges nothing once a verdict is written, the person is asked or a relaunch waits; a written verdict is due', () => {
+        expect(plan([parent({ verdict: { kind: 'succeeded', exitCode: 0 } }), run()])).toEqual([{ kind: 'svn-action-due', sessionId: 'w' }])
+        expect(plan([parent({ needs: { kind: 'check-failed', reason: 'x', at: 2 } }), run()])).toEqual([])
+        expect(plan([parent({ stage: 'updating', retryAt: start + 2_000 }), run()])).toEqual([])
+        expect(plan([parent({ stage: 'updating', retryAt: start + 2_000 }), run()], start + 2_000)).toEqual([{ kind: 'svn-action-due', sessionId: 'w' }])
+      })
+
+      it('asks for a client stage on every pass, unless a drive of this process holds it', () => {
+        for (const stage of ['stopping', 'evidence', 'removing', 'recording'] as const)
+          expect(plan([parent({ stage })])).toEqual([{ kind: 'svn-action-due', sessionId: 'w' }])
+        expect(plan([parent({ stage: 'removing' })], start + 1_000, new Set(['w']))).toEqual([])
+      })
+
+      it('judges a resolver through the action gate, and asks for its stop once it ran past 20 minutes', () => {
+        const resolver = (overrides?: Partial<SessionRecord>): SessionRecord => record('run', {
+          kind: 'agent', agent: { agentId: 'claude', launchMode: 'new', oneShot: true, permission: 'accept-edits' },
+          scriptOf: { sessionId: 'w', phase: 'after', scriptId: 'svn-resolve', name: 'resolver' }, ...overrides,
+        })
+        const resolving = (overrides?: Partial<NonNullable<SessionRecord['svnAction']>>): SessionRecord =>
+          parent({ stage: 'resolving', conflicts: { paths: ['a.txt'], before: ['a.txt'], at: start }, resolverSpent: true, ...overrides })
+        const live = resolver({ life: 'live', binding: { hostInstanceId: 'host-1', generation: 1 } })
+        const running = listing([runtime('run')])
+        const due = (records: readonly SessionRecord[], now: number, held: ReadonlySet<string> = new Set()) =>
+          Reconciler.plan(records, running, now, start, held).filter((change) => change.kind === 'svn-action-due')
+
+        expect(plan([resolving(), resolver({ life: 'ended', binding: null, exitCode: 1, exitReason: 'process-exit', endedAt: start })]))
+          .toEqual([{ kind: 'script-failed', sessionId: 'w', gate: 'action', reason: 'the resolver ended with 1' }])
+        expect(due([resolving(), live], start + 20 * 60_000)).toEqual([])
+        expect(due([resolving(), live], start + 20 * 60_000 + 1)).toEqual([{ kind: 'svn-action-due', sessionId: 'w' }])
+        expect(due([resolving(), live], start + 20 * 60_000 + 1, new Set(['w']))).toEqual([])
+        expect(due([resolving({ needs: { kind: 'resolver-failed', reason: 'x', at: 2 } }), live], start + 20 * 60_000 + 1)).toEqual([])
+      })
+    })
+
+    describe('after a failed setup of a session removed when it ends', () => {
+      function failedSetup(): SessionRecord {
+        return cleaning({
+          exitReason: undefined,
+          endedAt: start,
+          endedReason: 'setup failed: exit 1',
+          pendingSetup: { setupSessionId: 'i' },
+          worktreeCleanup: { phase: 'pending', trigger: 'remove-when-ended', requestedAt: 1, attempts: 0 },
+        })
+      }
+
+      function install(overrides?: Partial<SessionRecord>): SessionRecord {
+        return record('i', {
+          life: 'ended', binding: null, exitCode: 1, exitReason: 'process-exit', endedAt: start - 1_000,
+          commands: [{ command: 'pnpm install', cwd: 'C:\\repo\\.worktrees\\014-fix' }],
+          scriptOf: { sessionId: 'w', phase: 'before', scriptId: 'setup', name: 'setup' },
+          ...overrides,
+        })
+      }
+
+      it('judges the worktree thirty seconds after the failure, not before', () => {
+        expect(cleans([failedSetup(), install()], start + 29_999)).toBe(false)
+        expect(cleans([failedSetup(), install()], start + 30_000)).toBe(true)
+      })
+
+      it('waits while its install may still run', () => {
+        expect(cleans([failedSetup(), install({ exitReason: 'host-lost' })], start + 30_000)).toBe(false)
+        expect(cleans([failedSetup(), install({ life: 'live', binding: { hostInstanceId: 'host-1', generation: 1 } })], start + 30_000))
+          .toBe(false)
+      })
     })
   })
 })

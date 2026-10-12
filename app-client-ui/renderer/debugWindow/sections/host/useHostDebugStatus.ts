@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { HostDebugStatus } from '../../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { ErrorText } from '../../../../shared/errorText'
 import { IpcSnapshotReader } from '../../../ipc/ipcSnapshotReader'
+import { AppControl } from '../../../ipc/appControl'
 import { HostDebugEffects, type HostDebugPorts } from './hostDebugEffects'
 import { HostDebugModel, type HostDebugInput, type HostDebugState } from './hostDebugModel'
 
@@ -48,7 +49,7 @@ export function useHostDebugStatus(): HostDebugHandle {
     const engine = new IpcSnapshotReader<HostDebugStatus>(
       {
         subject: 'The Host debug status',
-        read: () => window.appClient.debug.hostStatus(),
+        read: () => AppControl.value('host.status', {}),
         // The same push the sessions tree reads: the status is composed out of what moved the
         // snapshot, so what wakes one wakes the other.
         subscribe: (onChanged) => window.appClient.onSessionsChanged(onChanged),

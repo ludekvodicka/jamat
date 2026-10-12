@@ -47,6 +47,7 @@ import type { LauncherPrefill } from './launcherIntentStore'
 import type { LauncherRemoteTarget } from './launcherTarget'
 import type { LauncherEffect, LauncherInput, LauncherSort } from './projects/launcherModel'
 import type { ManageEffect, ManageInput } from './projects/manageModel'
+import { AppControl } from '../../ipc/appControl'
 
 /** The two answers a history read can give, each naming the project it is an answer ABOUT. */
 type HistoryRead = Extract<
@@ -225,7 +226,7 @@ export class LauncherEffects {
 
   /** Reads and takes nothing, so a card that is opened and abandoned costs the project no number. */
   private static async peekNumber(projectPath: string, ports: LauncherPorts): Promise<void> {
-    const answer = await window.appClient.sessions.nextNumber(projectPath)
+    const answer = await AppControl.sessions('sessions.nextNumber', { projectPath: projectPath })
     // Every level of refusal lands in the same place: no number. It is never fatal, and the screen
     // draws a session without one rather than refusing to draw at all.
     //
@@ -439,7 +440,7 @@ export class LauncherEffects {
     // The peek already answered null for a binding that is not a catalog project, and asking again
     // would be a channel call whose answer is known.
     if (state.token === null || state.binding.mode !== 'project') return null
-    const answer = await window.appClient.sessions.allocateNumber(state.binding.projectPath)
+    const answer = await AppControl.sessions('sessions.allocateNumber', { projectPath: state.binding.projectPath })
     if (!answer.ok || !answer.value.ok) return null
     return answer.value.value.token
   }
@@ -451,19 +452,19 @@ export class LauncherEffects {
     if (effect.effect === 'rename')
       return LauncherEffects.relocation(
         { categoryId: effect.categoryId, name: effect.oldName },
-        window.appClient.projects.rename(effect.categoryId, effect.oldName, effect.newName),
+        AppControl.projects('projects.rename', { categoryId: effect.categoryId, oldName: effect.oldName, newName: effect.newName }),
         ports,
       )
     else if (effect.effect === 'movePrefix')
       return LauncherEffects.relocation(
         { categoryId: effect.categoryId, name: effect.name },
-        window.appClient.projects.movePrefix(effect.categoryId, effect.name, effect.targetPrefix),
+        AppControl.projects('projects.movePrefix', { categoryId: effect.categoryId, name: effect.name, targetPrefix: effect.targetPrefix }),
         ports,
       )
     else if (effect.effect === 'archive')
       return LauncherEffects.relocation(
         { categoryId: effect.categoryId, name: effect.name },
-        window.appClient.projects.archive(effect.categoryId, effect.name),
+        AppControl.projects('projects.archive', { categoryId: effect.categoryId, name: effect.name }),
         ports,
       )
     else if (effect.effect === 'deletePreview')
@@ -476,7 +477,7 @@ export class LauncherEffects {
   }
 
   private static async fetchCategories(ports: LauncherPorts): Promise<void> {
-    const answer = await window.appClient.projects.categories()
+    const answer = await AppControl.value('projects.categories', {})
     if (!answer.ok)
       return ports.dispatch({ input: 'loadFailed', detail: answer.error })
     ports.dispatch({ input: 'categoriesLoaded', categories: answer.value })
@@ -487,7 +488,7 @@ export class LauncherEffects {
     sort: LauncherSort,
     ports: LauncherPorts,
   ): Promise<void> {
-    const answer = await window.appClient.projects.list(categoryId, sort)
+    const answer = await AppControl.projects('projects.listing', { categoryId: categoryId, sort: sort })
     const listing = LauncherEffects.listed(answer, (detail) => ports.dispatch({
       input: 'projectsLoadFailed',
       categoryId,
@@ -502,8 +503,11 @@ export class LauncherEffects {
     effect: Extract<LauncherEffect, { effect: 'createProject' }>,
     ports: LauncherPorts,
   ): Promise<void> {
-    const answer = await window.appClient.projects
-      .create(effect.categoryId, effect.name, effect.virtualFolderPrefix)
+    const answer = await AppControl.projects('projects.create', {
+      categoryId: effect.categoryId,
+      name: effect.name,
+      virtualFolderPrefix: effect.virtualFolderPrefix,
+    })
     const created = LauncherEffects.listed(answer, (detail) =>
       ports.dispatch({ input: 'loadFailed', detail }))
     if (created)
@@ -531,8 +535,8 @@ export class LauncherEffects {
     report: (input: HistoryRead) => void,
   ): Promise<void> {
     const [answer, local] = await Promise.all([
-      window.appClient.projects.sessions(categoryId, projectName),
-      window.appClient.sessions.historyReferences({ mode: 'project', categoryId, projectPath }),
+      AppControl.projects('projects.sessions', { categoryId: categoryId, projectName: projectName }),
+      AppControl.sessions('sessions.historyReferences', { directory: { mode: 'project', categoryId, projectPath } }),
     ])
     // The project travels back with every answer. The first read of a project is the slow one - the
     // library reads transcripts to title them - so leaving it and opening another leaves two reads
@@ -603,7 +607,7 @@ export class LauncherEffects {
     ) => void,
     ports: LauncherPorts,
   ): Promise<void> {
-    const answer = await window.appClient.sessions.create(spec)
+    const answer = await AppControl.createSession(spec)
     return LauncherEffects.openSessionResult(answer, onFailure, ports)
   }
 
@@ -611,7 +615,7 @@ export class LauncherEffects {
     spec: SessionHistoryOpenSpec,
     ports: LauncherPorts,
   ): Promise<void> {
-    const answer = await window.appClient.sessions.openHistory(spec)
+    const answer = await AppControl.sessions('sessions.openHistory', { spec: spec })
     return LauncherEffects.openSessionResult(
       answer,
       (code, detail) => ports.create({ input: 'submitFailed', code, detail }),
@@ -629,7 +633,7 @@ export class LauncherEffects {
     name: string,
     ports: LauncherPorts,
   ): Promise<void> {
-    const answer = await window.appClient.sessions.fork(sessionId, { name })
+    const answer = await AppControl.sessions('sessions.fork', { session: AppControl.sessionOf(sessionId), name })
     return LauncherEffects.openSessionResult(
       answer,
       (code, detail) => ports.create({ input: 'submitFailed', code, detail }),
@@ -652,7 +656,7 @@ export class LauncherEffects {
   ): Promise<void> {
     const onFailure = (code: string, detail: string, setup?: SessionSetupAgreement): void =>
       ports.create({ input: 'submitFailed', code, detail, setup })
-    const answer = await window.appClient.sessions.reopen(sessionId)
+    const answer = await AppControl.sessionsDone('sessions.reopen', { session: AppControl.sessionOf(sessionId) })
     if (!answer.ok) return onFailure('transport', answer.error)
     if (!answer.value.ok)
       return onFailure(answer.value.code, answer.value.detail, answer.value.setup)
@@ -860,7 +864,7 @@ export class LauncherEffects {
     name: string,
     ports: LauncherPorts,
   ): Promise<void> {
-    const answer = await window.appClient.projects.deletePreview(categoryId, name)
+    const answer = await AppControl.projects('projects.deletePreview', { categoryId: categoryId, name: name })
     const preview = LauncherEffects.operated({ categoryId, name }, answer, ports)
     if (preview)
       ports.manage({ input: 'previewReady', categoryId, name, preview })
@@ -870,7 +874,7 @@ export class LauncherEffects {
     effect: Extract<ManageEffect, { effect: 'deleteExecute' }>,
     ports: LauncherPorts,
   ): Promise<void> {
-    const answer = await window.appClient.projects.deleteProject(effect.token)
+    const answer = await AppControl.projects('projects.delete', { token: effect.token })
     const report = LauncherEffects
       .operated({ categoryId: effect.categoryId, name: effect.name }, answer, ports)
     if (report)

@@ -8,7 +8,7 @@ import type { GitResult, WorktreeFacts } from '../../git/git.types'
 import type { MergeStatus } from '../../git/gitMergeManager'
 import type { GitWorktreeManager } from '../../git/gitWorktreeManager'
 import type { StoreCutWorktrees } from '../../git/storeCutWorktrees'
-import type { SessionLife, SessionRecord } from '../records/sessionRecord.types'
+import type { SessionLife, SessionRecord, SessionRecordScriptLink } from '../records/sessionRecord.types'
 import { SessionRecordsStore } from '../records/sessionRecordsStore'
 import type { SessionCreateSpec, SessionsOpResult } from '../sessionManagerApi.types'
 import type { SessionMergePort } from './worktreeMergeFlow'
@@ -190,7 +190,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
     }
   }
 
-  function refusalOf(result: SessionsOpResult): { code: string; detail: string } {
+  function refusalOf(result: SessionsOpResult<unknown>): { code: string; detail: string } {
     if (result.ok) throw new Error('expected a refusal')
     return { code: result.code, detail: result.detail }
   }
@@ -285,7 +285,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
       const it_ = await harness({ title: '007 - fix' })
       it_.merge.status = { inProgress: false, dirty: true, dirtyTracked: true, unresolved: false }
 
-      expect(await it_.flow.finish('s1')).toEqual({ ok: true, value: undefined })
+      expect(await it_.flow.finish('s1')).toEqual({ ok: true, value: { actionId: null } })
       expect(it_.merge.calls[1]).toEqual(['commitAll', worktreeConst, 'Finalize session 007 - fix'])
       expect(it_.merge.names).toContain('mergeToMain')
       expect(it_.record()?.worktree).toBeUndefined()
@@ -295,7 +295,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
     it('commits nothing when the worktree was already clean', async () => {
       const it_ = await harness()
 
-      expect(await it_.flow.finish('s1')).toEqual({ ok: true, value: undefined })
+      expect(await it_.flow.finish('s1')).toEqual({ ok: true, value: { actionId: null } })
       expect(it_.merge.names).not.toContain('commitAll')
       expect(it_.merge.names).toContain('mergeToMain')
     })
@@ -538,7 +538,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
   describe('the automatic resolver', () => {
     interface Launched {
       spec: SessionCreateSpec
-      marks: { sessionId: string; oneShot: true; resolveFor: string }
+      marks: { sessionId: string; oneShot: true; scriptOf: SessionRecordScriptLink }
     }
 
     /**
@@ -575,7 +575,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
             directory: { mode: 'adHoc', path: worktreeConst },
             binding: null,
             agent: { agentId: 'claude', launchMode: 'fork', oneShot: true },
-            resolveFor: marks.resolveFor,
+            scriptOf: marks.scriptOf,
             ...(refuse === 'undecided'
               ? {
                 life: 'starting' as SessionLife,
@@ -610,7 +610,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
       expect(spec.agent?.mode).toBe('fork')
       expect(spec.agent?.forkParentId).toBe('native-1')
       expect(spec.agent?.initialPrompt).toMatch(/Resolve every conflict/)
-      expect(marks).toEqual({ sessionId: 'resolve-1', oneShot: true, resolveFor: 's1' })
+      expect(marks).toEqual({ sessionId: 'resolve-1', oneShot: true, scriptOf: { sessionId: 's1', phase: 'after', scriptId: 'merge-resolve', name: 'resolver' } })
     })
 
     /** Write-ahead: a crash between the pointer and the launch reads as a resolver that is gone. */
@@ -664,9 +664,9 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
     })
 
     /**
-     * The loop this closes: `merge-resolve-succeeded` writes nothing of its own, so a record left
-     * with a `resolving` phase, a pointer and no failure is one the reconciler reaches the same
-     * verdict on for ever. The second pass is what a resumed merge looks like, and it must leave a
+     * The loop this closes: `script-succeeded` on the merge gate writes nothing of its own, so a
+     * record left with a `resolving` phase, a pointer and no failure is one the reconciler reaches
+     * the same verdict on for ever. The second pass is what a resumed merge looks like, and it must leave a
      * shape the judgement will not pick up again.
      */
     it('writes a failure when the resolver finished and the conflict is still there', async () => {
@@ -812,7 +812,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
           startedAt: 1_000,
         },
       })
-      await it_.store.put({ ...recordOf(), sessionId: 'r1', life, resolveFor: 's1' })
+      await it_.store.put({ ...recordOf(), sessionId: 'r1', life, scriptOf: { sessionId: 's1', phase: 'after', scriptId: 'merge-resolve', name: 'resolver' } })
 
       for (const answer of [
         await it_.flow.discard('s1'),
@@ -907,13 +907,13 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
     it('is offered Keep and Discard once its facts were measured', async () => {
       const it_ = await harness()
       const worktree = it_.record()!.worktree!
-      expect(it_.flow.choicesOf(worktree)).toEqual(['merge', 'keep', 'discard'])
+      expect(it_.flow.choicesOf({ worktree })).toEqual(['merge', 'keep', 'discard'])
 
       it_.storeCut.legacy = true
       expect(await it_.flow.facts(worktree))
         .toEqual({ diff: { added: 2, removed: 1, changedFiles: 1, capturedAt: 5 }, baseMoved: false })
 
-      expect(it_.flow.choicesOf(worktree)).toEqual(['keep', 'discard'])
+      expect(it_.flow.choicesOf({ worktree })).toEqual(['keep', 'discard'])
     })
 
     it('keeps the record and says why when the store discard fails', async () => {

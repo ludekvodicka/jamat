@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdir, readdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
 import type { RuntimeCategory } from '../catalog/catalog.types'
@@ -15,6 +15,7 @@ import type {
 } from '../providers/providerContract.types'
 import { ChildEnvironment } from '../../shared/childEnvironment'
 import { ErrorText } from '../../shared/errorText'
+import { type TreeRemove, TreeRemoval } from '../../shared/treeRemoval'
 import { DisplayGrouping } from './displayGrouping'
 import type {
   AfterCreateHook,
@@ -56,6 +57,8 @@ export interface ProjectLifecycleDeps {
    */
   forgetRewritten: (provider: ProviderAgentId, file: string) => void
   report: (message: string) => void
+  /** How a leftover directory goes; Node's own `rm` when absent (`TreeRemoval`). */
+  removeTree?: TreeRemove
   io?: LifecycleIo
 }
 
@@ -72,12 +75,11 @@ export class ProjectLifecycle {
   private static readonly hookTimeoutMillisecondsConst = 30_000
   private static readonly directoryPlaceholderConst = '{dir}'
   private static readonly namePlaceholderConst = '{name}'
-  private static readonly nodeIoConst: LifecycleIo = {
+  private static readonly nodeIoConst: RewriterIo = {
     readFile: (file) => readFile(file, 'utf8'),
     writeFile: (file, content) => writeFile(file, content, 'utf8'),
     rename: (oldPath, newPath) => rename(oldPath, newPath),
     unlink: (file) => unlink(file),
-    remove: (path) => rm(path, { recursive: true, force: true }),
   }
 
   private readonly journalsDirectory: string
@@ -97,7 +99,7 @@ export class ProjectLifecycle {
     this.forgetRewritten = deps.forgetRewritten
     this.report = deps.report
     this.guard = deps.guard
-    this.io = deps.io ?? ProjectLifecycle.nodeIoConst
+    this.io = deps.io ?? { ...ProjectLifecycle.nodeIoConst, remove: deps.removeTree ?? TreeRemoval.node }
   }
 
   /**

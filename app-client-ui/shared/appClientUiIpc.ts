@@ -1,33 +1,12 @@
-import type { HistoricSession, HistoricSessionGroup } from './historicSessions'
 import type {
   SessionGroup,
   SessionGroupAssignment,
-  SessionGroupDefinition,
-  SessionGroupsSaveResult,
 } from './sessionsGroupsState'
 import type {
-  CatalogCategoryDto,
-  CategoryInfo,
-  DeletePreview,
-  DeleteReport,
-  ProjectEntry,
-  ProjectListResult,
-  ProjectSessionsResult,
-  ProjectsOpResult,
-  RelocationReport,
-} from '../../lib-orchestrator/projectManager/projectManagerApi.types'
-import type {
-  HostDebugStatus,
   HostPingResult,
   SessionAgentId,
-  SessionColorName,
   SessionCreateSpec,
-  SessionDetailsSaved,
-  SessionDetailsUpdate,
-  SessionHistoryOpenSpec,
-  SessionHistoryReference,
   SessionsOpResult,
-  SessionsSnapshot,
   TerminalAttachResult,
   TerminalAttachSpec,
   TerminalFrame,
@@ -52,61 +31,30 @@ import type {
   FileViewerVersionResult,
 } from '../../lib-orchestrator/fileViewer/fileViewerApi.types'
 import type {
-  RateMonitorDebugStatus,
-  RateMonitorSnapshot,
-} from '../../lib-orchestrator/rateMonitor/rateMonitorApi.types'
-import type {
   RemoteControlResponse,
   RemoteControlStepResult,
 } from '../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import type { RemoteConnectionsSnapshot } from '../../lib-orchestrator/remoteControl/remoteConnectionsApi.types'
 import type { RemoteControlPeerEndpoint } from '../../lib-orchestrator/remoteControl/remoteControlPeerApi.types'
-import type { SessionModelReading } from '../../lib-orchestrator/sessionModelReader/sessionModelReaderApi.types'
-import type { SessionTranscriptReading } from '../../lib-orchestrator/sessionTranscriptReader/sessionTranscriptReaderApi.types'
+import type { RemoteControlAnswer } from '../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import type {
   TerminalDetectResult,
   TerminalDirectoryOpenResult,
   TerminalExternalOpenResult,
   TerminalMenuCapture,
 } from '../../lib-orchestrator/terminalDetector/terminalDetectorApi.types'
-import type {
-  AgentSettingsAgentId,
-  AgentSettingsSaveResult,
-  AgentSettingsValue,
-} from './agentSettings'
 import type { BareCommandId } from './commands'
 import type { AutolauncherResult, AutolauncherSnapshot } from './autolauncher'
 import type { ContextCompactionCooldown } from './contextCompactionCooldown'
 import type { ContextCompactionDelivery } from './contextCompactionDelivery'
 import type { DebugSectionId } from './debugSections.types'
-import type {
-  DirectoryNote,
-  DirectoryNotesGetResult,
-  DirectoryNotesImportResult,
-  DirectoryNotesSaveResult,
-} from './directoryNotes'
-import type {
-  FileChangesSettingsSaveResult,
-  FileChangesSettingsValue,
-} from './fileChangesSettings'
 import type { RemoteConnectionsHoldReason } from './remoteConnectionsHold'
 import type { RemoteControlListenerSettings } from './remoteControlSettings'
 import type {
   RemoteSettingsSaveResult,
   RemoteSettingsSnapshotDto,
 } from './remoteSettingsSnapshot'
-import type {
-  VersioningSettingsSaveResult,
-  VersioningSettingsValue,
-  VersioningSettingsField,
-} from './versioningSettings'
 import type { VersioningCommitDraftDto, VersioningCommitOpenResult, VersioningCommitOpenSessions, VersioningCommitRunRequest, VersioningCommitRunResult } from './versioningCommit'
-import type {
-  ProjectSetupRead,
-  ProjectSetupWrite,
-  WorktreeSettingsSaveResult,
-  WorktreeSettingsValue,
-} from './worktreeSettings'
 import type {
   RemarkableDependencyStatus,
   RemarkableOpenDocumentPages,
@@ -133,7 +81,6 @@ import type {
   TabTransferPayload,
   WorkspacePanelPresence,
 } from './tabTransfer'
-import type { UiSettingsSaveResult, UiSettingsValue } from './uiSettings'
 import type { WindowAppearance, WindowInfo } from './windowInfo'
 
 export interface AppInfo {
@@ -184,6 +131,12 @@ export interface LoadSessionsViewResult {
 }
 
 export interface AppClientUiIpcInvokeMap {
+  /**
+   * Every operation of the control API, by name: the window calls the same registry, schemas and
+   * call log a script reaches over HTTP. The answer is the protocol envelope; `renderer/ipc/appControl`
+   * reads it.
+   */
+  'control:call': (operation: string, body: unknown) => RemoteControlAnswer
   'autolauncher:get': () => AutolauncherSnapshot
   'autolauncher:enable': (invitation: string | null) => AutolauncherResult
   'autolauncher:disable': () => AutolauncherResult
@@ -246,142 +199,6 @@ export interface AppClientUiIpcInvokeMap {
    * gives; putting text INTO the clipboard gives a page nothing it did not already hand over.
    */
   'clipboard:write-text': (text: string) => void
-  /**
-   * The ProjectManager surface. The catalog pair is read and written by the settings editor
-   * (`renderer/overlays/configuration/tabs/projects/`); the other nine belong to the launcher.
-   *
-   * The pair carries the roots alone, not the file they live in: `config.json` is a document of
-   * registered sections and the catalog owns one key of it, so everything beside `categories`
-   * survives a save without this contract ever naming it.
-   *
-   * A domain failure travels as `ProjectsOpResult`, not as a thrown handler: which project could not
-   * be renamed and why is an answer, and `IpcResult` is reserved for the channel itself failing.
-   */
-  'projects:config-get': () => ProjectsOpResult<readonly CatalogCategoryDto[]>
-  'projects:config-save': (categories: readonly CatalogCategoryDto[]) => ProjectsOpResult
-  'projects:categories': () => readonly CategoryInfo[]
-  'projects:list': (
-    categoryId: string,
-    sort: 'alpha' | 'recent',
-  ) => ProjectsOpResult<ProjectListResult>
-  'projects:sessions': (
-    categoryId: string,
-    projectName: string,
-  ) => ProjectsOpResult<ProjectSessionsResult>
-  'historic-sessions:project': (categoryId: string, projectName: string, lastUsedSince?: number | null) => ProjectsOpResult<HistoricSession[]>
-  'historic-sessions:appjamat': (lastUsedSince?: number | null) => HistoricSessionGroup[]
-  'projects:create': (
-    categoryId: string,
-    name: string,
-    virtualFolderPrefix: string | null,
-  ) => ProjectsOpResult<ProjectEntry>
-  'projects:rename': (
-    categoryId: string,
-    oldName: string,
-    newName: string,
-  ) => ProjectsOpResult<RelocationReport>
-  'projects:move-prefix': (
-    categoryId: string,
-    name: string,
-    targetPrefix: string | null,
-  ) => ProjectsOpResult<RelocationReport>
-  'projects:archive': (categoryId: string, name: string) => ProjectsOpResult<RelocationReport>
-  'projects:delete-preview': (categoryId: string, name: string) => ProjectsOpResult<DeletePreview>
-  /** Only ever the token a preview handed out: the confirmation cannot be skipped or guessed. */
-  'projects:delete': (token: string) => ProjectsOpResult<DeleteReport>
-  /**
-   * The SessionManager surface. Its consumers arrived on 2026-08-10: the sessions tree and the Host
-   * item read the snapshot and run the row actions, and the launcher's second screen is the one
-   * caller of `create`.
-   *
-   * The whole snapshot travels on every read. It carries a revision, so a renderer told
-   * `sessions:changed` and asking for the snapshot knows which change it is holding; diffing it into
-   * a tree is the renderer's job, not this contract's.
-   */
-  'sessions:snapshot': () => SessionsSnapshot
-  /**
-   * Every create answers with the name a tab for the session takes, `AppJamatV3 - 001`: what a tab
-   * is called is the library's to compose, and a surface that named it itself would be one of four
-   * naming one session four ways.
-   */
-  'sessions:create': (
-    spec: SessionCreateSpec,
-  ) => SessionsOpResult<{ sessionId: string; tabTitle: string }>
-  'sessions:history-references': (
-    directory: SessionHistoryOpenSpec['directory'],
-  ) => SessionsOpResult<{ references: SessionHistoryReference[] }>
-  'sessions:open-history': (
-    spec: SessionHistoryOpenSpec,
-  ) => SessionsOpResult<{ sessionId: string; tabTitle: string }>
-  'sessions:reopen': (sessionId: string) => SessionsOpResult
-  /**
-   * Being done with a session, as one action that always does the next step: the stop for a session
-   * that is running, and for one with a worktree the commit and the merge that bring it home. It
-   * replaced the separate stop and merge channels, which were two names for one thought.
-   */
-  'sessions:finalize': (sessionId: string) => SessionsOpResult
-  /** Refused with `live-refused` while the session runs: removing a record is not stopping a runtime. */
-  'sessions:remove': (sessionId: string) => SessionsOpResult
-  /**
-   * The operations derived from an existing session rather than described by the caller. The
-   * renderer names the session and nothing else: what forking or restarting MEANS is the library's,
-   * which is why neither takes a `SessionCreateSpec`. The one exception is the fork's `name`, which
-   * the card asking for the fork lets somebody type over before anything starts - the number pair
-   * around it is still the library's to compose.
-   */
-  'sessions:fork': (
-    sessionId: string,
-    options?: { name?: string },
-  ) => SessionsOpResult<{ sessionId: string; tabTitle: string }>
-  'sessions:restart': (sessionId: string) => SessionsOpResult
-  /** `null` is None. An unknown name is refused rather than stored. */
-  'sessions:set-color': (
-    sessionId: string,
-    color: SessionColorName | null,
-  ) => SessionsOpResult
-  /**
-   * The details dialog's Save: name, note and colour as one mutation. What comes back says what
-   * happened and what is left to do - `notifyAgent` carries the text a live Codex session still
-   * has to be told, decided from the record rather than re-derived by the card.
-   */
-  'sessions:set-details': (
-    sessionId: string,
-    update: SessionDetailsUpdate,
-  ) => SessionsOpResult<SessionDetailsSaved>
-  'sessions:adopt-orphan': (runtimeSessionId: string) => SessionsOpResult
-  /**
-   * The other two endings a worktree session can have. Bringing the branch home is `finalize` now;
-   * `discard-worktree` takes the worktree and the branch away and brings nothing, and `retry-setup`
-   * is the one way out of an install that failed.
-   */
-  'sessions:discard-worktree': (sessionId: string) => SessionsOpResult
-  /**
-   * `acknowledgeSetup` is the hash from a `setup-not-acknowledged` refusal, answering the one
-   * question this call can be refused with. Without it the retry could ask and nobody could
-   * answer: the create path's blocks are in the launcher, and a failed install is on the tree.
-   */
-  'sessions:retry-setup': (sessionId: string, acknowledgeSetup?: string) => SessionsOpResult
-  /**
-   * The running count a session in this project is named after, and the reason it is two channels
-   * rather than one: the first only looks, so a card that is opened and abandoned costs the project
-   * nothing, and the second takes the number at submit. The token the second answers is what the
-   * title and the worktree slug are built from - never the one the first showed.
-   *
-   * The project is its directory and not its catalog entry, because the directory is what a repeated
-   * number would collide in: one `.worktrees/` folder, one branch namespace.
-   */
-  'sessions:next-number': (projectPath: string) => SessionsOpResult<{ token: string }>
-  'sessions:allocate-number': (projectPath: string) => SessionsOpResult<{ token: string }>
-  /** Explicit Host actions. Closing a client still only detaches. */
-  'sessions:start-host': () => SessionsOpResult
-  'sessions:restart-host': (expectedHostInstanceId: string) => SessionsOpResult
-  'sessions:stop-host': (expectedHostInstanceId: string) => SessionsOpResult
-  /**
-   * One session written down for a SECOND agent: the machine, the agent and its own conversation id,
-   * the directory and the transcript file. Composed in the library rather than here, and asked for
-   * when a person clicks rather than polled, because finding the transcript reads the disk.
-   */
-  'sessions:reference': (sessionId: string) => SessionsOpResult<{ text: string }>
   'remote:snapshot': () => RemoteConnectionsSnapshot
   /**
    * Connect one explicitly chosen computer while the dialog is open.
@@ -422,9 +239,14 @@ export interface AppClientUiIpcInvokeMap {
     remoteEndpointId: string,
     sessionId: string,
   ) => RemoteControlResponse
+  /**
+   * `acknowledgeSetup` answers a `setup-not-acknowledged` refusal from that computer, and only that:
+   * a target that never asked may predate the key and refuse the whole request over it.
+   */
   'remote:sessions-finalize': (
     remoteEndpointId: string,
     sessionId: string,
+    acknowledgeSetup?: string,
   ) => RemoteControlResponse
   /**
    * The reference block for a session of a PAIRED computer, and the one remote channel that asks
@@ -582,14 +404,11 @@ export interface AppClientUiIpcInvokeMap {
    * Host for nothing. `host-ping` is the one call that touches the network, and it lives here rather
    * than in the renderer because `GET /hello` needs the descriptor's token.
    */
-  'debug:host-status': () => HostDebugStatus
-  'debug:host-ping': () => HostPingResult
   /** Which section is on screen, so the main process can stop pinging for one that is not. */
   'debug:section-active': (section: DebugSectionId | null) => void
-  'versioning:settings-get': () => VersioningSettingsValue
-  'versioning:commit-open-draft': (sessionId: string, vcs: FileChangesVcsId, scope: string | null, paths?: readonly string[]) => VersioningCommitOpenResult
+  'versioning:commit-open-draft': (sessionId: string, vcs: FileChangesVcsId, scope: string | null, paths?: readonly import('./versioningCommit').VersioningCommitPath[]) => VersioningCommitOpenResult
   'versioning:commit-read': (draftId: string) => VersioningCommitDraftDto | null
-  'versioning:commit-files': (draftId: string) => FileChangesWorkingTreeSnapshotResult
+  'versioning:commit-files': (draftId: string) => import('./versioningCommit').VersioningCommitFilesResult
   'versioning:commit-external-diff': (request: FileDiffRequest) => import('./versioningCommit').VersioningExternalDiffResult
   'versioning:commit-open-tab': (sessionId: string, vcs: FileChangesVcsId, scope?: string) => import('../../lib-orchestrator/remoteControl/remoteControlApi.types').RemoteControlStepResult<import('../../lib-orchestrator/remoteControl/remoteControlApi.types').RemoteControlTabOpenCommitDto>
   'versioning:commit-set-message': (draftId: string, message: string) => boolean
@@ -598,21 +417,6 @@ export interface AppClientUiIpcInvokeMap {
   'versioning:commit-tortoise': (draftId: string, message: string) => import('./versioningCommit').VersioningTortoiseResult
   'versioning:commit-close': (draftId: string) => void
   'versioning:commit-open-sessions': () => VersioningCommitOpenSessions
-  'versioning:settings-save': (
-    value: VersioningSettingsValue,
-    field?: VersioningSettingsField,
-  ) => VersioningSettingsSaveResult
-  'worktrees:settings-get': () => WorktreeSettingsValue
-  'worktrees:settings-save': (
-    value: WorktreeSettingsValue,
-  ) => WorktreeSettingsSaveResult
-  /** The project's own tier, over its `.worktree.json`. The path is a project root, not a worktree. */
-  'worktrees:project-setup-get': (projectPath: string) => ProjectSetupRead
-  'worktrees:project-setup-save': (projectPath: string, setup: string[]) => ProjectSetupWrite
-  'fileChanges:settings-get': () => FileChangesSettingsValue
-  'fileChanges:settings-save': (
-    value: FileChangesSettingsValue,
-  ) => FileChangesSettingsSaveResult
   'fileChanges:list': (
     sessionId: string,
     preferredVcs: FileChangesVcsId | null,
@@ -690,60 +494,6 @@ export interface AppClientUiIpcInvokeMap {
     target: RemarkableRenderTarget,
   ) => RemarkableResult<RemarkablePagePreview>
   'remarkable:operation-release': (operationId: string) => void
-  /**
-   * The two font scales, the second section of `config.json` after the catalog.
-   *
-   * The read always answers a value: a config nobody can read means the defaults, because a window
-   * has to draw text either way. Refusal belongs to the save alone, which is where there is finally
-   * something that would be lost by writing over a damaged file.
-   */
-  'ui:settings-get': () => UiSettingsValue
-  'ui:settings-save': (value: UiSettingsValue) => UiSettingsSaveResult
-  /**
-   * The sections of the sessions tree, which a person edits. A read always answers a list, because a
-   * tree has to draw whatever state the config is in; a save is where a list this build cannot draw
-   * is refused, and where the assignments a removed section left behind are dropped.
-   */
-  'session-groups:get': () => readonly SessionGroupDefinition[]
-  'session-groups:save': (groups: readonly SessionGroupDefinition[]) => SessionGroupsSaveResult
-  /**
-   * Whether each agent runs without being asked anything. The read is only the tab's: what a launch
-   * is planned from never crosses this bridge, because the main process reads the same section
-   * straight from the store.
-   */
-  'agents:settings-get': () => AgentSettingsValue
-  'agents:settings-save': (value: AgentSettingsValue) => AgentSettingsSaveResult
-  'agents:auto-compact-set': (
-    agentId: AgentSettingsAgentId,
-    enabled: boolean,
-  ) => AgentSettingsSaveResult
-  /**
-   * How much of each provider's rate limit is spent. The whole snapshot travels on every read and
-   * carries a revision, the same shape as `sessions:snapshot`.
-   */
-  'rate:get': () => RateMonitorSnapshot
-  /**
-   * The manual read, and it answers the snapshot once the reads have settled, so a widget does not
-   * have to race the event it would otherwise wait for. Asking more often than the monitor's floor
-   * allows costs nothing and reads nothing: the floor lives in the library, not in the caller.
-   */
-  'rate:refresh': () => RateMonitorSnapshot
-  /**
-   * The Debug window alone: every window the API returned, both timestamps per provider and when the
-   * OAuth token expires. Never a token - `RateProviderDebug` has no field one could travel in, and
-   * the library composes it field by field, which is the same boundary `debug:host-status` keeps.
-   */
-  'rate:debug-status': () => RateMonitorDebugStatus
-  /**
-   * The model, the effort and how full the context is for one session, read out of the transcript
-   * its agent is writing. On demand and per window rather than broadcast: which panel is in front is
-   * the renderer's knowledge, and only the window looking at a terminal has anything to ask about.
-   *
-   * The session id is the whole request and it is taken strictly: a session nobody knows, a shell
-   * session and an agent session with no native session id all answer `none` with the reason, and
-   * never the newest transcript that happens to lie in the same directory.
-   */
-  'sessionModel:get': (sessionId: string) => SessionModelReading
   'contextCompaction:claim-auto': (sessionId: string) => boolean
   'contextCompaction:note-manual': (sessionId: string) => void
   'contextCompaction:cooldown': (sessionId: string) => ContextCompactionCooldown | null
@@ -752,24 +502,6 @@ export interface AppClientUiIpcInvokeMap {
    * process: wait for an empty composer, type, see it, press Enter, prove the submit.
    */
   'contextCompaction:deliver': (sessionId: string) => ContextCompactionDelivery
-  /**
-   * The last words of a session that has ended, for the post-mortem block of a panel whose runtime
-   * the Host no longer has. Taken as strictly as the model above it and answered the same way: a
-   * session nobody knows, a shell and an agent with no native session id all answer `none`.
-   */
-  'sessionTranscript:get': (sessionId: string) => SessionTranscriptReading
-  /**
-   * The notes of the session's working directory, which main resolves from the session id. A
-   * section damaged by hand is a refusal, so the tab never shows an empty editor over it.
-   */
-  'directoryNotes:get': (sessionId: string) => DirectoryNotesGetResult
-  /** The whole set of that directory; the limits are checked here, not by the section. */
-  'directoryNotes:save': (sessionId: string, notes: readonly DirectoryNote[]) => DirectoryNotesSaveResult
-  /**
-   * Reads the agent's prompt in the main process, stores it as a note and only then erases it.
-   * Never presses Enter; shares the one-delivery-at-a-time guard with `contextCompaction:deliver`.
-   */
-  'directoryNotes:import': (sessionId: string) => DirectoryNotesImportResult
 }
 
 export interface AppClientUiIpcEventMap {
@@ -794,6 +526,8 @@ export interface AppClientUiIpcEventMap {
     title?: string,
   ) => void
   'tabs:close-panel': (panelId: string) => void
+  /** A script run's tab given to the session the run was for, in its place and with its preview state. */
+  'tabs:hand-off-panel': (panelId: string, params: Record<string, unknown>, title: string) => void
   'tabs:terminal-restarted': (targetKey: string) => void
   'tabs:visible-terminal-targets': (targetKeys: readonly string[]) => void
   /** Every session a workspace window has a tab open for, whether or not that tab is in front. */
@@ -858,6 +592,9 @@ export type AppClientUiEventArgs<K extends keyof AppClientUiIpcEventMap> =
  * proof, and `preload/index.test.ts` is the same claim measured at runtime.
  */
 export const AppClientUiBridgeCallsConst = {
+  control: {
+    call: 'control:call',
+  },
   autolauncher: {
     get: 'autolauncher:get',
     enable: 'autolauncher:enable',
@@ -896,42 +633,6 @@ export const AppClientUiBridgeCallsConst = {
   },
   clipboard: {
     writeText: 'clipboard:write-text',
-  },
-  projects: {
-    getConfig: 'projects:config-get',
-    saveConfig: 'projects:config-save',
-    categories: 'projects:categories',
-    list: 'projects:list',
-    sessions: 'projects:sessions',
-    create: 'projects:create',
-    rename: 'projects:rename',
-    movePrefix: 'projects:move-prefix',
-    archive: 'projects:archive',
-    deletePreview: 'projects:delete-preview',
-    deleteProject: 'projects:delete',
-  },
-  historicSessions: { project: 'historic-sessions:project', appJamat: 'historic-sessions:appjamat' },
-  sessions: {
-    snapshot: 'sessions:snapshot',
-    create: 'sessions:create',
-    historyReferences: 'sessions:history-references',
-    openHistory: 'sessions:open-history',
-    reopen: 'sessions:reopen',
-    finalize: 'sessions:finalize',
-    remove: 'sessions:remove',
-    fork: 'sessions:fork',
-    restart: 'sessions:restart',
-    setColor: 'sessions:set-color',
-    setDetails: 'sessions:set-details',
-    adoptOrphan: 'sessions:adopt-orphan',
-    discardWorktree: 'sessions:discard-worktree',
-    retrySetup: 'sessions:retry-setup',
-    nextNumber: 'sessions:next-number',
-    allocateNumber: 'sessions:allocate-number',
-    startHost: 'sessions:start-host',
-    restartHost: 'sessions:restart-host',
-    stopHost: 'sessions:stop-host',
-    reference: 'sessions:reference',
   },
   remote: {
     snapshot: 'remote:snapshot',
@@ -994,8 +695,6 @@ export const AppClientUiBridgeCallsConst = {
   },
   // One preload serves both document entries, so the bridge is the superset and each uses its part.
   debug: {
-    hostStatus: 'debug:host-status',
-    pingHost: 'debug:host-ping',
     sectionActive: 'debug:section-active',
   },
   versioning: {
@@ -1010,18 +709,8 @@ export const AppClientUiBridgeCallsConst = {
     openTortoise: 'versioning:commit-tortoise',
     closeCommit: 'versioning:commit-close',
     openCommitSessions: 'versioning:commit-open-sessions',
-    getSettings: 'versioning:settings-get',
-    saveSettings: 'versioning:settings-save',
-  },
-  worktrees: {
-    getSettings: 'worktrees:settings-get',
-    saveSettings: 'worktrees:settings-save',
-    getProjectSetup: 'worktrees:project-setup-get',
-    saveProjectSetup: 'worktrees:project-setup-save',
   },
   fileChanges: {
-    getSettings: 'fileChanges:settings-get',
-    saveSettings: 'fileChanges:settings-save',
     list: 'fileChanges:list',
     workingTree: 'fileChanges:working-tree',
     scopedWorkingTree: 'fileChanges:scoped-working-tree',
@@ -1067,40 +756,11 @@ export const AppClientUiBridgeCallsConst = {
     preview: 'remarkable:operation-preview',
     release: 'remarkable:operation-release',
   },
-  ui: {
-    getSettings: 'ui:settings-get',
-    saveSettings: 'ui:settings-save',
-  },
-  sessionGroups: {
-    getGroups: 'session-groups:get',
-    saveGroups: 'session-groups:save',
-  },
-  agents: {
-    getSettings: 'agents:settings-get',
-    saveSettings: 'agents:settings-save',
-    setAutoCompact: 'agents:auto-compact-set',
-  },
-  rateMonitor: {
-    get: 'rate:get',
-    refresh: 'rate:refresh',
-    debugStatus: 'rate:debug-status',
-  },
-  sessionModel: {
-    get: 'sessionModel:get',
-  },
   contextCompaction: {
     claimAutomatic: 'contextCompaction:claim-auto',
     noteManual: 'contextCompaction:note-manual',
     cooldown: 'contextCompaction:cooldown',
     deliver: 'contextCompaction:deliver',
-  },
-  sessionTranscript: {
-    get: 'sessionTranscript:get',
-  },
-  directoryNotes: {
-    get: 'directoryNotes:get',
-    save: 'directoryNotes:save',
-    importPrompt: 'directoryNotes:import',
   },
 } as const satisfies AppClientUiBridgeCallTable
 
@@ -1115,6 +775,7 @@ export const AppClientUiBridgeEventsConst = {
   onRemoteChanged: 'remote:changed',
   onTabsActivatePanel: 'tabs:activate-panel',
   onTabsClosePanel: 'tabs:close-panel',
+  onTabsHandOffPanel: 'tabs:hand-off-panel',
   onTabsTerminalRestarted: 'tabs:terminal-restarted',
   onTabsVisibleTerminalTargets: 'tabs:visible-terminal-targets',
   onTabsOpenTerminalTargets: 'tabs:open-terminal-targets',

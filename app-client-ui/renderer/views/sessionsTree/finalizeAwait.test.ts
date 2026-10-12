@@ -6,7 +6,7 @@ import type {
 import type { SessionsSnapshot } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type { TerminalTarget } from '../../../shared/terminalTarget'
 import { SessionsFixtures } from '../../sessions/fixtures/sessionsFixtures'
-import { FinalizeAwait } from './finalizeAwait'
+import { FinalizeAwait, type FinalizeAwaited } from './finalizeAwait'
 
 describe('app-client-ui/renderer/views/sessionsTree/finalizeAwait', () => {
   const localTarget = { kind: 'local', sessionId: 's-dirty' } as const
@@ -77,8 +77,8 @@ describe('app-client-ui/renderer/views/sessionsTree/finalizeAwait', () => {
 
   it('builds local and remote asks in their own scopes', () => {
     const snapshot = SessionsFixtures.stoppedWorktree()
-    const local = FinalizeAwait.askOf(localTarget, snapshot, null)
-    const distant = FinalizeAwait.askOf(remoteTarget, null, remote([endpoint(snapshot)]))
+    const local = FinalizeAwait.askOf({ target: localTarget, group: 'Sessions' }, snapshot, null)
+    const distant = FinalizeAwait.askOf({ target: remoteTarget, group: 'Sessions' }, null, remote([endpoint(snapshot)]))
 
     expect(local?.questions[0].question.choices.map((choice) => choice.id))
       .toEqual(['merge', 'keep', 'discard'])
@@ -88,11 +88,11 @@ describe('app-client-ui/renderer/views/sessionsTree/finalizeAwait', () => {
 
   it('asks an ended SVN worktree session to Commit, and nothing while its finish runs', () => {
     const snapshot = SessionsFixtures.svnWorktrees()
-    const ended = FinalizeAwait.askOf({ kind: 'local', sessionId: 's-svn' }, snapshot, null)
+    const ended = FinalizeAwait.askOf({ target: { kind: 'local', sessionId: 's-svn' }, group: 'Sessions' }, snapshot, null)
 
     expect(ended?.questions[0].question.choices.map((choice) => choice.id))
       .toEqual(['commit', 'keep', 'discard'])
-    expect(FinalizeAwait.askOf({ kind: 'local', sessionId: 's-reviewing' }, snapshot, null))
+    expect(FinalizeAwait.askOf({ target: { kind: 'local', sessionId: 's-reviewing' }, group: 'Sessions' }, snapshot, null))
       .toBeNull()
   })
 
@@ -100,24 +100,24 @@ describe('app-client-ui/renderer/views/sessionsTree/finalizeAwait', () => {
     const snapshot = SessionsFixtures.mixed()
     const plain = { kind: 'local', sessionId: 's-ended' } as const
 
-    expect(FinalizeAwait.askOf(localTarget, { ...snapshot, sessions: [] }, null)).toBeNull()
-    expect(FinalizeAwait.askOf(plain, snapshot, null)).toBeNull()
+    expect(FinalizeAwait.askOf({ target: localTarget, group: 'Sessions' }, { ...snapshot, sessions: [] }, null)).toBeNull()
+    expect(FinalizeAwait.askOf({ target: plain, group: 'Sessions' }, snapshot, null)).toBeNull()
   })
 
   it('settles against the current wait map without dropping a later accepted target', () => {
-    const empty = new Map<string, TerminalTarget>()
+    const empty = new Map<string, FinalizeAwaited>()
     const withFirst = FinalizeAwait.reduce(empty, {
-      kind: 'accepted', targetKey: 'local:first', target: localTarget,
+      kind: 'accepted', targetKey: 'local:first', awaited: { target: localTarget, group: 'Sessions' },
     })
     const withBoth = FinalizeAwait.reduce(withFirst, {
-      kind: 'accepted', targetKey: 'remote:second', target: remoteTarget,
+      kind: 'accepted', targetKey: 'remote:second', awaited: { target: remoteTarget, group: 'Waiting' },
     })
 
     const remaining = FinalizeAwait.reduce(withBoth, {
       kind: 'settled', targetKeys: ['local:first'],
     })
 
-    expect([...remaining]).toEqual([['remote:second', remoteTarget]])
+    expect([...remaining]).toEqual([['remote:second', { target: remoteTarget, group: 'Waiting' }]])
   })
 
   it('throws on a target kind it does not know', () => {

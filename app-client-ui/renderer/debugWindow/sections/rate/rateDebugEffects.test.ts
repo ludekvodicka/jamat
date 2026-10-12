@@ -8,6 +8,7 @@ import type { AppClientUiBridge, IpcResult } from '../../../../shared/appClientU
 import { RateDebugFixtures } from './fixtures/rateDebugFixtures'
 import { RateDebugEffects, type RateDebugPorts } from './rateDebugEffects'
 import type { RateDebugEffect, RateDebugInput } from './rateDebugModel'
+import { ControlBridgeFixture } from '../../../ipc/fixtures/controlBridgeFixture'
 
 describe('app-client-ui/renderer/debugWindow/sections/rate/rateDebugEffects', () => {
   const snapshotConst: RateMonitorSnapshot = {
@@ -22,17 +23,17 @@ describe('app-client-ui/renderer/debugWindow/sections/rate/rateDebugEffects', ()
 
   function installBridge(answers: Partial<Bridge>): RateDebugInput[] {
     const bridge = {
-      rateMonitor: {
-        debugStatus: () => Promise.resolve(
-          answers.debugStatus ?? { ok: true as const, value: RateDebugFixtures.status() },
-        ),
-        refresh: () => Promise.resolve(
-          answers.refresh ?? { ok: true as const, value: snapshotConst },
-        ),
-      },
+      control: ControlBridgeFixture.routes({
+        'rate.debugStatus': {
+          value: () => Promise.resolve(answers.debugStatus ?? { ok: true as const, value: RateDebugFixtures.status() }),
+        },
+        'rate.refresh': {
+          value: () => Promise.resolve(answers.refresh ?? { ok: true as const, value: snapshotConst }),
+        },
+      }),
     }
     ;(window as unknown as { appClient: unknown }).appClient = bridge as unknown as
-      Pick<AppClientUiBridge, 'rateMonitor'>
+      Pick<AppClientUiBridge, 'control'>
     return []
   }
 

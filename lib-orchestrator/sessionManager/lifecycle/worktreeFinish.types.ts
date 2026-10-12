@@ -1,5 +1,5 @@
-import type { SessionRecordWorktree } from '../records/sessionRecord.types'
-import type { SessionFinishChoice, SessionsOpResult, SessionWorktreeInfo } from '../sessionManagerApi.types'
+import type { SessionRecord, SessionRecordWorktree } from '../records/sessionRecord.types'
+import type { SessionFinishChoice, SessionFinishPress, SessionsOpResult, SessionWorktreeInfo } from '../sessionManagerApi.types'
 
 /**
  * Finishing a worktree session, one implementation per worktree kind. `SessionManager` selects it by
@@ -7,13 +7,33 @@ import type { SessionFinishChoice, SessionsOpResult, SessionWorktreeInfo } from 
  * `WorktreeEnded` and calls it when an ending did all it promised.
  */
 export interface WorktreeFinisher {
-  /** svn answers once the first review is open, or at once when the finish ends without one. */
-  finish(sessionId: string): Promise<SessionsOpResult>
+  /**
+   * True: `finish` stops a live session, runs the project's after checks itself and answers once the
+   * action is accepted. False: `SessionManager` runs the Finish checks gate first and calls `finish`
+   * on an ended session once they passed.
+   */
+  readonly ownsChecks: boolean
+  /** The press; `actionId` names an action that goes on after the answer, null for an ending already done. */
+  finish(sessionId: string, press: SessionFinishPress): Promise<SessionsOpResult<{ actionId: string | null }>>
+  /**
+   * What refuses every Finish of this client before the worktree is asked anything, or null. Asked
+   * before a Finish runs the project's checks, so nobody waits for checks no Finish can follow.
+   */
+  finishRefusal(): SessionsOpResult<never> | null
+  /** The worktree goes with what is in it; answers once that removal ended. */
   discard(sessionId: string): Promise<SessionsOpResult>
+  /** Ends a Finish that waits for the person and keeps the worktree; with none to end, nothing happens. */
+  keep(sessionId: string): Promise<SessionsOpResult>
   /** Measured off the snapshot path; it may run a VCS process in the worktree. */
   facts(worktree: SessionRecordWorktree): Promise<WorktreeFinishFacts>
-  /** Read on every recompose, so it costs nothing: what it needs of the disk, `facts` measured. */
-  choicesOf(worktree: SessionRecordWorktree): readonly SessionFinishChoice[]
+  /** Read on every recompose, so it costs nothing: what it needs of the disk, `facts` measured (`diff`, null before). */
+  choicesOf(input: WorktreeChoicesInput): readonly SessionFinishChoice[]
+}
+
+export interface WorktreeChoicesInput {
+  record: SessionRecord
+  worktree: SessionRecordWorktree
+  diff: SessionWorktreeInfo['diff']
 }
 
 export interface WorktreeFinishFacts {

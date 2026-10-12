@@ -124,9 +124,7 @@ export function FileViewerReloadControl(props: {
 }): React.JSX.Element {
   return (
     <>
-      {props.missing && (
-        <span className="file-viewer-gone" role="status">File is gone from disk</span>
-      )}
+      {props.missing && <FileViewerGoneNote />}
       <button
         type="button"
         className="file-viewer-reload"
@@ -137,6 +135,10 @@ export function FileViewerReloadControl(props: {
       </button>
     </>
   )
+}
+
+export function FileViewerGoneNote(): React.JSX.Element {
+  return <span className="file-viewer-gone" role="status">File is gone from disk</span>
 }
 
 export function FileViewerPathControl(props: {

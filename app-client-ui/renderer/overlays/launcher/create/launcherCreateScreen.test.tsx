@@ -67,12 +67,12 @@ describe('app-client-ui/renderer/overlays/launcher/create/launcherCreateScreen',
     expect(nameField(view).value).toBe('')
   })
 
-  it('previews the worktree directory and draws no branch line', () => {
+  it('previews the worktree folder and draws no branch line', () => {
     const view = draw(opened({ field: 'isolation', token: '015', name: 'session wizard', worktree: true }))
     const note = view.container.querySelector('.jamat-launcher-create__note')
 
     expect(note?.textContent).toBe(
-      'Runs in C:\\Projects\\NodeJs\\AppJamatV3\\.worktrees\\015-session-wizard, from HEAD',
+      'Runs in .worktrees/015-session-wizard of its product group, catalog project or directory, from HEAD',
     )
     expect(view.container.textContent).not.toContain('Branch')
   })

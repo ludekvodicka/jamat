@@ -219,8 +219,8 @@ export class ServiceFileChangesIpc extends ServiceIpcBase<
     const result = await (running ?? this.startWorkingTree(key, { ...context.value, cwd: scopeRoot ?? context.value.cwd,
       ...(forCommit ? { worktree: null } : {}) }, source, forCommit, filePath))
     if (result.ok) this.track(result.value.snapshotId, ownerId, sessionId,
-      forCommit && scopeRoot !== undefined && PathCompare.comparable(scopeRoot) !== PathCompare.comparable(context.value.cwd)
-        && (source === 'svn' || source === 'git') ? { scopeRoot, source } : undefined)
+      forCommit && (source === 'svn' || source === 'git')
+        ? { scopeRoot: scopeRoot ?? context.value.cwd, source } : undefined)
     return result
   }
 

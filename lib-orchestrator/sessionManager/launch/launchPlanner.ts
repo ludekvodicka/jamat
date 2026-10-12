@@ -1,4 +1,5 @@
 import { homedir } from 'node:os'
+import { join } from 'node:path'
 
 import type { RuntimeChannel, RuntimeLaunchSpec } from '../../../app-host/app/wire/hostWire.js'
 import { ChildEnvironment } from '../../shared/childEnvironment'
@@ -6,10 +7,13 @@ import type {
   SessionDirectoryRef,
   SessionRecord,
   SessionRecordAgent,
+  SessionRecordProcess,
   SessionRecordSetupCommand,
+  SessionRecordWorktree,
 } from '../records/sessionRecord.types'
 import { AgentPresets } from './agentPresets'
 import { PowerShellHost } from './powershellHost'
+import type { RunTools } from './runTools'
 import { WindowsCommand } from './windowsCommand'
 
 /**
@@ -68,6 +72,8 @@ export interface LaunchPlanOptions {
    * to be able to state it rather than assert whatever this machine happens to have.
    */
   spanningLaunch?: (command: string) => Win32SpanningLaunch | null
+  /** Where a direct-process record's tool is on this machine; a process record planned without it is a bug. */
+  tools?: Pick<RunTools, 'resolve'>
 }
 
 /**
@@ -107,6 +113,8 @@ export class LaunchPlanner {
       rows: options?.rows ?? LaunchPlanner.defaultRowsConst,
     }
     if (record.kind === 'shell') {
+      if (record.process !== undefined)
+        return LaunchPlanner.processLaunch(record.sessionId, record.process, options?.tools, common)
       if (record.commands !== undefined && record.commands.length > 0)
         return LaunchPlanner.scriptedShell(record.commands, platform, environment, common)
       return { command: LaunchPlanner.shellCommand(platform, environment), args: [], ...common }
@@ -120,8 +128,9 @@ export class LaunchPlanner {
       // after one of them is not a root option any more. The initial prompt stays where the presets
       // put it, last inside the mode args, so nothing here can be read as more prompt either.
       const front = [
-        // Remote Codex resume/fork rejects terminal-side permission flags; its server owns them.
-        ...(options?.yolo && !(agent.agentId === 'codex' && options.codexBridge)
+        // Remote Codex resume/fork rejects terminal-side permission flags; its server owns them. A
+        // record with its own permission mode (the SVN resolver) never runs with YOLO.
+        ...(options?.yolo && agent.permission === undefined && !(agent.agentId === 'codex' && options.codexBridge)
           ? LaunchPlanner.yoloArgsOf(agent.agentId, common.cwd) : []),
         ...(options?.model === undefined
           ? []
@@ -336,9 +345,13 @@ export class LaunchPlanner {
    * the main copy.
    */
   static cwdOf(record: SessionRecord): string {
-    return record.worktree?.worktreePath
-      ?? record.retiredWorktree?.worktreePath
-      ?? LaunchPlanner.directoryOf(record.directory)
+    if (record.worktree !== undefined) return LaunchPlanner.worktreeCwdOf(record.worktree)
+    return record.retiredWorktree?.worktreePath ?? LaunchPlanner.directoryOf(record.directory)
+  }
+
+  /** The worktree, or the directory below it the session was started for (`cwdSubpath`). */
+  static worktreeCwdOf(worktree: Pick<SessionRecordWorktree, 'worktreePath' | 'cwdSubpath'>): string {
+    return worktree.cwdSubpath === undefined ? worktree.worktreePath : join(worktree.worktreePath, ...worktree.cwdSubpath.split('/'))
   }
 
   /**
@@ -419,6 +432,28 @@ export class LaunchPlanner {
         + `; ${step.command} || exit $?`)
       .join('; ')
     return { command: LaunchPlanner.posixScriptedShellConst, args: ['-c', line], ...common }
+  }
+
+  /**
+   * The tool itself, with its arguments as separate argv elements and no shell to read them: a URL with
+   * `%20` or `&` and a path with a quote arrive exactly as written. An unresolved tool is an invariant
+   * here, because `SessionLifecycle` refuses the launch with the tool's own reason before planning it.
+   */
+  private static processLaunch(
+    sessionId: string,
+    run: SessionRecordProcess,
+    tools: LaunchPlanOptions['tools'],
+    common: Omit<RuntimeLaunchSpec, 'command' | 'args'>,
+  ): RuntimeLaunchSpec {
+    if (tools === undefined) throw new Error(`Session ${sessionId} runs a tool, and no run tools were given`)
+    const resolved = tools.resolve(run.tool)
+    if (!resolved.ok) throw new Error(resolved.detail)
+    return {
+      ...common,
+      command: resolved.command,
+      args: [...resolved.prefixArgs, ...run.args],
+      env: { ...common.env, ...resolved.env },
+    }
   }
 
   /** Closes the quote, hands the shell a literal `'`, opens it again - the total POSIX escape. */

@@ -6,7 +6,7 @@ import { CommandRegistry } from '../../commands/commandRegistry'
 import { PanelFocusRegistry } from '../../shell/panelFocusRegistry'
 import { PanelRegistry } from './panelRegistry'
 import { usePanelSplit, type PanelSplitHandle } from './panelSplit'
-import { usePanelSidebar } from './panelSidebar'
+import { usePanelSidebar, type PanelSidebarHandle } from './panelSidebar'
 import { TabDecorationsStore } from './tabDecorations'
 import { TabDecorationsProvider } from './tabDecorationsContext'
 import { TabsController } from './tabsController'
@@ -94,12 +94,16 @@ describe('app-client-ui/renderer/widgets/tabs/tabsHost', () => {
     await waitFor(() => expect(attach).toHaveBeenCalledTimes(1))
   })
 
-  it.each(['debounce', 'shutdown'] as const)('restores inner files and commits after %s saves them', async (save) => {
+  it.each(['debounce', 'shutdown', 'preview replacement'] as const)('restores inner files, commits and sidebar after %s', async (save) => {
     let split: PanelSplitHandle
+    let sidebar: PanelSidebarHandle
     function SplitPanel(props: IDockviewPanelProps): React.JSX.Element {
       split = usePanelSplit(props)
-      usePanelSidebar(props)
-      return <output data-testid="split-state">{JSON.stringify(split.state)}</output>
+      sidebar = usePanelSidebar(props)
+      return <>
+        <output data-testid="split-state">{JSON.stringify(split.state)}</output>
+        <output data-testid="sidebar-state">{JSON.stringify(sidebar.state)}</output>
+      </>
     }
     function mount(saved: string | null) {
       const context = wiring()
@@ -118,20 +122,34 @@ describe('app-client-ui/renderer/widgets/tabs/tabsHost', () => {
     await waitFor(() => expect(first.saved).toHaveLength(1))
     act(() => {
       split.open({ kind: 'file', key: 'file', title: 'Readme', source: { kind: 'workspace', sessionId: 's1', path: 'README.md' }, location: { line: 12 }, zoomPercent: 125 })
-      expect(first.controller.isPreview(panelId)).toBe(false)
+      expect(first.controller.isPreview(panelId)).toBe(true)
       split.keepOpen('file')
       split.open({ kind: 'commit', key: 'svn', title: 'Commit SVN', vcs: 'svn', scopeRoot: 'Q:/app', paths: ['README.md'] })
       split.open({ kind: 'commit', key: 'git', title: 'Commit Git', vcs: 'git', scopeRoot: 'Q:/app' })
       split.resize(0.63)
       split.activate('file')
+      sidebar.open('directoryExplorer')
+      sidebar.resize(370)
       if (save === 'shutdown') first.controller.dispose()
     })
     const expected = first.view.getByTestId('split-state').textContent
+    const expectedSidebar = first.view.getByTestId('sidebar-state').textContent
+    if (save === 'preview replacement') {
+      await act(() => first.controller.openPanel('terminal', 'Other', { sessionId: 's2' }, undefined, { preview: true }))
+      expect(first.view.getByTestId('split-state').textContent).not.toBe(expected)
+      await act(() => first.controller.openPanel('terminal', 'Session', { sessionId: 's1' }, undefined, { preview: true }))
+      expect(first.view.getByTestId('split-state').textContent).toBe(expected)
+      expect(first.view.getByTestId('sidebar-state').textContent).toBe(expectedSidebar)
+      expect(first.controller.isPreview(panelId)).toBe(true)
+      first.view.unmount()
+      return
+    }
     await waitFor(() => expect(first.saved).toHaveLength(2))
     const saved = first.saved.at(-1)!
     first.view.unmount()
     const second = mount(saved)
     await waitFor(() => expect(second.view.getByTestId('split-state').textContent).toBe(expected))
+    expect(second.view.getByTestId('sidebar-state').textContent).toBe(expectedSidebar)
     expect(JSON.parse(expected!).items).toHaveLength(3)
     second.view.unmount()
   })

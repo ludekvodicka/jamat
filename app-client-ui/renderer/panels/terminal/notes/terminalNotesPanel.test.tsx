@@ -1,12 +1,13 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { AppClientUiBridge } from '../../../../shared/appClientUiIpc'
+import type { AppClientUiBridge, IpcResult } from '../../../../shared/appClientUiIpc'
 import { DirectoryNotes } from '../../../../shared/directoryNotes'
 import { TerminalNotesPanel } from './terminalNotesPanel'
 import type { TerminalNoteEntry } from './terminalNotesState'
 import { useTerminalNotes } from './useTerminalNotes'
 import type { TerminalNotesModel } from './useTerminalNotes'
+import { ControlBridgeFixture } from '../../../ipc/fixtures/controlBridgeFixture'
 
 describe('app-client-ui/renderer/panels/terminal/notes/terminalNotesPanel', () => {
   afterEach(() => {
@@ -181,11 +182,11 @@ describe('app-client-ui/renderer/panels/terminal/notes/terminalNotesPanel', () =
       value: { ok: true, value: { directory: 'C:/work', notes: [{ text: 'a' }] } },
     }
     ;(window as unknown as { appClient: AppClientUiBridge }).appClient = {
-      directoryNotes: {
-        get: () => Promise.resolve(answer),
-        save: () => Promise.resolve({ ok: true, value: { ok: true } }),
-        importPrompt: () => new Promise(() => undefined),
-      },
+      control: ControlBridgeFixture.routes({
+        'directoryNotes.get': { library: () => Promise.resolve(answer as IpcResult<unknown>) },
+        'directoryNotes.save': { library: () => Promise.resolve({ ok: true, value: { ok: true } }) },
+        'directoryNotes.importPrompt': { value: () => new Promise(() => undefined) },
+      }),
       onDirectoryNotesChanged: () => () => undefined,
     } as unknown as AppClientUiBridge
     function Harness(): React.JSX.Element {

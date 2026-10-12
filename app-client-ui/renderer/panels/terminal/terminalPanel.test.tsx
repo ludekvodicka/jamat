@@ -45,6 +45,7 @@ import { TabDecorationsStore } from '../../widgets/tabs/tabDecorations'
 import { TabDecorationsProvider } from '../../widgets/tabs/tabDecorationsContext'
 import { PanelSplitParams, type PanelSplitFileItem } from '../../widgets/tabs/panelSplit'
 import { TerminalPanel, type TerminalPanelProps } from './terminalPanel'
+import { ControlBridgeFixture } from '../../ipc/fixtures/controlBridgeFixture'
 
 const xtermMock = vi.hoisted(() => ({
   focuses: 0,
@@ -333,13 +334,45 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
 
   function installBridge(): void {
     const bridge = {
-      sessions: {
-        reopen: (sessionId: string) => {
-          reopened.push(sessionId)
-          if (reopenRejects !== null) return Promise.reject(new Error(reopenRejects))
-          return Promise.resolve({ ok: true as const, value: reopenAnswer })
+      control: ControlBridgeFixture.routes({
+        'sessions.reopen': {
+          library: (body: { session: { sessionId: string } }) => {
+            reopened.push(body.session.sessionId)
+            if (reopenRejects !== null) return Promise.reject(new Error(reopenRejects))
+            return Promise.resolve({ ok: true as const, value: reopenAnswer })
+          },
         },
-      },
+        'sessions.transcript': {
+          value: (body: { session: { sessionId: string } }) => {
+            transcriptReads.push(body.session.sessionId)
+            return Promise.resolve({
+              ok: true as const,
+              value: { sessionId: body.session.sessionId, transcriptContentUntrusted: true, reading: transcriptAnswer },
+            })
+          },
+        },
+        'directoryNotes.get': {
+          library: (body: { sessionId: string }) => {
+            notesReads.push(body.sessionId)
+            return Promise.resolve({
+              ok: true as const,
+              value: { ok: true as const, value: { directory: 'C:/work', notes: notesStored } },
+            })
+          },
+        },
+        'directoryNotes.save': {
+          library: (body: { sessionId: string; notes: readonly DirectoryNote[] }) => {
+            notesSaves.push({ sessionId: body.sessionId, notes: body.notes })
+            return Promise.resolve({ ok: true as const, value: { ok: true as const } })
+          },
+        },
+        'directoryNotes.importPrompt': {
+          value: (body: { sessionId: string }) => {
+            notesImports.push(body.sessionId)
+            return Promise.resolve({ ok: true as const, value: importAnswer })
+          },
+        },
+      }),
       terminal: {
         attach: (id: string) => {
           attachId = id
@@ -396,12 +429,6 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
       },
       clipboard: {
         writeText: () => Promise.resolve({ ok: true as const, value: undefined }),
-      },
-      sessionTranscript: {
-        get: (sessionId: string) => {
-          transcriptReads.push(sessionId)
-          return Promise.resolve({ ok: true as const, value: transcriptAnswer })
-        },
       },
       // The panel's file-changes read, which the post-mortem block is handed rather than repeating.
       fileChanges: {
@@ -494,23 +521,6 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
             ok: true as const,
             value: { ok: true as const, value: changedDocument },
           })
-        },
-      },
-      directoryNotes: {
-        get: (sessionId: string) => {
-          notesReads.push(sessionId)
-          return Promise.resolve({
-            ok: true as const,
-            value: { ok: true as const, value: { directory: 'C:/work', notes: notesStored } },
-          })
-        },
-        save: (sessionId: string, notes: readonly DirectoryNote[]) => {
-          notesSaves.push({ sessionId, notes })
-          return Promise.resolve({ ok: true as const, value: { ok: true as const } })
-        },
-        importPrompt: (sessionId: string) => {
-          notesImports.push(sessionId)
-          return Promise.resolve({ ok: true as const, value: importAnswer })
         },
       },
       onDirectoryNotesChanged: () => () => undefined,

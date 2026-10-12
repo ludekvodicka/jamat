@@ -3,6 +3,7 @@ import type {
   RuntimeSessionInfo,
 } from '../../wire/hostWire.js'
 import type {
+  TerminalExit,
   TerminalInstanceDriver,
   TerminalInstanceEvent,
   TerminalInstanceFactory,
@@ -22,6 +23,8 @@ export interface FakeTerminalInstanceOptions {
   stopLeavesAlive?: boolean
   readyError?: Error
   readyBarrier?: Promise<void>
+  /** The child ends with this code before `ready` sees it alive, as a fast command does. */
+  exitsDuringReady?: number
   /** A projection that cannot answer, which is what an attach past its own ack has to survive. */
   snapshotError?: Error
 }
@@ -68,6 +71,7 @@ export class FakeTerminalInstances {
       rows: launch.rows,
       outputSeq: 0,
       lastOutputAt: null as number | null,
+      exit: null as TerminalExit | null,
     }
     const writes: string[] = []
     const resizes: Array<{ cols: number; rows: number }> = []
@@ -107,6 +111,7 @@ export class FakeTerminalInstances {
       if (!state.alive)
         return
       state.alive = false
+      state.exit = { exitCode, exitedAt: Date.now() }
       onEvent({
         type: 'exit',
         runtimeSessionId,
@@ -121,12 +126,15 @@ export class FakeTerminalInstances {
       get pid() { return 4_242 + generation },
       get alive() { return state.alive },
       get processStartedAt() { return state.alive ? 1 : null },
+      get exit() { return state.exit },
       projection,
       ready: async () => {
         if (this.options.readyBarrier)
           await this.options.readyBarrier
         if (this.options.readyError)
           throw this.options.readyError
+        if (this.options.exitsDuringReady !== undefined)
+          emitExit(this.options.exitsDuringReady)
       },
       write: (data: string) => {
         if (state.alive)

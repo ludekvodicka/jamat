@@ -1,22 +1,34 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 
 import type {
+  RuntimeInspectResult,
   RuntimeLaunchSpec,
   RuntimeListResult,
+  RuntimeRef,
   RuntimeSessionInfo,
 } from '../../../app-host/app/wire/hostWire.js'
 import type { CodexSessionIdentity } from '../codexSessionIdentity'
-import type { HostCallFailure } from '../../hostClient/hostClient.types'
-import type { DeclaredSetup, SetupResolution } from '../../projectSetup/projectSetup.types'
+import type { HostCallFailure, HostCallResult } from '../../hostClient/hostClient.types'
+import type { SetupResolution } from '../../projectSetup/projectSetup.types'
+import { WorktreeConfig } from '../../projectSetup/worktreeConfig'
 import { AtomicJsonFile } from '../../shared/atomicJsonFile'
 import { AgentPresets } from '../launch/agentPresets'
-import type { SessionRecord } from '../records/sessionRecord.types'
+import type { RunToolResolution } from '../launch/runTools'
+import type { SessionRecord, SessionRecordWorktree } from '../records/sessionRecord.types'
 import { SessionRecordsStore } from '../records/sessionRecordsStore'
+import { CommandAgreement } from '../scripts/commandAgreement'
+import { CommandTrustStore } from '../scripts/commandTrustStore'
+import { DeclaredScripts } from '../scripts/declaredScripts'
+import { ScriptLogStore } from '../scripts/scriptLogStore'
+import { WorktreeResultsStore } from '../results/worktreeResultsStore'
+import { SessionScriptDefinitions } from '../scripts/sessionScriptDefinitions'
+import { type ScriptCollapsed, SessionScriptsManager } from '../scripts/sessionScriptsManager'
 import type {
+  SessionCommitReceipt,
   SessionCreateSpec,
   SessionHistoryOpenSpec,
   SessionsOpResult,
@@ -28,22 +40,35 @@ import {
   type SessionNumbersPort,
   type SessionSetupPort,
   type SessionWorktreePort,
+  type WorktreePlaceRequest,
+  type WorktreePlacing,
   type WorktreeProvision,
   type WorktreeRequest,
 } from './sessionLifecycle'
-import { type SvnFinishPort, SvnWorktreeFinishFlow } from './svnWorktreeFinishFlow'
+import type { ReconcileChange } from './reconciler'
+import type { SvnActionPort } from './svnActionFlow'
+import { type SvnCleanupPort, SvnWorktreeFinishFlow } from './svnWorktreeFinishFlow'
+import type { SvnWorktreeRemoved } from './svnWorktreeRemoval'
 import { WorktreeCleanupPacing } from './worktreeCleanupPacing'
 
 describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
   const created: string[] = []
-  /** The project every worktree here is cut from, and where `fakeWorktrees` says it landed. */
-  const projectRoot = join('Q:', 'apps', 'one')
+  /**
+   * The project every worktree here is cut from, and where `fakeWorktrees` says it landed. The
+   * worktree directory exists on disk, because a retry of its setup refuses one that is gone.
+   */
+  const projectParent = mkdtempSync(join(tmpdir(), 'jamat-v3-session-lifecycle-project-'))
+  const projectRoot = join(projectParent, 'one')
   const worktreePath = join(projectRoot, '.worktrees', 'fix')
+  mkdirSync(worktreePath, { recursive: true })
 
   afterEach(() => {
     for (const directory of created.splice(0))
       rmSync(directory, { recursive: true, force: true })
+    rmSync(join(projectRoot, '.worktree.json'), { force: true })
   })
+
+  afterAll(() => rmSync(projectParent, { recursive: true, force: true }))
 
   interface HostCall {
     name: string
@@ -66,6 +91,11 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     loseAnswer: boolean
     onCreate: (() => void) | null
     listing(): RuntimeListResult
+    /** The rows a dead runtime still shows, per runtime; absent is a runtime that printed nothing. */
+    screens: Map<string, string[]>
+    /** Every `runtime.inspect`, kept apart from `calls` so the launch assertions stay about launches. */
+    inspects: RuntimeRef[]
+    inspect(target: RuntimeRef): Promise<HostCallResult<RuntimeInspectResult>>
   }
 
   type FakeRun =
@@ -74,8 +104,13 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
 
   interface FakeWorktrees {
     port: SessionWorktreePort
+    places: WorktreePlaceRequest[]
     calls: WorktreeRequest[]
+    purged: SessionRecordWorktree[]
+    /** Null: a Git worktree of the project, or of the explicit owner, like `git` mode places one. */
+    placing: WorktreePlacing | null
     outcome: WorktreeProvision
+    purge: SessionsOpResult
   }
 
   interface FakeSetup {
@@ -83,12 +118,6 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     calls: { projectRoot: string; repositoryRoot: string }[]
     /** What the member answers about every project; a test that cares about one replaces it. */
     resolution: SetupResolution
-    /** Null is the common case: nothing is declared by the project itself, so no gate applies. */
-    declared: DeclaredSetup | null
-    acknowledged: { projectRoot: string; hash: string }[]
-    /** Called after each answer, so a test can move the file between the two reads of it. */
-    onDeclared: ((call: number) => void) | null
-    declaredCalls: number
   }
 
   interface FakeNumbers {
@@ -110,6 +139,9 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     host: FakeHost
     worktrees: FakeWorktrees
     setup: FakeSetup
+    /** The real gate over the real `.worktree.json` in `projectRoot`, with its own trust file. */
+    agreement: CommandAgreement
+    trustFile: string
     numbers: FakeNumbers
     identities: Map<string, CodexSessionIdentity>
     claudeTitles: FakeClaudeTitles
@@ -132,6 +164,24 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     finishing: Set<string>
     /** The lifecycle's clock, movable so a case can wait out a replay backoff. */
     clock: { now: number }
+    /** Every run the scripts manager collapsed, in order. */
+    collapsed: ScriptCollapsed[]
+    scripts: SessionScriptsManager
+    logs: ScriptLogStore
+    logsDirectory: string
+    /** What a direct-process tool resolves to; a tool not named here resolves to its own name. */
+    tools: Map<string, RunToolResolution>
+    /** The SVN action's own svn reads and removal, which a case may replace. */
+    svnAction: {
+      svn: SvnActionPort
+      remove: (sessionId: string) => Promise<SvnWorktreeRemoved>
+      /** Every session an action removed as asked. */
+      ended: string[]
+      /** Every drive the action detached, so a case can wait for them. */
+      detached: Promise<unknown>[]
+      /** The conflicted files a resolver left markers in. */
+      markers: string[]
+    }
   }
 
   interface FakeClaudeTitles {
@@ -250,6 +300,32 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         throughRevision: 1,
         hostInstanceId: fake.hostInstanceId,
       }),
+      screens: new Map(),
+      inspects: [],
+      async inspect(target) {
+        fake.inspects.push(target)
+        if (fake.failure) return fake.failure
+        const session = runtimes.get(target.runtimeSessionId)
+        if (!session) return { ok: false, code: 'op-rejected', status: 404, detail: `Unknown runtime: ${target.runtimeSessionId}` }
+        return {
+          ok: true,
+          value: {
+            session,
+            projection: {
+              runtimeSessionId: session.runtimeSessionId,
+              generation: session.generation,
+              outputEpoch: 1,
+              outputSeq: 0,
+              screen: '',
+              screenLines: fake.screens.get(target.runtimeSessionId) ?? [],
+              cols: session.cols,
+              rows: session.rows,
+              alive: session.alive,
+              lastOutputAt: null,
+            },
+          },
+        }
+      },
       port: {
         async runtimeCreate(request) {
           calls.push({ name: 'runtime.create', body: { ...request } })
@@ -326,23 +402,32 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
   }
 
   function fakeWorktrees(): FakeWorktrees {
-    const calls: FakeWorktrees['calls'] = []
     const fake: FakeWorktrees = {
-      calls,
+      places: [],
+      calls: [],
+      purged: [],
+      placing: null,
       outcome: {
         ok: true,
         value: {
-          worktreePath,
-          branch: 'jamat/fix',
-          baseCommit: 'abc123',
-          repositoryRoot: projectRoot,
-          kind: 'git',
+          worktree: { worktreePath, branch: 'jamat/fix', baseCommit: 'abc123', repositoryRoot: projectRoot, kind: 'git' },
+          checkout: null,
         },
       },
+      purge: { ok: true, value: undefined },
       port: {
+        async place(request) {
+          fake.places.push(request)
+          const ownerDir = request.owner ?? request.projectRoot ?? request.directory
+          return fake.placing ?? { ok: true, value: { kind: 'git', ownerDir, cwdSubpath: '', catalogProject: request.projectRoot } }
+        },
         async create(request) {
-          calls.push(request)
+          fake.calls.push(request)
           return fake.outcome
+        },
+        async purgeReserved(worktree) {
+          fake.purged.push(worktree)
+          return fake.purge
         },
       },
     }
@@ -351,28 +436,13 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
 
   function fakeSetup(): FakeSetup {
     const calls: FakeSetup['calls'] = []
-    const acknowledged: FakeSetup['acknowledged'] = []
     const fake: FakeSetup = {
       calls,
-      acknowledged,
       resolution: { kind: 'none', reason: 'no known project family detected' },
-      declared: null,
-      onDeclared: null,
-      declaredCalls: 0,
       port: {
         async resolve(projectRoot, repositoryRoot) {
           calls.push({ projectRoot, repositoryRoot })
           return fake.resolution
-        },
-        async declaredSetup() {
-          const answer = fake.declared
-          fake.declaredCalls += 1
-          fake.onDeclared?.(fake.declaredCalls)
-          return answer
-        },
-        acknowledgeSetup(projectRoot, hash) {
-          acknowledged.push({ projectRoot, hash })
-          if (fake.declared) fake.declared = { ...fake.declared, acknowledged: true }
         },
       },
     }
@@ -385,6 +455,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       unwritableRecords?: boolean
       /** What the trust seed answers; the default is the quiet success of an already-trusted one. */
       seedProblem?: string
+      /** Records on disk before the store loads, in whatever shape an older build wrote them. */
+      seedRecords?: unknown[]
     },
   ): Promise<Harness> {
     const root = mkdtempSync(join(tmpdir(), 'jamat-v3-session-lifecycle-'))
@@ -395,6 +467,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     // be written: absent as far as reading goes, so nothing latches, and impossible to write on
     // every platform. The store, the commit and the failure are all the real ones.
     if (options?.unwritableRecords) mkdirSync(file)
+    if (options?.seedRecords)
+      writeFileSync(file, JSON.stringify({ schemaVersion: 1, savedAt: 1, records: options.seedRecords }), 'utf8')
     const snapshotsDirectory = join(root, 'session-snapshots')
     const reports: string[] = []
     const store = await SessionRecordsStore.load(file, {
@@ -404,6 +478,10 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     const host = fakeHost()
     const worktrees = fakeWorktrees()
     const setup = fakeSetup()
+    const trustFile = join(root, 'setup-trust.json')
+    const agreement = new CommandAgreement({
+      trust: CommandTrustStore.load(trustFile, (message) => reports.push(message)),
+    })
     const numbers = fakeNumbers()
     const identities = new Map<string, CodexSessionIdentity>()
     const claudeTitles = fakeClaudeTitles()
@@ -417,12 +495,55 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     const seeded: string[] = []
     const resumed: string[] = []
     const finishing = new Set<string>()
+    const tools = new Map<string, RunToolResolution>()
+    const svnAction: Harness['svnAction'] = {
+      svn: {
+        ownerCheck: async () => ({ ok: true, value: undefined }),
+        scheduleMissing: async () => ({ ok: true, value: undefined }),
+        revisionOf: async () => ({ ok: true, value: 41 }),
+        status: async () => ({ ok: true, value: { textConflicts: [], otherConflicts: [], changed: [] } }),
+        changes: async () => ({ ok: true, value: [] }),
+        resolveWorking: async () => ({ ok: true, value: undefined }),
+        incoming: async () => ({ ok: true, value: [] }),
+        locked: async () => false,
+        reviewRoots: async () => ({ ok: true, value: [] }),
+        fingerprint: async () => ({ ok: true, value: 'fingerprint' }),
+        lowerBounds: async () => ({ ok: true, value: {} }),
+      },
+      remove: async () => ({ state: 'removed', lines: [] }),
+      ended: [],
+      detached: [],
+      markers: [],
+    }
+    const collapsed: ScriptCollapsed[] = []
+    const logsDirectory = join(root, 'script-logs')
+    const logs = new ScriptLogStore(logsDirectory)
+    const scripts = new SessionScriptsManager({
+      records: store,
+      host: {
+        runtimeInspect: (target) => host.inspect(target),
+        runtimeStop: (target) => host.port.runtimeStop(target),
+        runtimeRemove: (target) => host.port.runtimeRemove(target),
+      },
+      logs,
+      onCollapsed: (event) => collapsed.push(event),
+      report: (message) => reports.push(message),
+      now: () => clock.now,
+    })
     return {
+      tools,
+      svnAction,
+      collapsed,
+      scripts,
+      logs,
+      logsDirectory,
       store,
       recordsFile: file,
       host,
       worktrees,
       setup,
+      agreement,
+      trustFile,
       numbers,
       identities,
       claudeTitles,
@@ -442,12 +563,41 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         host: host.port,
         worktrees: worktrees.port,
         setup: setup.port,
+        agreement,
         numbers: numbers.port,
         codexSessions: {
           launch: (_record, native) => native,
           identity: record => identities.get(record.sessionId) ?? null,
         },
+        tools: { resolve: (tool) => tools.get(tool) ?? { ok: true, command: tool, prefixArgs: [], env: {} } },
         claudeTitles: claudeTitles.port,
+        scripts,
+        svnActions: {
+          svn: {
+            ownerCheck: (location) => svnAction.svn.ownerCheck(location),
+            scheduleMissing: (path) => svnAction.svn.scheduleMissing(path),
+            revisionOf: (path) => svnAction.svn.revisionOf(path),
+            status: (path) => svnAction.svn.status(path),
+            changes: (path) => svnAction.svn.changes(path),
+            resolveWorking: (path, paths) => svnAction.svn.resolveWorking(path, paths),
+            incoming: (path, base, changed, own) => svnAction.svn.incoming(path, base, changed, own),
+            locked: (path) => svnAction.svn.locked(path),
+            reviewRoots: (path) => svnAction.svn.reviewRoots(path),
+            fingerprint: (path) => svnAction.svn.fingerprint(path),
+            lowerBounds: (roots) => svnAction.svn.lowerBounds(roots),
+          },
+          labels: { ownCommits: async () => ({ ok: true, value: [] }), afterReview: async () => [], inferred: async () => [] },
+          removal: { remove: (sessionId) => svnAction.remove(sessionId) },
+          resolver: { unavailable: () => null, briefs: logs, withMarkers: async () => svnAction.markers },
+          results: new WorktreeResultsStore(join(root, 'worktree-results'), { now: () => clock.now, logs, report: (message) => reports.push(message) }),
+          finishRefusal: () => null,
+          activityOf: () => null,
+          ended: (sessionId) => { svnAction.ended.push(sessionId) },
+          landedDue: () => undefined,
+          proposalsSpent: () => undefined,
+          detach: (work) => { svnAction.detached.push(work) },
+          changed: () => undefined,
+        },
         // The one channel the client has for a fact it cannot put in a result, and the store's own
         // damage report goes to the same place in production.
         report: (message) => reports.push(message),
@@ -556,9 +706,14 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       endedAt: 4_000,
       directory: { mode: 'adHoc', path: worktreePath },
       commands: [{ command: 'pnpm install', cwd: worktreePath }],
-      setupFor: 'p1',
+      scriptOf: { sessionId: 'p1', phase: 'before', scriptId: 'setup', name: 'setup' },
       ...overrides,
     })
+  }
+
+  /** A pass minus the scripts manager's settles and collapses, for a case about something else. */
+  function withoutScriptRuns(changes: readonly ReconcileChange[]): ReconcileChange[] {
+    return changes.filter((change) => change.kind !== 'settle-script-run' && change.kind !== 'collapse-script-run')
   }
 
   function launchOf(call: HostCall): RuntimeLaunchSpec {
@@ -571,6 +726,15 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
 
   function snapshotCount(directory: string): number {
     return existsSync(directory) ? readdirSync(directory).length : 0
+  }
+
+  /** An SVN action of `root`, running unless a case gives it a reason to wait. */
+  function svnActionOf(root: string, overrides?: Partial<NonNullable<SessionRecord['svnAction']>>): NonNullable<SessionRecord['svnAction']> {
+    return {
+      kind: 'finish', actionId: 'action-1', stage: 'reviewing', runId: 'review-run', root, checks: [], checkCursor: 0,
+      roots: [{ path: root, own: '', changed: ['a.txt'] }], rootCursor: 0, rounds: { incoming: 0, outOfDate: 0, lock: 0 },
+      evidence: [], requestedBy: 'window', startedAt: 5, ...overrides,
+    }
   }
 
   function failureOf(result: SessionsOpResult<unknown>): { code: string; detail: string } {
@@ -635,51 +799,91 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
   })
 
   /*
-   * The gate in front of a repository's own setup. `projectScanner` calls any directory a level or
+   * The gate in front of a repository's own commands. `projectScanner` calls any directory a level or
    * two under a category root a project, so a clone dropped there is enough to get a `.worktree.json`
-   * read - and its `setup` array is the one input this library executes that nobody here wrote.
+   * read - and its `setup` and `scripts` are the inputs this library executes that nobody here wrote.
+   * The gate is the real `CommandAgreement` over a real file in `projectRoot`.
    */
-  describe('a setup the project itself declares', () => {
-    const declared: DeclaredSetup = {
-      commands: ['./bootstrap.sh'],
-      hash: 'hash-1',
-      acknowledged: false,
+  describe('commands the project itself declares', () => {
+    function declare(config: unknown): void {
+      writeFileSync(join(projectRoot, '.worktree.json'), JSON.stringify(config), 'utf8')
     }
+
+    function agreedHash(context: Harness): string | null {
+      return CommandTrustStore.load(context.trustFile, () => undefined).acknowledgedHashOf(projectRoot)
+    }
+
+    const bootstrapHash = CommandAgreement.hashOf(['./bootstrap.sh'], { before: [], after: [] })
 
     it('refuses the create, and leaves no worktree behind to be refused around', async () => {
       const context = await harness()
-      context.setup.declared = declared
+      declare({ setup: ['./bootstrap.sh'] })
 
       const result = await context.lifecycle.create(worktreeSpec())
 
       expect(result).toMatchObject({
         ok: false,
         code: 'setup-not-acknowledged',
-        setup: { commands: ['./bootstrap.sh'], hash: 'hash-1' },
+        setup: { commands: ['./bootstrap.sh'], hash: bootstrapHash },
       })
       // The whole reason the gate sits before `provisionWorktree` rather than beside the resolution.
       expect(context.worktrees.calls).toEqual([])
       expect(context.store.list()).toEqual([])
     })
 
+    it('asks about the declared scripts too, every command labeled by its phase', async () => {
+      const context = await harness()
+      declare({
+        setup: ['pnpm install'],
+        scripts: {
+          before: [{ name: 'codegen', command: 'pnpm codegen' }],
+          after: [{ name: 'tests', command: 'pnpm test', cwd: 'packages/app' }],
+        },
+      })
+
+      expect(await context.lifecycle.create(worktreeSpec())).toMatchObject({
+        ok: false,
+        code: 'setup-not-acknowledged',
+        setup: {
+          commands: ['pnpm install', 'before codegen: pnpm codegen', 'after tests (in packages/app): pnpm test'],
+        },
+      })
+      expect(context.worktrees.calls).toEqual([])
+    })
+
+    // A skipped check would read as a passed one, so a key the gate cannot judge is a refusal.
+    it('refuses a damaged scripts key before the worktree is cut', async () => {
+      const context = await harness()
+      declare({ setup: ['pnpm install'], scripts: { before: 'pnpm codegen' } })
+
+      expect(await context.lifecycle.create(worktreeSpec())).toMatchObject({
+        ok: false,
+        code: 'invalid-spec',
+        detail: expect.stringContaining('"scripts.before" must be an array'),
+      })
+      expect(context.worktrees.calls).toEqual([])
+      expect(context.numbers.calls).toEqual([])
+      expect(context.store.list()).toEqual([])
+    })
+
     it('goes through when the answer travels back with the spec, and remembers it', async () => {
       const context = await harness()
-      context.setup.declared = declared
+      declare({ setup: ['./bootstrap.sh'] })
 
       const result = await context.lifecycle.create({
         ...worktreeSpec(),
-        acknowledgeSetup: 'hash-1',
+        acknowledgeSetup: bootstrapHash,
       })
 
       expect(result.ok).toBe(true)
-      expect(context.setup.acknowledged).toEqual([{ projectRoot, hash: 'hash-1' }])
+      expect(agreedHash(context)).toBe(bootstrapHash)
       expect(context.worktrees.calls).toHaveLength(1)
     })
 
     // The hash is what was SHOWN. An answer to an older question is not an answer to this one.
     it('refuses an agreement that names a hash the file no longer has', async () => {
       const context = await harness()
-      context.setup.declared = declared
+      declare({ setup: ['./bootstrap.sh'] })
 
       const result = await context.lifecycle.create({
         ...worktreeSpec(),
@@ -687,15 +891,16 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       })
 
       expect(result).toMatchObject({ ok: false, code: 'setup-not-acknowledged' })
-      expect(context.setup.acknowledged).toEqual([])
+      expect(agreedHash(context)).toBe(null)
     })
 
     it('lets an already agreed setup through without asking again', async () => {
       const context = await harness()
-      context.setup.declared = { ...declared, acknowledged: true }
+      declare({ setup: ['./bootstrap.sh'] })
+      expect(context.agreement.gate(projectRoot, await context.agreement.declared(projectRoot), bootstrapHash)).toBe(null)
 
       expect((await context.lifecycle.create(worktreeSpec())).ok).toBe(true)
-      expect(context.setup.acknowledged).toEqual([])
+      expect(agreedHash(context)).toBe(bootstrapHash)
     })
 
     // Tiers two and three are this machine's own answers; there is nobody else to agree with.
@@ -711,17 +916,30 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
      * is somebody's chance to swap what runs. Asking again is what closes it; the worktree already
      * exists by then, so the answer is a skip rather than a refusal.
      */
+    // Not even this machine's own install: the file is the project's word on what replaces it.
+    it('installs nothing when the file cannot be read, and says why', async () => {
+      const context = await harness()
+      writeFileSync(join(projectRoot, '.worktree.json'), '{ "setup": [', 'utf8')
+      context.setup.resolution = installing([{ command: 'pnpm install', cwd: '' }])
+
+      expect((await context.lifecycle.create(worktreeSpec())).ok).toBe(true)
+      expect(context.store.get('id-1')?.setupSkipped?.reason).toContain('is not valid JSON')
+      expect(context.store.get('id-1')?.pendingSetup).toBeUndefined()
+      expect(JSON.stringify(context.host.calls)).not.toContain('pnpm install')
+    })
+
     it('installs nothing when the file moves between the agreement and the resolution', async () => {
       const context = await harness()
-      context.setup.declared = { ...declared, acknowledged: true }
+      declare({ setup: ['./bootstrap.sh'] })
       context.setup.resolution = installing([{ command: './bootstrap.sh', cwd: '' }], 'project')
-      // The gate reads it agreed; by the time the resolution is checked, the file says something else.
-      context.setup.onDeclared = (call) => {
-        if (call === 1)
-          context.setup.declared = { commands: ['./evil.sh'], hash: 'hash-2', acknowledged: false }
+      const cut = context.worktrees.port.create
+      // The gate reads it agreed; while the worktree is cut, the file starts to say something else.
+      context.worktrees.port.create = async (request) => {
+        declare({ setup: ['./bootstrap.sh'], scripts: { before: [{ name: 'evil', command: './evil.sh' }] } })
+        return cut(request)
       }
 
-      const result = await context.lifecycle.create(worktreeSpec())
+      const result = await context.lifecycle.create({ ...worktreeSpec(), acknowledgeSetup: bootstrapHash })
 
       expect(result.ok).toBe(true)
       expect(context.store.get('id-1')?.setupSkipped?.reason).toContain('not agreed to run')
@@ -790,16 +1008,15 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       worktree: { slug: 'fix', baseRef: 'main' },
     })
     expect(result.ok).toBe(true)
+    expect(context.worktrees.places).toEqual([{ directory: join('Q:', 'apps', 'one'), projectRoot: join('Q:', 'apps', 'one'), owner: undefined }])
     expect(context.worktrees.calls).toEqual([{
-      projectRoot: join('Q:', 'apps', 'one'),
-      owner: undefined,
+      placement: { kind: 'git', ownerDir: join('Q:', 'apps', 'one'), cwdSubpath: '', catalogProject: join('Q:', 'apps', 'one') },
       folder: '007-fix',
       baseRef: 'main',
     }])
     expect(context.store.get('id-1')?.worktree?.branch).toBe('jamat/fix')
     expect(context.store.get('id-1')?.transcriptCwd).toBe(worktreePath)
-    expect(launchOf(context.host.calls[0]).cwd)
-      .toBe(join('Q:', 'apps', 'one', '.worktrees', 'fix'))
+    expect(launchOf(context.host.calls[0]).cwd).toBe(worktreePath)
   })
 
   // A git failure ends the create where it stands: no record, no runtime, nothing to reconcile.
@@ -832,17 +1049,15 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     context.worktrees.outcome = {
       ok: true,
       value: {
-        worktreePath: join(owner, '.worktrees', '007-fix'),
-        branch: 'file:///repository/Member',
-        baseCommit: 'r41',
-        repositoryRoot: owner,
-        kind: 'svn',
+        worktree: { worktreePath: join(owner, '.worktrees', '007-fix'), branch: 'file:///repository/Member', baseCommit: 'r41', repositoryRoot: owner, kind: 'svn' },
+        checkout: null,
       },
     }
 
     successOf(await context.lifecycle.create({ ...worktreeSpec(), worktree: { slug: 'fix', owner } }))
 
-    expect(context.worktrees.calls).toMatchObject([{ projectRoot, owner, folder: '007-fix' }])
+    expect(context.worktrees.places).toEqual([{ directory: projectRoot, projectRoot, owner }])
+    expect(context.worktrees.calls).toMatchObject([{ placement: { ownerDir: owner }, folder: '007-fix' }])
     expect(context.setup.calls).toEqual([{ projectRoot: owner, repositoryRoot: owner }])
   })
 
@@ -851,7 +1066,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     const refusals = await Promise.all([
       context.lifecycle.create({
         kind: 'shell',
-        directory: { mode: 'adHoc', path: 'D:\\work' },
+        directory: { mode: 'default' },
         worktree: { slug: 'fix' },
       }),
       context.lifecycle.create({ kind: 'agent', directory: { mode: 'default' } }),
@@ -1768,6 +1983,47 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     expect(context.store.get('id-1')).toBeNull()
   })
 
+  it('replays a direct-process run as the tool itself, with no shell in front of it', async () => {
+    const context = await harness()
+    context.tools.set('svn', { ok: true, command: 'C:/svn/svn.exe', prefixArgs: [], env: {} })
+    await context.store.put(record('s1', {
+      directory: { mode: 'adHoc', path: context.workDirectory },
+      process: { tool: 'svn', args: ['update', '-q', '--', '.'] },
+      life: 'starting',
+      binding: null,
+      pendingOperationId: 'op-7',
+      pendingOperationKind: 'create',
+    }))
+
+    await context.lifecycle.reconcile(context.host.listing())
+    const launch = launchOf(callsNamed(context.host, 'runtime.create')[0])
+    expect(launch.command).toBe('C:/svn/svn.exe')
+    expect(launch.args).toEqual(['update', '-q', '--', '.'])
+    expect(launch.cwd).toBe(context.workDirectory)
+  })
+
+  // A tool missing now stays missing: replaying it would be a loop, and a shell might find another one.
+  it('ends a direct-process run whose tool this machine lacks, in the words of what is missing', async () => {
+    const context = await harness()
+    context.tools.set('jamat-cli', { ok: false, detail: 'The packaged Jamat CLI is missing: R:/cli/jamat-v3.cjs' })
+    await context.store.put(record('s1', {
+      directory: { mode: 'adHoc', path: context.workDirectory },
+      process: { tool: 'jamat-cli', args: ['sessions', 'worktree-review', '--self', '--wait'] },
+      life: 'starting',
+      binding: null,
+      pendingOperationId: 'op-7',
+      pendingOperationKind: 'create',
+    }))
+
+    await context.lifecycle.reconcile(context.host.listing())
+    expect(callsNamed(context.host, 'runtime.create')).toEqual([])
+    expect(context.store.get('s1')).toEqual(expect.objectContaining({
+      life: 'ended',
+      pendingOperationId: undefined,
+      endedReason: 'The packaged Jamat CLI is missing: R:/cli/jamat-v3.cjs',
+    }))
+  })
+
   /*
    * A hand-edited or half-written record: a pending `reopen` whose agent can name no conversation.
    * Building that launch throws inside `AgentPresets`, and a throw out of the replay abandons the
@@ -2081,7 +2337,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         sessionId: 'p1',
         operationId: 'op-7',
         operation: 'create',
-      }])
+      }, { kind: 'settle-script-run', runId: 's1' }])
       expect(context.host.calls[0].body).toEqual(expect.objectContaining({
         operationId: 'op-7',
         runtimeSessionId: 'p1',
@@ -2093,8 +2349,10 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       }))
       expect(context.store.get('p1')?.pendingSetup).toBeUndefined()
 
-      // Idempotent: the next pass finds a running session and starts nothing a second time.
-      expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([])
+      // Idempotent: the next pass finds a running session and starts nothing a second time. The
+      // install, settled and named by nobody any more, leaves the list.
+      expect(await context.lifecycle.reconcile(context.host.listing()))
+        .toEqual([{ kind: 'collapse-script-run', runId: 's1' }])
       expect(callsNamed(context.host, 'runtime.create')).toHaveLength(1)
     })
 
@@ -2114,7 +2372,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         detail: 'the socket died mid-call',
       }
 
-      expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([])
+      expect(await context.lifecycle.reconcile(context.host.listing()))
+        .toEqual([{ kind: 'settle-script-run', runId: 's1' }])
       expect(context.store.get('p1')).toEqual(expect.objectContaining({
         life: 'starting',
         pendingOperationId: 'op-7',
@@ -2128,7 +2387,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         sessionId: 'p1',
         operationId: 'op-7',
         operation: 'create',
-      }])
+      }, { kind: 'collapse-script-run', runId: 's1' }])
       expect(context.store.get('p1')?.life).toBe('live')
       expect(callsNamed(context.host, 'runtime.create')).toHaveLength(2)
     })
@@ -2139,10 +2398,11 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     await context.store.put(setupRecord({ exitCode: 1 }))
 
     expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([{
-      kind: 'setup-failed',
+      kind: 'script-failed',
       sessionId: 'p1',
+      gate: 'before',
       reason: expect.stringContaining('1'),
-    }])
+    }, { kind: 'settle-script-run', runId: 's1' }])
     expect(context.store.get('p1')).toEqual(expect.objectContaining({
       life: 'ended',
       binding: null,
@@ -2154,11 +2414,13 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     }))
     expect(context.store.get('p1')?.endedReason).toMatch(/^setup failed: /)
     expect(context.reports).toHaveLength(1)
-    expect(context.reports[0]).toContain(join('Q:', 'apps', 'one', '.worktrees', 'fix'))
+    expect(context.reports[0]).toContain(worktreePath)
     expect(context.reports[0]).toContain('jamat/fix')
 
-    // Ended is where it stops: the pass after it decides nothing and launches nothing.
+    // Ended is where it stops: the pass after it decides nothing and launches nothing, and the failed
+    // install its parent still names stays in the list.
     expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([])
+    expect(context.store.get('s1')).not.toBeNull()
     expect(context.host.calls).toEqual([])
   })
 
@@ -2173,7 +2435,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     await context.store.put(setupRecord({ exitCode: 1 }))
     context.host.runtimes.set('p1', runtime('p1', { generation: 4 }))
 
-    expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([{
+    expect(withoutScriptRuns(await context.lifecycle.reconcile(context.host.listing()))).toEqual([{
       kind: 'bind-live',
       sessionId: 'p1',
       binding: { hostInstanceId: 'host-1', generation: 4 },
@@ -2189,7 +2451,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       exitedAt: 8_000,
     }))
     await context.store.put(waiting({ life: 'starting', binding: null }))
-    expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([{
+    expect(withoutScriptRuns(await context.lifecycle.reconcile(context.host.listing()))).toEqual([{
       kind: 'mark-ended',
       sessionId: 'p1',
       exitCode: 2,
@@ -2212,7 +2474,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     }))
     await context.store.put(setupRecord())
 
-    expect(await context.lifecycle.reconcile(context.host.listing()))
+    expect(withoutScriptRuns(await context.lifecycle.reconcile(context.host.listing())))
       .toEqual([{ kind: 'mark-lost', sessionId: 'p1' }])
     expect(context.store.get('p1')?.life).toBe('lost')
     expect(context.host.calls).toEqual([])
@@ -2241,12 +2503,12 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       binding: null,
       pendingOperationId: 'id-2',
       pendingOperationKind: 'create',
-      pendingSetup: { setupSessionId: 'id-3' },
+      pendingSetup: expect.objectContaining({ setupSessionId: 'id-3', cursor: 0 }),
     }))
     expect(context.store.get('id-3')).toEqual(expect.objectContaining({
       kind: 'shell',
       life: 'live',
-      setupFor: 'id-1',
+      scriptOf: { sessionId: 'id-1', phase: 'before', scriptId: 'setup', name: 'setup', stepKey: expect.any(String) },
       // adHoc and no worktree field: `cwdOf` prefers a worktree and would move the first step.
       directory: { mode: 'adHoc', path: worktreePath },
       commands: [
@@ -2311,7 +2573,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     // The session is on disk and names the worktree itself; the install is not on disk at all.
     expect(context.store.get('id-1')).toEqual(expect.objectContaining({
       life: 'starting',
-      pendingSetup: { setupSessionId: 'id-3' },
+      pendingSetup: expect.objectContaining({ setupSessionId: 'id-3' }),
     }))
     expect(context.store.get('id-1')?.worktree?.branch).toBe('jamat/fix')
     expect(context.store.get('id-3')).toBeNull()
@@ -2320,8 +2582,9 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     // What the refusal promises, carried out: the pass reads the missing install for what it is and
     // ends the session, naming the worktree a retry needs exactly where it is.
     expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([{
-      kind: 'setup-failed',
+      kind: 'script-failed',
       sessionId: 'id-1',
+      gate: 'before',
       reason: expect.stringContaining('setup session record is gone'),
     }])
     expect(context.store.get('id-1')?.life).toBe('ended')
@@ -2355,14 +2618,15 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     expect(context.store.get('id-1')?.life).toBe('starting')
 
     context.host.failure = null
-    expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([{
-      kind: 'setup-failed',
+    expect(withoutScriptRuns(await context.lifecycle.reconcile(context.host.listing()))).toEqual([{
+      kind: 'script-failed',
       sessionId: 'id-1',
-      reason: expect.stringContaining('no exit code'),
+      gate: 'before',
+      reason: 'the setup could not start: launch.cwd must be an existing directory',
     }])
     expect(context.store.get('id-1')).toEqual(expect.objectContaining({
       life: 'ended',
-      pendingSetup: { setupSessionId: 'id-3' },
+      pendingSetup: expect.objectContaining({ setupSessionId: 'id-3' }),
     }))
     expect(callsNamed(context.host, 'runtime.create')).toHaveLength(1)
   })
@@ -2501,7 +2765,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
    * resolution, usually a `.worktree.json` that was not there the first time, and repeating the
    * commands that failed would walk into the same wall for ever.
    */
-  it('re-resolves the install, rewrites it and arms the waiting session again', async () => {
+  it('re-resolves the install, mints it as a new run and arms the waiting session again', async () => {
     const context = await harness()
     await context.store.put(failedWaiting())
     await context.store.put(setupRecord({ exitCode: 1 }))
@@ -2511,65 +2775,117 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
 
     expect(await context.lifecycle.retrySetup('p1')).toEqual({ ok: true, value: undefined })
     expect(context.setup.calls).toEqual([{ projectRoot, repositoryRoot: projectRoot }])
-    expect(context.store.get('s1')).toEqual(expect.objectContaining({
+    // `id-1` is the new install, `id-2` its launch, `id-3` the launch the session waits under.
+    expect(context.store.get('id-1')).toEqual(expect.objectContaining({
       life: 'live',
       commands: [{
         command: 'pnpm install --frozen-lockfile',
         cwd: join(worktreePath, 'packages', 'app'),
       }],
       directory: { mode: 'adHoc', path: join(worktreePath, 'packages', 'app') },
+      scriptOf: { sessionId: 'p1', phase: 'before', scriptId: 'setup', name: 'setup', stepKey: expect.any(String) },
     }))
-    // The install is armed first, so the ids run the other way: `id-1` is its launch, `id-2` the
-    // waiting session's own.
     expect(context.store.get('p1')).toEqual(expect.objectContaining({
       life: 'starting',
       binding: null,
-      pendingOperationId: 'id-2',
+      pendingOperationId: 'id-3',
       pendingOperationKind: 'create',
-      pendingSetup: { setupSessionId: 's1' },
+      pendingSetup: expect.objectContaining({ setupSessionId: 'id-1', cursor: 0 }),
       endedAt: undefined,
       endedReason: undefined,
     }))
+    // The failed attempt is left as it was: its record is the evidence its history entry is made of.
+    expect(context.store.get('s1')).toEqual(setupRecord({ exitCode: 1 }))
 
     const creates = callsNamed(context.host, 'runtime.create')
     expect(creates).toHaveLength(1)
-    expect(creates[0].body.runtimeSessionId).toBe('s1')
-    expect(creates[0].body.operationId).toBe('id-1')
+    expect(creates[0].body.runtimeSessionId).toBe('id-1')
+    expect(creates[0].body.operationId).toBe('id-2')
     expect(launchOf(creates[0]).args.join(' ')).toContain('--frozen-lockfile')
 
     // And it lands where the first install would have: the setup exits 0 and the session runs.
-    context.host.runtimes.set('s1', runtime('s1', { alive: false, exitCode: 0, exitedAt: 9_000 }))
+    context.host.runtimes.set('id-1', runtime('id-1', { alive: false, exitCode: 0, exitedAt: 9_000 }))
     await context.lifecycle.reconcile(context.host.listing())
     expect(context.store.get('p1')).toEqual(expect.objectContaining({
       life: 'live',
       pendingSetup: undefined,
     }))
-    expect(callsNamed(context.host, 'runtime.create')[1].body.operationId).toBe('id-2')
+    expect(callsNamed(context.host, 'runtime.create')[1].body.operationId).toBe('id-3')
+  })
+
+  it('refuses a retry while the install it would replace may still be running', async () => {
+    const context = await harness()
+    await context.store.put(failedWaiting())
+    await context.store.put(setupRecord({ life: 'live', binding: { hostInstanceId: 'host-1', generation: 1 } }))
+    context.setup.resolution = installing([{ command: 'pnpm install', cwd: '' }])
+
+    expect(failureOf(await context.lifecycle.retrySetup('p1')).code).toBe('live-refused')
+    expect(context.store.get('p1')).toEqual(failedWaiting())
+    expect(context.host.calls).toEqual([])
+  })
+
+  it('refuses a retry once the worktree is gone, naming its path, and while a cleanup holds it', async () => {
+    const context = await harness()
+    const gonePath = join(projectRoot, '.worktrees', 'gone')
+    const absent = failedWaiting({ worktree: { ...failedWaiting().worktree!, worktreePath: gonePath } })
+    await context.store.put(absent)
+    await context.store.put(setupRecord({ exitCode: 1 }))
+    context.setup.resolution = installing([{ command: 'pnpm install', cwd: '' }])
+
+    expect(failureOf(await context.lifecycle.retrySetup('p1')))
+      .toMatchObject({ code: 'worktree-removed', detail: expect.stringContaining(gonePath) })
+
+    const retired = failedWaiting({ retiredWorktree: { worktreePath, kind: 'svn', revisions: [], removedAt: 6_000 } })
+    delete retired.worktree
+    await context.store.put(retired)
+    expect(failureOf(await context.lifecycle.retrySetup('p1')))
+      .toMatchObject({ code: 'worktree-removed', detail: expect.stringContaining(worktreePath) })
+
+    await context.store.put(failedWaiting())
+    context.finishing.add('p1')
+    expect(failureOf(await context.lifecycle.retrySetup('p1')).code).toBe('merge-pending')
+    expect(context.store.get('p1')).toEqual(failedWaiting())
+    expect(context.host.calls).toEqual([])
+    expect(context.setup.calls).toEqual([])
   })
 
   /*
-   * The window a retry must never leave open, and the one the reviewers walked into: the Host is
-   * briefly unreachable, so nothing can be relaunched. Arming the waiting session anyway - over a
-   * setup record still saying `ended` with the exit code that failed - hands the next reconcile pass
-   * a session to condemn on that old exit code, and the user's retry is thrown away in silence.
-   * Nothing is written at all instead, so the records stay exactly as the failure left them and the
-   * retry is still there to be asked for again.
+   * The window a retry must never leave open: the Host is briefly unreachable, so nothing can be
+   * launched. The session is armed over the NEW install, which is `starting` under its own pending
+   * pair, never over the old one still saying `ended` with the exit code that failed - that would
+   * hand the next pass a session to condemn on the old exit code, throwing the retry away in silence.
+   * The new install is replayed under its own id once the Host answers, so the retry answers as
+   * accepted: the badge shows the install, and a pass will start the session after it.
    */
-  it('writes nothing when the Host cannot answer the retry', async () => {
+  it('leaves the new install to the replay when the Host cannot answer the retry', async () => {
     const context = await harness()
     await context.store.put(failedWaiting())
     await context.store.put(setupRecord({ exitCode: 1 }))
     context.setup.resolution = installing([{ command: 'pnpm install', cwd: '' }])
     context.host.failure = { ok: false, code: 'host-unreachable', detail: 'no descriptor' }
 
-    expect(failureOf(await context.lifecycle.retrySetup('p1')).code).toBe('host-unreachable')
-    expect(context.store.get('p1')).toEqual(failedWaiting())
+    expect(await context.lifecycle.retrySetup('p1')).toEqual({ ok: true, value: undefined })
+    expect(context.store.get('id-1')).toEqual(expect.objectContaining({
+      life: 'starting',
+      binding: null,
+      pendingOperationId: 'id-2',
+      pendingOperationKind: 'create',
+    }))
+    expect(context.store.get('p1')).toEqual(expect.objectContaining({
+      life: 'starting',
+      pendingSetup: expect.objectContaining({ setupSessionId: 'id-1' }),
+    }))
     expect(context.store.get('s1')).toEqual(setupRecord({ exitCode: 1 }))
 
-    // And the pass that follows decides nothing about either of them, so the retry can be repeated.
     context.host.failure = null
-    expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([])
-    expect(await context.lifecycle.retrySetup('p1')).toEqual({ ok: true, value: undefined })
+    expect(withoutScriptRuns(await context.lifecycle.reconcile(context.host.listing()))).toEqual([{
+      kind: 'retry-launch',
+      sessionId: 'id-1',
+      operationId: 'id-2',
+      operation: 'create',
+    }])
+    expect(context.store.get('id-1')?.life).toBe('live')
+    expect(context.store.get('p1')?.life).toBe('starting')
   })
 
   /*
@@ -2589,7 +2905,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       life: 'live',
       binding: { hostInstanceId: 'fake-host-1', generation: 1 },
       commands: [{ command: 'pnpm install', cwd: context.workDirectory }],
-      setupFor: 'p1',
+      scriptOf: { sessionId: 'p1', phase: 'before', scriptId: 'setup', name: 'setup' },
     }))
     context.host.runtimes.set('s1', runtime('s1'))
 
@@ -2599,8 +2915,9 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     // The fake stops a runtime with exit 0, which is the dangerous answer; the marker outranks it.
     expect(context.host.runtimes.get('s1')?.exitCode).toBe(0)
     expect(await context.lifecycle.reconcile(context.host.listing())).toContainEqual({
-      kind: 'setup-failed',
+      kind: 'script-failed',
       sessionId: 'p1',
+      gate: 'before',
       reason: 'its setup was stopped',
     })
   })
@@ -2620,19 +2937,36 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     await context.store.put(failedWaiting())
     await context.store.put(setupRecord({ exitCode: 1 }))
     context.setup.resolution = installing([{ command: './evil.sh', cwd: '' }], 'project')
-    context.setup.declared = { commands: ['./evil.sh'], hash: 'hash-1', acknowledged: false }
+    writeFileSync(join(projectRoot, '.worktree.json'), JSON.stringify({ setup: ['./evil.sh'] }), 'utf8')
+    const hash = CommandAgreement.hashOf(['./evil.sh'], { before: [], after: [] })
 
     expect(await context.lifecycle.retrySetup('p1')).toMatchObject({
       ok: false,
       code: 'setup-not-acknowledged',
-      setup: { commands: ['./evil.sh'], hash: 'hash-1' },
+      setup: { commands: ['./evil.sh'], hash },
     })
     expect(JSON.stringify(context.host.calls)).not.toContain('evil')
 
-    expect(await context.lifecycle.retrySetup('p1', 'hash-1'))
+    expect(await context.lifecycle.retrySetup('p1', hash))
       .toEqual({ ok: true, value: undefined })
-    expect(context.setup.acknowledged).toEqual([{ projectRoot, hash: 'hash-1' }])
+    expect(CommandTrustStore.load(context.trustFile, () => undefined).acknowledgedHashOf(projectRoot))
+      .toBe(hash)
     expect(JSON.stringify(context.host.calls)).toContain('evil')
+  })
+
+  // The agreement asked and the commands that run come from one read, so no write can land between.
+  it('reads .worktree.json once for a retry', async () => {
+    const context = await harness()
+    await context.store.put(failedWaiting())
+    await context.store.put(setupRecord({ exitCode: 1 }))
+    context.setup.resolution = installing([{ command: 'pnpm install', cwd: '' }])
+    writeFileSync(join(projectRoot, '.worktree.json'), JSON.stringify({ setup: ['pnpm install'] }), 'utf8')
+    const hash = CommandAgreement.hashOf(['pnpm install'], { before: [], after: [] })
+    const load = vi.spyOn(WorktreeConfig, 'load')
+
+    expect(await context.lifecycle.retrySetup('p1', hash)).toEqual({ ok: true, value: undefined })
+    expect(load).toHaveBeenCalledTimes(1)
+    load.mockRestore()
   })
 
   /*
@@ -2649,7 +2983,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     let observedSetup: SessionRecord | null = null
     let observedPrimary: SessionRecord | null = null
     context.host.onCreate = () => {
-      observedSetup = context.store.get('s1')
+      observedSetup = context.store.get('id-1')
       observedPrimary = context.store.get('p1')
     }
 
@@ -2657,15 +2991,14 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     expect(observedSetup).toEqual(expect.objectContaining({
       life: 'starting',
       binding: null,
-      pendingOperationId: 'id-1',
+      pendingOperationId: 'id-2',
       pendingOperationKind: 'create',
-      exitCode: undefined,
       commands: [{ command: 'pnpm install', cwd: worktreePath }],
     }))
     expect(observedPrimary).toEqual(expect.objectContaining({
       life: 'starting',
-      pendingOperationId: 'id-2',
-      pendingSetup: { setupSessionId: 's1' },
+      pendingOperationId: 'id-3',
+      pendingSetup: expect.objectContaining({ setupSessionId: 'id-1' }),
     }))
   })
 
@@ -2687,17 +3020,18 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     }
 
     expect(failureOf(await context.lifecycle.retrySetup('p1')).code).toBe('op-rejected')
-    expect(context.store.get('s1')).toEqual(expect.objectContaining({
+    expect(context.store.get('id-1')).toEqual(expect.objectContaining({
       life: 'ended',
       pendingOperationId: undefined,
       endedReason: 'launch.cwd must be an existing directory',
     }))
 
     context.host.launchFailure = null
-    expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([{
-      kind: 'setup-failed',
+    expect(withoutScriptRuns(await context.lifecycle.reconcile(context.host.listing()))).toEqual([{
+      kind: 'script-failed',
       sessionId: 'p1',
-      reason: expect.stringContaining('no exit code'),
+      gate: 'before',
+      reason: 'the setup could not start: launch.cwd must be an existing directory',
     }])
   })
 
@@ -2730,7 +3064,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     expect(context.store.get('id-1')).toEqual(expect.objectContaining({
       kind: 'shell',
       life: 'live',
-      setupFor: 'p1',
+      scriptOf: { sessionId: 'p1', phase: 'before', scriptId: 'setup', name: 'setup', stepKey: expect.any(String) },
       directory: { mode: 'adHoc', path: worktreePath },
       commands: [{ command: 'pnpm install', cwd: worktreePath }],
     }))
@@ -2740,7 +3074,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       binding: null,
       pendingOperationId: 'id-3',
       pendingOperationKind: 'create',
-      pendingSetup: { setupSessionId: 'id-1' },
+      pendingSetup: expect.objectContaining({ setupSessionId: 'id-1' }),
       endedReason: undefined,
     }))
     const creates = callsNamed(context.host, 'runtime.create')
@@ -2811,7 +3145,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     expect(context.host.calls).toEqual([])
     expect(context.reports).toEqual([])
 
-    expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([{
+    expect(withoutScriptRuns(await context.lifecycle.reconcile(context.host.listing()))).toEqual([{
       kind: 'retry-launch',
       sessionId: 'p1',
       operationId: 'id-1',
@@ -2842,7 +3176,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     expect(context.reports[0]).toContain('not valid JSON')
     expect(context.reports[0]).toContain(join(projectRoot, '.worktree.json'))
 
-    expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([{
+    expect(withoutScriptRuns(await context.lifecycle.reconcile(context.host.listing()))).toEqual([{
       kind: 'retry-launch',
       sessionId: 'p1',
       operationId: 'id-1',
@@ -2852,14 +3186,16 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
   })
 
   /*
-   * The install was only ever preparing this one session, so removing the session stops it. Best
-   * effort and nothing more: the setup's own record stays, ends like any other shell session, and
-   * keeps what it printed readable.
+   * The install was only ever preparing this one session, so removing the session stops it, marked
+   * as stopped. Its record goes once it has ended, without a second recovery point: the parent's
+   * removal spent the one this cascade is undone by, and its logs went with its history.
    */
-  it('stops the install when the session it was preparing is removed', async () => {
+  it('stops a running install when its session is removed, and takes its record once it ended', async () => {
     const context = await harness()
     context.setup.resolution = installing([{ command: 'pnpm install', cwd: '' }])
     await context.lifecycle.create(worktreeSpec())
+    expect(await context.logs.write('id-1', 'earlier', 'an earlier attempt')).toEqual({ ok: true, bytes: 18 })
+    const points = snapshotCount(context.snapshotsDirectory)
 
     expect(await context.lifecycle.remove('id-1')).toEqual({ ok: true, value: undefined })
     expect(context.store.get('id-1')).toBeNull()
@@ -2868,16 +3204,28 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       runtimeSessionId: 'id-3',
       generation: 1,
     })
-    expect(context.store.get('id-3')).not.toBeNull()
+    expect(context.store.get('id-3')?.stopRequested).toBe(true)
+    expect(existsSync(join(context.logsDirectory, 'id-1'))).toBe(false)
+    expect(snapshotCount(context.snapshotsDirectory)).toBe(points + 1)
+
+    // The fake ends a stopped runtime, so one pass marks it ended and the next takes it away.
+    expect(await context.lifecycle.reconcile(context.host.listing()))
+      .toContainEqual(expect.objectContaining({ kind: 'mark-ended', sessionId: 'id-3' }))
+    expect(await context.lifecycle.reconcile(context.host.listing()))
+      .toEqual([{ kind: 'collapse-script-run', runId: 'id-3' }])
+    expect(context.store.get('id-3')).toBeNull()
+    expect(context.host.runtimes.has('id-3')).toBe(false)
+    expect(context.collapsed).toEqual([{ runId: 'id-3', parentId: 'id-1', handoff: 'close', handoffTo: 'id-1' }])
+    expect(snapshotCount(context.snapshotsDirectory)).toBe(points + 1)
   })
 
   /*
-   * The install the Host never answered has no runtime, so stopping reaches nothing at all - and what
-   * is left on disk is a `starting` record with a pending pair, which is precisely what the next
-   * reconcile pass REPLAYS. It would run `pnpm install` in a worktree that belongs to no session any
-   * more. The pair is what has to go, so the record ends here instead, saying why.
+   * An install the Host never answered is a `starting` record with a pending pair, which is precisely
+   * what a reconcile pass REPLAYS: `pnpm install` in a worktree that belongs to no session any more.
+   * It holds no process, so it goes in the parent's own write, and so does an earlier attempt that
+   * has ended, its dead runtime asked away first.
    */
-  it('takes away an install the Host never answered when its session is removed', async () => {
+  it('takes the runs that hold no process with their session, in one write', async () => {
     const context = await harness()
     context.setup.resolution = installing([{ command: 'pnpm install', cwd: '' }])
     context.host.failure = { ok: false, code: 'host-unreachable', detail: 'no descriptor' }
@@ -2888,21 +3236,956 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       pendingOperationId: 'id-4',
       pendingOperationKind: 'create',
     }))
+    context.host.failure = null
+    await context.store.put(setupRecord({
+      sessionId: 's0',
+      binding: { hostInstanceId: 'host-1', generation: 1 },
+      scriptOf: { sessionId: 'id-1', phase: 'before', scriptId: 'setup', name: 'setup' },
+    }))
+    context.host.runtimes.set('s0', runtime('s0', { alive: false, exitCode: 1 }))
+    const points = snapshotCount(context.snapshotsDirectory)
 
     expect(await context.lifecycle.remove('id-1')).toEqual({ ok: true, value: undefined })
-    expect(context.store.get('id-3')).toEqual(expect.objectContaining({
-      life: 'ended',
-      pendingOperationId: undefined,
-      pendingOperationKind: undefined,
-      endedAt: 5_000,
-      endedReason: expect.stringContaining('removed'),
-    }))
-    // Nothing to stop, so nothing was asked of the Host about it.
+    expect(context.store.list()).toEqual([])
+    expect(snapshotCount(context.snapshotsDirectory)).toBe(points + 1)
     expect(callsNamed(context.host, 'runtime.stop')).toEqual([])
+    expect(callsNamed(context.host, 'runtime.remove').map((call) => call.body.target))
+      .toEqual([{ hostInstanceId: 'host-1', runtimeSessionId: 's0', generation: 1 }])
 
-    context.host.failure = null
     expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([])
     expect(callsNamed(context.host, 'runtime.create')).toHaveLength(1)
+  })
+
+  /*
+   * The before chain: the setup, then the project's own `scripts.before`, one run per step, before
+   * the session starts. Ids are minted in pairs per run (the run, its launch); the session takes
+   * `id-1` and `id-2` at create.
+   */
+  describe('the before chain', () => {
+    function declareBefore(): void {
+      writeFileSync(join(projectRoot, '.worktree.json'), JSON.stringify({
+        scripts: {
+          before: [
+            { name: 'prepare', command: 'pnpm prepare' },
+            { name: 'codegen', command: 'pnpm codegen', cwd: 'tools' },
+          ],
+        },
+      }), 'utf8')
+    }
+
+    async function agreeToFile(context: Harness): Promise<void> {
+      const declared = await context.agreement.declared(projectRoot)
+      if (declared.kind !== 'read' || declared.value === null) throw new Error('the project declares nothing')
+      expect(context.agreement.gate(projectRoot, declared, declared.value.hash)).toBe(null)
+    }
+
+    async function exits(context: Harness, runId: string, exitCode: number): Promise<void> {
+      context.clock.now += 1_000
+      context.host.runtimes.set(runId, runtime(runId, { alive: false, exitCode, exitedAt: context.clock.now }))
+      await context.lifecycle.reconcile(context.host.listing())
+    }
+
+    async function settleAll(context: Harness): Promise<void> {
+      for (let pass = 0; pass < 3; pass += 1) await context.lifecycle.reconcile(context.host.listing())
+    }
+
+    function createdRuntimes(context: Harness): unknown[] {
+      return callsNamed(context.host, 'runtime.create').map((call) => call.body.runtimeSessionId)
+    }
+
+    /** Create with the install, then the install and `prepare` pass and `codegen` exits 2. */
+    async function failedAtCodegen(context: Harness): Promise<void> {
+      declareBefore()
+      await agreeToFile(context)
+      context.setup.resolution = installing([{ command: 'pnpm install', cwd: '' }])
+      successOf(await context.lifecycle.create(worktreeSpec()))
+      await exits(context, 'id-3', 0)
+      await exits(context, 'id-5', 0)
+      await exits(context, 'id-7', 2)
+      await settleAll(context)
+    }
+
+    it('runs the setup and each declared step in order, and starts the session after the last', async () => {
+      const context = await harness()
+      declareBefore()
+      await agreeToFile(context)
+      context.setup.resolution = installing([{ command: 'pnpm install', cwd: '' }])
+
+      expect(await context.lifecycle.create(worktreeSpec())).toEqual({ ok: true, value: { sessionId: 'id-1' } })
+      const steps = context.store.get('id-1')?.pendingSetup?.steps ?? []
+      expect(steps.map((step) => [step.scriptId, step.name])).toEqual([
+        ['setup', 'setup'],
+        ['declared', 'prepare'],
+        ['declared', 'codegen'],
+      ])
+      expect(context.store.get('id-1')?.pendingSetup).toMatchObject({ setupSessionId: 'id-3', cursor: 0 })
+
+      await exits(context, 'id-3', 0)
+      expect(context.store.get('id-1')?.pendingSetup).toMatchObject({ setupSessionId: 'id-5', cursor: 1 })
+      expect(context.store.get('id-5')).toEqual(expect.objectContaining({
+        life: 'live',
+        title: 'prepare fix',
+        commands: [{ command: 'pnpm prepare', cwd: worktreePath }],
+        scriptOf: { sessionId: 'id-1', phase: 'before', scriptId: 'declared', name: 'prepare', stepKey: steps[1].key },
+      }))
+      expect(context.scripts.infoOf(context.store.get('id-1')!).scripts?.badge)
+        .toMatchObject({ state: 'running', text: 'setup: prepare', runId: 'id-5' })
+
+      await exits(context, 'id-5', 0)
+      expect(context.store.get('id-7')?.commands).toEqual([{ command: 'pnpm codegen', cwd: join(worktreePath, 'tools') }])
+      expect(context.store.get('id-1')?.life).toBe('starting')
+      expect(createdRuntimes(context)).toEqual(['id-3', 'id-5', 'id-7'])
+
+      await exits(context, 'id-7', 0)
+      expect(context.store.get('id-1')).toEqual(expect.objectContaining({ life: 'live', pendingSetup: undefined }))
+      expect(createdRuntimes(context)).toEqual(['id-3', 'id-5', 'id-7', 'id-1'])
+      expect(callsNamed(context.host, 'runtime.create')[3].body.operationId).toBe('id-2')
+
+      await settleAll(context)
+      expect(context.store.get('id-1')?.scriptRuns?.map((entry) => [entry.name, entry.outcome, entry.stepKey]))
+        .toEqual(steps.map((step) => [step.name, 'succeeded', step.key]))
+      expect(context.store.list().map((entry) => entry.sessionId)).toEqual(['id-1'])
+
+      // Reopen and Restart start the session itself and nothing before it.
+      context.host.runtimes.set('id-1', runtime('id-1', { alive: false, exitCode: 0, exitedAt: 20_000 }))
+      await context.lifecycle.reconcile(context.host.listing())
+      const before = context.host.calls.length
+      successOf(await context.lifecycle.reopen('id-1'))
+      expect(context.host.calls.slice(before).map((call) => call.name)).toEqual(['runtime.list', 'runtime.replace'])
+      expect(callsNamed(context.host, 'runtime.replace')[0].body.target).toMatchObject({ runtimeSessionId: 'id-1' })
+      expect(createdRuntimes(context)).toEqual(['id-3', 'id-5', 'id-7', 'id-1'])
+    })
+
+    it('ends the session naming the declared step that failed, and keeps the wait', async () => {
+      const context = await harness()
+      await failedAtCodegen(context)
+
+      const parent = context.store.get('id-1')!
+      expect(parent).toEqual(expect.objectContaining({
+        life: 'ended',
+        endedReason: 'setup failed: the codegen script exited with 2',
+        pendingSetup: expect.objectContaining({ setupSessionId: 'id-7', cursor: 2 }),
+      }))
+      expect(context.scripts.infoOf(parent).scripts?.badge)
+        .toMatchObject({ state: 'failed', text: 'setup failed: codegen', runId: 'id-7' })
+      expect(context.reports.some((message) => message.includes('the before script codegen failed'))).toBe(true)
+      // The failed step stays a row; the steps that passed are history.
+      expect(context.store.list().map((entry) => entry.sessionId)).toEqual(['id-1', 'id-7'])
+      expect(context.store.get('id-1')?.scriptRuns?.map((entry) => [entry.name, entry.outcome]))
+        .toEqual([['setup', 'succeeded'], ['prepare', 'succeeded'], ['codegen', 'failed']])
+    })
+
+    it('retries from the failed step when nothing before it changed', async () => {
+      const context = await harness()
+      await failedAtCodegen(context)
+
+      expect(await context.lifecycle.retrySetup('id-1')).toEqual({ ok: true, value: undefined })
+      // `id-9` is the new codegen run, `id-10` its launch, `id-11` the launch the session waits under.
+      expect(context.store.get('id-1')?.pendingSetup).toMatchObject({ setupSessionId: 'id-9', cursor: 2 })
+      expect(context.store.get('id-9')?.scriptOf).toMatchObject({ scriptId: 'declared', name: 'codegen' })
+      expect(createdRuntimes(context)).toEqual(['id-3', 'id-5', 'id-7', 'id-9'])
+
+      await exits(context, 'id-9', 0)
+      expect(context.store.get('id-1')?.life).toBe('live')
+      expect(createdRuntimes(context)).toEqual(['id-3', 'id-5', 'id-7', 'id-9', 'id-1'])
+      expect(callsNamed(context.host, 'runtime.create')[4].body.operationId).toBe('id-11')
+    })
+
+    // The history keeps ten entries for every phase; the gate keeps its own steps and where it stopped.
+    it('retries from the failed step after the history lost the steps that passed', async () => {
+      const context = await harness()
+      await failedAtCodegen(context)
+      for (let attempt = 0; attempt < 9; attempt += 1) {
+        successOf(await context.lifecycle.retrySetup('id-1'))
+        const runId = context.store.get('id-1')?.pendingSetup?.setupSessionId
+        if (runId === undefined) throw new Error('the retry armed no run')
+        await exits(context, runId, 2)
+        await settleAll(context)
+      }
+      expect(context.store.get('id-1')?.scriptRuns?.some((entry) => entry.name === 'setup')).toBe(false)
+      const created = createdRuntimes(context).length
+
+      successOf(await context.lifecycle.retrySetup('id-1'))
+      expect(context.store.get('id-1')?.pendingSetup).toMatchObject({ cursor: 2 })
+      expect(createdRuntimes(context)).toHaveLength(created + 1)
+      expect(context.store.get(String(createdRuntimes(context).at(-1)))?.scriptOf).toMatchObject({ name: 'codegen' })
+    })
+
+    it('retries the whole chain once the setup it starts with changed', async () => {
+      const context = await harness()
+      await failedAtCodegen(context)
+      context.setup.resolution = installing([{ command: 'pnpm install --force', cwd: '' }])
+
+      expect(await context.lifecycle.retrySetup('id-1')).toEqual({ ok: true, value: undefined })
+      expect(context.store.get('id-1')?.pendingSetup).toMatchObject({ setupSessionId: 'id-9', cursor: 0 })
+      expect(context.store.get('id-9')?.commands).toEqual([{ command: 'pnpm install --force', cwd: worktreePath }])
+
+      await exits(context, 'id-9', 0)
+      expect(context.store.get('id-1')?.pendingSetup).toMatchObject({ cursor: 1 })
+    })
+
+    it('runs the declared steps when nothing installs the project, and keeps saying so', async () => {
+      const context = await harness()
+      declareBefore()
+      await agreeToFile(context)
+
+      successOf(await context.lifecycle.create(worktreeSpec()))
+      expect(context.store.get('id-1')).toEqual(expect.objectContaining({
+        life: 'starting',
+        setupSkipped: { reason: 'no known project family detected' },
+        pendingSetup: expect.objectContaining({ setupSessionId: 'id-3', cursor: 0 }),
+      }))
+      expect(context.store.get('id-1')?.pendingSetup?.steps?.map((step) => step.name)).toEqual(['prepare', 'codegen'])
+      expect(context.reports.some((message) => message.includes('no known project family detected'))).toBe(true)
+
+      await exits(context, 'id-3', 0)
+      await exits(context, 'id-5', 0)
+      expect(context.store.get('id-1')).toEqual(expect.objectContaining({
+        life: 'live',
+        setupSkipped: { reason: 'no known project family detected' },
+      }))
+    })
+
+    // A wait an older build wrote names one setup step and no history keys, so a retry runs all of it.
+    it('reads a wait written before chains existed as one setup step', async () => {
+      const context = await harness()
+      declareBefore()
+      await agreeToFile(context)
+      await context.store.put(failedWaiting())
+      await context.store.put(setupRecord({ exitCode: 1 }))
+      context.setup.resolution = installing([{ command: 'pnpm install', cwd: '' }])
+
+      expect(await context.lifecycle.retrySetup('p1')).toEqual({ ok: true, value: undefined })
+      expect(context.store.get('p1')?.pendingSetup).toMatchObject({ setupSessionId: 'id-1', cursor: 0 })
+      expect(context.store.get('p1')?.pendingSetup?.steps?.map((step) => step.name))
+        .toEqual(['setup', 'prepare', 'codegen'])
+    })
+
+    /*
+     * A client that died between the next step's write and the gate's advance. The orphan is never
+     * launched and goes without a history entry, since nothing ran; the step before it is judged
+     * succeeded once more, and one new run starts.
+     */
+    it('launches exactly one next step after a crash between its write and the advance', async () => {
+      const context = await harness()
+      declareBefore()
+      await agreeToFile(context)
+      context.setup.resolution = installing([{ command: 'pnpm install', cwd: '' }])
+      successOf(await context.lifecycle.create(worktreeSpec()))
+      vi.spyOn(context.store, 'update').mockResolvedValueOnce(false)
+
+      await exits(context, 'id-3', 0)
+      expect(context.store.get('id-5')).toEqual(expect.objectContaining({ life: 'starting', binding: null }))
+      expect(context.store.get('id-1')?.pendingSetup).toMatchObject({ setupSessionId: 'id-3', cursor: 0 })
+      expect(createdRuntimes(context)).toEqual(['id-3'])
+
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.store.get('id-5')).toBeNull()
+      expect(context.store.get('id-1')?.pendingSetup).toMatchObject({ setupSessionId: 'id-7', cursor: 1 })
+      expect(createdRuntimes(context)).toEqual(['id-3', 'id-7'])
+
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(createdRuntimes(context)).toEqual(['id-3', 'id-7'])
+      expect(context.store.get('id-1')?.scriptRuns?.map((entry) => entry.runId) ?? []).not.toContain('id-5')
+    })
+
+    /*
+     * An SVN worktree of any directory: the create reserves the folder and writes the record with the
+     * URL and the HEAD revision, and the checkout leads the before chain as a visible run. Here the
+     * directory is `WebMirabiaAdmin/src` of the group `Mirabia`, which owns the worktree.
+     */
+    describe('an SVN checkout', () => {
+      const groupRoot = join(projectParent, 'Mirabia')
+      const reserved = join(groupRoot, '.worktrees', 'fix')
+      const directory = join(groupRoot, 'WebMirabiaAdmin', 'src')
+      const url = 'file:///repository/Mirabia'
+      const checkoutArgs = ['--non-interactive', 'checkout', '-q', '--', `${url}@41`, '.']
+      mkdirSync(reserved, { recursive: true })
+
+      function svnWorktree(context: Harness, catalogProject: string | null = null): void {
+        context.tools.set('svn', { ok: true, command: 'C:/svn/svn.exe', prefixArgs: [], env: {} })
+        context.worktrees.placing = { ok: true, value: { kind: 'svn', ownerDir: groupRoot, cwdSubpath: 'WebMirabiaAdmin/src', catalogProject } }
+        context.worktrees.outcome = {
+          ok: true,
+          value: {
+            worktree: { worktreePath: reserved, branch: url, baseCommit: 'r41', repositoryRoot: groupRoot, kind: 'svn', directoryId: '1:2:3', cwdSubpath: 'WebMirabiaAdmin/src' },
+            checkout: { tool: 'svn', cwd: reserved, args: checkoutArgs },
+          },
+        }
+      }
+
+      function adHocSpec(overrides?: Partial<SessionCreateSpec>): SessionCreateSpec {
+        return { kind: 'agent', directory: { mode: 'adHoc', path: directory }, agent: { agentId: 'claude', mode: 'new' }, worktree: { slug: 'fix' }, ...overrides }
+      }
+
+      it('records the URL and r<HEAD> before the checkout, runs it as a child run and starts the session in its subpath after it', async () => {
+        const context = await harness()
+        svnWorktree(context)
+
+        expect(await context.lifecycle.create(adHocSpec())).toEqual({ ok: true, value: { sessionId: 'id-1' } })
+        expect(context.worktrees.places).toEqual([{ directory, projectRoot: null, owner: undefined }])
+        const parent = context.store.get('id-1')!
+        expect(parent.worktree).toMatchObject({ worktreePath: reserved, branch: url, baseCommit: 'r41', cwdSubpath: 'WebMirabiaAdmin/src' })
+        expect(parent.transcriptCwd).toBe(join(reserved, 'WebMirabiaAdmin', 'src'))
+        expect(parent.pendingSetup?.steps?.map((step) => [step.scriptId, step.name])).toEqual([['svn', 'checkout']])
+        // The owner's own `.worktree.json` is what the setup is resolved from.
+        expect(context.setup.calls).toEqual([{ projectRoot: groupRoot, repositoryRoot: groupRoot }])
+        expect(context.store.get('id-3')).toMatchObject({
+          title: 'Checkout fix',
+          process: { tool: 'svn', args: checkoutArgs },
+          scriptOf: { sessionId: 'id-1', phase: 'before', scriptId: 'svn', name: 'checkout' },
+        })
+        expect(launchOf(callsNamed(context.host, 'runtime.create')[0])).toMatchObject({ command: 'C:/svn/svn.exe', args: checkoutArgs, cwd: reserved })
+        expect(context.scripts.infoOf(parent).scripts?.badge).toMatchObject({ state: 'running', text: 'checking out', runId: 'id-3' })
+
+        await exits(context, 'id-3', 0)
+        expect(context.store.get('id-1')?.life).toBe('live')
+        expect(createdRuntimes(context)).toEqual(['id-3', 'id-1'])
+        expect(launchOf(callsNamed(context.host, 'runtime.create')[1]).cwd).toBe(join(reserved, 'WebMirabiaAdmin', 'src'))
+      })
+
+      it('ends the session when the checkout fails, and Retry setup empties the folder by identity and checks out again', async () => {
+        const context = await harness()
+        svnWorktree(context)
+        successOf(await context.lifecycle.create(adHocSpec()))
+
+        await exits(context, 'id-3', 1)
+        await settleAll(context)
+        const parent = context.store.get('id-1')!
+        expect(parent).toMatchObject({ life: 'ended', endedReason: 'setup failed: the checkout exited with 1' })
+        expect(context.scripts.infoOf(parent).scripts?.badge).toMatchObject({ state: 'failed', text: 'checkout failed', runId: 'id-3' })
+        expect(context.reports.some((message) => message.includes('the checkout failed'))).toBe(true)
+
+        expect(await context.lifecycle.retrySetup('id-1')).toEqual({ ok: true, value: undefined })
+        expect(context.worktrees.purged.map((worktree) => [worktree.worktreePath, worktree.directoryId])).toEqual([[reserved, '1:2:3']])
+        const retried = context.store.get('id-1')?.pendingSetup
+        expect(retried).toMatchObject({ cursor: 0 })
+        expect(context.store.get(retried?.setupSessionId ?? '')).toMatchObject({ process: { tool: 'svn', args: checkoutArgs } })
+        expect(createdRuntimes(context)).toEqual(['id-3', retried?.setupSessionId])
+      })
+
+      it('refuses Retry setup when the reserved folder is another directory, and launches nothing', async () => {
+        const context = await harness()
+        svnWorktree(context)
+        successOf(await context.lifecycle.create(adHocSpec()))
+        await exits(context, 'id-3', 1)
+        await settleAll(context)
+        context.worktrees.purge = { ok: false, code: 'invalid-spec', detail: `${reserved} is another directory than the folder this session reserved; nothing was deleted` }
+
+        expect(await context.lifecycle.retrySetup('id-1')).toEqual(context.worktrees.purge)
+        expect(createdRuntimes(context)).toEqual(['id-3'])
+        expect(context.store.get('id-1')).toMatchObject({ life: 'ended', pendingSetup: { setupSessionId: 'id-3' } })
+      })
+
+      it('resumes after a checkout that passed without emptying the folder', async () => {
+        const context = await harness()
+        svnWorktree(context)
+        context.setup.resolution = installing([{ command: 'pnpm install', cwd: '' }])
+        successOf(await context.lifecycle.create(adHocSpec()))
+        expect(context.store.get('id-1')?.pendingSetup?.steps?.map((step) => step.scriptId)).toEqual(['svn', 'setup'])
+        await exits(context, 'id-3', 0)
+        await exits(context, 'id-5', 1)
+        await settleAll(context)
+
+        expect(await context.lifecycle.retrySetup('id-1')).toEqual({ ok: true, value: undefined })
+        expect(context.worktrees.purged).toEqual([])
+        expect(context.store.get('id-1')?.pendingSetup).toMatchObject({ cursor: 1 })
+      })
+
+      it('numbers the session by the catalog project that holds the directory, and by nothing outside the catalog', async () => {
+        const counted = await harness()
+        svnWorktree(counted, join(groupRoot, 'WebMirabiaAdmin'))
+        counted.numbers.token = '015'
+        successOf(await counted.lifecycle.create(adHocSpec()))
+        expect(counted.numbers.calls).toEqual([{ projectPath: join(groupRoot, 'WebMirabiaAdmin') }])
+        expect(counted.worktrees.calls.map((call) => call.folder)).toEqual(['015-fix'])
+
+        const outside = await harness()
+        svnWorktree(outside)
+        successOf(await outside.lifecycle.create(adHocSpec()))
+        expect(outside.numbers.calls).toEqual([])
+        expect(outside.worktrees.calls.map((call) => call.folder)).toEqual(['fix'])
+
+        const custom = await harness()
+        svnWorktree(custom)
+        successOf(await custom.lifecycle.create(adHocSpec({ number: 'i7' })))
+        expect(custom.worktrees.calls.map((call) => call.folder)).toEqual(['i7-fix'])
+      })
+
+      it('answers the refusal of the owner rule and leaves nothing behind', async () => {
+        const context = await harness()
+        context.worktrees.placing = { ok: false, code: 'invalid-spec', detail: `${directory} lies inside a worktree; cut worktrees from the main copy` }
+
+        expect(await context.lifecycle.create(adHocSpec())).toEqual(context.worktrees.placing)
+        expect(context.numbers.calls).toEqual([])
+        expect(context.worktrees.calls).toEqual([])
+        expect(context.store.list()).toEqual([])
+      })
+    })
+  })
+
+  describe('the after chain of a Finish', () => {
+    /** A worktree session that ended and is ready for its Finish. */
+    function ended(overrides?: Partial<SessionRecord>): SessionRecord {
+      return record('p1', {
+        directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
+        life: 'ended',
+        binding: null,
+        exitCode: 0,
+        endedAt: 4_000,
+        worktree: { worktreePath, branch: 'jamat/fix', baseCommit: 'abc123', repositoryRoot: projectRoot },
+        ...overrides,
+      })
+    }
+
+    async function declareAfter(context: Harness): Promise<void> {
+      writeFileSync(join(projectRoot, '.worktree.json'), JSON.stringify({
+        scripts: { after: [{ name: 'tests', command: 'pnpm test' }] },
+      }), 'utf8')
+      const declared = await context.agreement.declared(projectRoot)
+      if (declared.kind !== 'read' || declared.value === null) throw new Error('the project declares nothing')
+      expect(context.agreement.gate(projectRoot, declared, declared.value.hash)).toBe(null)
+    }
+
+    async function checking(): Promise<Harness & { continued: string[] }> {
+      const context = await harness()
+      const continued: string[] = []
+      context.lifecycle.setContinueFinish((sessionId) => continued.push(sessionId))
+      await context.store.put(ended())
+      await declareAfter(context)
+      expect(await context.lifecycle.finishChecks('p1', undefined, null)).toEqual({ kind: 'started' })
+      return { ...context, continued }
+    }
+
+    async function exits(context: Harness, runId: string, exitCode: number): Promise<ReconcileChange[]> {
+      context.clock.now += 1_000
+      context.host.runtimes.set(runId, runtime(runId, { alive: false, exitCode, exitedAt: context.clock.now }))
+      return context.lifecycle.reconcile(context.host.listing())
+    }
+
+    it('starts the check run in the worktree and shows it on the parent', async () => {
+      const context = await checking()
+
+      expect(context.store.get('id-1')).toEqual(expect.objectContaining({
+        life: 'live',
+        title: 'tests fix',
+        commands: [{ command: 'pnpm test', cwd: worktreePath }],
+        scriptOf: expect.objectContaining({ sessionId: 'p1', phase: 'after', scriptId: 'declared', name: 'tests' }),
+      }))
+      expect(context.scripts.infoOf(context.store.get('p1')!).scripts?.badge)
+        .toMatchObject({ phase: 'after', state: 'running', text: 'checks: tests', runId: 'id-1' })
+      expect(await context.lifecycle.finishChecks('p1', undefined, null)).toEqual({ kind: 'running' })
+      expect(callsNamed(context.host, 'runtime.create')).toHaveLength(1)
+    })
+
+    /*
+     * The verdict is read off the Host's dead runtime in the pass that marks the run's own record
+     * ended, and the finisher refuses a worktree a live run of the session stands in. So the pass
+     * that sees the exit only ends the run, and the next one continues the Finish, once.
+     */
+    it('continues the Finish once, in the pass after the run record ended', async () => {
+      const context = await checking()
+
+      expect(withoutScriptRuns(await exits(context, 'id-1', 0)))
+        .toEqual([{ kind: 'mark-ended', sessionId: 'id-1', exitCode: 0, endedAt: 6_000 }])
+      expect(context.continued).toEqual([])
+
+      expect(withoutScriptRuns(await context.lifecycle.reconcile(context.host.listing())))
+        .toEqual([{ kind: 'script-succeeded', sessionId: 'p1', gate: 'finish' }])
+      expect(context.continued).toEqual(['p1'])
+      expect(context.store.get('p1')?.finishChecks?.result).toMatchObject({ kind: 'passed' })
+
+      for (let pass = 0; pass < 3; pass += 1) await context.lifecycle.reconcile(context.host.listing())
+      expect(context.continued).toEqual(['p1'])
+      expect(context.store.get('id-1')).toBeNull()
+      expect(context.scripts.infoOf(context.store.get('p1')!).scripts?.badge)
+        .toMatchObject({ phase: 'after', state: 'succeeded', text: 'checks ✓ 1.0 s' })
+      expect(await context.lifecycle.finishChecks('p1', undefined, null)).toEqual({ kind: 'passed' })
+    })
+
+    it('stops the Finish on a failed check, keeps its run a row, and runs the whole chain on the next press', async () => {
+      const context = await checking()
+
+      expect(withoutScriptRuns(await exits(context, 'id-1', 1))).toEqual([
+        { kind: 'script-failed', sessionId: 'p1', gate: 'finish', reason: 'the tests check exited with 1' },
+        { kind: 'mark-ended', sessionId: 'id-1', exitCode: 1, endedAt: 6_000 },
+      ])
+      for (let pass = 0; pass < 3; pass += 1) await context.lifecycle.reconcile(context.host.listing())
+      expect(context.continued).toEqual([])
+      expect(context.reports.filter((message) => message.includes('the Finish stopped'))).toHaveLength(1)
+      expect(context.store.get('id-1')?.life).toBe('ended')
+      expect(context.scripts.infoOf(context.store.get('p1')!).scripts?.badge)
+        .toMatchObject({ phase: 'after', state: 'failed', text: 'checks failed: tests', title: 'The tests check exited with 1' })
+
+      expect(await context.lifecycle.finishChecks('p1', undefined, null)).toEqual({ kind: 'started' })
+      expect(context.store.get('p1')?.finishChecks).toMatchObject({ runId: 'id-3', cursor: 0 })
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.store.get('id-1')).toBeNull()
+      expect(context.store.get('p1')?.scriptRuns?.map((entry) => [entry.runId, entry.outcome])).toEqual([['id-1', 'failed']])
+    })
+
+    it('refuses a reopen while a check runs, and a reopen after a failure clears the chain', async () => {
+      const context = await checking()
+
+      expect(await context.lifecycle.reopen('p1')).toMatchObject({ ok: false, code: 'merge-pending' })
+      await exits(context, 'id-1', 1)
+      expect(context.store.get('p1')?.finishChecks?.result).toMatchObject({ kind: 'failed' })
+
+      expect(await context.lifecycle.reopen('p1')).toEqual({ ok: true, value: undefined })
+      expect(context.store.get('p1')).toEqual(expect.objectContaining({ life: 'live', finishChecks: undefined }))
+    })
+
+    // A client restart in between: the pass is written and said, and the next press finds it.
+    it('does not continue a chain an earlier client process started', async () => {
+      const context = await harness()
+      const continued: string[] = []
+      context.lifecycle.setContinueFinish((sessionId) => continued.push(sessionId))
+      await declareAfter(context)
+      const declared = await context.agreement.declared(projectRoot)
+      if (declared.kind !== 'read' || declared.value === null) throw new Error('the project declares nothing')
+      const steps = DeclaredScripts.stepsOf(declared.value.scripts.after, { projectRoot, repositoryRoot: projectRoot, worktreePath })
+      if (!steps.ok) throw new Error(steps.problem)
+      await context.store.put(ended({ finishChecks: { runId: 'c1', steps: steps.steps, cursor: 0, startedAt: 4_500 } }))
+      await context.store.put(record('c1', {
+        life: 'ended',
+        binding: null,
+        exitCode: 0,
+        endedAt: 4_800,
+        commands: steps.steps[0].commands,
+        scriptOf: { sessionId: 'p1', phase: 'after', scriptId: 'declared', name: 'tests', stepKey: steps.steps[0].key },
+      }))
+
+      expect(withoutScriptRuns(await context.lifecycle.reconcile(context.host.listing())))
+        .toEqual([{ kind: 'script-succeeded', sessionId: 'p1', gate: 'finish' }])
+      expect(continued).toEqual([])
+      expect(context.reports).toEqual(['Session p1: its Finish checks passed; press Finish to continue'])
+      expect(await context.lifecycle.finishChecks('p1', undefined, null)).toEqual({ kind: 'passed' })
+    })
+  })
+
+  /**
+   * A script run from its end to its history: the reconciler settles it once its record says it
+   * ended, and collapses it once its gate no longer holds it.
+   */
+  describe('script runs after they end', () => {
+    it('settles a setup that exited 0 with its log, then collapses it into its parent', async () => {
+      const context = await harness()
+      context.setup.resolution = installing([{ command: 'pnpm install', cwd: '' }])
+      await context.lifecycle.create(worktreeSpec())
+      context.host.runtimes.set('id-3', runtime('id-3', { alive: false, exitCode: 0, exitedAt: 9_000 }))
+      context.host.screens.set('id-3', ['Packages: +12', 'Done in 2.1s'])
+
+      expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([
+        { kind: 'retry-launch', sessionId: 'id-1', operationId: 'id-2', operation: 'create' },
+        { kind: 'mark-ended', sessionId: 'id-3', exitCode: 0, endedAt: 9_000 },
+      ])
+      expect(context.store.get('id-1')?.life).toBe('live')
+
+      expect(await context.lifecycle.reconcile(context.host.listing()))
+        .toEqual([{ kind: 'settle-script-run', runId: 'id-3' }])
+      expect(context.store.get('id-1')?.scriptRuns).toEqual([expect.objectContaining({
+        runId: 'id-3',
+        outcome: 'succeeded',
+        exitCode: 0,
+        startedAt: 5_000,
+        endedAt: 9_000,
+        commands: ['pnpm install'],
+        log: { state: 'saved', bytes: expect.any(Number), truncated: false },
+      })])
+      expect(readFileSync(context.logs.pathOf('id-1', 'id-3'), 'utf8')).toContain('Packages: +12\nDone in 2.1s\n')
+
+      expect(await context.lifecycle.reconcile(context.host.listing()))
+        .toEqual([{ kind: 'collapse-script-run', runId: 'id-3' }])
+      expect(context.store.get('id-3')).toBeNull()
+      expect(context.host.runtimes.has('id-3')).toBe(false)
+      expect(context.collapsed).toEqual([{ runId: 'id-3', parentId: 'id-1', handoff: 'parent-tab', handoffTo: 'id-1' }])
+      expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([])
+    })
+
+    it('keeps a failed setup its parent names, and a retry supersedes it with a run of its own', async () => {
+      const context = await harness()
+      context.setup.resolution = installing([{ command: 'pnpm install', cwd: '' }])
+      await context.lifecycle.create(worktreeSpec())
+      context.host.runtimes.set('id-3', runtime('id-3', { alive: false, exitCode: 1, exitedAt: 9_000 }))
+      context.host.screens.set('id-3', ['ERR_PNPM_FETCH_404'])
+
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.store.get('id-1')?.life).toBe('ended')
+      expect(await context.lifecycle.reconcile(context.host.listing()))
+        .toEqual([{ kind: 'settle-script-run', runId: 'id-3' }])
+      expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([])
+      expect(context.store.get('id-3')).not.toBeNull()
+
+      expect(await context.lifecycle.retrySetup('id-1')).toEqual({ ok: true, value: undefined })
+      expect(context.store.get('id-1')?.pendingSetup).toMatchObject({ setupSessionId: 'id-5', cursor: 0 })
+      context.host.runtimes.set('id-5', runtime('id-5', { alive: false, exitCode: 0, exitedAt: 12_000 }))
+
+      expect(await context.lifecycle.reconcile(context.host.listing()))
+        .toContainEqual({ kind: 'collapse-script-run', runId: 'id-3' })
+      await context.lifecycle.reconcile(context.host.listing())
+      await context.lifecycle.reconcile(context.host.listing())
+
+      expect(context.store.get('id-1')?.life).toBe('live')
+      expect(context.store.get('id-1')?.scriptRuns?.map((entry) => [entry.runId, entry.outcome]))
+        .toEqual([['id-3', 'failed'], ['id-5', 'succeeded']])
+      expect(context.store.list().map((entry) => entry.sessionId)).toEqual(['id-1'])
+      expect(existsSync(context.logs.pathOf('id-1', 'id-3'))).toBe(true)
+      expect(context.collapsed.map((event) => event.runId)).toEqual(['id-3', 'id-5'])
+    })
+
+    /*
+     * The upgrade: installs an older build left behind, linked by the old setupFor and with no
+     * history. The Host restarted since, so each is settled without a log, over passes of at most
+     * four, and said once; the successful ones collapse, the failed one its parent names stays, and
+     * one whose parent is gone simply goes.
+     */
+    it('settles the installs an older build left, and removes an orphaned one', async () => {
+      const old = (sessionId: string, parentId: string, exitCode: number): Record<string, unknown> => ({
+        sessionId,
+        kind: 'shell',
+        title: `Setup ${sessionId}`,
+        directory: { mode: 'adHoc', path: worktreePath },
+        commands: [{ command: 'pnpm install', cwd: worktreePath }],
+        setupFor: parentId,
+        binding: { hostInstanceId: 'host-0', generation: 1 },
+        life: 'ended',
+        exitCode,
+        createdAt: 3_000,
+        endedAt: 4_000,
+      })
+      const context = await harness({
+        seedRecords: [
+          record('pa', { life: 'ended', endedAt: 4_500 }), old('sa', 'pa', 0),
+          record('pb', { life: 'ended', endedAt: 4_500 }), old('sb', 'pb', 0),
+          failedWaiting({ sessionId: 'pc', pendingSetup: { setupSessionId: 'sc' } }), old('sc', 'pc', 1),
+          old('sd', 'gone', 0),
+        ],
+      })
+      await context.logs.write('gone', 'sd', 'left by a parent removed elsewhere')
+      utimesSync(join(context.logsDirectory, 'gone'), 1, 1)
+      context.clock.now += 2 * 86_400_000
+      await context.scripts.sweep()
+      expect(existsSync(join(context.logsDirectory, 'gone'))).toBe(false)
+
+      expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([
+        { kind: 'settle-script-run', runId: 'sa' },
+        { kind: 'settle-script-run', runId: 'sb' },
+        { kind: 'settle-script-run', runId: 'sc' },
+        { kind: 'collapse-script-run', runId: 'sd' },
+      ])
+      for (const parentId of ['pa', 'pb', 'pc'])
+        expect(context.store.get(parentId)?.scriptRuns?.[0].log)
+          .toEqual({ state: 'unavailable', reason: 'ended before this build kept logs' })
+      expect(context.reports).toEqual([])
+
+      expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([
+        { kind: 'collapse-script-run', runId: 'sa' },
+        { kind: 'collapse-script-run', runId: 'sb' },
+      ])
+      expect(context.reports).toEqual(['3 script runs were settled without a saved log; each history entry says why'])
+      expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([])
+      expect(context.store.list().map((entry) => entry.sessionId).sort()).toEqual(['pa', 'pb', 'pc', 'sc'])
+      expect(context.store.get('pc')?.scriptRuns?.[0]).toEqual(expect.objectContaining({ runId: 'sc', outcome: 'failed' }))
+    })
+
+    it('dismisses a run row on Remove: its entry stays on the parent, its record goes', async () => {
+      const context = await harness()
+      await context.store.put(failedWaiting())
+      await context.store.put(setupRecord({ exitCode: 1 }))
+
+      expect(await context.lifecycle.remove('s1')).toEqual({ ok: true, value: undefined })
+      expect(context.store.get('s1')).toBeNull()
+      expect(context.store.get('p1')?.scriptRuns?.map((entry) => entry.runId)).toEqual(['s1'])
+      expect(snapshotCount(context.snapshotsDirectory)).toBe(0)
+    })
+  })
+
+  describe('runs a live session asks for', () => {
+    /** A live session the Host runs, in the harness's own directory. */
+    async function asking(context: Harness): Promise<void> {
+      await context.store.put(record('p1', { directory: { mode: 'adHoc', path: context.workDirectory } }))
+      context.host.runtimes.set('p1', runtime('p1'))
+    }
+
+    function ends(context: Harness, runId: string, exitCode: number, rows: string[] = []): void {
+      context.host.runtimes.set(runId, runtime(runId, { alive: false, exitCode, exitedAt: 9_000 }))
+      context.host.screens.set(runId, rows)
+    }
+
+    it('writes the run under its parent, launches it and answers its id', async () => {
+      const context = await harness()
+      await asking(context)
+
+      expect(await context.lifecycle.runScript('p1', { command: 'pnpm test', title: 'tests' }))
+        .toEqual({ ok: true, value: { runId: 'id-1' } })
+      expect(context.store.get('id-1')).toMatchObject({
+        title: 'tests',
+        life: 'live',
+        scriptOf: { sessionId: 'p1', phase: 'inner', scriptId: 'requested', name: 'tests' },
+      })
+      expect(launchOf(callsNamed(context.host, 'runtime.create')[0]).cwd).toBe(context.workDirectory)
+    })
+
+    it('ends a run the Host refused after judging it, answers the failure and never replays it', async () => {
+      const context = await harness()
+      await asking(context)
+      context.host.launchFailure = { ok: false, code: 'op-rejected', status: 400, detail: 'launch.cwd must exist' }
+
+      expect(await context.lifecycle.runScript('p1', { command: 'pnpm test' }))
+        .toEqual({ ok: false, code: 'op-rejected', detail: 'launch.cwd must exist' })
+      expect(context.store.get('id-1')).toMatchObject({ life: 'ended', endedReason: 'launch.cwd must exist' })
+      expect(context.store.get('id-1')?.pendingOperationId).toBeUndefined()
+
+      context.host.launchFailure = null
+      context.clock.now += 60_000
+      await context.lifecycle.reconcile(context.host.listing())
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(callsNamed(context.host, 'runtime.create')).toHaveLength(1)
+      expect(context.store.get('p1')?.scriptRuns).toEqual([expect.objectContaining({
+        runId: 'id-1',
+        outcome: 'failed',
+        log: { state: 'unavailable', reason: 'the Host never ran it' },
+      })])
+    })
+
+    /*
+     * The answer never came, or said "not now": the Host may run it all the same. Ended here, the run
+     * would be stopped with nobody, counted by no limit and let a worktree cleanup go under it.
+     */
+    it('keeps a run the Host did not decide pending, binds it when the Host lists it, and never replays it', async () => {
+      for (const failure of [
+        { ok: false, code: 'host-unreachable', detail: 'timed out' },
+        { ok: false, code: 'op-rejected', status: 429, detail: 'too many live runtimes' },
+      ] as const) {
+        const context = await harness()
+        await asking(context)
+        context.host.launchFailure = failure
+
+        expect(await context.lifecycle.runScript('p1', { command: 'pnpm test' })).toEqual({ ok: true, value: { runId: 'id-1' } })
+        expect(context.store.get('id-1')).toMatchObject({ life: 'starting', pendingOperationId: 'id-2' })
+        expect(context.store.get('id-1')?.endedReason).toBeUndefined()
+
+        context.host.launchFailure = null
+        context.host.runtimes.set('id-1', runtime('id-1'))
+        await context.lifecycle.reconcile(context.host.listing())
+        expect(context.store.get('id-1')).toMatchObject({ life: 'live' })
+        expect(callsNamed(context.host, 'runtime.create')).toHaveLength(1)
+      }
+    })
+
+    it('loses a pending run the Host turns out not to have, without a replay, and settles it lost', async () => {
+      const context = await harness()
+      await asking(context)
+      context.host.launchFailure = { ok: false, code: 'host-unreachable', detail: 'timed out' }
+      successOf(await context.lifecycle.runScript('p1', { command: 'pnpm test' }))
+      context.host.launchFailure = null
+
+      // An unreachable Host has said nothing about it yet.
+      expect(await context.lifecycle.reconcile(null)).toEqual([])
+      expect(context.store.get('id-1')?.life).toBe('starting')
+
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.store.get('id-1')?.life).toBe('lost')
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(callsNamed(context.host, 'runtime.create')).toHaveLength(1)
+      expect(context.store.get('p1')?.scriptRuns).toEqual([expect.objectContaining({ runId: 'id-1', outcome: 'lost' })])
+    })
+
+    it('settles a run that exited 0 into its parent history with its log, and collapses it at once', async () => {
+      const context = await harness()
+      await asking(context)
+      successOf(await context.lifecycle.runScript('p1', { command: 'pnpm test', title: 'tests' }))
+      ends(context, 'id-1', 0, ['Tests  12 passed'])
+
+      expect(await context.lifecycle.reconcile(context.host.listing()))
+        .toEqual([{ kind: 'mark-ended', sessionId: 'id-1', exitCode: 0, endedAt: 9_000 }])
+      expect(await context.lifecycle.reconcile(context.host.listing()))
+        .toEqual([{ kind: 'settle-script-run', runId: 'id-1' }])
+      expect(await context.lifecycle.reconcile(context.host.listing()))
+        .toEqual([{ kind: 'collapse-script-run', runId: 'id-1' }])
+
+      expect(context.store.get('id-1')).toBeNull()
+      expect(context.store.get('p1')?.scriptRuns).toEqual([expect.objectContaining({
+        runId: 'id-1',
+        phase: 'inner',
+        scriptId: 'requested',
+        name: 'tests',
+        outcome: 'succeeded',
+        commands: ['pnpm test'],
+        log: { state: 'saved', bytes: expect.any(Number), truncated: false },
+      })])
+      expect(readFileSync(context.logs.pathOf('p1', 'id-1'), 'utf8')).toContain('Tests  12 passed')
+      expect(context.collapsed).toEqual([{ runId: 'id-1', parentId: 'p1', handoff: 'close', handoffTo: 'p1' }])
+    })
+
+    it('keeps a run that exited 1 until its parent asks for the next one', async () => {
+      const context = await harness()
+      await asking(context)
+      successOf(await context.lifecycle.runScript('p1', { command: 'pnpm test' }))
+      ends(context, 'id-1', 1)
+      await context.lifecycle.reconcile(context.host.listing())
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([])
+      expect(context.store.get('id-1')?.life).toBe('ended')
+      expect(context.store.get('p1')?.scriptRuns?.[0]).toMatchObject({ runId: 'id-1', outcome: 'failed', exitCode: 1 })
+
+      context.clock.now += 1_000
+      expect(await context.lifecycle.runScript('p1', { command: 'pnpm test' })).toEqual({ ok: true, value: { runId: 'id-3' } })
+      expect(await context.lifecycle.reconcile(context.host.listing()))
+        .toEqual([{ kind: 'collapse-script-run', runId: 'id-1' }])
+      expect(context.store.get('id-1')).toBeNull()
+      expect(context.store.get('id-3')?.life).toBe('live')
+    })
+
+    it('collapses a failed run once its parent is stopped', async () => {
+      const context = await harness()
+      await asking(context)
+      successOf(await context.lifecycle.runScript('p1', { command: 'pnpm test' }))
+      ends(context, 'id-1', 1)
+      await context.lifecycle.reconcile(context.host.listing())
+      await context.lifecycle.reconcile(context.host.listing())
+
+      expect(await context.lifecycle.stop('p1')).toEqual({ ok: true, value: undefined })
+      expect(await context.lifecycle.reconcile(context.host.listing()))
+        .toEqual([expect.objectContaining({ kind: 'mark-ended', sessionId: 'p1' })])
+      expect(await context.lifecycle.reconcile(context.host.listing()))
+        .toEqual([{ kind: 'collapse-script-run', runId: 'id-1' }])
+    })
+
+    it('stops a running run once its parent ended, and judges it stopped', async () => {
+      const context = await harness()
+      await asking(context)
+      successOf(await context.lifecycle.runScript('p1', { command: 'pnpm dev' }))
+      context.host.runtimes.set('p1', runtime('p1', { alive: false, exitCode: 0, exitedAt: 8_000 }))
+
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.store.get('p1')?.life).toBe('ended')
+      expect(await context.lifecycle.reconcile(context.host.listing()))
+        .toEqual([{ kind: 'stop-script-run', runId: 'id-1' }])
+      expect(context.store.get('id-1')?.stopRequested).toBe(true)
+      expect(await context.lifecycle.reconcile(context.host.listing()))
+        .toEqual([expect.objectContaining({ kind: 'mark-ended', sessionId: 'id-1' })])
+      expect(await context.lifecycle.reconcile(context.host.listing()))
+        .toEqual([{ kind: 'settle-script-run', runId: 'id-1' }])
+      expect(context.store.get('p1')?.scriptRuns?.[0])
+        .toMatchObject({ runId: 'id-1', outcome: 'stopped', reason: 'its run was stopped' })
+      expect(await context.lifecycle.reconcile(context.host.listing()))
+        .toEqual([{ kind: 'collapse-script-run', runId: 'id-1' }])
+    })
+
+    it('stops a running run in the same call that stops its parent', async () => {
+      const context = await harness()
+      await asking(context)
+      successOf(await context.lifecycle.runScript('p1', { command: 'pnpm dev' }))
+
+      expect(await context.lifecycle.stop('p1')).toEqual({ ok: true, value: undefined })
+      expect(callsNamed(context.host, 'runtime.stop').map((call) => (call.body.target as RuntimeRef).runtimeSessionId))
+        .toEqual(['p1', 'id-1'])
+      expect(context.store.get('id-1')?.stopRequested).toBe(true)
+      expect(context.host.runtimes.get('id-1')?.alive).toBe(false)
+      expect(context.reports).toEqual([])
+    })
+
+    it('says a run it could not stop and still answers the parent stopped', async () => {
+      const context = await harness()
+      await asking(context)
+      successOf(await context.lifecycle.runScript('p1', { command: 'pnpm dev' }))
+      const stop = context.host.port.runtimeStop
+      let refused = 0
+      context.host.port.runtimeStop = async (target) => {
+        if (target.runtimeSessionId !== 'id-1') return stop(target)
+        refused += 1
+        return { ok: false, code: 'op-rejected', status: 500, detail: 'did not confirm its death' }
+      }
+
+      expect(await context.lifecycle.stop('p1')).toEqual({ ok: true, value: undefined })
+      expect(context.store.get('p1')?.stopRequested).toBe(true)
+      // Nothing waits on its verdict: marked, a killed process reporting 0 still reads as stopped.
+      expect(context.store.get('id-1')?.stopRequested).toBe(true)
+      expect(context.reports).toEqual([
+        'The script run id-1 could not be stopped (op-rejected: did not confirm its death); it may still be running for p1',
+      ])
+
+      // The planning asks again while the Host lists it alive, and the refusal is not said twice.
+      await context.lifecycle.reconcile(context.host.listing())
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(refused).toBe(2)
+      expect(context.reports).toHaveLength(1)
+    })
+
+    // A cascade stop the Host refused leaves a process with no parent; the planning stops it after.
+    it('stops a run whose parent was removed after its cascade stop was refused', async () => {
+      const context = await harness()
+      await asking(context)
+      successOf(await context.lifecycle.runScript('p1', { command: 'pnpm dev' }))
+      const stop = context.host.port.runtimeStop
+      context.host.port.runtimeStop = async (target) => target.runtimeSessionId === 'id-1'
+        ? { ok: false, code: 'op-rejected', status: 500, detail: 'did not confirm its death' }
+        : stop(target)
+      expect(await context.lifecycle.stop('p1')).toEqual({ ok: true, value: undefined })
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(await context.lifecycle.remove('p1')).toEqual({ ok: true, value: undefined })
+      expect(context.store.get('p1')).toBeNull()
+      expect(context.host.runtimes.get('id-1')?.alive).toBe(true)
+
+      context.host.port.runtimeStop = stop
+      context.clock.now += 60_000
+      expect(await context.lifecycle.reconcile(context.host.listing())).toContainEqual({ kind: 'stop-script-run', runId: 'id-1' })
+      expect(context.host.runtimes.get('id-1')?.alive).toBe(false)
+      await context.lifecycle.reconcile(context.host.listing())
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.store.get('id-1')).toBeNull()
+    })
+
+    // The gated runs keep their own rules: their gate judges them, the parent's stop does not.
+    it('leaves a before and an after run of the stopped parent to their gates', async () => {
+      const context = await harness()
+      await asking(context)
+      await context.store.put(record('s1', {
+        directory: { mode: 'adHoc', path: context.workDirectory },
+        scriptOf: { sessionId: 'p1', phase: 'before', scriptId: 'setup', name: 'setup' },
+      }))
+      await context.store.put(record('c1', {
+        directory: { mode: 'adHoc', path: context.workDirectory },
+        scriptOf: { sessionId: 'p1', phase: 'after', scriptId: 'declared', name: 'tests' },
+      }))
+      context.host.runtimes.set('s1', runtime('s1'))
+      context.host.runtimes.set('c1', runtime('c1'))
+
+      expect(await context.lifecycle.stop('p1')).toEqual({ ok: true, value: undefined })
+      expect(callsNamed(context.host, 'runtime.stop').map((call) => (call.body.target as RuntimeRef).runtimeSessionId))
+        .toEqual(['p1'])
+      expect(context.store.get('s1')?.stopRequested).toBeUndefined()
+      expect(context.store.get('c1')?.stopRequested).toBeUndefined()
+    })
+
+    // A restart is a stop and a reopen in one call; no planning pass sees the parent ended between them.
+    it('leaves no run running across a restart of its parent, and judges it stopped', async () => {
+      const context = await harness()
+      await asking(context)
+      successOf(await context.lifecycle.runScript('p1', { command: 'pnpm dev' }))
+
+      expect(await context.lifecycle.stop('p1')).toEqual({ ok: true, value: undefined })
+      expect(await context.lifecycle.reopen('p1')).toEqual({ ok: true, value: undefined })
+      expect(context.host.runtimes.get('p1')?.alive).toBe(true)
+      expect(context.host.runtimes.get('id-1')?.alive).toBe(false)
+
+      await context.lifecycle.reconcile(context.host.listing())
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.store.get('p1')?.life).toBe('live')
+      expect(context.store.get('p1')?.scriptRuns?.[0])
+        .toMatchObject({ runId: 'id-1', outcome: 'stopped', reason: 'its run was stopped' })
+    })
+
+    it('refuses a Host restart while a run is live, naming it', async () => {
+      const context = await harness()
+      await asking(context)
+      successOf(await context.lifecycle.runScript('p1', { command: 'pnpm test', title: 'tests' }))
+
+      expect(failureOf(await context.lifecycle.prepareHostRestart(context.host.listing())).detail).toContain(
+        'tests (id-1): the script run tests is still running; let it finish or stop it before restarting the Host',
+      )
+    })
   })
 
   /**
@@ -3077,8 +4360,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
      */
     it('leaves the install and the resolver unmarked when the Host refused', async () => {
       const context = await harness()
-      await context.store.put(record('setup-1', { setupFor: 'primary-1' }))
-      await context.store.put(record('resolve-1', { resolveFor: 'primary-1' }))
+      await context.store.put(record('setup-1', { scriptOf: { sessionId: 'primary-1', phase: 'before', scriptId: 'setup', name: 'setup' } }))
+      await context.store.put(record('resolve-1', { scriptOf: { sessionId: 'primary-1', phase: 'after', scriptId: 'merge-resolve', name: 'resolver' } }))
       context.host.failure = { ok: false, code: 'op-rejected', status: 409, detail: 'did not confirm' }
 
       await context.lifecycle.stop('setup-1')
@@ -3119,8 +4402,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
      */
     it('marks a stopped resolver the way it marks a stopped install', async () => {
       const context = await harness()
-      await context.store.put(record('setup-1', { setupFor: 'primary-1' }))
-      await context.store.put(record('resolve-1', { resolveFor: 'primary-1' }))
+      await context.store.put(record('setup-1', { scriptOf: { sessionId: 'primary-1', phase: 'before', scriptId: 'setup', name: 'setup' } }))
+      await context.store.put(record('resolve-1', { scriptOf: { sessionId: 'primary-1', phase: 'after', scriptId: 'merge-resolve', name: 'resolver' } }))
 
       expect(await context.lifecycle.stop('setup-1')).toEqual({ ok: true, value: undefined })
       expect(await context.lifecycle.stop('resolve-1')).toEqual({ ok: true, value: undefined })
@@ -3436,10 +4719,40 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
           agentId: 'claude', launchMode: 'fork', forkParentId: 'native-1', nativeSessionId: 'native-2',
         },
         directory: { mode: 'adHoc', path: context.workDirectory },
-        resolveFor: 's1',
+        scriptOf: { sessionId: 's1', phase: 'after', scriptId: 'merge-resolve', name: 'resolver' },
       }))
 
       expect(failureOf(await context.lifecycle.forkFrom('r1')).code).toBe('invalid-spec')
+      expect(callsNamed(context.host, 'runtime.create')).toEqual([])
+    })
+
+    // A run works for its parent, so neither a fork nor a reopen of one is anybody's to ask for.
+    it('refuses to fork or reopen any script run, and names the run as the reason', async () => {
+      const context = await harness()
+      await context.store.put(record('r1', {
+        kind: 'agent',
+        life: 'ended',
+        agent: {
+          agentId: 'claude', launchMode: 'fork', forkParentId: 'native-1', nativeSessionId: 'native-2',
+        },
+        directory: { mode: 'adHoc', path: context.workDirectory },
+        scriptOf: { sessionId: 's1', phase: 'after', scriptId: 'merge-resolve', name: 'resolver' },
+      }))
+      await context.store.put(record('setup-1', {
+        life: 'ended',
+        directory: { mode: 'adHoc', path: context.workDirectory },
+        commands: [{ command: 'pnpm install', cwd: context.workDirectory }],
+        scriptOf: { sessionId: 's1', phase: 'before', scriptId: 'setup', name: 'setup' },
+      }))
+
+      for (const id of ['r1', 'setup-1']) {
+        const forked = failureOf(await context.lifecycle.forkFrom(id))
+        expect(forked.code).toBe('invalid-spec')
+        expect(forked.detail).toContain('script run for s1')
+        const reopened = failureOf(await context.lifecycle.reopen(id))
+        expect(reopened.code).toBe('invalid-spec')
+        expect(reopened.detail).toContain('a run is started by its flow')
+      }
       expect(callsNamed(context.host, 'runtime.create')).toEqual([])
     })
 
@@ -4195,7 +5508,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
           directory: { mode: 'adHoc', path: context.workDirectory },
           agent: { agentId: 'claude', mode: 'new', initialPrompt: 'resolve it' },
         },
-        { sessionId: 'resolve-1', oneShot: true, resolveFor: 's1' },
+        { sessionId: 'resolve-1', oneShot: true, scriptOf: { sessionId: 's1', phase: 'after', scriptId: 'merge-resolve', name: 'resolver' } },
       )
 
       const args = agentArgsOf(launchOf(callsNamed(context.host, 'runtime.create')[0]))
@@ -4203,6 +5516,27 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(args).toContain('-p')
       expect(args.at(-1)).toBe('resolve it')
       expect(context.seeded).toEqual([context.workDirectory])
+    })
+
+    // The SVN resolver edits files and runs nothing, so its own mode wins over the setting.
+    it('starts the SVN resolver in accept-edits mode without YOLO, and keeps the mode for a replay', async () => {
+      const context = await harness()
+      context.yolo.add('claude')
+
+      await context.lifecycle.createInternal(
+        {
+          kind: 'agent',
+          directory: { mode: 'adHoc', path: context.workDirectory },
+          agent: { agentId: 'claude', mode: 'new', initialPrompt: 'resolve it' },
+        },
+        { sessionId: 'resolve-3', oneShot: true, permission: 'accept-edits', scriptOf: { sessionId: 's1', phase: 'after', scriptId: 'svn-resolve', name: 'resolver' } },
+      )
+
+      const args = agentArgsOf(launchOf(callsNamed(context.host, 'runtime.create')[0]))
+      expect(args).not.toContain(claudeFlagConst)
+      expect(args.slice(0, 5)).toEqual(['--disallowedTools', 'Bash', '--permission-mode', 'acceptEdits', '-p'])
+      expect(args.at(-1)).toBe('resolve it')
+      expect(context.store.get('resolve-3')?.agent).toMatchObject({ oneShot: true, permission: 'accept-edits' })
     })
 
     /*
@@ -4221,7 +5555,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
           directory: { mode: 'adHoc', path: context.workDirectory },
           agent: { agentId: 'claude', mode: 'new', initialPrompt: 'resolve it' },
         },
-        { sessionId: 'resolve-2', oneShot: true, resolveFor: 's1' },
+        { sessionId: 'resolve-2', oneShot: true, scriptOf: { sessionId: 's1', phase: 'after', scriptId: 'merge-resolve', name: 'resolver' } },
       )
 
       const args = agentArgsOf(launchOf(callsNamed(context.host, 'runtime.create')[0]))
@@ -4259,7 +5593,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       return record('r1', {
         kind: 'agent',
         agent: { agentId: 'claude', launchMode: 'fork', oneShot: true },
-        resolveFor: 'm1',
+        scriptOf: { sessionId: 'm1', phase: 'after', scriptId: 'merge-resolve', name: 'resolver' },
         life: 'ended',
         binding: null,
         exitCode: 0,
@@ -4278,7 +5612,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       await context.store.put(merging())
       await context.store.put(resolver())
 
-      await context.lifecycle.reconcile(context.host.listing())
+      expect(withoutScriptRuns(await context.lifecycle.reconcile(context.host.listing())))
+        .toEqual([{ kind: 'script-succeeded', sessionId: 'm1', gate: 'merge' }])
 
       expect(context.resumed).toEqual(['m1'])
     })
@@ -4288,7 +5623,12 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       await context.store.put(merging())
       await context.store.put(resolver({ exitCode: 1 }))
 
-      await context.lifecycle.reconcile(context.host.listing())
+      expect(withoutScriptRuns(await context.lifecycle.reconcile(context.host.listing()))).toEqual([{
+        kind: 'script-failed',
+        sessionId: 'm1',
+        gate: 'merge',
+        reason: 'the resolver ended with 1',
+      }])
 
       expect(context.resumed).toEqual([])
       const merge = context.store.get('m1')?.worktreeMerge
@@ -4320,6 +5660,184 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(context.resumed).toEqual(['m1', 'm1'])
     })
 
+    /** What `WorktreeMergeFlow.clearWorktree` writes once the branch landed: the pointer goes with the worktree. */
+    async function landMerge(context: Harness): Promise<void> {
+      const current = context.store.get('m1')
+      if (!current) throw new Error('the merging session is gone')
+      const landed: SessionRecord = { ...current, completed: true }
+      delete landed.worktree
+      delete landed.worktreeMerge
+      await context.store.put(landed)
+    }
+
+    /** A resolver the Host ran, so its output is there to be saved when it settles. */
+    async function hostedResolver(context: Harness, exitCode: number): Promise<void> {
+      await context.store.put(resolver({ binding: { hostInstanceId: 'host-1', generation: 1 }, exitCode, endedAt: 9_000 }))
+      context.host.runtimes.set('r1', runtime('r1', { alive: false, exitCode, exitedAt: 9_000 }))
+      context.host.screens.set('r1', ['Resolved 1 conflict', 'Committed'])
+    }
+
+    it('settles a resolver that exited 0, and collapses it into history once the merge landed', async () => {
+      const context = await harness()
+      await context.store.put(merging())
+      await hostedResolver(context, 0)
+
+      expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([
+        { kind: 'script-succeeded', sessionId: 'm1', gate: 'merge' },
+        { kind: 'settle-script-run', runId: 'r1' },
+      ])
+      expect(context.store.get('m1')?.scriptRuns).toEqual([expect.objectContaining({
+        runId: 'r1', phase: 'after', scriptId: 'merge-resolve', name: 'resolver', outcome: 'succeeded', exitCode: 0,
+        log: { state: 'saved', bytes: expect.any(Number), truncated: false },
+      })])
+      // Still named by a gate that judges: the merge it was resolving has not landed yet.
+      expect(context.store.get('r1')).not.toBeNull()
+      expect(context.collapsed).toEqual([])
+
+      await landMerge(context)
+
+      expect(await context.lifecycle.reconcile(context.host.listing()))
+        .toEqual([{ kind: 'collapse-script-run', runId: 'r1' }])
+      expect(context.store.get('r1')).toBeNull()
+      expect(context.host.runtimes.has('r1')).toBe(false)
+      expect(context.store.get('m1')?.scriptRuns?.map((entry) => entry.runId)).toEqual(['r1'])
+      expect(readFileSync(context.logs.pathOf('m1', 'r1'), 'utf8')).toContain('Resolved 1 conflict\nCommitted\n')
+      // The resolver's tab closes rather than handing over: nothing of the parent's belongs in it.
+      expect(context.collapsed).toEqual([{ runId: 'r1', parentId: 'm1', handoff: 'close', handoffTo: 'm1' }])
+    })
+
+    /*
+     * The Host reports the exit before the record says so, and the merge refuses a worktree whose
+     * resolver record still reads live. Resumed in that pass, the merge wrote "stop it first" as its
+     * failure over a resolver that had succeeded; the smoke met exactly that.
+     */
+    it('resumes the merge only once the resolver record itself has ended', async () => {
+      const context = await harness()
+      await context.store.put(merging())
+      await context.store.put(resolver({ life: 'live', binding: { hostInstanceId: 'host-1', generation: 1 }, exitCode: undefined }))
+      context.host.runtimes.set('r1', runtime('r1', { alive: false, exitCode: 0, exitedAt: 9_000 }))
+
+      const first = await context.lifecycle.reconcile(context.host.listing())
+      expect(first).toContainEqual(expect.objectContaining({ kind: 'mark-ended', sessionId: 'r1', exitCode: 0 }))
+      expect(first.some((change) => change.kind === 'script-succeeded')).toBe(false)
+      expect(context.resumed).toEqual([])
+
+      expect(await context.lifecycle.reconcile(context.host.listing()))
+        .toContainEqual({ kind: 'script-succeeded', sessionId: 'm1', gate: 'merge' })
+      expect(context.resumed).toEqual(['m1'])
+    })
+
+    it('collapses a succeeded resolver once the resumed merge wrote a later failure', async () => {
+      const context = await harness()
+      await context.store.put(merging())
+      await hostedResolver(context, 0)
+      await context.lifecycle.reconcile(context.host.listing())
+
+      // What the resumed merge writes when the conflict outlived the resolver; the pointer stays.
+      const current = context.store.get('m1')
+      if (!current?.worktreeMerge) throw new Error('the merge is gone')
+      await context.store.put({
+        ...current,
+        worktreeMerge: { ...current.worktreeMerge, failure: 'the resolver finished and the conflict is still there' },
+      })
+
+      expect(await context.lifecycle.reconcile(context.host.listing()))
+        .toEqual([{ kind: 'collapse-script-run', runId: 'r1' }])
+      expect(context.store.get('m1')?.worktreeMerge?.resolveSessionId).toBe('r1')
+      expect(context.collapsed).toEqual([{ runId: 'r1', parentId: 'm1', handoff: 'close', handoffTo: 'm1' }])
+    })
+
+    it('keeps a failed resolver as a row while its merge waits, and lets it go when the merge lands', async () => {
+      const context = await harness()
+      await context.store.put(merging())
+      await hostedResolver(context, 1)
+
+      expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([
+        { kind: 'script-failed', sessionId: 'm1', gate: 'merge', reason: 'the resolver exited with 1' },
+        { kind: 'settle-script-run', runId: 'r1' },
+      ])
+      expect(context.store.get('m1')?.worktreeMerge?.failure).toBe('the resolver exited with 1')
+      expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([])
+      expect(context.store.get('r1')).not.toBeNull()
+      expect(context.store.get('m1')?.scriptRuns?.map((entry) => [entry.runId, entry.outcome])).toEqual([['r1', 'failed']])
+
+      // Resolved by hand and merged again: the pointer goes with the worktree, and so does the row.
+      await landMerge(context)
+
+      expect(await context.lifecycle.reconcile(context.host.listing()))
+        .toEqual([{ kind: 'collapse-script-run', runId: 'r1' }])
+      expect(context.collapsed).toEqual([{ runId: 'r1', parentId: 'm1', handoff: 'close', handoffTo: 'm1' }])
+    })
+
+    /*
+     * Finding 024 (a), carried through the judgement: a stopped resolver is killed, and the fake Host
+     * reports the 0 a POSIX platform gives a signalled process. The mark is what keeps that from
+     * reading as a clean resolution and resuming the merge over a half-resolved tree.
+     */
+    it('judges a resolver somebody stopped as failed, whatever its exit code', async () => {
+      const context = await harness()
+      await context.store.put(merging())
+      await context.store.put(resolver({ life: 'live', binding: { hostInstanceId: 'host-1', generation: 1 }, exitCode: undefined }))
+      context.host.runtimes.set('r1', runtime('r1'))
+
+      expect(await context.lifecycle.stop('r1')).toEqual({ ok: true, value: undefined })
+      expect(context.store.get('r1')?.stopRequested).toBe(true)
+      expect(context.host.runtimes.get('r1')?.exitCode).toBe(0)
+
+      const applied = await context.lifecycle.reconcile(context.host.listing())
+      await context.lifecycle.reconcile(context.host.listing())
+
+      expect(applied).toContainEqual({ kind: 'script-failed', sessionId: 'm1', gate: 'merge', reason: 'its resolver was stopped' })
+      expect(context.resumed).toEqual([])
+      expect(context.store.get('m1')?.worktreeMerge?.failure).toBe('its resolver was stopped')
+      expect(context.store.get('m1')?.scriptRuns?.map((entry) => [entry.runId, entry.outcome])).toEqual([['r1', 'stopped']])
+      expect(context.store.get('r1')).not.toBeNull()
+    })
+
+    /*
+     * Finding 024 (b), carried through the reconciler: an undecided launch leaves the resolver's
+     * record pending, the flow keeps its pointer, and the replay is what follows - not a judgement
+     * that the run is lost, and not an orphan rule taking it away.
+     */
+    it('replays a resolver whose launch the Host never decided, under the pointer the merge kept', async () => {
+      const context = await harness()
+      await context.store.put(merging({ worktreeMerge: { phase: 'resolving', resolveSessionId: 'resolve-9', startedAt: 1 } }))
+      context.host.launchFailure = { ok: false, code: 'host-unreachable', detail: 'no descriptor' }
+
+      const refused = await context.lifecycle.createInternal(
+        {
+          kind: 'agent',
+          directory: { mode: 'adHoc', path: context.workDirectory },
+          agent: { agentId: 'claude', mode: 'new', initialPrompt: 'resolve it' },
+        },
+        { sessionId: 'resolve-9', oneShot: true, scriptOf: SessionScriptDefinitions.linkOf('m1', 'after', 'merge-resolve', 'resolver') },
+      )
+      expect(refused.ok).toBe(false)
+      expect(context.store.get('resolve-9')?.life).toBe('starting')
+
+      context.host.launchFailure = null
+      const applied = await context.lifecycle.reconcile(context.host.listing())
+
+      expect(applied).toContainEqual(expect.objectContaining({ kind: 'retry-launch', sessionId: 'resolve-9' }))
+      expect(applied.some((change) => change.kind === 'script-failed')).toBe(false)
+      expect(context.store.get('resolve-9')?.life).toBe('live')
+      expect(context.store.get('m1')?.worktreeMerge?.resolveSessionId).toBe('resolve-9')
+    })
+
+    it('takes an ended resolver with its parent in the one removal a landed Finish makes', async () => {
+      const context = await harness()
+      await context.store.put(merging())
+      await hostedResolver(context, 0)
+      await context.lifecycle.reconcile(context.host.listing())
+      await landMerge(context)
+
+      expect(await context.lifecycle.remove('m1')).toEqual({ ok: true, value: undefined })
+
+      expect(context.store.list()).toEqual([])
+      expect(context.host.runtimes.has('r1')).toBe(false)
+      expect(existsSync(join(context.logsDirectory, 'm1'))).toBe(false)
+    })
+
     /*
      * `createInternal` is what the merge flow calls, and the whole judgement rests on `create`
      * honouring the id it was handed: a minted one would leave the flow pointing at a record that
@@ -4335,12 +5853,12 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
           directory: { mode: 'adHoc', path: context.workDirectory },
           agent: { agentId: 'claude', mode: 'new', initialPrompt: 'resolve it' },
         },
-        { sessionId: 'resolve-9', oneShot: true, resolveFor: 'm1' },
+        { sessionId: 'resolve-9', oneShot: true, scriptOf: { sessionId: 'm1', phase: 'after', scriptId: 'merge-resolve', name: 'resolver' } },
       )
 
       expect(successOf(answer).sessionId).toBe('resolve-9')
       const written = context.store.get('resolve-9')
-      expect(written?.resolveFor).toBe('m1')
+      expect(written?.scriptOf).toEqual({ sessionId: 'm1', phase: 'after', scriptId: 'merge-resolve', name: 'resolver' })
       expect(written?.agent?.oneShot).toBe(true)
     })
 
@@ -4354,7 +5872,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       })
 
       const written = context.store.get(successOf(answer).sessionId)
-      expect(written?.resolveFor).toBeUndefined()
+      expect(written?.scriptOf).toBeUndefined()
       expect(written?.agent?.oneShot).toBeUndefined()
     })
   })
@@ -4617,7 +6135,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
           directory: { mode: 'adHoc', path: context.workDirectory },
           agent: { agentId: 'claude', mode: 'new', initialPrompt: 'resolve it' },
         },
-        { sessionId: 'resolve-1', oneShot: true, resolveFor: 's1' },
+        { sessionId: 'resolve-1', oneShot: true, scriptOf: { sessionId: 's1', phase: 'after', scriptId: 'merge-resolve', name: 'resolver' } },
       )
 
       const args = agentArgsOf(launchOf(callsNamed(context.host, 'runtime.create')[0]))
@@ -4704,14 +6222,14 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         .toBe(join(context.workDirectory, '.worktrees', 'here'))
     })
 
-    // A running finish may be about to rename the directory away; nothing else may start in it or
+    // A running SVN action may be about to rename the directory away; nothing else may start in it or
     // drop the record that will carry the outcome.
-    it('refuses to reopen, fork or remove a session while its worktree finish runs', async () => {
+    it('refuses to reopen, fork or remove a session while its SVN action runs', async () => {
       const context = await harness()
       mkdirSync(join(context.workDirectory, '.worktrees', 'busy'), { recursive: true })
       const finishing: SessionRecord = {
         ...withWorktree(context, 'busy'),
-        worktreeFinish: { phase: 'reviewing', scopeRoot: join(context.workDirectory, '.worktrees', 'busy'), startedAt: 5 },
+        svnAction: svnActionOf(join(context.workDirectory, '.worktrees', 'busy')),
       }
       await context.store.put(finishing)
 
@@ -4725,6 +6243,62 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       }
       expect(context.host.calls).toEqual([])
       expect(context.store.get('s1')).toEqual(finishing)
+    })
+
+    // The verdict of a run is written in the reconcile pass; the next stage is launched off it.
+    it('judges a check of an SVN action through the action gate and launches the update off the reconcile loop', async () => {
+      const context = await harness()
+      const worktree = join(context.workDirectory, '.worktrees', 'acting')
+      mkdirSync(worktree, { recursive: true })
+      const check = { key: 'k', scriptId: 'checks' as const, name: 'tests', commands: [{ command: 'pnpm test', cwd: worktree }] }
+      await context.store.put({ ...withWorktree(context, 'acting'), svnAction: svnActionOf(worktree, { stage: 'checks', runId: 'check-run', checks: [check] }) })
+      await context.store.put(record('check-run', {
+        life: 'ended', binding: null, exitCode: 0, exitReason: 'process-exit', endedAt: 4_000, commands: check.commands,
+        scriptOf: { sessionId: 's1', phase: 'after', scriptId: 'checks', name: 'tests', stepKey: 'k' },
+      }))
+      context.tools.set('svn', { ok: true, command: 'C:/svn/svn.exe', prefixArgs: [], env: {} })
+
+      const applied = await context.lifecycle.reconcile(context.host.listing())
+      expect(applied).toContainEqual({ kind: 'script-succeeded', sessionId: 's1', gate: 'action' })
+      expect(context.store.get('s1')?.svnAction?.verdict).toEqual({ kind: 'succeeded', exitCode: 0 })
+      await Promise.all(context.svnAction.detached.splice(0))
+
+      const action = context.store.get('s1')?.svnAction
+      expect(action).toMatchObject({ stage: 'updating', baseRevision: 41 })
+      expect(action?.verdict).toBeUndefined()
+      const update = context.store.get(action?.runId ?? '')
+      expect(update).toMatchObject({ process: { tool: 'svn', args: ['--non-interactive', 'update', '--accept', 'postpone', '--', '.'] } })
+      const created = callsNamed(context.host, 'runtime.create').at(-1)
+      expect(created && launchOf(created)).toMatchObject({ command: 'C:/svn/svn.exe', args: ['--non-interactive', 'update', '--accept', 'postpone', '--', '.'], cwd: worktree })
+    })
+
+    // After a restart nothing drives a client stage until the reconciler asks for it.
+    it('resumes a client stage of an SVN action found on load through svn-action-due', async () => {
+      const context = await harness()
+      const worktree = join(context.workDirectory, '.worktrees', 'removing')
+      mkdirSync(worktree, { recursive: true })
+      await context.store.put({ ...withWorktree(context, 'removing'), svnAction: svnActionOf(worktree, { stage: 'removing' }) })
+
+      const applied = await context.lifecycle.reconcile(context.host.listing())
+      expect(applied).toContainEqual({ kind: 'svn-action-due', sessionId: 's1' })
+      await Promise.all(context.svnAction.detached.splice(0))
+
+      expect(context.store.get('s1')?.svnAction).toBeUndefined()
+      expect(context.store.get('s1')?.worktreeOutcome).toMatchObject({ result: 'nothing', worktree: 'removed' })
+      expect(context.svnAction.ended).toEqual(['s1'])
+    })
+
+    // A waiting action holds nothing: the person may run the session again and press Finish later.
+    it('reopens a session whose SVN action waits for the person, and keeps the action', async () => {
+      const context = await harness()
+      mkdirSync(join(context.workDirectory, '.worktrees', 'waiting'), { recursive: true })
+      const waiting = svnActionOf(join(context.workDirectory, '.worktrees', 'waiting'),
+        { needs: { kind: 'review-cancelled', reason: 'the review ended without a commit', at: 6 } })
+      await context.store.put({ ...withWorktree(context, 'waiting'), svnAction: waiting })
+
+      expect(await context.lifecycle.reopen('s1')).toEqual({ ok: true, value: undefined })
+      expect(context.store.get('s1')?.life).toBe('live')
+      expect(context.store.get('s1')?.svnAction).toEqual(waiting)
     })
 
     // The first phase write of a Finish lands after an await; a reopen in between would start the
@@ -4811,7 +6385,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(context.store.get('w1')?.completed).toBeUndefined()
     })
 
-    it('judges a cleanup waiting for an unlanded commit at once after a client start, then every ten minutes', async () => {
+    // Removed with the main-copy landing: an `unlanded` reason a 3.10 build wrote is paced like any other.
+    it('judges a cleanup a 3.10 build left waiting as unlanded at once after a client start, then on the ordinary pace', async () => {
       const context = await wired()
       // The harness client started at 5_000; this attempt is older than that start.
       await context.store.put(cleaning({ worktreeCleanup: {
@@ -4822,11 +6397,11 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       await context.lifecycle.reconcile(context.host.listing())
       expect(context.cleaned).toEqual(['w1'])
 
-      context.clock.now = 40_000 + 10 * 60_000 - 1
+      context.clock.now = 40_000 + 2 * 60_000 - 1
       await context.lifecycle.reconcile(context.host.listing())
       expect(context.cleaned).toEqual(['w1'])
 
-      context.clock.now = 40_000 + 10 * 60_000
+      context.clock.now = 40_000 + 2 * 60_000
       await context.lifecycle.reconcile(context.host.listing())
       expect(context.cleaned).toEqual(['w1', 'w1'])
     })
@@ -4856,11 +6431,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       context.worktrees.outcome = {
         ok: true,
         value: {
-          worktreePath: join(projectRoot, '.worktrees', '007-fix'),
-          branch: 'file:///repository/one',
-          baseCommit: 'r41',
-          repositoryRoot: projectRoot,
-          kind: 'svn',
+          worktree: { worktreePath: join(projectRoot, '.worktrees', '007-fix'), branch: 'file:///repository/one', baseCommit: 'r41', repositoryRoot: projectRoot, kind: 'svn' },
+          checkout: null,
         },
       }
     }
@@ -4873,32 +6445,40 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       if (base.worktree === undefined) throw new Error('the fixture has no worktree')
       await context.store.put({ ...base, worktree: { ...base.worktree, worktreePath: worktree, repositoryRoot: join(context.workDirectory, 'repo') } })
       const flowLog: string[] = []
-      const svn = {
+      const svn: SvnCleanupPort = {
         present: async () => true,
         changes: async (path: string) => {
           flowLog.push(`changes ${path}`)
           return { ok: true as const, value: [{ kind: 'item' as const, conflict: false, path: 'after-reopen.txt' }] }
         },
-        unlanded: async () => ({ ok: true as const, value: [] }),
-        renameAside: async () => {
-          flowLog.push('renameAside')
-          return { ok: true as const, value: renameAnswer }
-        },
-        purgeAside: async () => ({ ok: true as const, value: 'removed' as const }),
-        removeEmptyWorktreesDir: async () => undefined,
+        facts: async () => ({ ok: true as const, value: { added: 0, removed: 0, changedFiles: 0 } }),
       }
-      let renameAnswer: 'in-use' | 'renamed' = 'in-use'
+      let renameAnswer: 'in-use' | 'removed' = 'in-use'
+      const removal = {
+        remove: async (): Promise<SvnWorktreeRemoved> => {
+          flowLog.push('renameAside')
+          return { state: renameAnswer, lines: [] }
+        },
+      }
+      context.svnAction.remove = removal.remove
       const ended: string[] = []
       const flow = new SvnWorktreeFinishFlow({
         records: context.store,
-        svn: svn as unknown as SvnFinishPort,
-        reviewOf: () => null,
-        releaseBelow: async () => undefined,
-        onQueue: (work) => work(),
-        detach: () => { throw new Error('a Discard and a cleanup detach nothing') },
-        report: () => undefined,
+        svn,
+        removal,
+        actions: {
+          start: (sessionId, press) => context.lifecycle.svnActions.start(sessionId, press),
+          settled: (sessionId) => context.lifecycle.svnActions.settled(sessionId),
+        },
+        labels: { ownCommits: async () => ({ ok: true, value: [] }) },
+        results: new WorktreeResultsStore(join(context.workDirectory, 'cleanup-results'), {
+          now: () => context.clock.now, logs: context.logs, report: () => undefined,
+        }),
+        finishRefusal: () => null,
         changed: () => undefined,
         ended: (sessionId) => { ended.push(sessionId) },
+        landedDue: () => undefined,
+        report: () => undefined,
         now: () => context.clock.now,
       })
       const cleanups: Promise<void>[] = []
@@ -4922,7 +6502,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       await context.lifecycle.reconcile(context.host.listing())
       expect(context.store.get('w1')?.life).toBe('ended')
 
-      renameAnswer = 'renamed'
+      renameAnswer = 'removed'
       context.clock.now = 4_000 + 31_000
       await context.lifecycle.reconcile(context.host.listing())
       await Promise.all(cleanups)
@@ -4972,16 +6552,54 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(context.numbers.calls).toEqual([])
     })
 
+    it('keeps the caller\'s tag and wake-up line on the worktree it creates', async () => {
+      const context = await wired()
+      await context.store.put(cleaning({ sessionId: 'coordinator', worktree: undefined, worktreeCleanup: undefined }))
+      svnProvision(context)
+
+      const { sessionId } = successOf(await context.lifecycle.create({
+        ...worktreeSpec(), worktree: { slug: 'fix', tag: '7f3a9c2e-run:1', notify: { sessionId: 'coordinator', text: '$pp:work-tickets watch' } },
+      }))
+
+      expect(context.store.get(sessionId)?.worktree?.caller)
+        .toEqual({ tag: '7f3a9c2e-run:1', notify: { sessionId: 'coordinator', text: '$pp:work-tickets watch' } })
+      const plain = successOf(await context.lifecycle.create(worktreeSpec()))
+      expect(context.store.get(plain.sessionId)?.worktree).not.toHaveProperty('caller')
+    })
+
+    it('refuses a bad tag or wake-up line before anything is created', async () => {
+      const context = await harness()
+      await context.store.put(cleaning({ sessionId: 'coordinator', worktree: undefined, worktreeCleanup: undefined }))
+      const line = (text: string, sessionId = 'coordinator') => ({ notify: { sessionId, text } })
+
+      for (const [extra, detail] of [
+        [{ tag: 'x'.repeat(129) }, /tag/],
+        [{ tag: 'two words' }, /tag/],
+        [line('x'.repeat(801)), /exceeds 800/],
+        [line('wake\rup'), /control characters/],
+        [line('wake', 'nobody'), /session nobody/],
+      ] as const) {
+        const refused = await context.lifecycle.create({ ...worktreeSpec(), worktree: { slug: 'fix', ...extra } })
+        expect(failureOf(refused)).toMatchObject({ code: 'invalid-spec', detail: expect.stringMatching(detail) })
+      }
+      expect(context.numbers.calls).toEqual([])
+      expect(context.worktrees.calls).toEqual([])
+      expect(context.store.list().map((record) => record.sessionId)).toEqual(['coordinator'])
+    })
+
+    const commit = (sessionId: string, scopeRoot: string, revision: number | null = 50, paths: string[] = []): SessionCommitReceipt =>
+      ({ sessionId, scopes: [{ scopeRoot, revision }], paths })
+
     it('writes a committed cleanup for a review inside a session\'s SVN worktree, and nothing for a main-copy review', async () => {
       const context = await harness()
       await context.store.put(cleaning({ life: 'live', binding: { hostInstanceId: 'host-1', generation: 1 }, worktreeCleanup: undefined }))
       context.clock.now = 7_000
 
-      expect(await context.lifecycle.noteWorktreeCommitted('C:\\repo')).toEqual({ ok: true, value: undefined })
-      expect(await context.lifecycle.noteWorktreeCommitted('C:\\repo\\src')).toEqual({ ok: true, value: undefined })
+      expect(await context.lifecycle.noteCommitted(commit('main', 'C:\\repo'))).toEqual({ ok: true, value: undefined })
+      expect(await context.lifecycle.noteCommitted(commit('main', 'C:\\repo\\src'))).toEqual({ ok: true, value: undefined })
       expect(context.store.get('w1')?.worktreeCleanup).toBeUndefined()
 
-      await context.lifecycle.noteWorktreeCommitted('C:/repo/.worktrees/014-fix/mount')
+      await context.lifecycle.noteCommitted(commit('main', 'C:/repo/.worktrees/014-fix/mount'))
       expect(context.store.get('w1')?.worktreeCleanup)
         .toEqual({ phase: 'pending', trigger: 'committed', requestedAt: 7_000, attempts: 0 })
     })
@@ -4989,27 +6607,81 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     it('leaves a running finish and a pending trigger alone, and judges a kept worktree again', async () => {
       const context = await harness()
       const scope = 'C:\\repo\\.worktrees\\014-fix'
+      const cleanupOf = () => context.store.get('w1')?.worktreeCleanup
       const discarded = cleaning({ worktreeCleanup: { phase: 'pending', trigger: 'discard-unfinished', reason: 'in use', requestedAt: 1, attempts: 2 } })
       await context.store.put(discarded)
-      await context.lifecycle.noteWorktreeCommitted(scope)
-      expect(context.store.get('w1')).toEqual(discarded)
+      await context.lifecycle.noteCommitted(commit('w1', scope))
+      expect(cleanupOf()).toEqual(discarded.worktreeCleanup)
 
-      const reviewing = cleaning({ worktreeCleanup: undefined, worktreeFinish: { phase: 'reviewing', scopeRoot: scope, startedAt: 5 } })
+      // An SVN action reviews and removes the worktree itself; the receipt still lands on the session.
+      const reviewing = cleaning({ worktreeCleanup: undefined, svnAction: svnActionOf(scope) })
       await context.store.put(reviewing)
-      await context.lifecycle.noteWorktreeCommitted(scope)
-      expect(context.store.get('w1')).toEqual(reviewing)
+      await context.lifecycle.noteCommitted(commit('w1', scope))
+      expect(cleanupOf()).toBeUndefined()
+      expect(context.store.get('w1')?.svnAction).toEqual(reviewing.svnAction)
+      expect(context.store.get('w1')?.commitReceipts?.at(-1)).toMatchObject({ scopeRoot: scope, revision: 50 })
 
       await context.store.put(cleaning({ worktreeCleanup: undefined }))
       context.finishing.add('w1')
-      await context.lifecycle.noteWorktreeCommitted(scope)
-      expect(context.store.get('w1')?.worktreeCleanup).toBeUndefined()
+      await context.lifecycle.noteCommitted(commit('w1', scope))
+      expect(cleanupOf()).toBeUndefined()
       context.finishing.delete('w1')
 
       await context.store.put(cleaning({ worktreeCleanup: { phase: 'kept', trigger: 'committed', reason: '2 changes', requestedAt: 1, attempts: 1 } }))
       context.clock.now = 9_000
-      await context.lifecycle.noteWorktreeCommitted(scope)
+      await context.lifecycle.noteCommitted(commit('w1', scope))
+      expect(cleanupOf()).toEqual({ phase: 'pending', trigger: 'committed', requestedAt: 9_000, attempts: 0 })
+    })
+
+    it('keeps a receipt per scope on the split\'s session, each path relative to the deepest scope holding it', async () => {
+      const context = await harness()
+      const root = 'C:\\repo\\.worktrees\\014-fix'
+      await context.store.put(cleaning({ worktreeCleanup: undefined }))
+      context.clock.now = 7_000
+
+      await context.lifecycle.noteCommitted({ sessionId: 'w1',
+        scopes: [{ scopeRoot: `${root}\\mount`, revision: 1234 }, { scopeRoot: root, revision: 1235 }],
+        paths: [`${root}\\mount\\a.txt`, `${root}\\src\\b.txt`, `${root}\\c.txt`, 'C:\\elsewhere\\d.txt'] })
+
+      expect(context.store.get('w1')?.commitReceipts).toEqual([
+        { scopeRoot: `${root}\\mount`, revision: 1234, paths: ['a.txt'], at: 7_000 },
+        { scopeRoot: root, revision: 1235, paths: ['src/b.txt', 'c.txt'], at: 7_000 },
+      ])
+      expect(context.store.get('w1')?.worktreeCleanup).toMatchObject({ phase: 'pending', trigger: 'committed' })
+    })
+
+    it('lands a main-copy commit inside another session\'s worktree on both, and a run\'s on its parent', async () => {
+      const context = await harness()
+      const scope = 'C:\\repo\\.worktrees\\014-fix'
+      await context.store.put(cleaning({ worktreeCleanup: undefined }))
+      await context.store.put(record('main', { life: 'live', binding: { hostInstanceId: 'host-1', generation: 1 } }))
+      await context.store.put(record('run-1', { kind: 'shell', life: 'live', binding: { hostInstanceId: 'host-1', generation: 2 },
+        scriptOf: { sessionId: 'main', phase: 'before', scriptId: 'setup', name: 'setup' } }))
+      context.clock.now = 7_000
+
+      await context.lifecycle.noteCommitted(commit('main', scope, 60, [`${scope}\\a.txt`]))
+      await context.lifecycle.noteCommitted(commit('run-1', 'C:\\repo', null))
+
+      const first = { scopeRoot: scope, revision: 60, paths: ['a.txt'], at: 7_000 }
+      expect(context.store.get('main')?.commitReceipts).toEqual([first, { scopeRoot: 'C:\\repo', revision: null, paths: [], at: 7_000 }])
+      expect(context.store.get('run-1')?.commitReceipts).toBeUndefined()
+      expect(context.store.get('w1')?.commitReceipts).toEqual([first])
       expect(context.store.get('w1')?.worktreeCleanup)
-        .toEqual({ phase: 'pending', trigger: 'committed', requestedAt: 9_000, attempts: 0 })
+        .toEqual({ phase: 'pending', trigger: 'committed', requestedAt: 7_000, attempts: 0 })
+    })
+
+    it('keeps the newest 50 receipts and at most 200 paths in one', async () => {
+      const context = await harness()
+      await context.store.put(record('main'))
+      const many = Array.from({ length: 250 }, (_unused, index) => `C:\\repo\\f${index}.txt`)
+
+      for (let revision = 1; revision <= 51; revision += 1)
+        await context.lifecycle.noteCommitted(commit('main', 'C:\\repo', revision, revision === 51 ? many : []))
+
+      const receipts = context.store.get('main')?.commitReceipts ?? []
+      expect(receipts).toHaveLength(SessionLifecycle.commitReceiptsMaxConst)
+      expect(receipts[0].revision).toBe(2)
+      expect(receipts.at(-1)?.paths).toEqual(many.slice(0, SessionLifecycle.receiptPathsMaxConst).map((_path, index) => `f${index}.txt`))
     })
 
     it('takes a requested cleanup, judges a kept worktree again and makes a paced one due at once', async () => {
@@ -5033,7 +6705,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(paced && WorktreeCleanupPacing.due(paced, 7_000, 0)).toBe(true)
     })
 
-    it('refuses a requested cleanup without an SVN worktree, during a finish and after the removal', async () => {
+    it('refuses a requested cleanup without an SVN worktree, during an SVN action and after the removal', async () => {
       const context = await harness()
       expect(failureOf(await context.lifecycle.requestWorktreeCleanup('nobody'))).toMatchObject({ code: 'not-found' })
 
@@ -5043,7 +6715,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       }))
       expect(failureOf(await context.lifecycle.requestWorktreeCleanup('w1'))).toMatchObject({ code: 'invalid-spec' })
 
-      const reviewing = cleaning({ worktreeCleanup: undefined, worktreeFinish: { phase: 'reviewing', startedAt: 5 } })
+      const reviewing = cleaning({ worktreeCleanup: undefined, svnAction: svnActionOf('C:\\repo\\.worktrees\\014-fix') })
       await context.store.put(reviewing)
       expect(failureOf(await context.lifecycle.requestWorktreeCleanup('w1'))).toMatchObject({ code: 'merge-pending' })
       expect(context.store.get('w1')).toEqual(reviewing)

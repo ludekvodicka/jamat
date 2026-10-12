@@ -39,6 +39,10 @@ export class FileViewerSourceShape {
       return candidate as Extract<FileViewerDocumentSource, { kind: 'filesystem' }>
     else if (candidate.kind === 'detected')
       return candidate as Extract<FileViewerDocumentSource, { kind: 'detected' }>
+    else if (candidate.kind === 'scriptLog')
+      return typeof candidate.runId === 'string' && candidate.runId !== ''
+        ? candidate as Extract<FileViewerDocumentSource, { kind: 'scriptLog' }>
+        : null
     else
       return null
   }

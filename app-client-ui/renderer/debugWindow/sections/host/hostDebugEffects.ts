@@ -1,4 +1,5 @@
 import type { HostDebugEffect, HostDebugInput } from './hostDebugModel'
+import { AppControl } from '../../../ipc/appControl'
 
 export interface HostDebugPorts {
   dispatch(input: HostDebugInput): void
@@ -24,7 +25,7 @@ export class HostDebugEffects {
    * one - carrying the words of the transport, so it cannot be mistaken for the Host being gone.
    */
   private static async ping(ports: HostDebugPorts): Promise<void> {
-    const answer = await window.appClient.debug.pingHost()
+    const answer = await AppControl.value('host.ping', {})
     if (!answer.ok)
       return ports.dispatch({
         input: 'ping-answered',
@@ -42,7 +43,7 @@ export class HostDebugEffects {
    * owns. A Host that did start shows up through the status channel, so success says nothing here.
    */
   private static async startHost(ports: HostDebugPorts): Promise<void> {
-    const answer = await window.appClient.sessions.startHost()
+    const answer = await AppControl.sessionsDone('host.start', {})
     if (!answer.ok)
       return ports.dispatch({ input: 'failed', detail: HostDebugEffects.silent(answer.error) })
     if (!answer.value.ok)

@@ -8,9 +8,9 @@ export interface AutoUpdateController
 {
   status: DtoAutoUpdateStatus | null;
   view: AutoUpdateViewModel | null;
-  check(): void;
-  install(): void;
-  openReleasePage(): void;
+  check: () => void;
+  install: () => void;
+  openReleasePage: () => void;
 }
 
 export function useAutoUpdate(api: AutoUpdateApi): AutoUpdateController

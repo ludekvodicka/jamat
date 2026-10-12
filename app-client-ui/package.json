@@ -1,6 +1,6 @@
 {
   "name": "jamat-v3-client-ui",
-  "version": "3.10.0",
+  "version": "3.12.0",
   "private": true,
   "license": "MIT",
   "author": "ludekvodicka",
@@ -37,7 +37,8 @@
     "vega": "6.4.0",
     "vega-lite": "6.4.3",
     "ws": "8.21.1",
-    "yaml": "2.9.0"
+    "yaml": "2.9.0",
+    "zod": "4.6.5"
   },
   "optionalDependencies": {
     "@resvg/resvg-js-win32-x64-msvc": "2.6.2"

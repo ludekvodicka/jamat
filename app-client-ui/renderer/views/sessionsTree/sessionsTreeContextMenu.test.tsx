@@ -9,7 +9,8 @@ import { AppCommands, type CommandId } from '../../../shared/commands'
 import { CommandRegistry } from '../../commands/commandRegistry'
 import type { TabSessionFacts } from '../../widgets/tabs/tabContextMenu'
 import type { SessionAction } from './sessionNodeState'
-import { SessionsTreeContextMenu } from './sessionsTreeContextMenu'
+import { SessionsTreeContextMenu, SessionsTreeScriptsMenu } from './sessionsTreeContextMenu'
+import type { ScriptRunNode } from './sessionsTreeModel'
 
 function titleOf(id: CommandId): string {
   const descriptor = AppCommands.all().find((candidate) => candidate.id === id)
@@ -199,6 +200,22 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
     expect(MenuView.isOpen()).toBe(false)
   })
 
+  it('offers Update main copy on a landed row beside Remove, and runs it on the clicked row', () => {
+    const onAction = vi.fn()
+    render(<MenuHost
+      commands={new CommandRegistry()}
+      facts={{ ended: true }}
+      actions={['updateMain', 'remove']}
+      onAction={onAction}
+    />)
+
+    expect(MenuView.titles().slice(-2)).toEqual(['Update main copy', 'Remove…'])
+    fireEvent.click(MenuView.itemTitled('Update main copy'))
+
+    expect(onAction).toHaveBeenCalledWith('updateMain')
+    expect(MenuView.isOpen()).toBe(false)
+  })
+
   it('offers copying the folder only where there is a path to copy, and opening it regardless', () => {
     render(<MenuHost commands={new CommandRegistry()} facts={{ directoryPath: null }} />)
 
@@ -264,4 +281,87 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
     const current = document.querySelectorAll('.jamat-context-menu__flyout .is-current')
     expect(current).toHaveLength(1)
   })
+
+describe('SessionsTreeScriptsMenu', () => {
+  const open = { target: { kind: 'local' as const, sessionId: 'r-row' }, tabTitle: 'P - Setup' }
+  function runOf(over: Partial<ScriptRunNode>): ScriptRunNode {
+    return {
+      runId: 'r-row', phase: 'before', scriptId: 'setup', name: 'setup', title: 'Setup', state: 'running',
+      summary: 'Setup · running', startedAt: 3, commands: [], row: true, log: 'none', open, ...over,
+    }
+  }
+  const runs: readonly ScriptRunNode[] = [
+    runOf({}),
+    runOf({ runId: 'r-saved', state: 'succeeded', summary: 'Setup · succeeded · 2 s', row: false, log: 'saved', open: null }),
+    runOf({
+      runId: 'r-lost', state: 'failed', summary: 'Setup · failed · exit 1 · 1 s', row: false, log: 'unavailable',
+      logDetail: 'the Host never ran it', open: null,
+    }),
+  ]
+
+  it('lists rows and history in the order given, a row opening its terminal', () => {
+    const openTerminal = vi.fn()
+    const item = SessionsTreeScriptsMenu.itemOf(runs, 'local', openTerminal, null, null)
+
+    expect(item?.label).toBe('Scripts')
+    expect(item?.children.map((child) => [child.label, child.disabled === true, child.title])).toEqual([
+      ['Setup · running', false, undefined],
+      ['Setup · succeeded · 2 s', true, undefined],
+      ['Setup · failed · exit 1 · 1 s', true, 'the Host never ran it'],
+    ])
+    item?.children[0].onSelect()
+    expect(openTerminal).toHaveBeenCalledWith(open)
+  })
+
+  it('opens a saved log through the log port once one is given', () => {
+    const openLog = vi.fn()
+    const item = SessionsTreeScriptsMenu.itemOf(runs, 'local', vi.fn(), openLog, null)
+
+    expect(item?.children[1].disabled).toBeUndefined()
+    item?.children[1].onSelect()
+    expect(openLog).toHaveBeenCalledWith('r-saved')
+    expect(item?.children[2].disabled).toBe(true)
+  })
+
+  it('lists only the rows of a remote session, and nothing without a run', () => {
+    expect(SessionsTreeScriptsMenu.itemOf(runs, 'remote', vi.fn(), null, null)?.children.map((child) => child.label))
+      .toEqual(['Setup · running'])
+    expect(SessionsTreeScriptsMenu.itemOf(runs.slice(1), 'remote', vi.fn(), null, null)).toBe(null)
+    expect(SessionsTreeScriptsMenu.itemOf([], 'local', vi.fn(), null, null)).toBe(null)
+  })
+
+  it('leads with the sub-task switch, which flips the stored choice', () => {
+    const onSwitch = vi.fn()
+    const item = SessionsTreeScriptsMenu.itemOf(runs, 'local', vi.fn(), null, { shown: false, onSwitch })
+
+    expect(item?.children.map((child) => [child.label, child.checked])).toEqual([
+      ['Show as sub-tasks', false],
+      ['Setup · running', undefined],
+      ['Setup · succeeded · 2 s', undefined],
+      ['Setup · failed · exit 1 · 1 s', undefined],
+    ])
+    item?.children[0].onSelect()
+    expect(onSwitch).toHaveBeenCalledWith(true)
+    expect(SessionsTreeScriptsMenu.itemOf(runs, 'local', vi.fn(), null, { shown: true, onSwitch })?.children[0].checked)
+      .toBe(true)
+  })
+
+  it('puts the submenu first among the operations', () => {
+    const scripts = SessionsTreeScriptsMenu.itemOf(runs, 'local', vi.fn(), null, null)
+    render(
+      <SessionsTreeContextMenu
+        position={{ x: 10, y: 20 }}
+        commands={new CommandRegistry()}
+        sessionId="s1"
+        facts={factsOf()}
+        actions={['retrySetup', 'remove']}
+        scripts={scripts}
+        onAction={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(MenuView.titles().slice(-3)).toEqual(['Scripts', 'Retry setup', 'Remove…'])
+  })
+})
 })

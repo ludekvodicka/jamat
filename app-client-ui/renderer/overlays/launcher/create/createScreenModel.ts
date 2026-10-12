@@ -630,25 +630,20 @@ export class CreateScreenModel {
   }
 
   /**
-   * The directory this would land on, drawn before anything is created. No branch: whether the
-   * worktree is an SVN checkout or a Git branch is the library's choice by versioning mode, which
-   * this screen does not know, and the folder is named the same way under both.
+   * The folder this would land in, drawn before anything is created. Not its full path: which
+   * directory owns the worktree (the product group, else the catalog project, else the directory
+   * itself) and whether it is an SVN checkout or a Git branch are the library's to decide, and this
+   * screen knows neither. The folder is named the same way under both.
    */
   static worktreePreviewOf(
     state: CreateScreenState,
     token: string | null,
-  ): { slug: string; path: string } | null {
+  ): { slug: string; folder: string } | null {
     const title = CreateScreenModel.titleOf(state, token)
-    if (title === undefined || state.binding.mode !== 'project') return null
+    if (title === undefined) return null
     const slug = WorktreeNaming.slugOf(title)
     if (slug.length === 0) return null
-    // The separator the project path is already written with, rather than one typed here: the
-    // same preview is drawn for whatever the catalog holds.
-    const separator = state.binding.projectPath.includes('\\') ? '\\' : '/'
-    return {
-      slug,
-      path: [state.binding.projectPath, WorktreeNaming.folderNameConst, slug].join(separator),
-    }
+    return { slug, folder: `${WorktreeNaming.folderNameConst}/${slug}` }
   }
 
   /**
@@ -763,9 +758,11 @@ export class CreateScreenModel {
   }
 
   /**
-   * A worktree needs a project, and it needs something to be named after. The second one is not
-   * pedantry: with no number and no name the slug comes out empty, and git refuses it one step later
-   * with a message about slugs rather than about this screen.
+   * A worktree needs something to be named after. That is not pedantry: with no number and no name
+   * the slug comes out empty, and the library refuses it one step later with a message about slugs
+   * rather than about this screen. Whether the directory can carry a worktree at all (an SVN working
+   * copy, never inside `.worktrees`, no zone root) is the library's owner rule; its refusal comes
+   * back as the submit error.
    */
   static worktreeRefusal(state: CreateScreenState): string | null {
     if (CreateScreenModel.endpointOf(state.target) !== null)
@@ -774,7 +771,6 @@ export class CreateScreenModel {
     // runs, and a worktree belongs to the one session it was cut for.
     if (CreateScreenModel.typeOf(state).kind === 'existing')
       return 'an existing conversation runs in its project'
-    if (state.binding.mode !== 'project') return 'a worktree needs a catalog project'
     if (CreateScreenModel.worktreePreviewOf(state, state.token) === null)
       return 'a worktree needs a name to be called after'
     return null

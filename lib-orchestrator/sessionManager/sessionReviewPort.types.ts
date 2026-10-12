@@ -1,22 +1,25 @@
 import type { SessionsOpResult } from './sessionManagerApi.types'
 
 /**
- * How a review ended. A numeric `revision` is the receipt; `'1234, 1235'` names several scopes and
- * is no receipt of one.
+ * The commit dialog of the client, bound late because the client builds it after the sessions. The
+ * review run of an SVN action opens its review through it once and waits for the status itself.
  */
-export type SessionReviewSettled =
-  | { state: 'committed'; revision: string }
-  | { state: 'cancelled' }
-  /** The person took the review to an external client; its exit proves neither a commit nor a cancel. */
-  | { state: 'external-closed' }
-  /** A failed attempt that the person then closed. */
-  | { state: 'failed'; reason: string; outOfDate: boolean }
-  /** The review is unknown to the commit dialog; its outcome is unknown. */
-  | { state: 'lost' }
-
-/** The commit dialog of the client, bound late because the client builds it after the sessions. */
 export interface SessionReviewPort {
   open(input: { sessionId: string; scopeRoot: string; proposal: string }): Promise<SessionsOpResult<{ commitSessionId: string }>>
-  /** Rejects once `signal` aborts, which is how a stopping client stops waiting for a person. */
-  settled(commitSessionId: string, signal: AbortSignal): Promise<SessionReviewSettled>
+  /** Whether the commit dialog still knows the review; a client restart forgets every one. */
+  known(commitSessionId: string): boolean
+  /**
+   * Stores a worker's message for the SVN working copy that holds `directory`, under the worker's
+   * session, and opens nothing. A message a person wrote there is never replaced (`message-edited`).
+   */
+  propose(input: { sessionId: string; directory: string; message: string }): Promise<SessionsOpResult<{ scopeRoot: string }>>
+  /** The message stored for the session and scope (`commit propose`, or what a person wrote over it), or null. */
+  proposalOf(sessionId: string, scopeRoot: string): string | null
+  /** A Finish committed the worktree, so the session's message for that scope has served; Keep leaves it. */
+  forgetProposal(sessionId: string, scopeRoot: string): void
+}
+
+/** Where a Finish started from the window shows the worktree; bound by the client, never named here. */
+export interface SessionEditorPort {
+  openWorktree(worktreePath: string, ownerName: string): void
 }

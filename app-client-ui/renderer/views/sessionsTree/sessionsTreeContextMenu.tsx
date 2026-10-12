@@ -7,11 +7,14 @@ import { SessionCommandRun } from '../../commands/sessionCommandRun'
 import { CommandMenuEntries } from '../../widgets/commandMenuEntries'
 import {
   ContextMenu,
+  type ContextMenuAction,
   type ContextMenuEntry,
   type ContextMenuPosition,
+  type ContextMenuSubmenu,
 } from '../../widgets/contextMenu'
 import type { TabSessionFacts } from '../../widgets/tabs/tabContextMenu'
 import { type SessionAction, SessionNodeState } from './sessionNodeState'
+import type { ScriptRunNode, ScriptRunOpen } from './sessionsTreeModel'
 
 /**
  * The session row's menu. Its general commands come from the same catalog as the tab menu, followed
@@ -27,6 +30,8 @@ export function SessionsTreeContextMenu(props: {
   /** What that session is, captured when the menu opened: a menu lives for a moment. */
   facts: TabSessionFacts
   actions: readonly SessionAction[]
+  /** The `Scripts` submenu; absent or null for a session that has no run to list. */
+  scripts?: ContextMenuSubmenu | null
   groupItem?: ContextMenuEntry
   onAction(action: SessionAction): void
   onClose(): void
@@ -41,6 +46,7 @@ export function SessionsTreeContextMenu(props: {
         props.sessionId,
         props.facts,
         props.actions,
+        props.scripts ?? null,
         props.onAction,
       ).flatMap((item) => item.key === 'session.setColor' && props.groupItem !== undefined
         ? [item, props.groupItem] : [item])}
@@ -60,6 +66,7 @@ class SessionsTreeMenuItems {
     sessionId: string,
     facts: TabSessionFacts,
     actions: readonly SessionAction[],
+    scripts: ContextMenuSubmenu | null,
     onAction: (action: SessionAction) => void,
   ): readonly ContextMenuEntry[] {
     const commandItems = CommandMenuEntries.of(
@@ -70,7 +77,10 @@ class SessionsTreeMenuItems {
         setColor: (color) => commands.execute('session.setColor', { color, sessionId }),
       },
     )
-    const operations = SessionsTreeMenuItems.operations(actions, onAction)
+    const operations = [
+      ...(scripts === null ? [] : [scripts]),
+      ...SessionsTreeMenuItems.operations(actions, onAction),
+    ]
     if (operations.length === 0) return commandItems
     return [
       ...commandItems,
@@ -88,7 +98,7 @@ class SessionsTreeMenuItems {
       // Finish and Close are the row's own buttons, and Rerun is `Resume session` in the block above
       // since 2026-09-10: the catalog item opens the card that says what it will bring back.
       if (action === 'finalize' || action === 'close' || action === 'reopen') continue
-      else if (action === 'retrySetup' || action === 'remove')
+      else if (action === 'retrySetup' || action === 'remove' || action === 'updateMain')
         items.push({
           key: `tree-${action}`,
           label: action === 'remove' ? 'Remove…' : SessionNodeState.actionLabelOf(action),
@@ -135,5 +145,57 @@ class SessionsTreeMenuItems {
    */
   private static run(commands: CommandRegistry, id: CommandId, sessionId: string): void {
     SessionCommandRun.at(commands, id, sessionId)
+  }
+}
+
+/**
+ * The `Scripts ›` submenu: every run of a session, newest first, in the library's own lines. A row
+ * still has its terminal; a finished run has only its log, and a log is local to the computer that
+ * ran it, so a remote session lists its rows alone.
+ *
+ * The switch leads the list: it draws the finished runs as rows under every local session. A remote
+ * menu has none, because a remote session draws no finished run either way.
+ */
+export class SessionsTreeScriptsMenu {
+  static itemOf(
+    runs: readonly ScriptRunNode[],
+    scope: 'local' | 'remote',
+    openTerminal: (open: ScriptRunOpen) => void,
+    /** Null while this build has no log viewer: a saved log is then listed but cannot be opened. */
+    openLog: ((runId: string) => void) | null,
+    switcher: { shown: boolean; onSwitch(shown: boolean): void } | null,
+  ): ContextMenuSubmenu | null {
+    const listed = scope === 'local' ? runs : runs.filter((run) => run.open !== null)
+    if (listed.length === 0) return null
+    const runItems = listed.map((run) => SessionsTreeScriptsMenu.runItemOf(run, openTerminal, openLog))
+    return {
+      key: 'tree-scripts',
+      label: 'Scripts',
+      children: switcher === null ? runItems : [{
+        key: 'script-rows',
+        label: 'Show as sub-tasks',
+        title: 'Draw the finished runs of every session as rows under it',
+        checked: switcher.shown,
+        onSelect: () => switcher.onSwitch(!switcher.shown),
+      }, ...runItems],
+    }
+  }
+
+  private static runItemOf(
+    run: ScriptRunNode,
+    openTerminal: (open: ScriptRunOpen) => void,
+    openLog: ((runId: string) => void) | null,
+  ): ContextMenuAction {
+    const item = { key: `script-${run.runId}`, label: run.summary, title: run.logDetail }
+    const open = run.open
+    if (open !== null) return { ...item, onSelect: () => openTerminal(open) }
+    const log = run.log
+    if (log === 'saved')
+      return openLog === null
+        ? { ...item, disabled: true, onSelect: () => {} }
+        : { ...item, onSelect: () => openLog(run.runId) }
+    else if (log === 'unavailable' || log === 'none') return { ...item, disabled: true, onSelect: () => {} }
+    else
+      throw new Error(`Unknown script log state: ${JSON.stringify(log satisfies never)}`)
   }
 }

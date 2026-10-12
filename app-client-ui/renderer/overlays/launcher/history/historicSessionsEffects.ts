@@ -6,6 +6,7 @@ import { AppClientUiReport } from '../../../../shared/appClientUiReport'
 import type { PanelOpenOutcome } from '../../../shell/appShell.types'
 import { SessionTabOpener } from '../../../shell/sessionTabOpener'
 import { HistoricSessionsModel, type HistoricSessionRow } from './historicSessionsModel'
+import { AppControl } from '../../../ipc/appControl'
 
 export class HistoricSessionsEffects {
   private started: { sessionId: string; tabTitle: string } | null = null
@@ -20,7 +21,7 @@ export class HistoricSessionsEffects {
     progress: (completed: number, total: number) => void,
   ): Promise<HistoricSessionRow[]> {
     if (source === 'AppJamat') {
-      const answer = await window.appClient.historicSessions.appJamat(lastUsedSince)
+      const answer = await AppControl.value('historicSessions.appJamat', { lastUsedSince: lastUsedSince })
       if (!active()) return []
       if (!answer.ok) throw new Error(answer.error)
       return HistoricSessionsModel.sorted(answer.value.flatMap((group) => HistoricSessionsModel.rows(group.root, group.project, group.sessions)))
@@ -34,7 +35,7 @@ export class HistoricSessionsEffects {
     report: (detail: string) => void,
     progress: (completed: number, total: number) => void,
   ): Promise<HistoricSessionRow[]> {
-    const categories = await window.appClient.projects.categories()
+    const categories = await AppControl.value('projects.categories', {})
     if (!active()) return []
     if (!categories.ok) throw new Error(categories.error)
     const jobs: { root: CategoryInfo; project: ProjectEntry }[] = []
@@ -45,7 +46,7 @@ export class HistoricSessionsEffects {
         report(`${root.label}: root is unavailable (${root.path}).`)
         continue
       }
-      const listed = await window.appClient.projects.list(root.id, 'alpha')
+      const listed = await AppControl.projects('projects.listing', { categoryId: root.id, sort: 'alpha' })
       if (!active()) return []
       if (!listed.ok) { report(`${root.label}: ${listed.error}`); continue }
       if (!listed.value.ok) { report(`${root.label}: ${listed.value.detail}`); continue }
@@ -66,7 +67,7 @@ export class HistoricSessionsEffects {
         const job = jobs[next++]
         if (!job) return
         try {
-          const answer = await window.appClient.historicSessions.project(job.root.id, job.project.name, lastUsedSince)
+          const answer = await AppControl.projects('historicSessions.project', { categoryId: job.root.id, projectName: job.project.name, lastUsedSince: lastUsedSince })
           if (!active()) return
           if (!answer.ok) report(`${job.project.name}: ${answer.error}`)
           else if (!answer.value.ok) report(`${job.project.name}: ${answer.value.detail}`)
@@ -86,7 +87,7 @@ export class HistoricSessionsEffects {
     openTerminal: (target: TerminalTarget, title: string) => Promise<PanelOpenOutcome>,
   ): Promise<void> {
     if (this.started === null) {
-      const answer = await window.appClient.sessions.openHistory(spec)
+      const answer = await AppControl.sessions('sessions.openHistory', { spec: spec })
       if (!answer.ok) throw new Error(answer.error)
       if (!answer.value.ok) throw new Error(answer.value.detail)
       this.started = answer.value.value

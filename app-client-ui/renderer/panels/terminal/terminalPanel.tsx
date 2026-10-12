@@ -148,6 +148,8 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
    * has a time to live, so the answer to "nothing opened" is usually "right-click it again".
    */
   const [menuNote, setMenuNote] = useState<string | null>(null)
+  /** Raised by a split tab's Reload and read by the file pane in front. */
+  const [splitReload, setSplitReload] = useState(0)
   const restarting = useRef(false)
   const info = useTerminalSessionInfo(props.sessions, props.remoteSessions, target)
   const readAgent = useCallback(() => info?.agent?.agentId ?? null, [info])
@@ -267,6 +269,18 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
     baselineHint,
     location,
   }), [openSplitItem])
+
+  // A tab behind the one in front has no pane to reload; bringing it forward reads it from disk.
+  const reloadSplitItem = useCallback((key: string): void => {
+    if (key === splitRef.current.state.active) setSplitReload((value) => value + 1)
+    else splitRef.current.activate(key)
+  }, [])
+  const copySplitPath = useCallback((key: string): void => {
+    const item = splitRef.current.state.items.find((candidate) => candidate.key === key)
+    if (item?.kind !== 'file') return
+    void window.appClient.clipboard.writeText(item.source.path).then((answer) =>
+      setMenuNote(answer.ok ? null : `Copy path failed: ${answer.error}`))
+  }, [])
 
   const openCommitItem = useCallback((vcs: FileChangesVcsId, scopeRoot = '.'): void => {
     void window.appClient.versioning.openCommitTab(sessionId, vcs, scopeRoot).then((answer) => setMenuNote(IpcFailure.of(answer)))
@@ -506,6 +520,8 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
           onActivate={(key) => { split.activate(key); requestAnimationFrame(focusSplitPane) }}
           onKeepOpen={split.keepOpen}
           onSetPinned={split.setPinned}
+          onReload={reloadSplitItem}
+          onCopyPath={copySplitPath}
           onClose={split.close}
           onDetach={(key) => { void detach(key) }}
         />
@@ -520,6 +536,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
             changes={changes}
             workingTree={workingTree}
             backPath={PanelSplitParams.backTargetOf(split.state)?.source.path ?? null}
+            reloadRequest={splitReload}
             onBack={() => setMenuNote(splitRef.current.back())}
             onClose={() => split.close(activeItem.key)}
             onOpenItem={openSplitItem}

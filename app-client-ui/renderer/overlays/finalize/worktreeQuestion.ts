@@ -11,25 +11,38 @@ export class WorktreeQuestion {
     id: 'worktree',
     order: 100,
     questionOf(session, scope) {
-      if (session.worktree === undefined) return null
-      if (session.life !== 'ended' && session.life !== 'lost') return null
-      let discardAdmitted: boolean
-      if (scope === 'local') discardAdmitted = session.admits.includes('discardWorktree')
-      else if (scope === 'remote') discardAdmitted = false
+      const worktree = session.worktree
+      if (worktree === undefined) return null
+      let local: boolean
+      if (scope === 'local') local = true
+      else if (scope === 'remote') local = false
       else throw new Error(`Unknown finalize scope: ${JSON.stringify(scope)}`)
+      // A running SVN session is asked here too, on this computer: its action stops it first.
+      const ended = session.life === 'ended' || session.life === 'lost'
+      if (!ended && !(local && worktree.liveFinish === true)) return null
+      // An action that runs owns the worktree; one that waits for the person takes the next press.
+      const action = session.svnAction
+      if (action !== undefined && action.needs === null) return null
+      const discardAdmitted = local && (session.admits.includes('discardWorktree') || worktree.liveFinish === true)
+      const waiting = local && action?.needs !== undefined && action.needs !== null
       const choices: SessionFinalizeChoice[] = []
       // The library composes what this worktree offers; the kind is never read here to decide it.
-      for (const choice of session.worktree.choices) {
-        const row = WorktreeQuestion.rowOf(choice, session, session.worktree, discardAdmitted)
+      for (const choice of worktree.choices) {
+        const row = WorktreeQuestion.rowOf(choice, session, worktree, discardAdmitted, waiting)
         if (row !== null) choices.push(row)
       }
       if (!choices.some((choice) => choice.submitLabel !== null)) return null
       const landing = choices.find((choice) => choice.id === 'commit' || choice.id === 'merge')
-      return { label: 'Worktree', choices, chosenDefault: landing?.id ?? 'keep' }
+      return {
+        label: 'Worktree',
+        choices,
+        chosenDefault: landing?.id ?? 'keep',
+        ...waiting && action?.needs ? { note: `The Finish waits for you: ${action.needs}` } : {},
+      }
     },
-    perform(choiceId, ports) {
-      if (choiceId === 'merge' || choiceId === 'commit') return ports.finalize()
-      else if (choiceId === 'discard') return ports.discardWorktree()
+    perform(choiceId, ports, agreement) {
+      if (choiceId === 'commit' || choiceId === 'discard' || choiceId === 'keep') return ports.finishWorktree(choiceId, agreement)
+      else if (choiceId === 'merge') return ports.finalize(agreement.acknowledgeSetup)
       else
         throw new Error(`Unknown worktree choice: ${JSON.stringify(choiceId)}`)
     },
@@ -40,14 +53,15 @@ export class WorktreeQuestion {
     session: SessionInfo,
     worktree: SessionWorktreeInfo,
     discardAdmitted: boolean,
+    waiting: boolean,
   ): SessionFinalizeChoice | null {
     if (choice === 'commit')
       return session.admits.includes('finalize')
         ? {
             id: 'commit',
             title: 'Commit',
-            note: 'reviews and commits the changes from the worktree, updates the main copy and '
-              + 'removes the worktree',
+            note: `${worktree.liveFinish === true ? 'stops the session, ' : ''}runs the checks, reviews and commits `
+              + 'the changes from the worktree, then removes the worktree',
             glyph: '✓',
             submitLabel: 'Commit',
           }
@@ -63,14 +77,20 @@ export class WorktreeQuestion {
             submitLabel: 'Merge',
           }
         : null
-    else if (choice === 'keep')
-      return {
-        id: 'keep',
-        title: 'Keep worktree',
-        note: 'decide later; the row keeps Finish…',
-        glyph: '—',
-        submitLabel: null,
-      }
+    else if (choice === 'keep') {
+      if (waiting)
+        return { id: 'keep', title: 'Keep worktree', note: 'ends the waiting Finish; the worktree and its changes stay', glyph: '—', submitLabel: 'Keep worktree' }
+      // Leaving a worktree that waits for its removal after the end is no keeping: the removal goes on.
+      return worktree.cleanup?.phase === 'pending'
+        ? { id: 'keep', title: 'Remove automatically', note: worktree.cleanup.summary, glyph: '↻', submitLabel: null }
+        : {
+            id: 'keep',
+            title: 'Keep worktree',
+            note: 'decide later; the row keeps Finish…',
+            glyph: '—',
+            submitLabel: null,
+          }
+    }
     else if (choice === 'discard')
       return discardAdmitted
         ? {

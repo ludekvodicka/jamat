@@ -7,6 +7,7 @@ import type {
   VersioningSettingsInput,
 } from './versioningSettingsModel'
 import type { VersioningSettingsField } from '../../../../../shared/versioningSettings'
+import { AppControl } from '../../../../ipc/appControl'
 
 export type VersioningSettingsPorts = SettingsCardPorts<VersioningSettingsInput>
 
@@ -19,7 +20,7 @@ export class VersioningSettingsEffects {
   ): Promise<void> {
     if (effect.effect === 'load')
       return SettingsCardEffects.load(
-        () => window.appClient.versioning.getSettings(),
+        () => AppControl.value('versioningSettings.get', {}),
         ports,
         {
           loaded: (value) => ({ input: 'loaded' as const, value }),
@@ -29,7 +30,7 @@ export class VersioningSettingsEffects {
     else if (effect.effect === 'save')
       return SettingsCardEffects.save(
         effect.value,
-        (value) => window.appClient.versioning.saveSettings(value, field),
+        (value) => AppControl.library('versioningSettings.save', { value, ...(field === undefined ? {} : { field }) }),
         ports,
         {
           failed: (detail) => ({ input: 'failed' as const, detail }),

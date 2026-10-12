@@ -11,7 +11,7 @@ import {
   type RemoteControlDiscoveredInstance,
 } from '../../lib-orchestrator/remoteControl/remoteControlDescriptorDiscovery'
 import { RemoteControlInstanceRegistry } from '../../lib-orchestrator/remoteControl/remoteControlInstanceRegistry'
-import { RemoteControlConst } from '../../lib-orchestrator/remoteControl/remoteControlProtocol'
+import { RemoteControlCapabilities, RemoteControlConst } from '../../lib-orchestrator/remoteControl/remoteControlProtocol'
 import type {
   ConfigIdentityDocument,
   RuntimeChannel,
@@ -211,9 +211,10 @@ export class LocalInstanceResolver {
       && Array.isArray(value.operations)
       && (value.optionalOperations === undefined || Array.isArray(value.optionalOperations))
       && LocalInstanceResolver.same(value.operations, descriptor.operations)
+      // Compared as this build knows them: the descriptor was read the same way.
       && LocalInstanceResolver.same(
-        value.optionalOperations ?? [],
-        descriptor.optionalOperations ?? [],
+        RemoteControlCapabilities.known(value.optionalOperations ?? []),
+        RemoteControlCapabilities.known(descriptor.optionalOperations ?? []),
       )
   }
 
