@@ -15,7 +15,7 @@ export class CodexChildFixtures {
   static readonly secondChildIdConst = '01a12c2d-3c4a-7c72-980a-4edf7b22a6cc'
   static readonly grandchildIdConst = '01a12c2e-4361-7410-899b-d4c8900cc116'
   static readonly strangerIdConst = '01a12c2f-2beb-73f1-ac39-9696d8012288'
-  static readonly cwdConst = 'Q:\\ApplicationsAi\\Plugins'
+  static readonly cwdConst = 'C:\\work\\Plugins'
 
   /** The `session_meta` line; `parentThreadId` null writes a session the user started. */
   static header(threadId: string, parentThreadId: string | null, nickname: string | null, at: string): string {
@@ -197,12 +197,12 @@ export class CodexChildFixtures {
       CodexChildFixtures.commandDone('Get-ChildItem docs/architecture', '2026-10-11T18:14:06.000Z', 'Mode  Name\r\n-a--  layout.md\r\n'),
       CodexChildFixtures.tokenCount(24_000, '2026-10-11T18:14:06.100Z'),
       CodexChildFixtures.fileChange({
-        'Q:\\ApplicationsAi\\Plugins\\docs\\index.md': {
+        'C:\\work\\Plugins\\docs\\index.md': {
           type: 'update',
           unified_diff: '@@ -1,2 +1,3 @@\n # Index\n-old line\n+new line\n+added line\n',
           move_path: null,
         },
-        'Q:\\ApplicationsAi\\Plugins\\docs\\new.md': { type: 'add', content: 'one\ntwo\n' },
+        'C:\\work\\Plugins\\docs\\new.md': { type: 'add', content: 'one\ntwo\n' },
       }, '2026-10-11T18:14:06.500Z'),
       CodexChildFixtures.assistantText('Twelve files.', '2026-10-11T18:14:07.000Z'),
       CodexChildFixtures.tokenCount(25_164, '2026-10-11T18:14:07.100Z'),

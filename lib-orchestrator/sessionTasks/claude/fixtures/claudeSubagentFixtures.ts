@@ -22,7 +22,7 @@ export class ClaudeSubagentFixtures {
     const agentId = ClaudeSubagentFixtures.realAgentIdConst
     return [
       ClaudeSubagentFixtures.prompt(
-        'Mode: read only. Do not edit files. Return findings as your final message.\n\nProject: Q:\\Applications\\ProductivityTools\\Jamat (AppJamatV3).',
+        'Mode: read only. Do not edit files. Return findings as your final message.\n\nProject: C:\\work\\Jamat (AppJamatV3).',
         '2026-10-12T06:01:52.660Z',
         agentId,
       ),

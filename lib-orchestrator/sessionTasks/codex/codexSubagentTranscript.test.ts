@@ -87,7 +87,7 @@ describe('lib-orchestrator/sessionTasks/codex/codexSubagentTranscript', () => {
       },
       {
         kind: 'edit',
-        path: 'Q:\\ApplicationsAi\\Plugins\\docs\\index.md',
+        path: 'C:\\work\\Plugins\\docs\\index.md',
         added: 2,
         removed: 1,
         preview: ' # Index\n-old line\n+new line\n+added line',
@@ -95,7 +95,7 @@ describe('lib-orchestrator/sessionTasks/codex/codexSubagentTranscript', () => {
       },
       {
         kind: 'edit',
-        path: 'Q:\\ApplicationsAi\\Plugins\\docs\\new.md',
+        path: 'C:\\work\\Plugins\\docs\\new.md',
         added: 2,
         removed: 0,
         preview: '+one\n+two',
