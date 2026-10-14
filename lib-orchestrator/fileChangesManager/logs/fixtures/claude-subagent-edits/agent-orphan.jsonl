@@ -1,0 +1,3 @@
+{"type":"user","isSidechain":true,"agentId":"orphan","uuid":"o-1","timestamp":"2026-08-14T08:00:30.000Z","message":{"role":"user","content":"Edit orphan.ts"}}
+{"type":"assistant","isSidechain":true,"agentId":"orphan","uuid":"o-2","timestamp":"2026-08-14T08:00:40.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"edit-orphan","name":"Edit","input":{"file_path":"Q:/Project/src/orphan.ts","old_string":"old","new_string":"orphan"}}]}}
+{"type":"user","isSidechain":true,"agentId":"orphan","uuid":"o-3","timestamp":"2026-08-14T08:00:41.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"edit-orphan","content":"ok"}]}}

@@ -42,8 +42,9 @@ export class SessionsQuestionReveal {
           }
         } else
           this.asking.delete(node.id)
-        // An install hangs under the session it was started for, and that row carries no twisty:
-        // whatever opens the session opens the install with it, so the ancestors do not grow here.
+        // An install hangs under the session it was started for, and a session child under its
+        // parent, and that row carries no twisty: whatever opens the session opens what hangs under
+        // it, so the ancestors do not grow here.
         this.walk(node.children, ancestors, open)
       } else if (node.kind === 'category' || node.kind === 'project')
         this.walk(node.children, [...ancestors, node.id], open)

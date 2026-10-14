@@ -45,10 +45,15 @@ const hostActionsConst: Record<HostAction, HostActionSpec> = {
   },
 }
 
-/** What a surface draws about the Host: one line of text, and whether it may offer to start one. */
+/**
+ * What a surface draws about the Host: one line of text, whether it may offer to start one, and the
+ * memory reading's tooltip and warning mark while it runs.
+ */
 export interface HostReading {
   text: string
   startable: boolean
+  title: string | null
+  warning: boolean
 }
 
 /**
@@ -61,12 +66,17 @@ export interface HostReading {
 export class HostStatusReading {
   static of(host: HostStatusInfo): HostReading {
     if (host.presence === 'running')
-      return { text: `Host v${host.hostVersion ?? '?'} · ${host.liveCount} live`, startable: false }
+      return {
+        text: `Host v${host.hostVersion ?? '?'} · ${host.liveCount} live${host.memory?.suffix ?? ''}`,
+        startable: false,
+        title: host.memory?.lines.join('\n') ?? null,
+        warning: (host.memory?.warning ?? null) !== null,
+      }
     // No Start offered while one launch is already in flight: a second would be a second Host.
     else if (host.presence === 'starting')
-      return { text: 'Host starting…', startable: false }
+      return { text: 'Host starting…', startable: false, title: null, warning: false }
     else if (host.presence === 'unreachable')
-      return { text: 'Host unreachable', startable: true }
+      return { text: 'Host unreachable', startable: true, title: null, warning: false }
     else
       throw new Error(`Unknown host presence: ${JSON.stringify(host.presence)}`)
   }
@@ -75,11 +85,12 @@ export class HostStatusReading {
 /**
  * The Host's reading from the same document the sessions tree and restart chain observe.
  *
- * **Memoised on the three fields it draws.** The store hands back a fresh object per revision, and a
+ * **Memoised on the fields it draws.** The store hands back a fresh object per revision, and a
  * revision moves whenever anything about any session does - several times a second while an agent
  * works, in every open window. What this item shows changes almost never, so the sentence and the
- * button are derived once per CHANGE rather than once per revision. The neighbour
- * `useActiveAgentTerminal` holds a ref for the same reason.
+ * button are derived once per CHANGE rather than once per revision. The memory reading is a fresh
+ * object per revision too, so it is keyed by its contents. The neighbour `useActiveAgentTerminal`
+ * holds a ref for the same reason.
  */
 export function HostStatusItem(props: {
   ports: HostStatusPorts
@@ -95,12 +106,16 @@ export function HostStatusItem(props: {
   const presence = host?.presence ?? null
   const hostVersion = host?.hostVersion ?? null
   const liveCount = host?.liveCount ?? null
+  const memory = host?.memory ?? null
+  const memoryKey = memory === null ? null : JSON.stringify(memory)
   const reading = useMemo(
     () => presence === null || liveCount === null
       ? null
-      : HostStatusReading.of({ presence, hostVersion, liveCount } as HostStatusInfo),
-    [hostVersion, liveCount, presence],
+      : HostStatusReading.of({ presence, hostVersion, liveCount, memory } as HostStatusInfo),
+    // `memory` is read through its key: the object is new on every revision, its contents are not
+    [hostVersion, liveCount, presence, memoryKey],
   )
+  const statusClass = reading?.warning === true ? 'jamat-host-status jamat-host-status--warning' : 'jamat-host-status'
 
   const reportFailure = (message: string): void => {
     setOperationError(message)
@@ -199,7 +214,7 @@ export function HostStatusItem(props: {
   if (!reading.startable || busy !== null)
     return (
       <>
-        <span className="jamat-host-status" onContextMenu={openMenu}>
+        <span className={statusClass} title={reading.title ?? undefined} onContextMenu={openMenu}>
           {busy === null ? reading.text : hostActionsConst[busy].busyText}
         </span>
         {contextMenu}

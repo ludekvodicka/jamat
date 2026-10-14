@@ -20,6 +20,7 @@ import type {
   SvnLabelledRevision,
 } from '../sessionManagerApi.types'
 import { LandedRows } from './landedRows'
+import type { SessionSteps } from './sessionSteps'
 import { SvnRevisionLabels } from './svnRevisionLabels'
 import { SvnWorktreeRemoval } from './svnWorktreeRemoval'
 import type {
@@ -54,6 +55,8 @@ export interface SvnWorktreeFinishFlowDeps {
   finishRefusal: () => SessionsOpResult<never> | null
   /** The record moved outside an operation, so the snapshot is composed again. */
   changed: () => void
+  /** The cleanup's reads are the session's step, and the step goes when the cleanup ends. */
+  steps: Pick<SessionSteps, 'at' | 'clear'>
   /** A cleanup or a Discard that removed the worktree. */
   ended: WorktreeEnded
   /** A cleanup removed a worktree that committed: its session stays as a landed row of this main copy. */
@@ -80,6 +83,7 @@ export class SvnWorktreeFinishFlow implements WorktreeFinisher {
   private readonly results: WorktreeResultsPort
   private readonly refusalOf: () => SessionsOpResult<never> | null
   private readonly changed: () => void
+  private readonly steps: Pick<SessionSteps, 'at' | 'clear'>
   private readonly ended: WorktreeEnded
   private readonly landedDue: (mainCopy: string) => void
   private readonly report: (message: string) => void
@@ -99,6 +103,7 @@ export class SvnWorktreeFinishFlow implements WorktreeFinisher {
     this.results = deps.results
     this.refusalOf = deps.finishRefusal
     this.changed = deps.changed
+    this.steps = deps.steps
     this.ended = deps.ended
     this.landedDue = deps.landedDue
     this.report = deps.report
@@ -165,6 +170,7 @@ export class SvnWorktreeFinishFlow implements WorktreeFinisher {
       // A worktree already gone has nothing to judge; the removal finishes its own leftover.
       const present = await this.svn.present(location.worktreePath)
       if (checksChanges && present) {
+        this.steps.at(sessionId, { kind: 'read', read: 'leftovers' })
         const kept = await this.keeps(location)
         if (kept !== null) return await this.noteCleanup(sessionId, kept)
       }
@@ -192,6 +198,7 @@ export class SvnWorktreeFinishFlow implements WorktreeFinisher {
     } finally {
       this.inFlight.delete(sessionId)
       this.cleaning.delete(sessionId)
+      this.steps.clear(sessionId)
       release()
       this.changed()
     }
@@ -247,7 +254,11 @@ export class SvnWorktreeFinishFlow implements WorktreeFinisher {
 
   /** What the worktree committed itself and through its split; an unreadable answer proves nothing and keeps nothing. */
   private async ownCommits(record: SessionRecord, worktreePath: string): Promise<SvnLabelledRevision[]> {
-    const own = await this.labels.ownCommits(worktreePath, record.commitReceipts, record.createdAt)
+    this.steps.at(record.sessionId, { kind: 'read', read: 'own-commits' })
+    const own = await this.labels.ownCommits(worktreePath, record.commitReceipts, record.createdAt, (read) => {
+      const step = SvnRevisionLabels.stepOf(read)
+      this.steps.at(record.sessionId, step.facts, step.progress)
+    })
     return own.ok ? own.value : []
   }
 

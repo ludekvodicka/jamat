@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<status>
+<target
+   path=".">
+<entry
+   path="src\legacy.txt">
+<wc-status
+   tree-conflicted="true"
+   item="missing"
+   props="none">
+</wc-status>
+</entry>
+</target>
+</status>

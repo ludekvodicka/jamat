@@ -88,6 +88,9 @@ import type {
   SessionsOpResult,
   SessionsSnapshot,
   SessionWorktreeState,
+  SessionConflictList,
+  SessionConflictResolved,
+  SvnConflictResolveRequest,
   TerminalAttachResult,
   TerminalComposerContentResult,
   TerminalComposerResult,
@@ -1237,6 +1240,10 @@ class SmokeSessionsObserver implements RemoteControlSessionsPort {
     return this.sessions.notifies(filter)
   }
 
+  children(sessionId: string): ReturnType<SessionManager['children']> {
+    return this.sessions.children(sessionId)
+  }
+
   acknowledgeWorktreeResult(actionId: string): Promise<SessionsOpResult<{ actionId: string }>> {
     return this.sessions.acknowledgeWorktreeResult(actionId)
   }
@@ -1287,6 +1294,14 @@ class SmokeSessionsObserver implements RemoteControlSessionsPort {
 
   worktreeOf(sessionId: string): Promise<SessionsOpResult<SessionWorktreeState>> {
     return this.sessions.worktreeOf(sessionId)
+  }
+
+  conflictsOf(sessionId: string): Promise<SessionsOpResult<SessionConflictList>> {
+    return this.sessions.conflictsOf(sessionId)
+  }
+
+  resolveConflict(sessionId: string, request: SvnConflictResolveRequest): Promise<SessionsOpResult<SessionConflictResolved>> {
+    return this.sessions.resolveConflict(sessionId, request)
   }
 
   runScript(parentId: string, request: SessionScriptRequest): Promise<SessionsOpResult<{ runId: string }>> {
@@ -1636,6 +1651,10 @@ class SmokeUnavailableSessions implements RemoteControlSessionsPort, RemoteContr
     return Promise.resolve(SmokeUnavailableSessions.refused())
   }
 
+  children(_sessionId: string): ReturnType<SessionManager['children']> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
   acknowledgeWorktreeResult(_actionId: string): Promise<SessionsOpResult<{ actionId: string }>> {
     return Promise.resolve(SmokeUnavailableSessions.refused())
   }
@@ -1685,6 +1704,14 @@ class SmokeUnavailableSessions implements RemoteControlSessionsPort, RemoteContr
   }
 
   worktreeOf(_sessionId: string): Promise<SessionsOpResult<SessionWorktreeState>> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  conflictsOf(_sessionId: string): Promise<SessionsOpResult<SessionConflictList>> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  resolveConflict(_sessionId: string, _request: SvnConflictResolveRequest): Promise<SessionsOpResult<SessionConflictResolved>> {
     return Promise.resolve(SmokeUnavailableSessions.refused())
   }
 

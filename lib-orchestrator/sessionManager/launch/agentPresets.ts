@@ -1,3 +1,5 @@
+import { homedir } from 'node:os'
+
 import type { SessionRecordAgent } from '../records/sessionRecord.types'
 import type { SessionAgentId, SessionCreateSpec } from '../sessionManagerApi.types'
 
@@ -6,8 +8,9 @@ export type SessionAgentSpec = NonNullable<SessionCreateSpec['agent']>
 /**
  * What a launch is actually built from: the wire spec plus the two flags that never come off the
  * wire. Print mode is chosen by this library for its own one-shot runs, and a session a person
- * started is not one anybody is waiting on the exit code of. The permission mode is the SVN
- * resolver's, which edits files and runs no command.
+ * started is not one anybody is waiting on the exit code of. The permission is the SVN resolver's,
+ * which edits files and runs no command, or the SVN merger's, which edits files and runs two Jamat
+ * commands.
  */
 export type AgentLaunchSpec = SessionAgentSpec & { oneShot?: true; permission?: SessionRecordAgent['permission'] }
 
@@ -55,7 +58,8 @@ export class AgentPresets {
     // In FRONT of the mode flags, because print mode is what the whole invocation is, and after the
     // prompt it would be read as more prompt.
     if (agent.oneShot) args.unshift(...AgentPresets.oneShotArgsOf(agent.agentId))
-    if (agent.permission !== undefined) args.unshift(...AgentPresets.permissionArgsOf(agent.agentId, agent.permission))
+    if (agent.permission !== undefined)
+      args.unshift(...AgentPresets.permissionArgsOf(agent.agentId, agent.permission, AgentPresets.jamatCliOf(homedir())))
     // LAST, and positional: both CLIs read a trailing bare argument as the first thing to answer.
     // Anything appended after it would be read as more prompt rather than as a flag.
     if (agent.initialPrompt) args.push(agent.initialPrompt)
@@ -111,6 +115,8 @@ export class AgentPresets {
         mode: AgentPresets.reopenModeOf(agent),
         // The parent is deliberately not carried over: reopening a fork must not fork it again.
         nativeSessionId: agent.nativeSessionId,
+        // A reopened merger or resolver keeps its rights; it never gains the person's.
+        permission: agent.permission,
       },
       undefined,
     )
@@ -191,14 +197,31 @@ export class AgentPresets {
    * session (choices: "acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan")".
    * In print mode nothing can answer a permission prompt, so accept-edits edits files and refuses
    * every command the person's Claude settings do not allow already. A command those settings allow
-   * (`Bash(svn:*)`) would still run, so Bash is refused outright. `--disallowedTools <tools...>` is
-   * variadic: `--permission-mode` after it ends its list.
+   * (`Bash(svn:*)`) would still run, so Bash is refused outright. `--allowedTools` and
+   * `--disallowedTools <tools...>` are variadic: the next flag ends each list.
+   *
+   * The merger is interactive: it edits files, runs the two Jamat commands it settles conflicts with
+   * unasked, never runs `svn` or `svnadmin` (a deny rule wins over any allow of the person's settings,
+   * also inside a compound command), and any other command asks the person at its tab. Probed with
+   * Claude Code 2.1.296 on 2026-10-13 (docs/architecture/svn-conflict-resolution.md, "Merger rights").
    */
-  private static permissionArgsOf(agentId: SessionAgentId, permission: NonNullable<SessionRecordAgent['permission']>): string[] {
-    if (permission !== 'accept-edits') throw new Error(`Unknown agent permission: ${JSON.stringify(permission satisfies never)}`)
-    if (agentId === 'claude') return ['--disallowedTools', 'Bash', '--permission-mode', 'acceptEdits']
-    else if (agentId === 'codex') throw new Error('Codex has no accept-edits mode this build starts; the SVN resolver is always Claude')
-    else throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
+  private static permissionArgsOf(agentId: SessionAgentId, permission: NonNullable<SessionRecordAgent['permission']>, cli: string): string[] {
+    if (agentId === 'codex') throw new Error('Codex has no edits-only mode this build starts; the SVN resolver and merger are always Claude')
+    else if (agentId !== 'claude') throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
+    if (permission === 'accept-edits') return ['--disallowedTools', 'Bash', '--permission-mode', 'acceptEdits']
+    else if (permission === 'merger')
+      return ['--allowedTools', `Bash(${cli} sessions resolve-conflict:*)`, `Bash(${cli} sessions conflicts:*)`,
+        '--disallowedTools', 'Bash(svn:*)', 'Bash(svnadmin:*)', '--permission-mode', 'acceptEdits']
+    else throw new Error(`Unknown agent permission: ${JSON.stringify(permission satisfies never)}`)
+  }
+
+  /**
+   * The command an agent runs the Jamat CLI with: the `appjamat-v3` skill's wrapper, which AppClientUI
+   * links into `~/.claude/skills`. Forward slashes and quotes, so Claude's Bash and its permission
+   * rules read one string whatever the home path holds.
+   */
+  static jamatCliOf(home: string): string {
+    return `node "${home.replace(/\\/g, '/').replace(/\/+$/, '')}/.claude/skills/appjamat-v3/scripts/jamat-v3.mjs"`
   }
 
   /**

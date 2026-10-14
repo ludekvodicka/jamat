@@ -13,7 +13,7 @@ import type { SessionCreateSpec, SvnActionKind } from '../sessionManagerApi.type
 export interface SvnResolverPort {
   /** Why no headless Claude can resolve conflicts on this machine, or null. */
   unavailable(): string | null
-  briefs: Pick<ScriptLogStore, 'briefPathOf' | 'writeBrief'>
+  briefs: Pick<ScriptLogStore, 'briefPathOf' | 'writeBrief' | 'mergeBriefPathOf' | 'writeMergeBrief'>
   /** The conflicted files that still hold a conflict marker line, hold binary content or cannot be read. */
   withMarkers(root: string, paths: readonly string[]): Promise<string[]>
 }
@@ -38,18 +38,14 @@ export class SvnResolverLauncher {
    * into an update of that main copy: its directory is gone.
    */
   static specOf(parent: SessionRecord, input: { root: string; briefFile: string }): SessionCreateSpec {
-    const agent = parent.agent
     const prompt = SvnResolverLauncher.promptOf(input.briefFile)
     const title = `Resolve conflicts ${basename(input.root)}`
-    // Claude finds a conversation by the directory it ran in, so a fork runs there.
-    const forkCwd = parent.transcriptCwd ?? input.root
-    const below = PathCompare.normalized(forkCwd).slice(PathCompare.normalized(input.root).length).split('/')
-    const inside = PathCompare.isInside(input.root, forkCwd) && !below.includes(SvnWorktreeManager.worktreesDirConst)
-    if (agent?.agentId === 'claude' && agent.nativeSessionId !== undefined && inside)
+    const fork = SvnResolverLauncher.forkOf(parent, input.root)
+    if (fork !== null)
       return {
         kind: 'agent',
-        directory: { mode: 'adHoc', path: forkCwd },
-        agent: { agentId: 'claude', mode: 'fork', forkParentId: agent.nativeSessionId, initialPrompt: prompt },
+        directory: { mode: 'adHoc', path: fork.cwd },
+        agent: { agentId: 'claude', mode: 'fork', forkParentId: fork.nativeSessionId, initialPrompt: prompt },
         title,
       }
     return {
@@ -58,6 +54,18 @@ export class SvnResolverLauncher {
       agent: { agentId: 'claude', mode: 'new', initialPrompt: prompt },
       title,
     }
+  }
+
+  /**
+   * The worker's Claude conversation to fork and the directory it ran in, when it ran in `root`;
+   * null otherwise. Claude finds a conversation by the directory it ran in, so a fork runs there.
+   */
+  static forkOf(parent: SessionRecord, root: string): { cwd: string; nativeSessionId: string } | null {
+    const agent = parent.agent
+    const cwd = parent.transcriptCwd ?? root
+    const below = PathCompare.normalized(cwd).slice(PathCompare.normalized(root).length).split('/')
+    const inside = PathCompare.isInside(root, cwd) && !below.includes(SvnWorktreeManager.worktreesDirConst)
+    return agent?.agentId === 'claude' && agent.nativeSessionId !== undefined && inside ? { cwd, nativeSessionId: agent.nativeSessionId } : null
   }
 
   /** One line: it travels as a command-line argument, and cmd.exe cuts one at its first newline. */

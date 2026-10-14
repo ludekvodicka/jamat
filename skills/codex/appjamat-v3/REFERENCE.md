@@ -135,6 +135,10 @@ repeated blind Enters, submit somebody else's draft, or treat truncated/ambiguou
 - Mutate sessions, tabs, or terminal input only when the user's request authorizes that action.
 - For a retry of the same mutation, reuse the original `--operation-id`. A new ID is a new operation.
   Never retry an ambiguous or failed mutation by guessing.
+- After a `sessions create` with an unknown outcome (a `timeout`, an `operation-failed` or no
+  envelope), find its session in `sessions list` by `callerOperationId` equal to the create's
+  `operationId`. Never create again with a new operation id: the first create may still have made
+  the session.
 - Do not call AppHost directly. AppClientUI owns semantic operations and routing.
 - Pairing changes trust. Run `remote pairing import` only when the user explicitly asks to pair that
   bundle. It blocks on a confirmation dialog on this computer; refusal returns `forbidden`. Do not
@@ -164,9 +168,11 @@ candidates listed, exactly as a shared allocated number does.
 | Create agent | `sessions create --agent claude\|codex [--mode new\|continue\|resume\|fork] [--native-session-id ID] [--fork-parent-id ID] [--prompt TEXT]` plus directory/title options. `--native-session-id` belongs to `--mode resume`, or to a Claude `new`/`fork`; a Codex `new`/`fork` carrying it is refused as `invalid-spec`. |
 | Worktree session | Add `--worktree SLUG [--worktree-tag TAG] [--worktree-notify-session ID --worktree-notify-text TEXT]`; see Worktree sessions below |
 | Notify another session | Add `--notify-session ID --notify-text TEXT [--notify-on-group ID[,ID...]]` to `sessions create`; read with `sessions notifies [--session-id ID]` |
+| Session parent | Add `--parent-session ID --parent-kind worktree\|ticket\|worker` to `sessions create`; read with `sessions children --session-id ID`; see Session parent below |
 | Reopen/finalize | `sessions reopen\|finalize <session selector> [--working-directory PATH]`; `finalize` also takes `--expect stop` and `--acknowledge-setup HASH` |
 | Read a session's worktree | `sessions worktree <session selector> [--working-directory PATH]` |
-| Finish an SVN worktree | `sessions finish-worktree <session selector>\|--self --choice commit\|discard\|keep [--acknowledge-setup HASH] [--confirm-working]` |
+| Conflicts of an SVN Finish | `sessions conflicts <session selector>\|--self`; `sessions resolve-conflict ... --path --option`; see Worktree sessions below |
+| Finish an SVN worktree | `sessions finish-worktree <session selector>\|--self --choice commit\|discard\|keep [--acknowledge-setup HASH] [--confirm-working] [--agent]` |
 | Update a main copy | `sessions update-main <session selector>\|--self [--confirm-live ID,ID]` |
 | Worktree results | `sessions worktree-results [--tag TAG] [--session-id ID] [--unacknowledged]`, `sessions acknowledge-worktree-result --action-id ID` |
 | Propose the commit message | `commit propose --self --message TEXT\|--message-file FILE` |
@@ -227,6 +233,27 @@ not the target. Each row has `sessionId`, `target`, `text`, `onGroups` and `even
 observations and events survive client restarts; a settled record is kept for 30 days after its
 last observed end. This read takes no operation id.
 
+A create that wrote its session record and then failed without a Host decision still registers
+its notify for that record: its error answer is unchanged, and the session AppJamatV3 starts later
+wakes the target like any other. A refused create registers nothing.
+
+### Session parent
+
+Add `--parent-session ID --parent-kind worktree|ticket|worker` to a local `sessions create` to
+record which session started the new one. Both flags are required together; the kind says why:
+`worktree` (a worktree run), `ticket` (a ticket pass) or `worker` (a worker of another provider).
+The parent must be a local session of this computer and not a script run; otherwise the create
+answers `operation-failed` with source code `invalid-spec`. The link is set at create and never
+changes; it stays when the parent is removed. It is for display only: nothing waits, wakes or
+stops by it, so use a notify to be woken.
+
+`sessions list` shows the link on the child as `parent: { sessionId, kind, sameProject }`.
+`sameProject` is true when both sessions are in the same catalog project (a worktree of that project
+counts) or in the same ad-hoc directory. `sessions children --session-id ID` reads `{ children: [...] }`,
+the sessions whose link names ID, each with `sessionId`, `number`, `title`, `agentId`, `life`, `kind`
+and `sameProject`. This read takes no operation id. Both the create with a parent and
+`sessions children` are local-only; `--computer` is refused.
+
 ### Worktree sessions
 
 `--worktree SLUG` runs the session in its own worktree in `<owner>/.worktrees/<NNN>-<slug>`. The
@@ -282,8 +309,8 @@ node <wrapper> sessions worktree-results --tag run-7f3a
 **Finish of an SVN worktree is one press.** `sessions finish-worktree (<session selector> | --self)
 --choice commit|discard|keep` answers `{ "sessionId", "actionId" }` once AppJamatV3 wrote the action;
 the stages then go on in AppJamatV3 as visible runs of the session: stop the session (a running one
-too), run the project's `scripts.after` checks, `svn update`, resolve text conflicts with a Claude
-one-shot when one runs here, then one review run per changed working copy (changed externals first),
+too), run the project's `scripts.after` checks, `svn update`, settle conflicts by Jamat's rules and
+then by a visible Claude merger when one runs here, then one review run per changed working copy (changed externals first),
 in which **the person** commits in Jamat's commit dialog, then remove the worktree. A Finish never
 writes the main copy. `sessions finalize` on an ended SVN session is the same press of `commit`.
 
@@ -301,6 +328,15 @@ writes the main copy. `sessions finalize` on an ended SVN session is the same pr
 `svn-failed` or `not-stopped`. The person (or you, when asked) presses Finish again (`commit`), Keep
 (`keep`: ends the action, the worktree stays) or Discard. Never discard work you did not make without
 asking.
+
+**What runs now.** While AppJamatV3 works on the session in this client (a Finish, a Discard, an
+UPDATE, or the cleanup removal after the session's end), `sessions worktree` answers `step` (3.13):
+`{ "text", "detail", "progress": { "done", "total" } | null, "startedAt" }`, for example `"Removing
+the worktree"` with `"12,000 of 48,000 files"`, or `"Reading what the update brought in"` with the
+svn command. `total` is `null` while the count is not known; `startedAt` (milliseconds) is `null`
+for a wait. `step` is `null` when nothing runs in this client; a build before 3.13 leaves it out.
+`sessions list` carries the same `step` on a session only while one runs, and on a scripted run
+(`svn update`, checks) its last output line as `text`. Display only: never decide on its words.
 
 **After a committed Finish the session stays as a landed row** until the main copy holds the
 committed revisions; it goes by itself once any client updated the main copy. A Finish that committed
@@ -366,14 +402,37 @@ computer only (no `--computer`), and each answers `{ "sessionId" }`:
   command with `--acknowledge-setup <data.setup.hash>` only when the person agreed to that install.
 
 There is no command that commits inside a review: a commit stays the person's act. Follow an action
-with `sessions worktree` and its ending with `sessions worktree-results`. `sessions worktree-review`
+with `sessions worktree` and its ending with `sessions worktree-results`. When an action waits on
+conflicts, `sessions worktree` answers `action.summary` ("3 conflicts need you") and at most 50
+entries in `action.conflicts`; `sessions conflicts (<session selector> | --self)` answers the whole
+list `{ sessionId, actionId, stage, summary, entries, more }`, each entry with `path`, `kind`,
+`state` (`rule`, `agent`, `person`, `settled`), `description` and its `options` (`id`, `label`,
+`note`, `loses`). A run of the action asking with `--self` reads its parent's list; a session without
+conflicts answers `not-found` (exit 3). It only reads.
+`sessions resolve-conflict (<session selector> | --self) --path <path> --option <option>` settles one
+path of a Finish that waits on its conflicts with an option its entry lists (`merged`,
+`take-incoming`, `keep-mine`, `keep-both`, `union`): Jamat saves what the option replaces first,
+runs it step by step and answers `{ sessionId, path, state, left }`. The Finish goes on only when the
+person presses Check again. An option that loses incoming work (`loses: "incoming"`) is the person's
+alone, in the window: the CLI has no confirm flag and answers `conflict` (exit 4) with
+`data.sourceCode: "person-only"`. A path or option the set does not hold answers `operation-failed`
+(`invalid-spec`); an action that runs answers `conflict` (`merge-pending`); a failed svn step answers
+`operation-failed` (`svn-failed`) and the next call goes on from the step it reached. `--self` of a run
+settles its parent's path as the agent; while the merger works its calls are admitted, and the last
+one stops it. `sessions finish-worktree ... --choice commit --agent` on a Finish that waits on its
+conflicts starts the merger again for what is left (the window's Resolve with agent); without a path
+an agent may settle or without Claude it answers `operation-failed` (`invalid-spec`). `--choice
+commit` while the merger works is Check again: what the person settled by hand counts, and the merger
+goes on with the rest. `sessions worktree-review`
 is the command of a review run; never call it.
 
 **Older AppJamatV3.** `finish-worktree`, `update-main`, `worktree-results`,
 `acknowledge-worktree-result` and `commit propose` need their operation in the selected controller,
 and `--worktree-tag` and `--worktree-notify-*` need `sessions.worktreeResults`; `--notify-*` and
-`sessions notifies` need `sessions.notifies`; `--expect` and
-`sessions worktree` need `sessions.worktree`. Without it the CLI answers `unavailable` (exit 6)
+`sessions notifies` need `sessions.notifies`; `--parent-*` and `sessions children` need
+`sessions.children`; `--expect` and
+`sessions worktree` need `sessions.worktree`; `sessions conflicts` and `--agent` need `sessions.conflicts`;
+`sessions resolve-conflict` needs `sessions.resolveConflict`. Without it the CLI answers `unavailable` (exit 6)
 naming the operation and sends nothing. With `--computer`, the target computer may predate an option
 although the local controller has it; it then refuses the request as `invalid-request`.
 
@@ -512,8 +571,11 @@ with `--computer` to a machine whose build predates the option, which refuses th
 
 `sessions remove` deletes an ended session from the list, as the tree's Remove does. It never stops
 anything: a live session answers `conflict` (exit 4) with `data.sourceCode: 'live-refused'`, so stop
-or finalize it first. A worktree and its branch stay on disk. It is local-only (no `--computer`), and
-an older Jamat answers `unavailable` (exit 6).
+or finalize it first. An SVN worktree goes with the session when nothing is left in it; one with
+changes answers `conflict` with `data.sourceCode: 'dirty'` (Finish it with Commit or Discard), and one
+a process holds `conflict` with `'locked'` (it goes with its session once released). A Git worktree
+and its branch stay on disk. It is local-only (no `--computer`), and an older Jamat answers
+`unavailable` (exit 6).
 
 `sessions color` and `sessions group` say those same two things about a session that already exists.
 Each NAMES the value rather than toggling it, so sending one twice changes nothing, and each requires
@@ -685,6 +747,12 @@ a completed commit.
 which override category/root assignments. With `--computer`, this is the target computer's group.
 Older controllers omit the field; treat omission as unknown, not as None. Consumers may ignore
 the added field. There is no separate single-session details command.
+
+`sessions list` also includes `callerOperationId` on every session: the `operationId` of the
+`sessions create` that made it, or `null` for a session no control create made (fork, history
+open, internal runs, sessions made before 3.13.0). Older controllers omit the field; treat
+omission as unknown, not as `null`. Match it by exact equality only, never by title, number or
+directory.
 
 Every non-watch invocation writes exactly one JSON envelope. Check `ok` before using `value`.
 `events watch` writes one versioned response or event per line. A subscribe response with

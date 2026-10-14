@@ -127,6 +127,31 @@ describe('lib-orchestrator/sessionManager/notifies/sessionNotifier', () => {
     expect(['a1', 'a2', 'a3'].map((actionId) => it_.stateOf(actionId)?.state)).toEqual(['delivered', 'delivered', 'delivered'])
   })
 
+  it('types one line for a wait and a result of the same text that are due together, and notes both sources', async () => {
+    const it_ = harness()
+    await it_.put('a1')
+    const noted: string[] = []
+    const waits = {
+      pending: () => noted.length === 0 ? [{ id: 'n1', sessionId: 'coordinator', text: 'wake', at: 1_000, attempts: 0 }] : [],
+      note: async (ids: readonly string[], state: string) => { noted.push(...ids.map((id) => `${id} ${state}`)) },
+    }
+    const notifier = new SessionNotifier({
+      sources: [it_.store.notifySource(), waits],
+      watch: { watched: () => [], observe: async () => undefined },
+      sessions: () => [],
+      groups: () => new Map(),
+      port: { deliver: async (sessionId, text) => { it_.typed.push({ sessionId, text }); return 'delivered' } },
+      now: () => it_.clock.now,
+      report: () => undefined,
+    })
+
+    await notifier.tick()
+
+    expect(it_.typed).toEqual([{ sessionId: 'coordinator', text: 'wake' }])
+    expect(noted).toEqual(['n1 delivered'])
+    expect(it_.stateOf('a1')?.state).toBe('delivered')
+  })
+
   it('expires the line at once when the target session no longer exists', async () => {
     const it_ = harness()
     await it_.put('a1')

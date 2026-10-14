@@ -1,0 +1,10 @@
+{"type":"user","uuid":"message-one","timestamp":"2026-08-14T08:00:00.000Z","message":{"role":"user","content":"First message"}}
+{"type":"assistant","uuid":"assistant-one","timestamp":"2026-08-14T08:00:01.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"own-edit","name":"Edit","input":{"file_path":"Q:/Project/src/own.ts","old_string":"old","new_string":"own"}}]}}
+{"type":"user","uuid":"result-one","timestamp":"2026-08-14T08:00:02.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"own-edit","content":"ok"}]}}
+{"type":"user","uuid":"message-two","timestamp":"2026-08-14T08:01:00.000Z","message":{"role":"user","content":"Second message"}}
+{"type":"assistant","uuid":"assistant-two","timestamp":"2026-08-14T08:01:01.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_agent_a","name":"Agent","input":{"description":"Edit a","prompt":"Edit a.ts","subagent_type":"general-purpose"}}]}}
+{"type":"user","uuid":"result-two","timestamp":"2026-08-14T08:03:00.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_agent_a","content":[{"type":"text","text":"Done"}]}]}}
+{"type":"user","uuid":"message-three","timestamp":"2026-08-14T08:04:00.000Z","message":{"role":"user","content":"Third message"}}
+{"type":"assistant","uuid":"assistant-three","timestamp":"2026-08-14T08:04:01.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_agent_b","name":"Agent","input":{"description":"Write b","prompt":"Write b.txt","subagent_type":"general-purpose"}}]}}
+{"type":"user","uuid":"result-three","timestamp":"2026-08-14T08:05:00.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_agent_b","content":[{"type":"text","text":"Done"}]}]}}
+{"type":"user","uuid":"message-four","timestamp":"2026-08-14T08:06:00.000Z","message":{"role":"user","content":"Fourth message"}}

@@ -42,9 +42,19 @@ export interface UiSettingsValue {
    */
   terminalScrollSpeedPercent: number
   activateSessionOnDocument?: boolean
-  /** The sessions tree draws finished script runs as rows under their session (`Show as sub-tasks`). */
-  sessionsScriptRuns?: boolean
+  /**
+   * Display only, and absent reads as true: a file written before these existed nests everything.
+   * Sub-agent rows, background shell rows and pp `worker` children under their session.
+   */
+  sessionsNestSubagents?: boolean
+  /** Worktree session children under the session that started them. */
+  sessionsNestWorktrees?: boolean
+  /** Ticket pass children under the session that started them. */
+  sessionsNestTickets?: boolean
 }
+
+/** The three nesting toggles, the keys a read, a save and the Settings tab all name. */
+export type UiSettingsNestingKey = 'sessionsNestSubagents' | 'sessionsNestWorktrees' | 'sessionsNestTickets'
 
 /**
  * What a save answers. The codes are `ConfigOpResult`'s letter for letter, but the type is this
@@ -107,9 +117,17 @@ export class UiSettings {
       scrollSpeedPercent: UiSettings.scrollRangeConst.defaultPercent,
       terminalScrollSpeedPercent: UiSettings.scrollRangeConst.defaultPercent,
       activateSessionOnDocument: false,
-      sessionsScriptRuns: false,
+      sessionsNestSubagents: true,
+      sessionsNestWorktrees: true,
+      sessionsNestTickets: true,
     }
   }
+
+  static readonly nestingKeysConst: readonly UiSettingsNestingKey[] = [
+    'sessionsNestSubagents',
+    'sessionsNestWorktrees',
+    'sessionsNestTickets',
+  ]
 
   /**
    * A scroll percentage as the multiplier its reader wants. One conversion for both of them: xterm
@@ -135,24 +153,19 @@ export class UiSettings {
       )
       return UiSettings.defaultValue()
     }
-    const document = value as Partial<Record<keyof UiSettingsValue, unknown>>
+    const document = { ...value } as Record<string, unknown>
+    delete document.sessionsScriptRuns
     const font = UiSettings.fontRangeConst
     const scroll = UiSettings.scrollRangeConst
     const activateSessionOnDocument = document.activateSessionOnDocument === true
     if (document.activateSessionOnDocument !== undefined && typeof document.activateSessionOnDocument !== 'boolean')
       report('The document activation setting is unusable; reading it as disabled')
-    const sessionsScriptRuns = document.sessionsScriptRuns === true
-    if (document.sessionsScriptRuns !== undefined && typeof document.sessionsScriptRuns !== 'boolean')
-      report('The sessions script runs setting is unusable; reading it as hidden')
-    // The RAW object first, because what a save writes back is what a read returned: `config.json`
-    // is meant to be edited by hand and its own README promises that a key this build does not know
-    // is preserved, so a note or a field of a later version written inside `ui` has to come back out
-    // of a read that understands neither. The cast names the fields that are READ; the spread
-    // carries whatever else is there, which rebuilding the section from those alone would delete.
+    const nesting = UiSettings.coerceNesting(document, report)
+    // Unknown fields must survive a save, while a deliberately retired field must not return.
     return {
       ...document,
       activateSessionOnDocument,
-      sessionsScriptRuns,
+      ...nesting,
       fontScalePercent:
         UiSettings.coercePercent(document.fontScalePercent, 'fontScalePercent', font, report),
       fileViewerFontScalePercent: UiSettings.coercePercent(
@@ -213,7 +226,7 @@ export class UiSettings {
       && UiSettings.isValidPercent(document.scrollSpeedPercent, scroll)
       && UiSettings.isValidPercent(document.terminalScrollSpeedPercent, scroll)
       && (document.activateSessionOnDocument === undefined || typeof document.activateSessionOnDocument === 'boolean')
-      && (document.sessionsScriptRuns === undefined || typeof document.sessionsScriptRuns === 'boolean')
+      && UiSettings.nestingKeysConst.every((key) => document[key] === undefined || typeof document[key] === 'boolean')
   }
 
   /** Into the range first, then onto the step: both ends are multiples of it, so that order holds. */
@@ -255,6 +268,21 @@ export class UiSettings {
       return snapped
     }
     return value
+  }
+
+  /** Only `false` turns nesting off, so an unusable value keeps what a file without the key gets. */
+  private static coerceNesting(
+    document: Partial<Record<keyof UiSettingsValue, unknown>>,
+    report: (message: string) => void,
+  ): Record<UiSettingsNestingKey, boolean> {
+    const nesting = {} as Record<UiSettingsNestingKey, boolean>
+    for (const key of UiSettings.nestingKeysConst) {
+      const value = document[key]
+      nesting[key] = value !== false
+      if (value !== undefined && typeof value !== 'boolean')
+        report(`The sessions nesting setting ${key} is unusable (${JSON.stringify(value)}); reading it as nested`)
+    }
+    return nesting
   }
 
   private static isValidTerminalTheme(value: unknown): value is TerminalThemeName {

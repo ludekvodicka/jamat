@@ -43,6 +43,9 @@ export class AppClientUi {
       else
         focusRequested = true
     })
+    // The id the installer's shortcut carries (`build.appId`): Windows shows a notification of this
+    // process under it, and a click on it reaches this process.
+    if (process.platform === 'win32') app.setAppUserModelId('com.jamat.app')
     await app.whenReady()
     const context = new AppContext(config, mainModuleUrl)
     hub = new AppHub(context)

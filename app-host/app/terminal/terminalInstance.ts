@@ -45,6 +45,7 @@ export class TerminalInstance {
   private resolveExit: () => void = () => {}
   private aliveValue = true
   private stopping = false
+  private released = false
   private processStartedAtValue: number | null = null
   private exitValue: TerminalExit | null = null
   readonly projection: TerminalProjection
@@ -129,7 +130,7 @@ export class TerminalInstance {
       await TerminalInstance.sleep(TerminalInstance.readyPollMsConst)
     }
     if (!this.aliveValue) return
-    try { this.process.kill() } catch {}
+    this.release()
     throw new TerminalLaunchError(`PTY process did not expose a stable start identity: ${reason}`)
   }
 
@@ -161,7 +162,7 @@ export class TerminalInstance {
     try { this.process.write('\x03') } catch {}
     await this.awaitExit(TerminalInstance.gracefulStopMsConst)
     if (this.aliveValue) {
-      try { this.process.kill() } catch {}
+      this.release()
       await this.awaitExit(TerminalInstance.killConfirmMsConst)
     }
     if (this.aliveValue) {
@@ -194,13 +195,25 @@ export class TerminalInstance {
   }
 
   dispose(): void {
-    if (this.aliveValue)
-      try { this.process.kill() } catch {}
+    this.release()
     this.aliveValue = false
     this.resolveExit()
     for (const subscription of this.subscriptions.splice(0))
       try { subscription.dispose() } catch {}
     this.projection.dispose()
+  }
+
+  /**
+   * `IPty.kill()`, at most once per instance, and also after a process that ended by itself. On
+   * Windows node-pty starts one worker thread per PTY and ends it, with the pseudoconsole, only in
+   * `kill()`; a natural exit keeps both. Each ended run then held a worker isolate until the Host
+   * could start no new one (`ERR_WORKER_OUT_OF_MEMORY`) and every create died at once. A second
+   * kill of a closed pseudoconsole is never sent.
+   */
+  private release(): void {
+    if (this.released) return
+    this.released = true
+    try { this.process.kill() } catch {}
   }
 
   private awaitExit(budgetMs: number): Promise<void> {
@@ -249,6 +262,7 @@ export class TerminalInstance {
       generation: this.generation,
       exitCode,
     })
+    this.release()
   }
 
   private projectionSnapshot(): {

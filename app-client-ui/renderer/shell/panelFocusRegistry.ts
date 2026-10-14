@@ -1,4 +1,5 @@
-export type PanelSurfaceFocus = () => void
+export type PanelFocusTarget = 'primary' | 'content'
+export type PanelSurfaceFocus = (target: PanelFocusTarget) => void
 
 /**
  * Where the keyboard goes when a panel is put in front, per renderer document.
@@ -26,13 +27,13 @@ export class PanelFocusRegistry {
   }
 
   /** False is a panel with nothing to type into: a file viewer, the welcome tab, or no tab at all. */
-  focus(panelId: string | null): boolean {
+  focus(panelId: string | null, target: PanelFocusTarget = 'primary'): boolean {
     if (panelId === null)
       return false
     const surface = this.surfaces.get(panelId)
     if (surface === undefined)
       return false
-    surface()
+    surface(target)
     return true
   }
 }

@@ -3,7 +3,7 @@ import { z } from 'zod'
 
 import type { RemoteControlCallerKind } from './remoteControlApi.types'
 import { RemoteControlConst } from './remoteControlProtocol'
-import { type RemoteControlCallContext, RemoteControlRegistry } from './remoteControlRegistry'
+import { type RemoteControlCallContext, RemoteControlRegistry, type RemoteControlRunContext } from './remoteControlRegistry'
 
 describe('lib-orchestrator/remoteControl/remoteControlRegistry', () => {
   function registry(now = (): number => 1_000): {
@@ -93,6 +93,33 @@ describe('lib-orchestrator/remoteControl/remoteControlRegistry', () => {
       .resolves.toMatchObject({ ok: false, error: { detail: 'operationId is not allowed for notes.read' } })
     await expect(found.registry.execute(request('notes.erase', {}), context()))
       .resolves.toMatchObject({ ok: false, error: { code: 'invalid-request', detail: 'Unknown operation: "notes.erase"' } })
+  })
+
+  it('hands a write handler the envelope operation id and a read handler null, beside the unchanged caller', async () => {
+    const seen: RemoteControlRunContext[] = []
+    const found = new RemoteControlRegistry({ onError: () => {} })
+    found.register('notes.read', {
+      kind: 'read',
+      description: 'Read a note.',
+      input: z.strictObject({}),
+      run: async (_body, run) => {
+        seen.push(run)
+        return { ok: true, value: {} }
+      },
+    })
+    found.register('notes.write', {
+      kind: 'write',
+      description: 'Write a note.',
+      input: z.strictObject({}),
+      run: async (_body, run) => {
+        seen.push(run)
+        return { ok: true, value: {} }
+      },
+    })
+    const caller = context('remote-peer')
+    await found.execute(request('notes.write', {}, 'op-id-1'), caller)
+    await found.execute(request('notes.read', {}), caller)
+    expect(seen).toEqual([{ ...caller, operationId: 'op-id-1' }, { ...caller, operationId: null }])
   })
 
   it('refuses an operation the caller was not granted, before it runs', async () => {

@@ -1,3 +1,6 @@
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
+
 import { JsonNumber } from '../../shared/jsonNumber'
 import { JsonShape } from '../../shared/jsonShape'
 import { JsonlRecords } from '../../shared/jsonlRecords'
@@ -14,12 +17,24 @@ interface ClaudeTurn {
   model: string
   tokens: number
   /**
+   * The effort Claude Code recorded on this turn, or null when it wrote none (transcripts older than
+   * the field). It is the running session's own value: `/effort` and the per-model `modelSettings`
+   * both change it without leaving a trace in the top-level `effortLevel` the cascade reads.
+   */
+  effort: string | null
+  /**
    * What the newest `/model` switch in the read tail said about the tier of this turn's model, or
    * null when the tail holds no switch naming it. A switch is newer evidence than the launch and the
    * settings files: `/model` moves a running session onto another model AND tier, and the transcript
    * records only the bare id either way.
    */
   switchedToMillion: boolean | null
+}
+
+/** What Claude Code last handed its status line for one session, stored by Jamat's relay. */
+interface ClaudeContextSnapshot {
+  model: string
+  contextWindowSize: number
 }
 
 export class SessionModelSourceClaude extends SessionModelSource {
@@ -35,25 +50,31 @@ export class SessionModelSourceClaude extends SessionModelSource {
   private static readonly modelSwitchConst = /^<local-command-stdout>Set model to (.*)/s
   private static readonly ansiConst = /\u001b\[\d+m/g
   private static readonly millionTierConst = /1M context/i
+  private static readonly snapshotBytesConst = 4096
+  private static readonly sessionIdConst = /^[0-9A-Za-z-]{1,64}$/
 
   readonly agentId = 'claude' as const
 
   private readonly claudeHome: string
+  /** Where Jamat's status line relay stores each session's window; null where nothing does. */
+  private readonly snapshots: string | null
 
-  constructor(claudeHome?: string) {
+  constructor(claudeHome?: string, snapshots?: string | null) {
     super()
     this.claudeHome = ClaudeConfigHome.resolve(claudeHome)
+    this.snapshots = snapshots ?? null
   }
 
   /**
    * The effort AND the context window come from outside the transcript the key is taken from - three
-   * settings files and the model this session was launched with - so both would otherwise freeze at
-   * what they were when the transcript last moved.
+   * settings files, the model this session was launched with and the status line snapshot - so both
+   * would otherwise freeze at what they were when the transcript last moved.
    */
   override async cacheSaltOf(context: SessionModelContext): Promise<string> {
     return JSON.stringify([
       context.launchModel,
       await ClaudeSettingsCascade.readingOf(context.cwd, this.claudeHome),
+      await this.snapshotOf(context.nativeSessionId),
     ])
   }
 
@@ -77,22 +98,58 @@ export class SessionModelSourceClaude extends SessionModelSource {
     }
     if (turn === null) return { kind: 'none', reason: 'no real assistant turn in the transcript tail' }
     const settings = await ClaudeSettingsCascade.readingOf(context.cwd, this.claudeHome)
+    const snapshot = await this.snapshotOf(context.nativeSessionId)
     return { kind: 'ok', info: {
       model: turn.model,
       modelLabel: ClaudeContextWindows.labelOf(turn.model),
-      effortLevel: settings.effortLevel,
+      effortLevel: turn.effort ?? settings.effortLevel,
       contextTokens: turn.tokens,
-      // The launch WINS over the settings files rather than falling through to them: `--model` is
-      // what the agent was actually started with, so a launch that named a model without a tier is
-      // evidence that the settings file's tier is not what this session runs on. It is also the only
-      // source there is on a machine that configures the model in this app instead of in Claude's
-      // own settings, which is where a million-token session was drawn as a fifth of itself.
-      contextWindow: turn.switchedToMillion === true
-        ? ClaudeContextWindows.windowOf(`${turn.model}[1m]`)
-        : ClaudeContextWindows.windowOf(
-          turn.model,
-          turn.switchedToMillion === false ? turn.model : context.launchModel ?? settings.model),
+      contextWindow: snapshot !== null && ClaudeContextWindows.names(turn.model, snapshot.model)
+        ? snapshot.contextWindowSize
+        : SessionModelSourceClaude.guessedWindowOf(turn, context.launchModel ?? settings.model),
     } }
+  }
+
+  /**
+   * The window when Claude Code did not state it: a session Jamat did not start, one started before
+   * the relay existed, the moments before its first status line, and a snapshot of another model
+   * than the turn ran on (just after `/model`).
+   *
+   * The launch WINS over the settings files rather than falling through to them: `--model` is what
+   * the agent was actually started with, so a launch that named a model without a tier is evidence
+   * that the settings file's tier is not what this session runs on. It is also the only source there
+   * is on a machine that configures the model in this app instead of in Claude's own settings, which
+   * is where a million-token session was drawn as a fifth of itself.
+   *
+   * A session holding more than the smaller window cannot be on it, whatever the guess says, so the
+   * guess is raised to the million then: it corrects itself the first time a session passes 200k.
+   */
+  private static guessedWindowOf(turn: ClaudeTurn, configured: string | null): number | null {
+    const guessed = turn.switchedToMillion === true
+      ? ClaudeContextWindows.windowOf(`${turn.model}[1m]`)
+      : ClaudeContextWindows.windowOf(turn.model, turn.switchedToMillion === false ? turn.model : configured)
+    return guessed !== null && turn.tokens > guessed
+      ? ClaudeContextWindows.windowOf(`${turn.model}[1m]`)
+      : guessed
+  }
+
+  /** Null for no file, a foreign shape and an id that is not one; the guess then stands. */
+  private async snapshotOf(nativeSessionId: string): Promise<ClaudeContextSnapshot | null> {
+    if (this.snapshots === null || !SessionModelSourceClaude.sessionIdConst.test(nativeSessionId)) return null
+    let parsed: unknown
+    try {
+      const text = await readFile(join(this.snapshots, `${nativeSessionId}.json`), 'utf8')
+      if (text.length > SessionModelSourceClaude.snapshotBytesConst) return null
+      parsed = JSON.parse(text)
+    }
+    catch {
+      return null
+    }
+    const record = JsonShape.record(parsed)
+    const model = SessionModelSource.nonEmptyString(record?.['model'])
+    const size = JsonNumber.wholeCount(record?.['contextWindowSize'])
+    if (record?.['schemaVersion'] !== 1 || model === null || size === null || size === 0) return null
+    return { model, contextWindowSize: size }
   }
 
   /**
@@ -128,7 +185,8 @@ export class SessionModelSourceClaude extends SessionModelSource {
       if (model === null || usage === null) continue
       if (!SessionModelSourceClaude.realModelConst.test(model)) continue
       const tokens = postCompactTokens ?? SessionModelSourceClaude.tokensIn(usage)
-      turn = { model, tokens, switchedToMillion: null }
+      const effort = SessionModelSource.nonEmptyString(record['effort'])
+      turn = { model, tokens, effort, switchedToMillion: null }
     }
     return turn
   }

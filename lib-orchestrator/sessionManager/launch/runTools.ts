@@ -53,13 +53,23 @@ export class RunTools {
       : { ok: true, command: image, prefixArgs: [], env: {} }
   }
 
+  /**
+   * The Node runtime a Jamat helper script runs under: the packaged one beside the client, or in
+   * development the one the client itself would run a script with.
+   */
+  node(): { ok: true; command: string } | { ok: false; detail: string } {
+    if (this.resourcesRoot === null) return this.developmentNode()
+    const node = join(this.resourcesRoot, 'launcher', this.platform === 'win32' ? 'node.exe' : 'bin/node')
+    return existsSync(node) ? { ok: true, command: node } : { ok: false, detail: `The packaged Node runtime is missing: ${node}` }
+  }
+
   private jamatCli(): RunToolResolution {
+    const node = this.node()
+    if (!node.ok) return node
     if (this.resourcesRoot !== null) {
-      const node = join(this.resourcesRoot, 'launcher', this.platform === 'win32' ? 'node.exe' : 'bin/node')
       const bundle = join(this.resourcesRoot, 'cli', 'jamat-v3.cjs')
-      if (!existsSync(node)) return { ok: false, detail: `The packaged Node runtime for the Jamat CLI is missing: ${node}` }
       if (!existsSync(bundle)) return { ok: false, detail: `The packaged Jamat CLI is missing: ${bundle}` }
-      return { ok: true, command: node, prefixArgs: [bundle], env: {} }
+      return { ok: true, command: node.command, prefixArgs: [bundle], env: {} }
     }
     const root = join(this.applicationRoot, 'app-client-cli')
     const entry = join(root, 'start.ts')
@@ -70,8 +80,6 @@ export class RunTools {
     } catch {
       return { ok: false, detail: `tsx is not installed for the development Jamat CLI in ${root}` }
     }
-    const node = this.developmentNode()
-    if (!node.ok) return node
     // tsx otherwise reads the tsconfig.json of the run's working directory, a foreign project whose
     // `paths` can send an import of the CLI to that project's files.
     return {

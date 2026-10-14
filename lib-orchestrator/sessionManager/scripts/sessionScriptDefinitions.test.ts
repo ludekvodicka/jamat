@@ -56,6 +56,24 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptDefinitions', () 
     expect(SessionScriptDefinitions.gatesOf(record({ life: 'live' }))).toEqual([])
   })
 
+  it('draws a live line for the seven scripted kinds and never for the resolvers or the review', () => {
+    const live = [
+      ['before', 'setup'], ['before', 'declared'], ['before', 'svn'], ['after', 'declared'],
+      ['after', 'checks'], ['after', 'svn'], ['inner', 'requested'],
+    ] as const
+    const silent = [['after', 'merge-resolve'], ['after', 'svn-resolve'], ['after', 'svn-merge'], ['after', 'review']] as const
+    for (const [phase, scriptId] of live) expect(SessionScriptDefinitions.of({ phase, scriptId }).liveLine).toBe(true)
+    for (const [phase, scriptId] of silent) expect(SessionScriptDefinitions.of({ phase, scriptId }).liveLine).toBe(false)
+  })
+
+  it('knows the SVN merger as a replayable run of the action gate whose tab closes, named merge and merger', () => {
+    expect(SessionScriptDefinitions.of({ phase: 'after', scriptId: 'svn-merge' })).toEqual(expect.objectContaining({
+      gate: 'action', replayable: true, stopsWithParent: false, handoff: 'close', liveLine: false,
+    }))
+    expect(SessionScriptDefinitions.wordsOf({ phase: 'after', scriptId: 'svn-merge', name: 'merger' })).toEqual({ session: 'merge', actor: 'merger' })
+    expect(SessionScriptDefinitions.linkOf('p', 'after', 'svn-merge', 'merger')).toEqual({ sessionId: 'p', phase: 'after', scriptId: 'svn-merge', name: 'merger' })
+  })
+
   it('throws on a pair no definition answers, and says it does not know it', () => {
     for (const link of [
       { phase: 'after', scriptId: 'setup' },
@@ -192,6 +210,14 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptDefinitions', () 
         definition: expect.objectContaining({ phase: 'after', scriptId: 'svn-resolve', gate: 'action', replayable: true, handoff: 'close' }),
       }))
       expect(SessionScriptDefinitions.judging('action', acting())).toBe(true)
+      // The merger judges through the same gate and its run nests under the parent.
+      const merging = acting({ stage: 'merging', runId: 'm', merger: { runId: 'm', setAt: 1, startedAt: 1 } })
+      expect(SessionScriptDefinitions.gatesOf(merging)).toEqual([expect.objectContaining({
+        gate: 'action', runId: 'm', words: { session: 'merge', actor: 'merger' },
+        definition: expect.objectContaining({ phase: 'after', scriptId: 'svn-merge', replayable: true, handoff: 'close' }),
+      })])
+      expect(SessionScriptDefinitions.judging('action', merging)).toBe(true)
+      expect(SessionScriptDefinitions.awaitsVerdictOf('m', { sessionId: 's', phase: 'after', scriptId: 'svn-merge', name: 'merger' }, merging)).toBe(true)
     })
 
     it('names no run in a client stage and judges none once a verdict, a wait or a relaunch is written', () => {

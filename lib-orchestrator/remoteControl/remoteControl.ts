@@ -16,6 +16,7 @@ import type {
   HostPingResult,
   SessionColorName,
   SessionCreated,
+  SessionCreateOrigin,
   SessionCreateSpec,
   SessionDetailsSaved,
   SessionDetailsUpdate,
@@ -31,12 +32,15 @@ import type {
   SessionsOpResult,
   SessionsSnapshot,
   SessionWorktreeState,
+  SessionConflictList,
+  SessionConflictResolved,
+  SvnConflictResolveRequest,
   WorktreeResultDto,
   WorktreeResultsFilter,
 } from '../sessionManager/sessionManagerApi.types'
 import { RemoteControlActivityLog } from './remoteControlActivityLog'
 import type { RemoteControlOperationStore } from './remoteControlOperationStore'
-import { type RemoteControlCallContext, RemoteControlRegistry } from './remoteControlRegistry'
+import { type RemoteControlCallContext, RemoteControlRegistry, type RemoteControlRunContext } from './remoteControlRegistry'
 import { RemoteControlRequestValidation } from './remoteControlRequestValidation'
 import { RemoteControlBodySchemas } from './remoteControlSchemas'
 import type {
@@ -93,7 +97,8 @@ export interface RemoteControlProjectsPort {
 export interface RemoteControlSessionsPort {
   snapshot(): SessionsSnapshot
   notifies(filter: { sessionId?: string }): Promise<SessionsOpResult<RemoteControlResponseBody<'sessions.notifies'>>>
-  createSession(spec: SessionCreateSpec): Promise<SessionsOpResult<SessionCreated>>
+  children(sessionId: string): Promise<SessionsOpResult<RemoteControlResponseBody<'sessions.children'>>>
+  createSession(spec: SessionCreateSpec, origin?: SessionCreateOrigin): Promise<SessionsOpResult<SessionCreated>>
   reopenSession(sessionId: string): Promise<SessionsOpResult>
   finalizeSession(sessionId: string, options?: { expect?: 'stop'; acknowledgeSetup?: string }): Promise<SessionsOpResult>
   removeSession(sessionId: string): Promise<SessionsOpResult>
@@ -120,6 +125,9 @@ export interface RemoteControlSessionsPort {
   nextSessionNumber(projectPath: string): Promise<SessionsOpResult<{ token: string }>>
   allocateSessionNumber(projectPath: string): Promise<SessionsOpResult<{ token: string }>>
   worktreeOf(sessionId: string): Promise<SessionsOpResult<SessionWorktreeState>>
+  /** The full conflict list of an SVN action; a run of the action answers its parent's. */
+  conflictsOf(sessionId: string): Promise<SessionsOpResult<SessionConflictList>>
+  resolveConflict(sessionId: string, request: SvnConflictResolveRequest): Promise<SessionsOpResult<SessionConflictResolved>>
   /** A requested run: a shell command for a running session, as its child. */
   runScript(parentId: string, request: SessionScriptRequest): Promise<SessionsOpResult<{ runId: string }>>
   scriptsOf(parentId: string, runId?: string): Promise<SessionsOpResult<SessionScriptsReading>>
@@ -226,7 +234,7 @@ export interface RemoteControlAgentsPort {
   describe(): RemoteControlAgentsDto
 }
 
-export type { RemoteControlCallContext } from './remoteControlRegistry'
+export type { RemoteControlCallContext, RemoteControlRunContext } from './remoteControlRegistry'
 
 export interface RemoteControlDeps {
   system: RemoteControlSystemPort
@@ -280,13 +288,13 @@ export class RemoteControl {
     const define = <K extends RemoteControlOperation>(
       name: K,
       description: string,
-      run: (body: RemoteControlRequestBody<K>, context: RemoteControlCallContext) =>
+      run: (body: RemoteControlRequestBody<K>, context: RemoteControlRunContext) =>
         Promise<RemoteControlStepResult<RemoteControlResponseBody<K>>>,
     ): void => op(name, { kind: kindOf(name), description, input: RemoteControlBodySchemas[name], run })
     const bySession = <K extends RemoteControlOperation>(
       name: K,
       description: string,
-      run: (session: SessionInfo, body: RemoteControlRequestBody<K>, context: RemoteControlCallContext) =>
+      run: (session: SessionInfo, body: RemoteControlRequestBody<K>, context: RemoteControlRunContext) =>
         Promise<RemoteControlStepResult<RemoteControlResponseBody<K>>>,
     ): void => define(name, description, async (body, context) => {
       const session = this.session((body as { session: RemoteControlSessionSelector }).session)
@@ -351,20 +359,28 @@ export class RemoteControl {
       RemoteControl.projectsOutcome(await this.deps.projects.previewDelete(body.categoryId, body.name)))
     define('projects.delete', "Delete a project and its histories, named by a preview's token.", async (body) =>
       RemoteControl.projectsOutcome(await this.deps.projects.executeDelete(body.token)))
-    define('sessions.list', 'The sessions snapshot, each session with its group.', async () => {
+    define('sessions.list', 'The sessions snapshot, each session with its group.', async (_body, context) => {
       const snapshot = this.deps.sessions.snapshot()
       const groups = this.deps.groups.read(snapshot.sessions)
+      // Ended sessions are never pruned; with them the answer outgrew the 1 MiB peer frame, and a frame
+      // too large to seal closes the whole connection.
+      const sessions = context.callerKind === 'remote-peer'
+        ? snapshot.sessions.filter((session) => session.life !== 'ended')
+        : snapshot.sessions
       return RemoteControl.success({
         ...snapshot,
-        sessions: snapshot.sessions.map((session) => ({
+        sessions: sessions.map((session) => ({
           ...session,
           group: groups.get(session.sessionId) ?? null,
+          callerOperationId: session.callerOperationId ?? null,
         })),
       })
     })
     define('sessions.create', 'Create a session; optionally open its tab and file it under a group.', async (body, context) => {
       if (body.spec.notify !== undefined && context.callerKind === 'remote-peer')
         return RemoteControl.error('forbidden', 'Session notify is local only')
+      if (body.spec.parent !== undefined && context.callerKind === 'remote-peer')
+        return RemoteControl.error('forbidden', 'Session parent is local only')
       const openTab = body.openTab === true
       /*
        * Opening the tab IS `tabs.open`, whoever asks for it. A peer granted `control:sessions.create`
@@ -374,7 +390,8 @@ export class RemoteControl {
        */
       if (openTab && !context.allowedOperations.includes('tabs.open'))
         return RemoteControl.error('forbidden', `tabs.open is not allowed for ${context.callerKind}`)
-      return this.sessionCreate(body.spec, openTab, body.group)
+      const origin = context.operationId === null ? undefined : { callerOperationId: context.operationId }
+      return this.sessionCreate(body.spec, openTab, body.group, origin)
     })
     bySession('sessions.reopen', 'Start an ended session again in its own conversation.', async (session) =>
       this.sessionMutation(session.sessionId, () => this.deps.sessions.reopenSession(session.sessionId)))
@@ -394,13 +411,29 @@ export class RemoteControl {
       if (!state.ok) return RemoteControl.sessionError(state)
       return RemoteControl.success(state.value)
     })
-    bySession('sessions.remove', 'Delete an ended session record from the list; a worktree stays on disk.', async (session) => {
+    bySession('sessions.conflicts', "The full conflict list of a session's SVN action: summary, and each path's description, state and options.", async (session) => {
+      const list = await this.deps.sessions.conflictsOf(session.sessionId)
+      if (!list.ok) return RemoteControl.sessionError(list)
+      return RemoteControl.success(list.value)
+    })
+    bySession('sessions.resolveConflict', 'Settle one conflicted path of a waiting SVN Finish with an option it admits; Jamat saves, runs and journals it.', async (session, body, context) => {
+      const result = await this.deps.sessions.resolveConflict(session.sessionId, {
+        path: body.path,
+        option: body.option,
+        confirm: body.confirm === true,
+        requestedBy: RemoteControl.requestedByOf(context),
+      })
+      if (!result.ok) return RemoteControl.worktreeRefusal(result)
+      return RemoteControl.success(result.value)
+    })
+    bySession('sessions.remove', 'Delete an ended session record from the list, with its SVN worktree when nothing is left in it; changes keep both.', async (session) => {
       const result = await this.deps.sessions.removeSession(session.sessionId)
       /*
        * A live runtime is a conflict with the caller's request, not a failure of it: the caller
-       * stops or finalizes the session first. It is never stopped here on the caller's behalf.
+       * stops or finalizes the session first. It is never stopped here on the caller's behalf. An SVN
+       * worktree with changes, or one a process holds, is the same kind of conflict.
        */
-      if (!result.ok && result.code === 'live-refused')
+      if (!result.ok && (result.code === 'live-refused' || result.code === 'dirty' || result.code === 'locked'))
         return RemoteControl.error('conflict', result.detail, { sourceCode: result.code })
       if (!result.ok) return RemoteControl.sessionError(result)
       return RemoteControl.success({ sessionId: session.sessionId })
@@ -414,6 +447,7 @@ export class RemoteControl {
         choice: body.choice,
         ...(body.acknowledgeSetup === undefined ? {} : { acknowledgeSetup: body.acknowledgeSetup }),
         ...(body.confirmWorking === undefined ? {} : { confirmWorking: body.confirmWorking }),
+        ...(body.agent === undefined ? {} : { agent: body.agent }),
         requestedBy: RemoteControl.requestedByOf(context),
       })
       if (!result.ok) return RemoteControl.worktreeRefusal(result)
@@ -431,6 +465,8 @@ export class RemoteControl {
     })
     define('sessions.notifies', 'Watched local sessions and their notification events.', async (body) =>
       RemoteControl.outcome(await this.deps.sessions.notifies(body)))
+    define('sessions.children', 'Local sessions whose parent link names this session, with its kind and whether they share its project.', async (body) =>
+      RemoteControl.outcome(await this.deps.sessions.children(body.sessionId)))
     define('sessions.worktreeResults', 'How SVN worktrees ended, also of removed sessions, by tag, session or not yet acknowledged.', async (body) =>
       RemoteControl.outcome(await this.deps.sessions.worktreeResults({
         ...(body.tag === undefined ? {} : { tag: body.tag }),
@@ -641,8 +677,9 @@ export class RemoteControl {
     spec: SessionCreateSpec,
     openTab: boolean,
     group: SessionGroup | undefined,
+    origin: SessionCreateOrigin | undefined,
   ): Promise<RemoteControlStepResult<RemoteControlSessionCreateDto>> {
-    const created = await this.deps.sessions.createSession(spec)
+    const created = await this.deps.sessions.createSession(spec, origin)
     if (!created.ok) return RemoteControl.sessionError(created)
     const value: RemoteControlSessionCreateDto = {
       session: created.value,
@@ -699,7 +736,7 @@ export class RemoteControl {
     if (result.code === 'live-sessions')
       return RemoteControl.error('conflict', result.detail, { sourceCode: result.code, liveSessions: result.liveSessions ?? [] })
     if (result.code === 'live-refused' || result.code === 'merge-pending' || result.code === 'session-working'
-      || result.code === 'message-edited')
+      || result.code === 'message-edited' || result.code === 'person-only')
       return RemoteControl.error('conflict', result.detail, { sourceCode: result.code })
     if (result.code === 'review-unavailable')
       return RemoteControl.error('unavailable', result.detail, { sourceCode: result.code })

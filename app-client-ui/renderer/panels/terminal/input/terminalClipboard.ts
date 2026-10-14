@@ -127,6 +127,16 @@ export class TerminalClipboard {
   }
 
   /**
+   * `Alt+V`, Claude Code's image paste on Windows. The agent answers it by reading the clipboard of
+   * the computer it runs on, so on a remote session it would paste whatever that computer last
+   * copied; there it is taken and pasted from this computer's clipboard instead.
+   */
+  static isAgentImagePasteKey(event: KeyboardEvent): boolean {
+    return event.type === 'keydown' && event.altKey && !event.ctrlKey && !event.shiftKey
+      && !event.metaKey && (event.key === 'v' || event.key === 'V')
+  }
+
+  /**
    * `Ctrl+C`. Whether it copies ANYTHING is a different question and not one this can answer: with
    * no selection the key is the interrupt and belongs to whatever is running, so the decision is
    * made where the selection can be read.

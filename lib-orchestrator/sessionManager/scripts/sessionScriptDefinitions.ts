@@ -41,6 +41,11 @@ export interface SessionScriptDefinition {
   /** True: the run is stopped once its parent no longer runs. */
   stopsWithParent: boolean
   handoff: SessionScriptHandoff
+  /**
+   * True: while the run runs, its last output line is drawn under its row (`RunOutputLines`). False for
+   * the resolvers and the review, whose screen is an agent's conversation rather than progress.
+   */
+  liveLine: boolean
 }
 
 /**
@@ -57,6 +62,7 @@ export class SessionScriptDefinitions {
     replayable: true,
     stopsWithParent: false,
     handoff: 'parent-tab',
+    liveLine: true,
   }
 
   /**
@@ -72,6 +78,7 @@ export class SessionScriptDefinitions {
     replayable: true,
     stopsWithParent: false,
     handoff: 'parent-tab',
+    liveLine: true,
   }
 
   /**
@@ -87,6 +94,7 @@ export class SessionScriptDefinitions {
     replayable: true,
     stopsWithParent: false,
     handoff: 'parent-tab',
+    liveLine: true,
   }
 
   /** A step of the after chain a Finish press runs: the project's `scripts.after`, before the finisher. */
@@ -99,6 +107,7 @@ export class SessionScriptDefinitions {
     replayable: true,
     stopsWithParent: false,
     handoff: 'close',
+    liveLine: true,
   }
 
   private static readonly resolverConst: SessionScriptDefinition = {
@@ -111,6 +120,7 @@ export class SessionScriptDefinitions {
     replayable: true,
     stopsWithParent: false,
     handoff: 'close',
+    liveLine: false,
   }
 
   /** An `svn update` or `svn cleanup` of an SVN action, spawned directly; the step names which. */
@@ -123,6 +133,7 @@ export class SessionScriptDefinitions {
     replayable: true,
     stopsWithParent: false,
     handoff: 'close',
+    liveLine: true,
   }
 
   /** A `scripts.after` entry an SVN action froze at its press. */
@@ -135,6 +146,7 @@ export class SessionScriptDefinitions {
     replayable: true,
     stopsWithParent: false,
     handoff: 'close',
+    liveLine: true,
   }
 
   /** The Claude one-shot that resolves the text conflicts an SVN action's update left; the action verifies its work. */
@@ -147,6 +159,24 @@ export class SessionScriptDefinitions {
     replayable: true,
     stopsWithParent: false,
     handoff: 'close',
+    liveLine: false,
+  }
+
+  /**
+   * The interactive Claude merger of an SVN Finish: it settles the conflicts the rules left through
+   * `jamat-v3 sessions resolve-conflict`. Jamat stops it after the last settlement, or judges it when
+   * it ends, whatever its exit code.
+   */
+  private static readonly svnMergerConst: SessionScriptDefinition = {
+    phase: 'after',
+    scriptId: 'svn-merge',
+    gate: 'action',
+    pointerOf: (parent) => SessionScriptDefinitions.actionPointerOf(parent),
+    words: { session: 'merge', actor: 'merger' },
+    replayable: true,
+    stopsWithParent: false,
+    handoff: 'close',
+    liveLine: false,
   }
 
   /** The commit review of one root of an SVN action, hosted by `jamat-v3 sessions worktree-review`. */
@@ -159,6 +189,7 @@ export class SessionScriptDefinitions {
     replayable: true,
     stopsWithParent: false,
     handoff: 'close',
+    liveLine: false,
   }
 
   /** A shell run a live session asked for through the control API; nothing waits for its verdict. */
@@ -171,6 +202,7 @@ export class SessionScriptDefinitions {
     replayable: false,
     stopsWithParent: true,
     handoff: 'close',
+    liveLine: true,
   }
 
   private static readonly allConst: readonly SessionScriptDefinition[] = [
@@ -182,6 +214,7 @@ export class SessionScriptDefinitions {
     SessionScriptDefinitions.afterSvnConst,
     SessionScriptDefinitions.afterChecksConst,
     SessionScriptDefinitions.svnResolverConst,
+    SessionScriptDefinitions.svnMergerConst,
     SessionScriptDefinitions.reviewConst,
     SessionScriptDefinitions.requestedConst,
   ]
@@ -227,7 +260,7 @@ export class SessionScriptDefinitions {
     else if (link.scriptId === 'svn' && link.phase === 'before') return definition.words
     else if (link.scriptId === 'svn') noun = `${definition.words.actor} ${link.name}`
     else if (link.scriptId === 'setup' || link.scriptId === 'merge-resolve' || link.scriptId === 'requested'
-      || link.scriptId === 'svn-resolve' || link.scriptId === 'review') return definition.words
+      || link.scriptId === 'svn-resolve' || link.scriptId === 'svn-merge' || link.scriptId === 'review') return definition.words
     else throw new Error(`Unknown script: ${JSON.stringify(link.scriptId satisfies never)}`)
     return { session: noun, actor: noun }
   }

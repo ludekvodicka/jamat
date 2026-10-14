@@ -9,8 +9,8 @@ export interface SessionModelInfo {
   model: string
   modelLabel: string
   /**
-   * Claude: the project's configured effort, read from the settings cascade, not the live state of
-   * the running agent. Codex: read back out of the running session's own `turn_context`.
+   * Claude: the effort recorded on the last real turn of the transcript; the settings cascade only
+   * when the transcript records none. Codex: read back out of the running session's own `turn_context`.
    */
   effortLevel: string | null
   contextTokens: number
@@ -19,8 +19,9 @@ export interface SessionModelInfo {
    * widget, so a new model family silently blanked the line; here the model and the tokens are still
    * drawn and only the window and the percentage are left out.
    *
-   * For Claude the million-token tier comes from the same settings cascade the effort does, because
-   * the transcript records the bare id the API answered with and never the tier.
+   * For Claude it is the window Claude Code handed its status line, stored by Jamat's relay; where
+   * no snapshot exists it is guessed from the id, the launch and the settings cascade, because the
+   * transcript records the bare id the API answered with and never the tier.
    */
   contextWindow: number | null
 }

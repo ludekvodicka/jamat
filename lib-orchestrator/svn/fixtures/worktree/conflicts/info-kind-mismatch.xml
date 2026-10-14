@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<info>
+<entry
+   path="."
+   revision="3"
+   kind="dir">
+<url>{REPO}</url>
+<relative-url>^/</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+</wc-info>
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+<entry
+   kind="dir"
+   path="Lib"
+   revision="3">
+<url>{REPO}/Lib</url>
+<relative-url>^/Lib</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+</wc-info>
+<commit
+   revision="1">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+<entry
+   kind="file"
+   path="a.txt"
+   revision="3">
+<url>{REPO}/a.txt</url>
+<relative-url>^/a.txt</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+<text-updated>2026-01-01T00:00:00.000000Z</text-updated>
+<checksum>3f786850e387550fdab836ed7e6dc881de23001b</checksum>
+</wc-info>
+<commit
+   revision="2">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+<entry
+   kind="dir"
+   path="docs"
+   revision="3">
+<url>{REPO}/docs</url>
+<relative-url>^/docs</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>delete</schedule>
+<depth>infinity</depth>
+</wc-info>
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+<tree-conflict
+   action="add"
+   operation="update"
+   kind="file"
+   reason="unversioned"
+   victim="docs">
+<version
+   revision="3"
+   side="source-right"
+   kind="dir"
+   path-in-repos="docs"
+   repos-url="{REPO}"/>
+</tree-conflict>
+</entry>
+</info>

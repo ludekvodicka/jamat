@@ -39,7 +39,7 @@ describe('app-client-ui/app/versioning/sessionReviewPortAdapter', () => {
         proposalOf: (sessionId, scopeRoot) => sessionId === 's1' && scopeRoot === scopeConst ? 'Fix login' : null,
         forgetProposal: (...args) => { calls.push(['forget', ...args]) },
       },
-      (sessionId) => sessionId === 's1' ? 'App - 014 - fix login' : null,
+      (sessionId) => sessionId === 's1' ? 'App - 014 - fix login' : sessionId === 'parent' ? 'App - 013 - parent' : null,
     )
     return { adapter, calls }
   }
@@ -47,9 +47,18 @@ describe('app-client-ui/app/versioning/sessionReviewPortAdapter', () => {
   it('opens an SVN review of the scope in the session tab with the proposal', async () => {
     const { adapter, calls } = adapterOf([])
 
-    expect(await adapter.open({ sessionId: 's1', scopeRoot: scopeConst, proposal: 'fix login' }))
+    expect(await adapter.open({ sessionId: 's1', parentId: 'gone-parent', scopeRoot: scopeConst, proposal: 'fix login' }))
       .toEqual({ ok: true, value: { commitSessionId: 'c1' } })
     expect(calls).toEqual([['s1', 'App - 014 - fix login', 'svn', scopeConst, 'fix login', { fresh: true }]])
+  })
+
+  it("hands the broker the parent's workflow to return to once the review settles", async () => {
+    const { adapter, calls } = adapterOf([])
+
+    expect(await adapter.open({ sessionId: 's1', parentId: 'parent', scopeRoot: scopeConst, proposal: 'fix login' }))
+      .toEqual({ ok: true, value: { commitSessionId: 'c1' } })
+    expect(calls).toEqual([['s1', 'App - 014 - fix login', 'svn', scopeConst, 'fix login',
+      { fresh: true, returnToWorkflow: { sessionId: 'parent', tabTitle: 'App - 013 - parent' } }]])
   })
 
   it('accepts the review of the same scope spelled another way and refuses a review of another scope', async () => {
@@ -58,10 +67,10 @@ describe('app-client-ui/app/versioning/sessionReviewPortAdapter', () => {
       value: { kind: 'commit-opened', commitSessionId: 'c1', panelId: 'p1', windowId: 'main', scopeRoot, messageApplied: true },
     })
     const respelled = process.platform === 'win32' ? scopeConst.toLowerCase().replaceAll('/', '\\') : `${scopeConst}/`
-    expect(await adapterOf([], opened(respelled)).adapter.open({ sessionId: 's1', scopeRoot: scopeConst, proposal: 'x' }))
+    expect(await adapterOf([], opened(respelled)).adapter.open({ sessionId: 's1', parentId: 'gone-parent', scopeRoot: scopeConst, proposal: 'x' }))
       .toEqual({ ok: true, value: { commitSessionId: 'c1' } })
 
-    expect(await adapterOf([], opened('Q:/Work/App')).adapter.open({ sessionId: 's1', scopeRoot: scopeConst, proposal: 'x' }))
+    expect(await adapterOf([], opened('Q:/Work/App')).adapter.open({ sessionId: 's1', parentId: 'gone-parent', scopeRoot: scopeConst, proposal: 'x' }))
       .toEqual({
         ok: false,
         code: 'review-unavailable',
@@ -71,11 +80,11 @@ describe('app-client-ui/app/versioning/sessionReviewPortAdapter', () => {
 
   it('names why a review could not be opened', async () => {
     const refused = adapterOf([], { ok: false, error: { code: 'operation-failed', detail: 'not inside an SVN working copy' } })
-    expect(await refused.adapter.open({ sessionId: 's1', scopeRoot: scopeConst, proposal: 'x' }))
+    expect(await refused.adapter.open({ sessionId: 's1', parentId: 'gone-parent', scopeRoot: scopeConst, proposal: 'x' }))
       .toEqual({ ok: false, code: 'review-unavailable', detail: 'not inside an SVN working copy' })
 
     const unknown = adapterOf([])
-    expect(await unknown.adapter.open({ sessionId: 'gone', scopeRoot: scopeConst, proposal: 'x' }))
+    expect(await unknown.adapter.open({ sessionId: 'gone', parentId: 'gone-parent', scopeRoot: scopeConst, proposal: 'x' }))
       .toMatchObject({ ok: false, code: 'not-found' })
     expect(unknown.calls).toEqual([])
   })

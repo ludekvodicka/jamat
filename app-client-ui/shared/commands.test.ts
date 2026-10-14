@@ -65,6 +65,7 @@ describe('app-client-ui/shared/commands', () => {
       ['session.commitSvn', null],
       ['session.commitGit', null],
       ['tab.openProjectFolder', null],
+      ['session.openInVsCode', null],
       ['tab.copyProjectFolder', null],
       ['session.copyReference', null],
       ['project.openFolder', null],
@@ -208,6 +209,7 @@ describe('app-client-ui/shared/commands', () => {
         'session.commitSvn',
         'session.commitGit',
         'tab.openProjectFolder',
+        'session.openInVsCode',
         'tab.copyProjectFolder',
         'session.copyReference',
         'tab.keepOpen',
@@ -319,6 +321,7 @@ describe('app-client-ui/shared/commands', () => {
         'session.commitSvn',
         'session.commitGit',
         'tab.openProjectFolder',
+        'session.openInVsCode',
         'tab.copyProjectFolder',
         'session.copyReference',
       ])

@@ -19,6 +19,9 @@ export type TabControlCommand =
       documentKey: string
       title: string
     }
+  | { kind: 'open-task'; requestId: string; panelId: string; item: TabControlTaskItem }
+  /** The session's workflow item in its own tab's split, made active. */
+  | { kind: 'open-workflow'; requestId: string; panelId: string; sessionId: string }
   | { kind: 'focus-panel'; requestId: string; panelId: string }
   | { kind: 'close-panel'; requestId: string; panelId: string }
 
@@ -29,9 +32,40 @@ export type TabControlCommandResult =
   | { kind: 'closed'; panelId: string }
   | { kind: 'file-opened'; panelId: string }
   | { kind: 'commit-opened'; panelId: string }
+  | { kind: 'task-opened'; panelId: string }
+  | { kind: 'workflow-opened'; panelId: string }
   | { kind: 'failed'; detail: string }
 
 export interface TabControlAck {
   requestId: string
   result: TabControlCommandResult
+}
+
+/** Which task of a session a split item shows. */
+export type TabControlTaskRef =
+  | { kind: 'subagent'; subagentId: string }
+  | { kind: 'shell'; shellId: string }
+  | { kind: 'script'; runId: string }
+
+/** A task view in the parent's split. Main builds it and the window stores it, so both derive one key. */
+export interface TabControlTaskItem {
+  key: string
+  title: string
+  sessionId: string
+  task: TabControlTaskRef
+}
+
+export class TabControlTask {
+  static keyOf(sessionId: string, task: TabControlTaskRef): string {
+    return `task:${sessionId}:${task.kind}:${TabControlTask.idOf(task)}`
+  }
+
+  static idOf(task: TabControlTaskRef): string {
+    switch (task.kind) {
+      case 'subagent': return task.subagentId
+      case 'shell': return task.shellId
+      case 'script': return task.runId
+      default: throw new Error(`Unknown session task: ${JSON.stringify(task satisfies never)}`)
+    }
+  }
 }

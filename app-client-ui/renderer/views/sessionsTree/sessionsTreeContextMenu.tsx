@@ -33,6 +33,8 @@ export function SessionsTreeContextMenu(props: {
   /** The `Scripts` submenu; absent or null for a session that has no run to list. */
   scripts?: ContextMenuSubmenu | null
   groupItem?: ContextMenuEntry
+  /** Brings the session's workflow forward; absent for a session without one or on a peer. */
+  onShowWorkflow?: () => void
   onAction(action: SessionAction): void
   onClose(): void
 }): React.JSX.Element {
@@ -48,6 +50,7 @@ export function SessionsTreeContextMenu(props: {
         props.actions,
         props.scripts ?? null,
         props.onAction,
+        props.onShowWorkflow ?? null,
       ).flatMap((item) => item.key === 'session.setColor' && props.groupItem !== undefined
         ? [item, props.groupItem] : [item])}
       onClose={props.onClose}
@@ -68,6 +71,7 @@ class SessionsTreeMenuItems {
     actions: readonly SessionAction[],
     scripts: ContextMenuSubmenu | null,
     onAction: (action: SessionAction) => void,
+    showWorkflow: (() => void) | null,
   ): readonly ContextMenuEntry[] {
     const commandItems = CommandMenuEntries.of(
       SessionsTreeMenuItems.applicable(facts),
@@ -78,6 +82,7 @@ class SessionsTreeMenuItems {
       },
     )
     const operations = [
+      ...(showWorkflow === null ? [] : [{ key: 'tree-showWorkflow', label: 'Show workflow', onSelect: showWorkflow }]),
       ...(scripts === null ? [] : [scripts]),
       ...SessionsTreeMenuItems.operations(actions, onAction),
     ]
@@ -134,7 +139,7 @@ class SessionsTreeMenuItems {
         || admits('restart') && !facts.ended)
       .filter((descriptor) => descriptor.id !== 'session.compact' || admits('compact'))
       .filter((descriptor) => (descriptor.id !== 'session.commitSvn' && descriptor.id !== 'session.commitGit') || facts.live)
-      .filter((descriptor) => descriptor.id !== 'tab.copyProjectFolder'
+      .filter((descriptor) => (descriptor.id !== 'tab.copyProjectFolder' && descriptor.id !== 'session.openInVsCode')
         || facts.directoryPath !== null)
   }
 
@@ -152,9 +157,6 @@ class SessionsTreeMenuItems {
  * The `Scripts ›` submenu: every run of a session, newest first, in the library's own lines. A row
  * still has its terminal; a finished run has only its log, and a log is local to the computer that
  * ran it, so a remote session lists its rows alone.
- *
- * The switch leads the list: it draws the finished runs as rows under every local session. A remote
- * menu has none, because a remote session draws no finished run either way.
  */
 export class SessionsTreeScriptsMenu {
   static itemOf(
@@ -163,21 +165,13 @@ export class SessionsTreeScriptsMenu {
     openTerminal: (open: ScriptRunOpen) => void,
     /** Null while this build has no log viewer: a saved log is then listed but cannot be opened. */
     openLog: ((runId: string) => void) | null,
-    switcher: { shown: boolean; onSwitch(shown: boolean): void } | null,
   ): ContextMenuSubmenu | null {
     const listed = scope === 'local' ? runs : runs.filter((run) => run.open !== null)
     if (listed.length === 0) return null
-    const runItems = listed.map((run) => SessionsTreeScriptsMenu.runItemOf(run, openTerminal, openLog))
     return {
       key: 'tree-scripts',
       label: 'Scripts',
-      children: switcher === null ? runItems : [{
-        key: 'script-rows',
-        label: 'Show as sub-tasks',
-        title: 'Draw the finished runs of every session as rows under it',
-        checked: switcher.shown,
-        onSelect: () => switcher.onSwitch(!switcher.shown),
-      }, ...runItems],
+      children: listed.map((run) => SessionsTreeScriptsMenu.runItemOf(run, openTerminal, openLog)),
     }
   }
 

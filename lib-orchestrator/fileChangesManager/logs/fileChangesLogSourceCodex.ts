@@ -1,6 +1,13 @@
-import { JsonShape } from '../../shared/jsonShape'
+import { basename } from 'node:path'
+
 import { ProviderTranscriptMessages } from '../../projectManager/providerTranscriptMessages'
-import { FileChangesLogSource } from './fileChangesLogSource'
+import type { ProviderTranscriptRef } from '../../projectManager/providerTranscriptView'
+import { JsonShape } from '../../shared/jsonShape'
+import {
+  FileChangesLogSource,
+  type ParsedFileChangesLog,
+  type ParsedSubagentLog,
+} from './fileChangesLogSource'
 import type {
   RawFileChangesLogGroup,
   RawFileChangesLogMutation,
@@ -14,7 +21,17 @@ interface CodexRecord {
     success?: unknown
     call_id?: unknown
     changes?: unknown
+    item?: unknown
   }
+}
+
+interface CodexItem {
+  type?: unknown
+  id?: unknown
+  tool?: unknown
+  status?: unknown
+  changes?: unknown
+  receiver_thread_ids?: unknown
 }
 
 interface CodexChange {
@@ -24,18 +41,37 @@ interface CodexChange {
   move_path?: unknown
 }
 
+interface CodexAppliedPatch {
+  callId: unknown
+  changes: unknown
+}
+
 interface PendingFallback {
   message: string
   createdAt: number
   sequence: number
 }
 
+type CodexGroup = RawFileChangesLogGroup & { mutations: RawFileChangesLogMutation[] }
+
 export class FileChangesLogSourceCodex extends FileChangesLogSource {
+  /** `rollout-YYYY-MM-DDThh-mm-ss-<thread>.jsonl`, the thread's start in local time cut to the second. */
+  private static readonly rolloutStartPatternConst = /^rollout-(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})-/
+
   readonly agentId = 'codex' as const
 
-  protected parse(content: string): readonly RawFileChangesLogGroup[] {
-    const groups: (RawFileChangesLogGroup & { mutations: RawFileChangesLogMutation[] })[] = []
-    let current: (RawFileChangesLogGroup & { mutations: RawFileChangesLogMutation[] }) | null = null
+  /** The child rollouts of a thread start after it, so the listing starts at the parent's own start. */
+  subagentsSince(ref: ProviderTranscriptRef): number | null {
+    const match = FileChangesLogSourceCodex.rolloutStartPatternConst.exec(basename(ref.file))
+    if (match === null) return null
+    const startedAt = Date.parse(`${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}`)
+    return Number.isNaN(startedAt) ? null : startedAt
+  }
+
+  protected parse(content: string): ParsedFileChangesLog {
+    const groups: CodexGroup[] = []
+    const spawns = new Map<string, number>()
+    let current: CodexGroup | null = null
     let fallback: PendingFallback | null = null
     let sequence = 0
     // The last time this file gave us, so a record whose own timestamp is missing or unreadable
@@ -66,10 +102,9 @@ export class FileChangesLogSourceCodex extends FileChangesLogSource {
         )
         fallback = null
       }
-      if (record.type !== 'event_msg'
-        || record.payload?.type !== 'patch_apply_end'
-        || record.payload.success !== true)
-        continue
+      const patch = FileChangesLogSourceCodex.appliedPatchOf(record)
+      const spawned = FileChangesLogSourceCodex.spawnedThreadsOf(record)
+      if (patch === null && spawned.length === 0) continue
       if (current === null && fallback !== null) {
         current = FileChangesLogSourceCodex.openGroup(
           groups,
@@ -80,17 +115,65 @@ export class FileChangesLogSourceCodex extends FileChangesLogSource {
         fallback = null
       }
       if (current === null) continue
-      current.mutations.push(...FileChangesLogSourceCodex.mutationsOf(record, createdAt, sequence))
+      for (const threadId of spawned)
+        spawns.set(threadId, groups.length - 1)
+      if (patch !== null)
+        current.mutations.push(...FileChangesLogSourceCodex.mutationsOf(patch, createdAt, sequence))
     }
-    return groups.filter((group) => group.mutations.length > 0)
+    return { groups, spawns }
+  }
+
+  /** A child rollout opens no group: its prompt came from the parent's `spawn_agent` call. */
+  protected parseSubagent(content: string): ParsedSubagentLog {
+    const mutations: RawFileChangesLogMutation[] = []
+    let startedAt: number | null = null
+    let sequence = 0
+    let lastCreatedAt = 0
+    for (const raw of FileChangesLogSource.records(content)) {
+      sequence += 1
+      const record = FileChangesLogSourceCodex.recordOf(raw)
+      const createdAt = FileChangesLogSource.timestamp(record.timestamp, lastCreatedAt)
+      lastCreatedAt = createdAt
+      if (startedAt === null && createdAt > 0) startedAt = createdAt
+      const patch = FileChangesLogSourceCodex.appliedPatchOf(record)
+      if (patch !== null)
+        mutations.push(...FileChangesLogSourceCodex.mutationsOf(patch, createdAt, sequence))
+    }
+    return { startedAt, mutations }
+  }
+
+  /**
+   * A successful `patch_apply_end`, or a completed `FileChange` item: the rollouts Codex writes
+   * since mid-2026 carry an applied patch only as that item, with the same `changes` map.
+   */
+  private static appliedPatchOf(record: CodexRecord): CodexAppliedPatch | null {
+    if (record.type !== 'event_msg') return null
+    if (record.payload?.type === 'patch_apply_end')
+      return record.payload.success === true
+        ? { callId: record.payload.call_id, changes: record.payload.changes }
+        : null
+    if (record.payload?.type !== 'item_completed') return null
+    const item = FileChangesLogSourceCodex.itemOf(record.payload.item)
+    return item.type === 'FileChange' && item.status === 'completed'
+      ? { callId: item.id, changes: item.changes }
+      : null
+  }
+
+  /** The child thread ids a completed `spawn_agent` call names. */
+  private static spawnedThreadsOf(record: CodexRecord): string[] {
+    if (record.type !== 'event_msg' || record.payload?.type !== 'item_completed') return []
+    const item = FileChangesLogSourceCodex.itemOf(record.payload.item)
+    if (item.type !== 'CollabAgentToolCall' || item.tool !== 'spawn_agent') return []
+    if (!Array.isArray(item.receiver_thread_ids)) return []
+    return item.receiver_thread_ids.filter((id): id is string => typeof id === 'string' && id !== '')
   }
 
   private static openGroup(
-    groups: (RawFileChangesLogGroup & { mutations: RawFileChangesLogMutation[] })[],
+    groups: CodexGroup[],
     message: string,
     createdAt: number,
     sequence: number,
-  ): RawFileChangesLogGroup & { mutations: RawFileChangesLogMutation[] } {
+  ): CodexGroup {
     const group = {
       groupId: `codex-message-${sequence}`,
       message: FileChangesLogSource.shortMessage(message),
@@ -102,17 +185,17 @@ export class FileChangesLogSourceCodex extends FileChangesLogSource {
   }
 
   private static mutationsOf(
-    record: CodexRecord,
+    patch: CodexAppliedPatch,
     createdAt: number,
     sequence: number,
   ): RawFileChangesLogMutation[] {
-    const changes = FileChangesLogSourceCodex.objectOf(record.payload?.changes)
+    const changes = FileChangesLogSourceCodex.objectOf(patch.changes)
     return Object.entries(changes).map(([path, rawChange], index) => {
       const change = FileChangesLogSourceCodex.changeOf(rawChange)
       const movePath = typeof change.move_path === 'string' && change.move_path.trim()
         ? change.move_path
         : null
-      const mutationId = `${String(record.payload?.call_id ?? `codex-patch-${sequence}`)}-${index}`
+      const mutationId = `${String(patch.callId ?? `codex-patch-${sequence}`)}-${index}`
       if (change.type === 'add' && typeof change.content === 'string')
         return FileChangesLogSourceCodex.mutation(
           mutationId, 'add', 'added', path, null, null, change.content, null, createdAt,
@@ -172,6 +255,10 @@ export class FileChangesLogSourceCodex extends FileChangesLogSource {
 
   private static recordOf(value: unknown): CodexRecord {
     return (JsonShape.record(value) ?? {}) as CodexRecord
+  }
+
+  private static itemOf(value: unknown): CodexItem {
+    return (JsonShape.record(value) ?? {}) as CodexItem
   }
 
   private static objectOf(value: unknown): Record<string, unknown> {

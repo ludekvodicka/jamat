@@ -4,8 +4,8 @@ import { join } from 'node:path'
 import type { VsCodeLauncher } from './vsCodeLauncher'
 
 /**
- * VS Code on a worktree: the workspace file its owner versions at the root, so a product group opens
- * with all its projects and debug configurations, else the folder.
+ * VS Code on a project or worktree root: the workspace file its owner versions there, so a product
+ * group opens with all its projects and debug configurations, else the folder.
  */
 export class VsCodeWorkspace {
   private static readonly suffixConst = '.code-workspace'

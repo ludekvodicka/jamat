@@ -13,6 +13,7 @@ describe('app-client-ui/app/shared/agentSessionContext', () => {
           cwd: 'Q:/Repo/.worktrees/original',
           nativeSessionId: 'native-1',
           launchModel: 'claude-opus-5[1m]',
+          startedAt: 1_000,
         },
       }),
       workingContext: () => Promise.resolve({
@@ -29,6 +30,7 @@ describe('app-client-ui/app/shared/agentSessionContext', () => {
         nativeSessionId: 'native-1',
         // The one field a transcript cannot answer, so the gate carries it rather than dropping it.
         launchModel: 'claude-opus-5[1m]',
+        startedAt: 1_000,
       },
     })
   })

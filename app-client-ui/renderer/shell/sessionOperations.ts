@@ -145,6 +145,14 @@ export class SessionOperations {
     await SessionOperations.copyPath(path)
   }
 
+  /** The main process reads the project root off the session; the renderer names no path. */
+  static async openInVsCode(target: { sessionId: string } | null): Promise<void> {
+    if (target === null) return
+    const answer = await window.appClient.terminalMenu.openProjectVsCode(target.sessionId)
+    if (!answer.ok) AppClientUiReport.error(`Opening VS Code failed: ${answer.error}`)
+    else if (!answer.value) AppClientUiReport.error(`Opening VS Code failed: no session ${target.sessionId}`)
+  }
+
   /**
    * One session written down for a SECOND agent - the machine, the agent's own conversation id, the
    * directory and the transcript. The text is composed in the library, here and on the paired

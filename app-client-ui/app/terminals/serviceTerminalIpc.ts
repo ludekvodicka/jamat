@@ -1,8 +1,11 @@
 import type { WebContents } from 'electron'
 
+import { PastedFileStore } from '../../../lib-orchestrator/pastedFiles/pastedFileStore'
 import type { SessionManager } from '../../../lib-orchestrator/sessionManager/sessionManager'
 import type { TerminalFrame } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
+import type { TerminalClipboardPaste } from '../../shared/terminalClipboardPaste'
 import { ClipboardAccess } from '../shared/clipboardAccess'
+import { ClipboardPastePaths } from '../shared/clipboardPastePaths'
 import { ServiceIpcBase } from '../shared/serviceIpcBase'
 
 /**
@@ -25,7 +28,7 @@ export class ServiceTerminalIpc extends ServiceIpcBase<typeof ServiceTerminalIpc
     'terminal:resize': true,
     'terminal:active': true,
     'terminal:detach': true,
-    'terminal:clipboard-read': true,
+    'terminal:clipboard-paste': true,
     'terminal:clipboard-write': true,
   } as const
 
@@ -33,13 +36,16 @@ export class ServiceTerminalIpc extends ServiceIpcBase<typeof ServiceTerminalIpc
   private readonly ownerByAttach = new Map<string, WebContents>()
   /** What the terminal menu reads instead of trusting a session id from the renderer. */
   private readonly sessionByAttach = new Map<string, string>()
+  private readonly images: Pick<PastedFileStore, 'saveImage'>
   /** Which senders already have the pair of listeners, so a second attach does not add a second pair. */
 
   constructor(
     private readonly sessions: SessionManager,
     private readonly acceptsRenderer: (sender: WebContents) => boolean,
+    images: Pick<PastedFileStore, 'saveImage'>,
   ) {
     super()
+    this.images = images
   }
 
   initialize(): void {
@@ -85,15 +91,38 @@ export class ServiceTerminalIpc extends ServiceIpcBase<typeof ServiceTerminalIpc
     })
     // Through the same ownership check as the bytes: the clipboard is the user's, and the only
     // renderer with a reason to reach it is the one holding the terminal it is being pasted into.
-    this.register('terminal:clipboard-read', (event, attachId) => {
+    this.register('terminal:clipboard-paste', async (event, attachId) => {
       this.assertOwner(event.sender, attachId)
-      return ClipboardAccess.readText()
+      return this.paste(attachId)
     })
     this.register('terminal:clipboard-write', (event, attachId, text) => {
       this.assertOwner(event.sender, attachId)
       return ClipboardAccess.writeText(text)
     })
     this.assertComplete(ServiceTerminalIpc.channelsConst)
+  }
+
+  /**
+   * Text as it is, paths included: the agent runs on this computer and reads them. A file copied in
+   * Explorer pastes its path; an image is saved for the agent, which reads it from the path pasted.
+   * Text wins where both are held, because a spreadsheet copies its cells as text and as a picture.
+   */
+  private async paste(attachId: string): Promise<TerminalClipboardPaste> {
+    const text = ClipboardAccess.readText()
+    if (text.length > 0) return { kind: 'text', text }
+    const dropped = ClipboardAccess.readFileDrop()
+    if (dropped !== null) return { kind: 'text', text: ClipboardPastePaths.textOf(dropped) }
+    const read = ClipboardAccess.readImage(PastedFileStore.imageBytesMaxConst)
+    if (read.kind === 'none') return { kind: 'empty' }
+    else if (read.kind === 'too-large') throw new Error('The clipboard image is too large to paste')
+    else if (read.kind === 'image') {
+      const sessionId = this.sessionByAttach.get(attachId)
+      if (sessionId === undefined) throw new Error(`Terminal attach has no session: ${attachId}`)
+      const saved = await this.images.saveImage(sessionId, read.bytes)
+      if (!saved.ok) throw new Error(saved.detail)
+      return { kind: 'text', text: ClipboardPastePaths.textOf(saved.path) }
+    } else
+      throw new Error(`Unknown clipboard read: ${JSON.stringify(read)}`)
   }
 
   publishFrame(attachId: string, frame: TerminalFrame): void {

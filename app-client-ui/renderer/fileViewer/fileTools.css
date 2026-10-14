@@ -24,6 +24,7 @@
 }
 .file-tools-tabs {
   display: flex;
+  flex-wrap: wrap;
   flex: none;
   border-bottom: 1px solid var(--color-border-hairline);
 }

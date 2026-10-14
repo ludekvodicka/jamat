@@ -21,6 +21,7 @@ describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
     await harness.manager.connectComputer('test', 'target-endpoint')
     await harness.waitUntil(() => harness.manager.snapshot().outbound[0]?.status === 'connected')
     expect(harness.manager.snapshot().outbound[0]?.sessions?.revision).toBe(1)
+    await harness.manager.selectSession('target-endpoint', 'session-a')
     const frames: unknown[] = []
     expect(await harness.manager.attachTerminal(
       'target-endpoint',
@@ -126,11 +127,12 @@ describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
     const transport = harness.transports[0]
     if (!transport) throw new Error('Transport was not created')
     transport.refuseAttach = true
+    await harness.manager.selectSession('target-endpoint', 'session-a')
 
     const refused = await harness.manager.attachTerminal(
       'target-endpoint',
       'attach-a',
-      { sessionId: 'session-gone', size: null },
+      { sessionId: 'session-a', size: null },
       () => {},
     )
     expect(refused).toMatchObject({ ok: false, error: { code: 'not-found' } })
@@ -233,6 +235,7 @@ describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
     harness.manager.start()
     await harness.manager.connectComputer('test', 'target-endpoint')
     await harness.waitUntil(() => harness.manager.snapshot().outbound[0]?.status === 'connected')
+    await harness.manager.selectSession('target-endpoint', 'session-a')
     expect(await harness.manager.attachTerminal(
       'target-endpoint',
       'attach-a',
@@ -395,10 +398,38 @@ describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
     harness.manager.stop()
   })
 
+  /*
+   * A tab restored at start attaches before anything is connected or selected. Refused without being
+   * held, nothing attached it once the person connected and selected its session, and the tab stayed
+   * an empty screen until the computer was disconnected and connected again.
+   */
+  it('holds a tab opened before its session is selected and attaches it once the session is selected', async () => {
+    const harness = new RemoteConnectionsManagerTest()
+    harness.manager.start()
+    const frames: unknown[] = []
+    expect(await harness.manager.attachTerminal(
+      'target-endpoint', 'restored', { sessionId: 'session-a', size: null }, (frame) => frames.push(frame),
+    )).toMatchObject({ ok: false, error: { code: 'unavailable' } })
+    expect(frames).toEqual([{
+      type: 'terminal.status', status: 'connecting', detail: 'Select this session in Remote computers to connect it.',
+    }])
+    expect(harness.dials).toEqual([])
+
+    await harness.manager.connectComputer('dialog', 'target-endpoint')
+    const transport = harness.transports[0]
+    if (!transport) throw new Error('Transport was not created')
+    expect(transport.attachRequests).toBe(0)
+    await harness.manager.selectSession('target-endpoint', 'session-a')
+    await harness.waitUntil(() => transport.attachRequests === 1)
+    expect(await harness.manager.terminalInput('target-endpoint', 'restored', 'typed')).toMatchObject({ ok: true })
+    harness.manager.stop()
+  })
+
   it('waits for a reconciled peer snapshot before reattaching after a restart', async () => {
     const harness = new RemoteConnectionsManagerTest()
     harness.manager.start()
     await harness.manager.connectComputer('dialog', 'target-endpoint')
+    await harness.manager.selectSession('target-endpoint', 'session-a')
     await harness.manager.attachTerminal('target-endpoint', 'restart', { sessionId: 'session-a', size: null }, () => {})
     harness.transports[0]?.close()
     harness.reconciled = false

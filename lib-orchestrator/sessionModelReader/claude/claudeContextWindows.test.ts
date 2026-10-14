@@ -35,7 +35,6 @@ describe('lib-orchestrator/sessionModelReader/claude/claudeContextWindows', () =
   it('ignores a configured model that does not name the model in the transcript', () => {
     expect(ClaudeContextWindows.windowOf('claude-sonnet-5', 'opus[1m]')).toBe(200_000)
     expect(ClaudeContextWindows.windowOf('claude-opus-4-8', 'claude-opus-5[1m]')).toBe(200_000)
-    expect(ClaudeContextWindows.windowOf('claude-opus-5-5', 'claude-opus-5[1m]')).toBe(200_000)
     expect(ClaudeContextWindows.windowOf('claude-opus-5', 'opusplan[1m]')).toBe(200_000)
   })
 
@@ -45,12 +44,27 @@ describe('lib-orchestrator/sessionModelReader/claude/claudeContextWindows', () =
     expect(ClaudeContextWindows.windowOf('claude-opus-5', '')).toBe(200_000)
   })
 
-  it('reads the million for a model whose account default is that tier, only when nothing is named', () => {
+  it('reads the million for a model whose account default is that tier, when nothing names it', () => {
     expect(ClaudeContextWindows.windowOf('claude-opus-5-5')).toBe(1_000_000)
     expect(ClaudeContextWindows.windowOf('claude-opus-5-5', null)).toBe(1_000_000)
     expect(ClaudeContextWindows.windowOf('claude-opus-5-5-20260901', '')).toBe(1_000_000)
+    expect(ClaudeContextWindows.windowOf('claude-fable-5-1')).toBe(1_000_000)
+    expect(ClaudeContextWindows.windowOf('claude-fable-5-1-20261001', null)).toBe(1_000_000)
     expect(ClaudeContextWindows.windowOf('claude-opus-5-5', 'claude-opus-5-5')).toBe(200_000)
     expect(ClaudeContextWindows.windowOf('claude-opus-5-5', 'opus')).toBe(200_000)
+    expect(ClaudeContextWindows.windowOf('claude-fable-5-1', 'fable')).toBe(200_000)
+  })
+
+  // The session this was caught on: `~/.claude/settings.json` said `opus`, the transcript said
+  // `claude-fable-5-1`, and the settings model, naming another family, still kept the default out,
+  // so a million-token session drew a fifth of itself. A configured model that names another model
+  // is not a tier for this one; it is nothing.
+  it('keeps the account default when the configured model names another model', () => {
+    expect(ClaudeContextWindows.windowOf('claude-fable-5-1', 'opus')).toBe(1_000_000)
+    expect(ClaudeContextWindows.windowOf('claude-fable-5-1', 'opus[1m]')).toBe(1_000_000)
+    expect(ClaudeContextWindows.windowOf('claude-opus-5-5', 'claude-opus-5[1m]')).toBe(1_000_000)
+    expect(ClaudeContextWindows.windowOf('claude-opus-5-5', 'claude-opus-5')).toBe(1_000_000)
+    expect(ClaudeContextWindows.windowOf('claude-opus-5', 'fable')).toBe(200_000)
   })
 
   // A tier stated for a family the table does not list is still a stated tier: the window is known
@@ -80,5 +94,6 @@ describe('lib-orchestrator/sessionModelReader/claude/claudeContextWindows', () =
     expect(ClaudeContextWindows.labelOf('claude-opus-5')).toBe('Opus 5')
     expect(ClaudeContextWindows.labelOf('claude-sonnet-5-20260101')).toBe('Sonnet 5')
     expect(ClaudeContextWindows.labelOf('claude-opus-5[1m]')).toBe('Opus 5')
+    expect(ClaudeContextWindows.labelOf('claude-fable-5-1')).toBe('Fable 5.1')
   })
 })

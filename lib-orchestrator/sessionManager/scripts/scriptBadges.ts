@@ -196,8 +196,8 @@ export class ScriptBadges {
     else if (link.scriptId === 'requested') throw new Error('A requested run carries no badge')
     else if (link.scriptId === 'checks') return { kind: 'declared', name: link.name }
     else if (link.scriptId === 'svn' && link.phase === 'before') return ScriptBadges.checkoutStepConst
-    else if (link.scriptId === 'svn' || link.scriptId === 'svn-resolve' || link.scriptId === 'review')
-      throw new Error('An svn, resolver or review run of an SVN action carries no badge')
+    else if (link.scriptId === 'svn' || link.scriptId === 'svn-resolve' || link.scriptId === 'svn-merge' || link.scriptId === 'review')
+      throw new Error('An svn, resolver, merger or review run of an SVN action carries no badge')
     else throw new Error(`Unknown script: ${JSON.stringify(link.scriptId satisfies never)}`)
   }
 

@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<info>
+<entry
+   path="."
+   revision="3"
+   kind="dir">
+<url>{REPO}/src</url>
+<relative-url>^/src</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+</wc-info>
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+<entry
+   path="legacy.txt"
+   revision="Resource is not under version control."
+   kind="none">
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<schedule>normal</schedule>
+<depth>unknown</depth>
+</wc-info>
+<tree-conflict
+   action="delete"
+   operation="update"
+   kind="file"
+   reason="delete"
+   victim="legacy.txt">
+<version
+   side="source-left"
+   kind="file"
+   path-in-repos="src/legacy.txt"
+   repos-url="{REPO}"
+   revision="2"/>
+<version
+   revision="3"
+   side="source-right"
+   kind="none"
+   path-in-repos="src/legacy.txt"
+   repos-url="{REPO}"/>
+</tree-conflict>
+</entry>
+</info>

@@ -1,0 +1,3 @@
+{"type":"user","isSidechain":true,"agentId":"b","uuid":"b-1","timestamp":"2026-08-14T08:04:02.000Z","message":{"role":"user","content":"Write b.txt"}}
+{"type":"assistant","isSidechain":true,"agentId":"b","uuid":"b-2","timestamp":"2026-08-14T08:04:10.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"edit-a","name":"Write","input":{"file_path":"Q:/External/b.txt","content":"from b"}}]}}
+{"type":"user","isSidechain":true,"agentId":"b","uuid":"b-3","timestamp":"2026-08-14T08:04:11.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"edit-a","content":"ok"}]}}

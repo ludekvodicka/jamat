@@ -148,6 +148,47 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/ui/uiSettingsTab', 
     expect(stub.saved.at(-1)?.activateSessionOnDocument).toBe(false)
   })
 
+  // A 3.12 file has none of the keys: all three read as nested, and a cleared box is a preview the
+  // tree hears at once, before anything is written.
+  it('draws the three nesting toggles checked, previews a cleared one at once and writes it on Save', async () => {
+    const { stub, view, onDirtyChange } = await mount()
+    const heard: (boolean | undefined)[] = []
+    UiSettingsStore.subscribe((value) => heard.push(value.sessionsNestWorktrees))
+    const boxes = ['Nest sub-agents', 'Nest worktree sessions', 'Nest ticket passes']
+      .map((name) => view.getByRole('checkbox', { name }))
+    for (const box of boxes)
+      expect(box).toBeChecked()
+
+    fireEvent.click(boxes[1])
+
+    expect(boxes[1]).not.toBeChecked()
+    expect(heard).toEqual([false])
+    expect(UiSettingsStore.current().sessionsNestWorktrees).toBe(false)
+    expect(UiSettingsStore.stored().sessionsNestWorktrees).toBeUndefined()
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true)
+    expect(stub.saved).toEqual([])
+
+    fireEvent.click(buttonNamed(view.container, 'Save'))
+    await stub.answersSave()
+    expect(stub.saved).toEqual([{ ...storedConst, sessionsNestWorktrees: false }])
+    expect(UiSettingsStore.stored().sessionsNestWorktrees).toBe(false)
+
+    fireEvent.click(buttonNamed(view.container, 'Reset to defaults'))
+    for (const box of boxes)
+      expect(box).toBeChecked()
+  })
+
+  it('drops a cleared nesting toggle that was not saved when the tab goes', async () => {
+    const { stub, view } = await mount()
+    fireEvent.click(view.getByRole('checkbox', { name: 'Nest sub-agents' }))
+    expect(UiSettingsStore.current().sessionsNestSubagents).toBe(false)
+
+    view.unmount()
+
+    expect(UiSettingsStore.current().sessionsNestSubagents).toBeUndefined()
+    expect(stub.saved).toEqual([])
+  })
+
   /*
    * A speed is offered on its own grid, not the fonts': the two rows above it step by 5 inside
    * 70-150, and these step by 25 up to 400. A slider that offered a value the main process refuses

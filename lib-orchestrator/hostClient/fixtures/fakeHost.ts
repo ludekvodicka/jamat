@@ -8,6 +8,7 @@ import type {
   HostDescriptor,
   HostEvent,
   HostEventPayload,
+  HostHealthResult,
   HostHello,
   HostOpName,
   HostWsClientMsg,
@@ -33,6 +34,8 @@ export interface FakeHostCall {
 export interface FakeHostOptions {
   hostInstanceId?: string
   leaseTtlMilliseconds?: number
+  /** What the descriptor and hello claim; the default is a Host older than `host.health.v1`. */
+  capabilities?: string[]
 }
 
 /**
@@ -43,6 +46,13 @@ export interface FakeHostOptions {
  */
 export class FakeHost {
   private static readonly defaultLeaseTtlMillisecondsConst = 15_000
+  private static readonly defaultCapabilitiesConst = ['events.replay.v1', 'runtime.lifecycle.v1']
+  /** What `host.health` answers unless a test registers its own handler. */
+  static readonly healthConst: HostHealthResult = {
+    startedAt: 1,
+    sampleEveryMs: 600_000,
+    samples: [{ at: 2, rssBytes: 104_857_600, heapUsedBytes: 20_971_520, externalBytes: 1_048_576 }],
+  }
   readonly calls: FakeHostCall[] = []
   /** The `afterRevision` of every `events.subscribe`, in order: the client's cursor, as sent. */
   readonly subscribes: number[] = []
@@ -63,12 +73,16 @@ export class FakeHost {
   private helloPatch: Partial<HostHello> = {}
   private helloHangs = false
   private helloCountValue = 0
+  private readonly capabilities: string[]
 
   private constructor(
     private readonly server: Server,
     private readonly hostInstanceId: string,
     private readonly leaseTtlMilliseconds: number,
-  ) {}
+    capabilities: string[],
+  ) {
+    this.capabilities = capabilities
+  }
 
   static async start(options?: FakeHostOptions): Promise<FakeHost> {
     const server = createServer()
@@ -76,6 +90,7 @@ export class FakeHost {
       server,
       options?.hostInstanceId ?? `fake-host-${randomUUID()}`,
       options?.leaseTtlMilliseconds ?? FakeHost.defaultLeaseTtlMillisecondsConst,
+      options?.capabilities ?? FakeHost.defaultCapabilitiesConst,
     )
     host.wire()
     await new Promise<void>((resolve, reject) => {
@@ -100,7 +115,7 @@ export class FakeHost {
       port: this.portValue,
       token: this.token,
       protocol: { major: 1, minor: 0 },
-      capabilities: ['events.replay.v1', 'runtime.lifecycle.v1'],
+      capabilities: [...this.capabilities],
       hostVersion: '0.0.0-fake',
       payloadHash: 'fake',
       configIdentity: 'fake-identity',
@@ -116,14 +131,14 @@ export class FakeHost {
     return {
       app: 'jamat-host',
       protocol: { major: 1, minor: 0 },
-      capabilities: ['events.replay.v1', 'runtime.lifecycle.v1'],
+      capabilities: [...this.capabilities],
       buildInfo: {
         buildVersion: '0.0.0-fake',
         sourceRevision: 'fake-revision',
         platform: 'fake-platform',
         arch: 'fake-arch',
         hostWire: { major: 1, minor: 0 },
-        capabilities: ['events.replay.v1', 'runtime.lifecycle.v1'],
+        capabilities: [...this.capabilities],
         payloadHash: 'fake',
       },
       configIdentity: 'fake-identity',
@@ -288,6 +303,8 @@ export class FakeHost {
           hostInstanceId: this.hostInstanceId,
         } satisfies RuntimeListResult,
       }
+    else if (name === 'host.health')
+      return { body: FakeHost.healthConst }
     else if (name === 'runtime.create'
       || name === 'runtime.replace'
       || name === 'runtime.inspect'

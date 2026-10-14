@@ -17,6 +17,8 @@ class FinalizeClientStub {
   readonly remoteFinalized: { remoteEndpointId: string; sessionId: string; acknowledgeSetup?: string }[] = []
   /** The hash each local finalize carried, `null` for a press that carried none. */
   readonly acknowledged: (string | null)[] = []
+  /** The sessions whose workflow a press brought forward. */
+  readonly workflows: string[] = []
   finalizeAnswer: IpcResult<SessionsOpResult> = { ok: true, value: { ok: true, value: undefined } }
   discardAnswer: IpcResult<SessionsOpResult> = { ok: true, value: { ok: true, value: undefined } }
   /** One answer per press; the last repeats. */
@@ -42,7 +44,11 @@ class FinalizeClientStub {
   install(): void {
     const bridge = {
       control: {
-        call: async (operation: string, body: { session: { sessionId: string }; acknowledgeSetup?: string; choice?: string; confirmWorking?: true }) => {
+        call: async (operation: string, body: { session: { sessionId: string }; sessionId?: string; acknowledgeSetup?: string; choice?: string; confirmWorking?: true }) => {
+          if (operation === 'sessionTasks.openWorkflow') {
+            this.workflows.push(body.sessionId ?? '')
+            return ControlBridgeFixture.answerOf(operation, { ok: true, value: { ok: true, value: { panelId: 'terminal:x' } } })
+          }
           const sessionId = body.session.sessionId
           if (operation === 'sessions.finalize') {
             this.finalized.push(sessionId)
@@ -476,9 +482,6 @@ describe('app-client-ui/renderer/overlays/finalize/finalizeOverlay', () => {
       { ok: true, value: { ok: false, code: 'session-working', detail: 'Session s-svn is still working (writing tests); finish it anyway, or wait until it is ready' } },
       { ok: true, value: { ok: true, value: { sessionId: 's-svn', actionId: 'action-1' } } },
     ]
-    expect(mounted.view.container.querySelector('.jamat-finalize__note')?.textContent)
-      .toBe('The Finish waits for you: the review ended without a commit')
-
     fireEvent.click(FinalizeOverlayTest.primary(mounted.view.container))
     await waitFor(() => expect(FinalizeOverlayTest.primary(mounted.view.container).textContent).toBe('Finish anyway'))
     expect(mounted.view.container.querySelector('[role="alert"]')?.textContent).toMatch(/still working \(writing tests\)/)
@@ -487,9 +490,38 @@ describe('app-client-ui/renderer/overlays/finalize/finalizeOverlay', () => {
     fireEvent.keyDown(FinalizeOverlayTest.card(mounted.view.container), { key: 'Enter' })
     expect(mounted.client.pressed).toEqual(['commit'])
 
+    // A refused press brought nothing forward.
+    expect(mounted.client.workflows).toEqual([])
+
     fireEvent.click(FinalizeOverlayTest.primary(mounted.view.container))
     await waitFor(() => expect(mounted.onClose).toHaveBeenCalledOnce())
     expect(mounted.client.pressed).toEqual(['commit', 'commit confirmed'])
+    // The Commit this window pressed brings the session's workflow forward.
+    await waitFor(() => expect(mounted.client.workflows).toEqual(['s-svn']))
+  })
+
+  it('brings the Git Finish workflow forward after Merge back, and none after a refused Merge back', async () => {
+    const refused = mount()
+    refused.client.finalizeAnswer = { ok: true, value: { ok: false, code: 'dirty', detail: 'commit it first' } }
+    fireEvent.click(FinalizeOverlayTest.primary(refused.view.container))
+    await waitFor(() => expect(refused.view.container.querySelector('[role="alert"]')).toBeTruthy())
+    expect(refused.client.workflows).toEqual([])
+    cleanup()
+
+    const mounted = mount()
+    fireEvent.click(FinalizeOverlayTest.primary(mounted.view.container))
+    await waitFor(() => expect(mounted.onClose).toHaveBeenCalledOnce())
+    expect(mounted.client.finalized).toEqual(['s-dirty'])
+    await waitFor(() => expect(mounted.client.workflows).toEqual(['s-dirty']))
+  })
+
+  it('brings no workflow forward for a Git Discard', async () => {
+    const mounted = mount()
+    fireEvent.click(mounted.view.getByText('Discard worktree'))
+    fireEvent.click(FinalizeOverlayTest.primary(mounted.view.container))
+    await waitFor(() => expect(mounted.onClose).toHaveBeenCalledOnce())
+    expect(mounted.client.pressed).toEqual(['discard'])
+    expect(mounted.client.workflows).toEqual([])
   })
 })
 
@@ -507,6 +539,7 @@ class FinalizeOverlayTest {
           question: {
             label: 'Worktree',
             chosenDefault: 'merge',
+            startsWorkflow: ['merge'],
             choices: [
               {
                 id: 'merge',
@@ -540,12 +573,7 @@ class FinalizeOverlayTest {
   static svnRequest(): FinalizeOpenRequest {
     const session = SessionsFixtures.svnWorktrees().sessions.find((candidate) => candidate.sessionId === 's-svn')
     if (session === undefined) throw new Error('The SVN worktree fixture is missing')
-    const waiting = {
-      ...session,
-      svnAction: { kind: 'finish' as const, stage: 'reviewing' as const, needs: 'the review ended without a commit',
-        needsKind: 'review-cancelled' as const, review: null },
-    }
-    const ask = FinalizeAsks.of(waiting, { kind: 'local', sessionId: 's-svn' }, 'local', 'Sessions')
+    const ask = FinalizeAsks.of(session, { kind: 'local', sessionId: 's-svn' }, 'local', 'Sessions')
     if (ask === null) throw new Error('The SVN worktree fixture produced no finalize ask')
     return { requestId: 1, ask }
   }

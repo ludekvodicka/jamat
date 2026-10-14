@@ -16,6 +16,7 @@ import type { AutoUpdateApi } from '../../shared/electron/autoUpdate/common/auto
 import type { TerminalTarget } from '../../shared/terminalTarget'
 import type { SnapshotStore, SnapshotStorePorts } from '../ipc/snapshotStore'
 import type { SessionsMarksStore } from '../sessions/sessionsMarksStore'
+import type { SessionTasksStore } from '../sessions/sessionTasksStore'
 import type { HostStatusPorts } from '../statusBar/hostStatusItem'
 import type { RateStatusPorts } from '../statusBar/rateStatusItem'
 import type { SessionModelStore } from '../sessionModel/sessionModelStore'
@@ -99,6 +100,7 @@ export interface WorkspaceShellWiring {
    */
   sessionPorts: AppShellSessionPorts
   sessionsSnapshot: SnapshotStore<SessionsSnapshot>
+  sessionTasks: SessionTasksStore
   remotePorts: AppShellRemotePorts
   remoteSnapshot: SnapshotStore<RemoteConnectionsSnapshot>
   /**

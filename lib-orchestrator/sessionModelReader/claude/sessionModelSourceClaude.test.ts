@@ -155,6 +155,17 @@ describe('lib-orchestrator/sessionModelReader/claude/sessionModelSourceClaude', 
       .toMatchObject({ kind: 'ok', info: { effortLevel: 'high' } })
   })
 
+  // The home file said `xhigh` while `modelSettings` set `high` for this model, and the status bar
+  // drew `xhigh` for a session that ran every turn on `high`.
+  it('takes the effort the transcript recorded over the one the settings configure', async () => {
+    const { ref, context, home } = world(
+      ClaudeTranscriptFixtures.assistantTurn(sonnet, { input_tokens: 10 }, 'high'),
+    )
+    writeFileSync(join(home, 'settings.json'), JSON.stringify({ effortLevel: 'xhigh' }), 'utf8')
+    expect(await new SessionModelSourceClaude(home).read(ref, context))
+      .toMatchObject({ kind: 'ok', info: { effortLevel: 'high' } })
+  })
+
   // Claude Code records the id the API answered with, never the tier: this session ran on the
   // million and its transcript says `claude-opus-5`, so 91k of it was drawn as 46 percent of a
   // fifth of the window, with a compact offered and auto-compact fired at 9 percent of it.
@@ -241,6 +252,19 @@ describe('lib-orchestrator/sessionModelReader/claude/sessionModelSourceClaude', 
       .toMatchObject({ kind: 'ok', info: { contextWindow: 200_000 } })
   })
 
+  // Session 44e51484, 2026-10-13: started by this app with no model, so Claude's settings
+  // (`"model": "opus"`) were the configured model, while the transcript said `claude-fable-5-1`.
+  // The settings named another family, which is no tier for this one, and Fable 5.1 runs on the
+  // million by default; it was drawn against 200k.
+  it('keeps the default million of Fable 5.1 under a settings file that names another model', async () => {
+    const { ref, context, home } = world(
+      ClaudeTranscriptFixtures.assistantTurn('claude-fable-5-1', { input_tokens: 210_000 }),
+    )
+    writeFileSync(join(home, 'settings.json'), JSON.stringify({ model: 'opus' }), 'utf8')
+    expect(await new SessionModelSourceClaude(home).read(ref, context))
+      .toMatchObject({ kind: 'ok', info: { contextWindow: 1_000_000, modelLabel: 'Fable 5.1' } })
+  })
+
   it('leaves the window alone when the settings name a different model', async () => {
     const { ref, context, home } = world(
       ClaudeTranscriptFixtures.assistantTurn(sonnet, { input_tokens: 91_262 }),
@@ -268,6 +292,74 @@ describe('lib-orchestrator/sessionModelReader/claude/sessionModelSourceClaude', 
     const withEffort = await source.cacheSaltOf(context)
     const withLaunch = await source.cacheSaltOf(launchedOn('claude-opus-5[1m]'))
     expect(new Set([bare, withModel, withEffort, withLaunch]).size).toBe(4)
+  })
+
+  // A session past the smaller window cannot be on it. The guess said 200k for a model with no
+  // tier named anywhere; the transcript proves otherwise, without any table having to know it.
+  it('raises a two-hundred-thousand guess to the million once the session holds more', async () => {
+    const { ref, context, home } = world(
+      ClaudeTranscriptFixtures.assistantTurn(sonnet, { input_tokens: 200_001 }),
+    )
+    expect(await new SessionModelSourceClaude(home).read(ref, context))
+      .toMatchObject({ kind: 'ok', info: { contextWindow: 1_000_000 } })
+  })
+
+  describe('the status line snapshot', () => {
+    function snapshots(content: unknown): string {
+      const directory = mkdtempSync(join(tmpdir(), 'jamat-claude-context-'))
+      created.push(directory)
+      writeFileSync(join(directory, 'session.json'),
+        typeof content === 'string' ? content : JSON.stringify(content), 'utf8')
+      return directory
+    }
+
+    // What the relay stores is Claude Code's own window, so it beats every guess in both
+    // directions: a sonnet guessed at 200k, an Opus 5.5 guessed at its default million.
+    it('takes the window Claude Code stated over every guess', async () => {
+      const sonnetWorld = world(ClaudeTranscriptFixtures.assistantTurn(sonnet, { input_tokens: 10 }))
+      expect(await new SessionModelSourceClaude(sonnetWorld.home, snapshots({
+        schemaVersion: 1, model: `${sonnet}[1m]`, contextWindowSize: 1_000_000,
+      })).read(sonnetWorld.ref, sonnetWorld.context))
+        .toMatchObject({ kind: 'ok', info: { contextWindow: 1_000_000 } })
+      const opusWorld = world(ClaudeTranscriptFixtures.assistantTurn('claude-opus-5-5', { input_tokens: 10 }))
+      expect(await new SessionModelSourceClaude(opusWorld.home, snapshots({
+        schemaVersion: 1, model: 'claude-opus-5-5', contextWindowSize: 200_000,
+      })).read(opusWorld.ref, opusWorld.context))
+        .toMatchObject({ kind: 'ok', info: { contextWindow: 200_000 } })
+    })
+
+    // Just after `/model` the status line already speaks for the new model while the last turn
+    // in the transcript still ran on the old one.
+    it('ignores a snapshot of another model than the turn ran on', async () => {
+      const { ref, context, home } = world(ClaudeTranscriptFixtures.assistantTurn(sonnet, { input_tokens: 10 }))
+      expect(await new SessionModelSourceClaude(home, snapshots({
+        schemaVersion: 1, model: 'claude-opus-5-5[1m]', contextWindowSize: 1_000_000,
+      })).read(ref, context))
+        .toMatchObject({ kind: 'ok', info: { contextWindow: 200_000 } })
+    })
+
+    it('falls back to the guess for a snapshot it cannot read', async () => {
+      for (const content of [
+        '{"schemaVersion":1,"model":"claude-sonnet-4-5-2026',
+        { schemaVersion: 2, model: sonnet, contextWindowSize: 1_000_000 },
+        { schemaVersion: 1, model: sonnet, contextWindowSize: 0 },
+        { schemaVersion: 1, contextWindowSize: 1_000_000 },
+      ]) {
+        const { ref, context, home } = world(ClaudeTranscriptFixtures.assistantTurn(sonnet, { input_tokens: 10 }))
+        expect(await new SessionModelSourceClaude(home, snapshots(content)).read(ref, context))
+          .toMatchObject({ kind: 'ok', info: { contextWindow: 200_000 } })
+      }
+    })
+
+    it('moves the cache salt when the snapshot changes', async () => {
+      const { context, home } = world(ClaudeTranscriptFixtures.assistantTurn(sonnet, { input_tokens: 10 }))
+      const directory = snapshots({ schemaVersion: 1, model: sonnet, contextWindowSize: 200_000 })
+      const source = new SessionModelSourceClaude(home, directory)
+      const before = await source.cacheSaltOf(context)
+      writeFileSync(join(directory, 'session.json'),
+        JSON.stringify({ schemaVersion: 1, model: sonnet, contextWindowSize: 1_000_000 }), 'utf8')
+      expect(await source.cacheSaltOf(context)).not.toBe(before)
+    })
   })
 
   it('answers none instead of throwing when the transcript is not there to read', async () => {

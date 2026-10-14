@@ -164,6 +164,10 @@ const { FakeWindow, captured, updaterMock } = vi.hoisted(() => {
     remarkableInstallerOptions: null as null | { sourceDirectory: string; toolsDirectory: string },
     safeStorageCalls: [] as string[],
     appPath: 'C:/tmp/app/resources',
+    /** The sessions the snapshot answers; null: the one parent to fork. */
+    snapshotSessions: null as unknown[] | null,
+    /** Every Windows notification shown, with its click. */
+    notices: [] as { title: string; body: string; click: () => void }[],
   }
 
   /** How often anything read `autoUpdater`: reading it is what builds the platform updater. */
@@ -183,6 +187,22 @@ vi.mock('electron', () => ({
     quit: () => {},
   },
   BrowserWindow: FakeWindow,
+  Notification: class {
+    static isSupported(): boolean { return true }
+    private readonly options: { title: string; body: string }
+    private readonly handlers = new Map<string, () => void>()
+    constructor(options: { title: string; body: string }) {
+      this.options = options
+    }
+
+    on(event: string, handler: () => void): void {
+      this.handlers.set(event, handler)
+    }
+
+    show(): void {
+      captured.notices.push({ ...this.options, click: () => this.handlers.get('click')?.() })
+    }
+  },
   nativeImage: {
     createFromDataURL: () => ({ isEmpty: () => false }),
     createFromBuffer: () => ({ isEmpty: () => false }),
@@ -310,7 +330,7 @@ vi.mock('../../lib-orchestrator/sessionManager/sessionManager', async (importOri
       return {
         revision: 1, reconciled: true, categories: [], orphans: [],
         host: { presence: 'running', hostVersion: null, hostInstanceId: null, liveCount: 0, lastStartError: null },
-        sessions: [{
+        sessions: captured.snapshotSessions ?? [{
           sessionId: 'parent-1', kind: 'shell', title: 'Work - 014', tabTitle: 'Work - 014',
           titleParts: { number: '014', name: 'Work' }, directory: { mode: 'default' },
           project: { kind: 'none' }, life: 'ended', activity: null, admits: [],
@@ -341,6 +361,10 @@ vi.mock('../../lib-orchestrator/sessionManager/sessionManager', async (importOri
 
     sessionNotifyStore(): unknown {
       return { pending: () => [], note: async () => undefined, watched: () => [], observe: async () => [] }
+    }
+
+    svnWaitNotices(): unknown {
+      return { pending: () => [], note: async () => undefined }
     }
 
     async start(): Promise<void> {}
@@ -556,6 +580,8 @@ describe('app-client-ui/app/appHub', () => {
     captured.remarkableInstallerOptions = null
     captured.safeStorageCalls = []
     captured.appPath = join(stateRoot, 'application', 'resources')
+    captured.snapshotSessions = null
+    captured.notices = []
     updaterMock.reads = 0
     vi.spyOn(console, 'error').mockImplementation(() => {})
   })
@@ -783,7 +809,7 @@ describe('app-client-ui/app/appHub', () => {
     }
 
     expect(services.sessionNotifier.port.terminal).toBe(services.directoryNotes.terminal)
-    expect(services.sessionNotifier.sources).toHaveLength(2)
+    expect(services.sessionNotifier.sources).toHaveLength(3)
     hub.initialize()
     expect(services.sessionNotifier.started).toBe(true)
     await hub.dispose()
@@ -791,7 +817,7 @@ describe('app-client-ui/app/appHub', () => {
   })
 
   it('holds the final IPC parity counts', () => {
-    expect(Object.keys(AppHub.ipcChannelsConst)).toHaveLength(133)
+    expect(Object.keys(AppHub.ipcChannelsConst)).toHaveLength(137)
     expect(Object.keys(AppClientUiBridgeEventsConst)).toHaveLength(24)
     expect(Object.keys(ServiceTabsIpc.channelsConst)).toHaveLength(13)
     expect(Object.keys(ServiceRemarkableIpc.channelsConst)).toHaveLength(16)
@@ -1029,6 +1055,27 @@ describe('app-client-ui/app/appHub', () => {
     ])
   })
 
+  it('shows a Windows notification when a local Finish starts to wait, once, and its click opens the workflow tab', async () => {
+    const hub = hubUnderTest()
+    hub.initialize()
+    const openWorkflow = vi.spyOn((hub as unknown as { tabControlBroker: { openWorkflow: (sessionId: string, title: string) => Promise<unknown> } })
+      .tabControlBroker, 'openWorkflow').mockResolvedValue({ ok: true, value: { windowId: 'w', panelId: 'p' } })
+    captured.snapshotSessions = []
+    captured.sessionDeps?.onChanged()
+    captured.snapshotSessions = [{
+      sessionId: 's1', kind: 'agent', title: '014 - trail', tabTitle: 'Work - 014', titleParts: { number: '014', name: 'Work' },
+      directory: { mode: 'default' }, project: { kind: 'none' }, life: 'ended', activity: null, admits: [],
+      svnAction: { kind: 'finish', stage: 'fixing', needs: '2 conflicts need you: a, b', needsKind: 'conflict', review: null, summary: '2 conflicts need you' },
+    }]
+    captured.sessionDeps?.onChanged()
+    captured.sessionDeps?.onChanged()
+
+    expect(captured.notices.map(({ title, body }) => ({ title, body }))).toEqual([{ title: 'Finish waits: 014 - trail', body: '2 conflicts need you' }])
+    captured.notices[0]?.click()
+    await Promise.resolve()
+    expect(openWorkflow).toHaveBeenCalledWith('s1', 'Work - 014')
+  })
+
   it('broadcasts session changes to every workspace window and Debug', () => {
     const hub = hubUnderTest()
     hub.initialize()
@@ -1255,9 +1302,9 @@ describe('app-client-ui/app/appHub', () => {
   it('gives every transcript consumer the project manager\'s own view', async () => {
     const source = await readFile(new URL('./appHub.ts', import.meta.url), 'utf8')
 
-    // The two polled readers, the file-changes manager and the session manager's reference block,
-    // and no fifth way in.
-    expect(source.match(/this\.projects\.transcripts/g)).toHaveLength(4)
+    // The two polled readers, the file-changes manager, the session manager's reference block and
+    // the sub-agent listing, and no sixth way in.
+    expect(source.match(/this\.projects\.transcripts/g)).toHaveLength(5)
     expect(source).not.toContain('new ProviderTranscriptView(')
   })
 

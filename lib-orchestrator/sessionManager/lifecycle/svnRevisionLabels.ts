@@ -2,10 +2,20 @@ import type { SvnBounds, SvnLoggedRow, SvnResult, SvnRoot, SvnRootBounds } from 
 import type { SvnWorktreeManager } from '../../svn/svnWorktreeManager'
 import { PathCompare } from '../../shared/pathCompare'
 import type { SessionRecord, SvnActionRoot } from '../records/sessionRecord.types'
-import type { SvnLabelledRevision, SvnRevisionLabel } from '../sessionManagerApi.types'
+import type { SessionStepProgress, SvnLabelledRevision, SvnRevisionLabel } from '../sessionManagerApi.types'
+import type { SessionStepFacts } from './sessionStepWords'
 
 /** The svn reads the labels make, named so a test can hand them a scripted set. */
 export type SvnLabelsPort = Pick<SvnWorktreeManager, 'roots' | 'lowerBounds' | 'ownCommits' | 'reviewed' | 'proven' | 'changedSince'>
+
+/**
+ * The read `ownCommits` is about to make, so a caller can say what it reads: a root's own state, one
+ * candidate's `svn log -v` with its index and count, or the `svn log -v` that confirms a receipt.
+ */
+export type SvnLabelsRead =
+  | { kind: 'status'; root: SvnRoot }
+  | { kind: 'own-commit'; root: SvnRoot; revision: number; index: number; count: number }
+  | { kind: 'receipt'; root: SvnRoot; revision: number }
 
 /**
  * Which revisions an SVN action committed, and how each is known. A receipt the commit dialog wrote
@@ -26,12 +36,15 @@ export class SvnRevisionLabels {
    * its BASE (`base-proof`), and the receipts of commits from the session's split since `since`
    * that the log confirms (`receipt`).
    */
-  async ownCommits(worktreePath: string, receipts: SessionRecord['commitReceipts'], since: number): Promise<SvnResult<SvnLabelledRevision[]>> {
+  async ownCommits(worktreePath: string, receipts: SessionRecord['commitReceipts'], since: number,
+    onRead?: (read: SvnLabelsRead) => void): Promise<SvnResult<SvnLabelledRevision[]>> {
     const roots = await this.svn.roots(worktreePath)
     if (!roots.ok) return roots
     const labelled: SvnLabelledRevision[] = []
     for (const root of roots.value) {
-      const own = await this.svn.ownCommits(root)
+      onRead?.({ kind: 'status', root })
+      const own = await this.svn.ownCommits(root, onRead === undefined ? undefined
+        : (revision, index, count) => onRead({ kind: 'own-commit', root, revision, index, count }))
       if (!own.ok) return own
       labelled.push(...SvnRevisionLabels.labelledOf(own.value.repository, own.value.rows, 'base-proof'))
       const revisions = SvnRevisionLabels.receiptsOf(receipts, root.path, since)
@@ -40,9 +53,22 @@ export class SvnRevisionLabels {
       if (!bounds.ok) return bounds
       // Any commit after the checkout may be the split's; the log decides whether it lies below this root.
       const bound: SvnRootBounds = { ...bounds.value[root.own], since: 0 }
-      labelled.push(...await this.confirmed(root, bound, revisions))
+      labelled.push(...await this.confirmed(root, bound, revisions, onRead))
     }
     return { ok: true, value: SvnRevisionLabels.merged(labelled) }
+  }
+
+  /** The step a caller shows for one read of `ownCommits`; a mount names itself. */
+  static stepOf(read: SvnLabelsRead): { facts: SessionStepFacts; progress: SessionStepProgress | null } {
+    const kind = read.kind
+    const mount = read.root.own
+    switch (kind) {
+      case 'status': return { facts: { kind: 'read', read: 'own-commits', mount }, progress: null }
+      case 'own-commit':
+        return { facts: { kind: 'read', read: 'own-commits', revision: read.revision, mount }, progress: { done: read.index, total: read.count } }
+      case 'receipt': return { facts: { kind: 'read', read: 'receipts', revision: read.revision, mount }, progress: null }
+      default: throw new Error(`Unknown labels read: ${JSON.stringify(kind satisfies never)}`)
+    }
   }
 
   /**
@@ -88,10 +114,12 @@ export class SvnRevisionLabels {
     return `${entry.repository}:r${entry.revision}`
   }
 
-  private async confirmed(root: SvnRoot, bound: SvnRootBounds, revisions: readonly number[]): Promise<SvnLabelledRevision[]> {
+  private async confirmed(root: SvnRoot, bound: SvnRootBounds, revisions: readonly number[],
+    onRead?: (read: SvnLabelsRead) => void): Promise<SvnLabelledRevision[]> {
     const bounds: SvnBounds = { [root.own]: bound }
     const labelled: SvnLabelledRevision[] = []
     for (const revision of revisions) {
+      onRead?.({ kind: 'receipt', root, revision })
       const rows = await this.svn.reviewed(root, bounds, revision)
       if (rows.ok) labelled.push(...SvnRevisionLabels.labelledOf(bound.repository, rows.value, 'receipt'))
     }

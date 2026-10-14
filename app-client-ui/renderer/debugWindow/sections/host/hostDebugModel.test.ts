@@ -156,12 +156,12 @@ describe('app-client-ui/renderer/debugWindow/sections/host/hostDebugModel', () =
   // Delegated to the one derivation of presence there is, rather than switched on a third time.
   it('reads the headline through the shared presence derivation', () => {
     expect(HostDebugModel.headline(HostDebugFixtures.status()))
-      .toEqual({ text: 'Host v2026.08.10.1 · 2 live', startable: false })
+      .toEqual({ text: 'Host v2026.08.10.1 · 2 live', startable: false, title: null, warning: false })
 
     expect(HostDebugModel.headline(HostDebugFixtures.status({ presence: 'starting' })).startable)
       .toBe(false)
 
     expect(HostDebugModel.headline(HostDebugFixtures.status({ presence: 'unreachable' })))
-      .toEqual({ text: 'Host unreachable', startable: true })
+      .toEqual({ text: 'Host unreachable', startable: true, title: null, warning: false })
   })
 })

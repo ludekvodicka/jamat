@@ -13,6 +13,8 @@ export interface AgentSessionWorkingContext {
   cwd: string
   nativeSessionId: string
   launchModel: string | null
+  /** The record's `createdAt`: a Codex sub-agent listing reads day directories from here on. */
+  startedAt: number
 }
 
 /**
@@ -54,6 +56,7 @@ export class AgentSessionContext {
         cwd: context.value.cwd,
         nativeSessionId: context.value.nativeSessionId,
         launchModel: context.value.launchModel,
+        startedAt: context.value.startedAt,
       },
     }
   }

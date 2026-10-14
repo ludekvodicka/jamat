@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<status>
+<target
+   path=".">
+<entry
+   path="src\legacy.txt">
+<wc-status
+   moved-to="src\moved.txt"
+   item="deleted"
+   revision="3"
+   props="none"
+   tree-conflicted="true">
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</wc-status>
+</entry>
+<entry
+   path="src\moved.txt">
+<wc-status
+   moved-from="src\legacy.txt"
+   item="added"
+   props="none"
+   copied="true">
+<commit
+   revision="2">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</wc-status>
+</entry>
+</target>
+</status>

@@ -10,7 +10,10 @@ import { FileChangesManager } from '../../lib-orchestrator/fileChangesManager/fi
 import { LandedRows } from '../../lib-orchestrator/sessionManager/lifecycle/landedRows.js'
 import { Reconciler } from '../../lib-orchestrator/sessionManager/lifecycle/reconciler.js'
 import type { SessionInternalMarks, WorktreePlaceRequest } from '../../lib-orchestrator/sessionManager/lifecycle/sessionLifecycle.js'
+import { SessionSteps } from '../../lib-orchestrator/sessionManager/lifecycle/sessionSteps.js'
+import { SessionWorkflows } from '../../lib-orchestrator/sessionManager/lifecycle/sessionWorkflows.js'
 import { SvnActionFlow } from '../../lib-orchestrator/sessionManager/lifecycle/svnActionFlow.js'
+import { SvnActionStages } from '../../lib-orchestrator/sessionManager/lifecycle/svnActionStages.js'
 import { SvnResolverLauncher } from '../../lib-orchestrator/sessionManager/lifecycle/svnResolverLauncher.js'
 import { SvnRevisionLabels } from '../../lib-orchestrator/sessionManager/lifecycle/svnRevisionLabels.js'
 import { SvnWorktreeFinishFlow } from '../../lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow.js'
@@ -28,12 +31,16 @@ import { CommandInvoker } from '../../lib-orchestrator/shared/commandInvoker.js'
 import { PathCompare } from '../../lib-orchestrator/shared/pathCompare.js'
 import { ProductGroup } from '../../lib-orchestrator/shared/productGroup.js'
 import { ReviewRunExit } from '../../lib-orchestrator/shared/reviewRunExit.js'
+import { SvnConflictResolutions } from '../../lib-orchestrator/svn/svnConflictResolutions.js'
 import { SvnInvoker } from '../../lib-orchestrator/svn/svnInvoker.js'
 import { SvnWorktreeEvidence } from '../../lib-orchestrator/svn/svnWorktreeEvidence.js'
 import { SvnWorktreeManager } from '../../lib-orchestrator/svn/svnWorktreeManager.js'
+import { ConflictTestbed } from '../dev/make-conflict-testbed.js'
 import { SmokeHarness, SmokeRun } from './smokeHarness.js'
+import { type ConflictSpikeCapture, ConflictShapesSpike } from './svnConflictShapes.js'
 
 const fixtureDirectory = join(import.meta.dirname, '..', '..', 'lib-orchestrator', 'svn', 'fixtures', 'worktree')
+const conflictFixtureDirectory = join(fixtureDirectory, 'conflicts')
 
 /**
  * A disposable svnadmin repository below one temporary directory, and the working copies a case
@@ -49,6 +56,11 @@ class SvnFixtureRepository {
     this.directory = directory
     this.url = pathToFileURL(directory).href
     this.svn = svn
+  }
+
+  /** A repository something else made, such as the conflict testbed's. */
+  static at(directory: string, svn: SvnInvoker): SvnFixtureRepository {
+    return new SvnFixtureRepository(directory, svn)
   }
 
   static async create(directory: string, svn: SvnInvoker): Promise<SvnFixtureRepository> {
@@ -90,6 +102,8 @@ class SmokeSvnActions {
   readonly results: WorktreeResultsStore
   /** The roots a review run was launched for, in order. */
   readonly opened: string[] = []
+  /** The workflow of the parent as each run starts: its badge, then each step as `title: state`. */
+  readonly workflows: string[][] = []
   readonly ended = new Set<string>()
   /** The main copies a committed ending or an UPDATE asked the manager to read again. */
   readonly landedDue: string[] = []
@@ -115,7 +129,8 @@ class SmokeSvnActions {
     this.repository = repository
     this.svn = svn
     this.results = new WorktreeResultsStore(`${logs}-results`, { now: () => Date.now(), logs: new ScriptLogStore(logs), report: () => undefined })
-    const removal = new SvnWorktreeRemoval({ records, svn: manager, releaseBelow: async () => undefined, onQueue: (work) => work(), changed: () => undefined })
+    const steps = new SessionSteps({ changed: () => undefined, now: () => Date.now() })
+    const removal = new SvnWorktreeRemoval({ records, svn: manager, releaseBelow: async () => undefined, onQueue: (work) => work(), changed: () => undefined, steps })
     const ended = (sessionId: string): void => { this.ended.add(sessionId) }
     this.flow = new SvnActionFlow({
       records,
@@ -127,6 +142,7 @@ class SmokeSvnActions {
         briefs: new ScriptLogStore(logs),
         withMarkers: (root, paths) => SvnResolverLauncher.markersIn(root, paths),
       },
+      resolutions: new SvnConflictResolutions({ svn, markersIn: (root, paths) => SvnResolverLauncher.markersIn(root, paths), now: () => Date.now() }),
       results: this.results,
       createResolver: (spec, marks) => this.resolver(spec, marks),
       stopRun: async () => true,
@@ -137,6 +153,7 @@ class SmokeSvnActions {
       proposalsSpent: () => undefined,
       detach: (work) => { this.detached.push(work) },
       changed: () => undefined,
+      steps,
       runs: { launch: (run) => this.launch(run) },
       checks: { declaredAfter: async (record) => ({ ok: true, steps: this.checkStepsOf(record) }) },
       stop: async () => ({ ok: true, value: undefined }),
@@ -153,6 +170,7 @@ class SmokeSvnActions {
       results: this.results,
       finishRefusal: () => null,
       changed: () => undefined,
+      steps,
       ended,
       landedDue: (mainCopy) => { this.landedDue.push(mainCopy) },
       report: () => undefined,
@@ -206,6 +224,10 @@ class SmokeSvnActions {
 
   private async launch(run: SessionRecord): Promise<SessionsOpResult> {
     const cwd = run.directory.mode === 'adHoc' ? run.directory.path : ''
+    const parent = this.records.get(run.scriptOf?.sessionId ?? '')
+    const workflow = parent === null ? null : SessionWorkflows.of(parent, (runId) => this.records.get(runId))
+    if (workflow !== null)
+      this.workflows.push([workflow.badge, ...workflow.rounds.flatMap((round) => round.steps.map((step) => `${step.title}: ${step.state}`))])
     const process = run.process
     let exitCode: number
     if (process === undefined) exitCode = await this.check(run)
@@ -235,7 +257,11 @@ class SmokeSvnActions {
     return 0
   }
 
-  /** The resolver's create: its record, the scripted edit in its directory, then its end with exit 0. */
+  /**
+   * The create of the resolver (an UPDATE) or the merger (a worktree Finish): its record, the scripted
+   * edit in its directory, then its end with exit 0. The merger here ends without a call, so the
+   * check after it settles what it merged.
+   */
   private async resolver(spec: SessionCreateSpec, marks: SessionInternalMarks): Promise<SessionsOpResult<{ sessionId: string }>> {
     const resolve = this.resolve
     if (resolve === null) throw new Error('A resolver was started with no Claude')
@@ -243,7 +269,7 @@ class SmokeSvnActions {
     this.prompts.push(spec.agent?.initialPrompt ?? '')
     const run: SessionRecord = {
       sessionId: marks.sessionId, kind: 'agent', title: spec.title ?? 'resolver', directory: spec.directory, createdAt: Date.now(),
-      agent: { agentId: 'claude', launchMode: spec.agent?.mode ?? 'new', oneShot: true, permission: marks.permission },
+      agent: { agentId: 'claude', launchMode: spec.agent?.mode ?? 'new', ...marks.oneShot ? { oneShot: true as const } : {}, permission: marks.permission },
       scriptOf: marks.scriptOf, binding: null, life: 'live',
     }
     await this.records.put(run)
@@ -287,18 +313,35 @@ class SmokeSvnWorktree extends SmokeHarness {
 
   private async execute(): Promise<void> {
     await this.checkNonAsciiSpike()
+    const conflictCaptures = await new ConflictShapesSpike({
+      root: join(this.root, 'conflict-shapes'),
+      svn: this.svn,
+      check: (description, condition) => this.check(description, condition),
+      anonymized: (text, placeholders) => this.anonymized(text, placeholders),
+    }).run()
     const captures = await this.checkFinishEvidence()
     if (this.capture) {
-      await mkdir(fixtureDirectory, { recursive: true })
-      for (const { name, text } of captures) await writeFile(join(fixtureDirectory, name), text, 'utf8')
-      console.log(`  wrote ${captures.length} fixtures to ${fixtureDirectory}`)
+      await mkdir(conflictFixtureDirectory, { recursive: true })
+      let written = 0
+      for (const { name, text } of captures) written += await SmokeSvnWorktree.writeFixture(join(fixtureDirectory, name), text)
+      for (const { name, text } of conflictCaptures) written += await SmokeSvnWorktree.writeFixture(join(conflictFixtureDirectory, name), text)
+      console.log(`  wrote ${written} of ${captures.length + conflictCaptures.length} fixtures to ${fixtureDirectory}`)
     }
-    else await this.checkFixturesCurrent(captures)
+    else {
+      await this.checkFixturesCurrent(captures)
+      await this.checkConflictFixturesCurrent(conflictCaptures)
+    }
     await this.checkFinishFlow()
     await this.checkLandedRows()
     await this.checkWorktreeContract()
     await this.checkCreateOwners()
     await this.checkCleanup()
+    await this.checkConflictTestbed()
+    await this.checkIncidentWait()
+    await this.checkIncidentResolve()
+    await this.checkIncidentGuard()
+    await this.checkIncidentRule()
+    await this.checkLosslessRules()
     console.log(`\nsmoke-svn-worktree: ${this.passed} checks passed`)
   }
 
@@ -524,6 +567,12 @@ class SmokeSvnWorktree extends SmokeHarness {
       && await readFile(join(owner, 'a.txt'), 'utf8') === 'one\n' && !existsSync(committed)
       && records.get('commit-session')?.retiredWorktree?.revisions.length === 1)
     this.check('A committed Finish with the worktree removed keeps the session as a landed row', actions.landed('commit-session', owner))
+    const ended = SessionWorkflows.of(records.get('commit-session')!, () => null)
+    this.check('F2 the workflow of a Finish runs svn update with the review and the removal ahead, then the review, then ends as committed',
+      JSON.stringify(actions.workflows.slice(0, 2)) === JSON.stringify([
+        ['updating', 'Read what the worktree committed: done', 'svn update: running', 'Review: pending', 'Remove the worktree: pending'],
+        ['reviewing', 'Read what the worktree committed: done', 'svn update: done', 'Review: running', 'Remove the worktree: pending'],
+      ]) && ended?.open === false && ended.badge === 'committed')
     const result = actions.results.list({ sessionId: 'commit-session' })
     this.check('R9 a committed Finish writes a durable result with its receipt-labelled revision and the removal done',
       result.length === 1 && result[0].action === 'finish' && result[0].result === 'committed' && result[0].removal === 'removed'
@@ -756,11 +805,11 @@ class SmokeSvnWorktree extends SmokeHarness {
     const reviewsBefore = opened.length
     const conflict = await finished('conflict-session')
     this.check('SW06 an update conflict where no Claude runs waits for the person, opens no review and keeps the worktree',
-      conflict.answer.ok && conflict.action?.needs?.kind === 'conflict' && conflict.action.needs.reason.includes('nobody can resolve them here')
+      conflict.answer.ok && conflict.action?.needs?.kind === 'conflict' && conflict.action.needs.reason.includes('no merger runs here')
       && opened.length === reviewsBefore && existsSync(join(conflicted, '.svn')) && !ended.has('conflict-session'))
     this.check('SW04 Discard removes a worktree with conflicts and changes', (await flow.discard('conflict-session')).ok && !existsSync(conflicted))
 
-    // SW06 with a resolver: its files are verified, svn marks them resolved, the update runs again, then the review.
+    // SW06 with a merger: the check after it settles what it merged, the update runs again, then the review.
     await repository.run(owner, ['update'])
     const resolvedTree = await sessionIn(owner, 'resolved-session', '014-resolved')
     await writeFile(join(resolvedTree, 'a.txt'), 'one\ntwo foreign\nthree session\nfour\nfive session\n')
@@ -768,18 +817,18 @@ class SmokeSvnWorktree extends SmokeHarness {
     const merged = 'one\ntwo foreign\nthree other and session\nfour\nfive session\n'
     actions.resolve = async (cwd) => {
       const before = await readFile(join(cwd, 'a.txt'), 'utf8')
-      if (!before.includes('<<<<<<< .mine')) throw new Error(`the resolver found no conflict in ${cwd}`)
+      if (!before.includes('<<<<<<< .mine')) throw new Error(`the merger found no conflict in ${cwd}`)
       await writeFile(join(cwd, 'a.txt'), merged)
     }
     const resolvedFinish = await finished('resolved-session')
-    this.check('SW06 a resolver settles a text conflict: verified, marked resolved, updated again, reviewed and committed',
+    this.check('F24 a merger settles a text conflict: the check after it marks it resolved, the update runs again, reviewed and committed',
       resolvedFinish.answer.ok && resolvedFinish.outcome?.result === 'committed' && resolvedFinish.outcome.worktree === 'removed'
       && opened.length === reviewsBefore + 1 && actions.landed('resolved-session', owner)
-      && actions.prompts.length === 1 && actions.prompts[0].includes('-conflicts.txt'))
+      && actions.prompts.length === 1 && actions.prompts[0].includes('-merge.md'))
     await repository.run(other, ['update'])
-    this.check('SW06 the commit holds what the resolver merged', await readFile(join(other, 'a.txt'), 'utf8') === merged)
+    this.check('F24 the commit holds what the merger merged', await readFile(join(other, 'a.txt'), 'utf8') === merged)
 
-    // SW06 with a resolver that leaves its markers: nothing is marked resolved and the person decides.
+    // SW06 with a merger that leaves its markers: nothing is marked resolved and the person decides.
     await repository.run(owner, ['update'])
     const markedTree = await sessionIn(owner, 'marked-session', '014-marked')
     await writeFile(join(markedTree, 'a.txt'), 'one mine\ntwo foreign\nthree other and session\nfour\nfive session\n')
@@ -787,11 +836,38 @@ class SmokeSvnWorktree extends SmokeHarness {
     actions.resolve = async () => undefined
     const marked = await finished('marked-session')
     const markedStatus = await repository.run(markedTree, ['status', '--', 'a.txt'])
-    this.check('SW06 markers left by the resolver need the person, and svn still marks the conflict',
-      marked.answer.ok && marked.action?.needs?.kind === 'resolver-failed' && markedStatus.startsWith('C')
-      && opened.length === reviewsBefore + 1 && actions.prompts.length === 2)
+    this.check('F24 markers the merger left need the person ("the merger ended with 1 left"), and svn still marks the conflict',
+      marked.answer.ok && marked.action?.needs?.kind === 'conflict' && marked.action.needs.reason.startsWith('the merger ended with 1 left')
+      && markedStatus.startsWith('C') && opened.length === reviewsBefore + 1 && actions.prompts.length === 2)
     actions.resolve = null
-    this.check('SW04 Discard removes the worktree the resolver left', (await flow.discard('marked-session')).ok && !existsSync(markedTree))
+    this.check('SW04 Discard removes the worktree the merger left', (await flow.discard('marked-session')).ok && !existsSync(markedTree))
+
+    // F25: a file the session changed is edited by hand while the merger works: the Finish waits naming
+    // it, though the path was changed before too; Check again accepts it and the review commits it.
+    await foreignCommit('notes.txt', 'notes\n', true)
+    await repository.run(owner, ['update'])
+    const guardedTree = await sessionIn(owner, 'guarded-session', '014-guarded')
+    const base = await readFile(join(guardedTree, 'a.txt'), 'utf8')
+    await writeFile(join(guardedTree, 'a.txt'), base.replace(/^[^\n]*/, 'one guarded'))
+    await writeFile(join(guardedTree, 'notes.txt'), 'notes of the session\n')
+    await foreignCommit('a.txt', base.replace(/^[^\n]*/, 'one foreign again'))
+    const guardedMerged = base.replace(/^[^\n]*/, 'one guarded and foreign again')
+    actions.resolve = async (cwd) => {
+      if (!(await readFile(join(cwd, 'a.txt'), 'utf8')).includes('<<<<<<< .mine')) throw new Error(`the merger found no conflict in ${cwd}`)
+      await writeFile(join(cwd, 'a.txt'), guardedMerged)
+      await writeFile(join(cwd, 'notes.txt'), 'notes of the session\nand a line the person added while the merger ran\n')
+    }
+    const guarded = await finished('guarded-session')
+    actions.resolve = null
+    this.check('F25 an edit of a file the session changed, made while the merger ran, makes the Finish wait naming it',
+      guarded.answer.ok && guarded.action?.needs?.kind === 'conflict'
+      && guarded.action.needs.reason.startsWith('changed outside the conflicts while the merger ran: notes.txt;'))
+    const accepted = await finished('guarded-session')
+    await repository.run(other, ['update'])
+    this.check('F25 Check again accepts it: the review commits the edit with the merge',
+      accepted.answer.ok && accepted.outcome?.result === 'committed' && opened.length === reviewsBefore + 2
+      && (await readFile(join(other, 'notes.txt'), 'utf8')).includes('while the merger ran')
+      && await readFile(join(other, 'a.txt'), 'utf8') === guardedMerged)
 
     // SW06: other commits to the project need the person when no checks are declared; Finish again commits as it is.
     await repository.run(owner, ['update'])
@@ -1145,6 +1221,277 @@ class SmokeSvnWorktree extends SmokeHarness {
   }
 
   /**
+   * The conflict testbed of `scripts/dev/make-conflict-testbed.ts`, one fresh testbed per scenario:
+   * `--work` writes only the session's side into the main copy and commits nothing, and `--land`
+   * commits r2 with the paths the docs page lists.
+   */
+  private async checkConflictTestbed(): Promise<void> {
+    for (const name of ConflictTestbed.scenarioNamesConst) {
+      const root = join(this.root, `testbed-${name}`)
+      ConflictTestbed.build(root)
+      const scenario = ConflictTestbed.scenariosConst[name]
+      const main = ConflictTestbed.mainOf(root)
+      ConflictTestbed.work(main, name)
+      const status = await this.svn.run(main, ['status', '--xml', '--non-interactive', '--', '.'])
+      const changed = [...status.stdout.matchAll(/<entry\s+path="([^"]*)">\s*<wc-status([^>]*)>/g)]
+        .filter(([, , attributes]) => !/item="normal"/.test(attributes ?? '') || /props="modified"/.test(attributes ?? ''))
+        .map(([, path]) => (path ?? '').replaceAll('\\', '/')).sort()
+      const head = async () => (await this.svn.run(root, ['info', '--show-item', 'revision', '--non-interactive', ConflictTestbed.urlOf(root)])).stdout.trim()
+      this.check(`testbed ${name}: --work writes only the session's side and commits nothing`,
+        JSON.stringify(changed) === JSON.stringify([...scenario.workPaths].sort()) && await head() === '1')
+      const revision = ConflictTestbed.land(root, name)
+      const log = await this.svn.run(root, ['log', '-v', '--xml', '-r', String(revision), '--non-interactive', ConflictTestbed.urlOf(root)])
+      const landed = [...log.stdout.matchAll(/<path[^>]*>([^<]*)<\/path>/g)].map(([, path]) => (path ?? '').replace(/^\//, '')).sort()
+      this.check(`testbed ${name}: --land commits r2 with the listed paths`,
+        revision === 2 && JSON.stringify(landed) === JSON.stringify([...scenario.landPaths].sort()))
+    }
+  }
+
+  /**
+   * The testbed incident end to end on real svn: a worktree session of the testbed's main copy writes
+   * the session's side, another commit lands, and Finish Commit waits with one conflict set that names
+   * the tree conflict and both text conflicts, in the words the snapshot, the CLI and the workflow carry.
+   */
+  private async checkIncidentWait(): Promise<void> {
+    const root = join(this.root, 'incident-testbed')
+    ConflictTestbed.build(root)
+    const main = ConflictTestbed.mainOf(root)
+    const manager = new SvnWorktreeManager(this.svn)
+    const records = await SessionRecordsStore.load(join(this.root, 'incident-records', 'session-records.json'),
+      { snapshotsDirectory: join(this.root, 'incident-records', 'snapshots'), report: (message) => { throw new Error(message) } })
+    const actions = new SmokeSvnActions(records, manager, SvnFixtureRepository.at(join(root, 'repo'), this.svn), this.svn, join(this.root, 'incident-script-logs'))
+    const provision = await this.provisioned(this.provisionerOf(manager), { directory: main, projectRoot: main }, '006-incident')
+    if (!provision.ok || provision.exitCode !== 0) throw new Error(`the incident worktree: ${JSON.stringify(provision)}`)
+    await records.put({ sessionId: 'incident-session', kind: 'shell', title: '006 - incident', createdAt: 0, life: 'ended', binding: null,
+      directory: { mode: 'adHoc', path: main }, worktree: provision.worktree })
+    ConflictTestbed.work(provision.worktree.worktreePath, 'incident')
+    const landed = ConflictTestbed.land(root, 'incident')
+    const finished = await actions.finish('incident-session')
+    const action = finished.action
+    const info = action === undefined ? null : SvnActionStages.infoOf(action)
+    const record = records.get('incident-session')
+    const workflow = record === null ? null : SessionWorkflows.of(record, (runId) => records.get(runId))
+    const steps = workflow?.rounds.flatMap((round) => round.steps) ?? []
+    console.log(`  info: the incident waits: ${info?.summary ?? 'no summary'}; ${info?.conflicts?.entries.map((entry) => `${entry.path} (${entry.kind}): ${entry.description}`).join('; ')}`)
+    this.check('F10/F20 the testbed incident reads one set: Jamat fixed the folder with keep-both, both text conflicts wait for the person (no Claude here)',
+      finished.answer.ok && action?.needs?.kind === 'conflict' && info?.summary === '3 conflicts: Jamat fixed 1, 2 need you'
+      && JSON.stringify(info.conflicts?.entries.map((entry) => [entry.path, entry.kind, entry.state, entry.by]))
+        === JSON.stringify([['.aidocs/engines', 'tree', 'settled', 'jamat'], ['src/catalog.ts', 'text', 'person', null], ['src/wallets.ts', 'text', 'person', null]])
+      && info.conflicts?.entries[0]?.description === `Your session added this folder with 2 files; r${landed} added it with 3 files.`
+      && info.conflicts?.entries[0]?.saved !== null && existsSync(join(info.conflicts?.entries[0]?.saved ?? '', 't1'))
+      && JSON.stringify(action.fixed) === JSON.stringify([{ path: '.aidocs/engines', option: 'keep-both' }]))
+    this.check('F10/F20 its workflow reads the summary as the badge and waits on the check of the conflicts',
+      workflow?.badge === '3 conflicts: Jamat fixed 1, 2 need you'
+      && steps.some((step) => step.title === 'Check the conflicts' && step.state === 'waits' && step.target.kind === 'conflicts'))
+
+    // F15: the person keeps both lines of each text conflict and presses Check again.
+    const worktreePath = provision.worktree.worktreePath
+    for (const file of ['src/catalog.ts', 'src/wallets.ts']) {
+      const path = join(worktreePath, ...file.split('/'))
+      await writeFile(path, SmokeSvnWorktree.bothSidesOf(await readFile(path, 'utf8')))
+    }
+    actions.decision.of = () => 'cancel'
+    const checked = await actions.finish('incident-session')
+    const reviewing = checked.action
+    const changed = reviewing?.roots?.[0]?.changed ?? []
+    const after = records.get('incident-session')
+    const rounds = after === null ? [] : SessionWorkflows.of(after, (runId) => records.get(runId))?.rounds ?? []
+    console.log(`  info: after Check again the review lists ${changed.join(', ')}; rounds ${rounds.map((round) => `${round.title} [${round.steps.map((step) => `${step.title}: ${step.state}`).join(', ')}]`).join(' / ')}`)
+    this.check('F15 Check again on the incident settles what the person fixed, updates again in a new round and opens the review of the session\'s changes, not r2\'s',
+      checked.answer.ok && checked.answer.value.actionId === action?.actionId && reviewing?.stage === 'reviewing' && actions.opened.includes(worktreePath)
+      && ['src/catalog.ts', 'src/wallets.ts'].every((path) => changed.includes(path))
+      && changed.some((path) => path.startsWith('.aidocs/engines/t1'))
+      && !changed.some((path) => path.startsWith('.aidocs/engines/t2'))
+      && rounds[0]?.steps.some((step) => step.title === 'Check the conflicts' && step.state === 'done') === true
+      && rounds[1]?.steps[0]?.title === 'svn update' && rounds[1].steps[0].state === 'done')
+  }
+
+  /**
+   * F17/F20 on a second testbed incident: Jamat's rule settled the folder with keep-both on real svn,
+   * so `resolveConflict` refuses it as settled; merged of a text file the person edited settles it, and
+   * keep-mine of a text file from the CLI, which only the person may choose, is refused.
+   */
+  private async checkIncidentResolve(): Promise<void> {
+    const root = join(this.root, 'resolve-testbed')
+    ConflictTestbed.build(root)
+    const main = ConflictTestbed.mainOf(root)
+    const manager = new SvnWorktreeManager(this.svn)
+    const records = await SessionRecordsStore.load(join(this.root, 'resolve-records', 'session-records.json'),
+      { snapshotsDirectory: join(this.root, 'resolve-records', 'snapshots'), report: (message) => { throw new Error(message) } })
+    const actions = new SmokeSvnActions(records, manager, SvnFixtureRepository.at(join(root, 'repo'), this.svn), this.svn, join(this.root, 'resolve-script-logs'))
+    const provision = await this.provisioned(this.provisionerOf(manager), { directory: main, projectRoot: main }, '007-resolve')
+    if (!provision.ok || provision.exitCode !== 0) throw new Error(`the resolve worktree: ${JSON.stringify(provision)}`)
+    await records.put({ sessionId: 'resolve-session', kind: 'shell', title: '007 - resolve', createdAt: 0, life: 'ended', binding: null,
+      directory: { mode: 'adHoc', path: main }, worktree: provision.worktree })
+    const worktreePath = provision.worktree.worktreePath
+    ConflictTestbed.work(worktreePath, 'incident')
+    ConflictTestbed.land(root, 'incident')
+    await actions.finish('resolve-session')
+    const again = await actions.flow.resolveConflict('resolve-session', { path: '.aidocs/engines', option: 'keep-both', confirm: false, requestedBy: 'cli', by: 'person' })
+    const engines = async (folder: string): Promise<string[]> => (await readdir(join(worktreePath, '.aidocs', 'engines', folder)).catch(() => [])).sort()
+    const entry = records.get('resolve-session')?.svnAction?.conflictSet?.entries.find((candidate) => candidate.path === '.aidocs/engines')
+    const status = await this.svn.run(worktreePath, ['status', '--xml', '--non-interactive', '--', '.aidocs/engines'])
+    console.log(`  info: Jamat's keep-both on the incident: t1 [${(await engines('t1')).join(', ')}], t2 [${(await engines('t2')).join(', ')}]; a second keep-both: ${JSON.stringify(again)}`)
+    this.check('F17/F20 Jamat settles the incident folder with keep-both: the 3 files r2 added are back beside the session\'s files, saved first; a second keep-both is refused',
+      !again.ok && again.code === 'invalid-spec'
+      && JSON.stringify(await engines('t2')) === JSON.stringify(['brief.md', 'report.md', 'trail.md'])
+      && (await engines('t1')).length === 2
+      && entry?.by === 'jamat' && entry.settledWith === 'keep-both' && entry.saved !== undefined && existsSync(join(entry.saved, 't1'))
+      && !/tree-conflicted="true"/.test(status.stdout)
+      && records.get('resolve-session')?.svnAction?.needs?.kind === 'conflict')
+    const catalog = join(worktreePath, 'src', 'catalog.ts')
+    await writeFile(catalog, SmokeSvnWorktree.bothSidesOf(await readFile(catalog, 'utf8')))
+    const merged = await actions.flow.resolveConflict('resolve-session', { path: 'src/catalog.ts', option: 'merged', confirm: false, requestedBy: 'cli', by: 'person' })
+    this.check('F17 merged of a text file the person edited settles it on real svn, and the Finish keeps waiting for the last one',
+      merged.ok && merged.value.state === 'settled' && merged.value.left === 1 && records.get('resolve-session')?.svnAction?.needs?.kind === 'conflict')
+    const before = await readFile(join(worktreePath, 'src', 'wallets.ts'), 'utf8')
+    const refused = await actions.flow.resolveConflict('resolve-session', { path: 'src/wallets.ts', option: 'keep-mine', confirm: false, requestedBy: 'cli', by: 'person' })
+    this.check('F17 keep-mine of a text file from the CLI answers person-only and changes nothing',
+      !refused.ok && refused.code === 'person-only' && await readFile(join(worktreePath, 'src', 'wallets.ts'), 'utf8') === before)
+  }
+
+  /**
+   * F19 on a third testbed incident: after Jamat's keep-both the person deletes r2's folder outside
+   * Jamat, which the commit would carry, and presses Check again. The guard reopens the folder as
+   * drops-incoming; keep-both, the markers removed by hand and Check again then open the review of
+   * the session's changes, without r2's files.
+   */
+  private async checkIncidentGuard(): Promise<void> {
+    const root = join(this.root, 'guard-testbed')
+    ConflictTestbed.build(root)
+    const main = ConflictTestbed.mainOf(root)
+    const manager = new SvnWorktreeManager(this.svn)
+    const records = await SessionRecordsStore.load(join(this.root, 'guard-records', 'session-records.json'),
+      { snapshotsDirectory: join(this.root, 'guard-records', 'snapshots'), report: (message) => { throw new Error(message) } })
+    const actions = new SmokeSvnActions(records, manager, SvnFixtureRepository.at(join(root, 'repo'), this.svn), this.svn, join(this.root, 'guard-script-logs'))
+    const provision = await this.provisioned(this.provisionerOf(manager), { directory: main, projectRoot: main }, '008-guard')
+    if (!provision.ok || provision.exitCode !== 0) throw new Error(`the guard worktree: ${JSON.stringify(provision)}`)
+    await records.put({ sessionId: 'guard-session', kind: 'shell', title: '008 - guard', createdAt: 0, life: 'ended', binding: null,
+      directory: { mode: 'adHoc', path: main }, worktree: provision.worktree })
+    const worktreePath = provision.worktree.worktreePath
+    ConflictTestbed.work(worktreePath, 'incident')
+    const landed = ConflictTestbed.land(root, 'incident')
+    await actions.finish('guard-session')
+    await this.svn.run(worktreePath, ['delete', '--non-interactive', '--', '.aidocs/engines/t2'])
+    const caught = await actions.finish('guard-session')
+    const info = caught.action === undefined ? null : SvnActionStages.infoOf(caught.action)
+    const engines = info?.conflicts?.entries.find((entry) => entry.path === '.aidocs/engines')
+    console.log(`  info: Check again after deleting r2's folder: ${caught.action?.needs?.reason ?? 'no wait'}; ${engines?.description ?? ''}`)
+    this.check('F19 Check again after the person deleted what r2 added below the fixed folder waits again: the folder needs you, the commit would drop r2\'s files',
+      caught.action?.needs?.kind === 'conflict' && caught.action.stage === 'fixing' && engines?.state === 'person'
+      && caught.action.needs.reason.startsWith(`the commit would drop what r${landed} brought in below .aidocs/engines`)
+      && JSON.stringify(engines.options.map((option) => option.id)) === JSON.stringify(['keep-both', 'keep-mine']))
+
+    const settled = await actions.flow.resolveConflict('guard-session', { path: '.aidocs/engines', option: 'keep-both', confirm: false, requestedBy: 'window', by: 'person' })
+    for (const file of ['src/catalog.ts', 'src/wallets.ts']) {
+      const path = join(worktreePath, ...file.split('/'))
+      await writeFile(path, SmokeSvnWorktree.bothSidesOf(await readFile(path, 'utf8')))
+    }
+    actions.decision.of = () => 'cancel'
+    const checked = await actions.finish('guard-session')
+    const changed = checked.action?.roots?.[0]?.changed ?? []
+    console.log(`  info: after keep-both and Check again the review lists ${changed.join(', ')}`)
+    this.check('F19 keep-both, the markers removed by hand and Check again open the review of the session\'s changes; r2\'s files are not in it',
+      settled.ok && settled.value.state === 'settled' && checked.action?.stage === 'reviewing' && actions.opened.includes(worktreePath)
+      && ['src/catalog.ts', 'src/wallets.ts'].every((path) => changed.includes(path))
+      && changed.some((path) => path.startsWith('.aidocs/engines/t1')) && !changed.some((path) => path.startsWith('.aidocs/engines/t2')))
+  }
+
+  /**
+   * F20, the incident as it happened: two worktree sessions of one main copy each add an engine trail
+   * under the new `.aidocs/engines`, the first commits through its Finish, and the second Finish meets
+   * the tree conflict. Jamat's rule keeps both trails, nothing waits, and the review commits both; the
+   * result names what Jamat fixed.
+   */
+  private async checkIncidentRule(): Promise<void> {
+    const root = join(this.root, 'rule-testbed')
+    ConflictTestbed.build(root)
+    const main = ConflictTestbed.mainOf(root)
+    const manager = new SvnWorktreeManager(this.svn)
+    const records = await SessionRecordsStore.load(join(this.root, 'rule-records', 'session-records.json'),
+      { snapshotsDirectory: join(this.root, 'rule-records', 'snapshots'), report: (message) => { throw new Error(message) } })
+    const actions = new SmokeSvnActions(records, manager, SvnFixtureRepository.at(join(root, 'repo'), this.svn), this.svn, join(this.root, 'rule-script-logs'))
+    const trails = { 'rule-first': ['t1', ['brief.md', 'report.md']], 'rule-second': ['t2', ['brief.md', 'report.md', 'trail.md']] } as const
+    const worktrees = new Map<string, string>()
+    for (const [sessionId, [trail, files]] of Object.entries(trails)) {
+      const provision = await this.provisioned(this.provisionerOf(manager), { directory: main, projectRoot: main }, `00${worktrees.size + 1}-${sessionId}`)
+      if (!provision.ok || provision.exitCode !== 0) throw new Error(`the ${sessionId} worktree: ${JSON.stringify(provision)}`)
+      await records.put({ sessionId, kind: 'shell', title: sessionId, createdAt: 0, life: 'ended', binding: null,
+        directory: { mode: 'adHoc', path: main }, worktree: provision.worktree })
+      const folder = join(provision.worktree.worktreePath, '.aidocs', 'engines', trail)
+      await mkdir(folder, { recursive: true })
+      for (const file of files) await writeFile(join(folder, file), `${file} of ${trail}\n`)
+      worktrees.set(sessionId, provision.worktree.worktreePath)
+    }
+    // The first review adds its trail, as the commit dialog does; the second stays unversioned, as the agent left it.
+    await this.svn.run(worktrees.get('rule-first') ?? '', ['add', '--non-interactive', '--parents', '--', '.aidocs/engines/t1'])
+    const first = await actions.finish('rule-first')
+    const second = await actions.finish('rule-second')
+    const head = await this.svn.run(root, ['list', '-R', '--non-interactive', `${ConflictTestbed.urlOf(root)}/.aidocs/engines`])
+    const listed = head.stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.endsWith('.md')).sort()
+    const lines = second.outcome?.lines ?? []
+    const result = actions.results.list({ sessionId: 'rule-second' })[0]
+    console.log(`  info: the second Finish of the incident: ${lines.join(' | ')}; .aidocs/engines at HEAD: ${listed.join(', ')}`)
+    this.check('F20 two worktrees each add an engine trail, the first commits, and the second Finish keeps both without a wait: its review commits both trails',
+      first.outcome?.result === 'committed' && second.outcome?.result === 'committed' && second.action === undefined
+      && actions.opened.includes(worktrees.get('rule-second') ?? '')
+      && JSON.stringify(listed) === JSON.stringify(['t1/brief.md', 't1/report.md', 't2/brief.md', 't2/report.md', 't2/trail.md']))
+    this.check('F20 the result of the second Finish names what Jamat fixed and where the saved copies are',
+      lines.includes('FIXED: .aidocs/engines (keep both)') && lines.some((line) => line.startsWith('   saved copies: '))
+      && result?.lines.includes('FIXED: .aidocs/engines (keep both)') === true)
+  }
+
+  /**
+   * F21, the lossless rules end to end: for the testbed's `eol`, `binary`, `props` and `delete`
+   * scenarios a worktree session's Finish Commit never waits. A conflict svn leaves is settled by its
+   * rule and named in a `FIXED:` line; equal binary content svn settles itself.
+   */
+  private async checkLosslessRules(): Promise<void> {
+    const expected = {
+      eol: 'FIXED: src/catalog.ts (take incoming)',
+      binary: null,
+      props: 'FIXED: . (union)',
+      delete: 'FIXED: src/legacy.ts (merged)',
+    } as const
+    for (const [scenario, line] of Object.entries(expected) as [keyof typeof expected, string | null][]) {
+      const root = join(this.root, `lossless-${scenario}`)
+      ConflictTestbed.build(root)
+      const main = ConflictTestbed.mainOf(root)
+      const manager = new SvnWorktreeManager(this.svn)
+      const records = await SessionRecordsStore.load(join(this.root, `lossless-${scenario}-records`, 'session-records.json'),
+        { snapshotsDirectory: join(this.root, `lossless-${scenario}-records`, 'snapshots'), report: (message) => { throw new Error(message) } })
+      const actions = new SmokeSvnActions(records, manager, SvnFixtureRepository.at(join(root, 'repo'), this.svn), this.svn, join(this.root, `lossless-${scenario}-logs`))
+      const provision = await this.provisioned(this.provisionerOf(manager), { directory: main, projectRoot: main }, `009-${scenario}`)
+      if (!provision.ok || provision.exitCode !== 0) throw new Error(`the ${scenario} worktree: ${JSON.stringify(provision)}`)
+      await records.put({ sessionId: scenario, kind: 'shell', title: scenario, createdAt: 0, life: 'ended', binding: null,
+        directory: { mode: 'adHoc', path: main }, worktree: provision.worktree })
+      ConflictTestbed.work(provision.worktree.worktreePath, scenario)
+      ConflictTestbed.land(root, scenario)
+      const finished = await actions.finish(scenario)
+      const lines = finished.outcome?.lines ?? []
+      const ignore = scenario === 'props'
+        ? (await this.svn.run(root, ['propget', 'svn:ignore', '--non-interactive', ConflictTestbed.urlOf(root)])).stdout.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean)
+        : []
+      console.log(`  info: Finish of the testbed ${scenario}: ${finished.action?.needs?.reason ?? 'no wait'}; ${lines.join(' | ')}${scenario === 'props' ? `; svn:ignore at HEAD: ${ignore.join(', ')}` : ''}`)
+      this.check(`F21 the testbed ${scenario} Finish reaches its end without a wait${line === null ? ', svn settles it itself' : `, its result names ${line}`}`,
+        finished.answer.ok && finished.action === undefined && (finished.outcome?.result === 'committed' || finished.outcome?.result === 'nothing')
+        && (line === null ? !lines.some((entry) => entry.startsWith('FIXED:')) : lines.includes(line))
+        && (scenario !== 'props' || JSON.stringify(ignore) === JSON.stringify(['node_modules', 'coverage', 'dist'])))
+    }
+  }
+
+  /** What a person makes of svn's markers by hand: both sides kept, the base section and every marker line gone. */
+  private static bothSidesOf(text: string): string {
+    let base = false
+    return text.split(/(?<=\n)/).filter((line) => {
+      if (/^\|{7}/.test(line)) base = true
+      else if (/^={7}/.test(line)) base = false
+      else if (!/^(?:<{7}|>{7})/.test(line)) return !base
+      return false
+    }).join('')
+  }
+
+  /**
    * The removal after a session's end (Jamat#37), on a disposable owner: each record carries the
    * cleanup its trigger writes and has ended, and a fresh records store stands for the next client
    * start. The reconciler's verdict and the flow's apply then judge it, as they do in the app.
@@ -1244,9 +1591,10 @@ class SmokeSvnWorktree extends SmokeHarness {
     const cleanupResults = new WorktreeResultsStore(join(this.root, 'cleanup-results'), {
       now: () => Date.now(), logs: new ScriptLogStore(join(this.root, 'cleanup-logs')), report: () => undefined,
     })
+    const steps = new SessionSteps({ changed: () => undefined, now: () => Date.now() })
     const flow = new SvnWorktreeFinishFlow({
-      records, svn: manager,
-      removal: new SvnWorktreeRemoval({ records, svn: manager, releaseBelow: async () => undefined, onQueue: (work) => work(), changed: () => undefined }),
+      records, svn: manager, steps,
+      removal: new SvnWorktreeRemoval({ records, svn: manager, releaseBelow: async () => undefined, onQueue: (work) => work(), changed: () => undefined, steps }),
       actions: { start: () => { throw new Error('a cleanup presses nothing') }, settled: () => { throw new Error('a cleanup presses nothing') } },
       labels: new SvnRevisionLabels(manager),
       results: cleanupResults,
@@ -1358,6 +1706,33 @@ class SmokeSvnWorktree extends SmokeHarness {
       .filter((value) => value.length > 0 && result.toLowerCase().includes(value.toLowerCase()))
     if (leaks.length > 0) throw new Error(`A fixture would name this machine: ${leaks.join(', ')}`)
     return result
+  }
+
+  /**
+   * Writes a fixture unless it differs from the committed one only in attribute order: svn 1.14
+   * orders the attributes of an element by a hash seeded per process, so two captures of the same
+   * facts differ in bytes. Answers 1 when it wrote.
+   */
+  private static async writeFixture(path: string, text: string): Promise<number> {
+    const sorted = (xml: string) => xml.replace(/<([\w-]+)((?:\s+[\w-]+="[^"]*")+)\s*(\/?)>/g,
+      (_, name: string, attributes: string, closed: string) => `<${name} ${attributes.trim().split(/\s+(?=[\w-]+=")/).sort().join(' ')}${closed}>`)
+    if (existsSync(path) && sorted(await readFile(path, 'utf8')) === sorted(text)) return 0
+    await writeFile(path, text, 'utf8')
+    return 1
+  }
+
+  /** Each committed conflict fixture pair reads to the facts this svn writes for its shape. */
+  private async checkConflictFixturesCurrent(captures: readonly ConflictSpikeCapture[]): Promise<void> {
+    const texts = new Map(captures.map(({ name, text }) => [name, text]))
+    for (const { name, victim } of ConflictShapesSpike.casesConst) {
+      const live = ConflictShapesSpike.factsText(texts.get(`status-${name}.xml`) ?? '', texts.get(`info-${name}.xml`) ?? '', victim)
+      const fixture = ConflictShapesSpike.factsText(
+        await readFile(join(conflictFixtureDirectory, `status-${name}.xml`), 'utf8'),
+        await readFile(join(conflictFixtureDirectory, `info-${name}.xml`), 'utf8'),
+        victim,
+      )
+      this.check(`Conflict fixture ${name} reads the same facts as this svn's output`, live === fixture)
+    }
   }
 
   /** The committed fixtures still read the way this svn writes them. */

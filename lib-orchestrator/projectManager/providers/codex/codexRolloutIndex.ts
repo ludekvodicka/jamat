@@ -162,9 +162,7 @@ export class CodexRolloutIndex {
     from: number,
     until: number,
   ): Promise<CodexRolloutWindowRef[]> {
-    const root = CodexRolloutIndex.sessionsRootOf(this.codexHome)
-    const candidates = (await this.candidates(root, { kind: 'between', from, until }))
-      .filter((candidate) => candidate.createdAt >= from && candidate.createdAt <= until)
+    const candidates = await this.candidatesBetween(from, until)
     const reads = await this.pooled(candidates, (file) =>
       this.headerFields(file, CodexRolloutIndex.captureHeaderReadBytesConst))
     const wanted = CodexRolloutIndex.normalizedCwd(projectDir)
@@ -175,6 +173,17 @@ export class CodexRolloutIndex {
         found.push({ ...candidate, forkedFromId: read.forkedFromId, interactive: read.interactive })
     })
     return found.sort((left, right) => right.createdAt - left.createdAt)
+  }
+
+  /**
+   * Every rollout named inside one window, by its file NAME alone: the day directories the window
+   * touches are listed, nothing is opened, nothing is remembered. The walk `rolloutsBetween` reads
+   * headers over, offered to a caller that keeps its own header facts.
+   */
+  async candidatesBetween(from: number, until: number): Promise<CodexRolloutRef[]> {
+    const root = CodexRolloutIndex.sessionsRootOf(this.codexHome)
+    return (await this.candidates(root, { kind: 'between', from, until }))
+      .filter((candidate) => candidate.createdAt >= from && candidate.createdAt <= until)
   }
 
   invalidate(): void {

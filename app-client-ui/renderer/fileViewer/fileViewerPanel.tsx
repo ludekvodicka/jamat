@@ -30,6 +30,7 @@ import { FileViewerZoom, useFileViewerZoomWheel } from './fileViewerZoom'
 import { useFileChanges } from './useFileChanges'
 import { useFileViewerDocument } from './useFileViewerDocument'
 import { useFileViewerFreshness } from './useFileViewerFreshness'
+import { FileViewerSearchBar, useFileViewerSearch } from './fileViewerSearch'
 import { useWorkingTreeChanges } from './useWorkingTreeChanges'
 import './fileViewerPanel.css'
 
@@ -105,6 +106,9 @@ function FileViewerPanelBody(
     updateParameters({ ...currentParameters(), zoomPercent: percent })
   }, [currentParameters, updateParameters])
   const body = useFileViewerZoomWheel(zoomPercent, changeZoom)
+  const search = useFileViewerSearch(body, () => {
+    if (model.document?.kind.kind === 'html' && model.mode === 'rendered') model.setMode('raw')
+  })
 
   useEffect(() => props.fileTools.register(props.api.id, {
     toggle: sidebar.toggle,
@@ -149,6 +153,8 @@ function FileViewerPanelBody(
         className="file-viewer"
         aria-label="File viewer"
         tabIndex={-1}
+        data-file-search-open={search.open || undefined}
+        onKeyDown={search.onKeyDown}
         style={{
           '--file-viewer-zoom': FileViewerZoom.scaleOf(zoomPercent),
         } as React.CSSProperties}
@@ -175,6 +181,7 @@ function FileViewerPanelBody(
                 />
               )}
               <FileViewerZoomControl percent={zoomPercent} onChange={changeZoom} />
+              <button type="button" title="Find in file (Ctrl+F)" onClick={search.show}>Find</button>
               <FileViewerReloadControl missing={freshness.missing} onReload={model.reload} />
             </div>
             <FileViewerPathControl
@@ -185,6 +192,7 @@ function FileViewerPanelBody(
             />
           </>
         )}
+        <FileViewerSearchBar search={search} />
         <div className="file-viewer-body" ref={body}>
           {model.error && <p className="file-viewer-error">{model.error}</p>}
           {!model.error && !model.document && <p className="file-viewer-note">Opening file...</p>}

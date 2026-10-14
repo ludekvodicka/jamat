@@ -23,8 +23,9 @@ import {
 } from '../hostControl/hostController'
 import { HostLaunchLocator, type HostLaunchResult } from '../hostControl/hostLaunchLocator'
 import { HostTreeVersion } from '../hostControl/hostTreeVersion'
-import { type CatalogReading, CatalogView } from '../projectManager/catalogView'
+import { CatalogView } from '../projectManager/catalogView'
 import { ClaudeTitleWriter } from '../projectManager/claudeTitleWriter'
+import { ClaudeStatusLine } from './launch/claudeStatusLine'
 import { CodexSessionFiles } from './launch/codexSessionFiles'
 import { RunTools } from './launch/runTools'
 import type { ProjectBinding } from '../projectManager/projectManagerApi.types'
@@ -33,21 +34,28 @@ import type { PlatformSettingsValue } from '../projectSetup/projectSetup.types'
 import { ProjectSetupManager } from '../projectSetup/projectSetupManager'
 import { SetupFamilies } from '../projectSetup/setupFamilies'
 import type { RuntimeChannel } from '../shared/configIdentity.types'
+import { ClaudeConfigHome } from '../shared/claudeConfigHome'
 import { ErrorText } from '../shared/errorText'
 import { OrchestratorPaths } from '../shared/orchestratorPaths'
 import { PathCompare } from '../shared/pathCompare'
 import { ProductGroup } from '../shared/productGroup'
 import type { TreeRemove } from '../shared/treeRemoval'
+import { SvnConflictResolutions } from '../svn/svnConflictResolutions'
 import { SvnInvoker } from '../svn/svnInvoker'
 import { SvnWorktreeManager } from '../svn/svnWorktreeManager'
+import { HostMemoryWatch } from './hostMemory/hostMemoryWatch'
 import { AgentPresets } from './launch/agentPresets'
 import { FinalizeSteps } from './lifecycle/finalizeSteps'
 import { LandedRows } from './lifecycle/landedRows'
 import { LaunchBackoff } from './lifecycle/launchBackoff'
 import type { ReconcileChange } from './lifecycle/reconciler'
 import { SessionLifecycle, type SessionWorktreePort } from './lifecycle/sessionLifecycle'
+import { SessionSteps } from './lifecycle/sessionSteps'
 import { SvnActionFlow } from './lifecycle/svnActionFlow'
+import { SessionWorkflows } from './lifecycle/sessionWorkflows'
 import { SvnActionStages } from './lifecycle/svnActionStages'
+import { SvnConflictFlow } from './lifecycle/svnConflictFlow'
+import { SvnConflictWords } from './lifecycle/svnConflictWords'
 import { SvnResolverLauncher } from './lifecycle/svnResolverLauncher'
 import { SvnRevisionLabels } from './lifecycle/svnRevisionLabels'
 import { SvnWorktreeFinishFlow } from './lifecycle/svnWorktreeFinishFlow'
@@ -80,7 +88,9 @@ import { CommandAgreement } from './scripts/commandAgreement'
 import { CommandTrustStore } from './scripts/commandTrustStore'
 import { WorktreeResultsStore } from './results/worktreeResultsStore'
 import { SessionNotifyStore } from './notifies/sessionNotifyStore'
-import type { SessionNotifyDto } from './sessionManagerApi.types'
+import { SvnWaitNotices } from './notifies/svnWaitNotices'
+import type { SessionChildInfo, SessionNotifyDto, SessionStepInfo } from './sessionManagerApi.types'
+import { RunOutputLines } from './scripts/runOutputLines'
 import { ScriptLogStore } from './scripts/scriptLogStore'
 import { type ScriptCollapsed, SessionScriptsManager } from './scripts/sessionScriptsManager'
 import { SessionScriptDefinitions } from './scripts/sessionScriptDefinitions'
@@ -94,6 +104,7 @@ import type {
   SessionColorName,
   SessionCommitReceipt,
   SessionCreated,
+  SessionCreateOrigin,
   SessionCreateSpec,
   SessionDetailsSaved,
   SessionDetailsUpdate,
@@ -105,6 +116,7 @@ import type {
   SessionLiveBrief,
   SessionLocalHistoryEntry,
   SessionOperation,
+  SessionScriptOutput,
   SessionScriptRequest,
   SessionScriptsReading,
   SessionSetupInfo,
@@ -114,7 +126,11 @@ import type {
   SessionWorktreeInfo,
   SessionWorktreeKind,
   SessionWorktreePlace,
+  SessionWorkflowInfo,
   SessionWorktreeState,
+  SessionConflictList,
+  SessionConflictResolved,
+  SvnConflictResolveRequest,
   SvnLabelledRevision,
   TerminalAttachResult,
   TerminalAttachSpec,
@@ -267,6 +283,11 @@ export type SessionTranscriptContextResult =
        * tier, so the reader that draws the context window learns it here or nowhere.
        */
       launchModel: string | null
+      /**
+       * The record's `createdAt`. A Codex child thread is its own rollout, filed under the day it
+       * started, so the session's start bounds the day directories a sub-agent listing reads.
+       */
+      startedAt: number
     }
   }
   | { ok: false; code: 'unknown-session'; detail: string }
@@ -347,6 +368,10 @@ export class SessionManager {
   private readonly projectSetup: ProjectSetupManager
   private readonly agreement: CommandAgreement
   private readonly monitor: WorkStateMonitor
+  /** The last output line of each running scripted run, composed into its `step`. */
+  private readonly runLines: RunOutputLines
+  /** What this client does for each session now; memory only, composed into `step`. */
+  private readonly steps: SessionSteps
   private readonly terminals: TerminalGateway
   private readonly worktreeFacts = new Map<string, WorktreeFactsView>()
   private readonly vcsFacts: VcsFactsCache | null
@@ -354,8 +379,12 @@ export class SessionManager {
   /** Outlives the sessions it reports; loaded and swept at start. */
   private readonly results: WorktreeResultsStore
   private readonly notifyStore: SessionNotifyStore
+  /** The caller's wake-up line of a waiting worktree Finish, a third notify source beside results and observations. */
+  private readonly waitNotices: SvnWaitNotices
   /** What the landed rows wait for and how far their main copies are behind; memory only, fed by the poll. */
   private readonly landedRows: LandedRows
+  /** The Host's memory reading for the status bar; memory only, fed by the poll. */
+  private readonly hostMemory: HostMemoryWatch
   private landedPass: Promise<void> | null = null
   /** An ending asked for another round while one was running. */
   private landedAgain = false
@@ -487,6 +516,13 @@ export class SessionManager {
       agentOf: (runtimeSessionId) => this.agentOf(runtimeSessionId),
       onChanged: () => this.changed(),
     })
+    this.runLines = new RunOutputLines({
+      client: this.client,
+      liveLineOf: (runtimeSessionId) => this.liveLineOf(runtimeSessionId),
+      onChanged: () => this.changed(),
+    })
+    this.steps = new SessionSteps({ changed: () => this.changed(), now: () => Date.now() })
+    this.hostMemory = new HostMemoryWatch({ read: () => this.client.health(), now: () => Date.now() })
     // The lease is shared rather than taken again: the Host holds one at a time, so a second
     // controller identity here would take this client's own away from every `runtime.*` call.
     this.terminals = new TerminalGateway({
@@ -509,7 +545,9 @@ export class SessionManager {
       now: () => Date.now(),
       logs: this.scriptLogs,
       report: deps.onError,
+      heldActionIds: () => new Set((this.records?.list() ?? []).flatMap((record) => record.svnAction === undefined ? [] : [record.svnAction.actionId])),
     })
+    this.waitNotices = new SvnWaitNotices(() => this.records)
     this.notifyStore = new SessionNotifyStore(OrchestratorPaths.sessionNotifiesDirectory(deps.configIdentity, deps.channel), {
       now: () => Date.now(), report: deps.onError,
     })
@@ -557,6 +595,7 @@ export class SessionManager {
     this.started = false
     this.clearTimer()
     this.monitor.stop()
+    this.runLines.stop()
     this.terminals.closeAll()
     await this.records?.flushUserInput()
     await this.client.stop()
@@ -647,6 +686,12 @@ export class SessionManager {
     return this.scripts.scriptLogOf(parentId, runId)
   }
 
+  async scriptOutputOf(parentId: string, runId: string): Promise<SessionsOpResult<SessionScriptOutput>> {
+    await this.lifecycle()
+    if (this.scripts === null) return { ok: false, code: 'not-found', detail: `No session ${parentId}` }
+    return this.scripts.outputOf(parentId, runId)
+  }
+
   /** A session's runs and, with `runId`, one run's saved log text; for the control API. */
   async scriptsOf(parentId: string, runId?: string): Promise<SessionsOpResult<SessionScriptsReading>> {
     await this.lifecycle()
@@ -696,6 +741,7 @@ export class SessionManager {
         cwd: record.transcriptCwd ?? SessionWorkingDirectory.ofRecord(record),
         nativeSessionId: agent?.nativeSessionId ?? null,
         launchModel: agent?.model ?? null,
+        startedAt: record.createdAt,
       },
     }
   }
@@ -745,9 +791,14 @@ export class SessionManager {
    * A script that asked for a worktree learns from the answer where the session runs, so it never
    * has to find the folder by listing `.worktrees`.
    */
-  async createSession(spec: SessionCreateSpec): Promise<SessionsOpResult<SessionCreated>> {
-    const created = await this.tabTitled(this.operate((lifecycle) => lifecycle.create(spec)))
-    if (!created.ok) return created
+  async createSession(spec: SessionCreateSpec, origin?: SessionCreateOrigin): Promise<SessionsOpResult<SessionCreated>> {
+    const created = await this.tabTitled(this.operate((lifecycle) => lifecycle.create(spec, origin)))
+    if (!created.ok) {
+      // The reconciler may still start the left record; that session wakes its target like any other.
+      if (created.recordedSessionId !== undefined && spec.notify !== undefined)
+        await this.notifyStore.watch(created.recordedSessionId, spec.notify)
+      return created
+    }
     if (spec.notify !== undefined) await this.notifyStore.watch(created.value.sessionId, spec.notify)
     const record = this.records?.get(created.value.sessionId) ?? null
     const number = record === null ? null : SessionTitle.partsOf(record.title).number
@@ -794,9 +845,34 @@ export class SessionManager {
     return this.notifyStore
   }
 
+  svnWaitNotices(): SvnWaitNotices {
+    return this.waitNotices
+  }
+
   async notifies(filter: { sessionId?: string }): Promise<SessionsOpResult<{ notifies: SessionNotifyDto[] }>> {
     await this.notifyStore.load()
     return { ok: true, value: { notifies: this.notifyStore.list(filter) } }
+  }
+
+  /**
+   * The sessions whose parent link names this one, composed from the snapshot as the list is. A
+   * removed parent still has its children: the link stays on them.
+   */
+  async children(sessionId: string): Promise<SessionsOpResult<{ children: SessionChildInfo[] }>> {
+    await this.lifecycle()
+    const children = this.snapshot().sessions.flatMap((session): SessionChildInfo[] =>
+      session.parent?.sessionId === sessionId
+        ? [{
+          sessionId: session.sessionId,
+          number: session.titleParts.number,
+          title: session.title,
+          agentId: session.agent?.agentId ?? null,
+          life: session.life,
+          kind: session.parent.kind,
+          sameProject: session.parent.sameProject,
+        }]
+        : [])
+    return { ok: true, value: { children } }
   }
 
   /** The worktree facts of one session, read from its record. */
@@ -821,8 +897,57 @@ export class SessionManager {
           ? null
           : { phase: record.worktreeCleanup.phase, reason: record.worktreeCleanup.reason ?? null },
         receipts: (record.commitReceipts ?? []).map(({ scopeRoot, revision, at }) => ({ scopeRoot, revision, at })),
+        step: this.steps.infoOf(record),
+        workflow: this.workflowOf(record),
       },
     }
+  }
+
+  /**
+   * The full conflict list of a session's SVN action, in the words of the snapshot. A run of an SVN
+   * action (a review or a resolver run asking with `--self`) answers its parent's list, as
+   * `openReviewOnce` maps a run to its parent's action.
+   */
+  async conflictsOf(sessionId: string): Promise<SessionsOpResult<SessionConflictList>> {
+    await this.lifecycle()
+    const record = this.records?.get(sessionId)
+    if (!record) return { ok: false, code: 'not-found', detail: `No session ${sessionId}` }
+    const parent = record.svnAction === undefined && record.scriptOf !== undefined
+      ? this.records?.get(record.scriptOf.sessionId) ?? record
+      : record
+    const action = parent.svnAction
+    const set = action?.conflictSet
+    if (action === undefined || !SvnConflictFlow.open(set))
+      return { ok: false, code: 'not-found', detail: `Session ${sessionId} has no conflicts of an SVN action` }
+    const listed = SvnConflictWords.listOf(set, set.entries.length)
+    return { ok: true, value: {
+      sessionId: parent.sessionId,
+      actionId: action.actionId,
+      stage: action.stage,
+      summary: SvnConflictWords.summaryOf(set),
+      entries: listed.entries,
+      more: listed.more,
+    } }
+  }
+
+  /**
+   * One option on one conflicted path of a session's waiting Finish. A run of the action (the merger
+   * asking with `--self`) settles its parent's path as `agent`; any other caller as the person.
+   */
+  async resolveConflict(sessionId: string, request: SvnConflictResolveRequest): Promise<SessionsOpResult<SessionConflictResolved>> {
+    const lifecycle = await this.lifecycle()
+    const record = this.records?.get(sessionId)
+    if (!record) return { ok: false, code: 'not-found', detail: `No session ${sessionId}` }
+    const run = record.svnAction === undefined && record.scriptOf !== undefined
+    const parentId = run && record.scriptOf !== undefined ? record.scriptOf.sessionId : sessionId
+    const resolved = await lifecycle.svnActions.resolveConflict(parentId, { ...request, by: run ? 'agent' : 'person' })
+    this.changed()
+    return resolved
+  }
+
+  /** Moves only with a pass, the stage or a run's state; never with a poll or a live line. */
+  private workflowOf(record: SessionRecord): SessionWorkflowInfo | null {
+    return SessionWorkflows.of(record, (runId) => this.records?.get(runId) ?? null)
   }
 
   /**
@@ -1088,7 +1213,42 @@ export class SessionManager {
     }
   }
 
+  /**
+   * The Remove of an ended SVN worktree session takes its worktree too, through the cleanup's own
+   * judgement: the record is the only thing that names the worktree, so a Remove that dropped it
+   * left a checkout nobody saw or ended. Changes keep the session (`dirty`), and Finish decides
+   * about them; a holder keeps it until the pending cleanup removes both (`locked`). A worktree svn
+   * cannot judge falls back to the plain Remove, which names what it leaves, because a session that
+   * nothing can take away is worse than a leftover named out loud.
+   */
   async removeSession(sessionId: string): Promise<SessionsOpResult> {
+    await this.lifecycle()
+    const record = this.records?.get(sessionId)
+    if (record?.worktree?.kind !== 'svn' || (record.life !== 'ended' && record.life !== 'lost'))
+      return this.operate((lifecycle) => lifecycle.remove(sessionId))
+    const requested = await this.requestWorktreeCleanup(sessionId)
+    if (!requested.ok) return requested
+    await this.cleanWorktree(sessionId)
+    const after = this.records?.get(sessionId)
+    if (!after) return { ok: true, value: undefined }
+    const worktree = after.worktree
+    const cleanup = after.worktreeCleanup
+    if (worktree === undefined || cleanup === undefined)
+      return this.operate((lifecycle) => lifecycle.remove(sessionId))
+    if (cleanup.phase === 'kept')
+      return {
+        ok: false,
+        code: 'dirty',
+        detail: `Session ${sessionId} keeps its worktree ${worktree.worktreePath} (${cleanup.reason ?? 'changes'}); `
+          + 'Finish it: Commit lands the changes, Discard throws them away, and either takes the session away',
+      }
+    if (cleanup.reason === 'in use' || cleanup.reason === 'undeleted')
+      return {
+        ok: false,
+        code: 'locked',
+        detail: `Session ${sessionId}: its worktree ${worktree.worktreePath} is ${cleanup.reason}; `
+          + 'it is removed once nothing holds it, and the session goes with it',
+      }
     return this.operate((lifecycle) => lifecycle.remove(sessionId))
   }
 
@@ -1368,7 +1528,7 @@ export class SessionManager {
     const proposal = review.proposalOf(parent.sessionId, root.path)
       ?? review.proposalOf(parent.sessionId, action.root)
       ?? (SessionTitle.partsOf(parent.title).name.trim() || parent.title)
-    const opened = await review.open({ sessionId: runId, scopeRoot: root.path, proposal })
+    const opened = await review.open({ sessionId: runId, parentId: parent.sessionId, scopeRoot: root.path, proposal })
     if (!opened.ok) return opened
     const commitSessionId = opened.value.commitSessionId
     await this.records?.update(parent.sessionId, (latest) => latest.svnAction?.runId === runId
@@ -1498,6 +1658,7 @@ export class SessionManager {
       results: this.results,
       finishRefusal: () => this.svnFinishRefusal(),
       changed: () => this.changed(),
+      steps: this.steps,
       ended: (sessionId) => this.worktreeEnded(sessionId),
       report: this.deps.onError,
     })
@@ -1866,6 +2027,7 @@ export class SessionManager {
       // it reads it OFF the queue: rendering a screen per session is not something an operation may
       // wait behind. It reports its own verdicts through `onChanged`.
       this.detach(this.monitor.observe(listing), 'The work-state monitor')
+      this.detach(this.runLines.observe(listing), 'The output lines of running scripts')
     }
   }
 
@@ -1923,6 +2085,7 @@ export class SessionManager {
       releaseBelow: () => this.settleProbes(),
       onQueue: (work) => this.serialize(work),
       changed: () => this.changed(),
+      steps: this.steps,
     })
     this.svnRemoval = removal
     const lifecycle = new SessionLifecycle({
@@ -1945,6 +2108,13 @@ export class SessionManager {
         resourcesRoot: this.deps.resourcesRoot,
         report: this.deps.onError,
       }),
+      claudeStatusLine: new ClaudeStatusLine({
+        directory: OrchestratorPaths.claudeStatusLineDirectory(this.deps.configIdentity, this.deps.channel),
+        snapshots: OrchestratorPaths.claudeContextSnapshotsDirectory(this.deps.configIdentity, this.deps.channel),
+        claudeHome: ClaudeConfigHome.resolve(this.deps.claudeHome),
+        tools: this.tools,
+        report: this.deps.onError,
+      }),
       tools: this.tools,
       claudeTitles: ClaudeTitleWriter.load({
         claudeHome: this.deps.claudeHome,
@@ -1960,6 +2130,11 @@ export class SessionManager {
           briefs: logs,
           withMarkers: (root, paths) => SvnResolverLauncher.markersIn(root, paths),
         },
+        resolutions: new SvnConflictResolutions({
+          svn: new SvnInvoker(),
+          markersIn: (root, paths) => SvnResolverLauncher.markersIn(root, paths),
+          now: () => Date.now(),
+        }),
         results: this.results,
         finishRefusal: () => this.svnFinishRefusal(),
         activityOf: (sessionId) => {
@@ -1973,6 +2148,7 @@ export class SessionManager {
         },
         detach: (work, what) => this.detach(work, what),
         changed: () => this.changed(),
+        steps: this.steps,
       },
       report: this.deps.onError,
       yoloFor: this.deps.yoloFor,
@@ -2027,10 +2203,15 @@ export class SessionManager {
       this.detach(this.probe(this.refreshWorktreeFacts()), 'The worktree facts')
       this.detach(this.probe(this.refreshVcsFacts()), 'The VCS facts')
       this.detach(this.refreshLanded(), 'The landed rows')
+      this.detach(this.observeHostMemory(), 'The Host memory reading')
       await this.refresh('poll')
     } finally {
       this.armPoll()
     }
+  }
+
+  private async observeHostMemory(): Promise<void> {
+    if (await this.hostMemory.observe(this.client.descriptor()?.hostInstanceId ?? null)) this.changed()
   }
 
   /**
@@ -2230,6 +2411,12 @@ export class SessionManager {
     // One reading for the whole snapshot: the categories block and the bindings beside it have to
     // come from the same document, and the store re-reads whenever the file changes on disk.
     const catalog = this.catalog.read()
+    const records = this.records?.list() ?? []
+    // Composed once, because a child's `sameProject` reads its parent's binding beside its own. The
+    // repository root wins over the cwd: a session inside `<project>/.worktrees/<slug>` belongs to the
+    // project, not to a project called `.worktrees`.
+    const bindings = new Map(records.map((record) => [record.sessionId,
+      catalog.bind(SessionWorkingDirectory.ofRecord(record), SessionManager.bindRootOf(record))]))
     return {
       host: {
         presence: this.controller.presence(),
@@ -2237,26 +2424,23 @@ export class SessionManager {
         hostInstanceId: this.controller.hostInstanceId(),
         liveCount: [...this.runtimes.values()].filter((runtime) => runtime.alive).length,
         lastStartError: this.controller.lastStartError(),
+        memory: this.hostMemory.reading(),
       },
       categories: catalog.categories.map((category) => ({
         id: category.id,
         label: category.label,
         path: category.path,
       })),
-      sessions: (this.records?.list() ?? [])
-        .map((record) => this.sessionInfoOf(record, catalog)),
+      sessions: records.map((record) => this.sessionInfoOf(record, bindings)),
       orphans: this.orphans,
       reconciled: this.reconciled,
     }
   }
 
-  private sessionInfoOf(record: SessionRecord, catalog: CatalogReading): SessionInfo {
-    // The repository root wins over the cwd: a session inside `<project>/.worktrees/<slug>`
-    // belongs to the project, not to a project called `.worktrees`.
-    const project = catalog.bind(
-      SessionWorkingDirectory.ofRecord(record),
-      SessionManager.bindRootOf(record),
-    )
+  /** `bindings` holds every record's binding by session id, its own included. */
+  private sessionInfoOf(record: SessionRecord, bindings: ReadonlyMap<string, ProjectBinding>): SessionInfo {
+    const project = bindings.get(record.sessionId)
+    if (project === undefined) throw new Error(`Session ${record.sessionId}: no project binding was composed`)
     const info: SessionInfo = {
       sessionId: record.sessionId,
       kind: record.kind,
@@ -2279,6 +2463,11 @@ export class SessionManager {
       }
     if (record.worktree) info.worktree = this.worktreeInfoOf(record, record.worktree)
     if (record.svnAction) info.svnAction = SvnActionStages.infoOf(record.svnAction)
+    // A run has no client step and a parent no live line, so the two never compete.
+    const step = this.steps.infoOf(record) ?? this.liveStepOf(record)
+    if (step !== null) info.step = step
+    const workflow = this.workflowOf(record)
+    if (workflow !== null) info.workflow = workflow
     if (record.retiredWorktree) {
       info.retiredWorktree = {
         worktreePath: record.retiredWorktree.worktreePath,
@@ -2321,7 +2510,26 @@ export class SessionManager {
     // work in, so it loses its colour here and keeps everything else.
     if (SessionColors.isName(record.color)) info.color = record.color
     if (record.note !== undefined) info.note = record.note
+    if (record.callerOperationId !== undefined) info.callerOperationId = record.callerOperationId
+    if (record.parent !== undefined)
+      info.parent = { ...record.parent, sameProject: SessionManager.sameProject(project, bindings.get(record.parent.sessionId)) }
     return info
+  }
+
+  /**
+   * The generic nesting rule: both in one catalog project, or both in one ad-hoc directory. A
+   * worktree session binds to its owner (`bindRootOf`), so a worktree of the parent's project counts.
+   */
+  private static sameProject(child: ProjectBinding, parent: ProjectBinding | undefined): boolean {
+    // A removed parent: the child is drawn as a root.
+    if (parent === undefined) return false
+    switch (child.kind) {
+      case 'project': return parent.kind === 'project' && parent.categoryId === child.categoryId
+        && PathCompare.comparable(parent.projectPath) === PathCompare.comparable(child.projectPath)
+      case 'adHoc': return parent.kind === 'adHoc' && PathCompare.comparable(parent.path) === PathCompare.comparable(child.path)
+      case 'none': return false
+      default: throw new Error(`Unknown project binding: ${JSON.stringify(child satisfies never)}`)
+    }
   }
 
   /**
@@ -2363,6 +2571,8 @@ export class SessionManager {
     // it touches neither.
     if (SvnActionFlow.running(record)) {
       if (record.kind === 'agent') admits.push('newBeside')
+      // While an agent works for it, the Finish press and Discard stop that agent first.
+      if (record.svnAction !== undefined && SvnActionStages.agentRunOf(record.svnAction) !== null) admits.push('finalize', 'discardWorktree')
       return admits
     }
     // A tombstone names a directory that is gone, and the project directory is not a substitute.
@@ -2522,7 +2732,8 @@ export class SessionManager {
    */
   private static legacyLinkInto(info: SessionInfo, link: SessionRecordScriptLink): void {
     if (link.scriptId === 'setup' || link.scriptId === 'declared' || link.scriptId === 'requested'
-      || link.scriptId === 'svn' || link.scriptId === 'checks' || link.scriptId === 'svn-resolve' || link.scriptId === 'review')
+      || link.scriptId === 'svn' || link.scriptId === 'checks' || link.scriptId === 'svn-resolve' || link.scriptId === 'svn-merge'
+      || link.scriptId === 'review')
       info.setupFor = link.sessionId
     else if (link.scriptId === 'merge-resolve') info.resolveFor = link.sessionId
     else throw new Error(`Unknown script ${JSON.stringify(link.scriptId satisfies never)}`)
@@ -2574,6 +2785,23 @@ export class SessionManager {
       ref: { hostInstanceId, runtimeSessionId: sessionId, generation: runtime.generation },
       alive: runtime.alive,
     }
+  }
+
+  /** A run record gone between the listing and this answer gets no line, and the next pass forgets it. */
+  /** Only a run that still runs shows its last line; the record ends before the next listing says so. */
+  private liveStepOf(record: SessionRecord): SessionStepInfo | null {
+    switch (record.life) {
+      case 'starting':
+      case 'live': return this.runLines.stepOf(record.sessionId)
+      case 'ended':
+      case 'lost': return null
+      default: throw new Error(`Unknown session life ${JSON.stringify(record.life satisfies never)}`)
+    }
+  }
+
+  private liveLineOf(runtimeSessionId: string): boolean {
+    const link = this.records?.get(runtimeSessionId)?.scriptOf
+    return link !== undefined && SessionScriptDefinitions.known(link) && SessionScriptDefinitions.of(link).liveLine
   }
 
   private agentOf(runtimeSessionId: string): SessionRecordAgent['agentId'] | null {

@@ -124,6 +124,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
       'Commit (SVN)…',
       'Commit (Git)…',
       'Open project folder',
+      'Open in VS Code',
       'Copy project folder',
       'Copy unique session id',
     ])
@@ -155,6 +156,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
       'Commit (SVN)…',
       'Commit (Git)…',
       'Open project folder',
+      'Open in VS Code',
       'Copy project folder',
       // Gated on nothing either, and the one item on this row a SECOND agent is meant to read: an
       // ended session is exactly the one somebody hands over.
@@ -200,6 +202,29 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
     expect(MenuView.isOpen()).toBe(false)
   })
 
+  it('offers Show workflow first among the operations of a session that has one, and none without', () => {
+    const onShowWorkflow = vi.fn()
+    const view = render(
+      <SessionsTreeContextMenu
+        position={{ x: 10, y: 20 }}
+        commands={new CommandRegistry()}
+        sessionId="s1"
+        facts={factsOf({ ended: true })}
+        actions={['retrySetup', 'remove']}
+        onShowWorkflow={onShowWorkflow}
+        onAction={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+    expect(MenuView.titles().slice(-3)).toEqual(['Show workflow', 'Retry setup', 'Remove…'])
+    fireEvent.click(MenuView.items().find((item) => item.textContent?.includes('Show workflow'))!)
+    expect(onShowWorkflow).toHaveBeenCalledOnce()
+    view.unmount()
+
+    render(<MenuHost commands={new CommandRegistry()} facts={{ ended: true }} actions={['retrySetup', 'remove']} />)
+    expect(MenuView.titles()).not.toContain('Show workflow')
+  })
+
   it('offers Update main copy on a landed row beside Remove, and runs it on the clicked row', () => {
     const onAction = vi.fn()
     render(<MenuHost
@@ -220,6 +245,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
     render(<MenuHost commands={new CommandRegistry()} facts={{ directoryPath: null }} />)
 
     expect(MenuView.titles()).not.toContain(titleOf('tab.copyProjectFolder'))
+    expect(MenuView.titles()).not.toContain(titleOf('session.openInVsCode'))
     // The open needs only the session, exactly as the tab menu asks only for a session's tab.
     expect(MenuView.titles()).toContain(titleOf('tab.openProjectFolder'))
   })
@@ -301,7 +327,7 @@ describe('SessionsTreeScriptsMenu', () => {
 
   it('lists rows and history in the order given, a row opening its terminal', () => {
     const openTerminal = vi.fn()
-    const item = SessionsTreeScriptsMenu.itemOf(runs, 'local', openTerminal, null, null)
+    const item = SessionsTreeScriptsMenu.itemOf(runs, 'local', openTerminal, null)
 
     expect(item?.label).toBe('Scripts')
     expect(item?.children.map((child) => [child.label, child.disabled === true, child.title])).toEqual([
@@ -315,7 +341,7 @@ describe('SessionsTreeScriptsMenu', () => {
 
   it('opens a saved log through the log port once one is given', () => {
     const openLog = vi.fn()
-    const item = SessionsTreeScriptsMenu.itemOf(runs, 'local', vi.fn(), openLog, null)
+    const item = SessionsTreeScriptsMenu.itemOf(runs, 'local', vi.fn(), openLog)
 
     expect(item?.children[1].disabled).toBeUndefined()
     item?.children[1].onSelect()
@@ -324,30 +350,14 @@ describe('SessionsTreeScriptsMenu', () => {
   })
 
   it('lists only the rows of a remote session, and nothing without a run', () => {
-    expect(SessionsTreeScriptsMenu.itemOf(runs, 'remote', vi.fn(), null, null)?.children.map((child) => child.label))
+    expect(SessionsTreeScriptsMenu.itemOf(runs, 'remote', vi.fn(), null)?.children.map((child) => child.label))
       .toEqual(['Setup · running'])
-    expect(SessionsTreeScriptsMenu.itemOf(runs.slice(1), 'remote', vi.fn(), null, null)).toBe(null)
-    expect(SessionsTreeScriptsMenu.itemOf([], 'local', vi.fn(), null, null)).toBe(null)
-  })
-
-  it('leads with the sub-task switch, which flips the stored choice', () => {
-    const onSwitch = vi.fn()
-    const item = SessionsTreeScriptsMenu.itemOf(runs, 'local', vi.fn(), null, { shown: false, onSwitch })
-
-    expect(item?.children.map((child) => [child.label, child.checked])).toEqual([
-      ['Show as sub-tasks', false],
-      ['Setup · running', undefined],
-      ['Setup · succeeded · 2 s', undefined],
-      ['Setup · failed · exit 1 · 1 s', undefined],
-    ])
-    item?.children[0].onSelect()
-    expect(onSwitch).toHaveBeenCalledWith(true)
-    expect(SessionsTreeScriptsMenu.itemOf(runs, 'local', vi.fn(), null, { shown: true, onSwitch })?.children[0].checked)
-      .toBe(true)
+    expect(SessionsTreeScriptsMenu.itemOf(runs.slice(1), 'remote', vi.fn(), null)).toBe(null)
+    expect(SessionsTreeScriptsMenu.itemOf([], 'local', vi.fn(), null)).toBe(null)
   })
 
   it('puts the submenu first among the operations', () => {
-    const scripts = SessionsTreeScriptsMenu.itemOf(runs, 'local', vi.fn(), null, null)
+    const scripts = SessionsTreeScriptsMenu.itemOf(runs, 'local', vi.fn(), null)
     render(
       <SessionsTreeContextMenu
         position={{ x: 10, y: 20 }}

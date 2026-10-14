@@ -10,6 +10,7 @@ import type {
 } from '../../../../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import type { IpcResult } from '../../../../shared/appClientUiIpc'
 import { AppClientUiReport } from '../../../../shared/appClientUiReport'
+import type { TerminalClipboardPaste } from '../../../../shared/terminalClipboardPaste'
 import type { TerminalTarget } from '../../../../shared/terminalTarget'
 import { IpcFailure } from '../../../ipc/ipcFailure'
 import { AppControl } from '../../../ipc/appControl'
@@ -33,11 +34,10 @@ export type TerminalSize = { cols: number; rows: number } | null
 /**
  * One attach, over whichever channel the target chose.
  *
- * **Two members are optional, and that is the point.** The peer protocol carries attach, input,
- * resize, active and detach, and neither a clipboard read nor a detector: a remote arm that
- * implemented them by returning nothing would look complete to every caller. Missing, they make the
- * caller say what it does without them - the paste key leaves itself to xterm rather than being
- * swallowed into a handler that returns at once, which is the bug this shape exists to prevent.
+ * **`detect` is optional, and that is the point.** The peer protocol carries no detector: a remote
+ * arm that implemented it by returning nothing would look complete to every caller. Missing, it
+ * makes the caller say what it does without it. The clipboard paste was optional for the same
+ * reason until `terminal.pasteImage` gave the remote arm a way to hand an image to the agent.
  */
 export interface TerminalAttachTransport {
   /** Null means it worked. A refused attach publishes no frame, so this is all that is ever said. */
@@ -48,7 +48,16 @@ export interface TerminalAttachTransport {
   setActive(active: boolean): void
   detach(): void
   clipboardWrite(text: string): void
-  clipboardRead?(): Promise<string | null>
+  /**
+   * This computer's clipboard, made ready to paste: text as it is, an image or a file as its path on
+   * the computer the agent runs on. `refused` carries the sentence the person is shown.
+   */
+  clipboardPaste(): Promise<TerminalClipboardPaste | { kind: 'refused'; detail: string }>
+  /**
+   * Whether the agent behind this attach reads the same clipboard as the person typing. It does on
+   * a local session; on a remote one its own image-paste key would read the other computer's.
+   */
+  readonly agentSharesClipboard: boolean
   /** What was under a right click, sent to be given meaning. */
   detect?(capture: TerminalMenuCapture): Promise<IpcResult<TerminalDetectResult>>
   /** Frames for THIS attach only; the returned function stops them. */
@@ -115,10 +124,11 @@ export class TerminalTransports {
               AppClientUiReport.error('Another program held the clipboard; the copy did not go')
           })
         },
-        clipboardRead: async () => {
-          const answer = await window.appClient.terminal.clipboardRead(attachId)
-          return answer.ok ? answer.value : null
+        clipboardPaste: async () => {
+          const answer = await window.appClient.terminal.clipboardPaste(attachId)
+          return answer.ok ? answer.value : { kind: 'refused', detail: `Paste failed: ${answer.error}` }
         },
+        agentSharesClipboard: true,
         detect: (capture) => window.appClient.terminalMenu.detect(attachId, capture),
         onFrame: (handler) => window.appClient.onTerminalFrame((id, frame) => {
           if (id === attachId) handler(frame)
@@ -158,6 +168,13 @@ export class TerminalTransports {
         // The general clipboard rather than the attach-bound one: this machine is where the copy
         // has to land, and there is nothing on the far side to hold a clipboard against.
         clipboardWrite: (text) => { void window.appClient.clipboard.writeText(text) },
+        clipboardPaste: async () => {
+          const answer = await window.appClient.remote.terminalClipboardPaste(remoteEndpointId, attachId)
+          if (!answer.ok) return { kind: 'refused', detail: `Paste failed: ${answer.error}` }
+          if (!answer.value.ok) return { kind: 'refused', detail: `Paste failed: ${answer.value.error.detail}` }
+          return answer.value.value
+        },
+        agentSharesClipboard: false,
         onFrame: (handler) => window.appClient.onRemoteTerminalFrame((endpointId, id, frame) => {
           if (endpointId === remoteEndpointId && id === attachId) handler(frame)
         }),

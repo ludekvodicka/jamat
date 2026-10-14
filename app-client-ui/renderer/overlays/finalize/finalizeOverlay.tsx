@@ -16,6 +16,7 @@ import {
 } from './finalizeModel'
 import './finalize.css'
 import { AppControl } from '../../ipc/appControl'
+import { WorkflowPortsOf } from '../../workflow/workflowPorts'
 
 export function FinalizeOverlay(props: {
   request: FinalizeOpenRequest
@@ -111,6 +112,9 @@ export function FinalizeOverlay(props: {
           return
         }
         completed.current = new Set(completed.current).add(entry.specId)
+        // A press of this window that started an action brings its workflow forward; a peer's or the CLI's opens nothing.
+        if (ask.target.kind === 'local' && entry.question.startsWorkflow?.includes(choiceId) === true)
+          WorkflowPortsOf.openWorkflow(ask.target.sessionId)
       } catch (thrown: unknown) {
         inFlight.current = false
         if (!mounted.current) return

@@ -30,6 +30,20 @@ export class WorkspacePanels {
   /** Per document, so two probes in one window are told apart by their titles. */
   private static probeIndex = 0
 
+  static openTaskKeys(controller: TabsController): ReadonlySet<string> {
+    return new Set(controller.openPanels().flatMap((panel) => panel.key === PanelKeysConst.terminal
+      ? PanelSplitParams.of(panel.params).items.flatMap((item) => {
+          switch (item.kind) {
+            case 'task': return [item.key]
+            case 'file':
+            case 'commit':
+            case 'workflow': return []
+            default: throw new Error(`Unknown split item: ${JSON.stringify(item satisfies never)}`)
+          }
+        })
+      : []))
+  }
+
   static openFileViewer(
     controller: TabsController,
     source: FileViewerDocumentSource,
@@ -138,17 +152,19 @@ export class WorkspacePanels {
     return typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : null
   }
 
-  static hasActiveFileViewer(controller: TabsController): boolean {
+  /** A file viewer, or a file, sub-agent or shell view active in a terminal split: what Escape closes. */
+  static hasActiveViewer(controller: TabsController): boolean {
     const panelId = controller.activePanelId()
     if (panelId === null) return false
     const key = controller.keyOf(panelId)
     if (key === PanelKeysConst.fileViewer) return true
     if (key !== PanelKeysConst.terminal) return false
     const split = PanelSplitParams.of(controller.transferPayload(panelId).params)
-    return split.items.some((item) => item.key === split.active && item.kind === 'file')
+    return split.items.some((item) => item.key === split.active && (item.kind === 'file' || item.kind === 'task'))
   }
 
-  static async closeActive(controller: TabsController): Promise<void> {
+  /** `workflowOpen` answers whether a session's workflow is open; such an item stays like a pinned one. */
+  static async closeActive(controller: TabsController, workflowOpen: (sessionId: string) => boolean = () => false): Promise<void> {
     const panelId = controller.activePanelId()
     if (panelId === null)
       return
@@ -156,11 +172,13 @@ export class WorkspacePanels {
     if (controller.keyOf(panelId) === PanelKeysConst.terminal)
       controller.applyPanelParameters(panelId, (params) => {
         const split = PanelSplitParams.of(params)
+        const active = split.items.find((item) => item.key === split.active)
         // A pinned item is not closed by the keyboard; the same key closes the whole tab instead.
-        if (split.active === null || PanelSplitParams.isPinned(split, split.active))
+        if (active === undefined || PanelSplitParams.isPinned(split, active.key)
+          || PanelSplitParams.closeRefusalOf(active, workflowOpen) !== null)
           return params
         splitClosed = true
-        return PanelSplitParams.merged(params, PanelSplitParams.closed(split, split.active))
+        return PanelSplitParams.merged(params, PanelSplitParams.closed(split, active.key))
       })
     if (!splitClosed)
       await controller.hidePanel(panelId)
@@ -264,6 +282,34 @@ export class WorkspacePanels {
       } catch (error) {
         return { kind: 'failed', detail: ErrorText.of(error) }
       }
+    } else if (command.kind === 'open-task') {
+      if (controller.keyOf(command.panelId) !== PanelKeysConst.terminal)
+        return { kind: 'failed', detail: `Not a terminal panel: ${command.panelId}` }
+      let refusal: string | null = null
+      const applied = controller.applyPanelParameters(command.panelId, (params) => {
+        const result = PanelSplitParams.opened(PanelSplitParams.of(params), { kind: 'task', ...command.item })
+        if (!result.ok) { refusal = result.refusal; return params }
+        return PanelSplitParams.merged(params, result.state)
+      })
+      if (!applied) return { kind: 'failed', detail: `Unknown panel: ${command.panelId}` }
+      if (refusal !== null) return { kind: 'failed', detail: refusal }
+      controller.activatePanel(command.panelId)
+      requestAnimationFrame(() => controller.focusPanelContent(command.panelId))
+      return { kind: 'task-opened', panelId: command.panelId }
+    } else if (command.kind === 'open-workflow') {
+      if (controller.keyOf(command.panelId) !== PanelKeysConst.terminal)
+        return { kind: 'failed', detail: `Not a terminal panel: ${command.panelId}` }
+      let refusal: string | null = null
+      const applied = controller.applyPanelParameters(command.panelId, (params) => {
+        const result = PanelSplitParams.workflowOpened(PanelSplitParams.of(params), command.sessionId)
+        if (!result.ok) { refusal = result.refusal; return params }
+        return PanelSplitParams.merged(params, result.state)
+      })
+      if (!applied) return { kind: 'failed', detail: `Unknown panel: ${command.panelId}` }
+      if (refusal !== null) return { kind: 'failed', detail: refusal }
+      controller.activatePanel(command.panelId)
+      requestAnimationFrame(() => controller.focusPanelContent(command.panelId))
+      return { kind: 'workflow-opened', panelId: command.panelId }
     } else if (command.kind === 'open-commit') {
       if (controller.keyOf(command.panelId) !== PanelKeysConst.terminal)
         return { kind: 'failed', detail: `Not a terminal panel: ${command.panelId}` }

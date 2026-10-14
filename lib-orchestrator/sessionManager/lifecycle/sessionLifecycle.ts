@@ -15,6 +15,7 @@ import type { SetupResolution } from '../../projectSetup/projectSetup.types'
 import type { WorktreeConfigRead } from '../../projectSetup/worktreeConfig'
 import { AgentPresets, type SessionAgentSpec } from '../launch/agentPresets'
 import { ClaudeTrustSeed, type ClaudeTrustSeedResult } from '../launch/claudeTrustSeed'
+import type { ClaudeStatusLine } from '../launch/claudeStatusLine'
 import type { CodexSessionFiles } from '../launch/codexSessionFiles'
 import { PathCompare } from '../../shared/pathCompare'
 import { Slug } from '../../shared/slug'
@@ -48,6 +49,7 @@ import type {
   SessionAgentId,
   SessionColorName,
   SessionCommitReceipt,
+  SessionCreateOrigin,
   SessionCreateSpec,
   SessionDetailsSaved,
   SessionDetailsUpdate,
@@ -169,11 +171,13 @@ export interface SessionClaudeTitlesPort {
 
 /**
  * The marks of a session this library starts for itself, which the wire spec refuses to carry: a
- * one-shot run, the permission mode it runs in, and the parent it is a script run of.
+ * one-shot run, the permission mode it runs in, and the parent it is a script run of. Without
+ * `oneShot` the run is an interactive agent (the SVN merger): it gets the Claude settings file like
+ * any interactive session and ends when it is stopped or exits.
  */
 export interface SessionInternalMarks {
   sessionId: string
-  oneShot: true
+  oneShot?: true
   permission?: SessionRecordAgent['permission']
   scriptOf: SessionRecordScriptLink
 }
@@ -191,6 +195,8 @@ export interface SessionLifecycleDeps {
   agreement: Pick<CommandAgreement, 'gate' | 'agreed' | 'declared'>
   numbers: SessionNumbersPort
   codexSessions: Pick<CodexSessionFiles, 'launch' | 'identity'>
+  /** The status line relay an interactive Claude launch is started with; null leaves it out. */
+  claudeStatusLine: Pick<ClaudeStatusLine, 'settingsFileFor'>
   /** Where the tool of a direct-process run is on this machine, asked at every launch of one. */
   tools: Pick<RunTools, 'resolve'>
   claudeTitles: SessionClaudeTitlesPort
@@ -279,6 +285,7 @@ export class SessionLifecycle {
   private readonly setup: SessionSetupPort
   private readonly numbers: SessionNumbersPort
   private readonly codexSessions: SessionLifecycleDeps['codexSessions']
+  private readonly claudeStatusLine: SessionLifecycleDeps['claudeStatusLine']
   private readonly tools: SessionLifecycleDeps['tools']
   private readonly claudeTitles: SessionClaudeTitlesPort
   private readonly scripts: SessionScriptsManager
@@ -318,6 +325,7 @@ export class SessionLifecycle {
     this.setup = deps.setup
     this.numbers = deps.numbers
     this.codexSessions = deps.codexSessions
+    this.claudeStatusLine = deps.claudeStatusLine
     this.tools = deps.tools
     this.claudeTitles = deps.claudeTitles
     this.scripts = deps.scripts
@@ -454,7 +462,13 @@ export class SessionLifecycle {
       }
       else
         throw new Error(`Unknown launch: ${JSON.stringify(launch)}`)
-      const effective = { ...options, yolo, model, effort }
+      // Every interactive Claude launch, a reopen as much as a create: the window is read off the
+      // running process, so a resumed conversation needs the relay as much as a new one. A one-shot
+      // run draws no status line at all.
+      const claudeSettingsFile = agentId === 'claude' && !record.agent?.oneShot
+        ? this.claudeStatusLine.settingsFileFor(LaunchPlanner.cwdOf(record)) ?? undefined
+        : undefined
+      const effective = { ...options, yolo, model, effort, claudeSettingsFile }
       return LaunchPlanner.plan(record, { ...effective,
         codexBridge: (native, args) => this.codexSessions.launch(record, native, args, effective),
       })
@@ -640,13 +654,15 @@ export class SessionLifecycle {
   }
 
   /**
-   * A session somebody ASKED for, and the reason this door takes one argument: the sentence above
+   * A session somebody ASKED for, and the reason this door takes no marks: the sentence above
    * used to be enforced by nobody. `create(spec, marks)` was public with the widened signature, so
    * any caller could hand over the two marks the wire refuses to carry, and what stopped them was
-   * that none happened to. There are two doors now and the compiler holds the difference.
+   * that none happened to. There are two doors now and the compiler holds the difference. The
+   * origin is no mark: it is a fact of the control request (its envelope's operation id), which the
+   * registry hands over and no body can write.
    */
-  async create(spec: SessionCreateSpec): Promise<SessionsOpResult<{ sessionId: string }>> {
-    return this.createWith(spec)
+  async create(spec: SessionCreateSpec, origin?: SessionCreateOrigin): Promise<SessionsOpResult<{ sessionId: string }>> {
+    return this.createWith(spec, { origin })
   }
 
   /**
@@ -748,6 +764,8 @@ export class SessionLifecycle {
       marks?: SessionInternalMarks
       /** Set by `createComposed` alone: the title has already been through the counter. */
       titleFinal?: true
+      /** Set by `create` alone, for a session a control request asked for. */
+      origin?: SessionCreateOrigin
     },
   ): Promise<SessionsOpResult<{ sessionId: string }>> {
     const marks = options?.marks
@@ -756,6 +774,14 @@ export class SessionLifecycle {
     const notified = spec.worktree?.notify?.sessionId
     if (notified !== undefined && this.records.get(notified) === null)
       return { ok: false, code: 'invalid-spec', detail: `The worktree notify names session ${notified}, which this computer does not have` }
+    const parentId = spec.parent?.sessionId
+    if (parentId !== undefined) {
+      const parent = this.records.get(parentId)
+      if (parent === null)
+        return { ok: false, code: 'invalid-spec', detail: `The parent names session ${parentId}, which this computer does not have` }
+      if (parent.scriptOf !== undefined)
+        return { ok: false, code: 'invalid-spec', detail: `Session ${parentId} is a script run and cannot be a parent` }
+    }
     // The READ latch, and only that: a file that could not be read refuses every write for the rest
     // of the session, so asking here is what stops a worktree being cut for a record that could
     // never be written. It says NOTHING about a file that read cleanly and cannot be written - that
@@ -784,7 +810,7 @@ export class SessionLifecycle {
     const facts = provision.value?.worktree ?? null
     const sessionId = marks?.sessionId ?? this.newId()
     const operationId = this.newId()
-    const record = this.recordOf(spec, sessionId, facts, operationId, token, marks)
+    const record = this.recordOf(spec, sessionId, facts, operationId, token, marks, options?.origin)
     /*
      * Only a worktree is empty enough to need this, and only a worktree create can name the
      * repository the steps come back relative to. The resolution itself is a couple of file reads in
@@ -830,9 +856,13 @@ export class SessionLifecycle {
       // judging the request itself, and one of those replayed every two seconds forever is not a
       // retry, it is a loop - see `decided` for which answers are which. The undecided half is paced
       // and counted instead, so a refusal that stands is a wait somebody can see rather than a loop.
-      if (OperationOutcomes.decided(created)) await this.endRefused(record, created.detail)
-      else await this.markLaunchWait(record.sessionId, created.detail)
-      return OperationOutcomes.failureOf(created)
+      if (OperationOutcomes.decided(created)) {
+        await this.endRefused(record, created.detail)
+        return OperationOutcomes.failureOf(created)
+      }
+      await this.markLaunchWait(record.sessionId, created.detail)
+      // The replay may still start this record, so the failure names it for whoever waits on it.
+      return { ...OperationOutcomes.failureOf(created), recordedSessionId: record.sessionId }
     }
     await this.bindLive(record, created.value)
     return { ok: true, value: { sessionId } }
@@ -1931,6 +1961,7 @@ export class SessionLifecycle {
     operationId: string,
     token: string | null,
     marks?: SessionInternalMarks,
+    origin?: SessionCreateOrigin,
   ): SessionRecord {
     const agent = spec.agent ? this.recordAgentOf(spec.agent, sessionId, marks) : undefined
     const cwd = worktree === null ? LaunchPlanner.directoryOf(spec.directory) : LaunchPlanner.worktreeCwdOf(worktree)
@@ -1955,7 +1986,9 @@ export class SessionLifecycle {
       if (agent.initialPrompt) record.lastUserInputAt = record.createdAt
     }
     if (marks) record.scriptOf = marks.scriptOf
+    if (spec.parent !== undefined) record.parent = { sessionId: spec.parent.sessionId, kind: spec.parent.kind }
     if (spec.flowId) record.flowId = spec.flowId
+    if (origin) record.callerOperationId = origin.callerOperationId
     if (spec.color) record.color = spec.color
     if (worktree) record.worktree = SessionLifecycle.withCaller(worktree, spec.worktree)
     // Only an SVN worktree has a removal after the end; a Git one keeps its Finish.
@@ -2089,6 +2122,8 @@ export class SessionLifecycle {
     }
     const number = SessionLifecycle.numberProblem(spec)
     if (number) return number
+    const parent = SessionLifecycle.parentProblem(spec.parent)
+    if (parent) return parent
     // The same guard `setColor` writes through, and the same sentence: a name nobody can draw is a
     // caller's mistake wherever it arrives, and a create is not the place to start being lenient
     // about it - the record would keep the word and every reader would quietly filter it away.
@@ -2105,6 +2140,15 @@ export class SessionLifecycle {
       return SessionLifecycle.agentProblem(spec.agent)
     else
       return `unknown session kind ${JSON.stringify(spec.kind)}`
+  }
+
+  private static parentProblem(parent: SessionCreateSpec['parent']): string | null {
+    if (parent === undefined) return null
+    if (!parent || typeof parent !== 'object' || !SessionLifecycle.filled(parent.sessionId))
+      return 'a parent needs the id of the session that starts this one'
+    if (parent.kind !== 'worktree' && parent.kind !== 'ticket' && parent.kind !== 'worker')
+      return `unknown parent kind ${JSON.stringify(parent.kind)}`
+    return null
   }
 
   /**

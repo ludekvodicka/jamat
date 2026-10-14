@@ -1,0 +1,52 @@
+.workflow { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; overflow: hidden; box-sizing: border-box; color: var(--color-text-1); font-size: var(--fs-base); }
+.workflow:focus { outline: none; }
+.workflow__empty { margin: 0; padding: var(--space-2); color: var(--color-text-4); font-size: var(--fs-secondary); }
+.workflow__header { flex: none; display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-2); border-bottom: 1px solid var(--color-border-hairline); }
+.workflow__title { margin: 0; font-size: var(--fs-base); font-weight: 600; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.workflow__summary { margin: 0; color: var(--color-text-3); font-size: var(--fs-secondary); overflow-wrap: anywhere; }
+.workflow[data-open="true"] .workflow__summary { color: var(--color-text-2); }
+.workflow__rounds { flex: 1; min-height: 0; overflow: auto; padding: var(--space-1) 0; }
+.workflow__round + .workflow__round { margin-top: var(--space-2); border-top: 1px dashed var(--color-border-hairline); padding-top: var(--space-1); }
+.workflow__round-title { margin: 0; padding: var(--space-1) var(--space-2); color: var(--color-text-3); font-size: var(--fs-secondary); font-weight: 600; }
+.workflow__steps { list-style: none; margin: 0; padding: 0; }
+.workflow__step { display: grid; grid-template-columns: auto 1fr auto; column-gap: var(--space-2); align-items: baseline; width: 100%; box-sizing: border-box; padding: var(--space-1) var(--space-2); border: 0; border-radius: 0; background: transparent; color: inherit; font: inherit; text-align: left; }
+.workflow__step--opens { cursor: pointer; }
+.workflow__step--opens:hover { background: var(--color-surface-control-hover); }
+.workflow__glyph { grid-column: 1; color: var(--color-text-4); font-family: var(--font-mono); }
+.workflow__step-title { grid-column: 2; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.workflow__time { grid-column: 3; color: var(--color-text-4); font-size: var(--fs-status); }
+.workflow__detail { grid-column: 2 / 4; min-width: 0; color: var(--color-text-3); font-size: var(--fs-secondary); overflow-wrap: anywhere; }
+.workflow__step[data-state="running"] .workflow__glyph { color: var(--color-accent); }
+.workflow__step[data-state="running"] .workflow__detail { color: var(--color-accent); font-family: var(--font-mono); }
+.workflow__step[data-state="done"] .workflow__glyph { color: var(--color-ok); }
+.workflow__step[data-state="failed"] .workflow__glyph, .workflow__step[data-state="failed"] .workflow__detail { color: var(--color-danger); }
+.workflow__step[data-state="waits"] .workflow__glyph, .workflow__step[data-state="waits"] .workflow__detail { color: var(--color-warn); }
+.workflow__step[data-state="pending"] .workflow__step-title, .workflow__step[data-state="skipped"] .workflow__step-title { color: var(--color-text-3); }
+.workflow__footer { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2); border-top: 1px solid var(--color-border-hairline); }
+.workflow__action--primary { border-color: var(--color-accent); color: var(--color-text-1); }
+.workflow__refusal { flex-basis: 100%; margin: 0; color: var(--color-danger); font-size: var(--fs-secondary); overflow-wrap: anywhere; }
+.workflow__agreement { flex-basis: 100%; display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--fs-secondary); color: var(--color-text-2); }
+.workflow__agreement p, .workflow__agreement ul { margin: 0; }
+.workflow__agreement code { font-family: var(--font-mono); overflow-wrap: anywhere; }
+.workflow__agreement .workflow__action { align-self: flex-start; }
+.workflow__conflicts { display: flex; flex-direction: column; gap: var(--space-1); margin: 0 var(--space-2) var(--space-1) var(--space-4); padding: var(--space-1) var(--space-2); border-left: 2px solid var(--color-warn); background: var(--color-surface-sunken); }
+.workflow__conflicts:focus { outline: none; }
+.workflow__conflicts-brief { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); color: var(--color-text-2); font-size: var(--fs-secondary); }
+.workflow__conflicts-summary { margin: 0; color: var(--color-text-2); font-size: var(--fs-secondary); font-weight: 600; }
+.workflow__conflict-group-title { margin: 0; color: var(--color-text-3); font-size: var(--fs-secondary); font-weight: 600; }
+.workflow__conflict-group[data-group="person"] .workflow__conflict-group-title { color: var(--color-warn); }
+.workflow__conflict-group[data-group="fixed"] .workflow__conflict-group-title { color: var(--color-ok); }
+.workflow__conflict-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-1); }
+.workflow__conflict { display: flex; flex-direction: column; min-width: 0; }
+.workflow__conflict-path { font-family: var(--font-mono); font-size: var(--fs-secondary); color: var(--color-text-1); overflow-wrap: anywhere; }
+.workflow__conflict-description, .workflow__conflict-note { color: var(--color-text-3); font-size: var(--fs-secondary); overflow-wrap: anywhere; }
+.workflow__conflict-note code, .workflow__conflicts-more code { font-family: var(--font-mono); }
+.workflow__conflicts-more { margin: 0; color: var(--color-text-4); font-size: var(--fs-secondary); }
+.workflow__conflict-actions { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-top: var(--space-1); }
+.workflow__conflict-action { font-size: var(--fs-secondary); }
+.workflow__conflict-refusal { color: var(--color-danger); font-size: var(--fs-secondary); overflow-wrap: anywhere; }
+.workflow__conflict-options { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-top: var(--space-1); }
+.workflow__conflict-option { font-size: var(--fs-secondary); }
+.workflow__conflict-option[data-loses="incoming"] { color: var(--color-warn); }
+.workflow__conflict-option--armed { border-color: var(--color-danger); color: var(--color-danger); }
+.workflow__conflict-warning { color: var(--color-danger); font-size: var(--fs-secondary); overflow-wrap: anywhere; }

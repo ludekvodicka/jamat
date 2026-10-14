@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<info>
+<entry
+   kind="dir"
+   path="."
+   revision="3">
+<url>{REPO}/assets</url>
+<relative-url>^/assets</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+</wc-info>
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+<entry
+   kind="file"
+   path="logo.png"
+   revision="3">
+<url>{REPO}/assets/logo.png</url>
+<relative-url>^/assets/logo.png</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+<checksum>3b37538efb87e9eb1c6d547562f499932b894f17</checksum>
+</wc-info>
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+</info>

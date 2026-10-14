@@ -12,10 +12,11 @@ export class ClaudeTranscriptFixtures {
     input_tokens?: number
     cache_read_input_tokens?: number
     cache_creation_input_tokens?: number
-  }): string {
+  }, effort?: string): string {
     return `${JSON.stringify({
       type: 'assistant',
       timestamp: '2026-08-17T10:00:00.000Z',
+      effort,
       message: { role: 'assistant', model, usage: { output_tokens: 120, ...usage } },
     })}\n`
   }

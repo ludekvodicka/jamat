@@ -159,6 +159,7 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
     state.selectedSessionIds.add(sessionId)
     this.cancelIdle(state)
     this.changed()
+    this.reattachAvailable(state)
     return { ok: true, value: undefined }
   }
 
@@ -229,7 +230,9 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
 
   private needed(state: RemoteOutboundState): boolean {
     return [...this.holders.values()].includes(state.profile.remoteEndpointId)
-      || state.selectedSessionIds.size > 0 || state.attachments.size > 0 || state.pending > 0
+      // Attachments are not counted: an admitted one is reached through a selection counted here, and
+      // a tab waiting for its session to be selected again does not keep a computer dialled.
+      || state.selectedSessionIds.size > 0 || state.pending > 0
   }
 
   private unwanted(state: RemoteOutboundState): void {
@@ -377,6 +380,15 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
       active: false,
     }
     state.attachments.set(attachId, attachment)
+    // Held even while it may not attach: a restored tab opens before its session is selected again,
+    // and refused without being held it had nobody to attach it once the person selected it.
+    if (!this.admitsTerminal(remoteEndpointId, spec.sessionId)) {
+      RemoteConnectionsManager.safeFrame(attachment, {
+        type: 'terminal.status', status: 'connecting',
+        detail: 'Select this session in Remote computers to connect it.',
+      })
+      return RemoteConnectionsManager.error('unavailable', 'Select this session in Remote computers to connect it.')
+    }
     this.cancelIdle(state)
     if (state.status !== 'connected' || !state.channel) {
       RemoteConnectionsManager.safeFrame(attachment, {
@@ -407,6 +419,49 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
       attachId,
       data,
     })
+  }
+
+  /** Answers the path the image was saved under on the remote computer, for the caller to paste. */
+  async terminalPasteImage(
+    remoteEndpointId: string,
+    attachId: string,
+    data: string,
+  ): Promise<RemoteControlStepResult<{ path: string }>> {
+    const answer = await this.terminalMutation(remoteEndpointId, attachId, {
+      protocol: RemoteControlConst.protocol,
+      requestId: this.requestId(),
+      operationId: this.operationId(),
+      operation: 'terminal.pasteImage',
+      attachId,
+      data,
+    })
+    if (!answer.ok) return answer
+    const value = JsonShape.record(answer.value)
+    return typeof value?.path === 'string' && value.path.length > 0
+      ? { ok: true, value: { path: value.path } }
+      : RemoteConnectionsManager.error('operation-failed', 'The remote computer answered no image path')
+  }
+
+  /** One chunk of a file; the answer carries the remote path once the last chunk has arrived. */
+  async terminalPasteFile(
+    remoteEndpointId: string,
+    attachId: string,
+    chunk: { uploadId: string; fileName: string; size: number; offset: number; data: string },
+  ): Promise<RemoteControlStepResult<{ path: string | null }>> {
+    const answer = await this.terminalMutation(remoteEndpointId, attachId, {
+      protocol: RemoteControlConst.protocol,
+      requestId: this.requestId(),
+      operationId: this.operationId(),
+      operation: 'terminal.pasteFile',
+      attachId,
+      ...chunk,
+    })
+    if (!answer.ok) return answer
+    const value = JsonShape.record(answer.value)
+    if (value?.path === null) return { ok: true, value: { path: null } }
+    return typeof value?.path === 'string' && value.path.length > 0
+      ? { ok: true, value: { path: value.path } }
+      : RemoteConnectionsManager.error('operation-failed', 'The remote computer answered no file path')
   }
 
   terminalResize(
@@ -654,7 +709,9 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
     // Persisted live rows can arrive before the restarted peer has resolved their Host runtimes.
     if (state.status !== 'connected' || state.sessions?.reconciled !== true) return
     for (const attachment of state.attachments.values())
-      if (!attachment.attached && state.sessions?.sessions.some((session) =>
+      if (!attachment.attached
+        && RemoteConnectionsManager.reachedThrough(state, attachment.spec.sessionId, state.selectedSessionIds)
+        && state.sessions?.sessions.some((session) =>
         session.sessionId === attachment.spec.sessionId && session.life === 'live'))
         void this.attach(state, attachment)
   }

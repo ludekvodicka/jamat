@@ -112,6 +112,17 @@ describe('lib-orchestrator/svn/svnWorktreeEvidence', () => {
         .toEqual([{ revision: 5, action: 'M', path: 'mount/l.txt' }])
     })
 
+    it('reads revision, author and message of each commit, non-ASCII text intact, and a commit without an author', () => {
+      const xml = '<?xml version="1.0" encoding="UTF-8"?><log><logentry revision="2"><author>luděk</author><date>2026-10-13T10:00:00Z</date>'
+        + '<msg>Přidej stopu enginů\n\nřádek 2 &amp; „uvozovky“</msg></logentry><logentry revision="3"><msg></msg></logentry></log>'
+      expect(SvnWorktreeEvidence.logEntries(xml)).toEqual([
+        { revision: 2, author: 'luděk', message: 'Přidej stopu enginů\n\nřádek 2 & „uvozovky“' },
+        { revision: 3, author: null, message: '' },
+      ])
+      expect(SvnWorktreeEvidence.logEntries('<log></log>')).toEqual([])
+      expect(() => SvnWorktreeEvidence.logEntries('<info/>')).toThrow(/no <log>/)
+    })
+
     it('names the root ".", keeps a non-ASCII path and never takes a sibling with the same prefix', () => {
       const xml = '<log><logentry revision="12"><paths><path action="M" kind="dir">/Project</path>'
         + '<path action="A" kind="file">/Project/src/přehled.md</path><path action="M" kind="file">/Projectile/x.txt</path></paths></logentry></log>'
@@ -274,6 +285,26 @@ describe('lib-orchestrator/svn/svnWorktreeEvidence', () => {
       await expect(SvnWorktreeEvidence.ownCommitRows({ items, revisionLog: async () => added })).resolves.toEqual(added)
       await expect(SvnWorktreeEvidence.ownCommitRows({ items: [{ path: '.', item: 'normal', props: 'none', base: 10, changed: 10 }],
         revisionLog: noHistory })).resolves.toEqual([])
+    })
+
+    it('says before each candidate\'s log which of how many it reads, and changes no row', async () => {
+      const items: SvnVerboseItem[] = [{ path: '.', item: 'normal', props: 'none', base: 10, changed: 8 },
+        { path: 'a.txt', item: 'normal', props: 'none', base: 12, changed: 12 },
+        { path: 'b.txt', item: 'normal', props: 'none', base: 15, changed: 15 }]
+      const events: string[] = []
+      const log = async (revision: number): Promise<SvnLoggedRow[]> => {
+        events.push(`log r${revision}`)
+        return [{ revision, action: 'M', path: revision === 12 ? 'a.txt' : 'b.txt' }]
+      }
+      const counted = await SvnWorktreeEvidence.ownCommitRows({ items, revisionLog: log,
+        onRevision: (revision, index, count) => events.push(`r${revision} ${index} of ${count}`) })
+      expect(events).toEqual(['r12 1 of 2', 'log r12', 'r15 2 of 2', 'log r15'])
+      expect(await SvnWorktreeEvidence.ownCommitRows({ items, revisionLog: log })).toEqual(counted)
+
+      const none: string[] = []
+      await SvnWorktreeEvidence.ownCommitRows({ items: [{ path: '.', item: 'normal', props: 'none', base: 10, changed: 10 }],
+        revisionLog: noHistory, onRevision: (revision) => none.push(`r${revision}`) })
+      expect(none).toEqual([])
     })
   })
 

@@ -273,9 +273,11 @@ class SmokeSessionManager extends SmokeHarness {
     this.check(`the snapshot changed as the run went along (${this.changes} times)`, this.changes > 0)
     // The merge checks run against a project with no package.json and no `setup`, so the setup
     // manager truthfully says it installed nothing in each of their worktrees. Those lines are
-    // this run's own doing; anything else reaching the error channel is a fault.
+    // this run's own doing, and so is the wait F28 makes on purpose; anything else reaching the error
+    // channel is a fault.
     const unexpected = this.errors
       .filter((line) => !line.includes('nothing was installed in the worktree'))
+      .filter((line) => !/\d{3}-svn-wait waits for you \(incoming\)/.test(line))
     this.check(`nothing unexpected was reported through onError (${unexpected.join(' | ')})`,
       unexpected.length === 0)
     console.log(`\nsmoke-session-manager: ${this.passed} checks passed`)
@@ -1273,6 +1275,85 @@ class SmokeSessionManager extends SmokeHarness {
       await this.manager.worktreeResults({ tag: SmokeSessionManager.worktreeTagConst, unacknowledged: true }), 'worktreeResults').results
     this.check('an acknowledged result leaves the unacknowledged ones', acknowledged.ok && unacknowledged.length === 0)
     await this.checkWorktreeNotify(coordinator.sessionId, session.sessionId, wakeLine)
+    await this.checkWaitNotice(run)
+  }
+
+  /**
+   * F28: a worktree Finish that starts to wait types its caller's own line once into the caller's
+   * session through the notifier, never over a draft. The wait is `incoming` (another commit changed
+   * the project and no checks are declared), which needs no agent.
+   */
+  private async checkWaitNotice(run: (cwd: string, args: string[]) => Promise<void>): Promise<void> {
+    const coordinator = SmokeSessionManager.valueOf(await this.manager.createSession({
+      kind: 'shell',
+      directory: { mode: 'adHoc', path: this.svnProjectRoot },
+    }), 'createSession')
+    const line = 'status svn-wait'
+    const worker = SmokeSessionManager.valueOf(await this.manager.createSession({
+      kind: 'shell',
+      directory: { mode: 'project', categoryId: 'smoke', projectPath: this.svnProjectRoot },
+      worktree: { slug: 'svn-wait', notify: { sessionId: coordinator.sessionId, text: line } },
+    }), 'createSession')
+    await this.waitUntil(() => this.sessionOf(worker.sessionId)?.life === 'live', 'the waiting worker never started after its checkout')
+    const worktreePath = this.sessionOf(worker.sessionId)?.worktree?.worktreePath
+    if (worktreePath === undefined) throw new Error('FAILED: the waiting worker has no worktree')
+    writeFileSync(join(worktreePath, 'tracked.txt'), 'from SVN\nand the worker\n', 'utf8')
+    SmokeSessionManager.valueOf(await this.manager.stopSession(worker.sessionId), 'stopSession')
+    await this.waitUntil(() => this.sessionOf(worker.sessionId)?.life === 'ended', 'the waiting worker never ended')
+    await run(this.svnProjectRoot, ['update', '-q'])
+    writeFileSync(join(this.svnProjectRoot, 'other.txt'), 'another commit\n', 'utf8')
+    await run(this.svnProjectRoot, ['add', '-q', '--', 'other.txt'])
+    await run(this.svnProjectRoot, ['commit', '-q', '-m', 'another commit', '--', '.'])
+
+    // Commit needs the commit dialog to be there; no review opens before the wait.
+    this.manager.setReviewPort({
+      open: async () => { throw new Error('FAILED: a review opened before the wait') },
+      known: () => false,
+      propose: async () => ({ ok: false, code: 'invalid-spec', detail: 'no proposals here' }),
+      proposalOf: () => null,
+      forgetProposal: () => undefined,
+    })
+    const pressed = await this.manager.finishWorktreeSession(worker.sessionId, { choice: 'commit', requestedBy: 'cli' })
+    this.check(`F28 Commit of the worker is taken (${pressed.ok ? 'ok' : `${pressed.code}: ${pressed.detail}`})`, pressed.ok)
+    await this.waitUntil(() => this.sessionOf(worker.sessionId)?.svnAction?.needsKind === 'incoming',
+      'the Finish of the waiting worker never waited on the incoming commit')
+
+    const terminal = { composer: 'a draft of the coordinator', typed: [] as string[], asked: 0 }
+    const clock = { now: Date.now() }
+    const notifier = new SessionNotifier({
+      sources: [this.manager.worktreeResultsStore().notifySource(), this.manager.svnWaitNotices()],
+      watch: { watched: () => [], observe: async () => undefined },
+      sessions: () => this.manager.snapshot().sessions,
+      groups: () => new Map(),
+      port: {
+        deliver: async (sessionId, text) => {
+          terminal.asked += 1
+          if (sessionId !== coordinator.sessionId) return 'gone'
+          if (terminal.composer !== '') return 'retry'
+          terminal.typed.push(text)
+          return 'delivered'
+        },
+      },
+      now: () => clock.now,
+      report: (message) => { throw new Error(`FAILED: the notifier reported: ${message}`) },
+    })
+    await notifier.tick()
+    this.check('F28 a draft in the caller\'s composer keeps the wait\'s line pending',
+      terminal.asked === 1 && terminal.typed.length === 0 && this.manager.svnWaitNotices().pending().length === 1)
+    terminal.composer = ''
+    clock.now += SessionNotifier.paceMillisecondsConst[1] + 1_000
+    await notifier.tick()
+    await notifier.tick()
+    this.check(`F28 the waiting Finish types the caller's own line once into its session (${JSON.stringify(terminal.typed)})`,
+      JSON.stringify(terminal.typed) === JSON.stringify([line]) && this.manager.svnWaitNotices().pending().length === 0)
+
+    // The ending's own line follows as before: the Discard's result types it once more.
+    SmokeSessionManager.valueOf(await this.manager.finishWorktreeSession(worker.sessionId, { choice: 'discard', requestedBy: 'cli' }), 'discard')
+    await this.waitUntil(() => this.sessionOf(worker.sessionId) === undefined, 'the waiting worker was never discarded')
+    await notifier.tick()
+    this.check(`F28 the Discard's result types the line once more, as before (${JSON.stringify(terminal.typed)})`,
+      JSON.stringify(terminal.typed) === JSON.stringify([line, line]))
+    SmokeSessionManager.valueOf(await this.manager.stopSession(coordinator.sessionId), 'stopSession')
   }
 
   /**

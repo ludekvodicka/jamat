@@ -33,6 +33,7 @@ export type CommandId =
   | 'session.commitSvn'
   | 'session.commitGit'
   | 'tab.openProjectFolder'
+  | 'session.openInVsCode'
   | 'tab.copyProjectFolder'
   | 'session.copyReference'
   | 'project.openFolder'
@@ -102,6 +103,7 @@ export interface CommandArgById {
   'session.commitSvn': { sessionId?: string } | undefined
   'session.commitGit': { sessionId?: string } | undefined
   'tab.openProjectFolder': { sessionId?: string } | undefined
+  'session.openInVsCode': { sessionId?: string } | undefined
   'tab.copyProjectFolder': { sessionId?: string } | undefined
   /**
    * The one session command that also works on a session of ANOTHER computer, which is why its
@@ -446,6 +448,16 @@ export class AppCommands {
     {
       id: 'tab.openProjectFolder',
       title: 'Open project folder',
+      target: 'renderer',
+      windowScope: 'any',
+      surfaces: ['contextMenu', 'sessionsTree'],
+      contextMenuGroup: 3,
+      terminalSafe: true,
+    },
+    // The project root, or the workspace file it holds: the main process chooses, from the session.
+    {
+      id: 'session.openInVsCode',
+      title: 'Open in VS Code',
       target: 'renderer',
       windowScope: 'any',
       surfaces: ['contextMenu', 'sessionsTree'],

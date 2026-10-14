@@ -11,6 +11,7 @@ export class HostWireConst {
   static readonly capabilities = [
     'controller-lease.v1',
     'events.replay.v1',
+    'host.health.v1',
     'runtime.lifecycle.v1',
     'runtime.mutation-fence.v1',
     'terminal.backpressure.v1',
@@ -40,6 +41,7 @@ export class HostWireConst {
     'runtime.remove': 'rw',
     'runtime.replace': 'rw',
     'runtime.stop': 'rw',
+    'host.health': 'ro',
     'host.stop': 'rw',
   } as const
 
@@ -265,6 +267,24 @@ export interface ControllerLeaseResult {
   controllerLeaseId: string
   controllerId: string
   expiresAt: number
+}
+
+/** One reading of `process.memoryUsage()` in the Host, at the time it was taken. */
+export interface HostMemorySample {
+  at: number
+  rssBytes: number
+  heapUsedBytes: number
+  externalBytes: number
+}
+
+/**
+ * The Host's own memory history, so a leak shows as growth long before it stops a create. The last
+ * sample is taken while answering; the others are the Host's periodic samples, oldest first.
+ */
+export interface HostHealthResult {
+  startedAt: number
+  sampleEveryMs: number
+  samples: HostMemorySample[]
 }
 
 export interface HostStopReq {

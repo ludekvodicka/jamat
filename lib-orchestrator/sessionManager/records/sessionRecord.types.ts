@@ -1,6 +1,17 @@
 import type {
+  SvnConflictJournal,
+  SvnConflictKind,
+  SvnConflictOption,
+  SvnConflictShape,
+  SvnContentFacts,
+  SvnNodeKind,
+  SvnTreeAction,
+  SvnTreeReason,
+} from '../../svn/svn.types'
+import type {
   SessionAgentId,
   SessionColorName,
+  SessionParentKind,
   SessionScriptId,
   SessionScriptPhase,
   SessionWorktreeKind,
@@ -8,6 +19,8 @@ import type {
   SvnActionKind,
   SvnActionNeed,
   SvnActionStage,
+  SvnConflictActor,
+  SvnConflictState,
   SvnFinishPhase,
   SvnFinishWorktreeResult,
   SvnLabelledRevision,
@@ -77,10 +90,12 @@ export interface SessionRecordAgent {
    */
   oneShot?: true
   /**
-   * Internal like `oneShot`: the SVN conflict resolver edits files and runs no command, so it starts
-   * in Claude's accept-edits permission mode and never with YOLO, whatever the setting says.
+   * Internal like `oneShot`, and never YOLO whatever the setting says: the SVN conflict resolver
+   * (`accept-edits`) edits files and runs no command; the interactive SVN merger (`merger`) edits
+   * files, runs the two Jamat commands that read and settle conflicts, never `svn`, and asks the
+   * person for anything else.
    */
-  permission?: 'accept-edits'
+  permission?: 'accept-edits' | 'merger'
 }
 
 /**
@@ -209,6 +224,12 @@ export interface SessionRecordScriptLink {
   stepKey?: string
 }
 
+/** The session that started this one, as its creator stated it; see `SessionCreateSpec.parent`. */
+export interface SessionRecordParentLink {
+  sessionId: string
+  kind: SessionParentKind
+}
+
 /**
  * A run that spawns an executable directly, with no shell between: `tool` is resolved on this machine
  * at every launch (`RunTools`), and each argument reaches the process as one argv element, byte for byte.
@@ -265,6 +286,98 @@ export interface SvnActionConflicts {
   at: number
 }
 
+/** One stage the action left, written with the move; the workflow reads its steps and rounds from these. */
+export interface SvnActionPass {
+  stage: SvnActionStage
+  /** The run the stage waited on. */
+  runId?: string
+  startedAt: number
+  endedAt: number
+  /** `waited`: the action waited for the person at this stage, and a press moved it on. */
+  result: 'done' | 'failed' | 'waited'
+  /**
+   * What its words need: the newest revision a review committed; the conflicts an update left; for
+   * `fixing`, the conflicts of the set, how many Jamat's rules settled and how many were left open.
+   */
+  facts?: { revision?: number; conflicts?: number; fixed?: number; left?: number }
+}
+
+/** One conflicted path of a conflict set: svn's facts and the classifier's plan, never words. */
+export interface SvnActionConflictEntry {
+  /** Worktree-relative with '/'. */
+  path: string
+  kind: SvnConflictKind
+  shape: SvnConflictShape
+  state: SvnConflictState
+  options: SvnConflictOption[]
+  /** The lossless option the facts prove. */
+  rule?: SvnConflictOption
+  /** The svn facts the words are composed from at snapshot time. */
+  facts: {
+    reason?: SvnTreeReason
+    action?: SvnTreeAction
+    localKind?: SvnNodeKind
+    incomingKind?: SvnNodeKind
+    /** The revision the update brought. */
+    incomingRevision?: number
+    files?: SvnContentFacts['files']
+    /** The conflicted property names. */
+    properties?: string[]
+    /** svn cannot take the name as an argument. */
+    unsafe?: true
+    /** The files below a settled path a guard found scheduled for deletion or missing. */
+    dropped?: number
+  }
+  by?: SvnConflictActor
+  /** The option a settled entry was settled with; absent when svn stopped marking it by other hands. */
+  settledWith?: SvnConflictOption
+  /** The step an option reached on this path; a restart or a second call resumes after it. */
+  journal?: SvnConflictJournal
+  /** Absolute path of the saved copy. */
+  saved?: string
+  /** Keep mine of incoming work, confirmed by the person in the window. */
+  confirmedLoss?: true
+}
+
+/** Every conflict one update left, read together; the next update reads it again. */
+export interface SvnActionConflictSet {
+  readAt: number
+  /** BASE before the update. */
+  baseRevision: number
+  /** BASE after it. */
+  revision: number
+  /** At most 200 (`SvnConflictFlow.entriesMaxConst`); the next read takes the rest from svn. */
+  entries: SvnActionConflictEntry[]
+  more: number
+  /** The action waited on this set for the person, so Check again reads what they changed; a fresh read has none. */
+  waited?: true
+}
+
+/** The caller's line of one wait, typed once by the notifier; see `SessionRecordSvnAction.notice`. */
+export interface SvnActionNotice {
+  id: string
+  at: number
+  /** Deliveries tried and refused (a draft, a dialog, a session that does not run). */
+  attempts: number
+  state: 'pending' | 'delivered' | 'expired'
+  settledAt?: number
+}
+
+/** The merger of an SVN action; see `SessionRecordSvnAction.merger`. */
+export interface SvnActionMerger {
+  runId: string
+  setAt: number
+  startedAt: number
+  endedAt?: number
+  checkedAt?: number
+}
+
+/** A path Jamat's rules settled during an action, for the FIXED lines of its result. */
+export interface SvnActionFixed {
+  path: string
+  option: SvnConflictOption
+}
+
 /** How the run a run stage waited on ended, written by the gate verdict and judged by the next client step. */
 export type SvnActionVerdict =
   | { kind: 'succeeded'; exitCode?: number }
@@ -301,6 +414,19 @@ export interface SessionRecordSvnAction {
   conflicts?: SvnActionConflicts
   /** One resolver per press: a conflict after its checks and update needs the person. */
   resolverSpent?: true
+  /** Every conflict the last update left, all kinds; an update that leaves none clears it. */
+  conflictSet?: SvnActionConflictSet
+  /** What Jamat's rules settled in this action, oldest first, at most 200; it outlives the set an update clears. */
+  fixed?: SvnActionFixed[]
+  /** The merger's brief of the set, absolute (`ScriptLogStore.mergeBriefPathOf`), once it was written. */
+  mergeBrief?: string
+  /**
+   * The last merger of this action: its run, the set it was started on (`conflictSet.readAt`; one
+   * merger starts by itself per set), when it started and ended, and when the check after it ran.
+   */
+  merger?: SvnActionMerger
+  /** The caller's wake-up line for this wait (`worktree.notify`); the next wait writes a new id. */
+  notice?: SvnActionNotice
   /** The review plan, mounts first. */
   roots?: SvnActionRoot[]
   rootCursor: number
@@ -316,6 +442,10 @@ export interface SessionRecordSvnAction {
   requestedBy: 'window' | 'cli' | 'peer'
   /** When this press started; the stop limit and the receipts of its reviews are counted from it. */
   startedAt: number
+  /** The stages this action left, oldest first, at most 40 (`SvnActionStages.passesMaxConst`). */
+  passes?: SvnActionPass[]
+  /** When the current stage, or the current run of a run stage, began. */
+  stageAt?: number
 }
 
 /** The before gate on a parent; see `SessionRecord.pendingSetup`. `steps` and `cursor` come together. */
@@ -400,6 +530,12 @@ export interface SessionRecord {
   /** Which flow composed this session. Stored and never read by this library; see the spec's field. */
   flowId?: string
   /**
+   * The control operation id of the sessions.create that made this record, so a caller whose create answer was lost
+   * finds its session by exact identity. Absent for fork, history open, internal runs, adopted orphans and older
+   * records. Unlike pendingOperationId (the Host's launch id), it is never cleared.
+   */
+  callerOperationId?: string
+  /**
    * The colour somebody gave this session. It rides on the record rather than in the client's own
    * state because it follows the session: a tab closed and reopened, a session drawn in the tree and
    * on a tab at once, and a second window all have to show the same one, and the snapshot is what
@@ -426,6 +562,8 @@ export interface SessionRecord {
   worktreeCleanup?: SessionRecordWorktreeCleanup
   /** On a script run only: the session it runs for, and which script it is. */
   scriptOf?: SessionRecordScriptLink
+  /** Set at create, never changed. Absent = no parent, so no migration. Removing the parent leaves it. */
+  parent?: SessionRecordParentLink
   /**
    * On a parent only: its settled runs, oldest first, at most `SessionScriptsManager.historyMaxConst`
    * plus the entries whose run records still exist.

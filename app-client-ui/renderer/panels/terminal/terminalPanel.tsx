@@ -18,12 +18,17 @@ import type {
   RemoteConnectionsSnapshot,
 } from '../../../../lib-orchestrator/remoteControl/remoteConnectionsApi.types'
 import { ErrorText } from '../../../shared/errorText'
+import { AppControl } from '../../ipc/appControl'
+import { TabControlTask } from '../../../shared/tabControl'
 import {
   type TerminalPanelReading,
   TerminalTargetCodec,
 } from '../../../shared/terminalTarget'
 import { FileToolsSidebar } from '../../fileViewer/fileToolsSidebar'
 import { CommitPane } from '../../versioning/commitPane'
+import { TaskPane } from '../../taskView/taskPane'
+import { WorkflowPane } from '../../workflow/workflowPane'
+import { WorkflowPortsOf } from '../../workflow/workflowPorts'
 import { IpcFailure } from '../../ipc/ipcFailure'
 import { type CommitOpenStore, useCommitOpen } from '../../versioning/commitOpenStore'
 import { FileViewerPane } from '../../fileViewer/fileViewerPane'
@@ -37,12 +42,13 @@ import { useFileChanges } from '../../fileViewer/useFileChanges'
 import { useWorkingTreeChanges } from '../../fileViewer/useWorkingTreeChanges'
 import type { SnapshotStore } from '../../ipc/snapshotStore'
 import type { SessionModelStore } from '../../sessionModel/sessionModelStore'
-import type { PanelFocusRegistry } from '../../shell/panelFocusRegistry'
+import type { PanelFocusRegistry, PanelFocusTarget } from '../../shell/panelFocusRegistry'
 import type { PanelOpenOutcome } from '../../shell/appShell.types'
 import type { SessionRefreshRegistry } from '../../shell/sessionRefreshRegistry'
 import type { TerminalDraftRegistry } from '../../shell/terminalDraftRegistry'
 import type { TerminalInputRegistry } from '../../shell/terminalInputRegistry'
 import type { SessionsMarksStore } from '../../sessions/sessionsMarksStore'
+import type { SessionTasksStore } from '../../sessions/sessionTasksStore'
 import { useSessionMarked } from '../../sessions/useSessionMarked'
 import { type SessionGlyph, SessionNodeState } from '../../views/sessionsTree/sessionNodeState'
 import type { TabBadge, TabDecorations, TabSignal } from '../../widgets/tabs/tabDecorations'
@@ -62,6 +68,8 @@ import { TerminalContextMenu } from './menu/terminalContextMenu'
 import { TerminalClipboard } from './input/terminalClipboard'
 import { TerminalNotesPanel } from './notes/terminalNotesPanel'
 import { useTerminalNotes } from './notes/useTerminalNotes'
+import { ProcessesPanel } from './processes/processesPanel'
+import type { ProcessRow } from './processes/processesModel'
 import { TerminalPostMortem } from './view/terminalPostMortem'
 import { TerminalTransports } from './attach/terminalTransport'
 import { useTerminalSessionInfo } from './attach/useTerminalSessionInfo'
@@ -89,6 +97,7 @@ export type TerminalPanelProps = IDockviewPanelProps & {
   panelFocus: PanelFocusRegistry
   /** Read for the tab's mark alone. What is on the screen still comes from the attach. */
   sessions: SnapshotStore<SessionsSnapshot>
+  tasks: Pick<SessionTasksStore, 'watch' | 'current' | 'subscribe'>
   remoteSessions: SnapshotStore<RemoteConnectionsSnapshot>
   sessionModel: SessionModelStore
   settings: AgentSettingsStore
@@ -146,6 +155,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
    * What the terminal menu refused, said where the person who clicked is looking. It reached
    * `console.error` alone before, and the sentence it carries has an instruction in it: a detection
    * has a time to live, so the answer to "nothing opened" is usually "right-click it again".
+   * A paste that put nothing in the prompt says why here too.
    */
   const [menuNote, setMenuNote] = useState<string | null>(null)
   /** Raised by a split tab's Reload and read by the file pane in front. */
@@ -165,6 +175,8 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
     (data: string) => { if (localTools) drafts.typed(sessionId, data) },
     [drafts, localTools, sessionId],
   )
+  // The same signal for the split's task pane, which follows a running sub-agent only while on screen.
+  const [panelVisible, setPanelVisible] = useState(props.api.isVisible)
   const { state, focus, sendCommand, setActive, setVisible } = useTerminalAttachment(
     target,
     holder,
@@ -172,6 +184,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
     readAgent,
     openMenu,
     onTyped,
+    setMenuNote,
   )
   const publish = useTabDecorationsPublisher(props.api.id)
   const glyph = info === null
@@ -190,32 +203,51 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   const worktreePath = info?.worktree?.worktreePath ?? null
   const worktreeCleanup = info?.worktree?.cleanup?.summary ?? null
   const sidebar = usePanelSidebar(props, 'workingTree')
-  const split = usePanelSplit(props)
+  // The workflow of an action that runs or waits stays; the snapshot says which.
+  const workflowOpen = info?.workflow?.open === true
+  const closable = useCallback((item: PanelSplitItem): string | null =>
+    PanelSplitParams.closeRefusalOf(item, (id) => id === sessionId && workflowOpen), [sessionId, workflowOpen])
+  const split = usePanelSplit(props, closable)
   useTerminalSplitPins(sessionId, localTools, split, props.splitPins)
   const splitRef = useRef(split)
   const commitPanes = useRef<HTMLDivElement>(null)
-  const filePane = useRef<HTMLElement | null>(null)
+  const splitPane = useRef<HTMLElement | null>(null)
+  // React detaches a ref before it removes the element, so the caret is still inside the pane that
+  // is going. Its successor takes the caret, and Escape closes the split's items one after another.
+  const splitPaneHadFocus = useRef(false)
+  const detachSplitPane = useCallback((): void => {
+    splitPaneHadFocus.current = splitPane.current?.contains(document.activeElement) === true
+    splitPane.current = null
+  }, [])
   const attachFilePane = useCallback((element: HTMLElement | null) => {
-    filePane.current = element
-    if (element !== null && props.api.isActive) element.focus()
-  }, [props.api])
+    if (element === null) return detachSplitPane()
+    splitPane.current = element
+    if (props.api.isActive) element.focus()
+  }, [detachSplitPane, props.api])
   const visibleCommitPane = useCallback(
     () => commitPanes.current?.querySelector<HTMLElement>('.commit-pane-slot:not([hidden]) .commit-pane') ?? null,
     [],
   )
   // Switching to a session is going back to work in it: a commit waiting for its message takes the
   // caret, and a file open beside the terminal does not, because it is read rather than typed into.
-  const focusPanel = useCallback(() => {
-    const commit = visibleCommitPane()
-    if (commit) commit.focus()
-    else focus()
-  }, [focus, visibleCommitPane])
-  const focusSplitPane = useCallback(() => {
-    const pane = filePane.current ?? visibleCommitPane()
+  const focusPanel = useCallback((target: PanelFocusTarget = 'primary') => {
+    let pane: HTMLElement | null
+    switch (target) {
+      case 'primary': pane = visibleCommitPane(); break
+      case 'content': pane = splitPane.current ?? visibleCommitPane(); break
+      default: throw new Error(`Unknown panel focus target: ${target satisfies never}`)
+    }
     if (pane) pane.focus()
     else focus()
   }, [focus, visibleCommitPane])
+  const focusSplitPane = useCallback(() => focusPanel('content'), [focusPanel])
   useLayoutEffect(() => { splitRef.current = split }, [split])
+  // Runs after the new pane's ref is attached and the commit slots' `hidden` is written.
+  useLayoutEffect(() => {
+    if (!splitPaneHadFocus.current) return
+    splitPaneHadFocus.current = false
+    focusSplitPane()
+  }, [focusSplitPane, split.state.active])
   const toolsTab = PanelFileToolsRegistry.terminalTab(sidebar.state.activeView)
   // An ended session can still read as `live` until its attach goes, and nothing typed reaches it.
   const writable = state.status === 'live' && !state.ended
@@ -257,6 +289,14 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
 
   const openSplitItem = useCallback((item: PanelSplitItem): string | null =>
     splitRef.current.open(item), [])
+  const openProcess = useCallback(async (row: ProcessRow): Promise<void> => {
+    try {
+      const answer = await AppControl.call('sessionTasks.open', { sessionId, task: row.task, title: row.title })
+      setMenuNote(!answer.ok ? answer.error : !answer.value.ok ? answer.value.error.detail : null)
+    } catch (thrown) {
+      setMenuNote(ErrorText.of(thrown))
+    }
+  }, [sessionId])
   const openInSplit = useCallback((
     document: FileViewerDocument,
     baselineHint?: FileViewerBaselineHint,
@@ -269,6 +309,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
     baselineHint,
     location,
   }), [openSplitItem])
+  const workflowPorts = useMemo(() => WorkflowPortsOf.of(sessionId, setMenuNote, (document) => openInSplit(document)), [sessionId, openInSplit])
 
   // A tab behind the one in front has no pane to reload; bringing it forward reads it from disk.
   const reloadSplitItem = useCallback((key: string): void => {
@@ -281,6 +322,20 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
     void window.appClient.clipboard.writeText(item.source.path).then((answer) =>
       setMenuNote(answer.ok ? null : `Copy path failed: ${answer.error}`))
   }, [])
+  const copySplitId = useCallback((key: string): void => {
+    const item = splitRef.current.state.items.find((candidate) => candidate.key === key)
+    if (item?.kind !== 'task') return
+    void window.appClient.clipboard.writeText(TabControlTask.idOf(item.task)).then((answer) =>
+      setMenuNote(answer.ok ? null : `Copy id failed: ${answer.error}`))
+  }, [])
+
+  // A commit pane stays mounted while hidden, so no ref detach records the caret it held.
+  const closeCommitItem = useCallback((key: string): void => {
+    const current = splitRef.current
+    if (key === current.state.active && commitPanes.current?.contains(document.activeElement) === true)
+      splitPaneHadFocus.current = true
+    current.close(key)
+  }, [])
 
   const openCommitItem = useCallback((vcs: FileChangesVcsId, scopeRoot = '.'): void => {
     void window.appClient.versioning.openCommitTab(sessionId, vcs, scopeRoot).then((answer) => setMenuNote(IpcFailure.of(answer)))
@@ -288,7 +343,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
 
   const detach = useCallback(async (key: string): Promise<void> => {
     const capture = splitRef.current.capture(key)
-    if (capture === null || capture.item.kind === 'commit') return
+    if (capture === null || capture.item.kind !== 'file') return
     let detached: PanelOpenOutcome
     try {
       detached = await props.openFile(
@@ -439,7 +494,11 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
    */
   useEffect(() => {
     setVisible(props.api.isVisible)
-    const disposable = props.api.onDidVisibilityChange((event) => setVisible(event.isVisible))
+    setPanelVisible(props.api.isVisible)
+    const disposable = props.api.onDidVisibilityChange((event) => {
+      setVisible(event.isVisible)
+      setPanelVisible(event.isVisible)
+    })
     return () => disposable.dispose()
   }, [props.api, setVisible, attachEpoch, targetKey])
 
@@ -522,7 +581,11 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
           onSetPinned={split.setPinned}
           onReload={reloadSplitItem}
           onCopyPath={copySplitPath}
-          onClose={split.close}
+          onCopyId={copySplitId}
+          onClose={(key) => {
+            const refusal = split.close(key)
+            if (refusal !== null) setMenuNote(refusal)
+          }}
           onDetach={(key) => { void detach(key) }}
         />
       )}
@@ -542,10 +605,14 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
             onOpenItem={openSplitItem}
             onRefused={setMenuNote}
           />}
+          {activeItem.kind === 'task' && <TaskPane key={activeItem.key} ref={attachFilePane} item={activeItem} visible={panelVisible} />}
+          {/* Only the tab's own session: a workflow item of another session draws nothing of it. */}
+          {activeItem.kind === 'workflow' && <WorkflowPane key={activeItem.key} ref={attachFilePane}
+            session={activeItem.sessionId === sessionId ? info : null} sessions={props.sessions} visible={panelVisible} ports={workflowPorts} />}
           <div ref={commitPanes} className="commit-pane-slots">{split.state.items.map((item) => {
-            if (item.kind === 'file') return null
+            if (item.kind === 'file' || item.kind === 'task' || item.kind === 'workflow') return null
             else if (item.kind === 'commit') return <div key={item.key} className="commit-pane-slot" hidden={item.key !== activeItem.key}>
-              <CommitPane sessionId={sessionId} item={item} onClose={() => split.close(item.key)}
+              <CommitPane sessionId={sessionId} item={item} onClose={() => closeCommitItem(item.key)}
                 onOpenChanged={(value) => openInSplit(value.document, value.baselineHint ?? undefined)}
                 onOpenSeparately={(root) => openCommitItem(item.vcs, root)} />
             </div>
@@ -590,6 +657,16 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
                 model={notes}
                 canPaste={writable}
                 canImport={writable && agentId !== null}
+              />
+            )}
+            processes={(
+              <ProcessesPanel
+                sessionId={sessionId}
+                info={info}
+                tasks={props.tasks}
+                enabled={panelVisible && sidebar.state.visible}
+                selectedKey={split.state.active}
+                onOpen={(row) => { void openProcess(row) }}
               />
             )}
           />

@@ -4,7 +4,7 @@ import { SessionTitle } from '../sessionManager/records/sessionTitle'
 import { SessionColors } from '../sessionManager/sessionColors'
 import { SessionGroups } from '../sessionManager/sessionGroups'
 import { SessionLimits } from '../sessionManager/sessionLimits'
-import type { SessionColorName, SessionGroup } from '../sessionManager/sessionManagerApi.types'
+import type { SessionColorName, SessionGroup, SessionParentKind } from '../sessionManager/sessionManagerApi.types'
 import type { RemoteControlOperation, RemoteControlRequestBody } from './remoteControlApi.types'
 import { RemoteControlDeliverConst } from './remoteControlProtocol'
 
@@ -149,6 +149,10 @@ const sessionSpec = z.strictObject({
     text: RemoteControlZod.text(SessionLimits.worktreeNotifyCharacters)
       .regex(/^[^\x00-\x1f\x7f\u2028\u2029]+$/, { error: 'must be one line without control characters' }),
     onGroups: z.array(RemoteControlZod.group()).max(8, { error: 'onGroups names at most 8 groups' }),
+  }).optional(),
+  parent: z.strictObject({
+    sessionId: RemoteControlZod.text(),
+    kind: z.enum(['worktree', 'ticket', 'worker'] satisfies SessionParentKind[], { error: 'parent kind must be worktree, ticket or worker' }),
   }).optional(),
   title: RemoteControlZod.string(512).optional(),
   // The shape alone, here and in the library both: this one is a wire contract and the library's is
@@ -302,6 +306,7 @@ export const RemoteControlBodySchemas: { [K in RemoteControlOperation]: z.ZodTyp
     choice: z.enum(['commit', 'discard', 'keep'], { error: 'choice must be commit, discard or keep' }),
     acknowledgeSetup: RemoteControlZod.text().optional(),
     confirmWorking: z.literal(true, { error: 'confirmWorking must be true' }).optional(),
+    agent: z.literal(true, { error: 'agent must be true' }).optional(),
   }),
   'sessions.updateMain': z.strictObject({
     session: RemoteControlZod.sessionSelector,
@@ -309,6 +314,15 @@ export const RemoteControlBodySchemas: { [K in RemoteControlOperation]: z.ZodTyp
   }),
   'sessions.worktreeReview': RemoteControlZod.sessionBody(),
   'sessions.notifies': z.strictObject({ sessionId: RemoteControlZod.text().optional() }),
+  'sessions.conflicts': RemoteControlZod.sessionBody(),
+  'sessions.resolveConflict': z.strictObject({
+    session: RemoteControlZod.sessionSelector,
+    path: RemoteControlZod.text(4096),
+    option: z.enum(['merged', 'take-incoming', 'keep-mine', 'keep-both', 'union'],
+      { error: 'option must be merged, take-incoming, keep-mine, keep-both or union' }),
+    confirm: z.literal(true, { error: 'confirm must be true' }).optional(),
+  }),
+  'sessions.children': z.strictObject({ sessionId: RemoteControlZod.text() }),
   'sessions.worktreeResults': z.strictObject({
     tag: worktreeTag.optional(),
     sessionId: RemoteControlZod.text().optional(),

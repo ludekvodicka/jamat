@@ -213,6 +213,10 @@ export class RemoteControlAudit {
       return { attachId: request.attachId, active: request.active }
     else if (request.operation === 'terminal.detach')
       return { attachId: request.attachId }
+    else if (request.operation === 'terminal.pasteImage')
+      return { attachId: request.attachId, base64Length: request.data.length }
+    else if (request.operation === 'terminal.pasteFile')
+      return { attachId: request.attachId, uploadId: request.uploadId, size: request.size, offset: request.offset }
     else
       throw new Error(`Unknown socket audit operation: ${JSON.stringify(request)}`)
   }

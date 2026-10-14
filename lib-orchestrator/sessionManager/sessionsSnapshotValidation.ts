@@ -1,6 +1,7 @@
 import type {
   OrphanInfo,
   SessionInfo,
+  SessionParentKind,
   SessionScriptId,
   SessionScriptPhase,
   SessionScriptRunInfo,
@@ -8,10 +9,19 @@ import type {
   SessionScriptsBadge,
   SessionScriptsInfo,
   SessionsSnapshot,
+  SessionSvnActionInfo,
+  SvnConflictActor,
+  SvnConflictState,
+  SessionWorkflowActionId,
+  SessionWorkflowInfo,
+  SessionWorkflowKind,
+  SessionWorkflowStepState,
+  SessionWorkflowTarget,
   SvnActionNeed,
   SvnActionStage,
   SvnFinishResult,
 } from './sessionManagerApi.types'
+import type { SvnConflictKind, SvnConflictLoss, SvnConflictOption } from '../svn/svn.types'
 import { ScriptBadges } from './scripts/scriptBadges'
 import { JsonShape } from '../shared/jsonShape'
 
@@ -33,9 +43,9 @@ export class SessionsSnapshotValidation {
     'out-of-date', 'updated', 'conflict', 'nothing', 'failed', 'interrupted'] satisfies readonly SvnFinishResult[]
   private static readonly scriptPhasesConst: readonly string[] = ['before', 'after', 'inner'] satisfies readonly SessionScriptPhase[]
   private static readonly scriptIdsConst: readonly string[] =
-    ['setup', 'declared', 'merge-resolve', 'requested', 'svn', 'checks', 'svn-resolve', 'review'] satisfies readonly SessionScriptId[]
+    ['setup', 'declared', 'merge-resolve', 'requested', 'svn', 'checks', 'svn-resolve', 'svn-merge', 'review'] satisfies readonly SessionScriptId[]
   private static readonly actionStagesConst: readonly string[] = ['stopping', 'evidence', 'checks', 'updating', 'cleaning',
-    'resolving', 'verifying', 'diffing', 'reviewing', 'removing', 'recording'] satisfies readonly SvnActionStage[]
+    'resolving', 'merging', 'verifying', 'fixing', 'diffing', 'reviewing', 'removing', 'recording'] satisfies readonly SvnActionStage[]
   private static readonly actionNeedsConst: readonly string[] = ['check-failed', 'conflict', 'resolver-failed', 'incoming',
     'out-of-date', 'review-cancelled', 'review-interrupted', 'partial', 'pinned-external', 'locked', 'svn-failed',
     'not-stopped'] satisfies readonly SvnActionNeed[]
@@ -43,6 +53,25 @@ export class SessionsSnapshotValidation {
     ['running', 'succeeded', 'failed', 'stopped', 'lost'] satisfies readonly SessionScriptRunState[]
   private static readonly badgeStatesConst: readonly string[] =
     ['running', 'failed', 'skipped', 'succeeded'] satisfies readonly SessionScriptsBadge['state'][]
+  private static readonly parentKindsConst: readonly string[] = ['worktree', 'ticket', 'worker'] satisfies readonly SessionParentKind[]
+  private static readonly workflowKindsConst: readonly string[] =
+    ['before', 'finish', 'discard', 'update-main', 'git-finish'] satisfies readonly SessionWorkflowKind[]
+  private static readonly workflowStatesConst: readonly string[] =
+    ['pending', 'running', 'done', 'failed', 'waits', 'skipped'] satisfies readonly SessionWorkflowStepState[]
+  private static readonly workflowTargetsConst: readonly string[] =
+    ['run', 'agent', 'commit', 'conflicts', 'none'] satisfies readonly SessionWorkflowTarget['kind'][]
+  private static readonly conflictKindsConst: readonly string[] =
+    ['text', 'property', 'tree', 'diverged'] satisfies readonly SvnConflictKind[]
+  private static readonly conflictStatesConst: readonly string[] =
+    ['rule', 'agent', 'person', 'settled'] satisfies readonly SvnConflictState[]
+  private static readonly conflictActorsConst: readonly string[] =
+    ['jamat', 'agent', 'person'] satisfies readonly SvnConflictActor[]
+  private static readonly conflictOptionsConst: readonly string[] =
+    ['merged', 'take-incoming', 'keep-mine', 'keep-both', 'union'] satisfies readonly SvnConflictOption[]
+  private static readonly conflictLossesConst: readonly string[] =
+    ['nothing', 'mine', 'incoming'] satisfies readonly SvnConflictLoss[]
+  private static readonly workflowActionsConst: readonly string[] =
+    ['finish-again', 'keep', 'discard', 'retry-setup', 'stop-agent', 'open-in-vscode', 'resolve-with-agent', 'open-merger'] satisfies readonly SessionWorkflowActionId[]
 
   static parse(value: unknown): SessionsSnapshot | null {
     const snapshot = JsonShape.record(value)
@@ -55,6 +84,9 @@ export class SessionsSnapshotValidation {
       || !SessionsSnapshotValidation.every(snapshot.orphans, SessionsSnapshotValidation.orphan))
       return null
     const parsed = value as SessionsSnapshot
+    // Optional and newer than many peers: a reading this build cannot draw costs the field, never the snapshot.
+    if (parsed.host.memory !== undefined && parsed.host.memory !== null
+      && !SessionsSnapshotValidation.hostMemory(parsed.host.memory)) delete parsed.host.memory
     // A peer older than SVN worktrees sends no kind, and every worktree it has is a Git one. Nor
     // does it send the Finish choices, which its library composed by kind alone.
     for (const session of parsed.sessions) {
@@ -69,9 +101,18 @@ export class SessionsSnapshotValidation {
       SessionsSnapshotValidation.scriptsInto(session)
       // Optional and newer than many peers: a value this build cannot draw costs the field, never the session.
       if (session.svnAction !== undefined && !SessionsSnapshotValidation.svnAction(session.svnAction)) delete session.svnAction
+      if (session.svnAction !== undefined) SessionsSnapshotValidation.conflictsInto(session.svnAction)
       if (session.worktree?.liveFinish !== undefined && session.worktree.liveFinish !== true) delete session.worktree.liveFinish
       if (session.retiredWorktree?.landing !== undefined && !SessionsSnapshotValidation.landing(session.retiredWorktree.landing))
         delete session.retiredWorktree.landing
+      // A newer peer's kind costs the link, so the child is drawn as a root.
+      if (session.parent !== undefined && !SessionsSnapshotValidation.parent(session.parent)) delete session.parent
+      if (session.step !== undefined && !SessionsSnapshotValidation.step(session.step)) delete session.step
+      if (session.workflow !== undefined) {
+        const workflow = SessionsSnapshotValidation.workflow(session.workflow)
+        if (workflow === null) delete session.workflow
+        else session.workflow = workflow
+      }
     }
     return parsed
   }
@@ -86,6 +127,85 @@ export class SessionsSnapshotValidation {
     const review = JsonShape.record(action.review)
     return review !== null && Number.isSafeInteger(review.index) && Number.isSafeInteger(review.count)
       && typeof review.scopeRoot === 'string'
+  }
+
+  /** A summary or a conflict list this build cannot draw costs that part, never the action. */
+  private static conflictsInto(action: SessionSvnActionInfo): void {
+    if (action.summary !== undefined && action.summary !== null && typeof action.summary !== 'string') delete action.summary
+    if (action.mergeBrief !== undefined && action.mergeBrief !== null && typeof action.mergeBrief !== 'string') delete action.mergeBrief
+    if (action.mergerRunId !== undefined && action.mergerRunId !== null && typeof action.mergerRunId !== 'string') delete action.mergerRunId
+    if (action.conflicts === undefined || action.conflicts === null) return
+    const conflicts = JsonShape.record(action.conflicts)
+    if (conflicts === null || !SessionsSnapshotValidation.nonNegativeInteger(conflicts.more)
+      || !SessionsSnapshotValidation.every(conflicts.entries, SessionsSnapshotValidation.conflict)) delete action.conflicts
+  }
+
+  private static conflict(value: unknown): boolean {
+    const entry = JsonShape.record(value)
+    return entry !== null && SessionsSnapshotValidation.filledText(entry.path) && typeof entry.description === 'string'
+      && SessionsSnapshotValidation.conflictKindsConst.includes(entry.kind as string)
+      && SessionsSnapshotValidation.conflictStatesConst.includes(entry.state as string)
+      && (entry.by === null || SessionsSnapshotValidation.conflictActorsConst.includes(entry.by as string))
+      && (entry.saved === null || typeof entry.saved === 'string')
+      && SessionsSnapshotValidation.every(entry.options, (item) => {
+        const option = JsonShape.record(item)
+        return option !== null && SessionsSnapshotValidation.conflictOptionsConst.includes(option.id as string)
+          && typeof option.label === 'string' && typeof option.note === 'string'
+          && SessionsSnapshotValidation.conflictLossesConst.includes(option.loses as string)
+      })
+  }
+
+  /**
+   * A step state or a target this build cannot draw costs the workflow; an action it cannot press
+   * costs that action only.
+   */
+  private static workflow(value: unknown): SessionWorkflowInfo | null {
+    const workflow = JsonShape.record(value)
+    if (workflow === null || !SessionsSnapshotValidation.workflowKindsConst.includes(workflow.kind as string)
+      || ![workflow.workflowId, workflow.title, workflow.badge, workflow.summary].every((text) => typeof text === 'string')
+      || typeof workflow.open !== 'boolean'
+      || !SessionsSnapshotValidation.every(workflow.rounds, SessionsSnapshotValidation.workflowRound)
+      || !Array.isArray(workflow.actions))
+      return null
+    const actions = workflow.actions.filter((item) => {
+      const action = JsonShape.record(item)
+      return action !== null && SessionsSnapshotValidation.workflowActionsConst.includes(action.id as string)
+        && typeof action.label === 'string' && typeof action.primary === 'boolean'
+        && ((action.id !== 'stop-agent' && action.id !== 'open-merger') || typeof action.runId === 'string')
+    })
+    return { ...value as SessionWorkflowInfo, actions: actions as SessionWorkflowInfo['actions'] }
+  }
+
+  private static workflowRound(value: unknown): boolean {
+    const round = JsonShape.record(value)
+    return round !== null && typeof round.title === 'string' && SessionsSnapshotValidation.every(round.steps, (item) => {
+      const step = JsonShape.record(item)
+      const target = JsonShape.record(step?.target)
+      return step !== null && target !== null
+        && [step.key, step.title, step.detail].every((text) => typeof text === 'string')
+        && SessionsSnapshotValidation.workflowStatesConst.includes(step.state as string)
+        && (step.startedAt === null || Number.isSafeInteger(step.startedAt))
+        && (step.endedAt === null || Number.isSafeInteger(step.endedAt))
+        && SessionsSnapshotValidation.workflowTargetsConst.includes(target.kind as string)
+        && (target.kind === 'none' || target.kind === 'conflicts' || SessionsSnapshotValidation.filledText(target.runId))
+    })
+  }
+
+  private static step(value: unknown): boolean {
+    const step = JsonShape.record(value)
+    if (step === null || typeof step.text !== 'string' || (step.detail !== null && typeof step.detail !== 'string')) return false
+    if (step.startedAt !== null && !Number.isSafeInteger(step.startedAt)) return false
+    if (step.progress === null) return true
+    const progress = JsonShape.record(step.progress)
+    return progress !== null && SessionsSnapshotValidation.nonNegativeInteger(progress.done)
+      && (progress.total === null || SessionsSnapshotValidation.nonNegativeInteger(progress.total))
+  }
+
+  private static parent(value: unknown): boolean {
+    const parent = JsonShape.record(value)
+    return parent !== null && SessionsSnapshotValidation.filledText(parent.sessionId)
+      && SessionsSnapshotValidation.parentKindsConst.includes(parent.kind as string)
+      && typeof parent.sameProject === 'boolean'
   }
 
   private static landing(value: unknown): boolean {
@@ -191,6 +311,14 @@ export class SessionsSnapshotValidation {
       && SessionsSnapshotValidation.optionalText(host.hostInstanceId)
       && Number.isSafeInteger(host.liveCount)
       && SessionsSnapshotValidation.optionalText(host.lastStartError)
+  }
+
+  private static hostMemory(value: unknown): boolean {
+    const memory = JsonShape.record(value)
+    return memory !== null
+      && SessionsSnapshotValidation.every(memory.lines, (line) => typeof line === 'string')
+      && SessionsSnapshotValidation.optionalText(memory.warning)
+      && SessionsSnapshotValidation.optionalText(memory.suffix)
   }
 
   private static category(value: unknown): boolean {

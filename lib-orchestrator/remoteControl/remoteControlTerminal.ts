@@ -16,6 +16,7 @@ import type {
   TerminalResizeResult,
 } from '../sessionManager/terminals/terminalGateway'
 import { ErrorText } from '../shared/errorText'
+import type { PastedFileChunk, PastedFileStore } from '../pastedFiles/pastedFileStore'
 import type {
   RemoteControlTerminalDeliverOptions,
   RemoteControlTerminalDeliverProofPort,
@@ -85,6 +86,11 @@ export interface RemoteControlTerminalDeps {
   screenCharacterLimit?: number
   pause?(milliseconds: number): Promise<void>
   now?(): number
+  /**
+   * Where an image or a file pasted on another computer is kept; without it `terminal.pasteImage`
+   * and `terminal.pasteFile` are refused.
+   */
+  files?: Pick<PastedFileStore, 'saveImage' | 'receive'>
 }
 
 export interface RemoteControlLiveTerminalAttachDto {
@@ -96,6 +102,20 @@ export interface RemoteControlLiveTerminalInputDto {
   attachId: string
   accepted: true
   characterCount: number
+}
+
+export interface RemoteControlLiveTerminalPasteImageDto {
+  attachId: string
+  /** The saved file on THIS computer, which the caller pastes into the prompt as text. */
+  path: string
+}
+
+export interface RemoteControlLiveTerminalPasteFileDto {
+  attachId: string
+  /** Bytes saved so far. */
+  received: number
+  /** The saved file on THIS computer once the last chunk arrived, null before. */
+  path: string | null
 }
 
 export interface RemoteControlLiveTerminalResizeDto {
@@ -1076,6 +1096,51 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
       return RemoteControlTerminal.error('unavailable', 'The terminal attach disappeared')
     } else
       throw new Error(`Unknown terminal resize result: ${JSON.stringify(resized)}`)
+  }
+
+  /**
+   * An image from the controller's clipboard, saved here under the attach's session. Only saved: the
+   * path goes back to the controller, which pastes it through `terminal.input` like any other text,
+   * so the one writer of a remote prompt stays the person's own keys.
+   */
+  async pasteImageLive(
+    ownerId: string,
+    attachId: string,
+    bytes: Uint8Array,
+  ): Promise<RemoteControlStepResult<RemoteControlLiveTerminalPasteImageDto>> {
+    const live = this.liveByOwner.get(ownerId)?.get(attachId)
+    if (!live)
+      return RemoteControlTerminal.error('not-found', `No terminal attach ${JSON.stringify(attachId)}`)
+    if (this.deps.files === undefined)
+      return RemoteControlTerminal.error('operation-failed', 'This computer keeps no pasted files')
+    const saved = await this.deps.files.saveImage(live.sessionId, bytes)
+    if (!saved.ok) return RemoteControlTerminal.error('operation-failed', saved.detail)
+    return RemoteControlTerminal.success({ attachId, path: saved.path })
+  }
+
+  /**
+   * One chunk of a file the controller's clipboard named, saved here under the attach's session. As
+   * with an image, only saved: `path` is null until the last chunk, and the controller pastes it.
+   */
+  async pasteFileLive(
+    ownerId: string,
+    attachId: string,
+    uploadId: string,
+    chunk: PastedFileChunk,
+  ): Promise<RemoteControlStepResult<RemoteControlLiveTerminalPasteFileDto>> {
+    const live = this.liveByOwner.get(ownerId)?.get(attachId)
+    if (!live)
+      return RemoteControlTerminal.error('not-found', `No terminal attach ${JSON.stringify(attachId)}`)
+    if (this.deps.files === undefined)
+      return RemoteControlTerminal.error('operation-failed', 'This computer keeps no pasted files')
+    const received = await this.deps.files.receive(JSON.stringify([ownerId, uploadId]), live.sessionId, chunk)
+    if (!received.ok) return RemoteControlTerminal.error('operation-failed', received.detail)
+    else if (received.kind === 'partial')
+      return RemoteControlTerminal.success({ attachId, received: received.received, path: null })
+    else if (received.kind === 'complete')
+      return RemoteControlTerminal.success({ attachId, received: chunk.size, path: received.path })
+    else
+      throw new Error(`Unknown pasted file result: ${JSON.stringify(received)}`)
   }
 
   detachLive(ownerId: string, attachId: string): RemoteControlStepResult<{ attachId: string }> {

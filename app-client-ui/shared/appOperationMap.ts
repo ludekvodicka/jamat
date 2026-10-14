@@ -1,6 +1,12 @@
 import type { RateMonitorDebugStatus, RateMonitorSnapshot } from '../../lib-orchestrator/rateMonitor/rateMonitorApi.types'
 import type { RemoteControlOperationMap } from '../../lib-orchestrator/remoteControl/remoteControlApi.types'
+import type { SessionScriptOutput } from '../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type { SessionModelReading } from '../../lib-orchestrator/sessionModelReader/sessionModelReaderApi.types'
+import type {
+  SessionShellOutput,
+  SessionSubagentTranscript,
+  SessionTaskListing,
+} from '../../lib-orchestrator/sessionTasks/sessionTasksApi.types'
 import type {
   DirectoryNote,
   DirectoryNotesImportResult,
@@ -10,6 +16,7 @@ import type { AgentSettingsAgentId, AgentSettingsValue } from './agentSettings'
 import type { FileChangesSettingsValue } from './fileChangesSettings'
 import type { HistoricSession, HistoricSessionGroup } from './historicSessions'
 import type { SessionGroupDefinition } from './sessionsGroupsState'
+import type { TabControlTaskRef } from './tabControl'
 import type { UiSettingsValue } from './uiSettings'
 import type { VersioningSettingsField, VersioningSettingsValue } from './versioningSettings'
 import type { WorktreeSettingsValue } from './worktreeSettings'
@@ -50,6 +57,24 @@ export interface AppOperationMap {
   'rate.refresh': { request: Record<string, never>; response: RateMonitorSnapshot }
   'rate.debugStatus': { request: Record<string, never>; response: RateMonitorDebugStatus }
   'sessions.model': { request: { sessionId: string }; response: SessionModelReading }
+  'sessions.scriptOutput': { request: { sessionId: string; runId: string }; response: SessionScriptOutput }
+  'sessionTasks.list': { request: { sessionIds: string[] }; response: Record<string, SessionTaskListing> }
+  'sessionTasks.transcript': {
+    request: { sessionId: string; subagentId: string; known?: string }
+    response: SessionSubagentTranscript
+  }
+  'sessionTasks.shellOutput': {
+    request: { sessionId: string; shellId: string; known?: string }
+    response: SessionShellOutput
+  }
+  'sessionTasks.open': {
+    request: { sessionId: string; task: TabControlTaskRef; title: string }
+    response: { panelId: string }
+  }
+  'sessionTasks.openWorkflow': {
+    request: { sessionId: string }
+    response: { panelId: string }
+  }
   'directoryNotes.get': {
     request: { sessionId: string }
     response: DirectoryNotesSnapshot

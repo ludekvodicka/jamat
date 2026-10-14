@@ -30,6 +30,7 @@ const { electronMock, hubMock } = vi.hoisted(() => ({
         electronMock.calls.push('requestSingleInstanceLock')
         return electronMock.lockGranted
       },
+      setAppUserModelId: () => undefined,
       quit(): void {
         electronMock.calls.push('quit')
       },

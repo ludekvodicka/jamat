@@ -33,6 +33,8 @@ class FakeCliClient implements AppClientCliClientPort {
   readonly remoteRequests: { remoteEndpointId: string; request: RemoteControlRequestUnion }[] = []
   readonly watchCalls: { afterRevision?: number; signal?: AbortSignal }[] = []
   responseError: RemoteControlError | null = null
+  /** The refusal one operation answers; every other operation answers as usual. */
+  readonly operationErrors = new Map<string, RemoteControlError>()
   computers: RemoteControlComputerDto[] = []
   sessions: SessionInfo[] = [
     FakeCliClient.session('session-001', '001', 'Q:/Apps/One'),
@@ -65,6 +67,12 @@ class FakeCliClient implements AppClientCliClientPort {
       return Promise.resolve({
         protocol: RemoteControlConst.protocol, requestId: request.requestId, operation: request.operation,
         operationId: request.operationId ?? null, ok: false, error: this.openCommitError,
+      })
+    const operationError = this.operationErrors.get(request.operation)
+    if (operationError !== undefined)
+      return Promise.resolve({
+        protocol: RemoteControlConst.protocol, requestId: request.requestId, operation: request.operation,
+        operationId: request.operationId ?? null, ok: false, error: operationError,
       })
     if (this.responseError)
       return Promise.resolve({
@@ -125,6 +133,10 @@ class FakeCliClient implements AppClientCliClientPort {
     if (operation === 'sessions.updateMain') return { sessionId: 'session-001', actionId: 'update-1' }
     if (operation === 'sessions.worktreeResults') return { results: [] }
     if (operation === 'sessions.notifies') return { notifies: [] }
+    if (operation === 'sessions.conflicts')
+      return { sessionId: 'session-001', actionId: 'action-1', stage: 'updating', summary: '3 conflicts need you', entries: [], more: 3 }
+    if (operation === 'sessions.resolveConflict') return { sessionId: 'session-001', path: '.aidocs/engines', state: 'settled', left: 2 }
+    if (operation === 'sessions.children') return { children: [] }
     if (operation === 'sessions.acknowledgeWorktreeResult') return { actionId: 'action-1' }
     if (operation === 'sessions.proposeCommit') return { scopeRoot: 'Q:/Apps/One/.worktrees/i42-orders' }
     if (operation === 'tabs.cancelCommit') return this.cancelResponse
@@ -1062,6 +1074,28 @@ describe('app-client-cli/app/app', () => {
     expect(await new AppClientCli(['sessions', 'finish-worktree', '--number', '001', '--choice', 'commit'], working.deps()).run()).toBe(4)
   })
 
+  it('sends --agent with Commit to start the merger, refuses it with another choice, and only to a Jamat that offers sessions.conflicts', async () => {
+    const h = new CliHarness()
+    expect(await new AppClientCli(['sessions', 'finish-worktree', '--number', '001', '--choice', 'commit', '--agent'], h.deps()).run()).toBe(0)
+    expect(h.client.requests.at(-1)).toMatchObject({
+      operation: 'sessions.finishWorktree',
+      body: { session: { kind: 'sessionId', sessionId: 'session-001' }, choice: 'commit', agent: true },
+    })
+    // The agent of a create still takes its value.
+    expect(await new AppClientCli(['sessions', 'finish-worktree', '--agent', '--number', '001', '--choice', 'commit'], h.deps()).run()).toBe(0)
+    expect(h.client.requests.at(-1)?.body).toMatchObject({ agent: true })
+
+    const keep = new CliHarness()
+    expect(await new AppClientCli(['sessions', 'finish-worktree', '--number', '001', '--choice', 'keep', '--agent'], keep.deps()).run()).toBe(2)
+    expect(keep.client.requests).toEqual([])
+
+    const old = new CliHarness()
+    old.descriptor.optionalOperations = RemoteControlConst.optionalOperations.filter((operation) => operation !== 'sessions.conflicts')
+    expect(await new AppClientCli(['sessions', 'finish-worktree', '--number', '001', '--choice', 'commit', '--agent'], old.deps()).run()).toBe(6)
+    expect(old.client.requests.filter((request) => request.operation === 'sessions.finishWorktree')).toEqual([])
+    expect(old.parsedOutput()).toMatchObject({ ok: false, error: { code: 'unavailable', detail: expect.stringContaining('--agent needs sessions.conflicts') } })
+  })
+
   it('starts an UPDATE of a main copy by selector or --self, naming the live sessions it confirms', async () => {
     const h = new CliHarness()
     expect(await new AppClientCli(['sessions', 'update-main', '--number', '001', '--operation-id', 'update-op'], h.deps()).run()).toBe(0)
@@ -1392,6 +1426,62 @@ describe('app-client-cli/app/app', () => {
     }
   })
 
+  it('reads the conflicts of a session by selector or for its own run with --self, locally, and exits 6 against a Jamat without them', async () => {
+    const byNumber = new CliHarness()
+    expect(await new AppClientCli(['sessions', 'conflicts', '--number', '001'], byNumber.deps()).run()).toBe(0)
+    expect(byNumber.client.requests.at(-1)).toMatchObject({ operation: 'sessions.conflicts', body: { session: { kind: 'sessionId', sessionId: 'session-001' } } })
+    expect(byNumber.client.requests.at(-1)).not.toHaveProperty('operationId')
+    expect(byNumber.parsedOutput()).toMatchObject({ ok: true, value: { summary: '3 conflicts need you', more: 3 } })
+
+    const self = new CliHarness()
+    self.env.JAMAT_V3_SESSION_ID = 'session-001'
+    expect(await new AppClientCli(['sessions', 'conflicts', '--self'], self.deps()).run()).toBe(0)
+    expect(self.client.requests.at(-1)).toMatchObject({ operation: 'sessions.conflicts', body: { session: { kind: 'sessionId', sessionId: 'session-001' } } })
+
+    const old = new CliHarness()
+    old.descriptor.optionalOperations = RemoteControlConst.optionalOperations.filter((operation) => operation !== 'sessions.conflicts')
+    expect(await new AppClientCli(['sessions', 'conflicts', '--number', '001'], old.deps()).run()).toBe(6)
+    expect(old.client.requests).toEqual([])
+    expect(old.parsedOutput()).toMatchObject({ ok: false, error: { code: 'unavailable', detail: expect.stringContaining('sessions.conflicts') } })
+
+    const remote = new CliHarness()
+    expect(await new AppClientCli(['sessions', 'conflicts', '--number', '001', '--computer', 'remote'], remote.deps()).run()).toBe(2)
+    expect(remote.discoveries).toBe(0)
+  })
+
+  it('settles one conflicted path by selector or for its own run with --self, with no confirm flag, and maps a person-only refusal to exit 4', async () => {
+    const byNumber = new CliHarness()
+    expect(await new AppClientCli(['sessions', 'resolve-conflict', '--number', '001', '--path', '.aidocs/engines', '--option', 'keep-both'],
+      byNumber.deps()).run()).toBe(0)
+    expect(byNumber.client.requests.at(-1)).toMatchObject({
+      operation: 'sessions.resolveConflict',
+      body: { session: { kind: 'sessionId', sessionId: 'session-001' }, path: '.aidocs/engines', option: 'keep-both' },
+    })
+    expect(byNumber.client.requests.at(-1)?.body).not.toHaveProperty('confirm')
+    expect(byNumber.parsedOutput()).toMatchObject({ ok: true, value: { state: 'settled', left: 2 } })
+
+    const self = new CliHarness()
+    self.env.JAMAT_V3_SESSION_ID = 'session-001'
+    expect(await new AppClientCli(['sessions', 'resolve-conflict', '--self', '--path', 'src/a.ts', '--option', 'merged'], self.deps()).run()).toBe(0)
+    expect(self.client.requests.at(-1)).toMatchObject({ body: { session: { kind: 'sessionId', sessionId: 'session-001' }, path: 'src/a.ts', option: 'merged' } })
+
+    const refused = new CliHarness()
+    refused.client.operationErrors.set('sessions.resolveConflict', { code: 'conflict', detail: 'only you can choose it', data: { sourceCode: 'person-only' } })
+    expect(await new AppClientCli(['sessions', 'resolve-conflict', '--number', '001', '--path', 'src/a.ts', '--option', 'keep-mine'], refused.deps()).run()).toBe(4)
+    expect(refused.parsedOutput()).toMatchObject({ ok: false, error: { code: 'conflict', data: { sourceCode: 'person-only' } } })
+    expect(refused.client.requests.map((request) => request.operation)).toContain('sessions.resolveConflict')
+
+    for (const args of [['--option', 'squash', '--path', 'a'], ['--option', 'merged'], ['--path', 'a', '--option', 'merged', '--confirm']]) {
+      const wrong = new CliHarness()
+      expect(await new AppClientCli(['sessions', 'resolve-conflict', '--number', '001', ...args], wrong.deps()).run()).toBe(2)
+      expect(wrong.client.requests.filter((request) => request.operation === 'sessions.resolveConflict')).toEqual([])
+    }
+
+    const old = new CliHarness()
+    old.descriptor.optionalOperations = RemoteControlConst.optionalOperations.filter((operation) => operation !== 'sessions.resolveConflict')
+    expect(await new AppClientCli(['sessions', 'resolve-conflict', '--number', '001', '--path', 'a', '--option', 'merged'], old.deps()).run()).toBe(6)
+  })
+
   it('reads notifies with an optional session id without resolving a live session', async () => {
     for (const args of [[], ['--session-id', 'gone-child']]) {
       const h = new CliHarness()
@@ -1404,6 +1494,55 @@ describe('app-client-cli/app/app', () => {
     const h = new CliHarness()
     expect(await new AppClientCli(['sessions', 'notifies', '--computer', 'remote'], h.deps()).run()).toBe(2)
     expect(h.discoveries).toBe(0)
+  })
+
+  it('creates a local session with a parent link and reads the children of a session', async () => {
+    for (const kind of ['worktree', 'ticket', 'worker'] as const) {
+      const h = new CliHarness()
+      expect(await new AppClientCli([
+        'sessions', 'create', '--directory', 'Q:/Apps/One', '--parent-session', 'parent', '--parent-kind', kind,
+      ], h.deps()).run()).toBe(0)
+      expect(h.client.requests.at(-1)).toMatchObject({ operation: 'sessions.create', body: { spec: { parent: { sessionId: 'parent', kind } } } })
+    }
+    const plain = new CliHarness()
+    expect(await new AppClientCli(['sessions', 'create', '--directory', 'Q:/Apps/One'], plain.deps()).run()).toBe(0)
+    expect(plain.client.requests.at(-1)?.body).not.toHaveProperty('spec.parent')
+    const h = new CliHarness()
+    expect(await new AppClientCli(['sessions', 'children', '--session-id', 'parent'], h.deps()).run()).toBe(0)
+    expect(h.client.requests).toEqual([expect.objectContaining({ operation: 'sessions.children', body: { sessionId: 'parent' } })])
+    expect(h.client.requests[0]).not.toHaveProperty('operationId')
+    expect(h.parsedOutput()).toMatchObject({ ok: true, value: { children: [] } })
+  })
+
+  it('refuses an incomplete, unknown or remote parent link and a children read without a session id before discovery', async () => {
+    for (const args of [
+      ['sessions', 'create', '--parent-session', 'parent'], ['sessions', 'create', '--parent-kind', 'worktree'],
+      ['sessions', 'create', '--parent-session', 'parent', '--parent-kind', 'child'],
+      ['sessions', 'create', '--parent-session', 'parent', '--parent-kind', 'worktree', '--computer', 'remote'],
+      ['sessions', 'children'], ['sessions', 'children', '--session-id', 'parent', '--computer', 'remote'],
+    ]) {
+      const h = new CliHarness()
+      expect(await new AppClientCli(args, h.deps()).run()).toBe(2)
+      expect(h.discoveries).toBe(0)
+      expect(h.client.requests).toEqual([])
+      expect(h.client.remoteRequests).toEqual([])
+      if (args.includes('--parent-kind') && args.includes('--computer'))
+        expect(h.parsedOutput()).toMatchObject({ error: { detail: expect.stringContaining('local only') } })
+    }
+  })
+
+  it('requires sessions.children before sending a parent link or its read command', async () => {
+    for (const args of [
+      ['sessions', 'children', '--session-id', 'parent'],
+      ['sessions', 'create', '--parent-session', 'parent', '--parent-kind', 'worktree'],
+      ['sessions', 'create', '--parent-session', 'parent', '--parent-kind', 'ticket', '--notify-session', 'parent', '--notify-text', 'wake'],
+    ]) {
+      const h = new CliHarness()
+      h.descriptor.optionalOperations = RemoteControlConst.optionalOperations.filter((operation) => operation !== 'sessions.children')
+      expect(await new AppClientCli(args, h.deps()).run()).toBe(6)
+      expect(h.client.requests).toEqual([])
+      expect(h.parsedOutput()).toMatchObject({ error: { detail: expect.stringContaining('sessions.children') } })
+    }
   })
 
   it('sends a worktree tag and a wake-up line only to a Jamat that offers sessions.worktreeResults', async () => {

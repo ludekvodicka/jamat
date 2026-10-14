@@ -21,6 +21,9 @@ export interface RemoteControlCallContext {
   allowedOperations: readonly string[]
 }
 
+/** What a handler sees: the caller, and the envelope's operation id (null on a read). */
+export type RemoteControlRunContext = RemoteControlCallContext & { operationId: string | null }
+
 /**
  * One operation: its name, whether it writes, a sentence for the catalog, the schema of its body and
  * the handler. The handler sees a body the schema already accepted.
@@ -29,7 +32,7 @@ export interface RemoteControlOperationSpec<TBody, TValue> {
   kind: RemoteControlOperationKind
   description: string
   input: z.ZodType<TBody>
-  run(body: TBody, context: RemoteControlCallContext): Promise<RemoteControlStepResult<TValue>>
+  run(body: TBody, context: RemoteControlRunContext): Promise<RemoteControlStepResult<TValue>>
 }
 
 export interface RemoteControlRegistryRequest {
@@ -164,10 +167,10 @@ export class RemoteControlRegistry {
           context.callerId,
           operationId,
           JSON.stringify({ operation: request.operation, body: request.body }),
-          () => spec.run(request.body, context),
+          () => spec.run(request.body, { ...context, operationId }),
         )
         result = stored.ok ? stored.value : stored
-      } else result = await spec.run(request.body, context)
+      } else result = await spec.run(request.body, { ...context, operationId: null })
     } catch (error) {
       this.deps.onError(`Remote control ${request.operation} failed: ${ErrorText.of(error)}`)
       result = { ok: false, error: { code: 'operation-failed', detail: 'The operation failed unexpectedly' } }

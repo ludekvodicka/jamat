@@ -65,6 +65,7 @@ import { SessionOperations } from './sessionOperations'
 import { WorkspacePanels } from './workspacePanels'
 import { WorkspaceChannels } from './workspaceChannels'
 import { SessionsMarksStore } from '../sessions/sessionsMarksStore'
+import { SessionTasksStore } from '../sessions/sessionTasksStore'
 import { useSessionModel } from '../statusBar/sessionModelItem'
 import { type SessionModelPorts, SessionModelStore } from '../sessionModel/sessionModelStore'
 import { AppShellItems } from '../statusBar/appShellItems'
@@ -72,6 +73,7 @@ import { useCurrentProject } from '../statusBar/currentProjectItem'
 import { StatusBar } from '../statusBar/statusBar'
 import { ActiveAgentTerminals, useActiveAgentTerminal } from '../statusBar/useActiveAgentTerminal'
 import { SessionsTreeView } from '../views/sessionsTree/sessionsTreeView'
+import { SessionsTreeModel } from '../views/sessionsTree/sessionsTreeModel'
 import { SidebarProbeView } from '../views/sidebarProbeView'
 import { ErrorBoundary } from '../widgets/errorBoundary'
 import { AppShellSidebars } from '../widgets/sidebar/appShellSidebars'
@@ -166,6 +168,10 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
   // looked at.
   useEffect(() => wiring.sessionsMarks.start(), [wiring])
   useEffect(() => wiring.commitOpen.start(), [wiring])
+  useEffect(() => {
+    wiring.sessionTasks.setWindowVisible(document.visibilityState === 'visible')
+    return wiring.sessionTasks.start()
+  }, [wiring])
   useEffect(() => window.appClient.onTabsVisibleTerminalTargets(
     (targetKeys) => wiring.sessionsMarks.setActiveTargets(new Set(targetKeys)),
   ), [wiring])
@@ -189,8 +195,10 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
   // asking every twenty seconds. Read from the document rather than over IPC, because what matters
   // here is whether THIS window is on screen.
   useEffect(() => {
-    const report = (): void =>
+    const report = (): void => {
       wiring.sessionModel.setWindowVisible(document.visibilityState === 'visible')
+      wiring.sessionTasks.setWindowVisible(document.visibilityState === 'visible')
+    }
     report()
     document.addEventListener('visibilitychange', report)
     return () => document.removeEventListener('visibilitychange', report)
@@ -363,9 +371,11 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
           return
         if (event.target instanceof Element && event.target.closest('[role="menu"], [role="dialog"]'))
           return
-        if (!(event.target instanceof Element) || !event.target.closest('.file-viewer'))
+        if (!(event.target instanceof Element) || !event.target.closest('.file-viewer, .task-pane'))
           return
-        if (!WorkspacePanels.hasActiveFileViewer(wiring.controller))
+        if (event.target.closest('[data-file-search-open="true"]'))
+          return
+        if (!WorkspacePanels.hasActiveViewer(wiring.controller))
           return
         event.preventDefault()
         event.stopPropagation()
@@ -493,7 +503,7 @@ class AppShellComposition {
     if (role === 'main') {
       const sidebarCommands = new LateBoundCommand<SidebarSide>('sidebar')
       const common = AppShellComposition.workspaceWiring(role, sidebarCommands)
-      const { sessionPorts, sessionsSnapshot, sessionsMarks, commitOpen } = common
+      const { sessionPorts, sessionsSnapshot, sessionsMarks, commitOpen, sessionTasks } = common
       const restartChain = new SessionRestartChain({
         read: async () => {
           const snapshot = sessionsSnapshot.current().snapshot
@@ -511,6 +521,10 @@ class AppShellComposition {
           WorkspaceChannels.publishTerminalRestarted(sessionId),
       })
       const sidebars = new SidebarRegistry()
+      const openTasks = {
+        read: () => WorkspacePanels.openTaskKeys(common.controller),
+        subscribe: (listener: () => void) => common.controller.subscribePanels(listener),
+      }
       sidebars.register({
         key: 'sessionsTree',
         side: 'left',
@@ -529,6 +543,8 @@ class AppShellComposition {
               sessionFacts={common.sessionFacts}
               marks={sessionsMarks}
               commitOpen={commitOpen}
+              tasks={sessionTasks}
+              openTasks={openTasks}
               activeTerminal={common.activeTerminal}
               onLaunch={(intent) =>
                 AppShellComposition.launch(common.intents, common.launcherCommands, intent)}
@@ -593,6 +609,10 @@ class AppShellComposition {
       'The sessions snapshot',
       sessionPorts,
     )
+    const sessionTasks = new SessionTasksStore(sessionsSnapshot, {
+      list: (sessionIds) => AppControl.call('sessionTasks.list', { sessionIds: [...sessionIds] }),
+      reportError: (message) => AppClientUiReport.error(message),
+    })
     const remotePorts = AppShellComposition.remotePorts()
     const remoteSnapshot = new SnapshotStore<RemoteConnectionsSnapshot>(
       'The remote connections snapshot',
@@ -658,6 +678,7 @@ class AppShellComposition {
             drafts={terminalDrafts}
             panelFocus={panelFocus}
             sessions={sessionsSnapshot}
+            tasks={sessionTasks}
             remoteSessions={remoteSnapshot}
             sessionModel={sessionModel}
             settings={agentSettings}
@@ -721,7 +742,7 @@ class AppShellComposition {
       saveLayout: (layout) => WorkspaceChannels.saveLayout(layout),
       clearLayout: () => WorkspaceChannels.clearLayout(),
       claimPanel: (panel, activate) => WorkspaceChannels.claimPanel(panel, activate),
-      focusPanelContent: (panelId) => panelFocus.focus(panelId),
+      focusPanelContent: (panelId) => panelFocus.focus(panelId, 'content'),
       reconcilePanels: (presence) => WorkspaceChannels.reconcilePanels(presence),
       releasePanel: (panelId) => WorkspaceChannels.releasePanel(panelId),
       // This document's own reading first, then the main process: local surfaces would draw the
@@ -743,6 +764,7 @@ class AppShellComposition {
       controller,
       sessionPorts,
       sessionsSnapshot,
+      sessionTasks,
       remotePorts,
       remoteSnapshot,
       sessionsMarks,
@@ -823,17 +845,9 @@ class AppShellComposition {
       ),
       loadView: () => window.appClient.state.loadSessionsView(),
       saveView: (view) => window.appClient.state.saveSessionsView(view),
-      loadScriptRuns: () => UiSettingsStore.stored().sessionsScriptRuns === true,
-      subscribeScriptRuns: (onChanged) =>
-        UiSettingsStore.subscribe((value) => onChanged(value.sessionsScriptRuns === true)),
-      saveScriptRuns: async (shown) => {
-        const value = { ...UiSettingsStore.stored(), sessionsScriptRuns: shown }
-        const answer = await AppControl.library('uiSettings.save', { value })
-        if (!answer.ok) return answer
-        if (!answer.value.ok) return { ok: false, error: answer.value.detail }
-        UiSettingsStore.committed(value)
-        return { ok: true, value: true }
-      },
+      loadNesting: () => SessionsTreeModel.nestingOf(UiSettingsStore.current()),
+      subscribeNesting: (onChanged) =>
+        UiSettingsStore.subscribe((value) => onChanged(SessionsTreeModel.nestingOf(value))),
       loadFilters: () => window.appClient.state.loadSessionFilters(),
       saveFilters: (filters) => window.appClient.state.saveSessionFilters(filters),
       loadGroupDefinitions: () => AppControl.value('sessionGroups.list', {}),
@@ -1082,6 +1096,9 @@ class AppShellComposition {
     })
     commands.register('tab.openProjectFolder', (arg) =>
       WorkspacePanels.openProjectFolder(controller, arg?.sessionId ?? null))
+    commands.register('session.openInVsCode', (arg) =>
+      WorkspacePanels.started('session.openInVsCode',
+        SessionOperations.openInVsCode(WorkspacePanels.commandTargetOf(controller, arg))))
     commands.register('tab.copyProjectFolder', (arg) =>
       WorkspacePanels.started('tab.copyProjectFolder',
         SessionOperations.copyProjectFolder(session.snapshot,
@@ -1146,7 +1163,8 @@ class AppShellComposition {
     commands.register('session.commitGit', (arg) => WorkspacePanels.started('session.commitGit',
       SessionOperations.commitSession(session.snapshot, WorkspacePanels.commandTargetOf(controller, arg), 'git')))
     commands.register('tab.close', () =>
-      WorkspacePanels.started('tab.close', WorkspacePanels.closeActive(controller)))
+      WorkspacePanels.started('tab.close', WorkspacePanels.closeActive(controller, (sessionId) =>
+        session.snapshot.current().snapshot?.sessions.find((one) => one.sessionId === sessionId)?.workflow?.open === true)))
     commands.register('tab.closeOthers', () => WorkspacePanels.closeOthers(controller))
     commands.register('tab.splitRight', () => controller.splitActivePanel('right'))
     commands.register('tab.splitDown', () => controller.splitActivePanel('below'))

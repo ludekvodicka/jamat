@@ -177,6 +177,7 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
       'Commit (SVN)…',
       'Commit (Git)…',
       'Open project folder',
+      'Open in VS Code',
       'Copy project folder',
       'Copy unique session id',
       'Close Tab',
@@ -296,6 +297,22 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
     )
 
     expect(MenuView.titles()).not.toContain(titleOf('tab.copyProjectFolder'))
+  })
+
+  it('offers VS Code only on a local session tab that has a directory', () => {
+    const vsCode = titleOf('session.openInVsCode')
+    const view = render(<MenuHost commands={new CommandRegistry()} panelKey="terminal" params={{ sessionId: 's1' }} facts={factsOf()} />)
+    expect(MenuView.titles()).toContain(vsCode)
+    view.unmount()
+    for (const options of [
+      { facts: factsOf({ directoryPath: null }) },
+      { facts: factsOf(), params: { sessionId: 's1', remoteEndpointId: 'peer' } },
+      { facts: factsOf(), panelKey: 'fileViewer' },
+    ]) {
+      const other = render(<MenuHost commands={new CommandRegistry()} panelKey="terminal" params={{ sessionId: 's1' }} {...options} />)
+      expect(MenuView.titles()).not.toContain(vsCode)
+      other.unmount()
+    }
   })
 
   it('offers the project folder only on a tab bound to a session', () => {
@@ -555,6 +572,7 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
       'session.fork',
       'session.compact',
       'tab.copyProjectFolder',
+      'session.openInVsCode',
     ]
     for (const id of ids) {
       execute.mockClear()

@@ -18,4 +18,12 @@ describe('lib-orchestrator/sessionManager/scripts/scriptDuration', () => {
   it('reads a negative span as zero', () => {
     expect(ScriptDuration.text(-5)).toBe('0.0 s')
   })
+
+  it('reads a ticking clock in whole seconds, cut and never rounded', () => {
+    expect(ScriptDuration.elapsedText(0)).toBe('0 s')
+    expect(ScriptDuration.elapsedText(59_999)).toBe('59 s')
+    expect(ScriptDuration.elapsedText(72_000)).toBe('1 min 12 s')
+    expect(ScriptDuration.elapsedText(3_780_000)).toBe('1 h 3 min')
+    expect(ScriptDuration.elapsedText(-1_500)).toBe('0 s')
+  })
 })

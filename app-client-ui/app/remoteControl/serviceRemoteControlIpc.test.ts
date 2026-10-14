@@ -274,7 +274,6 @@ class ServiceRemoteControlIpcTest {
         calls.push({ method: 'sessionReference', args })
         return { ok: true, value: { text: `AppJamatV3 session remote ${String(args[1])}` } }
       },
-      admitsTerminal: () => true,
       selectSession: () => ({ ok: true, value: undefined }),
       disconnectSessions: (...args: unknown[]) => { calls.push({ method: 'disconnectSessions', args }) },
       attachTerminal: (...args: unknown[]) => {

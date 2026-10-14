@@ -1,0 +1,34 @@
+.task-pane { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; overflow: hidden; box-sizing: border-box; color: var(--color-text-1); font-size: var(--fs-base); }
+.task-pane:focus { outline: none; }
+.task-pane__note { margin: 0; padding: var(--space-2); color: var(--color-text-4); font-size: var(--fs-secondary); }
+.task-pane__note--failed { color: var(--color-danger); }
+
+.task-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.task-view__header { flex: none; display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-2); border-bottom: 1px solid var(--color-border-hairline); }
+.task-view__title { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.task-view__facts { color: var(--color-text-3); font-size: var(--fs-secondary); }
+.task-view__facts[data-state="running"] { color: var(--color-accent); }
+.task-view__facts[data-state="failed"] { color: var(--color-danger); }
+.task-view__entries { flex: 1; min-height: 0; overflow: auto; padding: var(--space-2); display: flex; flex-direction: column; gap: var(--space-2); }
+.task-view__label { color: var(--color-text-3); font-size: var(--fs-secondary); margin-bottom: var(--space-1); }
+/* Plain text on purpose: the agent wrote it, so nothing in it may become markup. */
+.task-view__text, .task-view__output { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--fs-secondary); }
+.task-view__entry--prompt .task-view__text { color: var(--color-text-2); }
+.task-view__entry--error .task-view__text, .task-view__failed { color: var(--color-danger); }
+.task-view__line { display: flex; gap: var(--space-2); align-items: baseline; min-width: 0; font-family: var(--font-mono); font-size: var(--fs-secondary); }
+.task-view__tool { flex: none; color: var(--color-text-1); font-weight: 600; }
+.task-view__summary { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--color-text-2); }
+.task-view__added { flex: none; color: var(--color-ok); }
+.task-view__removed { flex: none; color: var(--color-danger); }
+.task-view__output { margin: var(--space-1) 0 0; padding: var(--space-1) var(--space-2); background: var(--color-surface-sunken); border: 1px solid var(--color-border-hairline); color: var(--color-text-2); }
+.task-view__diff-line[data-sign="added"] { color: var(--color-ok); }
+.task-view__diff-line[data-sign="removed"] { color: var(--color-danger); }
+.task-view__more { align-self: flex-start; margin-top: var(--space-1); padding: 0; border: none; background: none; color: var(--color-accent); font: inherit; font-size: var(--fs-secondary); cursor: pointer; }
+.task-view__more:hover { text-decoration: underline; }
+.task-view__cut, .task-view__note, .task-view__marker { color: var(--color-text-4); font-size: var(--fs-secondary); }
+.task-view__note { margin: 0; }
+.task-view__marker { font-style: italic; }
+.task-view__marker--stop { color: var(--color-warn); }
+.task-view__divider { display: flex; align-items: center; gap: var(--space-2); color: var(--color-text-4); font-size: var(--fs-secondary); }
+.task-view__divider::before, .task-view__divider::after { content: ""; flex: 1; border-top: 1px solid var(--color-border-hairline); }
+.task-view__step { padding-top: var(--space-1); border-top: 1px dashed var(--color-border-hairline); color: var(--color-accent); font-family: var(--font-mono); font-size: var(--fs-secondary); white-space: pre-wrap; overflow-wrap: anywhere; }

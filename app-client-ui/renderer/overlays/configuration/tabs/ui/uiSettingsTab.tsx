@@ -3,6 +3,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import {
   type TerminalThemeName,
   UiSettings,
+  type UiSettingsNestingKey,
   type UiSettingsRange,
 } from '../../../../../shared/uiSettings'
 import { UiSettingsStore } from '../../../../uiSettings/uiSettingsStore'
@@ -224,6 +225,18 @@ export function UiSettingsTab(props: ConfigurationTabProps): React.JSX.Element {
           }}
         />
       </ConfigurationSection>
+      <ConfigurationSection title="Sessions tree">
+        {UiSettingsNestingConst.rows.map((row) => (
+          <label key={row.key}><input type="checkbox" checked={buffer?.[row.key] !== false}
+            disabled={buffer === null || saving}
+            onChange={(event) => {
+              ports.dispatch({ input: 'sessions-nest', key: row.key, value: event.currentTarget.checked })
+              UiSettingsPreview.of(stateRef.current)
+            }} />
+            {row.label}</label>
+        ))}
+        <p className="jamat-configuration-ui__note">Display only, applied at once. A cleared box draws those rows beside their session instead of under it; sub-agent and shell rows then carry the session's number.</p>
+      </ConfigurationSection>
       <div className="jamat-configuration__actions">
         <button
           className="jamat-configuration__button"
@@ -261,6 +274,15 @@ class UiSettingsThemeConst {
     soft: 'Jamat v1',
     vscodeDark: 'VS Code Dark',
   }
+}
+
+/** In the order the section draws them. Sub-agents also covers shell rows and pp `worker` children. */
+class UiSettingsNestingConst {
+  static readonly rows: readonly { key: UiSettingsNestingKey; label: string }[] = [
+    { key: 'sessionsNestSubagents', label: 'Nest sub-agents' },
+    { key: 'sessionsNestWorktrees', label: 'Nest worktree sessions' },
+    { key: 'sessionsNestTickets', label: 'Nest ticket passes' },
+  ]
 }
 
 /** What a control shows the moment it is touched, applied to this document and written nowhere. */

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -83,10 +83,56 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
     return new FileChangesManager({
       diffExecutor: new FileDiffComputer(),
       vcsAdapters: [vcs(root)],
-      transcriptResolver: { async resolve() { return null } },
-      logReaders: [{ agentId: 'codex', async load() { return [] } }],
+      transcriptResolver: { async resolve() { return null }, async subagentFiles() { return [] } },
+      logReaders: [{ agentId: 'codex', subagentsSince: () => null, async load() { return [] } }],
     })
   }
+
+  it('lists sub-agents from the log source\'s start and files their edits under the spawning message', async () => {
+    const root = cwd()
+    const fixture = (name: string) => {
+      const file = join(import.meta.dirname, 'logs', 'fixtures', 'claude-subagent-edits', name)
+      const stats = statSync(file)
+      return { file, mtimeMs: stats.mtimeMs, size: stats.size }
+    }
+    const asked: unknown[] = []
+    const instance = new FileChangesManager({
+      diffExecutor: new FileDiffComputer(),
+      vcsAdapters: [vcs(root)],
+      transcriptResolver: {
+        async resolve(input) {
+          return { agentId: input.agentId, nativeSessionId: input.nativeSessionId, ...fixture('parent.jsonl') }
+        },
+        async subagentFiles(input) {
+          asked.push(input)
+          return [{
+            agentId: 'claude',
+            subagentId: 'a',
+            ...fixture('agent-a.jsonl'),
+            metaFile: null,
+            spawnKey: 'toolu_agent_a',
+            workflowId: null,
+            thread: null,
+          }]
+        },
+      },
+    })
+
+    const listed = await instance.list({
+      sessionId: 'session',
+      cwd: root,
+      agent: { agentId: 'claude', nativeSessionId: 'native' },
+    })
+
+    if (!listed.ok) throw new Error(listed.detail)
+    expect(asked).to.deep.equal([{ agentId: 'claude', nativeSessionId: 'native', cwd: root, since: 0 }])
+    const chat = listed.value.history.groups.filter((group) => group.groupId.startsWith('chat-message:'))
+    expect(chat.map((group) => [group.groupId, group.entries.map((entry) => entry.path.replace(/\\/g, '/'))]))
+      .to.deep.equal([
+        ['chat-message:message-two', ['Q:/Project/src/a.ts']],
+        ['chat-message:message-one', ['Q:/Project/src/own.ts']],
+      ])
+  })
 
   it('reads main-only VCS baselines, distinguishes additions and binary content, and rejects expired tokens', async () => {
     const root = cwd()
@@ -207,7 +253,10 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
     const managerInstance = new FileChangesManager({
       diffExecutor: new FileDiffComputer(),
       vcsAdapters: [adapter],
-      transcriptResolver: { async resolve() { throw new Error('workingTree read the transcript') } },
+      transcriptResolver: {
+        async resolve() { throw new Error('workingTree read the transcript') },
+        async subagentFiles() { throw new Error('workingTree listed sub-agents') },
+      },
       workingSources,
     })
 
@@ -326,8 +375,8 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
         async execute() { throw new Error('A one-sided file called the general diff executor') },
       },
       vcsAdapters: [adapter],
-      transcriptResolver: { async resolve() { return null } },
-      logReaders: [{ agentId: 'codex', async load() { return [] } }],
+      transcriptResolver: { async resolve() { return null }, async subagentFiles() { return [] } },
+      logReaders: [{ agentId: 'codex', subagentsSince: () => null, async load() { return [] } }],
     })
     const listed = await managerInstance.list({
       sessionId: 'session', cwd: root, agent: null,

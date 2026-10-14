@@ -10,6 +10,7 @@ import type {
   SessionDetailsSaved,
   SessionGroup,
   SessionCreated,
+  SessionCreateOrigin,
   SessionInfo,
   SessionCreateSpec,
   SessionNotifyDto,
@@ -18,6 +19,8 @@ import type {
   SessionsOpResult,
   SessionsSnapshot,
   SessionWorktreeState,
+  SessionConflictList,
+  SessionConflictResolved,
   WorktreeResultDto,
 } from '../sessionManager/sessionManagerApi.types'
 import {
@@ -28,6 +31,7 @@ import {
 import type {
   RemoteControlAgentsDto,
   RemoteControlOperation,
+  RemoteControlOperationMap,
   RemoteControlRequest,
   RemoteControlRequestUnion,
   RemoteControlStepResult,
@@ -161,11 +165,13 @@ function world(options?: {
   finalize?: SessionsOpResult
   created?: Partial<SessionCreated>
   worktree?: SessionsOpResult<SessionWorktreeState>
+  conflicts?: SessionsOpResult<SessionConflictList>
+  resolved?: SessionsOpResult<SessionConflictResolved>
   scripts?: SessionsOpResult<SessionScriptsReading>
   runScript?: SessionsOpResult<{ runId: string }>
   results?: WorktreeResultDto[]
   notifies?: SessionNotifyDto[]
-  create?: (spec: SessionCreateSpec) => Promise<SessionsOpResult<SessionCreated>>
+  create?: (spec: SessionCreateSpec, origin?: SessionCreateOrigin) => Promise<SessionsOpResult<SessionCreated>>
 }): World {
   const sessions = options?.sessions ?? [session('session-1', '001')]
   let creates = 0
@@ -223,10 +229,11 @@ function world(options?: {
     }),
     sessions: {
       snapshot: () => snapshot(sessions),
-      createSession: async (spec) => {
+      createSession: async (spec, origin) => {
         creates += 1
-        if (options?.create !== undefined) return options.create(spec)
-        const created = session(`created-${creates}`, '002')
+        if (options?.create !== undefined) return options.create(spec, origin)
+        const created: SessionInfo = { ...session(`created-${creates}`, '002'),
+          ...spec.parent === undefined ? {} : { parent: { ...spec.parent, sameProject: true } } }
         sessions.push(created)
         return { ok: true, value: { sessionId: created.sessionId, tabTitle: created.tabTitle, ...options?.created } }
       },
@@ -239,9 +246,15 @@ function world(options?: {
         finalizeOptions.push(finalizeOption)
         return options?.finalize ?? { ok: true, value: undefined }
       },
+      conflictsOf: async (sessionId) => options?.conflicts
+        ?? { ok: true, value: { sessionId, actionId: 'a1', stage: 'updating', summary: '1 conflict needs you', entries: [], more: 1 } },
+      resolveConflict: async (sessionId, request) => {
+        worktreeCalls.push({ method: `resolveConflict ${request.path} ${request.option}${request.confirm ? ' confirmed' : ''} by ${request.requestedBy}`, sessionId })
+        return options?.resolved ?? { ok: true, value: { sessionId, path: request.path, state: 'settled', left: 2 } }
+      },
       worktreeOf: async (sessionId) => options?.worktree ?? {
         ok: true,
-        value: { sessionId, worktree: null, retired: null, finish: null, action: null, outcome: null, cleanup: null, receipts: [] },
+        value: { sessionId, worktree: null, retired: null, finish: null, action: null, outcome: null, cleanup: null, receipts: [], step: null, workflow: null },
       },
       removeSession: async (sessionId) => {
         removed.push(sessionId)
@@ -275,6 +288,10 @@ function world(options?: {
         sessionCalls.push({ method: 'notifies', args: [filter] })
         return { ok: true, value: { notifies: (options?.notifies ?? []).filter((notify) => filter.sessionId === undefined || notify.sessionId === filter.sessionId) } }
       },
+      children: async (sessionId) => ({ ok: true, value: { children: sessions.flatMap((child) => child.parent?.sessionId === sessionId
+        ? [{ sessionId: child.sessionId, number: child.titleParts.number, title: child.title, agentId: child.agent?.agentId ?? null,
+          life: child.life, kind: child.parent.kind, sameProject: child.parent.sameProject }]
+        : []) } }),
       proposeCommit: async (sessionId, message) => {
         sessionCalls.push({ method: 'proposeCommit', args: [sessionId, message] })
         return options?.proposeCommit ?? { ok: true, value: { scopeRoot: 'Q:/Apps/One/.worktrees/014-fix' } }
@@ -576,6 +593,8 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
       request('sessions.finalize', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-3'),
       request('sessions.remove', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-remove'),
       request('sessions.worktree', { session: { kind: 'sessionId', sessionId: 'session-1' } }),
+      request('sessions.conflicts', { session: { kind: 'sessionId', sessionId: 'session-1' } }),
+      request('sessions.resolveConflict', { session: { kind: 'sessionId', sessionId: 'session-1' }, path: '.aidocs/engines', option: 'keep-both' }, 'op-resolve'),
       request('sessions.discardWorktree', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-discard'),
       request('sessions.fork', { session: { kind: 'sessionId', sessionId: 'session-1' }, name: 'Branch' }, 'op-fork'),
       request('sessions.restart', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-restart'),
@@ -631,6 +650,7 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
       request('sessions.worktreeReview', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-worktree-review'),
       request('sessions.worktreeResults', { tag: 'run-7' }),
       request('sessions.notifies', {}),
+      request('sessions.children', { sessionId: 'session-1' }),
       request('sessions.acknowledgeWorktreeResult', { actionId: 'action-1' }, 'op-acknowledge-result'),
       request('sessions.proposeCommit', { session: { kind: 'sessionId', sessionId: 'session-1' }, message: 'Fix login' }, 'op-propose'),
       request('tabs.list', {}),
@@ -842,6 +862,17 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     })
     expect(live.terminalCalls).toEqual([])
 
+    // An SVN worktree with changes, or one a process holds, keeps the session: the caller resolves it.
+    for (const code of ['dirty', 'locked'] as const) {
+      const kept = world({ remove: { ok: false, code, detail: `Session session-1 keeps its worktree (${code})` } })
+      await expect(kept.control.execute(request('sessions.remove', {
+        session: { kind: 'sessionId', sessionId: 'session-1' },
+      }, `remove-${code}`), context())).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'conflict', data: { sourceCode: code } },
+      })
+    }
+
     const missing = world()
     await expect(missing.control.execute(request('sessions.remove', {
       session: { kind: 'sessionId', sessionId: 'nobody' },
@@ -950,6 +981,8 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
       outcome: null,
       cleanup: { phase: 'pending', reason: 'in use' },
       receipts: [{ scopeRoot: 'Q:/Apps/One/.worktrees/014-fix', revision: 15, at: 3 }],
+      step: { text: 'Reading conflicts after the update', detail: 'svn status --xml', progress: null, startedAt: 5 },
+      workflow: null,
     }
     const found = world({
       worktree: { ok: true, value: state },
@@ -976,6 +1009,60 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     await expect(found.control.execute(request('sessions.worktree', {
       session: { kind: 'sessionId', sessionId: 'session-1' },
     }), peer)).resolves.toMatchObject({ ok: false, error: { code: 'forbidden' } })
+  })
+
+  it('answers the full conflict list of an action to a local caller, not-found without a set, and never to a peer', async () => {
+    const entry = {
+      path: '.aidocs/engines', kind: 'tree', state: 'person', by: null, saved: null,
+      description: 'Your session added this folder with 2 files; r421 added it with 3 files.',
+      options: [{ id: 'keep-both', label: 'Keep both', note: 'restores the files r421 added', loses: 'nothing' }],
+    } as const
+    const list: SessionConflictList = {
+      sessionId: 'session-1', actionId: 'a1', stage: 'updating', summary: '60 conflicts need you',
+      entries: Array.from({ length: 60 }, (_, index) => ({ ...entry, path: `src/f${index}.ts`, options: [...entry.options] })), more: 0,
+    }
+    const found = world({ conflicts: { ok: true, value: list } })
+    const one = { session: { kind: 'sessionId', sessionId: 'session-1' } } as const
+    expect(await found.control.execute(request('sessions.conflicts', one), context())).toMatchObject({ ok: true, operationId: null, value: list })
+    const none = world({ conflicts: { ok: false, code: 'not-found', detail: 'Session session-1 has no conflicts of an SVN action' } })
+    expect(await none.control.execute(request('sessions.conflicts', one), context())).toMatchObject({ ok: false, error: { code: 'not-found' } })
+    expect(RemoteControlConst.optionalOperations).toContain('sessions.conflicts')
+    expect(RemoteControlConst.mutatingOperations).not.toContain('sessions.conflicts')
+    expect(RemoteControlPeerConst.controlOperations).not.toContain('sessions.conflicts')
+    const peer = { ...context(RemoteControlPeerConst.controlOperations), callerKind: 'remote-peer' as const }
+    expect(await found.control.execute(request('sessions.conflicts', one), peer)).toMatchObject({ ok: false, error: { code: 'forbidden' } })
+  })
+
+  it('settles one conflicted path for a local caller, names a loss of incoming work only the person may choose, and never for a peer', async () => {
+    const found = world()
+    const one = { session: { kind: 'number', number: '001' } } as const
+    expect(await found.control.execute(request('sessions.resolveConflict', { ...one, path: '.aidocs/engines', option: 'keep-both' }, 'resolve-1'), context()))
+      .toMatchObject({ ok: true, value: { sessionId: 'session-1', path: '.aidocs/engines', state: 'settled', left: 2 } })
+    const window = { ...context(), callerKind: 'window' as const }
+    await found.control.execute(request('sessions.resolveConflict', { ...one, path: 'src/a.ts', option: 'keep-mine', confirm: true }, 'resolve-2'), window)
+    expect(found.worktreeCalls).toEqual([
+      { method: 'resolveConflict .aidocs/engines keep-both by cli', sessionId: 'session-1' },
+      { method: 'resolveConflict src/a.ts keep-mine confirmed by window', sessionId: 'session-1' },
+    ])
+    expect(await found.control.execute(request('sessions.resolveConflict', { ...one, path: 'a', option: 'squash' as 'merged' }, 'resolve-3'), context()))
+      .toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+
+    const personOnly = world({ resolved: { ok: false, code: 'person-only', detail: 'only you can choose it' } })
+    expect(await personOnly.control.execute(request('sessions.resolveConflict', { ...one, path: 'a', option: 'keep-mine' }, 'resolve-4'), context()))
+      .toMatchObject({ ok: false, error: { code: 'conflict', data: { sourceCode: 'person-only' } } })
+    const running = world({ resolved: { ok: false, code: 'merge-pending', detail: 'fixing' } })
+    expect(await running.control.execute(request('sessions.resolveConflict', { ...one, path: 'a', option: 'merged' }, 'resolve-5'), context()))
+      .toMatchObject({ ok: false, error: { code: 'conflict', data: { sourceCode: 'merge-pending' } } })
+    const unknown = world({ resolved: { ok: false, code: 'invalid-spec', detail: 'not a conflict' } })
+    expect(await unknown.control.execute(request('sessions.resolveConflict', { ...one, path: 'a', option: 'merged' }, 'resolve-6'), context()))
+      .toMatchObject({ ok: false, error: { code: 'operation-failed', data: { sourceCode: 'invalid-spec' } } })
+
+    expect(RemoteControlConst.optionalOperations).toContain('sessions.resolveConflict')
+    expect(RemoteControlConst.mutatingOperations).toContain('sessions.resolveConflict')
+    expect(RemoteControlPeerConst.controlOperations).not.toContain('sessions.resolveConflict')
+    const peer = { ...context(RemoteControlPeerConst.controlOperations), callerKind: 'remote-peer' as const }
+    expect(await found.control.execute(request('sessions.resolveConflict', { ...one, path: 'a', option: 'merged' }, 'resolve-7'), peer))
+      .toMatchObject({ ok: false, error: { code: 'forbidden' } })
   })
 
   it('ends a worktree the way the Finish overlay and the row do, and only for a local caller', async () => {
@@ -1175,6 +1262,29 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
       .toMatchObject({ ok: true })
   })
 
+  it('passes the envelope operation id of a create as its origin for every caller kind, once on replay', async () => {
+    const origins: (SessionCreateOrigin | undefined)[] = []
+    const found = world({ create: async (_spec, origin) => {
+      origins.push(origin)
+      return { ok: true, value: { sessionId: `child-${origins.length}`, tabTitle: 'child' } }
+    } })
+    const spec: SessionCreateSpec = { kind: 'shell', directory: { mode: 'default' } }
+    const peer = { ...context(RemoteControlPeerConst.controlOperations), callerKind: 'remote-peer' as const }
+    const window = { ...context(), callerKind: 'window' as const }
+    const create = request('sessions.create', { spec }, 'create-cli')
+    expect(await found.control.execute(create, context())).toMatchObject({ ok: true, operationId: 'create-cli' })
+    expect(await found.control.execute({ ...create, requestId: 'replay' }, context()))
+      .toMatchObject({ ok: true, value: { session: { sessionId: 'child-1' } } })
+    expect(await found.control.execute(request('sessions.create', { spec }, 'create-window'), window)).toMatchObject({ ok: true })
+    expect(await found.control.execute(request('sessions.create', { spec }, 'create-peer'), peer)).toMatchObject({ ok: true })
+    expect(origins).toEqual([
+      { callerOperationId: 'create-cli' },
+      { callerOperationId: 'create-window' },
+      { callerOperationId: 'create-peer' },
+    ])
+    expect(found.creates()).toBe(3)
+  })
+
   it('validates notify text, group shapes and bounds before creating anything', async () => {
     const found = world()
     const notify = { sessionId: 'parent', text: 'wake', onGroups: ['waiting'] }
@@ -1209,6 +1319,36 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     const peer = { ...context(RemoteControlPeerConst.controlOperations), callerKind: 'remote-peer' as const }
     expect(RemoteControlPeerConst.controlOperations).not.toContain('sessions.notifies')
     expect(await found.control.execute(request('sessions.notifies', {}), peer)).toMatchObject({ ok: false, error: { code: 'forbidden' } })
+  })
+
+  it('creates a local child with a parent link, lists it as a child and refuses the link from a peer', async () => {
+    const found = world()
+    const spec: SessionCreateSpec = { kind: 'shell', directory: { mode: 'default' }, parent: { sessionId: 'session-1', kind: 'worktree' } }
+    expect(await found.control.execute(request('sessions.create', { spec }, 'create-child'), context())).toMatchObject({ ok: true })
+    expect(await found.control.execute(request('sessions.children', { sessionId: 'session-1' }), context())).toMatchObject({ ok: true, value: { children: [
+      { sessionId: 'created-1', number: '002', title: '002 - created-1', agentId: null, life: 'live', kind: 'worktree', sameProject: true },
+    ] } })
+    expect(await found.control.execute(request('sessions.list', {}), context()))
+      .toMatchObject({ ok: true, value: { sessions: expect.arrayContaining([expect.objectContaining({ sessionId: 'created-1', parent: { sessionId: 'session-1', kind: 'worktree', sameProject: true } })]) } })
+    const peer = { ...context(RemoteControlPeerConst.controlOperations), callerKind: 'remote-peer' as const }
+    expect(await found.control.execute(request('sessions.create', { spec }, 'peer-child'), peer))
+      .toMatchObject({ ok: false, error: { code: 'forbidden', detail: 'Session parent is local only' } })
+    expect(found.creates()).toBe(1)
+    expect(RemoteControlPeerConst.controlOperations).not.toContain('sessions.children')
+    expect(await found.control.execute(request('sessions.children', { sessionId: 'session-1' }), peer)).toMatchObject({ ok: false, error: { code: 'forbidden' } })
+  })
+
+  it('refuses a parent link of an unknown kind or with extra keys, and a children read without a session id', async () => {
+    const found = world()
+    for (const parent of [{ sessionId: 'session-1', kind: 'child' }, { sessionId: '', kind: 'worker' }, { sessionId: 'session-1' },
+      { sessionId: 'session-1', kind: 'worker', sameProject: true }])
+      expect(await found.control.execute(request('sessions.create', {
+        spec: { kind: 'shell', directory: { mode: 'default' }, parent },
+      } as never, 'invalid-parent'), context())).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+    expect(found.creates()).toBe(0)
+    for (const body of [{}, { sessionId: '' }, { sessionId: 'session-1', kind: 'worker' }])
+      expect(await found.control.execute(request('sessions.children', body as never), context()))
+        .toMatchObject({ ok: false, error: { code: 'invalid-request' } })
   })
 
   it('takes a tag and a wake-up line on a create, which a 3.10 target refuses by name', async () => {
@@ -1416,6 +1556,31 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     expect(legacy?.sessions.map(({ sessionId, title }) => ({ sessionId, title })))
       .toEqual(found.sessions.map(({ sessionId, title }) => ({ sessionId, title })))
     expect(found.sessions.every((entry) => !Object.hasOwn(entry, 'group'))).toBe(true)
+  })
+
+  it('lists the create operation id on every session, null for a session made without one', async () => {
+    const found = world({ sessions: [{ ...session('session-1', '001'), callerOperationId: 'op-1' }, session('session-2', '002')] })
+
+    const listed = await found.control.execute(request('sessions.list', {}), context())
+    if (!listed.ok) throw new Error(listed.error.detail)
+    const { sessions } = listed.value as RemoteControlOperationMap['sessions.list']['response']
+    expect(sessions.map(({ sessionId, callerOperationId }) => ({ sessionId, callerOperationId }))).toEqual([
+      { sessionId: 'session-1', callerOperationId: 'op-1' },
+      { sessionId: 'session-2', callerOperationId: null },
+    ])
+    expect(SessionsSnapshotValidation.parse(listed.value)).not.toBeNull()
+  })
+
+  it('lists ended sessions locally and leaves them out for a paired computer', async () => {
+    const found = world({ sessions: [session('session-1', '001'), { ...session('session-2', '002'), life: 'ended' }] })
+    const peer: RemoteControlCallContext = { ...context(), callerKind: 'remote-peer' }
+
+    await expect(found.control.execute(request('sessions.list', {}), context())).resolves.toMatchObject({
+      ok: true, value: { sessions: [{ sessionId: 'session-1' }, { sessionId: 'session-2' }] },
+    })
+    const listed = await found.control.execute(request('sessions.list', {}), peer)
+    if (!listed.ok) throw new Error(listed.error.detail)
+    expect((listed.value as SessionsSnapshot).sessions.map(({ sessionId }) => sessionId)).toEqual(['session-1'])
   })
 
   it('files a created session under the group the create named, before any tab is drawn', async () => {
@@ -1765,6 +1930,7 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
         openActionReview: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         worktreeResults: async () => ({ ok: true, value: { results: [] } }),
         notifies: async () => ({ ok: true, value: { notifies: [] } }),
+        children: async () => ({ ok: true, value: { children: [] } }),
         acknowledgeWorktreeResult: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         proposeCommit: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         retrySetup: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
@@ -1778,6 +1944,8 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
         nextSessionNumber: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         allocateSessionNumber: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         worktreeOf: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        conflictsOf: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        resolveConflict: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         runScript: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         scriptsOf: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         setSessionColor: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),

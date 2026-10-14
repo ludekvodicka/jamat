@@ -6,7 +6,7 @@ import { createRequire } from 'node:module'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-import { app, net, safeStorage, type WebContents } from 'electron'
+import { app, net, Notification, safeStorage, type WebContents } from 'electron'
 
 import { ConfigStore } from '../../lib-orchestrator/configStore/configStore'
 import { FileChangesManager } from '../../lib-orchestrator/fileChangesManager/fileChangesManager'
@@ -17,6 +17,7 @@ import { SvnCommitManager } from '../../lib-orchestrator/svn/svnCommitManager'
 import { SvnInvoker } from '../../lib-orchestrator/svn/svnInvoker'
 import type { FileChangesContext } from '../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import { FileViewer } from '../../lib-orchestrator/fileViewer/fileViewer'
+import { PastedFileStore } from '../../lib-orchestrator/pastedFiles/pastedFileStore'
 import { ProjectManager } from '../../lib-orchestrator/projectManager/projectManager'
 import { RateMonitor } from '../../lib-orchestrator/rateMonitor/rateMonitor'
 import { RemoteControl } from '../../lib-orchestrator/remoteControl/remoteControl'
@@ -25,10 +26,11 @@ import { RemoteControlPeerClient } from '../../lib-orchestrator/remoteControl/re
 import { RemoteControlTerminal } from '../../lib-orchestrator/remoteControl/remoteControlTerminal'
 import { SessionManager, SessionNotifier, type SessionManagerDeps } from '../../lib-orchestrator/sessionManager/sessionManager'
 import { SessionModelReader } from '../../lib-orchestrator/sessionModelReader/sessionModelReader'
+import { SessionTasks } from '../../lib-orchestrator/sessionTasks/sessionTasks'
 import { SessionTranscriptReader } from '../../lib-orchestrator/sessionTranscriptReader/sessionTranscriptReader'
 import { OrchestratorPaths } from '../../lib-orchestrator/shared/orchestratorPaths'
 import { TortoiseCommitDialog } from '../../lib-orchestrator/shared/tortoiseCommitDialog'
-import { TreeRemoval } from '../../lib-orchestrator/shared/treeRemoval'
+import { type TreeRemovalListener, type TreeRemovalProgress, TreeRemoval } from '../../lib-orchestrator/shared/treeRemoval'
 import { OpenedPathsStore } from '../../lib-orchestrator/terminalDetector/register/openedPathsStore'
 import {
   TerminalDetector,
@@ -58,6 +60,7 @@ import { WindowsLauncherSetup } from './autolauncher/windowsLauncherSetup'
 import { ClientStatePaths } from './clientState/clientStatePaths'
 import { VersioningCommitMessageStore } from './versioning/versioningCommitMessageStore'
 import { ClientStateStore } from './clientState/clientStateStore'
+import { FinishAttention, type FinishAttentionNotice } from './sessions/finishAttention'
 import { ServiceContextCompactionIpc } from './contextCompaction/serviceContextCompactionIpc'
 import { DirectoryNotesOperations } from './directoryNotes/directoryNotesOperations'
 import { HostPingLoop } from './debug/hostPingLoop'
@@ -103,6 +106,7 @@ import { RemoteProfileLifecycle } from './remoteControl/remoteProfileLifecycle'
 import { ServiceRemoteControlIpc } from './remoteControl/serviceRemoteControlIpc'
 import { ServiceRemoteSettingsIpc } from './remoteControl/serviceRemoteSettingsIpc'
 import { SessionModelOperations } from './sessionModel/sessionModelOperations'
+import { SessionTasksOperations } from './sessionTasks/sessionTasksOperations'
 import { SessionTranscriptAccess } from './sessionTranscript/sessionTranscriptAccess'
 import { ServiceControlIpc } from './remoteControl/serviceControlIpc'
 import { HistoricSessionsOperations } from './sessions/historicSessionsOperations'
@@ -233,6 +237,10 @@ export class AppHub {
   private readonly directoryNotes: DirectoryNotesOperations
   private readonly rateMonitor: RateMonitor
   private readonly sessionNotifier: SessionNotifier
+  /** Tells the person when a local Finish starts to wait; a click opens its workflow tab. */
+  private readonly finishAttention: FinishAttention
+  /** The notifications on screen: Electron drops the click of one nothing holds. */
+  private readonly notices = new Set<Notification>()
   private readonly pingLoop: HostPingLoop
   private readonly menu: AppMenu
   private readonly appRestart: AppRestart
@@ -246,6 +254,7 @@ export class AppHub {
   private remoteRevision = 0
 
   constructor(context: AppContext) {
+    this.finishAttention = new FinishAttention({ show: (notice) => this.showNotice(notice) })
     const configIdentity = context.config.identity.configIdentity
     const channel = context.config.runtimeChannel
     const applicationRoot = dirname(app.getAppPath())
@@ -305,7 +314,7 @@ export class AppHub {
       configIdentity,
       channel,
       onError: (message) => this.report(message),
-      removeTree: (path) => AppHub.removeTree(path),
+      removeTree: (path, onProgress) => AppHub.removeTree(path, onProgress),
     })
     const launcherDirectory = join(dirname(OrchestratorPaths.defaultMachineRoot()), 'JamatLauncher')
     this.autolauncherIpc = new ServiceAutolauncherIpc(new AutolauncherManager({
@@ -364,7 +373,7 @@ export class AppHub {
       onRemovedItself: (sessionId) =>
         this.tabsIpc.closeTerminalPanels(TerminalTargetCodec.key({ kind: 'local', sessionId })),
       onScriptCollapsed: (event) => this.scriptCollapsed(event),
-      removeTree: (path) => AppHub.removeTree(path),
+      removeTree: (path, onProgress) => AppHub.removeTree(path, onProgress),
       // Read per launch rather than captured once: `readSection` re-reads whenever the file's mtime
       // moved, so the switch in the tab reaches the next launch without a notification of its own.
       // The same shape and the same reason as `yoloFor` below: read per operation, so switching
@@ -385,12 +394,21 @@ export class AppHub {
       // rollout is not free, and a view of one's own has no memo behind its index.
       transcripts: this.projects.transcripts,
     })
-    const modelReader = new SessionModelReader({ transcripts: this.projects.transcripts })
+    const modelReader = new SessionModelReader({
+      transcripts: this.projects.transcripts,
+      claudeContextSnapshots: OrchestratorPaths.claudeContextSnapshotsDirectory(configIdentity, channel),
+    })
     const historicSessions = new HistoricSessions(this.projects, this.sessions, modelReader)
     // Each reader is handed over rather than held: there is no timer to stop and no child to end.
     // The transcript view is the project manager's, because resolving a Codex rollout is not free -
     // a view of one's own has no memo behind its index, and this pair is POLLED.
     const sessionModel = new SessionModelOperations(modelReader, this.sessions)
+    // The broker is built further down; an open reaches it only after the hub is composed.
+    const sessionTasks = new SessionTasksOperations(new SessionTasks(this.projects.transcripts), this.sessions,
+      {
+        openTask: (tabTitle, item) => this.tabControlBroker.openTask(tabTitle, item),
+        openWorkflow: (sessionId, tabTitle) => this.tabControlBroker.openWorkflow(sessionId, tabTitle),
+      })
     const transcriptReader = new SessionTranscriptReader({ transcripts: this.projects.transcripts })
     const transcriptAccess = new SessionTranscriptAccess(this.sessions, transcriptReader)
     const workspaceOwnerIdOf = (sender: WebContents): string | null =>
@@ -524,9 +542,12 @@ export class AppHub {
       this.tabControlBroker,
       () => this.tabsPresenceChanged(),
     )
+    // One store for both directions: a local paste and an image or file sent from another computer.
+    const pastedFiles = new PastedFileStore(OrchestratorPaths.pastedFilesDirectory(configIdentity, channel))
     this.terminalsIpc = new ServiceTerminalIpc(
       this.sessions,
       (sender) => this.workspaceWindows.acceptsRenderer(sender),
+      pastedFiles,
     )
     this.terminalMenuIpc = new ServiceTerminalMenuIpc(
       this.terminalDetector,
@@ -571,6 +592,7 @@ export class AppHub {
     }
     const remoteTerminal = new RemoteControlTerminal(this.sessions, {
       onError: (message) => this.report(message),
+      files: pastedFiles,
     })
     // The same terminal the control API delivers through, so a compact and a remote deliver to one
     // session share its one-delivery-at-a-time guard.
@@ -590,7 +612,7 @@ export class AppHub {
     )
     // The same terminal once more: a wake-up line never types into a prompt another delivery holds.
     this.sessionNotifier = new SessionNotifier({
-      sources: [this.sessions.worktreeResultsStore().notifySource(), this.sessions.sessionNotifyStore()],
+      sources: [this.sessions.worktreeResultsStore().notifySource(), this.sessions.sessionNotifyStore(), this.sessions.svnWaitNotices()],
       watch: this.sessions.sessionNotifyStore(),
       sessions: () => this.sessions.snapshot().sessions,
       groups: (sessions) => sessionGroups.read(sessions),
@@ -639,6 +661,7 @@ export class AppHub {
     for (const operations of this.settingsOperations) operations.register(remoteControl.registry)
     new RateMonitorOperations(this.rateMonitor).register(remoteControl.registry)
     sessionModel.register(remoteControl.registry)
+    sessionTasks.register(remoteControl.registry)
     this.directoryNotes.register(remoteControl.registry)
     this.controlIpc = new ServiceControlIpc(
       remoteControl.registry,
@@ -896,10 +919,10 @@ export class AppHub {
    * Electron's `fs` reads every `*.asar` as an archive and keeps one it opened locked until this
    * process exits, so Node's `rm` could not delete a worktree that holds the `electron` package.
    * `original-fs` is the unpatched `fs`; it is required on the first removal, because the node tests
-   * import this file and plain Node has no such module.
+   * import this file and plain Node has no such module. The counted walk reads through it too.
    */
-  private static removeTree(path: string): Promise<void> {
-    return AppHub.originalFs().promises.rm(path, TreeRemoval.rmOptionsConst)
+  private static removeTree(path: string, onProgress?: TreeRemovalListener): Promise<void> {
+    return TreeRemoval.over(AppHub.originalFs().promises)(path, onProgress)
   }
 
   private static originalFs(): typeof import('original-fs') {
@@ -1070,10 +1093,32 @@ export class AppHub {
   }
 
   private sessionsChanged(): void {
+    this.noticeWaits()
     this.broadcast('sessions:changed')
     this.remoteControlServer.publishEvent('sessions.changed')
     this.remoteInbound.publishEvent('sessions.changed')
     this.remoteControl.activity.publish('sessions.changed')
+  }
+
+  /** A notice never stops the broadcast of the change it came with. */
+  private noticeWaits(): void {
+    try { this.finishAttention.seen(this.sessions.snapshot()) }
+    catch (error) { this.report(`A waiting Finish could not be told: ${ErrorText.of(error)}`) }
+  }
+
+  /** A Windows notification whose click brings Jamat forward with the session's workflow tab. */
+  private showNotice(notice: FinishAttentionNotice): void {
+    if (!Notification.isSupported()) return
+    const toast = new Notification({ title: notice.title, body: notice.body })
+    this.notices.add(toast)
+    toast.on('click', () => {
+      this.notices.delete(toast)
+      void this.tabControlBroker.openWorkflow(notice.sessionId, this.tabTitleOf(notice.sessionId) ?? notice.title).then((opened) => {
+        if (!opened.ok) this.report(`The workflow of session ${notice.sessionId} could not be opened: ${opened.error.detail}`)
+      })
+    })
+    toast.on('close', () => { this.notices.delete(toast) })
+    toast.show()
   }
 
   private remoteChanged(): void {
@@ -1225,25 +1270,45 @@ export class AppHub {
 
   /**
    * The client's remover against a tree that holds a real `*.asar`, as every worktree with the
-   * `electron` package does. Only Electron's own `fs` reads it as an archive, so no plain Node smoke
-   * can see the difference. The fixture is made with `original-fs` too: touching the archive through
-   * the patched `fs` would open it and keep it locked for the rest of the run.
+   * `electron` package does, and a junction to a directory outside it. Only Electron's own `fs` reads
+   * the archive as a directory, so no plain Node smoke can see the difference. The fixture is made
+   * with `original-fs` too: touching the archive through the patched `fs` would open it and keep it
+   * locked for the rest of the run. Both removals run: the one `rm` that project deletion takes and
+   * the counted walk of a worktree removal.
    */
   private static async checkSmokeTreeRemoval(): Promise<void> {
+    await AppHub.checkSmokeTreeRemovalOnce()
+    const seen: TreeRemovalProgress[] = []
+    await AppHub.checkSmokeTreeRemovalOnce((progress) => seen.push(progress))
+    if (!seen.some((progress) => progress.phase === 'deleting' && progress.total !== null && progress.total > 0 && progress.done === progress.total))
+      throw new Error(`Smoke tree removal reported no count: ${JSON.stringify(seen.slice(-3))}`)
+  }
+
+  private static async checkSmokeTreeRemovalOnce(onProgress?: TreeRemovalListener): Promise<void> {
     const fs = AppHub.originalFs()
     const tree = await fs.promises.mkdtemp(join(tmpdir(), 'jamat-v3-smoke-asar-'))
-    const resources = join(tree, 'node_modules', 'electron', 'dist', 'resources')
-    await fs.promises.mkdir(resources, { recursive: true })
-    await fs.promises.copyFile(join(process.resourcesPath, 'default_app.asar'), join(resources, 'default_app.asar'))
-    let timer: NodeJS.Timeout | undefined
-    const deadline = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(() => reject(new Error(`Smoke tree removal of ${tree} did not finish`)),
-        AppHub.smokePhaseTimeoutMillisecondsConst)
-    })
-    try { await Promise.race([AppHub.removeTree(tree), deadline]) }
-    finally { clearTimeout(timer) }
-    if (fs.existsSync(tree))
-      throw new Error(`Smoke tree removal left ${tree} behind`)
+    const outside = await fs.promises.mkdtemp(join(tmpdir(), 'jamat-v3-smoke-junction-'))
+    try {
+      await fs.promises.writeFile(join(outside, 'kept.txt'), 'kept')
+      const resources = join(tree, 'node_modules', 'electron', 'dist', 'resources')
+      await fs.promises.mkdir(resources, { recursive: true })
+      await fs.promises.copyFile(join(process.resourcesPath, 'default_app.asar'), join(resources, 'default_app.asar'))
+      await fs.promises.symlink(outside, join(tree, 'node_modules', 'linked'), 'junction')
+      let timer: NodeJS.Timeout | undefined
+      const deadline = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`Smoke tree removal of ${tree} did not finish`)),
+          AppHub.smokePhaseTimeoutMillisecondsConst)
+      })
+      try { await Promise.race([AppHub.removeTree(tree, onProgress), deadline]) }
+      finally { clearTimeout(timer) }
+      if (fs.existsSync(tree))
+        throw new Error(`Smoke tree removal left ${tree} behind`)
+      if (!fs.existsSync(join(outside, 'kept.txt')))
+        throw new Error(`Smoke tree removal followed the junction into ${outside}`)
+    }
+    finally {
+      await fs.promises.rm(outside, TreeRemoval.rmOptionsConst)
+    }
   }
 
   private async checkSmokeFileProtocol(): Promise<void> {

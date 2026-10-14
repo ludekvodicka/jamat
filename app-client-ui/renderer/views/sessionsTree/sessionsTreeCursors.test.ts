@@ -5,7 +5,7 @@ import type { TreeResult } from './sessionsTreeModel'
 
 describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeCursors', () => {
   function treeOf(state: TreeResult['emptyState']): TreeResult {
-    return { nodes: [], emptyState: state, fingerprints: new Map() }
+    return { nodes: [], emptyState: state, nextTaskExpiryAt: null, fingerprints: new Map() }
   }
 
   /*

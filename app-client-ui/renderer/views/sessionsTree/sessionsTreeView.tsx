@@ -40,16 +40,19 @@ import { SessionsFilterState, type SessionsFilterValue } from '../../../shared/s
 import { type TerminalTarget, TerminalTargetCodec } from '../../../shared/terminalTarget'
 import type { CommandRegistry } from '../../commands/commandRegistry'
 import { IpcFailure } from '../../ipc/ipcFailure'
+import { AppControl } from '../../ipc/appControl'
 import type { SnapshotStore } from '../../ipc/snapshotStore'
 import type {
   ConfigurationTabId,
 } from '../../overlays/configuration/configurationTab.types'
 import { type FinalizeAsk, FinalizeAsks } from '../../overlays/finalize/finalizeModel'
 import { type UpdateMainAsk, UpdateMainAsks } from '../../overlays/updateMain/updateMainOverlay'
+import { WorkflowPortsOf } from '../../workflow/workflowPorts'
 import type { LauncherIntent } from '../../overlays/launcher/launcherIntentStore'
 import type { ActiveTerminalStore } from '../../shell/activeTerminalStore'
 import { AgentGlyph } from '../../sessions/agentGlyph'
 import type { SessionsMarksStore } from '../../sessions/sessionsMarksStore'
+import type { SessionTasksStore } from '../../sessions/sessionTasksStore'
 import type { ContextMenuSubmenu, ContextMenuEntry, ContextMenuPosition } from '../../widgets/contextMenu'
 import { ContextMenu } from '../../widgets/contextMenu'
 import { ErrorBoundary } from '../../widgets/errorBoundary'
@@ -64,6 +67,8 @@ import {
 import { FinalizeAwait, type FinalizeAwaited } from './finalizeAwait'
 import { type QuestionRevealTree, SessionsQuestionReveal } from './sessionsQuestionReveal'
 import { SessionRowTooltip, useSessionRowTooltip } from './sessionRowTooltip'
+import { SessionStepRow } from './sessionStepRow'
+import { SessionTaskRows } from './sessionTaskRows'
 import { SessionsTreeActionButton } from './sessionsTreeActionButton'
 import {
   type SessionAction,
@@ -86,6 +91,7 @@ import {
   type ScriptRunOpen,
   type ScriptsBadgeNode,
   type SessionBadges,
+  type SessionsNesting,
   SessionsTreeModel,
   type TreeNode,
   type TreeResult,
@@ -118,10 +124,9 @@ export interface SessionsTreePorts extends SavedSessionsFiltersPorts, SessionsGr
    */
   loadView(): Promise<IpcResult<LoadSessionsViewResult>>
   saveView(view: SessionsTabsView): Promise<IpcResult<boolean>>
-  /** The `Show as sub-tasks` choice, kept in the `ui` section of config.json for every window. */
-  loadScriptRuns(): boolean
-  subscribeScriptRuns(onChanged: (shown: boolean) => void): () => void
-  saveScriptRuns(shown: boolean): Promise<IpcResult<boolean>>
+  /** The three nesting toggles of Settings, a preview included, so a cleared box redraws at once. */
+  loadNesting(): SessionsNesting
+  subscribeNesting(onChanged: (nesting: SessionsNesting) => void): () => void
 }
 
 export interface SessionsTreeRemotePorts {
@@ -154,6 +159,12 @@ export interface SessionsTreeViewProps extends SidebarViewProps {
    */
   marks: SessionsMarksStore
   commitOpen: CommitOpenStore
+  /** The shell owns polling; the tree reports the local sessions it draws. */
+  tasks: SessionTasksStore
+  openTasks: {
+    read(): ReadonlySet<string>
+    subscribe(listener: () => void): () => void
+  }
   /** The terminal panel THIS workspace window has in front. */
   activeTerminal: ActiveTerminalStore
   /** Writes the intent and opens the launcher; what the launcher then does is its own business. */
@@ -277,9 +288,6 @@ interface SessionsTreeChrome {
   groupItem(key: string, group: SessionGroup): ContextMenuSubmenu
   pending: PendingConfirm | null
   collapsed: ReadonlySet<string>
-  /** Whether finished script runs are drawn as rows under their session, for every session at once. */
-  scriptRuns: boolean
-  switchScriptRuns(shown: boolean): void
   /** The one target THIS workspace window has in front. */
   inFront: string | null
   /**
@@ -295,6 +303,7 @@ interface SessionsTreeChrome {
   launch(intent: LauncherIntent): void
   openTerminal(target: TerminalTarget, tabTitle: string, intent: SessionOpenIntent): void
   openScriptLog(parentId: string, runId: string): void
+  scriptParentOf(runId: string): { sessionId: string; waiting: boolean } | null
   openMenu(node: SessionTreeNode, position: ContextMenuPosition): void
   openGroupMenu(facts: GroupRowFacts, position: ContextMenuPosition): void
   openRemoteMenu: RemoteRowMenu
@@ -335,6 +344,24 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
   )
   const marks = marksView.marks
   const commitOpen = useCommitOpen(props.commitOpen)
+  const taskListings = useSyncExternalStore(
+    useCallback((listener) => props.tasks.subscribe(listener), [props.tasks]),
+    useCallback(() => props.tasks.current(), [props.tasks]),
+    useCallback(() => props.tasks.current(), [props.tasks]),
+  )
+  useEffect(() => () => props.tasks.setDrawn(new Set()), [props.tasks])
+  const [openTaskKeys, setOpenTaskKeys] = useState(() => props.openTasks.read())
+  useEffect(() => {
+    const changed = (): void => {
+      const next = props.openTasks.read()
+      setOpenTaskKeys((current) => current.size === next.size && [...current].every((key) => next.has(key))
+        ? current : next)
+    }
+    const stop = props.openTasks.subscribe(changed)
+    changed()
+    return stop
+  }, [props.openTasks])
+  const [expiryRevision, expireTasks] = useReducer((value: number) => value + 1, 0)
   const visibleTargetKeys = marksView.activeTargetKeys
   // Every session with a tab open in any workspace window, not only the one in front. The tree keeps
   // such a row whatever the state filter says; see `TreeViewState.tabbed`.
@@ -356,7 +383,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
   const [filterMenu, setFilterMenu] = useState<{ position: ContextMenuPosition; savedId: string | null } | null>(null)
   const [groupingMenu, setGroupingMenu] = useState<ContextMenuPosition | null>(null)
   const [view, setView] = useState<SessionsTabsView>(SessionsViewState.defaultConst)
-  const [scriptRuns, setScriptRuns] = useState(() => ports.loadScriptRuns())
+  const [nesting, setNesting] = useState(() => ports.loadNesting())
   const [filterText, setFilterText] = useState('')
   // ONE set for both trees. A project node keeps its id wherever it is drawn, because it is the same
   // project: folding it away is a statement about that project, not about the section it happens to
@@ -404,18 +431,19 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     const build = (stateGroup?: TreeStateGroup, group: SessionGroup = 'none'): TreeResult => SessionsTreeModel.build(
       snapshot,
       { filters, filterText, now, inFront: visibleTargetKeys, tabbed: tabbedTargetKeys, stateGroup,
-        assignments, group },
+        assignments, group, nesting, openTaskKeys },
       marks,
       cursors.current.localOf(cursorOf(stateGroup, group)),
       undefined,
       commitOpen,
+      taskListings,
     )
     const remote = (stateGroup?: TreeStateGroup, group: SessionGroup = 'none'): RemoteSessionsSections | null => remoteSnapshot === null
       ? null
       : RemoteSessionsTreeModel.build(
           remoteSnapshot, snapshot,
           { filters, filterText, now, inFront: visibleTargetKeys, tabbed: tabbedTargetKeys, stateGroup,
-            assignments, group },
+            assignments, group, nesting },
           marks, cursors.current.remoteOf(cursorOf(stateGroup, group)),
         )
     /*
@@ -438,7 +466,26 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       })) }
     else
       throw new Error(`Unknown sessions view: ${JSON.stringify(view)}`)
-  }, [snapshot, remoteSnapshot, filters, filterText, marks, view, visibleTargetKeys, tabbedTargetKeys, commitOpen, assignments, sections])
+  }, [snapshot, remoteSnapshot, filters, filterText, marks, view, visibleTargetKeys, tabbedTargetKeys, commitOpen, assignments, sections, taskListings, nesting, openTaskKeys, expiryRevision])
+
+  useEffect(() => {
+    if (trees === null) return
+    const expiries = SessionsTreeChoices.localTreesOf(trees).flatMap((tree) =>
+      tree.nextTaskExpiryAt === null ? [] : [tree.nextTaskExpiryAt])
+    if (expiries.length === 0) return
+    const timer = setTimeout(expireTasks, Math.max(0, Math.min(...expiries) - Date.now()))
+    return () => clearTimeout(timer)
+  }, [trees])
+
+  // The task poll asks only what is on screen: a session the filter hides or a folded group holds
+  // has no rows to draw, and a tree of a thousand ended sessions would otherwise be read in full.
+  const drawnSessionIds = useMemo(
+    () => trees === null
+      ? new Set<string>()
+      : SessionsTreeModel.drawnSessionIdsOf(SessionsTreeChoices.localTreesOf(trees), collapsed),
+    [trees, collapsed],
+  )
+  useEffect(() => props.tasks.setDrawn(drawnSessionIds), [props.tasks, drawnSessionIds])
 
   /*
    * The cursor moves AFTER the commit, never during the render that produced the tree. React may run
@@ -544,19 +591,12 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
         ports.reportError(`The sessions view could not be stored: ${ErrorText.of(thrown)}`))
   }, [ports])
 
-  useEffect(() => ports.subscribeScriptRuns(setScriptRuns), [ports])
-
-  const switchScriptRuns = useCallback((shown: boolean): void => {
-    setScriptRuns(shown)
-    void ports.saveScriptRuns(shown)
-      .then((answer) => {
-        if (answer.ok) return
-        setScriptRuns(!shown)
-        ports.reportError(`The script runs choice could not be stored: ${answer.error}`)
-      })
-      .catch((thrown: unknown) =>
-        ports.reportError(`The script runs choice could not be stored: ${ErrorText.of(thrown)}`))
-  }, [ports])
+  // Every preview of any appearance field arrives here; an unchanged answer keeps the object, so a
+  // dragged font slider rebuilds no tree.
+  useEffect(() => ports.subscribeNesting((next) => setNesting((current) =>
+    current.subagents === next.subagents && current.worktrees === next.worktrees && current.tickets === next.tickets
+      ? current
+      : next)), [ports])
 
   // `onDone` runs only when the library accepted: a stop that was refused leaves a session running,
   // and closing what shows it would hide the one thing still worth looking at.
@@ -654,6 +694,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
         const live = UpdateMainAsks.liveOf(answer)
         settle(live === null ? IpcFailure.of(answer, 'Update main copy') : null)
         if (live !== null) onUpdateMainAsk({ sessionId, sessionTitle, live })
+        else if (answer.ok && answer.value.ok) WorkflowPortsOf.openWorkflow(answer.value.value.sessionId)
       })
       .catch((thrown: unknown) => settle(`Update main copy failed: ${ErrorText.of(thrown)}`))
   }, [ports, onUpdateMainAsk])
@@ -748,6 +789,12 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       const found = FinalizeAwait.findOf(node.target, current.snapshot, current.remoteSnapshot)
       if (found.state === 'unknown-yet' || found.state === 'gone') return
       else if (found.state === 'found') {
+        // A running or waiting action lives in the session's workflow tab, which Finish… brings forward.
+        if (SessionNodeState.opensWorkflow(found.info, found.scope) && node.target.kind === 'local') {
+          setPending(null)
+          WorkflowPortsOf.openWorkflow(node.target.sessionId)
+          return
+        }
         const live = SessionNodeState.isLive(found.info.life)
         if (live && !found.info.admits.includes('finalize')) return
         currentNode = {
@@ -860,8 +907,6 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     }),
     pending,
     collapsed,
-    scriptRuns,
-    switchScriptRuns,
     inFront: activeTargetKey,
     inFlight,
     awaitingAsk,
@@ -870,6 +915,13 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     launch: onLaunch,
     openTerminal: onOpenTerminal,
     openScriptLog: onOpenScriptLog,
+    scriptParentOf: (runId) => {
+      const sessions = currentSnapshots.current.snapshot?.sessions ?? []
+      const run = sessions.find((session) => session.sessionId === runId)
+      const parent = sessions.find((session) => session.sessionId === run?.script?.parentId
+        || session.scripts?.runs.some((candidate) => candidate.runId === runId))
+      return parent === undefined ? null : { sessionId: parent.sessionId, waiting: parent.scripts?.waitingOn !== undefined }
+    },
     openMenu,
     openGroupMenu,
     openRemoteMenu,
@@ -883,7 +935,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       }).catch((error: unknown) => AppClientUiReport.error(String(error)))
     },
   }), [
-    pending, collapsed, scriptRuns, switchScriptRuns, activeTargetKey, inFlight, awaitingAsk,
+    pending, collapsed, activeTargetKey, inFlight, awaitingAsk,
     toggle, request, onLaunch, onOpenTerminal, onOpenScriptLog, openMenu, openGroupMenu, openRemoteMenu,
     onOpenSettings, remotePorts, remoteSnapshot, onCloseTerminal,
     groupState.ready, groupState.saving, groupState.assign, sections,
@@ -1100,12 +1152,13 @@ function TreeMenu(props: {
           'local',
           ScriptRunOpens.opener(props.chrome),
           (runId) => props.chrome.openScriptLog(menu.node.sessionId, runId),
-          { shown: props.chrome.scriptRuns, onSwitch: props.chrome.switchScriptRuns },
         )}
-        // A run is filed in its parent's group, so a group of its own would change nothing on screen.
-        groupItem={menu.node.scriptRun
+        // A nested row is filed in its parent's group, so a group of its own would change nothing on screen.
+        groupItem={menu.node.filedWithParent
           ? undefined
           : props.chrome.groupItem(SessionsTreeModel.groupKeyOf(menu.node), menu.node.group)}
+        onShowWorkflow={menu.node.workflow && menu.node.target.kind === 'local'
+          ? () => WorkflowPortsOf.openWorkflow(menu.node.sessionId) : undefined}
         onAction={(action) => props.chrome.request(menu.node, action)}
         onClose={onClose}
       />
@@ -1537,7 +1590,8 @@ function LaunchButton(props: {
 /**
  * A session, and under it whatever was installed for it. The install is drawn nested rather than
  * beside it because it is something that happened TO this session: as a sibling it reads as a
- * second session the user started and does not recognise.
+ * second session the user started and does not recognise. A session child of the same project hangs
+ * here the same way, with no twisty on this row, and carries its own runs under it.
  */
 function SessionRow(props: {
   node: SessionTreeNode
@@ -1554,9 +1608,9 @@ function SessionRow(props: {
     SessionsTreeActions.isArmed(node, action, chrome.pending))
   const flash = useSessionStateFlash(node.glyph)
   const tooltip = useSessionRowTooltip()
-  const finishedRuns = chrome.scriptRuns && node.target.kind === 'local'
-    ? node.scriptRuns.filter((run) => !run.row)
-    : []
+  const finishedRuns = node.scriptHistoryRows
+  const nestedTasks = node.tasks?.placement === 'nested' ? node.tasks : null
+  const besideTasks = node.tasks?.placement === 'beside' ? node.tasks : null
   return (
     <div className="jamat-sessions__session" data-session={targetKey}>
       {/* On the row rather than on this container, so a right-click on a nested install lands on
@@ -1653,7 +1707,8 @@ function SessionRow(props: {
             {SessionsTreeGlyphs.mergeTextOf(node.merge)}
           </span>
         )}
-        {node.badges.worktree !== null && <WorktreeFinishMark worktree={node.badges.worktree} />}
+        {node.badges.worktree !== null && <WorktreeFinishMark worktree={node.badges.worktree}
+          onOpen={node.target.kind === 'local' ? () => WorkflowPortsOf.openWorkflow(node.sessionId) : null} />}
         {node.badges.worktree !== null && <WorktreeCleanupMark worktree={node.badges.worktree} />}
         {node.badges.mainUpdate !== null && <MainUpdateMark update={node.badges.mainUpdate} />}
         {node.badges.landing !== null && node.badges.mainUpdate === null && <LandingMark landing={node.badges.landing} />}
@@ -1669,30 +1724,41 @@ function SessionRow(props: {
           ))}
         </span>
       </div>
-      {(node.children.length > 0 || finishedRuns.length > 0) && (
+      {(node.step !== null || nestedTasks !== null || node.children.length > 0 || finishedRuns.length > 0) && (
         <div className="jamat-sessions__children">
+          {node.step !== null && <SessionStepRow step={node.step} />}
+          {nestedTasks !== null && (
+            <SessionTaskRows
+              tasks={nestedTasks}
+            />
+          )}
           {node.children.map((child) => <TreeRow key={child.id} node={child} chrome={chrome} />)}
           {finishedRuns.map((run) => (
-            <ScriptRunRow key={run.runId} parentId={node.sessionId} run={run} interactive={node.interactive} chrome={chrome} />
+            <ScriptRunRow key={run.runId} parentId={node.sessionId} run={run} interactive={node.interactive} />
           ))}
         </div>
+      )}
+      {/* Outside the indented container: with `Nest sub-agents` cleared the rows stand at this
+          row's level, after its family, and carry its number instead. */}
+      {besideTasks !== null && (
+        <SessionTaskRows
+          tasks={besideTasks}
+        />
       )}
     </div>
   )
 }
 
 /**
- * A finished run with no record left, drawn under its session when the person asked for it. Its
- * saved log is all that remains to open, and a log is local, so only a local row draws these.
+ * A finished run with no record left. Only a local row can read its saved output.
  */
 function ScriptRunRow(props: {
   parentId: string
   run: ScriptRunNode
   interactive: boolean
-  chrome: SessionsTreeChrome
 }): React.JSX.Element {
-  const { parentId, run, chrome } = props
-  const opens = props.interactive && run.log === 'saved'
+  const { parentId, run } = props
+  const opens = props.interactive
   const paint = SessionNodeState.runPaintOf(run.state)
   return (
     <div className="jamat-sessions__session" data-script-run={run.runId}>
@@ -1702,7 +1768,7 @@ function ScriptRunRow(props: {
         title={run.logDetail ?? run.summary}
         onClick={(event) => {
           if (opens && event.target instanceof Element && !event.target.closest('button'))
-            chrome.openScriptLog(parentId, run.runId)
+            ScriptRunOpens.openTask(parentId, run.runId, run.title)
         }}
       >
         <span className={`jamat-sessions__glyph jamat-sessions__glyph--paint-${paint}`} data-paint={paint} aria-hidden="true">
@@ -1712,7 +1778,7 @@ function ScriptRunRow(props: {
           type="button"
           className="jamat-sessions__title"
           disabled={!opens}
-          onClick={() => chrome.openScriptLog(parentId, run.runId)}
+          onClick={() => ScriptRunOpens.openTask(parentId, run.runId, run.title)}
         >
           {run.summary}
         </button>
@@ -1742,7 +1808,7 @@ function ScriptsBadge(props: {
         className={className}
         data-script-badge={badge.state}
         title={badge.title}
-        onClick={() => chrome.openScriptLog(props.parentId, logRunId)}
+        onClick={() => ScriptRunOpens.openTask(props.parentId, logRunId, badge.text)}
       >
         {badge.text}
       </button>
@@ -1755,8 +1821,8 @@ function ScriptsBadge(props: {
       className={className}
       data-script-badge={badge.state}
       title={badge.title}
-      onClick={() => chrome.openTerminal(open.target, open.tabTitle, 'preview')}
-      onDoubleClick={() => chrome.openTerminal(open.target, open.tabTitle, 'permanent')}
+      onClick={() => ScriptRunOpens.openBadge(props.parentId, open, chrome, 'preview')}
+      onDoubleClick={() => ScriptRunOpens.openBadge(props.parentId, open, chrome, 'permanent')}
     >
       {badge.text}
     </button>
@@ -1872,8 +1938,8 @@ function ExitPill(props: {
 }
 
 /**
- * Drawn for every worktree session of either kind, so a row says where it runs before it has been
- * measured. No diff drawn at all until one has been: `+0 -0` is a measurement, absence is not.
+ * Drawn for every worktree session of either kind, so a row says where it runs. The line counts
+ * against the base stay in the title only.
  */
 function WorktreeMark(props: { worktree: WorktreeBadge }): React.JSX.Element {
   const { worktree } = props
@@ -1886,9 +1952,6 @@ function WorktreeMark(props: { worktree: WorktreeBadge }): React.JSX.Element {
       aria-label={title}
     >
       <span className="jamat-sessions__worktree-mark">WT</span>
-      {worktree.diff !== null && (
-        <span>{`+${worktree.diff.added} -${worktree.diff.removed}`}</span>
-      )}
       {worktree.baseMoved && (
         <span
           className="jamat-sessions__base"
@@ -1943,9 +2006,13 @@ function MainUpdateMark(props: { update: SessionMainUpdateBadge }): React.JSX.El
   )
 }
 
-/** What a running SVN finish is doing, why one waits for you, or else how the last one ended. */
-function WorktreeFinishMark(props: { worktree: WorktreeBadge }): React.JSX.Element | null {
+/**
+ * What a running SVN finish is doing, why one waits for you, or else how the last one ended. On a
+ * local row a click brings the session's workflow forward.
+ */
+function WorktreeFinishMark(props: { worktree: WorktreeBadge; onOpen: (() => void) | null }): React.JSX.Element | null {
   const { finish, outcome, needs } = props.worktree
+  const opens = WorkflowMarks.propsOf(props.onOpen)
   if (needs !== null)
     return (
       <span
@@ -1953,8 +2020,9 @@ function WorktreeFinishMark(props: { worktree: WorktreeBadge }): React.JSX.Eleme
         data-finish-needs="true"
         title={needs.title}
         aria-label={needs.title}
+        {...opens}
       >
-        finish waits for you
+        {needs.text}
       </span>
     )
   if (finish !== null)
@@ -1964,6 +2032,7 @@ function WorktreeFinishMark(props: { worktree: WorktreeBadge }): React.JSX.Eleme
         data-finish={finish.phase}
         title={finish.title}
         aria-label={finish.title}
+        {...opens}
       >
         {SessionsTreeGlyphs.finishTextOf(finish.phase)}
       </span>
@@ -1975,11 +2044,33 @@ function WorktreeFinishMark(props: { worktree: WorktreeBadge }): React.JSX.Eleme
         data-finish-outcome={outcome.result}
         title={outcome.title}
         aria-label={outcome.title}
+        {...opens}
       >
         {SessionsTreeGlyphs.outcomeTextOf(outcome.result)}
       </span>
     )
   return null
+}
+
+/** The finish mark of a local row opens the session's workflow, and never the row's own click. */
+class WorkflowMarks {
+  static propsOf(onOpen: (() => void) | null): React.HTMLAttributes<HTMLSpanElement> {
+    if (onOpen === null) return {}
+    return {
+      role: 'button',
+      tabIndex: 0,
+      onClick: (event) => {
+        event.stopPropagation()
+        onOpen()
+      },
+      onKeyDown: (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        event.preventDefault()
+        event.stopPropagation()
+        onOpen()
+      },
+    }
+  }
 }
 
 /** The name comes with the click: acting on a row shows it, and a tab is opened under a name. */
@@ -2003,7 +2094,7 @@ function ActionButton(props: {
   return (
     <SessionsTreeActionButton
       label={armed
-        ? SessionsTreeActions.confirmLabelOf(action, label)
+        ? SessionsTreeActions.confirmLabelOf(node, action, label)
         : label ?? SessionNodeState.actionLabelOf(action)}
       title={nothingToClose ? 'This session has no tab open' : undefined}
       armed={armed}
@@ -2098,6 +2189,15 @@ class SessionsTreeChoices {
    * Every tree on screen, each with the groups standing above it. Which trees exist is the view's
    * choice, and the remote sections hang two group rows deeper than the local ones.
    */
+  /** Every local tree on screen; the remote ones carry no task rows. */
+  static localTreesOf(trees: SessionsTrees): TreeResult[] {
+    const assigned = trees.assigned.map((group) => group.tree)
+    if (trees.view === 'together') return [...assigned, trees.both]
+    else if (trees.view === 'states') return [...assigned, ...trees.groups.map((group) => group.tree)]
+    else
+      throw new Error(`Unknown sessions view: ${JSON.stringify(trees)}`)
+  }
+
   static revealTreesOf(trees: SessionsTrees): QuestionRevealTree[] {
     const found: QuestionRevealTree[] = []
     const local = (tree: TreeResult): void => { found.push({ above: [], nodes: tree.nodes }) }
@@ -2163,7 +2263,9 @@ class SessionsTreeActions {
     })
   }
 
-  static confirmLabelOf(action: SessionAction, label: string | null): string {
+  /** The Remove of an SVN worktree session takes the worktree too when nothing is left in it. */
+  static confirmLabelOf(node: SessionTreeNode, action: SessionAction, label: string | null): string {
+    if (action === 'remove' && node.badges.worktree?.kind === 'svn') return 'Remove with worktree?'
     return `${label ?? SessionNodeState.actionLabelOf(action)}?`
   }
 }
@@ -2174,8 +2276,29 @@ class ScriptRunOpens {
    * the run's, in the mode the row's own terminal would have taken.
    */
   static openRow(node: SessionTreeNode, chrome: SessionsTreeChrome, intent: SessionOpenIntent): void {
+    const parent = node.target.kind === 'local' ? chrome.scriptParentOf(node.sessionId) : null
+    if (parent !== null && !parent.waiting) {
+      ScriptRunOpens.openTask(parent.sessionId, node.sessionId, node.title)
+      return
+    }
     const opened = node.waitingOn ?? { target: node.target, tabTitle: node.tabTitle }
     chrome.openTerminal(opened.target, opened.tabTitle, intent)
+  }
+
+  static openBadge(parentId: string, open: ScriptRunOpen, chrome: SessionsTreeChrome, intent: SessionOpenIntent): void {
+    if (open.target.kind === 'local' && chrome.scriptParentOf(open.target.sessionId)?.waiting !== true)
+      ScriptRunOpens.openTask(parentId, open.target.sessionId, open.tabTitle)
+    else
+      chrome.openTerminal(open.target, open.tabTitle, intent)
+  }
+
+  static openTask(sessionId: string, runId: string, title: string): void {
+    void AppControl.call('sessionTasks.open', { sessionId, task: { kind: 'script', runId }, title: title.slice(0, 200) })
+      .then((answer) => {
+        if (!answer.ok) AppClientUiReport.error(`The script run could not be opened: ${answer.error}`)
+        else if (!answer.value.ok) AppClientUiReport.error(`The script run could not be opened: ${answer.value.error.detail}`)
+      })
+      .catch((error: unknown) => AppClientUiReport.error(`The script run could not be opened: ${ErrorText.of(error)}`))
   }
 
   static opener(chrome: SessionsTreeChrome): (open: ScriptRunOpen) => void {
@@ -2241,9 +2364,9 @@ class RemoteSessionMenu {
           : SessionNodeState.actionLabelOf(action),
         onSelect: () => chrome.request(node, action),
       })
-    const scripts = SessionsTreeScriptsMenu.itemOf(node.scriptRuns, 'remote', ScriptRunOpens.opener(chrome), null, null)
+    const scripts = SessionsTreeScriptsMenu.itemOf(node.scriptRuns, 'remote', ScriptRunOpens.opener(chrome), null)
     if (scripts !== null) items.push(scripts)
-    if (!node.scriptRun)
+    if (!node.filedWithParent)
       items.push({ kind: 'separator', key: 'tree-groups' }, chrome.groupItem(SessionsTreeModel.groupKeyOf(node), node.group))
     return items
   }
@@ -2292,7 +2415,7 @@ class RemoteComputerMenu {
 }
 
 class SessionsTreeGlyphs {
-  /** The numbers beside the mark are lines against the worktree's base, so the title says so. */
+  /** The row draws no line counts, so the title carries the lines against the worktree's base. */
   static worktreeTitleOf(worktree: WorktreeBadge): string {
     const lines = worktree.diff === null
       ? ''

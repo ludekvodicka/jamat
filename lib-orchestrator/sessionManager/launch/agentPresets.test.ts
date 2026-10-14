@@ -1,3 +1,5 @@
+import { homedir } from 'node:os'
+
 import { describe, expect, it } from 'vitest'
 
 import type { SessionRecordAgent } from '../records/sessionRecord.types'
@@ -259,6 +261,42 @@ describe('lib-orchestrator/sessionManager/launch/agentPresets', () => {
     expect(AgentPresets.replayArgs({
       agentId: 'codex', launchMode: 'fork', forkParentId: parentConst,
     })).toEqual(['fork', parentConst])
+  })
+
+  /**
+   * The merger is interactive: no `-p`. Its rights go in front of the mode flags, the prompt stays
+   * last; the two Jamat commands are allowed by the wrapper's exact command line, svn is denied.
+   */
+  it('starts the merger with its allow list, its deny list and accept-edits, interactive, the prompt last', () => {
+    const cli = AgentPresets.jamatCliOf(homedir())
+    expect(AgentPresets.createArgs(
+      { agentId: 'claude', mode: 'fork', forkParentId: parentConst, permission: 'merger', initialPrompt: 'merge it' },
+      mintedConst,
+    )).toEqual([
+      '--allowedTools', `Bash(${cli} sessions resolve-conflict:*)`, `Bash(${cli} sessions conflicts:*)`,
+      '--disallowedTools', 'Bash(svn:*)', 'Bash(svnadmin:*)', '--permission-mode', 'acceptEdits',
+      '--resume', parentConst, '--fork-session', '--session-id', mintedConst, 'merge it',
+    ])
+  })
+
+  it('replays a merger with its rights and no print mode, and reopens it with them too', () => {
+    const merger: SessionRecordAgent = { agentId: 'claude', launchMode: 'new', nativeSessionId: mintedConst, permission: 'merger', initialPrompt: 'merge it' }
+    const replayed = AgentPresets.replayArgs(merger)
+    expect(replayed).not.toContain('-p')
+    expect(replayed.slice(0, 3)[0]).toBe('--allowedTools')
+    expect(replayed.slice(-3)).toEqual(['--session-id', mintedConst, 'merge it'])
+    const reopened = AgentPresets.reopenArgs(merger)
+    expect(reopened).toContain('acceptEdits')
+    expect(reopened.slice(-2)).toEqual(['--resume', mintedConst])
+  })
+
+  it('names the skill wrapper with forward slashes and quotes, whatever the home path holds', () => {
+    expect(AgentPresets.jamatCliOf('C:\\Users\\Some One\\'))
+      .toBe('node "C:/Users/Some One/.claude/skills/appjamat-v3/scripts/jamat-v3.mjs"')
+  })
+
+  it('starts no Codex merger', () => {
+    expect(() => AgentPresets.replayArgs({ agentId: 'codex', launchMode: 'new', permission: 'merger' })).toThrow(/Codex has no edits-only/)
   })
 
   it('throws on an agent or a mode it does not know', () => {

@@ -20,6 +20,8 @@ export interface SessionModelTranscriptResolver {
 export interface SessionModelReaderDeps {
   transcripts?: SessionModelTranscriptResolver
   claudeHome?: string
+  /** Where Jamat's Claude status line relay stores each session's context window. */
+  claudeContextSnapshots?: string
   sources?: readonly SessionModelSource[]
 }
 
@@ -41,7 +43,7 @@ export class SessionModelReader
       ?? new ProviderTranscriptView({ claudeHome: deps?.claudeHome })
     super((context) => transcripts.resolve(context))
     const sources = deps?.sources
-      ?? [new SessionModelSourceClaude(deps?.claudeHome), new SessionModelSourceCodex()]
+      ?? [new SessionModelSourceClaude(deps?.claudeHome, deps?.claudeContextSnapshots), new SessionModelSourceCodex()]
     this.sources = new Map(sources.map((source) => [source.agentId, source]))
   }
 

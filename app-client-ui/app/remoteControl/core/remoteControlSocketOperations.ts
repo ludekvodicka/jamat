@@ -14,7 +14,7 @@ import { RemoteControlSocketValidation } from './remoteControlSocketValidation'
 
 export type RemoteControlSocketTerminalPort = Pick<
   RemoteControlTerminal,
-  'attachLive' | 'inputLive' | 'resizeLive' | 'setLiveActive' | 'detachLive'
+  'attachLive' | 'inputLive' | 'resizeLive' | 'setLiveActive' | 'detachLive' | 'pasteImageLive' | 'pasteFileLive'
 >
 
 export interface RemoteControlSocketSubscription {
@@ -45,7 +45,7 @@ export interface RemoteControlSocketCaller {
 /**
  * The socket protocol, once.
  *
- * The local WebSocket server and the peer registry answer the same six operations, and until
+ * The local WebSocket server and the peer registry answer the same eight operations, and until
  * 2026-08-23 each carried its own copy - which had already begun to differ: one dropped an
  * attachment when its terminal exited and the other kept it, and one audited a refused request while
  * the other left no trace. Two copies of a protocol do not stay equal; they take turns being right.
@@ -130,7 +130,7 @@ export class RemoteControlSocketOperations {
   private mutate(
     caller: RemoteControlSocketCaller,
     request: Exclude<RemoteControlSocketRequest, { operation: 'events.subscribe' }>,
-  ): RemoteControlStepResult<unknown> {
+  ): RemoteControlStepResult<unknown> | Promise<RemoteControlStepResult<unknown>> {
     if (request.operation === 'terminal.attach') {
       const attached = this.terminal.attachLive(
         caller.ownerId,
@@ -155,7 +155,20 @@ export class RemoteControlSocketOperations {
       const detached = this.terminal.detachLive(caller.ownerId, request.attachId)
       if (detached.ok) caller.detached(request.attachId)
       return detached
-    } else
+    } else if (request.operation === 'terminal.pasteImage')
+      return this.terminal.pasteImageLive(
+        caller.ownerId,
+        request.attachId,
+        Buffer.from(request.data, 'base64'),
+      )
+    else if (request.operation === 'terminal.pasteFile')
+      return this.terminal.pasteFileLive(caller.ownerId, request.attachId, request.uploadId, {
+        fileName: request.fileName,
+        size: request.size,
+        offset: request.offset,
+        bytes: Buffer.from(request.data, 'base64'),
+      })
+    else
       throw new Error(`Unknown socket mutation: ${JSON.stringify(request)}`)
   }
 

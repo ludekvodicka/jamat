@@ -3,7 +3,9 @@ import { randomUUID } from 'node:crypto'
 import type {
   HostDescriptor,
   HostEvent,
+  HostHealthResult,
   HostOpName,
+  HostWireConst,
   RuntimeInspectResult,
   RuntimeLaunchSpec,
   RuntimeListResult,
@@ -37,6 +39,9 @@ export interface HostClientDeps {
  * lease, and the operations, all of them answering with values. Nothing here knows what a session is.
  */
 export class HostClient {
+  /** Mirrored through the type system: the annotation fails to compile if the Host drops the name. */
+  private static readonly healthCapabilityConst:
+    Extract<typeof HostWireConst.capabilities[number], 'host.health.v1'> = 'host.health.v1'
   private readonly watcher: HostDescriptorWatcher
   private readonly http: HostHttpClient
   private readonly events: HostEventsSocket
@@ -113,6 +118,18 @@ export class HostClient {
       eventsSocket: this.events.debugView(),
       lease: this.lease.debugView(),
     }
+  }
+
+  /**
+   * The Host's memory history. Null when the running Host predates `host.health`: it would answer
+   * 404, and that is a fact about its build rather than a failure worth reporting.
+   */
+  async health(): Promise<HostCallResult<HostHealthResult> | null> {
+    const descriptor = this.watcher.current()
+    if (descriptor === null)
+      return { ok: false, code: 'host-unreachable', detail: 'host.health: no Host descriptor is published' }
+    if (!descriptor.capabilities.includes(HostClient.healthCapabilityConst)) return null
+    return this.http.call<HostHealthResult>('host.health', {})
   }
 
   async runtimeList(): Promise<HostCallResult<RuntimeListResult>> {

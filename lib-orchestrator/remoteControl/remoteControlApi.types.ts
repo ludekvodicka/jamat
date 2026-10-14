@@ -15,6 +15,7 @@ import type {
   HostDebugStatus,
   HostPingResult,
   SessionAgentId,
+  SessionChildInfo,
   SessionColorName,
   SessionCreated,
   SessionCreateSpec,
@@ -29,11 +30,14 @@ import type {
   SessionScriptsReading,
   SessionsSnapshot,
   SessionWorktreeState,
+  SessionConflictList,
+  SessionConflictResolved,
   TerminalComposerState,
   TerminalFrame,
   WorktreeResultDto,
 } from '../sessionManager/sessionManagerApi.types'
 import type { AgentWorkHint } from '../sessionManager/workState/agentWorkInspector.types'
+import type { SvnConflictOption } from '../svn/svn.types'
 import type { RuntimeChannel } from '../shared/configIdentity.types'
 import type { SessionTranscriptReading } from '../sessionTranscriptReader/sessionTranscriptReaderApi.types'
 import type {
@@ -484,6 +488,29 @@ export type RemoteControlSocketRequest =
       operation: 'terminal.detach'
       attachId: string
     }
+  | {
+      protocol: RemoteControlProtocol
+      requestId: string
+      operationId: string
+      operation: 'terminal.pasteImage'
+      attachId: string
+      /** A PNG or JPEG as base64; the target saves it and answers the path the agent is pasted. */
+      data: string
+    }
+  | {
+      protocol: RemoteControlProtocol
+      requestId: string
+      operationId: string
+      operation: 'terminal.pasteFile'
+      attachId: string
+      /** The sender's id for one file; every chunk of it carries the same one. */
+      uploadId: string
+      fileName: string
+      size: number
+      offset: number
+      /** This chunk as base64. The answer carries the saved path once the last byte has arrived. */
+      data: string
+    }
 
 export type RemoteControlSocketResponse =
   | {
@@ -605,8 +632,9 @@ export interface RemoteControlOperationMap {
   'sessions.list': {
     request: Record<string, never>
     response: Omit<SessionsSnapshot, 'sessions'> & {
-      // Older controllers omit group; current controllers always send the effective id or null.
-      sessions: readonly (SessionInfo & { group?: SessionGroup | null })[]
+      // Older controllers omit group and callerOperationId; current controllers always send both, null for none.
+      sessions: readonly (Omit<SessionInfo, 'callerOperationId'>
+        & { group?: SessionGroup | null; callerOperationId?: string | null })[]
     }
   }
   'sessions.create': {
@@ -667,7 +695,9 @@ export interface RemoteControlOperationMap {
    * action is written; the stages go on in the client and are read with `sessions.worktree`.
    * `actionId` is null where nothing goes on. A session that still works is refused with `conflict`
    * (source code `session-working`) until the caller sends `confirmWorking`; an agreement to the
-   * project's checks travels as `acknowledgeSetup`. A Git worktree takes `discard` only. Local only.
+   * project's checks travels as `acknowledgeSetup`. A Git worktree takes `discard` only. `agent` with
+   * Commit on a Finish that waits on its conflicts starts the merger for what is left (Resolve with
+   * agent); Commit while the merger works is Check again. Local only.
    */
   'sessions.finishWorktree': {
     request: {
@@ -675,6 +705,7 @@ export interface RemoteControlOperationMap {
       choice: 'commit' | 'discard' | 'keep'
       acknowledgeSetup?: string
       confirmWorking?: true
+      agent?: true
     }
     response: { sessionId: string; actionId: string | null }
   }
@@ -699,10 +730,47 @@ export interface RemoteControlOperationMap {
     request: { session: RemoteControlSessionSelector }
     response: { commitSessionId: string; scopeRoot: string }
   }
+  /**
+   * The full conflict list of an SVN action: its summary and every entry with its description, its
+   * state and its options; a review or resolver run names its parent's action through `--self`. A
+   * session without a conflict set answers `not-found`. Local only. Its capability is the version
+   * marker of every conflict key that follows.
+   */
+  'sessions.conflicts': {
+    request: { session: RemoteControlSessionSelector }
+    response: SessionConflictList
+  }
+  /**
+   * One option on one conflicted path of an SVN Finish that waits on its conflicts: the path as
+   * `sessions conflicts` lists it, an option its entry admits. Jamat saves what the option moves,
+   * replaces or resolves away first, runs it step by step and journals each step; a failed step is
+   * resumed by the next call. An option that loses incoming work (`keep-mine` of an add) answers
+   * `conflict` with source code `person-only` unless the window sends `confirm`. A running action
+   * answers `conflict` (`merge-pending`); an unknown path or an option the path does not admit
+   * `operation-failed` (`invalid-spec`). The Finish goes on only with Check again. A run's `--self`
+   * settles its parent's path as the agent. Local only, mutating.
+   */
+  'sessions.resolveConflict': {
+    request: {
+      session: RemoteControlSessionSelector
+      path: string
+      option: SvnConflictOption
+      confirm?: true
+    }
+    response: SessionConflictResolved
+  }
   /** Local only. Its capability marks support for SessionCreateSpec.notify. */
   'sessions.notifies': {
     request: { sessionId?: string }
     response: { notifies: SessionNotifyDto[] }
+  }
+  /**
+   * The sessions whose parent link names `sessionId`, with their kind and `sameProject`. Local only.
+   * Its capability marks support for SessionCreateSpec.parent.
+   */
+  'sessions.children': {
+    request: { sessionId: string }
+    response: { children: SessionChildInfo[] }
   }
   /**
    * The durable results of SVN worktrees, also of sessions removed since: every Finish, Discard, Keep

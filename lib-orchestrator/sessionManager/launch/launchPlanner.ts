@@ -60,6 +60,11 @@ export interface LaunchPlanOptions {
    */
   effort?: string
   /**
+   * A Claude `--settings` file, today the status line relay (`ClaudeStatusLine`). Absent emits
+   * nothing; Codex has no such flag and is never handed one.
+   */
+  claudeSettingsFile?: string
+  /**
    * The two shapes this class decides - the win32 wrap and the stripped environment - are the whole
    * reason it exists, and both are read off the running process. They are injectable so a test can
    * assert either shape from either platform instead of asserting whatever it happens to run on.
@@ -138,6 +143,9 @@ export class LaunchPlanner {
         ...(options?.effort === undefined
           ? []
           : LaunchPlanner.effortArgsOf(agent.agentId, options.effort)),
+        ...(options?.claudeSettingsFile === undefined
+          ? []
+          : LaunchPlanner.settingsArgsOf(agent.agentId, options.claudeSettingsFile)),
       ]
       const args = [...front, ...modeArgs]
       const native = platform === 'win32'
@@ -335,6 +343,18 @@ export class LaunchPlanner {
     if (agentId === 'claude') return ['--effort', effort]
     else if (agentId === 'codex')
       return ['-c', `model_reasoning_effort=${JSON.stringify(effort)}`]
+    else
+      throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+  }
+
+  /**
+   * Claude Code 2.1.296, `claude --help`: "--settings <file-or-json>  Path to a settings JSON file or
+   * a JSON string to load additional settings from". A file and not the JSON itself: the JSON carries
+   * quotes and a `|`, which the cmd.exe wrap would read as its own.
+   */
+  private static settingsArgsOf(agentId: SessionRecordAgent['agentId'], file: string): string[] {
+    if (agentId === 'claude') return ['--settings', file]
+    else if (agentId === 'codex') throw new Error('Codex has no --settings flag; only a Claude launch takes a settings file')
     else
       throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
   }

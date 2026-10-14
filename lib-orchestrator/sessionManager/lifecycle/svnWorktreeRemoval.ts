@@ -1,8 +1,11 @@
+import type { TreeRemovalProgress } from '../../shared/treeRemoval'
 import type { SvnWorktreeLocation } from '../../svn/svn.types'
 import type { SvnWorktreeManager } from '../../svn/svnWorktreeManager'
 import type { SessionRecord, SessionRecordWorktree } from '../records/sessionRecord.types'
 import type { SessionRecordsStore } from '../records/sessionRecordsStore'
 import type { SvnFinishWorktreeResult } from '../sessionManagerApi.types'
+import type { SessionSteps } from './sessionSteps'
+import type { SessionStepRemovalPhase } from './sessionStepWords'
 
 /** The disk writes a removal makes, named so a test can hand them a scripted set. */
 export type SvnRemovalPort = Pick<SvnWorktreeManager, 'renameAside' | 'purgeAside' | 'removeEmptyWorktreesDir'>
@@ -16,6 +19,8 @@ export interface SvnWorktreeRemovalDeps {
   onQueue: <T>(work: () => Promise<T>) => Promise<T>
   /** The record moved outside an operation, so the snapshot is composed again. */
   changed: () => void
+  /** Each phase of the removal is the session's step; its caller clears the step where its work ends. */
+  steps: Pick<SessionSteps, 'at'>
   now?: () => number
 }
 
@@ -37,6 +42,7 @@ export class SvnWorktreeRemoval {
   private readonly releaseBelow: (path: string) => Promise<void>
   private readonly onQueue: <T>(work: () => Promise<T>) => Promise<T>
   private readonly changed: () => void
+  private readonly steps: Pick<SessionSteps, 'at'>
   private readonly now: () => number
 
   constructor(deps: SvnWorktreeRemovalDeps) {
@@ -45,16 +51,20 @@ export class SvnWorktreeRemoval {
     this.releaseBelow = deps.releaseBelow
     this.onQueue = deps.onQueue
     this.changed = deps.changed
+    this.steps = deps.steps
     this.now = deps.now ?? (() => Date.now())
   }
 
   /** `revisions` (`<repository URL>:r<N>`) join those of the last outcome in the tombstone. */
   async remove(sessionId: string, location: SvnWorktreeLocation, revisions: readonly string[]): Promise<SvnWorktreeRemoved> {
     const path = location.worktreePath
+    this.steps.at(sessionId, { kind: 'removal', phase: 'queue', path })
     const renamed = await this.onQueue(async () => {
       const now = this.records.get(sessionId)
       if (!now || now.life === 'live' || now.life === 'starting' || now.pendingOperationId !== undefined) return null
+      this.steps.at(sessionId, { kind: 'removal', phase: 'release', path })
       await this.releaseBelow(path)
+      this.steps.at(sessionId, { kind: 'removal', phase: 'rename', path })
       return this.svn.renameAside(location)
     })
     if (renamed === null) return { state: 'kept', lines: [`KEPT: session ${sessionId} runs again, so ${path} stays`] }
@@ -63,12 +73,15 @@ export class SvnWorktreeRemoval {
       return { state: 'in-use', lines: [`IN USE: ${path} (a process has its working directory or an open file there; the worktree is kept)`] }
     else if (renamed.value !== 'renamed' && renamed.value !== 'absent')
       throw new Error(`Unknown rename result: ${JSON.stringify(renamed.value satisfies never)}`)
-    const purged = await this.svn.purgeAside(location)
+    const purged = await this.svn.purgeAside(location, (progress) => this.steps.at(sessionId,
+      { kind: 'removal', phase: SvnWorktreeRemoval.phaseOf(progress.phase), path },
+      { done: progress.done, total: progress.total }))
     if (!purged.ok || purged.value === 'undeleted')
       return {
         state: 'undeleted',
         lines: [`ERROR: ${path}.deleting is left half deleted${purged.ok ? '' : ` (${purged.detail})`}; Discard finishes it`],
       }
+    this.steps.at(sessionId, { kind: 'removal', phase: 'tombstone', path })
     await this.svn.removeEmptyWorktreesDir(location.ownerDir)
     await this.onQueue(async () => {
       const current = this.records.get(sessionId)
@@ -94,6 +107,12 @@ export class SvnWorktreeRemoval {
     })
     this.changed()
     return { state: 'removed', lines: ['   worktree removed'] }
+  }
+
+  private static phaseOf(phase: TreeRemovalProgress['phase']): SessionStepRemovalPhase {
+    if (phase === 'counting') return 'count'
+    else if (phase === 'deleting') return 'delete'
+    else throw new Error(`Unknown tree removal phase: ${JSON.stringify(phase satisfies never)}`)
   }
 
   static locationOf(worktree: SessionRecordWorktree): SvnWorktreeLocation {

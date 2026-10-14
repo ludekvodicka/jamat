@@ -25,11 +25,12 @@ describe('app-client-ui/renderer/fileViewer/panelFileToolsRegistry', () => {
 
   it('keeps the FileViewer tab to its three file keys', () => {
     expect(() => PanelFileToolsRegistry.tab('notes')).toThrow(/Unknown file tools tab: "notes"/)
+    expect(() => PanelFileToolsRegistry.tab('processes')).toThrow(/Unknown file tools tab: "processes"/)
     expect(() => PanelFileToolsRegistry.tab(null)).toThrow(/Unknown file tools tab/)
   })
 
-  it('accepts Notes and the three file keys for a terminal, and throws on anything else', () => {
-    for (const key of ['workingTree', 'fileChanges', 'directoryExplorer', 'notes'] as const)
+  it('accepts Notes, Processes and the three file keys for a terminal, and throws on anything else', () => {
+    for (const key of ['workingTree', 'fileChanges', 'directoryExplorer', 'notes', 'processes'] as const)
       expect(PanelFileToolsRegistry.terminalTab(key)).toBe(key)
     expect(() => PanelFileToolsRegistry.terminalTab('scratch')).toThrow(/Unknown file tools tab: "scratch"/)
   })

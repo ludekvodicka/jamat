@@ -2,6 +2,7 @@ import { AppConfig } from './appConfig.js'
 import { AppContext } from './appContext.js'
 import { AppHub } from './appHub.js'
 import { HostDescriptorStore } from './hostRuntime/hostDescriptorStore.js'
+import { HostMemorySampler } from './hostRuntime/hostMemorySampler.js'
 import { HostProcessLock } from './hostRuntime/hostProcessLock.js'
 import { HostOperationError } from './hostTransport/hostOperationError.js'
 import { HostOperationRouter } from './hostTransport/hostOperationRouter.js'
@@ -20,6 +21,7 @@ export class AppHost {
   private readonly descriptor: HostDescriptorStore
   private readonly router = new HostOperationRouter()
   private readonly hub: AppHub
+  private readonly memory: HostMemorySampler
   private readonly transport: HostTransport
   private shuttingDown = false
   private ownsLock = false
@@ -40,6 +42,7 @@ export class AppHost {
       config.runtimeChannel,
     )
     this.hub = new AppHub(this.context)
+    this.memory = new HostMemorySampler({ startedAt: this.context.health.startedAt })
     this.transport = new HostTransport(
       this.context.token,
       this.router,
@@ -72,7 +75,9 @@ export class AppHost {
     this.ownsLock = true
     this.hub.registerOperations(this.router)
     this.router.register('host.stop', (body) => this.stopOperation(body))
+    this.router.register('host.health', () => this.memory.reading())
     this.router.assertComplete()
+    this.memory.start()
     try {
       const port = await this.transport.start()
       this.descriptor.write(this.buildDescriptor(port))
@@ -81,6 +86,7 @@ export class AppHost {
         + `wire ${HostWireConst.protocolMajor}.${HostWireConst.protocolMinor}`,
       )
     } catch (error) {
+      this.memory.stop()
       this.lock.release()
       this.ownsLock = false
       throw error
@@ -128,6 +134,7 @@ export class AppHost {
   private async shutdown(exitCode: number): Promise<void> {
     if (this.shuttingDown) return
     this.shuttingDown = true
+    this.memory.stop()
     this.hub.destroy()
     await this.transport.stop()
     this.descriptor.remove()

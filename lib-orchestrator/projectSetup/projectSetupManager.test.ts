@@ -156,6 +156,101 @@ describe('lib-orchestrator/projectSetup/projectSetupManager', () => {
     })
   })
 
+  /*
+   * An SVN worktree of a product group checks out the whole group, whose root is no project of its
+   * own. Found on session 045 of the Mirabia group: `setup skipped`, and no member had node_modules.
+   */
+  describe('a product group root', () => {
+    const pnpmMember = { 'package.json': '{}', 'pnpm-lock.yaml': '' }
+
+    function group(members: Record<string, Record<string, string>>, own: Record<string, string> = {}): string {
+      const files: Record<string, string> = { '.appgroup': '', ...own }
+      for (const [member, memberFiles] of Object.entries(members))
+        for (const [name, content] of Object.entries(memberFiles))
+          files[`${member}/${name}`] = content
+      return repository(files)
+    }
+
+    it('installs each member that has a manifest, in name order', async () => {
+      const root = group({ B: pnpmMember, A: pnpmMember, docs: { 'readme.md': '# no manifest\n' } })
+      expect(await resolved(harness().manager, root, root)).toEqual({
+        kind: 'setup',
+        origin: 'machine',
+        steps: [
+          { command: 'pnpm install', cwd: 'A' },
+          { command: 'pnpm install', cwd: 'B' },
+        ],
+      })
+    })
+
+    it('keeps the group directory in each member path when the group sits below the repository root', async () => {
+      const root = repository({ 'Group/.appgroup': '', 'Group/A/package.json': '{}', 'Group/A/pnpm-lock.yaml': '' })
+      expect(await resolved(harness().manager, join(root, 'Group'), root)).toMatchObject({
+        steps: [{ command: 'pnpm install', cwd: 'Group/A' }],
+      })
+    })
+
+    it('installs only a root that has a manifest of its own, members unscanned', async () => {
+      const root = group({ A: pnpmMember }, { 'package.json': '{}', 'pnpm-lock.yaml': '' })
+      expect(await resolved(harness().manager, root, root)).toEqual({
+        kind: 'setup',
+        origin: 'machine',
+        steps: [{ command: 'pnpm install', cwd: '' }],
+      })
+    })
+
+    it('runs the setup its .worktree.json declares instead of the members', async () => {
+      const root = group({ A: pnpmMember }, { '.worktree.json': JSON.stringify({ setup: ['./install-all.sh'] }) })
+      expect(await resolved(harness().manager, root, root)).toEqual({
+        kind: 'setup',
+        origin: 'project',
+        steps: [{ command: './install-all.sh', cwd: '' }],
+      })
+    })
+
+    it('scans no members of a directory without the group marker', async () => {
+      const root = repository({ 'A/package.json': '{}', 'A/pnpm-lock.yaml': '' })
+      const resolution = await resolved(harness().manager, root, root)
+      expect(resolution.kind).toBe('none')
+      expect(resolution).toMatchObject({ reason: expect.stringContaining('no known project family detected') })
+    })
+
+    it('lets one ambiguous member fail the whole group, naming that member', async () => {
+      const root = group({ A: pnpmMember, B: { 'package.json': '{}', 'pnpm-lock.yaml': '', 'yarn.lock': '' } })
+      const resolution = await resolved(harness().manager, root, root)
+      expect(resolution).toEqual({ kind: 'none', reason: expect.stringContaining('member B: node: ') })
+    })
+
+    it('scans no dot directory and no node_modules', async () => {
+      const root = group({
+        '.private': pnpmMember,
+        '.worktrees': pnpmMember,
+        node_modules: pnpmMember,
+        A: pnpmMember,
+      })
+      expect(await resolved(harness().manager, root, root)).toMatchObject({
+        steps: [{ command: 'pnpm install', cwd: 'A' }],
+      })
+    })
+
+    it('says nothing was detected when no member has a manifest', async () => {
+      const root = group({ data: { 'readme.md': '# no manifest\n' } })
+      const resolution = await resolved(harness().manager, root, root)
+      expect(resolution).toEqual({ kind: 'none', reason: expect.stringContaining('.worktree.json') })
+    })
+
+    it('installs a workspace two members share once, from its root', async () => {
+      const root = group({ A: { 'package.json': '{}' }, B: { 'package.json': '{}' } }, {
+        'pnpm-workspace.yaml': 'packages:\n  - A\n  - B\n',
+      })
+      expect(await resolved(harness().manager, root, root)).toEqual({
+        kind: 'setup',
+        origin: 'machine',
+        steps: [{ command: 'pnpm install', cwd: '' }],
+      })
+    })
+  })
+
   /* This class never writes: a detection is this build's opinion, and writing it back would turn it
      into the project's. Writing `setup` at all is `WorktreeConfig`'s, and only when somebody asks. */
   it('writes nothing into the project, whatever it concluded about it', async () => {

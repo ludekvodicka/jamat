@@ -290,12 +290,12 @@ describe('lib-orchestrator/terminalDetector/terminalDetector', () => {
       first.markOpened('E:\\Reports\\a.md', 'file')
       first.markOpened('E:\\Logs', 'directory')
 
-      await vi.waitFor(() => {
-        const next = detector(null, { register: OpenedPathsStore.load(file, () => undefined) })
-        expect(next.wasOpened('E:\\Reports\\a.md')).to.equal(true)
-        expect(next.wasOpened('E:\\Logs\\today.log')).to.equal(true)
-      })
+      // Wait by reading only: a detector's wasOpened writes its proof back, and a poller that loaded the
+      // first write would overwrite the second with it.
+      await vi.waitFor(() => expect(OpenedPathsStore.load(file, () => undefined).entries()).to.have.length(2))
       const next = detector(null, { register: OpenedPathsStore.load(file, () => undefined) })
+      expect(next.wasOpened('E:\\Reports\\a.md')).to.equal(true)
+      expect(next.wasOpened('E:\\Logs\\today.log')).to.equal(true)
       expect(next.wasOpened('E:\\Reports\\b.md')).to.equal(false)
     })
 

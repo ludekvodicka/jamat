@@ -22,6 +22,7 @@ export function FileToolsSidebar(props: {
   onOpenDocument(document: FileViewerDocument): void
   /** The terminal's Notes; absent in the FileViewer, which then draws exactly its three tabs. */
   notes?: React.ReactNode
+  processes?: React.ReactNode
 }): React.JSX.Element {
   return (
     <div className="file-tools">
@@ -60,6 +61,16 @@ export function FileToolsSidebar(props: {
             Notes
           </button>
         )}
+        {props.processes !== undefined && (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={props.selected === 'processes'}
+            onClick={() => props.onSelect('processes')}
+          >
+            Processes
+          </button>
+        )}
       </div>
       <div className="file-tools-body">
         {props.selected === 'workingTree'
@@ -85,6 +96,8 @@ export function FileToolsSidebar(props: {
             )
           : props.selected === 'notes'
             ? (props.notes ?? (() => { throw new Error('Notes selected without Notes content') })())
+          : props.selected === 'processes'
+            ? (props.processes ?? (() => { throw new Error('Processes selected without Processes content') })())
             : (() => { throw new Error(`Unknown file tools tab: ${JSON.stringify(props.selected)}`) })()}
       </div>
     </div>

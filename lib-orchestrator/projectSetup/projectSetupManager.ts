@@ -1,3 +1,7 @@
+import { readdir } from 'node:fs/promises'
+import { join } from 'node:path'
+
+import { ProductGroup } from '../shared/productGroup'
 import { GoSetupDetector } from './detectors/goSetupDetector'
 import { NodeSetupDetector } from './detectors/nodeSetupDetector'
 import { PythonSetupDetector } from './detectors/pythonSetupDetector'
@@ -33,6 +37,8 @@ import type { WorktreeConfigRead } from './worktreeConfig'
  * rather than a session that says what is missing.
  */
 export class ProjectSetupManager {
+  private static readonly nothingDetectedConst =
+    'no known project family detected; add a .worktree.json with a "setup" array'
   /** Fixed array, order binding: a repository of several families installs in this order. */
   private readonly detectors: readonly SetupDetector[]
   private readonly platformSettingsOf: () => PlatformSettingsValue
@@ -80,26 +86,60 @@ export class ProjectSetupManager {
         steps: config.value.setup.map((command) => ({ command, cwd: projectCwd })),
       }
     }
+    const root = await this.detectAt(projectRoot, repositoryRoot, projectCwd)
+    if (root.kind === 'steps') return { kind: 'setup', origin: 'machine', steps: root.steps }
+    else if (root.kind === 'refused') return { kind: 'none', reason: root.reason }
+    else if (root.kind !== 'nothing') throw new Error(`Unknown detection at the root: ${JSON.stringify(root)}`)
+    // An SVN worktree of a product group checks out the whole group, and the group root is no project
+    // of its own: what installs is each member, the way each member's own checkout would install.
+    if (!await SetupPaths.isFile(join(projectRoot, ProductGroup.markerConst)))
+      return { kind: 'none', reason: ProjectSetupManager.nothingDetectedConst }
+    const steps: SetupStep[] = []
+    for (const member of await ProjectSetupManager.membersOf(projectRoot)) {
+      const memberCwd = projectCwd === '' ? member : `${projectCwd}/${member}`
+      const found = await this.detectAt(join(projectRoot, member), repositoryRoot, memberCwd)
+      // Half a group installed is a worktree that is broken quietly, the same as half a project.
+      if (found.kind === 'refused') return { kind: 'none', reason: `member ${member}: ${found.reason}` }
+      // Two members of one workspace both answer its root, and installing it twice gains nothing.
+      else if (found.kind === 'steps')
+        steps.push(...found.steps.filter((step) =>
+          !steps.some((known) => known.command === step.command && known.cwd === step.cwd)))
+      else if (found.kind !== 'nothing') throw new Error(`Unknown detection of a member: ${JSON.stringify(found)}`)
+    }
+    if (steps.length === 0) return { kind: 'none', reason: ProjectSetupManager.nothingDetectedConst }
+    return { kind: 'setup', origin: 'machine', steps }
+  }
+
+  /** Every detector over one directory; `cwd` is that directory's repository-relative spelling. */
+  private async detectAt(directory: string, repositoryRoot: string, cwd: string): Promise<DetectedAt> {
     const steps: SetupStep[] = []
     for (const detector of this.detectors) {
-      const detection = await detector.detect(projectRoot, repositoryRoot)
+      const detection = await detector.detect(directory, repositoryRoot)
       if (detection === null) continue
       if (detection.kind === 'ambiguous')
-        return { kind: 'none', reason: `${detector.familyId}: ${detection.reason}` }
+        return { kind: 'refused', reason: `${detector.familyId}: ${detection.reason}` }
       else if (detection.kind === 'tool')
         steps.push({
           command: this.commandOf(detection.toolId),
-          cwd: detection.installCwd ?? projectCwd,
+          cwd: detection.installCwd ?? cwd,
         })
       else
         throw new Error(`Unknown detection: ${JSON.stringify(detection)}`)
     }
-    if (steps.length === 0)
-      return {
-        kind: 'none',
-        reason: 'no known project family detected; add a .worktree.json with a "setup" array',
-      }
-    return { kind: 'setup', origin: 'machine', steps }
+    return steps.length === 0 ? { kind: 'nothing' } : { kind: 'steps', steps }
+  }
+
+  /**
+   * The group's projects: its direct child directories in name order, so the steps come out the same
+   * on every resolve, a retry included. Dot directories (`.private`, `.worktrees`, `.aidocs`) and
+   * `node_modules` hold no member.
+   */
+  private static async membersOf(groupRoot: string): Promise<string[]> {
+    const entries = await readdir(groupRoot, { withFileTypes: true })
+    return entries
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules')
+      .map((entry) => entry.name)
+      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
   }
 
   /**
@@ -111,3 +151,9 @@ export class ProjectSetupManager {
     return SetupFamilies.commandOf(toolId, this.platformSettingsOf())
   }
 }
+
+/** What the detectors made of one directory: install steps, nothing of theirs, or a refusal. */
+type DetectedAt =
+  | { kind: 'steps'; steps: SetupStep[] }
+  | { kind: 'nothing' }
+  | { kind: 'refused'; reason: string }

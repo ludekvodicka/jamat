@@ -4,11 +4,15 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
+import type { TreeRemovalListener } from '../../shared/treeRemoval'
 import type { SvnResult, SvnStatusRow, SvnWorktreeFacts, SvnWorktreeLocation } from '../../svn/svn.types'
 import type { SessionRecord } from '../records/sessionRecord.types'
 import { SessionRecordsStore } from '../records/sessionRecordsStore'
 import { WorktreeResultsStore } from '../results/worktreeResultsStore'
-import type { SessionFinishPress, SessionsOpResult, SvnFinishWorktreeResult, SvnLabelledRevision } from '../sessionManagerApi.types'
+import type { SessionFinishPress, SessionsOpResult, SessionStepProgress, SvnFinishWorktreeResult, SvnLabelledRevision } from '../sessionManagerApi.types'
+import type { SessionSteps } from './sessionSteps'
+import { type SessionStepFacts, SessionStepWords } from './sessionStepWords'
+import type { SvnLabelsRead } from './svnRevisionLabels'
 import { type SvnActionsPort, type SvnCleanupPort, SvnWorktreeFinishFlow } from './svnWorktreeFinishFlow'
 import { type SvnRemovalPort, SvnWorktreeRemoval } from './svnWorktreeRemoval'
 import { WorktreeCleanupPacing } from './worktreeCleanupPacing'
@@ -61,8 +65,10 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow', () =
       return this.rename instanceof Error ? Promise.reject(this.rename) : Promise.resolve(ok(this.rename))
     }
 
-    purgeAside(): Promise<SvnResult<'removed' | 'undeleted'>> {
+    purgeAside(_location: SvnWorktreeLocation, onProgress?: TreeRemovalListener): Promise<SvnResult<'removed' | 'undeleted'>> {
       this.log.push('purgeAside')
+      onProgress?.({ phase: 'counting', done: 4, total: null })
+      onProgress?.({ phase: 'deleting', done: 4, total: 4 })
       return Promise.resolve(ok(this.purge))
     }
 
@@ -90,8 +96,27 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow', () =
     }
   }
 
+  /** The session steps as a log: each `at` in words, each `clear`, and what is live now. */
+  class FakeSteps implements Pick<SessionSteps, 'at' | 'clear'> {
+    readonly log: string[] = []
+    readonly live = new Map<string, string>()
+
+    at(sessionId: string, facts: SessionStepFacts, progress: SessionStepProgress | null = null): void {
+      const words = SessionStepWords.of(facts, progress)
+      const text = words.detail === null ? words.text : `${words.text} | ${words.detail}`
+      this.log.push(text)
+      this.live.set(sessionId, text)
+    }
+
+    clear(sessionId: string): boolean {
+      this.log.push('clear')
+      return this.live.delete(sessionId)
+    }
+  }
+
   interface Harness {
     flow: SvnWorktreeFinishFlow
+    steps: FakeSteps
     store: SessionRecordsStore
     svn: FakeSvn
     actions: FakeActions
@@ -102,7 +127,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow', () =
     record: () => SessionRecord | null
     results: WorktreeResultsStore
     /** What `ownCommits` answers for the worktree before the cleanup removes it. */
-    own: { value: SvnLabelledRevision[]; reads: number }
+    own: { value: SvnLabelledRevision[]; reads: number; reported: SvnLabelsRead[] }
   }
 
   async function harness(options: {
@@ -123,6 +148,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow', () =
     const actions = new FakeActions()
     const ended: string[] = []
     const landedDue: string[] = []
+    const steps = new FakeSteps()
     const removal = new SvnWorktreeRemoval({
       records: store,
       svn,
@@ -132,12 +158,17 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow', () =
         return work()
       },
       changed: () => undefined,
+      steps,
       now: () => 5_000,
     })
-    const own: Harness['own'] = { value: [], reads: 0 }
+    const own: Harness['own'] = { value: [], reads: 0, reported: [] }
     const results = new WorktreeResultsStore(join(root, 'results'), {
       now: () => 5_000,
-      logs: { existingPathOf: async () => null, briefPathOf: (parentId, actionId) => join(root, parentId, `${actionId}-conflicts.txt`) },
+      logs: {
+        existingPathOf: async () => null,
+        briefPathOf: (parentId, actionId) => join(root, parentId, `${actionId}-conflicts.txt`),
+        mergeBriefPathOf: (parentId, actionId) => join(root, parentId, `${actionId}-merge.md`),
+      },
       report: () => undefined,
     })
     let minted = 0
@@ -147,21 +178,23 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow', () =
       removal,
       actions,
       labels: {
-        ownCommits: async () => {
+        ownCommits: async (_path, _receipts, _since, onRead) => {
           own.reads += 1
+          for (const read of own.reported) onRead?.(read)
           return { ok: true, value: own.value }
         },
       },
       results,
       finishRefusal: () => options.refusal ?? null,
       changed: () => undefined,
+      steps,
       ended: (sessionId) => { ended.push(sessionId) },
       landedDue: (mainCopy) => { landedDue.push(mainCopy) },
       report: () => undefined,
       now: () => 5_000,
       newId: () => `cleanup-${++minted}`,
     })
-    return { flow, store, svn, actions, log, ended, landedDue, record: () => store.get('s1'), results, own }
+    return { flow, steps, store, svn, actions, log, ended, landedDue, record: () => store.get('s1'), results, own }
   }
 
   function recordOf(overrides: Partial<SessionRecord> = {}): SessionRecord {
@@ -302,6 +335,64 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow', () =
         `removeEmptyWorktreesDir ${ownerConst}`,
       ])
       expect(it_.ended).toEqual(['s1'])
+    })
+
+    it('says which of how many revisions its own-commits read reads', async () => {
+      const it_ = await harness({ overrides: pending() })
+      const root = { path: `${worktreeConst}\\lib`, own: 'lib', changed: [] }
+      it_.own.reported = [{ kind: 'status', root }, { kind: 'own-commit', root, revision: 7, index: 1, count: 1 }]
+
+      await it_.flow.cleanUp('s1')
+
+      expect(it_.steps.log.slice(1, 4)).toEqual([
+        'Reading what the worktree committed | svn status -v --xml',
+        'Reading what the worktree committed | svn status -v --xml in lib',
+        'Reading what the worktree committed | svn log -v -r7 (1 of 1 revision) in lib',
+      ])
+    })
+
+    it('shows its reads and the phases of the removal as the step, and clears it at its end', async () => {
+      const it_ = await harness({ overrides: pending() })
+
+      await it_.flow.cleanUp('s1')
+
+      expect(it_.steps.log).toEqual([
+        'Checking what is left in the worktree | svn status --xml',
+        'Reading what the worktree committed | svn status -v --xml',
+        `Waiting for other operations | ${worktreeConst}`,
+        `Letting go of this client's reads | ${worktreeConst}`,
+        `Moving the worktree aside | ${worktreeConst}.deleting`,
+        'Counting the files to delete | 4 files so far',
+        'Removing the worktree | 4 of 4 files',
+        'Recording the removal | session record',
+        'clear',
+      ])
+      expect(it_.steps.live.size).toBe(0)
+    })
+
+    it('leaves no step when it keeps the worktree, finds it in use, leaves a rest, or a reopen won', async () => {
+      const kept = await harness({ overrides: pending() })
+      kept.svn.changesByPath[worktreeConst] = [row('notes.txt')]
+      const held = await harness({ overrides: pending() })
+      held.svn.rename = 'in-use'
+      const half = await harness({ overrides: pending() })
+      half.svn.purge = 'undeleted'
+      const reopened = await harness({
+        overrides: pending(),
+        beforeQueue: async (store) => {
+          const current = store.get('s1')
+          if (current?.life === 'ended') await store.put({ ...current, life: 'starting', pendingOperationId: 'op-1', pendingOperationKind: 'reopen' })
+        },
+      })
+
+      for (const it_ of [kept, held, half, reopened]) {
+        await it_.flow.cleanUp('s1')
+        expect(it_.steps.log.at(-1)).toBe('clear')
+        expect(it_.steps.live.size).toBe(0)
+      }
+      expect(kept.steps.log).toEqual(['Checking what is left in the worktree | svn status --xml', 'clear'])
+      expect(held.steps.log.at(-2)).toBe(`Moving the worktree aside | ${worktreeConst}.deleting`)
+      expect(half.steps.log.at(-2)).toBe('Removing the worktree | 4 of 4 files')
     })
 
     // Removed with the main-copy landing: a 3.10 `unlanded` verdict no longer waits for the main copy.

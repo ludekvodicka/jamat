@@ -2,13 +2,14 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { RuntimeRef, RuntimeSessionInfo } from '../../../app-host/app/wire/hostWire.js'
 import type { HostCallFailure } from '../../hostClient/hostClient.types'
 import type { SessionRecord, SessionRecordScriptRun } from '../records/sessionRecord.types'
 import { SessionRecordsStore } from '../records/sessionRecordsStore'
 import { ScriptLogStore } from './scriptLogStore'
+import { ScriptLogText } from './scriptLogText'
 import { type ScriptCollapsed, type ScriptsHostPort, SessionScriptsManager } from './sessionScriptsManager'
 
 describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => {
@@ -21,6 +22,7 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => 
 
   interface Harness {
     manager: SessionScriptsManager
+    host: ScriptsHostPort
     store: SessionRecordsStore
     recordsFile: string
     logs: ScriptLogStore
@@ -93,6 +95,7 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => 
       },
     }
     return {
+      host,
       manager: new SessionScriptsManager({
         records: store,
         host,
@@ -543,6 +546,226 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => 
     await context.manager.parentRemoved('p')
 
     expect(await context.manager.scriptLogOf('p', 's')).toEqual({ ok: false, code: 'not-found', detail: 'No session p' })
+  })
+
+  describe('script output', () => {
+    it('reads live terminal rows and the run state with its terminal target', async () => {
+      const context = await harness()
+      await context.store.put(record('p'))
+      await context.store.put(install('s', { life: 'live', exitCode: undefined, endedAt: undefined }))
+      context.runtimes.set('s', dead('s', ['installing', 'resolved 20 packages']))
+      const inspect = vi.spyOn(context.host, 'runtimeInspect')
+
+      expect(await context.manager.outputOf('p', 's')).toEqual({ ok: true, value: {
+        state: 'running',
+        source: 'live',
+        lines: ['installing', 'resolved 20 packages'],
+        terminal: { hostInstanceId: 'h', runtimeSessionId: 's', generation: 1 },
+      } })
+      expect(inspect).toHaveBeenCalledWith(
+        { hostInstanceId: 'h', runtimeSessionId: 's', generation: 1 },
+        { rawTailChars: 0, screenScrollbackRows: 1000 },
+      )
+    })
+
+    it('keeps reading an ended record from the Host until collapse, with its end state and time', async () => {
+      const context = await harness()
+      await context.store.put(record('p'))
+      await context.store.put(install('s', { exitCode: 2 }))
+      context.runtimes.set('s', dead('s', ['failed']))
+
+      expect(await context.manager.outputOf('p', 's')).toEqual({ ok: true, value: {
+        state: 'failed',
+        source: 'live',
+        lines: ['failed'],
+        terminal: { hostInstanceId: 'h', runtimeSessionId: 's', generation: 1 },
+        endedAt: 20_000,
+      } })
+    })
+
+    it('reads a retained failed run from its saved log after the Host instance changes', async () => {
+      const context = await harness()
+      await context.store.put(record('p', { life: 'ended', pendingSetup: { setupSessionId: 's' } }))
+      await context.store.put(install('s', { exitCode: 2 }))
+      context.runtimes.set('s', dead('s', ['installation failed']))
+      await context.manager.settle('s')
+      context.failure.value = { ok: false, code: 'op-rejected', status: 409, detail: 'Host instance mismatch' }
+
+      expect(await context.manager.outputOf('p', 's')).toEqual({ ok: true, value: {
+        state: 'failed', source: 'log',
+        lines: readFileSync(context.logs.pathOf('p', 's'), 'utf8').split('\n'),
+        terminal: null, endedAt: 20_000,
+      } })
+      expect(context.store.get('s')?.binding).toEqual({ hostInstanceId: 'h', generation: 1 })
+    })
+
+    it('keeps the missing saved-log reason for a retained failed run with an unavailable runtime', async () => {
+      const context = await harness()
+      await context.store.put(record('p', { life: 'ended', pendingSetup: { setupSessionId: 's' } }))
+      await context.store.put(install('s', { exitCode: 2 }))
+      context.runtimes.set('s', dead('s', ['installation failed']))
+      await context.manager.settle('s')
+      await context.logs.removeRun('p', 's')
+      context.failure.value = { ok: false, code: 'op-rejected', status: 409, detail: 'Host instance mismatch' }
+
+      expect(await context.manager.outputOf('p', 's')).toEqual({ ok: true, value: {
+        state: 'failed', source: 'log', lines: [], logReason: 'the saved log is gone',
+        terminal: null, endedAt: 20_000,
+      } })
+    })
+
+    it('preserves a Host mismatch error while the run is still running', async () => {
+      const context = await harness()
+      await context.store.put(record('p'))
+      await context.store.put(install('s', { life: 'live', exitCode: undefined, endedAt: undefined }))
+      context.failure.value = { ok: false, code: 'op-rejected', status: 409, detail: 'Host instance mismatch' }
+
+      expect(await context.manager.outputOf('p', 's'))
+        .toEqual({ ok: false, code: 'op-rejected', detail: 'Host instance mismatch' })
+    })
+
+    it('removes Host dim markers before applying the live output UTF-8 cap', async () => {
+      const context = await harness()
+      await context.store.put(record('p'))
+      await context.store.put(install('s', { life: 'live', exitCode: undefined, endedAt: undefined }))
+      const text = 'ž'.repeat(200)
+      const rows = [...Array.from({ length: 650 }, () => `\u001b[2m${text}\u001b[22m`), 'done ✓']
+      context.runtimes.set('s', dead('s', rows))
+
+      const reading = await context.manager.outputOf('p', 's')
+
+      expect(reading.ok).toBe(true)
+      if (!reading.ok) throw new Error(reading.detail)
+      expect(reading.value.lines).toHaveLength(rows.length)
+      expect(reading.value.lines[0]).toBe(text)
+      expect(reading.value.lines.at(-1)).toBe('done ✓')
+      expect(reading.value.lines.some((line) => line.includes('\u001b'))).toBe(false)
+      expect(Buffer.byteLength(reading.value.lines.join('\n'), 'utf8')).toBeLessThanOrEqual(ScriptLogText.maxBytesConst)
+      expect(rows[0]).toContain('\u001b[2m')
+    })
+
+    it('reads the saved log after collapse without a terminal', async () => {
+      const context = await harness()
+      await context.store.put(record('p'))
+      await context.store.put(install('s'))
+      context.runtimes.set('s', dead('s', ['installed', 'done']))
+      await context.manager.settle('s')
+      await context.manager.collapse('s')
+      context.calls.length = 0
+
+      const reading = await context.manager.outputOf('p', 's')
+
+      expect(reading).toEqual({ ok: true, value: {
+        state: 'succeeded',
+        source: 'log',
+        lines: readFileSync(context.logs.pathOf('p', 's'), 'utf8').split('\n'),
+        terminal: null,
+        endedAt: 20_000,
+      } })
+      expect(context.calls).toEqual([])
+    })
+
+    it('says why a collapsed run has no saved log', async () => {
+      const context = await harness()
+      await context.store.put(record('p'))
+      await context.store.put(install('s', { life: 'lost' }))
+      await context.manager.settle('s')
+      await context.manager.collapse('s')
+
+      expect(await context.manager.outputOf('p', 's')).toEqual({ ok: true, value: {
+        state: 'lost',
+        source: 'log',
+        lines: [],
+        logReason: 'the Host restarted before the output was saved',
+        terminal: null,
+        endedAt: 20_000,
+      } })
+    })
+
+    it('says when the saved log disappeared after collapse', async () => {
+      const context = await harness()
+      await context.store.put(record('p'))
+      await context.store.put(install('s'))
+      context.runtimes.set('s', dead('s', ['done']))
+      await context.manager.settle('s')
+      await context.manager.collapse('s')
+      await context.logs.removeRun('p', 's')
+
+      expect(await context.manager.outputOf('p', 's')).toMatchObject({ ok: true, value: {
+        source: 'log', lines: [], logReason: 'the saved log is gone', terminal: null,
+      } })
+    })
+
+    it('refuses an unknown parent, an unknown run and a run belonging to another parent without inspecting', async () => {
+      const context = await harness()
+      await context.store.put(record('p'))
+      await context.store.put(record('other'))
+      await context.store.put(install('s'))
+
+      for (const [parentId, runId] of [['missing', 's'], ['p', 'missing'], ['other', 's']])
+        expect(await context.manager.outputOf(parentId, runId)).toMatchObject({ ok: false, code: 'not-found' })
+      expect(context.calls).toEqual([])
+    })
+
+    it('caps live rows and saved log tails at 256 KiB in UTF-8, keeping the newest output', async () => {
+      const context = await harness()
+      await context.store.put(record('p'))
+      await context.store.put(install('s'))
+      const rows = ['oldest', ...Array.from({ length: 1000 }, () => 'ř'.repeat(200)), 'latest']
+      context.runtimes.set('s', dead('s', rows))
+
+      const live = await context.manager.outputOf('p', 's')
+      expect(live.ok).toBe(true)
+      if (!live.ok) throw new Error(live.detail)
+      expect(Buffer.byteLength(live.value.lines.join('\n'), 'utf8')).toBeLessThanOrEqual(ScriptLogText.maxBytesConst)
+      expect(live.value.lines).not.toContain('oldest')
+      expect(live.value.lines.at(-1)).toBe('latest')
+
+      await context.manager.settle('s')
+      await context.manager.collapse('s')
+      await context.logs.write('p', 's', rows.join('\n'))
+      const saved = await context.manager.outputOf('p', 's')
+      expect(saved.ok).toBe(true)
+      if (!saved.ok) throw new Error(saved.detail)
+      expect(saved.value.source).toBe('log')
+      expect(Buffer.byteLength(saved.value.lines.join('\n'), 'utf8')).toBeLessThanOrEqual(ScriptLogText.maxBytesConst)
+      expect(saved.value.lines).not.toContain('oldest')
+      expect(saved.value.lines.at(-1)).toBe('latest')
+      expect(saved.value.lines.join('\n')).not.toContain('\uFFFD')
+    })
+
+    it('reads the saved log when collapse removes the record during the Host inspection', async () => {
+      const context = await harness()
+      await context.store.put(record('p'))
+      await context.store.put(install('s'))
+      context.runtimes.set('s', dead('s', ['done']))
+      await context.manager.settle('s')
+      vi.spyOn(context.host, 'runtimeInspect').mockImplementationOnce(async () => {
+        await context.manager.collapse('s')
+        return { ok: false, code: 'op-rejected', status: 404, detail: 'Unknown runtime' }
+      })
+
+      expect(await context.manager.outputOf('p', 's')).toMatchObject({ ok: true, value: {
+        state: 'succeeded', source: 'log', lines: expect.arrayContaining(['done']), terminal: null,
+      } })
+    })
+
+    it('reports an unavailable Host and keeps an unbound starting run readable without a terminal', async () => {
+      const context = await harness()
+      await context.store.put(record('p'))
+      await context.store.put(install('s'))
+      context.failure.value = { ok: false, code: 'host-unreachable', detail: 'offline' }
+
+      expect(await context.manager.outputOf('p', 's')).toEqual({ ok: false, code: 'host-unreachable', detail: 'offline' })
+
+      await context.store.put(install('starting', {
+        life: 'starting', binding: null, exitCode: undefined, endedAt: undefined,
+        pendingOperationId: 'launch', pendingOperationKind: 'create',
+      }))
+      expect(await context.manager.outputOf('p', 'starting')).toEqual({ ok: true, value: {
+        state: 'running', source: 'live', lines: [], terminal: null, logReason: 'the Host has not started it yet',
+      } })
+    })
   })
 
   /** A manager over the records file as the next client process loads it. */

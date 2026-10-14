@@ -24,6 +24,9 @@ export class OrchestratorPaths {
   private static readonly codexRolloutCwdFileNameConst = 'codex-rollout-cwd.json'
   private static readonly rateMonitorCacheFileNameConst = 'rate-monitor-cache.json'
   private static readonly terminalOpenedPathsFileNameConst = 'terminal-opened-paths.json'
+  private static readonly claudeStatusLineNameConst = 'claude-statusline'
+  private static readonly claudeContextSnapshotsNameConst = 'claude-context'
+  private static readonly pastedFilesNameConst = 'pasted-files'
 
   // The override names the state ROOT, never one channel's directory: consuming it verbatim
   // collapses two channels into one state directory.
@@ -176,7 +179,31 @@ export class OrchestratorPaths {
     )
   }
 
+  /**
+   * The status line relay Claude sessions are started with, and the `--settings` files naming it.
+   * Rewritten by the launch whenever it differs; deleting the folder costs nothing.
+   */
+  static claudeStatusLineDirectory(configIdentity: string, channel: RuntimeChannel): string {
+    return join(OrchestratorPaths.directory(configIdentity, channel), OrchestratorPaths.claudeStatusLineNameConst)
+  }
+
+  /**
+   * `<claude session id>.json`: the context window Claude Code last handed its status line. Written by
+   * the relay above, read by the session model reader; a missing file is the fallback, never an error.
+   */
+  static claudeContextSnapshotsDirectory(configIdentity: string, channel: RuntimeChannel): string {
+    return join(OrchestratorPaths.directory(configIdentity, channel), OrchestratorPaths.claudeContextSnapshotsNameConst)
+  }
+
   static sessionNotifiesDirectory(configIdentity: string, channel: RuntimeChannel): string {
     return join(OrchestratorPaths.directory(configIdentity, channel), OrchestratorPaths.sessionNotifiesNameConst)
+  }
+
+  /**
+   * Clipboard images and files pasted into a session, one folder per session, so the agent is handed
+   * a path. Machine state that expires by age: the agent reads the file when the path is pasted.
+   */
+  static pastedFilesDirectory(configIdentity: string, channel: RuntimeChannel): string {
+    return join(OrchestratorPaths.directory(configIdentity, channel), OrchestratorPaths.pastedFilesNameConst)
   }
 }

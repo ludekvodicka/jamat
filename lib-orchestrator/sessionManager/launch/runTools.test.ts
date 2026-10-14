@@ -72,7 +72,7 @@ describe('lib-orchestrator/sessionManager/launch/runTools', () => {
       const noNode = directory(['cli/jamat-v3.cjs'])
       expect(new RunTools({ resourcesRoot: noNode, applicationRoot, platform: 'win32', environment: {} })
         .resolve('jamat-cli')).toEqual({
-        ok: false, detail: `The packaged Node runtime for the Jamat CLI is missing: ${join(noNode, 'launcher', 'node.exe')}`,
+        ok: false, detail: `The packaged Node runtime is missing: ${join(noNode, 'launcher', 'node.exe')}`,
       })
     })
 

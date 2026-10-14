@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<info>
+<entry
+   kind="dir"
+   path="."
+   revision="3">
+<url>{REPO}/slo%C5%BEka</url>
+<relative-url>^/slo%C5%BEka</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+</wc-info>
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+<entry
+   path="přehled.md"
+   revision="3"
+   kind="file">
+<url>{REPO}/slo%C5%BEka/p%C5%99ehled.md</url>
+<relative-url>^/slo%C5%BEka/p%C5%99ehled.md</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+<checksum>2f97168b1550f4d7c73e7ec7f4ecb56ab50dc5bc</checksum>
+</wc-info>
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+<conflict
+   operation="update"
+   type="text">
+<version
+   revision="2"
+   side="source-left"
+   kind="file"
+   path-in-repos="složka/přehled.md"
+   repos-url="{REPO}"/>
+<version
+   side="source-right"
+   kind="file"
+   path-in-repos="složka/přehled.md"
+   repos-url="{REPO}"
+   revision="3"/>
+<prev-base-file>{ROOT}/složka/přehled.md.r2</prev-base-file>
+<prev-wc-file>{ROOT}/složka/přehled.md.mine</prev-wc-file>
+<cur-base-file>{ROOT}/složka/přehled.md.r3</cur-base-file>
+</conflict>
+</entry>
+</info>

@@ -144,6 +144,43 @@ describe('app-client-ui/renderer/statusBar/hostStatusItem', () => {
     await waitFor(() => expect(container.textContent).toBe('Host v2026.08.04.09.30 · 4 live'))
   })
 
+  it('shows the memory lines as the tooltip of a running Host, unmarked while nothing is suspicious', async () => {
+    const snapshot = SessionsFixtures.mixed()
+    const memory = {
+      lines: ['Memory 812 MB (heap 120 MB), up 2 d 4 h', 'Growth: 6 h +40 MB · 12 h +85 MB · 24 h +160 MB'],
+      warning: null,
+      suffix: null,
+    }
+    const { container } = mount(new Ports({ ...snapshot, host: { ...snapshot.host, memory } }))
+
+    await waitFor(() => expect(container.textContent).toBe('Host v2026.08.04.09.30 · 4 live'))
+    const item = container.querySelector('.jamat-host-status')
+    expect(item?.getAttribute('title')).toBe(memory.lines.join('\n'))
+    expect(item?.classList.contains('jamat-host-status--warning')).toBe(false)
+  })
+
+  it('marks a running Host whose memory grew like a leak, with the suffix the library composed', async () => {
+    const snapshot = SessionsFixtures.mixed()
+    const memory = {
+      lines: ['Memory 900 MB (heap 120 MB), up 2 d 4 h', 'Warning: Host memory grew 420 MB in 24 h'],
+      warning: 'Host memory grew 420 MB in 24 h',
+      suffix: ' · memory ↑',
+    }
+    const { container } = mount(new Ports({ ...snapshot, host: { ...snapshot.host, memory } }))
+
+    await waitFor(() => expect(container.textContent).toBe('Host v2026.08.04.09.30 · 4 live · memory ↑'))
+    const item = container.querySelector('.jamat-host-status')
+    expect(item?.classList.contains('jamat-host-status--warning')).toBe(true)
+    expect(item?.getAttribute('title')).toContain('Warning: Host memory grew 420 MB in 24 h')
+  })
+
+  it('carries no tooltip for a Host without a memory reading', async () => {
+    const { container } = mount(new Ports(SessionsFixtures.mixed()))
+
+    await waitFor(() => expect(container.textContent).toBe('Host v2026.08.04.09.30 · 4 live'))
+    expect(container.querySelector('.jamat-host-status')?.hasAttribute('title')).toBe(false)
+  })
+
   it('offers Restart apphost on right click and restarts the confirmed Host', async () => {
     const snapshot = SessionsFixtures.mixed()
     const ports = new Ports(snapshot)

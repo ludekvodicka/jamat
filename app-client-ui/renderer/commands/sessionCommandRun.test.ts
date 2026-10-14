@@ -28,6 +28,7 @@ describe('app-client-ui/renderer/commands/sessionCommandRun', () => {
       'session.restart',
       'session.compact',
       'tab.openProjectFolder',
+      'session.openInVsCode',
       'tab.copyProjectFolder',
       'session.copyReference',
     ]

@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<info>
+<entry
+   kind="dir"
+   path="."
+   revision="3">
+<url>{REPO}/src</url>
+<relative-url>^/src</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+</wc-info>
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+<entry
+   kind="file"
+   path="a.txt"
+   revision="3">
+<url>{REPO}/src/a.txt</url>
+<relative-url>^/src/a.txt</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+<text-updated>2026-01-01T00:00:00.000000Z</text-updated>
+<checksum>3f786850e387550fdab836ed7e6dc881de23001b</checksum>
+</wc-info>
+<commit
+   revision="2">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+<entry
+   kind="file"
+   path="new.txt"
+   revision="2">
+<url>{REPO}/src/new.txt</url>
+<relative-url>^/src/new.txt</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>replace</schedule>
+<depth>infinity</depth>
+<copy-from-url>{REPO}/src/a.txt</copy-from-url>
+<copy-from-rev>2</copy-from-rev>
+<text-updated>2026-01-01T00:00:00.000000Z</text-updated>
+<checksum>3f786850e387550fdab836ed7e6dc881de23001b</checksum>
+</wc-info>
+<commit
+   revision="2">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+<tree-conflict
+   victim="new.txt"
+   action="add"
+   operation="update"
+   kind="file"
+   reason="add">
+<version
+   revision="3"
+   side="source-right"
+   kind="file"
+   path-in-repos="src/new.txt"
+   repos-url="{REPO}"/>
+</tree-conflict>
+</entry>
+</info>

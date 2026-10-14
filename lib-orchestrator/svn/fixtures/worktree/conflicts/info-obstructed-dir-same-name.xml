@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<info>
+<entry
+   path="."
+   revision="3"
+   kind="dir">
+<url>{REPO}/.aidocs</url>
+<relative-url>^/.aidocs</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+</wc-info>
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+<entry
+   path="README.md"
+   revision="3"
+   kind="file">
+<url>{REPO}/.aidocs/README.md</url>
+<relative-url>^/.aidocs/README.md</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+<text-updated>2026-01-01T00:00:00.000000Z</text-updated>
+<checksum>0753dda729217d9bd892d252bdd35f2ee6774a5b</checksum>
+</wc-info>
+<commit
+   revision="2">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+<entry
+   kind="dir"
+   path="engines"
+   revision="3">
+<url>{REPO}/.aidocs/engines</url>
+<relative-url>^/.aidocs/engines</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>delete</schedule>
+<depth>infinity</depth>
+</wc-info>
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+<tree-conflict
+   victim="engines"
+   action="add"
+   operation="update"
+   kind="dir"
+   reason="unversioned">
+<version
+   revision="3"
+   side="source-right"
+   kind="dir"
+   path-in-repos=".aidocs/engines"
+   repos-url="{REPO}"/>
+</tree-conflict>
+</entry>
+</info>

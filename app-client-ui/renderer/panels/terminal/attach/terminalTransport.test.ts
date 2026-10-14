@@ -79,9 +79,9 @@ class BridgeStub {
           record('detach', attachId)
           return local(undefined)
         },
-        clipboardRead: (attachId: string) => {
-          record('clipboardRead', attachId)
-          return local(this.clipboard)
+        clipboardPaste: (attachId: string) => {
+          record('clipboardPaste', attachId)
+          return local({ kind: 'text', text: this.clipboard })
         },
         clipboardWrite: (attachId: string, text: string) => {
           record('clipboardWrite', attachId, text)
@@ -124,6 +124,10 @@ class BridgeStub {
         terminalDetach: (endpointId: string, attachId: string) => {
           record('remoteDetach', endpointId, attachId)
           return step({})
+        },
+        terminalClipboardPaste: (endpointId: string, attachId: string) => {
+          record('remoteClipboardPaste', endpointId, attachId)
+          return step({ kind: 'text', text: 'C:/remote/shot.png' })
         },
       },
       onTerminalFrame: (callback: (attachId: string, frame: TerminalFrame) => void) => {
@@ -225,33 +229,43 @@ describe('app-client-ui/renderer/panels/terminal/terminalTransport', () => {
   })
 
   /*
-   * The peer protocol carries attach, input, resize, active and detach and nothing else. The remote
-   * arm therefore HAS no clipboard read and no detector, rather than having ones that answer
-   * nothing: a caller has to see them missing, which is what makes the paste key leave itself to
-   * xterm instead of being swallowed by a handler that returns at once.
+   * The peer protocol carries no detector, so the remote arm HAS none rather than one that answers
+   * nothing. It does carry an image paste now, so both arms paste, and only the local agent shares
+   * the clipboard of the person typing.
    */
   describe('what a transport honestly cannot do', () => {
-    it('gives the local attach a clipboard read and a detector', async () => {
+    it('gives the local attach a clipboard paste and a detector, over a clipboard its agent shares', async () => {
       const stub = install()
       const attachment = TerminalTransports.of(localTarget).attachment('a1')
 
-      expect(await attachment.clipboardRead?.()).toBe('held text')
+      expect(await attachment.clipboardPaste()).toEqual({ kind: 'text', text: 'held text' })
       await attachment.detect?.({ selection: null } as never)
-      expect(stub.methods()).toEqual(['clipboardRead', 'detect'])
+      expect(stub.methods()).toEqual(['clipboardPaste', 'detect'])
+      expect(attachment.agentSharesClipboard).toBe(true)
     })
 
-    it('gives the remote attach neither', () => {
-      install()
+    it('gives the remote attach a clipboard paste through its endpoint and no detector', async () => {
+      const stub = install()
       const attachment = TerminalTransports.of(remoteTarget).attachment('a1')
 
-      expect(attachment.clipboardRead).toBeUndefined()
+      expect(await attachment.clipboardPaste()).toEqual({ kind: 'text', text: 'C:/remote/shot.png' })
+      expect(stub.calls).toContainEqual({ method: 'remoteClipboardPaste', args: ['e1', 'a1'] })
       expect(attachment.detect).toBeUndefined()
+      expect(attachment.agentSharesClipboard).toBe(false)
     })
 
-    it('answers null from a clipboard read the channel refused', async () => {
+    it('refuses a paste the channel refused, with the reason', async () => {
       const stub = install()
       stub.channelFailure = 'the window is gone'
-      expect(await TerminalTransports.of(localTarget).attachment('a1').clipboardRead?.()).toBeNull()
+      expect(await TerminalTransports.of(localTarget).attachment('a1').clipboardPaste())
+        .toEqual({ kind: 'refused', detail: 'Paste failed: the window is gone' })
+    })
+
+    it('refuses a remote paste the other computer refused, with its sentence', async () => {
+      const stub = install()
+      stub.remoteRefusal = { code: 'forbidden', detail: 'update it' }
+      expect(await TerminalTransports.of(remoteTarget).attachment('a1').clipboardPaste())
+        .toEqual({ kind: 'refused', detail: 'Paste failed: update it' })
     })
   })
 

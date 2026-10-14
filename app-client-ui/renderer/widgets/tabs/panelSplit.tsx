@@ -6,6 +6,7 @@ import type {
   FileViewerDocumentSource,
   FileViewerLocation,
 } from '../../../../lib-orchestrator/fileViewer/fileViewerApi.types'
+import { TabControlTask, type TabControlTaskItem, type TabControlTaskRef } from '../../../shared/tabControl'
 import { VersioningCommitPaths, type VersioningCommitPath } from '../../../shared/versioningCommit'
 import { FileViewerSourceShape } from '../../fileViewer/fileViewerSourceShape'
 import type { FileViewerBaselineHint } from '../../fileViewer/fileViewerPanel.types'
@@ -39,7 +40,21 @@ export interface PanelSplitCommitItem {
   paths?: readonly VersioningCommitPath[]
 }
 
-export type PanelSplitItem = PanelSplitFileItem | PanelSplitCommitItem
+/** What runs inside the session, read from its CLI's own files. Never pinned and never in Back
+ *  history: the view is of the session's present, and the tree reopens it in one click. */
+export interface PanelSplitTaskItem extends TabControlTaskItem {
+  kind: 'task'
+}
+
+/** The workflow of the tab's own session: one per tab, never pinned, never in Back history. */
+export interface PanelSplitWorkflowItem {
+  kind: 'workflow'
+  key: `workflow:${string}`
+  title: string
+  sessionId: string
+}
+
+export type PanelSplitItem = PanelSplitFileItem | PanelSplitCommitItem | PanelSplitTaskItem | PanelSplitWorkflowItem
 
 export interface PanelSplitState {
   ratio: number
@@ -65,7 +80,8 @@ export interface PanelSplitHandle {
   setPinned(key: string, pinned: boolean): void
   /** Adds the session's stored pins that the restored or reopened split does not hold. */
   restorePinned(stored: readonly unknown[]): void
-  close(key: string): void
+  /** Null when the item went; the refusal of `closable` when it stays. */
+  close(key: string): string | null
   capture(key: string): PanelSplitCapture | null
   closeCaptured(capture: PanelSplitCapture): boolean
   resize(ratio: number): void
@@ -85,6 +101,8 @@ export class PanelSplitParams {
   private static readonly paramsKeyConst = 'split'
   static readonly itemsMaxConst = 8
   static readonly commitItemsMaxConst = 8
+  static readonly taskItemsMaxConst = 8
+  static readonly workflowItemsMaxConst = 1
   static readonly historyMaxConst = 50
   private static readonly ratioDefaultConst = 0.5
   private static readonly ratioMinConst = 0.15
@@ -103,7 +121,35 @@ export class PanelSplitParams {
   static tooltipOf(item: PanelSplitItem): string {
     if (item.kind === 'file') return item.source.path
     else if (item.kind === 'commit') return item.scopeRoot
+    else if (item.kind === 'task') return item.title
+    else if (item.kind === 'workflow') return item.title
     else throw new Error(`Unknown split item: ${JSON.stringify(item)}`)
+  }
+
+  /**
+   * Why an item may not close now, or null. A workflow item stays while its action runs or waits
+   * for the person; `openOf` answers whether the workflow of a session is open.
+   */
+  static closeRefusalOf(item: PanelSplitItem, openOf: (sessionId: string) => boolean): string | null {
+    if (item.kind === 'workflow')
+      return openOf(item.sessionId) ? 'The workflow stays open while its action runs or waits for you.' : null
+    else if (item.kind === 'file' || item.kind === 'commit' || item.kind === 'task') return null
+    else throw new Error(`Unknown split item: ${JSON.stringify(item satisfies never)}`)
+  }
+
+  static workflowItemOf(sessionId: string): PanelSplitWorkflowItem {
+    return { kind: 'workflow', key: `workflow:${sessionId}`, title: 'Workflow', sessionId }
+  }
+
+  /**
+   * The workflow of `sessionId`, the tab's own session, made active. A workflow item of any other
+   * session goes first, so a tab never holds two.
+   */
+  static workflowOpened(state: PanelSplitState, sessionId: string): ReturnType<typeof PanelSplitParams.opened> {
+    const item = PanelSplitParams.workflowItemOf(sessionId)
+    const foreign = state.items.filter((candidate) => candidate.kind === 'workflow' && candidate.key !== item.key)
+    const own = foreign.reduce((current, candidate) => PanelSplitParams.closed(current, candidate.key), state)
+    return PanelSplitParams.opened(own, item)
   }
 
   static of(params: unknown): PanelSplitState {
@@ -171,7 +217,7 @@ export class PanelSplitParams {
 
   private static remembered(state: PanelSplitState, nextKey: string): readonly PanelSplitFileItem[] {
     const previous = state.items.find((item) => item.key === state.active)
-    if (previous === undefined || previous.key === nextKey || previous.kind === 'commit')
+    if (previous === undefined || previous.key === nextKey || previous.kind !== 'file')
       return state.history
     return [...state.history, previous].slice(-PanelSplitParams.historyMaxConst)
   }
@@ -192,6 +238,16 @@ export class PanelSplitParams {
     if (item.kind === 'commit') {
       if (state.items.filter((candidate) => candidate.kind === 'commit').length >= PanelSplitParams.commitItemsMaxConst)
         return { ok: false, refusal: `The split already holds ${PanelSplitParams.commitItemsMaxConst} commit dialogs. Close one before opening another.` }
+      return { ok: true, state: { ...state, items: [...state.items, item], active: item.key } }
+    }
+    else if (item.kind === 'task') {
+      if (state.items.filter((candidate) => candidate.kind === 'task').length >= PanelSplitParams.taskItemsMaxConst)
+        return { ok: false, refusal: `The split already holds ${PanelSplitParams.taskItemsMaxConst} task views. Close one before opening another.` }
+      return { ok: true, state: { ...state, items: [...state.items, item], active: item.key } }
+    }
+    else if (item.kind === 'workflow') {
+      if (state.items.some((candidate) => candidate.kind === 'workflow'))
+        return { ok: false, refusal: 'The split already holds the workflow of another session.' }
       return { ok: true, state: { ...state, items: [...state.items, item], active: item.key } }
     }
     else if (item.kind !== 'file') throw new Error(`Unknown split item: ${JSON.stringify(item)}`)
@@ -326,11 +382,18 @@ export class PanelSplitParams {
         continue
       if (items.some((held) => held.key === item.key))
         continue
-      const limit = item.kind === 'file' ? PanelSplitParams.itemsMaxConst : PanelSplitParams.commitItemsMaxConst
-      if (items.filter((held) => held.kind === item.kind).length >= limit) continue
+      if (items.filter((held) => held.kind === item.kind).length >= PanelSplitParams.limitOf(item)) continue
       items.push(item)
     }
     return items
+  }
+
+  private static limitOf(item: PanelSplitItem): number {
+    if (item.kind === 'file') return PanelSplitParams.itemsMaxConst
+    else if (item.kind === 'commit') return PanelSplitParams.commitItemsMaxConst
+    else if (item.kind === 'task') return PanelSplitParams.taskItemsMaxConst
+    else if (item.kind === 'workflow') return PanelSplitParams.workflowItemsMaxConst
+    else throw new Error(`Unknown split item: ${JSON.stringify(item satisfies never)}`)
   }
 
   private static history(value: unknown): readonly PanelSplitFileItem[] {
@@ -355,6 +418,12 @@ export class PanelSplitParams {
       return { kind, key: candidate.key, title: candidate.title, vcs: candidate.vcs, scopeRoot: candidate.scopeRoot,
         ...(candidate.paths === undefined ? {} : { paths: candidate.paths as VersioningCommitPath[] }) }
     }
+    else if (kind === 'task') return PanelSplitParams.taskItem(candidate)
+    else if (kind === 'workflow') {
+      if (typeof candidate.sessionId !== 'string' || !candidate.sessionId) return null
+      const item = PanelSplitParams.workflowItemOf(candidate.sessionId)
+      return candidate.key === item.key ? item : null
+    }
     else if (kind !== 'file') return null
     const source = FileViewerSourceShape.read(candidate.source)
     if (source === null
@@ -378,6 +447,31 @@ export class PanelSplitParams {
     }
   }
 
+  /** The key is derived again, so a stored item cannot name one task and show another. */
+  private static taskItem(candidate: Record<string, unknown>): PanelSplitTaskItem | null {
+    const task = candidate.task
+    if (typeof candidate.sessionId !== 'string' || !candidate.sessionId
+      || typeof candidate.title !== 'string' || !candidate.title
+      || !task || typeof task !== 'object') return null
+    const parsed = PanelSplitParams.taskRef(task as Record<string, unknown>)
+    if (parsed === null) return null
+    const key = TabControlTask.keyOf(candidate.sessionId, parsed)
+    if (candidate.key !== key) return null
+    return { kind: 'task', key, title: candidate.title, sessionId: candidate.sessionId, task: parsed }
+  }
+
+  /** Unknown kinds are dropped, as an older build drops a task item. */
+  private static taskRef(ref: Record<string, unknown>): TabControlTaskRef | null {
+    if (ref.kind === 'subagent')
+      return typeof ref.subagentId === 'string' && ref.subagentId ? { kind: 'subagent', subagentId: ref.subagentId } : null
+    else if (ref.kind === 'shell')
+      return typeof ref.shellId === 'string' && ref.shellId ? { kind: 'shell', shellId: ref.shellId } : null
+    else if (ref.kind === 'script')
+      return typeof ref.runId === 'string' && ref.runId ? { kind: 'script', runId: ref.runId } : null
+    else
+      return null
+  }
+
   private static active(value: unknown, items: readonly PanelSplitItem[]): string | null {
     if (items.length === 0)
       return null
@@ -394,7 +488,11 @@ export class PanelSplitParams {
   }
 }
 
-export function usePanelSplit(props: IDockviewPanelProps): PanelSplitHandle {
+/** `closable` answers why an item may not close now, or null; absent, every item closes. */
+export function usePanelSplit(
+  props: IDockviewPanelProps,
+  closable: (item: PanelSplitItem) => string | null = () => null,
+): PanelSplitHandle {
   const [state, setState] = useState<PanelSplitState>(() => PanelSplitParams.of(props.params))
   const { current: currentParameters, update: updateParameters } = usePanelParameters(props)
   const [incarnations] = useState(() => new PanelSplitIncarnations(
@@ -496,11 +594,16 @@ export function usePanelSplit(props: IDockviewPanelProps): PanelSplitHandle {
       [currentParameters, store],
     ),
     close: useCallback(
-      (key: string) => {
+      (key: string): string | null => {
         const currentParams = currentParameters()
-        store(currentParams, PanelSplitParams.closed(PanelSplitParams.of(currentParams), key))
+        const current = PanelSplitParams.of(currentParams)
+        const item = current.items.find((candidate) => candidate.key === key)
+        const refusal = item === undefined ? null : closable(item)
+        if (refusal !== null) return refusal
+        store(currentParams, PanelSplitParams.closed(current, key))
+        return null
       },
-      [currentParameters, store],
+      [closable, currentParameters, store],
     ),
     capture: useCallback((key: string): PanelSplitCapture | null => {
       const current = PanelSplitParams.of(currentParameters())
@@ -648,6 +751,7 @@ export function PanelSplitStrip(props: {
   onSetPinned(key: string, pinned: boolean): void
   onReload(key: string): void
   onCopyPath(key: string): void
+  onCopyId(key: string): void
   onClose(key: string): void
   onDetach(key: string): void
 }): React.JSX.Element {
@@ -657,6 +761,7 @@ export function PanelSplitStrip(props: {
   const onSetPinned = props.onSetPinned
   const onReload = props.onReload
   const onCopyPath = props.onCopyPath
+  const onCopyId = props.onCopyId
   const menuItem = menu === null ? undefined : props.items.find((item) => item.key === menu.key)
 
   return (
@@ -698,6 +803,7 @@ export function PanelSplitStrip(props: {
           items={PanelSplitMenu.entries(menuItem, {
             reload: () => onReload(menu.key),
             copyPath: () => onCopyPath(menu.key),
+            copyId: () => onCopyId(menu.key),
             setPinned: (pinned) => onSetPinned(menu.key, pinned),
             detach: () => queueMicrotask(() => onDetach(menu.key)),
             close: () => onClose(menu.key),
@@ -714,12 +820,18 @@ class PanelSplitMenu {
   static entries(item: PanelSplitItem, actions: {
     reload(): void
     copyPath(): void
+    copyId(): void
     setPinned(pinned: boolean): void
     detach(): void
     close(): void
   }): readonly ContextMenuEntry[] {
     const close: ContextMenuEntry = { key: 'split.close', label: 'Close', onSelect: actions.close }
-    if (item.kind === 'commit') return [close]
+    if (item.kind === 'commit' || item.kind === 'workflow') return [close]
+    else if (item.kind === 'task') return [
+      { key: 'split.copyId', label: 'Copy id', onSelect: actions.copyId },
+      { kind: 'separator', key: 'split.separator.task' },
+      close,
+    ]
     else if (item.kind !== 'file') throw new Error(`Unknown split item: ${JSON.stringify(item)}`)
     return [
       { key: 'split.reload', label: 'Reload', onSelect: actions.reload },

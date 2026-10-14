@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -92,6 +92,22 @@ describe('lib-orchestrator/sessionManager/results/worktreeResultsStore', () => {
     expect(readFileSync(logs[1].path, 'utf8')).toBe('C a.txt')
   })
 
+  it("keeps the merger's brief as merge.md beside the run logs", async () => {
+    const it_ = harness()
+    const store = it_.store()
+    await it_.logs.write('s1', 'run-1', 'Updated to revision 50.')
+    await it_.logs.writeMergeBrief('s1', 'a1', '# Merge the conflicts of t')
+
+    const logs = await store.keepLogs('a1', 's1', [{ runId: 'run-1', title: 'svn update' }])
+
+    expect(logs).toEqual([
+      { runId: 'run-1', title: 'svn update', path: join(it_.directory, 'a1', 'run-1.log') },
+      { runId: 'a1-merge', title: 'merger brief', path: join(it_.directory, 'a1', 'merge.md') },
+    ])
+    await it_.logs.removeParent('s1')
+    expect(readFileSync(logs[1].path, 'utf8')).toBe('# Merge the conflicts of t')
+  })
+
   it('keeps a delivered line and an acknowledgement when the same result is written again', async () => {
     const it_ = harness()
     const store = it_.store()
@@ -119,6 +135,29 @@ describe('lib-orchestrator/sessionManager/results/worktreeResultsStore', () => {
 
     expect(store.list({ sessionId: 's1' })[0]).toMatchObject({ removal: 'removed', lines: ['-> committed app:r51', '   worktree removed after the session'] })
     expect(store.pendingRemovalsOf('s1')).toEqual([])
+  })
+
+  it('keeps a 31-day-old folder of an action still on a record, and sweeps an orphan one of the same age', async () => {
+    const it_ = harness()
+    it_.clock.now = 100 * dayConst
+    const old = (it_.clock.now - 31 * dayConst) / 1_000
+    for (const actionId of ['held', 'orphan']) {
+      const saved = new WorktreeResultsStore(it_.directory, { now: () => it_.clock.now, logs: it_.logs, report: () => undefined })
+        .savedDirectoryOf(actionId)
+      mkdirSync(saved, { recursive: true })
+      writeFileSync(join(saved, 'brief.md'), 'copy of the session')
+      utimesSync(join(it_.directory, actionId), old, old)
+    }
+    expect(it_.store().savedDirectoryOf('held')).toBe(join(it_.directory, 'held', 'saved'))
+    expect(() => it_.store().savedDirectoryOf('../escape')).toThrow(/Not a plain id/)
+
+    const store = new WorktreeResultsStore(it_.directory, {
+      now: () => it_.clock.now, logs: it_.logs, report: () => undefined, heldActionIds: () => new Set(['held']),
+    })
+    await store.load()
+
+    expect(readFileSync(join(it_.directory, 'held', 'saved', 'brief.md'), 'utf8')).toBe('copy of the session')
+    expect(existsSync(join(it_.directory, 'orphan'))).toBe(false)
   })
 
   it('leaves alone a file it cannot read, and refuses an id that is not plain', async () => {

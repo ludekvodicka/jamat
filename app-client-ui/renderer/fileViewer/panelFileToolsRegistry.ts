@@ -1,7 +1,6 @@
 export type FileToolsTab = 'workingTree' | 'fileChanges' | 'directoryExplorer'
 
-/** The terminal's sidebar: the three file tabs and its own Notes, which the FileViewer never has. */
-export type TerminalToolsTab = FileToolsTab | 'notes'
+export type TerminalToolsTab = FileToolsTab | 'notes' | 'processes'
 
 export interface PanelFileToolsHandle {
   toggle(): void
@@ -36,7 +35,7 @@ export class PanelFileToolsRegistry {
   }
 
   static terminalTab(value: string | null): TerminalToolsTab {
-    if (value === 'notes') return value
+    if (value === 'notes' || value === 'processes') return value
     else return PanelFileToolsRegistry.tab(value)
   }
 }

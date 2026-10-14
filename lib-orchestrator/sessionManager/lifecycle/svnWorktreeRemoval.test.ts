@@ -4,9 +4,12 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
+import type { TreeRemovalListener } from '../../shared/treeRemoval'
 import type { SvnResult, SvnWorktreeLocation } from '../../svn/svn.types'
 import type { SessionRecord } from '../records/sessionRecord.types'
 import { SessionRecordsStore } from '../records/sessionRecordsStore'
+import type { SessionStepProgress } from '../sessionManagerApi.types'
+import { type SessionStepFacts, SessionStepWords } from './sessionStepWords'
 import { type SvnRemovalPort, SvnWorktreeRemoval } from './svnWorktreeRemoval'
 
 describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeRemoval', () => {
@@ -30,8 +33,12 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeRemoval', () => {
         : { ok: false, code: 'refused', detail: this.rename.detail })
     }
 
-    purgeAside(): Promise<SvnResult<'removed' | 'undeleted'>> {
+    purgeAside(_location: SvnWorktreeLocation, onProgress?: TreeRemovalListener): Promise<SvnResult<'removed' | 'undeleted'>> {
       this.log.push('purgeAside')
+      onProgress?.({ phase: 'counting', done: 2, total: null })
+      onProgress?.({ phase: 'counting', done: 3, total: null })
+      onProgress?.({ phase: 'deleting', done: 2, total: 3 })
+      onProgress?.({ phase: 'deleting', done: 3, total: 3 })
       return Promise.resolve({ ok: true, value: this.purge })
     }
 
@@ -51,6 +58,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeRemoval', () => {
       worktree, worktreeCleanup: { phase: 'pending', trigger: 'committed', requestedAt: 1, attempts: 1 }, ...overrides,
     })
     const svn = new FakeSvn()
+    const steps: { sessionId: string; facts: SessionStepFacts; progress: SessionStepProgress | null }[] = []
     const removal = new SvnWorktreeRemoval({
       records: store,
       svn,
@@ -60,9 +68,10 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeRemoval', () => {
         return work()
       },
       changed: () => undefined,
+      steps: { at: (sessionId, facts, progress = null) => { steps.push({ sessionId, facts, progress }) } },
       now: () => 7_000,
     })
-    return { store, svn, removal, location: SvnWorktreeRemoval.locationOf(worktree) }
+    return { store, svn, removal, steps, location: SvnWorktreeRemoval.locationOf(worktree) }
   }
 
   it('releases its own handles, renames aside by identity, purges and leaves a tombstone with every revision', async () => {
@@ -127,6 +136,52 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeRemoval', () => {
 
     expect(await it_.removal.remove('s1', it_.location, [])).toEqual({ state: 'kept', lines: [`KEPT: session s1 runs again, so ${worktreeConst} stays`] })
     expect(it_.svn.log).toEqual([])
+  })
+
+  it('reports waiting, letting go, moving aside, counting, deleting and recording into the step, in order', async () => {
+    const it_ = await harness()
+
+    await it_.removal.remove('s1', it_.location, [])
+
+    expect(it_.steps.every((step) => step.sessionId === 's1')).toBe(true)
+    expect(it_.steps.map((step) => step.facts)).toEqual([
+      'queue', 'release', 'rename', 'count', 'count', 'delete', 'delete', 'tombstone',
+    ].map((phase) => ({ kind: 'removal', phase, path: worktreeConst })))
+    expect(it_.steps.map((step) => step.progress)).toEqual([
+      null, null, null, { done: 2, total: null }, { done: 3, total: null }, { done: 2, total: 3 }, { done: 3, total: 3 }, null,
+    ])
+    expect(it_.steps.map((step) => SessionStepWords.of(step.facts, step.progress))).toEqual([
+      { text: 'Waiting for other operations', detail: worktreeConst },
+      { text: 'Letting go of this client\'s reads', detail: worktreeConst },
+      { text: 'Moving the worktree aside', detail: `${worktreeConst}.deleting` },
+      { text: 'Counting the files to delete', detail: '2 files so far' },
+      { text: 'Counting the files to delete', detail: '3 files so far' },
+      { text: 'Removing the worktree', detail: '2 of 3 files' },
+      { text: 'Removing the worktree', detail: '3 of 3 files' },
+      { text: 'Recording the removal', detail: 'session record' },
+    ])
+  })
+
+  it('names the count in the words of the step with grouped numbers', () => {
+    const facts = (phase: 'count' | 'delete'): SessionStepFacts => ({ kind: 'removal', phase, path: worktreeConst })
+    expect(SessionStepWords.of(facts('count'), { done: 23_000, total: null }).detail).toBe('23,000 files so far')
+    expect(SessionStepWords.of(facts('count'), { done: 1, total: null }).detail).toBe('1 file so far')
+    expect(SessionStepWords.of(facts('delete'), { done: 12_000, total: 30_001 }).detail).toBe('12,000 of 30,001 files')
+    expect(SessionStepWords.of(facts('delete'), { done: 0, total: null }).detail).toBe(worktreeConst)
+  })
+
+  it('stops the step after the rename when a process holds the worktree, and before the rename when a reopen won', async () => {
+    const held = await harness()
+    held.svn.rename = 'in-use'
+    await held.removal.remove('s1', held.location, [])
+    expect(held.steps.map((step) => step.facts.kind === 'removal' ? step.facts.phase : step.facts.kind)).toEqual(['queue', 'release', 'rename'])
+
+    const reopened = await harness({}, async (store) => {
+      const current = store.get('s1')
+      if (current?.life === 'ended') await store.put({ ...current, life: 'starting', pendingOperationId: 'op', pendingOperationKind: 'reopen' })
+    })
+    await reopened.removal.remove('s1', reopened.location, [])
+    expect(reopened.steps.map((step) => step.facts.kind === 'removal' ? step.facts.phase : step.facts.kind)).toEqual(['queue'])
   })
 
   it('joins revision lists once each, by repository and number', () => {

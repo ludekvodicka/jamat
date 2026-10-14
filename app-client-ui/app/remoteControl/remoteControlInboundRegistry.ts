@@ -23,7 +23,7 @@ export interface RemoteControlInboundRegistryDeps {
   control: Pick<RemoteControl, 'execute'>
   terminal: Pick<
     RemoteControlTerminal,
-    'attachLive' | 'inputLive' | 'resizeLive' | 'setLiveActive' | 'detachLive' | 'detachOwner'
+    'attachLive' | 'inputLive' | 'resizeLive' | 'setLiveActive' | 'detachLive' | 'detachOwner' | 'pasteImageLive' | 'pasteFileLive'
   >
   auditFile: string
   onChanged(): void

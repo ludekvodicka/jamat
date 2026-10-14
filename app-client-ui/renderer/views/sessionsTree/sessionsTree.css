@@ -194,6 +194,80 @@
 .jamat-sessions__children {
   padding-left: var(--space-3);
 }
+/* A sub-agent of the session above: read, not acted on, so it takes no hover and no pointer. The
+   left padding matches a session row's border and padding, so the glyphs of both line up. */
+.jamat-sessions__task {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 1px var(--space-2) 1px calc(var(--space-2) + 3px);
+  font-size: var(--fs-status);
+  color: var(--color-text-3);
+  white-space: nowrap;
+}
+.jamat-sessions__task[data-depth='2'] {
+  padding-left: calc(var(--space-2) + 3px + var(--space-3));
+}
+.jamat-sessions__task-type {
+  flex: none;
+  font-weight: 700;
+  color: var(--color-text-2);
+}
+.jamat-sessions__task-description {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.jamat-sessions__task-step {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--color-text-5);
+}
+/* What the client does for the session now: read, never acted on, aligned with the task rows. */
+.jamat-sessions__step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 1px var(--space-2) 1px calc(var(--space-2) + 3px);
+  font-size: var(--fs-status);
+  color: var(--color-text-3);
+  white-space: nowrap;
+}
+.jamat-sessions__step-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.jamat-sessions__step-detail {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--color-text-5);
+}
+.jamat-sessions__step-elapsed {
+  flex: none;
+  color: var(--color-text-5);
+  font-variant-numeric: tabular-nums;
+}
+.jamat-sessions__step-bar {
+  flex: none;
+  width: calc(var(--space-4) * 3);
+  height: 3px;
+  overflow: hidden;
+  background: var(--color-surface-control);
+  border-radius: var(--radius-control);
+}
+.jamat-sessions__step-fill {
+  display: block;
+  width: calc(var(--step-fraction, 0) * 100%);
+  height: 100%;
+  background: var(--color-accent);
+}
 /* The twisty and the launch actions are separate buttons, so the row that holds both is what carries
    the hover, not the twisty alone. */
 .jamat-sessions__group-row {
@@ -517,6 +591,12 @@ button.jamat-sessions__script:hover {
 .jamat-sessions__finish {
   font-size: var(--fs-chip);
   color: var(--color-accent);
+}
+.jamat-sessions__finish[role='button'] {
+  cursor: pointer;
+}
+.jamat-sessions__finish[role='button']:hover {
+  text-decoration: underline;
 }
 .jamat-sessions__finish--committed {
   color: var(--color-ok);

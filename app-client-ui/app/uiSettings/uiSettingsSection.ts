@@ -18,6 +18,6 @@ export class UiSettingsSection {
         + `scroll speeds multiples of ${UiSettings.scrollRangeConst.stepPercent} between `
         + `${UiSettings.scrollRangeConst.minPercent} and ${UiSettings.scrollRangeConst.maxPercent}, `
         + `terminalTheme one of ${UiSettings.terminalThemesConst.join(', ')}, `
-        + 'and activateSessionOnDocument and sessionsScriptRuns booleans'),
+        + 'and activateSessionOnDocument and sessions nesting settings booleans'),
   }
 }

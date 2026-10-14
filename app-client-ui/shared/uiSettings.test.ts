@@ -23,14 +23,47 @@ describe('app-client-ui/shared/uiSettings', () => {
     expect(messages).toEqual([])
   })
 
-  it('reads the sessions script runs choice as hidden when absent or unusable, and keeps a stored one', () => {
+  it.each([true, false, 'yes'])('drops the retired sessions script runs choice %s while preserving unknown fields', (sessionsScriptRuns) => {
     const { messages, report } = reported()
-    expect(UiSettings.coerce({}, report).sessionsScriptRuns).toBe(false)
-    expect(UiSettings.coerce({ sessionsScriptRuns: true }, report).sessionsScriptRuns).toBe(true)
+    const stored = { sessionsScriptRuns, sessionsNestWorktrees: false, _later: { mode: 'all' } }
+    const read = UiSettings.coerce(stored, report)
+    expect(read).not.toHaveProperty('sessionsScriptRuns')
+    expect(read).toMatchObject({ sessionsNestWorktrees: false, _later: { mode: 'all' } })
+    expect(UiSettings.isValid(read)).toBe(true)
+    expect(stored.sessionsScriptRuns).toBe(sessionsScriptRuns)
     expect(messages).toEqual([])
-    expect(UiSettings.coerce({ sessionsScriptRuns: 'yes' }, report).sessionsScriptRuns).toBe(false)
-    expect(messages).toHaveLength(1)
-    expect(UiSettings.isValid({ ...UiSettings.defaultValue(), sessionsScriptRuns: 'yes' })).toBe(false)
+  })
+
+  // A file written by 3.12 has none of the three, and everything in it stays nested.
+  it('reads the nesting toggles as nested when absent, keeps a stored choice, and refuses an unusable one on save', () => {
+    const { messages, report } = reported()
+    const absent = UiSettings.coerce({}, report)
+    for (const key of UiSettings.nestingKeysConst) {
+      expect(absent[key]).toBe(true)
+      expect(UiSettings.coerce({ [key]: false }, report)[key]).toBe(false)
+      expect(UiSettings.coerce({ [key]: true }, report)[key]).toBe(true)
+    }
+    expect(messages).toEqual([])
+    for (const key of UiSettings.nestingKeysConst) {
+      const { messages: said, report: tell } = reported()
+      expect(UiSettings.coerce({ [key]: 'yes' }, tell)[key]).toBe(true)
+      expect(said).toHaveLength(1)
+      expect(said[0]).toContain(key)
+      expect(UiSettings.isValid({ ...UiSettings.defaultValue(), [key]: 'yes' })).toBe(false)
+      expect(UiSettings.isValid({ ...UiSettings.defaultValue(), [key]: false })).toBe(true)
+    }
+    const legacy: Record<string, unknown> = { ...UiSettings.defaultValue() }
+    for (const key of UiSettings.nestingKeysConst)
+      delete legacy[key]
+    expect(UiSettings.isValid(legacy)).toBe(true)
+  })
+
+  it('keeps a key it does not know beside a nesting toggle it reads', () => {
+    const { report } = reported()
+    const value = UiSettings.coerce({ sessionsNestWorktrees: false, _later: { nest: 'all' } }, report)
+    expect(value.sessionsNestWorktrees).toBe(false)
+    expect((value as unknown as Record<string, unknown>)._later).toEqual({ nest: 'all' })
+    expect(UiSettings.isValid(value)).toBe(true)
   })
 
   it('reports invalid document activation on read and refuses it on write', () => {
@@ -49,7 +82,9 @@ describe('app-client-ui/shared/uiSettings', () => {
       scrollSpeedPercent: 100,
       terminalScrollSpeedPercent: 100,
       activateSessionOnDocument: false,
-      sessionsScriptRuns: false,
+      sessionsNestSubagents: true,
+      sessionsNestWorktrees: true,
+      sessionsNestTickets: true,
     })
   })
 
@@ -82,7 +117,9 @@ describe('app-client-ui/shared/uiSettings', () => {
       scrollSpeedPercent: 100,
       terminalScrollSpeedPercent: 100,
       activateSessionOnDocument: false,
-      sessionsScriptRuns: false,
+      sessionsNestSubagents: true,
+      sessionsNestWorktrees: true,
+      sessionsNestTickets: true,
     })
     expect(messages).toHaveLength(1)
     expect(messages[0]).toContain('fontScalePercent')
@@ -109,7 +146,9 @@ describe('app-client-ui/shared/uiSettings', () => {
         scrollSpeedPercent: 100,
         terminalScrollSpeedPercent: 100,
         activateSessionOnDocument: false,
-        sessionsScriptRuns: false,
+        sessionsNestSubagents: true,
+        sessionsNestWorktrees: true,
+        sessionsNestTickets: true,
       })
       expect(messages).toHaveLength(3)
     }
@@ -141,7 +180,9 @@ describe('app-client-ui/shared/uiSettings', () => {
       scrollSpeedPercent: 250,
       terminalScrollSpeedPercent: 50,
       activateSessionOnDocument: false,
-      sessionsScriptRuns: false,
+      sessionsNestSubagents: true,
+      sessionsNestWorktrees: true,
+      sessionsNestTickets: true,
     }
     expect(UiSettings.coerce(stored, report)).toEqual(stored)
     expect(messages).toEqual([])
@@ -251,7 +292,9 @@ describe('app-client-ui/shared/uiSettings', () => {
       scrollSpeedPercent: 175,
       terminalScrollSpeedPercent: 300,
       activateSessionOnDocument: false,
-      sessionsScriptRuns: false,
+      sessionsNestSubagents: true,
+      sessionsNestWorktrees: true,
+      sessionsNestTickets: true,
       _note: 'hand written',
     }
 
@@ -280,7 +323,9 @@ describe('app-client-ui/shared/uiSettings', () => {
       scrollSpeedPercent: 100,
       terminalScrollSpeedPercent: 100,
       activateSessionOnDocument: false,
-      sessionsScriptRuns: false,
+      sessionsNestSubagents: true,
+      sessionsNestWorktrees: true,
+      sessionsNestTickets: true,
       _note: 'hand written',
     })
   })
@@ -295,7 +340,9 @@ describe('app-client-ui/shared/uiSettings', () => {
       scrollSpeedPercent: 100,
       terminalScrollSpeedPercent: 100,
       activateSessionOnDocument: false,
-      sessionsScriptRuns: false,
+      sessionsNestSubagents: true,
+      sessionsNestWorktrees: true,
+      sessionsNestTickets: true,
     }
   }
 
@@ -308,7 +355,9 @@ describe('app-client-ui/shared/uiSettings', () => {
       fontScalePercent: 100,
       terminalScrollSpeedPercent: 100,
       activateSessionOnDocument: false,
-      sessionsScriptRuns: false,
+      sessionsNestSubagents: true,
+      sessionsNestWorktrees: true,
+      sessionsNestTickets: true,
       scrollSpeedPercent: 100,
     })).toBe(true)
     expect(UiSettings.isValid({ fontScalePercent: 100 })).toBe(false)

@@ -16,6 +16,7 @@ import type {
 import { FileViewerZoom, useFileViewerZoomWheel } from './fileViewerZoom'
 import { useFileViewerDocument } from './useFileViewerDocument'
 import { useFileViewerFreshness } from './useFileViewerFreshness'
+import { FileViewerSearchBar, useFileViewerSearch } from './fileViewerSearch'
 import './fileViewerPanel.css'
 import './fileViewerPane.css'
 
@@ -61,6 +62,9 @@ export function FileViewerPane(props: {
       onRefused(refusal)
   }, [onOpenItem, onRefused, props.item])
   const body = useFileViewerZoomWheel(zoomPercent, changeZoom)
+  const search = useFileViewerSearch(body, () => {
+    if (model.document?.kind.kind === 'html' && model.mode === 'rendered') model.setMode('raw')
+  })
   const openSource = useCallback((source: FileViewerDocumentSource): void => {
     model.openSource(source, (document) => {
       const refusal = onOpenItem({
@@ -80,6 +84,8 @@ export function FileViewerPane(props: {
       aria-label="Split file"
       ref={props.ref}
       tabIndex={-1}
+      data-file-search-open={search.open || undefined}
+      onKeyDown={search.onKeyDown}
       style={{ '--file-viewer-zoom': FileViewerZoom.scaleOf(zoomPercent) } as React.CSSProperties}
     >
       <div className="file-viewer-toolbar">
@@ -115,10 +121,12 @@ export function FileViewerPane(props: {
               />
             )}
             <FileViewerZoomControl percent={zoomPercent} onChange={changeZoom} />
+            <button type="button" title="Find in file (Ctrl+F)" onClick={search.show}>Find</button>
             {freshness.missing && <FileViewerGoneNote />}
           </>
         )}
       </div>
+      <FileViewerSearchBar search={search} />
       <div className="file-viewer-body" ref={body}>
         {model.error && <p className="file-viewer-error">{model.error}</p>}
         {!model.error && !model.document && <p className="file-viewer-note">Opening file...</p>}

@@ -1,11 +1,13 @@
 import { DetectionRefusal } from '../shared/detectionRefusal'
 import { realpath } from 'node:fs/promises'
-import { basename } from 'node:path'
+import { basename, isAbsolute, join } from 'node:path'
 
 import type { WebContents } from 'electron'
 
 import { FileViewer } from '../../../lib-orchestrator/fileViewer/fileViewer'
 import type { SessionManager } from '../../../lib-orchestrator/sessionManager/sessionManager'
+import { PathCompare } from '../../../lib-orchestrator/shared/pathCompare'
+import { TortoiseConflictEditor } from '../../../lib-orchestrator/shared/tortoiseConflictEditor'
 import type {
   TerminalDetectionHit,
   TerminalDetector,
@@ -33,9 +35,16 @@ import { VsCodeWorkspace } from './vsCodeWorkspace'
  *
  * `terminal:menu-open-project-vscode` has neither proof and does not need the first: it names a
  * session rather than a detection, and the path it opens is the one the library reports for that
- * session: its cwd, or for a worktree session the worktree root or the workspace file there, since
- * the cwd of such a session may be one member of a product group. The only check it makes is that
- * the sender is a window this app knows.
+ * session: its cwd, or for a worktree session the worktree root, since the cwd of such a session may
+ * be one member of a product group. Either root opens as the workspace file it holds, else as the
+ * folder. The session tree and the tab menu send it too (`session.openInVsCode`). The only check it
+ * makes is that the sender is a window this app knows.
+ *
+ * The two conflict openers of the workflow name a session and a worktree-relative path: the path
+ * is resolved inside that session's worktree root, read from its working context, and refused when
+ * it leaves it. `menu-open-conflict-file` grants the file to the viewer as any workspace file;
+ * `menu-open-conflict-editor` hands it to TortoiseSVN's conflict editor. `menu-open-merge-brief`
+ * grants the merger's brief the session's action names, outside the worktree.
  */
 export class ServiceTerminalMenuIpc extends ServiceIpcBase<
   typeof ServiceTerminalMenuIpc.channelsConst
@@ -47,19 +56,34 @@ export class ServiceTerminalMenuIpc extends ServiceIpcBase<
     'terminal:menu-open-external': true,
     'terminal:menu-open-vscode': true,
     'terminal:menu-open-project-vscode': true,
+    'terminal:menu-open-conflict-file': true,
+    'terminal:menu-open-conflict-editor': true,
+    'terminal:menu-open-merge-brief': true,
   } as const
 
   private readonly ownersByRequest = new Map<string, WebContents>()
-  /** Which senders already have the pair of listeners, so a second request adds no second pair. */
+  private readonly detector: TerminalDetector
+  private readonly viewer: FileViewer
+  private readonly sessions: SessionManager
+  private readonly terminals: ServiceTerminalIpc
+  private readonly ownerIdOf: (sender: WebContents) => string | null
+  private readonly conflictEditor: Pick<TortoiseConflictEditor, 'open'>
 
   constructor(
-    private readonly detector: TerminalDetector,
-    private readonly viewer: FileViewer,
-    private readonly sessions: SessionManager,
-    private readonly terminals: ServiceTerminalIpc,
-    private readonly ownerIdOf: (sender: WebContents) => string | null,
+    detector: TerminalDetector,
+    viewer: FileViewer,
+    sessions: SessionManager,
+    terminals: ServiceTerminalIpc,
+    ownerIdOf: (sender: WebContents) => string | null,
+    conflictEditor: Pick<TortoiseConflictEditor, 'open'> = new TortoiseConflictEditor(),
   ) {
     super()
+    this.detector = detector
+    this.viewer = viewer
+    this.sessions = sessions
+    this.terminals = terminals
+    this.ownerIdOf = ownerIdOf
+    this.conflictEditor = conflictEditor
   }
 
   initialize(): void {
@@ -156,11 +180,43 @@ export class ServiceTerminalMenuIpc extends ServiceIpcBase<
       const context = await this.sessions.workingContext(sessionId)
       if (!context.ok) return false
       const worktree = context.value.worktree
-      if (worktree === null) VsCodeLauncher.open(context.value.cwd, null)
+      if (worktree === null) await VsCodeWorkspace.open(VsCodeLauncher, context.value.cwd, basename(context.value.cwd))
       else await VsCodeWorkspace.open(VsCodeLauncher, worktree.worktreePath, basename(worktree.repositoryRoot))
       return true
     })
+    this.register('terminal:menu-open-conflict-file', async (event, sessionId, path) => {
+      const ownerId = this.ownerId(event.sender)
+      const place = await this.conflictPlaceOf(sessionId, path)
+      if (!place.ok) return { ok: false, code: 'outside-root', detail: place.detail }
+      return this.viewer.openDetected(ownerId, sessionId, place.root, place.absolute)
+    })
+    this.register('terminal:menu-open-conflict-editor', async (event, sessionId, path) => {
+      this.ownerId(event.sender)
+      const place = await this.conflictPlaceOf(sessionId, path)
+      if (!place.ok) return place
+      const opened = await this.conflictEditor.open(place.absolute)
+      return opened.ok ? { ok: true } : { ok: false, detail: opened.detail }
+    })
+    this.register('terminal:menu-open-merge-brief', async (event, sessionId) => {
+      const ownerId = this.ownerId(event.sender)
+      const brief = this.sessions.snapshot().sessions.find((session) => session.sessionId === sessionId)?.svnAction?.mergeBrief
+      if (typeof brief !== 'string') return { ok: false, code: 'not-found', detail: `Session ${sessionId} has no merger brief` }
+      return this.viewer.openDetected(ownerId, sessionId, null, brief)
+    })
     this.assertComplete(ServiceTerminalMenuIpc.channelsConst)
+  }
+
+  /** A worktree-relative path of a session's conflict, as an absolute path inside its worktree root. */
+  private async conflictPlaceOf(sessionId: string, path: string)
+    : Promise<{ ok: true; root: string; absolute: string } | { ok: false; detail: string }> {
+    const context = await this.sessions.workingContext(sessionId)
+    if (!context.ok) return { ok: false, detail: context.detail }
+    const worktree = context.value.worktree
+    if (worktree === null) return { ok: false, detail: `Session ${sessionId} has no worktree` }
+    const absolute = path === '.' ? worktree.worktreePath : join(worktree.worktreePath, ...path.split('/'))
+    if (path === '' || isAbsolute(path) || !PathCompare.isInside(worktree.worktreePath, absolute))
+      return { ok: false, detail: `${path} is not inside the worktree ${worktree.worktreePath}` }
+    return { ok: true, root: worktree.worktreePath, absolute }
   }
 
   /**

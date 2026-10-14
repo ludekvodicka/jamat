@@ -27,6 +27,7 @@ import { CommandRegistry } from '../commands/commandRegistry'
 import { ConfigurationLastTab } from '../overlays/configuration/configurationLastTab'
 import type { FinalizeAsk } from '../overlays/finalize/finalizeModel'
 import { SessionsFixtures } from '../sessions/fixtures/sessionsFixtures'
+import { SessionTasksStore } from '../sessions/sessionTasksStore'
 import { TabsController } from '../widgets/tabs/tabsController'
 import { type ActiveTerminalReading, ActiveTerminalStore } from './activeTerminalStore'
 import { HolderShell, MainShell } from './appShell'
@@ -464,6 +465,7 @@ class AppClientStub {
         terminalResize: () => { throw new Error('No test of the shell resizes a remote terminal') },
         terminalActive: () => { throw new Error('No test of the shell activates a remote terminal') },
         terminalDetach: () => { throw new Error('No test of the shell detaches a remote terminal') },
+        terminalClipboardPaste: () => { throw new Error('No test of the shell pastes into a remote terminal') },
       },
       remoteSettings: {
         get: () => { throw new Error('No test of the shell reads the remote settings') },
@@ -547,7 +549,7 @@ class AppClientStub {
         resize: () => Promise.resolve({ ok: true as const, value: undefined }),
         active: () => Promise.resolve({ ok: true as const, value: undefined }),
         detach: () => Promise.resolve({ ok: true as const, value: undefined }),
-        clipboardRead: () => Promise.resolve({ ok: true as const, value: '' }),
+        clipboardPaste: () => Promise.resolve({ ok: true as const, value: { kind: 'empty' as const } }),
         clipboardWrite: () => Promise.resolve({ ok: true as const, value: true }),
       },
       terminalMenu: {
@@ -584,6 +586,9 @@ class AppClientStub {
         },
         openVsCode: () => { throw new Error('No test of the shell opens VS Code') },
         openProjectVsCode: () => { throw new Error('No test of the shell opens a project in VS Code') },
+        openConflictFile: () => { throw new Error('No test of the shell opens a conflicted file') },
+        openConflictEditor: () => { throw new Error('No test of the shell opens the conflict editor') },
+        openMergeBrief: () => { throw new Error('No test of the shell opens a merger brief') },
       },
       remarkable: AppClientStub.remarkable(),
       clipboard: {
@@ -1171,6 +1176,15 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     }
 
     const reachedContent = vi.fn()
+    fireEvent.keyDown(terminal, { key: 'f', ctrlKey: true })
+    expect(view.queryByRole('textbox', { name: 'Find in file' })).toBeNull()
+    fireEvent.keyDown(viewer, { key: 'f', ctrlKey: true })
+    const search = view.getByRole('textbox', { name: 'Find in file' })
+    expect(search).toHaveFocus()
+    fireEvent.keyDown(search, { key: 'Escape' })
+    expect(view.queryByRole('textbox', { name: 'Find in file' })).toBeNull()
+    expect(viewer).toHaveFocus()
+    expect(close).not.toHaveBeenCalled()
     viewer.focus()
     viewer.addEventListener('keydown', reachedContent)
     expect(fireEvent.keyDown(viewer, { key: 'Escape' })).toBe(false)
@@ -1181,6 +1195,126 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     fireEvent.keyDown(terminal, { key: 'Escape' })
     expect(close).toHaveBeenCalledTimes(1)
     viewer.removeEventListener('keydown', reachedContent)
+  })
+
+  it.each([
+    { key: 'task:s-working:subagent:a1', task: { kind: 'subagent', subagentId: 'a1' }, title: 'Explore: Read the docs' },
+    { key: 'task:s-working:shell:b1', task: { kind: 'shell', shellId: 'b1' }, title: '$ grep -rl etherscan' },
+    { key: 'task:s-working:script:r1', task: { kind: 'script', runId: 'r1' }, title: 'Setup project' },
+  ] as const)('focuses an opened $task.kind view and closes it with Escape', async ({ key, task, title }) => {
+    const { client, view } = await mount({ sidebars: null, failed: false })
+    vi.spyOn(window.appClient.fileChanges, 'list').mockResolvedValue({
+      ok: true, value: { ok: false, code: 'invalid-context', detail: 'File changes unavailable' },
+    })
+    AppShellTest.openSession(view.container, 'Alpha worktree')
+    const terminal = await view.findByLabelText('Terminal for session s-working')
+    client.controlTabs({ kind: 'open-task', requestId: 'task-escape', panelId: 'terminal:{"sessionId":"s-working"}',
+      item: { key, title, sessionId: 's-working', task } })
+    const pane = await view.findByLabelText(title, { selector: '.task-pane' })
+    const close = vi.spyOn(WorkspacePanels, 'closeActive')
+
+    await waitFor(() => expect(pane).toHaveFocus())
+    const reachedTerminal = vi.fn()
+    terminal.addEventListener('keydown', reachedTerminal)
+    expect(fireEvent.keyDown(terminal, { key: 'Escape' })).toBe(true)
+    expect(reachedTerminal).toHaveBeenCalledTimes(1)
+    expect(close).not.toHaveBeenCalled()
+    terminal.removeEventListener('keydown', reachedTerminal)
+
+    expect(fireEvent.keyDown(document.activeElement!, { key: 'Escape' })).toBe(false)
+    await waitFor(() => expect(view.container.querySelector('.task-pane')).toBeNull())
+    expect(close).toHaveBeenCalledTimes(1)
+    expect(view.getByLabelText('Terminal for session s-working')).toBe(terminal)
+  })
+
+  it.each([false, true])('focuses the same task again after tree focus, with an inactive parent: %s', async (inactive) => {
+    const { client, view } = await mount({ sidebars: null, failed: false })
+    vi.spyOn(window.appClient.fileChanges, 'list').mockResolvedValue({
+      ok: true, value: { ok: false, code: 'invalid-context', detail: 'File changes unavailable' },
+    })
+    AppShellTest.keepSession(view.container, 'Alpha worktree')
+    const terminal = await view.findByLabelText('Terminal for session s-working')
+    const open = (): void => client.controlTabs({ kind: 'open-task', requestId: 'reopen-task',
+      panelId: 'terminal:{"sessionId":"s-working"}', item: { key: 'task:s-working:subagent:a1',
+        title: 'Explore: Read the docs', sessionId: 's-working', task: { kind: 'subagent', subagentId: 'a1' } } })
+    open()
+    const pane = await view.findByLabelText('Explore: Read the docs', { selector: '.task-pane' })
+    await waitFor(() => expect(pane).toHaveFocus())
+    if (inactive) {
+      AppShellTest.openSession(view.container, 'Beta worktree')
+      await view.findByLabelText('Terminal for session s-waiting')
+    }
+    const treeFilter = view.getByRole('textbox', { name: 'Filter sessions' })
+    treeFilter.focus()
+    expect(treeFilter).toHaveFocus()
+
+    open()
+    await act(async () => { await new Promise<void>((resolve) => requestAnimationFrame(() => resolve())) })
+    expect(view.getByLabelText('Explore: Read the docs', { selector: '.task-pane' })).toBe(pane)
+    expect(pane).toHaveFocus()
+    expect(fireEvent.keyDown(document.activeElement!, { key: 'Escape' })).toBe(false)
+    await waitFor(() => expect(view.container.querySelector('.task-pane')).toBeNull())
+    expect(view.getByLabelText('Terminal for session s-working')).toBe(terminal)
+  })
+
+  it('retains an old script row for inactive split items in this window and removes it after Escape or closing the parent', async () => {
+    const source = SessionsFixtures.mixed()
+    const run = SessionsFixtures.setupCollapsed().sessions.find((info) => info.sessionId === 's-installed')!.scripts!.runs[0]!
+    const snapshot = { ...source, sessions: source.sessions.map((info) => info.sessionId !== 's-working' ? info : {
+      ...info, scripts: { runs: [{ ...run, runId: 'old-run', endedAt: Date.now() - 40_000 }] },
+    }) }
+    const client = new AppClientStub({ sidebars: null, failed: false }, false, snapshot)
+    client.install()
+    const view = render(<MainShell />)
+    vi.spyOn(window.appClient.fileChanges, 'list').mockResolvedValue({
+      ok: true, value: { ok: false, code: 'invalid-context', detail: 'File changes unavailable' },
+    })
+    await view.findByText('Alpha worktree')
+    const row = (): Element | null => view.container.querySelector('[data-script-run="old-run"]')
+    expect(row()).toBeNull()
+    AppShellTest.openSession(view.container, 'Alpha worktree')
+    await view.findByLabelText('Terminal for session s-working')
+    const open = (): void => client.controlTabs({ kind: 'open-task', requestId: 'old-script',
+      panelId: 'terminal:{"sessionId":"s-working"}', item: { key: 'task:s-working:script:old-run',
+        title: 'Old script', sessionId: 's-working', task: { kind: 'script', runId: 'old-run' } } })
+    open()
+    await waitFor(() => expect(row()).toBeTruthy())
+    client.controlTabs({ kind: 'open-task', requestId: 'other-task', panelId: 'terminal:{"sessionId":"s-working"}',
+      item: { key: 'task:s-working:shell:other', title: '$ other', sessionId: 's-working',
+        task: { kind: 'shell', shellId: 'other' } } })
+    await view.findByLabelText('$ other', { selector: '.task-pane' })
+    expect(row()).toBeTruthy()
+    fireEvent.click(view.getByRole('tab', { name: /Old script/ }))
+    const pane = await view.findByLabelText('Old script', { selector: '.task-pane' })
+    fireEvent.keyDown(pane, { key: 'Escape' })
+    await waitFor(() => expect(row()).toBeNull())
+    open()
+    await waitFor(() => expect(row()).toBeTruthy())
+    client.controlTabs({ kind: 'close-panel', requestId: 'close-parent', panelId: 'terminal:{"sessionId":"s-working"}' })
+    await waitFor(() => expect(row()).toBeNull())
+  })
+
+  it('hands the caret to the next split item, so Escape closes them one after another', async () => {
+    const { client, view } = await mount({ sidebars: null, failed: false })
+    vi.spyOn(window.appClient.fileChanges, 'list').mockResolvedValue({
+      ok: true, value: { ok: false, code: 'invalid-context', detail: 'File changes unavailable' },
+    })
+    AppShellTest.openSession(view.container, 'Alpha worktree')
+    await view.findByLabelText('Terminal for session s-working')
+    for (const shellId of ['b1', 'b2'])
+      client.controlTabs({ kind: 'open-task', requestId: `task-${shellId}`, panelId: 'terminal:{"sessionId":"s-working"}',
+        item: { key: `task:s-working:shell:${shellId}`, title: `$ shell ${shellId}`, sessionId: 's-working',
+          task: { kind: 'shell', shellId } } })
+    await view.findByLabelText('$ shell b2', { selector: '.task-pane' })
+    fireEvent.click(view.getByRole('tab', { name: /\$ shell b1/ }))
+    const first = await view.findByLabelText('$ shell b1', { selector: '.task-pane' })
+    first.focus()
+
+    expect(fireEvent.keyDown(first, { key: 'Escape' })).toBe(false)
+    const second = await view.findByLabelText('$ shell b2', { selector: '.task-pane' })
+    await waitFor(() => expect(second).toHaveFocus())
+    expect(fireEvent.keyDown(second, { key: 'Escape' })).toBe(false)
+    await waitFor(() => expect(view.container.querySelector('.task-pane')).toBeNull())
   })
 
   /**
@@ -1200,6 +1334,74 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     expect(client.sessionSnapshotSubscriptions).toBe(1)
     // The rate limits are the machine's, so a holder draws them too - once, like the sessions.
     expect(client.rateSnapshotReads).toBe(1)
+  })
+
+  it('polls Processes in a holder without a sessions tree and opens and marks its split item', async () => {
+    const start = vi.spyOn(SessionTasksStore.prototype, 'start')
+    const { client, view } = await mountHolder()
+    vi.spyOn(window.appClient.fileChanges, 'workingTree').mockResolvedValue({
+      ok: true, value: { ok: false, code: 'invalid-context', detail: 'No working tree' },
+    })
+    vi.spyOn(window.appClient.fileChanges, 'list').mockResolvedValue({
+      ok: true, value: { ok: false, code: 'invalid-context', detail: 'No file changes' },
+    })
+    const listed: string[][] = []
+    const original = window.appClient.control.call
+    vi.spyOn(window.appClient.control, 'call').mockImplementation((operation, body) => {
+      if (operation === 'sessionTasks.list') {
+        const { sessionIds } = body as { sessionIds: string[] }
+        listed.push(sessionIds)
+        return Promise.resolve(ControlBridgeFixture.valueOf(operation, { ok: true, value: {
+          's-working': { kind: 'tasks', olderFinished: 0, catchingUp: false, rows: [
+            { kind: 'shell', shellId: 'process-shell', command: 'pnpm test', description: null,
+              state: 'running', startedAt: Date.now(), endedAt: null },
+          ] },
+        } }))
+      }
+      if (operation === 'sessionTasks.open') {
+        client.controlTabs({ kind: 'open-task', requestId: 'process-open', panelId: 'terminal:{"sessionId":"s-working"}',
+          item: { key: 'task:s-working:shell:process-shell', sessionId: 's-working',
+            task: { kind: 'shell', shellId: 'process-shell' }, title: '$ pnpm test' } })
+        return Promise.resolve(ControlBridgeFixture.valueOf(operation, { ok: true, value: {} }))
+      }
+      return original(operation, body)
+    })
+    await waitFor(() => expect(client.readinessOrder).toContain('rendererReady'))
+    client.controlTabs({ kind: 'open-session', requestId: 'process-parent', sessionId: 's-working', tabTitle: 'Work' })
+    await view.findByLabelText('Terminal for session s-working')
+    expect(start).toHaveBeenCalledTimes(1)
+    expect(listed).toEqual([])
+    client.run('view.toggleTabSidebar')
+    fireEvent.click(await view.findByRole('tab', { name: 'Processes' }))
+    const row = (await view.findByText('$ pnpm test', {}, { timeout: 3_000 })).closest('button')!
+    expect(listed).toEqual([['s-working']])
+    fireEvent.click(row)
+    const pane = await view.findByLabelText('$ pnpm test', { selector: '.task-pane' })
+    await waitFor(() => expect(row).toHaveAttribute('aria-current', 'true'))
+    row.focus()
+    expect(row).toHaveFocus()
+    fireEvent.click(row)
+    await act(async () => { await new Promise<void>((resolve) => requestAnimationFrame(() => resolve())) })
+    expect(view.getByLabelText('$ pnpm test', { selector: '.task-pane' })).toBe(pane)
+    expect(pane).toHaveFocus()
+    expect(fireEvent.keyDown(document.activeElement!, { key: 'Escape' })).toBe(false)
+    await waitFor(() => expect(view.container.querySelector('.task-pane')).toBeNull())
+
+    vi.useFakeTimers()
+    fireEvent.click(view.getByRole('tab', { name: 'File Changes' }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+    expect(listed).toHaveLength(1)
+    fireEvent.click(view.getByRole('tab', { name: 'Processes' }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+    expect(listed).toHaveLength(2)
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+    expect(listed).toHaveLength(2)
+    visibility.mockReturnValue('visible')
+    await act(async () => document.dispatchEvent(new Event('visibilitychange')))
+    expect(listed).toHaveLength(3)
+    view.unmount()
   })
 
   it('flushes only the tab controller when a holder closes', async () => {

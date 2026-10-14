@@ -18,17 +18,21 @@ import type {
   RemoteConnectionsSnapshot,
 } from '../../../../lib-orchestrator/remoteControl/remoteConnectionsApi.types'
 import type { RemoteControlResponse } from '../../../../lib-orchestrator/remoteControl/remoteControlApi.types'
+import type { SessionTaskListing } from '../../../../lib-orchestrator/sessionTasks/sessionTasksApi.types'
 import type { IpcResult, LoadSessionsViewResult } from '../../../shared/appClientUiIpc'
 import type { SessionsTabsView } from '../../../shared/sessionsViewState'
 import type { SavedSessionsFilter } from '../../../shared/sessionsFilterState'
 import { type TerminalTarget, TerminalTargetCodec } from '../../../shared/terminalTarget'
 import { CommandRegistry } from '../../commands/commandRegistry'
 import { SnapshotStore, type SnapshotStorePorts } from '../../ipc/snapshotStore'
+import { ControlBridgeFixture } from '../../ipc/fixtures/controlBridgeFixture'
 import { SessionsMarksStore } from '../../sessions/sessionsMarksStore'
+import { SessionTasksStore } from '../../sessions/sessionTasksStore'
 import { ActiveTerminalStore } from '../../shell/activeTerminalStore'
 import type { TabSessionFacts } from '../../widgets/tabs/tabContextMenu'
 import { SessionsFixtures } from '../../sessions/fixtures/sessionsFixtures'
 import { SessionNodeState } from './sessionNodeState'
+import { type SessionsNesting, SessionsTreeModel } from './sessionsTreeModel'
 import {
   type SessionsTreePorts,
   type SessionsTreeRemotePorts,
@@ -207,7 +211,6 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     readonly calls: string[] = []
     readonly errors: string[] = []
     readonly savedViews: SessionsTabsView[] = []
-    readonly savedScriptRuns: boolean[] = []
     savedFilters: readonly SavedSessionsFilter[] = []
     savedGroups: readonly SessionGroupAssignment[] = []
     /** The seeded sections, so a test that says nothing draws the panel a fresh install draws. */
@@ -246,7 +249,6 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     readonly answers = new Map<string, IpcResult<SessionsOpResult>>()
     /** What the store holds before this panel is drawn; null is a client that never stored one. */
     storedView: SessionsTabsView | null = null
-    storedScriptRuns = false
     private changed: (() => void) | null = null
     /** Held answers, for the tests that are about the window while a call is still out. */
     private held: (() => void)[] | null = null
@@ -262,17 +264,12 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
       return Promise.resolve({ ok: true, value: true })
     }
 
-    loadScriptRuns(): boolean {
-      return this.storedScriptRuns
+    loadNesting(): SessionsNesting {
+      return SessionsTreeModel.nestedConst
     }
 
-    subscribeScriptRuns(): () => void {
+    subscribeNesting(): () => void {
       return () => {}
-    }
-
-    saveScriptRuns(shown: boolean): Promise<IpcResult<boolean>> {
-      this.savedScriptRuns.push(shown)
-      return Promise.resolve({ ok: true, value: true })
     }
 
     read(): Promise<IpcResult<SessionsSnapshot>> {
@@ -350,6 +347,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     cleanup()
     for (const stop of stops.splice(0))
       stop()
+    vi.useRealTimers()
   })
 
   async function mount(
@@ -360,11 +358,10 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     commitSessionIds: string[] = [],
     storedGroups: readonly SessionGroupAssignment[] = [],
     sections: readonly SessionGroupDefinition[] = SessionsGroupsState.defaultsConst,
-    storedScriptRuns = false,
+    taskListings: Readonly<Record<string, SessionTaskListing>> = {},
   ) {
     const ports = new Ports(snapshot)
     ports.storedView = storedView
-    ports.storedScriptRuns = storedScriptRuns
     ports.savedFilters = storedFilters
     ports.savedGroups = storedGroups
     ports.sections = sections
@@ -372,6 +369,8 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     const onOpenSettings = vi.fn()
     const onOpenTerminal = vi.fn()
     const onOpenScriptLog = vi.fn()
+    const control = new ControlBridgeFixture().on('sessionTasks.open', { ok: true, value: { panelId: 'parent' } })
+    ;(window as unknown as { appClient: unknown }).appClient = { control: control.bridge() }
     const onCloseTerminal = vi.fn()
     const onRerunTerminal = vi.fn()
     const onFinalizeAsk = vi.fn()
@@ -445,6 +444,26 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     const commitOpen = new CommitOpenStore({ read: async () => ({ ok: true, value: { revision: 1, sessionIds: commitSessionIds } }), subscribe: () => () => undefined, reportError: vi.fn() })
     stops.push(commitOpen.start())
     const activeTerminal = new ActiveTerminalStore()
+    const taskCalls: string[][] = []
+    const tasks = new SessionTasksStore(snapshotStore, {
+      list: (sessionIds) => {
+        taskCalls.push([...sessionIds])
+        return Promise.resolve({ ok: true, value: { ok: true, value: Object.fromEntries(sessionIds
+          .filter((sessionId) => taskListings[sessionId] !== undefined)
+          .map((sessionId) => [sessionId, taskListings[sessionId]])) } })
+      },
+      reportError: (message) => ports.reportError(message),
+    })
+    stops.push(tasks.start())
+    let taskKeys: ReadonlySet<string> = new Set()
+    const taskKeyListeners = new Set<() => void>()
+    const openTasks = {
+      read: () => taskKeys,
+      subscribe: (listener: () => void) => {
+        taskKeyListeners.add(listener)
+        return () => { taskKeyListeners.delete(listener) }
+      },
+    }
     const tree = (
       <SessionsTreeView
         side="left"
@@ -458,6 +477,8 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
         sessionFacts={sessionFacts}
         marks={marks}
           commitOpen={commitOpen}
+        tasks={tasks}
+        openTasks={openTasks}
         activeTerminal={activeTerminal}
         onLaunch={onLaunch}
         onOpenSettings={onOpenSettings}
@@ -480,12 +501,18 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
       onOpenSettings,
       onOpenTerminal,
       onOpenScriptLog,
+      control,
       onCloseTerminal,
       onRerunTerminal,
       onFinalizeAsk,
       onUpdateMainAsk,
       onFocusTerminal,
       remoteCalls,
+      taskCalls,
+      setOpenTasks: (keys: readonly string[]) => act(() => {
+        taskKeys = new Set(keys)
+        for (const listener of taskKeyListeners) listener()
+      }),
       container: view.container,
       lookAt: (activeSessionId: string | null) => act(() => activeTerminal.set(
         activeSessionId === null
@@ -1546,6 +1573,27 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(onCloseTerminal).toHaveBeenCalledWith({ kind: 'local', sessionId: 's-done' })
   })
 
+  it('names the worktree on the armed Remove of an SVN worktree session', async () => {
+    const snapshot = SessionsFixtures.mixed()
+    const finished = sessionOf(snapshot, 's-done')
+    delete finished.completed
+    finished.worktree = {
+      worktreePath: 'C:/Projects/App/.worktrees/014-fix',
+      branch: 'http://svn.local/applications/App',
+      baseCommit: 'r41',
+      kind: 'svn',
+      choices: ['keep', 'discard'],
+      diff: null,
+      baseMoved: false,
+    }
+    const { ports, container } = await mount({ ...snapshot, sessions: [finished] })
+
+    fireEvent.click(actionNamed(container, 's-done', 'Remove'))
+    fireEvent.click(actionNamed(container, 's-done', 'Remove with worktree?'))
+
+    await waitFor(() => expect(ports.calls).toEqual(['remove:s-done']))
+  })
+
   it('drops an armed live Finish when the committed session stops', async () => {
     const snapshot = SessionsFixtures.mixed()
     const { ports, container } = await mount(snapshot)
@@ -1679,6 +1727,30 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     const mark = rowOf(container, 's-svn').querySelector('[data-finish-needs="true"]')
     expect(mark?.textContent).toBe('finish waits for you')
     expect(mark?.getAttribute('title')).toBe('the check tests failed (exit 1)')
+  })
+
+  it('reads the workflow badge on the mark of a waiting action, and its click and Finish… open the workflow', async () => {
+    const snapshot = SessionsFixtures.svnWorktrees()
+    snapshot.sessions = snapshot.sessions.map((session) => session.sessionId !== 's-svn' ? session : {
+      ...session,
+      svnAction: { kind: 'finish', stage: 'updating', needs: 'tree or property conflicts after the update: docs', needsKind: 'conflict', review: null },
+      workflow: { kind: 'finish', workflowId: 'a1', title: 'Finish of Svn worktree', badge: 'conflicts need you',
+        summary: 'Waits for you: tree or property conflicts after the update: docs', open: true, rounds: [], actions: [] },
+    })
+    const { container, onFinalizeAsk, control } = await mount(snapshot)
+    control.on('sessionTasks.openWorkflow', { ok: true, value: { panelId: 'terminal:s-svn' } })
+    showAll(container)
+
+    const mark = rowOf(container, 's-svn').querySelector('[data-finish-needs="true"]')
+    expect(mark?.textContent).toBe('conflicts need you')
+    expect(mark?.getAttribute('title')).toBe('tree or property conflicts after the update: docs')
+    fireEvent.click(mark!)
+    await waitFor(() => expect(control.bodiesOf('sessionTasks.openWorkflow')).toEqual([{ sessionId: 's-svn' }]))
+
+    expect(labelsOf(container, 's-svn')).toContain('Finish…')
+    fireEvent.click(actionNamed(container, 's-svn', 'Finish…'))
+    await waitFor(() => expect(control.bodiesOf('sessionTasks.openWorkflow')).toHaveLength(2))
+    expect(onFinalizeAsk).not.toHaveBeenCalled()
   })
 
   it('restores stopped Finish after an armed Remove is cancelled', async () => {
@@ -2691,7 +2763,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
       .toBeTruthy()
   })
 
-  it('opens the run terminal from a running or failed badge, and the saved log from a succeeded one', async () => {
+  it('keeps waiting-parent badge terminals and opens failed or succeeded badges in the parent split', async () => {
     const pending = await mount(SessionsFixtures.setupPending())
     fireEvent.click(rowOf(pending.container, 's-primary').querySelector('[data-script-badge]')!)
     expect(pending.onOpenTerminal).toHaveBeenLastCalledWith(
@@ -2701,8 +2773,10 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     const outcomes = await mount(SessionsFixtures.setupOutcomes())
     showAll(outcomes.container)
     fireEvent.click(rowOf(outcomes.container, 's-failed').querySelector('[data-script-badge]')!)
-    expect(outcomes.onOpenTerminal).toHaveBeenLastCalledWith(
-      { kind: 'local', sessionId: 's-failed-install' }, 'AppJamatV3 - Setup beta', 'preview')
+    expect(outcomes.control.bodiesOf('sessionTasks.open')).toEqual([{
+      sessionId: 's-failed', task: { kind: 'script', runId: 's-failed-install' }, title: 'AppJamatV3 - Setup beta',
+    }])
+    expect(outcomes.onOpenTerminal).not.toHaveBeenCalled()
     outcomes.unmount()
 
     const collapsed = await mount(SessionsFixtures.setupCollapsed())
@@ -2712,7 +2786,10 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(succeeded.classList.contains('jamat-sessions__script--succeeded')).toBe(true)
     expect(succeeded.tagName).toBe('BUTTON')
     fireEvent.click(succeeded)
-    expect(collapsed.onOpenScriptLog).toHaveBeenCalledWith('s-installed', 'r-second')
+    expect(collapsed.control.bodiesOf('sessionTasks.open')).toEqual([{
+      sessionId: 's-installed', task: { kind: 'script', runId: 'r-second' }, title: 'setup ✓ 23.6 s',
+    }])
+    expect(collapsed.onOpenScriptLog).not.toHaveBeenCalled()
     expect(collapsed.onOpenTerminal).not.toHaveBeenCalled()
   })
 
@@ -2731,11 +2808,37 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
       { kind: 'local', sessionId: 's-neighbour' }, 'AppJamatV3 - Zulu shell', 'preview')
   })
 
+  it('opens a local script row and its badge in the parent split when the parent is no longer waiting', async () => {
+    const pending = SessionsFixtures.setupPending()
+    const snapshot = { ...pending, sessions: pending.sessions.map((session) => session.sessionId !== 's-primary'
+      ? session : { ...session, life: 'live' as const, scripts: { ...session.scripts!, waitingOn: undefined } }) }
+    const { container, control, onOpenTerminal } = await mount(snapshot)
+    fireEvent.click(buttonNamed(rowOf(container, 's-install'), 'Setup alpha'))
+    expect(control.bodiesOf('sessionTasks.open')).toEqual([{
+      sessionId: 's-primary', task: { kind: 'script', runId: 's-install' }, title: 'Setup alpha',
+    }])
+    fireEvent.click(rowOf(container, 's-primary').querySelector('[data-script-badge]')!)
+    expect(control.bodiesOf('sessionTasks.open')).toHaveLength(2)
+    expect(control.bodiesOf('sessionTasks.open')[1]).toMatchObject({
+      sessionId: 's-primary', task: { kind: 'script', runId: 's-install' },
+    })
+    expect(onOpenTerminal).not.toHaveBeenCalled()
+  })
+
+  it('keeps a script row in its run terminal while the parent is waiting', async () => {
+    const { container, control, onOpenTerminal } = await mount(SessionsFixtures.setupPending())
+    fireEvent.click(buttonNamed(rowOf(container, 's-install'), 'Setup alpha'))
+    expect(onOpenTerminal).toHaveBeenLastCalledWith(
+      { kind: 'local', sessionId: 's-install' }, 'AppJamatV3 - Setup alpha', 'preview')
+    expect(control.bodiesOf('sessionTasks.open')).toEqual([])
+  })
+
   it('lists every run in the Scripts submenu, newest first, a saved log opened and a lost one disabled', async () => {
     const { container, onOpenTerminal, onOpenScriptLog } = await mount(SessionsFixtures.setupCollapsed())
 
     fireEvent.contextMenu(rowOf(container, 's-installed'))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Scripts' }))
+    expect(within(screen.getByRole('menu', { name: 'Scripts' })).queryByRole('menuitemcheckbox', { name: 'Show as sub-tasks' })).toBeNull()
     const items = within(screen.getByRole('menu', { name: 'Scripts' })).getAllByRole('menuitem')
     expect(items.map((item) => item.textContent)).toEqual([
       'Setup gamma · succeeded · 23.6 s',
@@ -2748,43 +2851,43 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(onOpenTerminal).not.toHaveBeenCalled()
   })
 
-  it('draws finished runs as rows under their session once the Scripts switch is on', async () => {
-    const { container, ports, onOpenScriptLog } = await mount(SessionsFixtures.setupCollapsed())
-    const finishedRows = (): Element[] =>
-      [...container.querySelectorAll('[data-session="s-installed"] [data-script-run]')]
-    expect(finishedRows()).toEqual([])
+  function recentScriptSnapshot(endedAt = Date.now()): SessionsSnapshot {
+    const source = SessionsFixtures.setupCollapsed()
+    return { ...source, sessions: source.sessions.map((info) => info.scripts === undefined ? info : {
+      ...info, scripts: { ...info.scripts, runs: info.scripts.runs.map((run) => ({ ...run, endedAt })) },
+    }) }
+  }
 
-    fireEvent.contextMenu(rowOf(container, 's-installed'))
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Scripts' }))
-    const toggle = within(screen.getByRole('menu', { name: 'Scripts' }))
-      .getByRole('menuitemcheckbox', { name: 'Show as sub-tasks' })
-    expect(toggle.getAttribute('aria-checked')).toBe('false')
-    fireEvent.click(toggle)
-
-    await waitFor(() => expect(finishedRows().map((row) => row.textContent)).toEqual([
+  it('draws recent script history directly and opens saved or unavailable logs in the split', async () => {
+    const { container, control, onOpenScriptLog } = await mount(recentScriptSnapshot())
+    const finishedRows = [...container.querySelectorAll('[data-session="s-installed"] [data-script-run]')]
+    expect(finishedRows.map((row) => row.textContent)).toEqual([
       '✓Setup gamma · succeeded · 23.6 s',
       '×Setup gamma · failed · exit 1 · 4.1 s',
-    ]))
-    expect(ports.savedScriptRuns).toEqual([true])
-    const [saved, lost] = finishedRows().map((row) => row.querySelector('button')!)
-    expect(lost.hasAttribute('disabled')).toBe(true)
-    fireEvent.click(saved)
-    expect(onOpenScriptLog).toHaveBeenCalledWith('s-installed', 'r-second')
-
-    fireEvent.contextMenu(rowOf(container, 's-installed'))
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Scripts' }))
-    fireEvent.click(within(screen.getByRole('menu', { name: 'Scripts' }))
-      .getByRole('menuitemcheckbox', { name: 'Show as sub-tasks' }))
-    await waitFor(() => expect(finishedRows()).toEqual([]))
-    expect(ports.savedScriptRuns).toEqual([true, false])
+    ])
+    for (const row of finishedRows) fireEvent.click(row.querySelector('button')!)
+    expect(control.bodiesOf('sessionTasks.open')).toEqual([
+      { sessionId: 's-installed', task: { kind: 'script', runId: 'r-second' }, title: 'Setup gamma' },
+      { sessionId: 's-installed', task: { kind: 'script', runId: 'r-first' }, title: 'Setup gamma' },
+    ])
+    expect(onOpenScriptLog).not.toHaveBeenCalled()
   })
 
-  it('reads the stored Scripts switch when the panel opens', async () => {
-    const { container } = await mount(
-      SessionsFixtures.setupCollapsed(), null, undefined, [], [], [], undefined, true)
-
-    await waitFor(() =>
-      expect(container.querySelectorAll('[data-session="s-installed"] [data-script-run]')).toHaveLength(2))
+  it('expires script history at 5 seconds without a snapshot and keeps an open run until its view closes', async () => {
+    const endedAt = Date.now()
+    const { container, setOpenTasks } = await mount(recentScriptSnapshot(endedAt))
+    vi.useFakeTimers()
+    vi.setSystemTime(endedAt)
+    setOpenTasks(['task:s-installed:script:r-first'])
+    await act(async () => { await vi.advanceTimersByTimeAsync(4_999) })
+    expect(container.querySelectorAll('[data-script-run]')).toHaveLength(2)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+    expect(container.querySelector('[data-script-run="r-second"]')).toBeNull()
+    expect(container.querySelector('[data-script-run="r-first"]')).toBeTruthy()
+    setOpenTasks([])
+    expect(container.querySelectorAll('[data-script-run]')).toHaveLength(0)
+    setOpenTasks(['task:s-installed:script:r-second'])
+    expect(container.querySelector('[data-script-run="r-second"]')).toBeTruthy()
   })
 
   it('opens a run row from the Scripts submenu', async () => {
@@ -2891,14 +2994,16 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
       .map((item) => item.textContent)).toEqual(['Setup alpha · running'])
   })
 
-  it('draws a worktree diff only where something has measured one', async () => {
+  it('keeps a measured worktree diff in the title, never in the row text', async () => {
     const { container } = await mount(SessionsFixtures.mixed())
 
     const measured = container.querySelector('[data-session="s-working"] .jamat-sessions__worktree')
-    expect(measured?.textContent).toBe('WT+12 -3BASE')
+    expect(measured?.textContent).toBe('WTBASE')
+    expect(measured?.getAttribute('title')).toContain(' - +12 -3 lines vs base')
     const unmeasured = container
       .querySelector('[data-session="s-waiting"] .jamat-sessions__worktree')
     expect(unmeasured?.textContent).toBe('WT')
+    expect(unmeasured?.getAttribute('title')).not.toContain('lines vs base')
   })
 
   it('marks an SVN worktree row by kind and draws its finish phase or last outcome', async () => {
@@ -2943,6 +3048,76 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(kept?.getAttribute('title')).toBe('kept: 2 changes')
     expect(row?.querySelector('[data-finish-outcome="partial"]')).toBeTruthy()
     expect(container.querySelector('[data-session="s-svn"] [data-cleanup]')).toBeNull()
+  })
+
+  it('draws the step the library sent as a child row with its text, muted detail and a bar for a counted total', async () => {
+    const { container } = await mount(SessionsFixtures.svnWorktrees())
+    const stepOf = (sessionId: string): HTMLElement | null => container.querySelector<HTMLElement>(
+      `[data-session="${sessionId}"] > .jamat-sessions__children > .jamat-sessions__step`)
+
+    const reading = stepOf('s-finishing')!
+    expect(reading.querySelector('.jamat-sessions__step-text')?.textContent).toBe('Reading what the update brought in')
+    expect(reading.querySelector('.jamat-sessions__step-detail')?.textContent).toBe('svn log -v --xml -r4513:HEAD')
+    expect(reading.getAttribute('title')).toBe('Reading what the update brought in\nsvn log -v --xml -r4513:HEAD')
+    expect(reading.querySelector('.jamat-sessions__step-bar')).toBeNull()
+
+    const removing = stepOf('s-removing')!
+    expect(removing.querySelector('.jamat-sessions__step-detail')?.textContent).toBe('12,000 of 48,000 files')
+    expect(removing.querySelector<HTMLElement>('.jamat-sessions__step-fill')?.style.getPropertyValue('--step-fraction'))
+      .toBe('0.25')
+    // The row mark of the stage stays on the session row itself.
+    expect(container.querySelector('[data-session="s-removing"] > .jamat-sessions__row')).toBeTruthy()
+
+    // Nothing nested and no step: no children container at all.
+    expect(container.querySelector('[data-session="s-svn"] > .jamat-sessions__children')).toBeNull()
+  })
+
+  it('draws the step row first, before the task rows and the finished runs', async () => {
+    const fixture = recentScriptSnapshot()
+    const listing: SessionTaskListing = {
+      kind: 'tasks',
+      rows: [
+        { kind: 'subagent', subagentId: 'a1', agentType: 'Explore', description: 'List the docs', depth: 1,
+          parentSubagentId: null, state: 'running', startedAt: 1, endedAt: null, model: null, step: null },
+      ],
+      olderFinished: 0,
+      catchingUp: false,
+    }
+    const snapshot: SessionsSnapshot = {
+      ...fixture,
+      sessions: fixture.sessions.map((session) => ({
+        ...session,
+        step: { text: 'Checking the svn lock', detail: 'svn status --xml', progress: null, startedAt: 1 },
+      })),
+    }
+    const { container } = await mount(snapshot, null, undefined, [], [], [], undefined, { 's-installed': listing })
+    const children = (): Element[] =>
+      [...container.querySelectorAll('[data-session="s-installed"] > .jamat-sessions__children > *')]
+
+    await waitFor(() => expect(container.querySelector('[data-session="s-installed"] .jamat-sessions__task')).toBeTruthy())
+    await waitFor(() => expect(container.querySelectorAll('[data-session="s-installed"] [data-script-run]')).toHaveLength(2))
+    expect(children().map((child) => child.classList.contains('jamat-sessions__step')
+      ? 'step'
+      : child.classList.contains('jamat-sessions__tasks') ? 'tasks' : child.hasAttribute('data-script-run') ? 'run' : 'other'))
+      .toEqual(['step', 'tasks', 'run', 'run'])
+  })
+
+  it('draws the same step row on a remote row', async () => {
+    const fixture = SessionsFixtures.svnWorktrees()
+    const { container } = await mount(
+      SessionsFixtures.mixed(),
+      null,
+      remoteSnapshot([outboundEndpoint(fixture, 'endpoint-a')]),
+    )
+    const remote = sectionAfter(container, 'Remote')
+    const session = [...remote.querySelectorAll('.jamat-sessions__session')]
+      .find((node) => node.querySelector(':scope > .jamat-sessions__row')?.textContent?.includes('Removing worktree'))
+
+    const step = session?.querySelector(':scope > .jamat-sessions__children > .jamat-sessions__step')
+    expect(step?.querySelector('.jamat-sessions__step-text')?.textContent).toBe('Removing the worktree')
+    expect(step?.querySelector('.jamat-sessions__step-detail')?.textContent).toBe('12,000 of 48,000 files')
+    expect(step?.querySelector<HTMLElement>('.jamat-sessions__step-fill')?.style.getPropertyValue('--step-fraction'))
+      .toBe('0.25')
   })
 
   it('draws a landed row with how far its main copy is behind and Update main copy in place of Finish', async () => {
@@ -3234,5 +3409,68 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     const base = container.querySelector('.jamat-sessions__base')
     expect(base?.getAttribute('title'))
       .toBe('The branch this worktree was cut from has moved on')
+  })
+
+  it('expires tasks using one next-expiry timer without another listing, retaining open rows until close', async () => {
+    const endedAt = Date.now()
+    const row = { kind: 'subagent' as const, agentType: 'Explore', description: 'Recent work', depth: 1 as const,
+      parentSubagentId: null, state: 'done' as const, startedAt: endedAt - 1_000, endedAt, model: null, step: null }
+    const listing: SessionTaskListing = { kind: 'tasks', olderFinished: 9, catchingUp: false, rows: [
+      { ...row, subagentId: 'first' },
+      { ...row, subagentId: 'later', endedAt: endedAt + 5_000 },
+      { ...row, subagentId: 'open', endedAt: endedAt - 40_000 },
+    ] }
+    const { container, setOpenTasks, taskCalls, unmount } = await mount(
+      SessionsFixtures.mixed(), null, undefined, [], [], [], undefined, { 's-working': listing })
+    await waitFor(() => expect(container.querySelectorAll('[data-task]')).toHaveLength(2))
+    vi.useFakeTimers()
+    vi.setSystemTime(endedAt)
+    setOpenTasks(['task:s-working:subagent:open'])
+    const calls = taskCalls.length
+    expect(vi.getTimerCount()).toBe(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(4_999) })
+    expect(container.querySelectorAll('[data-task]')).toHaveLength(3)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+    expect(container.querySelector('[data-task="task:s-working:subagent:first"]')).toBeNull()
+    expect(container.querySelectorAll('[data-task]')).toHaveLength(2)
+    expect(vi.getTimerCount()).toBe(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+    expect(container.querySelectorAll('[data-task]')).toHaveLength(1)
+    expect(taskCalls).toHaveLength(calls)
+    expect(vi.getTimerCount()).toBe(0)
+    setOpenTasks([])
+    expect(container.querySelectorAll('[data-task]')).toHaveLength(0)
+    vi.setSystemTime(endedAt)
+    setOpenTasks(['task:s-working:subagent:open'])
+    expect(vi.getTimerCount()).toBe(1)
+    unmount()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('draws recent finished sub-agents directly without a finished grouping row', async () => {
+    const listing: SessionTaskListing = {
+      kind: 'tasks',
+      rows: [
+        { kind: 'subagent', subagentId: 'a1', agentType: 'Explore', description: 'List the docs', depth: 1,
+          parentSubagentId: null, state: 'running', startedAt: 1, endedAt: null, model: null, step: 'Bash ls docs' },
+        { kind: 'subagent', subagentId: 'a0', agentType: 'Explore', description: 'Earlier look', depth: 1,
+          parentSubagentId: null, state: 'done', startedAt: 0, endedAt: Date.now() - 1_000, model: null, step: null },
+      ],
+      olderFinished: 0,
+      catchingUp: false,
+    }
+    const { container, taskCalls } = await mount(
+      SessionsFixtures.mixed(), null, undefined, [], [], [], undefined, { 's-working': listing })
+
+    await waitFor(() => expect(container.querySelector('[data-session="s-working"] .jamat-sessions__task')).toBeTruthy())
+    const session = container.querySelector('[data-session="s-working"]')!
+    expect([...session.querySelectorAll('.jamat-sessions__task')].map((row) => row.textContent))
+      .toEqual(['●ExploreList the docsBash ls docs', '✓ExploreEarlier look'])
+
+    expect(within(session as HTMLElement).queryByRole('button', { name: /finished/ })).toBeNull()
+    expect(session.querySelectorAll('.jamat-sessions__task')).toHaveLength(2)
+    // `s-done` is completed, so the default `active` filter does not draw it: the poll never asks it.
+    expect(container.querySelector('[data-session="s-done"]')).toBeNull()
+    expect(taskCalls.flat()).not.toContain('s-done')
   })
 })

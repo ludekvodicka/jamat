@@ -4,13 +4,16 @@
  * because the renderer's TypeScript program compiles it. A `node:` import or a sibling module here
  * stops the web build. The Host's types are safe to name for the same reason: `import type` is
  * erased, and `hostWire.ts` has no imports of its own to drag in behind it. The same argument admits
- * `agentWorkInspector.types.ts`, the data-only vocabulary of the work-state classifier: no runtime
- * code, no imports of its own, and the Debug window needs the hint by name.
+ * `agentWorkInspector.types.ts`, the data-only vocabulary of the work-state classifier, and
+ * `svn/svn.types.ts`, whose conflict kinds, options and losses the conflict list names: no runtime
+ * code, no imports of their own.
  */
+import type { SvnConflictKind, SvnConflictLoss, SvnConflictOption } from '../svn/svn.types'
 import type { AgentWorkHint } from './workState/agentWorkInspector.types'
 import type {
   HostWsServerMsg,
   RuntimeChannel,
+  RuntimeRef,
   RuntimeSessionInfo,
   WireVersion,
 } from '../../app-host/app/wire/hostWire.js'
@@ -23,6 +26,9 @@ import type { ProjectBinding } from '../projectManager/projectManagerApi.types'
  * in their own subsystems: a wire type of one subsystem never imports another's.
  */
 export type SessionAgentId = 'claude' | 'codex'
+
+/** Who started a session, as its creator states it. Display only: nothing waits, wakes or stops by it. */
+export type SessionParentKind = 'worktree' | 'ticket' | 'worker'
 
 export interface SessionCreateSpec {
   kind: 'shell' | 'agent'
@@ -87,6 +93,11 @@ export interface SessionCreateSpec {
   }
   /** Local only; wakes the target on end or a move into a named group. Version marker: sessions.notifies. */
   notify?: { sessionId: string; text: string; onGroups: string[] }
+  /**
+   * The session that started this one, set at create and never changed. Local only; version marker
+   * sessions.children. A build before 3.13 refuses the key (exact keys).
+   */
+  parent?: { sessionId: string; kind: SessionParentKind }
   title?: string
   /**
    * The number this session is to carry INSTEAD of one from the project's counter: `i34` for issue
@@ -136,6 +147,11 @@ export interface SessionCreateSpec {
   acknowledgeSetup?: string
 }
 
+/** Facts of the control request that created a session, never of its spec, so a caller cannot write them. */
+export interface SessionCreateOrigin {
+  callerOperationId: string
+}
+
 export interface SessionHistoryOpenSpec {
   directory: Extract<SessionCreateSpec['directory'], { mode: 'project' }>
   agentId: SessionAgentId
@@ -169,6 +185,20 @@ export interface HostStatusInfo {
   hostInstanceId: string | null
   liveCount: number
   lastStartError: string | null
+  /**
+   * The Host's memory as the Host item's tooltip says it. Absent from an older peer, null before the
+   * first reading of the current Host. It moves only when a new reading arrives, never per poll.
+   */
+  memory?: HostMemoryReading | null
+}
+
+/** Every word is composed by `HostMemoryReadings`; a surface draws the lines and marks the warning. */
+export interface HostMemoryReading {
+  lines: string[]
+  /** Null, or the short reason the growth looks like a leak. */
+  warning: string | null
+  /** What the item's own text gains while `warning` is set, so the warning is visible without hovering. */
+  suffix: string | null
 }
 
 export type SessionActivity = 'working' | 'waiting' | 'idle' | 'unknown'
@@ -301,6 +331,8 @@ export interface SessionFinishPress {
   acknowledgeSetup?: string
   /** The person finishes a session that is still working. */
   confirmWorking?: true
+  /** Commit on a conflict wait only: start the merger for what is left (Resolve with agent). */
+  agent?: true
   requestedBy: 'window' | 'cli' | 'peer'
 }
 
@@ -331,8 +363,8 @@ export interface SvnLabelledRevision {
  * writes this client makes (`SvnActionStages`).
  */
 export type SvnActionStage =
-  | 'stopping' | 'evidence' | 'checks' | 'updating' | 'cleaning' | 'resolving' | 'verifying' | 'diffing' | 'reviewing'
-  | 'removing' | 'recording'
+  | 'stopping' | 'evidence' | 'checks' | 'updating' | 'cleaning' | 'resolving' | 'merging' | 'verifying' | 'fixing'
+  | 'diffing' | 'reviewing' | 'removing' | 'recording'
 
 /** `update-main` runs in a main copy, on the session that started it, which may hold no worktree. */
 export type SvnActionKind = 'finish' | 'discard' | 'update-main'
@@ -341,6 +373,27 @@ export type SvnActionKind = 'finish' | 'discard' | 'update-main'
 export type SvnActionNeed =
   | 'check-failed' | 'conflict' | 'resolver-failed' | 'incoming' | 'out-of-date' | 'review-cancelled'
   | 'review-interrupted' | 'partial' | 'pinned-external' | 'locked' | 'svn-failed' | 'not-stopped'
+
+/** A count of one step's work; `total` is null while it is not known yet (a count still running). */
+export interface SessionStepProgress {
+  done: number
+  total: number | null
+}
+
+/**
+ * What this client does for a session now, in the library's words: a client step of an SVN action,
+ * the removal after the session's end, or the last output line of a running scripted run. Present
+ * only while that work runs, so an idle snapshot never moves for it.
+ */
+export interface SessionStepInfo {
+  /** "Reading what the update brought in", "Removing the worktree", or a run's last output line. */
+  text: string
+  /** The exact work: "svn log -v --xml -r4513:HEAD", "12,000 of 48,000 files"; null when `text` says it all. */
+  detail: string | null
+  progress: SessionStepProgress | null
+  /** When this text began, for the seconds the row counts; null where elapsed time means nothing. */
+  startedAt: number | null
+}
 
 /** The full stage of an SVN action; `SessionWorktreeInfo.finish.phase` keeps the four legacy words for older peers. */
 export interface SessionSvnActionInfo {
@@ -351,6 +404,145 @@ export interface SessionSvnActionInfo {
   needsKind: SvnActionNeed | null
   /** The review open now: its place among the roots to review, from 1. */
   review: { index: number; count: number; scopeRoot: string } | null
+  /** "3 conflicts need you"; moves only when the set is read again or an entry settles. Absent from older peers. */
+  summary?: string | null
+  /** At most 50 entries of the conflict set; `sessions conflicts` answers them all. */
+  conflicts?: { entries: SessionSvnConflictInfo[]; more: number } | null
+  /** The merger's brief of the set, an absolute path, while the set is open and a brief was written. */
+  mergeBrief?: string | null
+  /** The merger run while the action is `merging`; its tab is where the person talks to it. */
+  mergerRunId?: string | null
+}
+
+/** The full conflict list of an SVN action, as `sessions.conflicts` answers it. */
+export interface SessionConflictList {
+  /** The session whose action it is: a run's parent when a run asked. */
+  sessionId: string
+  actionId: string
+  stage: SvnActionStage
+  summary: string
+  /** Every entry the record keeps, at most 200; `more` counts what the next read takes from svn. */
+  entries: SessionSvnConflictInfo[]
+  more: number
+}
+
+/** Who works on a conflicted path now; a surface draws `rule` and `settled` as one group. */
+export type SvnConflictState = 'rule' | 'agent' | 'person' | 'settled'
+export type SvnConflictActor = 'jamat' | 'agent' | 'person'
+
+/**
+ * One option on one conflicted path of a waiting Finish. `confirm` is the person's confirmation of a
+ * loss of incoming work, which only a window press carries.
+ */
+export interface SvnConflictResolveRequest {
+  path: string
+  option: SvnConflictOption
+  confirm: boolean
+  requestedBy: 'window' | 'cli' | 'peer'
+}
+
+/** How a path ended up after `sessions.resolveConflict`, and how many paths are still open. */
+export interface SessionConflictResolved {
+  /** The session whose action it is: a run's parent when a run asked. */
+  sessionId: string
+  path: string
+  state: SvnConflictState
+  left: number
+}
+
+export interface SessionSvnConflictOptionInfo {
+  id: SvnConflictOption
+  /** "Keep both", composed by the library. */
+  label: string
+  /** "restores the files r421 added and keeps the session's files beside them" */
+  note: string
+  loses: SvnConflictLoss
+}
+
+export interface SessionSvnConflictInfo {
+  /** Worktree-relative with '/'. */
+  path: string
+  kind: SvnConflictKind
+  state: SvnConflictState
+  /** "Your session added this folder with 2 files; r421 added it with 3 files." */
+  description: string
+  by: SvnConflictActor | null
+  saved: string | null
+  options: SessionSvnConflictOptionInfo[]
+}
+
+/** Which chain of a session a workflow shows. */
+export type SessionWorkflowKind = 'before' | 'finish' | 'discard' | 'update-main' | 'git-finish'
+
+export type SessionWorkflowStepState = 'pending' | 'running' | 'done' | 'failed' | 'waits' | 'skipped'
+
+/** What a click on a step opens. */
+export type SessionWorkflowTarget =
+  /** The run's live output while it runs, else its saved log. */
+  | { kind: 'run'; runId: string }
+  /** An agent run's own tab. */
+  | { kind: 'agent'; runId: string }
+  /** The review run's tab, which holds the commit split. */
+  | { kind: 'commit'; runId: string }
+  /** The conflict list the pane draws inside this step. */
+  | { kind: 'conflicts' }
+  | { kind: 'none' }
+
+/** A press a workflow admits now; each surface maps it onto an operation. */
+export type SessionWorkflowActionId = 'finish-again' | 'keep' | 'discard' | 'retry-setup' | 'stop-agent' | 'open-in-vscode'
+  | 'resolve-with-agent' | 'open-merger'
+
+export interface SessionWorkflowStep {
+  /** Stable within the workflow: `1:updating`, `1:check:lint`, `2:review:lib`. */
+  key: string
+  /** "svn update", "Check lint", "Review (lib)" */
+  title: string
+  /** One line: "svn update t1", "the check failed", "committed r4". Empty where the title says it all. */
+  detail: string
+  state: SessionWorkflowStepState
+  startedAt: number | null
+  endedAt: number | null
+  target: SessionWorkflowTarget
+}
+
+export interface SessionWorkflowRound {
+  /** "Finish", then "Update 2", "Update 3" for each update after one that ran through. */
+  title: string
+  steps: SessionWorkflowStep[]
+}
+
+export interface SessionWorkflowAction {
+  id: SessionWorkflowActionId
+  label: string
+  primary: boolean
+  /** `stop-agent` and `open-merger` only: the agent run the press stops or opens. */
+  runId?: string
+}
+
+/**
+ * One chain of a session as steps, composed by the library from the record and its runs; every
+ * surface draws it and composes no word of it. It moves only with a stage, a pass or a run's state,
+ * never with a poll; durations come from the timestamps, and a running step's live text is the
+ * session's or the run's own `step`.
+ */
+export interface SessionWorkflowInfo {
+  kind: SessionWorkflowKind
+  /**
+   * The action id, `setup:<sessionId>` for the before chain, `git-finish:<sessionId>:<startedAt>` for
+   * a Git Finish, or `ended:<at>` for the ended view: a new press is a new workflow.
+   */
+  workflowId: string
+  /** "Finish of 006-wallet-catalog-paging" */
+  title: string
+  /** The row mark: "updating", "conflicts need you", "committed". */
+  badge: string
+  /** The pane header: "Running svn update", "Waits for you: the check lint failed". */
+  summary: string
+  /** Runs or waits: a surface keeps it in view. False on the ended view. */
+  open: boolean
+  /** At most 10 rounds of at most 20 steps, the newest kept. */
+  rounds: SessionWorkflowRound[]
+  actions: SessionWorkflowAction[]
 }
 
 /** The result of the last SVN finish of a session, the twin of the bash helper's RESULT line. */
@@ -469,6 +661,10 @@ export interface SessionWorktreeState {
    * Answered for any session, with or without a worktree. A build before 3.11 leaves the field out.
    */
   receipts: readonly SessionCommitReceiptInfo[]
+  /** The step running now, or null. A build before 3.13 leaves the field out. */
+  step: SessionStepInfo | null
+  /** The session's workflow, as `SessionInfo.workflow`, or null. A build before 3.13 leaves the field out. */
+  workflow: SessionWorkflowInfo | null
 }
 
 /** How an SVN worktree ended, as its durable result says it. */
@@ -582,10 +778,10 @@ export type SessionScriptPhase = 'before' | 'after' | 'inner'
 
 /**
  * Which kind of script a run is. Each kind belongs to one phase and is owned by one flow. `svn`,
- * `checks`, `svn-resolve` and `review` are the runs of an SVN action; an older peer drops them and
- * nests them by `setupFor`.
+ * `checks`, `svn-resolve`, `svn-merge` and `review` are the runs of an SVN action; an older peer
+ * drops them and nests them by `setupFor`.
  */
-export type SessionScriptId = 'setup' | 'declared' | 'merge-resolve' | 'requested' | 'svn' | 'checks' | 'svn-resolve' | 'review'
+export type SessionScriptId = 'setup' | 'declared' | 'merge-resolve' | 'requested' | 'svn' | 'checks' | 'svn-resolve' | 'svn-merge' | 'review'
 
 /** On a script run: the session it runs for, and which script it is. The tree nests the run under it. */
 export interface SessionScriptLinkInfo {
@@ -667,6 +863,16 @@ export interface SessionScriptsReading {
   logDetail?: string
 }
 
+export interface SessionScriptOutput {
+  state: SessionScriptRunState
+  source: 'live' | 'log'
+  /** The latest output rows, at most 256 KiB in UTF-8 including line separators. */
+  lines: readonly string[]
+  logReason?: string
+  terminal: RuntimeRef | null
+  endedAt?: number
+}
+
 /** The library's split of a session's title; `SessionTitle` is the one thing that computes it. */
 export interface SessionTitleParts {
   /** `'014'` or `'014-015'` out of the corresponding title; null without a prefix. */
@@ -723,6 +929,8 @@ export interface SessionInfo {
   color?: SessionColorName
   /** The person's note about this session. Absent = none. */
   note?: string
+  /** The control operation id of the sessions.create that made this session. Absent = none. */
+  callerOperationId?: string
   life: 'starting' | 'live' | 'ended' | 'lost'
   /** The person's verdict, independent of `life`: what the daily view and the restart chain read. */
   completed?: true
@@ -780,6 +988,26 @@ export interface SessionInfo {
   scripts?: SessionScriptsInfo
   /** An SVN action of this session, running or waiting for the person. */
   svnAction?: SessionSvnActionInfo
+  /** Absent while this client does nothing for the session; older peers ignore it. */
+  step?: SessionStepInfo
+  /**
+   * The chain running or waiting for the person, or the ended view of the last SVN action until the
+   * next press. Absent: no chain and no ended view; an older build leaves it out.
+   */
+  workflow?: SessionWorkflowInfo
+  /** Composed by the library. `sameProject` is the generic nesting rule; the tree applies only display settings. */
+  parent?: { sessionId: string; kind: SessionParentKind; sameProject: boolean }
+}
+
+/** One session another one started, as `sessions.children` answers it. */
+export interface SessionChildInfo {
+  sessionId: string
+  number: string | null
+  title: string
+  agentId: SessionAgentId | null
+  life: SessionInfo['life']
+  kind: SessionParentKind
+  sameProject: boolean
 }
 
 export interface OrphanInfo {
@@ -889,6 +1117,8 @@ export type SessionsOpErrorCode =
   | 'live-sessions'
   /** A person already wrote the commit message of that scope; a proposal never replaces it. */
   | 'message-edited'
+  /** The option loses incoming work: only the person may choose it, in the window, with a confirmation. */
+  | 'person-only'
 
 export type SessionsOpResult<T = void> =
   | { ok: true; value: T }
@@ -900,6 +1130,8 @@ export type SessionsOpResult<T = void> =
       setup?: SessionSetupAgreement
       /** Only on `live-sessions`: the sessions a confirmation has to name. */
       liveSessions?: readonly SessionLiveBrief[]
+      /** Only on a create whose record stays `starting` for a replay: the session that may still appear. */
+      recordedSessionId?: string
     }
 
 /**

@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest'
 import type { SvnBounds, SvnLoggedRow, SvnResult, SvnRoot, SvnRootBounds } from '../../svn/svn.types'
 import type { SessionRecord, SvnActionRoot } from '../records/sessionRecord.types'
 import type { SvnLabelledRevision } from '../sessionManagerApi.types'
-import { type SvnLabelsPort, SvnRevisionLabels } from './svnRevisionLabels'
+import { SessionStepWords } from './sessionStepWords'
+import { type SvnLabelsPort, type SvnLabelsRead, SvnRevisionLabels } from './svnRevisionLabels'
 
 describe('lib-orchestrator/sessionManager/lifecycle/svnRevisionLabels', () => {
   const worktree = 'Q:/Work/App/.worktrees/014-fix'
@@ -33,8 +34,12 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnRevisionLabels', () => {
       return Promise.resolve(ok(Object.fromEntries(roots.map((root) => [root.own, bound(root.own === '' ? app : lib)]))))
     }
 
-    ownCommits(root: SvnRoot): Promise<SvnResult<{ repository: string; rows: SvnLoggedRow[] }>> {
-      return Promise.resolve(ok({ repository: root.own === '' ? app : lib, rows: this.own[root.own] ?? [] }))
+    ownCommits(root: SvnRoot, onRevision?: (revision: number, index: number, count: number) => void)
+      : Promise<SvnResult<{ repository: string; rows: SvnLoggedRow[] }>> {
+      const rows = this.own[root.own] ?? []
+      const revisions = [...new Set(rows.map((entry) => entry.revision))]
+      revisions.forEach((revision, index) => onRevision?.(revision, index + 1, revisions.length))
+      return Promise.resolve(ok({ repository: root.own === '' ? app : lib, rows }))
     }
 
     reviewed(root: SvnRoot, bounds: SvnBounds, revision: number): Promise<SvnResult<SvnLoggedRow[]>> {
@@ -77,6 +82,34 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnRevisionLabels', () => {
       ]))
     // A receipt is confirmed from the checkout on; only the worktree root had one, and only after `since`.
     expect(svn.log).toEqual(['lowerBounds .', 'reviewed . r44 since 0', 'reviewed . r45 since 0'])
+  })
+
+  it('names the root of each read it makes, so a mount names its mount', async () => {
+    const svn = new FakeSvn()
+    svn.roots_ = [{ path: mount, own: 'lib', changed: [] }, { path: worktree, own: '', changed: [] }]
+    svn.own = { lib: [row(7, 'lib/a.ts')], '': [row(43, 'a.txt'), row(45, 'b.txt')] }
+    svn.confirmed = { 44: [row(44, 'c.txt')] }
+    const reads: SvnLabelsRead[] = []
+    const labels = new SvnRevisionLabels(svn)
+
+    const counted = await labels.ownCommits(worktree, receipts([worktree, 44, 5]), 2, (read) => reads.push(read))
+    expect(reads.map((read) => {
+      const step = SvnRevisionLabels.stepOf(read)
+      return `${SessionStepWords.of(step.facts, step.progress).detail}`
+    })).toEqual([
+      'svn status -v --xml in lib',
+      'svn log -v -r7 (1 of 1 revision) in lib',
+      'svn status -v --xml',
+      'svn log -v -r43 (1 of 2 revisions)',
+      'svn log -v -r45 (2 of 2 revisions)',
+      'svn log -v -r44',
+    ])
+    expect(reads.map((read) => read.root.own)).toEqual(['lib', 'lib', '', '', '', ''])
+    expect(SvnRevisionLabels.stepOf(reads[1])).toEqual({
+      facts: { kind: 'read', read: 'own-commits', revision: 7, mount: 'lib' }, progress: { done: 1, total: 1 },
+    })
+    expect(SessionStepWords.textOf(SvnRevisionLabels.stepOf(reads[5]).facts)).toBe('Confirming the commits from the session\'s split')
+    expect(await labels.ownCommits(worktree, receipts([worktree, 44, 5]), 2)).toEqual(counted)
   })
 
   it('labels a review by its confirmed receipt first, else by the BASE proof, and an unreadable proof proves nothing', async () => {

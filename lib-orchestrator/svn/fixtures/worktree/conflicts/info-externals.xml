@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<info>
+<entry
+   kind="dir"
+   path="."
+   revision="3">
+<url>{REPO}</url>
+<relative-url>^/</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+</wc-info>
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+<conflict
+   operation="update"
+   type="property">
+<version
+   repos-url="{REPO}"
+   revision="2"
+   side="source-left"
+   kind="dir"
+   path-in-repos=""/>
+<version
+   side="source-right"
+   kind="dir"
+   path-in-repos=""
+   repos-url="{REPO}"
+   revision="3"/>
+<prop-file>{ROOT}/dir_conflicts.prej</prop-file>
+</conflict>
+</entry>
+</info>

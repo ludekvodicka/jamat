@@ -48,7 +48,7 @@ export interface RemoteControlServerDeps {
   control: Pick<RemoteControl, 'execute' | 'clientOperations' | 'registry'>
   terminal: Pick<
     RemoteControlTerminal,
-    'attachLive' | 'inputLive' | 'resizeLive' | 'setLiveActive' | 'detachLive' | 'detachOwner'
+    'attachLive' | 'inputLive' | 'resizeLive' | 'setLiveActive' | 'detachLive' | 'detachOwner' | 'pasteImageLive' | 'pasteFileLive'
   >
   descriptorFile: string
   compatibilityDescriptorFile?: string

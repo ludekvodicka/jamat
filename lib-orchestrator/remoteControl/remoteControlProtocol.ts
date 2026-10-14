@@ -79,8 +79,11 @@ export class RemoteControlConst {
     'sessions.worktreeReview',
     'sessions.worktreeResults',
     'sessions.notifies',
+    'sessions.children',
     'sessions.acknowledgeWorktreeResult',
     'sessions.proposeCommit',
+    'sessions.conflicts',
+    'sessions.resolveConflict',
   ] as const
   static readonly operations = RemoteControlConst.descriptorOperations
   static readonly mutatingOperations = [
@@ -124,6 +127,7 @@ export class RemoteControlConst {
     'sessions.worktreeReview',
     'sessions.acknowledgeWorktreeResult',
     'sessions.proposeCommit',
+    'sessions.resolveConflict',
   ] as const
   static readonly socketOperations = [
     'events.subscribe',
@@ -132,6 +136,8 @@ export class RemoteControlConst {
     'terminal.resize',
     'terminal.active',
     'terminal.detach',
+    'terminal.pasteImage',
+    'terminal.pasteFile',
   ] as const
   /**
    * Every failure this protocol can name. The LIST is the source and the type is read off it, so a
@@ -163,6 +169,28 @@ export class RemoteControlDeliverConst {
   static readonly submitTimeoutMinimumMillisecondsConst = 1_000
   static readonly submitTimeoutMaximumMillisecondsConst = 60_000
   static readonly composeTimeoutMillisecondsConst = 5_000
+}
+
+/**
+ * The bounds of one `terminal.pasteImage`. The image rides in one sealed peer frame as base64, and
+ * the frame's plaintext is capped at 1 MiB (`RemoteControlPeerConst.maximumPlaintextBytes`), so the
+ * sender shrinks a larger image to fit rather than splitting it.
+ */
+export class RemoteControlPasteImageConst {
+  static readonly bytesMaxConst = 720 * 1_024
+  static readonly base64LengthMaxConst = Math.ceil(RemoteControlPasteImageConst.bytesMaxConst / 3) * 4
+}
+
+/**
+ * The bounds of `terminal.pasteFile`. A file larger than one sealed peer frame goes as chunks, sent
+ * one at a time from offset 0; past the file limit nothing is sent and the local path is pasted.
+ */
+export class RemoteControlPasteFileConst {
+  static readonly bytesMaxConst = 20 * 1_024 * 1_024
+  static readonly chunkBytesConst = 512 * 1_024
+  static readonly chunkBase64LengthMaxConst = Math.ceil(RemoteControlPasteFileConst.chunkBytesConst / 3) * 4
+  static readonly fileNameLengthConst = 255
+  static readonly uploadIdLengthConst = 64
 }
 
 export class RemoteControlCapabilities {

@@ -6,6 +6,7 @@ import { TerminalInstance } from './terminalInstance.js'
 
 const fakePty = vi.hoisted(() => ({
   killed: false,
+  kills: 0,
   /** Whether `IPty.kill()` reports the death, which on Windows it frequently does not. */
   killEndsIt: false,
   reportExit: (exitCode: number): void => { void exitCode },
@@ -24,6 +25,7 @@ vi.mock('node-pty', () => ({
     resize: () => undefined,
     kill: () => {
       fakePty.killed = true
+      fakePty.kills += 1
       if (fakePty.killEndsIt) fakePty.reportExit(0)
     },
   }),
@@ -135,7 +137,8 @@ describe('app-host/app/terminal/terminalInstance', () => {
       expect(instance.alive).toBe(false)
       expect(instance.exit?.exitCode).toBe(3)
       expect(instance.info(1)).not.toHaveProperty('processStartedAt')
-      expect(fakePty.killed).toBe(false)
+      // the release after the exit, never a refusal's kill
+      expect(fakePty.kills).toBe(1)
       probe.mockRestore()
       instance.dispose()
     })
@@ -173,6 +176,41 @@ describe('app-host/app/terminal/terminalInstance', () => {
       expect((outcome as Error).message).toContain('Unknown process identity probe')
       probe.mockRestore()
       instance.dispose()
+    })
+  })
+
+  describe('releasing the pty', () => {
+    // node-pty ends its Windows worker thread and the pseudoconsole only in kill().
+    it('releases a process that ends by itself, once, also through a later dispose', () => {
+      const instance = TerminalInstanceTest.instance()
+
+      fakePty.reportExit(0)
+      instance.dispose()
+
+      expect(instance.exit?.exitCode).toBe(0)
+      expect(fakePty.kills).toBe(1)
+    })
+
+    it('sends no second kill when the stop kill is what ends the process', async () => {
+      vi.useFakeTimers()
+      fakePty.killEndsIt = true
+      const instance = TerminalInstanceTest.instance()
+
+      const stopping = instance.stop()
+      await vi.advanceTimersByTimeAsync(400)
+      await stopping
+      instance.dispose()
+
+      expect(instance.alive).toBe(false)
+      expect(fakePty.kills).toBe(1)
+    })
+
+    it('releases a live process on dispose', () => {
+      const instance = TerminalInstanceTest.instance()
+
+      instance.dispose()
+
+      expect(fakePty.kills).toBe(1)
     })
   })
 
@@ -270,6 +308,7 @@ class TerminalInstanceTest {
 
   static reset(): void {
     fakePty.killed = false
+    fakePty.kills = 0
     fakePty.killEndsIt = false
     fakePty.reportExit = () => undefined
     fakePty.hardKills.length = 0

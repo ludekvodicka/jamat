@@ -57,25 +57,49 @@ class WorkspacePanelsTestController {
 }
 
 describe('app-client-ui/renderer/shell/workspacePanels', () => {
-  it('offers Escape only for a full file viewer or the active file in a terminal split', () => {
+  it('collects every open terminal task item, including inactive items, but excludes file history and other panels', () => {
+    const task = (sessionId: string, runId: string) => ({ kind: 'task' as const,
+      key: `task:${sessionId}:script:${runId}`, title: runId, sessionId, task: { kind: 'script' as const, runId } })
+    const active = task('one', 'active')
+    const inactive = task('one', 'inactive')
+    const background = task('two', 'background')
+    const history = task('one', 'history')
+    const params = (items: ReturnType<typeof task>[]) => ({ split: {
+      ...PanelSplitParams.default(), items, active: items[0]?.key ?? null, history: [history],
+    } })
+    const controller = { openPanels: () => [
+      { key: PanelKeysConst.terminal, params: params([active, inactive]) },
+      { key: PanelKeysConst.terminal, params: params([background]) },
+      { key: PanelKeysConst.fileViewer, params: params([task('other', 'unrelated')]) },
+    ] } as unknown as TabsController
+    expect([...WorkspacePanels.openTaskKeys(controller)]).toEqual([active.key, inactive.key, background.key])
+  })
+
+  it('offers Escape only for a full file viewer or the active file or task view in a terminal split', () => {
     const controller = new WorkspacePanelsTestController()
     const file = WorkspacePanelsTest.item('one')
     const commit = { kind: 'commit' as const, key: 'commit', title: 'Commit', vcs: 'svn' as const, scopeRoot: 'Q:/app' }
+    const shell = { kind: 'task' as const, key: 'task:session-one:shell:b1', title: '$ ping', sessionId: 'session-one',
+      task: { kind: 'shell' as const, shellId: 'b1' } }
     controller.params = PanelSplitParams.merged(controller.params, {
-      ...PanelSplitParams.default(), items: [file, commit], active: file.key,
+      ...PanelSplitParams.default(), items: [file, commit, shell], active: file.key,
     })
-    expect(WorkspacePanels.hasActiveFileViewer(controller.asController())).toBe(true)
+    expect(WorkspacePanels.hasActiveViewer(controller.asController())).toBe(true)
+    controller.params = PanelSplitParams.merged(controller.params, {
+      ...PanelSplitParams.of(controller.params), active: shell.key,
+    })
+    expect(WorkspacePanels.hasActiveViewer(controller.asController())).toBe(true)
     controller.params = PanelSplitParams.merged(controller.params, {
       ...PanelSplitParams.of(controller.params), active: commit.key,
     })
-    expect(WorkspacePanels.hasActiveFileViewer(controller.asController())).toBe(false)
+    expect(WorkspacePanels.hasActiveViewer(controller.asController())).toBe(false)
     controller.params = {}
-    expect(WorkspacePanels.hasActiveFileViewer(controller.asController())).toBe(false)
+    expect(WorkspacePanels.hasActiveViewer(controller.asController())).toBe(false)
     controller.key = PanelKeysConst.fileViewer
-    expect(WorkspacePanels.hasActiveFileViewer(controller.asController())).toBe(true)
+    expect(WorkspacePanels.hasActiveViewer(controller.asController())).toBe(true)
     for (const key of [null, PanelKeysConst.welcome, PanelKeysConst.directoryViewer]) {
       controller.key = key
-      expect(WorkspacePanels.hasActiveFileViewer(controller.asController())).toBe(false)
+      expect(WorkspacePanels.hasActiveViewer(controller.asController())).toBe(false)
     }
   })
 
@@ -184,6 +208,27 @@ describe('app-client-ui/renderer/shell/workspacePanels', () => {
       WorkspacePanels.backInSplit(controller.asController())
     }
     expect(controller.writes).toBe(0)
+  })
+
+  it('opens a task view in the terminal split, brings the tab forward, and passes on the ninth refusal', async () => {
+    const controller = new WorkspacePanelsTestController()
+    const command = (subagentId: string): Extract<TabControlCommand, { kind: 'open-task' }> => ({
+      kind: 'open-task', requestId: `task-${subagentId}`, panelId: controller.panelId,
+      item: { key: `task:session-one:subagent:${subagentId}`, title: `Explore: ${subagentId}`, sessionId: 'session-one',
+        task: { kind: 'subagent', subagentId } },
+    })
+
+    expect(await WorkspacePanels.tabControlResult(controller.asController(), command('a0')))
+      .toEqual({ kind: 'task-opened', panelId: controller.panelId })
+    expect(PanelSplitParams.of(controller.params)).toMatchObject({ active: 'task:session-one:subagent:a0', preview: null,
+      items: [{ kind: 'task', title: 'Explore: a0', task: { kind: 'subagent', subagentId: 'a0' } }] })
+    expect(controller.activated).toEqual([controller.panelId])
+
+    for (let i = 1; i < 8; i++) await WorkspacePanels.tabControlResult(controller.asController(), command(`a${i}`))
+    const writes = controller.writes
+    expect(await WorkspacePanels.tabControlResult(controller.asController(), command('ninth'))).toEqual({
+      kind: 'failed', detail: 'The split already holds 8 task views. Close one before opening another.' })
+    expect(controller.writes).toBe(writes)
   })
 
   it('writes a proven source into the existing terminal panel split', async () => {

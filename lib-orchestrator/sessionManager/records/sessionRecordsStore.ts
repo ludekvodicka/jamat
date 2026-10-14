@@ -5,12 +5,14 @@ import { isAbsolute, join } from 'node:path'
 import { AtomicJsonFile } from '../../shared/atomicJsonFile'
 import { ErrorText } from '../../shared/errorText'
 import { type JsonDocumentReading, JsonDocumentStore } from '../../shared/jsonDocumentStore'
+import { SvnConflictShapes } from '../../svn/svnConflictShapes'
 import { SessionLimits } from '../sessionLimits'
-import type { SessionWorktreeKind, SvnLabelledRevision } from '../sessionManagerApi.types'
+import type { SessionParentKind, SessionWorktreeKind, SvnLabelledRevision } from '../sessionManagerApi.types'
 import { SessionScriptDefinitions } from '../scripts/sessionScriptDefinitions'
 import type {
   SessionRecord,
   SessionRecordCommitReceipt,
+  SessionRecordParentLink,
   SessionRecordProcess,
   SessionRecordScriptLink,
   SessionRecordScriptRun,
@@ -18,6 +20,11 @@ import type {
   SessionRecordSvnAction,
   SessionRecordsDocument,
   SessionRecordWorktreeCaller,
+  SvnActionConflictEntry,
+  SvnActionConflictSet,
+  SvnActionFixed,
+  SvnActionMerger,
+  SvnActionNotice,
 } from './sessionRecord.types'
 
 export interface SessionRecordsStoreOptions {
@@ -45,10 +52,14 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     'not-committed', 'out-of-date', 'updated', 'conflict', 'nothing', 'failed', 'interrupted']
   private static readonly finishMainPatternConst = /^(?:none|updated|failed|merged:\d+|conflict:\d+)$/
   private static readonly svnActionStagesConst: readonly unknown[] = ['stopping', 'evidence', 'checks', 'updating',
-    'cleaning', 'resolving', 'verifying', 'diffing', 'reviewing', 'removing', 'recording']
+    'cleaning', 'resolving', 'merging', 'verifying', 'fixing', 'diffing', 'reviewing', 'removing', 'recording']
   private static readonly svnActionNeedsConst: readonly unknown[] = ['check-failed', 'conflict', 'resolver-failed', 'incoming',
     'out-of-date', 'review-cancelled', 'review-interrupted', 'partial', 'pinned-external', 'locked', 'svn-failed', 'not-stopped']
   private static readonly revisionLabelsConst: readonly unknown[] = ['receipt', 'base-proof', 'inferred']
+  private static readonly conflictKindsConst: readonly unknown[] = ['text', 'property', 'tree', 'diverged']
+  private static readonly conflictStatesConst: readonly unknown[] = ['rule', 'agent', 'person', 'settled']
+  private static readonly conflictActorsConst: readonly unknown[] = ['jamat', 'agent', 'person']
+  private static readonly parentKindsConst: readonly unknown[] = ['worktree', 'ticket', 'worker'] satisfies readonly SessionParentKind[]
   private records: SessionRecord[] = []
   private readonly pendingUserInput = new Map<string, number>()
   /** How many records the read turned from a cut-short finish into an `interrupted` outcome. */
@@ -393,6 +404,37 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       this.report(`${subject}: dropping its Finish checks (${checks})`)
       delete record.finishChecks
     }
+    // The passes only draw the workflow: ones this build cannot read cost the steps, never the action.
+    const passes = record.svnAction && typeof record.svnAction === 'object' ? SessionRecordsStore.passesProblem(record.svnAction) : null
+    if (passes !== null && record.svnAction) {
+      this.report(`${subject}: dropping the passes of its SVN action (${passes})`)
+      delete record.svnAction.passes
+      delete record.svnAction.stageAt
+    }
+    // A set this build cannot word costs the set; the next read takes it from svn again.
+    const set = record.svnAction && typeof record.svnAction === 'object' ? SessionRecordsStore.conflictSetProblem(record.svnAction.conflictSet) : null
+    if (set !== null && record.svnAction) {
+      this.report(`${subject}: dropping the conflict set of its SVN action (${set})`)
+      delete record.svnAction.conflictSet
+    }
+    // A list of fixes this build cannot word costs the FIXED lines of the result, never the action.
+    const fixed = record.svnAction && typeof record.svnAction === 'object' ? SessionRecordsStore.fixedProblem(record.svnAction.fixed) : null
+    if (fixed !== null && record.svnAction) {
+      this.report(`${subject}: dropping the fixes of its SVN action (${fixed})`)
+      delete record.svnAction.fixed
+    }
+    // A wake-up notice this build cannot read costs the line, never the action.
+    const notice = record.svnAction && typeof record.svnAction === 'object' ? SessionRecordsStore.noticeProblem(record.svnAction.notice) : null
+    if (notice !== null && record.svnAction) {
+      this.report(`${subject}: dropping the wake-up notice of its SVN action (${notice})`)
+      delete record.svnAction.notice
+    }
+    // A merger this build cannot read costs the field: the run stage still names its run.
+    const merger = record.svnAction && typeof record.svnAction === 'object' ? SessionRecordsStore.mergerProblem(record.svnAction.merger) : null
+    if (merger !== null && record.svnAction) {
+      this.report(`${subject}: dropping the merger of its SVN action (${merger})`)
+      delete record.svnAction.merger
+    }
     // The worktree stays and Finish starts again; only the action this build cannot read goes.
     const action = SessionRecordsStore.svnActionProblem(record.svnAction)
     if (action !== null) {
@@ -456,6 +498,7 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       ?? SessionRecordsStore.commandsProblem(record.commands)
       ?? SessionRecordsStore.recordProcessProblem(record)
       ?? SessionRecordsStore.scriptOfProblem(record.scriptOf)
+      ?? SessionRecordsStore.parentProblem(record.parent)
       ?? SessionRecordsStore.scriptRunsProblem(record.scriptRuns)
       ?? SessionRecordsStore.commitReceiptsProblem(record.commitReceipts)
       ?? SessionRecordsStore.worktreeProblem(record.worktree)
@@ -466,6 +509,7 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       ?? SessionRecordsStore.retiredWorktreeProblem(record.retiredWorktree)
       ?? SessionRecordsStore.worktreeCleanupProblem(record.worktreeCleanup)
       ?? SessionRecordsStore.flowIdProblem(record.flowId)
+      ?? SessionRecordsStore.callerOperationIdProblem(record.callerOperationId)
       ?? SessionRecordsStore.completedProblem(record.completed)
       ?? SessionRecordsStore.stopRequestedProblem(record.stopRequested)
       ?? SessionRecordsStore.noteProblem(record.note)
@@ -574,6 +618,76 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     return null
   }
 
+  private static passesProblem(action: Partial<SessionRecordSvnAction>): string | null {
+    if (action.stageAt !== undefined && (typeof action.stageAt !== 'number' || !Number.isFinite(action.stageAt)))
+      return 'stageAt must be a number'
+    if (action.passes === undefined) return null
+    if (!Array.isArray(action.passes)) return 'passes must be an array'
+    const bad = action.passes.find((pass) => !pass || typeof pass !== 'object'
+      || !SessionRecordsStore.svnActionStagesConst.includes(pass.stage)
+      || (pass.runId !== undefined && !SessionRecordsStore.isFilledString(pass.runId))
+      || !Number.isFinite(pass.startedAt) || !Number.isFinite(pass.endedAt)
+      || (pass.result !== 'done' && pass.result !== 'failed' && pass.result !== 'waited')
+      || (pass.facts !== undefined && (!pass.facts || typeof pass.facts !== 'object'
+        || [pass.facts.revision, pass.facts.conflicts, pass.facts.fixed, pass.facts.left].some((count) => count !== undefined && !Number.isSafeInteger(count)))))
+    return bad === undefined ? null : 'a pass names no known stage, time or result'
+  }
+
+  /** Every entry must name a kind, shape, state and options of this build, or its words would throw. */
+  private static conflictSetProblem(value: unknown): string | null {
+    if (value === undefined) return null
+    if (!value || typeof value !== 'object') return 'conflictSet must be an object'
+    const set = value as Partial<SvnActionConflictSet>
+    if (![set.readAt, set.baseRevision, set.revision, set.more].every((number) => typeof number === 'number' && Number.isFinite(number)))
+      return 'conflictSet needs its times, revisions and count'
+    if (!Array.isArray(set.entries)) return 'conflictSet entries must be an array'
+    if (set.waited !== undefined && set.waited !== true) return 'conflictSet waited must be true when present'
+    const bad = set.entries.find((entry: Partial<SvnActionConflictEntry> | null) => !entry || typeof entry !== 'object'
+      || typeof entry.path !== 'string'
+      || !SessionRecordsStore.conflictKindsConst.includes(entry.kind)
+      || !SvnConflictShapes.isShape(entry.shape)
+      || !SessionRecordsStore.conflictStatesConst.includes(entry.state)
+      || !Array.isArray(entry.options) || !entry.options.every((option) => SvnConflictShapes.isOption(option))
+      || (entry.rule !== undefined && !SvnConflictShapes.isOption(entry.rule))
+      || (entry.settledWith !== undefined && !SvnConflictShapes.isOption(entry.settledWith))
+      || !entry.facts || typeof entry.facts !== 'object'
+      || (entry.by !== undefined && !SessionRecordsStore.conflictActorsConst.includes(entry.by))
+      || (entry.saved !== undefined && typeof entry.saved !== 'string')
+      || (entry.confirmedLoss !== undefined && entry.confirmedLoss !== true)
+      || (entry.journal !== undefined && (!entry.journal || typeof entry.journal !== 'object'
+        || !SvnConflictShapes.isOption(entry.journal.option) || !Number.isSafeInteger(entry.journal.done) || entry.journal.done < 0)))
+    return bad === undefined ? null : 'an entry names no known kind, shape, state or option'
+  }
+
+  /** Each fix names a path and an option of this build, or its line would throw. */
+  private static fixedProblem(value: unknown): string | null {
+    if (value === undefined) return null
+    if (!Array.isArray(value)) return 'fixed must be an array'
+    return value.every((fix: Partial<SvnActionFixed> | null) => !!fix && typeof fix === 'object' && typeof fix.path === 'string' && SvnConflictShapes.isOption(fix.option))
+      ? null : 'a fix names no path or no known option'
+  }
+
+  /** An id, a time, a count of tries and a known state. */
+  private static noticeProblem(value: unknown): string | null {
+    if (value === undefined) return null
+    const notice = value as Partial<SvnActionNotice> | null
+    if (!notice || typeof notice !== 'object' || !SessionRecordsStore.isFilledString(notice.id)) return 'notice needs an id'
+    if (typeof notice.at !== 'number' || typeof notice.attempts !== 'number' || !Number.isSafeInteger(notice.attempts) || notice.attempts < 0)
+      return 'notice needs a time and a count'
+    if (notice.state !== 'pending' && notice.state !== 'delivered' && notice.state !== 'expired') return `unknown notice state ${JSON.stringify(notice.state)}`
+    return notice.settledAt === undefined || typeof notice.settledAt === 'number' ? null : 'notice settledAt must be a number'
+  }
+
+  /** A run id and the set and start it names; its end and its check are times when present. */
+  private static mergerProblem(value: unknown): string | null {
+    if (value === undefined) return null
+    const merger = value as Partial<SvnActionMerger> | null
+    if (!merger || typeof merger !== 'object' || !SessionRecordsStore.isFilledString(merger.runId)) return 'merger needs a run id'
+    const times = [merger.setAt, merger.startedAt]
+    const optional = [merger.endedAt, merger.checkedAt].filter((time) => time !== undefined)
+    return [...times, ...optional].every((time) => typeof time === 'number' && Number.isFinite(time)) ? null : 'merger times must be numbers'
+  }
+
   /** Shape only, like the other gates: the cursors must name an entry, the stage and the reason one of their sets. */
   private static svnActionProblem(value: SessionRecord['svnAction']): string | null {
     if (value === undefined) return null
@@ -584,7 +698,7 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     if (!SessionRecordsStore.isFilledString(action.actionId)) return 'svnAction needs an actionId'
     if (!SessionRecordsStore.svnActionStagesConst.includes(action.stage)) return `unknown SVN action stage ${JSON.stringify(action.stage)}`
     if (!SessionRecordsStore.isFilledString(action.root)) return 'svnAction needs a root'
-    for (const field of ['runId', 'reviewCommitId'] as const)
+    for (const field of ['runId', 'reviewCommitId', 'mergeBrief'] as const)
       if (action[field] !== undefined && !SessionRecordsStore.isFilledString(action[field]))
         return `svnAction ${field} must be a non-empty string`
     if (!Array.isArray(action.checks)) return 'svnAction checks must be an array'
@@ -767,6 +881,12 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     return null
   }
 
+  private static callerOperationIdProblem(value: SessionRecord['callerOperationId']): string | null {
+    if (value === undefined) return null
+    if (!SessionRecordsStore.isFilledString(value)) return 'callerOperationId must be a non-empty string'
+    return null
+  }
+
   private static directoryProblem(value: SessionRecord['directory'] | undefined): string | null {
     if (!value || typeof value !== 'object') return 'directory must be an object'
     if (value.mode === 'project') {
@@ -815,7 +935,7 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     // says yes, and a session wrongly read as one-shot is one nothing ever reopens.
     if (value.oneShot !== undefined && value.oneShot !== true)
       return `oneShot must be true or absent, not ${JSON.stringify(value.oneShot)}`
-    if (value.permission !== undefined && value.permission !== 'accept-edits')
+    if (value.permission !== undefined && value.permission !== 'accept-edits' && value.permission !== 'merger')
       return `unknown agent permission ${JSON.stringify(value.permission)}`
     if (value.nativeSessionIdSource !== undefined && value.nativeSessionIdSource !== 'provided'
       && value.nativeSessionIdSource !== 'codex-app-server') return 'unknown native identity source'
@@ -963,7 +1083,7 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       return `unknown script phase ${JSON.stringify(link.phase)}`
     if (link.scriptId !== 'setup' && link.scriptId !== 'declared' && link.scriptId !== 'merge-resolve'
       && link.scriptId !== 'requested' && link.scriptId !== 'svn' && link.scriptId !== 'checks' && link.scriptId !== 'svn-resolve'
-      && link.scriptId !== 'review')
+      && link.scriptId !== 'svn-merge' && link.scriptId !== 'review')
       return `unknown script ${JSON.stringify(link.scriptId)}`
     if (!SessionRecordsStore.isFilledString(link.name)) return 'scriptOf needs a name string'
     if (link.stepKey !== undefined && !SessionRecordsStore.isFilledString(link.stepKey))
@@ -971,6 +1091,17 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     // A pair no definition answers would throw in every reconcile pass that reads it.
     if (!SessionScriptDefinitions.known({ phase: link.phase, scriptId: link.scriptId }))
       return `unknown script ${JSON.stringify(`${link.phase}/${link.scriptId}`)}`
+    return null
+  }
+
+  private static parentProblem(value: SessionRecord['parent']): string | null {
+    if (value === undefined) return null
+    if (!value || typeof value !== 'object') return 'parent must be an object'
+    const link = value as Partial<SessionRecordParentLink>
+    if (!SessionRecordsStore.isFilledString(link.sessionId))
+      return `parent sessionId must be a non-empty string, not ${JSON.stringify(link.sessionId)}`
+    if (!SessionRecordsStore.parentKindsConst.includes(link.kind))
+      return `unknown parent kind ${JSON.stringify(link.kind)}`
     return null
   }
 

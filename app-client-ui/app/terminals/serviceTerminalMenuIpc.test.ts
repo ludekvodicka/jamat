@@ -89,6 +89,8 @@ describe('app-client-ui/app/terminals/serviceTerminalMenuIpc', () => {
   let markedOpen: { path: string; kind: string }[]
   let attachSession: string | null
   let attachOwner: FakeSender
+  let editorOpens: string[]
+  let editorRefusal: string | null
 
   async function root(prefix: string): Promise<string> {
     const path = await realpath(await mkdtemp(join(tmpdir(), prefix)))
@@ -108,6 +110,8 @@ describe('app-client-ui/app/terminals/serviceTerminalMenuIpc', () => {
     markedOpen = []
     attachSession = 'session-1'
     attachOwner = owner
+    editorOpens = []
+    editorRefusal = null
     workspace = await root('jamat-menu-workspace-')
     elsewhere = await root('jamat-menu-elsewhere-')
     const detector = {
@@ -131,6 +135,7 @@ describe('app-client-ui/app/terminals/serviceTerminalMenuIpc', () => {
           ? { ok: true as const, value: { sessionId, cwd: join(elsewhere, 'WebMirabiaAdmin'), agent: null,
             worktree: { worktreePath: elsewhere, repositoryRoot: join('Q:', 'Applications', 'Mirabia'), baseCommit: 'r41', kind: 'svn' } } }
           : { ok: true as const, value: { sessionId, cwd: workspace, agent: null, worktree: null } }),
+      snapshot: () => ({ sessions: [{ sessionId: 'session-worktree', svnAction: { mergeBrief: join(workspace, 'a1-merge.md') } }, { sessionId: 'session-1' }] }),
     } as unknown as SessionManager
     const terminals = {
       ownsAttach: (sender: WebContents, attachId: string) =>
@@ -143,6 +148,10 @@ describe('app-client-ui/app/terminals/serviceTerminalMenuIpc', () => {
       sessions,
       terminals,
       (sender) => sender === owner.asSender() ? 'window-1' : null,
+      { open: async (path: string) => {
+        editorOpens.push(path)
+        return editorRefusal === null ? { ok: true as const, closed: Promise.resolve() } : { ok: false as const, detail: editorRefusal }
+      } },
     ).initialize()
   })
 
@@ -426,6 +435,13 @@ describe('app-client-ui/app/terminals/serviceTerminalMenuIpc', () => {
     expect(launcherMock.opens).toHaveLength(1)
   })
 
+  it('opens the workspace file at the project root of a session without a worktree', async () => {
+    await writeFile(join(workspace, 'Product.code-workspace'), '{}')
+    expect(await invoke('terminal:menu-open-project-vscode', owner, 'session-1'))
+      .toEqual({ ok: true, value: true })
+    expect(launcherMock.opens).toEqual([{ path: join(workspace, 'Product.code-workspace'), line: null }])
+  })
+
   it('opens the workspace file at the root of a worktree session, never the member it works in', async () => {
     await writeFile(join(elsewhere, 'Mirabia.code-workspace'), '{}')
     await writeFile(join(elsewhere, 'Other.code-workspace'), '{}')
@@ -438,6 +454,45 @@ describe('app-client-ui/app/terminals/serviceTerminalMenuIpc', () => {
     expect(await invoke('terminal:menu-open-project-vscode', owner, 'session-worktree'))
       .toEqual({ ok: true, value: true })
     expect(launcherMock.opens).toEqual([{ path: elsewhere, line: null }])
+  })
+
+  it('opens a conflicted path of a worktree session in the conflict editor, and refuses one outside its worktree or an unknown session', async () => {
+    expect(await invoke('terminal:menu-open-conflict-editor', owner, 'session-worktree', '.aidocs/engines'))
+      .toEqual({ ok: true, value: { ok: true } })
+    expect(editorOpens).toEqual([join(elsewhere, '.aidocs', 'engines')])
+
+    editorRefusal = 'the conflict editor is unavailable: C:/TortoiseProc.exe'
+    expect(await invoke('terminal:menu-open-conflict-editor', owner, 'session-worktree', 'src/catalog.ts'))
+      .toEqual({ ok: true, value: { ok: false, detail: 'the conflict editor is unavailable: C:/TortoiseProc.exe' } })
+    for (const path of ['../outside.txt', join(workspace, 'notes.md'), ''])
+      expect(await invoke('terminal:menu-open-conflict-editor', owner, 'session-worktree', path))
+        .toEqual({ ok: true, value: { ok: false, detail: `${path} is not inside the worktree ${elsewhere}` } })
+    expect(await invoke('terminal:menu-open-conflict-editor', owner, 'session-gone', 'a.txt'))
+      .toEqual({ ok: true, value: { ok: false, detail: 'no such session' } })
+    expect(await invoke('terminal:menu-open-conflict-editor', owner, 'session-1', 'a.txt'))
+      .toEqual({ ok: true, value: { ok: false, detail: 'Session session-1 has no worktree' } })
+    expect(await invoke('terminal:menu-open-conflict-editor', other, 'session-worktree', 'a.txt'))
+      .toEqual({ ok: false, error: 'Terminal menu request came from an unknown workspace' })
+    expect(editorOpens).toHaveLength(2)
+  })
+
+  it('grants the merger brief the session names to the viewer, and refuses a session without one', async () => {
+    await writeFile(join(workspace, 'a1-merge.md'), '# Merge the conflicts of t\n')
+    const opened = await invoke('terminal:menu-open-merge-brief', owner, 'session-worktree') as { ok: true; value: { ok: boolean; value?: { name: string } } }
+    expect(opened.value).toMatchObject({ ok: true, value: { name: 'a1-merge.md' } })
+    expect(await invoke('terminal:menu-open-merge-brief', owner, 'session-1'))
+      .toEqual({ ok: true, value: { ok: false, code: 'not-found', detail: 'Session session-1 has no merger brief' } })
+    expect(await invoke('terminal:menu-open-merge-brief', other, 'session-worktree'))
+      .toEqual({ ok: false, error: 'Terminal menu request came from an unknown workspace' })
+  })
+
+  it('grants a conflicted file of the worktree to the viewer, and refuses one outside it', async () => {
+    await mkdir(join(elsewhere, 'src'), { recursive: true })
+    await writeFile(join(elsewhere, 'src', 'catalog.ts'), ['<<<<<<< .mine', 'mine', '=======', 'theirs', '>>>>>>> .r2', ''].join('\n'))
+    const opened = await invoke('terminal:menu-open-conflict-file', owner, 'session-worktree', 'src/catalog.ts') as { ok: true; value: { ok: boolean; value?: { name: string } } }
+    expect(opened.value).toMatchObject({ ok: true, value: { name: 'catalog.ts' } })
+    expect(await invoke('terminal:menu-open-conflict-file', owner, 'session-worktree', '../catalog.ts'))
+      .toEqual({ ok: true, value: { ok: false, code: 'outside-root', detail: `../catalog.ts is not inside the worktree ${elsewhere}` } })
   })
 
   it('refuses a project launch from an unknown workspace', async () => {

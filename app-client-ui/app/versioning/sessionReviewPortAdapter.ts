@@ -7,7 +7,7 @@ import type { VersioningCommitManager, VersioningCommitProposeResult } from './v
 /**
  * The commit dialog as the sessions library sees it: a review opened in a session's own tab, whether
  * it is still known, and the message a worker proposed for it. The review run that asked for it waits
- * for its status itself.
+ * for its status itself; once the review settles, the parent's workflow takes the focus back.
  */
 export class SessionReviewPortAdapter implements SessionReviewPort {
   private readonly broker: Pick<TabControlBroker, 'openCommit'>
@@ -24,10 +24,15 @@ export class SessionReviewPortAdapter implements SessionReviewPort {
     this.tabTitleOf = tabTitleOf
   }
 
-  async open(input: { sessionId: string; scopeRoot: string; proposal: string }): Promise<SessionsOpResult<{ commitSessionId: string }>> {
+  async open(input: { sessionId: string; parentId: string; scopeRoot: string; proposal: string }): Promise<SessionsOpResult<{ commitSessionId: string }>> {
     const tabTitle = this.tabTitleOf(input.sessionId)
     if (tabTitle === null) return { ok: false, code: 'not-found', detail: `No session ${input.sessionId}` }
-    const opened = await this.broker.openCommit(input.sessionId, tabTitle, 'svn', input.scopeRoot, input.proposal, { fresh: true })
+    const parentTitle = this.tabTitleOf(input.parentId)
+    const opened = await this.broker.openCommit(input.sessionId, tabTitle, 'svn', input.scopeRoot, input.proposal, {
+      fresh: true,
+      // Once the review settles, the focus goes back to the workflow of the action that reviews.
+      ...parentTitle === null ? {} : { returnToWorkflow: { sessionId: input.parentId, tabTitle: parentTitle } },
+    })
     if (!opened.ok) return { ok: false, code: 'review-unavailable', detail: opened.error.detail }
     const commitSessionId = opened.value.commitSessionId
     if (commitSessionId === undefined)

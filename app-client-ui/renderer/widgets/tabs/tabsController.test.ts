@@ -1234,6 +1234,32 @@ describe('app-client-ui/renderer/widgets/tabs/tabsController', () => {
     expect(harness.saved[0]).toContain('"width":220')
   })
 
+  it('publishes open panel parameter changes and removals without including remembered closed parameters', async () => {
+    const { controller, dockview } = TabsControllerHarness.fresh()
+    controller.openWelcome()
+    expect(controller.openPanels()).toEqual([])
+    const readings: (readonly WorkspacePanelPresence[])[] = []
+    const stop = controller.subscribePanels(() => readings.push(controller.openPanels()))
+    await controller.openPanel(PanelKeysConst.terminal, 'First', { sessionId: 'first' }, 'first')
+    await controller.openPanel(PanelKeysConst.terminal, 'Second', { sessionId: 'second' }, 'second')
+    dockview.getPanel('first')!.api.updateParameters({ split: { active: 'inactive-item', items: ['inactive-item'] } })
+    expect(readings.at(-1)?.find((panel) => panel.panelId === 'first')?.params.split)
+      .toEqual({ active: 'inactive-item', items: ['inactive-item'] })
+    expect(controller.activePanelId()).toBe('second')
+    await controller.hidePanel('first')
+    expect(readings.at(-1)?.map((panel) => panel.panelId)).toEqual(['second'])
+    expect(controller.openPanels().map((panel) => panel.panelId)).toEqual(['second'])
+    await controller.openPanel(PanelKeysConst.terminal, 'First', { sessionId: 'first' }, 'first')
+    expect(readings.at(-1)?.find((panel) => panel.panelId === 'first')?.params.split)
+      .toEqual({ active: 'inactive-item', items: ['inactive-item'] })
+    stop()
+    const count = readings.length
+    dockview.getPanel('first')!.api.updateParameters({ changed: true })
+    expect(readings).toHaveLength(count)
+    controller.dispose()
+    expect(controller.openPanels()).toEqual([])
+  })
+
   // The stated hazard: an id derived from the LIVE parameters would change on every splitter drag,
   // so the panel would stop answering to the id its own layout was saved under and a second open
   // would add a duplicate instead of activating it.
@@ -1905,7 +1931,7 @@ describe('app-client-ui/renderer/widgets/tabs/tabsController', () => {
       expect(harness.dockview.getPanel(panelId)?.params.split).toMatchObject({ items: [splitItems[0]] })
     })
 
-    it.each(['workingTree', 'fileChanges', 'directoryExplorer', 'notes'])(
+    it.each(['workingTree', 'fileChanges', 'directoryExplorer', 'notes', 'processes'])(
       'restores the %s sidebar and every split parameter after repeated preview replacements', async (activeView) => {
         const harness = TabsControllerHarness.fresh()
         await openPreview(harness, 's1')

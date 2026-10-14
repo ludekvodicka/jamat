@@ -56,6 +56,29 @@ describe('lib-orchestrator/sessionManager/sessionsSnapshotValidation', () => {
    * The peer may be an older build, and a client that refuses a snapshot for carrying a field it no
    * longer reads is a client that cannot talk to yesterday's. Extra members are ignored.
    */
+  it('takes the Host memory reading when it is absent, null or well formed', () => {
+    const reading = { lines: ['Memory 812 MB (heap 120 MB), up 2 d 4 h'], warning: null, suffix: null }
+    for (const memory of [undefined, null, reading]) {
+      const value = snapshot() as { host: Record<string, unknown> }
+      if (memory !== undefined) value.host.memory = memory
+      const parsed = SessionsSnapshotValidation.parse(value)
+      expect(parsed, JSON.stringify(memory)).not.toBeNull()
+      expect(parsed?.host.memory, JSON.stringify(memory)).toEqual(memory)
+    }
+  })
+
+  it('drops a malformed Host memory reading and keeps the snapshot', () => {
+    for (const memory of ['812 MB', { lines: 'one line', warning: null, suffix: null },
+      { lines: [1], warning: null, suffix: null }, { lines: [], warning: 5, suffix: null }, { lines: [], warning: null }]) {
+      const value = snapshot() as { host: Record<string, unknown> }
+      value.host.memory = memory
+      const parsed = SessionsSnapshotValidation.parse(value)
+      expect(parsed, JSON.stringify(memory)).not.toBeNull()
+      expect(parsed?.host, JSON.stringify(memory)).not.toHaveProperty('memory')
+      expect(parsed?.host.liveCount).toBe(1)
+    }
+  })
+
   it('takes a snapshot from a build that still sends fields this one dropped', () => {
     const older = snapshot([session({ outputSeq: 12, lastOutputAt: 5_000, somethingNew: true })])
 
@@ -63,6 +86,11 @@ describe('lib-orchestrator/sessionManager/sessionsSnapshotValidation', () => {
 
     expect(parsed).not.toBeNull()
     expect(parsed?.sessions).toHaveLength(1)
+  })
+
+  it('takes a session with or without the create operation id, and null as sessions.list sends it', () => {
+    for (const fields of [{}, { callerOperationId: 'op-1' }, { callerOperationId: null }])
+      expect(SessionsSnapshotValidation.parse(snapshot([session(fields)])), JSON.stringify(fields)).not.toBeNull()
   })
 
   it('takes the optional background detail and refuses it outside working activity', () => {
@@ -327,6 +355,23 @@ describe('lib-orchestrator/sessionManager/sessionsSnapshotValidation', () => {
     expect(damaged?.sessions[0]?.worktree?.liveFinish).toBeUndefined()
   })
 
+  it('keeps an action at fixing, whose legacy phase a 3.10 peer reads as updating, and a stop-agent action with its run', () => {
+    const worktree = {
+      worktreePath: 'Q:/work/.worktrees/014-fix', branch: 'https://svn/repo/trunk', baseCommit: 'r41', kind: 'svn',
+      choices: ['commit', 'keep', 'discard'], diff: null, baseMoved: false, finish: { phase: 'updating' },
+    }
+    const svnAction = { kind: 'finish', stage: 'fixing', needs: null, needsKind: null, review: null }
+    const workflow = { kind: 'finish', workflowId: 'a1', title: 'Finish of 014', badge: 'resolving', summary: 'Claude resolves the conflicts', open: true,
+      rounds: [], actions: [{ id: 'stop-agent', label: 'Stop agent', primary: false, runId: 'cl' }, { id: 'stop-agent', label: 'Stop agent', primary: false }] }
+    const parent = session({ sessionId: 'p', worktree, svnAction, workflow })
+
+    expect(SessionsSnapshotValidation310.parse(snapshot([parent]))).not.toBeNull()
+    const parsed = SessionsSnapshotValidation.parse(snapshot([parent]))
+    expect(parsed?.sessions[0]?.svnAction).toEqual(svnAction)
+    expect(parsed?.sessions[0]?.worktree?.finish).toEqual({ phase: 'updating' })
+    expect(parsed?.sessions[0]?.workflow?.actions).toEqual([{ id: 'stop-agent', label: 'Stop agent', primary: false, runId: 'cl' }])
+  })
+
   it('draws a resolver run and an action that waits on its verification, which a 3.10 peer still accepts', () => {
     const worktree = {
       worktreePath: 'Q:/work/.worktrees/014-fix', branch: 'https://svn/repo/trunk', baseCommit: 'r41', kind: 'svn',
@@ -343,6 +388,31 @@ describe('lib-orchestrator/sessionManager/sessionsSnapshotValidation', () => {
     const parsed = SessionsSnapshotValidation.parse(snapshot([parent]))
     expect(parsed?.sessions[0]?.svnAction).toEqual(svnAction)
     expect(parsed?.sessions[0]?.scripts?.runs.map((entry) => entry.scriptId)).toEqual(['svn-resolve'])
+  })
+
+  it('keeps an action at merging with its merger run and brief, which a 3.10 peer reads as updating, and drops a malformed run id', () => {
+    const worktree = {
+      worktreePath: 'Q:/work/.worktrees/014-fix', branch: 'https://svn/repo/trunk', baseCommit: 'r41', kind: 'svn',
+      choices: ['commit', 'keep', 'discard'], diff: null, baseMoved: false, finish: { phase: 'updating' },
+    }
+    const svnAction = { kind: 'finish', stage: 'merging', needs: null, needsKind: null, review: null, mergerRunId: 'm1', mergeBrief: 'L:/m.md' }
+    expect(SessionsSnapshotValidation310.parse(snapshot([session({ sessionId: 'p', worktree, svnAction })]))).not.toBeNull()
+    expect(SessionsSnapshotValidation.parse(snapshot([session({ sessionId: 'p', worktree, svnAction })]))?.sessions[0]?.svnAction).toEqual(svnAction)
+    const damaged = SessionsSnapshotValidation.parse(snapshot([session({ sessionId: 'p', worktree, svnAction: { ...svnAction, mergerRunId: 7 } })]))
+    expect(damaged?.sessions[0]?.svnAction).toEqual({ kind: 'finish', stage: 'merging', needs: null, needsKind: null, review: null, mergeBrief: 'L:/m.md' })
+  })
+
+  it('draws a merger run, which a 3.10 peer still accepts, and drops a run of an unknown kind without the session', () => {
+    const run = (runId: string, scriptId: string) => ({
+      runId, phase: 'after', scriptId, name: 'merger', title: 'Merge conflicts 014-fix', state: 'running',
+      summary: 'Merge conflicts 014-fix · running', startedAt: 1, commands: [], row: true, log: 'none',
+    })
+    const parent = session({ sessionId: 'p', scripts: { runs: [run('m1', 'svn-merge'), run('x1', 'svn-later')] } })
+
+    expect(SessionsSnapshotValidation310.parse(snapshot([parent]))).not.toBeNull()
+    const parsed = SessionsSnapshotValidation.parse(snapshot([parent]))
+    expect(parsed?.sessions.map((entry) => entry.sessionId)).toEqual(['p'])
+    expect(parsed?.sessions[0]?.scripts?.runs.map((entry) => entry.scriptId)).toEqual(['svn-merge'])
   })
 
   it('draws a landed row and an UPDATE with its diff run, which a 3.10 peer still accepts, and drops a landing it cannot read', () => {
@@ -365,5 +435,104 @@ describe('lib-orchestrator/sessionManager/sessionsSnapshotValidation', () => {
 
     const damaged = SessionsSnapshotValidation.parse(snapshot([session({ retiredWorktree: { ...retiredWorktree, landing: { ...landing, behind: -1 } } })]))
     expect(damaged?.sessions[0]?.retiredWorktree).toEqual({ worktreePath: retiredWorktree.worktreePath, revisions: retiredWorktree.revisions })
+  })
+
+  it('keeps a well-formed parent link, which a 3.10 peer still accepts, and drops a malformed one or an unknown kind', () => {
+    const parent = { sessionId: 'p', kind: 'ticket', sameProject: false }
+    const sessions = [
+      session({ sessionId: 'a', parent }),
+      session({ sessionId: 'b', parent: { kind: 'unit' } }),
+      session({ sessionId: 'c', parent: { sessionId: 'p', kind: 'unit', sameProject: true } }),
+      session({ sessionId: 'd', parent: { sessionId: 'p', kind: 'worker' } }),
+      session({ sessionId: 'e', parent: 'p' }),
+    ]
+
+    expect(SessionsSnapshotValidation310.parse(snapshot(sessions))).not.toBeNull()
+    const parsed = SessionsSnapshotValidation.parse(snapshot(sessions))
+    expect(parsed?.sessions.map((entry) => entry.sessionId)).toEqual(['a', 'b', 'c', 'd', 'e'])
+    expect(parsed?.sessions[0]?.parent).toEqual(parent)
+    expect(parsed?.sessions.slice(1).every((entry) => entry.parent === undefined)).toBe(true)
+  })
+
+  it('keeps a well-formed step, which a 3.10 peer still accepts, and drops a malformed one without the session', () => {
+    const step = { text: 'Removing the worktree', detail: '12,000 of 48,000 files', progress: { done: 12_000, total: 48_000 }, startedAt: 5_000 }
+    const sessions = [
+      session({ sessionId: 'a', step }),
+      session({ sessionId: 'b', step: { text: 'Reading conflicts after the update', detail: null, progress: null, startedAt: null } }),
+      session({ sessionId: 'c', step: { ...step, text: 42 } }),
+      session({ sessionId: 'd', step: { ...step, progress: { done: -1, total: 48_000 } } }),
+      session({ sessionId: 'e', step: { ...step, progress: { done: 1, total: 'many' } } }),
+      session({ sessionId: 'f', step: { ...step, progress: { done: 1, total: null } } }),
+      session({ sessionId: 'g', step: 'Removing' }),
+    ]
+
+    expect(SessionsSnapshotValidation310.parse(snapshot(sessions))).not.toBeNull()
+    const parsed = SessionsSnapshotValidation.parse(snapshot(sessions))
+    expect(parsed?.sessions.map((entry) => entry.sessionId)).toEqual(['a', 'b', 'c', 'd', 'e', 'f', 'g'])
+    expect(parsed?.sessions[0]?.step).toEqual(step)
+    expect(parsed?.sessions[1]?.step?.text).toBe('Reading conflicts after the update')
+    expect(parsed?.sessions.slice(2, 5).every((entry) => entry.step === undefined)).toBe(true)
+    expect(parsed?.sessions[5]?.step?.progress).toEqual({ done: 1, total: null })
+    expect(parsed?.sessions[6]?.step).toBeUndefined()
+  })
+  it('keeps a well-formed workflow, which a 3.10 peer still accepts, and drops one it cannot draw without the session', () => {
+    const workflow = {
+      kind: 'finish', workflowId: 'a1', title: 'Finish of 014', badge: 'updating', summary: 'Running svn update', open: true,
+      rounds: [{ title: 'Finish', steps: [
+        { key: '1:evidence', title: 'Read what the worktree committed', detail: '', state: 'done', startedAt: 1, endedAt: 2, target: { kind: 'none' } },
+        { key: '1:updating', title: 'svn update', detail: 'svn update 014', state: 'running', startedAt: 2, endedAt: null, target: { kind: 'run', runId: 'u1' } },
+      ] }],
+      actions: [{ id: 'keep', label: 'Keep worktree', primary: false }, { id: 'merge-later', label: 'Later', primary: false }],
+    }
+    const step = workflow.rounds[0].steps[1]
+    const sessions = [
+      session({ sessionId: 'a', workflow }),
+      session({ sessionId: 'b', workflow: { ...workflow, rounds: [{ title: 'Finish', steps: [{ ...step, state: 'paused' }] }] } }),
+      session({ sessionId: 'c', workflow: { ...workflow, rounds: [{ title: 'Finish', steps: [{ ...step, target: { kind: 'run' } }] }] } }),
+      session({ sessionId: 'd', workflow: { ...workflow, kind: 'deploy' } }),
+      session({ sessionId: 'e', workflow: 'updating' }),
+    ]
+
+    expect(SessionsSnapshotValidation310.parse(snapshot(sessions))).not.toBeNull()
+    const parsed = SessionsSnapshotValidation.parse(snapshot(sessions))
+    expect(parsed?.sessions.map((entry) => entry.sessionId)).toEqual(['a', 'b', 'c', 'd', 'e'])
+    expect(parsed?.sessions[0]?.workflow).toEqual({ ...workflow, actions: [workflow.actions[0]] })
+    expect(parsed?.sessions.slice(1).every((entry) => entry.workflow === undefined)).toBe(true)
+  })
+
+  it('keeps a conflict list and its step, which a 3.10 peer still accepts, and drops a malformed list without the action', () => {
+    const entry = {
+      path: '.aidocs/engines', kind: 'tree', state: 'person', by: null, saved: null,
+      description: 'Your session added this folder with 2 files; r421 added it with 3 files.',
+      options: [{ id: 'keep-both', label: 'Keep both', note: 'restores the files r421 added', loses: 'nothing' }],
+    }
+    const svnAction = {
+      kind: 'finish', stage: 'updating', needs: '3 conflicts need you: .aidocs/engines (tree)', needsKind: 'conflict', review: null,
+      summary: '3 conflicts need you', conflicts: { entries: [entry], more: 2 },
+    }
+    const workflow = {
+      kind: 'finish', workflowId: 'a1', title: 'Finish of 014', badge: '3 conflicts need you', summary: 'Waits for you', open: true,
+      rounds: [{ title: 'Finish', steps: [
+        { key: '1:conflicts', title: 'Conflicts', detail: '3 conflicts need you', state: 'waits', startedAt: 1, endedAt: 2, target: { kind: 'conflicts' } },
+      ] }],
+      actions: [],
+    }
+    const sessions = [
+      session({ sessionId: 'a', svnAction, workflow }),
+      session({ sessionId: 'b', svnAction: { ...svnAction, conflicts: { entries: [{ ...entry, state: 'pondering' }], more: 0 } } }),
+      session({ sessionId: 'c', svnAction: { ...svnAction, conflicts: { entries: [{ ...entry, options: [{ id: 'burn', label: 'x', note: '', loses: 'nothing' }] }], more: 0 } } }),
+      session({ sessionId: 'd', svnAction: { ...svnAction, summary: 3, conflicts: { entries: [entry], more: -1 } } }),
+    ]
+
+    expect(SessionsSnapshotValidation310.parse(snapshot(sessions))).not.toBeNull()
+    const parsed = SessionsSnapshotValidation.parse(snapshot(sessions))
+    expect(parsed?.sessions[0]?.svnAction).toEqual(svnAction)
+    expect(parsed?.sessions[0]?.workflow?.rounds[0]?.steps[0]?.target).toEqual({ kind: 'conflicts' })
+    for (const damaged of parsed?.sessions.slice(1) ?? []) {
+      expect(damaged.svnAction).toMatchObject({ kind: 'finish', stage: 'updating', needsKind: 'conflict' })
+      expect(damaged.svnAction?.conflicts).toBeUndefined()
+    }
+    expect(parsed?.sessions[1]?.svnAction?.summary).toBe('3 conflicts need you')
+    expect(parsed?.sessions[3]?.svnAction?.summary).toBeUndefined()
   })
 })

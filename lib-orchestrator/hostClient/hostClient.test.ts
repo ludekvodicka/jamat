@@ -45,8 +45,8 @@ describe('lib-orchestrator/hostClient/hostClient', () => {
     hide: () => void
   }
 
-  async function startHost(hostInstanceId?: string): Promise<FakeHost> {
-    const host = await FakeHost.start({ hostInstanceId })
+  async function startHost(hostInstanceId?: string, capabilities?: string[]): Promise<FakeHost> {
+    const host = await FakeHost.start({ hostInstanceId, capabilities })
     hosts.push(host)
     return host
   }
@@ -123,6 +123,30 @@ describe('lib-orchestrator/hostClient/hostClient', () => {
     expect(listed.value.hostInstanceId).toBe(host.descriptor().hostInstanceId)
     expect(context.client.descriptor()?.hostVersion).toBe('0.0.0-fake')
     expect(context.resyncs).toBe(1)
+  })
+
+  it('reads the Host memory history from a Host that offers host.health.v1', async () => {
+    const host = await startHost(undefined, ['events.replay.v1', 'host.health.v1', 'runtime.lifecycle.v1'])
+    const context = harness()
+    expect(await context.client.health()).toMatchObject({ ok: false, code: 'host-unreachable' })
+    context.publish(host)
+    context.client.start()
+    await vi.waitFor(() => expect(context.client.descriptor()).not.toBeNull(), { timeout: 3_000 })
+
+    expect(await context.client.health()).toEqual({ ok: true, value: FakeHost.healthConst })
+    expect(host.calls.filter((call) => call.name === 'host.health')).toEqual([{ name: 'host.health', body: {} }])
+  })
+
+  it('answers null without asking a Host that predates host.health', async () => {
+    const host = await startHost()
+    const context = harness()
+    context.publish(host)
+    context.client.start()
+    await vi.waitFor(() => expect(context.client.descriptor()).not.toBeNull(), { timeout: 3_000 })
+
+    expect(await context.client.health()).toBeNull()
+    expect(host.calls.some((call) => call.name === 'host.health')).toBe(false)
+    expect(context.errors).toEqual([])
   })
 
   it('carries the lease the keeper holds into every mutation', async () => {

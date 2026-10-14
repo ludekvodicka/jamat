@@ -24,9 +24,13 @@ export class ScriptLogText {
   private static readonly dimMarkersConst = /\u001b\[(?:2|22)m/g
   private static readonly separatorConst = '-'.repeat(60)
 
+  static withoutDimMarkers(row: string): string {
+    return row.replace(ScriptLogText.dimMarkersConst, '')
+  }
+
   /** Header, then the rows without dim markers; past the cap the earliest rows go and the header says so. */
   static of(header: ScriptLogHeader, rows: readonly string[]): { text: string; truncated: boolean } {
-    const clean = rows.map((row) => row.replace(ScriptLogText.dimMarkersConst, ''))
+    const clean = rows.map(ScriptLogText.withoutDimMarkers)
     const rowBytes = clean.map((row) => Buffer.byteLength(row, 'utf8') + 1)
     const rowsTotal = rowBytes.reduce((sum, bytes) => sum + bytes, 0)
     const whole = ScriptLogText.headerOf(header, 0)

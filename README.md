@@ -99,6 +99,10 @@ things in your life that are not software.
   gets its own git worktree and branch, with the project's own setup commands run in it first, and
   a merge back when you finish. The main copy stays clean.
 
+- **See what a worktree Finish is doing.** While a Finish, a Discard or an update runs, the session
+  shows the step it is on as a row under it: the svn command, the live last line of a running
+  `svn update`, and a counted removal with a bar and the seconds it has taken.
+
 - **Reach your other computers.** Pair two machines and their sessions appear in each other's tree:
   list them, start one, watch it live, type into it. Off until you turn it on, and explicit in both
   directions. [More below](#remote-computers).

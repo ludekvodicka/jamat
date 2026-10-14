@@ -143,7 +143,7 @@ export class UiSettingsStore {
       && one.scrollSpeedPercent === other.scrollSpeedPercent
       && one.terminalScrollSpeedPercent === other.terminalScrollSpeedPercent
       && (one.activateSessionOnDocument === true) === (other.activateSessionOnDocument === true)
-      && (one.sessionsScriptRuns === true) === (other.sessionsScriptRuns === true)
+      && UiSettings.nestingKeysConst.every((key) => (one[key] !== false) === (other[key] !== false))
   }
 
   private static apply(value: UiSettingsValue): void {

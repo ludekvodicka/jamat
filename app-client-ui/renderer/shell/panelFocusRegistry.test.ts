@@ -13,7 +13,17 @@ describe('app-client-ui/renderer/shell/panelFocusRegistry', () => {
     expect(registry.focus('terminal:2')).toBe(true)
 
     expect(first).not.toHaveBeenCalled()
-    expect(second).toHaveBeenCalledOnce()
+    expect(second).toHaveBeenCalledExactlyOnceWith('primary')
+  })
+
+  it('passes an explicit content request to the panel that owns the focus destination', () => {
+    const registry = new PanelFocusRegistry()
+    const focused = vi.fn()
+    registry.register('terminal:1', focused)
+
+    expect(registry.focus('terminal:1', 'content')).toBe(true)
+
+    expect(focused).toHaveBeenCalledExactlyOnceWith('content')
   })
 
   /** A tab with no surface to type into is the ordinary case, not a failure: the caller does nothing. */

@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -178,7 +179,8 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
       expect(created).toEqual({ ok: true, value: { worktreePath, url, baseRevision: 41, directoryId: expect.any(String) } })
       expect(calls.find((call) => call.args[0] === 'checkout')).toEqual({ cwd: worktreePath,
         args: ['checkout', '--non-interactive', '-q', '--', `${url}@41`, '.'] })
-      expect(SvnWorktreeManager.checkoutArgsOf(url, 41)).toEqual(['checkout', '-q', '--', `${url}@41`, '.'])
+      expect(SvnWorktreeManager.checkoutArgsOf(url, 41, 'quiet')).toEqual(['checkout', '-q', '--', `${url}@41`, '.'])
+      expect(SvnWorktreeManager.checkoutArgsOf(url, 41, 'listed')).toEqual(['checkout', '--', `${url}@41`, '.'])
     })
 
     it('takes the next free name when the folder or its .deleting rest is taken', async () => {
@@ -306,6 +308,18 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
       ])
     })
 
+    it('never schedules a file missing at or below a recorded conflict victim, and schedules one outside it', async () => {
+      const { manager, calls } = scripted((cwd, args) => cwd !== temporary ? undefined
+        : args[0] === 'status' ? { stdout: statusXml([...changedBefore, { path: '.aidocs/engines/t2/brief.md', item: 'missing', revision: 5 },
+          { path: '.aidocs/engines', item: 'missing', revision: 5 }]) }
+        : args[0] === 'delete' ? {} : undefined)
+      expect(await manager.scheduleMissing(temporary, ['.aidocs/engines', 'src/catalog.ts'])).toEqual({ ok: true, value: undefined })
+      expect(calls.map((call) => call.args)).toEqual([
+        ['status', '--non-interactive', '--xml', '--', '.'],
+        ['delete', '--non-interactive', '-q', '--force', '--', 'gone@'],
+      ])
+    })
+
     it('names a file deleted from disk whose name svn cannot take, and passes nothing', async () => {
       const { manager, calls } = scripted((_cwd, args) => args[0] === 'status'
         ? { stdout: statusXml([{ path: 'složka/ř.txt', item: 'missing', revision: 5 }]) } : undefined)
@@ -424,6 +438,121 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
       ] })
     })
 
+  })
+
+  describe('merger handover', () => {
+    it('hashes a file by content, a folder by the names and contents below it, and an absent path as missing, reading files only', async () => {
+      await mkdir(join(temporary, 'src', 'deep'), { recursive: true })
+      await writeFile(join(temporary, 'src', 'a.ts'), 'one\n')
+      await writeFile(join(temporary, 'src', 'deep', 'b.ts'), 'two\n')
+      const { manager, calls } = scripted(() => undefined)
+      const first = await manager.hashes(temporary, ['src/a.ts', 'src', 'gone.ts'])
+      expect(first.ok && first.value['src/a.ts']).toBe(createHash('sha256').update('one\n').digest('hex'))
+      expect(first.ok && first.value['src']).toMatch(/^dir:[0-9a-f]{64}$/)
+      expect(first.ok && first.value['gone.ts']).toBe('missing')
+      await writeFile(join(temporary, 'src', 'deep', 'b.ts'), 'two changed\n')
+      const second = await manager.hashes(temporary, ['src', 'src/a.ts'])
+      expect(second.ok && second.value['src']).not.toBe(first.ok && first.value['src'])
+      expect(second.ok && second.value['src/a.ts']).toBe(first.ok && first.value['src/a.ts'])
+      expect(calls).toEqual([])
+    })
+
+    it('answers the highest BASE past a revision from status -v without externals, or null', async () => {
+      const { manager, calls } = scripted((_cwd, args) => args[0] === 'status'
+        ? { stdout: statusXml([{ path: temporary, item: 'normal', revision: 42 }, { path: join(temporary, 'a.txt'), item: 'normal', revision: 43 }]) }
+        : undefined)
+      expect(await manager.baseAbove(temporary, 42)).toEqual({ ok: true, value: 43 })
+      expect(await manager.baseAbove(temporary, 43)).toEqual({ ok: true, value: null })
+      expect(has(calls[0].args, 'status', '-v', '--xml', '--ignore-externals')).toBe(true)
+    })
+  })
+
+  describe('conflict set', () => {
+    const sha1 = (text: string): string => createHash('sha1').update(text).digest('hex')
+    const entry = (path: string, kind: string, inner = ''): string =>
+      `<entry kind="${kind}" path="${path}" revision="9"><url>${url}/${path}</url><wc-info><schedule>normal</schedule>${inner}</wc-info>`
+    const tree = '<tree-conflict reason="unversioned" victim="engines" action="add" operation="update" kind="dir">'
+      + `<version side="source-right" kind="dir" revision="9" path-in-repos="Project/.aidocs/engines" repos-url="${repository}"/></tree-conflict>`
+
+    it('reads every kind together, each victim in its parent, and passes svn no name it cannot take', async () => {
+      await mkdir(join(temporary, '.aidocs', 'engines', 't1'), { recursive: true })
+      await mkdir(join(temporary, '.aidocs', 'engines', 't2'), { recursive: true })
+      await writeFile(join(temporary, '.aidocs', 'engines', 't1', 'brief.md'), 'session t1\n')
+      await writeFile(join(temporary, '.aidocs', 'engines', 't2', 'brief.md'), 'session t2\n')
+      const folder = join(temporary, 'složka')
+      await mkdir(folder)
+      await writeFile(join(folder, 'ř.txt.mine'), 'one\r\ntwo\r\n')
+      await writeFile(join(folder, 'ř.txt.r9'), 'one\ntwo\n')
+      const slash = (path: string): string => path.replaceAll(sep, '/')
+      const status = statusXml([
+        { path: '.aidocs/engines', item: 'deleted', revision: 9, tree: true },
+        { path: '.aidocs/engines/t1', item: 'unversioned' },
+        { path: 'složka/ř.txt', item: 'conflicted', revision: 9 },
+        { path: 'a.txt', item: 'normal', props: 'conflicted', revision: 9 },
+      ])
+      const properties = (target: string, value: string): string =>
+        `<properties><target path="${target}"><property name="svn:ignore">${value}</property></target></properties>`
+      const { manager, calls } = scripted((cwd, args) => {
+        if (args[0] === 'status') return { stdout: status }
+        if (args[0] === 'info' && !args.includes('--depth')) return { stdout: infoXml({ revision: 9 }) }
+        if (args[0] === 'info' && cwd === temporary)
+          return { stdout: `<info>${entry('.', 'dir')}</entry>${entry('a.txt', 'file')}<conflict type="property"><prop-file>${slash(temporary)}/a.txt.prej</prop-file></conflict></entry></info>` }
+        if (args[0] === 'info' && cwd === join(temporary, '.aidocs') && args.includes('immediates'))
+          return { stdout: `<info>${entry('.', 'dir')}</entry>${entry('engines', 'dir')}${tree}</entry></info>` }
+        if (args[0] === 'info' && cwd === join(temporary, '.aidocs') && args.includes('infinity'))
+          return { stdout: `<info>${entry('engines', 'dir')}</entry>${entry('engines\\t2', 'dir')}</entry>`
+            + `${entry('engines\\t2\\brief.md', 'file', `<checksum>${sha1('incoming\n')}</checksum>`)}</entry>`
+            + `${entry('engines\\t2\\trail.md', 'file', `<checksum>${sha1('trail\n')}</checksum>`)}</entry></info>` }
+        if (args[0] === 'info' && cwd === folder)
+          return { stdout: `<info>${entry('.', 'dir')}</entry>${entry('ř.txt', 'file')}<conflict type="text">`
+            + `<prev-base-file>${slash(folder)}/ř.txt.r5</prev-base-file><prev-wc-file>${slash(folder)}/ř.txt.mine</prev-wc-file>`
+            + `<cur-base-file>${slash(folder)}/ř.txt.r9</cur-base-file></conflict></entry></info>` }
+        if (args[0] === 'proplist' && args.includes(`${url}/.@5`)) return { stdout: properties(`${url}/.`, 'a\n') }
+        if (args[0] === 'proplist' && args.includes('BASE')) return { stdout: properties('a.txt', 'a\nc\n') }
+        if (args[0] === 'proplist') return { stdout: properties('a.txt', 'a\nb\n') }
+        return undefined
+      })
+
+      const read = await manager.conflictSet(temporary, 5)
+      expect(read).toMatchObject({ ok: true, value: { revision: 9 } })
+      const facts = read.ok ? read.value.facts : []
+      expect(facts.map((fact) => [fact.path, fact.kind, fact.takesArgument])).toEqual([
+        ['.aidocs/engines', 'tree', true], ['složka/ř.txt', 'text', false], ['a.txt', 'property', true],
+      ])
+      expect(facts[0]).toMatchObject({
+        tree: { reason: 'unversioned', action: 'added', localKind: 'dir', incomingKind: 'dir', incomingRevision: 9, localHistory: false },
+        content: { files: { local: 2, incoming: 2, same: 0, differing: 1 } },
+      })
+      expect(facts[1]).toMatchObject({ sidecars: ['složka/ř.txt.r5', 'složka/ř.txt.mine', 'složka/ř.txt.r9'], content: { equal: 'eol' } })
+      expect(facts[2]).toMatchObject({ sidecars: ['a.txt.prej'], properties: [{ name: 'svn:ignore', older: null, mine: 'a\nb\n', theirs: 'a\nc\n' }] })
+      expect(read.ok && read.value.rows.filter((row) => row.conflict).map((row) => row.path)).toEqual(['.aidocs/engines', 'složka/ř.txt', 'a.txt'])
+      expect(calls.find((call) => call.cwd === folder)?.args).toEqual(['info', '--non-interactive', '--xml', '--depth', 'immediates', '--', '.'])
+      expect(calls.some((call) => call.args.some((arg) => /[^\x20-\x7e]/.test(arg)))).toBe(false)
+    })
+
+    it('reads the root alone with depth empty, and a property absent before the update from a parent svn did not have', async () => {
+      const { manager, calls } = scripted((_cwd, args) => {
+        if (args[0] === 'status') return { stdout: statusXml([{ path: '.', item: 'normal', props: 'conflicted', revision: 9 }]) }
+        if (args[0] === 'info' && !args.includes('--depth')) return { stdout: infoXml({ revision: 9 }) }
+        if (args[0] === 'info') return { stdout: `<info>${entry('.', 'dir')}<conflict type="property"/></entry></info>` }
+        if (args[0] === 'proplist' && args.some((arg) => arg.endsWith('@5'))) return failed('svn: E160013: path not found')
+        if (args[0] === 'proplist') return { stdout: `<properties><target path="."><property name="p">${args.includes('BASE') ? 'theirs' : 'mine'}</property></target></properties>` }
+        return undefined
+      })
+      expect(await manager.conflictSet(temporary, 5)).toMatchObject({ ok: true, value: { facts: [{ path: '.', kind: 'property',
+        properties: [{ name: 'p', older: null, mine: 'mine', theirs: 'theirs' }] }] } })
+      expect(calls.find((call) => call.args.includes('--depth'))?.args).toEqual(['info', '--non-interactive', '--xml', '--depth', 'empty', '--', '.'])
+    })
+
+    it('answers a failed read as an svn failure and reads nothing more for a set without conflicts', async () => {
+      expect(await scripted(() => failed('svn: E155037: Previous operation has not finished')).manager.conflictSet(temporary, 5))
+        .toMatchObject({ ok: false, code: 'locked' })
+      const clean = scripted((_cwd, args) => args[0] === 'status' ? { stdout: statusXml([{ path: 'a.txt', item: 'modified', revision: 9 }]) }
+        : args[0] === 'info' ? { stdout: infoXml({ revision: 9 }) } : undefined)
+      expect(await clean.manager.conflictSet(temporary, 5)).toEqual({ ok: true, value: { revision: 9, facts: [],
+        rows: [{ path: 'a.txt', item: 'modified', conflict: false, base: 9 }] } })
+      expect(clean.calls).toHaveLength(2)
+    })
   })
 
   describe('proofs', () => {

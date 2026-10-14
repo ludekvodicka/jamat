@@ -129,6 +129,8 @@ export function useTerminalAttachment(
    * synthetic path beside it, `sendCommand`, deliberately reports nothing: nobody typed that.
    */
   onTyped: (data: string) => void,
+  /** Why the last paste put nothing in the prompt, or null once one did. Read lazily like `onMenu`. */
+  onPasteNote: (note: string | null) => void,
 ): TerminalAttachmentHandle {
   const [state, setState] = useState<TerminalSurfaceState>({
     status: 'connecting',
@@ -149,6 +151,7 @@ export function useTerminalAttachment(
   const readAgentRef = useRef(readAgent)
   const onMenuRef = useRef(onMenu)
   const onTypedRef = useRef(onTyped)
+  const onPasteNoteRef = useRef(onPasteNote)
   // Committed rather than written mid-render. A render can be started and thrown away, and a
   // discarded one would leave these pointing at callbacks belonging to a tree that was never
   // committed - which in this surface means a wrong `readAgent` answer becoming wrong bytes, since
@@ -158,6 +161,7 @@ export function useTerminalAttachment(
     readAgentRef.current = readAgent
     onMenuRef.current = onMenu
     onTypedRef.current = onTyped
+    onPasteNoteRef.current = onPasteNote
   })
 
   useEffect(() => {
@@ -223,14 +227,30 @@ export function useTerminalAttachment(
     // await: the surface can be gone by then.
     let disposed = false
 
-    const pasteIn = async (): Promise<void> => {
-      const read = transport.clipboardRead
-      if (read === undefined) return
-      const text = await read()
+    /**
+     * The clipboard as text to paste: an image or a file arrives as its path on the computer the
+     * agent runs on. Null where there is nothing to paste or the surface went away.
+     */
+    const readPaste = async (): Promise<string | null> => {
+      const answer = await transport.clipboardPaste()
       // The clipboard read is the one await between the key and the write, and the surface can go
       // away inside it: the tab closes, or a restart mints a new attach. Without this the write goes
       // to an attach id main has already released, which refuses it and says nothing.
-      if (disposed || text === null) return
+      if (disposed) return null
+      if (answer.kind === 'refused') {
+        onPasteNoteRef.current(answer.detail)
+        return null
+      } else if (answer.kind === 'empty') return null
+      else if (answer.kind === 'text') {
+        onPasteNoteRef.current(null)
+        return answer.text
+      } else
+        throw new Error(`Unknown clipboard paste: ${JSON.stringify(answer)}`)
+    }
+
+    const pasteIn = async (): Promise<void> => {
+      const text = await readPaste()
+      if (text === null) return
       const bytes = TerminalClipboard.pasteOf(text)
       if (bytes === null) return
       onTypedRef.current(bytes)
@@ -241,13 +261,11 @@ export function useTerminalAttachment(
     // let you edit. There is one way to the clipboard from here and this is not a second one.
     let pasteAsTextRun: (() => void) | null = null
     const pasteAsText = async (): Promise<void> => {
-      const read = transport.clipboardRead
-      if (read === undefined) return
-      const text = await read()
       // Same as above, and worse: a run started after the cleanup keeps firing writes into a dead
       // attach for as long as the line sequence lasts, because the cleanup cancelled a run that had
-      // not started yet.
-      if (disposed || text === null) return
+      // not started yet. `readPaste` answers null for a surface that went away.
+      const text = await readPaste()
+      if (text === null) return
       // The lines are spaced out over seconds, so a run outlives the click that started it: whatever
       // replaces it - a second paste, or this attach going away - stops it first.
       pasteAsTextRun?.()
@@ -265,13 +283,8 @@ export function useTerminalAttachment(
       // Taken from xterm rather than left to it: xterm spells Ctrl+V as the control byte \x16 and
       // cancels the event, which also stops the browser's own paste from ever firing. Left alone,
       // the key reaches the agent as a byte it does nothing with and nothing is pasted at all.
-      if (TerminalClipboard.isPasteKey(event)) {
-        // A transport with no clipboard read has nothing to paste, so the key is left to xterm
-        // rather than swallowed into a handler that returns at once. The remote one is that
-        // transport today - `remote:terminal-*` carries attach, input, resize, active and detach and
-        // nothing else - and it says so by not having the member at all. Copying out works, so this
-        // is half a pair; the trigger for the other half is a clipboard read on the peer protocol.
-        if (transport.clipboardRead === undefined) return true
+      if (TerminalClipboard.isPasteKey(event)
+        || (!transport.agentSharesClipboard && TerminalClipboard.isAgentImagePasteKey(event))) {
         event.preventDefault()
         void pasteIn()
         return false

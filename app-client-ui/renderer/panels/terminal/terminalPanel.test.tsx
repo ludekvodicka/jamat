@@ -41,6 +41,9 @@ import { PanelFileToolsRegistry } from '../../fileViewer/panelFileToolsRegistry'
 import { PanelFocusRegistry } from '../../shell/panelFocusRegistry'
 import type { PanelOpenOutcome } from '../../shell/appShell.types'
 import { SessionsMarksStore } from '../../sessions/sessionsMarksStore'
+import { SessionTasksStore } from '../../sessions/sessionTasksStore'
+import type { SessionTaskListing } from '../../../../lib-orchestrator/sessionTasks/sessionTasksApi.types'
+import type { TabControlTaskItem } from '../../../shared/tabControl'
 import { TabDecorationsStore } from '../../widgets/tabs/tabDecorations'
 import { TabDecorationsProvider } from '../../widgets/tabs/tabDecorationsContext'
 import { PanelSplitParams, type PanelSplitFileItem } from '../../widgets/tabs/panelSplit'
@@ -557,6 +560,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
   let settings: AgentSettingsStore
   let compact: SessionCompact
   let marks: SessionsMarksStore
+  let tasks: SessionTasksStore
   let splitPins: SplitPinsFake
   let stopSessions: (() => void) | null = null
 
@@ -573,6 +577,9 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
     })
     marks = new SessionsMarksStore(sessions)
     marks.start()
+    tasks = new SessionTasksStore(sessions, {
+      list: async () => ({ ok: true, value: { ok: true, value: {} } }), reportError: vi.fn(),
+    })
     stopSessions = sessions.start()
     await act(async () => {
       await Promise.resolve()
@@ -624,6 +631,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
           drafts={drafts}
           panelFocus={panelFocus}
           sessions={sessions}
+          tasks={tasks}
           remoteSessions={remoteSessions}
           sessionModel={sessionModel}
           settings={settings}
@@ -657,6 +665,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
           drafts={drafts}
           panelFocus={panelFocus}
           sessions={sessions}
+          tasks={tasks}
           remoteSessions={remoteSessions}
           sessionModel={sessionModel}
           settings={settings}
@@ -764,6 +773,9 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
       reportError: () => undefined,
     })
     marks = new SessionsMarksStore(sessions)
+    tasks = new SessionTasksStore(sessions, {
+      list: async () => ({ ok: true, value: { ok: true, value: {} } }), reportError: vi.fn(),
+    })
     stopSessions = null
     splitPins = new SplitPinsFake()
     installBridge()
@@ -1260,7 +1272,82 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
     })
   })
 
-  /** The fourth tab of a local terminal, and the only one the FileViewer never has. */
+  describe('the Processes tab', () => {
+    const listing: SessionTaskListing = { kind: 'tasks', olderFinished: 0, catchingUp: false, rows: [
+      { kind: 'subagent', subagentId: 'agent-1', agentType: 'Explore', description: 'Find callers', depth: 1,
+        parentSubagentId: null, state: 'done', startedAt: 1_000, endedAt: 4_000, model: null, step: null },
+      { kind: 'shell', shellId: 'shell-1', command: 'pnpm test', description: 'Test application',
+        state: 'running', startedAt: 2_000, endedAt: null },
+    ] }
+
+    it('shows history by default, filters Active, and opens each kind through the task operation', async () => {
+      const snapshot = SessionsFixtures.mixed()
+      const info = snapshot.sessions.find((session) => session.sessionId === 's-working')!
+      info.scripts = { runs: [{ runId: 'run-1', phase: 'inner', scriptId: 'requested', name: 'Build', title: 'Build application',
+        state: 'succeeded', summary: 'Build succeeded', startedAt: 1_000, endedAt: 5_000, commands: [], row: false, log: 'saved' }] }
+      await withSessions(snapshot)
+      const listings = new Map([['s-working', listing]])
+      vi.spyOn(tasks, 'current').mockReturnValue(listings)
+      const calls: Omit<TabControlTaskItem, 'key'>[] = []
+      const original = window.appClient.control.call
+      vi.spyOn(window.appClient.control, 'call').mockImplementation((operation, body) => {
+        if (operation !== 'sessionTasks.open') return original(operation, body)
+        calls.push(body as Omit<TabControlTaskItem, 'key'>)
+        return Promise.resolve(ControlBridgeFixture.valueOf(operation, { ok: true, value: {} }))
+      })
+      const view = mount(new PanelApiFake('terminal:processes'), 's-working', {
+        params: { sidebar: { visible: true, width: 440, activeView: 'processes' } },
+      })
+      const panel = within(view.getByRole('region', { name: 'Session processes' }))
+      expect(panel.getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true')
+      expect(panel.getByText('Explore: Find callers')).toBeTruthy()
+      expect(panel.getByText('Build application')).toBeTruthy()
+      fireEvent.click(panel.getByText('Explore: Find callers'))
+      fireEvent.click(panel.getByText('$ pnpm test'))
+      fireEvent.click(panel.getByText('Build application'))
+      expect(calls).toEqual([
+        { sessionId: 's-working', task: { kind: 'subagent', subagentId: 'agent-1' }, title: 'Explore: Find callers' },
+        { sessionId: 's-working', task: { kind: 'shell', shellId: 'shell-1' }, title: '$ pnpm test' },
+        { sessionId: 's-working', task: { kind: 'script', runId: 'run-1' }, title: 'Build application' },
+      ])
+      fireEvent.click(panel.getByRole('button', { name: 'Active' }))
+      expect(panel.getByRole('button', { name: 'Active' })).toHaveAttribute('aria-pressed', 'true')
+      expect(panel.queryByText('Explore: Find callers')).toBeNull()
+      expect(panel.queryByText('Build application')).toBeNull()
+      expect(panel.getByText('$ pnpm test')).toBeTruthy()
+      fireEvent.click(panel.getByRole('button', { name: 'All' }))
+      expect(panel.getByText('Build application')).toBeTruthy()
+      await act(async () => { await Promise.resolve() })
+    })
+
+    it('watches only while Processes is selected and its panel and sidebar are visible', () => {
+      const release = vi.fn()
+      const watch = vi.spyOn(tasks, 'watch').mockReturnValue(release)
+      const api = new PanelApiFake('terminal:processes-watch')
+      const fileTools = new PanelFileToolsRegistry()
+      const view = mount(api, 'session-1', {
+        params: { sidebar: { visible: true, width: 440, activeView: 'workingTree' } }, fileTools,
+      })
+      expect(watch).not.toHaveBeenCalled()
+      fireEvent.click(view.getByRole('tab', { name: 'Processes' }))
+      expect(watch).toHaveBeenCalledExactlyOnceWith('session-1')
+      api.emitVisibility(false)
+      expect(release).toHaveBeenCalledTimes(1)
+      api.emitVisibility(true)
+      expect(watch).toHaveBeenCalledTimes(2)
+      act(() => fileTools.toggle('terminal:processes-watch'))
+      expect(release).toHaveBeenCalledTimes(2)
+      act(() => fileTools.toggle('terminal:processes-watch'))
+      expect(watch).toHaveBeenCalledTimes(3)
+      fireEvent.click(view.getByRole('tab', { name: 'File Changes' }))
+      expect(release).toHaveBeenCalledTimes(3)
+      fireEvent.click(view.getByRole('tab', { name: 'Processes' }))
+      expect(watch).toHaveBeenCalledTimes(4)
+      view.unmount()
+      expect(release).toHaveBeenCalledTimes(4)
+    })
+  })
+
   describe('the Notes tab', () => {
     function sidebarAt(activeView: string): Record<string, unknown> {
       return { sidebar: { visible: true, width: 440, activeView } }
@@ -1291,12 +1378,12 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
       })
     }
 
-    it('draws File Changes, Changelog, Explorer and Notes under a dock titled Tools', () => {
+    it('draws five tabs under a dock titled Tools', () => {
       const view = mount(new PanelApiFake('terminal:notes-tabs'), 'session-1', { params: sidebarAt('workingTree') })
 
       const dock = view.getByRole('complementary', { name: 'Tools' })
       expect(within(dock).getAllByRole('tab').map((tab) => tab.textContent))
-        .toEqual(['File Changes', 'Changelog', 'Explorer', 'Notes'])
+        .toEqual(['File Changes', 'Changelog', 'Explorer', 'Notes', 'Processes'])
       expect(view.queryByRole('complementary', { name: 'File tools' })).toBeNull()
       expect(notesReads).toEqual([])
     })
@@ -1352,7 +1439,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
       expect(fileChangesReads).toBe(0)
     })
 
-    it('restores a layout with each of the four keys without building the terminal again', async () => {
+    it('restores a layout with each of the five keys without building the terminal again', async () => {
       const api = new PanelApiFake('terminal:notes-layout')
       const view = mount(api, 'session-1', { params: sidebarAt('workingTree') })
       const screen = view.container.querySelector('.jamat-terminal__screen')
@@ -1362,6 +1449,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
         ['fileChanges', 'Changelog'],
         ['directoryExplorer', 'Explorer'],
         ['notes', 'Notes'],
+        ['processes', 'Processes'],
         ['workingTree', 'File Changes'],
       ] as const) {
         view.rerender(panelOf(api, 'session-1', { params: sidebarAt(key) }))
@@ -2385,6 +2473,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
           drafts={drafts}
           panelFocus={panelFocus}
           sessions={sessions}
+          tasks={tasks}
           remoteSessions={remoteSessions}
           sessionModel={sessionModel}
           settings={settings}

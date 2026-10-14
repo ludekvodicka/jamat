@@ -1,0 +1,6 @@
+{"timestamp":"2026-08-14T08:00:03.000Z","type":"session_meta","payload":{"id":"0198a000-0000-7000-8000-000000000002","parent_thread_id":"0198a000-0000-7000-8000-000000000001","agent_nickname":"Helper","cwd":"Q:/Project"}}
+{"timestamp":"2026-08-14T08:00:04.000Z","type":"event_msg","payload":{"type":"user_message","message":"Append a line"}}
+{"timestamp":"2026-08-14T08:01:00.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"FileChange","id":"exec-child","changes":{"Q:/Project/src/child.ts":{"type":"update","unified_diff":"@@ -1 +1,2 @@\n old\n+child\n","move_path":null}},"status":"completed"}}}
+{"timestamp":"2026-08-14T08:01:10.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"FileChange","id":"exec-declined","changes":{"Q:/Project/src/declined.ts":{"type":"add","content":"no"}},"status":"failed"}}}
+{"timestamp":"2026-08-14T08:01:20.000Z","type":"event_msg","payload":{"type":"patch_apply_end","call_id":"patch-legacy","success":true,"changes":{"Q:/Project/src/legacy.ts":{"type":"add","content":"legacy\n"}}}}
+{"timestamp":"2026-08-14T08:01:30.000Z","type":"event_msg","payload":{"type":"patch_apply_end","call_id":"patch-failed","success":false,"changes":{"Q:/Project/src/failed.ts":{"type":"add","content":"bad"}}}}

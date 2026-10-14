@@ -170,7 +170,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeProvisioners', () =>
             directoryId: '1:2:3',
             cwdSubpath: 'Member/src',
           },
-          checkout: { tool: 'svn', cwd: worktreePath, args: ['--non-interactive', 'checkout', '-q', '--', 'file:///repository/Group@41', '.'] },
+          checkout: { tool: 'svn', cwd: worktreePath, args: ['--non-interactive', 'checkout', '--', 'file:///repository/Group@41', '.'] },
         },
       })
     })

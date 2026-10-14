@@ -24,6 +24,8 @@ import { RemoteControlInstanceStore } from './remoteControlInstanceStore'
 import type {
   RemoteControlLiveTerminalAttachDto,
   RemoteControlLiveTerminalInputDto,
+  RemoteControlLiveTerminalPasteFileDto,
+  RemoteControlLiveTerminalPasteImageDto,
   RemoteControlLiveTerminalResizeDto,
 } from '../../../lib-orchestrator/remoteControl/remoteControlTerminal'
 import type {
@@ -44,6 +46,8 @@ interface LiveAttach {
 class FakeLiveTerminal {
   readonly attachments = new Map<string, LiveAttach>()
   readonly inputs: { ownerId: string; attachId: string; data: string }[] = []
+  readonly pastes: { ownerId: string; attachId: string; bytes: Uint8Array }[] = []
+  readonly fileChunks: { uploadId: string; fileName: string; size: number; offset: number; bytes: string }[] = []
   readonly resizes: { ownerId: string; attachId: string; cols: number; rows: number }[] = []
   readonly active: { ownerId: string; attachId: string; active: boolean }[] = []
   readonly detachedOwners: string[] = []
@@ -92,6 +96,33 @@ class FakeLiveTerminal {
   ): RemoteControlStepResult<RemoteControlLiveTerminalResizeDto> {
     this.active.push({ ownerId, attachId, active })
     return { ok: true, value: { attachId, accepted: true, applied: true } }
+  }
+
+  async pasteImageLive(
+    ownerId: string,
+    attachId: string,
+    bytes: Uint8Array,
+  ): Promise<RemoteControlStepResult<RemoteControlLiveTerminalPasteImageDto>> {
+    if (!this.attachments.has(FakeLiveTerminal.key(ownerId, attachId)))
+      return { ok: false, error: { code: 'not-found', detail: 'missing attach' } }
+    this.pastes.push({ ownerId, attachId, bytes })
+    return { ok: true, value: { attachId, path: `/images/${attachId}.png` } }
+  }
+
+  async pasteFileLive(
+    ownerId: string,
+    attachId: string,
+    uploadId: string,
+    chunk: { fileName: string; size: number; offset: number; bytes: Uint8Array },
+  ): Promise<RemoteControlStepResult<RemoteControlLiveTerminalPasteFileDto>> {
+    if (!this.attachments.has(FakeLiveTerminal.key(ownerId, attachId)))
+      return { ok: false, error: { code: 'not-found', detail: 'missing attach' } }
+    this.fileChunks.push({ uploadId, ...chunk, bytes: Buffer.from(chunk.bytes).toString() })
+    const received = chunk.offset + chunk.bytes.length
+    return {
+      ok: true,
+      value: { attachId, received, path: received === chunk.size ? `/files/${chunk.fileName}` : null },
+    }
   }
 
   detachLive(ownerId: string, attachId: string): RemoteControlStepResult<{ attachId: string }> {
@@ -220,6 +251,7 @@ class RemoteControlServerHarness {
         openActionReview: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         worktreeResults: async () => ({ ok: true, value: { results: [] } }),
         notifies: async () => ({ ok: true, value: { notifies: [] } }),
+        children: async () => ({ ok: true, value: { children: [] } }),
         acknowledgeWorktreeResult: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         proposeCommit: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         retrySetup: async () => ({ ok: true, value: undefined }),
@@ -234,8 +266,10 @@ class RemoteControlServerHarness {
         allocateSessionNumber: async () => ({ ok: true, value: { token: '002' } }),
         worktreeOf: async (sessionId) => ({
           ok: true,
-          value: { sessionId, worktree: null, retired: null, finish: null, action: null, outcome: null, cleanup: null, receipts: [] },
+          value: { sessionId, worktree: null, retired: null, finish: null, action: null, outcome: null, cleanup: null, receipts: [], step: null, workflow: null },
         }),
+        conflictsOf: async (sessionId) => ({ ok: false, code: 'not-found', detail: `Session ${sessionId} has no conflicts of an SVN action` }),
+        resolveConflict: async (sessionId) => ({ ok: false, code: 'not-found', detail: `Session ${sessionId} has no conflicts of an SVN action` }),
         runScript: async () => ({ ok: true, value: { runId: 'run-1' } }),
         scriptsOf: async (sessionId) => ({ ok: true, value: { sessionId, runs: [], log: null } }),
         setSessionColor: async () => ({ ok: true, value: undefined }),
@@ -1095,6 +1129,58 @@ describe('app-client-ui/app/remoteControl/remoteControlServer', () => {
       error: { code: 'conflict' },
     })
     expect(harness.terminal.inputs).toHaveLength(1)
+
+    const image = {
+      protocol: RemoteControlConst.protocol,
+      requestId: 'image-1',
+      operationId: 'image-op',
+      operation: 'terminal.pasteImage',
+      attachId: 'terminal-1',
+      data: Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64'),
+    }
+    socket.send(JSON.stringify(image))
+    await expect(inbox.wait((message) =>
+      message.type === 'response' && message.requestId === 'image-1')).resolves.toMatchObject({
+      ok: true,
+      value: { attachId: 'terminal-1', path: '/images/terminal-1.png' },
+    })
+    socket.send(JSON.stringify({ ...image, requestId: 'image-2', operationId: 'image-op-2', data: 'not base64!' }))
+    await expect(inbox.wait((message) =>
+      message.type === 'response' && message.requestId === 'image-2')).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'invalid-request', detail: 'data must be base64' },
+    })
+    expect(harness.terminal.pastes).toEqual([
+      { ownerId: expect.any(String), attachId: 'terminal-1', bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47]) },
+    ])
+
+    const chunk = {
+      protocol: RemoteControlConst.protocol,
+      operation: 'terminal.pasteFile',
+      attachId: 'terminal-1',
+      uploadId: 'upload-1',
+      fileName: 'notes.txt',
+      size: 6,
+    }
+    socket.send(JSON.stringify({ ...chunk, requestId: 'file-1', operationId: 'file-op-1', offset: 0, data: Buffer.from('abc').toString('base64') }))
+    await expect(inbox.wait((message) =>
+      message.type === 'response' && message.requestId === 'file-1')).resolves.toMatchObject({
+      ok: true,
+      value: { received: 3, path: null },
+    })
+    socket.send(JSON.stringify({ ...chunk, requestId: 'file-2', operationId: 'file-op-2', offset: 3, data: Buffer.from('def').toString('base64') }))
+    await expect(inbox.wait((message) =>
+      message.type === 'response' && message.requestId === 'file-2')).resolves.toMatchObject({
+      ok: true,
+      value: { received: 6, path: '/files/notes.txt' },
+    })
+    socket.send(JSON.stringify({ ...chunk, requestId: 'file-3', operationId: 'file-op-3', offset: 7, data: 'YQ==' }))
+    await expect(inbox.wait((message) =>
+      message.type === 'response' && message.requestId === 'file-3')).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'invalid-request', detail: 'offset must be an integer from 0 through 6' },
+    })
+    expect(harness.terminal.fileChunks.map((entry) => [entry.offset, entry.bytes])).toEqual([[0, 'abc'], [3, 'def']])
 
     socket.send(JSON.stringify({
       protocol: RemoteControlConst.protocol,

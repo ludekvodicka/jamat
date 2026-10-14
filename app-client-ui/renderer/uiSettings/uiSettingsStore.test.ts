@@ -33,7 +33,9 @@ describe('app-client-ui/renderer/uiSettings/uiSettingsStore', () => {
       scrollSpeedPercent: 100,
       terminalScrollSpeedPercent: 100,
       activateSessionOnDocument: false,
-      sessionsScriptRuns: false,
+      sessionsNestSubagents: true,
+      sessionsNestWorktrees: true,
+      sessionsNestTickets: true,
     }
   }
 
@@ -223,6 +225,23 @@ describe('app-client-ui/renderer/uiSettings/uiSettingsStore', () => {
     UiSettingsStore.committed(value(100, 100, 'soft'))
 
     expect(UiSettingsStore.current()).toEqual(value(100, 100, 'vscodeDark'))
+  })
+
+  // A cleared nesting box is a preview like a size: the tree draws it, so a write that did not
+  // carry it must not take it away. An absent key and true are the same answer.
+  it('tells a preview apart by a nesting toggle, and reads an absent one as nested', async () => {
+    const context = harness()
+    await context.answer(value(100))
+    const cleared = { ...value(100), sessionsNestWorktrees: false }
+    UiSettingsStore.preview(cleared)
+
+    UiSettingsStore.committed(value(100))
+    expect(UiSettingsStore.current()).toEqual(cleared)
+
+    const { sessionsNestTickets: _absent, ...legacy } = value(100)
+    UiSettingsStore.preview(legacy)
+    UiSettingsStore.committed(value(100))
+    expect(UiSettingsStore.current()).toEqual(value(100))
   })
 
   // The other half of the same rule: the preview WAS this write, so it goes, and the read that

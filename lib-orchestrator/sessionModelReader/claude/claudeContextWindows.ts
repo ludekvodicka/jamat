@@ -1,9 +1,11 @@
 /**
  * The context window and the human label for a Claude model id.
  *
- * Both are GUESSED from the id, because a Claude transcript stores the bare id and says nothing
- * about the tier it ran on. This is the one place a new model family arrives; an id this table does
- * not recognise answers null and the caller draws what it does know.
+ * The window here is GUESSED from the id, because a Claude transcript stores the bare id and says
+ * nothing about the tier it ran on. It is the fallback: a session Jamat started reports its own
+ * window through the status line relay (`sessionManager/launch/claudeStatusLine.ts`), and this table
+ * answers only where no snapshot does. An id it does not recognise answers null and the caller draws
+ * what it does know.
  */
 export class ClaudeContextWindows {
   private static readonly millionTokensConst = 1_000_000
@@ -11,11 +13,15 @@ export class ClaudeContextWindows {
   private static readonly oneMillionSuffixConst = /\[1m\]$/i
   /**
    * Models whose account DEFAULT is the million tier: `/model` lists `Opus 5.5 (1M context)
-   * (default)`, and a session started with no model named anywhere runs on it, while no file records
-   * that tier. Believed only when nothing names a model at all; the day the default moves, this list
-   * is wrong until it is edited.
+   * (default)` and `Fable 5.1 (1M context)`, and a session that lands on one of them with no tier
+   * named anywhere runs on it, while no file records that tier. Believed only when nothing names
+   * THIS model; the day a default moves, this list is wrong until it is edited.
+   *
+   * Fable 5.1 joined on 2026-10-13: a session whose transcript said `claude-fable-5-1` under a
+   * settings file saying `opus` drew a fifth of its window, because the settings model, which named
+   * another family, still counted as "something is configured" and kept the default out.
    */
-  private static readonly defaultMillionModelsConst = ['claude-opus-5-5']
+  private static readonly defaultMillionModelsConst = ['claude-opus-5-5', 'claude-fable-5-1']
   private static readonly familyPatternConst = /^claude-([a-z]+)-/i
   /**
    * The minor is optional because the ids lost it: V1 read `claude-opus-4-7` and this generation
@@ -41,19 +47,20 @@ export class ClaudeContextWindows {
    * auto-compact fired on a session at 9 percent.
    *
    * It is believed only when it MATCHES the id in the transcript, because it is configuration and
-   * `/model` can move a running session off it. A mismatch falls back to the smaller window, and so
-   * does a configured model that names no tier.
+   * `/model` can move a running session off it. A configured model that names another model is
+   * evidence about that other model and counts as nothing here, so the account default of the
+   * model the transcript names still applies; a matching one that names no tier is the smaller
+   * window.
    */
   static windowOf(model: string, configured?: string | null): number | null {
     if (ClaudeContextWindows.oneMillionSuffixConst.test(model))
       return ClaudeContextWindows.millionTokensConst
-    if (configured !== undefined && configured !== null
-      && ClaudeContextWindows.oneMillionSuffixConst.test(configured)
-      && ClaudeContextWindows.names(model, configured))
+    const named = configured !== undefined && configured !== null && configured !== ''
+      && ClaudeContextWindows.names(model, configured) ? configured : null
+    if (named !== null && ClaudeContextWindows.oneMillionSuffixConst.test(named))
       return ClaudeContextWindows.millionTokensConst
-    if ((configured === undefined || configured === null || configured === '')
-      && ClaudeContextWindows.defaultMillionModelsConst
-        .some((id) => ClaudeContextWindows.names(model, id)))
+    if (named === null && ClaudeContextWindows.defaultMillionModelsConst
+      .some((id) => ClaudeContextWindows.names(model, id)))
       return ClaudeContextWindows.millionTokensConst
     const family = ClaudeContextWindows.familyPatternConst.exec(model)?.[1]?.toLowerCase()
     // `fable` was missing until 2026-08-24, so a bare `claude-fable-5` session drew no window at
@@ -69,7 +76,7 @@ export class ClaudeContextWindows {
    * and the dated ids under it (`claude-opus-5` covers `claude-opus-5-20260101`), and nothing else:
    * a plain prefix made `claude-opus-5[1m]` name `claude-opus-5-5`, another release.
    */
-  private static names(model: string, configured: string): boolean {
+  static names(model: string, configured: string): boolean {
     const bare = configured.replace(ClaudeContextWindows.oneMillionSuffixConst, '').toLowerCase()
     const id = model.toLowerCase()
     if (bare.startsWith('claude-')) return id === bare || new RegExp(`^${bare}-\\d{8}$`).test(id)

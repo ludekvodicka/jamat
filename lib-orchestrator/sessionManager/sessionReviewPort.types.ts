@@ -5,7 +5,8 @@ import type { SessionsOpResult } from './sessionManagerApi.types'
  * review run of an SVN action opens its review through it once and waits for the status itself.
  */
 export interface SessionReviewPort {
-  open(input: { sessionId: string; scopeRoot: string; proposal: string }): Promise<SessionsOpResult<{ commitSessionId: string }>>
+  /** `parentId`: the session whose action reviews; once the review settles, its workflow takes the focus back. */
+  open(input: { sessionId: string; parentId: string; scopeRoot: string; proposal: string }): Promise<SessionsOpResult<{ commitSessionId: string }>>
   /** Whether the commit dialog still knows the review; a client restart forgets every one. */
   known(commitSessionId: string): boolean
   /**

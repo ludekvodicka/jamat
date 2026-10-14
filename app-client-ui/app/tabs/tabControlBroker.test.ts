@@ -620,6 +620,46 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     h.acknowledge('main', command, { kind: 'focused', panelId: 'original' })
   })
 
+  it("returns to the parent's workflow after an action's review settles, instead of the previous panel", async () => {
+    const h = new TabControlHarness()
+    h.session('parent')
+    h.session('original')
+    h.status('editing')
+    const pending = h.broker.openCommit('commit', 'Commit', 'svn', null, null,
+      { fresh: true, returnToWorkflow: { sessionId: 'parent', tabTitle: 'App - parent' } })
+    const opening = await h.command()
+    expect(opening).toMatchObject({ kind: 'open-session', activate: true })
+    h.session('commit')
+    h.acknowledge('main', opening, { kind: 'opened', panelId: 'commit' })
+    h.acknowledge('main', await h.command(1), { kind: 'commit-opened', panelId: 'commit' })
+    expect((await pending).ok).toBe(true)
+
+    h.status('committed')
+    h.broker.commitsChanged()
+    const command = await h.command(2)
+    expect(command).toMatchObject({ kind: 'open-workflow', panelId: 'parent', sessionId: 'parent' })
+    expect(h.windows.focused).toContain('main')
+    h.acknowledge('main', command, { kind: 'workflow-opened', panelId: 'parent' })
+    await h.settled()
+    expect(h.windows.published).toHaveLength(3)
+  })
+
+  it('returns nowhere after an action review when the return setting is off', async () => {
+    const h = new TabControlHarness(1_000, true, false)
+    h.session('parent')
+    h.session('commit')
+    h.status('editing')
+    const pending = h.broker.openCommit('commit', 'Commit', 'svn', null, null,
+      { fresh: true, returnToWorkflow: { sessionId: 'parent', tabTitle: 'App - parent' } })
+    h.acceptReview(await h.command())
+    expect((await pending).ok).toBe(true)
+    h.status('committed')
+    h.broker.commitsChanged()
+    await h.settled()
+    await h.settled()
+    expect(h.windows.published).toHaveLength(1)
+  })
+
   it('returns to the original panel in its current window after it was moved', async () => {
     const h = new TabControlHarness()
     h.session('commit')
@@ -1011,6 +1051,111 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
         code: 'timeout',
         detail: 'The workspace renderer did not confirm the tab command',
       },
+    })
+  })
+
+  describe('openTask', () => {
+    const itemConst = { key: 'task:session-1:subagent:a1', title: 'Explore: Look at docs', sessionId: 'session-1',
+      task: { kind: 'subagent' as const, subagentId: 'a1' } }
+
+    it('opens the parent tab before a script output item and leaves the run terminal alone', async () => {
+      const harness = new TabControlHarness()
+      const item = { key: 'task:session-1:script:run-1', title: 'Setup project', sessionId: 'session-1',
+        task: { kind: 'script' as const, runId: 'run-1' } }
+      const opened = harness.broker.openTask('Project - 001', item)
+      const sessionCommand = await harness.command(0)
+      expect(sessionCommand).toMatchObject({ kind: 'open-session', sessionId: 'session-1', activate: true })
+      harness.acknowledge('main', sessionCommand, { kind: 'opened', panelId: 'terminal:session-1' })
+      const taskCommand = await harness.command(1)
+      expect(taskCommand).toMatchObject({ kind: 'open-task', panelId: 'terminal:session-1', item })
+      harness.acknowledge('main', taskCommand, { kind: 'task-opened', panelId: 'terminal:session-1' })
+      await expect(opened).resolves.toEqual({ ok: true,
+        value: { kind: 'task-opened', panelId: 'terminal:session-1', windowId: 'main' } })
+      expect(harness.windows.published).toHaveLength(2)
+    })
+
+    it("sends open-task to the window that holds the parent's tab and focuses that window", async () => {
+      const harness = new TabControlHarness()
+      harness.session('session-1', 'holder')
+      harness.windows.focusOrRecreate('main')
+      const opened = harness.broker.openTask('Project - 001', itemConst)
+
+      const command = await harness.command()
+      expect(harness.windows.published.map((entry) => entry.windowId)).toEqual(['holder'])
+      expect(harness.windows.focused).toEqual(['main', 'holder'])
+      expect(command).toEqual({ kind: 'open-task', requestId: 'request-1', panelId: 'session-1', item: itemConst })
+      harness.acknowledge('holder', command, { kind: 'task-opened', panelId: 'session-1' })
+
+      await expect(opened).resolves.toEqual({ ok: true, value: { kind: 'task-opened', panelId: 'session-1', windowId: 'holder' } })
+    })
+
+    it('opens the tab first for a session with no tab, then sends open-task where it landed', async () => {
+      const harness = new TabControlHarness()
+      const opened = harness.broker.openTask('Project - 001', itemConst)
+
+      const sessionCommand = await harness.command(0)
+      expect(sessionCommand).toEqual({ kind: 'open-session', requestId: 'request-1', sessionId: 'session-1',
+        tabTitle: 'Project - 001', activate: true })
+      harness.acknowledge('main', sessionCommand, { kind: 'opened', panelId: 'terminal:session-1' })
+      const taskCommand = await harness.command(1)
+      expect(taskCommand).toEqual({ kind: 'open-task', requestId: 'request-2', panelId: 'terminal:session-1', item: itemConst })
+      expect(harness.windows.published.map((entry) => entry.windowId)).toEqual(['main', 'main'])
+      harness.acknowledge('main', taskCommand, { kind: 'task-opened', panelId: 'terminal:session-1' })
+
+      await expect(opened).resolves.toEqual({ ok: true,
+        value: { kind: 'task-opened', panelId: 'terminal:session-1', windowId: 'main' } })
+    })
+
+    it("passes on the window's refusal of a ninth task view", async () => {
+      const harness = new TabControlHarness()
+      harness.session('session-1')
+      const opened = harness.broker.openTask('Project - 001', itemConst)
+      harness.acknowledge('main', await harness.command(), { kind: 'failed', detail: 'The split already holds 8 task views.' })
+
+      await expect(opened).resolves.toEqual({ ok: false,
+        error: { code: 'operation-failed', detail: 'The split already holds 8 task views.' } })
+    })
+  })
+  describe('openWorkflow', () => {
+    it('opens a missing tab first, focuses its window, then sends open-workflow where it landed', async () => {
+      const harness = new TabControlHarness()
+      const opened = harness.broker.openWorkflow('session-1', 'Project - 001')
+
+      const sessionCommand = await harness.command(0)
+      expect(sessionCommand).toEqual({ kind: 'open-session', requestId: 'request-1', sessionId: 'session-1',
+        tabTitle: 'Project - 001', activate: true })
+      harness.acknowledge('main', sessionCommand, { kind: 'opened', panelId: 'terminal:session-1' })
+      const workflowCommand = await harness.command(1)
+      expect(workflowCommand).toEqual({ kind: 'open-workflow', requestId: 'request-2', panelId: 'terminal:session-1', sessionId: 'session-1' })
+      expect(harness.windows.focused).toContain('main')
+      harness.acknowledge('main', workflowCommand, { kind: 'workflow-opened', panelId: 'terminal:session-1' })
+
+      await expect(opened).resolves.toEqual({ ok: true,
+        value: { kind: 'workflow-opened', panelId: 'terminal:session-1', windowId: 'main' } })
+    })
+
+    it("sends open-workflow to the window that holds the session's tab and focuses that window", async () => {
+      const harness = new TabControlHarness()
+      harness.session('session-1', 'holder')
+      harness.windows.focusOrRecreate('main')
+      const opened = harness.broker.openWorkflow('session-1', 'Project - 001')
+
+      const command = await harness.command()
+      expect(harness.windows.published.map((entry) => entry.windowId)).toEqual(['holder'])
+      expect(harness.windows.focused).toEqual(['main', 'holder'])
+      expect(command).toEqual({ kind: 'open-workflow', requestId: 'request-1', panelId: 'session-1', sessionId: 'session-1' })
+      harness.acknowledge('holder', command, { kind: 'workflow-opened', panelId: 'session-1' })
+
+      await expect(opened).resolves.toEqual({ ok: true, value: { kind: 'workflow-opened', panelId: 'session-1', windowId: 'holder' } })
+    })
+
+    it('reads an acknowledgement of another kind as a failed command', async () => {
+      const harness = new TabControlHarness()
+      harness.session('session-1')
+      const opened = harness.broker.openWorkflow('session-1', 'Project - 001')
+      harness.acknowledge('main', await harness.command(), { kind: 'task-opened', panelId: 'session-1' })
+
+      await expect(opened).resolves.toMatchObject({ ok: false, error: { code: 'operation-failed' } })
     })
   })
 })

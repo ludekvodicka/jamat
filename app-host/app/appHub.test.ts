@@ -39,17 +39,20 @@ describe('app-host/app/appHub', () => {
   }
 
   /**
-   * The split moved controller.* and runtime.* into two services. Only both halves plus host.stop
-   * cover the wire, and assertComplete at boot is what turns a missing handler into a failed start
-   * instead of a 500 hours later.
+   * The split moved controller.* and runtime.* into two services. Only both halves plus the two
+   * `host.*` ops AppHost registers itself cover the wire, and assertComplete at boot is what turns a
+   * missing handler into a failed start instead of a 500 hours later.
    */
-  it('covers every wire operation once host.stop is registered alongside it', () => {
+  it('covers every wire operation once host.stop and host.health are registered alongside it', () => {
     const router = new HostOperationRouter()
     hub().registerOperations(router)
 
-    expect(() => router.assertComplete()).toThrow(/host\.stop/)
+    expect(() => router.assertComplete()).toThrow(/host\./)
 
     router.register('host.stop', () => ({ stopping: true, live: 0 }))
+    expect(() => router.assertComplete()).toThrow(/host\.health/)
+
+    router.register('host.health', () => ({ startedAt: 0, sampleEveryMs: 0, samples: [] }))
     expect(() => router.assertComplete()).not.toThrow()
   })
 
@@ -59,7 +62,7 @@ describe('app-host/app/appHub', () => {
     theHub.registerOperations(router)
 
     for (const name of Object.keys(HostWireConst.ops) as HostOpName[]) {
-      if (name === 'host.stop') continue
+      if (name === 'host.stop' || name === 'host.health') continue
       expect(() => router.register(name, () => undefined))
         .toThrow(/already registered/)
     }

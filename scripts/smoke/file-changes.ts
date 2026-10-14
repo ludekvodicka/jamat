@@ -357,7 +357,7 @@ class SmokeFileChanges extends SmokeHarness {
     const cwd = join(this.svnWorkingCopy, 'project')
     const manager = new FileChangesManager({
       diffExecutor: new FileDiffComputer(),
-      transcriptResolver: { resolve: async () => null },
+      transcriptResolver: { resolve: async () => null, subagentFiles: async () => [] },
     })
     const snapshot = SmokeFileChanges.snapshotOf(await manager.list({
       sessionId: 'svn-smoke',

@@ -3,10 +3,17 @@ import { SessionsFilterState, type SessionFilterStatus } from '../../../shared/s
 import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo, SessionsSnapshot } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
+import type {
+  SessionShellRow,
+  SessionSubagentRow,
+  SessionTaskListing,
+  SessionTaskRow,
+} from '../../../../lib-orchestrator/sessionTasks/sessionTasksApi.types'
 import { SessionsFixtures } from '../../sessions/fixtures/sessionsFixtures'
 import {
   SessionsTreeModel,
   type SessionsTreeBuildOptions,
+  type TaskRowRef,
   type TreeNode,
   type TreeResult,
   type TreeViewState,
@@ -393,6 +400,39 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
       expect(partial.worktreeLine).toContain('; removed once the session has ended')
     })
 
+    it('copies the step the library composed onto the node, and null where it sent none', () => {
+      expect(sessionNode('s-removing').step).toEqual({
+        text: 'Removing the worktree',
+        detail: '12,000 of 48,000 files',
+        progress: { done: 12000, total: 48000 },
+        startedAt: 1754600400000,
+      })
+      expect(sessionNode('s-finishing').step?.detail).toBe('svn log -v --xml -r4513:HEAD')
+      expect(sessionNode('s-svn').step).toBeNull()
+    })
+
+    it('hands a new object only to the row whose step moved and to its ancestors', () => {
+      const fixture = SessionsFixtures.svnWorktrees()
+      const first = build(fixture)
+      const moved: SessionsSnapshot = {
+        ...fixture,
+        revision: fixture.revision + 1,
+        sessions: fixture.sessions.map((session) => session.sessionId === 's-removing' && session.step
+          ? { ...session, step: { ...session.step, detail: '24,000 of 48,000 files', progress: { done: 24000, total: 48000 } } }
+          : session),
+      }
+      const second = build(moved, all, noMarks, first)
+      const projectId = 'project:category:nodejs/c:/projects/nodejs/appjamatv3'
+
+      const removing = find(second.nodes, 'session:s-removing')
+      expect(removing).not.toBe(find(first.nodes, 'session:s-removing'))
+      expect(removing.kind === 'session' ? removing.step?.progress : null).toEqual({ done: 24000, total: 48000 })
+      expect(find(second.nodes, projectId)).not.toBe(find(first.nodes, projectId))
+      expect(find(second.nodes, 'category:nodejs')).not.toBe(find(first.nodes, 'category:nodejs'))
+      expect(find(second.nodes, 'session:s-finishing')).toBe(find(first.nodes, 'session:s-finishing'))
+      expect(find(second.nodes, 'session:s-svn')).toBe(find(first.nodes, 'session:s-svn'))
+    })
+
     it('names where the work of a removed worktree went', () => {
       const node = sessionNode('s-retired')
 
@@ -643,7 +683,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
     const mixed = SessionsFixtures.mixed()
 
     expect(build({ ...mixed, sessions: [] }))
-      .toEqual({ nodes: [], emptyState: 'noSessions', fingerprints: new Map() })
+      .toEqual({ nodes: [], emptyState: 'noSessions', nextTaskExpiryAt: null, fingerprints: new Map() })
     expect(build(mixed, { filters: SessionsFilterState.allConst, filterText: 'nothing matches this' }).emptyState)
       .toBe('noMatch')
   })
@@ -773,8 +813,8 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
     })
     expect(primary.waitingOn).toEqual(open)
     expect(primary.scriptRuns.map((run) => [run.summary, run.open])).toEqual([['Setup alpha · running', open]])
-    expect(primary.scriptRun).toBe(false)
-    expect(install.scriptRun).toBe(true)
+    expect(primary.filedWithParent).toBe(false)
+    expect(install.filedWithParent).toBe(true)
     expect(install.scriptsBadge).toBe(null)
     expect(install.waitingOn).toBe(null)
   })
@@ -892,5 +932,489 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
 
     expect(dirty.badges.vcs).toBe('git')
     expect(clean.badges.vcs).toBeNull()
+  })
+
+  describe('session children', () => {
+    const source = SessionsFixtures.mixed()
+    const { worktree: _worktree, ...plain } = source.sessions.find((session) => session.sessionId === 's-working')!
+    const elsewhere = source.sessions.find((session) => session.sessionId === 's-lost')!
+    const projectId = 'project:category:nodejs/c:/projects/nodejs/appjamatv3'
+
+    function session(sessionId: string, fields: Partial<SessionInfo> = {}): SessionInfo {
+      return { ...plain, sessionId, title: sessionId, tabTitle: `AppJamatV3 - ${sessionId}`, activity: 'idle', ...fields }
+    }
+
+    function childOf(
+      parentId: string,
+      kind: NonNullable<SessionInfo['parent']>['kind'] = 'worktree',
+      sameProject = true,
+    ): Pick<SessionInfo, 'parent'> {
+      return { parent: { sessionId: parentId, kind, sameProject } }
+    }
+
+    function snapshotOf(...sessions: SessionInfo[]): SessionsSnapshot {
+      return { ...source, sessions }
+    }
+
+    function sessionIdsUnder(nodes: readonly TreeNode[], id: string): string[] {
+      return find(nodes, id).children.map((node) => node.id)
+    }
+
+    it('draws a worktree child of the same project under its parent, filed with it', () => {
+      const result = build(snapshotOf(session('P'), session('C', childOf('P'))))
+      const child = find(result.nodes, 'session:C')
+      if (child.kind !== 'session') throw new Error('no child node')
+
+      expect(sessionIdsUnder(result.nodes, projectId)).toEqual(['session:P'])
+      expect(sessionIdsUnder(result.nodes, 'session:P')).toEqual(['session:C'])
+      expect(child.filedWithParent).toBe(true)
+    })
+
+    it('keeps a ticket child of another project a root under that project', () => {
+      const result = build(snapshotOf(
+        session('P'),
+        session('C', { ...childOf('P', 'ticket', false), directory: elsewhere.directory, project: elsewhere.project }),
+      ))
+      const child = find(result.nodes, 'session:C')
+      if (child.kind !== 'session') throw new Error('no child node')
+
+      expect(sessionIdsUnder(result.nodes, 'session:P')).toEqual([])
+      expect(sessionIdsUnder(result.nodes, 'project:category:web/c:/projects/web/webjamatadmin')).toEqual(['session:C'])
+      expect(child.filedWithParent).toBe(false)
+    })
+
+    it('keeps the setup run of a child under the child, and the child under its parent', () => {
+      const result = build(snapshotOf(
+        session('P'),
+        session('C', childOf('P')),
+        session('R', { kind: 'shell', script: { parentId: 'C', phase: 'before', scriptId: 'setup' } }),
+      ))
+
+      expect(sessionIdsUnder(result.nodes, projectId)).toEqual(['session:P'])
+      expect(sessionIdsUnder(result.nodes, 'session:P')).toEqual(['session:C'])
+      expect(sessionIdsUnder(result.nodes, 'session:C')).toEqual(['session:R'])
+    })
+
+    it('draws a child of a nested child as a root: one hop', () => {
+      const result = build(snapshotOf(session('P'), session('C', childOf('P')), session('G', childOf('C'))))
+
+      expect(sessionIdsUnder(result.nodes, projectId)).toEqual(['session:G', 'session:P'])
+      expect(sessionIdsUnder(result.nodes, 'session:P')).toEqual(['session:C'])
+      expect(sessionIdsUnder(result.nodes, 'session:G')).toEqual([])
+    })
+
+    it('files the family under its most urgent live member, and an ended child does not count', () => {
+      const waiting = snapshotOf(session('P'), session('C', { ...childOf('P'), activity: 'waiting' }))
+      const attention = build(waiting, { ...all, stateGroup: 'attention' })
+
+      expect(sessionIdsUnder(attention.nodes, projectId)).toEqual(['session:P'])
+      expect(sessionIdsUnder(attention.nodes, 'session:P')).toEqual(['session:C'])
+      expect(build(waiting, { ...all, stateGroup: 'read' }).emptyState).toBe('noMatch')
+
+      const ended = snapshotOf(session('P'), session('C', {
+        ...childOf('P'), life: 'ended', outcome: 'interrupted', activity: 'unknown', endedAt: nowConst - hourConst,
+      }))
+      expect(build(ended, { ...all, stateGroup: 'attention' }).emptyState).toBe('noMatch')
+      expect(sessionIdsUnder(build(ended, { ...all, stateGroup: 'read' }).nodes, 'session:P')).toEqual(['session:C'])
+    })
+
+    it('files a run of a waiting child with the family, two hops up', () => {
+      const snapshot = snapshotOf(
+        session('P'),
+        session('C', { ...childOf('P'), activity: 'waiting' }),
+        session('R', { kind: 'shell', activity: 'working', script: { parentId: 'C', phase: 'before', scriptId: 'setup' } }),
+      )
+
+      expect(sessionIdsUnder(build(snapshot, { ...all, stateGroup: 'attention' }).nodes, 'session:C')).toEqual(['session:R'])
+      expect(build(snapshot, { ...all, stateGroup: 'running' }).emptyState).toBe('noMatch')
+    })
+
+    it('files a child in its parent group whatever its own assignment says', () => {
+      const snapshot = snapshotOf(session('P'), session('C', childOf('P')))
+      const assignments = new Map<string, SessionGroup>([['session:P', 'pinned'], ['session:C', 'automation']])
+
+      expect(sessionIdsUnder(build(snapshot, { ...all, assignments, group: 'pinned' }).nodes, 'session:P')).toEqual(['session:C'])
+      expect(build(snapshot, { ...all, assignments, group: 'automation' }).emptyState).toBe('noMatch')
+    })
+
+    it('draws a child as a root once its parent is removed or filtered away', () => {
+      const removed = build(snapshotOf(session('C', childOf('P', 'worktree', false))))
+      const unlisted = build(snapshotOf(session('C', childOf('P'))))
+      const hidden = build(snapshotOf(session('P'), session('C', { ...childOf('P'), title: 'Quokka' })), { ...all, filterText: 'quokka' })
+
+      for (const result of [removed, unlisted, hidden])
+        expect(sessionIdsUnder(result.nodes, projectId)).toEqual(['session:C'])
+    })
+
+    it('draws each kind of child as a root once its own Settings toggle is off, and only that kind', () => {
+      const snapshot = snapshotOf(
+        session('P'),
+        session('W', childOf('P', 'worktree')),
+        session('T', childOf('P', 'ticket')),
+        session('K', childOf('P', 'worker')),
+      )
+      const nested = SessionsTreeModel.nestedConst
+      const cases = [
+        [{ ...nested, worktrees: false }, 'session:W'],
+        [{ ...nested, tickets: false }, 'session:T'],
+        [{ ...nested, subagents: false }, 'session:K'],
+      ] as const
+
+      expect(sessionIdsUnder(build(snapshot, { ...all, nesting: nested }).nodes, 'session:P'))
+        .toEqual(['session:K', 'session:T', 'session:W'])
+      for (const [nesting, root] of cases) {
+        const result = build(snapshot, { ...all, nesting })
+        const node = find(result.nodes, root)
+        if (node.kind !== 'session') throw new Error(`no node ${root}`)
+        expect(sessionIdsUnder(result.nodes, projectId)).toEqual(['session:P', root].sort())
+        expect(sessionIdsUnder(result.nodes, 'session:P')).not.toContain(root)
+        expect(sessionIdsUnder(result.nodes, 'session:P')).toHaveLength(2)
+        expect(node.filedWithParent).toBe(false)
+      }
+    })
+
+    it('rebuilds the tree when only a toggle changed, and gives the parent its child back when it is on again', () => {
+      const snapshot = snapshotOf(session('P'), session('C', childOf('P')))
+      const first = build(snapshot)
+      const off = build(snapshot, { ...all, nesting: { ...SessionsTreeModel.nestedConst, worktrees: false } }, noMarks, first)
+      const on = build(snapshot, { ...all, nesting: SessionsTreeModel.nestedConst }, noMarks, off)
+
+      expect(sessionIdsUnder(first.nodes, 'session:P')).toEqual(['session:C'])
+      expect(sessionIdsUnder(off.nodes, projectId)).toEqual(['session:C', 'session:P'])
+      expect(find(off.nodes, 'session:P')).not.toBe(find(first.nodes, 'session:P'))
+      expect(sessionIdsUnder(on.nodes, 'session:P')).toEqual(['session:C'])
+    })
+
+    it('reads the Settings toggles as nested unless a key is false', () => {
+      expect(SessionsTreeModel.nestingOf({})).toEqual({ subagents: true, worktrees: true, tickets: true })
+      expect(SessionsTreeModel.nestingOf({ sessionsNestSubagents: false, sessionsNestTickets: true }))
+        .toEqual({ subagents: false, worktrees: true, tickets: true })
+    })
+
+    describe('a run follows the filters that keep its parent', () => {
+      const { agent: _agent, color: _color, ...shell } = session('R')
+
+      function runOf(sessionId: string, parentId: string, fields: Partial<SessionInfo> = {}): SessionInfo {
+        return {
+          ...shell, sessionId, title: sessionId, kind: 'shell', life: 'live', activity: 'working',
+          script: { parentId, phase: 'inner', scriptId: 'requested' }, ...fields,
+        }
+      }
+
+      function withFilters(filters: Partial<TreeViewState['filters']>, filterText = ''): ViewUnderTest {
+        return { ...all, filterText, filters: { ...all.filters, ...filters } }
+      }
+
+      it('draws an uncoloured run under a blue parent, and neither under a red one', () => {
+        const blue = snapshotOf(session('P', { color: 'blue' }), runOf('R', 'P'))
+        const red = snapshotOf(session('P', { color: 'red' }), runOf('R', 'P'))
+
+        expect(sessionIdsUnder(build(blue, withFilters({ colors: ['blue'] })).nodes, 'session:P')).toEqual(['session:R'])
+        expect(build(red, withFilters({ colors: ['blue'] })).emptyState).toBe('noMatch')
+      })
+
+      it('draws a run with no agent under a Claude parent', () => {
+        const snapshot = snapshotOf(session('P'), runOf('R', 'P'))
+
+        expect(sessionIdsUnder(build(snapshot, withFilters({ agents: ['claude'] })).nodes, 'session:P')).toEqual(['session:R'])
+        expect(build(snapshot, withFilters({ agents: ['codex'] })).emptyState).toBe('noMatch')
+      })
+
+      it('draws a starting run under a running parent', () => {
+        const snapshot = snapshotOf(session('P', { activity: 'working' }), runOf('R', 'P', { life: 'starting', activity: null }))
+
+        expect(sessionIdsUnder(build(snapshot, withFilters({ states: ['running'] })).nodes, 'session:P')).toEqual(['session:R'])
+      })
+
+      it('draws a running run under a parent that closed recently', () => {
+        const snapshot = snapshotOf(
+          session('P', { life: 'ended', outcome: 'interrupted', activity: 'unknown', endedAt: nowConst - hourConst }),
+          runOf('R', 'P'),
+        )
+
+        expect(sessionIdsUnder(build(snapshot, withFilters({ states: ['closedRecently'] })).nodes, 'session:P'))
+          .toEqual(['session:R'])
+      })
+
+      it('draws a run under a parent the text keeps, and as a root where only the run matches', () => {
+        const snapshot = snapshotOf(session('P', { title: 'Wombat' }), runOf('R', 'P', { title: 'Quokka' }))
+        const byParent = build(snapshot, withFilters({}, 'wombat'))
+        const byRun = build(snapshot, withFilters({}, 'quokka'))
+
+        expect(sessionIdsUnder(byParent.nodes, 'session:P')).toEqual(['session:R'])
+        expect(lookup(byRun.nodes, 'session:P')).toBeNull()
+        expect(sessionIdsUnder(byRun.nodes, projectId)).toEqual(['session:R'])
+      })
+
+      it('keeps a session child that does not match hidden under a parent that does', () => {
+        const snapshot = snapshotOf(session('P', { title: 'Wombat' }), session('C', childOf('P')))
+        const result = build(snapshot, withFilters({}, 'wombat'))
+
+        expect(sessionIdsUnder(result.nodes, 'session:P')).toEqual([])
+        expect(lookup(result.nodes, 'session:C')).toBeNull()
+      })
+    })
+
+    it('draws both sessions of a hand-edited cycle as roots', () => {
+      const result = build(snapshotOf(session('A', childOf('B')), session('B', childOf('A')), session('S', childOf('S'))))
+
+      expect(sessionIdsUnder(result.nodes, projectId)).toEqual(['session:A', 'session:B', 'session:S'])
+      expect(everyId(result.nodes).filter((id) => id.startsWith('session:'))).toHaveLength(3)
+    })
+  })
+
+  describe('task rows', () => {
+    function subagent(subagentId: string, fields: Partial<SessionSubagentRow> = {}): SessionSubagentRow {
+      return {
+        kind: 'subagent',
+        subagentId,
+        agentType: 'Explore',
+        description: `Agent ${subagentId}`,
+        depth: 1,
+        parentSubagentId: null,
+        state: 'running',
+        startedAt: 1_000,
+        endedAt: null,
+        model: null,
+        step: 'Bash pnpm test',
+        ...fields,
+      }
+    }
+
+    function shell(shellId: string, fields: Partial<SessionShellRow> = {}): SessionShellRow {
+      return {
+        kind: 'shell',
+        shellId,
+        command: 'ping -n 20 127.0.0.1',
+        description: 'Ping the loopback',
+        state: 'running',
+        startedAt: 1_000,
+        endedAt: null,
+        ...fields,
+      }
+    }
+
+    function listing(rows: readonly SessionTaskRow[], olderFinished = 0): SessionTaskListing {
+      return { kind: 'tasks', rows, olderFinished, catchingUp: false }
+    }
+
+    function idOf(task: TaskRowRef): string {
+      switch (task.kind) {
+        case 'subagent': return task.subagentId
+        case 'shell': return task.shellId
+        default: throw new Error(`Unknown task: ${JSON.stringify(task satisfies never)}`)
+      }
+    }
+
+    function buildWith(
+      tasks: ReadonlyMap<string, SessionTaskListing>,
+      previous: TreeResult | null = null,
+      options?: SessionsTreeBuildOptions,
+      view: ViewUnderTest = all,
+      snapshot: SessionsSnapshot = SessionsFixtures.mixed(),
+    ): TreeResult {
+      return SessionsTreeModel.build(
+        snapshot,
+        { inFront: noneInFront, tabbed: noneTabbed, now: nowConst, ...view },
+        noMarks,
+        previous,
+        options,
+        new Set(),
+        tasks,
+      )
+    }
+
+    function sessionOf(result: TreeResult, id: string): Extract<TreeNode, { kind: 'session' }> {
+      const node = find(result.nodes, id)
+      if (node.kind !== 'session') throw new Error(`${id} is not a session node`)
+      return node
+    }
+
+    it('keeps recent finished rows and puts a depth-2 row under its depth-1 row', () => {
+      const result = buildWith(new Map([['s-working', listing([
+        subagent('a1'),
+        subagent('a2', { state: 'done', step: null, endedAt: nowConst - 2_000 }),
+        subagent('b1', { depth: 2, parentSubagentId: 'a3' }),
+        subagent('a3'),
+        subagent('a4', { state: 'failed', step: null, endedAt: nowConst - 2_000 }),
+      ], 3)]]))
+
+      const tasks = sessionOf(result, 'session:s-working').tasks
+      expect(tasks?.placement).toBe('nested')
+      expect(tasks?.rows.map((row) => [idOf(row.task), row.depth])).toEqual([['a1', 1], ['a2', 1], ['a3', 1], ['b1', 2], ['a4', 1]])
+      expect(tasks?.rows.map((row) => idOf(row.task))).toEqual(['a1', 'a2', 'a3', 'b1', 'a4'])
+      expect(tasks?.rows.length).toBe(5)
+      expect(tasks?.rows[0]).toMatchObject({
+        sessionId: 's-working', label: 'Explore', description: 'Agent a1', detail: 'Bash pnpm test', state: 'running',
+      })
+    })
+
+    it('places the rows beside the session with its number once Nest sub-agents is off', () => {
+      const source = SessionsFixtures.mixed()
+      const snapshot = { ...source, sessions: source.sessions.map((info) => info.sessionId === 's-working'
+        ? { ...info, titleParts: { number: '018', name: info.titleParts.name } }
+        : info) }
+      const tasks = new Map([['s-working', listing([subagent('a1'), shell('b1', { state: 'done', endedAt: 2_000 })])]])
+      const nested = buildWith(tasks, null, undefined, all, snapshot)
+      const beside = buildWith(tasks, nested, undefined, { ...all, nesting: { ...SessionsTreeModel.nestedConst, subagents: false } }, snapshot)
+      const tasksKey = SessionsTreeModel.tasksPrintKeyOf('session:s-working')
+
+      expect(sessionOf(nested, 'session:s-working').tasks).toMatchObject({ placement: 'nested', numberPrefix: null })
+      expect(sessionOf(beside, 'session:s-working').tasks).toMatchObject({ placement: 'beside', numberPrefix: '018' })
+      expect(sessionOf(beside, 'session:s-working').tasks?.rows.map((row) => idOf(row.task))).toEqual(['a1'])
+      expect(beside.fingerprints.get(tasksKey)).not.toBe(nested.fingerprints.get(tasksKey))
+      expect(sessionOf(beside, 'session:s-waiting')).toBe(sessionOf(nested, 'session:s-waiting'))
+    })
+
+    it('draws a shell as `$ <command>` with its description, never under a sub-agent', () => {
+      const result = buildWith(new Map([['s-working', listing([
+        subagent('a1'),
+        shell('b1', { state: 'running' }),
+        shell('b2', { state: 'killed', endedAt: nowConst - 2_000, description: null }),
+      ])]]))
+
+      const tasks = sessionOf(result, 'session:s-working').tasks
+      expect(tasks?.rows.map((row) => idOf(row.task))).toEqual(['a1', 'b1', 'b2'])
+      expect(tasks?.rows[1]).toEqual({
+        id: 'task:s-working:shell:b1',
+        sessionId: 's-working',
+        task: { kind: 'shell', shellId: 'b1' },
+        label: '$ ping -n 20 127.0.0.1',
+        description: 'Ping the loopback',
+        detail: null,
+        state: 'running',
+        depth: 1,
+      })
+      expect(tasks?.rows[2]).toMatchObject({ task: { kind: 'shell', shellId: 'b2' }, state: 'killed', description: '' })
+    })
+
+    it('builds no task rows for a session with no listing, a none listing or an empty one', () => {
+      const result = buildWith(new Map<string, SessionTaskListing>([
+        ['s-waiting', { kind: 'none', code: 'transcript-not-found', reason: 'no file' }],
+        ['s-lost', listing([])],
+      ]))
+
+      expect(sessionOf(result, 'session:s-working').tasks).toBeNull()
+      expect(sessionOf(result, 'session:s-waiting').tasks).toBeNull()
+      expect(sessionOf(result, 'session:s-lost').tasks).toBeNull()
+    })
+
+    it('expires ended tasks at 5 seconds, keeps running and open tasks, and ignores unknown end times', () => {
+      const tasks = new Map([['s-working', listing([
+        subagent('running'),
+        subagent('recent', { state: 'done', endedAt: nowConst - 2_000 }),
+        subagent('boundary', { state: 'done', endedAt: nowConst - 5_000 }),
+        subagent('old', { state: 'failed', endedAt: nowConst - 7_000 }),
+        subagent('open', { state: 'done', endedAt: nowConst - 7_000 }),
+        subagent('unknown', { state: 'unfinished' }),
+        shell('open-unknown', { state: 'killed' }),
+      ], 80)]])
+      const openTaskKeys = new Set(['task:s-working:subagent:open', 'task:s-working:shell:open-unknown'])
+      const result = buildWith(tasks, null, undefined, { ...all, openTaskKeys })
+      expect(sessionOf(result, 'session:s-working').tasks?.rows.map((row) => idOf(row.task)))
+        .toEqual(['running', 'recent', 'open', 'open-unknown'])
+      expect(result.nextTaskExpiryAt).toBe(nowConst + 3_000)
+      const expired = buildWith(tasks, result, undefined, { ...all, openTaskKeys, now: nowConst + 3_000 })
+      expect(sessionOf(expired, 'session:s-working').tasks?.rows.map((row) => idOf(row.task)))
+        .toEqual(['running', 'open', 'open-unknown'])
+      expect(expired.nextTaskExpiryAt).toBeNull()
+      const closed = buildWith(tasks, expired, undefined, { ...all, now: nowConst + 3_000 })
+      expect(sessionOf(closed, 'session:s-working').tasks?.rows.map((row) => idOf(row.task))).toEqual(['running'])
+    })
+
+    it('places a running depth-2 child below its retained finished parent', () => {
+      const result = buildWith(new Map([['s-working', listing([
+        subagent('child', { depth: 2, parentSubagentId: 'parent' }),
+        subagent('other'),
+        subagent('parent', { state: 'done', endedAt: nowConst - 2_000 }),
+      ])]]))
+      expect(sessionOf(result, 'session:s-working').tasks?.rows.map((row) => idOf(row.task)))
+        .toEqual(['other', 'parent', 'child'])
+    })
+
+    it('retains recent or open script history without trimming the menu history or failed record rows', () => {
+      const source = SessionsFixtures.setupCollapsed()
+      const parent = source.sessions.find((info) => info.sessionId === 's-installed')!
+      const run = parent.scripts!.runs[0]!
+      const snapshot = { ...source, sessions: [{ ...parent, scripts: { ...parent.scripts!, runs: [
+        { ...run, runId: 'recent', endedAt: nowConst - 2_000 },
+        { ...run, runId: 'old', endedAt: nowConst - 7_000 },
+        { ...run, runId: 'open', endedAt: nowConst - 7_000 },
+        { ...run, runId: 'unknown', endedAt: undefined },
+        { ...run, runId: 'open-unknown', endedAt: undefined },
+      ] } }] }
+      const openTaskKeys = new Set(['task:s-installed:script:open', 'task:s-installed:script:open-unknown'])
+      const result = build(snapshot, { ...all, openTaskKeys })
+      const node = sessionOf(result, 'session:s-installed')
+      expect(node.scriptHistoryRows.map((entry) => entry.runId)).toEqual(['recent', 'open', 'open-unknown'])
+      expect(node.scriptRuns).toHaveLength(5)
+      expect(result.nextTaskExpiryAt).toBe(nowConst + 3_000)
+      expect(sessionOf(build(SessionsFixtures.setupOutcomes()), 'session:s-failed-install')).toBeTruthy()
+    })
+
+    it('gives a new node to the session whose listing moved, and keeps every other session node', () => {
+      const first = buildWith(new Map([['s-working', listing([subagent('a1')])], ['s-waiting', listing([subagent('w1')])]]))
+      const second = buildWith(
+        new Map([['s-working', listing([subagent('a1'), subagent('a2')])], ['s-waiting', listing([subagent('w1')])]]),
+        first,
+      )
+
+      expect(sessionOf(second, 'session:s-working')).not.toBe(sessionOf(first, 'session:s-working'))
+      const others = everyId(second.nodes).filter((id) => id.startsWith('session:') && id !== 'session:s-working')
+      expect(others.length).toBeGreaterThan(3)
+      for (const id of others)
+        expect(find(second.nodes, id)).toBe(find(first.nodes, id))
+      expect(sessionOf(second, 'session:s-waiting').tasks).toBe(sessionOf(first, 'session:s-waiting').tasks)
+    })
+
+    it('changes the tasks print and keeps the session print when only a step moved', () => {
+      const first = buildWith(new Map([['s-working', listing([subagent('a1', { step: 'Read a.ts' })])]]))
+      const second = buildWith(new Map([['s-working', listing([subagent('a1', { step: 'Read b.ts' })])]]), first)
+      const tasksKey = SessionsTreeModel.tasksPrintKeyOf('session:s-working')
+
+      expect(second.fingerprints.get('session:s-working')).toBe(first.fingerprints.get('session:s-working'))
+      expect(second.fingerprints.get(tasksKey)).not.toBe(first.fingerprints.get(tasksKey))
+      expect(sessionOf(second, 'session:s-working').tasks?.rows[0].detail).toBe('Read b.ts')
+    })
+
+    it('names the drawn sessions: filtered ones are not built, folded groups hold theirs back', () => {
+      const active = build(SessionsFixtures.mixed(), { ...all, filters: SessionsFilterState.defaultConst })
+      const drawn = SessionsTreeModel.drawnSessionIdsOf([active], new Set())
+      expect(drawn.has('s-working')).toBe(true)
+      expect(drawn.has('s-done')).toBe(false)
+
+      const folded = SessionsTreeModel.drawnSessionIdsOf([build(SessionsFixtures.mixed())], new Set(['category:web']))
+      expect(folded.has('s-done')).toBe(false)
+      expect(folded.has('s-lost')).toBe(false)
+      expect(folded.has('s-working')).toBe(true)
+    })
+
+    it('hands back the same session node when its listing arrives again unchanged', () => {
+      const first = buildWith(new Map([['s-working', listing([subagent('a1')])]]))
+      const second = buildWith(new Map([['s-working', listing([subagent('a1')])]]), first)
+
+      expect(sessionOf(second, 'session:s-working')).toBe(sessionOf(first, 'session:s-working'))
+    })
+
+    it('builds no task rows on a remote snapshot, even when a listing names its session', () => {
+      const result = buildWith(new Map([['s-working', listing([subagent('a1')])]]), null, {
+        namespace: 'remote:pc',
+        target: { kind: 'remote', remoteEndpointId: 'pc' },
+        operationScope: 'remote',
+        interactive: true,
+        allowLocalPaths: false,
+      })
+      const tasks: unknown[] = []
+      const walk = (nodes: readonly TreeNode[]): void => {
+        for (const node of nodes) {
+          if (node.kind === 'session') tasks.push(node.tasks)
+          walk(node.children)
+        }
+      }
+      walk(result.nodes)
+
+      expect(tasks.length).toBeGreaterThan(0)
+      expect(tasks.every((one) => one === null)).toBe(true)
+    })
   })
 })

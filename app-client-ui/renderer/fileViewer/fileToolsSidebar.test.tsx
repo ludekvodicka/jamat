@@ -146,4 +146,28 @@ describe('app-client-ui/renderer/fileViewer/fileToolsSidebar', () => {
     )).toThrow('Notes selected without Notes content')
     vi.restoreAllMocks()
   })
+
+  it('adds Processes after Notes and renders it from a restored selection', () => {
+    const onSelect = vi.fn()
+    const view = render(<FileToolsSidebar sessionId="session" documentId={null} selected="processes"
+      changes={changesConst} workingTree={workingConst} onSelect={onSelect}
+      onOpenChanged={vi.fn()} onOpenDocument={vi.fn()}
+      notes={<p>notes body</p>} processes={<p className="processes-probe">processes body</p>} />)
+
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent))
+      .toEqual(['File Changes', 'Changelog', 'Explorer', 'Notes', 'Processes'])
+    expect(screen.getByRole('tab', { name: 'Processes' })).toHaveAttribute('aria-selected', 'true')
+    expect(view.container.querySelector('.file-tools-body .processes-probe')?.textContent).toBe('processes body')
+    expect(screen.queryByText('notes body')).toBeNull()
+    fireEvent.click(screen.getByRole('tab', { name: 'Processes' }))
+    expect(onSelect).toHaveBeenCalledWith('processes')
+  })
+
+  it('refuses Processes selected without content', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    expect(() => render(<FileToolsSidebar sessionId="session" documentId={null} selected="processes"
+      changes={changesConst} workingTree={workingConst} onSelect={vi.fn()}
+      onOpenChanged={vi.fn()} onOpenDocument={vi.fn()} />)).toThrow('Processes selected without Processes content')
+    vi.restoreAllMocks()
+  })
 })

@@ -1,5 +1,9 @@
 import { JsonShape } from '../../shared/jsonShape'
-import { FileChangesLogSource } from './fileChangesLogSource'
+import {
+  FileChangesLogSource,
+  type ParsedFileChangesLog,
+  type ParsedSubagentLog,
+} from './fileChangesLogSource'
 import type {
   RawFileChangesLogGroup,
   RawFileChangesLogMutation,
@@ -40,10 +44,17 @@ interface PendingClaudeMutation {
 }
 
 export class FileChangesLogSourceClaude extends FileChangesLogSource {
+  private static readonly spawnToolNameConst = 'Agent'
+
   readonly agentId = 'claude' as const
 
-  protected parse(content: string): readonly RawFileChangesLogGroup[] {
+  subagentsSince(): number {
+    return 0
+  }
+
+  protected parse(content: string): ParsedFileChangesLog {
     const groups: (RawFileChangesLogGroup & { mutations: RawFileChangesLogMutation[] })[] = []
+    const spawns = new Map<string, number>()
     const pending = new Map<string, PendingClaudeMutation>()
     let current: (RawFileChangesLogGroup & { mutations: RawFileChangesLogMutation[] }) | null = null
     let sequence = 0
@@ -69,19 +80,55 @@ export class FileChangesLogSourceClaude extends FileChangesLogSource {
         continue
       }
       for (const block of FileChangesLogSourceClaude.blocks(record.message?.content)) {
-        if (block.type === 'tool_use' && current !== null) {
-          const mutation = FileChangesLogSourceClaude.mutationOf(block, createdAt, sequence)
-          if (mutation !== null && typeof block.id === 'string')
-            pending.set(block.id, { group: current, mutation })
-        }
-        else if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
-          const found = pending.get(block.tool_use_id)
-          pending.delete(block.tool_use_id)
-          if (found && block.is_error !== true) found.group.mutations.push(found.mutation)
-        }
+        if (block.type === 'tool_use'
+          && block.name === FileChangesLogSourceClaude.spawnToolNameConst
+          && typeof block.id === 'string'
+          && current !== null)
+          spawns.set(block.id, groups.length - 1)
+        FileChangesLogSourceClaude.collect(block, current, pending, createdAt, sequence)
       }
     }
-    return groups.filter((group) => group.mutations.length > 0)
+    return { groups, spawns }
+  }
+
+  /** A sidechain file opens no group: its prompt is the parent's `Agent` call, not a user message. */
+  protected parseSubagent(content: string): ParsedSubagentLog {
+    const target = { mutations: [] as RawFileChangesLogMutation[] }
+    const pending = new Map<string, PendingClaudeMutation>()
+    let startedAt: number | null = null
+    let sequence = 0
+    let lastCreatedAt = 0
+    for (const raw of FileChangesLogSource.records(content)) {
+      sequence += 1
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue
+      const record = raw as ClaudeRecord
+      const createdAt = FileChangesLogSource.timestamp(record.timestamp, lastCreatedAt)
+      lastCreatedAt = createdAt
+      if (startedAt === null && createdAt > 0) startedAt = createdAt
+      for (const block of FileChangesLogSourceClaude.blocks(record.message?.content))
+        FileChangesLogSourceClaude.collect(block, target, pending, createdAt, sequence)
+    }
+    return { startedAt, mutations: target.mutations }
+  }
+
+  /** An `Edit` or `Write` counts only once its tool_result came back without an error. */
+  private static collect(
+    block: ClaudeContentBlock,
+    group: { mutations: RawFileChangesLogMutation[] } | null,
+    pending: Map<string, PendingClaudeMutation>,
+    createdAt: number,
+    sequence: number,
+  ): void {
+    if (block.type === 'tool_use' && group !== null) {
+      const mutation = FileChangesLogSourceClaude.mutationOf(block, createdAt, sequence)
+      if (mutation !== null && typeof block.id === 'string')
+        pending.set(block.id, { group, mutation })
+    }
+    else if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
+      const found = pending.get(block.tool_use_id)
+      pending.delete(block.tool_use_id)
+      if (found && block.is_error !== true) found.group.mutations.push(found.mutation)
+    }
   }
 
   private static userMessage(record: ClaudeRecord): string | null {

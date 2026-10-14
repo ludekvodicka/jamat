@@ -21,6 +21,7 @@ describe('app-client-ui/renderer/overlays/finalize/worktreeQuestion', () => {
     expect(WorktreeQuestion.spec.questionOf(session, 'local')).toEqual({
       label: 'Worktree',
       chosenDefault: 'merge',
+      startsWorkflow: ['merge'],
       choices: [
         {
           id: 'merge',
@@ -188,18 +189,26 @@ describe('app-client-ui/renderer/overlays/finalize/worktreeQuestion', () => {
       expect(WorktreeQuestion.spec.questionOf({ ...live, worktree: plain }, 'local')).toBeNull()
     })
 
-    it('says why a Finish waits and lets Keep end it; asks nothing while the action runs', () => {
+    it('asks nothing on this computer while an action runs or waits; a peer keeps Commit for a waiting one', () => {
       const waiting: SessionInfo = {
         ...svn(),
         svnAction: { kind: 'finish', stage: 'reviewing', needs: 'the review ended without a commit', needsKind: 'review-cancelled', review: null },
       }
-      const question = WorktreeQuestion.spec.questionOf(waiting, 'local')
-      expect(question?.note).toBe('The Finish waits for you: the review ended without a commit')
-      expect(question?.choices.find((choice) => choice.id === 'keep')).toMatchObject({ title: 'Keep worktree', submitLabel: 'Keep worktree' })
-      expect(WorktreeQuestion.spec.questionOf(waiting, 'remote')?.note).toBeUndefined()
+      expect(WorktreeQuestion.spec.questionOf(waiting, 'local')).toBeNull()
+      const remote = WorktreeQuestion.spec.questionOf(waiting, 'remote')
+      expect(remote?.choices.filter((choice) => choice.submitLabel !== null).map((choice) => choice.id)).toEqual(['commit'])
+      expect(remote?.startsWorkflow).toBeUndefined()
 
       const running: SessionInfo = { ...waiting, svnAction: { ...waiting.svnAction!, needs: null, needsKind: null } }
       expect(WorktreeQuestion.spec.questionOf(running, 'local')).toBeNull()
+      expect(WorktreeQuestion.spec.questionOf(running, 'remote')).toBeNull()
+    })
+
+    it('names Commit and Discard of an SVN worktree and Merge back of a Git one as the presses that start a workflow', () => {
+      expect(WorktreeQuestion.spec.questionOf(svn(), 'local')?.startsWorkflow).toEqual(['commit', 'discard'])
+      const git = sessionOf(SessionsFixtures.stoppedWorktree().sessions, 's-dirty')
+      expect(WorktreeQuestion.spec.questionOf(git, 'local')?.startsWorkflow).toEqual(['merge'])
+      expect(WorktreeQuestion.spec.questionOf(git, 'remote')?.startsWorkflow).toBeUndefined()
     })
   })
 })

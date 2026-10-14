@@ -226,12 +226,19 @@ class TerminalBridgeStub {
   private releaseHeld: (() => void) | null = null
 
   clipboard = ''
+  /** Set to make every paste refused with this sentence. */
+  pasteRefusal: string | null = null
   private listener: ((attachId: string, frame: TerminalFrame) => void) | null = null
   private remoteListener: ((
     remoteEndpointId: string,
     attachId: string,
     frame: TerminalFrame,
   ) => void) | null = null
+
+  pasteOf(): { kind: 'text'; text: string } | { kind: 'empty' } {
+    if (this.clipboard.length > 0) return { kind: 'text', text: this.clipboard }
+    return { kind: 'empty' }
+  }
 
   holdClipboard(): void {
 
@@ -274,9 +281,11 @@ class TerminalBridgeStub {
           this.calls.push({ method: 'detach', args: [attachId] })
           return Promise.resolve({ ok: true as const, value: undefined })
         },
-        clipboardRead: (attachId: string) => {
-          this.calls.push({ method: 'clipboardRead', args: [attachId] })
-          const answer = { ok: true as const, value: this.clipboard }
+        clipboardPaste: (attachId: string) => {
+          this.calls.push({ method: 'clipboardPaste', args: [attachId] })
+          const answer = this.pasteRefusal !== null
+            ? { ok: false as const, error: this.pasteRefusal }
+            : { ok: true as const, value: this.pasteOf() }
           if (this.heldClipboard === null) return Promise.resolve(answer)
           return this.heldClipboard.then(() => answer)
         },
@@ -320,6 +329,10 @@ class TerminalBridgeStub {
         terminalDetach: (remoteEndpointId: string, attachId: string) => {
           this.calls.push({ method: 'remoteDetach', args: [remoteEndpointId, attachId] })
           return Promise.resolve({ ok: true as const, value: { ok: true as const, value: {} } })
+        },
+        terminalClipboardPaste: (remoteEndpointId: string, attachId: string) => {
+          this.calls.push({ method: 'remoteClipboardPaste', args: [remoteEndpointId, attachId] })
+          return Promise.resolve({ ok: true as const, value: { ok: true as const, value: this.pasteOf() } })
         },
       },
       clipboard: {
@@ -404,6 +417,12 @@ function onTyped(data: string): void {
   typed.push(data)
 }
 
+/** Every paste note the hook reported, in order: a refusal's sentence, or null once a paste lands. */
+const pasteNotes: (string | null)[] = []
+function onPasteNote(note: string | null): void {
+  pasteNotes.push(note)
+}
+
 /** Every menu the hook asked for, in order, and how often it took one back. */
 const menus: TerminalMenuContext[] = []
 let menuClears = 0
@@ -431,6 +450,7 @@ function Harness(props: {
     readAgent,
     onMenu,
     onTyped,
+    onPasteNote,
   )
   return (
     <div>
@@ -467,6 +487,7 @@ function InlineMenuHarness(props: { sessionId: string }): React.JSX.Element {
     readAgent,
     (context) => { if (context !== null) menus.push(context) },
     onTyped,
+    onPasteNote,
   )
   return (
     <div>
@@ -488,6 +509,7 @@ function InlineAgentHarness(props: {
     () => props.agent,
     onMenu,
     onTyped,
+    onPasteNote,
   )
   return <div data-testid="holder" ref={holder} />
 }
@@ -573,6 +595,7 @@ describe('app-client-ui/renderer/panels/terminal/useTerminalAttachment', () => {
     menuClears = 0
     sends.length = 0
     typed.length = 0
+    pasteNotes.length = 0
     attachedAgent = null
     sizeHolders(800, 400)
     bridge = new TerminalBridgeStub()
@@ -1027,20 +1050,66 @@ describe('app-client-ui/renderer/panels/terminal/useTerminalAttachment', () => {
   })
 
   /**
-   * A remote attach has no channel for reading the clipboard, so there is nothing to paste. Taking
-   * the key anyway left Ctrl+V doing nothing at all and not even reaching the agent as a byte, with
-   * no sign that a channel was missing rather than a paste failing.
+   * The agent reads the clipboard of the computer it runs on, so a remote screen pastes THIS
+   * computer's clipboard through the endpoint: an image comes back as the path the other computer
+   * saved it under, quoted where it holds a space.
    */
-  it('leaves Ctrl+V to xterm on a remote screen, where there is no clipboard to read', () => {
+  it('pastes this computer\'s clipboard image on a remote screen as the path the other computer saved', async () => {
     render(<Harness sessionId="remote-session" remoteEndpointId="remote-pc::default::stable" />)
+    const attachId = bridge.remoteAttachIds()[0]
     const gate = terminal().keyHandler
     if (gate === null) throw new Error('no key handler was attached')
+    // What main answers for an image: the path it was saved under there, already quoted.
+    bridge.clipboard = '"C:/Users/Ann Lee/shot.png"'
 
     const event = new KeyboardEvent('keydown', { key: 'v', ctrlKey: true, cancelable: true })
 
-    expect(gate(event)).toBe(true)
+    expect(gate(event)).toBe(false)
+    expect(event.defaultPrevented).toBe(true)
+    await waitFor(() => expect(bridge.calls.at(-1)).toEqual({
+      method: 'remoteInput',
+      args: ['remote-pc::default::stable', attachId, '\x1b[200~"C:/Users/Ann Lee/shot.png"\x1b[201~'],
+    }))
+    expect(bridge.calls.some((call) => call.method === 'remoteClipboardPaste')).toBe(true)
+  })
+
+  /**
+   * Alt+V is the agent's own image paste, and the agent reads the clipboard of the computer it runs
+   * on. On a remote screen that is somebody else's clipboard, so the key is taken; on a local one the
+   * agent and the person share it and the key is left to the agent.
+   */
+  it('takes Alt+V on a remote screen and leaves it to the agent on a local one', async () => {
+    const view = render(<Harness sessionId="remote-session" remoteEndpointId="remote-pc::default::stable" />)
+    const remoteGate = terminal().keyHandler
+    if (remoteGate === null) throw new Error('no key handler was attached')
+    bridge.clipboard = 'text from here'
+    expect(remoteGate(new KeyboardEvent('keydown', { key: 'v', altKey: true, cancelable: true }))).toBe(false)
+    await waitFor(() => expect(bridge.calls.some((call) => call.method === 'remoteClipboardPaste')).toBe(true))
+    view.unmount()
+
+    render(<Harness sessionId="session-1" />)
+    const localGate = terminal().keyHandler
+    if (localGate === null) throw new Error('no key handler was attached')
+    const event = new KeyboardEvent('keydown', { key: 'v', altKey: true, cancelable: true })
+    expect(localGate(event)).toBe(true)
     expect(event.defaultPrevented).toBe(false)
-    expect(bridge.calls.some((call) => call.method === 'clipboardRead')).toBe(false)
+    expect(bridge.calls.some((call) => call.method === 'clipboardPaste')).toBe(false)
+  })
+
+  it('says why a refused paste put nothing in the prompt, and clears it once one lands', async () => {
+    render(<Harness sessionId="session-1" />)
+    const gate = terminal().keyHandler
+    if (gate === null) throw new Error('no key handler was attached')
+    bridge.pasteRefusal = 'the image is too large'
+
+    gate(new KeyboardEvent('keydown', { key: 'v', ctrlKey: true, cancelable: true }))
+    await waitFor(() => expect(pasteNotes.at(-1)).toBe('Paste failed: the image is too large'))
+    expect(bridge.calls.filter((call) => call.method === 'input')).toHaveLength(0)
+
+    bridge.pasteRefusal = null
+    bridge.clipboard = 'fine'
+    gate(new KeyboardEvent('keydown', { key: 'v', ctrlKey: true, cancelable: true }))
+    await waitFor(() => expect(pasteNotes.at(-1)).toBeNull())
   })
 
   /**
@@ -1113,7 +1182,7 @@ describe('app-client-ui/renderer/panels/terminal/useTerminalAttachment', () => {
 
     expect(gate(new KeyboardEvent('keydown', { key: 'V', ctrlKey: true, shiftKey: true })))
       .toBe(false)
-    await waitFor(() => expect(bridge.calls.some((call) => call.method === 'clipboardRead'))
+    await waitFor(() => expect(bridge.calls.some((call) => call.method === 'clipboardPaste'))
       .toBe(true))
     expect(bridge.calls.filter((call) => call.method === 'input')).toHaveLength(0)
   })
@@ -1400,8 +1469,8 @@ describe('app-client-ui/renderer/panels/terminal/useTerminalAttachment', () => {
         { method: 'input', args: [attachId, '\x1b[200~alpha\n\x1b[201~'] },
         { method: 'input', args: [attachId, '\x1b[200~beta\x1b[201~'] },
       ]))
-      expect(bridge.calls.filter((call) => call.method === 'clipboardRead'))
-        .toEqual([{ method: 'clipboardRead', args: [attachId] }])
+      expect(bridge.calls.filter((call) => call.method === 'clipboardPaste'))
+        .toEqual([{ method: 'clipboardPaste', args: [attachId] }])
       expect(typed).toEqual(['\x1b[200~alpha\n\x1b[201~', '\x1b[200~beta\x1b[201~'])
     })
 

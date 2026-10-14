@@ -1,6 +1,7 @@
 import {
   type TerminalThemeName,
   UiSettings,
+  type UiSettingsNestingKey,
   type UiSettingsValue,
 } from '../../../../../shared/uiSettings'
 import {
@@ -22,6 +23,7 @@ export type UiSettingsInput =
   | { input: 'scroll-speed'; percent: number }
   | { input: 'terminal-scroll-speed'; percent: number }
   | { input: 'activate-session-on-document'; value: boolean }
+  | { input: 'sessions-nest'; key: UiSettingsNestingKey; value: boolean }
 
 export type UiSettingsEffect = SettingsCardEffect<UiSettingsValue>
 
@@ -60,7 +62,8 @@ export class UiSettingsModel {
       && buffer.terminalTheme === loaded.terminalTheme
       && buffer.scrollSpeedPercent === loaded.scrollSpeedPercent
       && buffer.terminalScrollSpeedPercent === loaded.terminalScrollSpeedPercent
-      && (buffer.activateSessionOnDocument === true) === (loaded.activateSessionOnDocument === true))
+      && (buffer.activateSessionOnDocument === true) === (loaded.activateSessionOnDocument === true)
+      && UiSettings.nestingKeysConst.every((key) => (buffer[key] !== false) === (loaded[key] !== false)))
   }
 
   static transition(state: UiSettingsModelState, input: UiSettingsInput): UiSettingsStep {
@@ -105,6 +108,8 @@ export class UiSettingsModel {
       }))
     else if (input.input === 'activate-session-on-document')
       return UiSettingsModel.edited(state, (buffer) => ({ ...buffer, activateSessionOnDocument: input.value }))
+    else if (input.input === 'sessions-nest')
+      return UiSettingsModel.edited(state, (buffer) => ({ ...buffer, [input.key]: input.value }))
     else
       throw new Error(`Unknown ui settings input: ${JSON.stringify(input)}`)
   }

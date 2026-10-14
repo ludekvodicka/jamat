@@ -2,7 +2,10 @@ import { randomUUID } from 'node:crypto'
 import { lstat, readFile, stat } from 'node:fs/promises'
 import { relative } from 'node:path'
 
-import type { ProviderTranscriptRef } from '../projectManager/providerTranscriptView'
+import type {
+  ProviderSubagentFileRef,
+  ProviderTranscriptRef,
+} from '../projectManager/providerTranscriptView'
 import { ProviderTranscriptView } from '../projectManager/providerTranscriptView'
 import { ErrorText } from '../shared/errorText'
 import { PathCompare } from '../shared/pathCompare'
@@ -55,11 +58,23 @@ export interface FileChangesTranscriptResolver {
     cwd: string
     nativeSessionId: string
   }): Promise<ProviderTranscriptRef | null>
+  subagentFiles(input: {
+    agentId: FileChangesAgentId
+    cwd: string
+    nativeSessionId: string
+    since: number
+  }): Promise<readonly ProviderSubagentFileRef[]>
 }
 
 export interface FileChangesLogReader {
   readonly agentId: FileChangesAgentId
-  load(ref: ProviderTranscriptRef, cwd: string): Promise<readonly FileChangesLogGroup[]>
+  /** Where the sub-agent listing of this transcript starts; null lists none. */
+  subagentsSince(ref: ProviderTranscriptRef): number | null
+  load(
+    ref: ProviderTranscriptRef,
+    cwd: string,
+    subagents: readonly ProviderSubagentFileRef[],
+  ): Promise<readonly FileChangesLogGroup[]>
 }
 
 export interface FileChangesManagerDeps {
@@ -409,12 +424,14 @@ export class FileChangesManager {
     const source = this.logReaders.get(context.agent.agentId)
     if (!source) throw new Error(`No log source for ${context.agent.agentId}`)
     try {
-      const ref = await this.transcriptResolver.resolve({
-        agentId: context.agent.agentId,
-        cwd: context.cwd,
-        nativeSessionId: context.agent.nativeSessionId,
-      })
-      return ref === null ? [] : await source.load(ref, context.cwd)
+      const agent = { ...context.agent, cwd: context.cwd }
+      const ref = await this.transcriptResolver.resolve(agent)
+      if (ref === null) return []
+      const since = source.subagentsSince(ref)
+      const subagents = since === null
+        ? []
+        : await this.transcriptResolver.subagentFiles({ ...agent, since })
+      return await source.load(ref, context.cwd, subagents)
     }
     catch (error) {
       warnings.push(`Transcript history: ${ErrorText.of(error)}`)

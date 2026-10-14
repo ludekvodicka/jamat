@@ -508,7 +508,9 @@ export class SessionsFixtures {
   /**
    * SVN worktree sessions as the library composes them: one waiting for Finish, one whose finish
    * waits in a review, one whose last finish left work behind, one a peer update stopped, a legacy
-   * store-cut Git worktree offered Keep and Discard only, and one whose worktree is removed.
+   * store-cut Git worktree offered Keep and Discard only, and one whose worktree is removed. Two carry
+   * the step this client runs for them: a Discard removing its worktree with a counted total, and a
+   * Finish reading what its update brought in.
    */
   static svnWorktrees(): SessionsSnapshot {
     const ownerConst = 'C:/Projects/NodeJs/AppJamatV3'
@@ -679,6 +681,38 @@ export class SessionsFixtures {
             landing: { mainCopy: ownerConst, behind: 1, newest: ['http://svn.local/applications:r4133'] },
           },
           svnAction: { kind: 'update-main', stage: 'updating', needs: null, needsKind: null, review: null },
+          admits: ['newBeside'],
+        },
+        {
+          ...ended,
+          sessionId: 's-removing',
+          ...SessionsFixtures.titled('Removing worktree'),
+          tabTitle: 'AppJamatV3 - Removing worktree',
+          agent: { agentId: 'claude', nativeSessionId: 'native-removing' },
+          worktree: worktree('019-removing'),
+          svnAction: { kind: 'discard', stage: 'removing', needs: null, needsKind: null, review: null },
+          step: {
+            text: 'Removing the worktree',
+            detail: '12,000 of 48,000 files',
+            progress: { done: 12000, total: 48000 },
+            startedAt: 1754600400000,
+          },
+          admits: ['newBeside'],
+        },
+        {
+          ...ended,
+          sessionId: 's-finishing',
+          ...SessionsFixtures.titled('Finishing worktree'),
+          tabTitle: 'AppJamatV3 - Finishing worktree',
+          agent: { agentId: 'claude', nativeSessionId: 'native-finishing' },
+          worktree: worktree('020-finishing'),
+          svnAction: { kind: 'finish', stage: 'updating', needs: null, needsKind: null, review: null },
+          step: {
+            text: 'Reading what the update brought in',
+            detail: 'svn log -v --xml -r4513:HEAD',
+            progress: null,
+            startedAt: 1754600500000,
+          },
           admits: ['newBeside'],
         },
       ],

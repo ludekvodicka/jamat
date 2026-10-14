@@ -1,9 +1,15 @@
+import { createHash } from 'node:crypto'
+
 import type {
   RemoteControlError,
   RemoteControlSocketOperation,
   RemoteControlSocketRequest,
 } from '../../../../lib-orchestrator/remoteControl/remoteControlApi.types'
-import { RemoteControlConst } from '../../../../lib-orchestrator/remoteControl/remoteControlProtocol'
+import {
+  RemoteControlConst,
+  RemoteControlPasteFileConst,
+  RemoteControlPasteImageConst,
+} from '../../../../lib-orchestrator/remoteControl/remoteControlProtocol'
 
 class RemoteControlSocketValidationError extends Error {
   constructor(
@@ -185,6 +191,70 @@ export class RemoteControlSocketValidation {
             ),
           },
         }
+      } else if (operation === 'terminal.pasteImage') {
+        RemoteControlSocketValidation.keys(
+          value,
+          ['protocol', 'requestId', 'operationId', 'operation', 'attachId', 'data'],
+          operation,
+        )
+        return {
+          ok: true,
+          request: {
+            protocol: RemoteControlConst.protocol,
+            requestId,
+            operationId,
+            operation,
+            attachId: RemoteControlSocketValidation.text(
+              value.attachId,
+              'attachId',
+              RemoteControlSocketValidation.idLengthConst,
+            ),
+            data: RemoteControlSocketValidation.base64(
+              value.data,
+              RemoteControlPasteImageConst.base64LengthMaxConst,
+              false,
+            ),
+          },
+        }
+      } else if (operation === 'terminal.pasteFile') {
+        RemoteControlSocketValidation.keys(
+          value,
+          ['protocol', 'requestId', 'operationId', 'operation', 'attachId', 'uploadId', 'fileName', 'size', 'offset', 'data'],
+          operation,
+        )
+        const size = RemoteControlSocketValidation.integer(value.size, 'size', 0, RemoteControlPasteFileConst.bytesMaxConst)
+        return {
+          ok: true,
+          request: {
+            protocol: RemoteControlConst.protocol,
+            requestId,
+            operationId,
+            operation,
+            attachId: RemoteControlSocketValidation.text(
+              value.attachId,
+              'attachId',
+              RemoteControlSocketValidation.idLengthConst,
+            ),
+            uploadId: RemoteControlSocketValidation.text(
+              value.uploadId,
+              'uploadId',
+              RemoteControlPasteFileConst.uploadIdLengthConst,
+            ),
+            fileName: RemoteControlSocketValidation.text(
+              value.fileName,
+              'fileName',
+              RemoteControlPasteFileConst.fileNameLengthConst,
+            ),
+            size,
+            offset: RemoteControlSocketValidation.integer(value.offset, 'offset', 0, size),
+            // Empty only for an empty file; every other chunk carries bytes.
+            data: RemoteControlSocketValidation.base64(
+              value.data,
+              RemoteControlPasteFileConst.chunkBase64LengthMaxConst,
+              size === 0,
+            ),
+          },
+        }
       } else
         throw new Error(`Unknown WebSocket operation: ${JSON.stringify(operation)}`)
     } catch (error) {
@@ -215,7 +285,19 @@ export class RemoteControlSocketValidation {
               ? { attachId: request.attachId, active: request.active }
               : request.operation === 'terminal.detach'
                 ? { attachId: request.attachId }
-                : RemoteControlSocketValidation.unknownMutation(request)),
+                : request.operation === 'terminal.pasteImage'
+                  // A digest rather than the image: the store keeps every fingerprint it is given.
+                  ? { attachId: request.attachId, data: createHash('sha256').update(request.data).digest('hex') }
+                  : request.operation === 'terminal.pasteFile'
+                    ? {
+                        attachId: request.attachId,
+                        uploadId: request.uploadId,
+                        fileName: request.fileName,
+                        size: request.size,
+                        offset: request.offset,
+                        data: createHash('sha256').update(request.data).digest('hex'),
+                      }
+                    : RemoteControlSocketValidation.unknownMutation(request)),
     })
   }
 
@@ -271,6 +353,15 @@ export class RemoteControlSocketValidation {
         `${name} exceeds ${maximum} characters`,
       )
     return input
+  }
+
+  private static base64(input: unknown, maximum: number, emptyAllowed: boolean): string {
+    const value = emptyAllowed
+      ? RemoteControlSocketValidation.string(input, 'data', maximum)
+      : RemoteControlSocketValidation.text(input, 'data', maximum)
+    if (value.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(value))
+      throw new RemoteControlSocketValidationError('invalid-request', 'data must be base64')
+    return value
   }
 
   private static integer(

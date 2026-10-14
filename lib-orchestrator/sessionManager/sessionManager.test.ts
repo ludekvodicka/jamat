@@ -481,6 +481,99 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(await client.manager.runScript('nobody', { command: 'pnpm test' })).toMatchObject({ ok: false, code: 'not-found' })
   })
 
+  it('composes the last output line of a running run as its step, and never one for its parent', async () => {
+    const context = await world()
+    seedRecords(context, [recordOf(context, 'p', { life: 'live' })])
+    context.runtimes.set('p', runtime('p'))
+    const rows = new Map<string, string[]>()
+    context.host.handle('runtime.inspect', (body) => {
+      const target = body.target as RuntimeRef
+      const session = context.runtimes.get(target.runtimeSessionId)
+      if (session === undefined) return { status: 404, body: { error: 'no such runtime' } }
+      return {
+        body: {
+          session,
+          projection: { ...session, raw: '', screen: '', screenLines: rows.get(target.runtimeSessionId) ?? [] },
+        } satisfies RuntimeInspectResult,
+      }
+    })
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.manager.start()
+    await writable(client)
+    await reconciled(client)
+
+    const { runId } = valueOf(await client.manager.runScript('p', { command: 'ping -n 30 127.0.0.1', title: 'Ping' }))
+    const running = context.runtimes.get(runId)
+    if (running === undefined) throw new Error('the fake Host lost the run it created')
+    rows.set(runId, ['Pinging 127.0.0.1', '\x1b[1mReply from 127.0.0.1: bytes=32\x1b[0m', ''])
+    rows.set('p', ['parent output'])
+    context.runtimes.set(runId, { ...running, outputSeq: 3, lastOutputAt: Date.now() })
+    context.runtimes.set('p', { ...runtime('p'), outputSeq: 3, lastOutputAt: Date.now() })
+
+    await vi.waitFor(() => expect(sessionOf(client, runId)?.step)
+      .toEqual({ text: 'Reply from 127.0.0.1: bytes=32', detail: null, progress: null, startedAt: null }), { timeout: 10_000 })
+    expect(sessionOf(client, 'p')).not.toHaveProperty('step')
+
+    context.runtimes.set(runId, { ...running, outputSeq: 3, alive: false, exitCode: 0 })
+    await vi.waitFor(() => expect(sessionOf(client, runId)).not.toHaveProperty('step'), { timeout: 10_000 })
+    expect(client.errors).toEqual([])
+  }, 20_000)
+
+  it('drops the live line of a run that ended while the inspect of another run is still out', async () => {
+    const context = await world()
+    seedRecords(context, [recordOf(context, 'p', { life: 'live' })])
+    context.runtimes.set('p', runtime('p'))
+    const rows = new Map<string, string[]>()
+    context.host.handle('runtime.inspect', (body) => {
+      const target = body.target as RuntimeRef
+      const session = context.runtimes.get(target.runtimeSessionId)
+      if (session === undefined) return { status: 404, body: { error: 'no such runtime' } }
+      return {
+        body: {
+          session,
+          projection: { ...session, raw: '', screen: '', screenLines: rows.get(target.runtimeSessionId) ?? [] },
+        } satisfies RuntimeInspectResult,
+      }
+    })
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.manager.start()
+    await writable(client)
+    await reconciled(client)
+
+    const ended = valueOf(await client.manager.runScript('p', { command: 'ping -n 30 127.0.0.1', title: 'Ping' })).runId
+    const slow = valueOf(await client.manager.runScript('p', { command: 'pnpm test', title: 'Tests' })).runId
+    const endedRuntime = context.runtimes.get(ended)
+    const slowRuntime = context.runtimes.get(slow)
+    if (endedRuntime === undefined || slowRuntime === undefined) throw new Error('the fake Host lost a run it created')
+    rows.set(ended, ['Reply from 127.0.0.1'])
+    rows.set(slow, ['test 1'])
+    context.runtimes.set(ended, { ...endedRuntime, outputSeq: 3, lastOutputAt: Date.now() })
+    context.runtimes.set(slow, { ...slowRuntime, outputSeq: 3, lastOutputAt: Date.now() })
+    await vi.waitFor(() => {
+      expect(sessionOf(client, ended)?.step?.text).toBe('Reply from 127.0.0.1')
+      expect(sessionOf(client, slow)?.step?.text).toBe('test 1')
+    }, { timeout: 10_000 })
+
+    const inspectsOf = (runtimeSessionId: string): number => context.host.calls
+      .filter((call) => call.name === 'runtime.inspect' && (call.body.target as RuntimeRef).runtimeSessionId === runtimeSessionId).length
+    const before = inspectsOf(slow)
+    const held = context.host.hold('runtime.inspect')
+    rows.set(slow, ['test 2'])
+    context.runtimes.set(slow, { ...slowRuntime, outputSeq: 4, lastOutputAt: Date.now() })
+    await vi.waitFor(() => expect(inspectsOf(slow)).toBe(before + 1), { timeout: 10_000 })
+    context.runtimes.set(ended, { ...endedRuntime, outputSeq: 3, alive: false, exitCode: 0 })
+
+    await vi.waitFor(() => expect(sessionOf(client, ended)?.life).toBe('ended'), { timeout: 10_000 })
+    expect(sessionOf(client, ended)).not.toHaveProperty('step')
+    expect(sessionOf(client, slow)?.step?.text).toBe('test 1')
+    held.release()
+    await vi.waitFor(() => expect(sessionOf(client, slow)?.step?.text).toBe('test 2'), { timeout: 10_000 })
+    expect(sessionOf(client, ended)).not.toHaveProperty('step')
+    expect(client.errors).toEqual([])
+  }, 30_000)
+
   function sessionOf(client: Client, sessionId: string): SessionInfo | undefined {
     return client.manager.snapshot().sessions.find((session) => session.sessionId === sessionId)
   }
@@ -985,6 +1078,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
         // The tier this session was founded on, which its transcript never states: the status bar
         // draws a fifth of the window without it.
         launchModel: 'claude-opus-5[1m]',
+        startedAt: 1_000,
       },
     })
     expect(await client.manager.workingContext('provenance')).toMatchObject({
@@ -998,6 +1092,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
         cwd: join(context.root, 'legacy-cwd'),
         nativeSessionId: null,
         launchModel: null,
+        startedAt: 1_000,
       },
     })
   }, 20_000)
@@ -1139,6 +1234,36 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(reloaded.errors).toEqual([])
   }, 20_000)
 
+  // The replay may still start the record an undecided create left, and that session has to wake
+  // the target like one whose create succeeded. A refused create ended its record and wakes nobody.
+  it('registers notify for the record an undecided create left, never for a refused one', async () => {
+    const context = await world()
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.manager.start()
+    await writable(client)
+    const watch = vi.spyOn(client.manager.sessionNotifyStore(), 'watch')
+    const notify = { sessionId: 'parent', text: 'left record woke', onGroups: [] }
+
+    context.host.handle('runtime.create', () => ({ status: 400, body: { error: 'launch.cwd must be an existing directory' } }))
+    const refused = await client.manager.createSession({ kind: 'shell', directory: { mode: 'default' }, notify })
+    expect(refused).toMatchObject({ ok: false, code: 'op-rejected' })
+    expect(refused).not.toHaveProperty('recordedSessionId')
+    expect(watch).not.toHaveBeenCalled()
+    expect(valueOf(await client.manager.notifies({})).notifies).toEqual([])
+
+    context.host.handle('runtime.create', () => ({ status: 500, body: { error: 'internal error' } }))
+    const left = await client.manager.createSession({ kind: 'shell', directory: { mode: 'default' }, notify })
+    if (left.ok || left.recordedSessionId === undefined) throw new Error(`expected a left record, got ${JSON.stringify(left)}`)
+    expect(left.code).toBe('op-rejected')
+    expect(sessionOf(client, left.recordedSessionId)?.life).toBe('starting')
+    expect(watch).toHaveBeenCalledTimes(1)
+    expect(watch).toHaveBeenCalledWith(left.recordedSessionId, notify)
+    expect(valueOf(await client.manager.notifies({ sessionId: left.recordedSessionId })).notifies).toEqual([
+      { sessionId: left.recordedSessionId, target: 'parent', text: notify.text, onGroups: [], events: [] },
+    ])
+  }, 20_000)
+
   it('carries a colour to the snapshot, and takes it off the record when it is cleared', async () => {
     const context = await world()
     context.publishDescriptor()
@@ -1197,6 +1322,61 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(sessionOf(client, 's1')?.note).toBe('why this one exists')
     expect(sessionOf(client, 's2')?.titleParts).toEqual({ number: null, name: 'plain shell' })
     expect(sessionOf(client, 's2')).not.toHaveProperty('note')
+  }, 20_000)
+
+  it('carries the create operation id of a record to the snapshot, and leaves it absent otherwise', async () => {
+    const context = await world()
+    seedRecords(context, [
+      recordOf(context, 's1', { callerOperationId: 'op-create', life: 'lost' }),
+      recordOf(context, 's2', { life: 'lost' }),
+    ])
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.manager.start()
+
+    expect(sessionOf(client, 's1')?.callerOperationId).toBe('op-create')
+    expect(sessionOf(client, 's2')).not.toHaveProperty('callerOperationId')
+  }, 20_000)
+
+  it('composes the parent link with sameProject from both bindings, and leaves a session without one untouched', async () => {
+    const context = await world()
+    const alpha = join(context.categoryRoot, 'Alpha')
+    const scratch = join(context.root, 'scratch')
+    seedRecords(context, [
+      recordOf(context, 'p', { directory: { mode: 'project', categoryId: 'code', projectPath: alpha }, life: 'lost' }),
+      // Its directory lies outside the catalog; only the worktree's owner makes it Alpha's.
+      recordOf(context, 'worktree-child', {
+        directory: { mode: 'adHoc', path: join(context.root, 'Alpha-worktrees', 'fix') },
+        worktree: { worktreePath: join(context.root, 'Alpha-worktrees', 'fix'), branch: 'jamat/fix', baseCommit: 'abc123', repositoryRoot: alpha },
+        parent: { sessionId: 'p', kind: 'worktree' },
+      }),
+      recordOf(context, 'other-project', {
+        directory: { mode: 'project', categoryId: 'code', projectPath: join(context.categoryRoot, 'Beta') },
+        parent: { sessionId: 'p', kind: 'ticket' },
+      }),
+      recordOf(context, 'ad-hoc', { directory: { mode: 'adHoc', path: scratch } }),
+      recordOf(context, 'ad-hoc-child', { directory: { mode: 'adHoc', path: scratch }, parent: { sessionId: 'ad-hoc', kind: 'worker' } }),
+      recordOf(context, 'orphan', { directory: { mode: 'project', categoryId: 'code', projectPath: alpha }, parent: { sessionId: 'removed', kind: 'worker' } }),
+    ])
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.manager.start()
+
+    expect(sessionOf(client, 'worktree-child')?.parent).toEqual({ sessionId: 'p', kind: 'worktree', sameProject: true })
+    expect(sessionOf(client, 'other-project')?.parent).toEqual({ sessionId: 'p', kind: 'ticket', sameProject: false })
+    expect(sessionOf(client, 'ad-hoc-child')?.parent).toEqual({ sessionId: 'ad-hoc', kind: 'worker', sameProject: true })
+    expect(sessionOf(client, 'orphan')?.parent).toEqual({ sessionId: 'removed', kind: 'worker', sameProject: false })
+    expect(sessionOf(client, 'p')).not.toHaveProperty('parent')
+    expect(await client.manager.children('p')).toEqual({ ok: true, value: { children: [
+      expect.objectContaining({ sessionId: 'worktree-child', kind: 'worktree', sameProject: true, life: sessionOf(client, 'worktree-child')?.life }),
+      expect.objectContaining({ sessionId: 'other-project', kind: 'ticket', sameProject: false }),
+    ] } })
+    expect(await client.manager.children('removed'))
+      .toEqual({ ok: true, value: { children: [expect.objectContaining({ sessionId: 'orphan', kind: 'worker', sameProject: false })] } })
+    expect(await client.manager.children('worktree-child')).toEqual({ ok: true, value: { children: [] } })
+    // No record binds to `none` (an empty cwd), so the rule is asked directly.
+    expect(SessionManager['sameProject']({ kind: 'none' }, { kind: 'none' })).toBe(false)
+    expect(client.errors).toEqual([])
   }, 20_000)
 
   it('refuses a colour that is not in the palette', async () => {
@@ -1605,6 +1785,65 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
   })
 
   /*
+   * The record is the only thing that names a worktree, so a Remove takes a clean one with the
+   * session, keeps a changed one with its session, and takes a session whose worktree is already
+   * gone. Real svn on a disposable repository; skipped where svnadmin is missing.
+   */
+  it('removes an ended session with its clean SVN worktree, and refuses one whose worktree holds changes', { timeout: 60_000 }, async (runner) => {
+    const context = await world()
+    const repository = join(context.root, 'repository')
+    const created = await new CommandInvoker().run({ command: 'svnadmin', args: ['create', repository], cwd: context.root, env: process.env })
+    if (created.failure !== null || created.code !== 0) return runner.skip()
+    const svn = new SvnInvoker()
+    const run = async (cwd: string, args: string[]): Promise<string> => {
+      const outcome = await svn.run(cwd, [args[0], '--non-interactive', ...args.slice(1)])
+      expect(outcome.code, outcome.stderr).toBe(0)
+      return outcome.stdout
+    }
+    const owner = join(context.root, 'owner')
+    const url = pathToFileURL(repository).href
+    await run(context.root, ['checkout', url, owner])
+    await run(owner, ['propset', 'svn:global-ignores', '.worktrees', '--', '.'])
+    writeFileSync(join(owner, 'a.txt'), 'base\n')
+    await run(owner, ['add', '--', 'a.txt'])
+    await run(owner, ['commit', '--username', 'fixture', '-m', 'base', '--', '.'])
+    const clean = join(owner, '.worktrees', '014-clean')
+    const dirty = join(owner, '.worktrees', '015-dirty')
+    await run(context.root, ['checkout', url, clean])
+    await run(context.root, ['checkout', url, dirty])
+    writeFileSync(join(dirty, 'a.txt'), 'changed\n')
+    const worktreeOf = (worktreePath: string): SessionRecord['worktree'] => ({
+      worktreePath, branch: url, baseCommit: 'r1', repositoryRoot: owner, kind: 'svn',
+    })
+    seedRecords(context, [
+      recordOf(context, 'clean', { directory: { mode: 'adHoc', path: owner }, worktree: worktreeOf(clean) }),
+      recordOf(context, 'dirty', { directory: { mode: 'adHoc', path: owner }, worktree: worktreeOf(dirty) }),
+      recordOf(context, 'absent', { directory: { mode: 'adHoc', path: owner }, worktree: worktreeOf(join(owner, '.worktrees', '016-absent')) }),
+    ])
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.manager.start()
+    await writable(client)
+
+    expect(await client.manager.removeSession('clean')).toEqual({ ok: true, value: undefined })
+    expect(storedRecord(context, 'clean')).toBeUndefined()
+    expect(existsSync(clean)).toBe(false)
+
+    expect(await client.manager.removeSession('dirty')).toMatchObject({
+      ok: false,
+      code: 'dirty',
+      detail: expect.stringMatching(/keeps its worktree .*015-dirty \(1 change\); Finish it/),
+    })
+    expect(storedRecord(context, 'dirty')?.worktreeCleanup).toMatchObject({ phase: 'kept', reason: '1 change' })
+    expect(readFileSync(join(dirty, 'a.txt'), 'utf8')).toBe('changed\n')
+
+    expect(await client.manager.removeSession('absent')).toEqual({ ok: true, value: undefined })
+    expect(storedRecord(context, 'absent')).toBeUndefined()
+    // Nothing was left behind, so no Remove reports a leftover worktree.
+    expect(client.errors.join('\n')).not.toContain('for you to keep or remove')
+  })
+
+  /*
    * Any directory of a product group: the worktree is the whole group, its checkout is a child run of
    * the session, and the session starts at its place below. A session working in the main copy of the
    * same member updates the whole group. Real svn for the reservation; the Host is the fake.
@@ -1640,7 +1879,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const checkout = client.manager.snapshot().sessions.find((info) => info.script?.parentId === session.sessionId)
     expect(checkout).toMatchObject({ title: 'Checkout fix', script: { phase: 'before', scriptId: 'svn' } })
     expect(storedRecord(context, checkout?.sessionId ?? '')?.process).toEqual({
-      tool: 'svn', args: ['--non-interactive', 'checkout', '-q', '--', `${url}/Group@1`, '.'],
+      tool: 'svn', args: ['--non-interactive', 'checkout', '--', `${url}/Group@1`, '.'],
     })
     expect(sessionOf(client, session.sessionId)?.worktree).toMatchObject({ worktreePath, cwdSubpath: 'Member/src' })
     expect(sessionOf(client, session.sessionId)?.scripts?.badge).toMatchObject({ state: 'running', text: 'checking out' })
@@ -1667,8 +1906,89 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       value: {
         sessionId: 'plain', worktree: null, retired: null, finish: null, action: null, outcome: null, cleanup: null,
         receipts: [{ scopeRoot: context.root, revision: 7, at: 5 }, { scopeRoot: context.root, revision: null, at: expect.any(Number) }],
+        step: null,
+        workflow: null,
       },
     }), { timeout: 5_000 })
+  })
+
+  it('composes the step of an action only while it has one, in the snapshot and in the worktree answer', async () => {
+    const context = await world()
+    const worktreePath = join(context.root, 'owner', '.worktrees', '014-fix')
+    const svnWorktree = {
+      worktreePath, branch: 'https://svn.example.test/repos/app/trunk', baseCommit: 'r41', repositoryRoot: join(context.root, 'owner'), kind: 'svn' as const,
+    }
+    // An update a lock stopped, relaunched in an hour; its run record still starts, so nothing judges it meanwhile.
+    const locked: NonNullable<SessionRecord['svnAction']> = {
+      kind: 'finish', actionId: 'action-1', stage: 'updating', runId: 'update-run', root: worktreePath, checks: [], checkCursor: 0,
+      rootCursor: 0, rounds: { incoming: 0, outOfDate: 0, lock: 1 }, evidence: [], requestedBy: 'window', startedAt: 5,
+      retryAt: Date.now() + 3_600_000,
+    }
+    seedRecords(context, [
+      recordOf(context, 'acting', { life: 'ended', worktree: svnWorktree, svnAction: locked }),
+      recordOf(context, 'update-run', { life: 'starting', binding: null, pendingOperationId: 'op-u', pendingOperationKind: 'create',
+        process: { tool: 'svn', args: ['--non-interactive', 'update', '--accept', 'postpone', '--', '.'] },
+        scriptOf: { sessionId: 'acting', phase: 'after', scriptId: 'svn', name: 'update' } }),
+      recordOf(context, 'plain', { life: 'ended', worktree: { ...svnWorktree, worktreePath: join(context.root, 'owner', '.worktrees', '015-idle') } }),
+    ])
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.manager.start()
+    await writable(client)
+
+    const step = { text: 'Waiting for the svn lock', detail: 'relaunch 1 of 3', progress: null, startedAt: null }
+    expect(sessionOf(client, 'acting')?.step).toEqual(step)
+    expect(await client.manager.worktreeOf('acting')).toMatchObject({ ok: true, value: { step } })
+    expect(sessionOf(client, 'plain')).not.toHaveProperty('step')
+    expect(sessionOf(client, 'update-run')).not.toHaveProperty('step')
+    expect(await client.manager.worktreeOf('plain')).toMatchObject({ ok: true, value: { step: null } })
+    // The workflow travels beside the step, the same in the snapshot and in the worktree answer.
+    const workflow = sessionOf(client, 'acting')?.workflow
+    expect(workflow).toMatchObject({ workflowId: 'action-1', badge: 'waits for the lock', summary: 'Waiting for the svn lock', open: true })
+    expect(workflow?.rounds[0]?.steps[0]).toMatchObject({ title: 'svn update', state: 'running', target: { kind: 'run', runId: 'update-run' } })
+    expect(await client.manager.worktreeOf('acting')).toMatchObject({ ok: true, value: { workflow } })
+    expect(sessionOf(client, 'plain')).not.toHaveProperty('workflow')
+    expect(await client.manager.worktreeOf('plain')).toMatchObject({ ok: true, value: { workflow: null } })
+  })
+
+  it('answers the full conflict list of a waiting action, also to a run of it, and not-found without a set', async () => {
+    const context = await world()
+    const worktreePath = join(context.root, 'owner', '.worktrees', '014-fix')
+    const svnWorktree = {
+      worktreePath, branch: 'https://svn.example.test/repos/app/trunk', baseCommit: 'r41', repositoryRoot: join(context.root, 'owner'), kind: 'svn' as const,
+    }
+    const entries = Array.from({ length: 60 }, (_, index): NonNullable<NonNullable<SessionRecord['svnAction']>['conflictSet']>['entries'][number] => ({
+      path: `src/f${index}.ts`, kind: 'text', shape: 'text-overlap', state: 'person', options: ['merged', 'take-incoming', 'keep-mine'],
+      facts: { incomingRevision: 42 },
+    }))
+    const waiting: NonNullable<SessionRecord['svnAction']> = {
+      kind: 'finish', actionId: 'action-1', stage: 'updating', runId: 'update-run', root: worktreePath, checks: [], checkCursor: 0,
+      rootCursor: 0, rounds: { incoming: 0, outOfDate: 0, lock: 0 }, evidence: [], requestedBy: 'window', startedAt: 5,
+      needs: { kind: 'conflict', reason: '60 conflicts need you', at: 6 },
+      conflictSet: { readAt: 6, baseRevision: 41, revision: 42, entries, more: 0 },
+    }
+    seedRecords(context, [
+      recordOf(context, 'waiting', { life: 'ended', worktree: svnWorktree, svnAction: waiting }),
+      recordOf(context, 'update-run', { life: 'ended', binding: null, exitCode: 0, endedAt: 6,
+        process: { tool: 'svn', args: ['--non-interactive', 'update', '--accept', 'postpone', '--', '.'] },
+        scriptOf: { sessionId: 'waiting', phase: 'after', scriptId: 'svn', name: 'update' } }),
+      recordOf(context, 'plain', { life: 'ended', worktree: { ...svnWorktree, worktreePath: join(context.root, 'owner', '.worktrees', '015-idle') } }),
+    ])
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.manager.start()
+    await writable(client)
+
+    const list = await client.manager.conflictsOf('waiting')
+    expect(list).toMatchObject({ ok: true, value: { sessionId: 'waiting', actionId: 'action-1', stage: 'updating', summary: '60 conflicts need you', more: 0 } })
+    expect(list.ok && list.value.entries).toHaveLength(60)
+    expect(list.ok && list.value.entries[59]).toMatchObject({ path: 'src/f59.ts', description: 'Your session and r42 changed the same lines of this file.' })
+    expect(await client.manager.conflictsOf('update-run')).toEqual(list)
+    expect(await client.manager.conflictsOf('plain')).toMatchObject({ ok: false, code: 'not-found' })
+    expect(await client.manager.conflictsOf('nobody')).toMatchObject({ ok: false, code: 'not-found' })
+    // The snapshot carries the first 50 and counts the rest.
+    expect(sessionOf(client, 'waiting')?.svnAction).toMatchObject({ summary: '60 conflicts need you', conflicts: { more: 10 } })
+    expect(sessionOf(client, 'waiting')?.svnAction?.conflicts?.entries).toHaveLength(50)
   })
 
   /*
@@ -1768,6 +2088,8 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
         outcome: null,
         cleanup: null,
         receipts: [],
+        step: null,
+        workflow: null,
       },
     })
     expect(await client.manager.worktreeOf('git')).toMatchObject({
@@ -1873,7 +2195,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const client = clientOf(context)
     await client.manager.start()
     await writable(client)
-    const opened: { sessionId: string; scopeRoot: string; proposal: string }[] = []
+    const opened: { sessionId: string; parentId: string; scopeRoot: string; proposal: string }[] = []
     const proposed: { sessionId: string; directory: string; message: string }[] = []
     const proposals = new Map([[`acting-cli|${scriptedPath}`, 'Fix the orders page']])
     const editors: [string, string][] = []
@@ -1904,12 +2226,13 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(await client.manager.openActionReview('review-run')).toEqual({ ok: true, value: { commitSessionId: 'commit-1', scopeRoot: worktreePath } })
     expect(await client.manager.openActionReview('review-run')).toEqual({ ok: true, value: { commitSessionId: 'commit-1', scopeRoot: worktreePath } })
     // Without a proposal the review starts with the title; the window's Finish shows the worktree once.
-    expect(opened).toEqual([{ sessionId: 'review-run', scopeRoot: worktreePath, proposal: 'fix login' }])
+    // The review names the session whose action reviews, so its workflow takes the focus back.
+    expect(opened).toEqual([{ sessionId: 'review-run', parentId: 'acting', scopeRoot: worktreePath, proposal: 'fix login' }])
     expect(editors).toEqual([[worktreePath, 'owner']])
     expect(storedRecord(context, 'acting')?.svnAction?.reviewCommitId).toBe('commit-1')
     // A scripted Finish never opens the editor, and its mount review falls back to the worktree's proposal.
     expect(await client.manager.openActionReview('review-run-cli')).toEqual({ ok: true, value: { commitSessionId: 'commit-2', scopeRoot: mountPath } })
-    expect(opened[1]).toEqual({ sessionId: 'review-run-cli', scopeRoot: mountPath, proposal: 'Fix the orders page' })
+    expect(opened[1]).toEqual({ sessionId: 'review-run-cli', parentId: 'acting-cli', scopeRoot: mountPath, proposal: 'Fix the orders page' })
     expect(editors).toHaveLength(1)
     known = false
     expect(await client.manager.openActionReview('review-run')).toMatchObject({ ok: false, code: 'review-unavailable' })

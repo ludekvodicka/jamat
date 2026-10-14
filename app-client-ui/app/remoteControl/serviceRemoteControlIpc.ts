@@ -12,6 +12,7 @@ import type {
 } from '../../shared/remoteConnectionsHold'
 import type { RemoteControlInboundRegistry } from './remoteControlInboundRegistry'
 import type { RemoteConnectionsManager } from './remoteConnectionsManager'
+import { RemoteClipboardPaste } from './remoteClipboardPaste'
 import { ServiceIpcBase } from '../shared/serviceIpcBase'
 
 interface RemoteRendererAttach {
@@ -46,6 +47,7 @@ export class ServiceRemoteControlIpc
     'remote:terminal-resize': true,
     'remote:terminal-active': true,
     'remote:terminal-detach': true,
+    'remote:terminal-clipboard-paste': true,
   } as const
 
   private readonly owned = new Map<WebContents, Set<string>>()
@@ -55,6 +57,7 @@ export class ServiceRemoteControlIpc
   private readonly wired = new WeakSet<WebContents>()
   private readonly requestId: () => string
   private readonly operationId: () => string
+  private readonly clipboardPaste: RemoteClipboardPaste
 
   constructor(
     private readonly outbound: RemoteConnectionsManager,
@@ -64,6 +67,7 @@ export class ServiceRemoteControlIpc
     super()
     this.requestId = deps.requestId ?? randomUUID
     this.operationId = deps.operationId ?? randomUUID
+    this.clipboardPaste = new RemoteClipboardPaste(outbound)
   }
 
   initialize(): void {
@@ -105,8 +109,6 @@ export class ServiceRemoteControlIpc
     this.register('remote:terminal-attach', async (event, endpointId, attachId, spec) => {
       if (!this.deps.acceptsRenderer(event.sender))
         throw new Error('The workspace window is closing')
-      if (!this.outbound.admitsTerminal(endpointId, spec.sessionId))
-        return { ok: false, error: { code: 'unavailable', detail: 'Select this session in Remote computers to connect it.' } }
       const key = ServiceRemoteControlIpc.attachKey(endpointId, attachId)
       if (this.attaches.has(key))
         throw new Error(`Remote terminal attach already exists: ${attachId}`)
@@ -140,6 +142,10 @@ export class ServiceRemoteControlIpc
       this.assertOwner(event.sender, endpointId, attachId)
       try { return await this.outbound.detachTerminal(endpointId, attachId) }
       finally { this.release(event.sender, endpointId, attachId) }
+    })
+    this.register('remote:terminal-clipboard-paste', (event, endpointId, attachId) => {
+      this.assertOwner(event.sender, endpointId, attachId)
+      return this.clipboardPaste.paste(endpointId, attachId)
     })
     this.assertComplete(ServiceRemoteControlIpc.channelsConst)
   }

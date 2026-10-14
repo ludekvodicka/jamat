@@ -73,6 +73,7 @@ import type { SplitPinRecord } from './splitPinsState'
 import type { SavedSessionsFilter } from './sessionsFilterState'
 import type { SidebarsStateValue } from './sidebarsState'
 import type { TabControlAck, TabControlCommand } from './tabControl'
+import type { TerminalClipboardPaste } from './terminalClipboardPaste'
 import type {
   ClaimPanelResult,
   ReconcilePanelsResult,
@@ -195,7 +196,7 @@ export interface AppClientUiIpcInvokeMap {
    */
   'dialog:confirm': (message: string, detail: string) => boolean
   /**
-   * Write only. Reading the clipboard stays tied to an attach, for the reason `terminal:clipboard-read`
+   * Write only. Reading the clipboard stays tied to an attach, for the reason `terminal:clipboard-paste`
    * gives; putting text INTO the clipboard gives a page nothing it did not already hand over.
    */
   'clipboard:write-text': (text: string) => void
@@ -284,6 +285,14 @@ export interface AppClientUiIpcInvokeMap {
     attachId: string,
   ) => RemoteControlStepResult<unknown>
   /**
+   * The clipboard of THIS computer, pasted into a terminal on the other one. An agent reads the
+   * clipboard of the machine it runs on, so an image is sent there, saved, and its path pasted.
+   */
+  'remote:terminal-clipboard-paste': (
+    remoteEndpointId: string,
+    attachId: string,
+  ) => RemoteControlStepResult<TerminalClipboardPaste>
+  /**
    * The Remote Control settings surface, and the reason it is its own set of channels rather than
    * more of `remote:*`: everything above drives ANOTHER computer, and everything here changes what
    * this one is willing to do. Its snapshot is credential-free by contract - no private key, no
@@ -359,7 +368,7 @@ export interface AppClientUiIpcInvokeMap {
    * renderer gets a silent rejection - the copy works all through development and no-ops in the
    * release.
    */
-  'terminal:clipboard-read': (attachId: string) => string
+  'terminal:clipboard-paste': (attachId: string) => TerminalClipboardPaste
   /** false = another process held the clipboard throughout; the caller knows the copy is not there. */
   'terminal:clipboard-write': (attachId: string, text: string) => boolean
   /**
@@ -395,6 +404,19 @@ export interface AppClientUiIpcInvokeMap {
   'terminal:menu-open-vscode': (requestId: string, detectionId: string) => boolean
   /** The project of a session, whose path comes from its working context and never from the caller. */
   'terminal:menu-open-project-vscode': (sessionId: string) => boolean
+  /**
+   * A conflicted path of a session's SVN action, worktree-relative as its conflict entry names it:
+   * main resolves it inside the session's worktree and refuses a path that leaves it, then grants it
+   * to the viewer as a workspace file of that session.
+   */
+  'terminal:menu-open-conflict-file': (sessionId: string, path: string) => FileViewerOpenResult
+  /** The same path, in TortoiseSVN's conflict editor; a refusal names the tool it expected. */
+  'terminal:menu-open-conflict-editor': (sessionId: string, path: string) => { ok: true } | { ok: false; detail: string }
+  /**
+   * The merger's brief of a session's SVN action, read off the session by main and granted to the
+   * viewer; the renderer names only the session.
+   */
+  'terminal:menu-open-merge-brief': (sessionId: string) => FileViewerOpenResult
   /**
    * The Debug window's surface: three named read-only channels and nothing that passes anything
    * through. V1 shipped a generic debug dispatcher and it reached `file:write` from the renderer, so
@@ -651,6 +673,7 @@ export const AppClientUiBridgeCallsConst = {
     terminalResize: 'remote:terminal-resize',
     terminalActive: 'remote:terminal-active',
     terminalDetach: 'remote:terminal-detach',
+    terminalClipboardPaste: 'remote:terminal-clipboard-paste',
   },
   remoteSettings: {
     get: 'remoteSettings:get',
@@ -682,7 +705,7 @@ export const AppClientUiBridgeCallsConst = {
     resize: 'terminal:resize',
     active: 'terminal:active',
     detach: 'terminal:detach',
-    clipboardRead: 'terminal:clipboard-read',
+    clipboardPaste: 'terminal:clipboard-paste',
     clipboardWrite: 'terminal:clipboard-write',
   },
   terminalMenu: {
@@ -692,6 +715,9 @@ export const AppClientUiBridgeCallsConst = {
     openExternal: 'terminal:menu-open-external',
     openVsCode: 'terminal:menu-open-vscode',
     openProjectVsCode: 'terminal:menu-open-project-vscode',
+    openConflictFile: 'terminal:menu-open-conflict-file',
+    openConflictEditor: 'terminal:menu-open-conflict-editor',
+    openMergeBrief: 'terminal:menu-open-merge-brief',
   },
   // One preload serves both document entries, so the bridge is the superset and each uses its part.
   debug: {

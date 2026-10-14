@@ -8,6 +8,7 @@ import type { IpcResult } from '../../../shared/appClientUiIpc'
 import { ErrorText } from '../../../shared/errorText'
 import { AppControl } from '../../ipc/appControl'
 import { IpcFailure } from '../../ipc/ipcFailure'
+import { WorkflowPortsOf } from '../../workflow/workflowPorts'
 import './updateMain.css'
 
 /** An UPDATE the library refused because live sessions work in the main copy; the person confirms them. */
@@ -25,6 +26,8 @@ export interface UpdateMainOpenRequest {
 /** How a window asks for an UPDATE; a test hands in its own. */
 export interface UpdateMainPorts {
   updateMain(sessionId: string, confirmLive?: readonly string[]): Promise<IpcResult<SessionsOpResult<{ sessionId: string; actionId: string }>>>
+  /** The UPDATE started: its session's workflow comes forward. */
+  started(sessionId: string): void
 }
 
 export class UpdateMainAsks {
@@ -40,6 +43,7 @@ export class UpdateMainAsks {
       session: AppControl.sessionOf(sessionId),
       ...(confirmLive === undefined ? {} : { confirmLive: [...confirmLive] }),
     }),
+    started: (sessionId) => WorkflowPortsOf.openWorkflow(sessionId),
   }
 }
 
@@ -95,6 +99,7 @@ export function UpdateMainOverlay(props: {
         setBusy(false)
         return
       }
+      if (answer.ok && answer.value.ok) ports.started(answer.value.value.sessionId)
       props.onClose()
     } catch (thrown: unknown) {
       if (!mounted.current) return

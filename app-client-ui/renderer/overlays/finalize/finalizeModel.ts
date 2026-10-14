@@ -26,6 +26,8 @@ export interface SessionFinalizeQuestion {
   chosenDefault: string
   /** What the person must know before choosing, such as why a Finish waits for them. */
   note?: string
+  /** The choices whose accepted press starts an action with a workflow, which then comes forward. */
+  startsWorkflow?: readonly string[]
 }
 
 /** What the dialog shows about the session it finishes, read when it opens; the dialog changes none of it. */

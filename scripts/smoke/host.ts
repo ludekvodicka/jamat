@@ -9,7 +9,7 @@
  * The only import { SmokeHarness, SmokeRun } from './smokeHarness.js'
 import from app-host is its wire type surface: this script is a CLIENT of the API.
  */
-import { spawn, type ChildProcess } from 'node:child_process'
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -21,6 +21,7 @@ import { SmokeHarness, SmokeRun } from './smokeHarness.js'
 import type {
   ControllerLeaseResult,
   HostDescriptor,
+  HostHealthResult,
   HostWsServerMsg,
   RuntimeInspectResult,
   RuntimeMutationAck,
@@ -50,6 +51,7 @@ class SmokeHost extends SmokeHarness {
       SmokeHost.check('wire major is 1', descriptor.protocol.major === 1)
 
       await SmokeHost.checkUnauthorized(descriptor)
+      await SmokeHost.checkHealth(descriptor)
 
       const lease = await SmokeHost.op<ControllerLeaseResult>(
         descriptor, 'controller.acquire', { controllerId: 'smoke' },
@@ -97,6 +99,8 @@ class SmokeHost extends SmokeHarness {
       })
       SmokeHost.check(`remove acknowledged as removed (${removed.diagnostic})`,
         removed.diagnostic === 'removed')
+
+      await SmokeHost.checkEndedRuntimesHoldNoThreads(descriptor, configDir, host)
 
       const stopping = await SmokeHost.op<{ stopping: true; live: number }>(
         descriptor, 'host.stop', { controllerLeaseId: relet.controllerLeaseId },
@@ -187,6 +191,14 @@ class SmokeHost extends SmokeHarness {
     return JSON.parse(text) as T
   }
 
+  private static async checkHealth(descriptor: HostDescriptor): Promise<void> {
+    SmokeHost.check('descriptor lists host.health.v1', descriptor.capabilities.includes('host.health.v1'))
+    const health = await SmokeHost.op<HostHealthResult>(descriptor, 'host.health', {})
+    const latest = health.samples.at(-1)
+    SmokeHost.check(`host.health answers ${health.samples.length} sample(s), the newest with rss > 0`,
+      latest !== undefined && latest.rssBytes > 0 && health.startedAt === descriptor.startedAt)
+  }
+
   /** The token is the only thing between a loopback port and remote code execution. */
   private static async checkUnauthorized(descriptor: HostDescriptor): Promise<void> {
     const response = await fetch(`http://127.0.0.1:${descriptor.port}/op/runtime.list`, {
@@ -206,14 +218,15 @@ class SmokeHost extends SmokeHarness {
     controllerLeaseId: string,
     cwd: string,
     exitCode: number,
+    runtimeSessionId = `smoke-fast-${exitCode}`,
   ): Promise<void> {
     const [command, args] = process.platform === 'win32'
       ? [process.env.ComSpec ?? 'cmd.exe', ['/d', '/c', `exit ${exitCode}`]]
       : ['/bin/sh', ['-c', `exit ${exitCode}`]]
     const created = await SmokeHost.op<RuntimeResult>(descriptor, 'runtime.create', {
       controllerLeaseId,
-      operationId: `smoke-fast-${exitCode}`,
-      runtimeSessionId: `smoke-fast-${exitCode}`,
+      operationId: runtimeSessionId,
+      runtimeSessionId,
       launch: { command, args, cwd, env: SmokeHost.childEnv(), cols: 80, rows: 24 },
     })
     SmokeHost.check(`a fast exit ${exitCode} is created dead with exit code ${exitCode}`
@@ -229,6 +242,40 @@ class SmokeHost extends SmokeHarness {
       },
     })
     SmokeHost.check(`the dead fast runtime is removed (${removed.diagnostic})`, removed.diagnostic === 'removed')
+  }
+
+  /**
+   * node-pty's Windows worker thread of a process that ended by itself lives until `IPty.kill()`.
+   * The Host kills each ended PTY once, so a run of short processes leaves the thread count where it
+   * was; without that a long-lived Host collected one worker per run until no new one could start.
+   */
+  private static async checkEndedRuntimesHoldNoThreads(
+    descriptor: HostDescriptor,
+    cwd: string,
+    host: ChildProcess,
+  ): Promise<void> {
+    if (process.platform !== 'win32' || host.pid === undefined) {
+      console.log('  skip  worker threads of ended runtimes (node-pty starts them on Windows only)')
+      return
+    }
+    const runs = 12
+    const before = SmokeHost.threadCount(host.pid)
+    for (let index = 0; index < runs; index++) {
+      // each create waits on a start identity probe, so the whole run outlasts one lease
+      const lease = await SmokeHost.op<ControllerLeaseResult>(descriptor, 'controller.acquire', { controllerId: 'smoke' })
+      await SmokeHost.checkFastExit(descriptor, lease.controllerLeaseId, cwd, 0, `smoke-ended-${index}`)
+    }
+    // node-pty drains the conout pipe for a second before it terminates the worker
+    await SmokeHarness.sleep(2_500)
+    const after = SmokeHost.threadCount(host.pid)
+    SmokeHost.check(`${runs} ended runtimes leave the Host's threads as they were (${before} -> ${after})`,
+      after - before < runs / 2)
+  }
+
+  private static threadCount(pid: number): number {
+    const output = execFileSync('powershell', ['-NoProfile', '-Command', `(Get-Process -Id ${pid}).Threads.Count`],
+      { encoding: 'utf8', windowsHide: true })
+    return Number(output.trim())
   }
 
   private static async checkProjectionContains(

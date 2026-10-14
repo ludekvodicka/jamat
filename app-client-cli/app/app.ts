@@ -36,6 +36,7 @@ import type {
   SessionColorName,
   SessionCreateSpec,
   SessionGroup,
+  SessionParentKind,
 } from '../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { SessionsSnapshotValidation } from '../../lib-orchestrator/sessionManager/sessionsSnapshotValidation'
 import { ErrorText } from '../../lib-orchestrator/shared/errorText'
@@ -389,6 +390,19 @@ export class AppClientCli {
           { session: this.selector(args) },
           requestId,
         ))
+    else if (args.command === 'sessions conflicts')
+      return this.requestPlan(args, this.request('sessions.conflicts', { session: this.selfOrSelector(args) }, requestId))
+    else if (args.command === 'sessions resolve-conflict') {
+      const option = args.required('--option')
+      if (option !== 'merged' && option !== 'take-incoming' && option !== 'keep-mine' && option !== 'keep-both' && option !== 'union')
+        throw new AppClientCliError('invalid-request', '--option must be merged, take-incoming, keep-mine, keep-both or union')
+      return this.requestPlan(args, this.request(
+          'sessions.resolveConflict',
+          { session: this.selfOrSelector(args), path: args.required('--path'), option },
+          requestId,
+          this.operationId(args),
+        ))
+    }
     else if (args.command === 'sessions remove')
       return this.requestPlan(args, this.request(
           'sessions.remove',
@@ -415,6 +429,8 @@ export class AppClientCli {
       const choice = args.required('--choice')
       if (choice !== 'commit' && choice !== 'discard' && choice !== 'keep')
         throw new AppClientCliError('invalid-request', '--choice must be commit, discard or keep')
+      if (args.has('--agent') && choice !== 'commit')
+        throw new AppClientCliError('invalid-request', '--agent goes with --choice commit: it starts the merger for the conflicts that are left')
       const acknowledgeSetup = args.option('--acknowledge-setup')
       return this.requestPlan(args, this.request(
           'sessions.finishWorktree',
@@ -423,6 +439,7 @@ export class AppClientCli {
             choice,
             ...(acknowledgeSetup === null ? {} : { acknowledgeSetup }),
             ...(args.has('--confirm-working') ? { confirmWorking: true as const } : {}),
+            ...(args.has('--agent') ? { agent: true as const } : {}),
           },
           requestId,
           this.operationId(args),
@@ -443,7 +460,9 @@ export class AppClientCli {
       return this.requestPlan(args, this.request('sessions.notifies', {
         ...(sessionId === null ? {} : { sessionId }),
       }, requestId))
-    } else if (args.command === 'sessions worktree-results') {
+    } else if (args.command === 'sessions children')
+      return this.requestPlan(args, this.request('sessions.children', { sessionId: args.required('--session-id') }, requestId))
+    else if (args.command === 'sessions worktree-results') {
       const tag = args.option('--tag')
       const sessionId = args.option('--session-id')
       return this.requestPlan(args, this.request(
@@ -802,6 +821,8 @@ export class AppClientCli {
       throw new AppClientCliError('invalid-request', '--computer must not be empty')
     if (computer !== null && request.operation === 'sessions.create' && request.body.spec.notify !== undefined)
       throw new AppClientCliError('invalid-request', '--notify-* options are local only and cannot be used with --computer')
+    if (computer !== null && request.operation === 'sessions.create' && request.body.spec.parent !== undefined)
+      throw new AppClientCliError('invalid-request', '--parent-session and --parent-kind are local only and cannot be used with --computer')
     if (computer !== null
       && request.operation === 'sessions.create'
       && args.has('--open-tab'))
@@ -879,6 +900,10 @@ export class AppClientCli {
       throw new AppClientCliError('invalid-request', '--notify-session and --notify-text must be provided together')
     if (sessionNotifyGroups !== null && sessionNotifyTarget === null)
       throw new AppClientCliError('invalid-request', '--notify-on-group requires --notify-session and --notify-text')
+    const parentSession = args.option('--parent-session')
+    const parentKind = args.option('--parent-kind')
+    if ((parentSession === null) !== (parentKind === null))
+      throw new AppClientCliError('invalid-request', '--parent-session and --parent-kind must be provided together')
     const title = args.option('--title')
     const number = AppClientCli.customNumberOf(args.option('--number'))
     const color = AppClientCli.colorOf(args.option('--color'))
@@ -912,6 +937,9 @@ export class AppClientCli {
           text: sessionNotifyText,
           onGroups: sessionNotifyGroups === null ? [] : sessionNotifyGroups.split(',').map((id) => id.trim()),
         },
+      }),
+      ...(parentSession === null || parentKind === null ? {} : {
+        parent: { sessionId: parentSession, kind: AppClientCli.parentKindOf(parentKind) },
       }),
       ...(title === null ? {} : { title }),
       ...(number === null ? {} : { number }),
@@ -957,6 +985,15 @@ export class AppClientCli {
         `--color must be one of ${SessionColors.namesConst.join(', ')}`,
       )
     return value
+  }
+
+  private static readonly parentKindsConst: readonly SessionParentKind[] = ['worktree', 'ticket', 'worker']
+
+  private static parentKindOf(value: string): SessionParentKind {
+    const kind = AppClientCli.parentKindsConst.find((known) => known === value)
+    if (kind === undefined)
+      throw new AppClientCliError('invalid-request', `--parent-kind must be one of ${AppClientCli.parentKindsConst.join(', ')}`)
+    return kind
   }
 
   /**
@@ -1049,6 +1086,8 @@ export class AppClientCli {
     if (request.operation === 'sessions.reopen'
       || request.operation === 'sessions.finalize'
       || request.operation === 'sessions.worktree'
+      || request.operation === 'sessions.conflicts'
+      || request.operation === 'sessions.resolveConflict'
       || request.operation === 'sessions.remove'
       || request.operation === 'sessions.discardWorktree'
       || request.operation === 'sessions.retrySetup'
@@ -1103,6 +1142,7 @@ export class AppClientCli {
       || request.operation === 'sessions.create'
       || request.operation === 'sessions.worktreeResults'
       || request.operation === 'sessions.notifies'
+      || request.operation === 'sessions.children'
       || request.operation === 'sessions.acknowledgeWorktreeResult'
       || request.operation === 'tabs.list'
       || request.operation === 'tabs.cancelCommit'
@@ -1121,6 +1161,8 @@ export class AppClientCli {
   private static featureOf(
     request: RemoteControlRequestUnion,
   ): { option: string; operation: RemoteControlOperation } | null {
+    if (request.operation === 'sessions.create' && request.body.spec.parent !== undefined)
+      return { option: '--parent-session', operation: 'sessions.children' }
     if (request.operation === 'sessions.create' && request.body.spec.notify !== undefined)
       return { option: '--notify-*', operation: 'sessions.notifies' }
     if (request.operation === 'sessions.scripts') return { option: 'sessions scripts', operation: 'sessions.scripts' }
@@ -1138,6 +1180,9 @@ export class AppClientCli {
       return { option: '--worktree-tag', operation: 'sessions.worktreeResults' }
     if (request.operation === 'sessions.create' && request.body.spec.worktree?.notify !== undefined)
       return { option: '--worktree-notify-session', operation: 'sessions.worktreeResults' }
+    // The merger came with the conflict list: a build without `sessions.conflicts` refuses the key.
+    if (request.operation === 'sessions.finishWorktree' && request.body.agent !== undefined)
+      return { option: '--agent', operation: 'sessions.conflicts' }
     return null
   }
 
@@ -1320,8 +1365,11 @@ export class AppClientCli {
     'sessions.updateMain',
     'sessions.worktreeResults',
     'sessions.notifies',
+    'sessions.children',
     'sessions.acknowledgeWorktreeResult',
     'sessions.proposeCommit',
+    'sessions.conflicts',
+    'sessions.resolveConflict',
   ]
 
   private static readonly deliverMarginMillisecondsConst = 5_000

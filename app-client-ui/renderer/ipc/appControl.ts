@@ -93,7 +93,9 @@ export class AppControl {
   static async snapshot(): Promise<IpcResult<SessionsSnapshot>> {
     const answer = await AppControl.value('sessions.list', {})
     if (!answer.ok) return answer
-    return { ok: true, value: { ...answer.value, sessions: [...answer.value.sessions] } }
+    // The list sends null for a session made without a create operation id; the snapshot leaves it absent.
+    return { ok: true, value: { ...answer.value, sessions: answer.value.sessions.map((session) =>
+      ({ ...session, callerOperationId: session.callerOperationId ?? undefined })) } }
   }
 
   static sessionOf(sessionId: string): RemoteControlSessionSelector {

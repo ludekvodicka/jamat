@@ -416,7 +416,7 @@ describe('lib-orchestrator/sessionManager/launch/launchPlanner', () => {
         expect(args).not.toContain('--dangerously-skip-permissions')
         expect(args).toEqual(plan(resolver, platform, agentArgs).args)
       }
-      expect(() => AgentPresets.replayArgs({ agentId: 'codex', launchMode: 'new', permission: 'accept-edits' })).toThrow(/Codex has no accept-edits/)
+      expect(() => AgentPresets.replayArgs({ agentId: 'codex', launchMode: 'new', permission: 'accept-edits' })).toThrow(/Codex has no edits-only/)
     })
 
     it('refuses an agent it has no policy for', () => {
@@ -794,6 +794,35 @@ describe('lib-orchestrator/sessionManager/launch/launchPlanner', () => {
 
     it('ignores an effort on a shell session', () => {
       expect(effortPlan(record(), 'linux', 'high')).toEqual(plan(record(), 'linux'))
+    })
+  })
+
+  describe('the Claude settings file', () => {
+    function agentRecord(agentId: 'claude' | 'codex'): SessionRecord {
+      return record({
+        kind: 'agent',
+        directory: { mode: 'adHoc', path: 'D:\\work' },
+        agent: { agentId, launchMode: 'resume', nativeSessionId: 'n1' },
+      })
+    }
+
+    it('hands Claude the file in front of the mode args, on both platforms', () => {
+      const value = agentRecord('claude')
+      const settings = 'C:\\Users\\x y\\settings-1.json'
+      expect(LaunchPlanner.plan(value, { platform: 'linux', environment: environmentConst, claudeSettingsFile: settings }).args)
+        .toEqual(['--settings', settings, '--resume', 'n1'])
+      expect(LaunchPlanner.plan(value, { platform: 'win32', environment: environmentConst, claudeSettingsFile: settings }).args)
+        .toEqual(['/d', '/q', '/c', 'claude', '--settings', settings, '--resume', 'n1'])
+    })
+
+    it('leaves the launch as it is without one', () => {
+      expect(LaunchPlanner.plan(agentRecord('claude'), { platform: 'linux', environment: environmentConst, claudeSettingsFile: undefined }))
+        .toEqual(plan(agentRecord('claude'), 'linux'))
+    })
+
+    it('refuses to hand Codex a Claude settings file', () => {
+      expect(() => LaunchPlanner.plan(agentRecord('codex'), { platform: 'linux', environment: environmentConst, claudeSettingsFile: 'x.json' }))
+        .toThrow('Codex has no --settings flag')
     })
   })
 

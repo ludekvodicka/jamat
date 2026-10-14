@@ -32,12 +32,21 @@ export class ScriptLogStore {
     return join(this.parentDirectory(parentId), `${ScriptLogStore.checked(actionId)}-conflicts.txt`)
   }
 
+  /** The merger's brief of an SVN Finish, Markdown, beside the parent's run logs and gone with them. */
+  mergeBriefPathOf(parentId: string, actionId: string): string {
+    return join(this.parentDirectory(parentId), `${ScriptLogStore.checked(actionId)}-merge.md`)
+  }
+
   async write(parentId: string, runId: string, text: string): Promise<{ ok: true; bytes: number } | { ok: false; detail: string }> {
     return this.written(parentId, () => this.pathOf(parentId, runId), text)
   }
 
   async writeBrief(parentId: string, actionId: string, text: string): Promise<{ ok: true; bytes: number } | { ok: false; detail: string }> {
     return this.written(parentId, () => this.briefPathOf(parentId, actionId), text)
+  }
+
+  async writeMergeBrief(parentId: string, actionId: string, text: string): Promise<{ ok: true; bytes: number } | { ok: false; detail: string }> {
+    return this.written(parentId, () => this.mergeBriefPathOf(parentId, actionId), text)
   }
 
   /** The same staging rule as `AtomicJsonFile.writeAsync`: a reader sees the old file or the whole new one. */

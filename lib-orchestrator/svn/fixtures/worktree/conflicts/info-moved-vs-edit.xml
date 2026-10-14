@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<info>
+<entry
+   revision="3"
+   kind="dir"
+   path=".">
+<url>{REPO}/src</url>
+<relative-url>^/src</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+</wc-info>
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+<entry
+   path="legacy.txt"
+   revision="3"
+   kind="file">
+<url>{REPO}/src/legacy.txt</url>
+<relative-url>^/src/legacy.txt</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>delete</schedule>
+<depth>infinity</depth>
+<checksum>2f97168b1550f4d7c73e7ec7f4ecb56ab50dc5bc</checksum>
+<moved-to>src/moved.txt</moved-to>
+</wc-info>
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+<tree-conflict
+   operation="update"
+   kind="file"
+   reason="moved-away"
+   victim="legacy.txt"
+   action="edit">
+<version
+   path-in-repos="src/legacy.txt"
+   repos-url="{REPO}"
+   revision="2"
+   side="source-left"
+   kind="file"/>
+<version
+   revision="3"
+   side="source-right"
+   kind="file"
+   path-in-repos="src/legacy.txt"
+   repos-url="{REPO}"/>
+</tree-conflict>
+</entry>
+<entry
+   path="moved.txt"
+   revision="2"
+   kind="file">
+<url>{REPO}/src/moved.txt</url>
+<relative-url>^/src/moved.txt</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>add</schedule>
+<depth>infinity</depth>
+<copy-from-url>{REPO}/src/legacy.txt</copy-from-url>
+<copy-from-rev>2</copy-from-rev>
+<text-updated>2026-01-01T00:00:00.000000Z</text-updated>
+<checksum>98ce56098daf1a2ffe03a0d108ea841f1e4e6c69</checksum>
+<moved-from>src/legacy.txt</moved-from>
+</wc-info>
+<commit
+   revision="2">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+</info>

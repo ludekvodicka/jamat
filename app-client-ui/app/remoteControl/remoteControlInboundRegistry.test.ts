@@ -326,6 +326,14 @@ class RemoteControlInboundRegistryTestTerminal {
     return { ok: true as const, value: { attachId, accepted: true as const, applied: true } }
   }
 
+  async pasteImageLive(_ownerId: string, attachId: string) {
+    return { ok: true as const, value: { attachId, path: `/images/${attachId}.png` } }
+  }
+
+  async pasteFileLive(_ownerId: string, attachId: string) {
+    return { ok: true as const, value: { attachId, received: 0, path: `/files/${attachId}.txt` } }
+  }
+
   detachLive(ownerId: string, attachId: string) {
     this.frames.delete(`${ownerId}\u0000${attachId}`)
     return { ok: true as const, value: { attachId } }

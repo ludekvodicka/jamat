@@ -21,23 +21,24 @@ export class WorktreeQuestion {
       const ended = session.life === 'ended' || session.life === 'lost'
       if (!ended && !(local && worktree.liveFinish === true)) return null
       // An action that runs owns the worktree; one that waits for the person takes the next press.
+      // On this computer both live in the session's workflow tab, which Finish… opens instead.
       const action = session.svnAction
-      if (action !== undefined && action.needs === null) return null
+      if (action !== undefined && (action.needs === null || local)) return null
       const discardAdmitted = local && (session.admits.includes('discardWorktree') || worktree.liveFinish === true)
-      const waiting = local && action?.needs !== undefined && action.needs !== null
       const choices: SessionFinalizeChoice[] = []
       // The library composes what this worktree offers; the kind is never read here to decide it.
       for (const choice of worktree.choices) {
-        const row = WorktreeQuestion.rowOf(choice, session, worktree, discardAdmitted, waiting)
+        const row = WorktreeQuestion.rowOf(choice, session, worktree, discardAdmitted)
         if (row !== null) choices.push(row)
       }
       if (!choices.some((choice) => choice.submitLabel !== null)) return null
       const landing = choices.find((choice) => choice.id === 'commit' || choice.id === 'merge')
+      const starts = WorktreeQuestion.startsWorkflowOf(worktree)
       return {
         label: 'Worktree',
         choices,
         chosenDefault: landing?.id ?? 'keep',
-        ...waiting && action?.needs ? { note: `The Finish waits for you: ${action.needs}` } : {},
+        ...local && starts.length > 0 ? { startsWorkflow: starts } : {},
       }
     },
     perform(choiceId, ports, agreement) {
@@ -48,12 +49,19 @@ export class WorktreeQuestion {
     },
   }
 
+  /** Commit and Discard of an SVN worktree start an SVN action; Merge back starts the Git Finish. */
+  private static startsWorkflowOf(worktree: SessionWorktreeInfo): readonly string[] {
+    const kind = worktree.kind
+    if (kind === 'svn') return ['commit', 'discard']
+    else if (kind === 'git') return ['merge']
+    else throw new Error(`Unknown worktree kind: ${JSON.stringify(kind satisfies never)}`)
+  }
+
   private static rowOf(
     choice: SessionFinishChoice,
     session: SessionInfo,
     worktree: SessionWorktreeInfo,
     discardAdmitted: boolean,
-    waiting: boolean,
   ): SessionFinalizeChoice | null {
     if (choice === 'commit')
       return session.admits.includes('finalize')
@@ -78,8 +86,6 @@ export class WorktreeQuestion {
           }
         : null
     else if (choice === 'keep') {
-      if (waiting)
-        return { id: 'keep', title: 'Keep worktree', note: 'ends the waiting Finish; the worktree and its changes stay', glyph: '—', submitLabel: 'Keep worktree' }
       // Leaving a worktree that waits for its removal after the end is no keeping: the removal goes on.
       return worktree.cleanup?.phase === 'pending'
         ? { id: 'keep', title: 'Remove automatically', note: worktree.cleanup.summary, glyph: '↻', submitLabel: null }

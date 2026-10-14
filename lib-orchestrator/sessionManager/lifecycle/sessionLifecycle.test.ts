@@ -156,6 +156,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     models: Map<'claude' | 'codex', string>
     /** The stored default effort per agent, on the same footing as the model beside it. */
     efforts: Map<'claude' | 'codex', string>
+    /** What the relay answers, and every directory it was asked for. */
+    statusLine: { file: string | null; cwds: string[] }
     /** Every directory the Claude trust seed was asked to answer for. */
     seeded: string[]
     /** Every session id the reconciler asked to have its merge carried on. */
@@ -492,6 +494,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     const yolo = new Set<'claude' | 'codex'>()
     const models = new Map<'claude' | 'codex', string>()
     const efforts = new Map<'claude' | 'codex', string>()
+    const statusLine: { file: string | null; cwds: string[] } = { file: null, cwds: [] }
     const seeded: string[] = []
     const resumed: string[] = []
     const finishing = new Set<string>()
@@ -509,6 +512,10 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         reviewRoots: async () => ({ ok: true, value: [] }),
         fingerprint: async () => ({ ok: true, value: 'fingerprint' }),
         lowerBounds: async () => ({ ok: true, value: {} }),
+        conflictSet: async () => ({ ok: true, value: { revision: 41, facts: [], rows: [] } }),
+        logOf: async () => ({ ok: true, value: [] }),
+        hashes: async () => ({ ok: true, value: {} }),
+        baseAbove: async () => ({ ok: true, value: null }),
       },
       remove: async () => ({ state: 'removed', lines: [] }),
       ended: [],
@@ -553,6 +560,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       yolo,
       models,
       efforts,
+      statusLine,
       seeded,
       resumed,
       finishing,
@@ -568,6 +576,12 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         codexSessions: {
           launch: (_record, native) => native,
           identity: record => identities.get(record.sessionId) ?? null,
+        },
+        claudeStatusLine: {
+          settingsFileFor: (cwd) => {
+            statusLine.cwds.push(cwd)
+            return statusLine.file
+          },
         },
         tools: { resolve: (tool) => tools.get(tool) ?? { ok: true, command: tool, prefixArgs: [], env: {} } },
         claudeTitles: claudeTitles.port,
@@ -585,10 +599,15 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
             reviewRoots: (path) => svnAction.svn.reviewRoots(path),
             fingerprint: (path) => svnAction.svn.fingerprint(path),
             lowerBounds: (roots) => svnAction.svn.lowerBounds(roots),
+            conflictSet: (path, base) => svnAction.svn.conflictSet(path, base),
+            logOf: (path, from, to) => svnAction.svn.logOf(path, from, to),
+            hashes: (path, paths) => svnAction.svn.hashes(path, paths),
+            baseAbove: (path, revision) => svnAction.svn.baseAbove(path, revision),
           },
           labels: { ownCommits: async () => ({ ok: true, value: [] }), afterReview: async () => [], inferred: async () => [] },
           removal: { remove: (sessionId) => svnAction.remove(sessionId) },
           resolver: { unavailable: () => null, briefs: logs, withMarkers: async () => svnAction.markers },
+          resolutions: { apply: async () => ({ ok: true, value: undefined }) },
           results: new WorktreeResultsStore(join(root, 'worktree-results'), { now: () => clock.now, logs, report: (message) => reports.push(message) }),
           finishRefusal: () => null,
           activityOf: () => null,
@@ -597,6 +616,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
           proposalsSpent: () => undefined,
           detach: (work) => { svnAction.detached.push(work) },
           changed: () => undefined,
+          steps: { at: () => undefined, clear: () => false },
         },
         // The one channel the client has for a fact it cannot put in a result, and the store's own
         // damage report goes to the same place in production.
@@ -1177,6 +1197,66 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     expect(stored?.lastUserInputAt).toBeUndefined()
   })
 
+  it('records the control operation id of a requested create, and no other door writes one', async () => {
+    const context = await harness()
+    await context.store.put(record('parent', {
+      kind: 'agent',
+      title: '014 - the wire',
+      agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'native-1' },
+      directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
+      callerOperationId: 'op-parent',
+    }))
+
+    const requested = successOf(await context.lifecycle.create(shellSpec(context.workDirectory), { callerOperationId: 'op-create' }))
+    const plain = successOf(await context.lifecycle.create(shellSpec(context.workDirectory)))
+    await context.lifecycle.createInternal(
+      {
+        kind: 'agent',
+        directory: { mode: 'adHoc', path: context.workDirectory },
+        agent: { agentId: 'claude', mode: 'new', initialPrompt: 'resolve it' },
+      },
+      { sessionId: 'internal-1', oneShot: true, scriptOf: { sessionId: 'parent', phase: 'after', scriptId: 'merge-resolve', name: 'resolver' } },
+    )
+    const forked = successOf(await context.lifecycle.forkFrom('parent'))
+    const resumed = successOf(await context.lifecycle.openHistory({
+      directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
+      agentId: 'claude',
+      nativeSessionId: 'native-9',
+      providerName: 'Provider task',
+      providerActive: false,
+    }))
+
+    expect(context.store.get(requested.sessionId)?.callerOperationId).toBe('op-create')
+    for (const sessionId of [plain.sessionId, 'internal-1', forked.sessionId, resumed.sessionId]) {
+      expect(context.store.get(sessionId)).not.toBeNull()
+      expect(context.store.get(sessionId)?.callerOperationId).toBeUndefined()
+    }
+  })
+
+  // The id is what a caller whose create answer was lost finds the session by, so it rides through
+  // every later write of the record: the replay of the pending launch, the loss and the reopen.
+  it('keeps the control operation id on a create the Host never answered, through its replay and a reopen', async () => {
+    const context = await harness()
+    context.host.failure = { ok: false, code: 'no-lease', detail: 'no live controller lease' }
+    await context.lifecycle.create(shellSpec(context.workDirectory), { callerOperationId: 'op-lost' })
+    expect(context.store.get('id-1')).toEqual(expect.objectContaining({
+      life: 'starting',
+      pendingOperationKind: 'create',
+      callerOperationId: 'op-lost',
+    }))
+
+    context.host.failure = null
+    expect(await context.lifecycle.reconcile(context.host.listing()))
+      .toEqual([expect.objectContaining({ kind: 'retry-launch', sessionId: 'id-1', operation: 'create' })])
+    expect(context.store.get('id-1')).toEqual(expect.objectContaining({ life: 'live', callerOperationId: 'op-lost' }))
+
+    context.host.runtimes.clear()
+    context.host.hostInstanceId = 'host-2'
+    expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([{ kind: 'mark-lost', sessionId: 'id-1' }])
+    expect(await context.lifecycle.reopen('id-1')).toEqual({ ok: true, value: undefined })
+    expect(context.store.get('id-1')).toEqual(expect.objectContaining({ life: 'live', callerOperationId: 'op-lost' }))
+  })
+
   /*
    * A colour named at create is the scheduler's mark on its own work: the wave it launches sits in
    * the tree beside sessions a person opened, and painting them afterwards would show every worker
@@ -1512,6 +1592,66 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         pendingOperationId: operationId,
         pendingOperationKind: 'create',
       }))
+  })
+
+  // A caller's notify has to reach the session the replay may still start, so only the failure that
+  // keeps the record names it; the wire answer is built from the code and detail alone.
+  describe('the record a failed create names', () => {
+    it('names the starting record a create left when the Host decided nothing', async () => {
+      const undecided: HostCallFailure[] = [
+        { ok: false, code: 'host-unreachable', detail: 'no descriptor' },
+        { ok: false, code: 'no-lease', detail: 'no live controller lease' },
+        { ok: false, code: 'op-rejected', status: 409, detail: 'Host is stopping and rejects new mutations' },
+        { ok: false, code: 'op-rejected', status: 500, detail: 'internal error' },
+      ]
+      for (const failure of undecided) {
+        const context = await harness()
+        context.host.failure = failure
+        expect(await context.lifecycle.create(shellSpec(context.workDirectory))).toStrictEqual({
+          ok: false, code: failure.code, detail: failure.detail, recordedSessionId: 'id-1',
+        })
+        expect(context.store.get('id-1')).toEqual(expect.objectContaining({
+          life: 'starting', pendingOperationId: 'id-2', pendingOperationKind: 'create',
+        }))
+      }
+    })
+
+    it('names nothing for a create the Host refused, and ends its record', async () => {
+      for (const status of [400, 404]) {
+        const context = await harness()
+        context.host.failure = { ok: false, code: 'op-rejected', status, detail: `refused with ${status}` }
+        expect(await context.lifecycle.create(shellSpec(context.workDirectory))).toStrictEqual({
+          ok: false, code: 'op-rejected', detail: `refused with ${status}`,
+        })
+        expect(context.store.get('id-1')).toEqual(expect.objectContaining({
+          life: 'ended', endedReason: `refused with ${status}`,
+        }))
+      }
+    })
+
+    it('names nothing for a create refused before it wrote a record', async () => {
+      const invalid = await harness()
+      const refused = await invalid.lifecycle.create({
+        ...shellSpec(invalid.workDirectory),
+        color: 'chartreuse' as SessionCreateSpec['color'],
+      })
+      expect(refused).toMatchObject({ ok: false, code: 'invalid-spec' })
+      expect(refused).not.toHaveProperty('recordedSessionId')
+      expect(invalid.store.list()).toEqual([])
+
+      const unacknowledged = await harness()
+      writeFileSync(join(projectRoot, '.worktree.json'), JSON.stringify({ setup: ['./bootstrap.sh'] }), 'utf8')
+      const asked = await unacknowledged.lifecycle.create(worktreeSpec())
+      expect(asked).toMatchObject({ ok: false, code: 'setup-not-acknowledged' })
+      expect(asked).not.toHaveProperty('recordedSessionId')
+      expect(unacknowledged.store.list()).toEqual([])
+
+      const latched = await harness({ damagedRecords: true })
+      const unwritten = await latched.lifecycle.create(shellSpec(latched.workDirectory))
+      expect(unwritten).toMatchObject({ ok: false, code: 'records-latched' })
+      expect(unwritten).not.toHaveProperty('recordedSessionId')
+      expect(latched.host.calls).toEqual([])
+    })
   })
 
   /*
@@ -3499,7 +3639,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       const reserved = join(groupRoot, '.worktrees', 'fix')
       const directory = join(groupRoot, 'WebMirabiaAdmin', 'src')
       const url = 'file:///repository/Mirabia'
-      const checkoutArgs = ['--non-interactive', 'checkout', '-q', '--', `${url}@41`, '.']
+      const checkoutArgs = ['--non-interactive', 'checkout', '--', `${url}@41`, '.']
       mkdirSync(reserved, { recursive: true })
 
       function svnWorktree(context: Harness, catalogProject: string | null = null): void {
@@ -5539,6 +5679,35 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(context.store.get('resolve-3')?.agent).toMatchObject({ oneShot: true, permission: 'accept-edits' })
     })
 
+    // The merger is interactive: the status line relay like any interactive Claude, its rights, no -p, no YOLO.
+    it('starts the SVN merger interactive with its rights and the settings file, never with YOLO, and replays it the same', async () => {
+      const context = await harness()
+      context.yolo.add('claude')
+      context.statusLine.file = join(context.workDirectory, 'settings-relay.json')
+
+      await context.lifecycle.createInternal(
+        {
+          kind: 'agent',
+          directory: { mode: 'adHoc', path: context.workDirectory },
+          agent: { agentId: 'claude', mode: 'new', initialPrompt: 'merge it' },
+        },
+        { sessionId: 'merge-1', permission: 'merger', scriptOf: { sessionId: 's1', phase: 'after', scriptId: 'svn-merge', name: 'merger' } },
+      )
+
+      const args = agentArgsOf(launchOf(callsNamed(context.host, 'runtime.create')[0]))
+      expect(args).not.toContain(claudeFlagConst)
+      expect(args).not.toContain('-p')
+      expect(args).toContain('--settings')
+      expect(args).toContain('--allowedTools')
+      expect(args.slice(args.indexOf('--disallowedTools'), args.indexOf('--disallowedTools') + 5))
+        .toEqual(['--disallowedTools', 'Bash(svn:*)', 'Bash(svnadmin:*)', '--permission-mode', 'acceptEdits'])
+      expect(args.at(-1)).toBe('merge it')
+      const stored = context.store.get('merge-1')?.agent
+      expect(stored?.permission).toBe('merger')
+      expect(stored?.oneShot).toBeUndefined()
+      expect(AgentPresets.replayArgs(stored!)).not.toContain('-p')
+    })
+
     /*
      * Found while the switch was being wired, and fixed with it: `create` used to build its args
      * from the wire SPEC, which cannot carry `oneShot`, while only the record gets that mark. The
@@ -6149,6 +6318,53 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
    * A session's conversation ran in its worktree. Once that directory is gone, the only other
    * directory a launch could use is the project's main copy, which is not where the work was.
    */
+  describe('the Claude status line relay', () => {
+    function agentArgsOf(launch: RuntimeLaunchSpec): string[] {
+      return launch.args[0] === '/d' ? launch.args.slice(4) : launch.args
+    }
+
+    async function created(context: Harness, agentId: 'claude' | 'codex'): Promise<string> {
+      const answer = await context.lifecycle.create({
+        kind: 'agent',
+        directory: { mode: 'adHoc', path: context.workDirectory },
+        agent: { agentId, mode: 'new' },
+      })
+      return successOf(answer).sessionId
+    }
+
+    it('starts a Claude session with the settings file, asked for the session directory', async () => {
+      const context = await harness()
+      context.statusLine.file = join(context.workDirectory, 'settings-relay.json')
+      await created(context, 'claude')
+      expect(agentArgsOf(launchOf(callsNamed(context.host, 'runtime.create')[0])).slice(0, 2))
+        .toEqual(['--settings', join(context.workDirectory, 'settings-relay.json')])
+      expect(context.statusLine.cwds).toEqual([context.workDirectory])
+    })
+
+    // The window is read off the running process, so a resumed conversation needs it as much.
+    it('starts a reopened Claude session with it too', async () => {
+      const context = await harness()
+      context.statusLine.file = join(context.workDirectory, 'settings-relay.json')
+      const sessionId = await created(context, 'claude')
+      await context.lifecycle.stop(sessionId)
+      expect(await context.lifecycle.reopen(sessionId)).toEqual({ ok: true, value: undefined })
+      const call = [...callsNamed(context.host, 'runtime.create'),
+        ...callsNamed(context.host, 'runtime.replace')].at(-1)!
+      expect(agentArgsOf(launchOf(call))).toContain('--settings')
+    })
+
+    it('leaves the launch alone when there is no relay, and never asks for Codex', async () => {
+      const context = await harness()
+      await created(context, 'claude')
+      expect(agentArgsOf(launchOf(callsNamed(context.host, 'runtime.create')[0]))).not.toContain('--settings')
+      context.statusLine.file = join(context.workDirectory, 'settings-relay.json')
+      context.statusLine.cwds.length = 0
+      await created(context, 'codex')
+      expect(agentArgsOf(launchOf(callsNamed(context.host, 'runtime.create')[1]))).not.toContain('--settings')
+      expect(context.statusLine.cwds).toEqual([])
+    })
+  })
+
   describe('a session whose worktree is gone', () => {
     const revision = 'https://svn.example.test/repos/app:r42'
 
@@ -6471,6 +6687,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
           settled: (sessionId) => context.lifecycle.svnActions.settled(sessionId),
         },
         labels: { ownCommits: async () => ({ ok: true, value: [] }) },
+        steps: { at: () => undefined, clear: () => false },
         results: new WorktreeResultsStore(join(context.workDirectory, 'cleanup-results'), {
           now: () => context.clock.now, logs: context.logs, report: () => undefined,
         }),
@@ -6727,6 +6944,44 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       })
       expect(failureOf(await context.lifecycle.requestWorktreeCleanup('w1')))
         .toMatchObject({ code: 'worktree-removed', detail: expect.stringMatching(/r12/) })
+    })
+  })
+
+  // The link is display only, so a create naming a parent this computer cannot show is refused
+  // rather than stored as a row nothing can nest under.
+  describe('the parent link', () => {
+    it('refuses an unknown parent, a script run as parent and an unknown kind before anything is created', async () => {
+      const context = await harness()
+      await context.store.put(record('p'))
+      await context.store.put(setupRecord({ scriptOf: { sessionId: 'p', phase: 'before', scriptId: 'setup', name: 'setup' } }))
+
+      for (const [parent, detail] of [
+        [{ sessionId: 'nobody', kind: 'worktree' }, /parent names session nobody, which this computer does not have/],
+        [{ sessionId: 's1', kind: 'ticket' }, /Session s1 is a script run and cannot be a parent/],
+        [{ sessionId: 'p', kind: 'unit' }, /unknown parent kind "unit"/],
+        [{ sessionId: ' ', kind: 'worker' }, /a parent needs the id/],
+      ] as const) {
+        const refused = await context.lifecycle.create({ ...shellSpec(context.workDirectory), parent } as unknown as SessionCreateSpec)
+        expect(failureOf(refused)).toMatchObject({ code: 'invalid-spec', detail: expect.stringMatching(detail) })
+      }
+      expect(context.host.calls).toEqual([])
+      expect(context.store.list().map((entry) => entry.sessionId)).toEqual(['p', 's1'])
+    })
+
+    it('stores the parent on the created record, and the record survives a reload unchanged', async () => {
+      const context = await harness()
+      await context.store.put(record('p'))
+
+      const { sessionId } = successOf(await context.lifecycle.create({
+        ...shellSpec(context.workDirectory), parent: { sessionId: 'p', kind: 'worker' },
+      }))
+      const plain = successOf(await context.lifecycle.create(shellSpec(context.workDirectory)))
+
+      const stored = context.store.get(sessionId)
+      expect(stored?.parent).toEqual({ sessionId: 'p', kind: 'worker' })
+      expect(context.store.get(plain.sessionId)).not.toHaveProperty('parent')
+      const reloaded = await SessionRecordsStore.load(context.recordsFile, { snapshotsDirectory: context.snapshotsDirectory })
+      expect(reloaded.get(sessionId)).toEqual(stored)
     })
   })
 })

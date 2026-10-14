@@ -11,6 +11,7 @@ import type {
 import type { SessionRecordsStore } from '../records/sessionRecordsStore'
 import type {
   SessionInfo,
+  SessionScriptOutput,
   SessionScriptPhase,
   SessionScriptRunInfo,
   SessionScriptsInfo,
@@ -321,6 +322,88 @@ export class SessionScriptsManager {
       return { ok: false, code: 'not-found', detail: `Session ${parentId} has no script run ${runId}` }
     const log = await this.logTextOf(parentId, run)
     return { ok: true, value: { sessionId: parentId, runs, ...log } }
+  }
+
+  async outputOf(parentId: string, runId: string): Promise<SessionsOpResult<SessionScriptOutput>> {
+    const parent = this.records.get(parentId)
+    if (!parent) return OperationOutcomes.notFound(parentId)
+    const run = this.records.get(runId)
+    if (run?.scriptOf?.sessionId !== parentId) {
+      const entry = SessionScriptsManager.entryOf(parent, runId)
+      if (entry === undefined)
+        return { ok: false, code: 'not-found', detail: `Session ${parentId} has no script run ${runId}` }
+      return this.logOutputOf(parentId, entry)
+    }
+    const info = SessionScriptsManager.rowInfoOf(run)
+    let settled: SessionRecordScriptRun | undefined
+    let missingRuntimeReason: string
+    switch (info.state) {
+      case 'running': missingRuntimeReason = 'the Host has not started it yet'; break
+      case 'succeeded':
+      case 'failed':
+      case 'stopped':
+      case 'lost':
+        settled = SessionScriptsManager.entryOf(parent, runId)
+        missingRuntimeReason = SessionScriptsManager.neverRanConst
+        break
+      default: throw new Error(`Unknown script run state: ${JSON.stringify(info.state satisfies never)}`)
+    }
+    const target = OperationOutcomes.targetOf(run)
+    const output: SessionScriptOutput = {
+      state: info.state,
+      source: 'live',
+      lines: [],
+      terminal: target,
+      ...(info.endedAt === undefined ? {} : { endedAt: info.endedAt }),
+    }
+    if (target === null) {
+      if (settled !== undefined) return this.logOutputOf(parentId, settled)
+      output.logReason = missingRuntimeReason
+      return { ok: true, value: output }
+    }
+    const inspected = await this.host.runtimeInspect(target, {
+      rawTailChars: 0,
+      screenScrollbackRows: SessionScriptsManager.scrollbackRowsConst,
+    })
+    // Collapse can remove the Host runtime while this read is in flight; its saved log takes over.
+    if (this.records.get(runId) === null) return this.outputOf(parentId, runId)
+    if (!inspected.ok) {
+      // Failed gated records outlive their Host runtime; their settled history still owns the output.
+      if (settled !== undefined) return this.logOutputOf(parentId, settled)
+      return OperationOutcomes.failureOf(inspected)
+    }
+    const rows = inspected.value.projection?.screenLines
+    if (rows === undefined) {
+      if (settled !== undefined) return this.logOutputOf(parentId, settled)
+      output.logReason = 'the Host answered without the rows of its output'
+    }
+    else output.lines = SessionScriptsManager.outputLinesOf(rows)
+    return { ok: true, value: output }
+  }
+
+  private async logOutputOf(parentId: string, entry: SessionRecordScriptRun): Promise<SessionsOpResult<SessionScriptOutput>> {
+    const reading = await this.logTextOf(parentId, SessionScriptsManager.settledInfoOf(entry, false))
+    return { ok: true, value: {
+      state: entry.outcome,
+      source: 'log',
+      lines: reading.log?.text ? reading.log.text.split('\n') : [],
+      ...(reading.logDetail === undefined ? {} : { logReason: reading.logDetail }),
+      terminal: null,
+      endedAt: entry.endedAt,
+    } }
+  }
+
+  private static outputLinesOf(rows: readonly string[]): readonly string[] {
+    const clean = rows.map(ScriptLogText.withoutDimMarkers)
+    let used = 0
+    let first = clean.length
+    while (first > 0) {
+      const bytes = Buffer.byteLength(clean[first - 1], 'utf8') + 1
+      if (used + bytes > ScriptLogText.maxBytesConst) break
+      used += bytes
+      first -= 1
+    }
+    return clean.slice(first)
   }
 
   /**

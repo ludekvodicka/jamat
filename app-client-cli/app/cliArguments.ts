@@ -58,6 +58,8 @@ export class CliArguments {
         '--notify-session',
         '--notify-text',
         '--notify-on-group',
+        '--parent-session',
+        '--parent-kind',
         '--base-ref',
         '--title',
         '--number',
@@ -119,7 +121,7 @@ export class CliArguments {
     },
     'sessions finish-worktree': {
       options: ['--session-id', '--number', '--working-directory', '--choice', '--acknowledge-setup'],
-      flags: ['--self', '--confirm-working'],
+      flags: ['--self', '--confirm-working', '--agent'],
       mutation: true,
     },
     'sessions update-main': {
@@ -131,6 +133,10 @@ export class CliArguments {
     'sessions worktree-review': { options: ['--timeout-ms'], flags: ['--self', '--wait'], mutation: true },
     'sessions worktree-results': { options: ['--tag', '--session-id'], flags: ['--unacknowledged'], mutation: false },
     'sessions notifies': { options: ['--session-id'], flags: [], mutation: false },
+    'sessions conflicts': { options: ['--session-id', '--number', '--working-directory'], flags: ['--self'], mutation: false },
+    /* No confirm flag: an option that loses incoming work is the person's, in the window. */
+    'sessions resolve-conflict': { options: ['--session-id', '--number', '--working-directory', '--path', '--option'], flags: ['--self'], mutation: true },
+    'sessions children': { options: ['--session-id'], flags: [], mutation: false },
     'sessions acknowledge-worktree-result': { options: ['--action-id'], flags: [], mutation: true },
     'sessions transcript': {
       options: ['--session-id', '--number', '--working-directory'],
@@ -275,7 +281,9 @@ export class CliArguments {
         positionals.push(token)
         continue
       }
-      if (CliArguments.knownFlags.has(token)) {
+      // `--agent` is both: the agent of `sessions create` takes a value, the press of `finish-worktree` none.
+      const valued = CliArguments.knownOptions.has(token) && args[index + 1] !== undefined && !(args[index + 1] ?? '').startsWith('--')
+      if (CliArguments.knownFlags.has(token) && !valued) {
         if (flags.has(token)) throw CliArguments.usage(`Argument ${token} was provided twice`)
         flags.add(token)
         continue

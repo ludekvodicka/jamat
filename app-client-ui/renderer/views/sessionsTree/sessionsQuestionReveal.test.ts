@@ -72,6 +72,22 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsQuestionReveal', () 
       .toEqual(['category:nodejs', 'computer:office', 'endpoint:office-dev', 'project:category:nodejs/c:/projects/nodejs/appjamatv3'])
   })
 
+  /** A session child hangs under its parent, whose row has no twisty: only the groups above open. */
+  it('opens the folded project of a nested child that has just asked', () => {
+    const reveal = new SessionsQuestionReveal()
+    const source = withActivity(SessionsFixtures.mixed(), 's-working', 'idle')
+    const parent = source.sessions.find((session) => session.sessionId === 's-working')!
+    const child = { ...parent, sessionId: 's-child', parent: { sessionId: 's-working', kind: 'worktree' as const, sameProject: true } }
+    const working: SessionsSnapshot = { ...source, sessions: [parent, { ...child, activity: 'working' }] }
+    const nodes = treeOf(working)
+    const parentNode = nodes[0].children[0].children[0]
+    expect(parentNode.children.map((node) => node.id)).toEqual(['session:s-child'])
+    open(reveal, working)
+
+    expect(open(reveal, withActivity(working, 's-child', 'waiting')))
+      .toEqual(['category:nodejs', 'project:category:nodejs/c:/projects/nodejs/appjamatv3'])
+  })
+
   /** A first sighting that is already waiting is a question nobody has been shown yet. */
   it('reveals a session it has never seen in any other state', () => {
     const reveal = new SessionsQuestionReveal()

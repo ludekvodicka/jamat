@@ -222,6 +222,7 @@ class SmokeRemoteControl extends SmokeHarness {
     const sessionId = await this.checkCreateReplayAndList()
     await this.checkRepaint(sessionId)
     await this.checkCustomNumber()
+    await this.checkCreateOperationIds(sessionId)
     await this.checkForkTranscript()
     const panelId = await this.checkTabs(sessionId)
     await this.checkTerminal(sessionId)
@@ -463,6 +464,26 @@ class SmokeRemoteControl extends SmokeHarness {
     )
     this.check('a create bringing an allocated number never reaches the controller',
       refused.ok === false && refused.error?.code === 'invalid-request')
+  }
+
+  /**
+   * The key a caller whose create answer was lost finds its session by: the control envelope's id, never
+   * a body field. A session made directly on the manager went through no control request and lists null.
+   */
+  private async checkCreateOperationIds(sessionId: string): Promise<void> {
+    const direct = await this.manager.createSession({
+      kind: 'shell',
+      directory: { mode: 'adHoc', path: this.workDir },
+      title: 'Direct create',
+    })
+    if (!direct.ok) throw new Error(`a create on the manager failed: ${direct.detail}`)
+    const listed = CliClient.valueOf(await this.cli('sessions', 'list'), 'sessions.list')
+    const entries = CliClient.array(listed.sessions, 'listed sessions')
+      .map((entry) => CliClient.object(entry, 'listed session'))
+    this.check('sessions list names the create operation id of a control-path create as callerOperationId',
+      entries.some((entry) => entry.sessionId === sessionId && entry.callerOperationId === 'smoke-create-1'))
+    this.check('sessions list sends callerOperationId null for a session created directly on the manager',
+      entries.some((entry) => entry.sessionId === direct.value.sessionId && entry.callerOperationId === null))
   }
 
   /**
@@ -868,7 +889,7 @@ class SmokeRemoteControl extends SmokeHarness {
       snapshot: () => {
         return this.manager.snapshot()
       },
-      createSession: (spec) => this.manager.createSession(spec),
+      createSession: (spec, origin) => this.manager.createSession(spec, origin),
       reopenSession: (sessionId) => this.manager.reopenSession(sessionId),
       finalizeSession: (sessionId, options) => this.manager.finalizeSession(sessionId, options),
       removeSession: (sessionId) => this.manager.removeSession(sessionId),
@@ -878,6 +899,7 @@ class SmokeRemoteControl extends SmokeHarness {
       openActionReview: (runId) => this.manager.openActionReview(runId),
       worktreeResults: (filter) => this.manager.worktreeResults(filter),
       notifies: (filter) => this.manager.notifies(filter),
+      children: (sessionId) => this.manager.children(sessionId),
       acknowledgeWorktreeResult: (actionId) => this.manager.acknowledgeWorktreeResult(actionId),
       proposeCommit: (sessionId, message) => this.manager.proposeCommit(sessionId, message),
       retrySetup: (sessionId, acknowledgeSetup) => this.manager.retrySetup(sessionId, acknowledgeSetup),
@@ -891,6 +913,8 @@ class SmokeRemoteControl extends SmokeHarness {
       nextSessionNumber: (projectPath) => this.manager.nextSessionNumber(projectPath),
       allocateSessionNumber: (projectPath) => this.manager.allocateSessionNumber(projectPath),
       worktreeOf: (sessionId) => this.manager.worktreeOf(sessionId),
+      conflictsOf: (sessionId) => this.manager.conflictsOf(sessionId),
+      resolveConflict: (sessionId, request) => this.manager.resolveConflict(sessionId, request),
       runScript: (parentId, request) => this.manager.runScript(parentId, request),
       scriptsOf: (parentId, runId) => this.manager.scriptsOf(parentId, runId),
       setSessionColor: (sessionId, color) => this.manager.setSessionColor(sessionId, color),

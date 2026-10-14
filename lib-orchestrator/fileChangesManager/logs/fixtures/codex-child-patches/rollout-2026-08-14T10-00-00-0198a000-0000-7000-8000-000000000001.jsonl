@@ -1,0 +1,7 @@
+{"timestamp":"2026-08-14T08:00:00.000Z","type":"session_meta","payload":{"id":"0198a000-0000-7000-8000-000000000001","timestamp":"2026-08-14T08:00:00.000Z","cwd":"Q:/Project"}}
+{"timestamp":"2026-08-14T08:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Spawn a helper"}]}}
+{"timestamp":"2026-08-14T08:00:01.100Z","type":"event_msg","payload":{"type":"user_message","message":"Spawn a helper"}}
+{"timestamp":"2026-08-14T08:00:02.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"CollabAgentToolCall","id":"exec-spawn","tool":"spawn_agent","status":"completed","receiver_thread_ids":["0198a000-0000-7000-8000-000000000002"]}}}
+{"timestamp":"2026-08-14T08:05:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Next"}]}}
+{"timestamp":"2026-08-14T08:05:00.100Z","type":"event_msg","payload":{"type":"user_message","message":"Next"}}
+{"timestamp":"2026-08-14T08:05:01.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"FileChange","id":"exec-own","changes":{"Q:/Project/src/own.ts":{"type":"update","unified_diff":"@@ -1 +1 @@\n-old\n+own\n","move_path":null}},"status":"completed"}}}

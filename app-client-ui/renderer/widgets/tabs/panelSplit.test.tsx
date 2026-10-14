@@ -9,6 +9,8 @@ import {
   PanelSplitStrip,
   usePanelSplit,
   type PanelSplitFileItem,
+  type PanelSplitState,
+  type PanelSplitTaskItem,
 } from './panelSplit'
 
 describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
@@ -57,13 +59,161 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
   it('shows the commit scope and offers Close without Detach', () => {
     render(<PanelSplitStrip items={[{ kind: 'commit', key: 'c', title: 'Commit SVN', vcs: 'svn', scopeRoot: 'Q:/app' }]}
       active="c" preview={null} onActivate={vi.fn()} onKeepOpen={vi.fn()} onSetPinned={vi.fn()} onReload={vi.fn()} onCopyPath={vi.fn()}
-      onClose={vi.fn()} onDetach={vi.fn()} />)
+      onCopyId={vi.fn()} onClose={vi.fn()} onDetach={vi.fn()} />)
     fireEvent.contextMenu(screen.getByTitle('Q:/app'))
     expect(screen.getByRole('menuitem', { name: 'Close' })).toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: 'Detach from split' })).toBeNull()
     expect(screen.queryByRole('menuitem', { name: 'Pin' })).toBeNull()
     expect(screen.queryByRole('menuitem', { name: 'Reload' })).toBeNull()
     expect(screen.queryByRole('separator')).toBeNull()
+  })
+
+  describe('task items', () => {
+    function taskFixture(subagentId: string, sessionId = 's1'): PanelSplitTaskItem {
+      return { kind: 'task', key: `task:${sessionId}:subagent:${subagentId}`, title: `Explore: ${subagentId}`, sessionId,
+        task: { kind: 'subagent', subagentId } }
+    }
+
+    function opened(state: PanelSplitState, item: Parameters<typeof PanelSplitParams.opened>[1]): PanelSplitState {
+      const result = PanelSplitParams.opened(state, item)
+      if (!result.ok) throw new Error(result.refusal)
+      return result.state
+    }
+
+    it('activates the held item when the same task opens again, and refuses the ninth task out loud', () => {
+      let state = PanelSplitParams.default()
+      for (let i = 0; i < 8; i++) state = opened(state, taskFixture(`a${i}`))
+      state = opened(state, itemFixture('doc.md'))
+      const again = opened(state, taskFixture('a2'))
+
+      expect(again.items).toHaveLength(9)
+      expect(again.active).toBe('task:s1:subagent:a2')
+      expect(PanelSplitParams.opened(again, taskFixture('ninth'))).toEqual({ ok: false,
+        refusal: 'The split already holds 8 task views. Close one before opening another.' })
+    })
+
+    it('never puts a task in Back history, never as the preview, and never pins it', () => {
+      let state = opened(PanelSplitParams.default(), itemFixture('a.md'))
+      state = opened(state, taskFixture('a1'))
+      expect(state.preview).toBe('key:a.md')
+      state = opened(state, itemFixture('b.md'))
+
+      expect(state.history.map((item) => item.key)).toEqual(['key:a.md'])
+      expect(PanelSplitParams.backTargetOf(state)?.key).toBe('key:a.md')
+      expect(PanelSplitParams.pinToggled(state, 'task:s1:subagent:a1', true)).toBe(state)
+      expect(PanelSplitParams.isPinned(state, 'task:s1:subagent:a1')).toBe(false)
+    })
+
+    it('restores a stored task item and drops only a malformed one', () => {
+      const shellFixture: PanelSplitTaskItem = { kind: 'task', key: 'task:s1:shell:b1', title: '$ ping -n 30 127.0.0.1',
+        sessionId: 's1', task: { kind: 'shell', shellId: 'b1' } }
+      const restored = PanelSplitParams.of({ split: { items: [
+        taskFixture('good'),
+        { ...taskFixture('bad-key'), key: 'task:s1:subagent:other' },
+        { ...taskFixture('no-id'), task: { kind: 'subagent' } },
+        { ...taskFixture('shell'), task: { kind: 'shell', shellId: 'b1' } },
+        shellFixture,
+        { ...shellFixture, task: { kind: 'shell' } },
+        { ...taskFixture('unknown'), task: { kind: 'monitor', taskId: 'm1' } },
+        { ...taskFixture('no-session'), sessionId: '' },
+        itemFixture('kept.md'),
+      ], active: 'task:s1:subagent:good' } })
+
+      expect(restored.items).toEqual([taskFixture('good'), shellFixture, { ...itemFixture('kept.md'), baselineHint: undefined }])
+      expect(restored.active).toBe('task:s1:subagent:good')
+    })
+
+    it('opens and restores a script item with a stable parent and run key', () => {
+      const script: PanelSplitTaskItem = { kind: 'task', key: 'task:s1:script:r1', title: 'Setup project',
+        sessionId: 's1', task: { kind: 'script', runId: 'r1' } }
+      const state = opened(PanelSplitParams.default(), script)
+      expect(state.items).toEqual([script])
+      expect(state.active).toBe(script.key)
+      const restored = PanelSplitParams.of({ split: { ...state, items: [
+        script,
+        { ...script, key: 'task:s1:script:other' },
+        { ...script, task: { kind: 'script' } },
+        { ...script, task: { kind: 'script', runId: '' } },
+      ] } })
+      expect(restored.items).toEqual([script])
+      expect(restored.active).toBe(script.key)
+    })
+
+    it('offers Copy id and Close and no Pin for a task', () => {
+      const copiedIds: string[] = []
+      render(<PanelSplitStrip items={[taskFixture('a1')]} active="task:s1:subagent:a1" preview={null}
+        onActivate={vi.fn()} onKeepOpen={vi.fn()} onSetPinned={vi.fn()} onReload={vi.fn()} onCopyPath={vi.fn()}
+        onCopyId={(key) => copiedIds.push(key)} onClose={vi.fn()} onDetach={vi.fn()} />)
+      fireEvent.contextMenu(screen.getByRole('tab'))
+      const menu = screen.getByRole('menu', { name: 'Split tab actions' })
+      expect(Array.from(menu.querySelectorAll('[role="menuitem"], [role="separator"]')).map((item) =>
+        item.getAttribute('role') === 'separator' ? '---' : item.textContent)).toEqual(['Copy id', '---', 'Close'])
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Copy id' }))
+      expect(copiedIds).toEqual(['task:s1:subagent:a1'])
+    })
+  })
+
+  describe('workflow items', () => {
+    function workflowOpened(state: PanelSplitState, sessionId: string): PanelSplitState {
+      const result = PanelSplitParams.workflowOpened(state, sessionId)
+      if (!result.ok) throw new Error(result.refusal)
+      return result.state
+    }
+
+    it("keeps one workflow item per tab, only for the tab's session, and activates it again", () => {
+      let state = workflowOpened(PanelSplitParams.default(), 's1')
+      state = PanelSplitParams.activated({ ...state, items: [...state.items, itemFixture('a.md')] }, 'key:a.md')
+      state = workflowOpened(state, 's1')
+      expect(state.items.filter((item) => item.kind === 'workflow')).toEqual([PanelSplitParams.workflowItemOf('s1')])
+      expect(state.active).toBe('workflow:s1')
+      const other = workflowOpened(state, 's2')
+      expect(other.items.filter((item) => item.kind === 'workflow')).toEqual([PanelSplitParams.workflowItemOf('s2')])
+      expect(PanelSplitParams.opened(state, PanelSplitParams.workflowItemOf('s3'))).toEqual({ ok: false,
+        refusal: 'The split already holds the workflow of another session.' })
+      expect(PanelSplitParams.pinToggled(state, 'workflow:s1', true)).toBe(state)
+    })
+
+    it('restores a stored workflow item, keeps one, and drops an unknown kind or a wrong key', () => {
+      const restored = PanelSplitParams.of({ split: { items: [
+        { kind: 'workflow', key: 'workflow:s1', title: 'Workflow', sessionId: 's1' },
+        { kind: 'workflow', key: 'workflow:s2', title: 'Workflow', sessionId: 's2' },
+        { kind: 'workflow', key: 'workflow:other', title: 'Workflow', sessionId: 's3' },
+        { kind: 'conflicts', key: 'conflicts:s1', title: 'Conflicts', sessionId: 's1' },
+        itemFixture('kept.md'),
+      ], active: 'workflow:s1' } })
+
+      expect(restored.items).toEqual([PanelSplitParams.workflowItemOf('s1'), { ...itemFixture('kept.md'), baselineHint: undefined }])
+      expect(restored.active).toBe('workflow:s1')
+    })
+
+    it('refuses to close a workflow item while its workflow is open, and closes it once it is not', () => {
+      const item = PanelSplitParams.workflowItemOf('s1')
+      expect(PanelSplitParams.closeRefusalOf(item, () => true)).toBe('The workflow stays open while its action runs or waits for you.')
+      expect(PanelSplitParams.closeRefusalOf(item, () => false)).toBeNull()
+      expect(PanelSplitParams.closeRefusalOf(itemFixture('a.md'), () => true)).toBeNull()
+
+      let open = true
+      const params = { split: { items: [item, itemFixture('a.md')], active: item.key } }
+      const props = { params, api: { onDidParametersChange: () => ({ dispose() {} }), updateParameters: vi.fn() } } as unknown as IDockviewPanelProps
+      const { result } = renderHook(() => usePanelSplit(props, (candidate) => PanelSplitParams.closeRefusalOf(candidate, () => open)))
+      let refusal: string | null = null
+      act(() => { refusal = result.current.close(item.key) })
+      expect(refusal).toBe('The workflow stays open while its action runs or waits for you.')
+      expect(result.current.state.items.map((entry) => entry.key)).toEqual([item.key, 'key:a.md'])
+      open = false
+      act(() => { refusal = result.current.close(item.key) })
+      expect(refusal).toBeNull()
+      expect(result.current.state.items.map((entry) => entry.key)).toEqual(['key:a.md'])
+    })
+
+    it('offers only Close for the workflow item', () => {
+      render(<PanelSplitStrip items={[PanelSplitParams.workflowItemOf('s1')]} active="workflow:s1" preview={null}
+        onActivate={vi.fn()} onKeepOpen={vi.fn()} onSetPinned={vi.fn()} onReload={vi.fn()} onCopyPath={vi.fn()}
+        onCopyId={vi.fn()} onClose={vi.fn()} onDetach={vi.fn()} />)
+      fireEvent.contextMenu(screen.getByRole('tab'))
+      const menu = screen.getByRole('menu', { name: 'Split tab actions' })
+      expect(Array.from(menu.querySelectorAll('[role="menuitem"]')).map((item) => item.textContent)).toEqual(['Close'])
+    })
   })
 
   function sourceFixture(path: string): FileViewerDocumentSource {
@@ -632,6 +782,7 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
           onSetPinned={(key, value) => pinned.push([key, value])}
           onReload={(key) => reloaded.push(key)}
           onCopyPath={(key) => copied.push(key)}
+          onCopyId={() => {}}
           onClose={(key) => closed.push(key)}
           onDetach={(key) => detached.push(key)}
         />,
@@ -721,6 +872,7 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
           onSetPinned={() => {}}
           onReload={() => {}}
           onCopyPath={() => {}}
+          onCopyId={() => {}}
           onClose={() => {}}
           onDetach={() => detached.focus()}
         />,

@@ -82,6 +82,7 @@ export class TabsController {
    */
   private previewPanelId: string | null = null
   private readonly previewListeners = new Set<() => void>()
+  private readonly panelListeners = new Set<() => void>()
   /** Closed and replaced previews return with their last panel state in this window. */
   private readonly closedPanelParameters = new Map<string, Record<string, unknown>>()
   /** Latched on a failed restore: saving now would overwrite the layout we could not read. */
@@ -101,7 +102,10 @@ export class TabsController {
     this.releaseSubscriptions()
     this.api = api
     this.setPreviewPanelId(this.previewPanelId)
-    this.subscriptions.push(api.onDidLayoutChange(() => this.scheduleSave()))
+    this.subscriptions.push(api.onDidLayoutChange(() => {
+      this.scheduleSave()
+      this.notifyPanels()
+    }))
     // Its own event, though `onDidLayoutChange` carries it too: that one also fires for every
     // splitter drag and every panel added, and what hangs off this one redraws on the answer.
     this.subscriptions.push(api.onDidActivePanelChange(() => this.notifyActivePanel()))
@@ -138,6 +142,7 @@ export class TabsController {
         void this.receiveTransfer(token, TabsController.placementOf(event))
           .catch((error: unknown) => this.report('Tab transfer failed', error))
     }))
+    this.notifyPanels()
   }
 
   private notifyActivePanel(): void {
@@ -190,6 +195,19 @@ export class TabsController {
     return () => {
       this.previewListeners.delete(listener)
     }
+  }
+
+  subscribePanels(listener: () => void): () => void {
+    this.panelListeners.add(listener)
+    return () => { this.panelListeners.delete(listener) }
+  }
+
+  openPanels(): readonly WorkspacePanelPresence[] {
+    return this.api === null ? [] : this.inventoryWithoutWelcome()
+  }
+
+  private notifyPanels(): void {
+    for (const listener of this.panelListeners) listener()
   }
 
   isPreview(panelId: string): boolean {
@@ -758,6 +776,7 @@ export class TabsController {
     // Dockview buffers layout events, so the final parameter change may precede our save timer.
     this.persist()
     this.api = null
+    this.notifyPanels()
   }
 
   /** Every subscription goes together, whichever way this controller lets go of its api. */

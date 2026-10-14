@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<info>
+<entry
+   kind="dir"
+   path="."
+   revision="3">
+<url>{REPO}/src</url>
+<relative-url>^/src</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+</wc-info>
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+<entry
+   path="legacy.txt"
+   revision="2"
+   kind="file">
+<url>{REPO}/src/legacy.txt</url>
+<relative-url>^/src/legacy.txt</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>replace</schedule>
+<depth>infinity</depth>
+<copy-from-url>{REPO}/src/legacy.txt</copy-from-url>
+<copy-from-rev>2</copy-from-rev>
+<text-updated>2026-01-01T00:00:00.000000Z</text-updated>
+<checksum>0c7348c34c67368d763e3e499ab655cbccfa25c7</checksum>
+</wc-info>
+<commit
+   revision="2">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+<tree-conflict
+   victim="legacy.txt"
+   action="replace"
+   operation="update"
+   kind="file"
+   reason="edit">
+<version
+   side="source-left"
+   kind="file"
+   path-in-repos="src/legacy.txt"
+   repos-url="{REPO}"
+   revision="2"/>
+<version
+   repos-url="{REPO}"
+   revision="3"
+   side="source-right"
+   kind="file"
+   path-in-repos="src/legacy.txt"/>
+</tree-conflict>
+</entry>
+</info>

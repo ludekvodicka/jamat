@@ -37,6 +37,7 @@ export class SessionModelOperations {
   private async get(sessionId: string): Promise<SessionModelReading> {
     const context = await AgentSessionContext.of(this.sessions, sessionId)
     if (!context.ok) return { kind: 'none', reason: context.reason }
-    return this.reader.read(context.value)
+    const { agentId, cwd, nativeSessionId, launchModel } = context.value
+    return this.reader.read({ agentId, cwd, nativeSessionId, launchModel })
   }
 }

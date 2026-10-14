@@ -68,6 +68,14 @@ export interface SvnLoggedRow {
   path: string
 }
 
+/** One commit as `svn log --xml` names it, for a brief that says what the other side did. */
+export interface SvnLogEntry {
+  revision: number
+  /** null when svn names none (an anonymous commit). */
+  author: string | null
+  message: string
+}
+
 /**
  * How a changed path names its project: `whole` the worktree is one project, `first-segment` a
  * product group whose member project is the first path segment.
@@ -116,6 +124,8 @@ export interface SvnReceiptInput {
 export interface SvnOwnCommitInput {
   items: readonly SvnVerboseItem[]
   revisionLog(revision: number): Promise<SvnLoggedRow[]>
+  /** Called before each candidate's `svn log -v`, so a caller can say which of how many it reads. */
+  onRevision?: (revision: number, index: number, count: number) => void
 }
 
 export interface SvnAttribution {
@@ -196,3 +206,103 @@ export interface SvnWorktreeFacts {
   removed: number
   changedFiles: number
 }
+
+/** svn's own kinds; `diverged` is Jamat's: a same-name file that keep-both left for a merge. */
+export type SvnConflictKind = 'text' | 'property' | 'tree' | 'diverged'
+/** svn's `reason` word of a tree conflict (`edit`, `obstruction`, ...), in Jamat's words. */
+export type SvnTreeReason = 'edited' | 'obstructed' | 'deleted' | 'missing' | 'unversioned' | 'added'
+  | 'replaced' | 'moved-away' | 'moved-here' | 'unrecognized'
+/** svn's `action` word of a tree conflict (`edit`, `add`, `delete`, `replace`), in Jamat's words. */
+export type SvnTreeAction = 'edited' | 'added' | 'deleted' | 'replaced' | 'unrecognized'
+export type SvnNodeKind = 'file' | 'dir' | 'none' | 'unrecognized'
+
+export interface SvnTreeFacts {
+  reason: SvnTreeReason
+  action: SvnTreeAction
+  /** The `kind` of `<tree-conflict>`: the node in the working copy. */
+  localKind: SvnNodeKind
+  /** The `kind` of `<version side="source-right">`; `none` for an incoming delete. */
+  incomingKind: SvnNodeKind
+  /** source-right: the revision the update brought. */
+  incomingRevision: number | null
+  /** The local add has history (copy or move), so no rule may revert it. */
+  localHistory: boolean
+}
+
+export interface SvnContentFacts {
+  binary: boolean
+  unreadable: boolean
+  /** Mine against theirs; null when one side is absent. */
+  equal: 'bytes' | 'eol' | 'differs' | null
+  /** A directory obstruction: files on each side, and same-name files equal or not. */
+  files?: { local: number; incoming: number; same: number; differing: number }
+}
+
+/** A property whose value before the update, in the working copy and in the new BASE all differ. */
+export interface SvnPropertyFacts { name: string; older: string | null; mine: string | null; theirs: string | null }
+
+export interface SvnConflictFact {
+  /** Worktree-relative with '/'. */
+  path: string
+  /** The first of tree, text, property that svn marks; `properties` lists the conflicted properties whatever it is. */
+  kind: Exclude<SvnConflictKind, 'diverged'>
+  /** false: read and listed, never passed to svn. */
+  takesArgument: boolean
+  tree: SvnTreeFacts | null
+  /** svn's .mine, .r<old>, .r<new> or .prej, root-relative. */
+  sidecars: string[]
+  properties: SvnPropertyFacts[]
+  content: SvnContentFacts | null
+}
+
+export type SvnConflictShape =
+  | 'text-overlap' | 'text-same' | 'binary' | 'text-unreadable' | 'name-unsafe'
+  | 'mergeinfo' | 'line-list-property' | 'property-value' | 'externals'
+  | 'obstructed-file' | 'obstructed-dir' | 'added-both' | 'kind-mismatch'
+  | 'edit-vs-delete' | 'edit-vs-replace' | 'delete-vs-edit' | 'delete-vs-delete' | 'replace-or-case'
+  | 'diverged' | 'drops-incoming' | 'unrecognized'
+
+export type SvnConflictOption = 'merged' | 'take-incoming' | 'keep-mine' | 'keep-both' | 'union'
+export type SvnConflictLoss = 'nothing' | 'mine' | 'incoming'
+
+export interface SvnConflictPlan {
+  shape: SvnConflictShape
+  /** Admitted, in drawing order; empty: fix it outside Jamat, then Check again. */
+  options: readonly SvnConflictOption[]
+  /** The lossless option the rules apply, only where the facts prove it. */
+  rule: SvnConflictOption | null
+  agent: boolean
+}
+
+/** One named step of an option; `SvnConflictResolutions.stepsOf` lists them per kind and option. */
+export type SvnConflictStepName =
+  | 'save-local' | 'remove-saved' | 'revert-incoming' | 'put-back' | 'restore-saved'
+  | 'save-sidecars' | 'no-markers' | 'union-properties'
+  | 'accept-working' | 'accept-theirs-full' | 'accept-mine-full'
+
+/** How far an option got on one path: the first `done` steps ran; a resume starts after them. */
+export interface SvnConflictJournal { option: SvnConflictOption; done: number }
+
+/** One option on one conflicted path, as the executor runs it. */
+export interface SvnConflictApply {
+  /** The working copy root; every svn call runs here. */
+  root: string
+  /** Every copy lands here before svn touches the path; an existing copy is never overwritten. */
+  savedDir: string
+  /** Root-relative with '/'. */
+  path: string
+  kind: SvnConflictKind
+  option: SvnConflictOption
+  /** The conflicted property names, for `union`. */
+  properties?: readonly string[]
+  /** BASE before the update, for a line list's value before it (`union`). */
+  baseRevision?: number
+  journal: SvnConflictJournal | null
+  /** Before the next step starts: the journal so far and the same-name files the step left diverged. */
+  onStep(journal: SvnConflictJournal, diverged: readonly string[]): Promise<void>
+}
+
+/** One row of status XML with its item state, for the guards. */
+export interface SvnItemRow { path: string; item: SvnWcItem; conflict: boolean; base: number }
+
+export interface SvnConflictRead { revision: number; facts: SvnConflictFact[]; rows: SvnItemRow[] }

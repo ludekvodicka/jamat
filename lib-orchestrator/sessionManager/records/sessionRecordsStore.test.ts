@@ -713,6 +713,56 @@ describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
         .rejects.toThrow(/retiredWorktree landed must be a list of labelled revisions beside an ownerDir/)
     })
 
+    it('loads an action at fixing with its conflict set, and drops a set it cannot word while the action stays', async () => {
+      const entry = { path: '.aidocs/engines', kind: 'tree' as const, shape: 'obstructed-dir' as const, state: 'settled' as const,
+        options: ['keep-both' as const], facts: { incomingRevision: 2 }, by: 'person' as const, settledWith: 'keep-both' as const,
+        journal: { option: 'keep-both' as const, done: 5 }, saved: 'C:\\results\\act-1\\saved\\.aidocs\\engines' }
+      const fixing = { ...action, stage: 'fixing' as const, conflictSet: { readAt: 5, baseRevision: 1, revision: 2, entries: [entry], more: 0 } }
+      const newer = { ...fixing, conflictSet: { ...fixing.conflictSet, entries: [{ ...entry, shape: 'moved-twice' }] } }
+      const context = harness({ schemaVersion: 1, savedAt: 5, records: [
+        record('a', { life: 'ended', worktree: svnWorktree, svnAction: fixing }),
+        record('b', { life: 'ended', worktree: svnWorktree, svnAction: newer as never }),
+      ] })
+
+      const store = await context.load()
+
+      expect(store.get('a')?.svnAction).toEqual(fixing)
+      expect(store.get('b')?.svnAction).toEqual({ ...action, stage: 'fixing' })
+      expect(context.reports.some((line) => line.includes('dropping the conflict set of its SVN action'))).toBe(true)
+    })
+
+    it('keeps what Jamat fixed and a waited set, and drops a list of fixes it cannot word while the action stays', async () => {
+      const fixed = { ...action, stage: 'fixing' as const, fixed: [{ path: '.aidocs/engines', option: 'keep-both' as const }],
+        conflictSet: { readAt: 5, baseRevision: 1, revision: 2, entries: [], more: 1, waited: true as const } }
+      const newer = { ...action, fixed: [{ path: 'a', option: 'rebase' }] }
+      const context = harness({ schemaVersion: 1, savedAt: 5, records: [
+        record('a', { life: 'ended', worktree: svnWorktree, svnAction: fixed }),
+        record('b', { life: 'ended', worktree: svnWorktree, svnAction: newer as never }),
+      ] })
+
+      const store = await context.load()
+
+      expect(store.get('a')?.svnAction).toEqual(fixed)
+      expect(store.get('b')?.svnAction).toEqual(action)
+      expect(context.reports.some((line) => line.includes('dropping the fixes of its SVN action'))).toBe(true)
+    })
+
+    it('keeps an action at merging with its merger, and drops a merger it cannot read while the action stays', async () => {
+      const merging = { ...action, stage: 'merging' as const, runId: 'm1', merger: { runId: 'm1', setAt: 5, startedAt: 6, endedAt: 7, checkedAt: 8 },
+        mergeBrief: 'L:/logs/a/x-merge.md' }
+      const broken = { ...action, stage: 'merging' as const, runId: 'm2', merger: { runId: 'm2', setAt: 'later', startedAt: 6 } }
+      const context = harness({ schemaVersion: 1, savedAt: 5, records: [
+        record('a', { life: 'ended', worktree: svnWorktree, svnAction: merging }),
+        record('b', { life: 'ended', worktree: svnWorktree, svnAction: broken as never }),
+      ] })
+
+      const store = await context.load()
+
+      expect(store.get('a')?.svnAction).toEqual(merging)
+      expect(store.get('b')?.svnAction).toEqual({ ...action, stage: 'merging', runId: 'm2' })
+      expect(context.reports.some((line) => line.includes('dropping the merger of its SVN action'))).toBe(true)
+    })
+
     it('refuses to write an SVN action whose checks are not checks', async () => {
       const store = await harness().load()
       const declared = { key: 'k', scriptId: 'declared' as const, name: 'tests', commands: [{ command: 'pnpm test', cwd: 'C:\\repo' }] }
@@ -763,6 +813,57 @@ describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
       completed: false as unknown as SessionRecord['completed'],
     })).rejects.toThrow(/completed must be true or absent/)
     expect(store.get('d')).toBeNull()
+  })
+
+  // Set at create and never changed: a reload gives back the same link, and a 3.12 file has none.
+  it('round-trips a parent link and refuses a kind or a session id it does not know', async () => {
+    const context = harness()
+    const store = await context.load()
+    await store.put(record('child', { parent: { sessionId: 'p', kind: 'worktree' } }))
+    await store.put(record('plain'))
+
+    const reloaded = await context.load()
+    expect(reloaded.get('child')).toEqual(record('child', { parent: { sessionId: 'p', kind: 'worktree' } }))
+    expect(Object.hasOwn(reloaded.get('plain') ?? {}, 'parent')).toBe(false)
+    await expect(store.put(record('a', {
+      parent: { sessionId: 'p', kind: 'unit' },
+    } as unknown as Partial<SessionRecord>))).rejects.toThrow(/record a: unknown parent kind "unit"/)
+    await expect(store.put(record('a', {
+      parent: { sessionId: '', kind: 'ticket' },
+    }))).rejects.toThrow(/parent sessionId must be a non-empty string/)
+    await expect(store.put(record('a', { parent: 'p' } as unknown as Partial<SessionRecord>)))
+      .rejects.toThrow(/parent must be an object/)
+    expect(context.reports).toEqual([])
+  })
+
+  // A file of an older build carries no id and loads unchanged; a later write keeps the id through a reload.
+  it('round-trips the control operation id of a create and refuses one that is empty or not a string', async () => {
+    const context = harness({ schemaVersion: 1, savedAt: 5, records: [record('old')] })
+    const store = await context.load()
+    expect(store.get('old')).toEqual(record('old'))
+    await store.put(record('created', { callerOperationId: 'op-1' }))
+
+    const reloaded = await context.load()
+    expect(reloaded.get('created')?.callerOperationId).toBe('op-1')
+    expect(reloaded.get('old')).toEqual(record('old'))
+    await expect(store.put(record('a', { callerOperationId: '' })))
+      .rejects.toThrow(/record a: callerOperationId must be a non-empty string/)
+    await expect(store.put(record('a', { callerOperationId: 7 } as unknown as Partial<SessionRecord>)))
+      .rejects.toThrow(/record a: callerOperationId must be a non-empty string/)
+    expect(store.get('a')).toBeNull()
+    expect(context.reports).toEqual([])
+  })
+
+  it('drops a loaded record whose control operation id is not a string, aloud and by its id', async () => {
+    const context = harness({
+      schemaVersion: 1,
+      savedAt: 5,
+      records: [record('a', { callerOperationId: 42 } as unknown as Partial<SessionRecord>), record('b')],
+    })
+    const store = await context.load()
+
+    expect(store.list().map((entry) => entry.sessionId)).toEqual(['b'])
+    expect(context.reports[0]).toContain('record a: callerOperationId must be a non-empty string')
   })
 
   /**

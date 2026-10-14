@@ -50,12 +50,15 @@ export interface WorktreeResultRecord {
 }
 
 /** What an ending writes and what the cleanup finishes, as the flows reach the store. */
-export type WorktreeResultsPort = Pick<WorktreeResultsStore, 'put' | 'keepLogs' | 'pendingRemovalsOf' | 'removalDone' | 'landedOf'>
+export type WorktreeResultsPort = Pick<WorktreeResultsStore, 'put' | 'keepLogs' | 'pendingRemovalsOf' | 'removalDone' | 'landedOf' | 'savedDirectoryOf'
+  | 'writeHandover' | 'readHandover'>
 
 export interface WorktreeResultsStoreDeps {
   now: () => number
-  logs: Pick<ScriptLogStore, 'existingPathOf' | 'briefPathOf'>
+  logs: Pick<ScriptLogStore, 'existingPathOf' | 'briefPathOf' | 'mergeBriefPathOf'>
   report: (message: string) => void
+  /** The ids of the actions still on a record: their folders hold saved copies and survive the orphan sweep. */
+  heldActionIds?: () => ReadonlySet<string>
 }
 
 /**
@@ -77,6 +80,7 @@ export class WorktreeResultsStore {
   private readonly now: () => number
   private readonly logs: WorktreeResultsStoreDeps['logs']
   private readonly report: (message: string) => void
+  private readonly heldActionIds: () => ReadonlySet<string>
   private readonly results = new Map<string, WorktreeResultRecord>()
   private loading: Promise<void> | null = null
   private writes: Promise<unknown> = Promise.resolve()
@@ -86,6 +90,7 @@ export class WorktreeResultsStore {
     this.now = deps.now
     this.logs = deps.logs
     this.report = deps.report
+    this.heldActionIds = deps.heldActionIds ?? (() => new Set())
   }
 
   static isPlainId(value: string): boolean {
@@ -125,8 +130,8 @@ export class WorktreeResultsStore {
   }
 
   /**
-   * Copies the action's run logs, and the resolver's conflict brief when there is one, beside the
-   * result: the parent's logs go with the parent. A log that is not on disk is left out.
+   * Copies the action's run logs, the resolver's conflict brief and the merger's brief when there are
+   * ones, beside the result: the parent's logs go with the parent. A log that is not on disk is left out.
    */
   async keepLogs(actionId: string, parentId: string, runs: readonly { runId: string; title: string }[]): Promise<WorktreeResultRecord['logs']> {
     const folder = this.logsDirectoryOf(actionId)
@@ -144,9 +149,48 @@ export class WorktreeResultsStore {
     }
     for (const run of runs)
       await copy(await this.logs.existingPathOf(parentId, run.runId), `${run.runId}.log`, run.runId, run.title)
-    if (WorktreeResultsStore.isPlainId(parentId))
+    if (WorktreeResultsStore.isPlainId(parentId)) {
       await copy(this.logs.briefPathOf(parentId, actionId), 'conflicts.txt', `${actionId}-conflicts`, 'conflict brief')
+      await copy(this.logs.mergeBriefPathOf(parentId, actionId), 'merge.md', `${actionId}-merge`, 'merger brief')
+    }
     return kept
+  }
+
+  /**
+   * `<actionId>/saved`: what a conflict option moves, replaces or resolves away is copied here first,
+   * so it outlives the session beside the action's log copies.
+   */
+  savedDirectoryOf(actionId: string): string {
+    return join(this.logsDirectoryOf(actionId), 'saved')
+  }
+
+  /** `<actionId>/merger-handover.json`: the content hash of every changed path when the merger started. */
+  handoverPathOf(actionId: string): string {
+    return join(this.logsDirectoryOf(actionId), 'merger-handover.json')
+  }
+
+  async writeHandover(actionId: string, hashes: Readonly<Record<string, string>>): Promise<boolean> {
+    try {
+      await AtomicJsonFile.ensureDirectoryAsync(this.logsDirectoryOf(actionId))
+      await AtomicJsonFile.writeAsync(this.handoverPathOf(actionId), { actionId, at: this.now(), hashes })
+      return true
+    } catch (error) {
+      this.report(`The merger handover of ${actionId} could not be written: ${ErrorText.of(error)}`)
+      return false
+    }
+  }
+
+  /** The hashes the merger started on, or null when none were written or they cannot be read. */
+  async readHandover(actionId: string): Promise<ReadonlyMap<string, string> | null> {
+    try {
+      const hashes = JsonShape.record(JsonShape.record(JSON.parse(await readFile(this.handoverPathOf(actionId), 'utf8')))?.hashes)
+      if (hashes === null) return null
+      const entries = Object.entries(hashes)
+      return entries.every(([, hash]) => typeof hash === 'string') ? new Map(entries as [string, string][]) : null
+    } catch (error) {
+      if (ErrnoCode.of(error) !== 'ENOENT') this.report(`The merger handover of ${actionId} could not be read: ${ErrorText.of(error)}`)
+      return null
+    }
   }
 
   list(filter: WorktreeResultsFilter): WorktreeResultRecord[] {
@@ -300,12 +344,16 @@ export class WorktreeResultsStore {
     await this.sweepOrphanLogs()
   }
 
-  /** A log folder whose result was never written (a client that died between the two) goes after the keep. */
+  /**
+   * A log folder whose result was never written (a client that died between the two) goes after the
+   * keep; the folder of an action still on a record holds its saved copies and stays.
+   */
   private async sweepOrphanLogs(): Promise<void> {
     const entries = await readdir(this.directory, { withFileTypes: true })
     const before = this.now() - WorktreeResultsStore.keepMillisecondsConst
+    const held = this.heldActionIds()
     for (const entry of entries) {
-      if (!entry.isDirectory() || this.results.has(entry.name)) continue
+      if (!entry.isDirectory() || this.results.has(entry.name) || held.has(entry.name)) continue
       const folder = join(this.directory, entry.name)
       if ((await stat(folder)).mtimeMs < before) await rm(folder, { recursive: true, force: true })
     }

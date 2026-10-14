@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<status>
+<target
+   path=".">
+<entry
+   path="src\new.txt">
+<wc-status
+   props="none"
+   tree-conflicted="true"
+   item="replaced"
+   revision="3">
+</wc-status>
+</entry>
+</target>
+</status>

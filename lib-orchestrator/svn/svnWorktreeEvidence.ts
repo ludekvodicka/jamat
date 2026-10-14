@@ -9,6 +9,7 @@ import type {
   SvnGroupMembers,
   SvnInfoEntry,
   SvnLogAction,
+  SvnLogEntry,
   SvnLoggedRow,
   SvnOwnCommitInput,
   SvnProofInput,
@@ -107,6 +108,20 @@ export class SvnWorktreeEvidence {
       }
     }
     return rows
+  }
+
+  /** `svn log --xml`: revision, author and message of each commit, as svn wrote them (UTF-8, any script). */
+  static logEntries(xml: string): SvnLogEntry[] {
+    const document = JsonShape.record(SvnWorktreeEvidence.parser.parse(xml))
+    if (document === null || document.log === undefined) throw new Error('svn log gave no <log> document')
+    // A log without entries parses to its whitespace.
+    const log = JsonShape.record(document.log)
+    if (log === null) return []
+    return SvnWorktreeEvidence.list(log.logentry, 'logentry').map((value) => {
+      const entry = SvnWorktreeEvidence.node(value, 'logentry')
+      const author = entry.author === undefined ? null : SvnWorktreeEvidence.text(entry.author)
+      return { revision: SvnWorktreeEvidence.revisionOf(entry['@_revision']), author, message: SvnWorktreeEvidence.text(entry.msg) }
+    })
   }
 
   /** `svn info --xml`, of working-copy paths or of a repository URL. */
@@ -278,7 +293,9 @@ export class SvnWorktreeEvidence {
   static async ownCommitRows(input: SvnOwnCommitInput): Promise<SvnLoggedRow[]> {
     const { items } = input
     const rows: SvnLoggedRow[] = []
-    for (const [revision, paths] of SvnWorktreeEvidence.candidates(items)) {
+    const candidates = [...SvnWorktreeEvidence.candidates(items)]
+    for (const [index, [revision, paths]] of candidates.entries()) {
+      input.onRevision?.(revision, index + 1, candidates.length)
       const logged = await input.revisionLog(revision)
       if (logged.some((entry) => entry.action !== 'D'
         && items.some((item) => item.path === entry.path && item.base < revision)))

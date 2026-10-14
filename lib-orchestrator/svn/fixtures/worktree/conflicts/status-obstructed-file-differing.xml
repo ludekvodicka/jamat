@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<status>
+<target
+   path=".">
+<entry
+   path="src\new.txt">
+<wc-status
+   props="none"
+   tree-conflicted="true"
+   item="deleted"
+   revision="3">
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</wc-status>
+</entry>
+</target>
+</status>

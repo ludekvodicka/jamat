@@ -39,6 +39,7 @@
     "package:ui:win:when-stale": "tsx scripts/release/package-when-stale.ts",
     "smoke:remarkable-sidecar-package": "tsx scripts/smoke/remarkable-sidecar-package.ts",
     "dev:capture-workstate": "tsx scripts/dev/capture-workstate.ts",
+    "dev:conflict-testbed": "tsx scripts/dev/make-conflict-testbed.ts",
     "dev:demo": "tsx scripts/dev/make-demo-profile.ts",
     "dev:models": "tsx scripts/dev/models.ts",
     "dev:probe-agent": "tsx scripts/dev/probe-agent.ts",

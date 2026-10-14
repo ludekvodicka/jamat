@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<info>
+<entry
+   kind="dir"
+   path="."
+   revision="3">
+<url>{REPO}/assets</url>
+<relative-url>^/assets</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+</wc-info>
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+<entry
+   kind="file"
+   path="logo.png"
+   revision="3">
+<url>{REPO}/assets/logo.png</url>
+<relative-url>^/assets/logo.png</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+<checksum>2892e21f6719362cdf1450be41b0a44d124e1add</checksum>
+</wc-info>
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+<conflict
+   operation="update"
+   type="text">
+<version
+   side="source-left"
+   kind="file"
+   path-in-repos="assets/logo.png"
+   repos-url="{REPO}"
+   revision="2"/>
+<version
+   revision="3"
+   side="source-right"
+   kind="file"
+   path-in-repos="assets/logo.png"
+   repos-url="{REPO}"/>
+<prev-base-file>{ROOT}/assets/logo.png.r2</prev-base-file>
+<cur-base-file>{ROOT}/assets/logo.png.r3</cur-base-file>
+</conflict>
+</entry>
+</info>

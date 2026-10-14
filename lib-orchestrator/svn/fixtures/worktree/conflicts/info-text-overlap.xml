@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<info>
+<entry
+   path="."
+   revision="3"
+   kind="dir">
+<url>{REPO}/src</url>
+<relative-url>^/src</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+</wc-info>
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+</entry>
+<entry
+   kind="file"
+   path="catalog.ts"
+   revision="3">
+<url>{REPO}/src/catalog.ts</url>
+<relative-url>^/src/catalog.ts</relative-url>
+<repository>
+<root>{REPO}</root>
+<uuid>00000000-0000-0000-0000-000000000000</uuid>
+</repository>
+<wc-info>
+<wcroot-abspath>{ROOT}</wcroot-abspath>
+<schedule>normal</schedule>
+<depth>infinity</depth>
+<checksum>5d86b00101955fa99b1c693a6c1b9be5b6d645bb</checksum>
+</wc-info>
+<commit
+   revision="3">
+<author>fixture</author>
+<date>2026-01-01T00:00:00.000000Z</date>
+</commit>
+<conflict
+   operation="update"
+   type="text">
+<version
+   revision="2"
+   side="source-left"
+   kind="file"
+   path-in-repos="src/catalog.ts"
+   repos-url="{REPO}"/>
+<version
+   side="source-right"
+   kind="file"
+   path-in-repos="src/catalog.ts"
+   repos-url="{REPO}"
+   revision="3"/>
+<prev-base-file>{ROOT}/src/catalog.ts.r2</prev-base-file>
+<prev-wc-file>{ROOT}/src/catalog.ts.mine</prev-wc-file>
+<cur-base-file>{ROOT}/src/catalog.ts.r3</cur-base-file>
+</conflict>
+</entry>
+</info>

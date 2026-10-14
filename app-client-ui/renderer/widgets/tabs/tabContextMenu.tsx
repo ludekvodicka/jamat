@@ -142,6 +142,9 @@ class TabContextMenuItems {
         || onSession && facts?.live === true && typeof params.remoteEndpointId !== 'string')
       .filter((descriptor) => descriptor.id !== 'tab.copyProjectFolder'
         || facts?.directoryPath !== null && facts?.directoryPath !== undefined)
+      // The main process opens a session of THIS computer; a paired computer's path means nothing here.
+      .filter((descriptor) => descriptor.id !== 'session.openInVsCode'
+        || onSession && placed && typeof params.remoteEndpointId !== 'string')
       // A session and nothing else, the same gate the details dialog takes: a file viewer carries a
       // `sessionId` too, and no admits gate either - an ended session is still worth naming.
       .filter((descriptor) => descriptor.id !== 'session.copyReference' || onSession)

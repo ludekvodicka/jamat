@@ -12,7 +12,9 @@ describe('app-client-ui/renderer/overlays/updateMain/updateMainOverlay', () => {
 
   it('names the live sessions, asks again with exactly them, and shows a session started meanwhile', async () => {
     const calls: (readonly string[] | undefined)[] = []
+    const started: string[] = []
     const ports: UpdateMainPorts = {
+      started: (sessionId) => { started.push(sessionId) },
       updateMain: async (_sessionId, confirmLive) => {
         calls.push(confirmLive)
         return calls.length === 1
@@ -36,10 +38,14 @@ describe('app-client-ui/renderer/overlays/updateMain/updateMainOverlay', () => {
     fireEvent.click(view.getByRole('button', { name: 'Update' }))
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
     expect(calls).toEqual([['s-coordinator'], ['s-coordinator', 's-late']])
+    // The UPDATE this window started brings its session's workflow forward, once.
+    expect(started).toEqual(['s-landed'])
   })
 
   it('shows any other refusal and closes on Cancel or Escape', async () => {
+    const started: string[] = []
     const ports: UpdateMainPorts = {
+      started: (sessionId) => { started.push(sessionId) },
       updateMain: async () => ({ ok: true, value: { ok: false, code: 'merge-pending', detail: 'An UPDATE of C:/w runs' } }),
     }
     const onClose = vi.fn()
@@ -54,6 +60,7 @@ describe('app-client-ui/renderer/overlays/updateMain/updateMainOverlay', () => {
     fireEvent.keyDown(view.getByRole('dialog'), { key: 'Escape' })
     fireEvent.click(view.getByRole('button', { name: 'Cancel' }))
     expect(onClose).toHaveBeenCalledTimes(2)
+    expect(started).toEqual([])
   })
 
   it('reads the live sessions off a live-sessions refusal and nothing else', () => {

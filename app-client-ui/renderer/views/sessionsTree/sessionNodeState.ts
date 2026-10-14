@@ -284,7 +284,9 @@ export class SessionNodeState {
     else if (stage === 'updating') return 'Updating the worktree to HEAD before the review'
     else if (stage === 'cleaning') return 'Running svn cleanup in the worktree'
     else if (stage === 'resolving') return 'Claude resolves the conflicts of the update'
+    else if (stage === 'merging') return 'The merger settles the conflicts the rules left'
     else if (stage === 'verifying') return 'Checking the files the conflict resolver edited'
+    else if (stage === 'fixing') return 'Checking the conflicts after Check again'
     else if (stage === 'diffing') return 'Showing the merge of the resolved files'
     else if (stage === 'reviewing')
       return action.review === null
@@ -299,6 +301,21 @@ export class SessionNodeState {
   /** Why an SVN action waits for the person, or null while it runs or when there is none. */
   static actionNeedsOf(action: SessionSvnActionInfo | undefined): string | null {
     return action?.needs ?? null
+  }
+
+  /** The mark of a waiting action: the workflow's short badge; a peer without workflows keeps the old words. */
+  static needsTextOf(workflow: SessionInfo['workflow']): string {
+    return workflow?.badge ?? 'finish waits for you'
+  }
+
+  /**
+   * Whether Finish… on this computer opens the session's workflow instead of the dialog: an SVN
+   * action runs or waits, and its workflow says so. A peer's row keeps the dialog.
+   */
+  static opensWorkflow(session: Pick<SessionInfo, 'svnAction' | 'workflow'>, scope: 'local' | 'remote'): boolean {
+    if (scope === 'remote') return false
+    else if (scope === 'local') return session.svnAction !== undefined && session.workflow?.open === true
+    else throw new Error(`Unknown operation scope: ${JSON.stringify(scope satisfies never)}`)
   }
 
   /**

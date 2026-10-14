@@ -29,6 +29,7 @@ export class SessionCommandRun {
     'session.commitSvn',
     'session.commitGit',
     'tab.openProjectFolder',
+    'session.openInVsCode',
     'tab.copyProjectFolder',
     'session.copyReference',
   ])
@@ -50,6 +51,7 @@ export class SessionCommandRun {
       case 'session.commitSvn':
       case 'session.commitGit':
       case 'tab.openProjectFolder':
+      case 'session.openInVsCode':
       case 'tab.copyProjectFolder':
       case 'session.copyReference':
         commands.execute(id, { sessionId })

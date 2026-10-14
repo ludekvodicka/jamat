@@ -90,7 +90,7 @@ export class SvnWorktreeProvisioner implements SessionWorktreePort {
           ...(directoryId === null ? {} : { directoryId }),
           ...(cwdSubpath === '' ? {} : { cwdSubpath }),
         },
-        checkout: { tool: 'svn', cwd: worktreePath, args: ['--non-interactive', ...SvnWorktreeManager.checkoutArgsOf(url, baseRevision)] },
+        checkout: { tool: 'svn', cwd: worktreePath, args: ['--non-interactive', ...SvnWorktreeManager.checkoutArgsOf(url, baseRevision, 'listed')] },
       },
     }
   }

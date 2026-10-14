@@ -9,14 +9,29 @@ import type {
   RemoteControlCommitStatusDto,
 } from '../../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import type { RemoteControlTabsPort } from '../../../lib-orchestrator/remoteControl/remoteControl'
-import type { TabControlAck, TabControlCommand } from '../../shared/tabControl'
+import type { TabControlAck, TabControlCommand, TabControlTaskItem } from '../../shared/tabControl'
 import type { VersioningCommitPath } from '../../shared/versioningCommit'
 import type { WorkspaceWindows } from '../shell/workspaceWindows'
 import type { WorkspacePanelIndex } from './workspacePanelIndex'
 import type { TabFileOpenResolver } from './tabFileOpenResolver'
 import type { VersioningCommitManager } from '../versioning/versioningCommitManager'
 
+/** A client-only answer: the task view is never a protocol operation, so it has no wire DTO. */
+export interface TabControlTaskOpenedDto {
+  kind: 'task-opened'
+  panelId: string
+  windowId: string
+}
+
+/** A client-only answer, like the task view's. */
+export interface TabControlWorkflowOpenedDto {
+  kind: 'workflow-opened'
+  panelId: string
+  windowId: string
+}
+
 type TabControlBrokerDto = RemoteControlTabCommandDto | RemoteControlTabOpenFileDto | RemoteControlTabOpenCommitDto
+  | TabControlTaskOpenedDto | TabControlWorkflowOpenedDto
 type TabControlBrokerResult = RemoteControlStepResult<TabControlBrokerDto>
 
 interface PendingTabControlCommand {
@@ -33,8 +48,16 @@ interface QueuedCommitReview {
 
 interface CommitReviewSequence {
   previousPanelId: string | null
+  /** The workflow an action's review returns to instead of the previous panel. */
+  returnToWorkflow: TabControlWorkflowReturn | null
   openedAt: number
   reviews: QueuedCommitReview[]
+}
+
+/** The session whose workflow a review hands the focus back to, and the title its tab opens under. */
+export interface TabControlWorkflowReturn {
+  sessionId: string
+  tabTitle: string
 }
 
 export interface TabControlBrokerDeps {
@@ -89,7 +112,12 @@ export class TabControlBroker implements RemoteControlTabsPort {
   }
 
   async openCommit(sessionId: string, tabTitle: string, vcs: 'svn' | 'git', scope: string | null,
-    proposal: string | null, options: { showRefusal?: true; paths?: readonly VersioningCommitPath[]; fresh?: true }): Promise<RemoteControlStepResult<RemoteControlTabOpenCommitDto>> {
+    proposal: string | null, options: {
+      showRefusal?: true
+      paths?: readonly VersioningCommitPath[]
+      fresh?: true
+      returnToWorkflow?: TabControlWorkflowReturn
+    }): Promise<RemoteControlStepResult<RemoteControlTabOpenCommitDto>> {
     return this.withCommitTurn(() => this.openCommitNow(sessionId, tabTitle, vcs, scope, proposal, options))
   }
 
@@ -130,7 +158,7 @@ export class TabControlBroker implements RemoteControlTabsPort {
         const panelId = result.value.panelId
         if (automatic) {
           this.commitSequence ??= { previousPanelId: previousPanelId !== panelId ? previousPanelId : null,
-            openedAt: this.now(), reviews: [] }
+            returnToWorkflow: shouldReturn ? options.returnToWorkflow ?? null : null, openedAt: this.now(), reviews: [] }
           if (!this.commitSequence.reviews.some((review) => review.draftId === draftId))
             this.commitSequence.reviews.push({ draftId, command: { ...command, panelId } })
           this.commitsChanged()
@@ -191,7 +219,13 @@ export class TabControlBroker implements RemoteControlTabsPort {
       return
     }
     this.commitSequence = null
-    if (sequence.previousPanelId === null || this.deps?.returnToPreviousSessionAfterCommit?.() === false) return
+    if (this.deps?.returnToPreviousSessionAfterCommit?.() === false) return
+    // An action's review goes back to its workflow, which goes on there, however long the review took.
+    if (sequence.returnToWorkflow !== null) {
+      await this.openWorkflow(sequence.returnToWorkflow.sessionId, sequence.returnToWorkflow.tabTitle)
+      return
+    }
+    if (sequence.previousPanelId === null) return
     const window = this.deps?.returnWindowMilliseconds?.() ?? null
     if (window !== null && this.now() - sequence.openedAt > window) return
     await this.focus(sequence.previousPanelId)
@@ -276,6 +310,58 @@ export class TabControlBroker implements RemoteControlTabsPort {
     })
   }
 
+  /**
+   * A sub-agent's view in its parent's split, in whichever window holds the parent's tab. Asked for
+   * by a click, so the tab comes forward and its window takes the focus, unlike a document an agent
+   * opens in the background.
+   */
+  async openTask(
+    tabTitle: string,
+    item: TabControlTaskItem,
+  ): Promise<RemoteControlStepResult<TabControlTaskOpenedDto>> {
+    if (this.stopping) return TabControlBroker.error('unavailable', 'The AppClientUI process is stopping')
+    const existing = this.index.panelsOfSession(item.sessionId)[0]
+    const opened = existing === undefined
+      ? await this.open(item.sessionId, tabTitle, { activate: true })
+      : { ok: true as const, value: { windowId: existing.windowId, panelId: existing.panel.panelId } }
+    if (!opened.ok) return opened
+    try {
+      this.windows.focusOrRecreate(opened.value.windowId)
+    } catch {
+      return TabControlBroker.error('unavailable', 'The tab owner window is unavailable')
+    }
+    return this.request(opened.value.windowId, {
+      kind: 'open-task',
+      requestId: this.requestId(),
+      panelId: opened.value.panelId,
+      item,
+    })
+  }
+
+  /**
+   * The session's workflow item in its own tab, the path `openTask` takes: the tab is found or
+   * opened, its window takes the focus, and the window makes the item active.
+   */
+  async openWorkflow(sessionId: string, tabTitle: string): Promise<RemoteControlStepResult<TabControlWorkflowOpenedDto>> {
+    if (this.stopping) return TabControlBroker.error('unavailable', 'The AppClientUI process is stopping')
+    const existing = this.index.panelsOfSession(sessionId)[0]
+    const opened = existing === undefined
+      ? await this.open(sessionId, tabTitle, { activate: true })
+      : { ok: true as const, value: { windowId: existing.windowId, panelId: existing.panel.panelId } }
+    if (!opened.ok) return opened
+    try {
+      this.windows.focusOrRecreate(opened.value.windowId)
+    } catch {
+      return TabControlBroker.error('unavailable', 'The tab owner window is unavailable')
+    }
+    return this.request(opened.value.windowId, {
+      kind: 'open-workflow',
+      requestId: this.requestId(),
+      panelId: opened.value.panelId,
+      sessionId,
+    })
+  }
+
   async close(panelId: string): Promise<RemoteControlStepResult<RemoteControlTabCommandDto>> {
     const windowId = this.index.ownerOf(panelId)
     if (windowId === null)
@@ -334,7 +420,15 @@ export class TabControlBroker implements RemoteControlTabsPort {
   ): Promise<RemoteControlStepResult<RemoteControlTabOpenFileDto>>
   private request(
     windowId: string,
-    command: Exclude<TabControlCommand, { kind: 'open-file' | 'open-commit' }>,
+    command: Extract<TabControlCommand, { kind: 'open-task' }>,
+  ): Promise<RemoteControlStepResult<TabControlTaskOpenedDto>>
+  private request(
+    windowId: string,
+    command: Extract<TabControlCommand, { kind: 'open-workflow' }>,
+  ): Promise<RemoteControlStepResult<TabControlWorkflowOpenedDto>>
+  private request(
+    windowId: string,
+    command: Exclude<TabControlCommand, { kind: 'open-file' | 'open-commit' | 'open-task' | 'open-workflow' }>,
   ): Promise<RemoteControlStepResult<RemoteControlTabCommandDto>>
   private request(
     windowId: string,
@@ -395,6 +489,16 @@ export class TabControlBroker implements RemoteControlTabsPort {
         throw new Error(`Unexpected commit result: ${JSON.stringify(result)}`)
       return TabControlBroker.success({ kind: 'commit-opened', panelId: result.panelId, windowId: pending.windowId,
         scopeRoot: pending.command.scopeRoot, messageApplied: pending.command.messageApplied })
+    }
+    if (pending.command.kind === 'open-task') {
+      if (result.kind !== 'task-opened' || result.panelId !== pending.command.panelId)
+        throw new Error(`Unexpected open-task result: ${JSON.stringify(result)}`)
+      return TabControlBroker.success({ kind: 'task-opened', panelId: result.panelId, windowId: pending.windowId })
+    }
+    if (pending.command.kind === 'open-workflow') {
+      if (result.kind !== 'workflow-opened' || result.panelId !== pending.command.panelId)
+        throw new Error(`Unexpected open-workflow result: ${JSON.stringify(result)}`)
+      return TabControlBroker.success({ kind: 'workflow-opened', panelId: result.panelId, windowId: pending.windowId })
     }
     if (pending.command.kind === 'open-session') {
       if (result.kind === 'opened')
