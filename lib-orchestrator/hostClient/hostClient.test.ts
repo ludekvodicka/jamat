@@ -109,6 +109,26 @@ describe('lib-orchestrator/hostClient/hostClient', () => {
     expect(context.errors).toEqual([])
   })
 
+  it('accepts a manually stopped old instance without sending its target to the replacement Host', async () => {
+    const host = await startHost('replacement'), context = harness()
+    context.publish(host)
+    context.client.start()
+    await vi.waitFor(() => expect(context.client.presence()).toBe('running'))
+    const target = { hostInstanceId: 'previous', runtimeSessionId: 'check', generation: 1 }
+    expect(await context.client.runtimeStop(target, true)).toMatchObject({ ok: true, value: { diagnostic: 'already-removed', target } })
+    expect(host.calls.some((call) => call.name === 'runtime.stop')).toBe(false)
+  })
+
+  it('removes a runtime of a previous instance without sending its target to the replacement Host', async () => {
+    const host = await startHost('replacement'), context = harness()
+    context.publish(host)
+    context.client.start()
+    await vi.waitFor(() => expect(context.client.presence()).toBe('running'))
+    const target = { hostInstanceId: 'previous', runtimeSessionId: 'run', generation: 1 }
+    expect(await context.client.runtimeRemove(target)).toMatchObject({ ok: true, value: { diagnostic: 'already-removed', target } })
+    expect(host.calls.some((call) => call.name === 'runtime.remove')).toBe(false)
+  })
+
   it('connects, takes the lease and answers reads once the descriptor is there', async () => {
     const host = await startHost()
     const context = harness()
@@ -169,6 +189,32 @@ describe('lib-orchestrator/hostClient/hostClient', () => {
     const call = host.calls.find((entry) => entry.name === 'runtime.create')
     expect(call?.body.controllerLeaseId).toBe(host.currentLeaseId())
     expect(call?.body.operationId).toBe('op-1')
+  })
+
+  it('refuses managed create and replace before contacting a Host without descendant capability', async () => {
+    const host = await startHost()
+    const context = harness()
+    context.publish(host)
+    context.client.start()
+    await vi.waitFor(() => expect(context.client.controllerLeaseId()).not.toBeNull(), { timeout: 3_000 })
+    const launch = { command: 'cmd.exe', args: [], cwd: 'C:\\', env: {}, cols: 120, rows: 30, stopDescendants: true as const }
+    const request = { operationId: 'managed', runtimeSessionId: 'managed', launch }
+    expect(await context.client.runtimeCreate(request)).toMatchObject({ ok: false, detail: expect.stringContaining('managed descendants') })
+    expect(await context.client.runtimeReplace({ ...request, target: { hostInstanceId: 'host', runtimeSessionId: 'managed', generation: 1 } })).toMatchObject({ ok: false, detail: expect.stringContaining('managed descendants') })
+    expect(host.calls.some((call) => call.name === 'runtime.create' || call.name === 'runtime.replace')).toBe(false)
+  })
+
+  it.each([true, false])('sends explicit managed ownership %s to a capable Host', async (managed) => {
+    const host = await startHost('capable', ['events.replay.v1', 'runtime.lifecycle.v1', 'runtime.managed-descendants.v1'])
+    host.handle('runtime.create', () => ({ body: { session: session('run') } }))
+    const context = harness()
+    context.publish(host)
+    context.client.start()
+    await vi.waitFor(() => expect(context.client.controllerLeaseId()).not.toBeNull(), { timeout: 3_000 })
+    await context.client.runtimeCreate({ operationId: 'create', runtimeSessionId: 'run', launch: {
+      command: 'cmd.exe', args: [], cwd: 'C:\\', env: {}, cols: 80, rows: 24, ...managed ? { stopDescendants: true } : {},
+    } })
+    expect(host.calls.find((call) => call.name === 'runtime.create')?.body.launch).toMatchObject({ stopDescendants: managed })
   })
 
   it('stops only the expected Host under the existing controller lease', async () => {

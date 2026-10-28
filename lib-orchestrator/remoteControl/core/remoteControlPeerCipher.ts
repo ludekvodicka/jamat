@@ -101,8 +101,8 @@ export class RemoteControlPeerCipher {
   private static message(value: unknown): value is RemoteControlPeerInboundMessage {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
     const message = value as Record<string, unknown>
-    if (message.type === 'control-request') return JsonShape.isRecord(message.request)
-    else if (message.type === 'control-response')
+    if (message.type === 'control-request' || message.type === 'session-state-request' || message.type === 'session-view-request') return JsonShape.isRecord(message.request)
+    else if (message.type === 'control-response' || message.type === 'session-state-response' || message.type === 'session-view-response')
       return JsonShape.isRecord(message.response)
     else if (message.type === 'socket-request') return JsonShape.isRecord(message.request)
     else if (message.type === 'socket-response')

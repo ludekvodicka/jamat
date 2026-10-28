@@ -1,13 +1,5 @@
-import { createReadStream } from 'node:fs'
-import { stat } from 'node:fs/promises'
-import { Readable } from 'node:stream'
-
 import { protocol } from 'electron'
-
-import {
-  FileContentReader,
-} from '../../../lib-orchestrator/fileViewer/content/fileContentReader'
-import type { FileViewer } from '../../../lib-orchestrator/fileViewer/fileViewer'
+import type { FileMediaSource } from './fileMediaSource'
 import { FileViewerProtocolUrl } from '../../shared/fileViewerProtocol'
 
 interface FileByteRange {
@@ -28,7 +20,9 @@ export class FileViewerProtocol {
     }])
   }
 
-  constructor(private readonly viewer: FileViewer) {}
+  private readonly source: FileMediaSource
+
+  constructor(source: FileMediaSource) { this.source = source }
 
   initialize(): void {
     protocol.handle(FileViewerProtocolUrl.scheme, (request) => this.handle(request))
@@ -44,25 +38,20 @@ export class FileViewerProtocol {
     let resourceId: string
     try { resourceId = decodeURIComponent(segments[0]!) }
     catch { return new Response(null, { status: 400 }) }
-    const resource = await this.viewer.resourceAccess(resourceId)
-    if (resource === null) return new Response(null, { status: 404 })
-    let info
-    try { info = await stat(resource.path) }
-    catch { return new Response(null, { status: 404 }) }
-    if (!info.isFile()
-      || FileContentReader.versionOf(info.size, info.mtimeMs) !== resource.contentVersion
-      || info.size !== resource.size)
-      return new Response(null, { status: 409 })
+    const resource = await this.source.metadata(resourceId)
+    if (resource.kind === 'missing') return new Response(null, { status: 404 })
+    else if (resource.kind === 'changed') return new Response(null, { status: 409 })
+    else if (resource.kind !== 'ready') throw new Error(`Unknown media metadata: ${JSON.stringify(resource)}`)
     const rangeHeader = request.headers.get('range')
-    const range = rangeHeader === null ? null : FileViewerProtocol.range(rangeHeader, info.size)
+    const range = rangeHeader === null ? null : FileViewerProtocol.range(rangeHeader, resource.size)
     if (rangeHeader !== null && range === null)
       return new Response(null, {
         status: 416,
-        headers: { 'Content-Range': `bytes */${info.size}` },
+        headers: { 'Content-Range': `bytes */${resource.size}` },
       })
     const start = range?.start ?? 0
-    const end = range?.end ?? Math.max(0, info.size - 1)
-    const length = info.size === 0 ? 0 : end - start + 1
+    const end = range?.end ?? Math.max(0, resource.size - 1)
+    const length = resource.size === 0 ? 0 : end - start + 1
     const headers = new Headers({
       'Accept-Ranges': 'bytes',
       'Access-Control-Allow-Origin': '*',
@@ -72,11 +61,31 @@ export class FileViewerProtocol {
       'Cross-Origin-Resource-Policy': 'cross-origin',
       'X-Content-Type-Options': 'nosniff',
     })
-    if (range !== null) headers.set('Content-Range', `bytes ${start}-${end}/${info.size}`)
-    if (request.method === 'HEAD' || info.size === 0)
+    if (range !== null) headers.set('Content-Range', `bytes ${start}-${end}/${resource.size}`)
+    if (request.method === 'HEAD' || resource.size === 0)
       return new Response(null, { status: range === null ? 200 : 206, headers })
-    const body = Readable.toWeb(createReadStream(resource.path, { start, end }))
-    return new Response(body as ReadableStream<Uint8Array>, {
+    const controller = new AbortController()
+    const abort = (): void => controller.abort(request.signal.reason)
+    if (request.signal.aborted) abort()
+    else request.signal.addEventListener('abort', abort, { once: true })
+    let offset = start
+    const source = this.source
+    const body = new ReadableStream<Uint8Array>({
+      async pull(stream) {
+        try {
+          controller.signal.throwIfAborted()
+          const size = Math.min(64 * 1024, end - offset + 1)
+          const bytes = await source.read(resourceId, resource.version, offset, size, controller.signal)
+          controller.signal.throwIfAborted()
+          if (bytes.length === 0 || bytes.length > size) throw new Error('Invalid media byte range')
+          offset += bytes.length
+          stream.enqueue(bytes)
+          if (offset > end) { request.signal.removeEventListener('abort', abort); stream.close() }
+        } catch (error) { request.signal.removeEventListener('abort', abort); controller.abort(); stream.error(error) }
+      },
+      cancel() { controller.abort(); request.signal.removeEventListener('abort', abort) },
+    }, { highWaterMark: 0 })
+    return new Response(body, {
       status: range === null ? 200 : 206,
       headers,
     })

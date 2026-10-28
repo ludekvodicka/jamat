@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
 import { AtomicJsonFile } from '../../shared/atomicJsonFile'
-import type { RateAgentId, RateExtra, RateWindow } from '../rateMonitorApi.types'
+import type { RateAccountKey, RateAgentId, RateExtra, RateWindow } from '../rateMonitorApi.types'
 
 /** One provider's last successful answer, reduced to what a surface draws. */
 export interface RateMonitorCacheEntry {
@@ -21,6 +21,13 @@ export type RateMonitorCacheAttempts = Readonly<Partial<Record<RateAgentId, numb
 export interface RateMonitorCacheContent {
   providers: RateMonitorCacheEntries
   attempts: RateMonitorCacheAttempts
+  accounts?: readonly RateMonitorAccountCache[]
+}
+
+export interface RateMonitorAccountCache {
+  key: RateAccountKey
+  entry?: RateMonitorCacheEntry
+  attemptAt?: number
 }
 
 /**
@@ -29,12 +36,6 @@ export interface RateMonitorCacheContent {
  * a document written under a test's clock carried one real timestamp beside simulated ones. A
  * document that still has the field simply loads without it.
  */
-interface RateMonitorCacheDocument {
-  schemaVersion: 1
-  providers: RateMonitorCacheEntries
-  attempts: RateMonitorCacheAttempts
-}
-
 /**
  * The last successful windows of both providers, so a client that has just opened has something
  * honest to draw, and so a restart loop during development does not spend a request against an
@@ -50,9 +51,10 @@ interface RateMonitorCacheDocument {
  * exactly the run that stores no windows to carry the time with.
  */
 export class RateMonitorCacheStore {
-  private static readonly schemaVersionConst = 1
+  private static readonly schemaVersionConst = 2
+  private readonly file: string
 
-  constructor(private readonly file: string) {}
+  constructor(file: string) { this.file = file }
 
   async load(): Promise<RateMonitorCacheContent | null> {
     let raw: string
@@ -62,7 +64,10 @@ export class RateMonitorCacheStore {
       return null
     }
     try {
-      return RateMonitorCacheStore.coerce(JSON.parse(raw))
+      const parsed: unknown = JSON.parse(raw)
+      const content = RateMonitorCacheStore.coerce(parsed)
+      if (content !== null && JsonShape.record(parsed)?.schemaVersion === 1) this.save(content)
+      return content
     } catch {
       return null
     }
@@ -70,11 +75,14 @@ export class RateMonitorCacheStore {
 
   /** Atomic, the way every store in this library writes: a half-written cache reads as damage. */
   save(content: RateMonitorCacheContent): void {
-    const document: RateMonitorCacheDocument = {
-      schemaVersion: RateMonitorCacheStore.schemaVersionConst,
-      providers: content.providers,
-      attempts: content.attempts,
+    const accounts: RateMonitorAccountCache[] = [...(content.accounts ?? [])]
+    for (const agentId of ['claude', 'codex'] as const) {
+      const entry = content.providers[agentId]
+      const attemptAt = content.attempts[agentId]
+      if (entry !== undefined || attemptAt !== undefined)
+        accounts.push({ key: { agentId, accountId: 'main' }, entry, attemptAt })
     }
+    const document = { schemaVersion: RateMonitorCacheStore.schemaVersionConst, accounts }
     AtomicJsonFile.ensureDirectory(dirname(this.file))
     AtomicJsonFile.write(this.file, document)
   }
@@ -84,7 +92,8 @@ export class RateMonitorCacheStore {
     // wrote there, and typing it as the shape it is being checked FOR is the check answering itself.
     const document = JsonShape.record(parsed)
     if (document === null) return null
-    if (document.schemaVersion !== RateMonitorCacheStore.schemaVersionConst) return null
+    if (document.schemaVersion === 2) return RateMonitorCacheStore.accountsOf(document.accounts)
+    if (document.schemaVersion !== 1) return null
     const record = JsonShape.record(document.providers)
     if (record === null) return null
     const entries: Partial<Record<RateAgentId, RateMonitorCacheEntry>> = {}
@@ -94,6 +103,26 @@ export class RateMonitorCacheStore {
     if (codex) entries.codex = codex
     // A document written before this section existed simply has none, and loads without it.
     return { providers: entries, attempts: RateMonitorCacheStore.attemptsOf(document.attempts) }
+  }
+
+  private static accountsOf(value: unknown): RateMonitorCacheContent | null {
+    if (!Array.isArray(value)) return null
+    const providers: Partial<Record<RateAgentId, RateMonitorCacheEntry>> = {}
+    const attempts: Partial<Record<RateAgentId, number>> = {}
+    const accounts: RateMonitorAccountCache[] = []
+    for (const item of value) {
+      const record = JsonShape.record(item)
+      const key = JsonShape.record(record?.key)
+      if (!record || !key || (key.agentId !== 'claude' && key.agentId !== 'codex')
+        || typeof key.accountId !== 'string' || key.accountId.length === 0) continue
+      const entry = RateMonitorCacheStore.entryOf(record.entry) ?? undefined
+      const attemptAt = JsonNumber.isFinite(record.attemptAt) ? record.attemptAt : undefined
+      if (key.accountId === 'main') {
+        if (entry !== undefined) providers[key.agentId] = entry
+        if (attemptAt !== undefined) attempts[key.agentId] = attemptAt
+      } else accounts.push({ key: { agentId: key.agentId, accountId: key.accountId }, entry, attemptAt })
+    }
+    return accounts.length === 0 ? { providers, attempts } : { providers, attempts, accounts }
   }
 
   private static attemptsOf(value: unknown): RateMonitorCacheAttempts {
@@ -130,7 +159,7 @@ export class RateMonitorCacheStore {
     return members
   }
 
-  private static windowOf(value: unknown): RateWindow | null {
+  static windowOf(value: unknown): RateWindow | null {
     const read = JsonShape.record(value)
     if (read === null) return null
     const { durationMinutes, usedPercent, resetsAt, model } = read

@@ -1,3 +1,7 @@
+import type { SvnFinishPhase, SvnFinishWorktreeResult, SvnLabelledRevision, SvnActionStage, SvnActionKind, SvnActionNeed, SvnConflictState, SvnConflictWireActor } from '../worktrees/worktreeContracts'
+export type { SvnFinishPhase, SvnFinishWorktreeResult, SvnRevisionLabel, SvnLabelledRevision, SvnActionStage, SvnActionKind, SvnActionNeed, SvnConflictState, SvnConflictActor, SvnConflictWireActor } from '../worktrees/worktreeContracts'
+import type { FinishStep, WorktreePhase, WorktreeLifecycle } from '../worktrees/worktreeState'
+import type { CommitMessageSource, CommitMessageFinding, CommitMessageFindingInfo } from '../svn/svnCommitMessageCheck'
 /**
  * The wire surface of the sessions subsystem, mirroring `projectManagerApi.types.ts`: it imports
  * nothing but its sibling wire-type file and the Host's own wire types, and never runtime code,
@@ -8,7 +12,7 @@
  * `svn/svn.types.ts`, whose conflict kinds, options and losses the conflict list names: no runtime
  * code, no imports of their own.
  */
-import type { SvnConflictKind, SvnConflictLoss, SvnConflictOption } from '../svn/svn.types'
+import type { SvnConflictKind, SvnConflictLoss, SvnConflictOption, SvnLocalItem } from '../svn/svn.types'
 import type { AgentWorkHint } from './workState/agentWorkInspector.types'
 import type {
   HostWsServerMsg,
@@ -17,7 +21,6 @@ import type {
   RuntimeSessionInfo,
   WireVersion,
 } from '../../app-host/app/wire/hostWire.js'
-import type { FileChangesVcsId } from '../fileChangesManager/fileChangesManagerApi.types'
 import type { ProjectBinding } from '../projectManager/projectManagerApi.types'
 
 /**
@@ -31,6 +34,9 @@ export type SessionAgentId = 'claude' | 'codex'
 export type SessionParentKind = 'worktree' | 'ticket' | 'worker'
 
 export interface SessionCreateSpec {
+  account?: { agentId: SessionAgentId; accountId: string }
+  /** Create a waiting worktree session whose commands are approved in Session actions. */
+  deferSetupAgreement?: true
   kind: 'shell' | 'agent'
   directory:
     | { mode: 'project'; categoryId: string; projectPath: string }
@@ -38,6 +44,8 @@ export interface SessionCreateSpec {
     | { mode: 'default' }
   agent?: {
     agentId: SessionAgentId
+    /** Sent to peers only with agents.accounts; absent uses the target's default account. */
+    accountId?: string
     /** V1's cc / ccc / resume / resume-fork, named for what they do. */
     mode: 'new' | 'continue' | 'resume' | 'fork'
     /**
@@ -184,6 +192,7 @@ export interface HostStatusInfo {
   hostVersion: string | null
   hostInstanceId: string | null
   liveCount: number
+  workingAgents?: string[]
   lastStartError: string | null
   /**
    * The Host's memory as the Host item's tooltip says it. Absent from an older peer, null before the
@@ -303,30 +312,43 @@ export interface SessionMergeInfo {
   startedAt: number
 }
 
-/**
- * What the working copy under a session's directory looks like right now.
- *
- * It is keyed by that directory rather than by the session, because sessions of one project share
- * one: the fact is measured once per root and worn by every session standing in it. Absent means
- * unmeasured or governed by no VCS at all, and absence is deliberately not a measurement - a row
- * with nothing to say draws nothing rather than claiming to be clean.
- *
- * Up to thirty seconds (git) or sixty (svn) old. It is a preview for what a row draws and what the
- * Finish label promises; the operations themselves read the disk when they run.
- */
-export interface SessionVcsInfo {
-  vcsId: FileChangesVcsId
-  dirty: boolean
-}
-
 export type SessionWorktreeKind = 'svn' | 'git'
+
+/** A directory a worktree can be cut from: a catalog project, or a folder somebody picked. */
+export type SessionWorktreeDirectory = Extract<SessionCreateSpec['directory'], { mode: 'project' | 'adHoc' }>
+
+/**
+ * Where a worktree of a directory would stand, answered before any create by the rules the create
+ * applies (`sessions.worktreePreview`). Nothing is reserved and no number is taken.
+ */
+export interface SessionWorktreePreview {
+  kind: SessionWorktreeKind
+  /** The directory whose `.worktrees` holds the folder. */
+  ownerDir: string
+  /** What owns it: a product group, a catalog project, or the directory itself. */
+  owner: 'product' | 'project' | 'directory'
+  /** The number the session would take; null where nothing counts it or the counter cannot answer. */
+  token: string | null
+}
 
 /** What Finish offers for a worktree, composed by the library; a surface never derives it from the kind. */
 export type SessionFinishChoice = 'commit' | 'merge' | 'keep' | 'discard'
 
 /** One press of Finish on a worktree: the choice, what the person agreed to, and where it came from. */
 export interface SessionFinishPress {
+  refreshPreparation?: true
+  confirmEnvironment?: true
+  repositories?: import('../worktrees/worktreeState').WorktreeRepositoryReview[]
+  reviewCorrection?: true
+  overrideChecks?: true
+  reviewVersion?: number
+  messageSource?: CommitMessageSource
+  acknowledgedFindings?: CommitMessageFinding[]
   choice: SessionFinishChoice
+  selection?: string[]
+  message?: string
+  /** Source-owned fingerprints from the human review, never accepted by the generic control wire. */
+  reviewed?: Readonly<Record<string, string>>
   /** The hash of the command agreement the press answers. */
   acknowledgeSetup?: string
   /** The person finishes a session that is still working. */
@@ -336,43 +358,10 @@ export interface SessionFinishPress {
   requestedBy: 'window' | 'cli' | 'peer'
 }
 
-export type SvnFinishPhase = 'updating' | 'reviewing' | 'main-updating' | 'removing'
-
 export type SvnFinishResult = 'committed' | 'partial' | 'not-committed' | 'out-of-date'
   | 'updated' | 'conflict' | 'nothing' | 'failed' | 'interrupted'
 
 export type SvnFinishMainResult = 'none' | 'updated' | `merged:${number}` | `conflict:${number}` | 'failed'
-
-export type SvnFinishWorktreeResult = 'removed' | 'kept' | 'in-use' | 'undeleted'
-
-/**
- * How a revision of an SVN action is known to be this worktree's: a commit receipt the log confirmed,
- * the worktree's own BASE, or the log of the paths the action saw changed. No label decides a removal.
- */
-export type SvnRevisionLabel = 'receipt' | 'base-proof' | 'inferred'
-
-export interface SvnLabelledRevision {
-  /** Repository root URL. */
-  repository: string
-  revision: number
-  label: SvnRevisionLabel
-}
-
-/**
- * Where an SVN action is. Run stages wait on a script run of the session; client stages are short
- * writes this client makes (`SvnActionStages`).
- */
-export type SvnActionStage =
-  | 'stopping' | 'evidence' | 'checks' | 'updating' | 'cleaning' | 'resolving' | 'merging' | 'verifying' | 'fixing'
-  | 'diffing' | 'reviewing' | 'removing' | 'recording'
-
-/** `update-main` runs in a main copy, on the session that started it, which may hold no worktree. */
-export type SvnActionKind = 'finish' | 'discard' | 'update-main'
-
-/** Why an SVN action waits for the person; Finish again, Keep and Discard are the ways on. */
-export type SvnActionNeed =
-  | 'check-failed' | 'conflict' | 'resolver-failed' | 'incoming' | 'out-of-date' | 'review-cancelled'
-  | 'review-interrupted' | 'partial' | 'pinned-external' | 'locked' | 'svn-failed' | 'not-stopped'
 
 /** A count of one step's work; `total` is null while it is not known yet (a count still running). */
 export interface SessionStepProgress {
@@ -397,6 +386,7 @@ export interface SessionStepInfo {
 
 /** The full stage of an SVN action; `SessionWorktreeInfo.finish.phase` keeps the four legacy words for older peers. */
 export interface SessionSvnActionInfo {
+  title?: string
   kind: SvnActionKind
   stage: SvnActionStage
   /** The reason a person must act, or null while it runs. */
@@ -406,7 +396,7 @@ export interface SessionSvnActionInfo {
   review: { index: number; count: number; scopeRoot: string } | null
   /** "3 conflicts need you"; moves only when the set is read again or an entry settles. Absent from older peers. */
   summary?: string | null
-  /** At most 50 entries of the conflict set; `sessions conflicts` answers them all. */
+  /** Every open entry of the conflict set first, then settled ones up to 50 entries; `sessions conflicts` answers them all. */
   conflicts?: { entries: SessionSvnConflictInfo[]; more: number } | null
   /** The merger's brief of the set, an absolute path, while the set is open and a brief was written. */
   mergeBrief?: string | null
@@ -426,16 +416,14 @@ export interface SessionConflictList {
   more: number
 }
 
-/** Who works on a conflicted path now; a surface draws `rule` and `settled` as one group. */
-export type SvnConflictState = 'rule' | 'agent' | 'person' | 'settled'
-export type SvnConflictActor = 'jamat' | 'agent' | 'person'
-
 /**
  * One option on one conflicted path of a waiting Finish. `confirm` is the person's confirmation of a
  * loss of incoming work, which only a window press carries.
  */
 export interface SvnConflictResolveRequest {
   path: string
+  /** Which conflict of the path: needed only where it holds a text and a property conflict that are both open. */
+  kind?: SvnConflictKind
   option: SvnConflictOption
   confirm: boolean
   requestedBy: 'window' | 'cli' | 'peer'
@@ -466,13 +454,15 @@ export interface SessionSvnConflictInfo {
   state: SvnConflictState
   /** "Your session added this folder with 2 files; r421 added it with 3 files." */
   description: string
-  by: SvnConflictActor | null
+  by: SvnConflictWireActor | null
+  /** "fixed by the worker: Keep mine", "Jamat's rule applies Keep both"; absent from an older peer and while nobody chose. */
+  settled?: string
   saved: string | null
   options: SessionSvnConflictOptionInfo[]
 }
 
 /** Which chain of a session a workflow shows. */
-export type SessionWorkflowKind = 'before' | 'finish' | 'discard' | 'update-main' | 'git-finish'
+export type SessionWorkflowKind = 'before' | 'finish' | 'discard' | 'update-main' | 'git-finish' | 'script'
 
 export type SessionWorkflowStepState = 'pending' | 'running' | 'done' | 'failed' | 'waits' | 'skipped'
 
@@ -489,8 +479,9 @@ export type SessionWorkflowTarget =
   | { kind: 'none' }
 
 /** A press a workflow admits now; each surface maps it onto an operation. */
-export type SessionWorkflowActionId = 'finish-again' | 'keep' | 'discard' | 'retry-setup' | 'stop-agent' | 'open-in-vscode'
-  | 'resolve-with-agent' | 'open-merger'
+export type SessionWorkflowActionId = 'refresh-preparation' | 'prepare-worktree' | 'confirm-environment' | 'review-correction' | 'override-checks' | 'finish-again' | 'keep' | 'discard' | 'retry-setup' | 'stop-agent' | 'open-in-vscode'
+  | 'resolve-with-agent' | 'open-merger' | 'solve-with-agent' | 'agree-setup' | 'cancel-setup' | 'update-main' | 'later' | 'back-to-work' | 'confirm-stopped' | 'stop-run' | 'remove-run'
+  | 'confirm-busy' | 'resume-worker'
 
 export interface SessionWorkflowStep {
   /** Stable within the workflow: `1:updating`, `1:check:lint`, `2:review:lib`. */
@@ -503,20 +494,53 @@ export interface SessionWorkflowStep {
   startedAt: number | null
   endedAt: number | null
   target: SessionWorkflowTarget
+  body?: SessionWorkflowBody
 }
 
+export type SessionWorkflowBody =
+  /** `liveUnknown`: the Host cannot be reached, so no session is named live (`SessionLiveState`). */
+  | { kind: 'sessions'; sessions: readonly SessionLiveBrief[]; liveUnknown?: true }
+  | { kind: 'commit'; vcs: 'svn' | 'git'; scopeRoot: string; repositories?: import('../worktrees/worktreeState').WorktreeRepositoryReview[]
+    /** Each repository takes its own labelled message, even a lone one: a mount, or the rest after another repository published. */
+    separateMessages?: true; marked?: string[]; messageCheck?: { message: string; source: CommitMessageSource; findings: CommitMessageFindingInfo[] } }
+  | { kind: 'commands'; commands: readonly string[] }
+  | { kind: 'log'; runId: string }
+  | { kind: 'conflicts'; summary?: string; conflicts?: { entries: SessionSvnConflictInfo[]; more: number }; mergeBrief?: string | null; readOnly?: true }
+
 export interface SessionWorkflowRound {
-  /** "Finish", then "Update 2", "Update 3" for each update after one that ran through. */
+  /** "Finish", then "Update 2", "Update 3" for each update after one that ran through; the targets of one sync share a round. */
   title: string
   steps: SessionWorkflowStep[]
 }
 
+export interface SessionWorkflowCommand {
+  operation: 'sessions.retrySetup' | 'sessions.discardWorktree' | 'sessions.finishWorktree' | 'sessions.updateMain' | 'sessions.solveWithAgent' | 'sessions.backToWork' | 'sessions.finalize'
+    | 'sessions.remove' | 'sessions.reopen'
+  sessionId?: string
+  body: { choice?: 'commit' | 'keep' | 'discard'; agent?: true; reviewCorrection?: true; overrideChecks?: true; refreshPreparation?: true; confirmEnvironment?: true; confirmWorking?: true; acknowledgeSetup?: string; confirmLive?: readonly string[]; expect?: 'stop'; confirmStoppedRunId?: string }
+}
+
 export interface SessionWorkflowAction {
+  command?: SessionWorkflowCommand
+  overrideChecks?: true
+  /** `finish-again` only: sync although the worker has not gone idle. */
+  confirmWorking?: true
   id: SessionWorkflowActionId
   label: string
   primary: boolean
-  /** `stop-agent` and `open-merger` only: the agent run the press stops or opens. */
+  /** `stop-agent`, `stop-run`, `remove-run` and `open-merger` only: the run the press stops, removes or opens. */
   runId?: string
+  acknowledgeSetup?: string
+  /** The exact live-session list displayed with Update, including an empty list. */
+  confirmLive?: readonly string[]
+  requiresCommit?: true
+  confirm?: string
+  /** `step`: the press belongs to the step that waits or runs now, and is drawn under it; absent: under the whole workflow. */
+  place?: 'step'
+  /** `later` only: the line the step's presses fold into after the press; the step still waits. */
+  deferred?: string
+  /** A secondary press's one line of when it is needed, drawn beside it, so the primary is the obvious next step. */
+  note?: string
 }
 
 /**
@@ -525,8 +549,28 @@ export interface SessionWorkflowAction {
  * never with a poll; durations come from the timestamps, and a running step's live text is the
  * session's or the run's own `step`.
  */
+export interface SessionActionsInfo {
+  sections: SessionWorkflowInfo[]
+}
+
+export interface SessionValidationRun {
+  runId: string
+  title: string
+  startedAt: number
+  /** `stop-run` of this run: the same press its own section offers. */
+  stop: SessionWorkflowAction
+}
+
 export interface SessionWorkflowInfo {
+  validation?: { cwd: string; checks: 'pending' | 'passed' | 'none' | 'overridden'; checkedAt?: number;
+    environmentInputs?: string[]; requiredSelection?: string[]; canRun: boolean
+    /** The session's requested runs that still run, all inside this worktree, each with its Stop. */
+    runs?: SessionValidationRun[] }
   kind: SessionWorkflowKind
+  /** Verified publication receipts, retained after the source worktree is removed. */
+  revisions?: readonly string[]
+  startedAt?: number
+  endedAt?: number
   /**
    * The action id, `setup:<sessionId>` for the before chain, `git-finish:<sessionId>:<startedAt>` for
    * a Git Finish, or `ended:<at>` for the ended view: a new press is a new workflow.
@@ -560,7 +604,15 @@ export interface SessionWorktreeOutcome {
   labelled?: readonly SvnLabelledRevision[]
 }
 
+export interface WorktreeQuestionView {
+  label: string
+  choices: Array<{ id: string; title: string; note: string | null; glyph: string; submitLabel: string | null; danger?: boolean }>
+  chosenDefault: string
+  startsWorkflow?: readonly string[]
+}
+
 export interface SessionWorktreeInfo {
+  questions?: { local: WorktreeQuestionView | null; remote: WorktreeQuestionView | null }
   worktreePath: string
   /**
    * svn: where the session runs below the worktree, '/'-separated; absent at the worktree itself and
@@ -575,13 +627,17 @@ export interface SessionWorktreeInfo {
   kind: SessionWorktreeKind
   /** A snapshot from an older peer carries none; `SessionsSnapshotValidation` composes them by kind. */
   choices: readonly SessionFinishChoice[]
+  /**
+   * Deprecated: no longer measured, always null. Kept because older peers refuse a snapshot
+   * without it; a value from such a peer is drawn by nothing.
+   */
   diff: { added: number; removed: number; changedFiles: number; capturedAt: number } | null
-  /** Always false for svn: an SVN worktree takes everyone else's commits when it finishes. */
+  /** Deprecated: no longer measured, always false; kept for the same peers as `diff`. */
   baseMoved: boolean
   /** Present only while an SVN action of this worktree runs, its stage in the four legacy words. */
   finish?: { phase: SvnFinishPhase; scopeRoot?: string }
   outcome?: SessionWorktreeOutcome
-  /** A live SVN worktree: Finish opens its dialog at once, and the action stops the session first. */
+  /** A live worktree can enter Finish review before its session is stopped. */
   liveFinish?: true
   /**
    * Present while the worktree waits to be removed after the session's end, or was kept by that
@@ -611,11 +667,36 @@ export interface SessionRetiredWorktreeInfo {
 }
 
 export interface SessionLandingInfo {
+  reason?: string
+  /**
+   * The person's local state of a landed path in the main copy that an update leaves as it is, so the
+   * landing cannot be proven by updating; `summary` says which path, what state and what the person
+   * can do. Absent while the proof is only behind or unknown, and from older peers.
+   */
+  local?: SessionLandingLocal
   mainCopy: string
-  /** Revisions of the main copy's path between its root revision and HEAD; null: unknown. */
+  /**
+   * Revisions between the revision of each working-copy root of the main copy (itself and every
+   * floating external mount) and the HEAD of its own repository, summed; null: unknown.
+   */
   behind: number | null
+  /** The roots that are behind, by path: `.` is the main copy itself. Absent when none is, and from older peers. */
+  behindRoots?: readonly SessionLandingBehindRoot[]
   /** `<repository URL>:r<N>`, the newest landed revision of each repository. */
   newest: readonly string[]
+}
+
+export interface SessionLandingLocal {
+  /** Below the main copy, with `/`. */
+  path: string
+  item: SvnLocalItem
+  summary: string
+}
+
+export interface SessionLandingBehindRoot {
+  /** `.` or the mount path below the main copy, with `/`. */
+  root: string
+  behind: number
 }
 
 /** A live session that works in a main copy an UPDATE would change under it. */
@@ -624,6 +705,15 @@ export interface SessionLiveBrief {
   title: string
   number: string | null
 }
+
+/**
+ * The live sessions in a main copy, from the Host's runtimes. `unknown` while the Host cannot be
+ * reached or has not been listed yet: the records keep the life a Host last gave them, which says
+ * nothing about a Host that stopped.
+ */
+export type SessionLiveState =
+  | { kind: 'known'; sessions: readonly SessionLiveBrief[] }
+  | { kind: 'unknown' }
 
 /** The directory a session's worktree occupies, as a script reads it: git names no URL and no revision. */
 export interface SessionWorktreePlace {
@@ -647,7 +737,21 @@ export interface SessionCreated {
  * removal after the session's end: `pending` waits for the process to end or for its reason to go
  * (`in use`, `unlanded r<N>: <paths>`), `kept` is final until a new trigger (`<N> changes`).
  */
+export interface WorktreeView {
+  title?: string
+  tone?: 'wait' | 'error' | 'done' | 'running'
+  actions?: SessionWorkflowAction[]
+  version: number
+  phase: WorktreePhase
+  step?: FinishStep
+  wait?: WorktreeLifecycle['wait']
+  outOfDate: number
+  conflicts: number
+  summary: string
+}
+
 export interface SessionWorktreeState {
+  worktreeView?: WorktreeView
   sessionId: string
   worktree: SessionWorktreePlace | null
   retired: { worktreePath: string; revisions: readonly string[]; removedAt: number } | null
@@ -665,10 +769,11 @@ export interface SessionWorktreeState {
   step: SessionStepInfo | null
   /** The session's workflow, as `SessionInfo.workflow`, or null. A build before 3.13 leaves the field out. */
   workflow: SessionWorkflowInfo | null
+  actions?: SessionActionsInfo
 }
 
 /** How an SVN worktree ended, as its durable result says it. */
-export type WorktreeResultKind = 'committed' | 'nothing' | 'partial' | 'not-committed' | 'discarded' | 'kept' | 'failed'
+export type WorktreeResultKind = 'never-started' | 'committed' | 'nothing' | 'partial' | 'not-committed' | 'discarded' | 'kept' | 'failed'
 
 /** `pending`: the worktree is still on disk and the cleanup removes it once nothing holds it. */
 export type WorktreeResultRemoval = 'removed' | 'pending' | 'kept'
@@ -678,7 +783,44 @@ export type WorktreeResultRemoval = 'removed' | 'pending' | 'kept'
  * session: `sessions worktree-results` answers it after the session was removed, for 30 days, or 1
  * day after it was acknowledged. `logs` are copies of the action's run logs beside the result.
  */
+/** The message one published revision was committed with, read from its commit intent. */
+export interface WorktreeResultCommitMessage {
+  /** Repository root URL. */
+  repository: string
+  revision: number
+  message: string
+  /** The earlier action of the same worktree that committed this revision; absent when this action did. */
+  adoptedFrom?: string
+  /** Who wrote this repository's message, and the findings the person confirmed, from this action's review. */
+  source?: CommitMessageSource
+  acknowledgedFindings?: CommitMessageFinding[]
+}
+
+/**
+ * The UPDATE of the main copy that holds a result: `revision` is the main copy root's, `repositories`
+ * the revision each repository this result published to has there, an external mount's own among them
+ * (UA1-J13-7). `repositories` is absent in results of older builds.
+ */
+export interface WorktreeResultMain {
+  revision: number
+  by: 'person' | 'agent'
+  at: number
+  repositories?: { repository: string; revision: number }[]
+}
+
 export interface WorktreeResultDto {
+  main?: WorktreeResultMain
+  /**
+   * The latest UPDATE of the session's own main copy that ran but could not prove this landing, with
+   * the reason; its logs are kept in `logs`. Gone once an UPDATE records `main`. Absent in older results.
+   */
+  mainUnproven?: WorktreeResultMain & { reason: string }
+  /** The worktree's own repository's committed message when it published, else the approved draft. */
+  message?: string
+  /** Per published revision, the message it was committed with; absent in results of older builds. */
+  messages?: readonly WorktreeResultCommitMessage[]
+  messageSource?: CommitMessageSource
+  acknowledgedFindings?: CommitMessageFinding[]
   actionId: string
   action: 'finish' | 'discard' | 'cleanup'
   result: WorktreeResultKind
@@ -693,7 +835,10 @@ export interface WorktreeResultDto {
   lines: readonly string[]
   logs: readonly { runId: string; title: string; path: string }[]
   notify: { sessionId: string; state: 'pending' | 'delivered' | 'expired'; at: number | null } | null
-  /** Whether the main copy holds every committed revision; null until the landed check reads it. */
+  /**
+   * Whether all committed paths are present in the main copy: `true` once proven and kept since,
+   * `false` as of the last svn write to the main copy's working copies, `null` while svn cannot tell.
+   */
   holdsLanded: boolean | null
   at: number
   acknowledgedAt: number | null
@@ -719,6 +864,7 @@ export interface SessionNotifyDto {
 
 /** What `sessions worktree-results` filters on; every field narrows, none is required. */
 export interface WorktreeResultsFilter {
+  includeLandingProof?: boolean
   tag?: string
   sessionId?: string
   unacknowledged?: true
@@ -866,6 +1012,7 @@ export interface SessionScriptsReading {
 export interface SessionScriptOutput {
   state: SessionScriptRunState
   source: 'live' | 'log'
+  failureReason?: string
   /** The latest output rows, at most 256 KiB in UTF-8 including line separators. */
   lines: readonly string[]
   logReason?: string
@@ -920,11 +1067,10 @@ export interface SessionInfo {
   tabTitle: string
   directory: SessionCreateSpec['directory']
   project: ProjectBinding
-  agent?: { agentId: SessionAgentId; nativeSessionId?: string }
+  agent?: { agentId: SessionAgentId; nativeSessionId?: string; accountId?: string; accountLabel?: string; accountExhausted?: boolean }
+  account?: { agentId: SessionAgentId; accountId: string }
   worktree?: SessionWorktreeInfo
   retiredWorktree?: SessionRetiredWorktreeInfo
-  /** Absent = unmeasured, or no VCS governs the directory. Absence is not a measurement. */
-  vcs?: SessionVcsInfo
   /** Absent = None. A name only; what it looks like is the renderer's to decide. */
   color?: SessionColorName
   /** The person's note about this session. Absent = none. */
@@ -932,10 +1078,20 @@ export interface SessionInfo {
   /** The control operation id of the sessions.create that made this session. Absent = none. */
   callerOperationId?: string
   life: 'starting' | 'live' | 'ended' | 'lost'
+  /**
+   * The runtime the record is bound to, `<hostInstanceId>:<generation>`; absent while none is. It
+   * changes on every relaunch, so a screen attached to an older runtime knows to attach again.
+   */
+  runtime?: string
   /** The person's verdict, independent of `life`: what the daily view and the restart chain read. */
   completed?: true
-  /** How it ended, for a session that has. Absent while one is starting or live. */
+  /** How it ended, for a session that has. Absent while one is starting or live, or waits for setup approval. */
   outcome?: SessionOutcome
+  /**
+   * Its setup waits for the person to agree to the commands, so nothing runs yet. `life` reads
+   * `ended` because no runtime stands behind it; this says it is a wait, never a failure.
+   */
+  awaitsSetupApproval?: true
   /** Null for a shell: nothing classifies a plain terminal. */
   activity: SessionActivity | null
   /** Absent unless `activity` is `working` specifically because work remains in the background. */
@@ -988,6 +1144,7 @@ export interface SessionInfo {
   scripts?: SessionScriptsInfo
   /** An SVN action of this session, running or waiting for the person. */
   svnAction?: SessionSvnActionInfo
+  worktreeView?: WorktreeView
   /** Absent while this client does nothing for the session; older peers ignore it. */
   step?: SessionStepInfo
   /**
@@ -995,6 +1152,7 @@ export interface SessionInfo {
    * next press. Absent: no chain and no ended view; an older build leaves it out.
    */
   workflow?: SessionWorkflowInfo
+  actions?: SessionActionsInfo
   /** Composed by the library. `sameProject` is the generic nesting rule; the tree applies only display settings. */
   parent?: { sessionId: string; kind: SessionParentKind; sameProject: boolean }
 }
@@ -1111,14 +1269,22 @@ export type SessionsOpErrorCode =
   | 'worktree-conflict'
   /** Committing an SVN worktree needs this client's commit dialog, and there is none to open. */
   | 'review-unavailable'
+  | 'review-stale'
   /** The session still works; the press is repeated with `confirmWorking` to finish it anyway. */
   | 'session-working'
   /** Other live sessions work in the main copy; the UPDATE is repeated with `confirmLive` naming them. */
   | 'live-sessions'
   /** A person already wrote the commit message of that scope; a proposal never replaces it. */
   | 'message-edited'
+  | 'message-unchecked'
+  | 'never-started'
   /** The option loses incoming work: only the person may choose it, in the window, with a confirmation. */
   | 'person-only'
+
+/** A Host stop or restart: what the old Host could not stop on its way out, each line naming its runtime. */
+export interface HostStopWarnings {
+  warnings: string[]
+}
 
 export type SessionsOpResult<T = void> =
   | { ok: true; value: T }
@@ -1358,3 +1524,5 @@ export interface TerminalComposerContentReading {
 export type TerminalComposerContentResult =
   | { ok: true; reading: TerminalComposerContentReading }
   | { ok: false; code: 'unknown-session' | 'not-live' | 'not-agent' | 'no-projection' | 'no-viewport' }
+
+export interface SessionWorktreeSyncResult { revision: number; conflicts: { path: string; kind: import('../svn/svn.types').SvnConflictKind }[] }

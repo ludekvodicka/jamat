@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { RateMonitor } from '../../../lib-orchestrator/rateMonitor/rateMonitor'
 import type {
@@ -67,7 +67,7 @@ describe('app-client-ui/app/rateMonitor/rateMonitorOperations', () => {
   beforeEach(() => {
     bench = new RegistryBench()
     refreshes = 0
-    new RateMonitorOperations(monitorUnderTest()).register(bench.registry)
+    new RateMonitorOperations(monitorUnderTest(), { list: async () => [] }).register(bench.registry)
   })
 
   /** Each channel the window used to call, by the operation it is now. */
@@ -79,7 +79,7 @@ describe('app-client-ui/app/rateMonitor/rateMonitorOperations', () => {
   }
 
   it('registers its operations', () => {
-    expect(bench.registry.names().sort()).toEqual(['rate.debugStatus', 'rate.get', 'rate.refresh'])
+    expect(bench.registry.names().sort()).toEqual(['rate.debugStatus', 'rate.get', 'rate.refresh', 'usage.get', 'usage.history'])
   })
 
   it('answers the read with the snapshot the monitor holds', async () => {
@@ -119,5 +119,21 @@ describe('app-client-ui/app/rateMonitor/rateMonitorOperations', () => {
       'raw',
       'state',
     ])
+  })
+  it('returns the selected historical bounds without projecting through the present', async () => {
+    const hour = 3_600_000, now = 10 * hour
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
+    try {
+      const registry = new RegistryBench()
+      const monitor = { readHistory: async () => [2, 3, 9].map(at => ({ at: at * hour, agentId: 'claude' as const,
+        accountId: 'main', source: 'poll' as const, windows: [{ durationMinutes: 10080, usedPercent: at * 10, resetsAt: null }] })) } as unknown as RateMonitor
+      new RateMonitorOperations(monitor, { list: async () => [{ accountId: 'main', agentId: 'claude', label: 'Main',
+        state: 'active', isMain: true, identity: null, profileProblem: null }] }).register(registry.registry)
+      expect(await registry.call('usage.history', { agentId: 'claude', from: 2 * hour, to: 3 * hour, burnHours: 3 })).toMatchObject({
+        ok: true, value: { displayRange: { from: 2 * hour, to: 3 * hour }, until: 3 * hour,
+          recorded: [{ at: 2 * hour, remaining: 80 }, { at: 3 * hour, remaining: 70 }], projected: [],
+          poolEmptyAt: null, firstEmpty: null, nextReset: null },
+      })
+    } finally { clock.mockRestore() }
   })
 })

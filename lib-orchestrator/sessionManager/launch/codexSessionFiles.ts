@@ -8,6 +8,7 @@ import type { CodexSessionIdentity, CodexSessionLaunch } from '../codexSessionId
 import type { SessionRecord } from '../records/sessionRecord.types'
 import type { LaunchPlanOptions } from './launchPlanner'
 import { WindowsCommand } from './windowsCommand'
+import { CodexLaunchConfiguration } from '../../agentAccounts/codexProfileView'
 
 export class CodexSessionFiles {
   private readonly directory: string
@@ -34,11 +35,7 @@ export class CodexSessionFiles {
     const root = this.rootOf(record)
     mkdirSync(root, {recursive: true})
     const launchFile = join(root, `${agent.identityLaunchId}.launch.json`)
-    const overrides: string[] = []
-    if (options.model !== undefined) overrides.push('-c', `model=${JSON.stringify(options.model)}`)
-    if (options.effort !== undefined) overrides.push('-c', `model_reasoning_effort=${JSON.stringify(options.effort)}`)
-    if (options.yolo) overrides.push('-c', 'approval_policy="never"', '-c', 'sandbox_mode="danger-full-access"',
-      '-c', `projects={${JSON.stringify(native.cwd)}={trust_level="trusted"}}`)
+    const overrides = CodexLaunchConfiguration.of(native.cwd, options).overrides.flatMap(value => ['-c', value])
     const launch: CodexSessionLaunch = {
       schemaVersion: 1,
       jamatSessionId: record.sessionId, launchId: agent.identityLaunchId,

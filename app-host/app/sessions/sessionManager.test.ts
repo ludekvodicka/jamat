@@ -8,6 +8,7 @@ import { EventHub } from '../events/eventHub.js'
 import { AtomicJsonFile } from '../shared/atomicJsonFile.js'
 import type { TerminalInstanceFactory } from '../terminal/terminal.types.js'
 import { TerminalLaunchError } from '../terminal/terminalLaunchError.js'
+import { TerminalStopRefusal } from '../terminal/terminalStopRefusal.js'
 import type { RuntimeCreateReq, RuntimeLaunchSpec } from '../wire/hostWire.js'
 import { FakeTerminalInstances } from './fixtures/fakeTerminalInstance.js'
 import { SessionError } from './sessionError.js'
@@ -255,6 +256,43 @@ describe('app-host/app/sessions/sessionManager', () => {
     expect(harness.manager.liveCount()).toBe(0)
   })
 
+  it('R4: a refused dead runtime cannot abort Host shutdown after stopping other sessions', async () => {
+    const h = SessionManagerTest.harness(directories)
+    await h.manager.create(SessionManagerTest.createRequest('refused'))
+    h.terminals.latest().emitExit(1)
+    vi.spyOn(h.terminals.latest().instance, 'stop').mockRejectedValue(new Error('Owned child 321 has not exited'))
+    await h.manager.create({ ...SessionManagerTest.createRequest('live'), runtimeSessionId: 'runtime-2' })
+    await expect(h.manager.stopAll()).resolves.toEqual([expect.stringContaining('Owned child 321')])
+    expect(h.manager.liveCount()).toBe(0)
+    await expect(h.manager.create({ ...SessionManagerTest.createRequest('late'), runtimeSessionId: 'runtime-3' })).rejects.toThrow('Host is stopping')
+  })
+
+  it('UA1-J10-1: answers a refused Stop as a conflict with the terminal reason, not as an internal error', async () => {
+    const h = SessionManagerTest.harness(directories)
+    await h.manager.create(SessionManagerTest.createRequest('refused-live'))
+    vi.spyOn(h.terminals.latest().instance, 'stop')
+      .mockRejectedValue(new TerminalStopRefusal('Terminal descendant inspection failed for root PID 7; retry Stop: CIM timed out'))
+    const live = await SessionManagerTest.rejection(h.manager.stop(SessionManagerTest.ref(1)))
+    expect(live).toBeInstanceOf(SessionError)
+    expect((live as SessionError).code).toBe('conflict')
+    expect((live as SessionError).message).toContain('retry Stop')
+    h.terminals.latest().emitExit(1)
+    const ended = await SessionManagerTest.rejection(h.manager.stop(SessionManagerTest.ref(1)))
+    expect((ended as SessionError).code).toBe('conflict')
+  })
+
+  it('R4: remove and replace cannot erase a dead runtime with an unconfirmed descendant', async () => {
+    const h = SessionManagerTest.harness(directories)
+    await h.manager.create(SessionManagerTest.createRequest('refused'))
+    h.terminals.latest().emitExit(1)
+    const stopped = vi.spyOn(h.terminals.latest().instance, 'stop').mockRejectedValue(new Error('Owned child 321 has not exited'))
+    await expect(h.manager.remove(SessionManagerTest.ref(1))).rejects.toThrow('Owned child 321')
+    await expect(h.manager.replace({ controllerLeaseId: 'lease-1', operationId: 'replacement', target: SessionManagerTest.ref(1), launch: SessionManagerTest.launch({}) })).rejects.toThrow('Owned child 321')
+    expect(h.terminals.latest().disposed()).toBe(false)
+    stopped.mockResolvedValue()
+    await expect(h.manager.remove(SessionManagerTest.ref(1))).resolves.toMatchObject({ diagnostic: 'removed' })
+  })
+
   /**
    * A child that never starts is the caller's launch spec being wrong, not the Host breaking. Before
    * this was classified, both the spawn and the ready failure escaped as plain Errors and the caller
@@ -416,6 +454,7 @@ class SessionManagerTest {
 
   static launch(env: Record<string, string>): RuntimeLaunchSpec {
     return {
+      stopDescendants: false,
       command: 'fake',
       args: [],
       cwd: process.cwd(),

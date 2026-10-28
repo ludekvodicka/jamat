@@ -1,3 +1,5 @@
+import type { CommitPanePorts } from '../versioning/commitPanePorts'
+import type { TaskPanePorts } from '../taskView/taskPaneStore'
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 
 import { ScriptDuration } from '../../../lib-orchestrator/sessionManager/scripts/scriptDuration'
@@ -5,6 +7,7 @@ import type {
   SessionInfo,
   SessionSetupAgreement,
   SessionsSnapshot,
+  SessionStepInfo,
   SessionWorkflowAction,
   SessionWorkflowInfo,
   SessionWorkflowStep,
@@ -24,10 +27,25 @@ export type WorkflowPressAnswer =
   | { kind: 'working'; sentence: string }
 
 export interface WorkflowPorts {
+  requestRun?(command: string, cwd: string): Promise<string | null>
+  clearHistory?(): Promise<string | null>
+  reviews?: CommitPanePorts
+  tasks?: TaskPanePorts
   openStep(target: SessionWorkflowTarget, title: string): void
-  press(action: SessionWorkflowAction, agreement: FinalizeAgreement): Promise<WorkflowPressAnswer>
+  press(action: SessionWorkflowAction, agreement: FinalizeAgreement, commit?: WorkflowCommit): Promise<WorkflowPressAnswer>
   /** What the rows of the conflict list do. */
   conflicts: ConflictListPorts
+}
+
+export type WorkflowReviewProof = Omit<Extract<import('../../../lib-orchestrator/remoteControl/remoteReviewApi.types').RemoteReviewDecision, { kind: 'finish' }>, 'kind' | 'workflow' | 'operationId'>
+export interface WorkflowCommit {
+  repositories?: import('../../../lib-orchestrator/worktrees/worktreeState').WorktreeRepositoryReview[]
+  reviewVersion?: number
+  acknowledgedFindings?: import('../../../lib-orchestrator/svn/svnCommitMessageCheck').CommitMessageFinding[]
+  messageSource?: import('../../../lib-orchestrator/svn/svnCommitMessageCheck').CommitMessageSource
+  selection: string[]
+  message: string
+  reviewed?: { proof: WorkflowReviewProof; workflowId: string; revision: number }
 }
 
 /** What the footer shows under its presses after the last one. */
@@ -64,6 +82,20 @@ export function WorkflowPane(props: {
   // The list belongs to the newest conflict step; an older round's step only says it waited.
   const conflictStep = (workflow?.rounds ?? []).flatMap((round) => round.steps).filter((step) => step.target.kind === 'conflicts').at(-1)?.key
   const showsConflicts = (step: SessionWorkflowStep): boolean => step.key === conflictStep && conflicts !== null && summary !== null
+  const current = WorkflowPlaces.currentStepOf(workflow)
+  const stepActions = current === null ? [] : (workflow?.actions ?? []).filter((action) => action.place === 'step')
+  const footerActions = (workflow?.actions ?? []).filter((action) => !stepActions.includes(action))
+  const actionButton = (action: SessionWorkflowAction): React.JSX.Element => (
+    <button
+      key={action.id}
+      type="button"
+      className={`workflow__action${action.primary ? ' workflow__action--primary' : ''}`}
+      disabled={busy}
+      onClick={() => void press(action, {})}
+    >
+      {action.label}
+    </button>
+  )
   const press = async (action: SessionWorkflowAction, agreement: FinalizeAgreement): Promise<void> => {
     setBusy(true)
     setNote({ kind: 'none' })
@@ -101,6 +133,8 @@ export function WorkflowPane(props: {
                       ? WorkflowConflicts.reveal(conflictsRef.current)
                       : props.ports.openStep(step.target, step.title)}
                   />
+                  {step.key === current && stepActions.length > 0
+                    && <div className="workflow__step-actions" role="group" aria-label={`${step.title} actions`}>{stepActions.map(actionButton)}</div>}
                   {showsConflicts(step) && conflicts !== null && summary !== null
                     && <ConflictList ref={conflictsRef} summary={summary} conflicts={conflicts}
                       mergeBrief={action?.mergeBrief ?? null} ports={ports.conflicts} />}
@@ -110,19 +144,9 @@ export function WorkflowPane(props: {
           </section>
         ))}
       </div>
-      {(workflow.actions.length > 0 || note.kind !== 'none') && (
+      {(footerActions.length > 0 || note.kind !== 'none') && (
         <footer className="workflow__footer">
-          {workflow.actions.map((action) => (
-            <button
-              key={action.id}
-              type="button"
-              className={`workflow__action${action.primary ? ' workflow__action--primary' : ''}`}
-              disabled={busy}
-              onClick={() => void press(action, {})}
-            >
-              {action.label}
-            </button>
-          ))}
+          {footerActions.map(actionButton)}
           <WorkflowFooterNoteView note={note} busy={busy} onAgree={(action, agreement) => void press(action, agreement)} />
         </footer>
       )}
@@ -130,14 +154,18 @@ export function WorkflowPane(props: {
   )
 }
 
-function WorkflowStepRow(props: { step: SessionWorkflowStep; now: number; live: string | null; opens: boolean; onOpen(): void }): React.JSX.Element {
+export function WorkflowStepRow(props: { step: SessionWorkflowStep; now: number; live: string | null; progress?: number | null; opens: boolean; onOpen(): void }): React.JSX.Element {
   const { step } = props
+  const progress = props.progress ?? null
   const body = (
     <>
       <span className="workflow__glyph" aria-label={WorkflowStepGlyphs.labelOf(step.state)}>{WorkflowStepGlyphs.of(step.state)}</span>
       <span className="workflow__step-title">{step.title}</span>
       <span className="workflow__time">{WorkflowDurations.textOf(step, props.now)}</span>
       {(props.live ?? step.detail) !== '' && <span className="workflow__detail">{props.live ?? step.detail}</span>}
+      {progress !== null && <span className="workflow__bar" role="progressbar" aria-valuemin={0} aria-valuemax={100}
+        aria-valuenow={Math.round(progress * 100)}>
+        <span className="workflow__bar-fill" style={{ '--step-fraction': progress } as React.CSSProperties} /></span>}
     </>
   )
   if (!props.opens)
@@ -150,7 +178,7 @@ function WorkflowStepRow(props: { step: SessionWorkflowStep; now: number; live: 
 }
 
 /** The refusal, or the agreement and still-working questions the Finish dialog asks, under the presses. */
-function WorkflowFooterNoteView(props: {
+export function WorkflowFooterNoteView(props: {
   note: WorkflowFooterNote
   busy: boolean
   onAgree(action: SessionWorkflowAction, agreement: FinalizeAgreement): void
@@ -181,7 +209,7 @@ function WorkflowFooterNoteView(props: {
   }
 }
 
-class WorkflowFooterNotes {
+export class WorkflowFooterNotes {
   static of(action: SessionWorkflowAction, answer: WorkflowPressAnswer): WorkflowFooterNote {
     const kind = answer.kind
     switch (kind) {
@@ -194,8 +222,7 @@ class WorkflowFooterNotes {
   }
 }
 
-/** One tick a second while `enabled`, as the Processes tab does; none while hidden or settled. */
-function useSecondTicks(enabled: boolean): number {
+export function useSecondTicks(enabled: boolean): number {
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     if (!enabled) return
@@ -210,7 +237,7 @@ function useSecondTicks(enabled: boolean): number {
  * The last output line of each running run step, read from the snapshot. A string is the store's
  * value, so the pane draws again only when a line moved, never for another session's change.
  */
-function useRunLines(
+export function useRunLines(
   sessions: Pick<SnapshotStore<SessionsSnapshot>, 'current' | 'subscribe'>,
   workflow: SessionWorkflowInfo | undefined,
 ): ReadonlyMap<string, string> {
@@ -228,6 +255,14 @@ function useRunLines(
   return new Map(value === '' ? [] : JSON.parse(value) as [string, string][])
 }
 
+export class WorkflowPlaces {
+  /** The key of the newest step that waits or runs: the step whose presses are drawn under it; null when none does. */
+  static currentStepOf(workflow: SessionWorkflowInfo | undefined): string | null {
+    return (workflow?.rounds ?? []).flatMap((round) => round.steps)
+      .filter((step) => step.state === 'waits' || step.state === 'running').at(-1)?.key ?? null
+  }
+}
+
 export class WorkflowConflicts {
   /** A click on the conflict step brings its list into view. */
   static reveal(list: HTMLElement | null): void {
@@ -242,6 +277,20 @@ export class WorkflowLive {
   static runningRunsOf(workflow: SessionWorkflowInfo | undefined): string[] {
     return (workflow?.rounds ?? []).flatMap((round) => round.steps)
       .flatMap((step) => step.state === 'running' && 'runId' in step.target ? [step.target.runId] : [])
+  }
+
+  /** The session's step in one line: its text, then the exact work it does. */
+  static stepTextOf(sessionStep: SessionStepInfo | null | undefined): string | null {
+    if (sessionStep === null || sessionStep === undefined) return null
+    return sessionStep.detail === null ? sessionStep.text : `${sessionStep.text} · ${sessionStep.detail}`
+  }
+
+  /** The done share of a running client stage, or null where the library counted no total. */
+  static fractionOf(step: SessionWorkflowStep, sessionStep: SessionStepInfo | null | undefined): number | null {
+    if (step.state !== 'running' || step.target.kind !== 'none') return null
+    const progress = sessionStep?.progress ?? null
+    if (progress === null || progress.total === null || progress.total === 0) return null
+    return Math.min(1, Math.max(0, progress.done / progress.total))
   }
 
   /** A running client stage says the session's step; a running run its last output line; anything else its detail. */

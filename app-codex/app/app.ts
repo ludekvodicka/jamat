@@ -1,7 +1,7 @@
-import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { writeFileSync, renameSync } from 'node:fs'
-import { isAbsolute } from 'node:path'
+import { closeSync, openSync, writeFileSync, renameSync } from 'node:fs'
+import { dirname, isAbsolute, join } from 'node:path'
 import { createInterface, type Interface } from 'node:readline'
 import { WebSocket, WebSocketServer } from 'ws'
 
@@ -13,9 +13,10 @@ export class App {
   private readonly launch: CodexSessionLaunch
   private readonly identity: CodexIdentity
   private readonly permissions: CodexLaunchPermissions
+  private readonly serverLogFile: string
   private readonly token = randomUUID()
   private server: WebSocketServer | null = null
-  private backend: ChildProcessWithoutNullStreams | null = null
+  private backend: ChildProcess | null = null
   private client: ChildProcess | null = null
   private lines: Interface | null = null
   private socket: WebSocket | null = null
@@ -30,6 +31,7 @@ export class App {
     this.launch = launch
     this.identity = new CodexIdentity(launch)
     this.permissions = new CodexLaunchPermissions(launch.yolo === true)
+    this.serverLogFile = join(dirname(launch.receiptFile), `${launch.launchId}.server.log`)
   }
 
   async run(): Promise<number> {
@@ -53,9 +55,9 @@ export class App {
           try {
             const message = this.permissions.request(JSON.parse(data.toString()))
             this.identity.sent(message)
-            if ((this.backend?.stdin.writableLength ?? 0) > App.frameBytesConst)
+            if ((this.backend?.stdin!.writableLength ?? 0) > App.frameBytesConst)
               throw new Error('Codex app-server input is not draining')
-            this.backend?.stdin.write(`${JSON.stringify(message)}\n`)
+            this.backend?.stdin!.write(`${JSON.stringify(message)}\n`)
           } catch (error) { this.fail(error) }
         })
         socket.on('error', error => this.fail(error))
@@ -70,25 +72,28 @@ export class App {
       const environment = {...process.env}
       delete environment.ELECTRON_RUN_AS_NODE
       delete environment.JAMAT_V3_CODEX_BRIDGE_TOKEN
-      this.backend = spawn(this.launch.server.command,
-        [...this.launch.server.prefixArgs, ...this.launch.server.args], {
-          cwd: this.launch.cwd, env: environment, windowsHide: true, stdio: 'pipe',
-        })
+      // Only the TUI may write to its screen; server stderr would overwrite its input rows.
+      const serverLog = openSync(this.serverLogFile, 'a', 0o600)
+      try {
+        this.backend = spawn(this.launch.server.command,
+          [...this.launch.server.prefixArgs, ...this.launch.server.args], {
+            cwd: this.launch.cwd, env: environment, windowsHide: true, stdio: ['pipe', 'pipe', serverLog],
+          })
+      } finally { closeSync(serverLog) }
       this.backend.once('error', error => this.fail(error))
       this.backend.once('exit', code => {
         if (!this.closed) this.fail(new Error(`Codex app-server exited (${code ?? 'signal'})`))
       })
-      this.backend.stdin.on('error', error => { if (!this.closed) this.fail(error) })
-      this.backend.stderr.on('data', chunk => { if (!this.closed) process.stderr.write(chunk) })
+      this.backend.stdin!.on('error', error => { if (!this.closed) this.fail(error) })
       let lineBytes = 0
-      this.backend.stdout.on('data', (chunk: Buffer) => {
+      this.backend.stdout!.on('data', (chunk: Buffer) => {
         for (const part of chunk.toString('utf8').split(/(?<=\n)/)) {
           lineBytes += Buffer.byteLength(part)
           if (lineBytes > App.frameBytesConst) this.fail(new Error('Codex protocol frame exceeds 100 MiB'))
           if (part.endsWith('\n')) lineBytes = 0
         }
       })
-      this.lines = createInterface({input: this.backend.stdout})
+      this.lines = createInterface({input: this.backend.stdout!})
       this.lines.on('line', line => {
         if (this.closed) return
         try {
@@ -129,14 +134,14 @@ export class App {
     this.socket?.terminate()
     for (const socket of this.server?.clients ?? []) socket.terminate()
     this.server?.close()
-    this.backend?.stdin.end()
+    this.backend?.stdin!.end()
     const children = [this.backend, this.client].filter((child): child is ChildProcess => child !== null)
     void Promise.all(children.map(child => App.endChild(child))).then(() => this.finish?.(code))
   }
 
   private fail(error: unknown): void {
     if (this.closed) return
-    process.stderr.write(`\nJamat cannot verify this Codex session: ${error instanceof Error ? error.message : String(error)}\n`)
+    process.stderr.write(`\nJamat cannot verify this Codex session: ${error instanceof Error ? error.message : String(error)}\nCodex app-server log: ${this.serverLogFile}\n`)
     this.stop(1)
   }
 

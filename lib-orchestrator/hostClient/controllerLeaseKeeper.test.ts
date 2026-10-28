@@ -17,6 +17,8 @@ describe('lib-orchestrator/hostClient/controllerLeaseKeeper', () => {
     keeper: ControllerLeaseKeeper
     calls: HostOpName[]
     errors: string[]
+    /** The lease each new grant made available, in order. */
+    grants: string[]
     grantTtl: (milliseconds: number) => void
     refuse: (refused: boolean) => void
     leaseId: () => string | null
@@ -75,15 +77,18 @@ describe('lib-orchestrator/hostClient/controllerLeaseKeeper', () => {
       }
       throw new Error(`the keeper called an op it has no business with: ${name}`)
     }
+    const grants: string[] = []
     const keeper = new ControllerLeaseKeeper({
       controllerId: 'test-controller',
       call,
       onError: (message) => errors.push(message),
+      onGranted: () => grants.push(keeper.leaseId() ?? 'none'),
     })
     return {
       keeper,
       calls,
       errors,
+      grants,
       grantTtl: (milliseconds) => { ttl = milliseconds },
       refuse: (value) => { refused = value },
       leaseId: () => (granted === null ? null : granted.controllerLeaseId),
@@ -94,6 +99,24 @@ describe('lib-orchestrator/hostClient/controllerLeaseKeeper', () => {
       },
     }
   }
+
+  // UA1-J09-9: after a restart the dead client's lease holds the Host until its TTL lapses. The
+  // keeper takes it on its retry and says so once, so the terminals can attach again as writers.
+  it('tells a lease taken on a retry once, and a renew of the same lease not at all', async () => {
+    const context = harness(1_000)
+    context.refuse(true)
+    await context.keeper.start()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(context.keeper.leaseId()).toBeNull()
+    expect(context.grants).toEqual([])
+    context.refuse(false)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(context.grants).toEqual(['lease-1'])
+    await vi.advanceTimersByTimeAsync(600)
+    expect(context.calls.at(-1)).toBe('controller.renew')
+    expect(context.grants).toEqual(['lease-1'])
+    await context.keeper.stop()
+  })
 
   it('acquires on start and hands out the lease the Host granted', async () => {
     const context = harness()

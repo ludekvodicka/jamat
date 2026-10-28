@@ -19,7 +19,43 @@ type RunsOf = (runId: string) => SessionRecord | null
  * chain that finished leaves no `pendingSetup`, so it has no workflow. Nothing reads a clock.
  */
 export class SetupWorkflow {
+  static completedOf(record: SessionRecord): SessionWorkflowInfo | null {
+    const history = (record.scriptRuns ?? []).filter((run) => run.phase === 'before')
+    if (history.length === 0) return null
+    const steps = SetupWorkflow.historyOf(history)
+    if (record.worktree !== undefined) steps.unshift(SetupWorkflow.reservedOf(record))
+    return { kind: 'before', workflowId: `setup:${record.sessionId}`, title: `Setup of ${record.title}`,
+      badge: 'setup ended', summary: 'Setup history', open: false, rounds: [{ title: 'Setup', steps }], actions: [] }
+  }
+
+  private static historyOf(history: readonly SessionRecordScriptRun[]): SessionWorkflowStep[] {
+    return history.map((run) => ({
+      key: run.runId, title: run.title, detail: run.reason ?? '',
+      state: SetupWorkflow.stateOf(run.outcome), startedAt: run.startedAt, endedAt: run.endedAt,
+      target: { kind: 'run', runId: run.runId },
+      body: { kind: 'log', runId: run.runId },
+    }))
+  }
+
+  private static stateOf(outcome: SessionRecordScriptRun['outcome']): SessionWorkflowStepState {
+    switch (outcome) {
+      case 'succeeded': return 'done'
+      case 'failed': case 'stopped': case 'lost': return 'failed'
+      default: throw new Error(`Unknown script outcome: ${JSON.stringify(outcome satisfies never)}`)
+    }
+  }
+
   static of(record: SessionRecord, pending: SessionRecordPendingSetup, runs: RunsOf): SessionWorkflowInfo | null {
+    if (pending.agreement !== undefined)
+      return { kind: 'before', workflowId: `setup:${record.sessionId}`, title: `Setup of ${record.title}`,
+        badge: 'setup waits for approval', summary: 'Approve the commands before setup starts', open: true,
+        rounds: [{ title: 'Setup', steps: [SetupWorkflow.reservedOf(record), {
+          key: 'agreement', title: 'Approve setup commands', detail: '', state: 'waits', startedAt: null, endedAt: null,
+          target: { kind: 'none' }, body: { kind: 'commands', commands: pending.agreement.commands },
+        }] }], actions: [
+          { id: 'agree-setup', label: 'Agree and run', primary: true, place: 'step', acknowledgeSetup: pending.agreement.hash },
+          { id: 'cancel-setup', label: 'Cancel', primary: false, place: 'step' },
+        ] }
     const life = record.life
     let failed: boolean
     if (life === 'starting') failed = false
@@ -40,20 +76,30 @@ export class SetupWorkflow {
     const skipped = SetupWorkflow.skippedOf(record, steps)
     // Where the setup would have run: right after the checkout that leads an SVN chain.
     if (skipped !== null) planned.splice(steps[0]?.scriptId === 'svn' ? 1 : 0, 0, skipped)
+    if (record.worktree !== undefined) planned.unshift(SetupWorkflow.reservedOf(record))
     const title = SetupWorkflow.titleOf(record, current)
     const word = SessionScriptDefinitions.wordsOf({ phase: 'before', scriptId: current.scriptId === 'checks' ? 'declared' : current.scriptId,
       name: current.name }).session
     const reason = failed ? SetupWorkflow.lastOf(history, (run) => run.runId === pending.setupSessionId)?.reason ?? record.endedReason : undefined
+    const neverStarted = failed && record.worktree?.kind === 'svn' && record.worktree.agentStartedAt === undefined
+    const earlier = history.filter((run) => !planned.some((step) => step.target.kind === 'run' && step.target.runId === run.runId))
     return {
       kind: 'before',
       workflowId: `setup:${record.sessionId}`,
       title: `Setup of ${record.title}`,
       badge: failed ? `${word} failed` : `${word} runs`,
-      summary: failed ? `${title} failed${reason === undefined ? '' : `: ${reason}`}; press Retry setup` : `Running ${title}`,
+      summary: neverStarted ? `The agent never started: ${reason ?? `${title} failed`}. Nothing to land.`
+        : failed ? `${title} failed${reason === undefined ? '' : `: ${reason}`}; press Retry setup` : `Running ${title}`,
       open: !failed,
-      rounds: [{ title: 'Setup', steps: planned }],
-      actions: failed ? [{ id: 'retry-setup', label: 'Retry setup', primary: true }] : [],
+      rounds: [...earlier.length === 0 ? [] : [{ title: 'Earlier attempts', steps: SetupWorkflow.historyOf(earlier) }], { title: 'Setup', steps: planned }],
+      actions: failed ? [{ id: 'retry-setup', label: 'Retry setup', primary: true },
+        ...neverStarted ? [{ id: 'discard' as const, label: 'Discard', primary: false }] : []] : [],
     }
+  }
+
+  private static reservedOf(record: SessionRecord): SessionWorkflowStep {
+    return { key: 'reserve', title: 'Reserve worktree', detail: record.worktree?.worktreePath ?? '', state: 'done',
+      startedAt: record.createdAt, endedAt: record.createdAt, target: { kind: 'none' } }
   }
 
   /** The history is oldest first, so the newest attempt is the last one that matches. */
@@ -104,7 +150,8 @@ export class SetupWorkflow {
     endedAt: number | null,
     target: SessionWorkflowStep['target'],
   ): SessionWorkflowStep {
-    return { key: `${index}:${step.key}`, title: SetupWorkflow.titleOf(record, step), detail, state, startedAt, endedAt, target }
+    return { key: `${index}:${step.key}`, title: SetupWorkflow.titleOf(record, step), detail, state, startedAt, endedAt, target,
+      ...target.kind === 'run' ? { body: { kind: 'log', runId: target.runId } } : {} }
   }
 
   /** "Checkout 014-fix", "Setup", "Script codegen". */

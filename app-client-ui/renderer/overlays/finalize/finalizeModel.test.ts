@@ -1,3 +1,4 @@
+import { WorktreeWords } from '../../../../lib-orchestrator/worktrees/worktreeViews'
 import { describe, expect, it } from 'vitest'
 
 import type {
@@ -8,11 +9,12 @@ import {
   FinalizeCatalog,
   type SessionFinalizeQuestionSpec,
 } from './finalizeCatalog'
-import { FinalizeAgreements, FinalizeAsks } from './finalizeModel'
+import { FinalizeAgreements, FinalizeAsks, FinalizeWorking } from './finalizeModel'
 
 function sessionOf(sessions: readonly SessionInfo[], sessionId: string): SessionInfo {
   const session = sessions.find((candidate) => candidate.sessionId === sessionId)
   if (session === undefined) throw new Error(`Missing test session: ${sessionId}`)
+  WorktreeWords.decorate(session)
   return session
 }
 
@@ -53,6 +55,7 @@ describe('app-client-ui/renderer/overlays/finalize/finalizeModel', () => {
       note: 'ready for review soon',
       worktree: { ...base.worktree, liveFinish: true },
     }
+    WorktreeWords.decorate(live)
     const target = { kind: 'local' as const, sessionId: live.sessionId }
 
     expect(FinalizeAsks.of(live, target, 'local', 'Automation')?.session)
@@ -175,4 +178,10 @@ describe('app-client-ui/renderer/overlays/finalize/finalizeModel', () => {
     expect(remote({ sourceCode: 'setup-not-acknowledged', setup: { commands: [7], hash: 'hash-1' } })).toBeNull()
     expect(remote({ sourceCode: 'setup-not-acknowledged', setup: { commands: [] } })).toBeNull()
   })
+})
+
+it('reads an authenticated remote working confirmation without losing its source code', () => {
+  expect(FinalizeWorking.of({ ok: true, value: { ok: false, error: {
+    code: 'conflict', detail: 'The session is still working', data: { sourceCode: 'session-working' },
+  } } })).toBe('The session is still working')
 })

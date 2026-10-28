@@ -6,6 +6,7 @@ import { createInterface, type Interface } from 'node:readline'
 import { ChildEnvironment } from '../../shared/childEnvironment'
 import { ErrnoCode } from '../../shared/errnoCode'
 import { ErrorText } from '../../shared/errorText'
+import { ChildProcessLifetime } from '../../shared/childProcessLifetime'
 
 /** Why a read did not answer, and the one distinction the facade acts on differently. */
 export interface CodexAppServerFailure {
@@ -32,6 +33,7 @@ export interface CodexAppServerClientDeps {
   environment?: NodeJS.ProcessEnv
   /** The directory the child is started in, injectable for the same reason as the two above. */
   homeDirectory?: string
+  configOverrides?: readonly string[]
 }
 
 interface PendingRequest {
@@ -79,11 +81,14 @@ export class CodexAppServerClient {
     = /is not recognized as an internal or external command/i
 
   private readonly spawnImpl: typeof spawn
+  private readonly deps: CodexAppServerClientDeps
   private readonly platform: NodeJS.Platform
   private readonly environment: NodeJS.ProcessEnv
   private readonly homeDirectory: string
   private readonly pending = new Map<number, PendingRequest>()
   private child: ChildProcessWithoutNullStreams | null = null
+  private readonly owned: Map<ChildProcessWithoutNullStreams, ChildProcessLifetime>
+  private readonly terminating = new Set<ChildProcessWithoutNullStreams>()
   private lines: Interface | null = null
   private readPromise: Promise<CodexAppServerAnswer> | null = null
   private stderrTail = Buffer.alloc(0)
@@ -91,12 +96,15 @@ export class CodexAppServerClient {
   private nextId = 1
   private ready = false
   private stopped = false
+  private closePromise: Promise<boolean> | null = null
 
-  constructor(private readonly deps: CodexAppServerClientDeps) {
+  constructor(deps: CodexAppServerClientDeps) {
+    this.deps = deps
     this.spawnImpl = deps.spawnImpl ?? spawn
     this.platform = deps.platform ?? process.platform
     this.environment = deps.environment ?? process.env
     this.homeDirectory = deps.homeDirectory ?? homedir()
+    this.owned = new Map()
   }
 
   /**
@@ -105,20 +113,46 @@ export class CodexAppServerClient {
    */
   readRateLimits(): Promise<CodexAppServerAnswer> {
     if (this.readPromise !== null) return this.readPromise
-    const tracked = this.readWithRetry().finally(() => {
+    const tracked = this.readWithRetry(CodexAppServerClient.readMethodConst, null).finally(() => {
       if (this.readPromise === tracked) this.readPromise = null
     })
     this.readPromise = tracked
     return tracked
   }
 
+  readConfiguration(cwd: string): Promise<CodexAppServerAnswer> {
+    return this.readWithRetry('config/read', { cwd, includeLayers: true })
+  }
+
+  readConfigurationRequirements(): Promise<CodexAppServerAnswer> {
+    return this.readWithRetry('configRequirements/read', null)
+  }
+
   /** Idempotent, and the only thing that ends the child. Nothing restarts a stopped client. */
   stop(): void {
     this.stopped = true
     this.reset({ code: 'failed', reason: 'The Codex app-server client was stopped' })
+    for (const child of this.owned.keys()) this.retire(child)
   }
 
-  private async readWithRetry(): Promise<CodexAppServerAnswer> {
+  close(): Promise<boolean> {
+    if (this.closePromise !== null) return this.closePromise
+    this.stop()
+    const exits = [...this.owned.values()].map(lifetime => lifetime.exited)
+    this.closePromise = new Promise(resolve => {
+      if (exits.length === 0) { resolve(true); return }
+      const timer = setTimeout(() => resolve(false), 2_000)
+      void Promise.all(exits).then(() => { clearTimeout(timer); resolve(true) })
+    })
+    return this.closePromise
+  }
+
+  /** Called after close has stopped spawning; a request timeout is not an ownership release. */
+  async waitForExit(): Promise<void> {
+    await Promise.all([...this.owned.values()].map(lifetime => lifetime.exited))
+  }
+
+  private async readWithRetry(method: string, params: unknown): Promise<CodexAppServerAnswer> {
     let failure: CodexAppServerFailure = {
       code: 'failed',
       reason: 'The Codex app-server was never asked',
@@ -126,7 +160,7 @@ export class CodexAppServerClient {
     for (let attempt = 0; attempt < CodexAppServerClient.attemptsConst; attempt++) {
       const start = await this.ensureStarted()
       if (start === null) {
-        const answer = await this.send(CodexAppServerClient.readMethodConst, null)
+        const answer = await this.send(method, params)
         if (answer.ok) return answer
         failure = { code: answer.code, reason: answer.reason }
       }
@@ -171,6 +205,9 @@ export class CodexAppServerClient {
       return CodexAppServerClient.spawnFailure(error)
     }
     this.child = child
+    const lifetime = new ChildProcessLifetime(child, this.spawnImpl, this.platform)
+    this.owned.set(child, lifetime)
+    void lifetime.exited.then(() => { this.owned.delete(child); this.terminating.delete(child) })
     this.stderrTail = Buffer.alloc(0)
     this.stdoutLineBytes = 0
     this.lines = createInterface({ input: child.stdout })
@@ -200,7 +237,9 @@ export class CodexAppServerClient {
           reason: 'The Codex app-server wrote a line past what an answer can be',
         })
     })
-    child.once('error', (error) => this.failChild(child, CodexAppServerClient.spawnFailure(error)))
+    child.once('error', error => {
+      this.failChild(child, CodexAppServerClient.spawnFailure(error), child.pid !== undefined)
+    })
     child.once('exit', (code, signal) => this.failChild(child, this.exitFailure(code, signal)))
     const handshake = await this.send('initialize', {
       clientInfo: { name: 'jamat', title: 'Jamat', version: '1.0.0' },
@@ -223,12 +262,13 @@ export class CodexAppServerClient {
    * `ENOENT` that says it is missing.
    */
   private invocation(): { command: string; args: readonly string[] } {
+    const args = [...(this.deps.configOverrides ?? []).flatMap(value => ['-c', value]), ...CodexAppServerClient.argsConst]
     if (this.platform === 'win32')
       return {
         command: this.environment.ComSpec ?? 'cmd.exe',
-        args: ['/d', '/q', '/c', CodexAppServerClient.commandConst, ...CodexAppServerClient.argsConst],
+        args: ['/d', '/q', '/c', CodexAppServerClient.commandConst, ...args],
       }
-    return { command: CodexAppServerClient.commandConst, args: CodexAppServerClient.argsConst }
+    return { command: CodexAppServerClient.commandConst, args }
   }
 
   private send(method: string, params: unknown): Promise<CodexAppServerAnswer> {
@@ -315,8 +355,8 @@ export class CodexAppServerClient {
     return `The Codex app-server answered error ${typeof code === 'number' ? code : 'unknown'}`
   }
 
-  private failChild(child: ChildProcessWithoutNullStreams, failure: CodexAppServerFailure): void {
-    if (this.child === child) this.reset(failure, false)
+  private failChild(child: ChildProcessWithoutNullStreams, failure: CodexAppServerFailure, terminate = false): void {
+    if (this.child === child) this.reset(failure, terminate)
   }
 
   private reset(failure: CodexAppServerFailure, terminate = true): void {
@@ -330,7 +370,13 @@ export class CodexAppServerClient {
       request.settle({ ok: false, ...failure })
     }
     this.pending.clear()
-    if (child === null || !terminate || child.exitCode !== null) return
+    if (child !== null && terminate) this.retire(child)
+  }
+
+  private retire(child: ChildProcessWithoutNullStreams): void {
+    if (child.exitCode !== null || child.signalCode != null) return
+    if (this.terminating.has(child)) return
+    this.terminating.add(child)
     try {
       // Ending stdin is what actually stops it: the server reads until EOF and exits on its own,
       // measured against codex-cli 0.146.0. The kill below is the fallback for one that does not.
@@ -342,39 +388,9 @@ export class CodexAppServerClient {
     // shutdown - a child that ignores EOF outliving the client that spawned it - is the one path
     // this fallback exists for and the one where nothing else does. The exit clears it instead.
     const killTimer = setTimeout(() => {
-      if (child.exitCode === null) this.terminate(child)
+      if (child.exitCode === null) this.owned.get(child)?.terminate()
     }, CodexAppServerClient.killDelayMillisecondsConst)
     child.once('exit', () => clearTimeout(killTimer))
-  }
-
-  /**
-   * On win32 the handle this class holds is cmd.exe's, not the server's: `child.kill()` ends the
-   * wrapper and leaves `codex app-server` running against a pipe nobody holds, untracked and past the
-   * one guarantee `stop()` makes. Only the TREE is the child that was started, and `taskkill /T` is
-   * what ends one. Everywhere else the handle IS the process.
-   *
-   * This runs inside a timer callback, where nothing catches: both a taskkill that cannot be started
-   * and one that fails asynchronously fall back to the handle rather than out of the event loop.
-   */
-  private terminate(child: ChildProcessWithoutNullStreams): void {
-    if (this.platform !== 'win32' || child.pid === undefined) {
-      child.kill()
-      return
-    }
-    try {
-      const killer = this.spawnImpl('taskkill', ['/T', '/F', '/PID', String(child.pid)], {
-        stdio: 'ignore',
-        windowsHide: true,
-      })
-      // Both halves of what the comment promises: `'error'` is a taskkill that could not be
-      // started, `'exit'` with a code is one that ran and was refused - an elevated target, a
-      // security hook. Either way the handle is what is left.
-      killer.once('error', () => child.kill())
-      killer.once('exit', (code) => { if (code !== 0) child.kill() })
-      killer.unref()
-    } catch {
-      child.kill()
-    }
   }
 
   private exitFailure(code: number | null, signal: NodeJS.Signals | null): CodexAppServerFailure {

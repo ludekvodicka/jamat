@@ -1,0 +1,33 @@
+{
+  "name": "jamat-mobile-relay",
+  "version": "1.4.3",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "pnpm build && node dist/start.js",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "pnpm build:web && node --import tsx --test app/*.test.ts web/*.test.ts",
+    "build:web": "node build.mjs --web-only",
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "cookie": "2.0.1",
+    "fast-xml-parser": "5.10.1",
+    "google-auth-library": "11.3.1",
+    "ws": "8.21.1",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "22.16.5",
+    "@types/ws": "8.18.1",
+    "@xterm/addon-unicode11": "0.10.0-beta.287",
+    "@xterm/xterm": "6.1.0-beta.287",
+    "esbuild": "0.28.1",
+    "tsx": "4.22.0",
+    "typescript": "5.9.3"
+  },
+  "packageManager": "pnpm@11.15.1",
+  "engines": {
+    "node": ">=22.16.0"
+  }
+}

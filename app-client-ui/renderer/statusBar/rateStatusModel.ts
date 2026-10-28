@@ -73,8 +73,10 @@ export class RateStatusModel {
     snapshot: RateMonitorSnapshot,
     agentId: RateAgentId,
     now: number,
+    accountId = 'main',
   ): RateReading {
-    const state = snapshot.providers[agentId]
+    const account = snapshot.accounts?.find(item => item.key.agentId === agentId && item.key.accountId === accountId)
+    const state = account?.state ?? (accountId === 'main' ? snapshot.providers[agentId] : { kind: 'never-read' as const })
     const name = RateStatusModel.namesConst[agentId]
     const tooltip = RateStatusModel.tooltipOf(name, state, now)
     const usageUrl = RateStatusModel.usageUrlsConst[agentId]

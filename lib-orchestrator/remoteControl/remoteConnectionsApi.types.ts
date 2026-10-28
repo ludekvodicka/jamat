@@ -9,6 +9,7 @@ import type {
   RemoteControlPeerCapability,
   RemoteControlPeerInboundApplicationMessage,
   RemoteControlPeerIdentity,
+  RemoteControlPeerWorkspaceCapability,
 } from './remoteControlPeerApi.types'
 import type {
   SessionsSnapshot,
@@ -21,6 +22,9 @@ export interface RemoteOutboundEndpointDto extends RemoteControlComputerFactsDto
   connectionId: string | null
   sessions: SessionsSnapshot | null
   selectedSessionIds?: readonly string[]
+  /** Main-computed descendants of the independently selected roots. */
+  reachableSessionIds?: readonly string[]
+  workspaceCapabilities?: readonly RemoteControlPeerWorkspaceCapability[]
 }
 
 export type RemoteEndpointIdentityDto = Omit<RemoteControlPeerIdentity, 'signing'>

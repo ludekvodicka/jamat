@@ -151,6 +151,15 @@ describe('lib-orchestrator/projectManager/providers/claude/claudeSessionSource',
     expect(active.get(slugId)).toBe(false)
   })
 
+  it('includes running-session records from added homes while reading the shared main transcripts once', async () => {
+    const main = harness()
+    const added = harness()
+    copyFixture(main.store, 'sessionWithCustomTitle.jsonl', customTitleId)
+    writeSessionRecord(added.home, 'live.json', JSON.stringify({ sessionId: customTitleId, pid: process.pid }))
+    const source = new ClaudeSessionSource({ claudeHome: main.home, homes: () => [main.home, added.home] })
+    expect(await list(source)).toEqual([expect.objectContaining({ nativeSessionId: customTitleId, active: true })])
+  })
+
   it('orders by last activity, newest first, and cuts the list at the limit', async () => {
     const { store, source } = harness()
     setMtime(copyFixture(store, 'sessionWithCustomTitle.jsonl', customTitleId), '2026-01-01T10:00:00Z')

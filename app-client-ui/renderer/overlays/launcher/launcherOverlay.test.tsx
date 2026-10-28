@@ -1,4 +1,5 @@
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
+import type { AccountView } from '../../../../lib-orchestrator/agentAccounts/agentAccountsApi.types'
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -26,6 +27,7 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
    * the bridge shows up here as a compile error rather than as an overlay that throws on mount.
    */
   class ProjectsStub {
+    accounts: Promise<readonly AccountView[]> = Promise.resolve([])
     readonly created: { categoryId: string; name: string; prefix: string | null }[] = []
     readonly listed: string[] = []
     readonly asked: string[] = []
@@ -106,6 +108,7 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
           this.deleted.push((body as { token: string }).token)
           return { ok: true, value: { deletedPaths: 13, leftoverCount: 0 } }
         })
+        .on('accounts.list', async () => ({ ok: true, value: await this.accounts }))
         .on('sessions.create', (body) => {
           const { spec } = body as { spec: SessionCreateSpec }
           this.started.push(spec)
@@ -193,6 +196,8 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
             },
           })
         },
+        listAccounts: () => Promise.resolve({ ok: true as const, value: { protocol: 'appjamat-v3-control.v1' as const,
+          requestId: 'accounts', operation: 'accounts.list' as const, operationId: null, ok: true as const, value: [] } }),
         listProjects: (remoteEndpointId: string) => {
           this.remoteListed.push(remoteEndpointId)
           return Promise.resolve({
@@ -213,7 +218,7 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
           })
         },
       } satisfies Pick<AppClientUiBridge['remote'],
-        'snapshot' | 'connect' | 'selectSession' | 'release' | 'describeAgents' | 'listProjects'>
+        'snapshot' | 'connect' | 'selectSession' | 'release' | 'describeAgents' | 'listAccounts' | 'listProjects'>
       ;(window as unknown as {
         appClient:
           Pick<AppClientUiBridge, 'control' | 'dialog'>
@@ -1098,6 +1103,7 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
      */
     function openFlow(container: HTMLElement): void {
       fireEvent.keyDown(card(container), { key: 'ArrowDown' })
+      fireEvent.keyDown(card(container), { key: 'ArrowDown' })
       fireEvent.keyDown(card(container), { key: 'ArrowRight' })
       fireEvent.keyDown(card(container), { key: 'Enter' })
     }
@@ -1143,7 +1149,7 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
 
       // `All` because the Agent row is that list's provider FILTER, and the session's own row is
       // not filtered by it: the row is what the card is about, not one of the rows it looks through.
-      expect(chosen(forking.view.container)).toEqual(['Continue/Fork', 'All'])
+      expect(chosen(forking.view.container)).toEqual(['All', 'Continue/Fork'])
       expect(foot(forking.view.container)).toContain('Enter Fork')
       expect(footKeys(forking.view.container)).toEqual(['Esc', '↑↓', '←→', 'Enter', 'N', 'Tab'])
       forking.opener.remove()
@@ -1170,14 +1176,14 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
       expect(view.container.querySelector('.jamat-launcher__title')?.textContent).toBe('New session')
       expect(cardTitles(view.container))
         .toEqual([
+          'Claude',
+          'Codex',
           'Raw',
           'Feature request',
           'Continue/Fork',
           'Shell',
           'None',
           'Worktree',
-          'Claude',
-          'Codex',
         ])
       expect(stub.peeked).toEqual(['C:\\Projects\\NodeJs\\AppJamat'])
       // Peeking must not take it: a card that is opened and abandoned costs the project nothing.
@@ -1189,13 +1195,13 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
       const stub = new ProjectsStub().remembersNewSessionAgent('codex')
       const first = await openCreate(stub)
 
-      expect(chosen(first.view.container)).toEqual(['Raw', 'None', 'Codex'])
+      expect(chosen(first.view.container)).toEqual(['Codex', 'Raw', 'None'])
       chooseCard(first.view.container, 'Claude')
       await waitFor(() => expect(stub.savedNewSessionAgents).toEqual(['claude']))
 
       cleanup()
       const second = await openCreate(stub)
-      expect(chosen(second.view.container)).toEqual(['Raw', 'None', 'Claude'])
+      expect(chosen(second.view.container)).toEqual(['Claude', 'Raw', 'None'])
       expect(nameField(second.view.container).value).toBe('')
     })
 
@@ -1233,7 +1239,7 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
       fireEvent.keyDown(name, { key: 'ArrowDown' })
       expect(document.activeElement).toBe(card(view.container))
       fireEvent.keyDown(card(view.container), { key: 'ArrowRight' })
-      expect(chosen(view.container)).toContain('Feature request')
+      expect(chosen(view.container)).toContain('Codex')
 
       fireEvent.keyDown(card(view.container), { key: 'ArrowUp' })
       expect(document.activeElement).toBe(nameField(view.container))
@@ -1311,9 +1317,7 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
       fireEvent.keyDown(card(view.container), { key: 'Tab' })
       expect(chosen(view.container)).toContain('Codex')
 
-      // Back up two rows from Agent to Type, then step it past the flow and Continue/Fork to Shell.
-      fireEvent.keyDown(card(view.container), { key: 'ArrowUp' })
-      fireEvent.keyDown(card(view.container), { key: 'ArrowUp' })
+      fireEvent.keyDown(card(view.container), { key: 'ArrowDown' })
       fireEvent.keyDown(card(view.container), { key: 'ArrowRight' })
       expect(chosen(view.container)).toContain('Feature request')
       fireEvent.keyDown(card(view.container), { key: 'ArrowRight' })
@@ -1346,7 +1350,7 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
       expect(chosen(view.container)).toContain('All')
       expect([...view.container.querySelectorAll('.jamat-choice__label')]
         .map((node) => node.textContent))
-        .toEqual(['Project', 'Type', 'Agent', 'Existing sessions'])
+        .toEqual(['Project', 'Agent', 'Type', 'Existing sessions'])
 
       chooseCard(view.container, 'Codex')
       expect(rowNames(view.container)).toEqual(['014 - Worktree cleanup'])
@@ -1607,6 +1611,26 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
 
       expect(view.container.querySelector('.jamat-launcher-flows')).toBeTruthy()
       expect(view.container.textContent).not.toContain('Archive')
+    })
+
+    it('retains account results that arrive while a flow is open', async () => {
+      const stub = new ProjectsStub()
+      let resolve!: (accounts: readonly AccountView[]) => void
+      stub.accounts = new Promise(done => { resolve = done })
+      const { view } = await openCreate(stub)
+      openFlow(view.container)
+      await waitFor(() => expect(view.container.querySelector('.jamat-launcher-flows')).toBeTruthy())
+      await act(async () => resolve([
+        { agentId: 'claude', accountId: 'main', label: 'Main', isMain: true, state: 'active', identity: null, profileProblem: null },
+        { agentId: 'claude', accountId: 'work', label: 'Work', isMain: false, state: 'active', identity: null, profileProblem: null },
+      ]))
+      fireEvent.keyDown(card(view.container), { key: 'Escape' })
+      const picker = view.getByRole('combobox', { name: 'Account' })
+      fireEvent.change(picker, { target: { value: 'work' } })
+      fireEvent.keyDown(card(view.container), { key: 'Enter' })
+      fireEvent.change(view.getByRole('textbox', { name: 'Summary' }), { target: { value: 'Use the selected account' } })
+      fireEvent.keyDown(card(view.container), { key: 'Enter' })
+      await waitFor(() => expect(stub.started[0]?.agent?.accountId).toBe('work'))
     })
 
     it('goes back from a flow to the create screen, not to the projects', async () => {

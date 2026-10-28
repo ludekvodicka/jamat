@@ -17,7 +17,8 @@ import {
   SessionDetailsModel,
   type SessionDetailsOpenRequest,
 } from './sessionDetailsModel'
-import { AppControl } from '../../ipc/appControl'
+import type { IpcResult } from '../../../shared/appClientUiIpc'
+import type { SessionDetailsUpdate, SessionDetailsSaved, SessionsOpResult } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 
 /**
  * The third overlay of this shell, and the same shape as the other two: no registry key, nothing
@@ -31,7 +32,10 @@ import { AppControl } from '../../ipc/appControl'
  */
 export function SessionDetailsOverlay(props: {
   request: SessionDetailsOpenRequest
-  snapshot: SnapshotStore<SessionsSnapshot>
+  snapshot: Pick<SnapshotStore<SessionsSnapshot>, 'current'>
+  save(sessionId: string, update: SessionDetailsUpdate): Promise<IpcResult<SessionsOpResult<SessionDetailsSaved>>>
+  inputKey?: string
+  sourceLabel?: string
   inputs: TerminalInputRegistry
   onClose(): void
 }): React.JSX.Element | null {
@@ -39,7 +43,7 @@ export function SessionDetailsOverlay(props: {
   const closeRef = useRef(props.onClose)
   closeRef.current = props.onClose
   const [baseline] = useState<SessionDetailsBaseline | null>(() => {
-    const info = props.snapshot.current().snapshot?.sessions
+    const info = props.request.session ?? props.snapshot.current().snapshot?.sessions
       .find((session) => session.sessionId === props.request.sessionId)
     return info === undefined ? null : SessionDetailsModel.baselineOf(info)
   })
@@ -80,7 +84,7 @@ export function SessionDetailsOverlay(props: {
       return
     }
     setSaving(true)
-    const answer = await AppControl.sessions('sessions.setDetails', { session: AppControl.sessionOf(baseline.sessionId), update: update })
+    const answer = await props.save(baseline.sessionId, update)
     // ONE branch for both refusals, the channel's and the library's: `IpcFailure.of` reads them
     // both, and a failed answer always carries a reason - the fallback is for the type alone.
     if (!answer.ok || !answer.value.ok) {
@@ -101,7 +105,7 @@ export function SessionDetailsOverlay(props: {
      * The card stays open instead, saying which half did not happen. Closing it is the person's,
      * and the sentence has to survive being read after the fact: it says the save is done.
      */
-    if (notice !== null && !props.inputs.submit(baseline.sessionId, notice.text)) {
+    if (notice !== null && !props.inputs.submit(props.inputKey ?? baseline.sessionId, notice.text)) {
       setError(
         'Saved. Codex was not told the new name: this session has no terminal open in this window. '
         + 'Open its tab and type the rename there, or rename it again from that window.',
@@ -133,7 +137,7 @@ export function SessionDetailsOverlay(props: {
         onKeyDown={(event) => SessionDetailsKeys.handle(event, { save: () => void save(), close })}
       >
         <header className="jamat-session-details__head">
-          <span className="jamat-session-details__title">Session details</span>
+          <span className="jamat-session-details__title">Session details{props.sourceLabel ? ` · ${props.sourceLabel}` : ''}</span>
           <button
             className="jamat-session-details__close"
             type="button"

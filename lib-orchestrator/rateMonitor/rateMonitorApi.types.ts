@@ -36,9 +36,38 @@ export type RateProviderState =
   | { kind: 'unconfigured'; reason: string }
   | { kind: 'never-read' }
 
+export interface RateSample {
+  at: number
+  agentId: RateAgentId
+  accountId: string
+  source: RateSampleSource
+  windows: readonly RateWindow[]
+}
+
+export interface RateAccountKey { agentId: RateAgentId; accountId: string }
+export type RateSampleSource = 'poll' | 'statusline' | 'rollout'
+export interface RateEstimate { estimated: true; windows: readonly RateWindow[]; sampleAt: number; ageMilliseconds: number }
+export interface RateAccountState {
+  key: RateAccountKey
+  label: string
+  state: RateProviderState
+  estimated: RateEstimate | null
+  source: RateSampleSource | null
+}
+export interface RatePool {
+  agentId: RateAgentId
+  weeklyRemaining: number
+  weeklyCapacity: number
+  sessionRemaining: number
+  sessionCapacity: number
+}
+
 export interface RateMonitorSnapshot {
   revision: number
   providers: Readonly<Record<RateAgentId, RateProviderState>>
+  /** Optional for snapshots from older clients. New monitors always provide both collections. */
+  accounts?: readonly RateAccountState[]
+  pools?: readonly RatePool[]
 }
 
 /** The unreduced truth, for the one surface built to look at it. */
@@ -58,4 +87,5 @@ export interface RateMonitorDebugStatus {
   capturedAt: number
   poll: { windowVisible: boolean; cadenceMilliseconds: number; claudeFloorMilliseconds: number }
   providers: Readonly<Record<RateAgentId, RateProviderDebug>>
+  accounts?: readonly { key: RateAccountKey; label: string; provider: RateProviderDebug; source: RateSampleSource | null }[]
 }

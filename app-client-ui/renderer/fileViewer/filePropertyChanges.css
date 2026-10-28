@@ -1,0 +1,25 @@
+.file-property-changes {
+  flex: none;
+  max-height: 40%;
+  overflow: auto;
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--color-border-hairline);
+  font-size: var(--fs-status);
+}
+.file-property-changes__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.file-property-changes table { border-collapse: collapse; width: 100%; }
+.file-property-changes :is(th, td) {
+  padding: var(--space-1);
+  border-bottom: 1px solid var(--color-border-hairline);
+  text-align: left;
+  vertical-align: top;
+}
+.file-property-changes th { color: var(--color-text-3); font-weight: normal; }
+.file-property-changes pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); }
+.file-property-changes__absent, .file-property-changes__note { color: var(--color-text-3); }
+.file-property-changes__note { margin: var(--space-1) 0 0; }

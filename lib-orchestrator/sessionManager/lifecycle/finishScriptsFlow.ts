@@ -11,11 +11,12 @@ import { ScriptChain } from '../scripts/scriptChain'
 import { ScriptRunRecords } from '../scripts/scriptRunRecords'
 import { SessionScriptDefinitions } from '../scripts/sessionScriptDefinitions'
 import type { SessionsOpResult } from '../sessionManagerApi.types'
-import { FinalizeSteps } from './finalizeSteps'
+import { FinalizeSteps } from '../../worktrees/worktreeFinish'
 import { OperationOutcomes } from './operationOutcomes'
 import type { ReconcileChange } from './reconciler'
 import { ScriptRunLauncher } from './scriptRunLauncher'
 import { SetupFlow } from './setupFlow'
+import type { HostGate } from '../hostGate'
 
 export type FinishChecksGate =
   /** Nothing declared: the finisher runs. */
@@ -35,7 +36,9 @@ export interface FinishLaunchPort {
 }
 
 export interface FinishScriptsFlowDeps {
+  hostGate?: Pick<HostGate, 'problemOf'>
   records: SessionRecordsStore
+  setup: Pick<SetupFlow, 'environmentOf'>
   /** The gate in front of every repository-authored command; `declared` says what `scripts.after` holds. */
   agreement: Pick<CommandAgreement, 'declared' | 'gate'>
   runs: Pick<ScriptRunLauncher, 'launch'>
@@ -57,7 +60,9 @@ export interface FinishScriptsFlowDeps {
  * disk after a restart waits for the next press, so no commit review opens out of nowhere.
  */
 export class FinishScriptsFlow {
+  private readonly hostGate: FinishScriptsFlowDeps['hostGate']
   private readonly records: SessionRecordsStore
+  private readonly setup: FinishScriptsFlowDeps['setup']
   private readonly agreement: Pick<CommandAgreement, 'declared' | 'gate'>
   private readonly runs: Pick<ScriptRunLauncher, 'launch'>
   private readonly launch: FinishLaunchPort
@@ -69,7 +74,9 @@ export class FinishScriptsFlow {
   private continueFinish: ((parentId: string) => void) | null = null
 
   constructor(deps: FinishScriptsFlowDeps) {
+    this.hostGate = deps.hostGate
     this.records = deps.records
+    this.setup = deps.setup
     this.agreement = deps.agreement
     this.runs = deps.runs
     this.launch = deps.launch
@@ -131,7 +138,7 @@ export class FinishScriptsFlow {
   async declaredAfter(
     parent: SessionRecord,
     acknowledge: string | undefined,
-  ): Promise<{ ok: true; steps: SessionRecordScriptStep[] } | { ok: false; result: SessionsOpResult<never> }> {
+  ): Promise<{ ok: true; steps: SessionRecordScriptStep[]; environment?: string; install?: SessionRecordScriptStep } | { ok: false; result: SessionsOpResult<never> }> {
     const worktree = parent.worktree
     const projectRoot = worktree === undefined ? null : SetupFlow.setupProjectOf(parent.directory, worktree)
     if (projectRoot === null || worktree === undefined) return { ok: true, steps: [] }
@@ -140,16 +147,21 @@ export class FinishScriptsFlow {
       return { ok: false, result: { ok: false, code: 'invalid-spec', detail: read.problem } }
     else if (read.kind !== 'read') throw new Error(`Unknown declared commands read: ${JSON.stringify(read satisfies never)}`)
     const after = read.value?.scripts.after ?? []
-    if (after.length === 0) return { ok: true, steps: [] }
+    const hostProblem = after.length === 0 ? null : this.hostGate?.problemOf(true)
+    if (hostProblem) return { ok: false, result: { ok: false, code: 'host-unreachable', detail: hostProblem } }
+    if (after.length === 0 && worktree.kind !== 'svn') return { ok: true, steps: [] }
     const agreement = this.agreement.gate(projectRoot, read, acknowledge)
     if (agreement) return { ok: false, result: agreement }
+    const setup = worktree.kind === 'svn' ? await this.setup.environmentOf(parent, read) : undefined
+    const environment = setup === undefined ? {} : { environment: setup.commands, ...setup.install === undefined ? {} : { install: setup.install } }
+    if (after.length === 0) return { ok: true, steps: [], ...environment }
     const steps = DeclaredScripts.stepsOf(after, {
       projectRoot,
       repositoryRoot: worktree.repositoryRoot,
       worktreePath: worktree.worktreePath,
     })
     if (!steps.ok) return { ok: false, result: { ok: false, code: 'invalid-spec', detail: steps.problem } }
-    return { ok: true, steps: steps.steps }
+    return { ok: true, steps: steps.steps, ...environment }
   }
 
   /**

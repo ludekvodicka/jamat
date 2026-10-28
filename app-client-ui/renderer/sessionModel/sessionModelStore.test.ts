@@ -9,6 +9,20 @@ import { type SessionModelPorts, SessionModelStore } from './sessionModelStore'
 import type { ActiveAgentTerminal } from '../statusBar/useActiveAgentTerminal'
 
 describe('app-client-ui/renderer/sessionModel/sessionModelStore', () => {
+  it('keeps equal session IDs on separate computers out of each other’s cache and in-flight read', async () => {
+    const read = vi.fn(async (_id: string, endpoint?: string): Promise<IpcResult<SessionModelReading>> => ({ ok: true,
+      value: { kind: 'ok', info: infoOf(endpoint === 'one' ? 100 : endpoint === 'two' ? 200 : 300) } }))
+    const store = new SessionModelStore({ read, reportError: vi.fn() })
+    await Promise.all([store.readNow('same', 'one'), store.readNow('same', 'two'), store.readNow('same')])
+    expect(read).toHaveBeenCalledTimes(3)
+    expect(store.readingFor('same', 'one')?.info.contextTokens).toBe(100)
+    expect(store.readingFor('same', 'two')?.info.contextTokens).toBe(200)
+    expect(store.readingFor('same')?.info.contextTokens).toBe(300)
+    store.setFocus({ ...focusOf('same'), remoteEndpointId: 'one' })
+    expect(store.current()?.info.contextTokens).toBe(100)
+    store.setFocus({ ...focusOf('same'), remoteEndpointId: 'two' })
+    expect(store.current()?.info.contextTokens).toBe(200)
+  })
   class Ports implements SessionModelPorts {
     readonly reads: string[] = []
     readonly errors: string[] = []

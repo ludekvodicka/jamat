@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { createSocket } from 'node:dgram'
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { once } from 'node:events'
+import { readFile } from 'node:fs/promises'
 import { createServer, request } from 'node:http'
 import test from 'node:test'
 import { createWolServer, parseConfig } from './server.mjs'
@@ -377,9 +378,10 @@ test('real HTTP forms send only the selected computer’s UDP magic packet', asy
     assert.equal(packets.length, 1)
   })
   await t.test('publishes the packaged version and build time without sending packets', async () => {
+    const { version } = JSON.parse(await readFile(new URL('./package.json', import.meta.url), 'utf8'))
     assert.deepEqual(JSON.parse((await call('/api/system/health')).text), { ok: true })
     assert.deepEqual(JSON.parse((await call('/api/system/version')).text), {
-      version: '1.2.0', buildTime: '2026-09-30T00:00:00Z',
+      version, buildTime: '2026-09-30T00:00:00Z',
     })
     assert.equal(packets.length, 1)
   })

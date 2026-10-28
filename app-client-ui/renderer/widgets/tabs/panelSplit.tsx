@@ -1,3 +1,5 @@
+import { SessionWorkspaceKeys } from '../../../shared/sessionWorkspace'
+import { TerminalTargetCodec, type TerminalTarget } from '../../../shared/terminalTarget'
 import type { IDockviewPanelProps } from 'dockview'
 import type { FileChangesVcsId } from '../../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
@@ -19,6 +21,7 @@ import './panelSplit.css'
  *  an activation rather than a second tab. `source` is the only durable half: grant ids never
  *  reach a layout, so a restored item asks for its grant again. */
 export interface PanelSplitFileItem {
+  target?: TerminalTarget
   kind: 'file'
   key: string
   title: string
@@ -32,6 +35,9 @@ export interface PanelSplitFileItem {
 }
 
 export interface PanelSplitCommitItem {
+  reviewId?: string
+  openId?: string
+  target?: TerminalTarget
   kind: 'commit'
   key: string
   title: string
@@ -43,11 +49,13 @@ export interface PanelSplitCommitItem {
 /** What runs inside the session, read from its CLI's own files. Never pinned and never in Back
  *  history: the view is of the session's present, and the tree reopens it in one click. */
 export interface PanelSplitTaskItem extends TabControlTaskItem {
+  target?: TerminalTarget
   kind: 'task'
 }
 
 /** The workflow of the tab's own session: one per tab, never pinned, never in Back history. */
 export interface PanelSplitWorkflowItem {
+  target?: TerminalTarget
   kind: 'workflow'
   key: `workflow:${string}`
   title: string
@@ -63,6 +71,8 @@ export interface PanelSplitState {
   /** Empty means the split is not there at all: visibility is derived, never stored. */
   items: readonly PanelSplitItem[]
   history: readonly PanelSplitFileItem[]
+  /** Keys of held items of every kind, the most recently active last: what a close returns to. */
+  recent: readonly string[]
 }
 
 export interface PanelSplitCapture {
@@ -73,7 +83,7 @@ export interface PanelSplitCapture {
 export interface PanelSplitHandle {
   state: PanelSplitState
   /** `null` when the item was taken; a sentence when it was refused, for the caller to show. */
-  open(item: PanelSplitItem): string | null
+  open(item: PanelSplitItem, activate?: boolean): string | null
   back(): string | null
   activate(key: string): void
   keepOpen(key: string): void
@@ -111,7 +121,7 @@ export class PanelSplitParams {
   private static readonly ratioDigitsConst = 3
 
   static default(): PanelSplitState {
-    return { ratio: PanelSplitParams.ratioDefaultConst, active: null, preview: null, items: [], history: [] }
+    return { ratio: PanelSplitParams.ratioDefaultConst, active: null, preview: null, items: [], history: [], recent: [] }
   }
 
   static commitKeyOf(vcs: FileChangesVcsId, scopeRoot: string, paths?: readonly VersioningCommitPath[]): string {
@@ -137,8 +147,8 @@ export class PanelSplitParams {
     else throw new Error(`Unknown split item: ${JSON.stringify(item satisfies never)}`)
   }
 
-  static workflowItemOf(sessionId: string): PanelSplitWorkflowItem {
-    return { kind: 'workflow', key: `workflow:${sessionId}`, title: 'Workflow', sessionId }
+  static workflowItemOf(sessionId: string, target?: TerminalTarget): PanelSplitWorkflowItem {
+    return { kind: 'workflow', key: `workflow:${target === undefined ? sessionId : TerminalTargetCodec.key(target)}`, title: 'Session actions', sessionId, ...(target === undefined ? {} : { target }) }
   }
 
   /**
@@ -156,15 +166,21 @@ export class PanelSplitParams {
     const stored = PanelSplitParams.stored(params)
     if (stored === null)
       return PanelSplitParams.default()
-    const items = PanelSplitParams.items(stored.items)
+    const target = TerminalTargetCodec.read(params)?.target
+    const accepts = (item: PanelSplitItem): boolean => item.target === undefined
+      ? target?.kind !== 'remote'
+      : target !== undefined && TerminalTargetCodec.key(item.target) === TerminalTargetCodec.key(target)
+    const items = PanelSplitParams.items(stored.items, accepts)
+    const active = PanelSplitParams.active(stored.active, items)
     return {
       ratio: typeof stored.ratio === 'number'
         ? PanelSplitParams.clampRatio(stored.ratio)
         : PanelSplitParams.ratioDefaultConst,
       items,
-      active: PanelSplitParams.active(stored.active, items),
+      active,
       preview: PanelSplitParams.preview(stored.preview, items),
-      history: items.length === 0 ? [] : PanelSplitParams.history(stored.history),
+      history: items.length === 0 ? [] : PanelSplitParams.history(stored.history).filter(accepts),
+      recent: PanelSplitParams.recent(stored.recent, items, active),
     }
   }
 
@@ -192,7 +208,11 @@ export class PanelSplitParams {
       return result
     return {
       ok: true,
-      state: { ...result.state, history: PanelSplitParams.remembered(state, item.key) },
+      state: {
+        ...result.state,
+        history: PanelSplitParams.remembered(state, item.key),
+        recent: PanelSplitParams.touched(result.state, item.key),
+      },
     }
   }
 
@@ -211,7 +231,11 @@ export class PanelSplitParams {
       return result
     return {
       ok: true,
-      state: { ...result.state, history: state.history.slice(0, state.history.lastIndexOf(target)) },
+      state: {
+        ...result.state,
+        history: state.history.slice(0, state.history.lastIndexOf(target)),
+        recent: PanelSplitParams.touched(result.state, target.key),
+      },
     }
   }
 
@@ -220,6 +244,11 @@ export class PanelSplitParams {
     if (previous === undefined || previous.key === nextKey || previous.kind !== 'file')
       return state.history
     return [...state.history, previous].slice(-PanelSplitParams.historyMaxConst)
+  }
+
+  private static touched(state: PanelSplitState, key: string): readonly string[] {
+    const held = state.recent.filter((candidate) => candidate !== key && state.items.some((item) => item.key === candidate))
+    return [...held, key]
   }
 
   private static placed(
@@ -282,19 +311,26 @@ export class PanelSplitParams {
     const items = state.items.filter((candidate) => candidate.key !== key)
     const preview = state.preview === key ? null : state.preview
     const history = items.length === 0 ? [] : state.history.filter((item) => item.key !== key)
+    const recent = state.recent.filter((candidate) => candidate !== key && items.some((item) => item.key === candidate))
     if (state.active !== key)
-      return { ...state, items, preview, history }
-    // The next sibling takes over, and the previous one when there is no next: the rule the real
-    // tabs use when the panel in front of somebody goes away. `ratio` survives an empty list, so
-    // the width a person dragged is still theirs the next time something opens.
-    const next = items[index] ?? items[index - 1] ?? null
-    return { ...state, items, active: next === null ? null : next.key, preview, history }
+      return { ...state, items, preview, history, recent }
+    // The item that was in front before this one takes over, so closing a file opened from a commit
+    // dialog returns to that dialog. Without such an item the next sibling takes over, and the
+    // previous one when there is no next. `ratio` survives an empty list, so the width a person
+    // dragged is still theirs the next time something opens.
+    const next = recent.at(-1) ?? items[index]?.key ?? items[index - 1]?.key ?? null
+    return { ...state, items, active: next, preview, history, recent }
   }
 
   static activated(state: PanelSplitState, key: string): PanelSplitState {
     if (!state.items.some((candidate) => candidate.key === key))
       return state
-    return { ...state, active: key, history: PanelSplitParams.remembered(state, key) }
+    return {
+      ...state,
+      active: key,
+      history: PanelSplitParams.remembered(state, key),
+      recent: PanelSplitParams.touched(state, key),
+    }
   }
 
   static keptOpen(state: PanelSplitState, key: string): PanelSplitState {
@@ -372,13 +408,13 @@ export class PanelSplitParams {
   }
 
   /** Field by field, and an unreadable entry is dropped rather than taking the rest with it. */
-  private static items(value: unknown): readonly PanelSplitItem[] {
+  private static items(value: unknown, accepts: (item: PanelSplitItem) => boolean = () => true): readonly PanelSplitItem[] {
     if (!Array.isArray(value))
       return []
     const items: PanelSplitItem[] = []
     for (const entry of value) {
       const item = PanelSplitParams.item(entry)
-      if (item === null)
+      if (item === null || !accepts(item))
         continue
       if (items.some((held) => held.key === item.key))
         continue
@@ -406,6 +442,18 @@ export class PanelSplitParams {
   }
 
   private static item(value: unknown): PanelSplitItem | null {
+    if (!value || typeof value !== 'object') return null
+    const candidate = value as Record<string, unknown>
+    const rawTarget = candidate.target as Record<string, unknown> | undefined
+    const target = rawTarget === undefined ? undefined : rawTarget?.kind === 'local'
+      ? TerminalTargetCodec.read({ sessionId: rawTarget.sessionId })?.target
+      : TerminalTargetCodec.read({ target: rawTarget })?.target
+    if (candidate.target !== undefined && target === undefined) return null
+    const item = PanelSplitParams.contentItem(value, target)
+    return item === null ? null : { ...item, ...(target === undefined ? {} : { target }) }
+  }
+
+  private static contentItem(value: unknown, target?: TerminalTarget): PanelSplitItem | null {
     if (!value || typeof value !== 'object')
       return null
     const candidate = value as Record<string, unknown>
@@ -416,12 +464,14 @@ export class PanelSplitParams {
       if (candidate.paths !== undefined && (!Array.isArray(candidate.paths) || candidate.paths.length === 0
         || candidate.paths.length > 2_000 || !candidate.paths.every(VersioningCommitPaths.valid))) return null
       return { kind, key: candidate.key, title: candidate.title, vcs: candidate.vcs, scopeRoot: candidate.scopeRoot,
+        ...(typeof candidate.reviewId === 'string' && candidate.reviewId ? { reviewId: candidate.reviewId } : {}),
+        ...(typeof candidate.openId === 'string' && candidate.openId ? { openId: candidate.openId } : {}),
         ...(candidate.paths === undefined ? {} : { paths: candidate.paths as VersioningCommitPath[] }) }
     }
-    else if (kind === 'task') return PanelSplitParams.taskItem(candidate)
+    else if (kind === 'task') return PanelSplitParams.taskItem(candidate, target)
     else if (kind === 'workflow') {
       if (typeof candidate.sessionId !== 'string' || !candidate.sessionId) return null
-      const item = PanelSplitParams.workflowItemOf(candidate.sessionId)
+      const item = PanelSplitParams.workflowItemOf(candidate.sessionId, target)
       return candidate.key === item.key ? item : null
     }
     else if (kind !== 'file') return null
@@ -448,14 +498,16 @@ export class PanelSplitParams {
   }
 
   /** The key is derived again, so a stored item cannot name one task and show another. */
-  private static taskItem(candidate: Record<string, unknown>): PanelSplitTaskItem | null {
+  private static taskItem(candidate: Record<string, unknown>, target?: TerminalTarget): PanelSplitTaskItem | null {
     const task = candidate.task
     if (typeof candidate.sessionId !== 'string' || !candidate.sessionId
       || typeof candidate.title !== 'string' || !candidate.title
       || !task || typeof task !== 'object') return null
     const parsed = PanelSplitParams.taskRef(task as Record<string, unknown>)
     if (parsed === null) return null
-    const key = TabControlTask.keyOf(candidate.sessionId, parsed)
+    if (target && target.sessionId !== candidate.sessionId) return null
+    const localKey = TabControlTask.keyOf(candidate.sessionId, parsed)
+    const key = target?.kind === 'remote' ? SessionWorkspaceKeys.of(target, localKey) : localKey
     if (candidate.key !== key) return null
     return { kind: 'task', key, title: candidate.title, sessionId: candidate.sessionId, task: parsed }
   }
@@ -478,6 +530,14 @@ export class PanelSplitParams {
     if (typeof value === 'string' && items.some((item) => item.key === value))
       return value
     return items[0].key
+  }
+
+  /** A layout written before this field gets the active item alone, so the first close still has it. */
+  private static recent(value: unknown, items: readonly PanelSplitItem[], active: string | null): readonly string[] {
+    if (!Array.isArray(value))
+      return active === null ? [] : [active]
+    const held = value.filter((key): key is string => typeof key === 'string' && items.some((item) => item.key === key))
+    return [...new Set(held)]
   }
 
   private static preview(value: unknown, items: readonly PanelSplitItem[]): string | null {
@@ -537,12 +597,14 @@ export function usePanelSplit(
 
   return {
     state,
-    open: useCallback((item: PanelSplitItem): string | null => {
+    open: useCallback((item: PanelSplitItem, activate = true): string | null => {
       const currentParams = currentParameters()
-      const result = PanelSplitParams.opened(PanelSplitParams.of(currentParams), item)
+      const previous = PanelSplitParams.of(currentParams)
+      const base = !activate && previous.preview !== null ? PanelSplitParams.keptOpen(previous, previous.preview) : previous
+      const result = PanelSplitParams.opened(base, item)
       if (!result.ok)
         return result.refusal
-      store(currentParams, result.state)
+      store(currentParams, !activate && previous.active !== null ? { ...result.state, active: previous.active, history: previous.history, recent: previous.recent } : result.state)
       return null
     }, [currentParameters, store]),
     back: useCallback((): string | null => {

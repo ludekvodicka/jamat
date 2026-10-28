@@ -8,15 +8,6 @@ export interface SvnInvokerOptions {
   timeoutMilliseconds?: number
 }
 
-/**
- * `svn`, run the way this tree runs any command.
- *
- * What this class adds over the shared invoker is `childEnv()` and nothing else. It used to add a
- * character-for-character copy of `CommandRunner`, a copy of `CommandOutcome` whose only difference
- * was renaming `command-missing` to `svn-missing` - a name nothing ever read, because the adapter
- * asks `failure === null` or prints the word into a sentence - and a `spawnImpl` option no caller
- * ever passed, because the test writes its own runner rather than constructing this.
- */
 export class SvnInvoker implements CommandRunner {
   private readonly invoker: CommandInvoker
 
@@ -30,7 +21,15 @@ export class SvnInvoker implements CommandRunner {
   }
 
   run(cwd: string, args: string[], options?: CommandRunOptions): Promise<CommandOutcome> {
-    return this.invoker.run({ command: 'svn', args, cwd, env: SvnInvoker.childEnv(), ...options })
+    const writes = new Set(['add', 'changelist', 'cl', 'checkout', 'co', 'cleanup', 'commit', 'ci', 'copy', 'cp',
+      'delete', 'del', 'remove', 'rm', 'import', 'lock', 'merge', 'mkdir', 'move', 'mv', 'rename', 'ren',
+      'propdel', 'pdel', 'pd', 'propset', 'pset', 'ps', 'relocate', 'resolve', 'resolved', 'revert',
+      'switch', 'sw', 'unlock', 'update', 'up', 'patch'])
+    const separator = args.indexOf('--')
+    const optionsAndCommand = separator === -1 ? args : args.slice(0, separator)
+    const nonInteractive = optionsAndCommand.some((arg) => writes.has(arg)) && !optionsAndCommand.includes('--non-interactive')
+    return this.invoker.run({ command: 'svn', args: nonInteractive ? ['--non-interactive', ...args] : args,
+      cwd, env: SvnInvoker.childEnv(), ...options })
   }
 
   private static childEnv(): NodeJS.ProcessEnv {

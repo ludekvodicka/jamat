@@ -30,6 +30,8 @@ interface FakeAttachment {
 }
 
 class FakeTerminalSessions implements RemoteControlTerminalSessionPort {
+  readonly pending = new Map<string, boolean>()
+  deliveryPending(sessionId: string, pending: boolean): void { this.pending.set(sessionId, pending) }
   readonly attachments = new Map<string, FakeAttachment>()
   readonly detached: string[] = []
   readonly detachedAll: string[][] = []
@@ -1086,6 +1088,7 @@ describe('lib-orchestrator/remoteControl/remoteControlTerminal take', () => {
     const harness = new TakeHarness()
     harness.sessions.content = TakeReadings.erasing('draft', 14)
     const first = harness.take()
+    expect(harness.sessions.pending.get('session-1')).toBe(true)
 
     expect(await harness.terminal.take('session-1', () => ({ ok: true }))).toEqual({
       kind: 'refused',
@@ -1101,15 +1104,18 @@ describe('lib-orchestrator/remoteControl/remoteControlTerminal take', () => {
       error: { code: 'conflict', data: { reason: 'in-flight' } },
     })
     expect(await first).toEqual({ kind: 'taken' })
+    expect(harness.sessions.pending.get('session-1')).toBe(false)
     expect(harness.written()).toEqual(['\x7f'.repeat(14)])
 
     const delivering = new DeliverHarness()
     delivering.sessions.composer = DeliverReadings.echoing('hello')
     delivering.transcript = DeliverReadings.submitted('hello')
     const delivery = delivering.deliver('hello')
+    expect(delivering.sessions.pending.get('session-1')).toBe(true)
     const keep = vi.fn(() => ({ ok: true as const }))
     expect(await delivering.terminal.take('session-1', keep)).toMatchObject({ kind: 'refused', reason: 'in-flight' })
     expect(await delivery).toMatchObject({ ok: true })
+    expect(delivering.sessions.pending.get('session-1')).toBe(false)
     expect(keep).not.toHaveBeenCalled()
     expect(delivering.sessions.contentReads).toBe(0)
   })

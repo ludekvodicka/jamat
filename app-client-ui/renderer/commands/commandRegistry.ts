@@ -21,6 +21,10 @@ export type DispatchOutcome = 'handled' | 'passthrough'
 export class CommandRegistry {
   private readonly handlers = new Map<CommandId, (arg?: unknown) => void>()
 
+  private readonly dispatch: ((id: CommandId, arg: unknown) => boolean) | undefined
+
+  constructor(dispatch?: (id: CommandId, arg: unknown) => boolean) { this.dispatch = dispatch }
+
   /**
    * The handler is given exactly what its command declares in `CommandArgById`, and `void` for every
    * command that declares nothing - so the commands that existed before the colour submenu are
@@ -45,7 +49,7 @@ export class CommandRegistry {
     const handler = this.handlers.get(id)
     if (!handler)
       return 'passthrough'
-    handler(arg)
+    if (!this.dispatch?.(id, arg)) handler(arg)
     return 'handled'
   }
 

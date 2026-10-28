@@ -1,20 +1,20 @@
+import { useEffect, useState } from 'react'
+import type { AccountView } from '../../../../lib-orchestrator/agentAccounts/agentAccountsApi.types'
+import { AppControl } from '../../ipc/appControl'
 import type {
   SessionOperation,
 } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
-import { AppCommands, type CommandDescriptor, type CommandId } from '../../../shared/commands'
+import { AppCommands, type CommandDescriptor } from '../../../shared/commands'
 import type { CommandRegistry } from '../../commands/commandRegistry'
 import { SessionCommandRun } from '../../commands/sessionCommandRun'
 import { CommandMenuEntries } from '../../widgets/commandMenuEntries'
 import {
   ContextMenu,
-  type ContextMenuAction,
   type ContextMenuEntry,
   type ContextMenuPosition,
-  type ContextMenuSubmenu,
 } from '../../widgets/contextMenu'
 import type { TabSessionFacts } from '../../widgets/tabs/tabContextMenu'
 import { type SessionAction, SessionNodeState } from './sessionNodeState'
-import type { ScriptRunNode, ScriptRunOpen } from './sessionsTreeModel'
 
 /**
  * The session row's menu. Its general commands come from the same catalog as the tab menu, followed
@@ -30,29 +30,38 @@ export function SessionsTreeContextMenu(props: {
   /** What that session is, captured when the menu opened: a menu lives for a moment. */
   facts: TabSessionFacts
   actions: readonly SessionAction[]
-  /** The `Scripts` submenu; absent or null for a session that has no run to list. */
-  scripts?: ContextMenuSubmenu | null
   groupItem?: ContextMenuEntry
-  /** Brings the session's workflow forward; absent for a session without one or on a peer. */
-  onShowWorkflow?: () => void
   onAction(action: SessionAction): void
+  onSwitchAccount(accounts: readonly AccountView[]): void
   onClose(): void
 }): React.JSX.Element {
+  const [accounts, setAccounts] = useState<readonly AccountView[]>([])
+  const agentId = props.facts.agentId
+  const currentAccount = props.facts.accountId ?? 'main'
+  useEffect(() => {
+    let active = true
+    if (agentId && props.facts.admits.includes('restart'))
+      void AppControl.value('accounts.list', { excludeAccount: { agentId, accountId: currentAccount } }).then(result => {
+        if (active && result.ok) setAccounts(result.value.filter(account => account.agentId === agentId
+          && account.accountId !== currentAccount && account.state === 'active'))
+      }).catch(() => {})
+    return () => { active = false }
+  }, [agentId, currentAccount, props.facts.admits])
+  const switchItems: ContextMenuEntry[] = accounts.length > 0 ? [{ key: 'switch-account', label: 'Continue on another account…',
+    onSelect: () => props.onSwitchAccount(accounts) }] : []
   return (
     <ContextMenu
       position={props.position}
       ariaLabel="Session actions"
       className="jamat-tab-menu"
-      items={SessionsTreeMenuItems.forNode(
+      items={[...SessionsTreeMenuItems.forNode(
         props.commands,
         props.sessionId,
         props.facts,
         props.actions,
-        props.scripts ?? null,
         props.onAction,
-        props.onShowWorkflow ?? null,
       ).flatMap((item) => item.key === 'session.setColor' && props.groupItem !== undefined
-        ? [item, props.groupItem] : [item])}
+        ? [item, props.groupItem] : [item]), ...switchItems]}
       onClose={props.onClose}
     />
   )
@@ -63,29 +72,24 @@ export function SessionsTreeContextMenu(props: {
  * menu's one for one, minus the "is this tab a session's" question the tree never has to ask: every
  * row here IS a session.
  */
-class SessionsTreeMenuItems {
+export class SessionsTreeMenuItems {
   static forNode(
     commands: CommandRegistry,
     sessionId: string,
     facts: TabSessionFacts,
     actions: readonly SessionAction[],
-    scripts: ContextMenuSubmenu | null,
     onAction: (action: SessionAction) => void,
-    showWorkflow: (() => void) | null,
+    remoteEndpointId?: string,
   ): readonly ContextMenuEntry[] {
     const commandItems = CommandMenuEntries.of(
-      SessionsTreeMenuItems.applicable(facts),
+      SessionsTreeMenuItems.applicable(facts).filter((entry) => !remoteEndpointId || entry.id !== 'session.openInVsCode'),
       facts.color,
       {
-        run: (id) => SessionsTreeMenuItems.run(commands, id, sessionId),
-        setColor: (color) => commands.execute('session.setColor', { color, sessionId }),
+        run: (id) => SessionCommandRun.at(commands, id, sessionId, remoteEndpointId),
+        setColor: (color) => commands.execute('session.setColor', { color, sessionId, ...(remoteEndpointId ? { remoteEndpointId } : {}) }),
       },
     )
-    const operations = [
-      ...(showWorkflow === null ? [] : [{ key: 'tree-showWorkflow', label: 'Show workflow', onSelect: showWorkflow }]),
-      ...(scripts === null ? [] : [scripts]),
-      ...SessionsTreeMenuItems.operations(actions, onAction),
-    ]
+    const operations = SessionsTreeMenuItems.operations(actions, onAction)
     if (operations.length === 0) return commandItems
     return [
       ...commandItems,
@@ -143,53 +147,4 @@ class SessionsTreeMenuItems {
         || facts.directoryPath !== null)
   }
 
-  /**
-   * Every plain item of this surface takes the optional target, and the case list is what tells
-   * the type system so. A command that joins the surface without joining this list fails the click
-   * loudly instead of quietly acting on the active tab of some other row's window.
-   */
-  private static run(commands: CommandRegistry, id: CommandId, sessionId: string): void {
-    SessionCommandRun.at(commands, id, sessionId)
-  }
-}
-
-/**
- * The `Scripts ›` submenu: every run of a session, newest first, in the library's own lines. A row
- * still has its terminal; a finished run has only its log, and a log is local to the computer that
- * ran it, so a remote session lists its rows alone.
- */
-export class SessionsTreeScriptsMenu {
-  static itemOf(
-    runs: readonly ScriptRunNode[],
-    scope: 'local' | 'remote',
-    openTerminal: (open: ScriptRunOpen) => void,
-    /** Null while this build has no log viewer: a saved log is then listed but cannot be opened. */
-    openLog: ((runId: string) => void) | null,
-  ): ContextMenuSubmenu | null {
-    const listed = scope === 'local' ? runs : runs.filter((run) => run.open !== null)
-    if (listed.length === 0) return null
-    return {
-      key: 'tree-scripts',
-      label: 'Scripts',
-      children: listed.map((run) => SessionsTreeScriptsMenu.runItemOf(run, openTerminal, openLog)),
-    }
-  }
-
-  private static runItemOf(
-    run: ScriptRunNode,
-    openTerminal: (open: ScriptRunOpen) => void,
-    openLog: ((runId: string) => void) | null,
-  ): ContextMenuAction {
-    const item = { key: `script-${run.runId}`, label: run.summary, title: run.logDetail }
-    const open = run.open
-    if (open !== null) return { ...item, onSelect: () => openTerminal(open) }
-    const log = run.log
-    if (log === 'saved')
-      return openLog === null
-        ? { ...item, disabled: true, onSelect: () => {} }
-        : { ...item, onSelect: () => openLog(run.runId) }
-    else if (log === 'unavailable' || log === 'none') return { ...item, disabled: true, onSelect: () => {} }
-    else
-      throw new Error(`Unknown script log state: ${JSON.stringify(log satisfies never)}`)
-  }
 }

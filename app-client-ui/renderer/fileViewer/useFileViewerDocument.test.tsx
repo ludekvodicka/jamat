@@ -103,7 +103,7 @@ describe('app-client-ui/renderer/fileViewer/useFileViewerDocument', () => {
     const changes = FileViewerDocumentHarness.changes()
     const sessionTree = FileViewerDocumentHarness.workingTree()
     const { result } = renderHook(() => useFileViewerDocument(document.source,
-      { kind: 'svn-base', revision: '5', workingTreeSource: 'svn' }, changes, sessionTree))
+      { kind: 'svn-base', revision: '5', workingTreeSource: 'svn' }, changes, sessionTree, { viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges }))
     await waitFor(() => expect(fileChanges.diff).toHaveBeenCalledWith({ snapshotId: 'scoped-1', fileId: 'file', baselineId: 'base' }))
     expect(fileChanges.scopedWorkingTree).toHaveBeenCalledWith(document.source)
     snapshot.snapshotId = 'scoped-2'
@@ -131,7 +131,7 @@ describe('app-client-ui/renderer/fileViewer/useFileViewerDocument', () => {
     const changes = FileViewerDocumentHarness.changes()
     const tree = FileViewerDocumentHarness.workingTree()
     const { result } = renderHook(() => useFileViewerDocument(document.source,
-      { kind: 'svn-base', revision: '5', workingTreeSource: 'svn' }, changes, tree))
+      { kind: 'svn-base', revision: '5', workingTreeSource: 'svn' }, changes, tree, { viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges }))
     await waitFor(() => expect(fileChanges.diff).toHaveBeenLastCalledWith({ snapshotId: 'fresh', fileId: 'fresh-file', baselineId: 'fresh-base' }))
     await waitFor(() => expect(result.current.diff).toEqual(expiresAgain ? expired.value : { ok: true, kind: 'source-unavailable', detail: 'fixture result' }))
     expect(fileChanges.diff).toHaveBeenCalledTimes(2)
@@ -152,6 +152,7 @@ describe('app-client-ui/renderer/fileViewer/useFileViewerDocument', () => {
       undefined,
       FileViewerDocumentHarness.changes(),
       FileViewerDocumentHarness.workingTree(),
+      { viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges },
     ))
 
     await waitFor(() => expect(result.current.error)
@@ -173,6 +174,7 @@ describe('app-client-ui/renderer/fileViewer/useFileViewerDocument', () => {
       undefined,
       FileViewerDocumentHarness.changes(),
       FileViewerDocumentHarness.workingTree(),
+      { viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges },
     ))
 
     await waitFor(() => expect(result.current.sourceMissing).toBe(true))
@@ -185,6 +187,7 @@ describe('app-client-ui/renderer/fileViewer/useFileViewerDocument', () => {
       undefined,
       FileViewerDocumentHarness.changes(),
       FileViewerDocumentHarness.workingTree(),
+      { viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges },
     ))
     await waitFor(() => expect(result.current.document?.name).toBe('a.ts'))
     fileViewer.restore.mockResolvedValue({
@@ -230,6 +233,7 @@ describe('app-client-ui/renderer/fileViewer/useFileViewerDocument', () => {
       undefined,
       FileViewerDocumentHarness.changes(),
       FileViewerDocumentHarness.workingTree(),
+      { viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges },
     ))
 
     await waitFor(() => expect(view.result.current.text).not.toBeNull())
@@ -257,6 +261,7 @@ describe('app-client-ui/renderer/fileViewer/useFileViewerDocument', () => {
       undefined,
       FileViewerDocumentHarness.changes(),
       FileViewerDocumentHarness.workingTree(),
+      { viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges },
     ))
 
     await waitFor(() => expect(view.result.current.document?.documentId).toBe(document.documentId))
@@ -287,7 +292,7 @@ describe('app-client-ui/renderer/fileViewer/useFileViewerDocument', () => {
       source: FileViewerDocument['source']
       deliverOnLayout: boolean
     }): React.JSX.Element | null {
-      useFileViewerDocument(props.source, undefined, changes, workingTree, onDocument)
+      useFileViewerDocument(props.source, undefined, changes, workingTree, { viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges }, onDocument)
       useLayoutEffect(() => {
         if (!props.deliverOnLayout)
           return
@@ -321,7 +326,7 @@ describe('app-client-ui/renderer/fileViewer/useFileViewerDocument', () => {
     const workingTree = FileViewerDocumentHarness.workingTree()
 
     function Viewer(): React.JSX.Element | null {
-      useFileViewerDocument(document.source, undefined, changes, workingTree, onDocument)
+      useFileViewerDocument(document.source, undefined, changes, workingTree, { viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges }, onDocument)
       return null
     }
 
@@ -356,6 +361,7 @@ describe('app-client-ui/renderer/fileViewer/useFileViewerDocument', () => {
         undefined,
         changes,
         workingTree,
+        { viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges },
         onDocument,
       ),
       { initialProps: first.source },
@@ -380,6 +386,7 @@ describe('app-client-ui/renderer/fileViewer/useFileViewerDocument', () => {
       undefined,
       FileViewerDocumentHarness.changes(),
       FileViewerDocumentHarness.workingTree(),
+      { viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges },
     ))
     await waitFor(() => expect(view.result.current.document?.documentId).toBe(first.documentId))
     fileViewer.release.mockClear()
@@ -407,6 +414,7 @@ describe('app-client-ui/renderer/fileViewer/useFileViewerDocument', () => {
       undefined,
       FileViewerDocumentHarness.changes(),
       FileViewerDocumentHarness.workingTree(),
+      { viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges },
     ))
     if (settle === null) throw new Error('the restore did not start')
 
@@ -439,6 +447,7 @@ describe('app-client-ui/renderer/fileViewer/useFileViewerDocument', () => {
           undefined,
           changes,
           workingTree,
+          { viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges },
           props.onDocument,
         )
         if (props.suspend) throw suspended
@@ -475,6 +484,7 @@ describe('app-client-ui/renderer/fileViewer/useFileViewerDocument', () => {
       undefined,
       FileViewerDocumentHarness.changes(),
       FileViewerDocumentHarness.workingTree(),
+      { viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges },
     ))
     await waitFor(() => expect(view.result.current.document?.documentId).toBe(first.documentId))
 

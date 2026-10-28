@@ -61,7 +61,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPostMortem', () => {
 
   function draw(): ReturnType<typeof render> {
     return render(
-      <TerminalPostMortem
+      <TerminalPostMortem read={async () => { reads.push('session-1'); return pending }}
         sessionId="session-1"
         outcome="failed"
         endedAt={null}

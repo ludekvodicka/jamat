@@ -1,12 +1,10 @@
+import { WorktreeLifecycle } from '../../worktrees/worktreeLifecycle'
 import type { RuntimeListResult, RuntimeSessionInfo } from '../../../app-host/app/wire/hostWire.js'
 import type { SessionExitReason, SessionRecord } from '../records/sessionRecord.types'
 import { ScriptRunOutcome } from '../scripts/scriptRunOutcome'
 import { ScriptRunPlanning, type ScriptRunChange } from '../scripts/scriptRunPlanning'
 import { SessionScriptDefinitions, type SessionScriptGate } from '../scripts/sessionScriptDefinitions'
 import { LaunchBackoff } from './launchBackoff'
-import { SvnActionStages } from './svnActionStages'
-import { SvnResolverLauncher } from './svnResolverLauncher'
-import { WorktreeCleanupPacing } from './worktreeCleanupPacing'
 
 export type ReconcileChange =
   | { kind: 'bind-live'; sessionId: string; binding: { hostInstanceId: string; generation: number } }
@@ -18,6 +16,7 @@ export type ReconcileChange =
   | {
     kind: 'mark-ended'
     sessionId: string
+    binding: { hostInstanceId: string; generation: number }
     exitCode?: number
     exitReason?: SessionExitReason
     endedAt: number
@@ -55,8 +54,8 @@ export type ReconcileChange =
    * a client restart this is how it goes on.
    */
   | { kind: 'svn-action-due'; sessionId: string }
-  /** Read the current launch confirmation without searching provider history. */
-  | { kind: 'name-codex-conversation'; sessionId: string }
+  /** Read the running agent's confirmation of its launch generation, never provider history. */
+  | { kind: 'name-conversation'; sessionId: string }
   /** The process of an SVN worktree session is gone and its cleanup is due: judge and remove it off this loop. */
   | { kind: 'clean-worktree'; sessionId: string }
   /** A run that is over: its log and history entry are written, or its record goes. See `ScriptRunPlanning`. */
@@ -98,14 +97,7 @@ export class Reconciler {
         else
           throw new Error(`Unknown run judgement: ${JSON.stringify(judged satisfies never)}`)
       }
-    for (const record of records) {
-      if (Reconciler.cleanupDue(record, records, now, clientStartedAt))
-        changes.push({ kind: 'clean-worktree', sessionId: record.sessionId })
-      const action = record.svnAction
-      if (action !== undefined && !held.has(record.sessionId)
-        && (SvnActionStages.clientDue(action, now) || SvnResolverLauncher.overdue(action, now)))
-        changes.push({ kind: 'svn-action-due', sessionId: record.sessionId })
-    }
+    changes.push(...WorktreeLifecycle.due(records, now, clientStartedAt, held))
     for (const record of records) {
       if (record.life !== 'live' && record.life !== 'starting') continue
       const found = live.get(record.sessionId)
@@ -128,7 +120,7 @@ export class Reconciler {
        * each field and no invariant across two of them. So it falls through instead, and the rule
        * below reads it for what it is: starting, no runtime, no launch it can name. That is lost.
        */
-      if (SessionScriptDefinitions.judging('before', record) && !found) continue
+      if ((record.pendingSetup?.local === true || SessionScriptDefinitions.judging('before', record)) && !found) continue
       if (!found) {
         // The Host answered and does not have it. A launch that crashed between the record write and
         // the Host's answer replays the SAME operationId, which the Host itself dedupes. Both halves
@@ -154,6 +146,7 @@ export class Reconciler {
         changes.push({
           kind: 'mark-ended',
           sessionId: record.sessionId,
+          binding: { hostInstanceId: listing.hostInstanceId, generation: found.generation },
           exitCode: found.exitCode,
           exitReason: Reconciler.exitReasonOf(found.exitReason),
           endedAt: found.exitedAt ?? now,
@@ -166,8 +159,8 @@ export class Reconciler {
           sessionId: record.sessionId,
           binding: { hostInstanceId: listing.hostInstanceId, generation: found.generation },
         })
-        if (Reconciler.wantsCodexName(record))
-          changes.push({ kind: 'name-codex-conversation', sessionId: record.sessionId })
+        if (Reconciler.wantsConversationName(record))
+          changes.push({ kind: 'name-conversation', sessionId: record.sessionId })
       }
     }
     // After the live loop, so a run is settled from the record a previous pass marked ended: the
@@ -218,26 +211,13 @@ export class Reconciler {
    * its handles had time to go, no run of it can still stand in the worktree, no SVN action (running
    * or waiting for the person) or Finish check owns the record, and no launch is on its way.
    */
-  private static cleanupDue(
-    record: SessionRecord,
-    records: readonly SessionRecord[],
-    now: number,
-    clientStartedAt: number,
-  ): boolean {
-    const cleanup = record.worktreeCleanup
-    if (cleanup?.phase !== 'pending' || record.worktree?.kind !== 'svn') return false
-    if (record.svnAction !== undefined || record.pendingOperationId !== undefined) return false
-    // Between two steps no run of the chain is live, and the next one is about to start in there.
-    if (SessionScriptDefinitions.judging('finish', record)) return false
-    if (!WorktreeCleanupPacing.processGone(record) || !WorktreeCleanupPacing.runsGone(record, records)
-      || !WorktreeCleanupPacing.settled(record, now, clientStartedAt)) return false
-    return WorktreeCleanupPacing.due(cleanup, now, clientStartedAt)
-  }
 
-  /** A running terminal may select a different thread without launching a new process. */
-  private static wantsCodexName(record: SessionRecord): boolean {
-    return record.agent?.agentId === 'codex' && record.agent.identityLaunchId !== undefined
-      && record.endedReason === undefined
+
+  /** A running terminal may select a different conversation without launching a new process. */
+  private static wantsConversationName(record: SessionRecord): boolean {
+    return record.agent !== undefined && record.agent.identityLaunchId !== undefined
+      && (record.endedReason === undefined || record.life === 'live' || record.agent.launchAccountId !== undefined
+        && record.agent.launchAccountId !== (record.agent.accountId ?? 'main'))
   }
 
   /**

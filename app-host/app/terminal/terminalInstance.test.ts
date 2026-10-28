@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ProcessStartIdentity } from '../shared/processStartIdentity.js'
 import type { RuntimeLaunchSpec } from '../wire/hostWire.js'
 import { TerminalInstance } from './terminalInstance.js'
+import { TerminalDescendants } from './terminalDescendants.js'
+import { TerminalStopRefusal } from './terminalStopRefusal.js'
 
 const fakePty = vi.hoisted(() => ({
   killed: false,
@@ -11,6 +13,7 @@ const fakePty = vi.hoisted(() => ({
   killEndsIt: false,
   reportExit: (exitCode: number): void => { void exitCode },
   hardKills: [] as string[][],
+  writes: [] as string[],
 }))
 
 vi.mock('node-pty', () => ({
@@ -21,7 +24,7 @@ vi.mock('node-pty', () => ({
       fakePty.reportExit = (exitCode) => listener({ exitCode })
       return { dispose: () => undefined }
     },
-    write: () => undefined,
+    write: (data: string) => { fakePty.writes.push(data) },
     resize: () => undefined,
     kill: () => {
       fakePty.killed = true
@@ -35,7 +38,7 @@ vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>()
   return {
     ...actual,
-    execFile: (file: string, args: string[], done: () => void) => {
+    execFile: (file: string, args: string[], _options: unknown, done: () => void) => {
       fakePty.hardKills.push([file, ...args])
       done()
     },
@@ -43,6 +46,89 @@ vi.mock('node:child_process', async (importOriginal) => {
 })
 
 describe('app-host/app/terminal/terminalInstance', () => {
+  it('requires explicit manual confirmation to clear an unknown tree after the root exits during inspection', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(TerminalDescendants, 'capture').mockImplementation(async () => { fakePty.reportExit(0); throw new Error('Root disappeared') })
+    vi.spyOn(TerminalDescendants, 'stop').mockResolvedValue()
+    const instance = new TerminalInstance('managed', 1, 1, { ...TerminalInstanceTest.launch(), stopDescendants: true }, () => {})
+    await expect(instance.stop()).rejects.toThrow('Root disappeared')
+    await expect(instance.stop()).rejects.toThrow('Root disappeared')
+    await expect(instance.stop(true)).resolves.toBeUndefined()
+    await expect(instance.stop()).resolves.toBeUndefined()
+    instance.dispose()
+  })
+  it('leaves the root alive after failed capture so a later Stop can capture and stop the whole tree', async () => {
+    vi.useFakeTimers()
+    const capture = vi.spyOn(TerminalDescendants, 'capture').mockRejectedValueOnce(new Error('CIM timed out')).mockResolvedValue([])
+    fakePty.killEndsIt = true
+    const instance = new TerminalInstance('managed', 1, 1, { ...TerminalInstanceTest.launch(), stopDescendants: true }, () => {})
+    const outcome = instance.stop().catch((error: unknown) => error)
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(fakePty.killed).toBe(false)
+    expect(instance.alive).toBe(true)
+    expect(String(await outcome)).toContain('CIM timed out')
+    const retried = instance.stop()
+    await vi.advanceTimersByTimeAsync(10_000)
+    await retried
+    expect(capture).toHaveBeenCalledTimes(2)
+    expect(instance.alive).toBe(false)
+    instance.dispose()
+  })
+  it('UA1-J10-1: refuses a Stop whose inspection failed as a typed refusal that says to retry or to confirm by hand', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(TerminalDescendants, 'capture').mockRejectedValueOnce(new Error('CIM timed out'))
+      .mockImplementationOnce(async () => { fakePty.reportExit(1); throw new Error('Root disappeared') })
+    vi.spyOn(TerminalDescendants, 'stop').mockResolvedValue()
+    const instance = new TerminalInstance('managed', 1, 1, { ...TerminalInstanceTest.launch(), stopDescendants: true }, () => {})
+    const live = await instance.stop().catch((error: unknown) => error)
+    expect(live).toBeInstanceOf(TerminalStopRefusal)
+    expect(String(live)).toContain('retry Stop')
+    const ended = await instance.stop().catch((error: unknown) => error)
+    expect(ended).toBeInstanceOf(TerminalStopRefusal)
+    expect(String(ended)).toContain('confirm')
+    expect(await instance.stop().catch((error: unknown) => error)).toBeInstanceOf(TerminalStopRefusal)
+    instance.dispose()
+  })
+  it('keeps no failed inspection of a live root once that root ended by itself', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(TerminalDescendants, 'capture').mockRejectedValueOnce(new Error('CIM timed out'))
+    const stop = vi.spyOn(TerminalDescendants, 'stop').mockResolvedValue()
+    const instance = new TerminalInstance('managed', 1, 1, { ...TerminalInstanceTest.launch(), stopDescendants: true }, () => {})
+    await expect(instance.stop()).rejects.toThrow('CIM timed out')
+    fakePty.reportExit(0)
+    await expect(instance.stop()).resolves.toBeUndefined()
+    expect(stop).toHaveBeenCalledWith([])
+    instance.dispose()
+  })
+
+  it('does not capture or kill descendants of an interactive terminal', async () => {
+    vi.useFakeTimers()
+    const capture = vi.spyOn(TerminalDescendants, 'capture')
+    const stop = vi.spyOn(TerminalDescendants, 'stop')
+    fakePty.killEndsIt = true
+    const instance = TerminalInstanceTest.instance(), outcome = instance.stop()
+    await vi.advanceTimersByTimeAsync(10_000)
+    await outcome
+    expect(capture).not.toHaveBeenCalled()
+    expect(stop).not.toHaveBeenCalled()
+    instance.dispose()
+  })
+  it('captures managed descendants before interrupting the shell and stops them after the shell exits', async () => {
+    vi.useFakeTimers()
+    const children = [{ pid: 1234, startedAt: 1000 }]
+    const capture = vi.spyOn(TerminalDescendants, 'capture').mockImplementation(async () => { expect(fakePty.writes).toEqual([]); return children })
+    const stopped = vi.spyOn(TerminalDescendants, 'stop').mockResolvedValue()
+    const instance = new TerminalInstance('managed', 1, 1, { ...TerminalInstanceTest.launch(), stopDescendants: true }, () => {})
+    const stopping = instance.stop()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(capture).toHaveBeenCalled()
+    fakePty.reportExit(0)
+    await vi.advanceTimersByTimeAsync(500)
+    await stopping
+    expect(stopped).toHaveBeenCalledWith(children)
+    instance.dispose()
+  })
+
   afterEach(() => {
     vi.useRealTimers()
     vi.restoreAllMocks()
@@ -223,7 +309,7 @@ describe('app-host/app/terminal/terminalInstance', () => {
     await vi.advanceTimersByTimeAsync(2_400)
 
     expect(fakePty.killed).toBe(true)
-    expect(fakePty.hardKills).toEqual([['taskkill', '/PID', '424242', '/T', '/F']])
+    expect(fakePty.hardKills).toEqual([['taskkill', '/PID', '424242', '/F']])
     fakePty.reportExit(1)
     await stopping
     expect(instance.alive).toBe(false)
@@ -312,5 +398,6 @@ class TerminalInstanceTest {
     fakePty.killEndsIt = false
     fakePty.reportExit = () => undefined
     fakePty.hardKills.length = 0
+    fakePty.writes.length = 0
   }
 }

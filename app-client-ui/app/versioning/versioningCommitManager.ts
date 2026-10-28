@@ -1,3 +1,8 @@
+import { SvnCommitMessageCheck, type CommitMessageSource } from '../../../lib-orchestrator/svn/svnCommitMessageCheck'
+import { FileChangesFingerprint } from '../../../lib-orchestrator/fileChangesManager/fileChangesFingerprint'
+import type { RemoteWorkflowReview } from '../../../lib-orchestrator/remoteControl/remoteReviewApi.types'
+import type { VersioningWorkflowPort } from '../../shared/versioningCommit'
+import { CommitTargets } from '../../shared/commitTargets'
 import { randomUUID } from 'node:crypto'
 import type { RemoteControlCommitStatusDto, RemoteControlStepResult } from '../../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import { lstat, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
@@ -15,14 +20,22 @@ import type { CommitProgress } from '../../../lib-orchestrator/shared/commitProg
 import { PathCompare } from '../../../lib-orchestrator/shared/pathCompare'
 import type { TortoiseCommitDialog } from '../../../lib-orchestrator/shared/tortoiseCommitDialog'
 import type { SvnCommitManager } from '../../../lib-orchestrator/svn/svnCommitManager'
-import { VersioningCommitLimits, VersioningCommitMessage, VersioningCommitPaths, VersioningRevert } from '../../shared/versioningCommit'
-import type { VersioningCommitPath, VersioningRevertRequest, VersioningRevertResult, VersioningTortoiseResult } from '../../shared/versioningCommit'
+import { VersioningCommitLimits, VersioningCommitMessage, VersioningCommitPaths, VersioningCommitReceipts, VersioningRevert } from '../../shared/versioningCommit'
+import type { ReviewInteraction, ReviewInteractionAccess } from './reviewInteractionAccess'
+import type { VersioningReviewDecision, VersioningReviewEdit, VersioningReviewEditResult, VersioningCommitPath, VersioningRevertRequest, VersioningRevertResult, VersioningTortoiseResult } from '../../shared/versioningCommit'
 import type { VersioningCommitDraftDto, VersioningCommitOpenResult, VersioningCommitOpenSessions, VersioningCommitRunRequest, VersioningCommitRunResult } from '../../shared/versioningCommit'
+import type { VersioningReviewStore, VersioningReviewRecord } from './versioningReviewStore'
 import type { VersioningCommitMessageStore } from './versioningCommitMessageStore'
 
 export interface VersioningCommitManagerDeps {
+  workflow?: VersioningWorkflowPort
+  splitReview?(sessionId: string, vcs: 'svn' | 'git', scopeRoot: string, intentId: string): Promise<string>
+  externalDiffAvailable?(): boolean
+  externalDiff?: import('./externalDiffLauncher').ExternalDiffLauncher['launch']
+  interactions?: Pick<ReviewInteractionAccess, 'isActive'>
+  reviews?: Pick<VersioningReviewStore, 'read' | 'save'>
   messages: Pick<VersioningCommitMessageStore, 'read' | 'save' | 'remove'>
-  sessions: Pick<SessionManager, 'workingContext' | 'settleVcs'>
+  sessions: Pick<SessionManager, 'workingContext' | 'worktreeAt'> & Partial<Pick<SessionManager, 'proposeWorktreeReady'>>
   vcsStatus: Pick<VcsStatusView, 'detect'>
   fileAccess(ownerId: string, snapshotId: string, fileId: string): FileChangesFileAccessResult
   snapshotOf(ownerId: string, snapshotId: string): FileChangesWorkingTreeSnapshot | null
@@ -40,6 +53,7 @@ export interface VersioningCommitManagerDeps {
 }
 
 interface Draft {
+  decisions?: VersioningReviewRecord['decisions']
   dto: VersioningCommitDraftDto
   committedPaths?: readonly string[]
   owners: Set<string>
@@ -53,11 +67,14 @@ interface Draft {
   targets?: readonly { path: string; directory: boolean; recursive: boolean }[]
   externalReview?: 'running' | 'closed'
   rejectedSnapshotId?: string
+  /** The paths the last listing showed, so a later listing can tell which rows are new. */
+  listed?: ReadonlySet<string>
 }
 
 interface CommitTarget {
   entry: FileChangeEntry
   modifiedAt: number | null
+  fingerprint?: string
   scopeRoot: string
 }
 
@@ -73,21 +90,40 @@ export class VersioningCommitManager {
   private readonly drafts = new Map<string, Draft>()
   private readonly closed = new Map<string, { draft: Draft; closedAt: number }>()
   private readonly running = new Set<string>()
-  private readonly cancellations = new Map<string, {
-    result: Promise<CancelResult>; resolve(result: CancelResult): void; timer: ReturnType<typeof setTimeout>
-  }>()
+  private readonly pendingDecisions = new Map<string, { payload: string; result: Promise<VersioningCommitRunResult> }>()
+  private readonly saved = new Map<string, VersioningReviewRecord>()
+  private readonly epoch = randomUUID()
   private revision = 0
+  /** What a window last read; a change from it is published, and nothing is before the first read. */
+  private lastOpenSessions: string | null = null
 
   private readonly deps: VersioningCommitManagerDeps
 
-  constructor(deps: VersioningCommitManagerDeps) { this.deps = deps }
+  constructor(deps: VersioningCommitManagerDeps) {
+    this.deps = deps
+    for (const record of deps.reviews?.read() ?? []) {
+      const dto = { ...record.dto, epoch: this.epoch, externalReview: record.externalReview === 'running' ? 'closed' as const : record.externalReview }
+      if (dto.phase.kind === 'running' && dto.workflow === undefined || record.externalReview === 'running')
+        dto.phase = { kind: 'failed', detail: 'The source restarted during publication. Its outcome is uncertain; verify the repository before continuing.', failedAt: this.now() }
+      const draft: Draft = { ...record, dto, owners: new Set(), fileReviews: new Map(),
+        ...(record.externalReview === 'running' ? { externalReview: 'closed' as const } : {}) }
+      if (record.closedAt !== undefined) this.closed.set(dto.draftId, { draft, closedAt: record.closedAt })
+      else this.drafts.set(dto.draftId, draft)
+      this.saved.set(dto.draftId, structuredClone(record))
+    }
+  }
 
   /**
    * `fresh` is for a caller that waits for the outcome of the review it opens: a draft of the same
    * scope that already ended, still shown in a pane, would answer its old outcome at once.
    */
+  private async isWorktree(path: string): Promise<boolean> {
+    return path.replace(/\\/g, '/').split('/').some((part) => part.toLowerCase() === '.worktrees')
+      || (await this.deps.sessions.worktreeAt(path))?.kind === 'svn'
+  }
+
   async prepare(sessionId: string, vcs: FileChangesVcsId, scope: string | null, proposal: string | null,
-    paths?: readonly VersioningCommitPath[], options: { fresh?: true } = {}): Promise<VersioningCommitOpenResult> {
+    paths?: readonly VersioningCommitPath[], options: { fresh?: true; reviewOnly?: true } = {}): Promise<VersioningCommitOpenResult> {
     if (vcs !== 'svn' && vcs !== 'git') throw new Error(`Unknown commit VCS: ${JSON.stringify(vcs)}`)
     const proposed = proposal === null ? null : VersioningCommitMessage.normalize(proposal)
     if (proposed !== null && proposed.length > VersioningCommitLimits.messageMaxCharactersConst)
@@ -106,6 +142,10 @@ export class VersioningCommitManager {
       // The same directory named twice keeps the wider selection.
       requests.set(key, { path, nodeOnly: VersioningCommitPaths.nodeOnly(request) && (requests.get(key)?.nodeOnly ?? true) })
     }
+    if (vcs === 'svn' && options.reviewOnly !== true)
+      for (const path of requests.values())
+        if (await this.isWorktree(path.path))
+          return { ok: false, code: 'use-finish', detail: 'use-finish: press Finish in Session actions' }
     const selected = [...requests.values()].sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0)
     const requestedKey = VersioningCommitManager.keyOf(selected.map(({ path, nodeOnly }) => nodeOnly ? { path, depth: 'empty' } : path))
     const retained = [...this.drafts.values()].find((draft) => draft.dto.sessionId === sessionId && draft.dto.vcs === vcs
@@ -135,15 +175,15 @@ export class VersioningCommitManager {
       && PathCompare.comparable(draft.dto.scopeRoot) === PathCompare.comparable(requested)
       && (draft.dto.paths === undefined ? null : VersioningCommitManager.keyOf(draft.dto.paths))
         === (selectedPaths === undefined ? null : VersioningCommitManager.keyOf(selectedPaths)))
-    const existing = matching !== undefined && options.fresh === true && VersioningCommitManager.ended(matching) ? undefined : matching
+    const existing = matching !== undefined && (matching.dto.phase.kind === 'cancelled' || (options.fresh === true && VersioningCommitManager.ended(matching))) ? undefined : matching
     // Its pane finds the draft gone and opens this scope again, which reaches the fresh draft.
     if (matching !== undefined && existing === undefined) this.close(matching)
     const draft: Draft = existing ?? {
       dto: {
-        draftId: this.deps.newId?.() ?? randomUUID(), sessionId, vcs, scopeRoot: requested,
+        draftId: this.deps.newId?.() ?? randomUUID(), epoch: this.epoch, sessionId, vcs, scopeRoot: requested,
         scopeTooltip: VersioningCommitManager.tooltipOf(requested, selectedPaths ?? null),
         ...(selectedPaths === undefined ? {} : { paths: selectedPaths }),
-        source: vcs, message: '', editedByPerson: false, proposedByAgent: false,
+        source: vcs, message: '', messageSource: 'unknown', messageAt: this.now(), editedByPerson: false, proposedByAgent: false,
         ...this.deps.messages.read({ sessionId, vcs, scopeRoot: requested, paths: selectedPaths }),
         phase: { kind: 'editing' }, revision: 0,
       },
@@ -153,6 +193,14 @@ export class VersioningCommitManager {
     if (messageApplied) {
       draft.dto.message = proposed
       draft.dto.proposedByAgent = true
+      draft.dto.messageSource = 'agent-proposal'
+      draft.dto.messageAt = this.now()
+      if (!this.deps.messages.save(draft.dto)) throw new Error('The commit message could not be saved')
+    }
+    const source = this.deps.workflow?.messageSource?.(draft.dto)
+    if (source !== undefined && source !== draft.dto.messageSource) {
+      draft.dto.messageSource = source
+      draft.dto.messageAt = this.now()
       if (!this.deps.messages.save(draft.dto)) throw new Error('The commit message could not be saved')
     }
     this.drafts.set(draft.dto.draftId, draft)
@@ -185,19 +233,31 @@ export class VersioningCommitManager {
     const open = [...this.drafts.values()].find((draft) => draft.dto.sessionId === sessionId && draft.dto.vcs === 'svn'
       && draft.dto.paths === undefined && PathCompare.comparable(draft.dto.scopeRoot) === PathCompare.comparable(scopeRoot)
       && !VersioningCommitManager.ended(draft))
-    if ((open?.dto.editedByPerson ?? this.deps.messages.read(scope)?.editedByPerson) === true)
+    // A Finish review keeps one message per repository: the row of this root says who wrote it there (UA1-J12-5).
+    const finish = [...this.drafts.values()].find((draft) => draft.dto.sessionId === sessionId && draft.dto.vcs === 'svn'
+      && draft.dto.paths === undefined && !VersioningCommitManager.ended(draft)
+      && this.repositoriesOf(draft)?.some((row) => PathCompare.comparable(row.root) === PathCompare.comparable(scopeRoot)))
+    const row = finish === undefined ? undefined : this.repositoriesOf(finish)!.find((candidate) => PathCompare.comparable(candidate.root) === PathCompare.comparable(scopeRoot))
+    if ((open?.dto.editedByPerson ?? this.deps.messages.read(scope)?.editedByPerson) === true || row !== undefined && SvnCommitMessageCheck.writtenByPerson(row.source))
       return { ok: false, code: 'message-edited', detail: `A person already wrote the commit message for ${scopeRoot}; the proposal was not stored` }
-    if (open?.dto.phase.kind === 'running')
+    if (open?.dto.phase.kind === 'running' || finish?.dto.phase.kind === 'running')
       return { ok: false, code: 'busy', detail: `A commit of ${scopeRoot} is running; propose again after it` }
     if (open === undefined) {
-      if (!this.deps.messages.save({ ...scope, message: proposed, editedByPerson: false, proposedByAgent: true }))
+      if (!this.deps.messages.save({ ...scope, message: proposed, editedByPerson: false, proposedByAgent: true, messageSource: 'agent-proposal', messageAt: this.now() }))
         throw new Error('The commit message could not be saved')
-      return { ok: true, scopeRoot }
     }
-    open.dto.message = proposed
-    open.dto.proposedByAgent = true
-    if (!this.deps.messages.save(open.dto)) throw new Error('The commit message could not be saved')
-    this.bump(open)
+    else {
+      open.dto.message = proposed
+      open.dto.proposedByAgent = true
+      open.dto.messageSource = 'agent-proposal'
+      open.dto.messageAt = this.now()
+      if (!this.deps.messages.save(open.dto)) throw new Error('The commit message could not be saved')
+    }
+    // The field shows the proposal the Finish publishes, not an older one the review was prepared with.
+    if (finish !== undefined) finish.dto.repositories = this.repositoryMessagesOf(finish, scopeRoot, proposed, 'agent-proposal')
+    if (open !== undefined) this.bump(open)
+    if (finish !== undefined && finish !== open) this.bump(finish)
+    await this.deps.sessions.proposeWorktreeReady?.(sessionId)
     return { ok: true, scopeRoot }
   }
 
@@ -266,6 +326,24 @@ export class VersioningCommitManager {
     // Keep its original timestamps; commit and revert still check the files on disk.
     draft.fileReviews.set(ownerId, structuredClone({ snapshot: filtered,
       files: new Map(entries.map((entry) => [entry.fileId, this.deps.fileAccess(ownerId, snapshot.snapshotId, entry.fileId)])) }))
+    const listed = draft.listed
+    draft.listed = new Set(entries.map((entry) => PathCompare.comparable(entry.path)))
+    if (draft.dto.phase.kind !== 'editing' && draft.dto.phase.kind !== 'failed') return filtered
+    const defaults = this.checkedPaths(ownerId, draftId, filtered)
+    const checked = CommitTargets.eligible(filtered)
+      .filter((entry) => entry.origin !== 'setup' && (defaults === null || defaults.includes(entry.path))).map((entry) => entry.path)
+    if (draft.dto.selection === undefined) {
+      draft.dto.selection = { snapshotId: snapshot.snapshotId, paths: checked }
+      this.bump(draft)
+    }
+    // A Finish publishes only its whole verified set, so a path that appeared since the person chose
+    // starts checked; a plain dialog keeps what the person chose.
+    else if (listed !== undefined && this.deps.workflow?.owns?.(draft.dto.sessionId) === true) {
+      const added = checked.filter((path) => !listed.has(PathCompare.comparable(path)))
+      if (added.length === 0) return filtered
+      draft.dto.selection = { snapshotId: snapshot.snapshotId, paths: [...draft.dto.selection.paths, ...added] }
+      this.bump(draft)
+    }
     return filtered
   }
 
@@ -285,53 +363,85 @@ export class VersioningCommitManager {
       || (target.recursive && PathCompare.isInside(target.path, entry.path)))).map((entry) => entry.path)
   }
 
+  discovery(): { revision: number; pending: readonly string[]; results: readonly string[] } {
+    this.sweepClosed()
+    const all = [...this.drafts.values(), ...[...this.closed.values()].map(({ draft }) => draft)]
+    return { revision: this.revision, pending: [...new Set(all.filter((draft) => !VersioningCommitManager.ended(draft)).map((draft) => draft.dto.sessionId))],
+      results: [...new Set(all.filter(VersioningCommitManager.ended).map((draft) => draft.dto.sessionId))] }
+  }
+
+  catalog(sessionId?: string): readonly VersioningCommitDraftDto[] {
+    this.sweepClosed()
+    return [...this.drafts.values(), ...[...this.closed.values()].map(({ draft }) => draft)]
+      .filter((draft) => sessionId === undefined || draft.dto.sessionId === sessionId).map((draft) => this.dtoOf(draft))
+  }
+
+  openReview(sessionId: string, reviewId: string, ownerId: string): VersioningCommitOpenResult {
+    const draft = this.drafts.get(reviewId) ?? this.closed.get(reviewId)?.draft
+    if (!draft || draft.dto.sessionId !== sessionId)
+      return { ok: false, code: 'unknown-session', detail: 'The review does not belong to this source session or has expired' }
+    draft.owners.add(ownerId)
+    return { ok: true, value: { draftId: reviewId, scopeRoot: draft.dto.scopeRoot, paths: draft.dto.paths,
+      title: `Commit ${draft.dto.vcs.toUpperCase()}` }, messageApplied: false }
+  }
+
+  externalScope(ownerId: string, draftId: string, snapshotId: string, scopeRoot: string): boolean {
+    const draft = this.owned(ownerId, draftId)
+    const snapshot = draft ? this.snapshotOf(ownerId, draft, snapshotId) : null
+    return snapshot?.externalRoots.some((root) => PathCompare.comparable(root.path) === PathCompare.comparable(scopeRoot)
+      && root.fileIds.length > 0) === true
+  }
+
   read(ownerId: string, draftId: string): VersioningCommitDraftDto | null {
-    const draft = this.drafts.get(draftId)
-    return draft === undefined || !draft.owners.has(ownerId) ? null : structuredClone(draft.dto)
+    const draft = this.drafts.get(draftId) ?? this.closed.get(draftId)?.draft
+    return draft === undefined || !draft.owners.has(ownerId) ? null : this.dtoOf(draft)
+  }
+
+  async openWorkflow(sessionId: string, vcs: 'svn' | 'git', scopeRoot: string, ownerId: string): Promise<VersioningCommitOpenResult> {
+    if (!this.deps.workflow?.offers(sessionId, vcs, scopeRoot))
+      return { ok: false, code: 'outside-session', detail: 'This scope is not offered by the source session Finish' }
+    const result = await this.prepare(sessionId, vcs, scopeRoot, null, undefined, { reviewOnly: true })
+    if (result.ok) this.attach(result.value.draftId, ownerId)
+    return result
   }
 
   cancel(draftId: string): Promise<CancelResult> {
     const status = this.status(draftId)
     if (status === null)
-      return Promise.resolve({ ok: false, error: { code: 'not-found', detail: 'The commit session is unknown or expired; its outcome is unknown' } })
-    if (status.state === 'cancelled' && status.closed) return Promise.resolve({ ok: true, value: status })
+      return Promise.resolve({ ok: false, error: { code: 'not-found', detail: 'The commit review is unknown' } })
+    if (status.state === 'cancelled') return Promise.resolve({ ok: true, value: status })
     const draft = this.drafts.get(draftId)
-    if (draft === undefined || this.running.has(draft.lockRoot) || status.state === 'running'
+    if (draft === undefined || this.busy(draft.lockRoot) || status.state === 'running'
       || status.state === 'committed' || status.state === 'external-closed')
       return Promise.resolve({ ok: false, error: { code: 'conflict', detail: `Cannot cancel this review while it is ${status.state} or its working copy is busy` } })
-    const pending = this.cancellations.get(draftId)
-    if (pending !== undefined) return pending.result
-    let resolve!: (result: CancelResult) => void
-    const result = new Promise<CancelResult>((finish) => { resolve = finish })
-    const timer = setTimeout(() => {
-      this.cancellations.delete(draftId)
-      resolve({ ok: false, error: { code: 'timeout', detail: 'The review was cancelled, but its dialog did not close; check this review before reopening' } })
-    }, 5_000)
-    this.cancellations.set(draftId, { result, resolve, timer })
     draft.dto.phase = { kind: 'cancelled' }
     this.bump(draft)
     this.releaseUnattached(draftId)
-    return result
+    return Promise.resolve({ ok: true, value: this.status(draftId)! })
   }
 
   status(commitSessionId: string): RemoteControlCommitStatusDto | null {
     this.sweepClosed()
     const draft = this.drafts.get(commitSessionId) ?? this.closed.get(commitSessionId)?.draft
     if (draft === undefined) return null
-    const closed = this.closed.has(commitSessionId)
+    this.refreshWorkflow(draft)
+    const closed = draft.owners.size === 0 || this.closed.has(commitSessionId)
     const { phase, sessionId, vcs, scopeRoot } = draft.dto
     let state: RemoteControlCommitStatusDto['state']
     if (phase.kind === 'done') state = 'committed'
     else if (phase.kind === 'running' || draft.externalReview === 'running') state = 'running'
     else if (draft.externalReview === 'closed') state = 'external-closed'
     else if (phase.kind === 'failed') state = 'failed'
-    else if (phase.kind === 'cancelled') state = closed ? 'cancelled' : 'editing'
-    else if (phase.kind === 'editing') state = closed ? 'cancelled' : 'editing'
+    else if (phase.kind === 'cancelled') state = 'cancelled'
+    else if (phase.kind === 'editing') state = 'editing'
     else throw new Error(`Unknown commit phase: ${JSON.stringify(phase)}`)
+    const omittedPaths = [...new Set(VersioningCommitReceipts.unresolved(draft.dto).flatMap((receipt) => receipt.omittedPaths ?? []))]
     return { kind: 'commit-status', commitSessionId, sessionId, vcs, scopeRoot, state, closed,
       ...(draft.dto.paths === undefined ? {} : { paths: draft.dto.paths.map(VersioningCommitPaths.pathOf) }),
       ...(draft.committedPaths === undefined ? {} : { committedPaths: [...draft.committedPaths] }),
-      revision: phase.kind === 'done' ? phase.revision : null, detail: state === 'failed' && phase.kind === 'failed' ? phase.detail : null }
+      ...(omittedPaths.length === 0 ? {} : { omittedPaths }),
+      revision: phase.kind === 'done' ? phase.revision : null, detail: state === 'failed' && phase.kind === 'failed' ? phase.detail
+        : omittedPaths.length > 0 ? `SVN published revisions, but did not report these selected paths: ${omittedPaths.join(', ')}` : null }
   }
 
   private sweepClosed(): void {
@@ -352,7 +462,7 @@ export class VersioningCommitManager {
   }
 
   release(draftId: string, ownerId: string): void {
-    const draft = this.drafts.get(draftId)
+    const draft = this.drafts.get(draftId) ?? this.closed.get(draftId)?.draft
     if (draft === undefined || !draft.owners.delete(ownerId)) return
     draft.fileReviews.delete(ownerId)
     this.releaseUnattached(draftId)
@@ -360,52 +470,205 @@ export class VersioningCommitManager {
 
   releaseUnattached(draftId: string): void {
     const draft = this.drafts.get(draftId)
-    if (draft === undefined || draft.owners.size !== 0) return
+    if (draft === undefined || draft.owners.size !== 0 || !VersioningCommitManager.ended(draft)) return
     this.close(draft)
   }
 
   /** The review leaves the open drafts; its status stays readable until it expires. */
   private close(draft: Draft): void {
     const draftId = draft.dto.draftId
+    draft.owners.clear()
+    draft.fileReviews.clear()
     this.closed.set(draftId, { draft, closedAt: this.now() })
     this.drafts.delete(draftId)
-    const pending = this.cancellations.get(draftId)
-    if (pending !== undefined) {
-      clearTimeout(pending.timer)
-      this.cancellations.delete(draftId)
-      pending.resolve({ ok: true, value: this.status(draftId)! })
-    }
     this.sweepClosed()
+    this.persist()
     this.changed()
   }
 
   revokeOwner(ownerId: string): void {
-    for (const draft of this.drafts.values()) this.release(draft.dto.draftId, ownerId)
+    for (const draft of [...this.drafts.values(), ...[...this.closed.values()].map(({ draft }) => draft)]) this.release(draft.dto.draftId, ownerId)
   }
 
   openSessions(): VersioningCommitOpenSessions {
-    return { revision: this.revision, sessionIds: [...new Set([...this.drafts.values()]
-      .filter((draft) => draft.dto.phase.kind !== 'done' && draft.dto.phase.kind !== 'cancelled').map((draft) => draft.dto.sessionId))] }
+    const sessionIds = this.openSessionIds()
+    this.lastOpenSessions = JSON.stringify(sessionIds)
+    return { revision: this.revision, sessionIds, reviews: this.pendingDrafts().map(({ dto }) => ({
+      draftId: dto.draftId, sessionId: dto.sessionId, vcs: dto.vcs, scopeRoot: dto.scopeRoot,
+      ...(dto.paths === undefined ? {} : { paths: structuredClone(dto.paths) }),
+      workflow: this.deps.workflow?.owns?.(dto.sessionId) === true,
+    })) }
+  }
+
+  /**
+   * A Finish review commits through its Finish, so its draft is never marked done; once the Finish
+   * left the review it no longer asks for one, and 051 kept its red mark over a landed row.
+   */
+  workflowChanged(): void {
+    if (this.lastOpenSessions === null) return
+    const open = JSON.stringify(this.openSessionIds())
+    if (open === this.lastOpenSessions) return
+    this.lastOpenSessions = open
+    this.changed()
+  }
+
+  private openSessionIds(): string[] {
+    return [...new Set(this.pendingDrafts().map((draft) => draft.dto.sessionId))]
+  }
+
+  private pendingDrafts(): Draft[] {
+    return [...this.drafts.values()]
+      .filter((draft) => draft.dto.phase.kind !== 'done' && draft.dto.phase.kind !== 'cancelled' && !this.finishLeft(draft))
+  }
+
+  private finishLeft(draft: Draft): boolean {
+    const workflow = this.deps.workflow
+    return workflow?.owns?.(draft.dto.sessionId) === true && draft.dto.phase.kind !== 'running'
+      && (draft.dto.vcs !== 'svn' && draft.dto.vcs !== 'git' || !workflow.offers(draft.dto.sessionId, draft.dto.vcs, draft.dto.scopeRoot))
   }
 
   setMessage(ownerId: string, draftId: string, message: string): boolean {
     const draft = this.owned(ownerId, draftId)
     if (draft === null || typeof message !== 'string' || message.length > VersioningCommitLimits.messageMaxCharactersConst
-      || draft.dto.phase.kind === 'running' || draft.dto.phase.kind === 'done') return false
+      || draft.dto.phase.kind === 'running' || draft.dto.phase.kind === 'done' || draft.dto.phase.kind === 'cancelled') return false
+    const previous = structuredClone(draft.dto)
     draft.dto.message = VersioningCommitMessage.normalize(message)
     draft.dto.editedByPerson = true
-    const saved = this.deps.messages.save(draft.dto)
-    this.bump(draft)
-    return saved
+    draft.dto.messageSource = 'person-local'
+    draft.dto.messageAt = this.now()
+    if (!this.deps.messages.save(draft.dto)) { draft.dto = previous; return false }
+    try { this.bump(draft) }
+    catch (error) { draft.dto = previous; this.deps.messages.save(previous); throw error }
+    return true
   }
 
-  async run(ownerId: string, request: VersioningCommitRunRequest): Promise<VersioningCommitRunResult> {
+  edit(ownerId: string, request: VersioningReviewEdit, source: CommitMessageSource = request.messageSource ?? 'person-remote'): VersioningReviewEditResult {
+    const draft = this.owned(ownerId, request.draftId)
+    if (!draft) return { ok: false, code: 'unknown-draft', detail: 'The review is no longer available' }
+    if (request.epoch !== this.epoch || request.expectedRevision !== draft.dto.revision)
+      return { ok: false, code: 'stale', detail: 'This review changed in another viewer. Compare or reload its edits.', current: this.dtoOf(draft) }
+    if (this.busy(draft.lockRoot) || draft.dto.phase.kind === 'running' || draft.dto.phase.kind === 'done' || draft.dto.phase.kind === 'cancelled')
+      return { ok: false, code: 'busy', detail: 'The review is running or settled' }
+    if (request.message !== undefined && (typeof request.message !== 'string' || request.message.length > VersioningCommitLimits.messageMaxCharactersConst))
+      return { ok: false, code: 'invalid-target', detail: 'Invalid commit message' }
+    let selection = draft.dto.selection
+    if (request.selection !== undefined) {
+      const snapshot = this.snapshotOf(ownerId, draft, request.selection.snapshotId)
+      const ids = request.selection.fileIds
+      if (!snapshot || snapshot.sessionId !== draft.dto.sessionId || snapshot.source.selected !== draft.dto.source
+        || !Array.isArray(ids) || ids.length > VersioningCommitLimits.targetsMaxConst
+        || ids.some((id) => !snapshot.entries.some((entry) => entry.fileId === id && VersioningCommitManager.allows(draft, entry))))
+        return { ok: false, code: 'invalid-target', detail: 'The selection contains files outside the displayed source snapshot' }
+      selection = { snapshotId: snapshot.snapshotId, paths: snapshot.entries.filter((entry) => ids.includes(entry.fileId)).map((entry) => entry.path) }
+    }
+    const repositories = this.repositoriesOf(draft)
+    if (request.repositoryMessage !== undefined && !repositories?.some((row) => PathCompare.comparable(row.root) === PathCompare.comparable(request.repositoryMessage!.root)))
+      return { ok: false, code: 'invalid-target', detail: 'The repository is outside the current Finish review' }
+    const previous = structuredClone(draft.dto)
+    draft.dto = { ...draft.dto, ...(request.repositoryMessage === undefined ? {}
+      : { repositories: this.repositoryMessagesOf(draft, request.repositoryMessage.root, request.repositoryMessage.message, source) }), ...(selection === undefined ? {} : { selection }),
+      ...(request.message === undefined ? {} : { message: VersioningCommitMessage.normalize(request.message), editedByPerson: true, messageSource: source, messageAt: this.now() }) }
+    try {
+      if (request.message !== undefined && !this.deps.messages.save(draft.dto)) throw new Error('The commit message could not be saved')
+      this.bump(draft)
+    } catch (error) { draft.dto = previous; this.deps.messages.save(previous); throw error }
+    return { ok: true, value: this.dtoOf(draft) }
+  }
+
+  decide(interaction: ReviewInteraction, request: VersioningReviewDecision): Promise<VersioningCommitRunResult> {
+    const refused = (code: 'forbidden' | 'conflict' | 'uncertain' | 'unknown-draft', detail: string): Promise<VersioningCommitRunResult> => Promise.resolve({ ok: false, code, detail })
+    if (!this.deps.interactions?.isActive(interaction)) return refused('forbidden', 'A live human workspace interaction is required')
+    const draft = this.drafts.get(request.draftId) ?? this.closed.get(request.draftId)?.draft
+    if (!draft || draft.dto.sessionId !== interaction.sessionId) return refused('unknown-draft', 'This review belongs to another source session')
+    this.refreshWorkflow(draft)
+    const payload = JSON.stringify(request)
+    const key = JSON.stringify([interaction.actorId, interaction.sessionId, request.draftId, request.operationId])
+    const pending = this.pendingDecisions.get(key)
+    if (pending) return pending.payload === payload ? pending.result : refused('conflict', 'Operation ID was already used with another decision')
+    const prior = draft.decisions?.find((decision) => decision.operationId === request.operationId && decision.actorId === interaction.actorId)
+    if (prior) {
+      if (prior.payload !== payload) return refused('conflict', 'Operation ID was already used with another decision')
+      return prior.result ? Promise.resolve(structuredClone(prior.result)) : refused('uncertain', 'The source restarted after accepting this operation; verify its original outcome')
+    }
+    if (!draft.owners.has(interaction.ownerId)) return refused('unknown-draft', 'This source view does not own the review')
+    if (this.busy(draft.lockRoot) || draft.dto.phase.kind === 'done' || draft.dto.phase.kind === 'cancelled')
+      return Promise.resolve({ ok: false, code: 'busy', detail: 'The review is running or already settled' })
+    if (draft.decisions?.some((decision) => decision.result === undefined || !decision.result.ok && decision.result.code === 'uncertain')) return refused('uncertain', 'An accepted source operation has no proved outcome; verify it before another decision')
+    const claim = (): VersioningCommitRunResult | null => {
+      if (!this.deps.interactions?.isActive(interaction)) return { ok: false, code: 'forbidden', detail: 'The human view was revoked before acceptance' }
+      if (request.epoch !== this.epoch || request.expectedRevision !== draft.dto.revision)
+        return { ok: false, code: 'stale', detail: 'The review changed before the decision was accepted' }
+      draft.decisions ??= []
+      draft.decisions.push({ operationId: request.operationId, actorId: interaction.actorId, payload, acceptedAt: this.now() })
+      try { this.persist() }
+      catch (error) { draft.decisions.pop(); throw error }
+      return null
+    }
+    let operation: Promise<VersioningCommitRunResult>
+    if (request.kind === 'approve') operation = this.run(interaction.ownerId, request, claim)
+    else if (request.kind === 'finish') operation = this.run(interaction.ownerId, request, claim, request.workflow)
+    else if (request.kind === 'revert') operation = this.revert(interaction.ownerId, request, async () => request.confirmed, claim).then((result) => result.ok ? { ok: true, revision: '' } : result)
+    else if (request.kind === 'external-review') operation = this.openTortoise(interaction.ownerId, request.draftId, request.message, request, claim).then((result) => result.ok ? { ok: true, revision: '' } : result)
+    else if (request.kind === 'external-diff') operation = this.externalDiff(interaction.ownerId, request, claim)
+    else if (request.kind === 'split') {
+      if (!this.externalScope(interaction.ownerId, request.draftId, request.snapshotId, request.scopeRoot) || !this.deps.splitReview)
+        return Promise.resolve({ ok: false, code: 'invalid-target', detail: 'A separate review must name an external root in the held source snapshot' })
+      this.running.add(draft.lockRoot)
+      operation = (async (): Promise<VersioningCommitRunResult> => {
+        try {
+          const refusal = claim()
+          if (refusal) return refusal
+          const reviewId = await this.deps.splitReview!(draft.dto.sessionId, draft.dto.vcs, request.scopeRoot, key)
+          return { ok: true, revision: '', reviewId }
+        } finally { this.running.delete(draft.lockRoot) }
+      })()
+    }
+    else if (request.kind === 'cancel') {
+      if (this.busy(draft.lockRoot) || VersioningCommitManager.ended(draft))
+        return Promise.resolve({ ok: false, code: 'busy', detail: 'The review is running or already settled' })
+      this.running.add(draft.lockRoot)
+      try {
+        const refusal = claim()
+        if (refusal) operation = Promise.resolve(refusal)
+        else { draft.dto.phase = { kind: 'cancelled' }; this.bump(draft); operation = Promise.resolve({ ok: true, revision: '' }) }
+      } finally { this.running.delete(draft.lockRoot) }
+    } else throw new Error(`Unknown review decision: ${JSON.stringify(request satisfies never)}`)
+    const result = operation.then((result) => {
+      const receipt = draft.decisions?.find((decision) => decision.operationId === request.operationId && decision.actorId === interaction.actorId)
+      if (receipt) { receipt.result = structuredClone(result); this.persist() }
+      return result
+    }).finally(() => this.pendingDecisions.delete(key))
+    this.pendingDecisions.set(key, { payload, result })
+    return result
+  }
+
+  private async worktreeDraft(draft: Draft): Promise<boolean> {
+    const paths = [draft.dto.scopeRoot, ...draft.targets?.map((target) => target.path) ?? [], ...draft.dto.selection?.paths ?? []]
+    for (const path of paths)
+      if (await this.isWorktree(path)) return true
+    return false
+  }
+
+  async run(ownerId: string, request: VersioningCommitRunRequest, claim?: () => VersioningCommitRunResult | null, workflow?: RemoteWorkflowReview): Promise<VersioningCommitRunResult> {
     const draft = this.owned(ownerId, request.draftId)
     if (draft === null) return { ok: false, code: 'unknown-draft', detail: 'The commit dialog no longer exists' }
+    if (workflow === undefined && draft.dto.vcs === 'svn') {
+      if (this.busy(draft.lockRoot)) return { ok: false, code: 'busy', detail: 'Another change is running in this scope' }
+      this.running.add(draft.lockRoot)
+      try {
+        if (await this.worktreeDraft(draft)) return { ok: false, code: 'use-finish', detail: 'use-finish: press Finish in Session actions' }
+      } finally { this.running.delete(draft.lockRoot) }
+    }
+    if (workflow && (!claim || !this.deps.workflow)) return { ok: false, code: 'forbidden', detail: 'Finish requires an admitted source review' }
     if (typeof request.message !== 'string' || request.message.length > VersioningCommitLimits.messageMaxCharactersConst)
       return { ok: false, code: 'message-too-long', detail: `The commit message is limited to ${VersioningCommitLimits.messageMaxCharactersConst} characters` }
     const message = VersioningCommitMessage.normalize(request.message)
-    if (this.running.has(draft.lockRoot) || draft.dto.phase.kind === 'running' || draft.dto.phase.kind === 'done')
+    if (request.expectedRevision !== undefined && (request.expectedRevision !== draft.dto.revision || request.epoch !== this.epoch))
+      return { ok: false, code: 'stale', detail: 'The review changed; reload or compare before approving' }
+    if (request.expectedRevision !== undefined && draft.dto.selection !== undefined
+      && (draft.dto.selection.snapshotId !== request.snapshotId || draft.dto.message !== message))
+      return { ok: false, code: 'stale', detail: 'The reviewed selection or message changed' }
+    if (this.busy(draft.lockRoot) || draft.dto.phase.kind === 'running' || draft.dto.phase.kind === 'done' || draft.dto.phase.kind === 'cancelled')
       return { ok: false, code: 'busy', detail: 'A commit is already running or this dialog has already committed' }
     const snapshot = this.snapshotOf(ownerId, draft, request.snapshotId)
     if (snapshot === null || snapshot.sessionId !== draft.dto.sessionId || snapshot.source.selected !== draft.dto.source)
@@ -414,7 +677,11 @@ export class VersioningCommitManager {
       return { ok: false, code: 'invalid-target', detail: 'Invalid external selection' }
     if (draft.rejectedSnapshotId === request.snapshotId)
       return { ok: false, code: 'invalid-target', detail: 'This commit attempt changed the working copy; reload the file list', reloadRequired: true }
-    const targets = this.resolveTargets(ownerId, draft, snapshot, request.fileIds, request.includeExternals === true)
+    if (claim && (!draft.dto.selection || JSON.stringify([...draft.dto.selection.paths].sort()) !== JSON.stringify(snapshot.entries.filter((entry) => request.fileIds.includes(entry.fileId)).map((entry) => entry.path).sort())))
+      return { ok: false, code: 'stale', detail: 'Save and review the selected source files before approving' }
+    const targets = workflow && request.fileIds.length === 0 && snapshot.entries.length === 0 && snapshot.warnings.length === 0
+      ? { ok: true as const, value: [] as CommitTarget[] }
+      : this.resolveTargets(ownerId, draft, snapshot, request.fileIds, request.includeExternals === true || workflow !== undefined)
     if (!targets.ok) return targets
     const grouped = new Map<string, CommitTarget[]>()
     for (const target of targets.value) {
@@ -452,28 +719,60 @@ export class VersioningCommitManager {
             || !(await lstat(scope)).isDirectory())
             return { ok: false, code: 'external-target', detail: `The external working copy changed: ${scope}; reload the list`, reloadRequired: true }
           const lock = PathCompare.comparable(detection.root)
-          if (!locks.has(lock) && this.running.has(lock))
+          if (!locks.has(lock) && this.busy(lock))
             return { ok: false, code: 'busy', detail: `Another change is running in ${scope}` }
           locks.add(lock)
           this.running.add(lock)
         }
+        if (workflow) continue
         const stale = await this.staleOf(scope, entries, draft.dto.vcs === 'svn')
         if (stale !== null) return { ok: false, code: 'stale', detail: stale }
       }
+      if (workflow) {
+        const changed: string[] = []
+        for (const [scope, entries] of groups)
+          for (const target of entries)
+            if (await this.staleOf(scope, [target], draft.dto.vcs === 'svn') !== null) changed.push(target.entry.displayPath)
+        if (changed.length > 0) return { ok: false, code: 'stale', detail: this.deps.workflow!.changed(changed) }
+      }
       if (this.owned(ownerId, request.draftId) !== draft)
         return { ok: false, code: 'unknown-draft', detail: 'The commit dialog closed before the commit started' }
-      if (!this.setMessage(ownerId, request.draftId, message))
+      if (workflow) {
+        const refusal = this.deps.workflow!.check(draft.dto, workflow)
+        if (refusal) return { ok: false, code: 'stale', detail: refusal }
+        if (targets.value.some((target) => target.fingerprint === undefined))
+          return { ok: false, code: 'stale', detail: 'Reload the source files before approving Finish' }
+      }
+      const refused = claim?.()
+      if (refused) return refused
+      if (message !== draft.dto.message && !this.setMessage(ownerId, request.draftId, message))
         return fail('The commit message could not be saved')
       draft.dto.phase = { kind: 'running', startedAt }
-      if (draft.dto.vcs === 'svn') draft.committedPaths = []
+      if (draft.dto.vcs === 'svn') draft.committedPaths ??= []
       delete draft.externalReview
       this.bump(draft)
+      if (workflow) {
+        const reviewed: Record<string, string> = {}
+        for (const { entry, fingerprint } of targets.value) {
+          reviewed[entry.path] = fingerprint!
+          if (entry.previousPath !== null) reviewed[entry.previousPath] = 'missing'
+        }
+        draft.dto.workflow = { workflowId: workflow.workflowId, acceptedAt: startedAt, lockRoots: [...locks] }
+        this.bump(draft)
+        const result = await this.deps.workflow!.start(draft.dto, workflow, Object.keys(reviewed), reviewed)
+        // The refusal answers the press and stays in the Finish until its next preparation; a failed
+        // phase would stay on the shared review beside the next passed checks.
+        if (!result.ok) {
+          delete draft.dto.workflow
+          draft.dto.phase = { kind: 'editing' }
+          this.bump(draft)
+        } else this.refreshWorkflow(draft)
+        return result
+      }
       temporary = await mkdtemp(join(tmpdir(), 'jamat-v3-commit-'))
       const messageFile = join(temporary, 'message.txt')
       await writeFile(messageFile, message.replace(/\n?$/, '\n'), 'utf8')
       for (const [scope, entries] of groups) {
-        if (completed.length > 0 && this.owned(ownerId, request.draftId) !== draft)
-          return fail('The commit dialog closed before the remaining groups were committed')
         if (!PathCompare.isInside(actualScope, await realpath(scope)))
           return fail(`${scope} points outside the commit scope; reload the list`, true)
         const stale = await this.staleOf(scope, entries, draft.dto.vcs === 'svn')
@@ -515,6 +814,11 @@ export class VersioningCommitManager {
           // An update that happened leaves the shown list behind whatever the retry did.
           if (!result.ok) return fail(result.detail, updateOutput !== null)
           draft.committedPaths = [...new Set([...(draft.committedPaths ?? []), ...result.value.committedPaths])]
+          const published = new Set(result.value.committedPaths.map(PathCompare.normalized))
+          const omittedPaths = targets.map((target) => target.absolutePath).filter((path) => !published.has(PathCompare.normalized(path)))
+          draft.dto.published = [...(draft.dto.published ?? []), { scopeRoot: scope, revision: result.value.revision, paths: [...result.value.committedPaths],
+            ...(omittedPaths.length === 0 ? {} : { omittedPaths }) }]
+          this.bump(draft)
           completed.push({ scope, revision: result.value.revision,
             output: updateOutput === null ? result.value.output : `${updateOutput}\n${result.value.output}` })
         }
@@ -522,6 +826,8 @@ export class VersioningCommitManager {
           const paths = entries.flatMap(({ entry }) => entry.status === 'renamed' && entry.previousPath !== null ? [entry.path, entry.previousPath] : [entry.path])
           const result = await this.deps.git.commit(scope, paths, messageFile, onProgress)
           if (!result.ok) return fail(result.detail)
+          draft.dto.published = [...(draft.dto.published ?? []), { scopeRoot: scope, revision: result.value.hash }]
+          this.bump(draft)
           completed.push({ scope, revision: result.value.hash, output: result.value.output })
         }
         else throw new Error(`Unknown commit VCS: ${JSON.stringify(draft.dto.vcs)}`)
@@ -534,20 +840,25 @@ export class VersioningCommitManager {
       this.svnSettled(draft, completed)
       return { ok: true, revision }
     }
-    catch (error) { return fail(ErrorText.of(error)) }
+    catch (error) {
+      if (workflow && draft.dto.workflow) {
+        this.failed(draft, `Finish acknowledgement was lost: ${ErrorText.of(error)}. Read its original source outcome before retrying.`)
+        return { ok: false, code: 'uncertain', detail: `The source may have accepted Finish (${ErrorText.of(error)}). Verify its original outcome before another approval.` }
+      }
+      return fail(ErrorText.of(error))
+    }
     finally {
       for (const lock of locks) this.running.delete(lock)
-      if (completed.length > 0)
-        for (const scope of new Set([draft.cwd, ...completed.map((item) => item.scope)])) this.deps.sessions.settleVcs(scope)
       if (temporary !== null) await rm(temporary, { recursive: true, force: true })
+      this.releaseUnattached(draft.dto.draftId)
     }
   }
 
   async revert(ownerId: string, request: VersioningRevertRequest,
-    confirm: (paths: readonly string[], vcs: FileChangesVcsId) => Promise<boolean>): Promise<VersioningRevertResult> {
+    confirm: (paths: readonly string[], vcs: FileChangesVcsId) => Promise<boolean>, claim?: () => VersioningCommitRunResult | null): Promise<VersioningRevertResult> {
     const draft = this.owned(ownerId, request.draftId)
     if (draft === null) return { ok: false, code: 'unknown-draft', detail: 'The commit dialog no longer exists' }
-    if (this.running.has(draft.lockRoot) || draft.dto.phase.kind === 'running' || draft.dto.phase.kind === 'done')
+    if (this.busy(draft.lockRoot) || draft.dto.phase.kind === 'running' || draft.dto.phase.kind === 'done' || draft.dto.phase.kind === 'cancelled')
       return { ok: false, code: 'busy', detail: 'Another change is running or this dialog has already committed' }
     const snapshot = this.snapshotOf(ownerId, draft, request.snapshotId)
     if (snapshot === null || snapshot.sessionId !== draft.dto.sessionId || snapshot.source.selected !== draft.dto.source)
@@ -576,8 +887,11 @@ export class VersioningCommitManager {
         if (current !== null && !current.isFile())
           return { ok: false, code: 'invalid-target', detail: 'Only regular files can be reverted here' }
       }
+      const refusal = claim?.()
+      if (refusal && !refusal.ok) return refusal
+      if (claim) { draft.dto.phase = { kind: 'running', startedAt: this.now(), detail: 'Reverting reviewed files...' }; this.bump(draft) }
       for (const target of targets.value) {
-        if (this.owned(ownerId, request.draftId) !== draft)
+        if (!claim && this.owned(ownerId, request.draftId) !== draft)
           return { ok: false, code: 'unknown-draft', detail: progress('The commit dialog closed while reverting') }
         const changed = await this.staleOf(draft.dto.scopeRoot, [target], false)
         if (changed !== null) return { ok: false, code: 'stale', detail: progress(changed) }
@@ -593,38 +907,74 @@ export class VersioningCommitManager {
     } catch (error) { return { ok: false, code: 'vcs-failed', detail: progress(ErrorText.of(error)) } }
     finally {
       this.running.delete(draft.lockRoot)
-      if (attempted) {
+      if (attempted || claim && draft.dto.phase.kind === 'running') {
         draft.dto.phase = { kind: 'editing' }
         this.bump(draft)
-        this.settle(draft, draft.dto.scopeRoot)
       }
     }
   }
 
-  async openTortoise(ownerId: string, draftId: string, message: string): Promise<VersioningTortoiseResult> {
+  async openTortoise(ownerId: string, draftId: string, message: string, binding?: { snapshotId: string; fileIds: readonly string[] },
+    claim?: () => VersioningCommitRunResult | null): Promise<VersioningTortoiseResult> {
     const draft = this.owned(ownerId, draftId)
     if (draft === null) return { ok: false, code: 'unknown-draft', detail: 'The commit dialog no longer exists' }
-    if (this.running.has(draft.lockRoot) || draft.dto.phase.kind === 'running' || draft.dto.phase.kind === 'done')
+    if (draft.dto.vcs === 'svn') {
+      if (this.busy(draft.lockRoot)) return { ok: false, code: 'busy', detail: 'Another change is running in this scope' }
+      this.running.add(draft.lockRoot)
+      try {
+        if (await this.worktreeDraft(draft)) return { ok: false, code: 'use-finish', detail: 'use-finish: press Finish in Session actions' }
+      } finally { this.running.delete(draft.lockRoot) }
+    }
+    if (this.busy(draft.lockRoot) || draft.dto.phase.kind === 'running' || draft.dto.phase.kind === 'done' || draft.dto.phase.kind === 'cancelled')
       return { ok: false, code: 'busy', detail: 'Another change is running or this dialog has already committed' }
     if (typeof message !== 'string' || message.length > VersioningCommitLimits.messageMaxCharactersConst)
       return { ok: false, code: 'message-too-long', detail: `The commit message is limited to ${VersioningCommitLimits.messageMaxCharactersConst} characters` }
     // Tortoise has no depth per target: it would list the work below the folder and check it.
     if (draft.targets?.some((target) => target.directory && !target.recursive))
       return { ok: false, code: 'invalid-target', detail: 'Tortoise cannot keep a folder to its own node; it would show and check the work below it. Commit this review here.' }
+    let selected: CommitTarget[] | undefined
+    if (binding) {
+      const snapshot = this.snapshotOf(ownerId, draft, binding.snapshotId)
+      if (!snapshot || snapshot.sessionId !== draft.dto.sessionId || snapshot.source.selected !== draft.dto.source)
+        return { ok: false, code: 'invalid-target', detail: 'The external review file list is no longer owned' }
+      if (draft.dto.selection?.snapshotId !== binding.snapshotId || draft.dto.message !== message)
+        return { ok: false, code: 'stale', detail: 'The shared message or selection changed' }
+      const targets = this.resolveTargets(ownerId, draft, snapshot, binding.fileIds)
+      if (!targets.ok) return targets
+      for (const { entry } of targets.value) {
+        if (entry.nodeKind !== 'directory') continue
+        const recursive = draft.targets === undefined ? PathCompare.isInside(draft.dto.scopeRoot, entry.path)
+          : draft.targets.some((target) => target.directory && target.recursive && PathCompare.isInside(target.path, entry.path))
+        if (!recursive || snapshot.entries.some((child) => PathCompare.isInside(entry.path, child.path) && !binding.fileIds.includes(child.fileId)))
+          return { ok: false, code: 'invalid-target', detail: 'Tortoise checks a directory recursively. Use an explicit recursive directory with every displayed descendant selected, or commit this exact selection here.' }
+      }
+      const selectedPaths = targets.value.map(({ entry }) => entry.path).sort()
+      if (JSON.stringify(selectedPaths) !== JSON.stringify([...draft.dto.selection.paths].sort()))
+        return { ok: false, code: 'stale', detail: 'The selected external review targets changed' }
+      selected = targets.value
+    }
     this.running.add(draft.lockRoot)
     let temporary: string | null = null
     try {
+      if (selected) {
+        const stale = await this.staleOf(draft.dto.scopeRoot, selected, false)
+        if (stale !== null) return { ok: false, code: 'stale', detail: stale }
+      }
+      const refusal = claim?.()
+      if (refusal && !refusal.ok) return refusal
       if (!this.setMessage(ownerId, draftId, message))
         return { ok: false, code: 'vcs-failed', detail: 'The commit message could not be saved' }
       temporary = await mkdtemp(join(tmpdir(), 'jamat-v3-commit-'))
       const messageFile = join(temporary, 'message.txt')
       await writeFile(messageFile, VersioningCommitMessage.normalize(message), 'utf8')
-      if (this.owned(ownerId, draftId) !== draft)
+      if (!claim && this.owned(ownerId, draftId) !== draft)
         return { ok: false, code: 'unknown-draft', detail: 'The commit dialog closed before opening Tortoise' }
       draft.externalReview = 'running'
       this.bump(draft)
       const opened = await this.deps.tortoise.open({ vcs: draft.dto.vcs, scope: draft.dto.scopeRoot, messageFile,
-        ...(draft.dto.paths === undefined ? {} : { paths: draft.dto.paths.map(VersioningCommitPaths.pathOf) }) })
+        ...(selected ? { paths: selected.filter(({ entry }) => !selected!.some((parent) => parent.entry !== entry && parent.entry.nodeKind === 'directory' && PathCompare.isInside(parent.entry.path, entry.path)))
+          .flatMap(({ entry }) => entry.previousPath ? [entry.path, entry.previousPath] : [entry.path]) }
+          : draft.dto.paths === undefined ? {} : { paths: draft.dto.paths.map(VersioningCommitPaths.pathOf) }) })
       if (!opened.ok) {
         delete draft.externalReview
         this.bump(draft)
@@ -632,7 +982,6 @@ export class VersioningCommitManager {
       }
       try { await opened.closed }
       finally { draft.externalReview = 'closed'; this.bump(draft) }
-      this.settle(draft, draft.dto.scopeRoot)
       // TortoiseSVN does not say whether it committed; the cleanup reads the worktree before it removes anything.
       if (draft.dto.vcs === 'svn')
         this.deps.committed?.({ sessionId: draft.dto.sessionId, scopes: [{ scopeRoot: draft.dto.scopeRoot, revision: null }], paths: [] })
@@ -645,6 +994,27 @@ export class VersioningCommitManager {
       this.running.delete(draft.lockRoot)
       if (temporary !== null) await rm(temporary, { recursive: true, force: true })
     }
+  }
+
+  private async externalDiff(ownerId: string, request: Extract<VersioningReviewDecision, { kind: 'external-diff' }>,
+    claim: () => VersioningCommitRunResult | null): Promise<VersioningCommitRunResult> {
+    const draft = this.owned(ownerId, request.draftId)
+    if (!draft) return { ok: false, code: 'unknown-draft', detail: 'The review is no longer attached' }
+    if (this.busy(draft.lockRoot) || VersioningCommitManager.ended(draft)) return { ok: false, code: 'busy', detail: 'The review is running or settled' }
+    const snapshot = this.snapshotOf(ownerId, draft, request.snapshotId)
+    const entry = snapshot?.entries.find((entry) => entry.fileId === request.fileId)
+    if (!snapshot || snapshot.sessionId !== draft.dto.sessionId || snapshot.source.selected !== draft.dto.source
+      || snapshot.defaultBaseline?.baselineId !== request.baselineId || !entry || entry.nodeKind !== 'file'
+      || !VersioningCommitManager.allows(draft, entry) || !PathCompare.isInside(draft.dto.scopeRoot, entry.path))
+      return { ok: false, code: 'invalid-target', detail: 'The diff target or baseline does not belong to this review' }
+    if (!this.deps.externalDiff) return { ok: false, code: 'vcs-failed', detail: 'External diff is unavailable on the source' }
+    this.running.add(draft.lockRoot)
+    try {
+      const refusal = claim()
+      if (refusal) return refusal
+      const result = await this.deps.externalDiff(ownerId, { snapshotId: request.snapshotId, fileId: request.fileId, baselineId: request.baselineId })
+      return result.ok ? { ok: true, revision: '' } : { ok: false, code: 'vcs-failed', detail: result.detail }
+    } finally { this.running.delete(draft.lockRoot) }
   }
 
   private snapshotOf(ownerId: string, draft: Draft, snapshotId: string): FileChangesWorkingTreeSnapshot | null {
@@ -704,7 +1074,7 @@ export class VersioningCommitManager {
         return { ok: false, code: 'external-target', detail: 'A selected path crosses an external boundary; reload the list' }
       if (!access.value.workingState.vcsEntry) continue
       if (draft.dto.vcs === 'git' && entry.nodeKind === 'directory') continue
-      targets.push({ entry, modifiedAt: access.value.workingState.modifiedAt, scopeRoot })
+      targets.push({ entry, modifiedAt: access.value.workingState.modifiedAt, fingerprint: access.value.workingState.fingerprint, scopeRoot })
     }
     return targets.length === 0 ? { ok: false, code: 'no-targets', detail: 'Select at least one changed file' } : { ok: true, value: targets }
   }
@@ -725,6 +1095,8 @@ export class VersioningCommitManager {
       // list that is still correct. The commit leaves that file in place, unversioned. Git is the
       // opposite: its staging adds a present file back, so a deletion there still needs it gone.
       if (target.entry.status !== 'deleted' || !keptLocalDeletions) {
+        if (target.fingerprint !== undefined && await FileChangesFingerprint.of(path) !== target.fingerprint)
+          return `${target.entry.displayPath} changed since you looked; reload the list`
         const current = await lstat(path).catch(() => null)
         if ((current === null ? null : Math.round(current.mtimeMs)) !== target.modifiedAt
           || (current === null && target.entry.status !== 'missing' && target.entry.status !== 'deleted')
@@ -747,7 +1119,7 @@ export class VersioningCommitManager {
   }
 
   private owned(ownerId: string, draftId: string): Draft | null {
-    const draft = this.drafts.get(draftId)
+    const draft = this.drafts.get(draftId) ?? this.closed.get(draftId)?.draft
     return draft?.owners.has(ownerId) && draft.dto.phase.kind !== 'cancelled' ? draft : null
   }
 
@@ -781,7 +1153,6 @@ export class VersioningCommitManager {
         : { ok: false, detail: `SVN update failed or left conflicts:\n${result.detail}` }
     }
     catch (error) { return { ok: false, detail: `SVN update failed: ${ErrorText.of(error)}` } }
-    finally { this.settle(draft, scope) }
   }
 
   private failed(draft: Draft, detail: string, reloadRequired = false): Extract<VersioningCommitRunResult, { ok: false }> {
@@ -800,9 +1171,103 @@ export class VersioningCommitManager {
   }
 
   private now(): number { return this.deps.now?.() ?? Date.now() }
-  private settle(draft: Draft, scope: string): void {
-    for (const cwd of new Set([draft.cwd, scope])) this.deps.sessions.settleVcs(cwd)
+  private persist(): void {
+    const reviews: VersioningReviewRecord[] = [...this.drafts.values(), ...[...this.closed.values()].map(({ draft }) => draft)]
+      .map(({ dto, cwd, lockRoot, targets, committedPaths, externalReview, rejectedSnapshotId, decisions }) => ({
+        dto, cwd, lockRoot, targets, committedPaths, externalReview, rejectedSnapshotId, decisions,
+        ...(this.closed.has(dto.draftId) ? { closedAt: this.closed.get(dto.draftId)!.closedAt } : {}),
+      }))
+    if (this.deps.reviews?.save(reviews) === false) throw new Error('The commit review could not be saved')
+    this.saved.clear()
+    for (const review of reviews) this.saved.set(review.dto.draftId, structuredClone(review))
   }
-  private bump(draft: Draft): void { draft.dto.revision++; this.changed() }
+  private dtoOf(draft: Draft): VersioningCommitDraftDto {
+    this.refreshWorkflow(draft)
+    return { ...structuredClone(draft.dto), repositories: this.repositoriesOf(draft)?.map((row) => ({ ...row, findings: SvnCommitMessageCheck.info(row.message, row.source) })), messageFindings: SvnCommitMessageCheck.info(draft.dto.message, draft.dto.messageSource ?? 'unknown'), ...(this.deps.externalDiffAvailable ? { externalDiffAvailable: this.deps.externalDiffAvailable() } : {}) }
+  }
+
+  /** The review's rows with the message of `root` replaced. A repository this review leaves out keeps its saved text for the review that shows it again. */
+  private repositoryMessagesOf(draft: Draft, root: string, message: string, source: CommitMessageSource): NonNullable<VersioningCommitDraftDto['repositories']> {
+    const repositories = this.repositoriesOf(draft) ?? []
+    const retained = (draft.dto.repositories ?? []).filter((saved) => !repositories.some((row) => row.repository === saved.repository
+      && PathCompare.comparable(row.root) === PathCompare.comparable(saved.root)))
+    return [...repositories.map((row) => PathCompare.comparable(row.root) !== PathCompare.comparable(root) ? row
+      : { ...row, message: VersioningCommitMessage.normalize(message), source, acknowledged: [] }), ...retained]
+  }
+
+  private repositoriesOf(draft: Draft): VersioningCommitDraftDto['repositories'] {
+    const current = this.deps.workflow?.repositories?.(draft.dto)
+    if (current === undefined) return draft.dto.repositories
+    return current.map((row) => {
+      const saved = draft.dto.repositories?.find((prior) => PathCompare.comparable(prior.root) === PathCompare.comparable(row.root)
+        && prior.repository === row.repository)
+      return saved === undefined ? row : { ...row, message: saved.message, source: saved.source, acknowledged: [] }
+    })
+  }
+
+  private refreshWorkflow(draft: Draft): void {
+    if (!draft.dto.workflow || !this.deps.workflow || this.running.has(draft.lockRoot)) return
+    const current = draft.dto.phase
+    const state = current.kind === 'done'
+      ? { kind: 'done' as const, revision: current.revision, output: current.output }
+      : this.deps.workflow.state(draft.dto)
+    let receiptChanged = false
+    for (const decision of draft.decisions ?? []) {
+      const request: unknown = JSON.parse(decision.payload)
+      if (!request || typeof request !== 'object' || !('kind' in request) || request.kind !== 'finish'
+        || !('workflow' in request) || !request.workflow || typeof request.workflow !== 'object'
+        || !('workflowId' in request.workflow) || request.workflow.workflowId !== draft.dto.workflow.workflowId) continue
+      const result: VersioningCommitRunResult | undefined = state.kind === 'done' ? { ok: true, revision: state.revision }
+        : state.kind === 'waiting' || state.kind === 'replaced' ? { ok: false, code: 'vcs-failed', detail: state.detail }
+        : state.kind === 'running' ? { ok: true, revision: '' } : undefined
+      if (result && JSON.stringify(result) !== JSON.stringify(decision.result)) {
+        decision.result = result
+        receiptChanged = true
+      }
+    }
+    if (receiptChanged) this.persist()
+    if (state.kind === 'running') {
+      if (current.kind === 'running') return
+      draft.dto.phase = { kind: 'running', startedAt: draft.dto.workflow.acceptedAt, detail: 'Finish continues on the source computer' }
+    } else if (state.kind === 'waiting' || state.kind === 'uncertain') {
+      if (current.kind === 'failed' && current.detail === state.detail) return
+      draft.dto.phase = { kind: 'failed', detail: state.detail, failedAt: this.now() }
+    } else if (state.kind === 'replaced') {
+      // The draft serves the later Finish's review of the same scope, with the person's text kept;
+      // only its next approval binds it again.
+      delete draft.dto.workflow
+      draft.dto.phase = { kind: 'editing' }
+    } else if (state.kind === 'done') {
+      if (current.kind === 'done' && current.revision === state.revision && current.output === state.output) return
+      draft.dto.phase = { kind: 'done', revision: state.revision, output: state.output, finishedAt: this.now() }
+    } else throw new Error(`Unknown workflow state: ${JSON.stringify(state satisfies never)}`)
+    this.bump(draft)
+  }
+
+  private busy(root: string): boolean {
+    if (this.running.has(root)) return true
+    for (const draft of this.drafts.values()) {
+      if (!draft.dto.workflow || !this.deps.workflow || draft.lockRoot !== root && !draft.dto.workflow.lockRoots?.includes(root)) continue
+      this.refreshWorkflow(draft)
+      if (!draft.dto.workflow || draft.dto.phase.kind === 'done') continue
+      const state = this.deps.workflow.state(draft.dto)
+      if (state.kind === 'running' || state.kind === 'uncertain') return true
+    }
+    return false
+  }
+
+  private bump(draft: Draft): void {
+    if (draft.externalReview === undefined) delete draft.dto.externalReview
+    else draft.dto.externalReview = draft.externalReview
+    draft.dto.revision++
+    try { this.persist() }
+    catch (error) {
+      const previous = this.saved.get(draft.dto.draftId)
+      if (previous) Object.assign(draft, structuredClone(previous))
+      else this.drafts.delete(draft.dto.draftId)
+      throw error
+    }
+    this.changed()
+  }
   private changed(): void { this.revision++; this.deps.onChanged() }
 }

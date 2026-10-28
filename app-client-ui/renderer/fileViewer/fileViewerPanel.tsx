@@ -1,3 +1,5 @@
+import type { SessionFilePorts } from '../../shared/sessionWorkspace'
+import type { AppClientUiBridge } from '../../shared/appClientUiIpc'
 import type { IDockviewPanelProps } from 'dockview'
 import { useCallback, useEffect, useState } from 'react'
 
@@ -24,6 +26,7 @@ import type {
   FileViewerPanelParams,
 } from './fileViewerPanel.types'
 import { FileViewerContent } from './fileViewerContent'
+import { FileImageSurface } from './fileImageSurface'
 import { FileViewerSourceShape } from './fileViewerSourceShape'
 import { PanelFileToolsRegistry } from './panelFileToolsRegistry'
 import { FileViewerZoom, useFileViewerZoomWheel } from './fileViewerZoom'
@@ -35,6 +38,8 @@ import { useWorkingTreeChanges } from './useWorkingTreeChanges'
 import './fileViewerPanel.css'
 
 export type FileViewerPanelProps = IDockviewPanelProps & {
+  ports: SessionFilePorts
+  changesPorts: AppClientUiBridge['fileChanges'] | null
   fileTools: PanelFileToolsRegistry
 }
 
@@ -60,13 +65,16 @@ function FileViewerPanelBody(
   const { current: currentParameters, update: updateParameters } = usePanelParameters(props)
   const sidebar = usePanelSidebar(props, 'workingTree')
   const toolsTab = PanelFileToolsRegistry.tab(sidebar.state.activeView)
+  const ports = props.ports
   const changes = useFileChanges(
     params.sessionId,
+    props.changesPorts,
     params.baselineHint?.workingTreeSource === undefined
       || (sidebar.state.visible && toolsTab === 'fileChanges'),
   )
   const workingTree = useWorkingTreeChanges(
     params.sessionId,
+    props.changesPorts?.workingTree ?? null,
     sidebar.state.visible && toolsTab === 'workingTree',
     params.baselineHint?.workingTreeSource,
   )
@@ -90,9 +98,10 @@ function FileViewerPanelBody(
     params.baselineHint,
     changes,
     workingTree,
+    ports,
     onDocument,
   )
-  const freshness = useFileViewerFreshness(model.document?.documentId ?? null, model.reload)
+  const freshness = useFileViewerFreshness(model.document?.documentId ?? null, model.reload, ports.viewer)
   // A file that is gone has nothing left to show; a refusal of any other kind stays readable.
   useEffect(() => { if (model.sourceMissing) props.api.close() }, [model.sourceMissing, props.api])
   // Held here as well as written, the way the split beside it holds its own: the parameters are
@@ -132,7 +141,7 @@ function FileViewerPanelBody(
       onResize={sidebar.resize}
       onClose={sidebar.toggle}
     >
-      <FileToolsSidebar
+      <FileToolsSidebar changesPorts={props.changesPorts ?? undefined} release={ports.viewer.release} directoryPorts={ports.directories}
         sessionId={params.sessionId}
         documentId={model.document?.documentId ?? null}
         selected={toolsTab}
@@ -197,15 +206,17 @@ function FileViewerPanelBody(
           {model.error && <p className="file-viewer-error">{model.error}</p>}
           {!model.error && !model.document && <p className="file-viewer-note">Opening file...</p>}
           {model.document && (
-            <FileViewerContent
-              document={model.document}
-              mode={model.mode}
-              baselines={model.baselines}
-              text={model.text}
-              diff={model.diff}
-              location={params.location}
-              onOpenSource={openSource}
-            />
+            <FileImageSurface key={model.document.documentId} name={model.document.name}>
+              <FileViewerContent ports={ports.viewer}
+                document={model.document}
+                mode={model.mode}
+                baselines={model.baselines}
+                text={model.text}
+                diff={model.diff}
+                location={params.location}
+                onOpenSource={openSource}
+              />
+            </FileImageSurface>
           )}
         </div>
       </section>

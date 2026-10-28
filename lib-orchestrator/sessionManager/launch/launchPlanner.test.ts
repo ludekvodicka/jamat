@@ -51,6 +51,78 @@ describe('lib-orchestrator/sessionManager/launch/launchPlanner', () => {
     return LaunchPlanner.plan(value, { platform, environment: environmentConst, agentArgs })
   }
 
+  it('characterizes the unchanged main-account environment for both agents', () => {
+    const environment = { PATH: '/usr/bin', CLAUDE_CONFIG_DIR: '/main/claude', CODEX_HOME: '/main/codex',
+      USER_FLAG: 'kept', JAMAT_V3_CONFIG_DIR: '/private', JAMAT_OLD: 'filtered' }
+    for (const agentId of ['claude', 'codex'] as const) {
+      const value = record({ kind: 'agent', agent: { agentId, launchMode: 'new' } })
+      expect(LaunchPlanner.plan(value, { platform: 'linux', environment, agentArgs: [] }).env).toEqual({
+        PATH: '/usr/bin', CLAUDE_CONFIG_DIR: '/main/claude', CODEX_HOME: '/main/codex',
+        USER_FLAG: 'kept', JAMAT_V3_SESSION_ID: 's1',
+      })
+    }
+  })
+
+  it('injects an added account home after environment filtering for agents and login shells', () => {
+    const accountEnv = { CLAUDE_CONFIG_DIR: '/profiles/second' }
+    for (const kind of ['agent', 'shell'] as const) {
+      const value = record({ kind, ...(kind === 'agent' ? { agent: { agentId: 'claude' as const, launchMode: 'new' as const } } : {}) })
+      const launch = LaunchPlanner.plan(value, { platform: 'linux', environment: { CLAUDE_CONFIG_DIR: '/main', JAMAT_OLD: 'no' },
+        accountEnv, agentArgs: [] })
+      expect(launch.env.CLAUDE_CONFIG_DIR).toBe('/profiles/second')
+      expect(launch.env.JAMAT_OLD).toBeUndefined()
+    }
+  })
+
+  it('prepends the SVN shim only for an SVN worktree agent', () => {
+    const state = mkdtempSync(join(tmpdir(), 'jamat-shim-env-'))
+    try {
+      const source = record({ kind: 'agent', agent: { agentId: 'claude', nativeSessionId: 'n1', launchMode: 'new' },
+        worktree: { kind: 'svn', repositoryRoot: 'C:/owner', worktreePath: 'C:/owner/.worktrees/tree', branch: 'url', baseCommit: 'r1' } })
+      const options = { platform: 'win32' as const, environment: environmentConst, localStateDir: state,
+        tools: { node: () => ({ ok: true as const, command: process.execPath }), resolve: () => ({ ok: true as const, command: 'C:/svn tools/svn.exe', prefixArgs: [], env: {} }) } }
+      const launch = LaunchPlanner.plan(source, options)
+      expect(launch.env.PATH.split(';')[0]).toBe(join(state, 'svn-shim'))
+      expect(launch.env.JAMAT_V3_REAL_SVN).toBe('C:/svn tools/svn.exe')
+      expect(LaunchPlanner.plan({ ...source, worktree: undefined }, options).env.JAMAT_V3_REAL_SVN).toBeUndefined()
+      expect(LaunchPlanner.plan({ ...source, worktree: undefined }, { ...options, svnWritesBlocked: true }).env.JAMAT_V3_REAL_SVN).toBe('C:/svn tools/svn.exe')
+    } finally { rmSync(state, { recursive: true, force: true }) }
+  })
+
+  // Claude's auto mode blocked the line of a resume handoff: the worker had no rule for Jamat's own CLI (UA1-J14R-2).
+  it('allows a Claude worktree worker exactly the CLI lines its handoffs give, and nobody else', () => {
+    const state = mkdtempSync(join(tmpdir(), 'jamat-worker-rights-'))
+    try {
+      const worker = record({ kind: 'agent', agent: { agentId: 'claude', nativeSessionId: 'n1', launchMode: 'new' },
+        worktree: { kind: 'svn', repositoryRoot: 'D:/owner', worktreePath: 'D:/owner/.worktrees/tree', branch: 'url', baseCommit: 'r1' } })
+      const lines = ["'node' '/cli.cjs' 'sessions' 'worktree' '--self'", "'node' '/cli.cjs' 'commit' 'propose' '--self' '--message-file'"]
+      const options = { platform: 'linux' as const, environment: environmentConst, localStateDir: state, workerCli: lines,
+        tools: { node: () => ({ ok: true as const, command: process.execPath }), resolve: () => ({ ok: true as const, command: '/usr/bin/svn', prefixArgs: [], env: {} }) } }
+      expect(LaunchPlanner.plan(worker, options).args).toEqual(['--allowedTools', `Bash(${lines[0]}:*)`, `Bash(${lines[1]}:*)`, '--resume', 'n1'])
+      expect(LaunchPlanner.plan({ ...worker, agent: { ...worker.agent!, permission: 'merger' } }, { ...options, jamatCli: 'node "/w.mjs"' }).args)
+        .not.toContain(`Bash(${lines[0]}:*)`)
+      expect(LaunchPlanner.plan({ ...worker, agent: { agentId: 'codex', nativeSessionId: 'n1', launchMode: 'new' } }, options).args).not.toContain('--allowedTools')
+      expect(LaunchPlanner.plan({ ...worker, worktree: undefined }, options).args).toEqual(['--resume', 'n1'])
+    } finally { rmSync(state, { recursive: true, force: true }) }
+  })
+
+  // A node child of the worker's shell tool outlived the worker's stop and held the worktree (UA1-J14-7).
+  it('stops the descendants of a worktree session and of a script run, never of another session', () => {
+    const worktree = { kind: 'svn' as const, repositoryRoot: 'D:/owner', worktreePath: 'D:/owner/.worktrees/tree', branch: 'url', baseCommit: 'r1' }
+    const agent = record({ kind: 'agent', agent: { agentId: 'codex', launchMode: 'new' } })
+    const options = { platform: 'linux' as const, environment: environmentConst, agentArgs: [] }
+    const state = mkdtempSync(join(tmpdir(), 'jamat-descendants-'))
+    try {
+      const tools = { node: () => ({ ok: true as const, command: process.execPath }), resolve: () => ({ ok: true as const, command: '/usr/bin/svn', prefixArgs: [], env: {} }) }
+      expect(LaunchPlanner.plan({ ...agent, worktree }, { ...options, localStateDir: state, tools }).stopDescendants).toBe(true)
+    } finally { rmSync(state, { recursive: true, force: true }) }
+    expect(LaunchPlanner.plan({ ...agent, worktree: { ...worktree, kind: 'git' } }, options).stopDescendants).toBe(true)
+    expect(LaunchPlanner.plan(agent, options).stopDescendants).toBeUndefined()
+    expect(LaunchPlanner.plan(record(), options).stopDescendants).toBeUndefined()
+    expect(LaunchPlanner.plan(record({ commands: [{ command: 'install', cwd: 'D:\\work' }],
+      scriptOf: { sessionId: 'parent', phase: 'before', scriptId: 'setup', name: 'setup' } }), options).stopDescendants).toBe(true)
+  })
+
   it('runs a shell through the platform shell', () => {
     expect(plan(record(), 'win32').command).toBe('C:\\Windows\\system32\\cmd.exe')
     expect(plan(record(), 'win32').args).toEqual([])

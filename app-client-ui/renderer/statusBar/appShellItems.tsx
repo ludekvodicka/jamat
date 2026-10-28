@@ -12,6 +12,7 @@ import { SessionModelItem } from './sessionModelItem'
 import type { SessionModelCurrent } from '../sessionModel/sessionModelStore'
 import type { StatusBarItem } from './statusBar'
 import { UpdateStatusItem } from './updateStatusItem'
+import { AgentCliUpdateStatusItem, type AgentCliUpdatePorts } from './agentCliUpdateStatusItem'
 import type { ActiveAgentTerminal } from './useActiveAgentTerminal'
 
 /**
@@ -31,12 +32,14 @@ export class AppShellItems {
     update: AutoUpdateApi,
     hostStatus: AppShellHostStatus | null,
     currentProject: CurrentProject | null,
+    cliUpdates: AgentCliUpdatePorts,
   ): readonly StatusBarItem[] {
     const items: StatusBarItem[] = []
     // Before app:info answers there is no version to draw, rather than a placeholder reading.
     if (appInfo)
       items.push({ key: 'version', node: <span>{`v${appInfo.appVersion}`}</span> })
     items.push({ key: 'update', node: <UpdateStatusItem api={update} /> })
+    items.push({ key: 'cli-updates', node: <AgentCliUpdateStatusItem ports={cliUpdates} /> })
     if (hostStatus !== null)
       items.push({
         key: 'host',
@@ -85,11 +88,12 @@ export class AppShellItems {
           key: 'session-model',
           node: <SessionModelItem reading={widgets.sessionModel} compact={widgets.compact} />,
         })
-      items.push({
+      if (!focus.remoteEndpointId) items.push({
         key: 'rate',
         node: (
           <RateStatusItem
             agentId={focus.agentId}
+            accountId={focus.accountId}
             ports={widgets.rate.ports}
             store={widgets.rate.store}
           />

@@ -1,3 +1,4 @@
+import type { CommitMessageSource, CommitMessageFindingInfo } from '../../lib-orchestrator/svn/svnCommitMessageCheck'
 import type { FileChangeEntry, FileChangesVcsId, FileChangesWorkingTreeSnapshot, FileChangesWorkingTreeSnapshotResult } from '../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import type { RemoteControlCommitPath } from '../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import type { CommitProgress } from '../../lib-orchestrator/shared/commitProgress.types'
@@ -86,7 +87,13 @@ export type VersioningCommitPhase =
   | { kind: 'failed'; detail: string; failedAt: number }
 
 export interface VersioningCommitDraftDto {
+  workflow?: { workflowId: string; acceptedAt: number; lockRoots?: readonly string[] }
   draftId: string
+  epoch?: string
+  externalReview?: 'running' | 'closed'
+  externalDiffAvailable?: boolean
+  published?: { scopeRoot: string; revision: string; paths?: readonly string[]; omittedPaths?: readonly string[] }[]
+  selection?: { paths: readonly string[]; snapshotId: string }
   sessionId: string
   vcs: FileChangesVcsId
   scopeRoot: string
@@ -99,15 +106,41 @@ export interface VersioningCommitDraftDto {
   scopeTooltip: string
   source: FileChangesVcsId
   message: string
+  messageSource?: CommitMessageSource
+  messageAt?: number
+  messageFindings?: CommitMessageFindingInfo[]
+  repositories?: Array<import('../../lib-orchestrator/worktrees/worktreeState').WorktreeRepositoryReview & { findings?: CommitMessageFindingInfo[] }>
   editedByPerson: boolean
   proposedByAgent: boolean
   phase: VersioningCommitPhase
   revision: number
 }
 
+export class VersioningCommitReceipts {
+  static unresolved(draft: Pick<VersioningCommitDraftDto, 'published'> | null): NonNullable<VersioningCommitDraftDto['published']> {
+    const receipts = draft?.published ?? []
+    return receipts.flatMap((receipt, index) => {
+      const later = new Set(receipts.slice(index + 1).flatMap((next) => next.paths ?? []).map((path) => path.replaceAll('\\', '/')))
+      const omittedPaths = receipt.omittedPaths?.filter((path) => !later.has(path.replaceAll('\\', '/'))) ?? []
+      return omittedPaths.length > 0 ? [{ ...receipt, omittedPaths }] : []
+    })
+  }
+
+  /** Old peers reject new receipt keys and auto-close a done phase, hiding a partial result. */
+  static forLegacyPeer(draft: VersioningCommitDraftDto): VersioningCommitDraftDto {
+    if (!draft.published?.some((receipt) => receipt.omittedPaths !== undefined)) return draft
+    const unresolved = VersioningCommitReceipts.unresolved(draft)
+    const phase = draft.phase.kind === 'done' && unresolved.length > 0
+      ? { kind: 'failed' as const, failedAt: draft.phase.finishedAt,
+        detail: `Published ${draft.phase.revision}. SVN did not report these selected paths:\n${unresolved.flatMap((receipt) => receipt.omittedPaths ?? []).join('\n')}\nInspect the revision and remaining changes. Do not repeat the published commit.` }
+      : draft.phase
+    return { ...draft, phase, published: draft.published.map(({ omittedPaths: _omitted, ...receipt }) => receipt) }
+  }
+}
+
 export type VersioningCommitOpenResult =
   | { ok: true; value: { draftId: string; scopeRoot: string; title: string; paths?: readonly VersioningCommitPath[] }; messageApplied: boolean }
-  | { ok: false; code: 'unknown-session' | 'no-working-copy' | 'outside-session' | 'remote-session' | 'message-too-long'; detail: string }
+  | { ok: false; code: 'use-finish' | 'unknown-session' | 'no-working-copy' | 'outside-session' | 'remote-session' | 'message-too-long'; detail: string }
 
 export interface VersioningCommitRunRequest {
   draftId: string
@@ -115,13 +148,45 @@ export interface VersioningCommitRunRequest {
   fileIds: readonly string[]
   message: string
   includeExternals?: true
+  expectedRevision?: number
+  epoch?: string
 }
 
+export type { RemoteReviewEdit as VersioningReviewEdit, RemoteReviewDecision as VersioningReviewDecision } from '../../lib-orchestrator/remoteControl/remoteReviewApi.types'
+
+export type VersioningReviewEditResult =
+  | { ok: true; value: VersioningCommitDraftDto }
+  | { ok: false; code: 'stale' | 'busy' | 'invalid-target' | 'unknown-draft'; detail: string; current?: VersioningCommitDraftDto }
+
 export type VersioningCommitRunResult =
-  | { ok: true; revision: string }
-  | { ok: false; code: 'unknown-draft' | 'busy' | 'stale' | 'no-targets' | 'invalid-target' | 'external-target' | 'message-too-long' | 'vcs-failed'; detail: string; reloadRequired?: true }
+  | { ok: true; revision: string; reviewId?: string }
+  | { ok: false; code: 'use-finish' | 'unknown-draft' | 'busy' | 'stale' | 'no-targets' | 'invalid-target' | 'external-target' | 'message-too-long' | 'vcs-failed' | 'forbidden' | 'conflict' | 'uncertain'; detail: string; reloadRequired?: true;
+      setup?: import('../../lib-orchestrator/sessionManager/sessionManagerApi.types').SessionSetupAgreement; working?: true }
 
 export interface VersioningCommitOpenSessions {
   revision: number
   sessionIds: readonly string[]
+  reviews?: readonly (Pick<VersioningCommitDraftDto, 'draftId' | 'sessionId' | 'vcs' | 'scopeRoot' | 'paths'> & { workflow: boolean })[]
+}
+import type { RemoteWorkflowReview } from '../../lib-orchestrator/remoteControl/remoteReviewApi.types'
+
+export type VersioningWorkflowState =
+  | { kind: 'running' }
+  | { kind: 'waiting'; detail: string }
+  | { kind: 'uncertain'; detail: string }
+  /** A later Finish of the same worktree took over; the approval holds no publication of its own any more. */
+  | { kind: 'replaced'; detail: string }
+  | { kind: 'done'; revision: string; output: string }
+
+export interface VersioningWorkflowPort {
+  repositories?(draft: VersioningCommitDraftDto): VersioningCommitDraftDto['repositories']
+  messageSource?(draft: VersioningCommitDraftDto): CommitMessageSource | undefined
+  offers(sessionId: string, vcs: 'svn' | 'git', scope: string): boolean
+  /** The session commits only through its Finish: an SVN worktree, or its landed row. */
+  owns?(sessionId: string): boolean
+  check(draft: VersioningCommitDraftDto, request: RemoteWorkflowReview): string | null
+  start(draft: VersioningCommitDraftDto, request: RemoteWorkflowReview, selection: string[], reviewed: Record<string, string>): Promise<VersioningCommitRunResult>
+  state(draft: VersioningCommitDraftDto): VersioningWorkflowState
+  /** The refusal of an approval whose files changed after the person read them, naming those files. */
+  changed(paths: readonly string[]): string
 }

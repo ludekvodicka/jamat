@@ -1,3 +1,5 @@
+import { SvnShim } from './svnShim'
+import { OrchestratorPaths } from '../../shared/orchestratorPaths'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -32,6 +34,9 @@ type SpanningLaunchOutcome =
   | { launch: null; problem: string }
 
 export interface LaunchPlanOptions {
+  accountEnv?: Readonly<Record<string, string>>
+  svnWritesBlocked?: boolean
+  localStateDir?: string
   codexBridge?: (native: RuntimeLaunchSpec, agentArgs: string[]) => RuntimeLaunchSpec
   controller?: { configIdentity: string; channel: RuntimeChannel }
   cols?: number
@@ -64,6 +69,10 @@ export interface LaunchPlanOptions {
    * nothing; Codex has no such flag and is never handed one.
    */
   claudeSettingsFile?: string
+  /** This client's own Jamat CLI line (`RunTools.agentCli`), which the rights of a reopened merger name. */
+  jamatCli?: string
+  /** The CLI lines a worktree worker's handoffs give (`WorkerHandoffs.linesOf`), which its launch allows. */
+  workerCli?: readonly string[]
   /**
    * The two shapes this class decides - the win32 wrap and the stripped environment - are the whole
    * reason it exists, and both are read off the running process. They are injectable so a test can
@@ -78,7 +87,7 @@ export interface LaunchPlanOptions {
    */
   spanningLaunch?: (command: string) => Win32SpanningLaunch | null
   /** Where a direct-process record's tool is on this machine; a process record planned without it is a bug. */
-  tools?: Pick<RunTools, 'resolve'>
+  tools?: Pick<RunTools, 'resolve'> & Partial<Pick<RunTools, 'node'>>
 }
 
 /**
@@ -105,9 +114,13 @@ export class LaunchPlanner {
     const platform = options?.platform ?? process.platform
     const environment = options?.environment ?? process.env
     const common = {
+      // A worktree session's children stop with it like a script run's: a child of the worker's
+      // shell tool that outlived the worker held the worktree its Finish removes (UA1-J14-7).
+      ...(record.scriptOf === undefined && record.worktree === undefined ? {} : { stopDescendants: true as const }),
       cwd: LaunchPlanner.cwdOf(record),
       env: {
         ...ChildEnvironment.withoutJamat(environment),
+        ...options?.accountEnv,
         [LaunchPlanner.sessionIdVariableConst]: record.sessionId,
         ...(options?.controller === undefined ? {} : {
           [LaunchPlanner.sessionControllerVariableConst]: options.controller.configIdentity,
@@ -125,10 +138,22 @@ export class LaunchPlanner {
       return { command: LaunchPlanner.shellCommand(platform, environment), args: [], ...common }
     }
     else if (record.kind === 'agent') {
+      if (record.worktree?.kind === 'svn' || options?.svnWritesBlocked === true) {
+        const svn = options?.tools?.resolve('svn')
+        if (svn === undefined || !svn.ok) throw new Error(svn?.detail ?? 'Worktree workers require the resolved SVN executable')
+        const directory = SvnShim.ensure(options?.localStateDir ?? OrchestratorPaths.machineRoot())
+        const env = common.env as Record<string, string>
+        const pathKey = Object.keys(env).find((key) => key.toLowerCase() === 'path') ?? 'PATH'
+        env[pathKey] = `${directory}${platform === 'win32' ? ';' : ':'}${env[pathKey] ?? ''}`
+        env.JAMAT_V3_REAL_SVN = svn.command
+        const node = options?.tools?.node?.()
+        if (node === undefined || !node.ok) throw new Error(node?.detail ?? 'Worktree workers require the resolved Node executable')
+        env.JAMAT_V3_SVN_SHIM_NODE = node.command.replace(/\\/g, '/')
+      }
       const agent = record.agent
       if (!agent)
         throw new Error(`An agent session without an agent: ${JSON.stringify(record.sessionId)}`)
-      const modeArgs = options?.agentArgs ?? AgentPresets.reopenArgs(agent)
+      const modeArgs = options?.agentArgs ?? AgentPresets.reopenArgs(agent, options?.jamatCli)
       // In FRONT of the mode args: Codex reads `resume` and `fork` as subcommands, and a root option
       // after one of them is not a root option any more. The initial prompt stays where the presets
       // put it, last inside the mode args, so nothing here can be read as more prompt either.
@@ -147,7 +172,9 @@ export class LaunchPlanner {
           ? []
           : LaunchPlanner.settingsArgsOf(agent.agentId, options.claudeSettingsFile)),
       ]
-      const args = [...front, ...modeArgs]
+      // A worker only: a merger or a resolver has rights of its own and never gains these.
+      const args = record.worktree?.kind === 'svn' && agent.permission === undefined && options?.workerCli !== undefined
+        ? AgentPresets.workerRightsOf(agent.agentId, [...front, ...modeArgs], options.workerCli) : [...front, ...modeArgs]
       const native = platform === 'win32'
         ? { ...LaunchPlanner.win32Agent(agent.agentId, args, environment, options), ...common }
         : { command: agent.agentId, args, ...common }

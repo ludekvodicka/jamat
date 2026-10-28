@@ -28,7 +28,7 @@ describe('lib-orchestrator/sessionManager/launch/runTools', () => {
         resourcesRoot: null, applicationRoot, platform: 'win32',
         environment: { PATH: bin, PATHEXT: '.COM;.EXE;.BAT;.CMD', ComSpec: 'C:\\Windows\\system32\\cmd.exe' },
       })
-      expect(tools.resolve('svn')).toEqual({ ok: true, command: join(bin, 'svn.exe'), prefixArgs: [], env: {} })
+      expect(tools.resolve('svn')).toEqual({ ok: true, command: join(bin, 'svn.exe'), prefixArgs: [], env: { LC_ALL: 'C', LANG: 'C' } })
     })
 
     it('says so when PATH holds no svn.exe, even with a shim of that name', () => {
@@ -41,9 +41,9 @@ describe('lib-orchestrator/sessionManager/launch/runTools', () => {
       })
     })
 
-    it('leaves the PATH lookup to the spawn elsewhere', () => {
+    it('refuses missing SVN before a PATH shim can recursively invoke itself', () => {
       const tools = new RunTools({ resourcesRoot: null, applicationRoot, platform: 'linux', environment: {} })
-      expect(tools.resolve('svn')).toEqual({ ok: true, command: 'svn', prefixArgs: [], env: {} })
+      expect(tools.resolve('svn')).toEqual({ ok: false, detail: 'svn was not found on PATH; install the Subversion command-line client' })
     })
   })
 
@@ -91,6 +91,26 @@ describe('lib-orchestrator/sessionManager/launch/runTools', () => {
       const empty = directory()
       expect(new RunTools({ resourcesRoot: null, applicationRoot: empty, environment: {} }).resolve('jamat-cli')).toEqual({
         ok: false, detail: `The development Jamat CLI is missing: ${join(empty, 'app-client-cli', 'start.ts')}`,
+      })
+    })
+  })
+
+  // The merger's brief and its allow list name this line, so it must be THIS client's CLI: the
+  // person's ~/.claude skill can belong to another installation (UA1-J14-9).
+  describe('agentCli', () => {
+    it('names the appjamat-v3 wrapper this client ships, with forward slashes and quotes', () => {
+      const root = directory(['skills/claude/appjamat-v3/scripts/jamat-v3.mjs'])
+      const tools = new RunTools({ resourcesRoot: null, applicationRoot: root, platform: 'win32', environment: {} })
+      expect(tools.agentCli()).toEqual({
+        ok: true, command: `node "${join(root, 'skills', 'claude', 'appjamat-v3', 'scripts', 'jamat-v3.mjs').replaceAll('\\', '/')}"`,
+      })
+    })
+
+    it('says which wrapper is missing', () => {
+      const root = directory()
+      const tools = new RunTools({ resourcesRoot: null, applicationRoot: root, platform: 'win32', environment: {} })
+      expect(tools.agentCli()).toEqual({
+        ok: false, detail: `The Jamat CLI wrapper is missing: ${join(root, 'skills', 'claude', 'appjamat-v3', 'scripts', 'jamat-v3.mjs')}`,
       })
     })
   })

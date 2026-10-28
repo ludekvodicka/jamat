@@ -8,6 +8,7 @@ describe('lib-orchestrator/sessionManager/hostMemory/hostMemoryReadings', () => 
   const hour = 60 * minute
   const mebibyte = 1024 ** 2
   const startedAt = 1_000_000
+  const started = new Date(startedAt).toLocaleString()
 
   /** One sample every ten minutes from the start, rss growing by `perSampleMegabytes`. */
   function health(uptime: number, firstMegabytes: number, perSampleMegabytes: number): HostHealthResult {
@@ -25,7 +26,7 @@ describe('lib-orchestrator/sessionManager/hostMemory/hostMemoryReadings', () => 
 
     expect(reading).toEqual({
       lines: [
-        'Memory 512 MB (heap 120 MB), up 2 d 4 h',
+        `Memory 512 MB (heap 120 MB), Host started ${started}`,
         'Growth: 6 h +36 MB · 12 h +72 MB · 24 h +144 MB',
       ],
       warning: null,
@@ -33,20 +34,28 @@ describe('lib-orchestrator/sessionManager/hostMemory/hostMemoryReadings', () => 
     })
   })
 
-  it('says n/a for a window longer than the uptime, and names the uptime', () => {
+  it('says n/a for a window longer than the uptime, and why', () => {
     const reading = HostMemoryReadings.of(health(7 * hour, 200, 1))
 
     expect(reading.lines).toEqual([
-      'Memory 242 MB (heap 120 MB), up 7 h',
-      'Growth: 6 h +36 MB · 12 h n/a · 24 h n/a (up 7 h)',
+      `Memory 242 MB (heap 120 MB), Host started ${started}`,
+      'Growth: 6 h +36 MB · 12 h n/a · 24 h n/a (n/a: the Host has not run that long)',
     ])
     expect(reading.warning).toBeNull()
+  })
+
+  // UA1-J10-10: the reading is composed per ten-minute sample, so "up 0 min" stood six minutes after the start.
+  it('names when the Host started rather than an uptime that is stale until the next sample', () => {
+    const reading = HostMemoryReadings.of(health(0, 100, 0))
+
+    expect(reading.lines[0]).toBe(`Memory 100 MB (heap 120 MB), Host started ${started}`)
+    expect(reading.lines.join('\n')).not.toContain('up 0 min')
   })
 
   it('reads a Host up for minutes as all n/a without a warning', () => {
     const reading = HostMemoryReadings.of(health(20 * minute, 100, 200))
 
-    expect(reading.lines[1]).toBe('Growth: 6 h n/a · 12 h n/a · 24 h n/a (up 20 min)')
+    expect(reading.lines[1]).toBe('Growth: 6 h n/a · 12 h n/a · 24 h n/a (n/a: the Host has not run that long)')
     // 400 MB grown, but under an hour of uptime is too little history to call it a leak
     expect(reading.warning).toBeNull()
   })
@@ -76,7 +85,7 @@ describe('lib-orchestrator/sessionManager/hostMemory/hostMemoryReadings', () => 
   it('warns when rss passes 1.5 GB, whatever the growth', () => {
     const reading = HostMemoryReadings.of(health(30 * hour, 1_600, 0))
 
-    expect(reading.lines[0]).toBe('Memory 1.6 GB (heap 120 MB), up 1 d 6 h')
+    expect(reading.lines[0]).toBe(`Memory 1.6 GB (heap 120 MB), Host started ${started}`)
     expect(reading.warning).toBe('Host memory is 1.6 GB')
   })
 
@@ -96,7 +105,7 @@ describe('lib-orchestrator/sessionManager/hostMemory/hostMemoryReadings', () => 
   it('writes a shrinking window with its own sign', () => {
     const reading = HostMemoryReadings.of(health(7 * hour, 500, -1))
 
-    expect(reading.lines[1]).toBe('Growth: 6 h -36 MB · 12 h n/a · 24 h n/a (up 7 h)')
+    expect(reading.lines[1]).toBe('Growth: 6 h -36 MB · 12 h n/a · 24 h n/a (n/a: the Host has not run that long)')
   })
 
   it('says a Host without host.health cannot report, and does not warn', () => {

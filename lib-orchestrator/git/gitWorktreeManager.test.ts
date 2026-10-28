@@ -287,51 +287,6 @@ describe('lib-orchestrator/git/gitWorktreeManager', () => {
       .toMatchObject({ ok: false, code: 'not-a-repo' })
   })
 
-  it('sums the numstat, counts a binary file and adds the untracked ones', async () => {
-    const { root, commonDir } = repository()
-    const worktreePath = join(root, '.worktrees', 'feature')
-    const runner = scripted(root, commonDir, (args) => {
-      if (args[0] === 'diff') return { stdout: '4\t2\tsrc/a.ts\n10\t0\tsrc/b.ts\n-\t-\tlogo.png\n' }
-      if (args[0] === 'status') return { stdout: '?? note.txt\n M src/a.ts\n' }
-      return null
-    })
-    const diff = valueOf(
-      await new GitWorktreeManager(runner).refreshDiff(worktreePath, headShaConst),
-    )
-
-    expect(diff).toMatchObject({ added: 14, removed: 2, changedFiles: 4 })
-    expect(runner.calls[0]).toEqual({
-      cwd: worktreePath,
-      args: ['diff', '--numstat', '--end-of-options', headShaConst, '--'],
-    })
-  })
-
-  it('measures once per 30 s unless the caller forces it', async () => {
-    const { root, commonDir } = repository()
-    const worktreePath = join(root, '.worktrees', 'feature')
-    const runner = scripted(root, commonDir, (args) =>
-      args[0] === 'diff' ? { stdout: '1\t1\tsrc/a.ts\n' } : null)
-    const manager = new GitWorktreeManager(runner)
-
-    const first = valueOf(await manager.refreshDiff(worktreePath, headShaConst))
-    const throttled = valueOf(await manager.refreshDiff(worktreePath, headShaConst))
-    expect(throttled).toBe(first)
-    expect(runner.calls).toHaveLength(2)
-
-    valueOf(await manager.refreshDiff(worktreePath, headShaConst, { force: true }))
-    expect(runner.calls).toHaveLength(4)
-  })
-
-  it('refuses a base that is not a commit id before it reaches git', async () => {
-    const { root, commonDir } = repository()
-    const runner = scripted(root, commonDir)
-    const result = await new GitWorktreeManager(runner)
-      .refreshDiff(join(root, '.worktrees', 'feature'), '--output=/tmp/pwned')
-
-    expect(result).toMatchObject({ ok: false, code: 'missing-base' })
-    expect(runner.calls).toEqual([])
-  })
-
   it('refuses to remove a dirty worktree and leaves it where it is', async () => {
     const { root, commonDir } = repository()
     const worktreePath = join(root, '.worktrees', 'feature')
@@ -381,22 +336,6 @@ describe('lib-orchestrator/git/gitWorktreeManager', () => {
     expect(existsSync(worktreePath)).toBe(true)
   })
 
-  it('says the base moved once the repository head is another commit', async () => {
-    const { root, commonDir } = repository()
-    const facts = {
-      worktreePath: join(root, '.worktrees', 'feature'),
-      branch: 'jamat/feature',
-      baseCommit: headShaConst,
-      repositoryRoot: root,
-    }
-    const manager = new GitWorktreeManager(scripted(root, commonDir))
-    expect(valueOf(await manager.baseMoved(root, facts))).toBe(false)
-
-    const moved = new GitWorktreeManager(scripted(root, commonDir, (args) =>
-      args[1] === '--verify' ? { stdout: '3333333333333333333333333333333333333333\n' } : null))
-    expect(valueOf(await moved.baseMoved(root, facts))).toBe(true)
-  })
-
   /**
    * The one test that runs a real git. It is what proves the arrangement itself: a worktree created
    * INSIDE the repository leaves `status --porcelain` in the main tree empty, which is true only
@@ -442,8 +381,6 @@ describe('lib-orchestrator/git/gitWorktreeManager', () => {
     expect(listed.every((entry) => entry.baseCommit.length === 40)).toBe(true)
 
     writeFileSync(join(facts.worktreePath, 'note.txt'), 'hello', 'utf8')
-    expect(valueOf(await manager.refreshDiff(facts.worktreePath, facts.baseCommit)).changedFiles)
-      .toBe(1)
     expect(await manager.remove(facts.repositoryRoot, facts.worktreePath))
       .toMatchObject({ ok: false, code: 'dirty' })
     expect(existsSync(facts.worktreePath)).toBe(true)
@@ -452,7 +389,7 @@ describe('lib-orchestrator/git/gitWorktreeManager', () => {
     expect(await manager.remove(facts.repositoryRoot, facts.worktreePath))
       .toEqual({ ok: true, value: undefined })
     expect(existsSync(facts.worktreePath)).toBe(false)
-    expect(valueOf(await manager.baseMoved(root, second))).toBe(false)
+    expect(second.branch).toBe('jamat/second')
   })
 
   it('answers the repository root a path lies in, and null where git owns none', async () => {

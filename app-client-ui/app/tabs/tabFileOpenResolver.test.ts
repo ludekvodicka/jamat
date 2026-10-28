@@ -1,3 +1,6 @@
+import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import type { FileViewerOpenResult } from '../../../lib-orchestrator/fileViewer/fileViewerApi.types'
@@ -168,4 +171,40 @@ describe('app-client-ui/app/tabs/tabFileOpenResolver', () => {
     expect(viewer.releases).toEqual([])
     expect(detector.opened).toEqual([])
   })
+})
+
+
+it('binds source detections to owner/session, preserves line paths and refuses expiry or redirected junctions', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'jamat-remote-detect-'))
+  try {
+    await mkdir(join(root, 'one'))
+    await mkdir(join(root, 'two'))
+    await writeFile(join(root, 'one', 'a.ts'), 'source')
+    await writeFile(join(root, 'two', 'a.ts'), 'other')
+    let now = 1
+    const sessions = { workingContext: async (sessionId: string) => ({ ok: true as const, value: { sessionId, cwd: root, agent: null, worktree: null } }) }
+    const detector = new TerminalDetector({ workingContext: sessions.workingContext, changedPaths: async () => [] }, () => now)
+    const viewer = new TabFileOpenResolverTestViewer()
+    const resolver = new TabFileOpenResolver(sessions, viewer, detector)
+    const capture = (token: string) => ({ token, selection: null, contextText: token, fallbackToken: null })
+    const detected = await resolver.detect('source-view', 'session-one', capture(join(root, 'one', 'a.ts') + ':12:3'))
+    const file = detected.detections.find((item) => item.kind === 'file')!
+    expect(file).toMatchObject({ kind: 'file', line: 12, column: 3 })
+    expect(await resolver.detected('foreign', 'session-one', detected.requestId, file.detectionId, 'file')).toMatchObject({ ok: false, code: 'proof-expired' })
+    expect(await resolver.detected('source-view', 'foreign', detected.requestId, file.detectionId, 'file')).toMatchObject({ ok: false })
+    expect(await resolver.detected('source-view', 'session-one', detected.requestId, '../a.ts', 'file')).toMatchObject({ ok: false })
+    expect(viewer.opens).toHaveLength(0)
+    expect(await resolver.detected('source-view', 'session-one', detected.requestId, file.detectionId, 'file')).toMatchObject({ ok: true })
+    const directory = await resolver.detect('source-view', 'session-one', capture(join(root, 'one')))
+    expect(await resolver.detected('source-view', 'session-one', directory.requestId, directory.detections[0].detectionId, 'directory')).toMatchObject({ ok: true, value: { sessionId: 'session-one' } })
+    now += 10 * 60_000
+    expect(await resolver.detected('source-view', 'session-one', detected.requestId, file.detectionId, 'file')).toMatchObject({ ok: false, code: 'proof-expired' })
+    const link = join(root, 'link')
+    await symlink(join(root, 'one'), link, 'junction')
+    const linked = await resolver.detect('source-view', 'session-one', capture(join(link, 'a.ts')))
+    await rm(link)
+    await symlink(join(root, 'two'), link, 'junction')
+    expect(await resolver.detected('source-view', 'session-one', linked.requestId, linked.detections[0].detectionId, 'file')).toMatchObject({ ok: false, code: 'proof-expired' })
+    expect(viewer.opens).toHaveLength(1)
+  } finally { await rm(root, { recursive: true, force: true }) }
 })

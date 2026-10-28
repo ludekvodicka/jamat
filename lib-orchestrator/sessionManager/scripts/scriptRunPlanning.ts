@@ -1,4 +1,5 @@
 import type { SessionRecord } from '../records/sessionRecord.types'
+import { SessionWorkflows } from '../lifecycle/sessionWorkflows'
 import { SessionScriptDefinitions, type SessionScriptDefinition } from './sessionScriptDefinitions'
 
 /**
@@ -18,6 +19,7 @@ export class ScriptRunPlanning {
 
   /** `runtimes`: the ids the Host's listing names, alive or dead. */
   static changes(records: readonly SessionRecord[], runtimes: ReadonlySet<string>): ScriptRunChange[] {
+    const endedHistory = SessionWorkflows.endedHistoryOf(records)
     const byId = new Map(records.map((record) => [record.sessionId, record]))
     const out: ScriptRunChange[] = []
     let settles = 0
@@ -28,7 +30,8 @@ export class ScriptRunPlanning {
       // Asked on every pass while a process may stand behind it: the manager paces a stop the Host
       // refused and skips one it confirmed, and the Host's report of the exit moves the run on.
       if (ScriptRunPlanning.liveOrBound(run)
-        && (parent === undefined || (definition.stopsWithParent && !ScriptRunPlanning.running(parent)))) {
+        && (parent === undefined || run.scriptOf.historyExpired === true || (definition.stopsWithParent && !ScriptRunPlanning.running(parent))
+          || (definition.gate === 'action' && definition.pointerOf(parent) !== run.sessionId))) {
         out.push({ kind: 'stop-script-run', runId: run.sessionId })
         continue
       }
@@ -39,7 +42,7 @@ export class ScriptRunPlanning {
       if (run.life !== 'ended' && run.life !== 'lost') continue
       // Nobody is left to keep a history for, so the run simply goes. One still starting is first
       // marked lost by the orphan rule, and one still running is stopped by the rule above.
-      if (parent === undefined) {
+      if (parent === undefined || run.scriptOf.historyExpired === true || endedHistory.has(parent.sessionId)) {
         out.push({ kind: 'collapse-script-run', runId: run.sessionId })
         continue
       }

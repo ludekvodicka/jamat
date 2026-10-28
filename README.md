@@ -15,7 +15,7 @@ restarting it, or crashing it leaves every agent exactly where it was.
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/ludekvodicka/jamat/actions/workflows/ci.yml/badge.svg)](https://github.com/ludekvodicka/jamat/actions)
 [![Platform: Windows | macOS | Linux](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%28beta%29-0078D6.svg)](#download)
-[![Node (from source)](https://img.shields.io/badge/node%20(source)-%E2%89%A522.16-339933.svg?logo=node.js&logoColor=white)](#build-from-source)
+[![Node (from source)](https://img.shields.io/badge/node%20(source)-%E2%89%A522.19-339933.svg?logo=node.js&logoColor=white)](#build-from-source)
 
 ![The Jamat workspace: the sessions tree, dockview tabs, and a live agent session](docs/images/01-workspace.png)
 
@@ -150,11 +150,12 @@ allowed to dial out and being willing to be dialed are separate rights, granted 
 another computer more access asks you to confirm its name and key fingerprint first; taking access
 away asks nothing and drops live connections immediately.
 
-**What a paired computer can do is a closed list**: see status and projects, list sessions, start
-one, finish one, and attach to a terminal to watch it and type into it. Everything else is refused,
-including reading files, opening tabs, reading transcripts, and pairing operations, which is what
-stops one paired machine using another as a route to a third. Every accepted operation is logged,
-with no tokens, no bodies, no terminal text.
+**A selected remote session uses the source computer's workspace.** Its terminal, files and rich
+previews, changes, tasks, Session actions and shared commit review stay tied to that source.
+A person can review and finish SVN or Git work from either computer; the source records the result
+and preserves unfinished work. Reconnecting requires an explicit Connect. Machine settings, native
+editor windows and pairing administration stay on their owning computer. See the
+[workspace contract](docs/architecture/remote-session-workspace.md) for capabilities and recovery limits.
 
 **It is off until you enable it.** The listener is disabled by default, and even switched on it
 advertises `127.0.0.1` until you give it a real address. The peer listener's inbound firewall rule
@@ -197,7 +198,7 @@ what has to be green before a change lands.
 **Most people should just [download an installer](#download).** Build from source to work on Jamat,
 or to run the command line client.
 
-**Prerequisites:** Node.js 22.16 or newer, [pnpm](https://pnpm.io) (`corepack enable` picks up the
+**Prerequisites:** Node.js 22.19 or newer, [pnpm](https://pnpm.io) (`corepack enable` picks up the
 pinned version), and Claude Code or Codex on your `PATH`.
 
 ```bash

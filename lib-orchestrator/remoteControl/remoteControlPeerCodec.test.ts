@@ -54,6 +54,29 @@ describe('lib-orchestrator/remoteControl/remoteControlPeerCodec', () => {
     expect(() => second.server.inbound.open(modified)).toThrow('authentication failed')
   })
 
+  it('negotiates workspace groups only when offered and preserves the frozen v3.0.0 offer', () => {
+    const harness = new RemoteControlPeerCodecTest()
+    expect(harness.connect().client.capabilities).toEqual(RemoteControlPeerConst.capabilities)
+    const state = harness.clientState(RemoteControlPeerConst.legacyCapabilities)
+    const server = harness.acceptClient(state.hello)
+    expect(server.capabilities).toEqual(RemoteControlPeerConst.legacyCapabilities)
+    expect(RemoteControlPeerCodec.acceptServerHello(server.hello, state, RemoteControlPeerCodecTest.now).capabilities)
+      .toEqual(RemoteControlPeerConst.legacyCapabilities)
+    expect(server.capabilities.some((entry) => entry.startsWith('session-workspace.'))).toBe(false)
+  })
+
+  it('carries discovery requests and bounded errors through the encrypted channel', () => {
+    const connected = new RemoteControlPeerCodecTest().connect()
+    const request = { type: 'session-state-request' as const, request: {
+      requestId: 'page', kind: 'sessions' as const, expected: null, offset: 0,
+    } }
+    expect(connected.server.inbound.open(connected.client.outbound.seal(request))).toEqual(request)
+    const response = { type: 'session-state-response' as const, response: { requestId: 'page', result: {
+      ok: false as const, error: { code: 'conflict' as const, detail: 'Revision changed' },
+    } } }
+    expect(connected.client.inbound.open(connected.server.outbound.seal(response))).toEqual(response)
+  })
+
   it('rejects an unpaired or wrongly pinned client and server', () => {
     const harness = new RemoteControlPeerCodecTest()
     const state = harness.clientState()
@@ -149,18 +172,18 @@ describe('lib-orchestrator/remoteControl/remoteControlPeerCodec', () => {
       .toThrowError(expect.objectContaining({ code: 'invalid-handshake' }))
   })
 
-  it('never negotiates target UI tab capabilities', () => {
+  it('negotiates source file opens while refusing arbitrary target tab control', () => {
     expect(RemoteControlPeerConst.controlOperations).not.toContain('tabs.open')
-    expect(RemoteControlPeerConst.controlOperations).not.toContain('tabs.openFile')
+    expect(RemoteControlPeerConst.controlOperations).toContain('tabs.openFile')
     expect(RemoteControlPeerConst.controlOperations).not.toContain('tabs.close')
     expect(RemoteControlPeerConst.controlOperations).not.toContain('terminal.deliver')
-    expect(RemoteControlPeerConst.capabilities.some((capability) =>
-      capability.startsWith('control:tabs.'))).toBe(false)
+    expect(RemoteControlPeerConst.capabilities.filter((capability) =>
+      capability.startsWith('control:tabs.'))).toEqual(['control:tabs.openFile'])
 
     // Asked for properly, signed and all: the refusal has to be the NEGOTIATION rather than the
     // decoder, or it would hold only for as long as nobody signs the request.
     const harness = new RemoteControlPeerCodecTest()
-    const state = harness.clientState(['control:sessions.list', 'control:tabs.openFile'])
+    const state = harness.clientState(['control:sessions.list', 'control:tabs.close'])
 
     const server = harness.acceptClient(state.hello)
 

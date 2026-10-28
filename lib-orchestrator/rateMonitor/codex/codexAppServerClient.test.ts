@@ -399,4 +399,46 @@ describe('lib-orchestrator/rateMonitor/codex/codexAppServerClient', () => {
     expect(child.stdin.ended).toBe(false)
     expect(child.killed).toBe(false)
   })
+
+  it.each([true, false])('awaits every retry child before closure, successful retry=%s', async succeeds => {
+    vi.useFakeTimers()
+    const server = new FakeCodexAppServer(), client = clientOf(server)
+    const reading = client.readRateLimits()
+    const first = server.child
+    first.refuse(1, 'first refused')
+    await vi.advanceTimersByTimeAsync(0)
+    const second = server.child
+    expect(second).not.toBe(first)
+    if (succeeds) {
+      second.answer(2, {})
+      await vi.advanceTimersByTimeAsync(0)
+      second.answer(3, {})
+    } else second.refuse(2, 'second refused')
+    expect((await reading).ok).toBe(succeeds)
+    let closed: boolean | undefined
+    const closing = client.close().then(value => { closed = value })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(closed).toBeUndefined()
+    second.exit(0)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(closed).toBeUndefined()
+    first.exit(0)
+    await closing
+    expect(closed).toBe(true)
+  })
+
+  it('reports a bounded failed closure when a retired retry child does not exit', async () => {
+    vi.useFakeTimers()
+    const server = new FakeCodexAppServer(), client = clientOf(server)
+    const reading = client.readRateLimits()
+    server.child.refuse(1, 'first refused')
+    await vi.advanceTimersByTimeAsync(0)
+    server.child.refuse(2, 'second refused')
+    await reading
+    const closing = client.close()
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(await closing).toBe(false)
+    expect(server.children.map(child => child.killed)).toEqual([true, true])
+    for (const child of server.children) child.exit(0)
+  })
 })

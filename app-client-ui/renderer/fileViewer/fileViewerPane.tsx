@@ -1,8 +1,10 @@
+import type { SessionFilePorts } from '../../shared/sessionWorkspace'
 import { useCallback, useEffect, useRef } from 'react'
 
 import type { FileViewerDocumentSource } from '../../../lib-orchestrator/fileViewer/fileViewerApi.types'
 import type { PanelSplitFileItem } from '../widgets/tabs/panelSplit'
 import { FileViewerContent } from './fileViewerContent'
+import { FileImageSurface } from './fileImageSurface'
 import {
   FileViewerDiffControl,
   FileViewerGoneNote,
@@ -22,6 +24,7 @@ import './fileViewerPane.css'
 
 export function FileViewerPane(props: {
   ref?: React.Ref<HTMLElement>
+  ports: SessionFilePorts
   item: PanelSplitFileItem
   changes: FileChangesViewModel
   workingTree: FileChangesWorkingTreeViewModel
@@ -38,8 +41,9 @@ export function FileViewerPane(props: {
     props.item.baselineHint,
     props.changes,
     props.workingTree,
+    props.ports,
   )
-  const freshness = useFileViewerFreshness(model.document?.documentId ?? null, model.reload)
+  const freshness = useFileViewerFreshness(model.document?.documentId ?? null, model.reload, props.ports.viewer)
   // The value the pane mounted with is not a request: a freshly mounted pane has just read the file.
   const servedReload = useRef(props.reloadRequest)
   const reload = model.reload
@@ -72,6 +76,7 @@ export function FileViewerPane(props: {
         key: document.documentKey,
         title: document.name,
         source: document.source,
+        ...(props.item.target ? { target: props.item.target } : {}),
       })
       if (refusal !== null)
         onRefused(refusal)
@@ -131,15 +136,17 @@ export function FileViewerPane(props: {
         {model.error && <p className="file-viewer-error">{model.error}</p>}
         {!model.error && !model.document && <p className="file-viewer-note">Opening file...</p>}
         {model.document && (
-          <FileViewerContent
-            document={model.document}
-            mode={model.mode}
-            baselines={model.baselines}
-            text={model.text}
-            diff={model.diff}
-            location={props.item.location}
-            onOpenSource={openSource}
-          />
+          <FileImageSurface key={model.document.documentId} name={model.document.name}>
+            <FileViewerContent ports={props.ports.viewer}
+              document={model.document}
+              mode={model.mode}
+              baselines={model.baselines}
+              text={model.text}
+              diff={model.diff}
+              location={props.item.location}
+              onOpenSource={openSource}
+            />
+          </FileImageSurface>
         )}
       </div>
     </section>

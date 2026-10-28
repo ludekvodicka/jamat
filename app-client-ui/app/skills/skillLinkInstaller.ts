@@ -33,6 +33,7 @@ export interface SkillLinkInstallerDeps {
   repoRoot: string
   homeRoot: string
   codexHome?: string
+  skip?: boolean
   report(message: string): void
 }
 
@@ -55,6 +56,7 @@ export class SkillLinkInstaller {
   }
 
   install(): readonly SkillLinkResult[] {
+    if (this.skipReason() !== null) return []
     return SkillLinkInstaller.skillNamesConst.flatMap(skill => [
       this.installOne(
         skill,
@@ -69,6 +71,16 @@ export class SkillLinkInstaller {
         join(this.codexHome, 'skills', skill),
       ),
     ])
+  }
+
+  roots(): readonly string[] {
+    return [join(this.homeRoot, '.claude', 'skills'), join(this.codexHome, 'skills')]
+  }
+
+  skipReason(): string | null {
+    if (/(?:^|[\\/])\.worktrees(?:[\\/]|$)/i.test(this.repoRoot)) return 'worktree checkout'
+    if (this.deps.skip) return 'JAMAT_V3_SKIP_SKILL_LINKS=1'
+    return null
   }
 
   private installOne(

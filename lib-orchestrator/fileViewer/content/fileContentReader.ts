@@ -1,3 +1,4 @@
+import type { Stats } from 'node:fs'
 import { open, readFile, stat } from 'node:fs/promises'
 import { TextDecoder } from 'node:util'
 
@@ -56,7 +57,7 @@ export class FileContentReader {
         return {
           size: info.size,
           modifiedAt: info.mtimeMs,
-          contentVersion: FileContentReader.versionOf(info.size, info.mtimeMs),
+          contentVersion: FileContentReader.versionOf(info.size, info.mtimeMs, info),
           kind: FileFormatRegistry.classify({ path, exists: true, sample }),
         }
       }
@@ -92,11 +93,11 @@ export class FileContentReader {
     if (!info.isFile()) return { kind: 'missing' }
     return {
       kind: 'version',
-      contentVersion: FileContentReader.versionOf(info.size, info.mtimeMs),
+      contentVersion: FileContentReader.versionOf(info.size, info.mtimeMs, info),
     }
   }
 
-  async text(path: string, expectedVersion: string | null): Promise<FileContentTextRead> {
+  async text(path: string, expectedVersion: string | null, limit = FileViewerLimits.fullTextBytes): Promise<FileContentTextRead> {
     let info
     try { info = await stat(path) }
     catch (error) {
@@ -104,10 +105,10 @@ export class FileContentReader {
       if (code === 'ENOENT' || code === 'ENOTDIR') return { kind: 'missing' }
       throw error
     }
-    const version = FileContentReader.versionOf(info.size, info.mtimeMs)
+    const version = FileContentReader.versionOf(info.size, info.mtimeMs, info)
     if (expectedVersion !== version) return { kind: 'changed' }
-    if (info.size > FileViewerLimits.fullTextBytes)
-      return { kind: 'too-large', size: info.size, limit: FileViewerLimits.fullTextBytes }
+    if (info.size > limit)
+      return { kind: 'too-large', size: info.size, limit }
     const bytes = await readFile(path)
     if (bytes.includes(0)) return { kind: 'binary', detail: 'The file contains NUL bytes' }
     try {
@@ -125,37 +126,46 @@ export class FileContentReader {
     expectedVersion: string | null,
     offset: number,
   ): Promise<FileContentChunkRead> {
-    if (!Number.isSafeInteger(offset) || offset < 0)
-      return { kind: 'invalid-range', detail: 'Chunk offset must be a non-negative integer' }
-    let info
-    try { info = await stat(path) }
+    return this.range(path, expectedVersion, offset, FileViewerLimits.chunkBytes)
+  }
+
+  async range(path: string, expectedVersion: string | null, offset: number, requestedLength: number, signal?: AbortSignal): Promise<FileContentChunkRead> {
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(requestedLength)
+      || requestedLength < 1 || requestedLength > FileViewerLimits.chunkBytes)
+      return { kind: 'invalid-range', detail: 'Byte reads require a non-negative offset and 1 through 65536 bytes' }
+    signal?.throwIfAborted()
+    let handle
+    try { handle = await open(path, 'r') }
     catch (error) {
-      const code = (error as NodeJS.ErrnoException).code
-      if (code === 'ENOENT' || code === 'ENOTDIR') return { kind: 'missing' }
+      if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return { kind: 'missing' }
       throw error
     }
-    const version = FileContentReader.versionOf(info.size, info.mtimeMs)
-    if (expectedVersion !== version) return { kind: 'changed' }
-    if (offset > info.size)
-      return { kind: 'invalid-range', detail: `Chunk offset ${offset} exceeds file size ${info.size}` }
-    const length = Math.min(FileViewerLimits.chunkBytes, info.size - offset)
-    const bytes = Buffer.alloc(length)
-    const handle = await open(path, 'r')
     try {
-      if (length > 0) await handle.read(bytes, 0, length, offset)
+      const info = await handle.stat()
+      const version = FileContentReader.versionOf(info.size, info.mtimeMs, info)
+      if (!info.isFile() || version !== expectedVersion) return { kind: 'changed' }
+      if (offset > info.size) return { kind: 'invalid-range', detail: 'Byte offset exceeds file size' }
+      const length = Math.min(requestedLength, info.size - offset)
+      const bytes = Buffer.alloc(length)
+      let read = 0
+      while (read < length) {
+        signal?.throwIfAborted()
+        const result = await handle.read(bytes, read, length - read, offset + read)
+        if (result.bytesRead === 0) break
+        read += result.bytesRead
+      }
+      const after = await handle.stat()
+      let current
+      try { current = await stat(path) }
+      catch { return { kind: 'changed' } }
+      if (FileContentReader.versionOf(after.size, after.mtimeMs, after) !== version
+        || FileContentReader.versionOf(current.size, current.mtimeMs, current) !== version)
+        return { kind: 'changed' }
+      signal?.throwIfAborted()
+      return { kind: 'chunk', value: { bytes: bytes.subarray(0, read), offset, length: read,
+        totalSize: info.size, eof: offset + read >= info.size, contentVersion: version } }
     }
     finally { await handle.close() }
-    return {
-      kind: 'chunk',
-      value: {
-        bytes,
-        offset,
-        length,
-        totalSize: info.size,
-        eof: offset + length >= info.size,
-        contentVersion: version,
-      },
-    }
   }
 
   /**
@@ -166,7 +176,7 @@ export class FileContentReader {
    * here would have made every `jamat-file://resource/...` answer 409 for a file nobody touched -
    * images and video silently stopping, with typecheck green.
    */
-  static versionOf(size: number, modifiedAt: number): string {
-    return `${size}:${modifiedAt}`
+  static versionOf(size: number, modifiedAt: number, identity?: Pick<Stats, 'dev' | 'ino' | 'ctimeMs' | 'birthtimeMs'>): string {
+    return identity ? `${size}:${modifiedAt}:${identity.dev}:${identity.ino}:${identity.ctimeMs}:${identity.birthtimeMs}` : `${size}:${modifiedAt}`
   }
 }

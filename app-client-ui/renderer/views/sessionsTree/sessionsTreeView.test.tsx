@@ -1,3 +1,4 @@
+import { AppControl } from '../../ipc/appControl'
 import {
   SessionsGroupsState,
   type SessionGroup,
@@ -26,6 +27,8 @@ import { type TerminalTarget, TerminalTargetCodec } from '../../../shared/termin
 import { CommandRegistry } from '../../commands/commandRegistry'
 import { SnapshotStore, type SnapshotStorePorts } from '../../ipc/snapshotStore'
 import { ControlBridgeFixture } from '../../ipc/fixtures/controlBridgeFixture'
+import { SessionFinishRequests } from '../../sessions/sessionFinishRequests'
+import { SessionDrag } from '../../sessions/sessionDrag'
 import { SessionsMarksStore } from '../../sessions/sessionsMarksStore'
 import { SessionTasksStore } from '../../sessions/sessionTasksStore'
 import { ActiveTerminalStore } from '../../shell/activeTerminalStore'
@@ -40,6 +43,57 @@ import {
 } from './sessionsTreeView'
 
 describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
+  it('keeps a pending account dialog and its later error when the Active filter removes the session', async () => {
+    const source = SessionsFixtures.mixed()
+    const base = { ...sessionOf(source, 's-working'), openInWindowIds: [], worktree: undefined }
+    const snapshot = { ...source, sessions: [base] }
+    const { container, ports, control } = await mount(snapshot)
+    control.on('accounts.list', { ok: true, value: [{ agentId: 'claude', accountId: 'b', label: 'B',
+      isMain: false, state: 'active', identity: null, profileProblem: null }] })
+    let finish!: () => void
+    const pending = new Promise<void>(resolve => { finish = resolve })
+    control.on('sessions.switchAccount', async () => {
+      await pending
+      return { ok: false, error: { code: 'operation-failed', detail: 'replacement launch refused' } }
+    })
+    fireEvent.contextMenu(rowOf(container, base.sessionId))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Continue on another account…' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    await act(async () => { ports.push({ ...snapshot, revision: snapshot.revision + 1, sessions: [{ ...base, completed: true }] }) })
+    await waitFor(() => expect(container.querySelector(`[data-session="${base.sessionId}"]`)).toBeNull())
+    expect(screen.getByRole('dialog', { name: 'Continue on another account' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled()
+    await act(async () => { finish(); await pending })
+    expect(await screen.findByRole('alert')).toHaveTextContent('replacement launch refused')
+    expect(screen.getByRole('combobox', { name: 'Account' })).toHaveValue('b')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('draws exhaustion only on the account marked by the session snapshot', async () => {
+    const source = SessionsFixtures.mixed()
+    const base = sessionOf(source, 's-working')
+    const { container } = await mount({ ...source, sessions: [
+      { ...base, sessionId: 'exhausted', agent: { agentId: 'claude', accountId: 'b', accountExhausted: true } },
+      { ...base, sessionId: 'available', agent: { agentId: 'claude', accountId: 'main' } },
+    ] })
+    expect(rowOf(container, 'exhausted')).toHaveTextContent('Account exhausted')
+    expect(rowOf(container, 'available')).not.toHaveTextContent('Account exhausted')
+  })
+
+  it('shows the added account label and leaves main and legacy rows without an account badge', async () => {
+    const source = SessionsFixtures.mixed()
+    const base = sessionOf(source, 's-working')
+    const { container } = await mount({ ...source, sessions: [
+      { ...base, sessionId: 'second', agent: { agentId: 'claude', accountId: 'work', accountLabel: 'Work subscription' } },
+      { ...base, sessionId: 'main', agent: { agentId: 'claude', accountId: 'main', accountLabel: 'Main' } },
+      { ...base, sessionId: 'legacy', agent: { agentId: 'claude' } },
+    ] })
+    expect(rowOf(container, 'second').querySelector('[data-account-badge]')?.textContent).toBe('Work subscription')
+    expect(rowOf(container, 'main').querySelector('[data-account-badge]')).toBeNull()
+    expect(rowOf(container, 'legacy').querySelector('[data-account-badge]')).toBeNull()
+  })
+
   it.each(['together', 'states'] as const)('orders assigned groups and the submenu equally in %s', async (view) => {
     const source = SessionsFixtures.mixed()
     const base = sessionOf(source, 's-working')
@@ -198,7 +252,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     const sessionId = snapshot.sessions[0].sessionId
     await mount({ ...snapshot, sessions: snapshot.sessions.map((info) => ({ ...info, vcs: undefined })) }, null,
       { revision: 1, outbound: [], inbound: [] }, [], [sessionId])
-    const star = await screen.findByLabelText('Commit dialog open')
+    const star = await screen.findByLabelText('Commit review pending')
     expect(star).toHaveClass('is-commit-open')
     expect(star).toHaveTextContent('*')
     const marker = screen.getByLabelText('Commit review required')
@@ -273,7 +327,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     }
 
     read(): Promise<IpcResult<SessionsSnapshot>> {
-      return Promise.resolve({ ok: true, value: this.snapshot })
+      return Promise.resolve({ ok: true, value: SessionsFixtures.present(this.snapshot) })
     }
 
     subscribe(onChanged: () => void): () => void {
@@ -345,6 +399,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
 
   afterEach(() => {
     cleanup()
+    vi.restoreAllMocks()
     for (const stop of stops.splice(0))
       stop()
     vi.useRealTimers()
@@ -359,6 +414,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     storedGroups: readonly SessionGroupAssignment[] = [],
     sections: readonly SessionGroupDefinition[] = SessionsGroupsState.defaultsConst,
     taskListings: Readonly<Record<string, SessionTaskListing>> = {},
+    taskNavigation?: React.ComponentProps<typeof SessionsTreeView>['onOpenTask'],
   ) {
     const ports = new Ports(snapshot)
     ports.storedView = storedView
@@ -368,13 +424,11 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     const onLaunch = vi.fn()
     const onOpenSettings = vi.fn()
     const onOpenTerminal = vi.fn()
-    const onOpenScriptLog = vi.fn()
     const control = new ControlBridgeFixture().on('sessionTasks.open', { ok: true, value: { panelId: 'parent' } })
     ;(window as unknown as { appClient: unknown }).appClient = { control: control.bridge() }
     const onCloseTerminal = vi.fn()
     const onRerunTerminal = vi.fn()
     const onFinalizeAsk = vi.fn()
-    const onUpdateMainAsk = vi.fn()
     const onFocusTerminal = vi.fn()
     const commands = new CommandRegistry()
     /**
@@ -391,8 +445,10 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
         live: life === 'live',
         ended: life === 'ended' || life === 'lost',
         admits: ['newBeside', 'fork', 'restart', 'compact'],
+        finish: false,
       }
     }
+    const finishRequests = new SessionFinishRequests()
     const snapshotStore = new SnapshotStore<SessionsSnapshot>('The sessions snapshot', ports)
     stops.push(snapshotStore.start())
     let remote = initialRemote
@@ -419,7 +475,10 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
         remoteCalls.push(`disconnect:${endpointId}:${sessionIds?.join(',') ?? 'all'}`)
         return Promise.resolve({ ok: true, value: undefined })
       },
-      read: () => Promise.resolve({ ok: true, value: remote }),
+      read: () => {
+        for (const endpoint of remote.outbound) if (endpoint.sessions !== null) SessionsFixtures.present(endpoint.sessions)
+        return Promise.resolve({ ok: true, value: remote })
+      },
       subscribe: (onChanged) => {
         remoteChanged = onChanged
         return () => { remoteChanged = null }
@@ -478,17 +537,20 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
         marks={marks}
           commitOpen={commitOpen}
         tasks={tasks}
+        onOpenTask={taskNavigation ?? ((target, task, title) => {
+          if (target.kind !== 'local') throw new Error('Test requires explicit remote task navigation')
+          void AppControl.call('sessionTasks.open', { sessionId: target.sessionId, task, title })
+        })}
         openTasks={openTasks}
         activeTerminal={activeTerminal}
         onLaunch={onLaunch}
         onOpenSettings={onOpenSettings}
         onOpenTerminal={onOpenTerminal}
-        onOpenScriptLog={onOpenScriptLog}
         onCloseTerminal={onCloseTerminal}
         onRerunTerminal={onRerunTerminal}
         onFinalizeAsk={onFinalizeAsk}
-        onUpdateMainAsk={onUpdateMainAsk}
         onFocusTerminal={onFocusTerminal}
+        finishRequests={finishRequests}
       />
     )
     const view = render(tree)
@@ -497,15 +559,14 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     return {
       ports,
       commands,
+      finishRequests,
       onLaunch,
       onOpenSettings,
       onOpenTerminal,
-      onOpenScriptLog,
       control,
       onCloseTerminal,
       onRerunTerminal,
       onFinalizeAsk,
-      onUpdateMainAsk,
       onFocusTerminal,
       remoteCalls,
       taskCalls,
@@ -1547,7 +1608,9 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
   })
 
   it('needs a second click before it finishes a session', async () => {
-    const { ports, container } = await mount(SessionsFixtures.mixed())
+    const snapshot = SessionsFixtures.mixed()
+    delete sessionOf(snapshot, 's-working').worktree
+    const { ports, container } = await mount(snapshot)
 
     fireEvent.click(actionNamed(container, 's-working', 'Finish'))
     expect(ports.calls).toEqual([])
@@ -1596,6 +1659,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
 
   it('drops an armed live Finish when the committed session stops', async () => {
     const snapshot = SessionsFixtures.mixed()
+    delete sessionOf(snapshot, 's-working').worktree
     const { ports, container } = await mount(snapshot)
 
     fireEvent.click(actionNamed(container, 's-working', 'Finish'))
@@ -1603,7 +1667,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
 
     const ended = settled(snapshot, 's-working', 'ended', 'finished')
     ports.push(ended)
-    await waitFor(() => expect(labelsOf(container, 's-working')[0]).toBe('Finish…'))
+    await waitFor(() => expect(labelsOf(container, 's-working')).toEqual([]))
 
     ports.push({ ...snapshot, revision: ended.revision + 1 })
     await waitFor(() => expect(labelsOf(container, 's-working')[0]).toBe('Finish'))
@@ -1650,7 +1714,9 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
 
   // The tab was the only place that session was visible, and there is nothing left in it to read.
   it('takes the session terminal with the stop, and only when the stop was accepted', async () => {
-    const { ports, onCloseTerminal, container } = await mount(SessionsFixtures.mixed())
+    const snapshot = SessionsFixtures.mixed()
+    delete sessionOf(snapshot, 's-working').worktree
+    const { ports, onCloseTerminal, container } = await mount(snapshot)
 
     fireEvent.click(actionNamed(container, 's-working', 'Finish'))
     fireEvent.click(actionNamed(container, 's-working', 'Finish?'))
@@ -1666,30 +1732,38 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(onCloseTerminal).toHaveBeenCalledTimes(1)
   })
 
-  it('opens the stopped-worktree dialog on the first click without arming the row', async () => {
-    const { ports, onCloseTerminal, onFinalizeAsk, container } =
-      await mount(SessionsFixtures.stoppedWorktree())
+  it('opens Session actions for a Git worktree without a Finish dialog', async () => {
+    const sent = vi.spyOn(AppControl, 'sessionsDone').mockResolvedValue({ ok: true, value: { ok: true, value: {} } } as never)
+    const opened = vi.spyOn(AppControl, 'call').mockResolvedValue({ ok: true, value: { ok: true, value: {} } } as never)
+    const { ports, onCloseTerminal, onFinalizeAsk, container } = await mount(SessionsFixtures.stoppedWorktree())
     showAll(container)
-
-    expect(labelsOf(container, 's-dirty'))
-      .toEqual(['Finish…'])
-    expect(labelsOf(container, 's-clean')[0]).toBe('Finish…')
-
     fireEvent.click(actionNamed(container, 's-dirty', 'Finish…'))
-
-    expect(actionNamed(container, 's-dirty', 'Finish…').textContent).toBe('Finish…')
-    expect(onFinalizeAsk).toHaveBeenCalledTimes(1)
-    expect(onFinalizeAsk).toHaveBeenCalledWith(expect.objectContaining({
-      target: { kind: 'local', sessionId: 's-dirty' },
-      scope: 'local',
-      questions: [expect.objectContaining({ specId: 'worktree' })],
-    }))
+    expect(onFinalizeAsk).not.toHaveBeenCalled()
+    expect(sent).toHaveBeenCalledWith('sessions.finishWorktree', { session: AppControl.sessionOf('s-dirty'), choice: 'commit' })
+    await waitFor(() => expect(opened).toHaveBeenCalledWith('sessionTasks.openWorkflow', { sessionId: 's-dirty' }))
     expect(ports.calls).toEqual([])
     expect(onCloseTerminal).not.toHaveBeenCalled()
   })
 
-  // A running SVN worktree session asks its question at once; its action stops the session first.
-  it('opens the Finish dialog of a running SVN worktree session on the first click, and stops nothing itself', async () => {
+  // UI01: the tab's Finish is handed to the row, so both start the very same Finish.
+  it('starts the row Finish when a tab asks for it', async () => {
+    const sent = vi.spyOn(AppControl, 'sessionsDone').mockResolvedValue({ ok: true, value: { ok: true, value: {} } } as never)
+    const opened = vi.spyOn(AppControl, 'call').mockResolvedValue({ ok: true, value: { ok: true, value: {} } } as never)
+    const { finishRequests, onFinalizeAsk } = await mount(SessionsFixtures.stoppedWorktree())
+    let taken = false
+    act(() => { taken = finishRequests.request('s-dirty') })
+
+    expect(taken).toBe(true)
+    expect(onFinalizeAsk).not.toHaveBeenCalled()
+    expect(sent).toHaveBeenCalledWith('sessions.finishWorktree', { session: AppControl.sessionOf('s-dirty'), choice: 'commit' })
+    await waitFor(() => expect(opened).toHaveBeenCalledWith('sessionTasks.openWorkflow', { sessionId: 's-dirty' }))
+    // A session the tree draws no row for is not taken, so the tab can say so.
+    expect(finishRequests.request('no-such-session')).toBe(false)
+  })
+
+  it('opens Session actions for an SVN worktree without a Finish dialog', async () => {
+    const sent = vi.spyOn(AppControl, 'sessionsDone').mockResolvedValue({ ok: true, value: { ok: true, value: {} } } as never)
+    const opened = vi.spyOn(AppControl, 'call').mockResolvedValue({ ok: true, value: { ok: true, value: {} } } as never)
     const snapshot = SessionsFixtures.svnWorktrees()
     snapshot.sessions = snapshot.sessions.map((session) => session.sessionId !== 's-svn' || session.worktree === undefined ? session : {
       ...session, life: 'live', activity: 'waiting', outcome: undefined, endedAt: undefined, exitCode: undefined,
@@ -1703,16 +1777,85 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(labelsOf(container, 's-svn')[0]).toBe('Finish…')
     fireEvent.click(actionNamed(container, 's-svn', 'Finish…'))
 
-    expect(onFinalizeAsk).toHaveBeenCalledOnce()
-    // The dialog is told the section the row is drawn in, by its title; the assignment stays as it was.
-    expect(onFinalizeAsk).toHaveBeenCalledWith(expect.objectContaining({
-      target: { kind: 'local', sessionId: 's-svn' },
-      session: expect.objectContaining({ glyph: 'waiting', group: 'Automation' }),
-      questions: [expect.objectContaining({ specId: 'worktree' })],
-    }))
+    expect(onFinalizeAsk).not.toHaveBeenCalled()
+    expect(sent).toHaveBeenCalledWith('sessions.finishWorktree', { session: AppControl.sessionOf('s-svn'), choice: 'commit' })
+    await waitFor(() => expect(opened).toHaveBeenCalledWith('sessionTasks.openWorkflow', { sessionId: 's-svn' }))
     expect(ports.savedGroups).toEqual(automation)
     expect(ports.calls).toEqual([])
     expect(onCloseTerminal).not.toHaveBeenCalled()
+  })
+
+  // UA1-J07-1: an application still running from the last validation of a kept worktree held Finish… silently.
+  it('prepares a kept SVN worktree while a requested run still runs, and brings its Session actions forward', async () => {
+    const sent = vi.spyOn(AppControl, 'sessionsDone').mockResolvedValue({ ok: true, value: { ok: true, value: {} } } as never)
+    const opened = vi.spyOn(AppControl, 'call').mockResolvedValue({ ok: true, value: { ok: true, value: {} } } as never)
+    const snapshot = SessionsFixtures.svnWorktrees()
+    snapshot.sessions = snapshot.sessions.map((session) => session.sessionId !== 's-svn' || session.worktree === undefined ? session : {
+      ...session, life: 'live', activity: 'waiting', outcome: undefined, endedAt: undefined, exitCode: undefined,
+      admits: ['newBeside', 'fork', 'restart', 'compact', 'finalize'],
+      worktree: { ...session.worktree, liveFinish: true },
+      actions: { sections: [
+        { kind: 'finish', workflowId: 'ended:5', title: 'Finish of Svn worktree', badge: 'partial', summary: 'partial', open: false, rounds: [], actions: [] },
+        { kind: 'script', workflowId: 'script:v1', title: 'Worktree validation', badge: 'running', summary: 'Worktree validation', open: true, rounds: [],
+          actions: [{ id: 'stop-run', label: 'Stop', primary: false, runId: 'v1' }] },
+      ] },
+    })
+    const { onFinalizeAsk, container } = await mount(snapshot)
+    showAll(container)
+
+    fireEvent.click(actionNamed(container, 's-svn', 'Finish…'))
+
+    expect(onFinalizeAsk).not.toHaveBeenCalled()
+    expect(sent).toHaveBeenCalledWith('sessions.finishWorktree', { session: AppControl.sessionOf('s-svn'), choice: 'commit' })
+    await waitFor(() => expect(opened).toHaveBeenCalledWith('sessionTasks.openWorkflow', { sessionId: 's-svn' }))
+  })
+
+  it.each(['shell', 'agent'] as const)('opens Keep and Discard without a Prepare press when an ended %s worktree cannot prepare', async (kind) => {
+    const sent = vi.spyOn(AppControl, 'sessionsDone').mockResolvedValue({ ok: true, value: { ok: true, value: {} } } as never)
+    const opened = vi.spyOn(AppControl, 'call').mockResolvedValue({ ok: true, value: { ok: true, value: {} } } as never)
+    const snapshot = SessionsFixtures.svnWorktrees()
+    const session = sessionOf(snapshot, 's-svn')
+    session.kind = kind
+    session.life = 'ended'
+    session.admits = ['restart', 'finalize', 'remove', 'discardWorktree']
+    session.worktree = { ...session.worktree!, choices: ['keep', 'discard'] }
+    if (kind === 'shell') delete session.agent
+    const { container, onFinalizeAsk, onCloseTerminal } = await mount(SessionsFixtures.present(snapshot))
+    showAll(container)
+
+    fireEvent.click(actionNamed(container, 's-svn', 'Finish…'))
+
+    await waitFor(() => expect(onFinalizeAsk).toHaveBeenCalledOnce())
+    expect(onFinalizeAsk.mock.calls[0]![0].questions[0].question.choices.map((choice: { id: string }) => choice.id))
+      .toEqual(['keep', 'discard'])
+    expect(sent).not.toHaveBeenCalled()
+    expect(opened).not.toHaveBeenCalled()
+    expect(onCloseTerminal).not.toHaveBeenCalled()
+    expect(container.querySelector('.jamat-sessions__error')).toBeNull()
+    fireEvent.contextMenu(rowOf(container, 's-svn'))
+    expect(screen.getByRole('menuitem', { name: 'Show session actions' })).toBeInTheDocument()
+  })
+
+  it('answers a never-started refusal to a stale Prepare with the dialog and leaves no notice behind', async () => {
+    const sent = vi.spyOn(AppControl, 'sessionsDone').mockResolvedValue({
+      ok: true, value: { ok: false, code: 'never-started', detail: 'No agent start was recorded. Nothing to land.' },
+    } as never)
+    const opened = vi.spyOn(AppControl, 'call').mockResolvedValue({ ok: true, value: { ok: true, value: {} } } as never)
+    const snapshot = SessionsFixtures.svnWorktrees()
+    const session = sessionOf(snapshot, 's-svn')
+    session.kind = 'shell'
+    session.admits = ['restart', 'finalize', 'remove', 'discardWorktree']
+    delete session.agent
+    const { container, onFinalizeAsk } = await mount(SessionsFixtures.present(snapshot))
+    showAll(container)
+
+    fireEvent.click(actionNamed(container, 's-svn', 'Finish…'))
+
+    await waitFor(() => expect(onFinalizeAsk).toHaveBeenCalledOnce())
+    await waitFor(() => expect(labelsOf(container, 's-svn')).toContain('Finish…'))
+    expect(sent).toHaveBeenCalledOnce()
+    expect(opened).not.toHaveBeenCalled()
+    expect(container.textContent).not.toContain('No agent start was recorded')
   })
 
   it('says on the row that a Finish waits for the person, and why', async () => {
@@ -1754,6 +1897,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
   })
 
   it('restores stopped Finish after an armed Remove is cancelled', async () => {
+    const sent = vi.spyOn(AppControl, 'sessionsDone').mockResolvedValue({ ok: true, value: { ok: true, value: {} } } as never)
     const { ports, onFinalizeAsk, container } = await mount(SessionsFixtures.stoppedWorktree())
     showAll(container)
 
@@ -1764,12 +1908,14 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(labelsOf(container, 's-dirty')).toEqual(['Finish…'])
     fireEvent.click(actionNamed(container, 's-dirty', 'Finish…'))
 
-    expect(onFinalizeAsk).toHaveBeenCalledOnce()
+    expect(onFinalizeAsk).not.toHaveBeenCalled()
+    expect(sent).toHaveBeenCalledWith('sessions.finishWorktree', { session: AppControl.sessionOf('s-dirty'), choice: 'commit' })
     expect(labelsOf(container, 's-dirty')).toEqual(['Finish…'])
     expect(ports.calls).toEqual([])
   })
 
   it('offers failed-install discard through Finish only on the local tree', async () => {
+    const sent = vi.spyOn(AppControl, 'sessionsDone').mockResolvedValue({ ok: true, value: { ok: true, value: {} } } as never)
     const snapshot = SessionsFixtures.setupOutcomes()
     const { container, onFinalizeAsk } = await mount(
       snapshot,
@@ -1780,19 +1926,8 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
 
     expect(labelsOf(container, 's-failed')).toEqual(['Finish…'])
     fireEvent.click(actionNamed(container, 's-failed', 'Finish…'))
-    expect(onFinalizeAsk).toHaveBeenCalledWith(expect.objectContaining({
-      scope: 'local',
-      questions: [expect.objectContaining({
-        specId: 'worktree',
-        question: expect.objectContaining({
-          choices: expect.arrayContaining([
-            expect.objectContaining({ id: 'keep' }),
-            expect.objectContaining({ id: 'discard' }),
-          ]),
-          chosenDefault: 'keep',
-        }),
-      })],
-    }))
+    expect(onFinalizeAsk).not.toHaveBeenCalled()
+    expect(sent).toHaveBeenCalledWith('sessions.finishWorktree', { session: AppControl.sessionOf('s-failed'), choice: 'commit' })
 
     const remote = sectionAfter(container, 'Remote')
     const remoteKey = TerminalTargetCodec.key({
@@ -1855,66 +1990,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(remoteCalls).toEqual([])
   })
 
-  describe('stop then ask', () => {
-    it.each([
-      ['ended', 'ended', 'finished'],
-      ['failed', 'ended', 'failed'],
-      ['lost', 'lost', 'interrupted'],
-    ] as const)('opens one ask when an accepted stop becomes %s', async (_label, life, outcome) => {
-      const snapshot = SessionsFixtures.mixed()
-      const { ports, container, onCloseTerminal, onFinalizeAsk } = await mount(snapshot)
-
-      confirmFinish(container, 's-working')
-      await waitFor(() => expect(ports.calls).toEqual(['finalize:s-working']))
-      await waitFor(() => expect(onCloseTerminal).toHaveBeenCalledWith({
-        kind: 'local', sessionId: 's-working',
-      }))
-      expect(onFinalizeAsk).not.toHaveBeenCalled()
-
-      ports.push(settled(snapshot, 's-working', life, outcome))
-
-      await waitFor(() => expect(onFinalizeAsk).toHaveBeenCalledTimes(1))
-      expect(onFinalizeAsk).toHaveBeenCalledWith(expect.objectContaining({
-        target: { kind: 'local', sessionId: 's-working' },
-        scope: 'local',
-        session: expect.objectContaining({ group: 'None' }),
-      }))
-    })
-
-    it('registers no wait when stop was refused', async () => {
-      const snapshot = SessionsFixtures.mixed()
-      const { ports, container, onFinalizeAsk } = await mount(snapshot)
-      ports.answer = {
-        ok: true,
-        value: { ok: false, code: 'live-refused', detail: 'the session is still running' },
-      }
-
-      confirmFinish(container, 's-working')
-      await waitFor(() => expect(container.textContent).toContain('the session is still running'))
-      ports.push({
-        ...settled(snapshot, 's-working', 'ended', 'finished'),
-        revision: snapshot.revision + 2,
-      })
-      await waitFor(() => expect(glyphOf(container, 's-working')?.getAttribute('data-glyph'))
-        .toBe('ended'))
-
-      expect(onFinalizeAsk).not.toHaveBeenCalled()
-    })
-
-    it('disables Finish while waiting and starts no second wait', async () => {
-      const snapshot = SessionsFixtures.mixed()
-      const { ports, container, onFinalizeAsk } = await mount(snapshot)
-
-      confirmFinish(container, 's-working')
-      const finish = actionNamed(container, 's-working', 'Finish') as HTMLButtonElement
-      await waitFor(() => expect(finish.disabled).toBe(true))
-      fireEvent.click(finish)
-
-      expect(ports.calls).toEqual(['finalize:s-working'])
-      ports.push(settled(snapshot, 's-working', 'ended', 'finished'))
-      await waitFor(() => expect(onFinalizeAsk).toHaveBeenCalledTimes(1))
-    })
-
+  describe('peer stop then ask', () => {
     it('blocks a remote menu duplicate without reopening its terminal while waiting', async () => {
       const snapshot = SessionsFixtures.mixed()
       const { container, remoteCalls, onOpenTerminal } = await mount(
@@ -1942,72 +2018,6 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
 
       expect(remoteCalls).toEqual(['finalize:endpoint-a:s-working'])
       expect(onOpenTerminal).toHaveBeenCalledTimes(openCalls)
-    })
-
-    it('keeps a newly accepted wait while another wait settles in the same batch', async () => {
-      const snapshot = SessionsFixtures.mixed()
-      const { ports, container, onFinalizeAsk } = await mount(snapshot)
-
-      confirmFinish(container, 's-working')
-      await waitFor(() => expect((actionNamed(
-        container,
-        's-working',
-        'Finish',
-      ) as HTMLButtonElement).disabled).toBe(true))
-
-      ports.hold()
-      confirmFinish(container, 's-waiting')
-      await waitFor(() => expect(ports.calls).toEqual([
-        'finalize:s-working',
-        'finalize:s-waiting',
-      ]))
-      const firstSettled = settled(snapshot, 's-working', 'ended', 'finished')
-      await act(async () => {
-        ports.push(firstSettled)
-        await Promise.resolve()
-        ports.release()
-        await Promise.resolve()
-      })
-
-      await waitFor(() => expect(onFinalizeAsk).toHaveBeenCalledTimes(1))
-      await waitFor(() => expect((actionNamed(
-        container,
-        's-waiting',
-        'Finish',
-      ) as HTMLButtonElement).disabled).toBe(true))
-
-      ports.push(settled(firstSettled, 's-waiting', 'ended', 'finished'))
-
-      await waitFor(() => expect(onFinalizeAsk).toHaveBeenCalledTimes(2))
-      expect(onFinalizeAsk.mock.calls.map(([ask]) => ask.target)).toEqual([
-        { kind: 'local', sessionId: 's-working' },
-        { kind: 'local', sessionId: 's-waiting' },
-      ])
-    })
-
-    it('drops a wait when the local session disappears', async () => {
-      const snapshot = SessionsFixtures.mixed()
-      const { ports, container, onFinalizeAsk } = await mount(snapshot)
-      confirmFinish(container, 's-working')
-      await waitFor(() => expect((actionNamed(
-        container,
-        's-working',
-        'Finish',
-      ) as HTMLButtonElement).disabled).toBe(true))
-
-      ports.push({
-        ...snapshot,
-        revision: snapshot.revision + 1,
-        sessions: snapshot.sessions.filter((session) => session.sessionId !== 's-working'),
-      })
-      await waitFor(() => expect(container.querySelector('[data-session="s-working"]')).toBeNull())
-      ports.push({
-        ...settled(snapshot, 's-working', 'ended', 'finished'),
-        revision: snapshot.revision + 2,
-      })
-      await waitFor(() => expect(labelsOf(container, 's-working')[0]).toBe('Finish…'))
-
-      expect(onFinalizeAsk).not.toHaveBeenCalled()
     })
 
     it('clears a settled wait whose fresh catalog has no question', async () => {
@@ -2110,14 +2120,14 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     it('owns no wait after the tree unmounts', async () => {
       const snapshot = SessionsFixtures.mixed()
       const { ports, container, onCloseTerminal, onFinalizeAsk, unmount } = await mount(snapshot)
-      confirmFinish(container, 's-working')
-      await waitFor(() => expect(ports.calls).toEqual(['finalize:s-working']))
+      confirmFinish(container, 's-shell')
+      await waitFor(() => expect(ports.calls).toEqual(['finalize:s-shell']))
       await waitFor(() => expect(onCloseTerminal).toHaveBeenCalledWith({
-        kind: 'local', sessionId: 's-working',
+        kind: 'local', sessionId: 's-shell',
       }))
 
       unmount()
-      ports.push(settled(snapshot, 's-working', 'ended', 'finished'))
+      ports.push(settled(snapshot, 's-shell', 'ended', 'finished'))
       await Promise.resolve()
 
       expect(onFinalizeAsk).not.toHaveBeenCalled()
@@ -2290,6 +2300,22 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
    * screen was not even asked for - so an open and read session kept its dot until something else
    * produced output.
    */
+  it('draws a session name bright only while it waits or carries an unseen mark, and every project name bright', async () => {
+    const mixed = SessionsFixtures.mixed()
+    const { ports, container } = await mount(mixed)
+    const attentionOf = (sessionId: string): string | null =>
+      container.querySelector(`[data-session="${sessionId}"] > .jamat-sessions__row .jamat-sessions__title`)
+        ?.getAttribute('data-attention') ?? null
+
+    expect(attentionOf('s-waiting')).toBe('true')
+    expect(attentionOf('s-working')).toBe('false')
+    expect(container.querySelectorAll('.jamat-sessions__label[data-attention]')).toHaveLength(0)
+
+    ports.push(withActivity(mixed, ['s-working'], 'idle'))
+    await waitFor(() => expect(markedOf(container, 's-working')).toBe(true))
+    expect(attentionOf('s-working')).toBe('true')
+  })
+
   it('takes the mark off the session being looked at and leaves the others theirs', async () => {
     const mixed = SessionsFixtures.mixed()
     const { ports, container, setVisibleTargets } = await mount(mixed)
@@ -2512,7 +2538,9 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
   )
 
   it('does not double-open the session or pin it when an inline action is clicked', async () => {
-    const { onOpenTerminal, container } = await mount(SessionsFixtures.mixed())
+    const snapshot = SessionsFixtures.mixed()
+    delete sessionOf(snapshot, 's-working').worktree
+    const { onOpenTerminal, container } = await mount(snapshot)
     showAll(container)
     const action = actionNamed(container, 's-working', 'Finish')
     fireEvent.click(action)
@@ -2789,7 +2817,6 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(collapsed.control.bodiesOf('sessionTasks.open')).toEqual([{
       sessionId: 's-installed', task: { kind: 'script', runId: 'r-second' }, title: 'setup ✓ 23.6 s',
     }])
-    expect(collapsed.onOpenScriptLog).not.toHaveBeenCalled()
     expect(collapsed.onOpenTerminal).not.toHaveBeenCalled()
   })
 
@@ -2833,22 +2860,13 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(control.bodiesOf('sessionTasks.open')).toEqual([])
   })
 
-  it('lists every run in the Scripts submenu, newest first, a saved log opened and a lost one disabled', async () => {
-    const { container, onOpenTerminal, onOpenScriptLog } = await mount(SessionsFixtures.setupCollapsed())
-
-    fireEvent.contextMenu(rowOf(container, 's-installed'))
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Scripts' }))
-    expect(within(screen.getByRole('menu', { name: 'Scripts' })).queryByRole('menuitemcheckbox', { name: 'Show as sub-tasks' })).toBeNull()
-    const items = within(screen.getByRole('menu', { name: 'Scripts' })).getAllByRole('menuitem')
-    expect(items.map((item) => item.textContent)).toEqual([
-      'Setup gamma · succeeded · 23.6 s',
-      'Setup gamma · failed · exit 1 · 4.1 s',
-    ])
-    expect(items.map((item) => item.hasAttribute('disabled'))).toEqual([false, true])
-    expect(items[1].getAttribute('title')).toBe('the Host restarted before the output was saved')
-    fireEvent.click(items[0])
-    expect(onOpenScriptLog).toHaveBeenCalledWith('s-installed', 'r-second')
-    expect(onOpenTerminal).not.toHaveBeenCalled()
+  it.each([
+    ['s-primary', SessionsFixtures.setupPending],
+    ['s-installed', SessionsFixtures.setupCollapsed],
+  ] as const)('omits Scripts for local session %s', async (sessionId, snapshot) => {
+    const { container } = await mount(snapshot())
+    fireEvent.contextMenu(rowOf(container, sessionId))
+    expect(menuTitles()).not.toContain('Scripts')
   })
 
   function recentScriptSnapshot(endedAt = Date.now()): SessionsSnapshot {
@@ -2859,7 +2877,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
   }
 
   it('draws recent script history directly and opens saved or unavailable logs in the split', async () => {
-    const { container, control, onOpenScriptLog } = await mount(recentScriptSnapshot())
+    const { container, control } = await mount(recentScriptSnapshot())
     const finishedRows = [...container.querySelectorAll('[data-session="s-installed"] [data-script-run]')]
     expect(finishedRows.map((row) => row.textContent)).toEqual([
       '✓Setup gamma · succeeded · 23.6 s',
@@ -2870,7 +2888,6 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
       { sessionId: 's-installed', task: { kind: 'script', runId: 'r-second' }, title: 'Setup gamma' },
       { sessionId: 's-installed', task: { kind: 'script', runId: 'r-first' }, title: 'Setup gamma' },
     ])
-    expect(onOpenScriptLog).not.toHaveBeenCalled()
   })
 
   it('expires script history at 5 seconds without a snapshot and keeps an open run until its view closes', async () => {
@@ -2888,50 +2905,6 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(container.querySelectorAll('[data-script-run]')).toHaveLength(0)
     setOpenTasks(['task:s-installed:script:r-second'])
     expect(container.querySelector('[data-script-run="r-second"]')).toBeTruthy()
-  })
-
-  it('opens a run row from the Scripts submenu', async () => {
-    const { container, onOpenTerminal } = await mount(SessionsFixtures.setupPending())
-
-    fireEvent.contextMenu(rowOf(container, 's-primary'))
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Scripts' }))
-    fireEvent.click(within(screen.getByRole('menu', { name: 'Scripts' }))
-      .getByRole('menuitem', { name: 'Setup alpha · running' }))
-    expect(onOpenTerminal).toHaveBeenLastCalledWith(
-      { kind: 'local', sessionId: 's-install' }, 'AppJamatV3 - Setup alpha', 'preview')
-  })
-
-  it('follows the snapshot in an open Scripts submenu: a run that collapsed opens its log', async () => {
-    const pending = SessionsFixtures.setupPending()
-    const { container, ports, onOpenTerminal, onOpenScriptLog } = await mount(pending)
-    fireEvent.contextMenu(rowOf(container, 's-primary'))
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Scripts' }))
-    expect(within(screen.getByRole('menu', { name: 'Scripts' })).getByRole('menuitem', { name: 'Setup alpha · running' }))
-      .toBeTruthy()
-
-    ports.push({
-      ...pending,
-      revision: pending.revision + 1,
-      sessions: pending.sessions.filter((session) => session.sessionId !== 's-install').map((session) =>
-        session.sessionId !== 's-primary' ? session : {
-          ...session,
-          life: 'live' as const,
-          setup: undefined,
-          scripts: {
-            runs: [{
-              ...session.scripts!.runs[0]!, state: 'succeeded' as const, summary: 'Setup alpha · succeeded · 23.6 s',
-              exitCode: 0, row: false, log: 'saved' as const,
-            }],
-          },
-        }),
-    })
-
-    if (screen.queryByRole('menu', { name: 'Scripts' }) === null)
-      fireEvent.click(await screen.findByRole('menuitem', { name: 'Scripts' }))
-    fireEvent.click(await within(screen.getByRole('menu', { name: 'Scripts' }))
-      .findByRole('menuitem', { name: 'Setup alpha · succeeded · 23.6 s' }))
-    expect(onOpenScriptLog).toHaveBeenCalledWith('s-primary', 's-install')
-    expect(onOpenTerminal).not.toHaveBeenCalled()
   })
 
   it('closes the menu of a run row that went into its parent', async () => {
@@ -2968,42 +2941,33 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     await waitFor(() => expect(ports.calls).toContain('remove:s-failed-install'))
   })
 
-  it('lists only the rows of a remote session in its Scripts submenu', async () => {
+  it('omits Scripts for remote sessions with running and retained script runs', async () => {
     const collapsed = SessionsFixtures.setupCollapsed()
     const pending = SessionsFixtures.setupPending()
-    const { container } = await mount(
+    const onOpenTask = vi.fn()
+    const { container, control } = await mount(
       SessionsFixtures.mixed(),
       null,
       remoteSnapshot([
         outboundEndpoint(collapsed, 'endpoint-a'),
         outboundEndpoint(pending, 'endpoint-b', { selectedSessionIds: ['s-primary'] }),
-      ]),
+      ]), [], [], [], SessionsGroupsState.defaultsConst, {}, onOpenTask,
     )
     const remote = sectionAfter(container, 'Remote')
 
     // The install was never selected on its own; it comes with the session it installs for.
     expect(remote.querySelector('[data-session*="s-primary"] [data-session*="s-install"]')).not.toBeNull()
-    // A log is local to the computer that ran it, so a remote succeeded badge opens nothing.
-    expect(remote.querySelector('[data-session*="s-installed"] [data-script-badge="succeeded"]')?.tagName).toBe('SPAN')
+    const badge = remote.querySelector('[data-session*="s-installed"] [data-script-badge="succeeded"]')!
+    expect(badge.tagName).toBe('BUTTON')
+    fireEvent.click(badge)
+    expect(onOpenTask).toHaveBeenLastCalledWith({ kind: 'remote', remoteEndpointId: 'endpoint-a', sessionId: 's-installed' },
+      { kind: 'script', runId: expect.any(String) }, expect.any(String))
     fireEvent.contextMenu(remote.querySelector('[data-session*="s-installed"] > .jamat-sessions__row')!)
     expect(menuTitles()).not.toContain('Scripts')
-    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onOpenTask).toHaveBeenCalledTimes(1)
+    expect(control.bodiesOf('sessionTasks.open')).toEqual([])
     fireEvent.contextMenu(remote.querySelector('[data-session*="s-primary"] > .jamat-sessions__row')!)
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Scripts' }))
-    expect(within(screen.getByRole('menu', { name: 'Scripts' })).getAllByRole('menuitem')
-      .map((item) => item.textContent)).toEqual(['Setup alpha · running'])
-  })
-
-  it('keeps a measured worktree diff in the title, never in the row text', async () => {
-    const { container } = await mount(SessionsFixtures.mixed())
-
-    const measured = container.querySelector('[data-session="s-working"] .jamat-sessions__worktree')
-    expect(measured?.textContent).toBe('WTBASE')
-    expect(measured?.getAttribute('title')).toContain(' - +12 -3 lines vs base')
-    const unmeasured = container
-      .querySelector('[data-session="s-waiting"] .jamat-sessions__worktree')
-    expect(unmeasured?.textContent).toBe('WT')
-    expect(unmeasured?.getAttribute('title')).not.toContain('lines vs base')
+    expect(menuTitles()).not.toContain('Scripts')
   })
 
   it('marks an SVN worktree row by kind and draws its finish phase or last outcome', async () => {
@@ -3015,7 +2979,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(mark?.getAttribute('data-worktree-kind')).toBe('svn')
     expect(mark?.getAttribute('title')).toBe(
       'SVN worktree C:/Projects/NodeJs/AppJamatV3/.worktrees/014-svn-worktree, a checkout of '
-        + 'http://svn.local/applications/AppJamatV3 - +12 -3 lines vs base',
+        + 'http://svn.local/applications/AppJamatV3',
     )
     expect(rowOf('s-svn')?.querySelector('.jamat-sessions__finish')).toBeNull()
 
@@ -3121,7 +3085,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
   })
 
   it('draws a landed row with how far its main copy is behind and Update main copy in place of Finish', async () => {
-    const { container, ports, onUpdateMainAsk } = await mount(SessionsFixtures.svnWorktrees())
+    const { container, ports } = await mount(SessionsFixtures.svnWorktrees())
     const rowOf = (sessionId: string): Element | null =>
       container.querySelector(`[data-session="${sessionId}"] > .jamat-sessions__row`)
 
@@ -3139,14 +3103,10 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
 
     fireEvent.click(actionNamed(container, 's-landed', 'Update main copy'))
     await waitFor(() => expect(ports.calls).toEqual(['updateMain:s-landed']))
-    expect(onUpdateMainAsk).not.toHaveBeenCalled()
 
-    // Live sessions in the main copy turn the refusal into the confirmation.
-    const live = [{ sessionId: 's-coordinator', title: '020 - coordinator', number: '020' }]
-    ports.updateAnswer = { ok: true, value: { ok: false, code: 'live-sessions', detail: '1 live session', liveSessions: live } }
-    fireEvent.click(actionNamed(container, 's-landed', 'Update main copy'))
-    await waitFor(() => expect(onUpdateMainAsk).toHaveBeenCalledWith({ sessionId: 's-landed', sessionTitle: 'Landed worktree', live }))
-    expect(container.querySelector('.jamat-sessions__error')).toBeNull()
+    fireEvent.click(landing!)
+    await waitFor(() => expect(ports.calls).toEqual(['updateMain:s-landed', 'updateMain:s-landed']))
+    expect(container.querySelector('[role=dialog]')).toBeNull()
 
     // Any other refusal is the row's error line.
     ports.updateAnswer = { ok: true, value: { ok: false, code: 'merge-pending', detail: 'An UPDATE of C:/w runs' } }
@@ -3227,6 +3187,22 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
       sessionId: 's-working',
       remoteEndpointId: 'endpoint-a',
     }]])
+  })
+
+  it('carries a remote row in a drag as its target, for a terminal to paste the reference of', async () => {
+    const mixed = SessionsFixtures.mixed()
+    const { container } = await mount(mixed, null, remoteSnapshot([outboundEndpoint(mixed, 'endpoint-a')]))
+    showAll(container)
+    const target = { kind: 'remote' as const, remoteEndpointId: 'endpoint-a', sessionId: 's-working' }
+    const row = rowOf(sectionAfter(container, 'Remote'), TerminalTargetCodec.key(target))
+    const data = new Map<string, string>()
+    const dataTransfer = { setData: (format: string, value: string) => data.set(format, value), effectAllowed: 'none' }
+
+    fireEvent.dragStart(row, { dataTransfer })
+
+    expect([...data.keys()]).not.toContain('text/plain')
+    expect(SessionDrag.targetOf({ getData: (format) => data.get(format) ?? '' })).toEqual(target)
+    expect(dataTransfer.effectAllowed).toBe('copy')
   })
 
   /**
@@ -3358,23 +3334,6 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
   })
 
   /**
-   * The mark sits in the slot the two dots left behind, so the row carries the same number of things
-   * it did before. It names the VCS, because "commit this" means two different commands here.
-   */
-  it('marks a row whose working copy has uncommitted work, and names the VCS', async () => {
-    const { container } = await mount(SessionsFixtures.stoppedWorktree())
-
-    const mark = container.querySelector(
-      '[data-session="s-dirty"] > .jamat-sessions__row .jamat-sessions__vcs',
-    )
-    expect(mark?.textContent).toBe('*')
-    expect(mark?.getAttribute('title')).toBe('Uncommitted changes (git)')
-    expect(container.querySelector(
-      '[data-session="s-clean"] > .jamat-sessions__row .jamat-sessions__vcs',
-    )).toBeNull()
-  })
-
-  /**
    * Every mark says what it means when it is pointed at. Several of these carried nothing at all,
    * which on a row that is mostly one-word chips is the difference between a legend and a guess.
    */
@@ -3386,11 +3345,10 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
 
     expect(titleOf('s-dirty', '.jamat-sessions__worktree'))
       .toBe('Git worktree C:/Projects/NodeJs/AppJamatV3/.worktrees/dirty, branch jamat/dirty')
-    expect(titleOf('s-dirty', '.jamat-sessions__vcs')).toBe('Uncommitted changes (git)')
     expect(titleOf('s-dirty', '.jamat-sessions__glyph')).toBe('ended')
   })
 
-  it('explains the base chip, the completed pill and the merge word', async () => {
+  it('explains the completed pill', async () => {
     const { container } = await mount(SessionsFixtures.mixed())
     showAll(container)
     const titlesOf = (selector: string): (string | null)[] =>
@@ -3401,14 +3359,6 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(completed.length).toBeGreaterThan(0)
     for (const title of completed)
       expect(title).toBe('Marked completed by you')
-  })
-
-  it('explains what a moved base means', async () => {
-    const { container } = await mount(SessionsFixtures.mixed())
-
-    const base = container.querySelector('.jamat-sessions__base')
-    expect(base?.getAttribute('title'))
-      .toBe('The branch this worktree was cut from has moved on')
   })
 
   it('expires tasks using one next-expiry timer without another listing, retaining open rows until close', async () => {

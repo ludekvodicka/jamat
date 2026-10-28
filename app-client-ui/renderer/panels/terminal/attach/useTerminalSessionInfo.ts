@@ -57,3 +57,31 @@ export function useTerminalSessionInfo(
   }, [local, remote])
   return useSyncExternalStore(subscribe, read, read)
 }
+
+/**
+ * The instance of the Host behind this session's computer while that Host runs, else null: the
+ * moment it turns from null to an id is the moment an attach refused for an unreachable Host can be
+ * made again. A string, so a snapshot that moved nothing about the Host renders nothing.
+ */
+export function useTerminalHostInstance(
+  local: SnapshotStore<SessionsSnapshot>,
+  remote: SnapshotStore<RemoteConnectionsSnapshot>,
+  target: TerminalTarget,
+): string | null {
+  const endpointId = TerminalTargetCodec.endpointOf(target)
+  const read = useCallback((): string | null => {
+    const host = endpointId === null
+      ? local.current().snapshot?.host
+      : remote.current().snapshot?.outbound.find((entry) => entry.remoteEndpointId === endpointId)?.sessions?.host
+    return host?.presence === 'running' ? host.hostInstanceId : null
+  }, [local, remote, endpointId])
+  const subscribe = useCallback((listener: () => void) => {
+    const offLocal = local.subscribe(listener)
+    const offRemote = remote.subscribe(listener)
+    return () => {
+      offLocal()
+      offRemote()
+    }
+  }, [local, remote])
+  return useSyncExternalStore(subscribe, read, read)
+}

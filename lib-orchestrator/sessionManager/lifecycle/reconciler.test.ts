@@ -136,7 +136,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
       [record('a')],
       listing([runtime('a', { alive: false, exitCode: 3, exitedAt: 9_000 })]),
     )
-    expect(changes).toEqual([{ kind: 'mark-ended', sessionId: 'a', exitCode: 3, endedAt: 9_000 }])
+    expect(changes).toEqual([{ kind: 'mark-ended', sessionId: 'a', binding: { hostInstanceId: 'host-1', generation: 1 }, exitCode: 3, endedAt: 9_000 }])
   })
 
   it("carries the Host's own word for the ending through to the record", () => {
@@ -147,6 +147,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
     expect(changes).toEqual([{
       kind: 'mark-ended',
       sessionId: 'a',
+      binding: { hostInstanceId: 'host-1', generation: 1 },
       exitCode: -1073741510,
       exitReason: 'stopped',
       endedAt: expect.any(Number),
@@ -578,7 +579,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
     expect(forSession(Reconciler.plan(
       [waiting(), failed],
       listing([runtime('p', { alive: false, exitCode: 0, exitedAt: 9_000 })]),
-    ), 'p')).toEqual([{ kind: 'mark-ended', sessionId: 'p', exitCode: 0, endedAt: 9_000 }])
+    ), 'p')).toEqual([{ kind: 'mark-ended', sessionId: 'p', binding: { hostInstanceId: 'host-1', generation: 1 }, exitCode: 0, endedAt: 9_000 }])
   })
 
   it('changes nothing about a waiting session when the Host could not be reached', () => {
@@ -865,7 +866,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
     })
   })
 
-  describe('reading Codex identity confirmations', () => {
+  describe('reading identity confirmations of the running agent', () => {
     function codex(overrides?: Partial<SessionRecord>): SessionRecord {
       return record('c', {
         kind: 'agent', createdAt: 1,
@@ -874,27 +875,42 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
     }
     function asks(records: readonly SessionRecord[]): ReconcileChange[] {
       return Reconciler.plan(records, listing([runtime('c')]))
-        .filter(change => change.kind === 'name-codex-conversation')
+        .filter(change => change.kind === 'name-conversation')
     }
     it('continues reading the active launch even after an identity has been confirmed', () => {
       for (const launchMode of ['new', 'fork', 'resume', 'continue'] as const)
         expect(asks([codex({agent: {
           agentId: 'codex', launchMode, identityLaunchId: 'launch', nativeSessionId: 'native',
-        }})])).toEqual([{kind: 'name-codex-conversation', sessionId: 'c'}])
+        }})])).toEqual([{kind: 'name-conversation', sessionId: 'c'}])
     })
     it('does not depend on the age of the session', () => {
-      expect(asks([codex()])).toEqual([{kind: 'name-codex-conversation', sessionId: 'c'}])
+      expect(asks([codex()])).toEqual([{kind: 'name-conversation', sessionId: 'c'}])
     })
     it('never guesses an identity for a legacy launch', () => {
       expect(asks([codex({agent: {agentId: 'codex', launchMode: 'new'}})])).toEqual([])
     })
-    it('never reads Codex identities for Claude or a shell', () => {
+    it('never reads an identity for a Claude launch without a generation, or for a shell', () => {
       expect(asks([codex({agent: {agentId: 'claude', launchMode: 'new'}})])).toEqual([])
       expect(asks([record('c')])).toEqual([])
     })
+    // The status line relay names the conversation an interactive Claude really runs (UA1-J14-1).
+    it('reads the running Claude conversation of a launch with a generation', () => {
+      expect(asks([codex({agent: {agentId: 'claude', launchMode: 'new', nativeSessionId: 'c', identityLaunchId: 'launch'}})]))
+        .toEqual([{kind: 'name-conversation', sessionId: 'c'}])
+    })
+    it('reads a live retained generation after a stop error even when selected and launch accounts match', () => {
+      expect(asks([codex({ life: 'live', endedReason: 'stop refused', agent: {
+        agentId: 'claude', launchMode: 'new', accountId: 'a', launchAccountId: 'a', identityLaunchId: 'launch',
+      } })])).toEqual([{ kind: 'name-conversation', sessionId: 'c' }])
+    })
+    it('does not request late confirmations for an ordinary ended generation', () => {
+      expect(asks([codex({ life: 'ended', endedReason: 'launch refused', agent: {
+        agentId: 'claude', launchMode: 'new', accountId: 'a', launchAccountId: 'a', identityLaunchId: 'launch',
+      } })])).toEqual([])
+    })
     it('does not read an active launch when the Host has no runtime', () => {
       expect(Reconciler.plan([codex()], listing([]))
-        .filter(change => change.kind === 'name-codex-conversation')).toEqual([])
+        .filter(change => change.kind === 'name-conversation')).toEqual([])
     })
   })
 

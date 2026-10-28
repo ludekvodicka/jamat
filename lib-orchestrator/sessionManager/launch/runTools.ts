@@ -1,6 +1,6 @@
-import { existsSync } from 'node:fs'
+import { accessSync, constants, existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { join } from 'node:path'
+import { delimiter, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import type { SessionRecordProcess } from '../records/sessionRecord.types'
@@ -46,11 +46,19 @@ export class RunTools {
   }
 
   private svn(): RunToolResolution {
-    if (this.platform !== 'win32') return { ok: true, command: 'svn', prefixArgs: [], env: {} }
+    if (this.platform !== 'win32') {
+      for (const directory of (this.environment.PATH ?? '').split(delimiter)) {
+        if (!directory) continue
+        const command = resolve(directory, 'svn')
+        try { accessSync(command, constants.X_OK); return { ok: true, command, prefixArgs: [], env: { LC_ALL: 'C', LANG: 'C' } } }
+        catch { continue }
+      }
+      return { ok: false, detail: 'svn was not found on PATH; install the Subversion command-line client' }
+    }
     const image = WindowsCommand.imageOf('svn', this.environment)
     return image === null
       ? { ok: false, detail: 'svn.exe was not found on PATH; install the Subversion command-line client' }
-      : { ok: true, command: image, prefixArgs: [], env: {} }
+      : { ok: true, command: image, prefixArgs: [], env: { LC_ALL: 'C', LANG: 'C' } }
   }
 
   /**
@@ -61,6 +69,20 @@ export class RunTools {
     if (this.resourcesRoot === null) return this.developmentNode()
     const node = join(this.resourcesRoot, 'launcher', this.platform === 'win32' ? 'node.exe' : 'bin/node')
     return existsSync(node) ? { ok: true, command: node } : { ok: false, detail: `The packaged Node runtime is missing: ${node}` }
+  }
+
+  /**
+   * The line an agent writes to run THIS client's Jamat CLI: the `appjamat-v3` wrapper this client
+   * ships (`skills/claude/...` in the repository and beside the packaged `resources/cli` bundle),
+   * which finds its CLI relative to itself. The person's `~/.claude/skills` link can belong to another
+   * installation, and a merger that used it reached the wrong instance (UA1-J14-9). Calls still
+   * select the instance with `--self`. `node` and the quoted forward-slash path are the shape the
+   * merger's permission rules were probed with (Claude Code 2.1.296).
+   */
+  agentCli(): { ok: true; command: string } | { ok: false; detail: string } {
+    const wrapper = join(this.applicationRoot, 'skills', 'claude', 'appjamat-v3', 'scripts', 'jamat-v3.mjs')
+    if (!existsSync(wrapper)) return { ok: false, detail: `The Jamat CLI wrapper is missing: ${wrapper}` }
+    return { ok: true, command: `node "${wrapper.replaceAll('\\', '/')}"` }
   }
 
   private jamatCli(): RunToolResolution {

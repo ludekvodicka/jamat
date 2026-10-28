@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { worktreeRepositoryReviewSchema } from '../sessionManager/worktreeReviewSchema'
 
 import { SessionTitle } from '../sessionManager/records/sessionTitle'
 import { SessionColors } from '../sessionManager/sessionColors'
@@ -117,6 +118,7 @@ const directory = z.discriminatedUnion('mode', [
 
 const agent = z.strictObject({
   agentId: z.enum(['claude', 'codex'], { error: 'agentId must be claude or codex' }),
+  accountId: RemoteControlZod.text().optional(),
   mode: z.enum(['new', 'continue', 'resume', 'fork'], { error: 'agent mode is invalid' }),
   nativeSessionId: RemoteControlZod.text().optional(),
   forkParentId: RemoteControlZod.text().optional(),
@@ -140,6 +142,7 @@ const worktree = z.strictObject({
 })
 
 const sessionSpec = z.strictObject({
+  account: z.strictObject({ agentId: z.enum(['claude', 'codex']), accountId: RemoteControlZod.text() }).optional(),
   kind: z.enum(['shell', 'agent'], { error: 'session kind must be shell or agent' }),
   directory,
   agent: agent.optional(),
@@ -163,6 +166,7 @@ const sessionSpec = z.strictObject({
   color: RemoteControlZod.color().optional(),
   flowId: RemoteControlZod.text().optional(),
   acknowledgeSetup: RemoteControlZod.text().optional(),
+  deferSetupAgreement: z.literal(true).optional(),
 }).superRefine((spec, context) => {
   if (spec.kind === 'agent' && spec.agent === undefined)
     context.addIssue({ code: 'custom', path: ['agent'], message: 'agent is required for an agent session' })
@@ -261,6 +265,7 @@ export const RemoteControlBodySchemas: { [K in RemoteControlOperation]: z.ZodTyp
   'projects.listing': z.strictObject({
     categoryId: RemoteControlZod.text(),
     sort: z.enum(['alpha', 'recent'], { error: 'sort must be alpha or recent' }),
+    fresh: z.boolean().optional(),
   }),
   'projects.sessions': z.strictObject({ categoryId: RemoteControlZod.text(), projectName: RemoteControlZod.text(1_024) }),
   'projects.create': z.strictObject({
@@ -305,6 +310,16 @@ export const RemoteControlBodySchemas: { [K in RemoteControlOperation]: z.ZodTyp
     session: RemoteControlZod.sessionSelector,
     choice: z.enum(['commit', 'discard', 'keep'], { error: 'choice must be commit, discard or keep' }),
     acknowledgeSetup: RemoteControlZod.text().optional(),
+    selection: z.array(z.string().min(1).max(32768)).max(10000).optional(),
+    message: z.string().max(100000).optional(),
+    acknowledgedFindings: z.array(z.enum(['empty', 'no-prefix', 'long-first-line', 'chat-opening', 'markdown', 'reused-after-keep'])).max(6).optional(),
+    repositories: z.array(worktreeRepositoryReviewSchema).max(100).optional(),
+    reviewVersion: z.number().int().nonnegative().optional(),
+    messageSource: z.enum(['agent-proposal', 'person-local', 'person-remote', 'restored-draft', 'kept-attempt', 'unknown']).optional(),
+    reviewCorrection: z.literal(true).optional(),
+    overrideChecks: z.literal(true).optional(),
+    refreshPreparation: z.literal(true).optional(),
+    confirmEnvironment: z.literal(true).optional(),
     confirmWorking: z.literal(true, { error: 'confirmWorking must be true' }).optional(),
     agent: z.literal(true, { error: 'agent must be true' }).optional(),
   }),
@@ -314,14 +329,18 @@ export const RemoteControlBodySchemas: { [K in RemoteControlOperation]: z.ZodTyp
   }),
   'sessions.worktreeReview': RemoteControlZod.sessionBody(),
   'sessions.notifies': z.strictObject({ sessionId: RemoteControlZod.text().optional() }),
+  'sessions.sync': RemoteControlZod.sessionBody(),
   'sessions.conflicts': RemoteControlZod.sessionBody(),
   'sessions.resolveConflict': z.strictObject({
     session: RemoteControlZod.sessionSelector,
     path: RemoteControlZod.text(4096),
+    kind: z.enum(['text', 'property', 'tree', 'diverged'], { error: 'kind must be text, property, tree or diverged' }).optional(),
     option: z.enum(['merged', 'take-incoming', 'keep-mine', 'keep-both', 'union'],
       { error: 'option must be merged, take-incoming, keep-mine, keep-both or union' }),
     confirm: z.literal(true, { error: 'confirm must be true' }).optional(),
   }),
+  'sessions.solveWithAgent': RemoteControlZod.sessionBody(),
+  'sessions.backToWork': z.strictObject({ session: RemoteControlZod.sessionSelector, confirmStoppedRunId: RemoteControlZod.text().optional() }),
   'sessions.children': z.strictObject({ sessionId: RemoteControlZod.text() }),
   'sessions.worktreeResults': z.strictObject({
     tag: worktreeTag.optional(),
@@ -332,8 +351,10 @@ export const RemoteControlBodySchemas: { [K in RemoteControlOperation]: z.ZodTyp
   'sessions.proposeCommit': z.strictObject({
     session: RemoteControlZod.sessionSelector,
     message: RemoteControlZod.string(messageLengthConst),
+    directory: RemoteControlZod.text(32768).optional(),
   }),
   'sessions.transcript': RemoteControlZod.sessionBody(),
+  'sessions.clearActions': RemoteControlZod.sessionBody(),
   'sessions.scripts': z.strictObject({
     session: RemoteControlZod.sessionSelector,
     runId: RemoteControlZod.text().optional(),
@@ -353,6 +374,7 @@ export const RemoteControlBodySchemas: { [K in RemoteControlOperation]: z.ZodTyp
     name: RemoteControlZod.string(512).optional(),
   }),
   'sessions.restart': RemoteControlZod.sessionBody(),
+  'sessions.switchAccount': z.strictObject({ session: RemoteControlZod.sessionSelector, accountId: RemoteControlZod.text() }),
   'sessions.setDetails': z.strictObject({
     session: RemoteControlZod.sessionSelector,
     update: z.strictObject({
@@ -375,6 +397,10 @@ export const RemoteControlBodySchemas: { [K in RemoteControlOperation]: z.ZodTyp
     }),
   }),
   'sessions.nextNumber': z.strictObject({ projectPath: RemoteControlZod.text(RemoteControlZod.pathLengthConst) }),
+  'sessions.worktreePreview': z.strictObject({ directory: z.discriminatedUnion('mode', [
+    projectDirectory,
+    z.strictObject({ mode: z.literal('adHoc'), path: RemoteControlZod.text(RemoteControlZod.pathLengthConst) }),
+  ], { error: 'directory mode must be project or adHoc' }) }),
   'sessions.allocateNumber': z.strictObject({ projectPath: RemoteControlZod.text(RemoteControlZod.pathLengthConst) }),
   'host.status': RemoteControlZod.empty(),
   'host.ping': RemoteControlZod.empty(),
@@ -389,6 +415,7 @@ export const RemoteControlBodySchemas: { [K in RemoteControlOperation]: z.ZodTyp
     note: RemoteControlZod.string(SessionLimits.noteCharacters).nullable(),
   }),
   'agents.describe': RemoteControlZod.empty(),
+  'accounts.list': z.strictObject({ excludeAccount: z.strictObject({ agentId: z.enum(['claude', 'codex']), accountId: RemoteControlZod.text() }).optional() }),
   'tabs.list': RemoteControlZod.empty(),
   'tabs.open': RemoteControlZod.sessionBody(),
   'tabs.openFile': z.strictObject({

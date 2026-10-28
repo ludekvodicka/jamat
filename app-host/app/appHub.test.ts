@@ -75,6 +75,10 @@ describe('app-host/app/appHub', () => {
     expect(theHub.eventRevision()).toBe(0)
   })
 
+  it('advertises the terminal release contract required before creating new workers', () => {
+    expect(HostWireConst.capabilities).toContain('pty.release.v2')
+  })
+
   it('advances the event revision when it publishes', () => {
     const theHub = hub()
     theHub.publish({ kind: 'host-stopping' })

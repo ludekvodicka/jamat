@@ -27,6 +27,65 @@ const tree = (reason: SvnTreeFacts['reason'], action: SvnTreeFacts['action'], lo
   ({ reason, action, localKind, incomingKind, incomingRevision: 3, localHistory })
 
 describe('lib-orchestrator/svn/svnConflictFacts', () => {
+  describe('merge sources', () => {
+    const left = '<version side="source-left" kind="file" repos-url="file:///repo" path-in-repos="trunk/a @.txt" revision="2"/>'
+    const right = '<version side="source-right" kind="file" repos-url="file:///repo" path-in-repos="branches/task/a @.txt" revision="8"/>'
+    const document = (sources: string) => `<info><entry path="a.txt" kind="file"><conflict type="property" operation="merge">${sources}</conflict></entry></info>`
+
+    it('retains each source URL and revision instead of assuming the target BASE is incoming', () => {
+      expect(SvnConflictFacts.infoConflicts(document(left + right))[0].propertySources).toEqual({
+        older: { url: 'file:///repo/trunk/a%20%40.txt', revision: 2 },
+        theirs: { url: 'file:///repo/branches/task/a%20%40.txt', revision: 8 },
+      })
+    })
+
+    it('refuses incomplete or invalid source evidence and represents an absent ancestor explicitly', () => {
+      expect(() => SvnConflictFacts.infoConflicts(document(left))).toThrow('source-right')
+      expect(() => SvnConflictFacts.infoConflicts(document(left + right.replace('revision="8"', 'revision="unknown"')))).toThrow('invalid')
+      expect(() => SvnConflictFacts.infoConflicts(document(left + right.replace('branches/task', '../task')))).toThrow('invalid')
+      expect(SvnConflictFacts.infoConflicts(document('<version side="source-left" kind="none"/>' + right))[0].propertySources?.older).toBeNull()
+    })
+
+    it('reads the original property revision from update evidence after a later mount or restart', () => {
+      expect(SvnConflictFacts.infoConflicts(document(left + right).replace('operation="merge"', 'operation="update"'))[0].propertySources).toEqual({
+        older: { url: 'file:///repo/trunk/a%20%40.txt', revision: 2 },
+        theirs: { url: 'file:///repo/branches/task/a%20%40.txt', revision: 8 },
+      })
+    })
+  })
+
+  describe('incoming moves', () => {
+    const path = (action: string, text: string, from?: string): string =>
+      `<path action="${action}" kind="file"${from === undefined ? '' : ` copyfrom-path="${from}" copyfrom-rev="1"`}>${text}</path>`
+    const log = (...entries: [number, string[]][]): string =>
+      `<?xml version="1.0"?><log>${entries.map(([revision, paths]) => `<logentry revision="${revision}"><paths>${paths.join('')}</paths><msg>m</msg></logentry>`).join('')}</log>`
+
+    it('follows the moves of the other commits to the path where the victim now lives, below the worktree base', () => {
+      expect(SvnConflictFacts.incomingMoveOf(log([2, [path('D', '/trunk/src/e.txt'), path('A', '/trunk/src/f.txt', '/trunk/src/e.txt')]]), '/trunk', 'src/e.txt')).toBe('src/f.txt')
+      expect(SvnConflictFacts.incomingMoveOf(log(
+        [3, [path('D', '/trunk/src'), path('A', '/trunk/lib', '/trunk/src')]],
+        [2, [path('A', '/trunk/src/f.txt', '/trunk/src/e.txt'), path('D', '/trunk/src/e.txt')]],
+      ), '/trunk', 'src/e.txt')).toBe('lib/f.txt')
+      expect(SvnConflictFacts.incomingMoveOf(log([2, [path('D', '/e.txt'), path('A', '/g.txt', '/e.txt')]]), '', 'e.txt')).toBe('g.txt')
+    })
+
+    it('finds no move for a delete, a copy that keeps its source, two copies of one path, a moved path deleted later or a target outside the base', () => {
+      expect(SvnConflictFacts.incomingMoveOf(log([2, [path('D', '/trunk/e.txt')]]), '/trunk', 'e.txt')).toBeNull()
+      expect(SvnConflictFacts.incomingMoveOf(log([2, [path('A', '/trunk/x.txt', '/trunk/e.txt')]], [3, [path('D', '/trunk/e.txt')]]), '/trunk', 'e.txt')).toBeNull()
+      expect(SvnConflictFacts.incomingMoveOf(log([2, [path('D', '/trunk/e.txt'), path('A', '/trunk/x.txt', '/trunk/e.txt'), path('A', '/trunk/y.txt', '/trunk/e.txt')]]), '/trunk', 'e.txt')).toBeNull()
+      expect(SvnConflictFacts.incomingMoveOf(log([2, [path('D', '/trunk/e.txt'), path('A', '/trunk/f.txt', '/trunk/e.txt')]], [3, [path('D', '/trunk/f.txt')]]), '/trunk', 'e.txt')).toBeNull()
+      expect(SvnConflictFacts.incomingMoveOf(log([2, [path('D', '/trunk/e.txt'), path('A', '/branches/e.txt', '/trunk/e.txt')]]), '/trunk', 'e.txt')).toBeNull()
+      expect(SvnConflictFacts.incomingMoveOf('<?xml version="1.0"?><log>\n</log>', '/trunk', 'e.txt')).toBeNull()
+    })
+
+    it('ignores moves before the individual conflict when a shared log covers older conflicts too', () => {
+      const history = log([2, [path('D', '/trunk/e.txt'), path('A', '/trunk/old.txt', '/trunk/e.txt')]],
+        [4, [path('D', '/trunk/e.txt'), path('A', '/trunk/current.txt', '/trunk/e.txt')]])
+      expect(SvnConflictFacts.incomingMoveOf(history, '/trunk', 'e.txt', 3)).toBe('current.txt')
+      expect(SvnConflictFacts.incomingMoveOf(history, '/trunk', 'e.txt', 4)).toBeNull()
+    })
+  })
+
   describe('the spike fixtures', () => {
     const trees: [string, string, SvnTreeFacts][] = [
       ['obstructed-dir', '.aidocs/engines', tree('unversioned', 'added', 'dir', 'dir')],
@@ -39,7 +98,7 @@ describe('lib-orchestrator/svn/svnConflictFacts', () => {
       ['edit-vs-delete', 'src/legacy.txt', tree('edited', 'deleted', 'file', 'none', true)],
       ['edit-vs-replace', 'src/legacy.txt', tree('edited', 'replaced', 'file', 'file', true)],
       ['delete-vs-edit', 'src/legacy.txt', tree('deleted', 'edited', 'file', 'file')],
-      ['moved-vs-edit', 'src/legacy.txt', tree('moved-away', 'edited', 'file', 'file')],
+      ['moved-vs-edit', 'src/legacy.txt', { ...tree('moved-away', 'edited', 'file', 'file'), movedTo: 'src/moved.txt' }],
       ['delete-vs-delete', 'src/legacy.txt', tree('deleted', 'deleted', 'file', 'none')],
     ]
 
@@ -141,6 +200,17 @@ dist
       expect(SvnConflictFacts.contentOf(bytes('a\r\nb\r\n'), bytes('a\nb\n'))).toEqual({ binary: false, unreadable: false, equal: 'eol' })
       expect(SvnConflictFacts.contentOf(bytes('a\n'), bytes('b\n'))).toEqual({ binary: false, unreadable: false, equal: 'differs' })
       expect(SvnConflictFacts.contentOf(bytes('a\n'), null)).toEqual({ binary: false, unreadable: false, equal: null })
+    })
+
+    it('merges differing text against the side before the update, line ends ignored (Finish 072)', () => {
+      const older = bytes('one\r\ntwo\r\nthree\r\nfour\r\n')
+      expect(SvnConflictFacts.contentOf(bytes('ONE\ntwo\nthree\nfour\n'), bytes('one\r\ntwo\r\nthree\r\nFOUR\r\n'), older))
+        .toEqual({ binary: false, unreadable: false, equal: 'differs', merge: 'clean' })
+      expect(SvnConflictFacts.contentOf(bytes('one\nTWO\nthree\nfour\n'), bytes('one\r\ntwo\r\nTHREE\r\nfour\r\n'), older))
+        .toEqual({ binary: false, unreadable: false, equal: 'differs', merge: 'conflict' })
+      expect(SvnConflictFacts.contentOf(bytes('a\r\nb\r\n'), bytes('a\nb\n'), older)).toEqual({ binary: false, unreadable: false, equal: 'eol' })
+      expect(SvnConflictFacts.contentOf(Uint8Array.from([0x61, 0x00]), Uint8Array.from([0x62, 0x00]), Uint8Array.from([0x63, 0x00])))
+        .toEqual({ binary: true, unreadable: false, equal: 'differs' })
     })
 
     it('reads a NUL byte as binary, a UTF-16 byte order mark or invalid UTF-8 as unreadable', () => {

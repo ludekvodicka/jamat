@@ -32,6 +32,8 @@ export class SessionRequestValidation {
   static validateLaunch(launch: RuntimeLaunchSpec): void {
     if (!launch || typeof launch !== 'object')
       throw new SessionError('invalid-request', 'launch is required')
+    if (typeof launch.stopDescendants !== 'boolean')
+      throw new SessionError('invalid-request', 'Update the client: launch.stopDescendants must explicitly select managed (true) or interactive (false) process ownership')
     if (typeof launch.command !== 'string' || !launch.command)
       throw new SessionError('invalid-request', 'launch.command is required')
     if (!Array.isArray(launch.args) || !launch.args.every((value) => typeof value === 'string'))

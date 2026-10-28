@@ -1,3 +1,4 @@
+import type { SessionScriptOutput } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { z } from 'zod'
 
 import { RemoteControlOutcome } from '../../../lib-orchestrator/remoteControl/remoteControlOutcome'
@@ -12,7 +13,7 @@ import type {
   SessionTaskParentState,
 } from '../../../lib-orchestrator/sessionTasks/sessionTasksApi.types'
 import type { AppOperationMap } from '../../shared/appOperationMap'
-import { TabControlTask } from '../../shared/tabControl'
+import { TabControlTask, type TabControlTaskRef, type TabControlTaskItem } from '../../shared/tabControl'
 import { AgentSessionContext } from '../shared/agentSessionContext'
 import type { TabControlBroker } from '../tabs/tabControlBroker'
 
@@ -20,8 +21,8 @@ import type { TabControlBroker } from '../tabs/tabControlBroker'
  * The sub-agents and background shells of local agent sessions, the output of local script runs, and
  * the workflow item of a local session's tab.
  *
- * A client operation, so it is never on the peer list and never in `SessionInfo`: a paired computer
- * receives no process content. Sub-agent and shell reads pass the transcript gate, so a session with
+ * Local operations and authenticated source task views share these readers. Sub-agent and shell
+ * reads pass the transcript gate, so a session with
  * no native id is answered without the disk being asked; script output needs only its parent and run.
  */
 export class SessionTasksOperations {
@@ -44,7 +45,7 @@ export class SessionTasksOperations {
       kind: 'read',
       description: 'The live output or saved log of one script run of a local session.',
       input: z.strictObject({ sessionId: RemoteControlZod.text(), runId: RemoteControlZod.text() }),
-      run: async (body) => RemoteControlOutcome.of(await this.sessions.scriptOutputOf(body.sessionId, body.runId)),
+      run: (body) => this.scriptOutputOf(body.sessionId, body.runId),
     })
     op('sessionTasks.list', {
       kind: 'read',
@@ -90,7 +91,7 @@ export class SessionTasksOperations {
         ]),
         title: RemoteControlZod.text(SessionTasksOperations.titleMaxConst),
       }),
-      run: async (body) => {
+      run: async (body, context) => {
         const info = this.sessions.snapshot().sessions.find((one) => one.sessionId === body.sessionId)
         if (info === undefined)
           return { ok: false, error: { code: 'not-found', detail: `Session ${body.sessionId} does not exist` } }
@@ -102,25 +103,49 @@ export class SessionTasksOperations {
           title: body.title,
           sessionId: body.sessionId,
           task: body.task,
-        })
+        }, JSON.stringify([context.callerId, context.operationId]))
         return opened.ok ? { ok: true, value: { panelId: opened.value.panelId } } : opened
       },
     })
     op('sessionTasks.openWorkflow', {
       kind: 'write',
-      description: "Bring a local session's tab forward with its workflow split item active.",
+      description: "Bring a local session's tab forward with Session actions active in its split.",
       input: z.strictObject({ sessionId: RemoteControlZod.text() }),
-      run: async (body) => {
+      run: async (body, context) => {
         const info = this.sessions.snapshot().sessions.find((one) => one.sessionId === body.sessionId)
         if (info === undefined)
           return { ok: false, error: { code: 'not-found', detail: `Session ${body.sessionId} does not exist` } }
-        const opened = await this.tabs.openWorkflow(body.sessionId, info.tabTitle)
+        const opened = await this.tabs.openWorkflow(body.sessionId, info.tabTitle, JSON.stringify([context.callerId, context.operationId]))
         return opened.ok ? { ok: true, value: { panelId: opened.value.panelId } } : opened
       },
     })
   }
 
-  private async listingOf(sessionId: string): Promise<SessionTaskListing> {
+  async itemOf(sessionId: string, task: TabControlTaskRef): Promise<TabControlTaskItem> {
+    let title: string
+    if (task.kind === 'subagent') {
+      const read = await this.transcriptOf(sessionId, task.subagentId, null)
+      if (read.kind !== 'transcript') throw new Error(read.kind === 'none' ? read.reason : 'Source transcript is unavailable')
+      title = `${read.header.agentType}: ${read.header.description}`
+    } else if (task.kind === 'shell') {
+      const read = await this.shellOutputOf(sessionId, task.shellId, null)
+      if (read.kind !== 'output') throw new Error(read.kind === 'none' ? read.reason : 'Source shell output is unavailable')
+      title = `$ ${read.command}`
+    } else if (task.kind === 'script') {
+      const read = await this.scriptOutputOf(sessionId, task.runId)
+      if (!read.ok) throw new Error(read.error.detail)
+      const run = this.scriptsOf(sessionId)?.runs.find((run) => run.runId === task.runId)
+      if (!run) throw new Error('Source script run is no longer retained')
+      title = run.title
+    } else throw new Error(`Unknown source task: ${JSON.stringify(task satisfies never)}`)
+    return { key: TabControlTask.keyOf(sessionId, task), sessionId, task, title: title.slice(0, 400) }
+  }
+
+  scriptsOf(sessionId: string) { return this.sessions.snapshot().sessions.find((session) => session.sessionId === sessionId)?.scripts ?? null }
+
+  async scriptOutputOf(sessionId: string, runId: string) { return RemoteControlOutcome.of<SessionScriptOutput>(await this.sessions.scriptOutputOf(sessionId, runId)) }
+
+  async listingOf(sessionId: string): Promise<SessionTaskListing> {
     const context = await AgentSessionContext.of(this.sessions, sessionId)
     if (!context.ok) return { kind: 'none', code: context.code, reason: context.reason }
     return this.tasks.list({
@@ -131,7 +156,7 @@ export class SessionTasksOperations {
     }, this.parentOf(sessionId))
   }
 
-  private async transcriptOf(
+  async transcriptOf(
     sessionId: string,
     subagentId: string,
     known: string | null,
@@ -146,7 +171,7 @@ export class SessionTasksOperations {
     }, subagentId, this.parentOf(sessionId), known)
   }
 
-  private async shellOutputOf(
+  async shellOutputOf(
     sessionId: string,
     shellId: string,
     known: string | null,

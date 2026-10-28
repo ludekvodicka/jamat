@@ -1,3 +1,4 @@
+import { WorkerIdle } from '../../worktrees/worktreeFinish'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type {
@@ -42,7 +43,6 @@ describe('lib-orchestrator/sessionManager/workState/workStateMonitor', () => {
   const codexLiveWideWorkingScreenConst = frameOf('codex-live-working-wide-screen.json').wideScreenTail
   const codexQuietScreenConst = frameOf('codex-unknown-prompt.json').screenTail
   const codexIdleScreenConst = frameOf('codex-live-idle.json').screenTail
-  const codexBackgroundFrameConst = frameOf('codex-live-background-terminal.json')
 
   interface FakeRuntime {
     runtimeSessionId: string
@@ -410,6 +410,7 @@ describe('lib-orchestrator/sessionManager/workState/workStateMonitor', () => {
     await context.observe()
     expect(context.monitor.activity('a')).toBe('working')
     expect(context.monitor.activityDetail('a')).toBe('background')
+    expect(WorkerIdle.of(context.monitor.activity('a'), context.monitor.polledAt('a'), 0)).toBe(false)
 
     // One observation per settle window rather than one jump over four of them: the claim is about
     // CADENCE, and a single `observe` after 60 s can only ever prove that one re-inspection
@@ -422,6 +423,7 @@ describe('lib-orchestrator/sessionManager/workState/workStateMonitor', () => {
 
     expect(context.monitor.activity('a')).toBe('working')
     expect(context.monitor.activityDetail('a')).toBe('background')
+    expect(WorkerIdle.of(context.monitor.activity('a'), context.monitor.polledAt('a'), 0)).toBe(false)
     // The first look plus one per due settle, and nothing in between: the screen is re-read on the
     // window, not on every pass.
     expect(context.calls.inspect.length).toBe(1 + settles)
@@ -438,6 +440,7 @@ describe('lib-orchestrator/sessionManager/workState/workStateMonitor', () => {
     await context.observe()
     expect(context.monitor.activity('a')).toBe('working')
     expect(context.monitor.activityDetail('a')).toBe('background')
+    expect(WorkerIdle.of(context.monitor.activity('a'), context.monitor.polledAt('a'), 0)).toBe(false)
 
     // Quiet stretches first, with nothing printed: they must not drop the row on their own.
     for (let window = 0; window < 3; window += 1) {
@@ -462,13 +465,17 @@ describe('lib-orchestrator/sessionManager/workState/workStateMonitor', () => {
   // The same clock through the other inspector: Codex has finished its foreground turn, but the
   // yielded terminal named on its current screen is still work. The shared background hint holds it
   // green until that status disappears, without a Codex-specific monitor branch.
-  it('holds a Codex background-terminal wait green, then drops once it clears', async () => {
+  it.each([
+    'codex-live-background-terminal.json',
+    'codex-background-terminal-tip.json',
+  ])('holds a Codex background-terminal wait green, then drops once it clears: %s', async (file) => {
+    const background = frameOf(file)
     const context = harness()
     context.add({ runtimeSessionId: 'c', agent: 'codex' })
     context.emit(
       'c',
-      codexBackgroundFrameConst.screenTail,
-      codexBackgroundFrameConst.rawTail,
+      background.wideScreenTail,
+      background.rawTail,
     )
     await context.observe()
     expect(context.monitor.activity('c')).toBe('working')
@@ -533,6 +540,7 @@ describe('lib-orchestrator/sessionManager/workState/workStateMonitor', () => {
 
     expect(context.monitor.activity('a')).toBe('working')
     expect(context.monitor.activityDetail('a')).toBe('background')
+    expect(WorkerIdle.of(context.monitor.activity('a'), context.monitor.polledAt('a'), 0)).toBe(false)
     expect(context.changes()).toBe(2)
   })
 

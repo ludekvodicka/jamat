@@ -25,13 +25,12 @@ export function RateClaudeSection(): React.JSX.Element {
 }
 
 /**
- * One implementation behind the rate root and both provider nodes. The root draws the shared poll
- * facts; a child draws the chosen provider's unreduced answer. Only the selected node is mounted, so
+ * One implementation behind the rate root and both provider nodes. The root draws shared poll
+ * facts and every account; a child filters accounts by provider. Only the selected node is mounted, so
  * all three use the same reader without keeping three subscriptions alive.
  *
  * It reads on mount and whenever the monitor says something moved, and it has no timer of its own on
- * purpose. Rate data cannot move faster than the monitor's ten-minute cadence and the 180-second
- * floor on the Claude side, so a clock here would only redraw a value nobody had re-read.
+ * purpose. Polls and status-line receipts publish changes through that subscription.
  */
 function RateDebugPage(props: { agentId?: RateAgentId }): React.JSX.Element {
   const [start] = useState(() => RateDebugModel.initial())
@@ -112,20 +111,17 @@ function RateDebugPage(props: { agentId?: RateAgentId }): React.JSX.Element {
 
       {status === null
         ? <p className="jamat-debug-rate__empty">Nothing has been read from the monitor yet.</p>
-        : props.agentId === undefined
-          ? (
-              <section className="jamat-debug-rate__block">
-                <h2 className="jamat-debug-rate__title">Poll</h2>
-                <RateFacts facts={RateDebugModel.pollFactsOf(status)} />
-              </section>
-            )
-          : (
-              <RateProviderBlock
-                agentId={props.agentId}
-                provider={status.providers[props.agentId]}
-                now={status.capturedAt}
-              />
-            )}
+        : <>
+            {props.agentId === undefined && <section className="jamat-debug-rate__block">
+              <h2 className="jamat-debug-rate__title">Poll</h2>
+              <RateFacts facts={RateDebugModel.pollFactsOf(status)} />
+            </section>}
+            {(props.agentId === undefined && !status.accounts ? [] : RateDebugModel.accountsOf(status, props.agentId)).map(account => <RateProviderBlock
+              key={`${account.key.agentId}/${account.key.accountId}`}
+              agentId={account.key.agentId} label={status.accounts ? account.label : undefined}
+              provider={account.provider} source={account.source} now={status.capturedAt} />)}
+          </>}
+
     </div>
   )
 }
@@ -135,14 +131,15 @@ function RateDebugPage(props: { agentId?: RateAgentId }): React.JSX.Element {
  * when did it last answer, what did the answer contain, and what did the wire actually carry.
  */
 function RateProviderBlock(
-  props: { agentId: RateAgentId; provider: RateProviderDebug; now: number },
+  props: { agentId: RateAgentId; label?: string; source?: 'poll' | 'statusline' | 'rollout' | null; provider: RateProviderDebug; now: number },
 ): React.JSX.Element {
   const { provider, now } = props
   const windows = RateDebugModel.windowsOf(provider.state)
   return (
     <section className="jamat-debug-rate__block">
-      <h2 className="jamat-debug-rate__title">{RateDebugModel.titleOf(props.agentId)}</h2>
+      <h2 className="jamat-debug-rate__title">{RateDebugModel.titleOf(props.agentId)}{props.label ? ` · ${props.label}` : ''}</h2>
       <RateFacts facts={RateDebugModel.providerFactsOf(provider, now)} />
+      {props.source && <RateFacts facts={[[ 'Source', { poll: 'poll', statusline: 'status line', rollout: 'rollout' }[props.source] ]]} />}
 
       <h3 className="jamat-debug-rate__subtitle">Windows</h3>
       {windows.length === 0

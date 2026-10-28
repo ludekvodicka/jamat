@@ -6,13 +6,15 @@ export class HostWireConst {
    * sees 1, and refuses loudly instead of half-working.
    */
   static readonly protocolMajor = 1
-  static readonly protocolMinor = 0
+  static readonly protocolMinor = 1
 
   static readonly capabilities = [
     'controller-lease.v1',
+    'pty.release.v2',
     'events.replay.v1',
     'host.health.v1',
     'runtime.lifecycle.v1',
+    'runtime.managed-descendants.v1',
     'runtime.mutation-fence.v1',
     'terminal.backpressure.v1',
     'terminal.replay.v1',
@@ -123,6 +125,8 @@ export interface RuntimeRef {
  * never argv or environment contents.
  */
 export interface RuntimeLaunchSpec {
+  /** Explicit ownership of background descendants for a managed run, absent for interactive sessions. */
+  stopDescendants?: boolean
   command: string
   args: string[]
   cwd: string
@@ -207,6 +211,11 @@ export interface RuntimeTargetReq {
 
 export interface RuntimeTargetMutationReq extends RuntimeTargetReq {
   controllerLeaseId: string
+}
+
+export interface RuntimeStopReq extends RuntimeTargetMutationReq {
+  /** A person confirmed unobservable descendants stopped externally; known live children are still checked. */
+  confirmExternalStop?: boolean
 }
 
 export interface RuntimeReplaceReq extends RuntimeTargetMutationReq {

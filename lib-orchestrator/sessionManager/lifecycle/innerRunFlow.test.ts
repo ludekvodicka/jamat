@@ -124,6 +124,22 @@ describe('lib-orchestrator/sessionManager/lifecycle/innerRunFlow', () => {
     expect(context.store.get('id-1')?.commands).toEqual([{ command: 'pnpm test', cwd: inside }])
   })
 
+  // The review's validation run starts at the worktree root, above a session started in a subdirectory.
+  it('takes the whole worktree of a session started below its root, and starts in that subdirectory without a cwd', async () => {
+    const context = await harness({
+      worktree: { kind: 'svn', worktreePath: 'Q:/pending', branch: 'http://svn/app', baseCommit: 'r7', repositoryRoot: 'Q:/main', cwdSubpath: 'packages/app' },
+    })
+    const parent = context.store.get('p')!
+    await context.store.put({ ...parent, worktree: { ...parent.worktree!, worktreePath: context.place } })
+
+    expect(await context.flow.start('p', { command: 'node show.js', cwd: context.place })).toEqual({ ok: true, value: { runId: 'id-1' } })
+    expect(context.store.get('id-1')?.commands).toEqual([{ command: 'node show.js', cwd: context.place }])
+    expect(await context.flow.start('p', { command: 'pnpm test' })).toEqual({ ok: true, value: { runId: 'id-3' } })
+    expect(context.store.get('id-3')?.commands).toEqual([{ command: 'pnpm test', cwd: join(context.place, 'packages', 'app') }])
+    expect(refusalOf(await context.flow.start('p', { command: 'pnpm test', cwd: '../../..' })))
+      .toContain(`is outside the session's worktree ${context.place}`)
+  })
+
   it('answers the failure of a launch the Host refused', async () => {
     const context = await harness()
     context.answer.value = { ok: false, code: 'op-rejected', detail: 'launch.cwd must exist' }

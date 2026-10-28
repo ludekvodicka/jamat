@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { TabControlCommand } from '../../shared/tabControl'
 import { PanelKeysConst } from '../../shared/tabTransfer'
@@ -57,6 +57,19 @@ class WorkspacePanelsTestController {
 }
 
 describe('app-client-ui/renderer/shell/workspacePanels', () => {
+  it.each([false, true])('opens or focuses the fixed snap-in panel, existing: %s', async (existing) => {
+    const openPanel = vi.fn(async () => ({ kind: 'opened', panelId: 'snapin:review-todos' }))
+    const activatePanel = vi.fn()
+    const controller = { keyOf: () => existing ? PanelKeysConst.snapin : null, openPanel, activatePanel } as unknown as TabsController
+    expect(await WorkspacePanels.tabControlResult(controller, { kind: 'open-snapin', requestId: 'r', panelId: 'snapin:review-todos', snapinKind: 'review-todos', title: 'Review todos' }))
+      .toEqual({ kind: 'snapin-opened', panelId: 'snapin:review-todos' })
+    if (existing) { expect(activatePanel).toHaveBeenCalledWith('snapin:review-todos'); expect(openPanel).not.toHaveBeenCalled() }
+    else expect(openPanel).toHaveBeenCalledWith(PanelKeysConst.snapin, 'Review todos', { kind: 'review-todos' }, 'snapin:review-todos')
+  })
+
+  it('throws for an unknown tab control command', async () => {
+    await expect(WorkspacePanels.tabControlResult({} as TabsController, { kind: 'future' } as unknown as TabControlCommand)).rejects.toThrow('Unknown tab control command')
+  })
   it('collects every open terminal task item, including inactive items, but excludes file history and other panels', () => {
     const task = (sessionId: string, runId: string) => ({ kind: 'task' as const,
       key: `task:${sessionId}:script:${runId}`, title: runId, sessionId, task: { kind: 'script' as const, runId } })
@@ -380,3 +393,77 @@ class WorkspacePanelsTest {
     }
   }
 }
+
+describe('Session actions panel routing', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  const target = { kind: 'remote', remoteEndpointId: 'peer', sessionId: 'session' } as const
+
+  it('forwards opening the split to the main broker when another window owns the terminal', async () => {
+    const openSessionActions = vi.fn(async () => ({ ok: true, value: undefined }))
+    const openSharedItem = vi.fn(async () => ({ ok: true, value: { ok: true, value: {} } }))
+    const closeView = vi.fn(async () => ({ ok: true, value: undefined }))
+    vi.stubGlobal('appClient', { tabs: { openSessionActions }, remote: { openSharedItem, closeView,
+      openView: async () => ({ ok: true, value: { ok: true, value: { viewId: 'view' } } }) } })
+    const controller = {
+      openPanel: async () => ({ kind: 'focusedExisting', panelId: 'remote', windowId: 'holder' }),
+      applyPanelParameters: () => false,
+    } as unknown as TabsController
+    await WorkspacePanels.openSessionActions(controller, target, 'Remote')
+    expect(openSessionActions).toHaveBeenCalledWith(target)
+    expect(openSharedItem).toHaveBeenCalledExactlyOnceWith(target.remoteEndpointId, 'view', { openId: expect.any(String), item: { kind: 'workflow' } })
+    expect(closeView).toHaveBeenCalledOnce()
+  })
+
+  it.each(['local', 'remote'] as const)('publishes an intentional %s Session actions open once and never republishes a projected command', async (kind) => {
+    const chosen = kind === 'remote' ? target : { kind: 'local' as const, sessionId: 'session' }
+    const openSharedItem = vi.fn(async () => ({ ok: true, value: { ok: true, value: {} } }))
+    const closeView = vi.fn(async () => ({ ok: true, value: undefined }))
+    vi.stubGlobal('appClient', { tabs: { openSharedItem }, remote: { openSharedItem, closeView,
+      openView: async () => ({ ok: true, value: { ok: true, value: { viewId: 'view' } } }) } })
+    let params: Record<string, unknown> = kind === 'remote' ? { target: chosen } : { sessionId: 'session' }
+    const controller = { openPanel: async () => ({ kind: 'opened', panelId: 'panel' }), keyOf: () => 'terminal',
+      focusPanelContent: vi.fn(), activatePanel: vi.fn(),
+      applyPanelParameters: (_id: string, merge: (value: Record<string, unknown>) => Record<string, unknown>) => { params = merge(params); return true },
+    } as unknown as TabsController
+    await WorkspacePanels.openSessionActions(controller, chosen, 'Session')
+    expect(openSharedItem).toHaveBeenCalledOnce()
+    expect(PanelSplitParams.of(params).items).toHaveLength(1)
+    await WorkspacePanels.tabControlResult(controller, { kind: 'open-workflow', requestId: 'projected', panelId: 'panel', sessionId: 'session', target: chosen })
+    expect(openSharedItem).toHaveBeenCalledOnce()
+    expect(closeView).toHaveBeenCalledTimes(kind === 'remote' ? 1 : 0)
+  })
+
+  it('forwards a remote task to its owner and shares once only after acknowledgement', async () => {
+    const task = { kind: 'shell', shellId: 'same' } as const
+    const openSessionTask = vi.fn(async () => ({ ok: true, value: undefined }))
+    const openSharedItem = vi.fn(async () => ({ ok: true, value: { ok: true, value: {} } }))
+    const closeView = vi.fn(async () => ({ ok: true, value: undefined }))
+    vi.stubGlobal('appClient', { tabs: { openSessionTask }, remote: { openSharedItem, closeView,
+      openView: async () => ({ ok: true, value: { ok: true, value: { viewId: 'view' } } }) } })
+    const controller = { openPanel: async () => ({ kind: 'focusedExisting', panelId: 'remote', windowId: 'holder' }),
+      keyOf: () => null } as unknown as TabsController
+    await WorkspacePanels.openTask(controller, target, task, 'Shell')
+    expect(openSessionTask).toHaveBeenCalledExactlyOnceWith(target, task, 'Shell')
+    expect(openSharedItem).toHaveBeenCalledExactlyOnceWith(target.remoteEndpointId, 'view', { openId: expect.any(String), item: { kind: 'task', task } })
+    expect(closeView).toHaveBeenCalledOnce()
+  })
+
+  it('opens the qualified workflow in the owning window and refuses a foreign target', async () => {
+    let params: Record<string, unknown> = { target }
+    const activatePanel = vi.fn()
+    const controller = {
+      keyOf: () => 'terminal', activatePanel, focusPanelContent: vi.fn(),
+      applyPanelParameters: (_id: string, merge: (value: Record<string, unknown>) => Record<string, unknown>) => {
+        params = merge(params)
+        return true
+      },
+    } as unknown as TabsController
+    const command = { kind: 'open-workflow', requestId: 'one', panelId: 'remote', sessionId: 'session', target } as const
+    expect(await WorkspacePanels.tabControlResult(controller, command)).toEqual({ kind: 'workflow-opened', panelId: 'remote' })
+    expect(PanelSplitParams.of(params).items).toEqual([PanelSplitParams.workflowItemOf('session', target)])
+    expect(await WorkspacePanels.tabControlResult(controller, { ...command, target: { ...target, remoteEndpointId: 'foreign' } }))
+      .toEqual({ kind: 'failed', detail: 'The session terminal target has changed' })
+    expect(activatePanel).toHaveBeenCalledTimes(1)
+  })
+})

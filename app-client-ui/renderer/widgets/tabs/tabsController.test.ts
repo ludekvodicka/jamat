@@ -1932,7 +1932,7 @@ describe('app-client-ui/renderer/widgets/tabs/tabsController', () => {
     })
 
     it.each(['workingTree', 'fileChanges', 'directoryExplorer', 'notes', 'processes'])(
-      'restores the %s sidebar and every split parameter after repeated preview replacements', async (activeView) => {
+      'preserves the stored %s sidebar key, including retired keys, through preview replacements', async (activeView) => {
         const harness = TabsControllerHarness.fresh()
         await openPreview(harness, 's1')
         const panelId = sessionPanelId('s1')

@@ -1,3 +1,4 @@
+import type { AppClientUiBridge } from '../../shared/appClientUiIpc'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type {
@@ -6,7 +7,7 @@ import type {
 } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import { IpcFailure } from '../ipc/ipcFailure'
 import { FileChangesOpen } from './fileChangesOpen'
-import { FileChangesStatusMark } from './fileChangesStatusMark'
+import { FileChangesStatusMark, type FileChangesMarkConventions } from './fileChangesStatusMark'
 import { FileChangesTree, type FileChangesTreeNode } from './fileChangesTree'
 import type {
   FileChangesWorkingTreeViewModel,
@@ -14,6 +15,8 @@ import type {
 } from './fileViewerPanel.types'
 
 export function FileChangesTreeWidget(props: {
+  openFile: AppClientUiBridge['fileChanges']['openFile']
+  release: AppClientUiBridge['fileViewer']['release']
   model: FileChangesWorkingTreeViewModel
   onOpen(value: FileViewerChangedOpen): void
 }): React.JSX.Element {
@@ -56,13 +59,13 @@ export function FileChangesTreeWidget(props: {
     const source = snapshot.source.selected
     const isCurrent = (fresh: FileViewerChangedOpen['snapshot']): boolean => current === openings.current
       && (latestSnapshot.current?.snapshotId === snapshot.snapshotId || latestSnapshot.current?.snapshotId === fresh.snapshotId)
-    const opened = await FileChangesOpen.read({ snapshot, entry, openFile: window.appClient.fileChanges.openFile,
+    const opened = await FileChangesOpen.read({ snapshot, entry, openFile: props.openFile,
       baselineHint: baseline === null || source === null ? null : { kind: baseline.kind, revision: baseline.revision, workingTreeSource: source },
       refresh: () => props.model.reload(source ?? undefined), isCurrent })
     const { answer } = opened
     if (!isCurrent(opened.snapshot)) {
       if (answer.ok && answer.value.ok)
-        await window.appClient.fileViewer.release(answer.value.value.documentId)
+        await props.release(answer.value.value.documentId)
       return
     }
     setOpening(null)
@@ -136,6 +139,7 @@ export function FileChangesTreeWidget(props: {
                     key={node.key}
                     node={node}
                     depth={0}
+                    conventions={FileChangesStatusMark.ofSource(snapshot.source.selected)}
                     collapsed={collapsed}
                     opening={opening}
                     onToggle={toggle}
@@ -153,6 +157,7 @@ export function FileChangesTreeWidget(props: {
 function FileChangesTreeItem(props: {
   node: FileChangesTreeNode
   depth: number
+  conventions: FileChangesMarkConventions
   collapsed: ReadonlySet<string>
   opening: string | null
   onToggle(key: string): void
@@ -166,7 +171,7 @@ function FileChangesTreeItem(props: {
     ? `${entry.previousDisplayPath} → ${entry.displayPath}`
     : entry?.path ?? props.node.label
   const accessibleLabel = entry?.previousDisplayPath
-    ? `${props.node.label}, renamed from ${entry.previousDisplayPath}, ${entry.status}`
+    ? `${props.node.label}, ${entry.status === 'renamed' ? 'renamed' : 'moved'} from ${entry.previousDisplayPath}, ${entry.status}`
     : entry === null ? props.node.label : `${props.node.label}, ${entry.status}`
   return (
     <li
@@ -197,7 +202,7 @@ function FileChangesTreeItem(props: {
             className={`file-tools-status file-tools-status--${entry.status}`}
             title={entry.status}
           >
-            {FileChangesStatusMark.of(entry.status)}
+            {FileChangesStatusMark.of(entry.status, props.conventions)}
           </span>
         )}
       </button>
@@ -208,6 +213,7 @@ function FileChangesTreeItem(props: {
               key={child.key}
               node={child}
               depth={props.depth + 1}
+              conventions={props.conventions}
               collapsed={props.collapsed}
               opening={props.opening}
               onToggle={props.onToggle}

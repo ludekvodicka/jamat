@@ -3,6 +3,8 @@ import type { spawn } from 'node:child_process'
 import type { RateLimitSource, RateSourceReading } from '../rateMonitor'
 import { CodexAppServerClient } from './codexAppServerClient'
 import { CodexRateLimitMapping } from './codexRateLimitMapping'
+import { ErrorText } from '../../shared/errorText'
+import type { RetainProfile } from '../../agentAccounts/agentAccountsApi.types'
 
 export interface RateLimitSourceCodexDeps {
   /**
@@ -14,6 +16,9 @@ export interface RateLimitSourceCodexDeps {
   spawnImpl?: typeof spawn
   platform?: NodeJS.Platform
   environment?: NodeJS.ProcessEnv
+  keepAlive?: boolean
+  beforeRead?: () => Promise<unknown>
+  withProfile?: (read: (retain?: RetainProfile) => Promise<RateSourceReading>) => Promise<RateSourceReading>
 }
 
 /**
@@ -34,10 +39,19 @@ export class RateLimitSourceCodex implements RateLimitSource {
 
   readonly agentId = 'codex' as const
 
-  private readonly client: CodexAppServerClient
+  private readonly deps: RateLimitSourceCodexDeps
+  private client: CodexAppServerClient | null = null
+  private stopped = false
+  private exiting: Promise<void> | null
 
   constructor(deps: RateLimitSourceCodexDeps) {
-    this.client = new CodexAppServerClient({
+    this.deps = deps
+    this.exiting = null
+  }
+
+  private createClient(): CodexAppServerClient {
+    const deps = this.deps
+    return new CodexAppServerClient({
       onNotification: (method) => {
         if (method === RateLimitSourceCodex.updatedNotificationConst) deps.onNudge()
       },
@@ -48,7 +62,31 @@ export class RateLimitSourceCodex implements RateLimitSource {
   }
 
   async read(): Promise<RateSourceReading> {
-    const answer = await this.client.readRateLimits()
+    if (this.stopped) return { kind: 'failed', reason: 'The Codex quota source was stopped', oauthExpiresAt: null }
+    try {
+      return this.deps.withProfile ? await this.deps.withProfile(retain => this.readProfile(retain)) : await this.readProfile()
+    } catch (error) { return { kind: 'failed', reason: ErrorText.of(error), oauthExpiresAt: null } }
+  }
+
+  private async readProfile(retain?: RetainProfile): Promise<RateSourceReading> {
+    if (this.stopped) return { kind: 'failed', reason: 'The Codex quota source was stopped', oauthExpiresAt: null }
+    if (this.exiting) return { kind: 'failed', reason: 'The Codex quota child did not stop', oauthExpiresAt: null }
+    try { if (this.deps.beforeRead) await this.deps.beforeRead() }
+    catch (error) { return { kind: 'failed', reason: ErrorText.of(error), oauthExpiresAt: null } }
+    if (this.stopped) return { kind: 'failed', reason: 'The Codex quota source was stopped', oauthExpiresAt: null }
+    const client = this.client ??= this.createClient()
+    const answer = await client.readRateLimits()
+    if (this.deps.keepAlive === false) {
+      const closed = await client.close()
+      if (this.client === client) this.client = null
+      if (!closed) {
+        const exiting = client.waitForExit()
+        this.exiting = exiting
+        retain?.(exiting)
+        void exiting.then(() => { if (this.exiting === exiting) this.exiting = null })
+        return { kind: 'failed', reason: 'The Codex quota child did not stop', oauthExpiresAt: null }
+      }
+    }
     if (answer.ok)
       return {
         kind: 'ok',
@@ -72,6 +110,8 @@ export class RateLimitSourceCodex implements RateLimitSource {
   }
 
   stop(): void {
-    this.client.stop()
+    this.stopped = true
+    this.client?.stop()
+    this.client = null
   }
 }

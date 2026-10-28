@@ -237,6 +237,7 @@ class SmokePackagedHost extends SmokeHarness {
       operationId: 'packaged-host-smoke-1',
       runtimeSessionId: 'packaged-host-smoke-shell',
       launch: {
+        stopDescendants: false,
         command: process.env.ComSpec ?? 'cmd.exe',
         args: ['/d', '/q', '/k', `echo ${SmokePackagedHost.markerConst}`],
         cwd: this.configDir,

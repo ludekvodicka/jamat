@@ -8,7 +8,7 @@ import type {
   TerminalDetection,
   TerminalDetectResult,
 } from '../../../../../lib-orchestrator/terminalDetector/terminalDetectorApi.types'
-import type { IpcResult } from '../../../../shared/appClientUiIpc'
+import type { AppClientUiBridge, IpcResult } from '../../../../shared/appClientUiIpc'
 import { AppClientUiReport } from '../../../../shared/appClientUiReport'
 import { ErrorText } from '../../../../shared/errorText'
 import { IpcFailure } from '../../../ipc/ipcFailure'
@@ -39,6 +39,14 @@ interface TerminalDetectionMenuItems {
   openings: ContextMenuItem[]
   copyPaths: ContextMenuAction[]
 }
+export interface TerminalMenuPorts {
+  openFile: AppClientUiBridge['terminalMenu']['openFile']
+  openDirectory: AppClientUiBridge['terminalMenu']['openDirectory']
+  release: AppClientUiBridge['fileViewer']['release']
+  copyPath: AppClientUiBridge['clipboard']['writeText']
+  openUrl: AppClientUiBridge['fileViewer']['openExternal']
+  native?: Pick<AppClientUiBridge['terminalMenu'], 'openExternal' | 'openVsCode' | 'openProjectVsCode'>
+}
 
 /**
  * The terminal's menu, which is the one place in this tree where the items are FINDINGS rather than
@@ -51,6 +59,7 @@ interface TerminalDetectionMenuItems {
 export function TerminalContextMenu(props: {
   context: Extract<TerminalMenuContext, { kind: 'local' }>
   sessionId: string
+  ports: TerminalMenuPorts
   openInSplit(document: FileViewerDocument, location?: FileViewerLocation): string | null
   openDirectoryAt(sessionId: string, path: string, directoryKey: string): void
   /**
@@ -102,31 +111,33 @@ export function TerminalContextMenu(props: {
         location,
         props.openInSplit,
         refused,
+        props.ports.openFile,
+        props.ports.release,
       )
     },
     openExternal: (requestId, detectionId) => {
-      void TerminalMenuActions.openExternal(requestId, detectionId, refused)
+      if (props.ports.native) void TerminalMenuActions.openExternal(requestId, detectionId, refused, props.ports.native.openExternal)
     },
     openDirectory: (requestId, detectionId) => {
-      void TerminalMenuActions.openDirectory(requestId, detectionId, props.openDirectoryAt, refused)
+      void TerminalMenuActions.openDirectory(requestId, detectionId, props.openDirectoryAt, refused, props.ports.openDirectory)
     },
     openVsCode: (requestId, detectionId) => {
-      void TerminalMenuActions.run(
-        window.appClient.terminalMenu.openVsCode(requestId, detectionId),
+      if (props.ports.native) void TerminalMenuActions.run(
+        props.ports.native.openVsCode(requestId, detectionId),
         refused,
       )
     },
     openProjectVsCode: () => {
-      void TerminalMenuActions.run(
-        window.appClient.terminalMenu.openProjectVsCode(props.sessionId),
+      if (props.ports.native) void TerminalMenuActions.run(
+        props.ports.native.openProjectVsCode(props.sessionId),
         refused,
       )
     },
     copyPath: (path) => {
-      void TerminalMenuActions.run(window.appClient.clipboard.writeText(path), refused)
+      void TerminalMenuActions.run(props.ports.copyPath(path), refused)
     },
     openUrl: (url) => {
-      void TerminalMenuActions.run(window.appClient.fileViewer.openExternal(url), refused)
+      void TerminalMenuActions.run(props.ports.openUrl(url), refused)
     },
   }
 
@@ -134,7 +145,7 @@ export function TerminalContextMenu(props: {
     <ContextMenu
       position={props.context.position}
       ariaLabel="Terminal actions"
-      items={TerminalMenuItems.entriesOf(found, props.context, handlers)}
+      items={TerminalMenuItems.entriesOf(found, props.context, handlers, props.ports.native !== undefined)}
       onClose={props.onClose}
     />
   )
@@ -156,19 +167,20 @@ export class TerminalMenuItems {
     found: TerminalDetectResult | 'refused' | null,
     context: TerminalMenuContext,
     handlers: TerminalMenuHandlers,
+    native = true,
   ): ContextMenuEntry[] {
     if (found === null)
       return [{ key: 'loading', label: 'Loading…', disabled: true, onSelect: () => undefined }]
 
     const result = found === 'refused' ? null : found
-    const detections = TerminalMenuItems.ofDetections(result, handlers)
+    const detections = TerminalMenuItems.ofDetections(result, handlers, native)
     return [
       ...detections.openings,
-      {
+      ...(native ? [{
         key: 'project-vscode',
         label: 'Open project in VS Code',
         onSelect: () => handlers.openProjectVsCode(),
-      },
+      }] : []),
       ...(detections.copyPaths.length === 0
         ? []
         : [{ kind: 'separator', key: 'paths' } as ContextMenuEntry, ...detections.copyPaths]),
@@ -181,11 +193,14 @@ export class TerminalMenuItems {
   static ofDetections(
     result: TerminalDetectResult | null,
     handlers: TerminalMenuHandlers,
+    native = true,
   ): TerminalDetectionMenuItems {
     const items: TerminalDetectionMenuItems = { openings: [], copyPaths: [] }
     if (result === null) return items
     for (const detection of result.detections) {
-      const detected = TerminalMenuItems.itemsOf(result.requestId, detection, handlers)
+      const candidate = !native && detection.kind === 'file' ? { ...detection, opensExternally: false } : !native && detection.kind === 'directory' ? { ...detection, children: detection.children.map((child) => ({ ...child, opensExternally: false })) } : detection
+      const detected = TerminalMenuItems.itemsOf(result.requestId, candidate, handlers)
+      if (!native) detected.openings = detected.openings.filter((item) => !item.key.startsWith('vscode:'))
       items.openings.push(...detected.openings)
       items.copyPaths.push(...detected.copyPaths)
     }
@@ -346,8 +361,10 @@ class TerminalMenuActions {
     location: FileViewerLocation | undefined,
     open: (document: FileViewerDocument, location?: FileViewerLocation) => string | null,
     refused: (reason: string) => void,
+    openFile: TerminalMenuPorts['openFile'],
+    release: TerminalMenuPorts['release'],
   ): Promise<void> {
-    const answer = await window.appClient.terminalMenu.openFile(requestId, detectionId)
+    const answer = await openFile(requestId, detectionId)
     const document = answer.ok && answer.value.ok ? answer.value.value : null
     if (document === null) {
       TerminalMenuActions.report(IpcFailure.of(answer), refused)
@@ -358,7 +375,7 @@ class TerminalMenuActions {
       refusal = open(document, location)
     }
     finally {
-      void window.appClient.fileViewer.release(document.documentId)
+      void release(document.documentId)
     }
     if (refusal !== null) refused(refusal)
   }
@@ -371,8 +388,9 @@ class TerminalMenuActions {
     requestId: string,
     detectionId: string,
     refused: (reason: string) => void,
+    openExternal: AppClientUiBridge['terminalMenu']['openExternal'],
   ): Promise<void> {
-    const answer = await window.appClient.terminalMenu.openExternal(requestId, detectionId)
+    const answer = await openExternal(requestId, detectionId)
     TerminalMenuActions.report(IpcFailure.of(answer), refused)
   }
 
@@ -381,8 +399,9 @@ class TerminalMenuActions {
     detectionId: string,
     open: (sessionId: string, path: string, directoryKey: string) => void,
     refused: (reason: string) => void,
+    openDirectory: TerminalMenuPorts['openDirectory'],
   ): Promise<void> {
-    const answer = await window.appClient.terminalMenu.openDirectory(requestId, detectionId)
+    const answer = await openDirectory(requestId, detectionId)
     const opened = answer.ok && answer.value.ok ? answer.value.value : null
     if (opened === null) {
       TerminalMenuActions.report(IpcFailure.of(answer), refused)

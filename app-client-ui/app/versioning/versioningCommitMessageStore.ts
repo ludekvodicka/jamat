@@ -1,10 +1,12 @@
+import type { CommitMessageSource } from '../../../lib-orchestrator/svn/svnCommitMessageCheck'
 import { JsonDocumentStore, type JsonDocumentReading } from '../../../lib-orchestrator/shared/jsonDocumentStore'
 import { JsonShape } from '../../../lib-orchestrator/shared/jsonShape'
 import { PathCompare } from '../../../lib-orchestrator/shared/pathCompare'
 import { VersioningCommitLimits, VersioningCommitPaths, type VersioningCommitDraftDto } from '../../shared/versioningCommit'
 
 type CommitScope = Pick<VersioningCommitDraftDto, 'sessionId' | 'vcs' | 'scopeRoot' | 'paths'>
-type CommitMessage = Pick<VersioningCommitDraftDto, 'message' | 'editedByPerson' | 'proposedByAgent'>
+type CommitMessage = Pick<VersioningCommitDraftDto, 'message' | 'editedByPerson' | 'proposedByAgent'> & { source: CommitMessageSource; at: number }
+type DraftMessage = Pick<VersioningCommitDraftDto, 'message' | 'editedByPerson' | 'proposedByAgent' | 'messageSource' | 'messageAt'>
 interface MessageDocument {
   version: 1
   messages: Record<string, CommitMessage>
@@ -18,14 +20,15 @@ export class VersioningCommitMessageStore extends JsonDocumentStore<MessageDocum
     this.document = this.readDocumentSync()
   }
 
-  read(scope: CommitScope): CommitMessage | undefined {
+  read(scope: CommitScope): DraftMessage | undefined {
     const message = this.document.messages[VersioningCommitMessageStore.key(scope)]
-    return message === undefined ? undefined : { ...message }
+    return message === undefined ? undefined : { message: message.message, editedByPerson: message.editedByPerson,
+      proposedByAgent: message.proposedByAgent, messageSource: message.source, messageAt: message.at }
   }
 
-  save(draft: CommitScope & CommitMessage): boolean {
+  save(draft: CommitScope & DraftMessage): boolean {
     const key = VersioningCommitMessageStore.key(draft)
-    const message = { message: draft.message, editedByPerson: draft.editedByPerson, proposedByAgent: draft.proposedByAgent }
+    const message = { message: draft.message, editedByPerson: draft.editedByPerson, proposedByAgent: draft.proposedByAgent, source: draft.messageSource ?? 'unknown', at: draft.messageAt ?? Date.now() }
     if (JSON.stringify(this.document.messages[key]) === JSON.stringify(message)) return true
     return this.saveDocument({ version: 1, messages: { ...this.document.messages, [key]: message } })
   }
@@ -53,7 +56,9 @@ export class VersioningCommitMessageStore extends JsonDocumentStore<MessageDocum
         || value.message.length > VersioningCommitLimits.messageMaxCharactersConst
         || typeof value.editedByPerson !== 'boolean' || typeof value.proposedByAgent !== 'boolean')
         throw new Error('Invalid saved commit message')
-      messages[key] = { message: value.message, editedByPerson: value.editedByPerson, proposedByAgent: value.proposedByAgent }
+      messages[key] = { message: value.message, editedByPerson: value.editedByPerson, proposedByAgent: value.proposedByAgent,
+        source: ['agent-proposal', 'person-local', 'person-remote', 'restored-draft', 'kept-attempt', 'unknown'].includes(String(value.source))
+          ? value.source as CommitMessageSource : 'unknown', at: typeof value.at === 'number' && Number.isFinite(value.at) ? value.at : 0 }
     }
     return { document: { version: 1, messages }, damaged: false }
   }

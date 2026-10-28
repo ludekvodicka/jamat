@@ -1,0 +1,18 @@
+{
+  "agent": "codex",
+  "expected": {
+    "hint": "background"
+  },
+  "provenance": {
+    "origin": "User screenshot of session 0cf069e2-bce7-4862-abfd-accf9517f95d on 2026-10-22",
+    "case": "background-terminal wait above the shallow window because its command preview and tip precede the composer and footer",
+    "capture": "Physical rows manually transcribed from the supplied screenshot, with the command and project path sanitized. The same session's subsequent terminal peek confirmed the tip, composer and footer after foreground work resumed. This is not a captured background Host frame or evidence of a known Codex build.",
+    "ported": "not ported",
+    "identical": "No; see capture provenance"
+  },
+  "frame": {
+    "rawTail": "",
+    "screenTail": "  └ npx vitest run --config test.config.ts > test.log\n  └ Tip: You can resume a previous conversation by running codex resume\n\n\n› Ask Codex to do anything\n\n  GPT-6-Astra xhigh · Q:\\PROJECT · Run tests\n  ? for shortcuts",
+    "wideScreenTail": "• Waiting for background terminal (35m 32s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close\n  └ npx vitest run --config test.config.ts > test.log\n  └ Tip: You can resume a previous conversation by running codex resume\n\n\n› Ask Codex to do anything\n\n  GPT-6-Astra xhigh · Q:\\PROJECT · Run tests\n  ? for shortcuts"
+  }
+}

@@ -23,6 +23,7 @@ describe('lib-orchestrator/sessionManager/launch/claudeStatusLine', () => {
       new ClaudeStatusLine({
         directory: join(root, 'claude-statusline'),
         snapshots: join(root, 'claude-context'),
+        identities: join(root, 'claude-identity'),
         claudeHome: home,
         tools: { node: () => hasNode ? { ok: true, command: process.execPath } : { ok: false, detail: 'no node here' } },
         report: (message) => reports.push(message),
@@ -42,7 +43,7 @@ describe('lib-orchestrator/sessionManager/launch/claudeStatusLine', () => {
     const wrapper = join(root, 'claude-statusline', 'relay.cmd')
     expect(settingsOf(file)).toEqual({ statusLine: { type: 'command', command: wrapper.replaceAll('\\', '/') } })
     expect(readFileSync(wrapper, 'utf8')).toBe(
-      `@"${process.execPath}" "${join(root, 'claude-statusline', 'relay.cjs')}" "${join(root, 'claude-context')}" %*\r\n`)
+      `@"${process.execPath}" "${join(root, 'claude-statusline', 'relay.cjs')}" "${join(root, 'claude-context')}" "${join(root, 'claude-identity')}" %*\r\n`)
     expect(readFileSync(join(root, 'claude-statusline', 'relay.cjs'), 'utf8')).toBe(ClaudeStatusLine.relaySourceConst)
   })
 
@@ -86,6 +87,43 @@ describe('lib-orchestrator/sessionManager/launch/claudeStatusLine', () => {
     expect(reports).toEqual(['Claude status line relay not installed: no node here'])
   })
 
+  // Claude Code 2.1.304 was started with --session-id and wrote its conversation under another id;
+  // the relay is the one place that reports the id Claude really runs (UA1-J14-1).
+  it('hands the relay the Jamat session and its launch generation, one settings file per session', () => {
+    const { root, cwd, home, relay } = world()
+    const statusLine = relay('win32')
+    const file = statusLine.settingsFileFor(cwd, { sessionId: 'jamat-1', launchId: 'launch-1' })
+    const wrapper = join(root, 'claude-statusline', 'relay.cmd').replaceAll('\\', '/')
+    expect(settingsOf(file).statusLine['command']).toBe(`${wrapper} --session jamat-1 --launch launch-1`)
+    expect(file).toBe(join(root, 'claude-statusline', 'settings-jamat-1.json'))
+    writeFileSync(join(home, 'settings.json'), JSON.stringify({ statusLine: { type: 'command', command: 'mine' } }))
+    expect(settingsOf(statusLine.settingsFileFor(cwd, { sessionId: 'jamat-1', launchId: 'launch-2' })).statusLine['command'])
+      .toBe(`${wrapper} --session jamat-1 --launch launch-2 --pass | mine`)
+  })
+
+  it('refuses a session or launch id that is not one, and says so once', () => {
+    const { cwd, reports, relay } = world()
+    const statusLine = relay('win32')
+    expect(statusLine.settingsFileFor(cwd, { sessionId: 'a b', launchId: 'l' })).toBeNull()
+    expect(reports).toEqual(['Claude status line relay not installed: an identity that is not an id: "a b"'])
+  })
+
+  it('reads back only the receipt of the asked session and launch', () => {
+    const { root, reports, relay } = world()
+    const statusLine = relay('win32')
+    mkdirSync(join(root, 'claude-identity'))
+    const receipt = { schemaVersion: 1, jamatSessionId: 'jamat-1', launchId: 'launch-1', nativeSessionId: '11126908-45f3-438e-b263-6138206cd005', sequence: 7 }
+    writeFileSync(join(root, 'claude-identity', 'jamat-1.json'), JSON.stringify(receipt))
+    expect(statusLine.identity('jamat-1', 'launch-1')).toEqual({ nativeSessionId: receipt.nativeSessionId, sequence: 7 })
+    expect(statusLine.identity('jamat-1', 'launch-2')).toBeNull()
+    expect(statusLine.identity('jamat-2', 'launch-1')).toBeNull()
+    expect(reports).toEqual([])
+    writeFileSync(join(root, 'claude-identity', 'jamat-1.json'), JSON.stringify({ ...receipt, jamatSessionId: 'jamat-2' }))
+    expect(statusLine.identity('jamat-1', 'launch-1')).toBeNull()
+    expect(statusLine.identity('jamat-1', 'launch-1')).toBeNull()
+    expect(reports).toHaveLength(1)
+  })
+
   it('writes an executable shell wrapper on POSIX and single-quotes its path', () => {
     const { root, cwd, relay } = world()
     const { statusLine } = settingsOf(relay('linux').settingsFileFor(cwd))
@@ -94,10 +132,10 @@ describe('lib-orchestrator/sessionManager/launch/claudeStatusLine', () => {
   })
 
   describe('the relay itself', () => {
-    function run(root: string, input: string, mode?: string): { stdout: string; status: number | null } {
+    function run(root: string, input: string, mode?: string, flags: readonly string[] = []): { stdout: string; status: number | null } {
       const script = join(root, 'relay.cjs')
       writeFileSync(script, ClaudeStatusLine.relaySourceConst)
-      const result = spawnSync(process.execPath, [script, join(root, 'snapshots'), ...(mode ? [mode] : [])],
+      const result = spawnSync(process.execPath, [script, join(root, 'snapshots'), join(root, 'identities'), ...flags, ...(mode ? [mode] : [])],
         { input, encoding: 'utf8' })
       return { stdout: result.stdout, status: result.status }
     }
@@ -113,6 +151,50 @@ describe('lib-orchestrator/sessionManager/launch/claudeStatusLine', () => {
       expect(run(root, input)).toEqual({ stdout: '', status: 0 })
       expect(JSON.parse(readFileSync(join(root, 'snapshots', '44e51484-ec6d-420e-afce-d0d621d9f40b.json'), 'utf8')))
         .toEqual({ schemaVersion: 1, model: 'claude-fable-5-1', contextWindowSize: 1_000_000 })
+    })
+
+    function receiptOf(root: string, sessionId: string): Record<string, unknown> {
+      return JSON.parse(readFileSync(join(root, 'identities', `${sessionId}.json`), 'utf8'))
+    }
+
+    it('reports the conversation Claude runs for the Jamat session and launch it was given, and its later changes', () => {
+      const { root } = world()
+      const flags = ['--session', 'jamat-1', '--launch', 'launch-1']
+      expect(run(root, input, '--pass', flags)).toEqual({ stdout: input, status: 0 })
+      const first = receiptOf(root, 'jamat-1')
+      expect(first).toMatchObject({ schemaVersion: 1, jamatSessionId: 'jamat-1', launchId: 'launch-1', nativeSessionId: '44e51484-ec6d-420e-afce-d0d621d9f40b' })
+      expect(Number.isSafeInteger(first['sequence'])).toBe(true)
+      run(root, input, undefined, flags)
+      expect(receiptOf(root, 'jamat-1')).toEqual(first)
+      const moved = input.replace('44e51484-ec6d-420e-afce-d0d621d9f40b', '11126908-45f3-438e-b263-6138206cd005')
+      run(root, moved, undefined, flags)
+      const second = receiptOf(root, 'jamat-1')
+      expect(second['nativeSessionId']).toBe('11126908-45f3-438e-b263-6138206cd005')
+      expect(second['sequence'] as number).toBeGreaterThan(first['sequence'] as number)
+    })
+
+    it('reports no conversation without a Jamat session, or for one that is not an id', () => {
+      const { root } = world()
+      run(root, input, '--pass')
+      run(root, input, '--pass', ['--session', '../x', '--launch', 'launch-1'])
+      expect(existsSync(join(root, 'identities'))).toBe(false)
+    })
+
+    it('writes valid installed-CLI rates and leaves them untouched for missing or malformed rates', () => {
+      const { root } = world()
+      const flags = ['--session', 'jamat-1', '--launch', 'launch-1']
+      const limits = { five_hour: { used_percentage: 37, resets_at: 1793115673 }, seven_day: { used_percentage: 21, resets_at: 1793702473 } }
+      const withRates = JSON.stringify({ ...JSON.parse(input), rate_limits: limits })
+      expect(run(root, withRates, '--pass', flags)).toEqual({ stdout: withRates, status: 0 })
+      const file = join(root, 'rates', 'jamat-1.json')
+      const stored = readFileSync(file, 'utf8')
+      expect(JSON.parse(stored)).toMatchObject({ schemaVersion: 1, launchId: 'launch-1', rateLimits: limits })
+      expect(Number.isFinite(JSON.parse(stored).at)).toBe(true)
+      for (const rate_limits of [undefined, [], 'bad', { five_hour: { used_percentage: 'bad' } }]) {
+        const missing = JSON.stringify({ ...JSON.parse(input), rate_limits })
+        expect(run(root, missing, '--pass', flags)).toEqual({ stdout: missing, status: 0 })
+        expect(readFileSync(file, 'utf8')).toBe(stored)
+      }
     })
 
     it('hands its input on unchanged in pass mode', () => {

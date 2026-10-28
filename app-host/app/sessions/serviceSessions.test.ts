@@ -223,6 +223,7 @@ class ServiceSessionsTest {
 
   static launch() {
     return {
+      stopDescendants: false,
       command: 'fake',
       args: [],
       cwd: process.cwd(),

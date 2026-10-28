@@ -7,6 +7,7 @@ describe('app-host/app/sessions/sessionRequestValidation', () => {
   function launch(overrides: Partial<RuntimeLaunchSpec> = {}): RuntimeLaunchSpec {
     return {
       command: 'fake',
+      stopDescendants: false,
       args: [],
       cwd: process.cwd(),
       env: { A: 'one' },
@@ -18,6 +19,10 @@ describe('app-host/app/sessions/sessionRequestValidation', () => {
 
   it('accepts a complete launch spec', () => {
     expect(() => SessionRequestValidation.validateLaunch(launch())).not.toThrow()
+  })
+
+  it('refuses a legacy client that did not specify its descendant policy', () => {
+    expect(() => SessionRequestValidation.validateLaunch(launch({ stopDescendants: undefined }))).toThrow(/Update the client/)
   })
 
   // The Host inherits nothing into the child, so a non-string value is a variable the child loses.

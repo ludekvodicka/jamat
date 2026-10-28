@@ -37,19 +37,19 @@ export class FileChangesSvnCopied {
   }
 
   async expand(entries: readonly FileChangesVcsEntry[]): Promise<readonly FileChangesVcsEntry[]> {
-    const expanded = new Map(entries.map((entry) => [PathCompare.comparable(entry.absolutePath), entry]))
+    const expanded = new Map(entries.map((entry) => [PathCompare.normalized(entry.absolutePath), entry]))
     FileChangesSvnCopied.checkLimit(expanded.size)
     for (const directory of entries) {
       if (directory.status !== 'added' || directory.nodeKind !== 'directory') continue
       const carried = await this.contentsOf(directory.absolutePath)
       if (carried.length > FileChangesLimits.copiedListingEntriesMax) {
-        expanded.set(PathCompare.comparable(directory.absolutePath), { ...directory, carriedItems: carried.length })
+        expanded.set(PathCompare.normalized(directory.absolutePath), { ...directory, carriedItems: carried.length })
         continue
       }
       for (const path of carried) {
         if (!PathCompare.isInside(directory.absolutePath, path))
           throw new Error('SVN returned a copied path outside its directory')
-        const key = PathCompare.comparable(path)
+        const key = PathCompare.normalized(path)
         if (expanded.has(key)) continue
         expanded.set(key, {
           ...directory,

@@ -9,8 +9,7 @@ import { AppCommands, type CommandId } from '../../../shared/commands'
 import { CommandRegistry } from '../../commands/commandRegistry'
 import type { TabSessionFacts } from '../../widgets/tabs/tabContextMenu'
 import type { SessionAction } from './sessionNodeState'
-import { SessionsTreeContextMenu, SessionsTreeScriptsMenu } from './sessionsTreeContextMenu'
-import type { ScriptRunNode } from './sessionsTreeModel'
+import { SessionsTreeContextMenu } from './sessionsTreeContextMenu'
 
 function titleOf(id: CommandId): string {
   const descriptor = AppCommands.all().find((candidate) => candidate.id === id)
@@ -31,6 +30,7 @@ function factsOf(over: Partial<TabSessionFacts> = {}): TabSessionFacts {
     ended: false,
     live: over.ended !== true,
     admits: everyOperationConst,
+    finish: false,
     ...over,
   }
 }
@@ -53,6 +53,7 @@ function MenuHost(props: {
       facts={factsOf(props.facts)}
       actions={props.actions ?? []}
       onAction={props.onAction ?? vi.fn()}
+      onSwitchAccount={vi.fn()}
       onClose={() => setOpen(false)}
     />
   )
@@ -121,6 +122,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
       'Fork session',
       'Restart session',
       'Compact session',
+      'Show session actions',
       'Commit (SVN)…',
       'Commit (Git)…',
       'Open project folder',
@@ -153,6 +155,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
       'Session Appearance',
       'Session properties…',
       // Not gated on `admits` either: the launcher creates from scratch rather than beside this one.
+      'Show session actions',
       'Commit (SVN)…',
       'Commit (Git)…',
       'Open project folder',
@@ -202,27 +205,18 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
     expect(MenuView.isOpen()).toBe(false)
   })
 
-  it('offers Show workflow first among the operations of a session that has one, and none without', () => {
-    const onShowWorkflow = vi.fn()
-    const view = render(
-      <SessionsTreeContextMenu
-        position={{ x: 10, y: 20 }}
-        commands={new CommandRegistry()}
-        sessionId="s1"
-        facts={factsOf({ ended: true })}
-        actions={['retrySetup', 'remove']}
-        onShowWorkflow={onShowWorkflow}
-        onAction={vi.fn()}
-        onClose={vi.fn()}
-      />,
-    )
-    expect(MenuView.titles().slice(-3)).toEqual(['Show workflow', 'Retry setup', 'Remove…'])
-    fireEvent.click(MenuView.items().find((item) => item.textContent?.includes('Show workflow'))!)
-    expect(onShowWorkflow).toHaveBeenCalledOnce()
+  it('opens actions below Compact and offers them for ended sessions with an empty history', () => {
+    const commands = new CommandRegistry()
+    const opened = vi.fn()
+    commands.register('session.showActions', opened)
+    const view = render(<MenuHost commands={commands} />)
+    const titles = MenuView.titles()
+    expect(titles[titles.indexOf('Compact session') + 1]).toBe('Show session actions')
+    fireEvent.click(MenuView.itemTitled('Show session actions'))
+    expect(opened).toHaveBeenCalledWith({ sessionId: 's1' })
     view.unmount()
-
-    render(<MenuHost commands={new CommandRegistry()} facts={{ ended: true }} actions={['retrySetup', 'remove']} />)
-    expect(MenuView.titles()).not.toContain('Show workflow')
+    render(<MenuHost commands={commands} facts={{ ended: true, admits: [], directoryPath: null }} />)
+    expect(MenuView.titles()).toContain('Show session actions')
   })
 
   it('offers Update main copy on a landed row beside Remove, and runs it on the clicked row', () => {
@@ -308,70 +302,4 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
     expect(current).toHaveLength(1)
   })
 
-describe('SessionsTreeScriptsMenu', () => {
-  const open = { target: { kind: 'local' as const, sessionId: 'r-row' }, tabTitle: 'P - Setup' }
-  function runOf(over: Partial<ScriptRunNode>): ScriptRunNode {
-    return {
-      runId: 'r-row', phase: 'before', scriptId: 'setup', name: 'setup', title: 'Setup', state: 'running',
-      summary: 'Setup · running', startedAt: 3, commands: [], row: true, log: 'none', open, ...over,
-    }
-  }
-  const runs: readonly ScriptRunNode[] = [
-    runOf({}),
-    runOf({ runId: 'r-saved', state: 'succeeded', summary: 'Setup · succeeded · 2 s', row: false, log: 'saved', open: null }),
-    runOf({
-      runId: 'r-lost', state: 'failed', summary: 'Setup · failed · exit 1 · 1 s', row: false, log: 'unavailable',
-      logDetail: 'the Host never ran it', open: null,
-    }),
-  ]
-
-  it('lists rows and history in the order given, a row opening its terminal', () => {
-    const openTerminal = vi.fn()
-    const item = SessionsTreeScriptsMenu.itemOf(runs, 'local', openTerminal, null)
-
-    expect(item?.label).toBe('Scripts')
-    expect(item?.children.map((child) => [child.label, child.disabled === true, child.title])).toEqual([
-      ['Setup · running', false, undefined],
-      ['Setup · succeeded · 2 s', true, undefined],
-      ['Setup · failed · exit 1 · 1 s', true, 'the Host never ran it'],
-    ])
-    item?.children[0].onSelect()
-    expect(openTerminal).toHaveBeenCalledWith(open)
-  })
-
-  it('opens a saved log through the log port once one is given', () => {
-    const openLog = vi.fn()
-    const item = SessionsTreeScriptsMenu.itemOf(runs, 'local', vi.fn(), openLog)
-
-    expect(item?.children[1].disabled).toBeUndefined()
-    item?.children[1].onSelect()
-    expect(openLog).toHaveBeenCalledWith('r-saved')
-    expect(item?.children[2].disabled).toBe(true)
-  })
-
-  it('lists only the rows of a remote session, and nothing without a run', () => {
-    expect(SessionsTreeScriptsMenu.itemOf(runs, 'remote', vi.fn(), null)?.children.map((child) => child.label))
-      .toEqual(['Setup · running'])
-    expect(SessionsTreeScriptsMenu.itemOf(runs.slice(1), 'remote', vi.fn(), null)).toBe(null)
-    expect(SessionsTreeScriptsMenu.itemOf([], 'local', vi.fn(), null)).toBe(null)
-  })
-
-  it('puts the submenu first among the operations', () => {
-    const scripts = SessionsTreeScriptsMenu.itemOf(runs, 'local', vi.fn(), null)
-    render(
-      <SessionsTreeContextMenu
-        position={{ x: 10, y: 20 }}
-        commands={new CommandRegistry()}
-        sessionId="s1"
-        facts={factsOf()}
-        actions={['retrySetup', 'remove']}
-        scripts={scripts}
-        onAction={vi.fn()}
-        onClose={vi.fn()}
-      />,
-    )
-
-    expect(MenuView.titles().slice(-3)).toEqual(['Scripts', 'Retry setup', 'Remove…'])
-  })
-})
 })

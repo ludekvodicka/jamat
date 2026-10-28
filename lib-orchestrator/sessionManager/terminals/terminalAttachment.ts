@@ -101,7 +101,7 @@ export class TerminalAttachment {
     this.open()
   }
 
-  input(data: string): boolean {
+  acceptsInput(): boolean {
     if (this.disposed) return false
     if (!this.writer) {
       // The keystroke is the ask. A lease that came back under a new id is the one case where
@@ -113,6 +113,20 @@ export class TerminalAttachment {
       if (this.attachedAlive && this.deps.leaseIdOf() !== this.attachedWithLease) this.open()
       return false
     }
+    return this.socket !== null
+  }
+
+  /**
+   * A lease under a new id is held now. An attach that asked to write and was served read-only
+   * attaches again with it, from the cursor, so no keystroke is spent on asking (UA1-J09-9).
+   */
+  leaseChanged(): void {
+    if (this.disposed || this.writer || !this.attachedAlive || this.socket === null) return
+    if (this.deps.leaseIdOf() !== this.attachedWithLease) this.open()
+  }
+
+  input(data: string): boolean {
+    if (!this.acceptsInput()) return false
     const socket = this.socket
     if (socket === null) return false
     // A paste is one string and the wire takes it in frames. Split here rather than at whichever

@@ -1,3 +1,6 @@
+import { RemoteReviewScenarios } from './remoteReviewScenarios.js'
+import { RemoteContentScenarios } from './remoteContentScenarios.js'
+import { RemoteSessionSnapshots } from '../../app-client-ui/app/remoteControl/remoteSessionSnapshots.js'
 import { CliClient, type CliEnvelope } from './cliClient.js'
 import { SmokeHarness, SmokeRun } from './smokeHarness.js'
 import { randomUUID } from 'node:crypto'
@@ -87,6 +90,8 @@ import type {
   SessionFinishPress,
   SessionsOpResult,
   SessionsSnapshot,
+  SessionWorktreeDirectory,
+  SessionWorktreePreview,
   SessionWorktreeState,
   SessionConflictList,
   SessionConflictResolved,
@@ -170,6 +175,7 @@ class SmokeRemoteApp extends SmokeHarness {
     const root = mkdtempSync(join(tmpdir(), 'jamat-v3-remote-app-smoke-'))
     const smoke = new SmokeRemoteApp(root)
     try { await smoke.execute() }
+    catch (error) { console.error(error); throw error }
     finally {
       await smoke.retire()
       rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
@@ -213,6 +219,9 @@ class SmokeRemoteApp extends SmokeHarness {
 
     const sessionId = await this.createRemoteSession()
     await this.verifyRemoteStatusAndIsolation(sessionId)
+    await RemoteContentScenarios.prove(this.requiredController().workspaceConnections(), this.requiredTarget().peerIdentity.remoteEndpointId, sessionId, this.workDir)
+    await RemoteReviewScenarios.prove(this.requiredTarget().workspace, this.requiredTarget().sessions, this.requiredTarget().workspaceConfig(),
+      this.requiredController().workspaceConnections(), this.requiredTarget().peerIdentity.remoteEndpointId, sessionId, this.workDir)
     const localFrames = new SmokeTerminalFrames()
     const remoteFrames = new SmokeTerminalFrames()
     this.attachLocal('target-local-before-restarts', sessionId, localFrames)
@@ -806,6 +815,8 @@ class SmokeRemoteApp extends SmokeHarness {
     sessionId: string,
     frames: SmokeTerminalFrames,
   ): Promise<void> {
+    const selected = await this.requiredController().workspaceConnections().selectSession(this.requiredTarget().peerIdentity.remoteEndpointId, sessionId)
+    if (!selected.ok) throw new Error(selected.error.detail)
     const answer = await this.requiredController().attachTerminal(
       attachId,
       sessionId,
@@ -974,6 +985,7 @@ class SmokeRemoteApp extends SmokeHarness {
 }
 
 class SmokeTargetApp {
+  readonly workspace: RemoteContentScenarios
   readonly sessions: SessionManager
   readonly peerIdentity: RemoteControlPeerIdentity
   private readonly config: ConfigStore
@@ -1052,7 +1064,10 @@ class SmokeTargetApp {
       paths.pairingBundleFile,
       () => Promise.resolve(true),
     )
+    this.workspace = new RemoteContentScenarios(this.sessions)
     this.inbound = new RemoteControlInboundRegistry({
+      sessionViews: this.workspace.views,
+      sessionSnapshots: new RemoteSessionSnapshots(() => this.sessions.snapshot()),
       control,
       terminal,
       auditFile: paths.auditFile,
@@ -1092,6 +1107,7 @@ class SmokeTargetApp {
       profiles: () => config.readSection(RemoteControlSettingsSection.spec).profiles,
       connect: (profile, signal) => peerClient.connect(profile, signal),
       onChanged: () => undefined,
+      onSessionRemoved: () => undefined,
       onError: (message) => this.errors.push(message),
     })
     this.listener = new RemotePeerListenerManager({
@@ -1163,6 +1179,8 @@ class SmokeTargetApp {
     ) !== null
   }
 
+  workspaceConfig(): ConfigStore { return this.config }
+
   lastRemoteCreateSpec(): SessionCreateSpec | null {
     return this.remoteSessions.lastCreateSpec
   }
@@ -1223,13 +1241,13 @@ class SmokeSessionsObserver implements RemoteControlSessionsPort {
     return this.sessions.finishWorktreeSession(sessionId, press)
   }
 
+  backToWork(sessionId: string, requestedBy: SessionFinishPress['requestedBy']): ReturnType<RemoteControlSessionsPort['backToWork']> {
+    return this.sessions.backToWork(sessionId, requestedBy)
+  }
+
   updateMain(sessionId: string, confirmLive: readonly string[] | undefined, requestedBy: SessionFinishPress['requestedBy'])
     : Promise<SessionsOpResult<{ sessionId: string; actionId: string }>> {
     return this.sessions.updateMain(sessionId, confirmLive, requestedBy)
-  }
-
-  openActionReview(runId: string): Promise<SessionsOpResult<{ commitSessionId: string; scopeRoot: string }>> {
-    return this.sessions.openActionReview(runId)
   }
 
   worktreeResults(filter: WorktreeResultsFilter): Promise<SessionsOpResult<{ results: WorktreeResultDto[] }>> {
@@ -1292,6 +1310,10 @@ class SmokeSessionsObserver implements RemoteControlSessionsPort {
     return this.sessions.allocateSessionNumber(projectPath)
   }
 
+  worktreePreview(directory: SessionWorktreeDirectory): Promise<SessionsOpResult<SessionWorktreePreview>> {
+    return this.sessions.worktreePreview(directory)
+  }
+
   worktreeOf(sessionId: string): Promise<SessionsOpResult<SessionWorktreeState>> {
     return this.sessions.worktreeOf(sessionId)
   }
@@ -1304,12 +1326,20 @@ class SmokeSessionsObserver implements RemoteControlSessionsPort {
     return this.sessions.resolveConflict(sessionId, request)
   }
 
+  solveWithAgent(sessionId: string): Promise<SessionsOpResult<SessionCreated>> {
+    return this.sessions.solveWithAgent(sessionId)
+  }
+
   runScript(parentId: string, request: SessionScriptRequest): Promise<SessionsOpResult<{ runId: string }>> {
     return this.sessions.runScript(parentId, request)
   }
 
   scriptsOf(parentId: string, runId?: string): Promise<SessionsOpResult<SessionScriptsReading>> {
     return this.sessions.scriptsOf(parentId, runId)
+  }
+
+  clearActions(sessionId: string): Promise<SessionsOpResult> {
+    return this.sessions.clearActions(sessionId)
   }
 
   setSessionColor(sessionId: string, color: SessionColorName | null): Promise<SessionsOpResult> {
@@ -1401,6 +1431,7 @@ class SmokeControllerApp {
       profiles: () => config.readSection(RemoteControlSettingsSection.spec).profiles,
       connect: (profile, signal) => peerClient.connect(profile, signal),
       onChanged: () => undefined,
+      onSessionRemoved: () => undefined,
       onError: (message) => this.errors.push(message),
     })
     const unavailableSessions = new SmokeUnavailableSessions()
@@ -1561,6 +1592,8 @@ class SmokeControllerApp {
     return this.config.readSection(RemoteControlSettingsSection.spec).profiles
   }
 
+  workspaceConnections(): RemoteConnectionsManager { return this.connections }
+
   private snapshot(): RemoteConnectionsSnapshot {
     const snapshot = this.connections.snapshot()
     return { revision: snapshot.revision, outbound: snapshot.outbound, inbound: [] }
@@ -1634,6 +1667,10 @@ class SmokeUnavailableSessions implements RemoteControlSessionsPort, RemoteContr
     return Promise.resolve(SmokeUnavailableSessions.refused())
   }
 
+  backToWork(_sessionId: string, _requestedBy: SessionFinishPress['requestedBy']): ReturnType<RemoteControlSessionsPort['backToWork']> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
   updateMain(_sessionId: string, _confirmLive: readonly string[] | undefined, _requestedBy: SessionFinishPress['requestedBy'])
     : Promise<SessionsOpResult<{ sessionId: string; actionId: string }>> {
     return Promise.resolve(SmokeUnavailableSessions.refused())
@@ -1703,6 +1740,10 @@ class SmokeUnavailableSessions implements RemoteControlSessionsPort, RemoteContr
     return Promise.resolve(SmokeUnavailableSessions.refused())
   }
 
+  worktreePreview(_directory: SessionWorktreeDirectory): Promise<SessionsOpResult<SessionWorktreePreview>> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
   worktreeOf(_sessionId: string): Promise<SessionsOpResult<SessionWorktreeState>> {
     return Promise.resolve(SmokeUnavailableSessions.refused())
   }
@@ -1715,7 +1756,15 @@ class SmokeUnavailableSessions implements RemoteControlSessionsPort, RemoteContr
     return Promise.resolve(SmokeUnavailableSessions.refused())
   }
 
+  solveWithAgent(_sessionId: string): Promise<SessionsOpResult<SessionCreated>> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
   runScript(_parentId: string, _request: SessionScriptRequest): Promise<SessionsOpResult<{ runId: string }>> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  clearActions(_sessionId: string): Promise<SessionsOpResult> {
     return Promise.resolve(SmokeUnavailableSessions.refused())
   }
 
@@ -1935,7 +1984,7 @@ class SmokeRemoteAppPorts {
 
   /** The controller side runs no Host of its own. */
   static noHost(): RemoteControlHostPort {
-    const refused = (): Promise<SessionsOpResult> =>
+    const refused = <T = void>(): Promise<SessionsOpResult<T>> =>
       Promise.resolve({ ok: false, code: 'host-unreachable', detail: 'controller smoke has no local Host' })
     return {
       debugStatus: () => { throw new Error('controller smoke has no local Host') },

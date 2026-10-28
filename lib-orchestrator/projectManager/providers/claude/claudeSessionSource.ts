@@ -43,12 +43,14 @@ export class ClaudeSessionSource implements ProviderSessionSource {
 
   readonly agentId: ProviderAgentId = 'claude'
   private readonly claudeHome: string
+  private readonly homes: () => readonly string[]
   private readonly locator: ClaudeProjectsLocator
   private readonly memo = new Map<string, MemoEntry>()
   private generation = 0
 
-  constructor(deps: { claudeHome?: string; locator?: ClaudeProjectsLocator }) {
+  constructor(deps: { claudeHome?: string; homes?: () => readonly string[]; locator?: ClaudeProjectsLocator }) {
     this.claudeHome = ClaudeConfigHome.resolve(deps.claudeHome)
+    this.homes = deps.homes ?? (() => [this.claudeHome])
     this.locator = deps.locator ?? new ClaudeProjectsLocator(this.claudeHome)
   }
 
@@ -242,7 +244,14 @@ export class ClaudeSessionSource implements ProviderSessionSource {
    * recorded still answers. It is what covers sessions started outside this application.
    */
   private async activeSessionIds(): Promise<ReadonlySet<string>> {
-    const directory = join(this.claudeHome, 'sessions')
+    const ids = new Set<string>()
+    for (const home of this.homes())
+      for (const id of await this.activeIdsIn(home)) ids.add(id)
+    return ids
+  }
+
+  private async activeIdsIn(home: string): Promise<ReadonlySet<string>> {
+    const directory = join(home, 'sessions')
     const ids = new Set<string>()
     let names: string[]
     try {

@@ -1,4 +1,5 @@
 import type { RemoteControlConst, RemoteControlLocalConst } from './remoteControlProtocol'
+import type { AccountView } from '../agentAccounts/agentAccountsApi.types'
 
 import type {
   CatalogCategoryDto,
@@ -14,6 +15,7 @@ import type {
 import type {
   HostDebugStatus,
   HostPingResult,
+  HostStopWarnings,
   SessionAgentId,
   SessionChildInfo,
   SessionColorName,
@@ -29,6 +31,8 @@ import type {
   SessionScriptRequest,
   SessionScriptsReading,
   SessionsSnapshot,
+  SessionWorktreeDirectory,
+  SessionWorktreePreview,
   SessionWorktreeState,
   SessionConflictList,
   SessionConflictResolved,
@@ -37,7 +41,7 @@ import type {
   WorktreeResultDto,
 } from '../sessionManager/sessionManagerApi.types'
 import type { AgentWorkHint } from '../sessionManager/workState/agentWorkInspector.types'
-import type { SvnConflictOption } from '../svn/svn.types'
+import type { SvnConflictKind, SvnConflictOption } from '../svn/svn.types'
 import type { RuntimeChannel } from '../shared/configIdentity.types'
 import type { SessionTranscriptReading } from '../sessionTranscriptReader/sessionTranscriptReaderApi.types'
 import type {
@@ -241,6 +245,8 @@ export interface RemoteControlCommitStatusDto {
   paths?: readonly string[]
   /** Actual SVN change notifications from successful revisions; absent on older clients and Git. */
   committedPaths?: readonly string[]
+  /** Selected changed nodes absent from SVN's successful publication receipt. Never retry the published revision automatically. */
+  omittedPaths?: readonly string[]
   kind: 'commit-status'
   commitSessionId: string
   sessionId: string
@@ -594,7 +600,8 @@ export interface RemoteControlOperationMap {
    * the groups for an older peer; this read keeps them.
    */
   'projects.listing': {
-    request: { categoryId: string; sort: 'alpha' | 'recent' }
+    /** `fresh` reads the category root again instead of the listing cached for 30 s. */
+    request: { categoryId: string; sort: 'alpha' | 'recent'; fresh?: boolean }
     response: ProjectListResult
   }
   /** The provider conversations of one project, Claude and Codex. */
@@ -632,6 +639,8 @@ export interface RemoteControlOperationMap {
   'sessions.list': {
     request: Record<string, never>
     response: Omit<SessionsSnapshot, 'sessions'> & {
+      /** Source-owned titles and ordering. Older controllers omit this field. */
+      sessionGroups?: readonly import('../sessionManager/sessionGroups').SessionGroupDefinition[]
       // Older controllers omit group and callerOperationId; current controllers always send both, null for none.
       sessions: readonly (Omit<SessionInfo, 'callerOperationId'>
         & { group?: SessionGroup | null; callerOperationId?: string | null })[]
@@ -701,10 +710,16 @@ export interface RemoteControlOperationMap {
    */
   'sessions.finishWorktree': {
     request: {
+      reviewVersion?: number
+  repositories?: import('../worktrees/worktreeState').WorktreeRepositoryReview[]
+      messageSource?: import('../svn/svnCommitMessageCheck').CommitMessageSource
+      acknowledgedFindings?: import('../svn/svnCommitMessageCheck').CommitMessageFinding[]
       session: RemoteControlSessionSelector
       choice: 'commit' | 'discard' | 'keep'
       acknowledgeSetup?: string
-      confirmWorking?: true
+      selection?: string[]
+      message?: string
+      confirmWorking?: true; reviewCorrection?: true; overrideChecks?: true; refreshPreparation?: true; confirmEnvironment?: true
       agent?: true
     }
     response: { sessionId: string; actionId: string | null }
@@ -721,10 +736,8 @@ export interface RemoteControlOperationMap {
     response: { sessionId: string; actionId: string }
   }
   /**
-   * The review run of an SVN action asks for its review: the commit split opens once on its own tab,
-   * for the root the action reviews now, and a second call answers the same review. The run then
-   * waits with `tabs.commitStatus`. `jamat-v3 sessions worktree-review --self --wait` is its only
-   * caller. Local only.
+   * Dormant wire capability for older peers. Always refuses with review-unavailable; current
+   * Finish reviews use the versioned source Session actions draft. Retire at the supported peer floor.
    */
   'sessions.worktreeReview': {
     request: { session: RemoteControlSessionSelector }
@@ -736,6 +749,10 @@ export interface RemoteControlOperationMap {
    * session without a conflict set answers `not-found`. Local only. Its capability is the version
    * marker of every conflict key that follows.
    */
+  'sessions.sync': {
+    request: { session: RemoteControlSessionSelector }
+    response: import('../sessionManager/sessionManagerApi.types').SessionWorktreeSyncResult
+  }
   'sessions.conflicts': {
     request: { session: RemoteControlSessionSelector }
     response: SessionConflictList
@@ -754,10 +771,32 @@ export interface RemoteControlOperationMap {
     request: {
       session: RemoteControlSessionSelector
       path: string
+      /** Which conflict of the path, where it holds a text and a property conflict that are both open. */
+      kind?: SvnConflictKind
       option: SvnConflictOption
       confirm?: true
     }
     response: SessionConflictResolved
+  }
+  /**
+   * An interactive agent session in the worktree of an SVN Finish or Discard that waits for the
+   * person, briefed on why it waits and asked to fix what it can and to say how the Finish could
+   * avoid the wait; its tab opens. The action keeps waiting. A running action, an UPDATE, or a Finish
+   * whose conflicts the merger covers answers `operation-failed` (`invalid-spec`). Local only, mutating.
+   */
+  'sessions.solveWithAgent': {
+    request: { session: RemoteControlSessionSelector }
+    response: { sessionId: string; tabTitle: string; tabOpen: RemoteControlSessionCreateDto['tabOpen'] }
+  }
+  /**
+   * Ends an SVN Finish that has published nothing yet and leaves the worktree and its worker as they
+   * are, so the session goes on working; the next Finish starts again with a sync. After the commit
+   * started it answers `operation-failed` (`person-only`); an agent cannot take back a Finish the
+   * person holds. Mutating.
+   */
+  'sessions.backToWork': {
+    request: { session: RemoteControlSessionSelector; confirmStoppedRunId?: string }
+    response: { sessionId: string; actionId: string | null }
   }
   /** Local only. Its capability marks support for SessionCreateSpec.notify. */
   'sessions.notifies': {
@@ -794,7 +833,7 @@ export interface RemoteControlOperationMap {
    * `message-edited`). `jamat-v3 commit propose --self` is its caller. Local only.
    */
   'sessions.proposeCommit': {
-    request: { session: RemoteControlSessionSelector; message: string }
+    request: { session: RemoteControlSessionSelector; message: string; directory?: string }
     response: { scopeRoot: string }
   }
   /**
@@ -827,6 +866,10 @@ export interface RemoteControlOperationMap {
     request: { session: RemoteControlSessionSelector; runId?: string }
     response: RemoteControlSessionScriptsDto
   }
+  'sessions.clearActions': {
+    request: { session: RemoteControlSessionSelector }
+    response: { sessionId: string }
+  }
   /**
    * Run one shell command for a running session, as its child, judged by its exit code. It runs
    * through the Host, outside the caller's own sandbox. Local only; read the verdict with
@@ -842,6 +885,10 @@ export interface RemoteControlOperationMap {
     response: { sessionId: string; tabTitle: string }
   }
   /** Stop what runs and resume the same conversation in a fresh process. */
+  'sessions.switchAccount': {
+    request: { session: RemoteControlSessionSelector; accountId: string }
+    response: { sessionId: string }
+  }
   'sessions.restart': {
     request: { session: RemoteControlSessionSelector }
     response: { sessionId: string }
@@ -876,6 +923,11 @@ export interface RemoteControlOperationMap {
     request: { projectPath: string }
     response: { token: string }
   }
+  /** Where a worktree of a directory would stand, its owner and the number its session would take; takes nothing. */
+  'sessions.worktreePreview': {
+    request: { directory: SessionWorktreeDirectory }
+    response: SessionWorktreePreview
+  }
   /** Take the next number of a project for a session about to be created. */
   'sessions.allocateNumber': {
     request: { projectPath: string }
@@ -895,14 +947,17 @@ export interface RemoteControlOperationMap {
     request: Record<string, never>
     response: Record<string, never>
   }
-  /** Refused unless the running Host is the one the caller saw, so a stale press stops nothing new. */
+  /**
+   * Refused unless the running Host is the one the caller saw, so a stale press stops nothing new.
+   * `warnings` names what the old Host could not stop; those processes may still run.
+   */
   'host.restart': {
     request: { expectedHostInstanceId: string }
-    response: Record<string, never>
+    response: HostStopWarnings
   }
   'host.stop': {
     request: { expectedHostInstanceId: string }
-    response: Record<string, never>
+    response: HostStopWarnings
   }
   /**
    * What a session LOOKS like after it exists, which a create could already say and nothing could
@@ -946,6 +1001,10 @@ export interface RemoteControlOperationMap {
   'agents.describe': {
     request: Record<string, never>
     response: RemoteControlAgentsDto
+  }
+  'accounts.list': {
+    request: { excludeAccount?: { agentId: 'claude' | 'codex'; accountId: string } }
+    response: readonly AccountView[]
   }
   'tabs.list': {
     request: Record<string, never>

@@ -90,7 +90,7 @@ describe('app-client-ui/renderer/fileViewer/fileChangesTreeWidget', () => {
       },
     } as unknown as AppClientUiBridge
 
-    render(<FileChangesTreeWidget model={model()} onOpen={onOpen} />)
+    render(<FileChangesTreeWidget openFile={window.appClient?.fileChanges?.openFile ?? vi.fn()} release={window.appClient?.fileViewer?.release ?? vi.fn()} model={model()} onOpen={onOpen} />)
 
     expect(screen.getByRole('tree', { name: 'Changed files' })).toBeInTheDocument()
     expect(screen.getByRole('treeitem', { name: /src/ })).toHaveAttribute('aria-expanded', 'true')
@@ -107,13 +107,13 @@ describe('app-client-ui/renderer/fileViewer/fileChangesTreeWidget', () => {
   })
 
   it('keeps a known directory collapsed across a refreshed snapshot', () => {
-    const view = render(<FileChangesTreeWidget model={model()} onOpen={vi.fn()} />)
+    const view = render(<FileChangesTreeWidget openFile={window.appClient?.fileChanges?.openFile ?? vi.fn()} release={window.appClient?.fileViewer?.release ?? vi.fn()} model={model()} onOpen={vi.fn()} />)
     const directory = screen.getByRole('treeitem', { name: /src/ })
     fireEvent.click(directory.querySelector('button')!)
     expect(directory).toHaveAttribute('aria-expanded', 'false')
 
     const refreshed = { ...snapshot(), snapshotId: 'snapshot-2' }
-    view.rerender(<FileChangesTreeWidget model={model(refreshed)} onOpen={vi.fn()} />)
+    view.rerender(<FileChangesTreeWidget openFile={window.appClient?.fileChanges?.openFile ?? vi.fn()} release={window.appClient?.fileViewer?.release ?? vi.fn()} model={model(refreshed)} onOpen={vi.fn()} />)
 
     expect(screen.getByRole('treeitem', { name: /src/ })).toHaveAttribute('aria-expanded', 'false')
   })
@@ -126,9 +126,9 @@ describe('app-client-ui/renderer/fileViewer/fileChangesTreeWidget', () => {
       .mockResolvedValue({ ok: true, value: { ok: true, value: documentConst } })
     ;(window as unknown as { appClient: unknown }).appClient = { fileChanges: { openFile } }
     const onOpen = vi.fn()
-    const view = render(<FileChangesTreeWidget model={stale} onOpen={onOpen} />)
+    const view = render(<FileChangesTreeWidget openFile={window.appClient?.fileChanges?.openFile ?? vi.fn()} release={window.appClient?.fileViewer?.release ?? vi.fn()} model={stale} onOpen={onOpen} />)
     vi.mocked(stale.reload).mockImplementation(async () => {
-      view.rerender(<FileChangesTreeWidget model={model(fresh)} onOpen={onOpen} />)
+      view.rerender(<FileChangesTreeWidget openFile={window.appClient?.fileChanges?.openFile ?? vi.fn()} release={window.appClient?.fileViewer?.release ?? vi.fn()} model={model(fresh)} onOpen={onOpen} />)
       await Promise.resolve()
       return fresh
     })
@@ -149,10 +149,10 @@ describe('app-client-ui/renderer/fileViewer/fileChangesTreeWidget', () => {
       fileViewer: { release },
     } as unknown as AppClientUiBridge
     const onOpen = vi.fn()
-    const view = render(<FileChangesTreeWidget model={model()} onOpen={onOpen} />)
+    const view = render(<FileChangesTreeWidget openFile={window.appClient?.fileChanges?.openFile ?? vi.fn()} release={window.appClient?.fileViewer?.release ?? vi.fn()} model={model()} onOpen={onOpen} />)
     fireEvent.click(screen.getByRole('treeitem', { name: /a\.ts/ }).querySelector('button')!)
     const refreshed = { ...snapshot(), snapshotId: 'snapshot-2' }
-    view.rerender(<FileChangesTreeWidget model={model(refreshed)} onOpen={onOpen} />)
+    view.rerender(<FileChangesTreeWidget openFile={window.appClient?.fileChanges?.openFile ?? vi.fn()} release={window.appClient?.fileViewer?.release ?? vi.fn()} model={model(refreshed)} onOpen={onOpen} />)
     expect(screen.getByRole('treeitem', { name: /a\.ts/ }).querySelector('button'))
       .not.toBeDisabled()
 
@@ -174,7 +174,7 @@ describe('app-client-ui/renderer/fileViewer/fileChangesTreeWidget', () => {
     const current = snapshot()
     current.entries = [...current.entries, entry('src/b.ts', 'file')]
     const onOpen = vi.fn()
-    render(<FileChangesTreeWidget model={model(current)} onOpen={onOpen} />)
+    render(<FileChangesTreeWidget openFile={window.appClient?.fileChanges?.openFile ?? vi.fn()} release={window.appClient?.fileViewer?.release ?? vi.fn()} model={model(current)} onOpen={onOpen} />)
 
     fireEvent.click(screen.getByRole('treeitem', { name: /a\.ts/ }).querySelector('button')!)
     fireEvent.click(screen.getByRole('treeitem', { name: /b\.ts/ }).querySelector('button')!)
@@ -212,7 +212,7 @@ describe('app-client-ui/renderer/fileViewer/fileChangesTreeWidget', () => {
       fileViewer: { release },
     } as unknown as AppClientUiBridge
     const onOpen = vi.fn()
-    const view = render(<FileChangesTreeWidget model={model()} onOpen={onOpen} />)
+    const view = render(<FileChangesTreeWidget openFile={window.appClient?.fileChanges?.openFile ?? vi.fn()} release={window.appClient?.fileViewer?.release ?? vi.fn()} model={model()} onOpen={onOpen} />)
     fireEvent.click(screen.getByRole('treeitem', { name: /a\.ts/ }).querySelector('button')!)
     view.unmount()
 

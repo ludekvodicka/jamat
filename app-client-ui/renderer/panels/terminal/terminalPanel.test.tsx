@@ -1,3 +1,4 @@
+import type { RemoteChangesRequest, RemoteFileRequest } from '../../../../lib-orchestrator/remoteControl/remoteContentApi.types'
 import { CommitOpenStore } from '../../versioning/commitOpenStore'
 import { act, cleanup, fireEvent, render, type RenderResult, waitFor, within } from '@testing-library/react'
 import type { IDockviewPanelProps } from 'dockview'
@@ -13,6 +14,7 @@ import type {
   FileViewerDocumentSource,
 } from '../../../../lib-orchestrator/fileViewer/fileViewerApi.types'
 import type {
+  SessionInfo,
   SessionsSnapshot,
   TerminalFrame,
 } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
@@ -32,6 +34,7 @@ import type { TerminalSplitPinsStore } from './split/useTerminalSplitPins'
 import { AgentSettingsStore } from '../../contextCompaction/agentSettingsStore'
 import { SessionCompact } from '../../contextCompaction/sessionCompact'
 import { SnapshotStore } from '../../ipc/snapshotStore'
+import { SessionNodeState } from '../../views/sessionsTree/sessionNodeState'
 import { SessionModelStore } from '../../sessionModel/sessionModelStore'
 import { SessionRefreshRegistry } from '../../shell/sessionRefreshRegistry'
 import { TerminalDraftRegistry } from '../../shell/terminalDraftRegistry'
@@ -41,9 +44,7 @@ import { PanelFileToolsRegistry } from '../../fileViewer/panelFileToolsRegistry'
 import { PanelFocusRegistry } from '../../shell/panelFocusRegistry'
 import type { PanelOpenOutcome } from '../../shell/appShell.types'
 import { SessionsMarksStore } from '../../sessions/sessionsMarksStore'
-import { SessionTasksStore } from '../../sessions/sessionTasksStore'
-import type { SessionTaskListing } from '../../../../lib-orchestrator/sessionTasks/sessionTasksApi.types'
-import type { TabControlTaskItem } from '../../../shared/tabControl'
+import { SessionDrag } from '../../sessions/sessionDrag'
 import { TabDecorationsStore } from '../../widgets/tabs/tabDecorations'
 import { TabDecorationsProvider } from '../../widgets/tabs/tabDecorationsContext'
 import { PanelSplitParams, type PanelSplitFileItem } from '../../widgets/tabs/panelSplit'
@@ -55,6 +56,8 @@ const xtermMock = vi.hoisted(() => ({
   /** Every byte this surface handed the parser, which is the cost a hidden panel does not pay. */
   writes: [] as string[],
   resets: 0,
+  /** What xterm hands a keystroke to, so a test can type. */
+  data: null as ((data: string) => void) | null,
 }))
 
 vi.mock('@xterm/xterm', () => ({
@@ -71,7 +74,7 @@ vi.mock('@xterm/xterm', () => ({
     /** Read per wheel event by the repeat the attachment installs. */
     attachCustomKeyEventHandler(): void {}
     attachCustomWheelEventHandler(): void {}
-    onData(): void {}
+    onData(handler: (data: string) => void): void { xtermMock.data = handler }
     onSelectionChange(): void {}
     getSelection(): string { return '' }
     clearSelection(): void {}
@@ -354,6 +357,10 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
             })
           },
         },
+        'sessions.reference': {
+          library: (body: { session: { sessionId: string } }) =>
+            Promise.resolve({ ok: true as const, value: { ok: true as const, value: { text: `reference of ${body.session.sessionId}` } } }),
+        },
         'directoryNotes.get': {
           library: (body: { sessionId: string }) => {
             notesReads.push(body.sessionId)
@@ -560,7 +567,6 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
   let settings: AgentSettingsStore
   let compact: SessionCompact
   let marks: SessionsMarksStore
-  let tasks: SessionTasksStore
   let splitPins: SplitPinsFake
   let stopSessions: (() => void) | null = null
 
@@ -569,17 +575,14 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
    * started, so it answers "no record" - which is what every test that is only about the attachment
    * wants, and it is the same state a tab is in before the first snapshot lands.
    */
-  async function withSessions(snapshot: SessionsSnapshot): Promise<void> {
+  async function withSessions(snapshot: SessionsSnapshot | (() => SessionsSnapshot)): Promise<void> {
     sessions = new SnapshotStore<SessionsSnapshot>('The sessions snapshot', {
-      read: () => Promise.resolve({ ok: true as const, value: snapshot }),
+      read: () => Promise.resolve({ ok: true as const, value: typeof snapshot === 'function' ? snapshot() : snapshot }),
       subscribe: () => () => undefined,
       reportError: () => undefined,
     })
     marks = new SessionsMarksStore(sessions)
     marks.start()
-    tasks = new SessionTasksStore(sessions, {
-      list: async () => ({ ok: true, value: { ok: true, value: {} } }), reportError: vi.fn(),
-    })
     stopSessions = sessions.start()
     await act(async () => {
       await Promise.resolve()
@@ -631,7 +634,6 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
           drafts={drafts}
           panelFocus={panelFocus}
           sessions={sessions}
-          tasks={tasks}
           remoteSessions={remoteSessions}
           sessionModel={sessionModel}
           settings={settings}
@@ -655,17 +657,18 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
     endpointId = 'remote-pc::default::stable',
     sessionId = 'remote-session',
     params: Record<string, unknown> = {},
+    taskOptions: Pick<TerminalPanelProps, 'openTerminal'> = {},
   ): RenderResult {
     return render(
       <TabDecorationsProvider store={store}>
         <TerminalPanel
+          {...taskOptions}
           {...api.props({ target: { kind: 'remote', remoteEndpointId: endpointId, sessionId }, ...params })}
           refresh={refresh}
           inputs={inputs}
           drafts={drafts}
           panelFocus={panelFocus}
           sessions={sessions}
-          tasks={tasks}
           remoteSessions={remoteSessions}
           sessionModel={sessionModel}
           settings={settings}
@@ -773,9 +776,6 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
       reportError: () => undefined,
     })
     marks = new SessionsMarksStore(sessions)
-    tasks = new SessionTasksStore(sessions, {
-      list: async () => ({ ok: true, value: { ok: true, value: {} } }), reportError: vi.fn(),
-    })
     stopSessions = null
     splitPins = new SplitPinsFake()
     installBridge()
@@ -791,6 +791,97 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
       await Promise.resolve()
     })
     delete (window as unknown as { appClient?: unknown }).appClient
+  })
+
+  it('opens source Session actions beside a remote terminal and never calls local file owners', async () => {
+    const snapshot = SessionsFixtures.mixed()
+    const summary = { ...snapshot.sessions[0], sessionId: 'remote-session' }
+    const detail = { ...summary, actions: { sections: [{ kind: 'finish', workflowId: 'remote-workflow', title: 'Remote finish',
+      open: true, badge: '', summary: 'Source action state', rounds: [], actions: [{ id: 'later', label: 'Later', primary: false, place: 'footer' }] }] } }
+    const remote = { revision: 1, inbound: [], outbound: [{ remoteEndpointId: 'remote-pc::default::stable', status: 'connected', connectionId: 'epoch',
+      workspaceCapabilities: ['session-workspace.read', 'session-workspace.views', 'session-workspace.actions'],
+      sessions: { ...snapshot, sessions: [summary] } }] } as unknown as RemoteConnectionsSnapshot
+    remoteSessions = new SnapshotStore('remote test', { read: async () => ({ ok: true, value: remote }), subscribe: () => () => {}, reportError: vi.fn() })
+    const stop = remoteSessions.start()
+    const openView = vi.fn(async () => ({ ok: true, value: { ok: true, value: { viewId: 'view', epoch: 'epoch', viewerId: 'viewer', sessionId: 'remote-session' } } }))
+    const readView = vi.fn(async () => ({ ok: true, value: { ok: true, value: { revision: 7, session: detail } } }))
+    const pressAction = vi.fn(async () => ({ ok: true, value: { ok: true, value: null } }))
+    const closeView = vi.fn(async () => ({ ok: true, value: { ok: true, value: null } }))
+    Object.assign(window.appClient.remote, { openView, readView, pressAction, closeView })
+    await act(async () => { await Promise.resolve() })
+    const view = mountRemote(new PanelApiFake('terminal:remote-actions'))
+    fireEvent.click(within(view.container).getByRole('button', { name: 'Session actions' }))
+    await within(view.container).findByText('Source action state')
+    expect(view.container.querySelector('.jamat-terminal__screen')).toBeTruthy()
+    fireEvent.click(within(view.container).getByRole('button', { name: 'Later' }))
+    await waitFor(() => expect(pressAction).toHaveBeenCalledWith('remote-pc::default::stable', 'view',
+      { revision: 7, workflowId: 'remote-workflow', actionId: 'later', agreement: {} }, expect.any(String)))
+    expect(fileChangesReads).toBe(0)
+    expect(workingTreeReads).toEqual([])
+    expect(restoredSources).toEqual([])
+    view.unmount()
+    await waitFor(() => expect(closeView).toHaveBeenCalledWith('remote-pc::default::stable', 'view'))
+    stop()
+  })
+
+  it('restores a mounted file-only pane after an explicit source epoch change and releases on unmount', async () => {
+    const snapshot = SessionsFixtures.mixed()
+    let epoch = 'one'
+    let revision = 1
+    let documentSequence = 0
+    const target = { kind: 'remote' as const, remoteEndpointId: 'remote-pc::default::stable', sessionId: 'remote-session' }
+    remoteSessions = new SnapshotStore('remote file test', { read: async () => ({ ok: true, value: { revision, inbound: [], outbound: [{
+      remoteEndpointId: target.remoteEndpointId, status: 'connected', connectionId: epoch,
+      workspaceCapabilities: ['session-workspace.views', 'session-workspace.files', 'session-workspace.changes'], sessions: { ...snapshot, sessions: [{ ...snapshot.sessions[0], sessionId: target.sessionId }] },
+    }] } as unknown as RemoteConnectionsSnapshot }), subscribe: () => () => {}, reportError: vi.fn() })
+    const stop = remoteSessions.start()
+    await waitFor(() => expect(remoteSessions.current().snapshot).not.toBeNull())
+    const closeView = vi.fn(async () => ({ ok: true, value: { ok: true, value: null } }))
+    const requestFiles = vi.fn(async (_endpoint: string, _viewId: string, request: RemoteFileRequest) => {
+      const content = `Source epoch ${epoch}`
+      const document = { documentId: `${epoch}:${++documentSequence}`, documentKey: 'source-file', source: { kind: 'workspace', sessionId: target.sessionId, path: 'C:/same/file.txt' },
+        path: 'C:/same/file.txt', name: 'file.txt', size: content.length, contentVersion: epoch, kind: { kind: 'text' }, modes: ['raw'] }
+      const value = request.kind === 'restore' ? { ok: true, value: document } : request.kind === 'bytes'
+        ? { ok: true, value: { version: epoch, offset: 0, length: content.length, totalSize: content.length, base64: btoa(content), eof: true } }
+        : request.kind === 'version' ? { ok: true, kind: 'unchanged' } : null
+      const encoded = JSON.stringify(value)
+      return { ok: true, value: { ok: true, value: { transferId: 'transfer', version: 'transfer-version', offset: 0, totalBytes: encoded.length, base64: btoa(encoded) } } }
+    })
+    const requestChanges = vi.fn(async (_endpoint: string, _view: string, request: RemoteChangesRequest) => {
+      const base = TerminalPanelFixtures.workingTree()
+      const value = request.kind === 'working-tree' ? { ok: true, value: { ...base, sessionId: target.sessionId,
+        entries: [{ ...base.entries[0], displayPath: `remote-change-${epoch}.txt`, path: `C:/same/remote-change-${epoch}.txt` }] } }
+        : { ok: false, code: 'invalid-context', detail: 'Source changelog unavailable' }
+      const encoded = JSON.stringify(value)
+      return { ok: true, value: { ok: true, value: { transferId: 'changes', version: 'version', offset: 0, totalBytes: encoded.length, base64: btoa(encoded) } } }
+    })
+    Object.assign(window.appClient.remote, { requestChanges, requestFiles, closeView,
+      openView: async () => ({ ok: true, value: { ok: true, value: { viewId: epoch, epoch, viewerId: epoch, sessionId: target.sessionId } } }),
+    })
+    const item = { kind: 'file', key: 'source-file', title: 'file.txt', source: { kind: 'workspace', sessionId: target.sessionId, path: 'C:/same/file.txt' }, target }
+    const api = new PanelApiFake('terminal:remote-file')
+    const mounted = mountRemote(api, target.remoteEndpointId, target.sessionId, { sidebar: { visible: true, width: 320, activeView: 'workingTree' }, split: { ratio: 0.61, active: item.key, items: [item] } })
+    await mounted.findByText('Source epoch one')
+    await mounted.findByText('remote-change-one.txt')
+    epoch = 'two'; revision++
+    act(() => remoteSessions.refresh())
+    await mounted.findByText('Source epoch two')
+    await mounted.findByText('remote-change-two.txt')
+    expect(workingTreeReads).toEqual([])
+    expect(PanelSplitParams.of(api.paramsValue()).ratio).toBe(0.61)
+    expect(restoredSources).toEqual([])
+    expect(fileChangesReads).toBe(0)
+    mounted.unmount()
+    await waitFor(() => expect(closeView).toHaveBeenCalledWith(target.remoteEndpointId, 'two'))
+    stop()
+  })
+
+  it('shows an explicit offline actions state while leaving the legacy remote terminal attached', async () => {
+    const view = mountRemote(new PanelApiFake('terminal:remote-offline-actions'))
+    fireEvent.click(within(view.container).getByRole('button', { name: 'Session actions' }))
+    expect(await within(view.container).findByText(/Remote session is offline/)).toBeTruthy()
+    expect(remoteAttachCalls).toHaveLength(1)
+    expect(restoredSources).toEqual([])
   })
 
   it('draws a screen and says what it is waiting for until it is attached', () => {
@@ -956,6 +1047,9 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
     })
 
     it('opens a File Changes row beside the terminal and releases the incoming grant', async () => {
+      const share = vi.fn(async () => ({ ok: true as const, value: undefined }))
+      Object.assign(window.appClient, { tabs: { openSharedItem: share } })
+
       workingTreeAnswer = { ok: true as const, value: TerminalPanelFixtures.workingTree() }
       const openFile: TerminalPanelProps['openFile'] = vi.fn(async () => ({
         kind: 'opened' as const,
@@ -979,6 +1073,8 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
       expect(previewTab?.classList.contains('is-preview')).toBe(true)
       expect(view.container.querySelector('.jamat-terminal__screen')).toBe(terminalScreen)
       expect(openFile).not.toHaveBeenCalled()
+      expect(share).toHaveBeenCalledOnce()
+      expect(share).toHaveBeenCalledWith('session-1', { openId: expect.any(String), item: { kind: 'file', documentId: 'changed-document' } })
       expect(releasedDocuments).toContain('changed-document')
       expect(PanelSplitParams.of(api.paramsValue()).items).toEqual([{
         kind: 'file',
@@ -1002,6 +1098,9 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
     })
 
     it('opens an Explorer file beside the terminal instead of a full tab', async () => {
+      const share = vi.fn(async () => ({ ok: true as const, value: undefined }))
+      Object.assign(window.appClient, { tabs: { openSharedItem: share } })
+
       const openFile: TerminalPanelProps['openFile'] = vi.fn(async () => ({
         kind: 'opened' as const,
         panelId: 'file:full',
@@ -1019,6 +1118,8 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
       await waitFor(() => expect(PanelSplitParams.of(api.paramsValue()).items).toHaveLength(1))
       expect(rootDirectoryReads).toEqual(['session-1'])
       expect(openFile).not.toHaveBeenCalled()
+      expect(share).toHaveBeenCalledOnce()
+      expect(share).toHaveBeenCalledWith('session-1', { openId: expect.any(String), item: { kind: 'file', documentId: 'changed-document' } })
       expect(releasedDocuments).toContain('changed-document')
     })
 
@@ -1072,6 +1173,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
         item.key,
         item.baselineHint,
         item.location,
+        { kind: 'local', sessionId: 'session-1' },
       )
       expect(PanelSplitParams.of(api.paramsValue())).toMatchObject({
         ratio: 0.61,
@@ -1272,80 +1374,21 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
     })
   })
 
-  describe('the Processes tab', () => {
-    const listing: SessionTaskListing = { kind: 'tasks', olderFinished: 0, catchingUp: false, rows: [
-      { kind: 'subagent', subagentId: 'agent-1', agentType: 'Explore', description: 'Find callers', depth: 1,
-        parentSubagentId: null, state: 'done', startedAt: 1_000, endedAt: 4_000, model: null, step: null },
-      { kind: 'shell', shellId: 'shell-1', command: 'pnpm test', description: 'Test application',
-        state: 'running', startedAt: 2_000, endedAt: null },
-    ] }
-
-    it('shows history by default, filters Active, and opens each kind through the task operation', async () => {
-      const snapshot = SessionsFixtures.mixed()
-      const info = snapshot.sessions.find((session) => session.sessionId === 's-working')!
-      info.scripts = { runs: [{ runId: 'run-1', phase: 'inner', scriptId: 'requested', name: 'Build', title: 'Build application',
-        state: 'succeeded', summary: 'Build succeeded', startedAt: 1_000, endedAt: 5_000, commands: [], row: false, log: 'saved' }] }
-      await withSessions(snapshot)
-      const listings = new Map([['s-working', listing]])
-      vi.spyOn(tasks, 'current').mockReturnValue(listings)
-      const calls: Omit<TabControlTaskItem, 'key'>[] = []
-      const original = window.appClient.control.call
-      vi.spyOn(window.appClient.control, 'call').mockImplementation((operation, body) => {
-        if (operation !== 'sessionTasks.open') return original(operation, body)
-        calls.push(body as Omit<TabControlTaskItem, 'key'>)
-        return Promise.resolve(ControlBridgeFixture.valueOf(operation, { ok: true, value: {} }))
-      })
-      const view = mount(new PanelApiFake('terminal:processes'), 's-working', {
-        params: { sidebar: { visible: true, width: 440, activeView: 'processes' } },
-      })
-      const panel = within(view.getByRole('region', { name: 'Session processes' }))
-      expect(panel.getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true')
-      expect(panel.getByText('Explore: Find callers')).toBeTruthy()
-      expect(panel.getByText('Build application')).toBeTruthy()
-      fireEvent.click(panel.getByText('Explore: Find callers'))
-      fireEvent.click(panel.getByText('$ pnpm test'))
-      fireEvent.click(panel.getByText('Build application'))
-      expect(calls).toEqual([
-        { sessionId: 's-working', task: { kind: 'subagent', subagentId: 'agent-1' }, title: 'Explore: Find callers' },
-        { sessionId: 's-working', task: { kind: 'shell', shellId: 'shell-1' }, title: '$ pnpm test' },
-        { sessionId: 's-working', task: { kind: 'script', runId: 'run-1' }, title: 'Build application' },
-      ])
-      fireEvent.click(panel.getByRole('button', { name: 'Active' }))
-      expect(panel.getByRole('button', { name: 'Active' })).toHaveAttribute('aria-pressed', 'true')
-      expect(panel.queryByText('Explore: Find callers')).toBeNull()
-      expect(panel.queryByText('Build application')).toBeNull()
-      expect(panel.getByText('$ pnpm test')).toBeTruthy()
-      fireEvent.click(panel.getByRole('button', { name: 'All' }))
-      expect(panel.getByText('Build application')).toBeTruthy()
-      await act(async () => { await Promise.resolve() })
+  it('restores a persisted Processes sidebar as File Changes and keeps it usable', async () => {
+    const api = new PanelApiFake('terminal:retired-processes')
+    const fileTools = new PanelFileToolsRegistry()
+    const view = mount(api, 'session-1', {
+      params: { sidebar: { visible: true, width: 440, activeView: 'processes' } }, fileTools,
     })
-
-    it('watches only while Processes is selected and its panel and sidebar are visible', () => {
-      const release = vi.fn()
-      const watch = vi.spyOn(tasks, 'watch').mockReturnValue(release)
-      const api = new PanelApiFake('terminal:processes-watch')
-      const fileTools = new PanelFileToolsRegistry()
-      const view = mount(api, 'session-1', {
-        params: { sidebar: { visible: true, width: 440, activeView: 'workingTree' } }, fileTools,
-      })
-      expect(watch).not.toHaveBeenCalled()
-      fireEvent.click(view.getByRole('tab', { name: 'Processes' }))
-      expect(watch).toHaveBeenCalledExactlyOnceWith('session-1')
-      api.emitVisibility(false)
-      expect(release).toHaveBeenCalledTimes(1)
-      api.emitVisibility(true)
-      expect(watch).toHaveBeenCalledTimes(2)
-      act(() => fileTools.toggle('terminal:processes-watch'))
-      expect(release).toHaveBeenCalledTimes(2)
-      act(() => fileTools.toggle('terminal:processes-watch'))
-      expect(watch).toHaveBeenCalledTimes(3)
-      fireEvent.click(view.getByRole('tab', { name: 'File Changes' }))
-      expect(release).toHaveBeenCalledTimes(3)
-      fireEvent.click(view.getByRole('tab', { name: 'Processes' }))
-      expect(watch).toHaveBeenCalledTimes(4)
-      view.unmount()
-      expect(release).toHaveBeenCalledTimes(4)
-    })
+    await act(async () => { await Promise.resolve() })
+    expect(view.getAllByRole('tab').map((tab) => tab.textContent))
+      .toEqual(['File Changes', 'Changelog', 'Explorer', 'Notes'])
+    expect(view.getByRole('tab', { name: 'File Changes' })).toHaveAttribute('aria-selected', 'true')
+    act(() => fileTools.toggle('terminal:retired-processes'))
+    act(() => fileTools.toggle('terminal:retired-processes'))
+    expect(view.getByRole('tab', { name: 'File Changes' })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.click(view.getByRole('tab', { name: 'Changelog' }))
+    expect(view.getByRole('tab', { name: 'Changelog' })).toHaveAttribute('aria-selected', 'true')
   })
 
   describe('the Notes tab', () => {
@@ -1383,7 +1426,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
 
       const dock = view.getByRole('complementary', { name: 'Tools' })
       expect(within(dock).getAllByRole('tab').map((tab) => tab.textContent))
-        .toEqual(['File Changes', 'Changelog', 'Explorer', 'Notes', 'Processes'])
+        .toEqual(['File Changes', 'Changelog', 'Explorer', 'Notes'])
       expect(view.queryByRole('complementary', { name: 'File tools' })).toBeNull()
       expect(notesReads).toEqual([])
     })
@@ -1439,7 +1482,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
       expect(fileChangesReads).toBe(0)
     })
 
-    it('restores a layout with each of the five keys without building the terminal again', async () => {
+    it('restores the four sidebar tabs and the retired Processes key without rebuilding the terminal', async () => {
       const api = new PanelApiFake('terminal:notes-layout')
       const view = mount(api, 'session-1', { params: sidebarAt('workingTree') })
       const screen = view.container.querySelector('.jamat-terminal__screen')
@@ -1449,7 +1492,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
         ['fileChanges', 'Changelog'],
         ['directoryExplorer', 'Explorer'],
         ['notes', 'Notes'],
-        ['processes', 'Processes'],
+        ['processes', 'File Changes'],
         ['workingTree', 'File Changes'],
       ] as const) {
         view.rerender(panelOf(api, 'session-1', { params: sidebarAt(key) }))
@@ -1476,6 +1519,37 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
       expect(drafts.composing('session-1')).toBe(true)
       await waitFor(() => expect(xtermMock.focuses).toBe(focuses + 1))
       expect(view.getByRole('textbox', { name: 'Note 1' })).toHaveValue('')
+    })
+
+    it('pastes the reference of a session row dropped from the sessions tree', async () => {
+      const typed = vi.spyOn(drafts, 'typed')
+      const view = mount(new PanelApiFake('terminal:session-drop'), 'session-1')
+      attached('session-1')
+      const data = new Map<string, string>()
+      SessionDrag.write({ setData: (format, value) => data.set(format, value) }, { kind: 'local', sessionId: 'session-2' })
+      const dataTransfer = { types: [...data.keys()], getData: (format: string) => data.get(format) ?? '', dropEffect: 'none' }
+      const section = view.container.querySelector('.jamat-terminal')!
+
+      expect(fireEvent.dragOver(section, { dataTransfer })).toBe(false)
+      expect(dataTransfer.dropEffect).toBe('copy')
+      fireEvent.drop(section, { dataTransfer })
+
+      const bytes = '\x1b[200~reference of session-2\x1b[201~'
+      await waitFor(() => expect(inputCalls).toEqual([{ attachId: attachIds.at(-1), data: bytes }]))
+      expect(typed).toHaveBeenCalledWith('session-1', bytes)
+    })
+
+    it('leaves a drag without a session row to dockview', async () => {
+      const view = mount(new PanelApiFake('terminal:other-drop'), 'session-1')
+      attached('session-1')
+      const dataTransfer = { types: ['text/plain'], getData: () => 'jamat-tab:token', dropEffect: 'none' }
+      const section = view.container.querySelector('.jamat-terminal')!
+
+      expect(fireEvent.dragOver(section, { dataTransfer })).toBe(true)
+      fireEvent.drop(section, { dataTransfer })
+
+      await settled()
+      expect(inputCalls).toEqual([])
     })
 
     it('offers no Paste while the terminal is not live, and reports nothing', async () => {
@@ -1653,26 +1727,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
       expect(store.get('terminal:1').secondary).toMatchObject({ glyph: '·', tone: 'muted' })
     })
 
-    /**
-     * The first badge a session tab has ever carried. It names the VCS because "commit this" is a
-     * different command under git than under svn.
-     */
-    it('carries the uncommitted-work mark, naming the VCS that measured it', async () => {
-      await withSessions(SessionsFixtures.stoppedWorktree())
-      mount(new PanelApiFake('terminal:1'), 's-dirty')
-
-      expect(store.get('terminal:1').badges).toEqual([
-        { key: 'vcs', text: '*', tone: 'muted', title: 'Uncommitted changes (git)' },
-        {
-          key: 'worktree',
-          text: 'WT',
-          tone: 'accent',
-          title: 'Git worktree C:/Projects/NodeJs/AppJamatV3/.worktrees/dirty',
-        },
-      ])
-    })
-
-    it('carries no uncommitted-work mark where the working copy was measured clean', async () => {
+    it('carries only the worktree badge for a worktree session with no commit review open', async () => {
       await withSessions(SessionsFixtures.stoppedWorktree())
       mount(new PanelApiFake('terminal:1'), 's-clean')
 
@@ -1729,9 +1784,52 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
       try {
         mount(new PanelApiFake('terminal:1'), 's-clean', { commitOpen })
         await waitFor(() => expect(store.get('terminal:1').badges[0]).toEqual(
-          { key: 'vcs', text: '*', tone: 'danger', title: 'Commit dialog open' },
+          { key: 'vcs', text: '*', tone: 'danger', title: 'Commit review pending' },
         ))
         expect(store.get('terminal:1').primary).toEqual({ glyph: '!', tone: 'danger', title: 'Commit review required' })
+      } finally { stop() }
+    })
+
+    it('offers a hidden review again after closing its pane and removes the offer when cancelled', async () => {
+      await withSessions(SessionsFixtures.stoppedWorktree())
+      const review = { draftId: 'failed-review', sessionId: 's-clean', vcs: 'svn' as const,
+        scopeRoot: 'C:/outside/project', paths: ['C:/outside/project/report.md'], workflow: false }
+      let snapshot = { revision: 1, sessionIds: ['s-clean'], reviews: [review, { ...review, draftId: 'foreign', sessionId: 'other' }] }
+      let changed = (): void => {}
+      const commitOpen = new CommitOpenStore({ read: async () => ({ ok: true, value: snapshot }),
+        subscribe: (listener) => { changed = listener; return () => {} }, reportError: vi.fn() })
+      const stop = commitOpen.start()
+      try {
+        const api = new PanelApiFake('terminal:1')
+        const view = mount(api, 's-clean', { commitOpen })
+        const pending = await view.findByRole('region', { name: 'Pending commit reviews' })
+        expect(within(pending).getAllByRole('button')).toHaveLength(1)
+        fireEvent.click(within(pending).getByRole('button', { name: /Open SVN review/ }))
+        expect(PanelSplitParams.of(api.paramsValue()).items).toEqual([expect.objectContaining({
+          kind: 'commit', reviewId: 'failed-review', scopeRoot: review.scopeRoot, paths: review.paths,
+        })])
+        expect(view.queryByRole('region', { name: 'Pending commit reviews' })).toBeNull()
+        fireEvent.click(view.getByRole('button', { name: 'Close Commit SVN' }))
+        expect(await view.findByRole('region', { name: 'Pending commit reviews' })).not.toBeNull()
+        snapshot = { revision: 2, sessionIds: [], reviews: [] }
+        act(() => changed())
+        await waitFor(() => expect(view.queryByRole('region', { name: 'Pending commit reviews' })).toBeNull())
+        expect(store.get('terminal:1').primary?.title).not.toBe('Commit review required')
+      } finally { stop() }
+    })
+
+    it('recovers a pending Finish review through Session actions', async () => {
+      await withSessions(SessionsFixtures.stoppedWorktree())
+      const commitOpen = new CommitOpenStore({ read: async () => ({ ok: true, value: { revision: 1, sessionIds: ['s-clean'],
+        reviews: [{ draftId: 'finish-review', sessionId: 's-clean', vcs: 'svn', scopeRoot: 'C:/worktree', workflow: true }] } }),
+        subscribe: () => () => {}, reportError: vi.fn() })
+      const stop = commitOpen.start()
+      try {
+        const api = new PanelApiFake('terminal:1')
+        const view = mount(api, 's-clean', { commitOpen })
+        fireEvent.click(await view.findByRole('button', { name: /Open SVN review/ }))
+        expect(PanelSplitParams.of(api.paramsValue()).items).toEqual([expect.objectContaining({ kind: 'workflow', sessionId: 's-clean' })])
+        expect(view.queryByRole('region', { name: 'Pending commit reviews' })).toBeNull()
       } finally { stop() }
     })
 
@@ -1872,6 +1970,35 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
     expect(xtermMock.focuses).toBe(2)
   })
 
+  it('keeps a workflow review mounted while a sibling diff is selected', async () => {
+    const snapshot = SessionsFixtures.mixed()
+    const info = snapshot.sessions.find((session) => session.sessionId === 's-working')!
+    info.actions = { sections: [{ kind: 'finish', workflowId: 'finish-1', title: 'Finish', badge: 'waits', summary: '', open: true,
+      actions: [{ id: 'finish-again', label: 'Commit & merge', primary: true, place: 'step', requiresCommit: true }],
+      rounds: [{ title: 'Finish', steps: [{ key: '1:changes', title: 'Changes', detail: '', state: 'waits', startedAt: null, endedAt: null,
+        target: { kind: 'none' }, body: { kind: 'commit', vcs: 'svn', scopeRoot: 'Q:/work' } }] }] }] }
+    await withSessions(snapshot)
+    const file = TerminalPanelFixtures.splitItem(1)
+    const workflow = PanelSplitParams.workflowItemOf('s-working')
+    const view = mount(new PanelApiFake('terminal:workflow-review', true), 's-working', {
+      params: { split: { ratio: 0.5, active: workflow.key, items: [workflow, file] } },
+    })
+    const editor = await view.findByLabelText('SVN commit dialog')
+    act(() => { panelFocus.focus('terminal:workflow-review') })
+    expect(view.getByRole('region', { name: 'Review changes' })).toHaveFocus()
+    fireEvent.click(view.getByRole('tab', { name: /file-1/ }))
+    expect(editor).toBeInTheDocument()
+    expect(editor).not.toBeVisible()
+    fireEvent.click(view.getByRole('tab', { name: /Session actions/ }))
+    expect(view.getByLabelText('SVN commit dialog')).toBe(editor)
+    expect(editor).toBeVisible()
+    fireEvent.click(view.getByRole('button', { name: 'Back to Session actions' }))
+    fireEvent.click(view.getByRole('tab', { name: /file-1/ }))
+    fireEvent.click(view.getByRole('tab', { name: /Session actions/ }))
+    expect(view.getByRole('button', { name: 'Review changes' })).toBeVisible()
+    expect(editor).not.toBeVisible()
+  })
+
   /**
    * The two clicks dockview reports nothing for: a tab, or a tree row, of the session ALREADY in
    * front. Nothing becomes active, and the click has just taken the focus for the element under it.
@@ -1963,6 +2090,9 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
     })
 
     it('opens a detected file in this panel split, never through the full-tab callback', async () => {
+      const share = vi.fn(async () => ({ ok: true as const, value: undefined }))
+      Object.assign(window.appClient, { tabs: { openSharedItem: share } })
+
       detections = [[{
         kind: 'file',
         detectionId: 'detection-file',
@@ -1992,6 +2122,8 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
         { requestId: 'request-1', detectionId: 'detection-file' },
       ])
       expect(openFile).not.toHaveBeenCalled()
+      expect(share).toHaveBeenCalledOnce()
+      expect(share).toHaveBeenCalledWith('session-1', { openId: expect.any(String), item: { kind: 'file', documentId: 'changed-document' } })
       expect(releasedDocuments).toContain('changed-document')
       expect(PanelSplitParams.of(api.paramsValue())).toMatchObject({
         active: changedDocument.documentKey,
@@ -2177,6 +2309,36 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
         expect(transcriptReads).toEqual([])
       })
 
+      // A worktree session whose setup waits for "Agree and run" has no runtime yet and failed nothing.
+      it('says the setup waits for approval rather than that the session failed', async () => {
+        const stopped = SessionsFixtures.stoppedWorktree()
+        await withSessions({ ...stopped, sessions: stopped.sessions.map((session) => {
+          const { outcome: _outcome, exitCode: _exitCode, ...rest } = session
+          return { ...rest, life: 'ended' as const, awaitsSetupApproval: true as const, endedReason: 'Setup waits for command approval' }
+        }) })
+        attachAnswer = { ok: false, code: 'not-live', detail: 'session s-dirty is not live' }
+        const view = mount(new PanelApiFake('terminal:1'), 's-dirty')
+        await act(async () => { await Promise.resolve() })
+
+        expect(noteOf(view)).toBe('Setup waits for your approval of its commands in Session actions.')
+        expect(postMortem(view)).toBeNull()
+        expect(view.container.textContent).not.toContain('Failed')
+        expect(view.container.textContent).not.toContain('This terminal is gone')
+      })
+
+      it('shows the reason for a cancelled setup without claiming its absent terminal was lost (UA2-J01-01)', async () => {
+        const stopped = SessionsFixtures.stoppedWorktree()
+        await withSessions({ ...stopped, sessions: stopped.sessions.map((session) => ({ ...session,
+          life: 'ended' as const, outcome: 'finished' as const, endedReason: 'Setup cancelled; worktree removed' })) })
+        attachAnswer = { ok: false, code: 'not-live', detail: 'session s-dirty has no live runtime' }
+        const view = mount(new PanelApiFake('terminal:1'), 's-dirty')
+        await act(async () => { await Promise.resolve() })
+
+        expect(noteOf(view)).toBe('The session has ended. Setup cancelled; worktree removed')
+        expect(view.container.textContent).not.toContain('Failed')
+        expect(view.container.textContent).not.toContain('This terminal is gone')
+      })
+
       // No record behind the panel is no verdict, and a block with nothing to say is not drawn.
       it('draws nothing for a session the snapshot knows nothing about', async () => {
         const view = await mountRefused('not-live')
@@ -2313,6 +2475,99 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
     })
 
     /**
+     * A worktree session's checkout and setup run before its agent starts, so a tab opened meanwhile
+     * is refused `not-live`. The tab carried a red `!` and the note said the terminal was gone, while
+     * the sessions tree showed the session starting.
+     */
+    describe('a session whose setup still runs', () => {
+      it('marks the tab with the session state alone and says it is starting', async () => {
+        await withSessions(SessionsFixtures.mixed())
+        attachAnswer = { ok: false, code: 'not-live', detail: 'session s-home has no live runtime' }
+        const view = mount(new PanelApiFake('terminal:1'), 's-home')
+        await act(async () => { await Promise.resolve() })
+
+        expect(store.get('terminal:1').primary?.glyph).toBe(SessionNodeState.characterOf('starting', false))
+        expect(store.get('terminal:1').secondary).toBeNull()
+        expect(noteOf(view)).toBe('The session is starting.')
+        expect(block(view)).toBeNull()
+      })
+
+      it('attaches by itself once the session goes live', async () => {
+        const starting = SessionsFixtures.mixed()
+        let current = starting
+        await withSessions(() => current)
+        attachAnswer = { ok: false, code: 'not-live', detail: 'session s-home has no live runtime' }
+        const view = mount(new PanelApiFake('terminal:1'), 's-home')
+        await act(async () => { await Promise.resolve() })
+        const before = attachIds.length
+        attachAnswer = { ok: true }
+
+        current = {
+          ...starting,
+          revision: starting.revision + 1,
+          sessions: starting.sessions.map((session) => session.sessionId === 's-home'
+            ? { ...session, life: 'live' as const, activity: 'idle' as const }
+            : session),
+        }
+        await act(async () => { sessions.refresh() })
+
+        await waitFor(() => expect(attachIds).toHaveLength(before + 1))
+        expect(noteOf(view)).toBe('Connecting.')
+      })
+    })
+
+    /**
+     * A restart answers before the new runtime is bound, so the panel attached to the record's old,
+     * dead runtime and replayed its last screen; 023 showed "ended with exit code 0" over a running Codex.
+     */
+    it('attaches again to the runtime a restart bound, over the ended screen of the old one', async () => {
+      const mixed = SessionsFixtures.mixed()
+      const withRuntime = (runtime: string, revision: number) => ({ ...mixed, revision,
+        sessions: mixed.sessions.map((session) => session.sessionId === 's-working' ? { ...session, runtime } : session) })
+      let current = withRuntime('host-a:3', mixed.revision)
+      await withSessions(() => current)
+      const view = mount(new PanelApiFake('terminal:1'), 's-working')
+      await act(async () => { await Promise.resolve() })
+      push({ type: 'terminal.exit', runtimeSessionId: 's-working', generation: 3, exitCode: 0 })
+      const before = attachIds.length
+
+      current = withRuntime('host-a:4', mixed.revision + 1)
+      await act(async () => { sessions.refresh() })
+
+      await waitFor(() => expect(attachIds).toHaveLength(before + 1))
+      expect(noteOf(view)).toBe('Connecting.')
+    })
+
+    /**
+     * A Host restart moved the record from its old runtime, through lost, to a new one while the screen
+     * was still reconnecting; the reconnect then answered not-live. The panel had already seen the new
+     * runtime, so the tab said "lost its screen" over a running session until Reconnect (UA1-J10-6).
+     */
+    it('attaches again to the runtime a Host restart bound, although its reconnect was lost afterwards', async () => {
+      const mixed = SessionsFixtures.mixed()
+      const withWorking = (patch: Partial<SessionInfo>, revision: number) => ({ ...mixed, revision,
+        sessions: mixed.sessions.map((session) => session.sessionId === 's-working' ? { ...session, ...patch } : session) })
+      let current = withWorking({ runtime: 'host-a:3' }, mixed.revision)
+      await withSessions(() => current)
+      mount(new PanelApiFake('terminal:1'), 's-working')
+      await act(async () => { await Promise.resolve() })
+      push({ type: 'terminal.status', status: 'connecting', detail: 'the Host is gone' })
+      current = withWorking({ life: 'lost', runtime: undefined }, mixed.revision + 1)
+      await act(async () => { sessions.refresh() })
+      const before = attachIds.length
+
+      current = withWorking({ life: 'live', runtime: 'host-b:1' }, mixed.revision + 2)
+      await act(async () => { sessions.refresh() })
+      push({ type: 'terminal.status', status: 'lost', detail: 'this session has no live runtime', code: 'not-live' })
+
+      await waitFor(() => expect(attachIds.length).toBeGreaterThan(before))
+      const settled = attachIds.length
+      push({ type: 'terminal.status', status: 'lost', detail: 'this session has no live runtime', code: 'not-live' })
+      await act(async () => { await Promise.resolve() })
+      expect(attachIds).toHaveLength(settled)
+    })
+
+    /**
      * The screen can be lost while the session is not, and that is what a paste past the wire's size
      * did: the Host refused the frame, the attach ended, and the record went on saying `live`. The
      * button offered there was Restart, whose only possible answer is `live-refused` - so the way
@@ -2358,6 +2613,49 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
         await act(async () => { restartButton(view).click() })
 
         expect(reopened).toEqual(['s-lost'])
+      })
+    })
+
+    /**
+     * A client that starts before the Host publishes its descriptor is refused `host-unreachable`. The
+     * session runs on, so the panel attaches again by itself once the Host is reachable, and until then
+     * says that what is typed is not sent rather than dropping it without a word (UA1-J13-6).
+     */
+    describe('a screen refused while the Host could not be reached', () => {
+      const unreachable = { ok: false as const, code: 'host-unreachable', detail: 'terminal.attach: no Host descriptor is published' }
+
+      it('attaches again by itself once the Host is reachable, and sends nothing typed meanwhile', async () => {
+        const mixed = SessionsFixtures.mixed()
+        let current: SessionsSnapshot = { ...mixed, host: { ...mixed.host, presence: 'unreachable', hostInstanceId: null } }
+        await withSessions(() => current)
+        attachAnswer = unreachable
+        const view = mount(new PanelApiFake('terminal:1'), 's-working')
+        await act(async () => { await Promise.resolve() })
+
+        expect(noteOf(view)).toBe('Not connected to the Host: what you type is not sent. host-unreachable: terminal.attach: no Host descriptor is published')
+        expect(block(view)?.textContent).toContain('This terminal could not reach the Host. The session is still running;')
+        act(() => xtermMock.data?.('ls\r'))
+        expect(inputCalls).toEqual([])
+        const before = attachIds.length
+
+        attachAnswer = { ok: true }
+        current = { ...mixed, revision: mixed.revision + 1 }
+        await act(async () => { sessions.refresh() })
+
+        await waitFor(() => expect(attachIds).toHaveLength(before + 1))
+      })
+
+      it('tries a few times against a Host the snapshot already names, then leaves Reconnect to the person', async () => {
+        await withSessions(SessionsFixtures.mixed())
+        attachAnswer = unreachable
+        vi.useFakeTimers()
+        const view = mount(new PanelApiFake('terminal:1'), 's-working')
+        for (let pass = 0; pass < 8; pass += 1)
+          await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+        vi.useRealTimers()
+
+        expect(attachIds).toHaveLength(4)
+        expect(restartButton(view).textContent).toBe('Reconnect')
       })
     })
 
@@ -2473,7 +2771,6 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
           drafts={drafts}
           panelFocus={panelFocus}
           sessions={sessions}
-          tasks={tasks}
           remoteSessions={remoteSessions}
           sessionModel={sessionModel}
           settings={settings}

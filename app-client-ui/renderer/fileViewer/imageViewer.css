@@ -1,0 +1,50 @@
+.image-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface-sunken);
+  color: var(--color-text-1);
+  font: var(--fs-base) var(--font-ui);
+  outline: none;
+}
+.image-viewer__toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface-raised);
+  border-bottom: 1px solid var(--color-border-frame);
+}
+.image-viewer__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.image-viewer__dimensions { color: var(--color-text-3); white-space: nowrap; }
+.image-viewer button {
+  flex: none;
+  min-width: 32px;
+  padding: var(--space-1) var(--space-2);
+  color: var(--color-text-1);
+  background: var(--color-surface-control);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  font: inherit;
+  cursor: pointer;
+}
+.image-viewer button:hover { background: var(--color-surface-control-hover); }
+.image-viewer button:focus-visible { outline: 2px solid var(--color-accent); }
+.image-viewer button[aria-pressed='true'] { border-color: var(--color-accent); }
+.image-viewer button:disabled { color: var(--color-text-5); cursor: default; }
+.image-viewer output { min-width: 5ch; text-align: center; }
+.image-viewer__viewport { flex: 1; min-height: 0; overflow: auto; touch-action: none; cursor: grab; }
+.image-viewer__viewport:active { cursor: grabbing; }
+.image-viewer__canvas { display: grid; place-items: center; width: 100%; height: 100%; }
+.image-viewer__canvas img { display: block; max-width: none; max-height: none; user-select: none; }
+.image-viewer__notice, .image-viewer__error, .image-viewer__loading { margin: var(--space-3); }
+.image-viewer__error { color: var(--color-danger); }
+.file-image-surface { display: contents; }

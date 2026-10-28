@@ -14,6 +14,7 @@ export class PanelKeysConst {
   static readonly fileViewer = 'fileViewer'
   static readonly directoryViewer = 'directoryViewer'
   static readonly probe = 'probe'
+  static readonly snapin = 'snapin'
 }
 
 /** `prototype` is excluded because a class carries one and it is not a panel. */

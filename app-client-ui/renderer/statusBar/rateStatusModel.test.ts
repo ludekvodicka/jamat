@@ -229,4 +229,12 @@ describe('app-client-ui/renderer/statusBar/rateStatusModel', () => {
 
     expect(reading.text).toBe('S: 100% [██████████], W:  0% [░░░░░░░░░░]')
   })
+  it('reads the active session account without falling back to another account', () => {
+    const snapshot = Rates.snapshot(Rates.ok())
+    snapshot.accounts = [{ key: { agentId: 'claude', accountId: 'other' }, label: 'Other',
+      state: Rates.ok([{ durationMinutes: 300, usedPercent: 75, resetsAt: null }]), estimated: null, source: 'poll' }]
+    expect(RateStatusModel.readingOf(snapshot, 'claude', Rates.nowConst, 'other').text).toBe('S: 75% [' + '\u2588'.repeat(8) + '\u2591'.repeat(2) + ']')
+    expect(RateStatusModel.readingOf(snapshot, 'claude', Rates.nowConst, 'missing').text).toBe('S:? W:?')
+  })
+
 })

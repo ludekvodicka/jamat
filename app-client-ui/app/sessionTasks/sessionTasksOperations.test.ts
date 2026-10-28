@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { RemoteControlPeerConst } from '../../../lib-orchestrator/remoteControl/remoteControlPeerProtocol'
 import type { SessionManager } from '../../../lib-orchestrator/sessionManager/sessionManager'
@@ -115,7 +115,7 @@ describe('app-client-ui/app/sessionTasks/sessionTasksOperations', () => {
       snapshot: () => ({
         sessions: Object.entries(sessionsConst).map(([sessionId, one]) =>
           ({ sessionId, life: one.life, activity: one.activity, tabTitle: `Tab ${sessionId}`,
-            scripts: sessionId === 'shell-1' ? { runs: [{ runId: 'run-1', row: false }] } : undefined }) as unknown as SessionInfo),
+            scripts: sessionId === 'shell-1' ? { runs: [{ runId: 'run-1', row: false, title: 'Source setup' }] } : undefined }) as unknown as SessionInfo),
       }),
     } as unknown as SessionManager
   }
@@ -129,6 +129,21 @@ describe('app-client-ui/app/sessionTasks/sessionTasksOperations', () => {
     opens = []
     workflows = []
     new SessionTasksOperations(tasksUnderTest(), sessionsUnderTest(), tabsUnderTest()).register(bench.registry)
+  })
+
+  it('derives shareable task titles from source readers and refuses foreign runs and missing native identity', async () => {
+    const tasks = tasksUnderTest()
+    const operations = new SessionTasksOperations(tasks, sessionsUnderTest(), tabsUnderTest())
+    vi.spyOn(tasks, 'transcript').mockResolvedValue({ kind: 'transcript', revision: 'source',
+      header: { agentType: 'Explore', description: 'Source task', model: null, state: 'done', contextTokens: null }, entries: [], earlierStepsOmitted: false })
+    vi.spyOn(tasks, 'shellOutput').mockResolvedValue({ kind: 'output', revision: 'source', command: 'source-command', state: 'done',
+      startedAt: 1, endedAt: 2, text: 'source bytes', earlierOutputOmitted: false })
+    expect(await operations.itemOf('agent-1', { kind: 'subagent', subagentId: 'agent' })).toMatchObject({ sessionId: 'agent-1', title: 'Explore: Source task' })
+    expect(await operations.itemOf('agent-1', { kind: 'shell', shellId: 'shell' })).toMatchObject({ sessionId: 'agent-1', title: '$ source-command' })
+    expect(await operations.itemOf('shell-1', { kind: 'script', runId: 'run-1' })).toMatchObject({ sessionId: 'shell-1', title: 'Source setup', task: { kind: 'script', runId: 'run-1' } })
+    await expect(operations.itemOf('agent-1', { kind: 'script', runId: 'run-1' })).rejects.toThrow('no script run')
+    await expect(operations.itemOf('agent-unlaunched', { kind: 'subagent', subagentId: 'agent' })).rejects.toThrow()
+    expect(tasks.transcript).toHaveBeenCalledTimes(1)
   })
 
   it('registers its read operations and the open write, none of which a peer can be granted', () => {

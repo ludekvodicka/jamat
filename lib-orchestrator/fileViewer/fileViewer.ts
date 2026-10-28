@@ -11,6 +11,7 @@ import {
 } from './access/fileViewerGrantStore'
 import { FileContentNotAFileError, FileContentReader } from './content/fileContentReader'
 import { FileFormatRegistry } from './content/fileFormatRegistry'
+import { FileViewerLimits } from './fileViewerLimits'
 import { FileDirectoryReader } from './directory/fileDirectoryReader'
 import type {
   FileViewerChunkResult,
@@ -287,7 +288,7 @@ export class FileViewer {
       return { ok: false, code: 'not-text', detail: 'The document is not a text format' }
     if (!await FileViewerGrantBoundary.insideGrant(found.value.rootPath, document.path))
       return { ok: false, code: 'outside-root', detail: 'The document moved outside its grant' }
-    const read = await this.content.text(document.path, document.contentVersion)
+    const read = await this.content.text(document.path, document.contentVersion, FileViewerLimits.textBytes(document.kind))
     if (read.kind === 'text') return { ok: true, ...read }
     else if (read.kind === 'too-large')
       return {
@@ -335,6 +336,10 @@ export class FileViewer {
   }
 
   async chunk(ownerId: string, documentId: string, offset: number): Promise<FileViewerChunkResult> {
+    return this.readBytes(ownerId, documentId, null, offset, 64 * 1024)
+  }
+
+  async readBytes(ownerId: string, documentId: string, expectedVersion: string | null, offset: number, length: number, signal?: AbortSignal): Promise<FileViewerChunkResult> {
     const found = this.grants.document(documentId, ownerId)
     if (!found.ok) return found
     const document = found.value.document
@@ -342,7 +347,13 @@ export class FileViewer {
       return { ok: false, code: 'missing', detail: 'The document no longer exists' }
     if (!await FileViewerGrantBoundary.insideGrant(found.value.rootPath, document.path))
       return { ok: false, code: 'outside-root', detail: 'The document moved outside its grant' }
-    const read = await this.content.chunk(document.path, document.contentVersion, offset)
+    if (expectedVersion !== null && expectedVersion !== document.contentVersion)
+      return { ok: false, code: 'document-changed', detail: 'The requested file version no longer matches its grant' }
+    const read = await this.content.range(document.path, document.contentVersion, offset, length, signal)
+    if (!this.grants.document(documentId, ownerId).ok)
+      return { ok: false, code: 'document-expired', detail: 'The document was released during the read' }
+    if (!await FileViewerGrantBoundary.insideGrant(found.value.rootPath, document.path))
+      return { ok: false, code: 'outside-root', detail: 'The document moved outside its grant' }
     if (read.kind === 'chunk') return { ok: true, value: read.value }
     else if (read.kind === 'missing')
       return { ok: false, code: 'missing', detail: 'The document no longer exists' }
@@ -536,6 +547,18 @@ export class FileViewer {
     }
   }
 
+  async exportResource(ownerId: string, documentId: string): Promise<FileViewerResourceResult> {
+    const found = this.grants.document(documentId, ownerId)
+    if (!found.ok) return found
+    const document = found.value.document
+    if (document.size === null || document.contentVersion === null)
+      return { ok: false, code: 'not-found', detail: 'The file no longer exists' }
+    if (!await FileViewerGrantBoundary.insideGrant(found.value.rootPath, document.path))
+      return { ok: false, code: 'outside-root', detail: 'The file moved outside its grant' }
+    return { ok: true, value: this.publicResource(this.grants.putResource({ ownerId, documentId, rootPath: found.value.rootPath,
+      path: document.path, size: document.size, contentVersion: document.contentVersion, mimeType: 'application/octet-stream' })) }
+  }
+
   async relativeResource(
     ownerId: string,
     documentId: string,
@@ -573,6 +596,14 @@ export class FileViewer {
     return this.grants.path(documentId, ownerId)
   }
 
+  async document(ownerId: string, documentId: string): Promise<FileViewerOpenResult> {
+    const found = this.grants.document(documentId, ownerId)
+    if (!found.ok) return { ok: false, code: 'invalid-source', detail: found.detail }
+    // The accepted open holds this proof while the producing pane releases its temporary grant.
+    const version = await this.version(ownerId, documentId)
+    return version.ok ? { ok: true, value: found.value.document } : { ok: false, code: 'invalid-source', detail: version.detail }
+  }
+
   async imageDragPath(ownerId: string, documentId: string): Promise<string | null> {
     const found = this.grants.document(documentId, ownerId)
     if (!found.ok) return null
@@ -595,6 +626,33 @@ export class FileViewer {
       size: resource.size,
       contentVersion: resource.contentVersion,
     }
+  }
+
+  async resourceMetadata(resourceId: string, ownerId?: string): Promise<{ kind: 'ready'; resource: FileViewerResource } | { kind: 'missing' | 'changed' }> {
+    const resource = this.grants.resource(resourceId)
+    if (!resource || ownerId !== undefined && resource.ownerId !== ownerId
+      || !this.grants.document(resource.documentId, resource.ownerId).ok) return { kind: 'missing' }
+    if (!await FileViewerGrantBoundary.insideGrant(resource.rootPath, resource.path)) return { kind: 'missing' }
+    const version = await this.content.version(resource.path)
+    if (version.kind === 'missing') return { kind: 'missing' }
+    if (version.contentVersion !== resource.contentVersion) return { kind: 'changed' }
+    return { kind: 'ready', resource: this.publicResource(resource) }
+  }
+
+  async readResourceBytes(resourceId: string, expectedVersion: string, offset: number, length: number, signal: AbortSignal, ownerId?: string): Promise<FileViewerChunkResult> {
+    const resource = this.grants.resource(resourceId)
+    const metadata = await this.resourceMetadata(resourceId, ownerId)
+    if (!resource || metadata.kind === 'missing') return { ok: false, code: 'document-expired', detail: 'Resource grant expired' }
+    if (metadata.kind === 'changed' || resource.contentVersion !== expectedVersion) return { ok: false, code: 'document-changed', detail: 'Resource changed' }
+    const read = await this.content.range(resource.path, expectedVersion, offset, length, signal)
+    if (this.grants.resource(resourceId) === null || !this.grants.document(resource.documentId, resource.ownerId).ok)
+      return { ok: false, code: 'document-expired', detail: 'Resource was released during its read' }
+    if (!await FileViewerGrantBoundary.insideGrant(resource.rootPath, resource.path)) return { ok: false, code: 'outside-root', detail: 'Resource moved outside its grant' }
+    if (read.kind === 'chunk') return { ok: true, value: read.value }
+    else if (read.kind === 'changed') return { ok: false, code: 'document-changed', detail: 'Resource changed' }
+    else if (read.kind === 'missing') return { ok: false, code: 'missing', detail: 'Resource disappeared' }
+    else if (read.kind === 'invalid-range') return { ok: false, code: 'invalid-range', detail: read.detail }
+    else throw new Error(`Unknown resource byte result: ${JSON.stringify(read)}`)
   }
 
   release(ownerId: string, documentId: string): void {

@@ -198,6 +198,8 @@ describe('app-client-ui/renderer/panels/terminal/terminalContextMenu', () => {
       <TerminalContextMenu
         context={contextOf(over)}
         sessionId="session-1"
+        ports={{ ...window.appClient.terminalMenu, release: window.appClient.fileViewer.release,
+          copyPath: window.appClient.clipboard.writeText, openUrl: window.appClient.fileViewer.openExternal, native: window.appClient.terminalMenu }}
         openInSplit={(document, location) => {
           opened.push({ document, location })
           return splitRefusal
@@ -663,4 +665,37 @@ describe('app-client-ui/renderer/panels/terminal/terminalContextMenu', () => {
     expect(MenuView.isOpen()).toBe(false)
     expect(reported).not.toHaveBeenCalled()
   })
+})
+
+
+it('opens remote files, directories and URLs through injected ports without using the controller detector', async () => {
+  const local = new MenuBridgeStub()
+  local.install()
+  const source = {
+    openFile: vi.fn(async () => ({ ok: true as const, value: { ok: true as const, value: documentConst } })),
+    openDirectory: vi.fn(async () => ({ ok: true as const, value: { ok: true as const, value: { sessionId: 'session-1', path: 'D:/notes', directoryKey: 'remote-dir' } } })),
+    release: vi.fn(async () => ({ ok: true as const, value: undefined })),
+    copyPath: vi.fn(async () => ({ ok: true as const, value: undefined })),
+    openUrl: vi.fn(async () => ({ ok: true as const, value: true })),
+  }
+  const open = vi.fn(() => null)
+  const directory = vi.fn()
+  const detected = [fileDetection({ opensExternally: true }), directoryDetection(0, false), { kind: 'url' as const, detectionId: 'url', url: 'https://example.com/source' }]
+  const labels = ['Open report.md:12', 'Open D:\\notes in tab', 'Open https://example.com/source']
+  for (const label of labels) {
+    const view = render(<TerminalContextMenu sessionId="session-1" ports={source} context={{ kind: 'local', clickId: label, position: { x: 0, y: 0 }, hasSelection: false,
+      paste: () => {}, pasteAsText: () => {}, copySelection: () => {}, detect: async () => ({ ok: true, value: { requestId: 'remote-proof', detections: detected } }) }}
+      openInSplit={open} openDirectoryAt={directory} onRefused={() => {}} onClose={() => {}} />)
+    await act(async () => { await Promise.resolve() })
+    expect(MenuView.labels().some((value) => value.includes('VS Code'))).toBe(false)
+    await act(async () => { fireEvent.click(MenuView.itemLabelled(label)); await Promise.resolve() })
+    view.unmount()
+  }
+  expect(source.openFile).toHaveBeenCalledWith('remote-proof', 'detection-file')
+  expect(source.release).toHaveBeenCalledWith(documentConst.documentId)
+  expect(source.openDirectory).toHaveBeenCalledWith('remote-proof', 'detection-directory')
+  expect(source.openUrl).toHaveBeenCalledWith('https://example.com/source')
+  expect(open).toHaveBeenCalledWith(documentConst, { line: 12 })
+  expect(directory).toHaveBeenCalledWith('session-1', 'D:/notes', 'remote-dir')
+  expect(local.calls).toEqual([])
 })

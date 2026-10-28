@@ -11,6 +11,7 @@ import type {
   RuntimeReplaceReq,
   RuntimeResult,
   RuntimeTargetMutationReq,
+  RuntimeStopReq,
 } from '../wire/hostWire.js'
 import { SessionError } from './sessionError.js'
 import { SessionManager } from './sessionManager.js'
@@ -76,11 +77,14 @@ export class ServiceSessions {
   }
 
   private async stop(body: Record<string, unknown>): Promise<RuntimeMutationAck> {
-    const request = body as unknown as RuntimeTargetMutationReq
+    const request = body as unknown as RuntimeStopReq
     this.requireLease(request.controllerLeaseId)
+    if (body.confirmExternalStop !== undefined && typeof body.confirmExternalStop !== 'boolean')
+      throw new SessionError('invalid-request', 'confirmExternalStop must be a boolean')
     return this.sessions.stop(
       request.target,
       () => this.requireLease(request.controllerLeaseId),
+      body.confirmExternalStop === true,
     )
   }
 

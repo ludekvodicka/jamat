@@ -1,3 +1,7 @@
+import { AgentAccounts, type StoredAccount } from '../agentAccounts/agentAccounts'
+import { WorkerReady } from '../worktrees/worktreeFinish'
+import { SyncStep } from '../worktrees/worktreeFinish'
+import { FinishDriver } from '../worktrees/finish/finishDriver'
 import type { ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -23,8 +27,13 @@ import { HostDescriptorPaths } from '../hostClient/hostDescriptorPaths'
 import { CommandInvoker } from '../shared/commandInvoker'
 import { OrchestratorPaths } from '../shared/orchestratorPaths'
 import { SvnInvoker } from '../svn/svnInvoker'
+import { SvnWorktreeManager } from '../svn/svnWorktreeManager'
+import { LandedRows } from '../worktrees/worktreeLanding'
+import { WorktreeLease } from '../worktrees/worktreeLease'
+import type { WorktreeResultRecord } from '../worktrees/worktreeResults'
 import type { SessionRecord, SessionRecordsDocument } from './records/sessionRecord.types'
-import type { SessionInfo, SessionsOpResult } from './sessionManagerApi.types'
+import type { SessionInfo, SessionsOpResult, WorktreeResultsFilter } from './sessionManagerApi.types'
+import { SessionLifecycle } from './lifecycle/sessionLifecycle'
 import { SessionManager, type SessionManagerDeps } from './sessionManager'
 import { WorkFixtures } from './workState/fixtures/workFixtures'
 import { ScreenTail } from './workState/screenTail'
@@ -133,7 +142,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     }
   }
 
-  async function world(): Promise<World> {
+  async function world(managed = true): Promise<World> {
     const root = mkdtempSync(join(tmpdir(), 'jamat-v3-session-manager-'))
     roots.push(root)
     process.env.JAMAT_V3_LOCAL_STATE_DIR = join(root, 'state')
@@ -149,7 +158,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       }),
       'utf8',
     )
-    const host = await FakeHost.start({ hostInstanceId: 'fake-host-1' })
+    const host = await FakeHost.start({ hostInstanceId: 'fake-host-1', capabilities: ['events.replay.v1', 'runtime.lifecycle.v1', 'pty.release.v2', ...managed ? ['runtime.managed-descendants.v1'] : []] })
     hosts.push(host)
     const runtimes = new Map<string, RuntimeSessionInfo>()
     const screens = new Map<string, string>()
@@ -174,6 +183,12 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
           hostInstanceId: host.descriptor().hostInstanceId,
         } satisfies RuntimeResult,
       }
+    })
+    host.handle('runtime.remove', (body) => {
+      const target = body.target as RuntimeRef
+      if (runtimes.get(target.runtimeSessionId)?.alive) return { status: 409, body: { error: 'Runtime is still alive' } }
+      runtimes.delete(target.runtimeSessionId)
+      return { body: { servedByHostInstanceId: host.descriptor().hostInstanceId, target, diagnostic: 'removed' } satisfies RuntimeMutationAck }
     })
     // What the work-state monitor reads. The screen is whatever the test put there for that runtime.
     host.handle('runtime.inspect', (body) => {
@@ -211,9 +226,10 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
   function clientOf(
     context: World,
     options?: {
+      accounts?: SessionManagerDeps['accounts']
+      rates?: SessionManagerDeps['rates']
       autoStartHost?: boolean
       spawnPublishes?: boolean
-      vcsStatusView?: SessionManagerDeps['vcsStatusView']
       codexHome?: string
       exitClock?: SessionManagerDeps['exitClock']
       transcripts?: SessionManagerDeps['transcripts']
@@ -226,6 +242,8 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const errors: string[] = []
     const counters = { emits: 0, spawns: 0 }
     const manager = new SessionManager({
+      accounts: options?.accounts,
+      rates: options?.rates,
       applicationRoot: join(import.meta.dirname, '..', '..'),
       resourcesRoot: null,
       configDir: context.configDir,
@@ -242,7 +260,6 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
         if (options?.spawnPublishes) context.publishDescriptor()
         return Object.assign(new EventEmitter(), { unref: () => undefined }) as unknown as ChildProcess
       }) as unknown as SessionManagerDeps['spawnImpl'],
-      vcsStatusView: options?.vcsStatusView,
       codexHome: options?.codexHome,
       transcripts: options?.transcripts,
       versioningModeOf: options?.versioningModeOf,
@@ -261,8 +278,97 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     return result.value
   }
 
+  it('refuses account removal while the real session chain waits for Host create', async () => {
+    const context = await world()
+    const main = join(context.root, 'main-profile')
+    mkdirSync(main)
+    let stored: readonly StoredAccount[] = []
+    let client: Client
+    const accounts = new AgentAccounts({ mainHomes: { claude: main, codex: main },
+      specs: [{ agentId: 'claude', mainHome: () => main, homeVariable: 'CLAUDE_CONFIG_DIR', extraEnv: () => ({}),
+        shareTable: { directories: [], files: [], neverShared: [] }, loginCommand: 'fixture', probe: async () => ({ kind: 'logged-in', identity: { key: 'org/busy', label: 'busy' } }) }],
+      accountsRoot: join(context.root, 'accounts'), stored: () => stored, store: value => { stored = value },
+      hasRunningSession: (agentId, accountId) => client.manager.hasAccountSession(agentId, accountId), onChanged: () => {},
+    })
+    const { accountId } = await accounts.add('claude', 'Busy')
+    stored = stored.map(account => ({ ...account, identity: { key: 'org/busy', label: 'busy' } }))
+    const home = accounts.homeOf('claude', accountId)
+    const marker = join(home, 'private-fixture')
+    writeFileSync(marker, 'unchanged')
+    client = clientOf(context, { accounts })
+    context.publishDescriptor()
+    await client.manager.start()
+    await writable(client)
+    await reconciled(client)
+    const cached = client.manager.snapshot()
+    const hold = context.host.hold('runtime.create')
+    const pending = client.manager.createSession({ kind: 'agent', directory: { mode: 'adHoc', path: main },
+      agent: { agentId: 'claude', mode: 'new', accountId } })
+    try {
+      await vi.waitFor(() => expect(context.host.calls.some(call => call.name === 'runtime.create')).toBe(true))
+      expect(cached.sessions).toHaveLength(0)
+      expect(client.manager.hasAccountSession('claude', accountId)).toBe(true)
+      await expect(accounts.remove(accountId)).rejects.toThrow('a session runs on Busy')
+      expect(readFileSync(marker, 'utf8')).toBe('unchanged')
+    } finally { hold.release() }
+    const created = valueOf(await pending)
+    expect(client.manager.hasAccountSession('claude', accountId)).toBe(true)
+    await expect(accounts.remove(accountId)).rejects.toThrow('a session runs on Busy')
+    expect(created.sessionId).toBeTruthy()
+  })
+
+  it.each([
+    { exitCode: 0, exitReason: 'process-exit' as const, result: 0 },
+    { exitCode: 1, exitReason: 'process-exit' as const, result: 1 },
+    { exitCode: 0, exitReason: 'stopped' as const, result: null },
+    { exitCode: 0, exitReason: undefined, result: null },
+  ])('reports the authoritative login terminal exit $exitCode with reason $exitReason', async ({ exitCode, exitReason, result }) => {
+    const context = await world()
+    const client = clientOf(context)
+    context.publishDescriptor()
+    await client.manager.start()
+    await writable(client)
+    await reconciled(client)
+    const created = valueOf(await client.manager.createCommandSession({
+      directory: { mode: 'adHoc', path: context.categoryRoot },
+      account: { agentId: 'claude', accountId: 'main' }, title: 'Login',
+    }, 'fixture-login'))
+    expect(client.manager.terminalResult(created.sessionId)).toEqual({ ended: false })
+    expect(client.manager.hasAccountSession('claude', 'main')).toBe(true)
+    const running = context.runtimes.get(created.sessionId)!
+    context.runtimes.set(created.sessionId, { ...running, alive: false, exitCode, exitReason, exitedAt: Date.now() })
+    await client.manager.removeSession('never-existed')
+    expect(client.manager.terminalResult(created.sessionId)).toEqual({ ended: true, exitCode: result })
+    expect(client.manager.hasAccountSession('claude', 'main')).toBe(false)
+    expect(client.errors).toEqual([])
+  })
+
+  it('composes current account labels for added sessions and leaves main labels absent', async () => {
+    const context = await world()
+    seedRecords(context, [recordOf(context, 'added', { kind: 'agent', agent: { agentId: 'claude', launchMode: 'new', accountId: 'work' } }),
+      recordOf(context, 'main', { kind: 'agent', agent: { agentId: 'claude', launchMode: 'new' } })])
+    const client = clientOf(context, { accounts: { exists: () => true, launchEnv: async () => ({}),
+      defaultAccount: () => ({ accountId: 'main', noFreeAccount: false }), labelOf: () => 'Work subscription' } })
+    await client.manager.start()
+    expect(client.manager.snapshot().sessions.find(session => session.sessionId === 'added')?.agent)
+      .toMatchObject({ accountId: 'work', accountLabel: 'Work subscription' })
+    expect(client.manager.snapshot().sessions.find(session => session.sessionId === 'main')?.agent).not.toHaveProperty('accountLabel')
+  })
+
+  it('R4: an old Host refuses worktree setup before any session or runtime is created', async () => {
+    const context = await world(false)
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.manager.start()
+    await writable(client)
+    const result = await client.manager.createSession({ kind: 'shell', directory: { mode: 'adHoc', path: context.categoryRoot }, worktree: { slug: 'old-host' } })
+    expect(result).toMatchObject({ ok: false, detail: expect.stringContaining('Restart the Host') })
+    expect(client.manager.snapshot().sessions).toEqual([])
+    expect(context.host.calls.some((call) => call.name === 'runtime.create')).toBe(false)
+  })
+
   async function replacementHost(context: World): Promise<FakeHost> {
-    const replacement = await FakeHost.start({ hostInstanceId: 'replacement-host' })
+    const replacement = await FakeHost.start({ hostInstanceId: 'replacement-host', capabilities: ['events.replay.v1', 'runtime.lifecycle.v1', 'pty.release.v2', 'runtime.managed-descendants.v1'] })
     hosts.push(replacement)
     const runtimes = new Map<string, RuntimeSessionInfo>()
     replacement.handle('runtime.list', () => ({ body: {
@@ -299,7 +405,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     })
     expect(await client.manager.stopHost('other-host')).toMatchObject({ ok: false, code: 'host-unreachable' })
     expect(context.host.calls.some((call) => call.name === 'host.stop')).toBe(false)
-    expect(await client.manager.stopHost('fake-host-1')).toEqual({ ok: true, value: undefined })
+    expect(await client.manager.stopHost('fake-host-1')).toEqual({ ok: true, value: { warnings: [] } })
     expect(context.host.calls.filter((call) => call.name === 'host.stop')).toHaveLength(1)
     await vi.waitFor(() => expect(client.manager.snapshot().host.presence).toBe('unreachable'))
     expect(client.spawns()).toBe(0)
@@ -329,7 +435,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     } finally {
       held.release()
     }
-    expect(await restarting).toEqual({ ok: true, value: undefined })
+    expect(await restarting).toEqual({ ok: true, value: { warnings: [] } })
     const launches = replacement.calls.filter((call) => call.name === 'runtime.create')
     expect(launches.map((call) => call.body.runtimeSessionId)).toEqual(['claude', 'codex', 'shell'])
     expect(JSON.stringify(launches[0]?.body.launch)).toContain('claude-conversation')
@@ -367,6 +473,76 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(sessionOf(client, 'bad')?.life).toBe('lost')
   }, 20_000)
 
+  // The worker lived until the restart, so the restore continues its lifetime (UA1-J13-3).
+  it('keeps the history and script runs of a restored worktree session in any phase, kept included', async () => {
+    const context = await world()
+    const worktreePath = join(context.root, '.worktrees', 'kept')
+    mkdirSync(worktreePath, { recursive: true })
+    const entry = (runId: string) => ({ runId, phase: 'after' as const, scriptId: 'checks' as const, name: 'tests', title: `tests ${runId}`,
+      commands: ['node check.js'], startedAt: 1_000, endedAt: 2_000, exitCode: 1, outcome: 'failed' as const,
+      log: { state: 'saved' as const, bytes: 4, truncated: false } })
+    // The current Keep section and its buttons are drawn from this outcome (UA1-J14-6).
+    const kept = { result: 'not-committed' as const, revisions: [], main: 'none' as const, worktree: 'kept' as const,
+      lines: ['Worktree kept. Nothing published'], at: 3_000 }
+    seedRecords(context, [
+      recordOf(context, 'kept', { kind: 'agent', life: 'live', agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'kept-conversation' },
+        worktree: { kind: 'svn', repositoryRoot: context.root, worktreePath, branch: 'url', baseCommit: 'r1' },
+        worktreeLifecycle: { version: 3, actionId: 'kept-action', phase: 'kept', outOfDate: 0, journal: [], facts: { worker: { liveness: 'alive', resumeFailures: 0 } } },
+        worktreeOutcome: kept, scriptRuns: [entry('kept-run')] }),
+    ])
+    context.runtimes.set('kept', runtime('kept'))
+    context.publishDescriptor()
+    const client = clientOf(context, { spawnPublishes: true })
+    await client.manager.start()
+    await writable(client)
+    await replacementHost(context)
+    expect(await client.manager.restartHost('fake-host-1')).toEqual({ ok: true, value: { warnings: [] } })
+    expect(sessionOf(client, 'kept')?.life).toBe('live')
+    expect(storedRecord(context, 'kept')?.scriptRuns?.map((run) => run.runId)).toEqual(['kept-run'])
+    expect(storedRecord(context, 'kept')?.pendingKeepsHistory).toBeUndefined()
+    expect(storedRecord(context, 'kept')?.worktreeOutcome).toEqual(kept)
+  }, 20_000)
+
+  /*
+   * A worktree worker comes back through its liveness inside the restart's own reconcile. The restore
+   * after it read that session again, was refused by the running Finish and called the restart failed
+   * although the worker was live (UA1-J10-6). What the old Host could not stop is in the answer.
+   */
+  it('reads a worker its liveness already resumed as restored and carries what the old Host could not stop', async () => {
+    const context = await world()
+    const worktreePath = join(context.root, '.worktrees', 'w1')
+    mkdirSync(worktreePath, { recursive: true })
+    seedRecords(context, [recordOf(context, 'w1', {
+      kind: 'agent', life: 'live', agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'w1-conversation' },
+      worktree: { kind: 'svn', repositoryRoot: context.root, worktreePath, branch: 'url', baseCommit: 'r1' },
+      worktreeLifecycle: { version: 0, actionId: null, phase: 'active', outOfDate: 0, journal: [], facts: {
+        worker: { liveness: 'alive', resumeFailures: 0 },
+      } },
+    })])
+    context.runtimes.set('w1', runtime('w1'))
+    context.publishDescriptor()
+    const client = clientOf(context, { spawnPublishes: true })
+    await client.manager.start()
+    await writable(client)
+    await replacementHost(context)
+    const file = HostDescriptorPaths.descriptorFile(context.configIdentity, 'development')
+    context.host.handle('host.stop', () => {
+      context.host.publish({ kind: 'host-stopping' })
+      rmSync(file)
+      return { body: { stopping: true, live: 1, warnings: ['run-1: descendant 88824 survived'] } }
+    })
+    // The Finish holds the worktree, which refuses a plain reopen and lets the worker's own resume through.
+    const finishing = vi.spyOn(SessionLifecycle.prototype as unknown as { finishingRefusal(record: SessionRecord): unknown },
+      'finishingRefusal').mockImplementation((record) => record.sessionId === 'w1'
+      ? { ok: false, code: 'merge-pending', detail: 'Session w1: the finish of its worktree is checks; wait for it to end' }
+      : null)
+    try {
+      expect(await client.manager.restartHost('fake-host-1'))
+        .toEqual({ ok: true, value: { warnings: ['run-1: descendant 88824 survived'] } })
+    } finally { finishing.mockRestore() }
+    expect(sessionOf(client, 'w1')?.life).toBe('live')
+  }, 20_000)
+
   it.each([
     { kind: 'agent' as const, agent: { agentId: 'codex' as const, launchMode: 'new' as const } },
     {
@@ -381,7 +557,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const client = clientOf(context, { codexHome: join(context.root, 'empty-codex') })
     await client.manager.start()
     await writable(client)
-    expect(await client.manager.restartHost('fake-host-1')).toMatchObject({ ok: false, code: 'invalid-spec' })
+    expect(await client.manager.restartHost('fake-host-1')).toMatchObject({ ok: false, code: 'live-refused' })
     expect(context.host.calls.some((call) => call.name === 'host.stop')).toBe(false)
     expect(sessionOf(client, 's1')?.life).toBe('live')
     expect(client.spawns()).toBe(0)
@@ -404,7 +580,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     await client.manager.start()
     await writable(client)
     const result = await client.manager.restartHost('fake-host-1')
-    expect(result).toMatchObject({ ok: false, code: 'invalid-spec' })
+    expect(result).toMatchObject({ ok: false, code: 'live-refused' })
     if (result.ok) throw new Error('Restart should have been refused')
     expect(result.detail).toContain('Legacy Codex (legacy)')
     expect(result.detail).toContain('old inferred Codex identity is unverified')
@@ -422,7 +598,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       commands: ['pnpm install'], startedAt: 1_000, endedAt: 2_000, exitCode: 0, outcome: 'succeeded' as const,
       log: { state: 'saved' as const, bytes: 4, truncated: false },
     }
-    seedRecords(context, [recordOf(context, 'p', { scriptRuns: [entry] })])
+    seedRecords(context, [recordOf(context, 'p', { life: 'live', scriptRuns: [entry] })])
     const folder = join(OrchestratorPaths.scriptLogsDirectory(context.configIdentity, 'development'), 'p')
     mkdirSync(folder, { recursive: true })
     writeFileSync(join(folder, 'r-saved.log'), 'done', 'utf8')
@@ -454,6 +630,79 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(await client.manager.acknowledgeWorktreeResult('fresh')).toEqual({ ok: true, value: { actionId: 'fresh' } })
     expect(valueOf(await client.manager.worktreeResults({ unacknowledged: true })).results).toEqual([])
     expect(client.manager.worktreeResultsStore().list({}).map((result) => result.actionId)).toEqual(['fresh'])
+  })
+
+  it('shares proofs within one response, keeps a proven landing on the result and proves a changed one again', async () => {
+    const context = await world()
+    const client = clientOf(context)
+    const result: WorktreeResultRecord = {
+      actionId: 'landed', action: 'finish', result: 'committed', sessionId: 'gone', title: 'gone', tag: 'first',
+      worktreePath: join(context.root, '.worktrees', 'gone'), mainCopy: context.root, directoryId: null, removal: 'removed',
+      revisions: [{ repository: 'https://svn.test/app', revision: 50, label: 'receipt', paths: ['/a'] }],
+      lines: [], logs: [], notify: null, at: Date.now(), acknowledgedAt: null,
+    }
+    const proof = vi.spyOn(SvnWorktreeManager.prototype, 'landingProof').mockResolvedValue({ ok: true, value: { holds: false, reason: 'a still at r40 (normal)' } })
+    const holds = async (filter: WorktreeResultsFilter = {}) => valueOf(await client.manager.worktreeResults(filter)).results.map((row) => row.holdsLanded)
+    try {
+      await client.manager.worktreeResultsStore().put(result)
+      await client.manager.worktreeResultsStore().put({ ...result, actionId: 'duplicate', tag: 'second' })
+      expect(await holds({ includeLandingProof: false })).toEqual([null, null])
+      expect(proof).not.toHaveBeenCalled()
+      expect(await holds()).toEqual([false, false])
+      expect(proof).toHaveBeenCalledTimes(1)
+      proof.mockResolvedValue({ ok: true, value: { holds: true } })
+      expect(await holds()).toEqual([true, true])
+      expect(proof).toHaveBeenCalledTimes(2)
+      expect(client.manager.worktreeResultsStore().list({}).map((row) => row.landedAt)).toEqual([expect.any(Number), expect.any(Number)])
+
+      proof.mockResolvedValue({ ok: true, value: { holds: false, reason: 'a still at r40 (normal)' } })
+      expect(await holds()).toEqual([true, true])
+      expect(valueOf(await clientOf(context).manager.worktreeResults({ tag: 'second' })).results[0].holdsLanded).toBe(true)
+      await client.manager.worktreeResultsStore().put({ ...result, actionId: 'duplicate', tag: 'second', lines: ['removed'] })
+      expect(await holds({ tag: 'second' })).toEqual([true])
+      expect(proof).toHaveBeenCalledTimes(2)
+
+      const poll = new LandedRows({ svn: new SvnWorktreeManager(new SvnInvoker()), now: () => 1_000 })
+      expect(poll.claimHolds(result.mainCopy)).toBe(true)
+      expect(await poll.holds(result.mainCopy, result.revisions)).toBe(false)
+      expect(poll.infoOf(result.mainCopy, result.revisions).reason).toBe('a still at r40 (normal)')
+      expect(poll.claimHolds(result.mainCopy)).toBe(false)
+
+      for (const changed of [
+        { mainCopy: join(context.root, 'another') },
+        { revisions: [{ ...result.revisions[0], revision: 51 }] },
+        { revisions: [{ ...result.revisions[0], paths: ['/b'] }] },
+        { revisions: [{ ...result.revisions[0], repository: 'https://svn.test/other' }] },
+        { revisions: [{ ...result.revisions[0], paths: undefined }] },
+      ]) {
+        await client.manager.worktreeResultsStore().put({ ...result, ...changed })
+        expect(await holds({ tag: 'first' })).toEqual([false])
+      }
+      expect(proof).toHaveBeenCalledTimes(8)
+    } finally { proof.mockRestore() }
+  })
+
+  it.each([false, null])('retries a result proof of %s on the next read until it holds, then keeps it', async (holds) => {
+    const context = await world()
+    const client = clientOf(context)
+    const proof = vi.spyOn(SvnWorktreeManager.prototype, 'landingProof').mockResolvedValue(holds === null
+      ? { ok: false, code: 'svn-failed', detail: 'offline' }
+      : { ok: true, value: { holds, reason: 'not updated' } })
+    try {
+      await client.manager.worktreeResultsStore().put({
+        actionId: 'pending', action: 'finish', result: 'committed', sessionId: 'gone', title: 'gone', tag: null,
+        worktreePath: join(context.root, '.worktrees', 'gone'), mainCopy: context.root, directoryId: null, removal: 'removed',
+        revisions: [{ repository: 'https://svn.test/app', revision: 50, label: 'receipt' }],
+        lines: [], logs: [], notify: null, at: Date.now(), acknowledgedAt: null,
+      })
+      for (let read = 0; read < 2; read++)
+        expect(valueOf(await client.manager.worktreeResults({})).results[0].holdsLanded).toBe(holds)
+      expect(proof).toHaveBeenCalledTimes(2)
+      proof.mockResolvedValue({ ok: true, value: { holds: true } })
+      for (let read = 0; read < 2; read++)
+        expect(valueOf(await client.manager.worktreeResults({})).results[0].holdsLanded).toBe(true)
+      expect(proof).toHaveBeenCalledTimes(3)
+    } finally { proof.mockRestore() }
   })
 
   it('starts a requested run under a live session on the operation queue, and draws it as its child', async () => {
@@ -924,6 +1173,32 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(await client.manager.terminalComposerContent('content-plain')).toEqual({ ok: false, code: 'no-viewport' })
   })
 
+  it('classifies setup origins by current content and property hashes', async () => {
+    const context = await world()
+    const worktreePath = join(context.root, '.worktrees', 'setup')
+    mkdirSync(worktreePath, { recursive: true })
+    const file = join(worktreePath, 'lock')
+    writeFileSync(file, 'setup')
+    let properties = 'setup'
+    const svn = vi.spyOn(SvnInvoker.prototype, 'run').mockImplementation(async (_cwd, args) => ({ code: 0, failure: null, stderr: '',
+      stdout: args[0] === 'proplist' ? `<properties><target path="lock"><property name="fixture">${properties}</property></target></properties>` : '<status><target path="." /></status>' }))
+    const baseline = await new SvnWorktreeManager(new SvnInvoker()).commitHashes(worktreePath, ['lock'])
+    if (!baseline.ok) throw new Error(baseline.detail)
+    seedRecords(context, [recordOf(context, 'setup', { worktree: { kind: 'svn', worktreePath, repositoryRoot: context.root,
+      branch: 'https://svn.test/app', baseCommit: 'r1', setupBaseline: { at: 1, hashes: baseline.value } } })])
+    const client = clientOf(context)
+    try {
+      await client.manager.start()
+      expect(await client.manager.setupPaths('setup', [file, join(context.root, 'outside')])).toEqual({ ok: true, value: [file] })
+      properties = 'worker'
+      expect(await client.manager.setupPaths('setup', [file])).toEqual({ ok: true, value: [] })
+      properties = 'setup'
+      writeFileSync(file, 'worker')
+      expect(await client.manager.setupPaths('setup', [file])).toEqual({ ok: true, value: [] })
+    }
+    finally { svn.mockRestore() }
+  })
+
   it('names the Host, the catalog and where every session belongs', async () => {
     const context = await world()
     context.publishDescriptor()
@@ -1137,6 +1412,58 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(client.errors).toEqual([])
   }, 20_000)
 
+  it.each(['Alpha', 'ProductivityTools/Jamat'])('numbers a directory create at catalog root %s and recovers its counter', async (projectName) => {
+    const context = await world()
+    writeFileSync(join(context.configDir, 'config.json'), JSON.stringify({
+      schemaVersion: 1,
+      categories: [{ id: 'code', label: 'Code', path: context.categoryRoot, flattenFolders: ['ProductivityTools'] }],
+    }))
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.manager.start()
+    await writable(client)
+    const projectPath = join(context.categoryRoot, projectName)
+    const directory = { mode: 'adHoc', path: `${projectPath.replaceAll('\\', '/')}/` } as const
+    const created = valueOf(await client.manager.createSession({
+      kind: 'agent', directory, agent: { agentId: 'codex', mode: 'new' }, title: 'Fix the parser',
+    }))
+
+    expect(created).toMatchObject({ sessionId: expect.any(String), number: '001', tabTitle: `${projectName} - 001 - Fix the parser` })
+    expect(storedRecord(context, created.sessionId)?.directory)
+      .toEqual({ mode: 'project', categoryId: 'code', projectPath })
+    expect(sessionOf(client, created.sessionId)?.titleParts).toEqual({ number: '001', name: 'Fix the parser' })
+    expect(await client.manager.workingContext(created.sessionId)).toMatchObject({ ok: true, value: { cwd: projectPath } })
+    expect(directory.mode).toBe('adHoc')
+
+    const refused = await client.manager.createSession({ kind: 'shell', directory, title: '2026 plan' })
+    expect(refused).toMatchObject({ ok: false, code: 'invalid-spec' })
+    const custom = valueOf(await client.manager.createSession({ kind: 'shell', directory, number: 'i76', title: 'Ticket' }))
+    expect(custom.number).toBe('i76')
+
+    await client.manager.stop()
+    rmSync(OrchestratorPaths.sessionNumbersFile(context.configIdentity, 'development'))
+    const restarted = clientOf(context)
+    await restarted.manager.start()
+    await writable(restarted)
+    const next = valueOf(await restarted.manager.createSession({ kind: 'shell', directory, title: 'Next task' }))
+    expect(next.number).toBe('002')
+  }, 20_000)
+
+  it('keeps directory creates below a project or outside the catalog in their requested directory', async () => {
+    const context = await world()
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.manager.start()
+    await writable(client)
+    for (const path of [join(context.categoryRoot, 'Alpha', 'src'), context.categoryRoot, join(context.root, 'elsewhere')]) {
+      const directory = { mode: 'adHoc', path } as const
+      const created = valueOf(await client.manager.createSession({ kind: 'shell', directory, title: 'Inspect' }))
+      expect(created.number).toBeUndefined()
+      expect(storedRecord(context, created.sessionId)?.directory).toEqual(directory)
+      expect(await client.manager.workingContext(created.sessionId)).toMatchObject({ ok: true, value: { cwd: path } })
+    }
+  }, 20_000)
+
   it('opens a provider history conversation through the derived operation and names its tab',
     async () => {
       const context = await world()
@@ -1160,8 +1487,10 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       expect(opened.tabTitle).toBe('Alpha - 001 - Provider task')
       expect(storedRecord(context, opened.sessionId)?.agent).toEqual({
         agentId: 'claude',
+        accountId: 'main',
         launchMode: 'resume',
         nativeSessionId: 'native-1',
+        identityLaunchId: expect.any(String),
       })
       expect(valueOf(await client.manager.historyReferences({
         mode: 'project',
@@ -1517,6 +1846,33 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(client.errors).toEqual([])
   }, 20_000)
 
+  // The record is `ended` with no runtime, yet nothing ran: the surfaces say it waits rather than failed.
+  it('composes a setup waiting for command approval as a wait without a verdict', async () => {
+    const context = await world()
+    seedRecords(context, [recordOf(context, 'approval', {
+      kind: 'agent',
+      agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'native-approval' },
+      life: 'ended',
+      endedReason: 'Setup waits for command approval',
+      pendingSetup: { setupSessionId: 'setup-approval', agreement: { hash: 'hash-1', commands: ['pnpm install'] } },
+      worktree: {
+        worktreePath: join(context.root, 'repo', '.worktrees', 'approval'),
+        branch: 'jamat/approval',
+        baseCommit: 'abc1234',
+        repositoryRoot: join(context.root, 'repo'),
+      },
+    })])
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.manager.start()
+    await writable(client)
+
+    const info = sessionOf(client, 'approval')
+    expect(info?.awaitsSetupApproval).toBe(true)
+    expect(info?.outcome).toBeUndefined()
+    expect(client.errors).toEqual([])
+  }, 20_000)
+
   /*
    * The one row action that needs a SECOND record, and the defect that sent the other four here:
    * `WorktreeMergeFlow.refuse` also refuses a discard while the RESOLVER is live - an agent standing
@@ -1683,7 +2039,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
    * UPDATE that starts waits for the person. Which live sessions an UPDATE would change files under
    * is the part this test is about.
    */
-  it('keeps a landed row with UPDATE and Remove, and starts an UPDATE only once the live sessions in its main copy are confirmed', async () => {
+  it('keeps a landed row with UPDATE and Remove, names the live sessions of its main copy and starts an UPDATE without confirming them (Finish 072)', async () => {
     const context = await world()
     const owner = join(context.root, 'owner')
     mkdirSync(join(owner, 'src'), { recursive: true })
@@ -1704,6 +2060,19 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     await writable(client)
 
     const row = sessionOf(client, 'landed')
+    let releaseWrite: () => void = () => {}
+    const heldWrite = new Promise<void>((done) => { releaseWrite = done })
+    let ownerHeld = false
+    const mainLease = client.manager.svnCommands.lease.within(owner, 'update', async () => { ownerHeld = true; await heldWrite })
+    await vi.waitFor(() => expect(ownerHeld).toBe(true), { timeout: 8000 })
+    const externalWrite = vi.fn(async () => {})
+    const pendingWrite = client.manager.withinSvnWrite(join(owner, 'src'), [], externalWrite)
+    await Promise.resolve()
+    expect(externalWrite).not.toHaveBeenCalled()
+    releaseWrite()
+    await mainLease
+    await pendingWrite
+    expect(externalWrite).toHaveBeenCalledTimes(1)
     expect(row?.retiredWorktree?.landing).toEqual({ mainCopy: owner, behind: null, newest: ['https://svn.example.test/repos/app:r52'] })
     expect(row?.completed).toBeUndefined()
     expect(row?.admits).toEqual(expect.arrayContaining(['updateMain', 'remove']))
@@ -1716,27 +2085,113 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       { sessionId: first.sessionId, title: 'one', number: null },
       { sessionId: second.sessionId, title: 'two', number: null },
     ]
-    expect(await client.manager.updateMain('landed', undefined, 'cli')).toMatchObject({ ok: false, code: 'live-sessions', liveSessions: live })
-    expect(await client.manager.updateMain('landed', [first.sessionId], 'cli')).toMatchObject({ ok: false, code: 'live-sessions' })
-    // A third session started meanwhile is not in the confirmation, so it refuses again.
+    const wait = valueOf(await client.manager.updateMain('landed', undefined, 'window'))
+    expect(storedRecord(context, 'landed')?.svnAction).toMatchObject({ actionId: wait.actionId, stage: 'main-update' })
+    const waitingStep = sessionOf(client, 'landed')?.actions?.sections.at(-1)?.rounds.at(-1)?.steps.at(-1)
+    expect(waitingStep).toMatchObject({ title: 'Update main copy', state: 'waits', body: { kind: 'sessions', sessions: live } })
     const third = valueOf(await client.manager.createSession({ kind: 'shell', directory: { mode: 'adHoc', path: owner }, title: 'three' }))
-    const twoConfirmed = await client.manager.updateMain('landed', [second.sessionId, first.sessionId], 'cli')
-    expect(twoConfirmed).toMatchObject({ ok: false, code: 'live-sessions' })
-    expect(twoConfirmed.ok ? [] : twoConfirmed.liveSessions?.map((brief) => brief.sessionId)).toEqual([first.sessionId, second.sessionId, third.sessionId])
+    expect(sessionOf(client, 'landed')?.actions?.sections.at(-1)?.actions[0].confirmLive).toEqual([first.sessionId, second.sessionId, third.sessionId])
+    expect(storedRecord(context, 'landed')?.svnAction?.stage).toBe('main-update')
 
-    // Confirmed: the UPDATE is an action of the landed row; svn cannot read this main copy, so it waits for the person.
-    expect(await client.manager.updateMain('landed', [first.sessionId, second.sessionId, third.sessionId], 'cli'))
+    // A press starts it with three sessions live; an older caller's list that names only one is not compared.
+    // svn cannot read this main copy, so it waits for the person.
+    expect(await client.manager.updateMain('landed', [first.sessionId], 'cli'))
       .toMatchObject({ ok: true, value: { sessionId: 'landed' } })
-    expect(storedRecord(context, 'landed')?.svnAction).toMatchObject({ kind: 'update-main', root: owner, needs: { kind: 'svn-failed' } })
+    await vi.waitFor(() => expect(storedRecord(context, 'landed')?.svnAction).toMatchObject({ actionId: wait.actionId, kind: 'update-main', root: owner, needs: { kind: 'svn-failed' } }), { timeout: 10_000 })
     expect(sessionOf(client, 'landed')?.svnAction).toMatchObject({ kind: 'update-main', needsKind: 'svn-failed' })
 
     // A live session in the main copy has no landed row; svn decides whether its directory is a main copy.
     expect(await client.manager.updateMain(first.sessionId, [], 'cli')).toMatchObject({ ok: false, code: 'invalid-spec' })
 
+    for (const id of [first.sessionId, second.sessionId, third.sessionId]) context.runtimes.delete(id)
+    await client.manager.stopSession(first.sessionId)
+    expect(sessionOf(client, 'landed')?.actions?.sections.at(-1)?.actions[0].confirmLive).toEqual([])
+    expect(await client.manager.updateMain('landed', [first.sessionId, second.sessionId, third.sessionId], 'window'))
+      .toMatchObject({ ok: true, value: { sessionId: 'landed' } })
+    await vi.waitFor(() => expect(storedRecord(context, 'landed')?.svnAction?.needs?.kind).toBe('svn-failed'), { timeout: 10_000 })
+
     // Remove takes the landed row away at once.
     expect(await client.manager.removeSession('landed')).toEqual({ ok: true, value: undefined })
     expect(sessionOf(client, 'landed')).toBeUndefined()
   }, 20_000)
+
+  it('names no session live in the main copy of an UPDATE while the Host is stopped, and says that is unknown (UA1-J08-6)', async () => {
+    const context = await world()
+    const owner = join(context.root, 'owner')
+    mkdirSync(owner, { recursive: true })
+    seedRecords(context, [recordOf(context, 'landed', {
+      kind: 'agent',
+      agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'native-1' },
+      directory: { mode: 'adHoc', path: owner },
+      retiredWorktree: {
+        worktreePath: join(owner, '.worktrees', '014-fix'), kind: 'svn', revisions: ['https://svn.example.test/repos/app:r52'],
+        removedAt: 2_000, ownerDir: owner, landed: [{ repository: 'https://svn.example.test/repos/app', revision: 52, label: 'receipt' }],
+      },
+    })])
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.manager.start()
+    await writable(client)
+    const shell = valueOf(await client.manager.createSession({ kind: 'shell', directory: { mode: 'adHoc', path: owner }, title: 'shell' }))
+    valueOf(await client.manager.updateMain('landed', undefined, 'window'))
+    const update = () => sessionOf(client, 'landed')?.actions?.sections.at(-1)
+    expect(update()?.rounds.at(-1)?.steps.at(-1)?.body).toEqual({ kind: 'sessions', sessions: [{ sessionId: shell.sessionId, title: 'shell', number: null }] })
+
+    const file = HostDescriptorPaths.descriptorFile(context.configIdentity, 'development')
+    context.host.handle('host.stop', () => {
+      context.host.publish({ kind: 'host-stopping' })
+      rmSync(file)
+      return { body: { stopping: true, live: context.runtimes.size } }
+    })
+    expect(await client.manager.stopHost('fake-host-1')).toEqual({ ok: true, value: { warnings: [] } })
+    await vi.waitFor(() => expect(client.manager.snapshot().host.presence).toBe('unreachable'))
+    expect(storedRecord(context, shell.sessionId)?.life).toBe('live')
+    expect(update()?.rounds.at(-1)?.steps.at(-1)?.body).toEqual({ kind: 'sessions', sessions: [], liveUnknown: true })
+    expect(update()?.actions[0]).toMatchObject({ id: 'update-main', confirmLive: [] })
+    expect(await client.manager.updateMain('landed', [shell.sessionId], 'cli')).toMatchObject({ ok: true, value: { sessionId: 'landed' } })
+  }, 20_000)
+
+  /*
+   * A reviewed commit from a working-copy root that holds several projects is one coordinated commit:
+   * it waits for and holds the lease of each project its paths lie in, and the root's own lease for a
+   * file that lies in none. Without paths such a root still owns nothing. Real svn; skipped where
+   * svnadmin is missing.
+   */
+  it('leases every project of a coordinated commit from a working-copy root that holds them', { timeout: 30_000 }, async (runner) => {
+    const context = await world()
+    const repository = join(context.root, 'repository')
+    const created = await new CommandInvoker().run({ command: 'svnadmin', args: ['create', repository], cwd: context.root, env: process.env })
+    if (created.failure !== null || created.code !== 0) return runner.skip()
+    const checkout = await new SvnInvoker().run(context.root, ['checkout', '--non-interactive', pathToFileURL(repository).href, context.categoryRoot])
+    expect(checkout.code, checkout.stderr).toBe(0)
+    const zone = context.categoryRoot
+    const product = join(zone, 'Portfolio')
+    const member = join(zone, 'Tools', 'Member')
+    mkdirSync(product, { recursive: true })
+    mkdirSync(member, { recursive: true })
+    writeFileSync(join(product, '.appgroup'), '{"kind":"product"}')
+    writeFileSync(join(zone, 'Tools', '.appgroup'), '{"kind":"collection"}')
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.manager.start()
+    await writable(client)
+
+    await expect(client.manager.withinSvnWrite(zone, [], async () => {})).rejects.toThrow(/holds other projects/)
+    let releaseUpdate: () => void = () => {}
+    const heldUpdate = new Promise<void>((done) => { releaseUpdate = done })
+    let productHeld = false
+    const update = client.manager.svnCommands.lease.within(product, 'update', async () => { productHeld = true; await heldUpdate })
+    await vi.waitFor(() => expect(productHeld).toBe(true), { timeout: 8000 })
+    const leases: boolean[] = []
+    const commit = client.manager.withinSvnWrite(zone, [join(product, 'Web', 'app.ts'), join(member, 'src', 'a.ts'), join(zone, 'CLAUDE.md')],
+      async () => { for (const root of [product, member, zone]) leases.push(existsSync(WorktreeLease.fileOf(root))) })
+    await Promise.resolve()
+    expect(leases).toEqual([])
+    releaseUpdate()
+    await update
+    await commit
+    expect(leases).toEqual([true, true, true])
+  })
 
   /*
    * The person updates the main copy with another client. The poll reads "behind" from the server
@@ -1763,13 +2218,20 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     await run(other, ['add', '--', 'a.txt'])
     await run(other, ['commit', '--username', 'fixture', '-m', 'landed', '--', '.'])
     const root = (await run(owner, ['info', '--show-item', 'repos-root-url', '--', '.'])).trim()
-    seedRecords(context, [recordOf(context, 'landed', {
+    const landedRecord = recordOf(context, 'landed', {
       directory: { mode: 'adHoc', path: owner },
       retiredWorktree: {
         worktreePath: join(owner, '.worktrees', '014-fix'), kind: 'svn', revisions: [`${root}:r1`], removedAt: 2_000,
         ownerDir: owner, landed: [{ repository: root, revision: 1, label: 'receipt' }],
       },
-    })])
+    })
+    const waiting = (sessionId: string, evidence: typeof landedRecord.retiredWorktree): SessionRecord => ({ ...landedRecord, sessionId,
+      retiredWorktree: evidence,
+      svnAction: { kind: 'finish', flowVersion: 1, actionId: sessionId, stage: 'main-update', root: join(owner, '.worktrees', sessionId),
+        checks: [], checkCursor: 0, rootCursor: 0, rounds: { incoming: 0, outOfDate: 0, lock: 0 }, evidence: [], requestedBy: 'window', startedAt: 1 },
+    })
+    seedRecords(context, [landedRecord, waiting('waiting-landed', landedRecord.retiredWorktree),
+      waiting('waiting-clean', { ...landedRecord.retiredWorktree!, landed: [] })])
     context.publishDescriptor()
     const removedItself: string[] = []
     const client = clientOf(context, { onRemovedItself: (sessionId) => removedItself.push(sessionId) })
@@ -1782,6 +2244,12 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     await vi.waitFor(() => expect(sessionOf(client, 'landed')).toBeUndefined(), { timeout: 30_000, interval: 250 })
     expect(removedItself).toEqual(['landed'])
     expect(storedRecord(context, 'landed')).toBeUndefined()
+    for (const sessionId of ['waiting-landed', 'waiting-clean']) {
+      expect(storedRecord(context, sessionId)?.svnAction?.stage).toBe('main-update')
+      expect(sessionOf(client, sessionId)?.actions?.sections.at(-1)?.actions[0]).toMatchObject({ id: 'update-main', confirmLive: [] })
+    }
+    expect(await client.manager.removeSession('waiting-clean')).toMatchObject({ ok: true })
+    expect(sessionOf(client, 'waiting-clean')).toBeUndefined()
   })
 
   /*
@@ -1844,11 +2312,46 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
   })
 
   /*
-   * Any directory of a product group: the worktree is the whole group, its checkout is a child run of
+   * A stopped session's cleanup is due at once, so the reconcile pass after the Remove's own request
+   * starts it before the Remove applies it. The Remove waits for that cleanup instead of answering
+   * that a finish is starting (UA1-J11-8). Real svn on a disposable repository.
+   */
+  it('removes a stopped session with its clean SVN worktree through the cleanup its own request started', { timeout: 60_000 }, async (runner) => {
+    const context = await world()
+    const repository = join(context.root, 'repository')
+    const created = await new CommandInvoker().run({ command: 'svnadmin', args: ['create', repository], cwd: context.root, env: process.env })
+    if (created.failure !== null || created.code !== 0) return runner.skip()
+    const svn = new SvnInvoker()
+    const run = async (cwd: string, args: string[]): Promise<string> => {
+      const outcome = await svn.run(cwd, [args[0], '--non-interactive', ...args.slice(1)])
+      expect(outcome.code, outcome.stderr).toBe(0)
+      return outcome.stdout
+    }
+    const owner = join(context.root, 'owner')
+    const url = pathToFileURL(repository).href
+    await run(context.root, ['checkout', url, owner])
+    await run(owner, ['propset', 'svn:global-ignores', '.worktrees', '--', '.'])
+    const clean = join(owner, '.worktrees', '014-clean')
+    await run(context.root, ['checkout', url, clean])
+    seedRecords(context, [recordOf(context, 'clean', { directory: { mode: 'adHoc', path: owner }, endedAt: 1_000, exitReason: 'stopped',
+      worktree: { worktreePath: clean, branch: url, baseCommit: 'r0', repositoryRoot: owner, kind: 'svn' } })])
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.manager.start()
+    await writable(client)
+
+    expect(await client.manager.removeSession('clean')).toEqual({ ok: true, value: undefined })
+    expect(storedRecord(context, 'clean')).toBeUndefined()
+    expect(existsSync(clean)).toBe(false)
+    expect(client.errors.join('\n')).not.toContain('merge-pending')
+  })
+
+  /*
+   * Any directory of a product group: the worktree is the whole group, its checkout is a local run of
    * the session, and the session starts at its place below. A session working in the main copy of the
    * same member updates the whole group. Real svn for the reservation; the Host is the fake.
    */
-  it('creates the worktree of a group member directory as the group, with a checkout run, and updates the group from a member', { timeout: 60_000 }, async (runner) => {
+  it('creates the worktree of a group member directory as the group, with a local checkout run, and updates the group from a member', { timeout: 60_000 }, async (runner) => {
     const context = await world()
     const repository = join(context.root, 'repository')
     const created = await new CommandInvoker().run({ command: 'svnadmin', args: ['create', repository], cwd: context.root, env: process.env })
@@ -1864,7 +2367,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const group = join(context.root, 'Group')
     await run(context.root, ['checkout', '-q', '--', `${url}/Group`, group])
     await run(group, ['propset', 'svn:global-ignores', '.worktrees', '--', '.'])
-    writeFileSync(join(group, '.appgroup'), '')
+    writeFileSync(join(group, '.appgroup'), '{"kind":"product"}')
     const directory = join(group, 'Member', 'src')
     context.publishDescriptor()
     const client = clientOf(context)
@@ -1875,14 +2378,18 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const stored = storedRecord(context, session.sessionId)
     const worktreePath = join(group, '.worktrees', 'fix')
     expect(stored?.worktree).toMatchObject({ worktreePath, branch: `${url}/Group`, baseCommit: 'r1', repositoryRoot: group, kind: 'svn', cwdSubpath: 'Member/src' })
-    expect(existsSync(join(worktreePath, '.svn'))).toBe(false)
-    const checkout = client.manager.snapshot().sessions.find((info) => info.script?.parentId === session.sessionId)
-    expect(checkout).toMatchObject({ title: 'Checkout fix', script: { phase: 'before', scriptId: 'svn' } })
-    expect(storedRecord(context, checkout?.sessionId ?? '')?.process).toEqual({
-      tool: 'svn', args: ['--non-interactive', 'checkout', '--', `${url}/Group@1`, '.'],
-    })
+    await vi.waitFor(() => expect(storedRecord(context, session.sessionId)?.worktreeLifecycle?.journal).toContainEqual(expect.objectContaining({
+      kind: 'checkout', targetRevision: 1, outcome: 'ok', args: ['--non-interactive', 'checkout', '--', `${url}/Group@1`, '.'],
+    })), { timeout: 15_000 })
+    expect(existsSync(join(worktreePath, '.svn'))).toBe(true)
+    expect(client.manager.snapshot().sessions.find((info) => info.script?.parentId === session.sessionId)).toBeUndefined()
+    expect(storedRecord(context, session.sessionId)?.scriptRuns).toContainEqual(expect.objectContaining({
+      title: 'Checkout', phase: 'before', scriptId: 'svn', outcome: 'succeeded', log: expect.objectContaining({ state: 'saved' }),
+    }))
     expect(sessionOf(client, session.sessionId)?.worktree).toMatchObject({ worktreePath, cwdSubpath: 'Member/src' })
-    expect(sessionOf(client, session.sessionId)?.scripts?.badge).toMatchObject({ state: 'running', text: 'checking out' })
+    await vi.waitFor(() => expect(storedRecord(context, session.sessionId)?.pendingSetup).toBeUndefined(), { timeout: 15_000 })
+    await vi.waitFor(() => expect(context.host.calls.find((call) => call.name === 'runtime.create' && call.body.runtimeSessionId === session.sessionId)?.body.launch)
+      .toMatchObject({ cwd: join(worktreePath, 'Member', 'src') }), { timeout: 15_000 })
 
     const plain = valueOf(await client.manager.createSession({ kind: 'shell', directory: { mode: 'adHoc', path: directory }, title: 'plain' }))
     expect(await client.manager.updateMain(plain.sessionId, [], 'cli')).toMatchObject({ ok: true })
@@ -1908,6 +2415,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
         receipts: [{ scopeRoot: context.root, revision: 7, at: 5 }, { scopeRoot: context.root, revision: null, at: expect.any(Number) }],
         step: null,
         workflow: null,
+        actions: { sections: [] },
       },
     }), { timeout: 5_000 })
   })
@@ -1920,7 +2428,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     }
     // An update a lock stopped, relaunched in an hour; its run record still starts, so nothing judges it meanwhile.
     const locked: NonNullable<SessionRecord['svnAction']> = {
-      kind: 'finish', actionId: 'action-1', stage: 'updating', runId: 'update-run', root: worktreePath, checks: [], checkCursor: 0,
+      kind: 'finish', flowVersion: 1, actionId: 'action-1', stage: 'updating', runId: 'update-run', root: worktreePath, checks: [], checkCursor: 0,
       rootCursor: 0, rounds: { incoming: 0, outOfDate: 0, lock: 1 }, evidence: [], requestedBy: 'window', startedAt: 5,
       retryAt: Date.now() + 3_600_000,
     }
@@ -1962,7 +2470,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       facts: { incomingRevision: 42 },
     }))
     const waiting: NonNullable<SessionRecord['svnAction']> = {
-      kind: 'finish', actionId: 'action-1', stage: 'updating', runId: 'update-run', root: worktreePath, checks: [], checkCursor: 0,
+      kind: 'finish', flowVersion: 1, actionId: 'action-1', stage: 'updating', runId: 'update-run', root: worktreePath, checks: [], checkCursor: 0,
       rootCursor: 0, rounds: { incoming: 0, outOfDate: 0, lock: 0 }, evidence: [], requestedBy: 'window', startedAt: 5,
       needs: { kind: 'conflict', reason: '60 conflicts need you', at: 6 },
       conflictSet: { readAt: 6, baseRevision: 41, revision: 42, entries, more: 0 },
@@ -1986,14 +2494,14 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(await client.manager.conflictsOf('update-run')).toEqual(list)
     expect(await client.manager.conflictsOf('plain')).toMatchObject({ ok: false, code: 'not-found' })
     expect(await client.manager.conflictsOf('nobody')).toMatchObject({ ok: false, code: 'not-found' })
-    // The snapshot carries the first 50 and counts the rest.
-    expect(sessionOf(client, 'waiting')?.svnAction).toMatchObject({ summary: '60 conflicts need you', conflicts: { more: 10 } })
-    expect(sessionOf(client, 'waiting')?.svnAction?.conflicts?.entries).toHaveLength(50)
+    // The snapshot carries every open entry, past the 50 it bounds settled ones at.
+    expect(sessionOf(client, 'waiting')?.svnAction).toMatchObject({ summary: '60 conflicts need you', conflicts: { more: 0 } })
+    expect(sessionOf(client, 'waiting')?.svnAction?.conflicts?.entries).toHaveLength(60)
   })
 
   /*
    * The finisher is chosen by the worktree's kind: an SVN one goes to the SVN twin, which needs the
-   * client's commit dialog for Commit and nothing for Discard. Every path here stays inside the
+   * person's Changes review for Commit and a proven absent tree for Discard. Every path here stays inside the
    * test's own directory, and the owner does not exist, so nothing reaches a real working copy.
    */
   it('finishes an SVN worktree through its own finisher and composes its choices', async () => {
@@ -2007,6 +2515,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
         life: 'ended',
         worktree: {
           worktreePath,
+          agentStartedAt: 1,
           branch: 'https://svn.example.test/repos/app/trunk',
           baseCommit: 'r41',
           repositoryRoot: join(context.root, 'owner'),
@@ -2077,10 +2586,13 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(sessionOf(client, 'svn-auto')?.worktree?.choices).toEqual(['keep', 'discard'])
     expect(sessionOf(client, 'svn-auto')?.worktree?.cleanup)
       .toEqual({ phase: 'pending', summary: 'removed once the session has ended and nothing is left in it' })
+    expect(sessionOf(client, 'svn')?.worktreeView).toEqual({ version: 0, phase: 'active', outOfDate: 0, conflicts: 0, summary: 'active v0',
+      title: 'Worktree active', tone: 'running', actions: [] })
     expect(await client.manager.worktreeOf('svn')).toEqual({
       ok: true,
       value: {
         sessionId: 'svn',
+        worktreeView: { version: 0, phase: 'active', outOfDate: 0, conflicts: 0, summary: 'active v0', title: 'Worktree active', tone: 'running', actions: [] },
         worktree: { kind: 'svn', worktreePath, url: 'https://svn.example.test/repos/app/trunk', baseRevision: 41 },
         retired: null,
         finish: null,
@@ -2090,6 +2602,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
         receipts: [],
         step: null,
         workflow: null,
+        actions: { sections: [] },
       },
     })
     expect(await client.manager.worktreeOf('git')).toMatchObject({
@@ -2116,19 +2629,9 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     })
     expect(sessionOf(client, 'svn')?.worktree?.outcome).toBeUndefined()
 
-    expect(await client.manager.finalizeSession('svn')).toMatchObject({ ok: false, code: 'review-unavailable' })
-    client.manager.setReviewPort({
-      open: () => Promise.reject(new Error('no review may open for an owner that is gone')),
-      known: () => false,
-      propose: () => Promise.reject(new Error('nothing proposes here')),
-      proposalOf: () => null,
-      forgetProposal: () => undefined,
-    })
-    // The press answers once the action is written; the action then finds the owner gone and waits for the person.
-    expect(await client.manager.finalizeSession('svn')).toEqual({ ok: true, value: undefined })
-    await vi.waitFor(() => expect(sessionOf(client, 'svn')?.svnAction?.needsKind).toBe('svn-failed'), { timeout: 5_000 })
-    expect(sessionOf(client, 'svn')?.svnAction?.needs).toMatch(/^REFUSED: The owner .* is gone$/)
-    // A waiting action holds nothing: the legacy finish phase is gone, and the row keeps its Finish.
+    expect(await client.manager.finalizeSession('svn')).toMatchObject({ ok: false, code: 'svn-failed' })
+    expect(await client.manager.finishWorktreeSession('svn', { choice: 'commit', requestedBy: 'window' })).toMatchObject({ ok: false, code: 'svn-failed' })
+    expect(sessionOf(client, 'svn')?.worktreeView?.phase).toBe('active')
     expect(sessionOf(client, 'svn')?.worktree?.finish).toBeUndefined()
     expect(sessionOf(client, 'svn')?.admits).toContain('finalize')
     expect(removedItself).toEqual([])
@@ -2155,10 +2658,11 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
    * The press of the Finish dialog and the review a review run asks for. The review port is a fake
    * that counts what it opens; the owner does not exist, so no svn reaches a real working copy.
    */
-  it('takes a Finish press on an SVN worktree, refuses one on a Git worktree, and opens a review run\'s review once', async () => {
+  it('migrates an old Finish, refuses review runs and preserves worker message proposals', async () => {
     const context = await world()
     const worktreePath = join(context.root, 'owner', '.worktrees', '014-fix')
     const svnWorktree = {
+      agentStartedAt: 1,
       worktreePath, branch: 'https://svn.example.test/repos/app/trunk', baseCommit: 'r41', repositoryRoot: join(context.root, 'owner'), kind: 'svn' as const,
     }
     const reviewing: NonNullable<SessionRecord['svnAction']> = {
@@ -2198,15 +2702,13 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const opened: { sessionId: string; parentId: string; scopeRoot: string; proposal: string }[] = []
     const proposed: { sessionId: string; directory: string; message: string }[] = []
     const proposals = new Map([[`acting-cli|${scriptedPath}`, 'Fix the orders page']])
-    const editors: [string, string][] = []
-    let known = true
     expect(await client.manager.proposeCommit('acting', 'Fix login')).toMatchObject({ ok: false, code: 'review-unavailable' })
     client.manager.setReviewPort({
       open: async (input) => {
         opened.push(input)
         return { ok: true, value: { commitSessionId: `commit-${opened.length}` } }
       },
-      known: () => known,
+      known: () => true,
       propose: async (input) => {
         proposed.push(input)
         return { ok: true, value: { scopeRoot: input.directory } }
@@ -2214,30 +2716,12 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       proposalOf: (sessionId, scopeRoot) => proposals.get(`${sessionId}|${scopeRoot}`) ?? null,
       forgetProposal: (sessionId, scopeRoot) => { proposals.delete(`${sessionId}|${scopeRoot}`) },
     })
-    client.manager.setEditor({ openWorktree: (path, ownerName) => editors.push([path, ownerName]) })
 
-    expect(sessionOf(client, 'acting')?.svnAction).toEqual({
-      kind: 'finish', stage: 'reviewing', needs: null, needsKind: null, review: { index: 1, count: 1, scopeRoot: worktreePath },
-    })
-    expect(sessionOf(client, 'acting')?.worktree?.finish).toEqual({ phase: 'reviewing', scopeRoot: worktreePath })
-    expect(sessionOf(client, 'acting')?.admits).toEqual(['newBeside'])
-    expect(sessionOf(client, 'review-run')?.setupFor).toBe('acting')
-
-    expect(await client.manager.openActionReview('review-run')).toEqual({ ok: true, value: { commitSessionId: 'commit-1', scopeRoot: worktreePath } })
-    expect(await client.manager.openActionReview('review-run')).toEqual({ ok: true, value: { commitSessionId: 'commit-1', scopeRoot: worktreePath } })
-    // Without a proposal the review starts with the title; the window's Finish shows the worktree once.
-    // The review names the session whose action reviews, so its workflow takes the focus back.
-    expect(opened).toEqual([{ sessionId: 'review-run', parentId: 'acting', scopeRoot: worktreePath, proposal: 'fix login' }])
-    expect(editors).toEqual([[worktreePath, 'owner']])
-    expect(storedRecord(context, 'acting')?.svnAction?.reviewCommitId).toBe('commit-1')
-    // A scripted Finish never opens the editor, and its mount review falls back to the worktree's proposal.
-    expect(await client.manager.openActionReview('review-run-cli')).toEqual({ ok: true, value: { commitSessionId: 'commit-2', scopeRoot: mountPath } })
-    expect(opened[1]).toEqual({ sessionId: 'review-run-cli', parentId: 'acting-cli', scopeRoot: mountPath, proposal: 'Fix the orders page' })
-    expect(editors).toHaveLength(1)
-    known = false
-    expect(await client.manager.openActionReview('review-run')).toMatchObject({ ok: false, code: 'review-unavailable' })
-    expect(await client.manager.openActionReview('git')).toMatchObject({ ok: false, code: 'not-found' })
-    expect(editors).toHaveLength(1)
+    expect(sessionOf(client, 'acting')?.svnAction).toMatchObject({ kind: 'finish', stage: 'changes' })
+    expect(sessionOf(client, 'acting')?.worktree?.finish).toBeUndefined()
+    expect('openActionReview' in client.manager).toBe(false)
+    expect(opened).toEqual([])
+    expect(storedRecord(context, 'acting')?.svnAction?.runId).toBeUndefined()
 
     // A proposal is kept for the worktree root, never the member the session works in; without a worktree, for its directory.
     expect(await client.manager.proposeCommit('acting-cli', 'Fix the orders page')).toEqual({ ok: true, value: { scopeRoot: scriptedPath } })
@@ -2246,12 +2730,17 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       { sessionId: 'acting-cli', directory: scriptedPath, message: 'Fix the orders page' },
       { sessionId: 'plain', directory: context.root, message: 'Tidy' },
     ])
+    const external = join(context.root, 'shared', 'external')
+    mkdirSync(external, { recursive: true })
+    expect(await client.manager.proposeCommit('plain', '[external] Update library', external)).toEqual({ ok: true, value: { scopeRoot: external } })
+    expect(proposed.at(-1)).toEqual({ sessionId: 'plain', directory: external, message: '[external] Update library' })
+    expect(await client.manager.proposeCommit('plain', 'outside', join(context.root, '..', 'elsewhere'))).toMatchObject({ ok: false })
     expect(await client.manager.proposeCommit('nobody', 'x')).toMatchObject({ ok: false, code: 'not-found' })
 
     expect(await client.manager.finishWorktreeSession('acting', { choice: 'commit', requestedBy: 'window' }))
-      .toMatchObject({ ok: false, code: 'merge-pending' })
-    expect(await client.manager.finishWorktreeSession('git', { choice: 'commit', requestedBy: 'cli' }))
-      .toMatchObject({ ok: false, code: 'invalid-spec', detail: expect.stringMatching(/Git worktree; finish it with sessions finalize/) })
+      .toMatchObject({ ok: false, code: 'svn-failed', detail: expect.stringContaining('not a working copy') })
+    expect(await client.manager.finishWorktreeSession('git', { choice: 'commit', requestedBy: 'window' }))
+      .toMatchObject({ ok: true })
     expect(await client.manager.finishWorktreeSession('nobody', { choice: 'keep', requestedBy: 'cli' })).toMatchObject({ ok: false, code: 'not-found' })
   }, 20_000)
 
@@ -2373,6 +2862,247 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     })
     return { calls: () => calls }
   }
+
+  it.each([false, true])('switches a live account once and keeps the new account when restart fails: %s', async fails => {
+    const context = await world()
+    seedRecords(context, [recordOf(context, 'switch', { kind: 'agent', life: 'live',
+      binding: { hostInstanceId: 'fake-host-1', generation: 1 },
+      agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'conversation', accountId: 'a', identityLaunchId: 'launch-a' },
+      accountSegments: [{ accountId: 'a', from: 1000, to: null }] })])
+    context.runtimes.set('switch', runtime('switch'))
+    context.publishDescriptor()
+    const client = clientOf(context, { accounts: { exists: () => true, defaultAccount: () => ({ accountId: 'main', noFreeAccount: false }),
+      launchEnv: async () => ({}), usable: async (_agent, id) => id === 'b' } })
+    await client.manager.start()
+    await writable(client)
+    await reconciled(client)
+    expect(client.manager.accountForLaunch('switch', 'launch-a', 2000)).toEqual({ agentId: 'claude', accountId: 'a' })
+    const restart = vi.spyOn(client.manager, 'restartSession').mockResolvedValue(fails
+      ? { ok: false, code: 'spawn-failed', detail: 'fixture restart refused' } : { ok: true, value: undefined })
+    const result = await client.manager.switchAccount('switch', 'b')
+    expect(result.ok).toBe(!fails)
+    expect(restart.mock.calls).toEqual([['switch']])
+    const record = storedRecord(context, 'switch')!
+    expect(record.agent?.accountId).toBe('b')
+    expect(record.agent?.nativeSessionId).toBe('conversation')
+    expect(record.accountSegments).toEqual([
+      { accountId: 'a', from: 1000, to: record.accountSegments![1].from },
+      { accountId: 'b', from: record.accountSegments![1].from, to: null },
+    ])
+    expect(client.manager.accountForLaunch('switch', 'launch-a', Date.now())).toBeNull()
+    if (fails) expect(client.manager.snapshot().sessions.find(session => session.sessionId === 'switch')?.endedReason).toBe('fixture restart refused')
+  })
+
+  it.each(['before-stop', 'during-stop'] as const)('resumes the latest conversation confirmed %s without reassigning old quota', async timing => {
+    const context = await world()
+    const home = join(context.root, 'profile')
+    mkdirSync(home)
+    seedRecords(context, [recordOf(context, 'switch', { kind: 'agent', life: 'live',
+      binding: { hostInstanceId: 'fake-host-1', generation: 1 },
+      agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'old-conversation', accountId: 'a', identityLaunchId: 'launch-a' },
+      accountSegments: [{ accountId: 'a', from: 1000, to: null }] })])
+    context.runtimes.set('switch', runtime('switch'))
+    context.publishDescriptor()
+    const client = clientOf(context, { accounts: { exists: () => true, defaultAccount: () => ({ accountId: 'main', noFreeAccount: false }),
+      launchEnv: async () => ({ CLAUDE_CONFIG_DIR: home }), usable: async () => true } })
+    await client.manager.start()
+    await writable(client)
+    await reconciled(client)
+    const identities = OrchestratorPaths.claudeIdentitiesDirectory(context.configIdentity, 'development')
+    mkdirSync(identities, { recursive: true })
+    const confirm = () => writeFileSync(join(identities, 'switch.json'), JSON.stringify({ schemaVersion: 1,
+      jamatSessionId: 'switch', launchId: 'launch-a', nativeSessionId: 'displayed-conversation', sequence: 2 }))
+    if (timing === 'before-stop') confirm()
+    else if (timing !== 'during-stop') throw new Error(`Unknown confirmation timing: ${timing}`)
+    handleStop(context, { exits: true })
+    const hold = context.host.hold('runtime.stop')
+    const switched = client.manager.switchAccount('switch', 'b')
+    try {
+      await vi.waitFor(() => expect(context.host.calls.some(call => call.name === 'runtime.stop')).toBe(true))
+      expect(storedRecord(context, 'switch')?.agent?.identityLaunchId).toBe('launch-a')
+      expect(client.manager.accountForLaunch('switch', 'launch-a', Date.now())).toBeNull()
+      if (timing === 'during-stop') confirm()
+      else if (timing !== 'before-stop') throw new Error(`Unknown confirmation timing: ${timing}`)
+    } finally { hold.release() }
+    expect(await switched).toEqual({ ok: true, value: undefined })
+    const record = storedRecord(context, 'switch')!
+    expect(record.agent?.nativeSessionId).toBe('displayed-conversation')
+    expect(record.agent?.launchAccountId).toBe('b')
+    const launches = context.host.calls.filter(call => call.name === 'runtime.create')
+    expect(launches).toHaveLength(1)
+    expect((launches[0].body.launch as RuntimeLaunchSpec).args).toEqual(expect.arrayContaining(['--resume', 'displayed-conversation']))
+    expect(client.manager.accountForLaunch('switch', 'launch-a', Date.now())).toBeNull()
+    expect(client.manager.accountForLaunch('switch', record.agent!.identityLaunchId!, Date.now()))
+      .toEqual({ agentId: 'claude', accountId: 'b' })
+    expect(client.manager.accountForLaunch('switch', record.agent!.identityLaunchId!, 999)).toBeNull()
+  })
+
+  it.each(['ended', 'missing'] as const)('resumes the final conversation when switching back after stop refusal with an %s runtime', async afterStop => {
+    const context = await world()
+    const home = join(context.root, 'profile')
+    mkdirSync(home)
+    seedRecords(context, [recordOf(context, 'switch', { kind: 'agent', life: 'live',
+      binding: { hostInstanceId: 'fake-host-1', generation: 1 },
+      agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'old-conversation', accountId: 'a', identityLaunchId: 'launch-a' },
+      accountSegments: [{ accountId: 'a', from: 1000, to: null }] })])
+    context.runtimes.set('switch', runtime('switch'))
+    context.publishDescriptor()
+    const client = clientOf(context, { accounts: { exists: () => true, defaultAccount: () => ({ accountId: 'main', noFreeAccount: false }),
+      launchEnv: async () => ({ CLAUDE_CONFIG_DIR: home }), usable: async () => true } })
+    await client.manager.start()
+    await writable(client)
+    await reconciled(client)
+    context.host.handle('runtime.stop', () => ({ status: 409, body: { error: 'first stop refused' } }))
+    expect((await client.manager.switchAccount('switch', 'b')).ok).toBe(false)
+    expect(storedRecord(context, 'switch')?.agent).toMatchObject({ accountId: 'b', launchAccountId: 'a', nativeSessionId: 'old-conversation' })
+    expect(client.manager.accountForLaunch('switch', 'launch-a', Date.now())).toBeNull()
+    context.host.handle('runtime.stop', body => {
+      if (afterStop === 'ended') context.runtimes.set('switch', { ...context.runtimes.get('switch')!, alive: false, exitedAt: Date.now(), exitCode: 0 })
+      else if (afterStop === 'missing') context.runtimes.delete('switch')
+      else throw new Error(`Unknown runtime state: ${afterStop}`)
+      return { body: { servedByHostInstanceId: context.host.descriptor().hostInstanceId,
+        target: body.target, diagnostic: 'stopped' } }
+    })
+    context.host.handle('runtime.replace', () => {
+      const session = runtime('switch', { generation: 2 })
+      context.runtimes.set('switch', session)
+      return { body: { session, hostInstanceId: context.host.descriptor().hostInstanceId } satisfies RuntimeResult }
+    })
+    const hold = context.host.hold('runtime.stop')
+    const switched = client.manager.switchAccount('switch', 'a')
+    try {
+      await vi.waitFor(() => expect(context.host.calls.filter(call => call.name === 'runtime.stop')).toHaveLength(2))
+      const pending = storedRecord(context, 'switch')!
+      expect(pending.agent).toMatchObject({ accountId: 'a', launchAccountId: 'a', identityLaunchId: 'launch-a', nativeSessionId: 'old-conversation' })
+      expect(pending.endedReason).toContain('first stop refused')
+      expect(client.manager.accountForLaunch('switch', 'launch-a', 999)).toBeNull()
+      expect(client.manager.accountForLaunch('switch', 'other-launch', Date.now())).toBeNull()
+      const identities = OrchestratorPaths.claudeIdentitiesDirectory(context.configIdentity, 'development')
+      mkdirSync(identities, { recursive: true })
+      writeFileSync(join(identities, 'switch.json'), JSON.stringify({ schemaVersion: 1, jamatSessionId: 'switch',
+        launchId: 'launch-a', nativeSessionId: 'second-stop-conversation', sequence: 2 }))
+    } finally { hold.release() }
+    expect(await switched).toEqual({ ok: true, value: undefined })
+    expect(storedRecord(context, 'switch')?.agent?.nativeSessionId).toBe('second-stop-conversation')
+    const launches = context.host.calls.filter(call => call.name === 'runtime.create' || call.name === 'runtime.replace')
+    expect(launches).toHaveLength(1)
+    const args = (launches[0].body.launch as RuntimeLaunchSpec).args
+    expect(args.slice(args.indexOf('--resume'), args.indexOf('--resume') + 2)).toEqual(['--resume', 'second-stop-conversation'])
+    expect(args).not.toContain('old-conversation')
+    expect(client.manager.accountForLaunch('switch', 'launch-a', Date.now())).toBeNull()
+  })
+
+  it.each(['refusal', 'timeout'] as const)('protects the actual profile during stop, after %s and after manager recovery', async failure => {
+    const context = await world()
+    const main = join(context.root, 'main-profile')
+    mkdirSync(main)
+    let stored: readonly StoredAccount[] = []
+    let client: Client
+    const accounts = new AgentAccounts({ mainHomes: { claude: main, codex: main },
+      specs: [{ agentId: 'claude', mainHome: () => main, homeVariable: 'CLAUDE_CONFIG_DIR', extraEnv: () => ({}),
+        shareTable: { directories: [], files: [], neverShared: [] }, loginCommand: 'fixture',
+        probe: async home => ({ kind: 'logged-in', identity: { key: home, label: home } }) }],
+      accountsRoot: join(context.root, 'accounts'), stored: () => stored, store: value => { stored = value },
+      hasRunningSession: (agentId, accountId) => client.manager.hasAccountSession(agentId, accountId), onChanged: () => {},
+    })
+    const a = await accounts.add('claude', 'A')
+    const b = await accounts.add('claude', 'B')
+    stored = stored.map(account => ({ ...account, identity: { key: accounts.homeOf('claude', account.id), label: account.label } }))
+    const marker = join(accounts.homeOf('claude', a.accountId), 'private-fixture')
+    writeFileSync(marker, 'unchanged')
+    const at = Date.now()
+    seedRecords(context, [recordOf(context, 'switch', { kind: 'agent', life: 'live',
+      binding: { hostInstanceId: 'fake-host-1', generation: 1 },
+      agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'conversation', accountId: a.accountId, identityLaunchId: 'launch-a' },
+      accountSegments: [{ accountId: a.accountId, from: at, to: null }] })])
+    context.runtimes.set('switch', runtime('switch', { startedAt: at }))
+    context.publishDescriptor()
+    client = clientOf(context, { accounts, exitClock: virtualClock().clock })
+    await client.manager.start()
+    await writable(client)
+    await reconciled(client)
+    if (failure === 'refusal') context.host.handle('runtime.stop', () => ({ status: 409, body: { error: 'fixture stop refused' } }))
+    else if (failure === 'timeout') handleStop(context, { exits: false })
+    else throw new Error(`Unknown stop failure: ${failure}`)
+    const hold = context.host.hold('runtime.stop')
+    const switched = client.manager.switchAccount('switch', b.accountId)
+    try {
+      await vi.waitFor(() => expect(context.host.calls.some(call => call.name === 'runtime.stop')).toBe(true))
+      expect(storedRecord(context, 'switch')?.agent?.accountId).toBe(b.accountId)
+      await expect(accounts.remove(a.accountId)).rejects.toThrow('a session runs on A')
+      expect(readFileSync(marker, 'utf8')).toBe('unchanged')
+    } finally { hold.release() }
+    expect((await switched).ok).toBe(false)
+    expect(context.runtimes.get('switch')?.alive).toBe(true)
+    await expect(accounts.remove(a.accountId)).rejects.toThrow('a session runs on A')
+    await client.manager.stop()
+    client = clientOf(context, { accounts, exitClock: virtualClock().clock })
+    await client.manager.start()
+    await writable(client)
+    await reconciled(client)
+    expect(storedRecord(context, 'switch')?.agent?.accountId).toBe(b.accountId)
+    await expect(accounts.remove(a.accountId)).rejects.toThrow('a session runs on A')
+    context.runtimes.set('switch', { ...context.runtimes.get('switch')!, alive: false, exitedAt: Date.now(), exitCode: 0 })
+    await client.manager.removeSession('never-existed')
+    expect(client.manager.hasAccountSession('claude', a.accountId)).toBe(false)
+    await accounts.remove(a.accountId)
+    expect(existsSync(marker)).toBe(false)
+    context.runtimes.delete('switch')
+    expect(await client.manager.restartSession('switch')).toEqual({ ok: true, value: undefined })
+    expect(storedRecord(context, 'switch')?.agent?.launchAccountId).toBe(b.accountId)
+    expect(client.manager.hasAccountSession('claude', b.accountId)).toBe(true)
+    accounts.stop()
+  }, 20_000)
+
+  it('refuses the current or an unusable account before any record change or restart', async () => {
+    const context = await world()
+    seedRecords(context, [recordOf(context, 'switch', { kind: 'agent',
+      agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'conversation', accountId: 'a' } })])
+    const client = clientOf(context, { accounts: { exists: () => true, defaultAccount: () => ({ accountId: 'main', noFreeAccount: false }),
+      launchEnv: async () => ({}), usable: async () => false } })
+    await client.manager.start()
+    const before = storedRecord(context, 'switch')
+    const restart = vi.spyOn(client.manager, 'restartSession')
+    expect(await client.manager.switchAccount('switch', 'a')).toEqual({ ok: false, code: 'invalid-spec', detail: 'already on this account' })
+    expect(await client.manager.switchAccount('switch', 'disabled')).toEqual({ ok: false, code: 'invalid-spec', detail: 'account not usable' })
+    expect(storedRecord(context, 'switch')).toEqual(before)
+    expect(restart).not.toHaveBeenCalled()
+  })
+
+  it('keeps the selected account and reports a fresh preflight refusal during a real switch restart', async () => {
+    const context = await world()
+    seedRecords(context, [recordOf(context, 'switch', { kind: 'agent',
+      agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'conversation', accountId: 'a' } })])
+    context.publishDescriptor()
+    const launchEnv = vi.fn(async () => { throw new Error('registered identity no longer matches') })
+    const client = clientOf(context, { accounts: { exists: () => true,
+      defaultAccount: () => ({ accountId: 'main', noFreeAccount: false }), launchEnv, usable: async () => true } })
+    await client.manager.start()
+    await writable(client)
+    const result = await client.manager.switchAccount('switch', 'b')
+    expect(result.ok).toBe(false)
+    expect(launchEnv).toHaveBeenCalledWith('claude', 'b', context.root, { yolo: false, model: undefined, effort: undefined })
+    expect(storedRecord(context, 'switch')?.agent?.accountId).toBe('b')
+    expect(storedRecord(context, 'switch')?.agent?.nativeSessionId).toBe('conversation')
+    expect(sessionOf(client, 'switch')?.endedReason).toContain('registered identity no longer matches')
+    expect(context.host.calls.filter(call => call.name === 'runtime.create')).toHaveLength(0)
+  })
+
+  it('marks only the session account exhausted and clears the marker after a fresh rate change', async () => {
+    const context = await world()
+    seedRecords(context, ['a', 'b'].map(accountId => recordOf(context, accountId, { kind: 'agent',
+      agent: { agentId: 'claude', launchMode: 'new', accountId } })))
+    let usedPercent = 100
+    const client = clientOf(context, { rates: () => [{ key: { agentId: 'claude', accountId: 'b' }, label: 'B',
+      state: { kind: 'ok', fetchedAt: 1000, windows: [{ durationMinutes: 300, usedPercent, resetsAt: null }] },
+      estimated: null, source: 'statusline' }] })
+    await client.manager.start()
+    expect(sessionOf(client, 'a')?.agent?.accountExhausted).toBeUndefined()
+    expect(sessionOf(client, 'b')?.agent?.accountExhausted).toBe(true)
+    usedPercent = 10
+    client.manager.ratesChanged()
+    expect(sessionOf(client, 'b')?.agent?.accountExhausted).toBeUndefined()
+  })
 
   it('restarts a live session by stopping it, waiting for it to go, and resuming it', async () => {
     const context = await world()
@@ -2553,7 +3283,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       hostInstanceId: 'fake-host-1',
       hostVersion: '0.0.0-fake',
     })
-    expect(status.clientProtocol).toEqual({ major: 1, minor: 0 })
+    expect(status.clientProtocol).toEqual({ major: 1, minor: 1 })
     // Read here by a different route than the one under test, from the file the Host's own build
     // info falls back to.
     expect(status.expectedHostVersion).toBe((JSON.parse(readFileSync(
@@ -2715,6 +3445,81 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
    * all: it is handed the one the manager already fetched, and everything it learns arrives through
    * that. A session classified here is the proof that the hand-over happens.
    */
+  it('continues ready sync for another worktree when one hash read refuses', async () => {
+    const context = await world()
+    seedRecords(context, ['broken', 'ready'].map((id) => recordOf(context, id, {
+      life: 'live', worktree: { kind: 'svn', repositoryRoot: context.root, worktreePath: join(context.root, '.worktrees', id), branch: 'url', baseCommit: 'r1' },
+      worktreeLifecycle: { version: 0, actionId: null, phase: 'active', outOfDate: 0, journal: [], facts: {
+        worker: { liveness: 'alive', resumeFailures: 0, ready: { at: 1, hashes: {} } },
+      } },
+    })))
+    for (const id of ['broken', 'ready']) context.runtimes.set(id, runtime(id))
+    const ready = vi.spyOn(WorkerReady.prototype, 'current').mockImplementation(async (id) => {
+      if (id === 'broken') throw new Error('Cannot prove the complete directory hash')
+      return true
+    })
+    const idle = vi.spyOn(SessionManager.prototype, 'workerIdle').mockReturnValue(true)
+    const sync = vi.spyOn(SyncStep.prototype, 'run').mockResolvedValue({ ok: true, value: { revision: 2, conflicts: [] } })
+    try {
+      context.publishDescriptor()
+      const client = clientOf(context)
+      await client.manager.start()
+      await vi.waitFor(() => expect(sync).toHaveBeenCalledWith('ready', 'ready'))
+      expect(client.errors).toContain('Ready sync for broken: Cannot prove the complete directory hash')
+      expect(sync).not.toHaveBeenCalledWith('broken', 'ready')
+    } finally { ready.mockRestore(); idle.mockRestore(); sync.mockRestore() }
+  })
+
+  // A Finish waited 1 min 25 s on Sync now after its worker was idle (UA1-J14-4).
+  it('hands a sync that waits for a busy worker on to the Finish once the look finds the worker idle', async () => {
+    const context = await world()
+    const worktreePath = join(context.root, '.worktrees', 'busy')
+    seedRecords(context, [recordOf(context, 'busy', {
+      kind: 'agent', life: 'live', agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'busy-conversation' },
+      worktree: { kind: 'svn', repositoryRoot: context.root, worktreePath, branch: 'url', baseCommit: 'r1' },
+      worktreeLifecycle: { version: 2, actionId: 'busy-action', phase: 'waiting', step: 'syncing', outOfDate: 0, journal: [],
+        wait: { kind: 'worker-busy', reason: 'Sync waits for an idle worker or your confirmation: the worker is working', at: 1 },
+        execution: { root: worktreePath, checks: [], checkCursor: 0, rootCursor: 0, evidence: [], requestedBy: 'window', startedAt: 1 },
+        facts: { worker: { liveness: 'alive', resumeFailures: 0 } } },
+    })])
+    context.runtimes.set('busy', runtime('busy'))
+    let idle = false
+    const idleness = vi.spyOn(SessionManager.prototype, 'workerIdle').mockImplementation(() => idle)
+    const resumed = vi.spyOn(FinishDriver.prototype, 'workerIdle').mockResolvedValue(undefined)
+    try {
+      context.publishDescriptor()
+      const client = clientOf(context)
+      await client.manager.start()
+      await writable(client)
+      expect(resumed).not.toHaveBeenCalled()
+      idle = true
+      await vi.waitFor(() => expect(resumed).toHaveBeenCalledWith('busy'), { timeout: 10_000 })
+    } finally { idleness.mockRestore(); resumed.mockRestore() }
+  }, 20_000)
+
+  it('reports a detached Finish drive whose lifecycle cannot be saved instead of rejecting unhandled', async () => {
+    const context = await world()
+    const worktreePath = join(context.root, '.worktrees', 'unsaved')
+    seedRecords(context, [recordOf(context, 'unsaved', {
+      kind: 'agent', life: 'live', agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'unsaved-conversation' },
+      worktree: { kind: 'svn', repositoryRoot: context.root, worktreePath, branch: 'url', baseCommit: 'r1' },
+      worktreeLifecycle: { version: 2, actionId: 'unsaved-action', phase: 'waiting', step: 'syncing', outOfDate: 0, journal: [],
+        wait: { kind: 'worker-busy', reason: 'Sync waits for an idle worker or your confirmation: the worker is working', at: 1 },
+        execution: { root: worktreePath, checks: [], checkCursor: 0, rootCursor: 0, evidence: [], requestedBy: 'window', startedAt: 1 },
+        facts: { worker: { liveness: 'alive', resumeFailures: 0 } } },
+    })])
+    context.runtimes.set('unsaved', runtime('unsaved'))
+    const idleness = vi.spyOn(SessionManager.prototype, 'workerIdle').mockReturnValue(true)
+    const resumed = vi.spyOn(FinishDriver.prototype, 'workerIdle').mockRejectedValue(new Error('The Finish lifecycle could not be saved'))
+    try {
+      context.publishDescriptor()
+      const client = clientOf(context)
+      await client.manager.start()
+      await vi.waitFor(() => expect(client.errors).toContain(
+        'Finishing session unsaved after its worker became idle failed: The Finish lifecycle could not be saved'), { timeout: 10_000 })
+    } finally { idleness.mockRestore(); resumed.mockRestore() }
+  }, 20_000)
+
   it('classifies an agent session from the listing it already fetched', async () => {
     const context = await world()
     context.publishDescriptor()
@@ -2754,6 +3559,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
         activity: 'working',
         activityDetail: 'background',
       })
+      expect(client.manager.workerIdle(created.sessionId)).toBe(false)
     }, { timeout: 10_000 })
     context.screens.set(created.sessionId, screenOf('claude-compacting-conversation.json'))
     context.runtimes.set(created.sessionId, {
@@ -3006,109 +3812,6 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(client.errors).toEqual([])
   }, 20_000)
 
-  /**
-   * The fact is keyed by the DIRECTORY, not by the session, which is the whole reason it is cheap:
-   * every session of one project stands in the same place, so ten of them cost one child process.
-   */
-  it('wears the working-copy fact of the directory it stands in, measured once for all of them', async () => {
-    const context = await world()
-    context.publishDescriptor()
-    const probed: string[] = []
-    const view = {
-      async detect(cwd: string) {
-        return {
-          id: 'git' as const,
-          root: cwd,
-          cwd,
-          scopeRelativePath: '.',
-          scopeUrl: null,
-          repositoryPathPrefix: null,
-        }
-      },
-      async dirty(detection: { cwd: string }) {
-        probed.push(detection.cwd)
-        return { ok: true as const, value: true }
-      },
-    }
-    const client = clientOf(context, {
-      vcsStatusView: view as unknown as NonNullable<SessionManagerDeps['vcsStatusView']>,
-    })
-    await client.manager.start()
-    await writable(client)
-
-    const projectPath = join(context.categoryRoot, 'Alpha')
-    const first = valueOf(await client.manager.createSession({
-      kind: 'shell',
-      directory: { mode: 'project', categoryId: 'code', projectPath },
-    }))
-    const second = valueOf(await client.manager.createSession({
-      kind: 'shell',
-      directory: { mode: 'project', categoryId: 'code', projectPath },
-    }))
-
-    await vi.waitFor(
-      () => expect(sessionOf(client, first.sessionId)?.vcs).toEqual({ vcsId: 'git', dirty: true }),
-      { timeout: 10_000 },
-    )
-    expect(sessionOf(client, second.sessionId)?.vcs).toEqual({ vcsId: 'git', dirty: true })
-    expect(new Set(probed).size).toBe(1)
-    expect(client.errors).toEqual([])
-  }, 20_000)
-
-  /**
-   * The strictest half of the speed budget: with nothing on screen there is nobody to draw a mark
-   * for, so no working copy is measured at all. The worktree pass beside it is not this strict; this
-   * one is, because a probe is a child process per directory.
-   */
-  it('measures no working copy while no window is visible', async () => {
-    const context = await world()
-    context.publishDescriptor()
-    const probed: string[] = []
-    const view = {
-      async detect(cwd: string) {
-        return {
-          id: 'git' as const,
-          root: cwd,
-          cwd,
-          scopeRelativePath: '.',
-          scopeUrl: null,
-          repositoryPathPrefix: null,
-        }
-      },
-      async dirty(detection: { cwd: string }) {
-        probed.push(detection.cwd)
-        return { ok: true as const, value: true }
-      },
-    }
-    const client = clientOf(context, {
-      vcsStatusView: view as unknown as NonNullable<SessionManagerDeps['vcsStatusView']>,
-    })
-    await client.manager.start()
-    client.manager.setWindowVisible(false)
-    await writable(client)
-    const session = valueOf(await client.manager.createSession({
-      kind: 'shell',
-      directory: {
-        mode: 'project',
-        categoryId: 'code',
-        projectPath: join(context.categoryRoot, 'Alpha'),
-      },
-    }))
-
-    // Two hidden ticks would have been long past a visible one; nothing was asked.
-    await new Promise((resolve) => setTimeout(resolve, 4_000))
-    expect(probed).toEqual([])
-    expect(sessionOf(client, session.sessionId)?.vcs).toBeUndefined()
-
-    // And back on screen it catches up on the next tick rather than on the next window.
-    client.manager.setWindowVisible(true)
-    await vi.waitFor(
-      () => expect(sessionOf(client, session.sessionId)?.vcs).toEqual({ vcsId: 'git', dirty: true }),
-      { timeout: 10_000 },
-    )
-    expect(client.errors).toEqual([])
-  }, 30_000)
-
   describe('which repository worktrees are cut from', () => {
     /**
      * The wiring is asserted on DISK rather than by reading a private field, because the disk is the
@@ -3207,11 +3910,12 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
         writeFileSync(join(worktree?.worktreePath ?? '', `${file}.txt`), 'from the session\n', 'utf8')
         valueOf(await client.manager.finalizeSession(created.sessionId))
         mode = finishMode
-        valueOf(await client.manager.finalizeSession(created.sessionId))
+        expect(await client.manager.finalizeSession(created.sessionId)).toMatchObject({ ok: false, code: 'review-unavailable' })
+        valueOf(await client.manager.finishWorktreeSession(created.sessionId, { choice: 'commit', requestedBy: 'window',
+          selection: [join(worktree!.worktreePath, `${file}.txt`)], message: `Land ${file}` }))
         expect(existsSync(worktree?.worktreePath ?? '')).toBe(false)
-        // A landed merge takes the session with it, as Remove does.
         expect(sessionOf(client, created.sessionId)).toBeUndefined()
-        expect(await client.manager.worktreeOf(created.sessionId)).toMatchObject({ ok: false, code: 'not-found' })
+        expect(storedRecord(context, created.sessionId)).toBeUndefined()
       }
 
       await finishUnder('checkpoints', 'one')
@@ -3229,12 +3933,38 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
      * once and merges nothing, the worktree is held while they run, and their pass presses Finish
      * again, which merges and removes the session with its check run.
      */
+    it('waits for the live Git runtime to exit before committing the window selection', { timeout: 120_000 }, async () => {
+      const context = await world()
+      const stopping = handleStop(context, { exits: false })
+      context.publishDescriptor()
+      const client = clientOf(context, { exitClock: virtualClock().clock })
+      await client.manager.start()
+      await writable(client)
+      const project = await gitProject(context)
+      const created = valueOf(await client.manager.createSession({ kind: 'shell',
+        directory: { mode: 'project', categoryId: 'code', projectPath: project }, worktree: { slug: 'pp-u11-live' } }))
+      const path = sessionOf(client, created.sessionId)!.worktree!.worktreePath
+      writeFileSync(join(path, 'selected.txt'), 'approved work')
+      const press = { choice: 'commit' as const, requestedBy: 'window' as const,
+        selection: [join(path, 'selected.txt')], message: 'Approved after stopping' }
+      valueOf(await client.manager.finishWorktreeSession(created.sessionId, { choice: 'commit', requestedBy: 'window' }))
+      expect(stopping.calls()).toBe(0)
+      expect(await client.manager.finishWorktreeSession(created.sessionId, press)).toMatchObject({ ok: false, code: 'live-refused' })
+      expect(stopping.calls()).toBe(1)
+      expect(existsSync(join(project, 'selected.txt'))).toBe(false)
+      expect((await new GitInvoker().run(path, ['log', '-1', '--format=%s'])).stdout.trim()).toBe('base')
+      context.runtimes.set(created.sessionId, runtime(created.sessionId, { alive: false, exitCode: 0, exitedAt: Date.now() }))
+      valueOf(await client.manager.finishWorktreeSession(created.sessionId, press))
+      expect(existsSync(path)).toBe(false)
+      expect(readFileSync(join(project, 'selected.txt'), 'utf8')).toBe('approved work')
+    })
+
     it('runs the declared after checks before a Finish, and merges once they pass', {
       timeout: 120_000,
     }, async (runner) => {
       await skipWithoutGit(runner)
       const context = await world()
-      handleStop(context, { exits: true })
+      const stopping = handleStop(context, { exits: true })
       context.publishDescriptor()
       const client = clientOf(context)
       await client.manager.start()
@@ -3255,8 +3985,11 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       const worktreePath = sessionOf(client, created.sessionId)?.worktree?.worktreePath ?? ''
       writeFileSync(join(worktreePath, 'checked.txt'), 'from the session\n', 'utf8')
 
-      valueOf(await client.manager.finalizeSession(created.sessionId))
-      valueOf(await client.manager.finalizeSession(created.sessionId))
+      valueOf(await client.manager.finishWorktreeSession(created.sessionId, { choice: 'commit', requestedBy: 'window' }))
+      expect(sessionOf(client, created.sessionId)?.life).toBe('live')
+      expect(stopping.calls()).toBe(0)
+      valueOf(await client.manager.finishWorktreeSession(created.sessionId, { choice: 'commit', requestedBy: 'window',
+        selection: [join(worktreePath, 'checked.txt')], message: 'Checked changes' }))
       const runOf = () => client.manager.snapshot().sessions.find((session) => session.script?.parentId === created.sessionId)
       const runId = runOf()?.sessionId ?? ''
       expect(runOf()).toMatchObject({ script: { phase: 'after', scriptId: 'declared' }, life: 'live' })
@@ -3272,10 +4005,10 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
         .toHaveLength(1)
 
       context.runtimes.set(runId, runtime(runId, { alive: false, exitCode: 0, exitedAt: Date.now() }))
-      await vi.waitFor(() => expect(sessionOf(client, created.sessionId)).toBeUndefined(), { timeout: 20_000 })
+      await vi.waitFor(() => expect(sessionOf(client, created.sessionId)?.worktree).toBeUndefined(), { timeout: 20_000 })
       expect(readFileSync(join(project, 'checked.txt'), 'utf8')).toContain('from the session')
       expect(existsSync(worktreePath)).toBe(false)
-      expect(sessionOf(client, runId)).toBeUndefined()
+      await vi.waitFor(() => expect(sessionOf(client, runId)).toBeUndefined())
       // This fake Host answers an inspect without rows, so the run is settled without a log.
       expect(client.errors.filter((message) => !message.includes('nothing was installed')
         && !message.includes('settled without a saved log'))).toEqual([])

@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { RemoteControlDescriptor } from '../../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import {
@@ -16,6 +16,7 @@ describe('app-client-ui/app/remoteControl/remoteControlInstanceStore', () => {
   const roots: string[] = []
 
   afterEach(() => {
+    vi.restoreAllMocks()
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
   })
 
@@ -120,6 +121,32 @@ describe('app-client-ui/app/remoteControl/remoteControlInstanceStore', () => {
       .not.toBe(RemoteControlInstanceRegistry.fileOf(
         'identity-a', 'development', 'instance-b', 1_000,
       ))
+  })
+
+  it('prunes more than 256 crash registrations while retaining live, uncertain and foreign entries', () => {
+    const root = RemoteControlInstanceStoreTest.root(roots)
+    const registration = (id: string, pid: number) => RemoteControlInstanceRegistration.of(
+      { ...RemoteControlInstanceStoreTest.descriptor(id), pid }, join(root, `${id}.descriptor.json`))
+    const fileOf = (value: ReturnType<typeof registration>) => join(root,
+      RemoteControlInstanceRegistry.fileOf(value.configIdentity, value.runtimeChannel, value.instanceId, value.startedAt).split(/[\\/]/).at(-1)!)
+    for (let index = 0; index < 300; index++) {
+      const value = registration(`dead-${index}`, 100)
+      writeFileSync(fileOf(value), JSON.stringify(value))
+    }
+    const live = registration('live', 101), uncertain = registration('uncertain', 102)
+    writeFileSync(fileOf(live), JSON.stringify(live))
+    writeFileSync(fileOf(uncertain), JSON.stringify(uncertain))
+    writeFileSync(join(root, 'foreign.json'), JSON.stringify(registration('foreign', 100)))
+    vi.spyOn(process, 'kill').mockImplementation((pid) => {
+      if (pid === 100) throw Object.assign(new Error('dead'), { code: 'ESRCH' })
+      if (pid === 102) throw Object.assign(new Error('unknown'), { code: 'EPERM' })
+      return true
+    })
+    const current = registration('current', 103)
+    new RemoteControlInstanceStore(fileOf(current)).write(current)
+    expect(RemoteControlInstanceRegistry.readComplete(root).map((entry) => entry.instanceId).sort())
+      .toEqual(['current', 'foreign', 'live', 'uncertain'])
+    expect(existsSync(live.descriptorFile)).toBe(false)
   })
 })
 

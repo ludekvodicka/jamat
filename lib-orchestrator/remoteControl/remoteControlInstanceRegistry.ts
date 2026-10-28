@@ -92,6 +92,19 @@ export class RemoteControlInstanceRegistry {
     )
   }
 
+  /** Lease takeover needs a complete observation, unlike best-effort discovery. */
+  static readComplete(directory = RemoteControlInstanceRegistry.directory()): readonly RemoteControlInstanceRegistration[] {
+    const root = lstatSync(directory)
+    if (!root.isDirectory() || root.isSymbolicLink()) throw new Error('The instance registry is not a real directory')
+    const entries = readdirSync(directory, { withFileTypes: true })
+    if (entries.length > RemoteControlInstanceRegistry.entriesMaximumConst) throw new Error('The instance registry is incomplete')
+    return entries.map((entry) => {
+      const registration = entry.isFile() ? RemoteControlInstanceRegistry.readFile(join(directory, entry.name)) : null
+      if (registration === null) throw new Error(`Cannot verify instance registration ${entry.name}`)
+      return registration
+    })
+  }
+
   static fileOf(
     configIdentity: string,
     channel: RuntimeChannel,

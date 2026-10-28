@@ -6,6 +6,7 @@ import {
   type CommandId,
 } from '../../shared/commands'
 import { AppMenu } from './appMenu'
+import { BuiltInSnapins } from '../../../lib-orchestrator/snapins/builtInSnapinsView'
 
 const { menuMock } = vi.hoisted(() => ({ menuMock: { installs: 0 } }))
 
@@ -34,6 +35,8 @@ describe('app-client-ui/app/shell/appMenu', () => {
       (id) => dispatched.main.push(id),
       (id) => dispatched.renderer.push(id),
       (windowId) => focused.push(windowId),
+      BuiltInSnapins.all(),
+      (kind) => focused.push(`snapin:${kind}`),
     )
     return { menu, template: menu.buildTemplate(), dispatched, focused }
   }
@@ -55,6 +58,7 @@ describe('app-client-ui/app/shell/appMenu', () => {
 
   function commandItemsOf(template: MenuItemConstructorOptions[]): MenuItemConstructorOptions[] {
     return template
+      .filter((section) => section.label !== 'Tasks')
       .flatMap((section) => (Array.isArray(section.submenu) ? section.submenu : []))
       .filter((item) => item.type !== 'separator')
   }
@@ -70,10 +74,19 @@ describe('app-client-ui/app/shell/appMenu', () => {
     menuMock.installs = 0
   })
 
-  it('lays the sections out as File, Tab, View, Tools, Window, Debug', () => {
+  it('lays the sections out with a Tasks tail', () => {
     const { template } = build()
     expect(template.map((section) => section.label))
-      .toEqual(['File', 'Tab', 'View', 'Tools', 'Window', 'Debug'])
+      .toEqual(['File', 'Tab', 'View', 'Tasks', 'Tools', 'Window', 'Debug'])
+  })
+
+  it('opens the catalog snap-in and preserves Tasks when the window tail changes', () => {
+    const { menu, template, focused } = build()
+    expect(readOut(submenuOf(template, 'Tasks'))).toEqual(['Review todos'])
+    click(submenuOf(template, 'Tasks')[0])
+    expect(focused).toEqual(['snapin:review-todos'])
+    menu.updateWindowEntries([{ windowId: 'test', name: 'Test' }])
+    expect(readOut(submenuOf(menu.buildTemplate(), 'Tasks'))).toEqual(['Review todos'])
   })
 
   it('separates the groups of a section and nothing else', () => {
@@ -106,7 +119,7 @@ describe('app-client-ui/app/shell/appMenu', () => {
     expect(readOut(submenuOf(template, 'File')))
       .toEqual(['New Session', 'Historic sessions', 'New Remote Session', 'Settings', 'separator', 'Quit'])
     expect(readOut(submenuOf(template, 'Tools')))
-      .toEqual(['Remarkable', 'separator', 'Check for Updates…'])
+      .toEqual(['Usage', 'Remarkable', 'separator', 'Check for Updates…'])
     expect(readOut(submenuOf(template, 'Window'))).toEqual(['New Window', 'Window Settings'])
     expect(readOut(submenuOf(template, 'Debug')))
       .toEqual(['Debug Window', 'New Lifecycle Probe', 'Reload', 'separator', 'Restart App'])
@@ -208,7 +221,7 @@ describe('app-client-ui/app/shell/appMenu', () => {
       'debug.newProbe',
     ])
     expect(dispatched.main)
-      .toEqual(['app.checkForUpdates', 'window.new', 'debug.open', 'app.reload', 'app.restart'])
+      .toEqual(['tools.usage', 'app.checkForUpdates', 'window.new', 'debug.open', 'app.reload', 'app.restart'])
   })
 
   /**

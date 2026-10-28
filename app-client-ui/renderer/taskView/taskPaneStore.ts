@@ -1,3 +1,5 @@
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+
 import type { RemoteControlStepResult } from '../../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import type { SessionScriptOutput } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type {
@@ -16,6 +18,7 @@ export interface TaskPaneTarget {
 type TaskPaneReply<T> = Promise<IpcResult<RemoteControlStepResult<T>>>
 
 export interface TaskPanePorts {
+  openTerminal?(runId: string): Promise<string | null>
   transcript(request: { sessionId: string; subagentId: string; known?: string }): TaskPaneReply<SessionSubagentTranscript>
   shellOutput(request: { sessionId: string; shellId: string; known?: string }): TaskPaneReply<SessionShellOutput>
   scriptOutput(request: { sessionId: string; runId: string }): TaskPaneReply<SessionScriptOutput>
@@ -28,6 +31,22 @@ export type TaskPaneView =
   | Extract<SessionSubagentTranscript, { kind: 'transcript' }>
   | Extract<SessionShellOutput, { kind: 'output' }>
   | { kind: 'script'; output: SessionScriptOutput; error?: string }
+
+export function useTaskPane(target: TaskPaneTarget, ports: TaskPanePorts, visible: boolean): TaskPaneView {
+  const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === 'visible')
+  useEffect(() => {
+    const changed = (): void => setDocumentVisible(document.visibilityState === 'visible')
+    document.addEventListener('visibilitychange', changed)
+    return () => document.removeEventListener('visibilitychange', changed)
+  }, [])
+  const shown = visible && documentVisible
+  const identity = JSON.stringify(target)
+  const store = useMemo(() => new TaskPaneStore(target, ports, shown), [identity, ports])
+  const view = useSyncExternalStore((changed) => store.subscribe(changed), () => store.current())
+  useEffect(() => store.start(), [store])
+  useEffect(() => store.setVisible(shown), [store, shown])
+  return view
+}
 
 /**
  * The poll behind one open task item. It lives exactly as long as the item is the active one of

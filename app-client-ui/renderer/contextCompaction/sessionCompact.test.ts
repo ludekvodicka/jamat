@@ -6,6 +6,21 @@ import { TerminalInputRegistry } from '../shell/terminalInputRegistry'
 import { SessionCompact, type SessionCompactPorts } from './sessionCompact'
 
 describe('app-client-ui/renderer/contextCompaction/sessionCompact', () => {
+  it('focuses the remote target and sends both manual compact operations to its source', async () => {
+    const registry = new TerminalInputRegistry()
+    const localFocus = vi.fn(), sourceFocus = vi.fn()
+    registry.register('same', { writable: () => true, write: () => true, focus: localFocus })
+    registry.register('remote:["peer","same"]', { writable: () => true, write: () => true, focus: sourceFocus })
+    const noteManual = vi.fn(async () => ({ ok: true as const, value: undefined }))
+    const deliver = vi.fn(async () => ({ ok: true as const, value: { kind: 'delivered' as const, proof: 'working' as const } }))
+    const compact = new SessionCompact(registry, { noteManual, deliver, claimAutomatic: vi.fn(), cooldown: vi.fn(), reportError: vi.fn() })
+    expect(compact.manual('same', 'peer')).toBe(true)
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
+    expect(localFocus).not.toHaveBeenCalled()
+    expect(sourceFocus).toHaveBeenCalledOnce()
+    expect(noteManual).toHaveBeenCalledWith('same', 'peer')
+    expect(deliver).toHaveBeenCalledWith('same', 'peer')
+  })
   let inputs: TerminalInputRegistry
   let written: string[]
   let focuses: number

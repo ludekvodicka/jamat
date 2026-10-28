@@ -1,3 +1,4 @@
+import type { SessionFilePorts } from '../../shared/sessionWorkspace'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import type { FileDiffResult } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
@@ -58,6 +59,7 @@ export function useFileViewerDocument(
   sourceBaselineHint: FileViewerBaselineHint | undefined,
   changes: FileChangesViewModel,
   sessionWorkingTree: FileChangesWorkingTreeViewModel,
+  ports: SessionFilePorts,
   onDocument?: (
     document: FileViewerDocument,
     hint: FileViewerBaselineHint | undefined,
@@ -65,9 +67,9 @@ export function useFileViewerDocument(
   ) => void,
 ): FileViewerDocumentModel {
   const sourceKey = JSON.stringify(source)
-  const readScoped = useCallback(() => window.appClient.fileChanges.scopedWorkingTree(source), [sourceKey])
-  const scopedTree = useWorkingTreeChanges(source.sessionId, source.workingTree !== undefined, source.workingTree?.source, readScoped)
-  useEffect(() => { if (source.workingTree !== undefined) scopedTree.select(source.workingTree.source) }, [sourceKey])
+  const readScoped = useCallback(() => ports.changes.scopedWorkingTree(source), [sourceKey, ports.changes])
+  const scopedTree = useWorkingTreeChanges(source.sessionId, readScoped, source.workingTree !== undefined, source.workingTree?.source)
+  useEffect(() => { if (source.workingTree !== undefined) scopedTree.select(source.workingTree.source) }, [sourceKey, ports.changes])
   const workingTree = source.workingTree === undefined ? sessionWorkingTree : scopedTree
   const sourceBaselineHintKey = JSON.stringify(sourceBaselineHint ?? null)
   const [documentValue, setDocument] = useState<FileViewerDocument | null>(null)
@@ -98,11 +100,11 @@ export function useFileViewerDocument(
   useLayoutEffect(() => {
     opening.current += 1
     recoveredDiff.current = false
-  }, [sourceKey])
+  }, [sourceKey, ports.changes])
 
   const release = useCallback((documentId: string): void => {
-    void window.appClient.fileViewer.release(documentId)
-  }, [])
+    void ports.viewer.release(documentId)
+  }, [ports.viewer])
 
   const accept = useCallback((
     next: FileViewerDocument,
@@ -140,7 +142,7 @@ export function useFileViewerDocument(
     if (persist)
       writtenSource.current = JSON.stringify(next.source)
     onDocumentRef.current?.(next, hint, persist)
-  }, [release])
+  }, [release, ports.viewer])
 
   const request = useCallback((
     nextSource: FileViewerDocumentSource,
@@ -149,7 +151,7 @@ export function useFileViewerDocument(
   ): void => {
     const current = ++opening.current
     setError(null)
-    void window.appClient.fileViewer.restore(nextSource, true).then((answer) => {
+    void ports.viewer.restore(nextSource, true).then((answer) => {
       if (current !== opening.current) {
         if (answer.ok && answer.value.ok)
           release(answer.value.value.documentId)
@@ -175,7 +177,7 @@ export function useFileViewerDocument(
         setError(ErrorText.of(reason))
       }
     })
-  }, [release])
+  }, [release, ports.viewer])
 
   useEffect(() => {
     if (writtenSource.current === sourceKey) {
@@ -199,7 +201,7 @@ export function useFileViewerDocument(
       ownedDocumentId.current = null
       if (documentId !== null) release(documentId)
     }
-  }, [release])
+  }, [release, ports.viewer])
 
   useEffect(() => {
     setBaselineHint(sourceBaselineHint)
@@ -216,7 +218,7 @@ export function useFileViewerDocument(
     let alive = true
     if (keepingText.current) keepingText.current = false
     else setText(null)
-    void window.appClient.fileViewer.text(documentValue.documentId).then((answer) => {
+    void ports.viewer.text(documentValue.documentId).then((answer) => {
       if (!alive) return
       setText(answer.ok
         ? answer.value
@@ -249,7 +251,7 @@ export function useFileViewerDocument(
     }
     let alive = true
     setDiff(null)
-    void window.appClient.fileChanges.diff({
+    void ports.changes.diff({
       snapshotId: diffTarget.snapshotId,
       fileId: diffTarget.fileId,
       baselineId: diffTarget.baseline.baselineId,
@@ -277,7 +279,7 @@ export function useFileViewerDocument(
     setBaselineHint(target?.hint)
     if (target !== null)
       setMode('diff')
-  }, [])
+  }, [ports.viewer])
 
   /**
    * The diff is asked for again as well, and only the listing the chosen baseline came out of: a

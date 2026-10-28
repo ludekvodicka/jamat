@@ -51,6 +51,7 @@ export interface ProjectManagerDeps {
   /** Where a latched store, a failed sweep and a failed hook are reported; one line each. */
   onError: (message: string) => void
   claudeHome?: string
+  claudeHomes?: () => readonly string[]
   codexHome?: string
   /** How a project directory or a relocation leftover goes; Node's own `rm` when absent (`TreeRemoval`). */
   removeTree?: TreeRemove
@@ -115,7 +116,7 @@ export class ProjectManager {
       codexIndex: this.codexIndex,
       report,
     })
-    this.claudeSource = new ClaudeSessionSource({ claudeHome, locator: this.locator })
+    this.claudeSource = new ClaudeSessionSource({ claudeHome, homes: deps.claudeHomes, locator: this.locator })
     this.codexSource = new CodexSessionSource({ codexHome, index: this.codexIndex })
     const migrators: readonly ProviderHistoryMigrator[] = [
       new ClaudeHistoryMigrator({ claudeHome, locator: this.locator, report }),
@@ -192,11 +193,11 @@ export class ProjectManager {
 
   async listProjects(
     categoryId: string,
-    options?: { sort?: 'alpha' | 'recent'; signal?: AbortSignal },
+    options?: { sort?: 'alpha' | 'recent'; signal?: AbortSignal; fresh?: boolean },
   ): Promise<ProjectsOpResult<ProjectListResult>> {
     const category = this.catalog.runtimeCategory(categoryId)
     if (!category) return ProjectManager.categoryNotFound(categoryId)
-    const scan = await this.scanner.scan(category, { signal: options?.signal })
+    const scan = await this.scanner.scan(category, { signal: options?.signal, fresh: options?.fresh })
     const sort = options?.sort ?? 'alpha'
     let projects: ProjectEntry[]
     if (sort === 'alpha') projects = ProjectManager.byName(scan.entries)

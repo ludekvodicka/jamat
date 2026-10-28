@@ -1,6 +1,7 @@
 /* The sidebar is narrow and the tree is the surface the user reads all day: every row is one line,
    nothing wraps, and what overflows is cut rather than allowed to push the actions off the edge. */
 .jamat-sessions {
+  --sessions-tree-indent: 0px;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -189,10 +190,12 @@
   cursor: pointer;
 }
 
-/* One indent per level, applied to the container rather than to each row, so a row that is drawn
-   two ways (a session, and the same session as somebody's install) cannot indent differently. */
 .jamat-sessions__children {
+  --sessions-tree-parent-indent: var(--sessions-tree-indent);
   padding-left: var(--space-3);
+}
+.jamat-sessions__children > * {
+  --sessions-tree-indent: calc(var(--sessions-tree-parent-indent) + var(--space-3));
 }
 /* A sub-agent of the session above: read, not acted on, so it takes no hover and no pointer. The
    left padding matches a session row's border and padding, so the glyphs of both line up. */
@@ -210,7 +213,6 @@
 }
 .jamat-sessions__task-type {
   flex: none;
-  font-weight: 700;
   color: var(--color-text-2);
 }
 .jamat-sessions__task-description {
@@ -285,8 +287,13 @@
   align-items: center;
   gap: var(--space-1);
   padding: 2px var(--space-2) 2px 0;
-  color: var(--color-text-3);
+  color: var(--color-text-1);
   text-align: left;
+}
+/* Relative, so it follows the tree's font setting and stays a step above the session names. */
+.jamat-sessions__group > .jamat-sessions__label {
+  font-size: 1.05em;
+  font-weight: 600;
 }
 /* Hidden until the row is pointed at or reached by the keyboard, the same bargain the session actions
    make: a project row is read far more often than it is launched from. */
@@ -308,9 +315,13 @@
    own hit area: the arrow itself is 10px and nobody hits 10px reliably in a list this dense. */
 .jamat-sessions__twisty {
   display: flex;
+  flex: none;
   align-items: center;
+  justify-content: center;
   align-self: stretch;
-  padding: 2px var(--space-1) 2px var(--space-2);
+  box-sizing: border-box;
+  width: calc(var(--space-2) + 19px);
+  padding: 2px var(--space-1) 2px calc(var(--space-2) + 3px);
   font: inherit;
   line-height: 1;
   color: var(--color-text-5);
@@ -370,12 +381,22 @@
 .jamat-sessions__row[data-session-color='violet'] { background: var(--session-color-violet); }
 .jamat-sessions__row[data-session-color='magenta'] { background: var(--session-color-magenta); }
 .jamat-sessions__row[data-session-color='rose'] { background: var(--session-color-rose); }
-/* Inset shadows preserve the session background and keep selection from changing the row size. */
+/* Each children container captures its inherited indent before its nodes add a level.
+   Selection can then reach the sidebar edge without shifting text or covering state colours. */
 .jamat-sessions__row--in-front {
-  border-left-color: var(--color-accent);
+  border-left-color: transparent;
+}
+.jamat-sessions__row--in-front::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: 0 0 0 calc(-1 * var(--sessions-tree-indent) - 3px);
+  border-left: 3px solid var(--color-accent);
+  background: inherit;
   box-shadow:
     inset 0 -1px 0 color-mix(in srgb, var(--color-accent) 65%, transparent),
-    inset 0 0 0 100vmax color-mix(in srgb, var(--color-accent) 14%, transparent);
+    inset 0 0 0 100vmax color-mix(in srgb, var(--color-accent) 20%, transparent);
+  pointer-events: none;
 }
 /* This row's state changed: a swell of light that fades out on its own, so a person looking
    somewhere else catches the movement rather than the colour. Deliberately not the accent - that
@@ -407,8 +428,12 @@
 }
 /* A button, because clicking it opens the session's terminal. It keeps the look of the text it
    replaced: a row of buttons drawn as buttons would read as a toolbar rather than as a list. */
+/* The floor is the whole name up to 8em: the marks' shrink weight alone still took a sub-pixel from
+   the title, and any overflow at all makes the ellipsis replace the name's last characters. */
 .jamat-sessions__title {
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-width: calc-size(max-content, min(size, 8em));
   overflow: hidden;
   padding: 0;
   border: none;
@@ -421,6 +446,27 @@
   cursor: pointer;
 }
 
+/* The name is what a row is read by, so every mark beside it gives way first: a waiting row once
+   drew its state and its buttons and no name at all. The title still shrinks last, never first. */
+.jamat-sessions__row > :not(.jamat-sessions__title, .jamat-sessions__glyph, .jamat-sessions__actions, .jamat-sessions__flash) {
+  flex-shrink: 1000;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* A running Finish says so on its row; it gives way after the name, never first (Finish 072). */
+.jamat-sessions__row > .jamat-sessions__finish--running {
+  flex-shrink: 1;
+  min-width: max-content;
+  cursor: pointer;
+}
+
+/* Before the hover and disabled rules, so a pointed-at or inert name still reads as theirs. */
+.jamat-sessions__title[data-attention='false'] {
+  color: color-mix(in srgb, var(--color-text-1) 50%, var(--color-text-2));
+}
 .jamat-sessions__title:hover {
   color: var(--color-accent);
 }
@@ -474,6 +520,7 @@
    this file only turns each word into a token. That is what lets one character carry both what a
    session is doing and whether anything on it has gone unseen, without a second mark on the row. */
 .jamat-sessions__glyph {
+  flex: none;
   width: 12px;
   text-align: center;
 }
@@ -510,14 +557,6 @@
 .jamat-sessions__worktree-mark {
   font-weight: 700;
   letter-spacing: 0.06em;
-}
-.jamat-sessions__base {
-  padding: 0 3px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  color: var(--color-background);
-  background: var(--color-attention);
-  border-radius: 2px;
 }
 /* The library's one badge about a session's scripts. A button only where a terminal is behind it. */
 .jamat-sessions__script {
@@ -647,6 +686,7 @@ button.jamat-sessions__script:hover {
    still reveals them and clicking no longer does. */
 .jamat-sessions__actions {
   display: none;
+  flex: none;
   gap: 2px;
 }
 .jamat-sessions__row:hover .jamat-sessions__actions,

@@ -69,6 +69,13 @@ export class RateDebugModel {
       throw new Error(`Unknown rate debug input: ${JSON.stringify(input)}`)
   }
 
+  static accountsOf(status: RateMonitorDebugStatus, agentId?: RateAgentId) {
+    const accounts = status.accounts ?? (Object.keys(status.providers) as RateAgentId[]).map(id => ({
+      key: { agentId: id, accountId: 'main' }, label: 'Main', provider: status.providers[id], source: null,
+    }))
+    return accounts.filter(account => agentId === undefined || account.key.agentId === agentId)
+  }
+
   static titleOf(agentId: RateAgentId): string {
     if (agentId === 'claude')
       return 'Claude'

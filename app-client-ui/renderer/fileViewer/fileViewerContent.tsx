@@ -1,3 +1,4 @@
+import type { SessionFilePorts } from '../../shared/sessionWorkspace'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import type { FileDiffResult } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
@@ -16,6 +17,7 @@ import {
 import { FileViewerProtocolUrl } from '../../shared/fileViewerProtocol'
 import { ErrorText } from '../../shared/errorText'
 import { FileDiffView } from './fileDiffView'
+import { FilePropertyChanges } from './filePropertyChanges'
 import { FileHexView } from './fileHexView'
 import { FileHtmlView } from './fileHtmlView'
 import { FileViewerPath } from './fileViewerPath'
@@ -30,6 +32,7 @@ export interface FileViewerBaselineState {
 }
 
 export function FileViewerContent(props: {
+  ports: SessionFilePorts['viewer']
   document: FileViewerDocument
   mode: FileViewerViewMode
   text: FileViewerTextResult | null
@@ -38,9 +41,10 @@ export function FileViewerContent(props: {
   location?: FileViewerLocation
   onOpenSource(source: FileViewerDocumentSource): void
 }): React.JSX.Element {
+  const [exportError, setExportError] = useState<string | null>(null)
   let content: React.JSX.Element
-  if (props.mode === 'hex') content = <FileHexView documentId={props.document.documentId} />
-  else if (props.mode === 'preview') content = <FileMediaPreview document={props.document} />
+  if (props.mode === 'hex') content = <FileHexView ports={props.ports} documentId={props.document.documentId} />
+  else if (props.mode === 'preview') content = <FileMediaPreview ports={props.ports} document={props.document} />
   else if (props.mode === 'diff')
     content = (
       <FileDiffContent
@@ -54,7 +58,7 @@ export function FileViewerContent(props: {
     content = <FileRawContent result={props.text} location={props.location} />
   else if (props.mode === 'rendered')
     content = (
-      <FileRenderedContent
+      <FileRenderedContent ports={props.ports}
         document={props.document}
         result={props.text}
         location={props.location}
@@ -62,12 +66,14 @@ export function FileViewerContent(props: {
       />
     )
   else throw new Error(`Unknown file viewer mode: ${JSON.stringify(props.mode)}`)
-  return props.location === undefined
-    ? content
-    : <FileViewerLineReveal location={props.location}>{content}</FileViewerLineReveal>
+  const displayed = props.location === undefined ? content : <FileViewerLineReveal location={props.location}>{content}</FileViewerLineReveal>
+  return <>{props.ports.exportFile && <button type="button" onClick={() => {
+    void props.ports.exportFile!(props.document.documentId, props.document.name).then((answer) => setExportError(answer.ok ? null : answer.error))
+  }}>Save copy…</button>}{exportError && <p role="alert">{exportError}</p>}{displayed}</>
 }
 
 function FileRenderedContent(props: {
+  ports: SessionFilePorts['viewer']
   document: FileViewerDocument
   result: FileViewerTextResult | null
   location?: FileViewerLocation
@@ -84,23 +90,23 @@ function FileRenderedContent(props: {
    * The renders are not rare. Dragging the sidebar splitter commits one per pointer move.
    */
   const documentId = props.document.documentId
-  const drag = useFileViewerImageDrag(documentId)
+  const drag = useFileViewerImageDrag(documentId, props.ports)
   const documentPath = props.document.path
   const documentSource = props.document.source
   const onOpenSource = props.onOpenSource
   const resolveImage = useCallback(async (reference: string): Promise<string | null> => {
-    const answer = await window.appClient.fileViewer.relativeResource(documentId, reference)
+    const answer = await props.ports.relativeResource(documentId, reference)
     return answer.ok && answer.value.ok
       ? FileViewerProtocolUrl.resource(answer.value.value.resourceId)
       : null
-  }, [documentId])
+  }, [documentId, props.ports])
   const onLink = useCallback((reference: string): void => {
     if (reference.startsWith('#')) {
       document.getElementById(reference.slice(1))?.scrollIntoView({ block: 'start' })
       return
     }
     if (/^https?:/i.test(reference)) {
-      void window.appClient.fileViewer.openExternal(reference)
+      void props.ports.openExternal(reference)
       return
     }
     const path = FileViewerPath.resolve(documentPath, reference)
@@ -114,7 +120,7 @@ function FileRenderedContent(props: {
     return <MdExtRenderer source={source} resolveImage={resolveImage} onLink={onLink} />
   if (kind.kind === 'html')
     return (
-      <FileHtmlView
+      <FileHtmlView ports={props.ports}
         documentId={props.document.documentId}
         name={props.document.name}
         source={source}
@@ -305,7 +311,10 @@ function FileDiffContent(props: {
     return <p className="file-viewer-note">Loading the diff...</p>
   }
   if (!props.diff.ok) return <p className="file-viewer-error">{props.diff.code}: {props.diff.detail}</p>
-  if (props.diff.kind !== 'text') return <p className="file-viewer-note">{props.diff.detail}</p>
+  if (props.diff.kind !== 'text') return <>
+    {props.diff.properties && <FilePropertyChanges properties={props.diff.properties} />}
+    <p className="file-viewer-note">{props.diff.detail}</p>
+  </>
   const current = FileViewerText.value(props.text)
   return (
     <FileDiffView
@@ -316,16 +325,16 @@ function FileDiffContent(props: {
   )
 }
 
-function FileMediaPreview(props: { document: FileViewerDocument }): React.JSX.Element {
+function FileMediaPreview(props: { document: FileViewerDocument; ports: SessionFilePorts['viewer'] }): React.JSX.Element {
   const [url, setUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const fit = useFileViewerMediaFit(url)
-  const drag = useFileViewerImageDrag(props.document.documentId)
+  const drag = useFileViewerImageDrag(props.document.documentId, props.ports)
   useEffect(() => {
     let alive = true
     setUrl(null)
     setError(null)
-    void window.appClient.fileViewer.mediaResource(props.document.documentId).then((answer) => {
+    void props.ports.mediaResource(props.document.documentId).then((answer) => {
       if (!alive) return
       if (!answer.ok) setError(answer.error)
       else if (!answer.value.ok) setError(`${answer.value.code}: ${answer.value.detail}`)
@@ -373,7 +382,7 @@ function FileMediaPreview(props: { document: FileViewerDocument }): React.JSX.El
   else throw new Error(`Document cannot use preview mode: ${JSON.stringify(props.document.kind)}`)
 }
 
-function useFileViewerImageDrag(documentId: string): {
+function useFileViewerImageDrag(documentId: string, ports: Pick<SessionFilePorts['viewer'], 'startImageDrag'>): {
   onDragStart(event: React.DragEvent): void
   error: React.JSX.Element | null
 } {
@@ -382,7 +391,7 @@ function useFileViewerImageDrag(documentId: string): {
     event.preventDefault()
     event.stopPropagation()
     setFailure(null)
-    void window.appClient.fileViewer.startImageDrag(documentId).then((answer) => {
+    void ports.startImageDrag(documentId).then((answer) => {
       if (!answer.ok) setFailure({ documentId, detail: answer.error })
       else if (!answer.value)
         setFailure({ documentId, detail: 'The image is no longer available for dragging. Reload it and try again.' })

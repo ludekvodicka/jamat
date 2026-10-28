@@ -17,12 +17,14 @@ describe('lib-orchestrator/rateMonitor/rateMonitor', () => {
   const claudeFloorMillisecondsConst = 180_000
   const startClockConst = 1_000_000
   const created: string[] = []
+  const monitors: RateMonitor[] = []
 
   beforeEach(() => {
     vi.useFakeTimers()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    await Promise.all(monitors.splice(0).map(rate => rate.stop()))
     vi.useRealTimers()
     for (const directory of created.splice(0))
       rmSync(directory, { recursive: true, force: true })
@@ -65,6 +67,7 @@ describe('lib-orchestrator/rateMonitor/rateMonitor', () => {
       },
       source: {
         agentId,
+        minimumIntervalMilliseconds: { claude: 180_000, codex: 0 }[agentId],
         async read(): Promise<RateSourceReading> {
           fake.reads += 1
           if (fake.gated) await new Promise<void>((resolve) => { open = resolve })
@@ -109,6 +112,7 @@ describe('lib-orchestrator/rateMonitor/rateMonitor', () => {
       cacheFile: options.cacheFile ?? cacheFile(),
       now: () => clock,
     })
+    monitors.push(rate)
     if (captured === undefined) throw new Error('the monitor never asked for its sources')
     return {
       rate,
@@ -124,16 +128,17 @@ describe('lib-orchestrator/rateMonitor/rateMonitor', () => {
     }
   }
 
-  it('reads nothing while nothing is visible, and every provider the moment something is', async () => {
+  it('polls every 600 seconds while hidden and reuses the fresh answer when a window opens', async () => {
     const context = harness()
     await context.rate.start()
-    await context.elapse(pollMillisecondsConst * 2)
-    expect([context.claude.reads, context.codex.reads]).toEqual([0, 0])
+    await context.elapse(pollMillisecondsConst)
+    await context.elapse(pollMillisecondsConst)
+    expect([context.claude.reads, context.codex.reads]).toEqual([2, 2])
 
     context.rate.setWindowVisible(true)
     await context.elapse(0)
 
-    expect([context.claude.reads, context.codex.reads]).toEqual([1, 1])
+    expect([context.claude.reads, context.codex.reads]).toEqual([2, 2])
     expect(context.rate.snapshot().providers.claude).toEqual({
       kind: 'ok',
       fetchedAt: startClockConst + pollMillisecondsConst * 2,
@@ -158,7 +163,7 @@ describe('lib-orchestrator/rateMonitor/rateMonitor', () => {
     expect([context.claude.reads, context.codex.reads]).toEqual([2, 2])
   })
 
-  it('polls on the interval while visible and stops the moment nothing is', async () => {
+  it('keeps polling every 600 seconds after the window is hidden', async () => {
     const context = harness()
     await context.rate.start()
     context.rate.setWindowVisible(true)
@@ -168,8 +173,8 @@ describe('lib-orchestrator/rateMonitor/rateMonitor', () => {
     expect([context.claude.reads, context.codex.reads]).toEqual([2, 2])
 
     context.rate.setWindowVisible(false)
-    await context.elapse(pollMillisecondsConst * 3)
-    expect([context.claude.reads, context.codex.reads]).toEqual([2, 2])
+    for (let interval = 0; interval < 3; interval++) await context.elapse(pollMillisecondsConst)
+    expect([context.claude.reads, context.codex.reads]).toEqual([5, 5])
   })
 
   // Showing a window is not a reason to ask the same question again: only what one interval has left
@@ -655,4 +660,112 @@ describe('lib-orchestrator/rateMonitor/rateMonitor', () => {
       .toEqual({ kind: 'stale', fetchedAt: null, windows: [], reason: 'the source threw' })
     expect(context.rate.snapshot().providers.codex).toMatchObject({ kind: 'ok' })
   })
+  it('keeps each account floor, failure and main alias independent and updates accounts live', async () => {
+    let clock = startClockConst
+    const main = fakeSource('claude', [rateWindow(300, 40)])
+    const added = fakeSource('claude', [rateWindow(300, 10)])
+    let accountIds = ['main']
+    const rate = new RateMonitor({ configIdentity: 'accounts', channel: 'development', cacheFile: cacheFile(),
+      now: () => clock, onChanged: () => {}, onError: () => {},
+      accounts: async () => accountIds.map(accountId => ({ agentId: 'claude', accountId, label: accountId,
+        state: 'active', isMain: accountId === 'main', identity: null, profileProblem: null })),
+      sourceForAccount: account => ({ ...(account.accountId === 'main' ? main : added).source,
+        accountId: account.accountId, label: account.label }) })
+    await rate.start()
+    await rate.refresh()
+    clock += 60_000
+    accountIds = ['main', 'other']
+    await rate.refresh()
+    expect([main.reads, added.reads]).toEqual([1, 1])
+    expect(rate.snapshot().providers.claude).toEqual(rate.snapshot().accounts![0].state)
+    expect(rate.snapshot().accounts![1].state).toEqual({ kind: 'ok', fetchedAt: clock, windows: [rateWindow(300, 10)] })
+    clock += 120_000
+    main.reading = { kind: 'failed', reason: '401', oauthExpiresAt: null }
+    await rate.refresh()
+    expect([main.reads, added.reads]).toEqual([2, 1])
+    expect(rate.snapshot().accounts!.map(account => account.state.kind)).toEqual(['stale', 'ok'])
+    accountIds = ['main']
+    await rate.refresh()
+    expect(added.stops).toBe(1)
+    expect(rate.snapshot().accounts!.map(account => account.key.accountId)).toEqual(['main'])
+    await rate.stop()
+  })
+
+  it('accepts a fresh relay reading without a request and ignores older readings for that account', async () => {
+    const source = fakeSource('claude', [rateWindow(300, 1)])
+    let at = startClockConst - 100
+    const rate = new RateMonitor({ configIdentity: 'feed', channel: 'development', cacheFile: cacheFile(),
+      now: () => startClockConst, onChanged: () => {}, onError: () => {}, sources: () => [source.source],
+      readings: async () => [{ key: { agentId: 'claude', accountId: 'main' }, at, source: 'statusline', windows: [rateWindow(300, 37)] }] })
+    await rate.start()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(source.reads).toBe(0)
+    expect(rate.snapshot().accounts![0].source).toBe('statusline')
+    expect(rate.snapshot().providers.claude).toEqual({ kind: 'ok', fetchedAt: at, windows: [rateWindow(300, 37)] })
+    const revision = rate.snapshot().revision
+    at -= 100
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(rate.snapshot().revision).toBe(revision)
+    await rate.stop()
+  })
+
+  it('backfills rollout history behind a newer cache without rewinding the live reading', async () => {
+    const file = cacheFile(), source = fakeSource('codex', [rateWindow(300, 99)])
+    const cached = { fetchedAt: startClockConst - 100, windows: [rateWindow(300, 50)], extras: [] }
+    writeFileSync(file, JSON.stringify({ schemaVersion: 2, accounts: [
+      { key: { agentId: 'codex', accountId: 'main' }, entry: cached },
+    ] }))
+    const old = { key: { agentId: 'codex' as const, accountId: 'main' }, at: startClockConst - 400_000,
+      source: 'rollout' as const, windows: [rateWindow(300, 20)], backfill: true }
+    const rate = new RateMonitor({ configIdentity: 'rollout-feed', channel: 'development', cacheFile: file,
+      now: () => startClockConst, onChanged: () => {}, onError: () => {}, sources: () => [source.source],
+      readings: async () => [old] })
+    monitors.push(rate)
+    await rate.start()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(rate.snapshot().providers.codex).toEqual({ kind: 'ok', fetchedAt: cached.fetchedAt, windows: cached.windows })
+    expect(source.reads).toBe(0)
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(await rate.readHistory({ from: 0, to: startClockConst })).toEqual([
+      { ...old.key, at: old.at, source: old.source, windows: old.windows },
+    ])
+  })
+
+  it('hydrates only a newly added account, preserving fresh readings and floors of existing accounts', async () => {
+    const file = cacheFile()
+    writeFileSync(file, JSON.stringify({ schemaVersion: 1, providers: { claude: {
+      fetchedAt: 1000, windows: [rateWindow(300, 90)], extras: [] } }, attempts: { claude: 1000 } }))
+    let clock = startClockConst
+    const main = fakeSource('claude', [rateWindow(300, 20)])
+    const other = fakeSource('claude', [rateWindow(300, 30)])
+    let ids = ['main']
+    const rate = new RateMonitor({ configIdentity: 'cache-add', channel: 'development', cacheFile: file,
+      now: () => clock, onChanged: () => {}, onError: () => {},
+      accounts: async () => ids.map(accountId => ({ agentId: 'claude', accountId, label: accountId, state: 'active',
+        isMain: accountId === 'main', identity: null, profileProblem: null })),
+      sourceForAccount: account => ({ ...(account.accountId === 'main' ? main : other).source, accountId: account.accountId }) })
+    monitors.push(rate)
+    await rate.start()
+    await rate.refresh()
+    clock += 1000
+    ids = ['main', 'b']
+    await rate.refresh()
+    expect(main.reads).toBe(1)
+    expect(rate.snapshot().providers.claude).toEqual({ kind: 'ok', fetchedAt: startClockConst, windows: [rateWindow(300, 20)] })
+    expect(rate.debugStatus().providers.claude.lastAttemptAt).toBe(startClockConst)
+  })
+
+  it('estimates failed account samples and replaces the estimate with a new reading', async () => {
+    const context = harness()
+    await context.rate.start()
+    await context.rate.refresh()
+    context.claude.reading = { kind: 'failed', reason: 'expired', oauthExpiresAt: null }
+    await context.elapse(pollMillisecondsConst)
+    expect(context.rate.snapshot().accounts![0].estimated).toEqual({ estimated: true,
+      sampleAt: startClockConst, ageMilliseconds: pollMillisecondsConst, windows: [rateWindow(300, 40)] })
+    context.claude.reading = okReading([rateWindow(300, 15)])
+    await context.elapse(pollMillisecondsConst)
+    expect(context.rate.snapshot().accounts![0].estimated).toBeNull()
+  })
+
 })

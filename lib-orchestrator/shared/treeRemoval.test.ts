@@ -161,6 +161,48 @@ describe('lib-orchestrator/shared/treeRemoval', () => {
     expect(seen.some((progress) => progress.phase === 'deleting' && progress.done === progress.total)).toBe(false)
   })
 
+  it('says which file is held while it retries a held directory, then goes on once the holder lets go (UA1-J11-6)', async () => {
+    const fs = new FakeFs(treeConst)
+    let refusals = 2
+    const rm = fs.rm.bind(fs)
+    fs.rm = async (path, options) => {
+      if (path === 'C:\\t\\src\\deep' && refusals > 0) {
+        refusals -= 1
+        fs.calls.push(`rm ${path}`)
+        throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY', path: 'C:\\t\\src\\deep\\c.txt' })
+      }
+      return rm(path, options)
+    }
+    const seen: TreeRemovalProgress[] = []
+
+    await TreeRemoval.over(fs, { attempts: 4, delayMilliseconds: 1 })('C:\\t', (progress) => seen.push(progress))
+
+    expect(fs.nodes.size).toBe(0)
+    const held = seen.filter((progress) => progress.held !== undefined)
+    expect(held.map((progress) => progress.held)).toEqual([
+      { path: 'C:\\t\\src\\deep\\c.txt', code: 'EBUSY', attempt: 1, attempts: 4, delayMilliseconds: 1 },
+      { path: 'C:\\t\\src\\deep\\c.txt', code: 'EBUSY', attempt: 2, attempts: 4, delayMilliseconds: 1 },
+    ])
+    expect(held.every((progress) => progress.phase === 'deleting' && progress.total === 5)).toBe(true)
+    expect(seen.at(-1)).toEqual({ phase: 'deleting', done: 5, total: 5 })
+  })
+
+  it('gives up on a file still held after the last try and throws its error', async () => {
+    const fs = new FakeFs(treeConst)
+    const rm = fs.rm.bind(fs)
+    fs.rm = async (path, options) => {
+      if (path === 'C:\\t\\src\\deep') throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM', path: 'C:\\t\\src\\deep\\d.txt' })
+      return rm(path, options)
+    }
+    const seen: TreeRemovalProgress[] = []
+
+    await expect(TreeRemoval.over(fs, { attempts: 3, delayMilliseconds: 1 })('C:\\t', (progress) => seen.push(progress))).rejects.toThrow('EPERM')
+
+    expect(seen.filter((progress) => progress.held !== undefined).map((progress) => progress.held?.attempt)).toEqual([1, 2])
+    expect(fs.nodes.has('C:\\t\\src\\deep\\d.txt')).toBe(true)
+    expect(TreeRemoval.heldPolicyConst.attempts * TreeRemoval.heldPolicyConst.delayMilliseconds).toBeLessThanOrEqual(60_000)
+  })
+
   it('unlinks a link root or a file root with one rm and no walk, as one of one', async () => {
     for (const kind of ['link', 'file'] as const) {
       const fs = new FakeFs({ 'C:\\root': kind })

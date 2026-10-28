@@ -1,4 +1,5 @@
 import { WorktreeNaming } from '../../../../../lib-orchestrator/git/worktreeNaming'
+import type { AccountView } from '../../../../../lib-orchestrator/agentAccounts/agentAccountsApi.types'
 import { SessionTitle } from '../../../../../lib-orchestrator/sessionManager/records/sessionTitle'
 import type { ProviderSessionSummary } from '../../../../../lib-orchestrator/projectManager/projectManagerApi.types'
 import type {
@@ -9,6 +10,8 @@ import type {
   SessionCreateSpec,
   SessionHistoryOpenSpec,
   SessionSetupAgreement,
+  SessionWorktreeDirectory,
+  SessionWorktreePreview,
 } from '../../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { FlowCatalog } from '../flows/flowCatalog'
 import type { LauncherBinding } from '../launcherBinding'
@@ -38,7 +41,7 @@ export type CreateType =
 export type CreateSessionTarget = LauncherSessionPrefill
 
 /** Which row the cursor stands on. `↑↓` moves between them and `←→` chooses inside one. */
-export type CreateField = 'name' | 'type' | 'isolation' | 'agent' | 'model' | 'existingSessions'
+export type CreateField = 'name' | 'type' | 'isolation' | 'agent' | 'model' | 'account' | 'existingSessions'
 export type ExistingAgentFilter = SessionAgentId | 'all'
 
 export interface ExistingSessionSummary extends ProviderSessionSummary {
@@ -119,6 +122,16 @@ export interface CreateModelOption {
   note: string | null
 }
 
+/**
+ * Where a worktree of this card's directory would stand, read once from the library when Worktree
+ * is first chosen on this computer. `path` is the directory it was asked for.
+ */
+export type CreateWorktreePlace =
+  | { status: 'unread' }
+  | { status: 'loading'; path: string }
+  | { status: 'ready'; path: string; preview: SessionWorktreePreview }
+  | { status: 'refused'; path: string; detail: string }
+
 export interface CreateScreenState {
   binding: LauncherBinding
   /**
@@ -139,6 +152,9 @@ export interface CreateScreenState {
    * exactly as it did before this row existed.
    */
   modelId: string | null
+  accounts: readonly AccountView[]
+  accountId: string
+  accountChosen: boolean
   /**
    * The session this card was opened ON, or null. It leads the Continue/Fork list as a row of its
    * own, that type opens chosen with the cursor on it, and `mode` says which of the list's two
@@ -160,6 +176,7 @@ export interface CreateScreenState {
    */
   token: string | null
   worktree: boolean
+  worktreePlace: CreateWorktreePlace
   /**
    * `setup` is present only on `setup-not-acknowledged`, which is the one refusal a person can answer
    * from here: the library hands back the commands to show and the hash to answer with.
@@ -198,6 +215,12 @@ export type CreateScreenInput =
    * number.
    */
   | { input: 'numberLoaded'; projectPath: string; token: string | null }
+  /** `path` is the directory the answer is about, so a late one for another card is dropped. */
+  | {
+      input: 'worktreePreviewLoaded'
+      path: string
+      answer: { ok: true; preview: SessionWorktreePreview } | { ok: false; detail: string }
+    }
   | { input: 'moveField'; delta: number }
   | { input: 'setField'; field: CreateField }
   | { input: 'chooseType'; index: number }
@@ -219,6 +242,8 @@ export type CreateScreenInput =
     }
   | { input: 'retryDescribe' }
   | { input: 'chooseModel'; modelId: string | null }
+  | { input: 'accountsLoaded'; remoteEndpointId: string | null; accounts: readonly AccountView[] }
+  | { input: 'chooseAccount'; accountId: string }
   | { input: 'chooseExistingAgent'; agentId: ExistingAgentFilter }
   | { input: 'cycleAgent' }
   | { input: 'chooseIsolation'; worktree: boolean }
@@ -265,6 +290,8 @@ export type CreateScreenInput =
 export type CreateScreenEffect =
   /** Reads the next number without taking it, so a card that is opened and abandoned costs nothing. */
   | { effect: 'fetchNumber'; projectPath: string }
+  /** Where a worktree of the directory would stand and the number its session would take; takes nothing. */
+  | { effect: 'fetchWorktreePreview'; directory: SessionWorktreeDirectory }
   /**
    * The number is NOT in this effect. Taking it is a write, and the overlay does it immediately
    * before the create so the title and the slug are both built from what was actually allocated
@@ -281,6 +308,7 @@ export type CreateScreenEffect =
   | { effect: 'fetchRemoteSessions'; remoteEndpointId: string; projectPath: string }
   /** What that computer can start an agent on. Its own catalog: this one's would name the wrong CLIs. */
   | { effect: 'describeAgents'; remoteEndpointId: string }
+  | { effect: 'fetchAccounts'; remoteEndpointId: string | null }
   | { effect: 'openHistory'; spec: SessionHistoryOpenSpec }
   /**
    * Continue on a remote card: a running session only needs its tab drawing here, and an ended one
@@ -349,6 +377,9 @@ export class CreateScreenModel {
       source,
       models: { status: 'none' },
       modelId: null,
+      accounts: [],
+      accountId: 'main',
+      accountChosen: false,
       existingAgentFilter: 'all',
       existingSessions: null,
       remoteSessions: null,
@@ -357,6 +388,7 @@ export class CreateScreenModel {
       name: options?.name ?? '',
       token: null,
       worktree: false,
+      worktreePlace: { status: 'unread' },
       submitError: null,
       acknowledgeSetup: null,
       pendingCreate: null,
@@ -370,8 +402,9 @@ export class CreateScreenModel {
       return CreateScreenModel.step(
         { ...state, models: { status: 'loading' } },
         { effect: 'describeAgents', remoteEndpointId: endpoint },
+        { effect: 'fetchAccounts', remoteEndpointId: endpoint },
       )
-    const effects: CreateScreenEffect[] = []
+    const effects: CreateScreenEffect[] = [{ effect: 'fetchAccounts', remoteEndpointId: null }]
     // Only a catalog project is counted at all: the other two bindings name a directory, not a
     // project.
     if (binding.mode === 'project')
@@ -477,6 +510,13 @@ export class CreateScreenModel {
         return CreateScreenModel.step(state)
       return CreateScreenModel.step({ ...state, token: input.token })
     }
+    else if (input.input === 'worktreePreviewLoaded') {
+      const place = state.worktreePlace
+      if (place.status !== 'loading' || place.path !== input.path) return CreateScreenModel.step(state)
+      return CreateScreenModel.step({ ...state, worktreePlace: input.answer.ok
+        ? { status: 'ready', path: input.path, preview: input.answer.preview }
+        : { status: 'refused', path: input.path, detail: input.answer.detail } })
+    }
     else if (input.input === 'moveField') return CreateScreenModel.movedField(state, input.delta)
     else if (input.input === 'setField')
       return CreateScreenModel.step({ ...state, field: input.field })
@@ -503,6 +543,15 @@ export class CreateScreenModel {
     }
     else if (input.input === 'retryDescribe') return CreateScreenModel.retriedDescribe(state)
     else if (input.input === 'chooseModel') return CreateScreenModel.modelled(state, input.modelId)
+    else if (input.input === 'accountsLoaded') {
+      if (CreateScreenModel.endpointOf(state.target) !== input.remoteEndpointId) return CreateScreenModel.step(state)
+      const next = { ...state, accounts: input.accounts }
+      if (!CreateScreenModel.accountOptionsOf(next).some(account => account.accountId === next.accountId)) next.accountChosen = false
+      if (!next.accountChosen) next.accountId = CreateScreenModel.defaultAccountOf(next)
+      if (next.field === 'account' && !CreateScreenModel.fieldsOf(next).includes('account')) next.field = 'agent'
+      return CreateScreenModel.step(next)
+    }
+    else if (input.input === 'chooseAccount') return CreateScreenModel.accounted(state, input.accountId)
     else if (input.input === 'chooseExistingAgent')
       return CreateScreenModel.existingAgented(state, input.agentId)
     else if (input.input === 'cycleAgent') return CreateScreenModel.cycledAgent(state)
@@ -574,6 +623,8 @@ export class CreateScreenModel {
           agentId: state.agentId,
           mode: 'new',
           ...(model === undefined ? {} : { model }),
+          ...((state.accountChosen || state.accountId !== 'main') && CreateScreenModel.accountOptionsOf(state).some(account => account.accountId === state.accountId)
+            ? { accountId: state.accountId } : {}),
         },
         worktree,
         acknowledgeSetup,
@@ -644,6 +695,24 @@ export class CreateScreenModel {
     const slug = WorktreeNaming.slugOf(title)
     if (slug.length === 0) return null
     return { slug, folder: `${WorktreeNaming.folderNameConst}/${slug}` }
+  }
+
+  /**
+   * What the card draws for the worktree: the folder with the number the create will put in front,
+   * and the owner, once the library has said where the worktree would stand. `refusal` is the
+   * library's reason this directory takes no worktree.
+   */
+  static worktreeLineOf(state: CreateScreenState): {
+    folder: string
+    owner: { kind: SessionWorktreePreview['owner']; dir: string } | null
+    refusal?: string
+  } | null {
+    const place = state.worktreePlace
+    const preview = place.status === 'ready' ? place.preview : null
+    const shown = CreateScreenModel.worktreePreviewOf(state, state.token ?? preview?.token ?? null)
+    if (shown === null) return null
+    const owner = preview === null ? null : { kind: preview.owner, dir: preview.ownerDir }
+    return place.status === 'refused' ? { folder: shown.folder, owner, refusal: place.detail } : { folder: shown.folder, owner }
   }
 
   /**
@@ -751,7 +820,6 @@ export class CreateScreenModel {
     return [
       'Flows run where they were defined; this card starts on another computer.',
       'A plain tab lives outside the tree; the remote card starts tree sessions only.',
-      'Worktree isolation is set up on the target; use the CLI --worktree for now.',
       'The number belongs to that project on that computer, which names the session itself.',
       'The session opens in a tab here; nothing is opened on the target\'s own screen.',
     ]
@@ -765,8 +833,6 @@ export class CreateScreenModel {
    * back as the submit error.
    */
   static worktreeRefusal(state: CreateScreenState): string | null {
-    if (CreateScreenModel.endpointOf(state.target) !== null)
-      return 'worktree isolation is set up on the target computer'
     // The same rule the library keeps: a session opened out of this list runs where it already
     // runs, and a worktree belongs to the one session it was cut for.
     if (CreateScreenModel.typeOf(state).kind === 'existing')
@@ -934,23 +1000,23 @@ export class CreateScreenModel {
     [{ kind: 'raw' }, { kind: 'existing' }, { kind: 'shell' }]
 
   private static readonly fieldsConst: readonly CreateField[] =
-    ['name', 'type', 'isolation', 'agent']
+    ['name', 'agent', 'type', 'isolation']
   /**
    * The remote rows: name, type and agent - a worktree is set up on the target - plus the model. It
    * comes AFTER the agent because it is the agent's: the target answers per agent, and switching
    * agents drops whatever was chosen.
    */
   private static readonly remoteFieldsConst: readonly CreateField[] =
-    ['name', 'type', 'agent', 'model']
+    ['name', 'agent', 'type', 'isolation', 'model']
   private static readonly existingFieldsConst: readonly CreateField[] =
-    ['type', 'agent', 'existingSessions']
+    ['agent', 'type', 'existingSessions']
   /**
    * The same rows plus a name, for the one row of that list that can take one: a fork founds a new
    * session and gets to be called something. Every other row of it opens a session that is already
    * named - a resume brings back the very record, and a continue takes the conversation's own name.
    */
   private static readonly existingForkFieldsConst: readonly CreateField[] =
-    ['name', 'type', 'agent', 'existingSessions']
+    ['name', 'agent', 'type', 'existingSessions']
 
   /** The cursor walks only the rows that are drawn, which is what the screen shows. */
   static fieldsOf(state: CreateScreenState): readonly CreateField[] {
@@ -958,9 +1024,37 @@ export class CreateScreenModel {
       return CreateScreenModel.actingOn(state)?.mode === 'fork'
         ? CreateScreenModel.existingForkFieldsConst
         : CreateScreenModel.existingFieldsConst
-    if (CreateScreenModel.endpointOf(state.target) !== null)
-      return CreateScreenModel.remoteFieldsConst
-    return CreateScreenModel.fieldsConst
+    const fields = CreateScreenModel.endpointOf(state.target) !== null
+      ? CreateScreenModel.remoteFieldsConst : CreateScreenModel.fieldsConst
+    return CreateScreenModel.accountOptionsOf(state).length > 1 ? [...fields, 'account'] : fields
+  }
+
+  static accountOptionsOf(state: CreateScreenState): readonly AccountView[] {
+    const type = CreateScreenModel.typeOf(state)
+    if (type.kind === 'shell' || type.kind === 'existing') return []
+    else if (type.kind === 'raw' || type.kind === 'flow')
+      return state.accounts.filter(account => account.agentId === state.agentId && account.state === 'active')
+    else throw new Error(`Unknown create type: ${JSON.stringify(type satisfies never)}`)
+  }
+
+  static accountReasonOf(state: CreateScreenState): string | null {
+    const type = CreateScreenModel.typeOf(state)
+    if (type.kind === 'shell' || type.kind === 'existing') return null
+    else if (type.kind !== 'raw' && type.kind !== 'flow') throw new Error(`Unknown create type: ${JSON.stringify(type satisfies never)}`)
+    const choice = state.accounts.find(account => account.agentId === state.agentId && account.accountId === state.accountId)?.defaultChoice
+    if (!choice) return null
+    if (choice.noFreeAccount) return 'No account has free quota'
+    return choice.resetsAt ? `resets ${new Date(choice.resetsAt).toLocaleString()}` : null
+  }
+
+  private static defaultAccountOf(state: CreateScreenState): string {
+    return state.accounts.find(account => account.agentId === state.agentId && account.defaultChoice)?.accountId ?? 'main'
+  }
+
+  private static accounted(state: CreateScreenState, accountId: string): CreateScreenStep {
+    if (!CreateScreenModel.accountOptionsOf(state).some(account => account.accountId === accountId))
+      return CreateScreenModel.step(state)
+    return CreateScreenModel.step({ ...state, accountId, accountChosen: true, field: 'account' })
   }
 
   private static movedField(state: CreateScreenState, delta: number): CreateScreenStep {
@@ -995,6 +1089,12 @@ export class CreateScreenModel {
         ? CreateScreenModel.steppedExistingAgent(state, delta)
         : CreateScreenModel.agented(state, delta > 0 ? 'codex' : 'claude')
     else if (state.field === 'model') return CreateScreenModel.steppedModel(state, delta)
+    else if (state.field === 'account') {
+      const options = CreateScreenModel.accountOptionsOf(state)
+      const index = options.findIndex(account => account.accountId === state.accountId)
+      const account = options[Math.min(Math.max(index + delta, 0), options.length - 1)]
+      return account ? CreateScreenModel.accounted(state, account.accountId) : CreateScreenModel.step(state)
+    }
     else if (state.field === 'existingSessions') return CreateScreenModel.step(state)
     else
       throw new Error(`Unknown create field: ${JSON.stringify(state.field)}`)
@@ -1050,7 +1150,8 @@ export class CreateScreenModel {
       return CreateScreenModel.step(state)
     if (CreateScreenModel.agentRefusal(state) !== null) return CreateScreenModel.step(state)
     // The target answers per agent, so a model chosen for one is not a model the other has.
-    return CreateScreenModel.step({ ...state, agentId, modelId: null, field: 'agent' })
+    const next = { ...state, agentId, modelId: null, accountChosen: false, field: 'agent' as const }
+    return CreateScreenModel.step({ ...next, accountId: CreateScreenModel.defaultAccountOf(next) })
   }
 
   /** Only an id the target actually offered: anything else is a model chosen from a stale list. */
@@ -1113,7 +1214,13 @@ export class CreateScreenModel {
     // Turning it OFF is never refused: whatever the reason it cannot be on, off is always reachable.
     if (worktree && CreateScreenModel.worktreeRefusal(state) !== null)
       return CreateScreenModel.step(state)
-    return CreateScreenModel.step({ ...state, worktree, field: 'isolation' })
+    const next = { ...state, worktree, field: 'isolation' as const }
+    // Read on this computer only: a remote card's folders are that computer's to place.
+    if (!worktree || state.worktreePlace.status !== 'unread' || CreateScreenModel.endpointOf(state.target) !== null)
+      return CreateScreenModel.step(next)
+    const directory = CreateScreenModel.directoryOf(state.binding)
+    return CreateScreenModel.step({ ...next, worktreePlace: { status: 'loading', path: CreateScreenModel.pathOf(directory) } },
+      { effect: 'fetchWorktreePreview', directory })
   }
 
   /** A name that stops being one takes the worktree with it, rather than leaving an empty slug. */
@@ -1200,7 +1307,13 @@ export class CreateScreenModel {
       throw new Error(`Unknown create type: ${JSON.stringify(type)}`)
   }
 
-  private static directoryOf(binding: LauncherBinding): SessionCreateSpec['directory'] {
+  private static pathOf(directory: SessionWorktreeDirectory): string {
+    if (directory.mode === 'project') return directory.projectPath
+    else if (directory.mode === 'adHoc') return directory.path
+    else throw new Error(`Unknown worktree directory: ${JSON.stringify(directory satisfies never)}`)
+  }
+
+  private static directoryOf(binding: LauncherBinding): SessionWorktreeDirectory {
     if (binding.mode === 'project')
       return { mode: 'project', categoryId: binding.categoryId, projectPath: binding.projectPath }
     else if (binding.mode === 'adHoc')

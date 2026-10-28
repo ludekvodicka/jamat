@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -76,6 +76,129 @@ describe('lib-orchestrator/fileChangesManager/vcs/fileChangesVcsSvn', () => {
     })
   })
 
+  it('names where a moved file came from, as svn 1.14 writes it relative to the cwd, and keeps it an add', async () => {
+    const { root, cwd } = workingCopy()
+    const runner = new Runner((args) => detectionAnswer(root, args) ?? ok(`<?xml version="1.0"?>
+      <status><target path=".">
+        <entry path="src\\a.txt"><wc-status moved-to="src\\a2.txt" item="deleted" revision="1" props="none"/></entry>
+        <entry path="src\\a2.txt"><wc-status props="none" copied="true" moved-from="src\\a.txt" item="added"/></entry>
+        <entry path="src\\c.txt"><wc-status item="added" props="none" copied="true"/></entry>
+      </target></status>`))
+    const vcs = new FileChangesVcsSvn(runner)
+    const detected = (await vcs.detect(cwd))!
+
+    const status = await vcs.status(detected)
+    expect(status.ok && status.value.entries.map((entry) => [entry.repositoryPath, entry.status, entry.previousAbsolutePath, entry.previousRepositoryPath]))
+      .toEqual([
+        ['nested/src/a.txt', 'deleted', null, null],
+        ['nested/src/a2.txt', 'added', resolve(cwd, 'src', 'a.txt'), 'nested/src/a.txt'],
+        ['nested/src/c.txt', 'added', null, null],
+      ])
+  })
+
+  it('excludes only SVN-reported unversioned conflict files and retains versioned cleanup and unrelated names', async () => {
+    const { root, cwd } = workingCopy()
+    const vcs = new FileChangesVcsSvn(new Runner((args) => {
+      if (args[0] === 'info' && args[1] === '--xml') return ok(`<info><entry path="changed.ts" kind="file">
+        <conflict type="text"><prev-base-file>${join(cwd, 'changed.ts.r1')}</prev-base-file>
+        <prev-wc-file>${join(cwd, 'changed.ts.mine')}</prev-wc-file>
+        <cur-base-file>${join(cwd, 'changed.ts.r2')}</cur-base-file></conflict></entry></info>`)
+      return detectionAnswer(root, args) ?? ok(`<status><target path=".">
+        <entry path="changed.ts"><wc-status item="conflicted" props="none"/></entry>
+        <entry path="changed.ts.r1"><wc-status item="unversioned" props="none"/></entry>
+        <entry path="changed.ts.mine"><wc-status item="unversioned" props="none"/></entry>
+        <entry path="changed.ts.r2"><wc-status item="deleted" props="none"/></entry>
+        <entry path="unrelated.mine"><wc-status item="unversioned" props="none"/></entry>
+      </target></status>`)
+    }))
+    expect(await vcs.status((await vcs.detect(cwd))!)).toMatchObject({ ok: true, value: { entries: [
+      { absolutePath: join(cwd, 'changed.ts'), status: 'conflicted' },
+      { absolutePath: join(cwd, 'changed.ts.r2'), status: 'deleted' },
+      { absolutePath: join(cwd, 'unrelated.mine'), status: 'untracked' },
+    ] } })
+  })
+
+  it('refuses the changes list when SVN cannot identify conflict files', async () => {
+    const { root, cwd } = workingCopy()
+    const vcs = new FileChangesVcsSvn(new Runner((args) => {
+      if (args[0] === 'info' && args[1] === '--xml') return { code: 1, stdout: '', stderr: 'Working copy is locked', failure: null }
+      return detectionAnswer(root, args) ?? ok('<status><target path="."><entry path="changed.ts"><wc-status item="conflicted" props="none"/></entry></target></status>')
+    }))
+    expect(await vcs.status((await vcs.detect(cwd))!)).toMatchObject({ ok: false, detail: expect.stringContaining('Could not identify SVN conflict files') })
+  })
+
+  it('reads the BASE and working values of changed properties, of files, directories and the scope itself', async () => {
+    const { root, cwd } = workingCopy()
+    mkdirSync(join(cwd, 'src'))
+    writeFileSync(join(cwd, 'added.txt'), 'new\n', 'utf8')
+    const at = (name: string): string => name === '.' ? cwd : join(cwd, name)
+    const target = (name: string, properties: Record<string, string>): string => `<target path="${at(name)}">${Object.entries(properties)
+      .map(([key, value]) => `<property name="${key}">${value}</property>`).join('')}</target>`
+    const commands: string[][] = []
+    const vcs = new FileChangesVcsSvn(new Runner((args) => {
+      if (args[0] === 'proplist') {
+        commands.push(args)
+        return ok(args.includes('BASE')
+          ? `<properties>${target('changed.ts', { 'jamat:test': 'base', 'svn:eol-style': 'native', gone: 'old' })}
+            ${target('src', { 'svn:ignore': 'x&#13;\ny&#13;\n' })}</properties>`
+          : `<properties>${target('changed.ts', { 'jamat:test': 'w1-prop-only', 'svn:eol-style': 'native' })}
+            ${target('src', { 'svn:ignore': 'x&#13;\nz&#13;\n', 'svn:externals': '^/lib lib' })}
+            ${target('.', { root: 'set' })}${target('added.txt', { 'svn:mime-type': 'text/plain' })}</properties>`)
+      }
+      return detectionAnswer(root, args) ?? ok(`<status><target path=".">
+        <entry path="."><wc-status item="normal" props="modified" revision="2"/></entry>
+        <entry path="changed.ts"><wc-status item="normal" props="modified" revision="2"/></entry>
+        <entry path="src"><wc-status item="normal" props="modified" revision="2"/></entry>
+        <entry path="added.txt"><wc-status item="added" props="modified" revision="-1"/></entry>
+        <entry path="text.ts"><wc-status item="modified" props="normal" revision="2"/></entry>
+      </target></status>`)
+    }))
+
+    const result = await vcs.status((await vcs.detect(cwd))!)
+
+    expect(result).toEqual({ ok: true, value: { externalRoots: [], entries: [
+      expect.objectContaining({ absolutePath: cwd, properties: { changes: [{ name: 'root', before: null, after: 'set' }], detail: null } }),
+      expect.objectContaining({ absolutePath: at('changed.ts'), properties: { changes: [
+        { name: 'gone', before: 'old', after: null },
+        { name: 'jamat:test', before: 'base', after: 'w1-prop-only' },
+      ], detail: null } }),
+      expect.objectContaining({ absolutePath: at('src'), nodeKind: 'directory', properties: { changes: [
+        { name: 'svn:externals', before: null, after: '^/lib lib' },
+        { name: 'svn:ignore', before: 'x\r\ny\r\n', after: 'x\r\nz\r\n' },
+      ], detail: null } }),
+      expect.objectContaining({ absolutePath: at('added.txt'), status: 'added',
+        properties: { changes: [{ name: 'svn:mime-type', before: null, after: 'text/plain' }], detail: null } }),
+      expect.objectContaining({ absolutePath: at('text.ts'), status: 'modified' }),
+    ] } })
+    expect(result.ok && result.value.entries[4]).not.toHaveProperty('properties')
+    // BASE answers nothing for an added node, so both reads take every node.
+    expect(commands).toEqual([
+      ['proplist', '--xml', '--verbose', '--non-interactive', '--', `${cwd}@`, `${at('changed.ts')}@`, `${at('src')}@`, `${at('added.txt')}@`],
+      ['proplist', '--xml', '--verbose', '--non-interactive', '-r', 'BASE', '--', `${cwd}@`, `${at('changed.ts')}@`, `${at('src')}@`, `${at('added.txt')}@`],
+    ])
+  })
+
+  it('keeps the changes list and says why when property values cannot be read, and cuts a long value', async () => {
+    const { root, cwd } = workingCopy()
+    const long = 'v'.repeat(5_000)
+    let failing = true
+    const vcs = new FileChangesVcsSvn(new Runner((args) => {
+      if (args[0] === 'proplist')
+        return failing ? { code: 1, stdout: '', stderr: 'svn: E155037: locked', failure: null }
+          : ok(args.includes('BASE') ? '<properties></properties>'
+            : `<properties><target path="${join(cwd, 'changed.ts')}"><property name="big">${long}</property></target></properties>`)
+      return detectionAnswer(root, args) ?? ok(`<status><target path=".">
+        <entry path="changed.ts"><wc-status item="normal" props="modified" revision="2"/></entry></target></status>`)
+    }))
+    const detected = (await vcs.detect(cwd))!
+
+    expect(await vcs.status(detected)).toMatchObject({ ok: true, value: { entries: [{ status: 'modified',
+      properties: { changes: [], detail: expect.stringContaining('Property values could not be read: svn: E155037: locked') } }] } })
+    failing = false
+    expect(await vcs.status(detected)).toMatchObject({ ok: true, value: { entries: [{
+      properties: { changes: [{ name: 'big', before: null, after: `${'v'.repeat(4_000)}…` }], detail: 'Values longer than 4000 characters are cut.' } }] } })
+  })
+
   it('reads a literal file at depth empty without scanning the scope', async () => {
     const { root, cwd } = workingCopy()
     const path = join(cwd, 'name@file.ts')
@@ -123,6 +246,7 @@ describe('lib-orchestrator/fileChangesManager/vcs/fileChangesVcsSvn', () => {
 
   it('keeps nested external roots and their changed files', async () => {
     const { root, cwd } = workingCopy()
+    mkdirSync(join(cwd, 'shared/.svn'), { recursive: true })
     const vcs = new FileChangesVcsSvn(new Runner((args) => detectionAnswer(root, args) ?? ok(`
       <status><target path=".">
         <entry path="shared"><wc-status item="external" props="none"/></entry>
@@ -140,6 +264,35 @@ describe('lib-orchestrator/fileChangesManager/vcs/fileChangesVcsSvn', () => {
         expect.objectContaining({ absolutePath: join(cwd, 'shared/b.ts'), status: 'modified' }),
       ],
     } })
+  })
+
+  it('groups changed files by actual checkouts below an X container, including nested mounts', async () => {
+    const { root, cwd } = workingCopy()
+    const first = join(cwd, 'shared/library'), nested = join(first, 'vendor/nested'), second = join(cwd, 'shared/other')
+    for (const path of [first, nested, second]) mkdirSync(join(path, '.svn'), { recursive: true })
+    const vcs = new FileChangesVcsSvn(new Runner((args) => detectionAnswer(root, args) ?? ok(`<status><target path=".">
+      <entry path="shared"><wc-status item="external" props="none"/></entry>
+      <entry path="shared/library/a.ts"><wc-status item="modified" props="none"/></entry>
+      <entry path="shared/library/missing.ts"><wc-status item="deleted" props="none"/></entry>
+      <entry path="shared/library/vendor/nested/b.ts"><wc-status item="modified" props="none"/></entry>
+      <entry path="shared/other/new.ts"><wc-status item="unversioned" props="none"/></entry>
+    </target></status>`)))
+    expect(await vcs.status((await vcs.detect(cwd))!)).toMatchObject({ ok: true, value: {
+      externalRoots: [first, nested, second], entries: [
+        { absolutePath: join(first, 'a.ts') }, { absolutePath: join(first, 'missing.ts') },
+        { absolutePath: join(nested, 'b.ts') }, { absolutePath: join(second, 'new.ts') },
+      ],
+    } })
+  })
+
+  it('refuses changed files below an X container without checkout metadata', async () => {
+    const { root, cwd } = workingCopy()
+    const vcs = new FileChangesVcsSvn(new Runner((args) => detectionAnswer(root, args) ?? ok(`<status><target path=".">
+      <entry path="shared"><wc-status item="external" props="none"/></entry>
+      <entry path="shared/missing/a.ts"><wc-status item="modified" props="none"/></entry>
+    </target></status>`)))
+    expect(await vcs.status((await vcs.detect(cwd))!)).toMatchObject({ ok: false,
+      detail: expect.stringContaining('Could not identify the external working copy') })
   })
 
   function infoAnswer(entries: readonly { path: string; url: string; root?: string; wcRoot: string }[]): CommandOutcome {
@@ -216,6 +369,48 @@ describe('lib-orchestrator/fileChangesManager/vcs/fileChangesVcsSvn', () => {
     } })
   })
 
+  it('reads a baseline as the bytes svn printed, so a binary file keeps them', async () => {
+    const { root, cwd } = workingCopy()
+    const bytes = Buffer.from([0x89, 0x50, 0x00, 0xff, 0xfe, 0x80])
+    const asked: unknown[] = []
+    const vcs = new FileChangesVcsSvn({ run: async (_cwd: string, args: string[], options?: unknown) => {
+      const detected = detectionAnswer(root, args)
+      if (detected) return detected
+      asked.push(options)
+      return { ...ok(bytes.toString('utf8')), stdoutBytes: bytes }
+    } })
+    const detected = (await vcs.detect(cwd))!
+
+    const baseline = await vcs.readBaseline(detected, 'nested/changed.ts', { kind: 'svn-base', revision: 'BASE' })
+    expect(baseline.kind === 'content' && Buffer.isBuffer(baseline.content) && baseline.content.equals(bytes)).toBe(true)
+    expect(asked).toEqual([expect.objectContaining({ stdoutBytes: true })])
+  })
+
+  it('reads the BASE of a replaced file from the revision svn status names, since svn cat has no pristine for it', async () => {
+    const { root, cwd } = workingCopy()
+    const target = join(root, 'nested', 'changed.ts')
+    const calls: string[][] = []
+    const vcs = new FileChangesVcsSvn({ run: async (_cwd: string, args: string[]) => {
+      const detected = detectionAnswer(root, args)
+      if (detected) return detected
+      calls.push(args)
+      if (args[0] === 'cat' && args.includes('BASE'))
+        return { code: 1, stdout: '', stderr: `svn: E200009: '${target}' has no pristine version until it is committed`, failure: null }
+      if (args[0] === 'status')
+        return ok(`<?xml version="1.0"?><status><target path="${target}"><entry path="${target}"><wc-status item="replaced" revision="3" props="none"/></entry></target></status>`)
+      if (args[0] === 'cat') return { ...ok('incoming\n'), stdoutBytes: Buffer.from('incoming\n') }
+      throw new Error(JSON.stringify(args))
+    } })
+    const detected = (await vcs.detect(cwd))!
+
+    const baseline = await vcs.readBaseline(detected, 'nested/changed.ts', { kind: 'svn-base', revision: 'BASE' })
+    expect(baseline.kind === 'content' && baseline.content.toString()).toBe('incoming\n')
+    expect(calls.slice(1)).toEqual([
+      ['status', '--xml', '--depth', 'empty', '--non-interactive', '--', `${target}@`],
+      ['cat', '--non-interactive', '-r', '3', '--', `${target}@3`],
+    ])
+  })
+
   it('uses the local BASE target and repository URL for a selected revision', async () => {
     const { root, cwd } = workingCopy()
     const targets: string[] = []
@@ -237,71 +432,5 @@ describe('lib-orchestrator/fileChangesManager/vcs/fileChangesVcsSvn', () => {
       `${join(root, 'nested', 'changed.ts')}@`,
       'https://svn.example/repo/trunk/nested/changed.ts@',
     ])
-  })
-
-  /**
-   * What `svn status --ignore-externals` actually prints, checked against svn 1.14.5: the external
-   * itself as an `X` row and nothing else - no narration, because with that switch svn never
-   * descends into one. The fixture here used to carry that narration and a filter for it, so a test
-   * named after the filter passed over input the command under it cannot produce. CRLF, because that
-   * is what svn prints on the first target platform and the trimming has to survive it.
-   */
-  it('reads dirty from the cheap status probe and does not count the external itself', async () => {
-    const { root, cwd } = workingCopy()
-    const externalOnly = 'X       shared\r\n'
-    const runner = new Runner((args) => detectionAnswer(root, args) ?? ok(externalOnly))
-    const vcs = new FileChangesVcsSvn(runner)
-    const detected = await vcs.detect(cwd)
-
-    expect(await vcs.dirty(detected!)).toEqual({ ok: true, value: false })
-  })
-
-  // A bare carriage return is not a change. Without the trim it is a line of length one, and the
-  // working copy is marked dirty by a blank line.
-  it('does not read a blank line as a change', async () => {
-    const { root, cwd } = workingCopy()
-    const blank = '\r\n\r\n'
-    const runner = new Runner((args) => detectionAnswer(root, args) ?? ok(blank))
-    const vcs = new FileChangesVcsSvn(runner)
-    const detected = await vcs.detect(cwd)
-
-    expect(await vcs.dirty(detected!)).toEqual({ ok: true, value: false })
-  })
-
-  it('counts a change beside an external row, CRLF and all', async () => {
-    const { root, cwd } = workingCopy()
-    const changed = 'X       shared\r\nM       nested\\changed.ts\r\n'
-    const runner = new Runner((args) => detectionAnswer(root, args) ?? ok(changed))
-    const vcs = new FileChangesVcsSvn(runner)
-    const detected = await vcs.detect(cwd)
-
-    expect(await vcs.dirty(detected!)).toEqual({ ok: true, value: true })
-  })
-
-  it('counts an unversioned file as dirty, for parity with git', async () => {
-    const { root, cwd } = workingCopy()
-    const unversioned = `?       new.txt
-`
-    const runner = new Runner((args) => detectionAnswer(root, args) ?? ok(unversioned))
-    const vcs = new FileChangesVcsSvn(runner)
-    const detected = await vcs.detect(cwd)
-
-    expect(await vcs.dirty(detected!)).toEqual({ ok: true, value: true })
-  })
-
-  it('probes without the full-walk flags status uses', async () => {
-    const { root, cwd } = workingCopy()
-    const seen: string[][] = []
-    const runner = new Runner((args) => {
-      seen.push(args)
-      return detectionAnswer(root, args) ?? ok('')
-    })
-    const vcs = new FileChangesVcsSvn(runner)
-    await vcs.dirty((await vcs.detect(cwd))!)
-
-    const probe = seen.at(-1)!
-    expect(probe).toContain('--ignore-externals')
-    expect(probe).not.toContain('--xml')
-    expect(probe).not.toContain('infinity')
   })
 })

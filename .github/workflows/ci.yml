@@ -19,7 +19,8 @@ on:
 # and its tests import the module. app-client-ui skips only the Electron binary download: its tests
 # mock Electron and never launch it, while the remaining install scripts still prepare esbuild.
 #
-# NOT run here, deliberately: none of the `smoke:*` scripts and no packaging run. They spawn real
+# The preparation and update SVN matrices below use disposable local repositories. Other smoke
+# scripts and packaging are not run here. They spawn real
 # PTYs, boot a real Electron, open real listeners and download real runtimes, which a hosted runner
 # should not be paying for on every push. That coverage comes from two other places, and both run
 # before anything public moves:
@@ -39,7 +40,7 @@ jobs:
 
       - uses: actions/setup-node@v5
         with:
-          node-version: 22 # the repository's engines floor is >=22.16.0
+          node-version: 22.23.4 # tested security release; the engines floor is >=22.19.0
           cache: pnpm
           cache-dependency-path: "**/pnpm-lock.yaml" # one key over all five lockfiles
 
@@ -74,6 +75,36 @@ jobs:
 
       - name: Unit tests
         run: pnpm test
+
+      - name: Install SVN fixture tools
+        run: choco install sliksvn --no-progress -y
+
+      - name: Worktree preparation and update acceptance
+        shell: pwsh
+        run: |
+          $env:PATH += ';C:\Program Files\SlikSvn\bin'
+          node --import tsx scripts/smoke/svn-worktree.ts --matrix-preparation
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --import tsx scripts/smoke/svn-worktree.ts --matrix-update
+          exit $LASTEXITCODE
+
+  relay:
+    name: relay typecheck + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.23.4
+          cache: pnpm
+          cache-dependency-path: app-relay/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: app-relay
+      - run: pnpm install --frozen-lockfile
+        working-directory: lib-orchestrator
+      - run: pnpm typecheck && pnpm test && pnpm build
+        working-directory: app-relay
 
   # Secret scan - a post-push SAFETY NET for outside contributor PRs, NOT the primary defense.
   # It runs AFTER a push lands, so it cannot prevent a leak (a pushed secret is already exposed and

@@ -9,9 +9,11 @@ import { FileViewer } from '../../../lib-orchestrator/fileViewer/fileViewer'
 import type { FileChangesManager } from '../../../lib-orchestrator/fileChangesManager/fileChangesManager'
 import type { FileChangesWorkingTreeSnapshot } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import type { ConfigStore } from '../../../lib-orchestrator/configStore/configStore'
+import { FileChangesAccess } from '../fileChanges/fileChangesAccess'
 import { ServiceFileChangesIpc } from '../fileChanges/serviceFileChangesIpc'
 import type { SessionManager } from '../../../lib-orchestrator/sessionManager/sessionManager'
 import type { AppClientUiIpcInvokeMap } from '../../shared/appClientUiIpc'
+import { FileViewerAccess } from './fileViewerAccess'
 import { ServiceFileViewerIpc } from './serviceFileViewerIpc'
 
 const electronMock = vi.hoisted(() => ({
@@ -103,27 +105,25 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
       }),
     } as unknown as SessionManager
     new ServiceFileViewerIpc(
-      viewer,
-      sessions,
-      (value) => value === sender ? 'window-1' : null,
-      async (ownerId, source, supportsDiff) => {
+      viewer, new FileViewerAccess({ viewer, sessions,
+      restoreExternal: async (ownerId, source, supportsDiff) => {
         calls.push({ method: 'restoreExternal', args: [ownerId, source, supportsDiff] })
         return { ok: false, code: 'not-found', detail: 'x' }
       },
       // The shape `AppHub` wires: the register decides, and a detected path it does not hold is
       // refused rather than reopened.
-      async (ownerId, source, supportsDiff) => {
+      restoreDetected: async (ownerId, source, supportsDiff) => {
         calls.push({ method: 'restoreDetected', args: [ownerId, source, supportsDiff] })
         if (!openedByDetection.has(source.path))
           return { ok: false, code: 'proof-expired', detail: 'gone' }
         return viewer.openDetected(ownerId, source.sessionId, null, source.path, supportsDiff)
       },
-      (path) => openedByDetection.has(path),
-      async (ownerId, source) => {
+      allowsDetected: (path) => openedByDetection.has(path),
+      restoreWorkingTree: async (ownerId, source) => {
         calls.push({ method: 'restoreWorkingTree', args: [ownerId, source] })
         return { ok: false, code: 'not-found', detail: 'fixture' }
       },
-    ).initialize()
+    }), (value) => value === sender ? 'window-1' : null).initialize()
   })
 
   afterEach(async () => {
@@ -158,10 +158,10 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
     const sessions = { workingContext: async () => ({ ok: true, value: { sessionId: 'session-1', cwd, agent: null, worktree: null } }) } as unknown as SessionManager
     const workingTree = vi.fn(async () => ({ ok: true, value: snapshot }))
     const manager = { workingTree, fileAccess: () => ({ ok: true, value: { sessionId: 'session-1', cwd: scopeRoot, path, nodeKind: 'file' } }) } as unknown as FileChangesManager
-    const files = new ServiceFileChangesIpc(manager, viewer, sessions, {} as ConfigStore, () => 'window-1')
-    files.initialize()
-    new ServiceFileViewerIpc(viewer, sessions, () => 'window-1', vi.fn(), vi.fn(), () => false,
-      (owner, source) => files.restoreWorkingTree(owner, source)).initialize()
+    const files = new FileChangesAccess(manager, viewer, sessions, {} as ConfigStore)
+    new ServiceFileChangesIpc(files, () => 'window-1').initialize()
+    new ServiceFileViewerIpc(viewer, new FileViewerAccess({ viewer, sessions, restoreExternal: vi.fn(), restoreDetected: vi.fn(), allowsDetected: () => false,
+      restoreWorkingTree: (owner, source) => files.restoreWorkingTree(owner, source) }), () => 'window-1').initialize()
     await files.workingTree('window-1', 'session-1', 'svn', scopeRoot, true)
     const opened = await electronMock.handlers.get('fileChanges:open-file')!({ sender }, snapshot.snapshotId, 'changed') as {
       ok: true; value: { ok: true; value: import('../../../lib-orchestrator/fileViewer/fileViewerApi.types').FileViewerDocument }
@@ -177,7 +177,7 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
     // The fourth argument is r4361, "Read only the selected file when opening commit diffs": a scoped
     // restore narrows the scan to the one file instead of rescanning the whole scope root. Named here
     // rather than dropped, so the narrowing stays asserted.
-    expect(workingTree).toHaveBeenLastCalledWith({ sessionId: 'session-1', cwd: scopeRoot, agent: null, worktree: null }, 'svn', true, path)
+    expect(workingTree).toHaveBeenLastCalledWith({ sessionId: 'session-1', cwd: scopeRoot, agent: null, worktree: null }, 'svn', true, path, undefined)
     expect(await invoke('fileViewer:open-workspace', sender, 'session-1', path, true)).toMatchObject({ ok: true, value: { ok: false } })
     expect(await files.scopedWorkingTree('window-1', { ...document.source, path: join(cwd, 'unapproved.txt') })).toMatchObject({ ok: false })
   })
@@ -194,7 +194,7 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
       ? { ok: true as const, value: { path: log } }
       : { ok: false as const, code: 'not-found' as const, detail: `No proof for ${parentId}/${runId}` })
     const sessions = { scriptLogOf } as unknown as SessionManager
-    new ServiceFileViewerIpc(viewer, sessions, () => 'window-1', vi.fn(), vi.fn(), () => false, vi.fn()).initialize()
+    new ServiceFileViewerIpc(viewer, new FileViewerAccess({ viewer, sessions, restoreExternal: vi.fn(), restoreDetected: vi.fn(), allowsDetected: () => false, restoreWorkingTree: vi.fn() }), () => 'window-1').initialize()
 
     const restored = await invoke('fileViewer:restore', sender,
       { kind: 'scriptLog', sessionId: 'p', runId: 'r-saved', path: elsewhere }, true)

@@ -30,6 +30,8 @@ export type CommandId =
   | 'session.resume'
   | 'session.restart'
   | 'session.compact'
+  | 'session.showActions'
+  | 'session.finish'
   | 'session.commitSvn'
   | 'session.commitGit'
   | 'tab.openProjectFolder'
@@ -56,6 +58,7 @@ export type CommandId =
   | 'view.fileChanges'
   | 'view.fileBack'
   | 'view.maximizeToggle'
+  | 'tools.usage'
   | 'tools.remarkable'
 
 export type CommandMenuSection = 'file' | 'tab' | 'view' | 'tools' | 'window' | 'debug'
@@ -90,21 +93,23 @@ export type NewSessionPlace =
  * it declared, not `unknown`.
  */
 export interface CommandArgById {
-  'session.details': { sessionId?: string } | undefined
-  'session.setColor': { color: SessionColorName | null; sessionId?: string }
+  'session.details': { sessionId?: string; remoteEndpointId?: string } | undefined
+  'session.setColor': { color: SessionColorName | null; sessionId?: string; remoteEndpointId?: string }
   'session.newHere': { place: NewSessionPlace }
-  'session.newBeside': { sessionId?: string } | undefined
-  'session.newInClaude': { sessionId?: string } | undefined
-  'session.newInCodex': { sessionId?: string } | undefined
-  'session.fork': { sessionId?: string } | undefined
-  'session.resume': { sessionId?: string } | undefined
-  'session.restart': { sessionId?: string } | undefined
-  'session.compact': { sessionId?: string } | undefined
-  'session.commitSvn': { sessionId?: string } | undefined
-  'session.commitGit': { sessionId?: string } | undefined
-  'tab.openProjectFolder': { sessionId?: string } | undefined
-  'session.openInVsCode': { sessionId?: string } | undefined
-  'tab.copyProjectFolder': { sessionId?: string } | undefined
+  'session.newBeside': { sessionId?: string; remoteEndpointId?: string } | undefined
+  'session.newInClaude': { sessionId?: string; remoteEndpointId?: string } | undefined
+  'session.newInCodex': { sessionId?: string; remoteEndpointId?: string } | undefined
+  'session.fork': { sessionId?: string; remoteEndpointId?: string } | undefined
+  'session.resume': { sessionId?: string; remoteEndpointId?: string } | undefined
+  'session.restart': { sessionId?: string; remoteEndpointId?: string } | undefined
+  'session.compact': { sessionId?: string; remoteEndpointId?: string } | undefined
+  'session.showActions': { sessionId?: string; remoteEndpointId?: string } | undefined
+  'session.finish': { sessionId?: string; remoteEndpointId?: string } | undefined
+  'session.commitSvn': { sessionId?: string; remoteEndpointId?: string } | undefined
+  'session.commitGit': { sessionId?: string; remoteEndpointId?: string } | undefined
+  'tab.openProjectFolder': { sessionId?: string; remoteEndpointId?: string } | undefined
+  'session.openInVsCode': { sessionId?: string; remoteEndpointId?: string } | undefined
+  'tab.copyProjectFolder': { sessionId?: string; remoteEndpointId?: string } | undefined
   /**
    * The one session command that also works on a session of ANOTHER computer, which is why its
    * argument names an endpoint beside the session: the block is composed from what that computer
@@ -438,6 +443,15 @@ export class AppCommands {
       terminalSafe: true,
     },
     {
+      id: 'session.showActions', title: 'Show session actions', target: 'renderer', windowScope: 'any',
+      surfaces: ['contextMenu', 'sessionsTree'], contextMenuGroup: 1, terminalSafe: true,
+    },
+    // The tab's way to the row's Finish; the tree row draws its own Finish button and menu item.
+    {
+      id: 'session.finish', title: 'Finish…', target: 'renderer', windowScope: 'any',
+      surfaces: ['contextMenu'], contextMenuGroup: 1, terminalSafe: true,
+    },
+    {
       id: 'session.commitSvn', title: 'Commit (SVN)…', target: 'renderer', windowScope: 'any',
       surfaces: ['contextMenu', 'sessionsTree'], contextMenuGroup: 2, terminalSafe: true,
     },
@@ -713,6 +727,14 @@ export class AppCommands {
       accelerator: 'Ctrl+Shift+I',
       terminalSafe: true,
       role: 'toggleDevTools',
+    },
+    {
+      id: 'tools.usage',
+      title: 'Usage',
+      target: 'main',
+      menu: { section: 'tools', group: 0 },
+      surfaces: ['menu'],
+      terminalSafe: true,
     },
     {
       id: 'tools.remarkable',

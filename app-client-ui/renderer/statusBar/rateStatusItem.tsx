@@ -29,6 +29,7 @@ export interface RateStatusPorts {
  */
 export function RateStatusItem(props: {
   agentId: RateAgentId
+  accountId?: string
   ports: RateStatusPorts
   store: SnapshotStore<RateMonitorSnapshot>
 }): React.JSX.Element {
@@ -76,7 +77,7 @@ export function RateStatusItem(props: {
         <span className="jamat-rate__absent">usage …</span>
       </span>
     )
-  const reading = RateStatusModel.readingOf(state.snapshot, agentId, Date.now())
+  const reading = RateStatusModel.readingOf(state.snapshot, agentId, Date.now(), props.accountId)
   // Held rather than read off `reading` inside the handler: a const is what keeps the narrowing.
   const usageUrl = reading.usageUrl
   return (

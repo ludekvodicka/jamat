@@ -36,6 +36,7 @@ class SmokeVcsCommit extends SmokeHarness {
     await writeFile(message, 'Commit selected files\n\nPříliš žluťoučký kůň\n', 'utf8')
     await this.checkGit(message)
     await this.checkSvn(message)
+    await this.checkSvnNewProject(message)
     await this.checkSvnExternalBatch(message)
     await this.checkSvnUpdate(message)
     await this.checkExplicitScopes(message)
@@ -43,6 +44,46 @@ class SmokeVcsCommit extends SmokeHarness {
     await this.checkSvnGitIgnoredDirectory(message)
     await this.checkSvnNodeOnlyDirectory(message)
     console.log(`\nsmoke-vcs-commit: ${this.passed} checks passed`)
+  }
+
+  private async checkSvnNewProject(message: string): Promise<void> {
+    const repository = join(this.root, 'new-project-repository')
+    const created = await new CommandInvoker().run({ command: 'svnadmin', args: ['create', repository], cwd: this.root, env: process.env })
+    if (created.failure !== null || created.code !== 0) throw new Error(created.stderr)
+    const working = join(this.root, 'new-project-working')
+    await this.svnRun(this.root, ['checkout', pathToFileURL(repository).href, working])
+    for (const staged of [false, true]) {
+      const project = join(working, staged ? 'StagedProject' : 'NewProject')
+      await mkdir(join(project, 'src'), { recursive: true })
+      const source = join(project, 'src', 'main.ts')
+      await writeFile(source, 'export const ready = true\n')
+      await this.svnRun(working, ['add', '--depth', staged ? 'infinity' : 'empty', '--', `${project}@`])
+      const manager = new VersioningCommitManager({
+        messages: new VersioningCommitMessageStore(join(this.root, `new-project-messages-${staged}.json`), (detail) => console.error(detail)),
+        sessions: { worktreeAt: async () => null, workingContext: async () => ({ ok: true, value: { sessionId: 'new-project', cwd: project, agent: null, worktree: null } }) },
+        vcsStatus: new VcsStatusView(),
+        fileAccess: (_owner, snapshot, file) => this.files.fileAccess(snapshot, file),
+        snapshotOf: (_owner, snapshot) => this.files.workingSnapshot(snapshot),
+        git: this.commits, svn: this.svnCommits,
+        tortoise: { open: async () => { throw new Error('Unexpected Tortoise fallback') } }, onChanged: () => {},
+      })
+      const prepared = await manager.prepare('new-project', 'svn', project, null)
+      if (!prepared.ok) throw new Error(prepared.detail)
+      this.check('The first project commit keeps its added directory as the review scope', prepared.value.scopeRoot === project)
+      manager.attach(prepared.value.draftId, 'owner')
+      const read = await this.files.workingTree({ sessionId: 'new-project', cwd: project, agent: null, worktree: null }, 'svn', true)
+      if (!read.ok) throw new Error(read.detail)
+      const snapshot = manager.files('owner', prepared.value.draftId, read.value)
+      const result = await manager.run('owner', { draftId: prepared.value.draftId, snapshotId: snapshot.snapshotId,
+        fileIds: snapshot.entries.map((entry) => entry.fileId), message: await readFile(message, 'utf8') })
+      if (!result.ok) throw new Error(result.detail)
+      this.check(`The first project commit publishes ${staged ? 'staged' : 'untracked'} descendants from an added scope`,
+        result.revision === (staged ? '2' : '1')
+        && await this.svnRun(project, ['cat', `${pathToFileURL(repository).href}/${staged ? 'StagedProject' : 'NewProject'}/src/main.ts`]) === 'export const ready = true\n'
+        && manager.status(prepared.value.draftId)?.committedPaths?.includes(source) === true
+        && (await this.svnRun(project, ['status'])).trim() === '')
+      manager.release(prepared.value.draftId, 'owner')
+    }
   }
 
   private async gitRun(root: string, args: string[]): Promise<string> {
@@ -83,7 +124,7 @@ class SmokeVcsCommit extends SmokeHarness {
     await this.svnRun(working, ['delete', '--keep-local', '--', `${data}@`])
     const manager = new VersioningCommitManager({
       messages: new VersioningCommitMessageStore(join(this.root, 'kept-messages.json'), (detail) => console.error(detail)),
-      sessions: { workingContext: async () => ({ ok: true, value: { sessionId: 'kept', cwd: working, agent: null, worktree: null } }), settleVcs: () => {} },
+      sessions: { worktreeAt: async () => null, workingContext: async () => ({ ok: true, value: { sessionId: 'kept', cwd: working, agent: null, worktree: null } }) },
       vcsStatus: new VcsStatusView(),
       fileAccess: (_owner, snapshot, file) => this.files.fileAccess(snapshot, file),
       snapshotOf: (_owner, snapshot) => this.files.workingSnapshot(snapshot),
@@ -144,7 +185,7 @@ class SmokeVcsCommit extends SmokeHarness {
     await writeFile(join(group, 'Project', 'draft.txt'), 'unfinished\n')
     const manager = new VersioningCommitManager({
       messages: new VersioningCommitMessageStore(join(this.root, 'node-messages.json'), (detail) => console.error(detail)),
-      sessions: { workingContext: async () => ({ ok: true, value: { sessionId: 'node', cwd: working, agent: null, worktree: null } }), settleVcs: () => {} },
+      sessions: { worktreeAt: async () => null, workingContext: async () => ({ ok: true, value: { sessionId: 'node', cwd: working, agent: null, worktree: null } }) },
       vcsStatus: new VcsStatusView(),
       fileAccess: (_owner, snapshot, file) => this.files.fileAccess(snapshot, file),
       snapshotOf: (_owner, snapshot) => this.files.workingSnapshot(snapshot),
@@ -197,7 +238,7 @@ class SmokeVcsCommit extends SmokeHarness {
     await writeFile(join(working, '.git', 'info', 'exclude'), '/.aidocs/\n')
     const manager = new VersioningCommitManager({
       messages: new VersioningCommitMessageStore(join(this.root, 'ignored-messages.json'), (detail) => console.error(detail)),
-      sessions: { workingContext: async () => ({ ok: true, value: { sessionId: 'ignored', cwd: working, agent: null, worktree: null } }), settleVcs: () => {} },
+      sessions: { worktreeAt: async () => null, workingContext: async () => ({ ok: true, value: { sessionId: 'ignored', cwd: working, agent: null, worktree: null } }) },
       vcsStatus: new VcsStatusView(),
       fileAccess: (_owner, snapshot, file) => this.files.fileAccess(snapshot, file),
       snapshotOf: (_owner, snapshot) => this.files.workingSnapshot(snapshot),
@@ -286,7 +327,7 @@ class SmokeVcsCommit extends SmokeHarness {
     await writeFile(join(working, 'unchecked.txt'), 'unchecked edit\n')
     const manager = new VersioningCommitManager({
       messages: new VersioningCommitMessageStore(join(this.root, 'selection-messages.json'), (detail) => console.error(detail)),
-      sessions: { workingContext: async () => ({ ok: true, value: { sessionId: 'selection', cwd: origin, agent: null, worktree: null } }), settleVcs: () => {} },
+      sessions: { worktreeAt: async () => null, workingContext: async () => ({ ok: true, value: { sessionId: 'selection', cwd: origin, agent: null, worktree: null } }) },
       vcsStatus: new VcsStatusView(),
       fileAccess: (_owner, snapshot, file) => this.files.fileAccess(snapshot, file),
       snapshotOf: (_owner, snapshot) => this.files.workingSnapshot(snapshot),
@@ -501,7 +542,7 @@ class SmokeVcsCommit extends SmokeHarness {
     }
     const manager = new VersioningCommitManager({
       messages: new VersioningCommitMessageStore(join(this.root, 'batch-messages.json'), (detail) => console.error(detail)),
-      sessions: { workingContext: async () => ({ ok: true, value: { sessionId: 'batch', cwd: scope, agent: null, worktree: null } }), settleVcs: () => {} },
+      sessions: { worktreeAt: async () => null, workingContext: async () => ({ ok: true, value: { sessionId: 'batch', cwd: scope, agent: null, worktree: null } }) },
       vcsStatus: new VcsStatusView(),
       fileAccess: (_owner, snapshotId, fileId) => this.files.fileAccess(snapshotId, fileId),
       snapshotOf: (_owner, snapshotId) => this.files.workingSnapshot(snapshotId),

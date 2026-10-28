@@ -3,6 +3,7 @@ import { relative, resolve } from 'node:path'
 import { XMLParser } from 'fast-xml-parser'
 
 import { JsonShape } from '../shared/jsonShape'
+import { SvnExternalDefinitions } from './svnExternalDefinitions'
 import type {
   SvnAttribution,
   SvnConflictRow,
@@ -69,7 +70,7 @@ export class SvnWorktreeEvidence {
       const item = SvnWorktreeEvidence.itemOf(status['@_item'])
       const props = SvnWorktreeEvidence.propsOf(status['@_props'])
       const conflict = item === 'conflicted' || props === 'conflicted' || status['@_tree-conflicted'] === 'true'
-      return { kind: SvnWorktreeEvidence.kindOf(item, props), conflict, path: SvnWorktreeEvidence.relativeTo(root, path) }
+      return { kind: SvnWorktreeEvidence.kindOf(item, props), conflict, path: SvnWorktreeEvidence.relativeTo(root, path), ...(item === 'deleted' ? { deleted: true as const } : {}) }
     })
   }
 
@@ -90,8 +91,11 @@ export class SvnWorktreeEvidence {
    * checks out, placed at `own`. Paths outside `base` are dropped.
    */
   static loggedRows(xml: string, base: string, own: string): SvnLoggedRow[] {
-    const log = JsonShape.record(JsonShape.record(SvnWorktreeEvidence.parser.parse(xml))?.log)
-    if (log === null) throw new Error('svn log gave no <log> document')
+    const document = JsonShape.record(SvnWorktreeEvidence.parser.parse(xml))
+    if (document === null || document.log === undefined) throw new Error('svn log gave no <log> document')
+    // A log without entries parses to its whitespace: no commit in the range touched this path.
+    const log = JsonShape.record(document.log)
+    if (log === null) return []
     const rows: SvnLoggedRow[] = []
     for (const value of SvnWorktreeEvidence.list(log.logentry, 'logentry')) {
       const entry = SvnWorktreeEvidence.node(value, 'logentry')
@@ -102,7 +106,7 @@ export class SvnWorktreeEvidence {
         const changed = SvnWorktreeEvidence.text(path)
         let rel: string
         if (changed === base) rel = '.'
-        else if (changed.startsWith(`${base}/`)) rel = changed.slice(base.length + 1)
+        else if (changed.startsWith(`${base}/`)) rel = changed.slice(base.length + 1) || '.'
         else continue
         rows.push({ revision, action: SvnWorktreeEvidence.actionOf(path['@_action']), path: SvnWorktreeEvidence.place(own, rel) })
       }
@@ -162,6 +166,22 @@ export class SvnWorktreeEvidence {
       .map(({ path }) => SvnWorktreeEvidence.relativeTo(root, path))
   }
 
+  static updateProblems(xml: string, root: string, revision: number): string[] {
+    return SvnWorktreeEvidence.statusEntries(xml).flatMap(({ path, status }) => {
+      if (status['@_file-external'] === 'true' || status['@_item'] === 'external') return []
+      const item = status['@_item']
+      const incomplete = item === 'incomplete' || item === 'obstructed' || item === 'missing'
+        || status['@_switched'] === 'true'
+        || status['@_copied'] !== 'true' && (item === 'normal' || item === 'modified' || item === 'merged') && Number(status['@_revision']) !== revision
+      return incomplete ? [SvnWorktreeEvidence.relativeTo(root, path)] : []
+    })
+  }
+
+  static registeredFileExternal(xml: string): boolean {
+    const entries = SvnWorktreeEvidence.statusEntries(xml)
+    return entries.length === 1 && entries[0].status['@_file-external'] === 'true'
+  }
+
   /**
    * The externals whose definition names a revision (`-r N` or a peg `@N`), from `svn propget
    * svn:externals -R --xml` of the worktree, worktree-relative. Such a mount checks out an old
@@ -169,24 +189,10 @@ export class SvnWorktreeEvidence {
    * and the old `DIR [-r N] URL`.
    */
   static pinnedExternals(xml: string, root: string): string[] {
-    const properties = JsonShape.record(JsonShape.record(SvnWorktreeEvidence.parser.parse(xml))?.properties)
-    if (properties === null) throw new Error('svn propget gave no <properties> document')
-    const pinned: string[] = []
-    for (const value of SvnWorktreeEvidence.list(properties.target, 'target')) {
-      const target = SvnWorktreeEvidence.node(value, 'target')
-      const path = target['@_path']
-      if (typeof path !== 'string') throw new Error('svn propget gave a target without a path')
-      const own = SvnWorktreeEvidence.relativeTo(root, path)
-      for (const propertyValue of SvnWorktreeEvidence.list(target.property, 'property')) {
-        const property = SvnWorktreeEvidence.node(propertyValue, 'property')
-        if (property['@_name'] !== 'svn:externals') continue
-        for (const line of SvnWorktreeEvidence.text(property).split(/\r?\n/)) {
-          const definition = SvnWorktreeEvidence.externalOf(line)
-          if (definition?.pinned === true) pinned.push(own === '.' ? definition.dir : `${own}/${definition.dir}`)
-        }
-      }
-    }
-    return pinned
+    return Object.entries(SvnExternalDefinitions.properties(xml, root)).flatMap(([carrier, value]) =>
+      SvnExternalDefinitions.parse(carrier, value)
+        .filter((definition) => definition.revision !== undefined || SvnExternalDefinitions.peg(definition.url) !== undefined)
+        .map((definition) => SvnWorktreeEvidence.relativeTo(root, definition.path)))
   }
 
   /**
@@ -223,6 +229,24 @@ export class SvnWorktreeEvidence {
           return false
         default: throw new Error(`Unknown svn status kind ${String(row.kind satisfies never)}`)
       }
+    })
+  }
+
+  /**
+   * The changed paths a Finish leaves unpublished. The files svn writes beside a conflicted path
+   * (`.mine`, `.working`, `.r<N>`, `.merge-left.r<N>`, `.prej`, `dir_conflicts.prej`) belong to that
+   * conflict, so the path is named and they are not (UA1-J10-10).
+   */
+  static unpublished(changed: readonly SvnStatusRow[]): string[] {
+    const conflicted = changed.filter((row) => row.conflict).map((row) => row.path)
+    return changed.filter((row) => row.conflict || !SvnWorktreeEvidence.conflictFileOf(row.path, conflicted)).map((row) => row.path)
+  }
+
+  private static conflictFileOf(path: string, conflicted: readonly string[]): boolean {
+    return conflicted.some((owner) => {
+      if (path.startsWith(`${owner}.`) && /^\.(?:mine|working|r\d+|merge-(?:left|right)\.r\d+|prej)$/.test(path.slice(owner.length))) return true
+      const directory = owner === '.' ? '' : `${owner}/`
+      return path.startsWith(directory) && /^dir_conflicts(?:\.\d+)?\.prej$/.test(path.slice(directory.length))
     })
   }
 
@@ -398,29 +422,6 @@ export class SvnWorktreeEvidence {
     const action = logActions.find((known) => known === value)
     if (action === undefined) throw new Error(`Unknown svn log action: ${String(value)}`)
     return action
-  }
-
-  /** One line of an `svn:externals` value: its directory and whether it names a revision; null for a blank or a comment. */
-  private static externalOf(line: string): { dir: string; pinned: boolean } | null {
-    const tokens = line.trim().match(/"[^"]*"|\S+/g)?.map((token) => token.replace(/^"(.*)"$/, '$1')) ?? []
-    if (tokens.length === 0 || tokens[0].startsWith('#')) return null
-    const isUrl = (token: string): boolean => /^([a-z][a-z0-9+.-]*:\/\/|\^\/|\/\/|\/|\.\.\/)/i.test(token)
-    let revision = false
-    const rest: string[] = []
-    for (let index = 0; index < tokens.length; index += 1) {
-      const token = tokens[index]
-      if (token === '-r' && index + 1 < tokens.length) {
-        revision = true
-        index += 1
-      }
-      else if (/^-r\S+$/.test(token)) revision = true
-      else rest.push(token)
-    }
-    if (rest.length < 2) return null
-    const [first, second] = rest
-    const url = isUrl(first) ? first : second
-    const dir = isUrl(first) ? second : first
-    return { dir: dir.replace(/\\/g, '/').replace(/\/+$/, ''), pinned: revision || /@\d+$/.test(url) }
   }
 
   private static revisionOf(value: unknown): number {

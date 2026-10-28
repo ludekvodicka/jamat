@@ -1,7 +1,8 @@
-import { SessionGroups } from '../../lib-orchestrator/sessionManager/sessionGroups'
+import { SessionGroups, type SessionGroupDefinition } from '../../lib-orchestrator/sessionManager/sessionGroups'
+export type { SessionGroupDefinition } from '../../lib-orchestrator/sessionManager/sessionGroups'
 import type { ProjectBinding } from '../../lib-orchestrator/projectManager/projectManagerApi.types'
 import type { SessionGroup } from '../../lib-orchestrator/sessionManager/sessionManagerApi.types'
-import { PathText } from './pathText'
+import { SessionTreeHierarchy } from '../../lib-orchestrator/sessionManager/sessionTreeHierarchy'
 import { TerminalTargetCodec, type TerminalTarget } from './terminalTarget'
 
 export type { SessionGroup }
@@ -9,18 +10,6 @@ export type { SessionGroup }
 export interface SessionGroupAssignment {
   key: string
   group: SessionGroup
-}
-
-/**
- * One section of the sessions tree: the id an assignment names, and the heading a person reads.
- *
- * Two fields rather than one because they are typed by different people. The id is written on a
- * command line and lives in two files, so it is lowercase and never changes once a group exists; the
- * title is what the section is called and can be rewritten whenever the person wants a better word.
- */
-export interface SessionGroupDefinition {
-  id: SessionGroup
-  title: string
 }
 
 /** What a save answers, letter for letter the store's own codes, in this package's type. */
@@ -42,8 +31,8 @@ export type SessionGroupsSaveResult =
  * read above a person's own work and which below.
  */
 export class SessionsGroupsState {
-  static readonly adHocRootConst = 'root:adhoc'
-  static readonly noProjectRootConst = 'root:none'
+  static readonly adHocRootConst = SessionTreeHierarchy.adHocRootConst
+  static readonly noProjectRootConst = SessionTreeHierarchy.noProjectRootConst
   static readonly defaultsConst: readonly SessionGroupDefinition[] = [
     { id: 'pinned', title: 'Pinned' },
     { id: 'priority', title: 'Priority' },
@@ -53,7 +42,7 @@ export class SessionsGroupsState {
     { id: 'completed', title: 'Completed' },
     { id: 'blocked', title: 'Blocked' },
   ]
-  static readonly maxGroupsConst = 24
+  static readonly maxGroupsConst = SessionGroups.maxGroupsConst
 
   /**
    * What the Groups submenu calls a section. It is the title everywhere but `none`, where the
@@ -65,9 +54,7 @@ export class SessionsGroupsState {
   }
 
   static isDefinition(value: unknown): value is SessionGroupDefinition {
-    if (value === null || typeof value !== 'object') return false
-    const definition = value as { id?: unknown; title?: unknown }
-    return SessionGroups.isId(definition.id) && SessionGroups.isTitle(definition.title)
+    return SessionGroups.isDefinition(value)
   }
 
   /**
@@ -80,20 +67,7 @@ export class SessionsGroupsState {
 
   /** The same question as `isList`, answered with the sentence a refusal needs. */
   static problemOf(value: unknown): string | null {
-    if (!Array.isArray(value)) return 'session groups must be an array'
-    if (value.length > SessionsGroupsState.maxGroupsConst)
-      return `session groups must hold at most ${SessionsGroupsState.maxGroupsConst} groups`
-    const ids = new Set<string>()
-    for (const definition of value) {
-      if (!SessionsGroupsState.isDefinition(definition))
-        return `every session group needs an id (${SessionGroups.idRuleConst}) and a title of at most `
-          + `${SessionGroups.titleMaxLengthConst} characters`
-      if (ids.has(definition.id)) return `session group ${JSON.stringify(definition.id)} is listed twice`
-      ids.add(definition.id)
-    }
-    for (const id of SessionGroups.structuralConst)
-      if (!ids.has(id)) return `session groups must keep ${JSON.stringify(id)}`
-    return null
+    return SessionGroups.definitionsProblemOf(value)
   }
 
   /**
@@ -176,14 +150,11 @@ export class SessionsGroupsState {
   }
 
   static projectGroupOf(binding: ProjectBinding): { rootId: string; path: string | null } {
-    if (binding.kind === 'project') return { rootId: `category:${binding.categoryId}`, path: binding.projectPath }
-    else if (binding.kind === 'adHoc') return { rootId: SessionsGroupsState.adHocRootConst, path: binding.path }
-    else if (binding.kind === 'none') return { rootId: SessionsGroupsState.noProjectRootConst, path: null }
-    else throw new Error(`Unknown project binding: ${JSON.stringify(binding)}`)
+    return SessionTreeHierarchy.projectGroupOf(binding)
   }
 
   static projectKeyOf(rootId: string, path: string): string {
-    return `project:${rootId}/${PathText.comparable(path)}`
+    return SessionTreeHierarchy.projectKeyOf(rootId, path)
   }
 
   static keysOf(target: TerminalTarget, binding: ProjectBinding, namespace = ''): readonly string[] {

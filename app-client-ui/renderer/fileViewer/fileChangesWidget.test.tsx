@@ -75,7 +75,7 @@ describe('app-client-ui/renderer/fileViewer/fileChangesWidget', () => {
     ;(window as unknown as { appClient: unknown }).appClient = { fileChanges: { openFile } }
     const onOpen = vi.fn()
     const reload = vi.fn(async () => fresh)
-    const view = render(<FileChangesWidget model={{ ...modelOf(stale), groups: stale.history.groups, reload }} onOpen={onOpen} />)
+    const view = render(<FileChangesWidget openFile={window.appClient?.fileChanges?.openFile ?? vi.fn()} release={window.appClient?.fileViewer?.release ?? vi.fn()} model={{ ...modelOf(stale), groups: stale.history.groups, reload }} onOpen={onOpen} />)
     fireEvent.click(view.container.querySelector<HTMLButtonElement>('details button')!)
     await waitFor(() => expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({
       snapshot: fresh, fileId: 'fresh-history-file', baselineHint: { kind: 'git-commit', revision: 'abc' },
@@ -94,10 +94,11 @@ describe('app-client-ui/renderer/fileViewer/fileChangesWidget', () => {
       'added', 'modified', 'deleted', 'renamed', 'replaced',
       'copied', 'untracked', 'conflicted', 'missing', 'obstructed',
     ]
-    const marks = statuses.map((status) => FileChangesStatusMark.of(status))
-
-    expect(new Set(marks).size, marks.join()).toBe(statuses.length)
-    expect(() => FileChangesStatusMark.of('exploded' as FileChangeStatus))
+    for (const conventions of ['svn', 'git'] as const) {
+      const marks = statuses.map((status) => FileChangesStatusMark.of(status, conventions))
+      expect(new Set(marks).size, marks.join()).toBe(statuses.length)
+    }
+    expect(() => FileChangesStatusMark.of('exploded' as FileChangeStatus, 'svn'))
       .toThrow(/Unknown file change status/)
   })
 
@@ -175,7 +176,7 @@ describe('app-client-ui/renderer/fileViewer/fileChangesWidget', () => {
     }
     const onOpen = vi.fn()
     const view = render(
-      <FileChangesWidget model={modelOf(snapshotOf())} onOpen={onOpen} />,
+      <FileChangesWidget openFile={window.appClient?.fileChanges?.openFile ?? vi.fn()} release={window.appClient?.fileViewer?.release ?? vi.fn()} model={modelOf(snapshotOf())} onOpen={onOpen} />,
     )
     const rows = (): HTMLElement[] => [...view.container.querySelectorAll('button')]
       .filter((node): node is HTMLButtonElement => node.textContent?.includes('.ts') === true)
@@ -202,7 +203,7 @@ describe('app-client-ui/renderer/fileViewer/fileChangesWidget', () => {
           new Promise((resolve) => answers.set(fileId, resolve)),
       },
     }
-    const view = render(<FileChangesWidget model={modelOf(snapshotOf())} onOpen={vi.fn()} />)
+    const view = render(<FileChangesWidget openFile={window.appClient?.fileChanges?.openFile ?? vi.fn()} release={window.appClient?.fileViewer?.release ?? vi.fn()} model={modelOf(snapshotOf())} onOpen={vi.fn()} />)
     const rows = (): HTMLElement[] => [...view.container.querySelectorAll('button')]
       .filter((node): node is HTMLButtonElement => node.textContent?.includes('.ts') === true)
 
@@ -244,7 +245,7 @@ describe('app-client-ui/renderer/fileViewer/fileChangesWidget', () => {
       warnings: [],
     }
     const view = render(
-      <FileChangesWidget
+      <FileChangesWidget openFile={window.appClient?.fileChanges?.openFile ?? vi.fn()} release={window.appClient?.fileViewer?.release ?? vi.fn()}
         model={{
           snapshot,
           groups: [],

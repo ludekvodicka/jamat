@@ -1,0 +1,40 @@
+.session-actions { height: 100%; min-height: 0; overflow: auto; color: var(--color-text-1); font-size: var(--fs-base); }
+.session-actions__toolbar { position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2); background: var(--color-surface-raised); border-bottom: 1px solid var(--color-border-hairline); }
+.session-actions__toolbar[hidden] { display: none; }
+.session-actions__section { border-bottom: 1px solid var(--color-border-hairline); padding: var(--space-2); }
+.session-actions__heading { width: 100%; text-align: left; border: 0; padding: var(--space-1); color: inherit; background: var(--color-surface-control); font: inherit; font-weight: 600; cursor: pointer; }
+.session-actions__toggle { border: 0; background: transparent; color: var(--color-text-3); font: inherit; font-size: var(--fs-secondary); margin-left: var(--space-4); cursor: pointer; }
+.session-actions__body { height: auto; max-height: 50vh; min-height: 0; overflow: auto; margin: var(--space-1) var(--space-2); }
+.session-actions__body .task-view { max-height: 45vh; }
+.session-actions__body .task-view__entries { flex: 0 1 auto; }
+
+.session-actions__danger { color: var(--color-danger); border-color: var(--color-danger); }
+.session-actions__confirm { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.session-actions__confirm p { margin: 0; color: var(--color-text-2); font-size: var(--fs-secondary); }
+.session-actions--review { overflow: hidden; }
+.session-actions__section--review { height: 100%; min-height: 0; padding: 0; border: 0; }
+.session-actions__review { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; }
+.session-actions__review[hidden], .session-actions__section[hidden] { display: none; }
+.session-actions__review-header { display: flex; flex: none; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-2); border-bottom: 1px solid var(--color-border-hairline); }
+.session-actions__review > .commit-pane { flex: 1; height: auto; }
+.session-actions__review .commit-actions .workflow__action--primary:not(:disabled) { color: var(--color-text-1); background: var(--color-accent-strong); border-color: var(--color-accent); }
+.session-actions__missing { flex-basis: 100%; max-height: 6em; overflow: auto; overflow-wrap: anywhere; }
+.session-actions__missing p, .session-actions__missing ul { margin: 0; }
+.session-actions__missing ul { padding-left: var(--space-4); }
+.session-actions__review > .workflow__refusal { flex: none; padding: var(--space-2); max-height: 25%; overflow: auto; }
+.session-actions__review:focus, .session-actions__section > div:focus { outline: none; }
+
+/* One repository's label and message stay in view (`contain: size` keeps the others out of the editor's minimum); the rest scroll. */
+.session-actions__repositories { display: flex; flex-direction: column; gap: var(--space-2); flex: 1; min-height: calc(6lh + var(--space-1) + 2 * var(--space-2) + 2px); overflow: auto; contain: size; }
+.session-actions__repository { display: flex; flex-direction: column; gap: var(--space-1); }
+.session-actions__repository-message { display: flex; flex-direction: column; gap: var(--space-1); }
+.session-actions__repository-root { color: var(--color-text-3); font-size: var(--fs-secondary); overflow-wrap: anywhere; }
+.session-actions__repository-source { margin-left: var(--space-2); color: var(--color-text-3); font-size: var(--fs-secondary); }
+.session-actions__repository-message textarea { flex: none; min-height: 5lh; resize: vertical; background: var(--color-surface-sunken); color: var(--color-text-1); border: 1px solid var(--color-border-frame); padding: var(--space-2); font: inherit; }
+
+.session-actions__time { display: block; font-size: var(--fs-secondary); font-weight: normal; color: var(--color-text-3); }
+.worktree-validation { flex: none; max-height: 32vh; overflow: auto; padding: var(--space-2); border-bottom: 1px solid var(--color-border-hairline); font-size: var(--fs-secondary); }
+.worktree-validation p { margin: var(--space-1) 0; overflow-wrap: anywhere; }
+.worktree-validation form { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: end; }
+.worktree-validation label { display: flex; flex: 1; flex-direction: column; gap: var(--space-1); }
+.worktree-validation input { background: var(--color-surface-sunken); color: var(--color-text-1); border: 1px solid var(--color-border-frame); padding: var(--space-1); font: inherit; }

@@ -53,6 +53,8 @@ export class FinishAttention {
    */
   static keyOf(session: SessionInfo, sessions: readonly SessionInfo[]): string | null {
     const action = session.svnAction
+    const wait = session.worktreeView?.wait
+    if (wait !== undefined && action?.kind !== 'update-main') return `lifecycle:${wait.kind}:${wait.at}`
     if (action === undefined || action.kind === 'update-main') return null
     if (action.needs !== null) {
       const waiting = session.workflow?.rounds.flatMap((round) => round.steps).filter((step) => step.state === 'waits').at(-1)?.key
@@ -70,7 +72,7 @@ export class FinishAttention {
     return {
       sessionId: session.sessionId,
       title: `${action?.kind === 'discard' ? 'Discard' : 'Finish'} waits: ${session.title}`,
-      body: action?.summary ?? session.workflow?.summary ?? action?.needs ?? '',
+      body: session.worktreeView?.wait?.reason ?? action?.summary ?? session.workflow?.summary ?? action?.needs ?? '',
     }
   }
 }

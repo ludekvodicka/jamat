@@ -1,4 +1,6 @@
 import type { RateMonitorDebugStatus, RateMonitorSnapshot } from '../../lib-orchestrator/rateMonitor/rateMonitorApi.types'
+import type { AccountAgentId } from '../../lib-orchestrator/agentAccounts/agentAccountsApi.types'
+import type { SnapinKindState, SnapinsSettings, SnapinsSettingsView, SnapinView } from '../../lib-orchestrator/snapins/snapinsApi.types'
 import type { RemoteControlOperationMap } from '../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import type { SessionScriptOutput } from '../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type { SessionModelReading } from '../../lib-orchestrator/sessionModelReader/sessionModelReaderApi.types'
@@ -30,6 +32,21 @@ type Done = Record<string, never>
  * window calls against it through `renderer/ipc/appControl`, so the two cannot disagree.
  */
 export interface AppOperationMap {
+  'usage.tokens': { request: import('../../lib-orchestrator/tokenUsage/tokenUsageApi.types').TokenUsageQuery; response: import('../../lib-orchestrator/tokenUsage/tokenUsageApi.types').TokenUsageResult }
+  'usage.rescan': { request: Record<string, never>; response: Done }
+  'usage.history': { request: { agentId: 'claude' | 'codex'; from: number; to: number; burnHours: 1 | 3 | 6 }; response: import('../../lib-orchestrator/rateMonitor/usageApi.types').PoolSeries }
+  'usage.get': { request: Record<string, never>; response: import('../../lib-orchestrator/rateMonitor/usageApi.types').UsageSnapshot }
+  'accounts.add': { request: { agentId: AccountAgentId; label: string }; response: { accountId: string } }
+  'accounts.login': { request: { accountId: string }; response: { sessionId: string } }
+  'accounts.rename': { request: { accountId: string; label: string }; response: Done }
+  'accounts.setEnabled': { request: { accountId: string; enabled: boolean }; response: Done }
+  'accounts.remove': { request: { accountId: string }; response: Done }
+  'snapins.passWake': { request: { passDirectory: string }; response: { woken: true } }
+  'snapins.list': { request: Record<string, never>; response: { kinds: { kind: string; title: string; state: SnapinKindState }[] } }
+  'snapins.view': { request: { kind: string }; response: SnapinView }
+  'snapins.press': { request: { kind: string; actionId: string; itemKeys?: string[] }; response: { accepted: true } }
+  'snapins.settings.get': { request: Record<string, never>; response: SnapinsSettingsView }
+  'snapins.settings.save': { request: { settings: SnapinsSettings }; response: { saved: true } }
   'historicSessions.appJamat': {
     request: { lastUsedSince?: number | null }
     response: HistoricSessionGroup[]

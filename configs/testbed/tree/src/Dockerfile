@@ -1,12 +1,12 @@
 # Recognised by FILENAME, not by extension.
-FROM node:22.16.0-alpine AS build
+FROM amd64/node:24.22.1-trixie-slim AS build
 WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
 RUN corepack enable && pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm build
 
-FROM node:22.16.0-alpine
+FROM amd64/node:24.22.1-trixie-slim
 WORKDIR /app
 COPY --from=build /app/out ./out
 ENV NODE_ENV=production

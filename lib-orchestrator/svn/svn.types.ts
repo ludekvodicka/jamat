@@ -40,7 +40,13 @@ export type SvnWcProps = 'none' | 'normal' | 'modified' | 'conflicted'
  */
 export type SvnStatusKind = 'clean' | 'item' | 'props' | 'missing' | 'external'
 
+export interface SvnRemovalRow extends SvnStatusRow {
+  ignored: boolean
+  unversioned?: true
+}
+
 export interface SvnStatusRow {
+  deleted?: true
   kind: SvnStatusKind
   /** A text, property or tree conflict. */
   conflict: boolean
@@ -68,12 +74,34 @@ export interface SvnLoggedRow {
   path: string
 }
 
+export interface SvnLandingPath extends SvnLoggedRow {
+  repository: string
+  repositoryPath: string
+  root: string | null
+}
+
+export interface SvnLandingReceipt { repository: string; revision: number; paths?: readonly string[] }
+
+/** A local state of a working-copy node that an update leaves as it is. */
+export type SvnLocalItem = Exclude<SvnWcItem, 'normal' | 'modified' | 'none' | 'missing' | 'incomplete'>
+
+/** The person's local state of a landed path in the main copy, by its path below the main copy. */
+export interface SvnLandingLocal { path: string; item: SvnLocalItem }
+
+/** `local` is present when the person's own state of the first unproven path, not the distance to HEAD, keeps the landing unproven. */
+export interface SvnLandingProof { holds: boolean; reason?: string; local?: SvnLandingLocal }
+
 /** One commit as `svn log --xml` names it, for a brief that says what the other side did. */
 export interface SvnLogEntry {
   revision: number
   /** null when svn names none (an anonymous commit). */
   author: string | null
   message: string
+}
+
+export interface SvnCommitHistory extends SvnLogEntry {
+  date: number
+  paths: string[]
 }
 
 /**
@@ -186,6 +214,13 @@ export interface SvnReviewRoot extends SvnRoot {
   pinned: boolean
 }
 
+/** How many revisions of its own repository changed one working-copy root after its revision. */
+export interface SvnBehindRoot {
+  /** `SvnRoot.own`: `''` for the main copy itself, else the mount path. */
+  own: string
+  behind: number
+}
+
 /** What a proof needs of one root, read before its review. */
 export interface SvnRootBounds {
   /** Repository root URL. */
@@ -201,12 +236,6 @@ export interface SvnRootBounds {
 /** By `SvnRoot.own`. */
 export type SvnBounds = Readonly<Record<string, SvnRootBounds>>
 
-export interface SvnWorktreeFacts {
-  added: number
-  removed: number
-  changedFiles: number
-}
-
 /** svn's own kinds; `diverged` is Jamat's: a same-name file that keep-both left for a merge. */
 export type SvnConflictKind = 'text' | 'property' | 'tree' | 'diverged'
 /** svn's `reason` word of a tree conflict (`edit`, `obstruction`, ...), in Jamat's words. */
@@ -217,6 +246,8 @@ export type SvnTreeAction = 'edited' | 'added' | 'deleted' | 'replaced' | 'unrec
 export type SvnNodeKind = 'file' | 'dir' | 'none' | 'unrecognized'
 
 export interface SvnTreeFacts {
+  /** Older records describe update conflicts. A merge does not install its incoming tree into BASE. */
+  operation?: 'merge'
   reason: SvnTreeReason
   action: SvnTreeAction
   /** The `kind` of `<tree-conflict>`: the node in the working copy. */
@@ -225,8 +256,15 @@ export interface SvnTreeFacts {
   incomingKind: SvnNodeKind
   /** source-right: the revision the update brought. */
   incomingRevision: number | null
+  /** source-left: the revision before this unresolved conflict, even after the working copy advances. */
+  baseRevision?: number
   /** The local add has history (copy or move), so no rule may revert it. */
   localHistory: boolean
+  /**
+   * Where the moved node lives now, worktree-relative: the session's move target (`<moved-to>` of a
+   * `moved-away` victim) or, for an incoming delete, the place the other commits moved it to.
+   */
+  movedTo?: string
 }
 
 export interface SvnContentFacts {
@@ -234,6 +272,12 @@ export interface SvnContentFacts {
   unreadable: boolean
   /** Mine against theirs; null when one side is absent. */
   equal: 'bytes' | 'eol' | 'differs' | null
+  /**
+   * Differing readable text, merged three ways against the side before the update with line ends
+   * ignored (`SvnTextMerge`): `clean` when no change of one side overlaps the other's. Absent
+   * without the older side.
+   */
+  merge?: 'clean' | 'conflict'
   /** A directory obstruction: files on each side, and same-name files equal or not. */
   files?: { local: number; incoming: number; same: number; differing: number }
 }
@@ -244,7 +288,11 @@ export interface SvnPropertyFacts { name: string; older: string | null; mine: st
 export interface SvnConflictFact {
   /** Worktree-relative with '/'. */
   path: string
-  /** The first of tree, text, property that svn marks; `properties` lists the conflicted properties whatever it is. */
+  /**
+   * The first of tree, text, property that svn marks; `properties` lists the conflicted properties of a tree or
+   * property fact. A path svn marks with a text and a property conflict (no tree) is read as two facts, one of
+   * each kind, so each is settled by its own choice.
+   */
   kind: Exclude<SvnConflictKind, 'diverged'>
   /** false: read and listed, never passed to svn. */
   takesArgument: boolean
@@ -253,11 +301,16 @@ export interface SvnConflictFact {
   sidecars: string[]
   properties: SvnPropertyFacts[]
   content: SvnContentFacts | null
+  /**
+   * The BASE revision of the root of the working copy that holds the path: an external's own, not the
+   * worktree's. The incoming revision of a conflict whose tree facts name none.
+   */
+  rootRevision?: number
 }
 
 export type SvnConflictShape =
   | 'text-overlap' | 'text-same' | 'binary' | 'text-unreadable' | 'name-unsafe'
-  | 'mergeinfo' | 'line-list-property' | 'property-value' | 'externals'
+  | 'mergeinfo' | 'line-list-property' | 'property-value' | 'property-unknown' | 'externals'
   | 'obstructed-file' | 'obstructed-dir' | 'added-both' | 'kind-mismatch'
   | 'edit-vs-delete' | 'edit-vs-replace' | 'delete-vs-edit' | 'delete-vs-delete' | 'replace-or-case'
   | 'diverged' | 'drops-incoming' | 'unrecognized'
@@ -277,14 +330,21 @@ export interface SvnConflictPlan {
 /** One named step of an option; `SvnConflictResolutions.stepsOf` lists them per kind and option. */
 export type SvnConflictStepName =
   | 'save-local' | 'remove-saved' | 'revert-incoming' | 'put-back' | 'restore-saved'
-  | 'save-sidecars' | 'no-markers' | 'union-properties'
-  | 'accept-working' | 'accept-theirs-full' | 'accept-mine-full'
+  | 'save-sidecars' | 'write-merged' | 'no-markers' | 'union-properties'
+  | 'accept-working' | 'accept-theirs-full' | 'accept-mine-full' | 'accept-mine-conflict' | 'accept-incoming-move'
 
 /** How far an option got on one path: the first `done` steps ran; a resume starts after them. */
 export interface SvnConflictJournal { option: SvnConflictOption; done: number }
 
 /** One option on one conflicted path, as the executor runs it. */
 export interface SvnConflictApply {
+  actionId?: string
+  occurrenceId?: string
+  /**
+   * keep-both of a move, from the entry's facts: `away` applies the incoming edit to the session's
+   * move target, `incoming` applies the session's edit to the place the other commit moved the file to.
+   */
+  move?: 'away' | 'incoming'
   /** The working copy root; every svn call runs here. */
   root: string
   /** Every copy lands here before svn touches the path; an existing copy is never overwritten. */
@@ -297,6 +357,20 @@ export interface SvnConflictApply {
   properties?: readonly string[]
   /** BASE before the update, for a line list's value before it (`union`). */
   baseRevision?: number
+  /**
+   * Jamat's `merged` rule on text whose sides merge cleanly (`SvnContentFacts.merge`): the executor
+   * writes that merge over svn's markers first. A person's Merged press never sets it, so their own
+   * edit of the file is what gets accepted.
+   */
+  rebuild?: true
+  /**
+   * The other kind of conflict on this path (text beside property) is still open. svn resolves every
+   * kind of a path at once, so the option installs only its own side and leaves svn's mark; the
+   * settlement of the other kind resolves both.
+   */
+  held?: true
+  /** The root is a main copy, where no svn cleanup ever runs, not even of Jamat's own interrupted step. */
+  mainCopy?: true
   journal: SvnConflictJournal | null
   /** Before the next step starts: the journal so far and the same-name files the step left diverged. */
   onStep(journal: SvnConflictJournal, diverged: readonly string[]): Promise<void>
@@ -305,4 +379,10 @@ export interface SvnConflictApply {
 /** One row of status XML with its item state, for the guards. */
 export interface SvnItemRow { path: string; item: SvnWcItem; conflict: boolean; base: number }
 
-export interface SvnConflictRead { revision: number; facts: SvnConflictFact[]; rows: SvnItemRow[] }
+export interface SvnConflictRead {
+  revision: number
+  facts: SvnConflictFact[]
+  rows: SvnItemRow[]
+  /** Working-copy locks from the same status read; older readers provide no lock evidence. */
+  lockedPaths?: string[]
+}

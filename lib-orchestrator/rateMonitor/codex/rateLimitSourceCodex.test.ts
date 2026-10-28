@@ -106,4 +106,34 @@ describe('lib-orchestrator/rateMonitor/codex/rateLimitSourceCodex', () => {
 
     expect(child.killed).toBe(true)
   })
+
+  it('closes an added account child after every read and starts a fresh one for the next poll', async () => {
+    const server = new FakeCodexAppServer({ autoAnswer: true })
+    const source = new RateLimitSourceCodex({ onNudge: () => {}, keepAlive: false,
+      spawnImpl: server.spawnImpl, platform: 'linux', environment: { CODEX_HOME: '/added', CODEX_SQLITE_HOME: '/main' } })
+    sources.push(source)
+    const first = source.read()
+    await vi.waitFor(() => expect(server.child.stdin.ended).toBe(true))
+    expect(server.child.stdin.ended).toBe(true)
+    server.child.exit(0)
+    expect(await first).toMatchObject({ kind: 'ok' })
+    const second = source.read()
+    await vi.waitFor(() => expect(server.child.stdin.ended).toBe(true))
+    expect(server.children).toHaveLength(2)
+    expect(server.child.stdin.ended).toBe(true)
+    server.child.exit(0)
+    expect(await second).toMatchObject({ kind: 'ok' })
+    source.stop()
+    expect(await source.read()).toMatchObject({ kind: 'failed' })
+    expect(server.children).toHaveLength(2)
+  })
+
+  it('refuses an invalid added profile before starting a quota child', async () => {
+    const server = new FakeCodexAppServer({ autoAnswer: true })
+    const source = new RateLimitSourceCodex({ onNudge: () => {}, keepAlive: false, spawnImpl: server.spawnImpl,
+      beforeRead: async () => { throw new Error('Codex accounts require file credential storage') } })
+    sources.push(source)
+    expect(await source.read()).toEqual({ kind: 'failed', reason: 'Codex accounts require file credential storage', oauthExpiresAt: null })
+    expect(server.children).toHaveLength(0)
+  })
 })

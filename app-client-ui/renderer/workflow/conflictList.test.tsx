@@ -35,6 +35,38 @@ describe('app-client-ui/renderer/workflow/conflictList', () => {
     expect(screen.queryByText(/more not shown here/)).toBeNull()
   })
 
+  it('says on each settled row who chose which option, in the words of the library, and falls back to the actor of an older peer (UA1-J05-5)', () => {
+    render(<ConflictList summary="3 conflicts: worker fixed 1, merger fixed 1, you fixed 1" conflicts={{ more: 0, entries: [
+      entry('src/w.txt', 'settled', { by: 'agent', settled: 'fixed by the worker: Keep mine' }),
+      entry('src/m.txt', 'settled', { by: 'agent', settled: 'fixed by the merger: Merge' }),
+      entry('src/old.txt', 'settled', { by: 'agent' }),
+    ] }} ports={portsOf()} />)
+    const rows = within(screen.getByRole('region', { name: 'Fixed' })).getAllByRole('listitem')
+    expect(rows.map((row) => row.querySelector('.workflow__conflict-note')?.textContent))
+      .toEqual(['fixed by the worker: Keep mine', 'fixed by the merger: Merge', 'fixed by an agent'])
+  })
+
+  it('draws a text and a property conflict of one file as two rows, each settling only its own kind (UA1-J05-1)', async () => {
+    const ports = portsOf()
+    const merge = { id: 'merged' as const, label: 'Merge', note: 'edit the file to the merged text; then it is marked resolved', loses: 'nothing' as const }
+    const take = { id: 'take-incoming' as const, label: 'Take incoming', note: 'takes the value of r3', loses: 'mine' as const }
+    render(<ConflictList summary="2 conflicts need you" conflicts={{ more: 0, entries: [
+      entry('src/both.txt', 'person', { options: [merge, take] }),
+      entry('src/both.txt', 'person', { kind: 'property', description: 'Your session and r3 both changed jamat:test.', options: [merge, take] }),
+      entry('src/one.txt', 'person', { options: [merge] }),
+    ] }} ports={ports} />)
+    const rows = screen.getAllByRole('listitem')
+    expect(rows.map((row) => row.querySelector('.workflow__conflict-path')?.textContent)).toEqual(['src/both.txt (text)', 'src/both.txt (property)', 'src/one.txt'])
+    fireEvent.click(within(rows[0]).getByRole('button', { name: 'Merge' }))
+    await waitFor(() => expect(ports.resolve).toHaveBeenCalledWith('src/both.txt', 'merged', false, 'text'))
+    fireEvent.click(within(rows[2]).getByRole('button', { name: 'Merge' }))
+    await waitFor(() => expect(ports.resolve).toHaveBeenLastCalledWith('src/one.txt', 'merged', false))
+    fireEvent.click(within(rows[1]).getByRole('button', { name: 'Take incoming' }))
+    expect(within(rows[0]).queryByRole('alert')).toBeNull()
+    fireEvent.click(within(rows[1]).getByRole('button', { name: 'Take incoming?' }))
+    await waitFor(() => expect(ports.resolve).toHaveBeenLastCalledWith('src/both.txt', 'take-incoming', false, 'property'))
+  })
+
   it('names how many more the set holds and the command that lists them all', () => {
     render(<ConflictList summary="60 conflicts need you" conflicts={{ more: 10, entries: [entry('a.ts', 'person')] }} ports={portsOf()} />)
     expect(screen.getByText(/10 more not shown here/).textContent).toBe('10 more not shown here; jamat-v3 sessions conflicts lists them all.')
@@ -102,6 +134,26 @@ describe('app-client-ui/renderer/workflow/conflictList', () => {
     await waitFor(() => expect(ports.resolve).toHaveBeenLastCalledWith('.aidocs/engines', 'keep-both', false))
   })
 
+  it('asks before Take incoming too, which drops the session\'s own changes, and sends no confirmation of an incoming loss', async () => {
+    const ports = portsOf()
+    const fileOptions = [
+      { id: 'merged' as const, label: 'Merge', note: 'edit the file to the merged text; then it is marked resolved', loses: 'nothing' as const },
+      { id: 'take-incoming' as const, label: 'Take incoming', note: 'takes the version of r2 and drops the session\'s own changes to this file; a copy is saved first', loses: 'mine' as const },
+      { id: 'keep-mine' as const, label: 'Keep mine', note: 'keeps the session\'s version; what r2 brought is dropped', loses: 'incoming' as const },
+    ]
+    render(<ConflictList summary="1 conflict needs you" conflicts={{ more: 0, entries: [entry('src/catalog.ts', 'person', { options: fileOptions })] }} ports={ports} />)
+    const takeIncoming = (): HTMLElement => screen.getByRole('button', { name: /^Take incoming/ })
+
+    fireEvent.click(takeIncoming())
+    expect(screen.getByRole('alert').textContent)
+      .toBe('Take incoming: takes the version of r2 and drops the session\'s own changes to this file; a copy is saved first. Click it again to confirm.')
+    expect(takeIncoming().textContent).toBe('Take incoming?')
+    expect(ports.resolve).not.toHaveBeenCalled()
+
+    fireEvent.click(takeIncoming())
+    await waitFor(() => expect(ports.resolve).toHaveBeenCalledExactlyOnceWith('src/catalog.ts', 'take-incoming', false))
+  })
+
   it('shows a refusal of an option on its own row and changes nothing else', async () => {
     const ports = portsOf()
     vi.mocked(ports.resolve).mockResolvedValueOnce('Settle failed: keep-both on .aidocs/engines stopped: svn: E155010')
@@ -113,6 +165,23 @@ describe('app-client-ui/renderer/workflow/conflictList', () => {
     await waitFor(() => expect(within(rows[0]).getByRole('alert').textContent).toBe('Settle failed: keep-both on .aidocs/engines stopped: svn: E155010'))
     expect(within(rows[1]).queryByRole('alert')).toBeNull()
     expect(rows[0].getAttribute('data-state')).toBe('person')
+  })
+
+  it('drops the failure of an option once the snapshot settles its row, and keeps a refusal made on the fixed row (UA1-J06-2)', async () => {
+    const ports = portsOf()
+    vi.mocked(ports.resolve).mockResolvedValueOnce('Settle failed: keep-mine on src/k804.txt stopped: src/k804.txt.r3 is open in another program')
+    const keep = { id: 'keep-mine' as const, label: 'Keep mine', note: 'drops what r3 changed', loses: 'nothing' as const }
+    const { rerender } = render(<ConflictList summary="1 conflict needs you" conflicts={{ more: 0, entries: [entry('src/k804.txt', 'person', { options: [keep] })] }} ports={ports} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Keep mine' }))
+    expect(await screen.findByText(/^Settle failed: keep-mine on src\/k804\.txt/)).toBeTruthy()
+    rerender(<ConflictList summary="1 conflict: you fixed 1" conflicts={{ more: 0, entries: [
+      entry('src/k804.txt', 'settled', { by: 'person', settled: 'fixed by you outside Jamat; svn no longer marks it', options: [keep] }),
+    ] }} ports={ports} />)
+    const fixed = within(screen.getByRole('region', { name: 'Fixed' })).getByRole('listitem')
+    expect(within(fixed).queryByRole('alert')).toBeNull()
+    vi.mocked(ports.openFile).mockResolvedValueOnce('src/k804.txt is no file of this worktree')
+    fireEvent.click(within(fixed).getByRole('button', { name: 'Open' }))
+    await waitFor(() => expect(within(fixed).getByRole('alert').textContent).toBe('src/k804.txt is no file of this worktree'))
   })
 
   it('groups by state with a total switch: settled and rule are fixed, and an unknown state throws', () => {

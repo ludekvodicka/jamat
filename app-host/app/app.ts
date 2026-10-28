@@ -99,21 +99,22 @@ export class AppHost {
    */
   private async stopOperation(
     body: Record<string, unknown>,
-  ): Promise<{ stopping: true; live: number }> {
+  ): Promise<{ stopping: true; live: number; warnings: string[] }> {
     const request = body as unknown as HostStopReq
     if (typeof request.controllerLeaseId !== 'string')
       throw new HostOperationError(400, 'controllerLeaseId is required')
     this.requireController(request.controllerLeaseId)
     let live = 0
-    await this.hub.stopAllRuntimes(() => {
+    const warnings = await this.hub.stopAllRuntimes(() => {
       this.requireController(request.controllerLeaseId)
       live = this.hub.liveRuntimeCount()
       if (live > 0 && request.force !== true)
         throw new HostOperationError(409, `${live} live runtime(s); pass force:true`)
       this.hub.publish({ kind: 'host-stopping' })
     })
+    for (const warning of warnings) this.context.log(`Host shutdown: ${warning}`)
     setTimeout(() => { void this.shutdown(0) }, 10)
-    return { stopping: true, live }
+    return { stopping: true, live, warnings }
   }
 
   private requireController(controllerLeaseId: string): void {

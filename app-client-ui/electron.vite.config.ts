@@ -3,7 +3,7 @@ import { dirname, resolve } from 'node:path'
 
 import react from '@vitejs/plugin-react'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
-import type { DepOptimizationConfig, Plugin } from 'vite'
+import { createIdResolver, type DepOptimizationConfig, type Plugin } from 'vite'
 
 type DependencyOptimizerPlugin = NonNullable<
   NonNullable<DepOptimizationConfig['esbuildOptions']>['plugins']
@@ -11,16 +11,28 @@ type DependencyOptimizerPlugin = NonNullable<
 
 export class PnpmPreserveSymlinksResolver {
   static plugin(): Plugin {
+    let resolveDependency: ReturnType<typeof createIdResolver> | undefined
     return {
       name: 'pnpm-preserve-symlinks-resolver',
       enforce: 'pre',
+      configResolved(config) {
+        if (config.command === 'build') resolveDependency = createIdResolver(config, { preserveSymlinks: false })
+        else if (config.command === 'serve') resolveDependency = undefined
+        else throw new Error(`Unexpected Vite command: ${config.command}`)
+      },
       async resolveId(source, importer) {
-        if (!importer || !PnpmPreserveSymlinksResolver.isBare(source)
-          || !PnpmPreserveSymlinksResolver.isDependency(importer))
+        if (!importer || source.startsWith('\0') || !PnpmPreserveSymlinksResolver.isBare(source)
+          && !PnpmPreserveSymlinksResolver.isDependency(source) && !PnpmPreserveSymlinksResolver.isDependency(importer))
           return null
-        const realImporter = PnpmPreserveSymlinksResolver.realImporter(importer)
-        if (realImporter === null) return null
-        return this.resolve(source, realImporter, { skipSelf: true })
+        const from = PnpmPreserveSymlinksResolver.isDependency(importer)
+          ? PnpmPreserveSymlinksResolver.realImporter(importer) ?? importer : importer
+        // Bare imports must reach Vite's dev optimizer before they become filesystem paths.
+        if (!resolveDependency)
+          return PnpmPreserveSymlinksResolver.isBare(source) && from !== importer ? this.resolve(source, from, { skipSelf: true }) : null
+        // Resolve the physical identity before CommonJS can load and cache a package-link alias.
+        const resolved = await resolveDependency(this.environment, source, from)
+        if (!resolved || !PnpmPreserveSymlinksResolver.isDependency(resolved)) return null
+        return this.resolve(resolved, from, { skipSelf: true })
       },
     }
   }
@@ -69,7 +81,7 @@ export class PnpmPreserveSymlinksResolver {
     const path = importer.split('?')[0]
     try {
       const real = realpathSync(path)
-      return real === path ? null : real
+      return real === path ? null : real + importer.slice(path.length)
     } catch { return null }
   }
 }
@@ -88,6 +100,7 @@ export default defineConfig({
       rollupOptions: {
         input: {
           start: resolve(__dirname, 'start.ts'),
+          tokenUsageWorker: resolve(__dirname, 'app/tokenUsage/tokenUsageWorkerEntry.ts'),
           fileDiffWorker: resolve(__dirname, 'app/fileChanges/diff/fileDiffWorkerEntry.ts'),
         },
       },
@@ -132,11 +145,12 @@ export default defineConfig({
     },
     plugins: [PnpmPreserveSymlinksResolver.plugin(), react()],
     build: {
-      // Two documents, one renderer build: the workspace window and the Debug window.
+      // All shell documents share one renderer build.
       rollupOptions: {
         input: {
           index: resolve(__dirname, 'renderer/index.html'),
           debug: resolve(__dirname, 'renderer/debug.html'),
+          usage: resolve(__dirname, 'renderer/usage.html'),
         },
       },
     },

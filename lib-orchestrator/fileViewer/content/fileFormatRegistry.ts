@@ -67,7 +67,7 @@ export class FileFormatRegistry {
         : { kind: 'hex' }
     // Before the language table, which knows `html` as one: a page is read as a page here, and the
     // highlighted source it would otherwise have opened as is what `raw` shows instead.
-    if (extension === 'html' || extension === 'htm')
+    if (extension === 'html' || extension === 'htm' || extension === 'htmlx')
       return FileFormatRegistry.looksTextual(probe.sample) ? { kind: 'html' } : { kind: 'hex' }
     if (extension === 'mdext')
       return FileFormatRegistry.looksTextual(probe.sample)
@@ -99,7 +99,7 @@ export class FileFormatRegistry {
   ): readonly FileViewerViewMode[] {
     if ((kind.kind === 'markdown' || kind.kind === 'code' || kind.kind === 'svg'
       || kind.kind === 'html' || kind.kind === 'text')
-      && size !== null && size > FileViewerLimits.fullTextBytes)
+      && size !== null && size > FileViewerLimits.textBytes(kind))
       return supportsDiff ? ['hex', 'diff'] : ['hex']
     // `hex` sits at the end of every text kind, because the kind is decided from a 64 KiB sample
     // and the read refuses the WHOLE file for a NUL byte anywhere in it. A 300 KiB log with one NUL
@@ -113,7 +113,7 @@ export class FileFormatRegistry {
     else if (kind.kind === 'image' || kind.kind === 'video')
       return ['preview', 'hex']
     else if (kind.kind === 'hex')
-      return ['hex']
+      return supportsDiff ? ['hex', 'diff'] : ['hex']
     else if (kind.kind === 'missing')
       return supportsDiff ? ['diff'] : []
     else

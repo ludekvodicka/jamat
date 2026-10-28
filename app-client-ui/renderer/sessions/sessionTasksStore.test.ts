@@ -198,55 +198,6 @@ describe('app-client-ui/renderer/sessions/sessionTasksStore', () => {
     expect(harness.calls).toHaveLength(2)
   })
 
-  it('polls watched sessions outside the tree until the last watcher releases', async () => {
-    const harness = await started(new Harness([session('watched', { activity: 'working' })]), false)
-    const releaseFirst = harness.store.watch('watched')
-    const releaseSecond = harness.store.watch('watched')
-    await vi.advanceTimersByTimeAsync(1_000)
-    expect(harness.calls).toEqual([['watched']])
-
-    releaseFirst()
-    releaseFirst()
-    await vi.advanceTimersByTimeAsync(3_000)
-    expect(harness.asked('watched')).toBe(2)
-
-    releaseSecond()
-    await vi.advanceTimersByTimeAsync(30_000)
-    expect(harness.asked('watched')).toBe(2)
-    expect(harness.store.current().has('watched')).toBe(true)
-  })
-
-  it('shares one poll between the tree and watchers and keeps the tree polling after release', async () => {
-    const harness = await started(new Harness([session('shared', { activity: 'working' })]))
-    const release = harness.store.watch('shared')
-    await vi.advanceTimersByTimeAsync(3_000)
-    expect(harness.calls).toEqual([['shared'], ['shared']])
-    release()
-    await vi.advanceTimersByTimeAsync(3_000)
-    expect(harness.asked('shared')).toBe(3)
-
-    const watchAgain = harness.store.watch('shared')
-    harness.store.setDrawn(new Set())
-    await vi.advanceTimersByTimeAsync(3_000)
-    expect(harness.asked('shared')).toBe(4)
-    watchAgain()
-    await vi.advanceTimersByTimeAsync(30_000)
-    expect(harness.asked('shared')).toBe(4)
-  })
-
-  it('suspends watched sessions with the window and releases an in-flight watch without more polls', async () => {
-    const harness = new Harness([session('watched', { activity: 'working' })])
-    const release = harness.store.watch('watched')
-    harness.store.setWindowVisible(false)
-    await started(harness, false)
-    await vi.advanceTimersByTimeAsync(30_000)
-    expect(harness.calls).toEqual([])
-    harness.store.setWindowVisible(true)
-    release()
-    await vi.advanceTimersByTimeAsync(30_000)
-    expect(harness.calls).toEqual([['watched']])
-  })
-
   it('publishes a listing only when it changed, and keeps the map otherwise', async () => {
     const harness = await started(new Harness([session('working', { activity: 'working' })]))
     const onChanged = vi.fn()

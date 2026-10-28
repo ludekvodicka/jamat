@@ -5,11 +5,14 @@ import type {
   SessionInfo,
   SessionsSnapshot,
 } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
+import type { RemoteConnectionsSnapshot } from '../../../lib-orchestrator/remoteControl/remoteConnectionsApi.types'
 import { TerminalTargetCodec } from '../../shared/terminalTarget'
 import type { SnapshotStore } from '../ipc/snapshotStore'
 import type { ActiveTerminalReading, ActiveTerminalStore } from '../shell/activeTerminalStore'
 
 export interface ActiveAgentTerminal {
+  accountId?: string
+  remoteEndpointId?: string
   sessionId: string
   agentId: SessionAgentId
   life: 'starting' | 'live' | 'ended' | 'lost'
@@ -28,25 +31,28 @@ export interface ActiveAgentTerminal {
 export function useActiveAgentTerminal(
   active: ActiveTerminalStore,
   sessions: SnapshotStore<SessionsSnapshot>,
+  remote?: SnapshotStore<RemoteConnectionsSnapshot>,
 ): ActiveAgentTerminal | null {
   const subscribe = useCallback((onChanged: () => void) => {
     const stopActive = active.subscribe(onChanged)
     const stopSessions = sessions.subscribe(onChanged)
+    const stopRemote = remote?.subscribe(onChanged)
     return () => {
       stopActive()
       stopSessions()
+      stopRemote?.()
     }
-  }, [active, sessions])
+  }, [active, sessions, remote])
   // Held rather than rebuilt: a busy agent moves the sessions document several times a second, and a
   // fresh object on every read would be a fresh identity - the bar would then re-render for every
   // revision, including the ones that said nothing about this tab.
   const held = useRef<ActiveAgentTerminal | null>(null)
   const read = useCallback((): ActiveAgentTerminal | null => {
-    const next = ActiveAgentTerminals.of(active.current(), sessions.current().snapshot)
+    const next = ActiveAgentTerminals.of(active.current(), sessions.current().snapshot, remote?.current().snapshot)
     if (!ActiveAgentTerminals.same(held.current, next))
       held.current = next
     return held.current
-  }, [active, sessions])
+  }, [active, sessions, remote])
   return useSyncExternalStore(subscribe, read, read)
 }
 
@@ -54,14 +60,17 @@ export class ActiveAgentTerminals {
   static of(
     reading: ActiveTerminalReading | null,
     snapshot: SessionsSnapshot | null,
+    remote?: RemoteConnectionsSnapshot | null,
   ): ActiveAgentTerminal | null {
-    if (reading === null || snapshot === null
-      || TerminalTargetCodec.endpointOf(reading.target) !== null)
-      return null
-    const info = snapshot.sessions.find((session) => session.sessionId === reading.target.sessionId)
+    if (reading === null) return null
+    const endpointId = TerminalTargetCodec.endpointOf(reading.target)
+    const endpoint = endpointId === null ? null : remote?.outbound.find((entry) => entry.remoteEndpointId === endpointId)
+    const source = endpointId === null ? snapshot : endpoint?.status === 'connected' ? endpoint.sessions : null
+    const info = source?.sessions.find((session) => session.sessionId === reading.target.sessionId)
     if (info === undefined)
       return null
-    return ActiveAgentTerminals.agentOf(info)
+    const agent = ActiveAgentTerminals.agentOf(info)
+    return agent === null ? null : { ...agent, ...(endpointId ? { remoteEndpointId: endpointId } : {}) }
   }
 
   private static agentOf(info: SessionInfo): ActiveAgentTerminal | null {
@@ -71,7 +80,8 @@ export class ActiveAgentTerminals {
       // A record that names no agent is one nothing can be drawn about, the same as a shell.
       if (info.agent === undefined)
         return null
-      return { sessionId: info.sessionId, agentId: info.agent.agentId, life: info.life }
+      return { sessionId: info.sessionId, agentId: info.agent.agentId, life: info.life,
+        ...(info.agent.accountId && info.agent.accountId !== 'main' ? { accountId: info.agent.accountId } : {}) }
     } else
       throw new Error(`Unknown session kind: ${JSON.stringify(info)}`)
   }
@@ -79,8 +89,9 @@ export class ActiveAgentTerminals {
   static same(left: ActiveAgentTerminal | null, right: ActiveAgentTerminal | null): boolean {
     if (left === null || right === null)
       return left === right
-    return left.sessionId === right.sessionId
+    return left.sessionId === right.sessionId && left.remoteEndpointId === right.remoteEndpointId
       && left.agentId === right.agentId
+      && left.accountId === right.accountId
       && left.life === right.life
   }
 }

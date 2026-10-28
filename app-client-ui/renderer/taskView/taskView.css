@@ -6,6 +6,9 @@
 .task-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .task-view__header { flex: none; display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-2); border-bottom: 1px solid var(--color-border-hairline); }
 .task-view__title { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.task-view__heading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.task-view__heading > button { flex: none; }
+.task-view__close { padding: var(--space-1) var(--space-2); border: 1px solid var(--color-border-hairline); border-radius: var(--radius-control); background: var(--color-surface-control); color: inherit; font: inherit; cursor: pointer; }
 .task-view__facts { color: var(--color-text-3); font-size: var(--fs-secondary); }
 .task-view__facts[data-state="running"] { color: var(--color-accent); }
 .task-view__facts[data-state="failed"] { color: var(--color-danger); }

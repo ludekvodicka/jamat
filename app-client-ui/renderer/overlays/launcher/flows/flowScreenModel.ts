@@ -134,7 +134,7 @@ export class FlowScreenModel {
       ...base,
       kind: 'agent',
       flowId: flow.id,
-      agent: { agentId: named.agentId, mode: 'new', initialPrompt: composed.initialPrompt },
+      agent: { ...base.agent, agentId: named.agentId, mode: 'new', initialPrompt: composed.initialPrompt },
     }
   }
 

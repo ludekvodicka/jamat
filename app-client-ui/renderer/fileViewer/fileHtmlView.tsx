@@ -1,3 +1,4 @@
+import type { SessionFilePorts } from '../../shared/sessionWorkspace'
 import { useEffect, useState } from 'react'
 
 import { MdExtSecurity } from '../../../mdext-renderer/renderer'
@@ -18,6 +19,7 @@ import { FileViewerProtocolUrl } from '../../shared/fileViewerProtocol'
  * for the same reason - the frame may not navigate anything, this window included.
  */
 export function FileHtmlView(props: {
+  ports: Pick<SessionFilePorts['viewer'], 'relativeResource'>
   documentId: string
   name: string
   source: string
@@ -29,12 +31,12 @@ export function FileHtmlView(props: {
     let alive = true
     setPage(null)
     setError(null)
-    void FileHtmlPage.of(props.source, props.documentId).then(
+    void FileHtmlPage.of(props.source, props.documentId, props.ports).then(
       (html) => { if (alive) setPage(html) },
       (reason: unknown) => { if (alive) setError(ErrorText.of(reason)) },
     )
     return () => { alive = false }
-  }, [props.source, props.documentId])
+  }, [props.source, props.documentId, props.ports])
 
   if (error !== null) return <p className="file-viewer-error">{error}</p>
   if (page === null) return <p className="file-viewer-note">Rendering the page...</p>
@@ -65,10 +67,10 @@ export class FileHtmlPage {
    */
   private static readonly imagesMaxConst = 64
 
-  static async of(source: string, documentId: string): Promise<string> {
+  static async of(source: string, documentId: string, ports: Pick<SessionFilePorts['viewer'], 'relativeResource'>): Promise<string> {
     const parsed = new DOMParser().parseFromString(MdExtSecurity.page(source), 'text/html')
     FileHtmlPage.strip(parsed)
-    await FileHtmlPage.images(parsed, documentId)
+    await FileHtmlPage.images(parsed, documentId, ports)
     const style = parsed.createElement('style')
     style.textContent = FileHtmlPage.baseStyleConst
     parsed.head.insertBefore(style, parsed.head.firstChild)
@@ -92,7 +94,7 @@ export class FileHtmlPage {
    * page cannot read the disk by naming it. An embedded `data:` picture is already in the file and
    * needs nobody's permission; every other scheme loses its `src` rather than being fetched.
    */
-  private static async images(parsed: Document, documentId: string): Promise<void> {
+  private static async images(parsed: Document, documentId: string, ports: Pick<SessionFilePorts['viewer'], 'relativeResource'>): Promise<void> {
     const images = [...parsed.querySelectorAll('img[src]')]
     for (const beyond of images.slice(FileHtmlPage.imagesMaxConst)) beyond.removeAttribute('src')
     await Promise.all(images.slice(0, FileHtmlPage.imagesMaxConst).map(async (image) => {
@@ -103,7 +105,7 @@ export class FileHtmlPage {
         image.removeAttribute('src')
         return
       }
-      const answer = await window.appClient.fileViewer.relativeResource(documentId, reference)
+      const answer = await ports.relativeResource(documentId, reference)
       if (answer.ok && answer.value.ok)
         image.setAttribute('src', FileViewerProtocolUrl.resource(answer.value.value.resourceId))
       else image.removeAttribute('src')

@@ -18,8 +18,8 @@ package, and one that has neither fails the generator, so nothing reaches this l
 
 | Component | Version | License | What it is |
 | --- | --- | --- | --- |
-| Electron | 43.2.0 | MIT | the application runtime the installer carries. Electron embeds Chromium (BSD-3-Clause and the licenses named in its own credits), Node.js (MIT) and V8 (BSD-3-Clause). |
-| Node.js | 22.23.2 | MIT | the runtime the reMarkable sidecar runs on. The installer carries a sha256-pinned official build from nodejs.org, unmodified. |
+| Electron | 43.8.4 | MIT | the application runtime the installer carries. Electron embeds Chromium (BSD-3-Clause and the licenses named in its own credits), Node.js (MIT) and V8 (BSD-3-Clause). |
+| Node.js | 22.23.4 | MIT | the runtime the reMarkable sidecar runs on. The installer carries a sha256-pinned official build from nodejs.org, unmodified. |
 | remarkable-cli | 0.3.0 | MIT | the reMarkable command line tool the sidecar invokes. Its own dependency tree is installed beside it at seed time and pinned in `configs/remarkable-sidecar/package-lock.json`, which names each of those licenses. |
 
 ## Licenses in use

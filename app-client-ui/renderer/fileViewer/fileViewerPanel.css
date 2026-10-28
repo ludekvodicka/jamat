@@ -159,6 +159,7 @@
   --file-viewer-reading-width: 1100px;
 }
 .file-viewer-body > .mdext,
+.file-image-surface > .mdext,
 .file-viewer-location > .mdext {
   max-width: calc(var(--file-viewer-reading-width) * var(--file-viewer-zoom, 1));
   margin: 0 auto;
@@ -328,6 +329,8 @@
 .file-viewer-error {
   margin: var(--space-3);
   color: var(--color-text-4);
+  /* A binary comparison names two 64-character SHA-256 values, which a narrow pane must wrap. */
+  overflow-wrap: anywhere;
 }
 .file-viewer-error { color: var(--color-danger); }
 .file-viewer-load-more {

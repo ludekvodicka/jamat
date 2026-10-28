@@ -14,7 +14,6 @@ import type {
 
 describe('lib-orchestrator/fileChangesManager/vcsStatusView', () => {
   class Adapter implements FileChangesVcs {
-    readonly probes: string[] = []
     readonly defaultBaselineRef: FileChangesVcsBaselineRef = { kind: 'git-head', revision: 'HEAD' }
 
     historyBaselineRef(revision: string): FileChangesVcsBaselineRef {
@@ -24,7 +23,6 @@ describe('lib-orchestrator/fileChangesManager/vcsStatusView', () => {
     constructor(
       readonly id: 'git' | 'svn',
       private readonly present: boolean,
-      private readonly answer: FileChangesVcsResult<boolean> = { ok: true, value: false },
     ) {}
 
     async detect(cwd: string): Promise<FileChangesVcsDetection | null> {
@@ -37,11 +35,6 @@ describe('lib-orchestrator/fileChangesManager/vcsStatusView', () => {
         scopeUrl: null,
         repositoryPathPrefix: null,
       }
-    }
-
-    async dirty(detection: FileChangesVcsDetection): Promise<FileChangesVcsResult<boolean>> {
-      this.probes.push(detection.cwd)
-      return this.answer
     }
 
     async status(): Promise<Awaited<ReturnType<FileChangesVcs['status']>>> {
@@ -76,38 +69,5 @@ describe('lib-orchestrator/fileChangesManager/vcsStatusView', () => {
 
     const bare = new VcsStatusView([new Adapter('git', false), new Adapter('svn', false)])
     expect(await bare.detect('/work', 'git')).toBeNull()
-  })
-
-  it('routes the probe to the adapter the detection names', async () => {
-    const git = new Adapter('git', true, { ok: true, value: true })
-    const svn = new Adapter('svn', true)
-    const view = new VcsStatusView([git, svn])
-
-    const detection = await view.detect('/work', 'git')
-    expect(await view.dirty(detection!)).toEqual({ ok: true, value: true })
-    expect(git.probes).toEqual(['/work'])
-    expect(svn.probes).toEqual([])
-  })
-
-  it('hands a failed probe back rather than turning it into clean', async () => {
-    const git = new Adapter('git', true, { ok: false, detail: 'git could not run' })
-    const view = new VcsStatusView([git])
-
-    expect(await view.dirty((await view.detect('/work', 'git'))!))
-      .toEqual({ ok: false, detail: 'git could not run' })
-  })
-
-  it('throws on a detection naming a VCS it has no adapter for', async () => {
-    const view = new VcsStatusView([new Adapter('git', true)])
-    const foreign: FileChangesVcsDetection = {
-      id: 'svn',
-      root: '/work',
-      cwd: '/work',
-      scopeRelativePath: '.',
-      scopeUrl: null,
-      repositoryPathPrefix: null,
-    }
-
-    await expect(view.dirty(foreign)).rejects.toThrow('Unknown VCS id')
   })
 })

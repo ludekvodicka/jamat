@@ -1,3 +1,10 @@
+import { FinishProjection } from '../../worktrees/worktreeFinish'
+import { SessionAccounts, type SessionAccountsPort } from '../sessionAccounts'
+import { ErrorText } from '../../shared/errorText'
+import type { HostGate } from '../hostGate'
+import { WorktreeLifecycle } from '../../worktrees/worktreeLifecycle'
+import { WorkerLiveness } from '../../worktrees/worktreeFinish'
+import type { SessionInternalMarks, SessionWorktreePort, WorktreePlacement, WorktreePlacing, WorktreeProvision } from '../../worktrees/worktreeLifecycle.types'
 import { randomUUID } from 'node:crypto'
 import { stat } from 'node:fs/promises'
 import { basename } from 'node:path'
@@ -11,7 +18,7 @@ import type {
   RuntimeSessionInfo,
 } from '../../../app-host/app/wire/hostWire.js'
 import type { HostCallResult } from '../../hostClient/hostClient.types'
-import type { SetupResolution } from '../../projectSetup/projectSetup.types'
+import type { SetupResolution, SetupScope } from '../../projectSetup/projectSetup.types'
 import type { WorktreeConfigRead } from '../../projectSetup/worktreeConfig'
 import { AgentPresets, type SessionAgentSpec } from '../launch/agentPresets'
 import { ClaudeTrustSeed, type ClaudeTrustSeedResult } from '../launch/claudeTrustSeed'
@@ -25,7 +32,10 @@ import { FinishScriptsFlow, type FinishChecksGate } from './finishScriptsFlow'
 import { InnerRunFlow } from './innerRunFlow'
 import { ScriptRunLauncher } from './scriptRunLauncher'
 import { SetupFlow, type SetupSkip } from './setupFlow'
-import { SvnActionFlow, type SvnActionPorts } from './svnActionFlow'
+import type { FinishDriver, FinishDriverPorts } from '../../worktrees/worktreeFinish'
+import type { SvnActionPorts } from '../../worktrees/worktreeFinish'
+import { WorktreeOperations } from '../../worktrees/worktreeOperations'
+import { SvnActionStages } from '../../worktrees/worktreeFinish'
 import { OperationOutcomes } from './operationOutcomes'
 import { LaunchPlanner, type LaunchPlanOptions } from '../launch/launchPlanner'
 import type { RunTools } from '../launch/runTools'
@@ -33,12 +43,11 @@ import type {
   SessionRecord,
   SessionRecordAgent,
   SessionRecordCommitReceipt,
-  SessionRecordProcess,
-  SessionRecordScriptLink,
   SessionRecordWorktree,
   SessionRecordWorktreeCaller,
 } from '../records/sessionRecord.types'
 import { SessionColors } from '../sessionColors'
+import { WorkerHandoffs } from '../notifies/workerHandoffs'
 import { SessionLimits } from '../sessionLimits'
 import { SessionOutcomes } from '../records/sessionOutcomes'
 import type { SessionRecordsStore } from '../records/sessionRecordsStore'
@@ -57,13 +66,14 @@ import type {
   SessionHistoryReference,
   SessionScriptRequest,
   SessionTitleParts,
-  SessionWorktreeKind,
+  SessionWorktreeDirectory,
+  SessionWorktreePreview,
   SessionsOpErrorCode,
   SessionsOpResult,
 } from '../sessionManagerApi.types'
 import { LaunchBackoff } from './launchBackoff'
 import { Reconciler, type ReconcileChange } from './reconciler'
-import { WorktreeCleanupPacing } from './worktreeCleanupPacing'
+import { WorktreeCleanupPacing } from '../../worktrees/worktreeRemoval'
 
 /** What this class asks of the Host: five operations, all of them answering with a value. */
 export interface SessionHostPort {
@@ -83,62 +93,6 @@ export interface SessionHostPort {
 }
 
 /**
- * Where a worktree of a session's directory is wanted. `projectRoot` is the catalog project the
- * directory was chosen as, null for an ad-hoc directory; `owner` is pp 7.3's explicit SVN owner at
- * or below it (dormant register, `lib-orchestrator.md`).
- */
-export interface WorktreePlaceRequest {
-  directory: string
-  projectRoot: string | null
-  owner?: string
-}
-
-/**
- * Where a worktree stands, decided before its number and its agreement so a refusal leaves nothing:
- * the kind, the directory it checks out or cuts from (whose `.worktree.json` drives setup and
- * checks), the session's place below it, and the catalog project whose counter numbers it.
- */
-export interface WorktreePlacement {
-  kind: SessionWorktreeKind
-  ownerDir: string
-  /** '/'-separated, `''` at the owner. */
-  cwdSubpath: string
-  catalogProject: string | null
-}
-
-export type WorktreePlacing =
-  | { ok: true; value: WorktreePlacement }
-  | { ok: false; code: SessionsOpErrorCode; detail: string }
-
-/** What a worktree create asks for. `folder` is the final directory name, the session number already in front. */
-export interface WorktreeRequest {
-  placement: WorktreePlacement
-  folder: string
-  baseRef?: string
-}
-
-/**
- * The worktree as the record keeps it, and for an SVN worktree the checkout that leads the before
- * chain: the create reserves the folder, and the checkout is a visible run.
- */
-export type WorktreeProvision =
-  | { ok: true; value: { worktree: SessionRecordWorktree; checkout: (SessionRecordProcess & { cwd: string }) | null } }
-  | { ok: false; code: SessionsOpErrorCode; detail: string }
-
-/**
- * What a session wants of a worktree at create. Tearing one down is deliberately not on it: that is
- * a finish, under a person who has said what should happen to the work inside, and it belongs to
- * the finish flows rather than to a record being deleted. What `remove` does instead is SAY what it
- * leaves - see there.
- */
-export interface SessionWorktreePort {
-  place(request: WorktreePlaceRequest): Promise<WorktreePlacing>
-  create(request: WorktreeRequest): Promise<WorktreeProvision>
-  /** Empties the reserved folder of an SVN worktree whose checkout failed, by identity, before the checkout runs again. */
-  purgeReserved(worktree: SessionRecordWorktree): Promise<SessionsOpResult>
-}
-
-/**
  * The one thing a session wants from the project setup member: what installs this project, read in
  * the main copy and answered as repository-relative steps. It runs nothing and it decides nothing
  * about sessions - the install is a session of its own, on the Host, like everything else here that
@@ -146,7 +100,7 @@ export interface SessionWorktreePort {
  */
 export interface SessionSetupPort {
   /** `config` is the `setup` of the same `.worktree.json` read the agreement was checked over. */
-  resolve(projectRoot: string, repositoryRoot: string, config: WorktreeConfigRead): Promise<SetupResolution>
+  resolve(projectRoot: string, repositoryRoot: string, config: WorktreeConfigRead, scope?: SetupScope): Promise<SetupResolution>
 }
 
 /**
@@ -169,23 +123,15 @@ export interface SessionClaudeTitlesPort {
   appendTitle(input: { cwd: string; nativeSessionId: string; title: string }): Promise<boolean>
 }
 
-/**
- * The marks of a session this library starts for itself, which the wire spec refuses to carry: a
- * one-shot run, the permission mode it runs in, and the parent it is a script run of. Without
- * `oneShot` the run is an interactive agent (the SVN merger): it gets the Claude settings file like
- * any interactive session and ends when it is stopped or exits.
- */
-export interface SessionInternalMarks {
-  sessionId: string
-  oneShot?: true
-  permission?: SessionRecordAgent['permission']
-  scriptOf: SessionRecordScriptLink
-}
-
 export interface SessionLifecycleDeps {
+  accounts?: SessionAccountsPort
+  activityOf?: (sessionId: string) => import('../sessionManagerApi.types').SessionActivity | null
+  localStateDir?: string
   controller: NonNullable<LaunchPlanOptions['controller']>
   records: SessionRecordsStore
   host: SessionHostPort
+  hostGate?: HostGate
+  localBefore: import('../../worktrees/worktreeLifecycle.types').LocalBeforeStep
   worktrees: SessionWorktreePort
   setup: SessionSetupPort
   /**
@@ -196,13 +142,14 @@ export interface SessionLifecycleDeps {
   numbers: SessionNumbersPort
   codexSessions: Pick<CodexSessionFiles, 'launch' | 'identity'>
   /** The status line relay an interactive Claude launch is started with; null leaves it out. */
-  claudeStatusLine: Pick<ClaudeStatusLine, 'settingsFileFor'>
+  claudeStatusLine: Pick<ClaudeStatusLine, 'settingsFileFor' | 'identity'>
   /** Where the tool of a direct-process run is on this machine, asked at every launch of one. */
-  tools: Pick<RunTools, 'resolve'>
+  tools: Pick<RunTools, 'resolve'> & Partial<Pick<RunTools, 'node' | 'agentCli'>>
   claudeTitles: SessionClaudeTitlesPort
   /** Settles and collapses runs that are over, and takes a parent's runs with it when it goes. */
   scripts: SessionScriptsManager
   /** What an SVN action of a worktree session reads and writes beside the records and the runs. */
+  finish: FinishDriverPorts
   svnActions: SvnActionPorts
   /** Where a fact the user has to know but cannot act on through the result goes. */
   report: (message: string) => void
@@ -232,7 +179,7 @@ export interface SessionLifecycleDeps {
    */
   finishing?: (sessionId: string) => boolean
   /** Injected by tests; the default answers Claude's trust dialog in the file it reads it from. */
-  seedClaudeTrust?: (cwd: string) => ClaudeTrustSeedResult
+  seedClaudeTrust?: (cwd: string, claudeJsonPath?: string) => ClaudeTrustSeedResult
   /** Both are injected by tests only. Ids are v4 UUIDs because Claude's `--session-id` demands one. */
   newId?: () => string
   now?: () => number
@@ -276,8 +223,10 @@ type ScriptGateHandlers = Record<SessionScriptGate, {
  * Which answers are which is the whole of `decided`.
  */
 export class SessionLifecycle {
+  private readonly hostGate: HostGate | undefined
   /** V1's bound, kept: a note is a paragraph about a session, not a document inside one. */
 
+  private readonly agentActivityOf: NonNullable<SessionLifecycleDeps['activityOf']>
   private readonly records: SessionRecordsStore
   private readonly controller: SessionLifecycleDeps['controller']
   private readonly host: SessionHostPort
@@ -287,6 +236,7 @@ export class SessionLifecycle {
   private readonly codexSessions: SessionLifecycleDeps['codexSessions']
   private readonly claudeStatusLine: SessionLifecycleDeps['claudeStatusLine']
   private readonly tools: SessionLifecycleDeps['tools']
+  private readonly localStateDir: string | undefined
   private readonly claudeTitles: SessionClaudeTitlesPort
   private readonly scripts: SessionScriptsManager
   private readonly report: (message: string) => void
@@ -297,12 +247,13 @@ export class SessionLifecycle {
   private readonly modelFor: (agentId: SessionRecordAgent['agentId']) => string | undefined
   private readonly effortFor: (agentId: SessionRecordAgent['agentId']) => string | undefined
   private readonly finishing: (sessionId: string) => boolean
-  private readonly seedClaudeTrust: (cwd: string) => ClaudeTrustSeedResult
+  private readonly seedClaudeTrust: (cwd: string, claudeJsonPath?: string) => ClaudeTrustSeedResult
+  private readonly accounts: SessionAccountsPort | undefined
   private readonly newId: () => string
   private readonly now: () => number
   /** This client process's start: the first cleanup judgement after it is always due. */
   private readonly startedAt: number
-  private codexStartupNamingDone = false
+  private startupNamingDone = false
   /**
    * The before chain, carved out of this class. It launches its runs through `runs`, which is handed
    * exactly the record writes a launch needs and nothing else - never `this`.
@@ -314,19 +265,25 @@ export class SessionLifecycle {
   private readonly innerRuns: InnerRunFlow
   private readonly runs: ScriptRunLauncher
   /** Finish (Commit) and Discard of SVN worktrees, launched through the same `runs`. */
-  readonly svnActions: SvnActionFlow
+  readonly svnActions: FinishDriver
   private readonly gateHandlers: ScriptGateHandlers
+
+  recoverLocalBefore(sessionId: string): Promise<boolean> { return this.setupFlow.recoverLocalBefore(sessionId) }
 
   constructor(deps: SessionLifecycleDeps) {
     this.controller = deps.controller
+    this.accounts = deps.accounts
+    this.agentActivityOf = deps.activityOf ?? (() => null)
     this.records = deps.records
-    this.host = deps.host
+    this.hostGate = deps.hostGate
+    this.host = deps.hostGate?.guard(deps.host) ?? deps.host
     this.worktrees = deps.worktrees
     this.setup = deps.setup
     this.numbers = deps.numbers
     this.codexSessions = deps.codexSessions
     this.claudeStatusLine = deps.claudeStatusLine
     this.tools = deps.tools
+    this.localStateDir = deps.localStateDir
     this.claudeTitles = deps.claudeTitles
     this.scripts = deps.scripts
     this.report = deps.report
@@ -336,7 +293,7 @@ export class SessionLifecycle {
     this.effortFor = deps.effortFor ?? (() => undefined)
     this.finishing = deps.finishing ?? (() => false)
     this.seedClaudeTrust = deps.seedClaudeTrust
-      ?? ((cwd) => ClaudeTrustSeed.seed(cwd, ClaudeTrustSeed.defaultPath()))
+      ?? ((cwd, file) => ClaudeTrustSeed.seed(cwd, file ?? ClaudeTrustSeed.defaultPath()))
     this.newId = deps.newId ?? (() => randomUUID())
     this.now = deps.now ?? (() => Date.now())
     this.startedAt = this.now()
@@ -351,6 +308,10 @@ export class SessionLifecycle {
       },
     })
     this.setupFlow = new SetupFlow({
+      hostGate: deps.hostGate,
+      localBefore: deps.localBefore,
+      detach: deps.svnActions.detach,
+      svn: deps.svnActions.svn,
       records: this.records,
       setup: this.setup,
       worktrees: this.worktrees,
@@ -368,7 +329,9 @@ export class SessionLifecycle {
       },
     })
     this.finishScripts = new FinishScriptsFlow({
+      hostGate: deps.hostGate,
       records: this.records,
+      setup: this.setupFlow,
       agreement: deps.agreement,
       runs: this.runs,
       report: this.report,
@@ -381,18 +344,20 @@ export class SessionLifecycle {
       },
     })
     this.innerRuns = new InnerRunFlow({ records: this.records, runs: this.runs, newId: this.newId, now: this.now })
-    this.svnActions = new SvnActionFlow({
+    const actionDeps = {
       ...deps.svnActions,
       records: this.records,
       runs: this.runs,
       createResolver: (spec, marks) => this.createInternal(spec, marks),
-      stopRun: (runId) => this.scripts.stopRun(runId),
+      stopRun: (runId, manuallyStopped) => this.scripts.confirmStopped(runId, manuallyStopped),
+      stopRefusal: (runId) => this.scripts.stopRefusalOf(runId),
       checks: this.finishScripts,
       stop: (sessionId) => this.stop(sessionId),
       report: this.report,
       newId: this.newId,
       now: this.now,
-    })
+    } satisfies import('../../worktrees/worktreeFinish').SvnActionFlowDeps
+    this.svnActions = WorktreeOperations.finish(actionDeps, deps.finish)
     this.gateHandlers = {
       before: {
         succeeded: (parentId) => this.setupFlow.applyBeforeSucceeded(parentId),
@@ -407,10 +372,10 @@ export class SessionLifecycle {
         failed: (parentId, reason) => this.applyResolveFailed(parentId, reason),
       },
       action: {
-        succeeded: async (parentId) => await this.svnActions.noteVerdict(parentId, { kind: 'succeeded' })
+        succeeded: async (parentId) => await WorktreeLifecycle.onRunVerdict(this.svnActions, parentId, { kind: 'succeeded' })
           ? { kind: 'script-succeeded', sessionId: parentId, gate: 'action' }
           : null,
-        failed: (parentId, reason) => this.svnActions.noteVerdict(parentId, { kind: 'failed', reason }),
+        failed: (parentId, reason) => WorktreeLifecycle.onRunVerdict(this.svnActions, parentId, { kind: 'failed', reason }),
       },
     }
   }
@@ -431,44 +396,53 @@ export class SessionLifecycle {
    * Making it a parameter rather than something inferred here means a sixth launch site added later
    * has nowhere to leave the decision implicit either.
    */
-  private plannedLaunch(
+  private async plannedLaunch(
     record: SessionRecord,
     launch: 'create' | 'reopen',
     options?: LaunchPlanOptions,
-  ): RuntimeLaunchSpec {
-    options = { ...options, controller: this.controller }
+    prepareAccount?: () => Promise<Record<string, string>>,
+  ): Promise<RuntimeLaunchSpec> {
+    const agentId = record.agent?.agentId
+    const yolo = record.kind === 'agent' && agentId !== undefined && this.yoloFor(agentId)
+    let model: string | undefined
+    let effort: string | undefined
+    if (launch === 'create') {
+      model = record.kind === 'agent' ? record.agent?.model : undefined
+      effort = record.kind === 'agent' && agentId !== undefined ? this.effortFor(agentId) : undefined
+    } else if (launch === 'reopen') {
+      model = undefined
+      effort = undefined
+    } else throw new Error(`Unknown launch: ${JSON.stringify(launch)}`)
+    const settings = { yolo, model, effort }
+    const account = SessionAccounts.ref(record)
+    let accountEnv: Record<string, string> = {}
+    try {
+      if (prepareAccount) accountEnv = await prepareAccount()
+      else if (account !== null && this.accounts)
+        accountEnv = await this.accounts.launchEnv(account.agentId, account.accountId, LaunchPlanner.cwdOf(record), settings)
+    } catch (error) {
+      await this.endRefused(record, `Account preflight failed: ${ErrorText.of(error)}`)
+      throw error
+    }
+    const parentId = record.scriptOf?.sessionId ?? record.parent?.sessionId
+    const parent = parentId === undefined ? undefined : this.records.get(parentId)
+    const svnWritesBlocked = parent?.worktree?.kind === 'svn'
+      && PathCompare.isInside(parent.worktree.worktreePath, LaunchPlanner.cwdOf(record))
+    options = { ...options, accountEnv, controller: this.controller, tools: this.tools, localStateDir: this.localStateDir, svnWritesBlocked }
     if (record.kind === 'shell')
       return LaunchPlanner.plan(record, { ...options, tools: this.tools })
     else if (record.kind === 'agent') {
-      // A record with no agent is refused by LaunchPlanner itself, which already owns that invariant.
-      const agentId = record.agent?.agentId
-      const yolo = agentId !== undefined && this.yoloFor(agentId)
-      if (yolo && agentId === 'claude') this.seedTrust(record)
-      let model: string | undefined
-      let effort: string | undefined
-      if (launch === 'create') {
-        // The record and nothing else: `recordAgentOf` has already resolved this machine's setting
-        // into it, so a replay repeats the same command line however the setting has moved since,
-        // and a model NAMED by a caller - which today is a create sent from another computer - is
-        // the same field. The effort is still read live here, because nothing reads it back.
-        model = record.agent?.model
-        effort = agentId === undefined ? undefined : this.effortFor(agentId)
-      }
-      else if (launch === 'reopen') {
-        // Deliberately nothing: a resumed conversation carries on with whatever it was running
-        // on, and both of these are switchable from inside a session.
-        model = undefined
-        effort = undefined
-      }
-      else
-        throw new Error(`Unknown launch: ${JSON.stringify(launch)}`)
+      if (yolo && agentId === 'claude') this.seedTrust(record, accountEnv)
       // Every interactive Claude launch, a reopen as much as a create: the window is read off the
       // running process, so a resumed conversation needs the relay as much as a new one. A one-shot
       // run draws no status line at all.
+      // The launch generation binds the relay's report of the conversation to this runtime (UA1-J14-1).
+      const launchId = record.agent?.identityLaunchId
       const claudeSettingsFile = agentId === 'claude' && !record.agent?.oneShot
-        ? this.claudeStatusLine.settingsFileFor(LaunchPlanner.cwdOf(record)) ?? undefined
+        ? this.claudeStatusLine.settingsFileFor(LaunchPlanner.cwdOf(record),
+          launchId === undefined ? undefined : { sessionId: record.sessionId, launchId }) ?? undefined
         : undefined
-      const effective = { ...options, yolo, model, effort, claudeSettingsFile }
+      const effective = { ...options, yolo, model, effort, claudeSettingsFile, jamatCli: this.agentCli(), workerCli: this.workerCli(record) }
       return LaunchPlanner.plan(record, { ...effective,
         codexBridge: (native, args) => this.codexSessions.launch(record, native, args, effective),
       })
@@ -477,20 +451,35 @@ export class SessionLifecycle {
       throw new Error(`Unknown session kind: ${JSON.stringify(record.kind)}`)
   }
 
+  /** The CLI lines this worker's handoffs give, which its launch allows; absent where this machine has no CLI. */
+  private workerCli(record: SessionRecord): string[] | undefined {
+    if (record.worktree?.kind !== 'svn') return undefined
+    const tool = this.tools.resolve('jamat-cli')
+    return tool.ok ? WorkerHandoffs.linesOf((args) => WorkerHandoffs.lineFor(tool, record, args)) : undefined
+  }
+
+  /** This client's own Jamat CLI line, which a merger's rights name; absent where this machine has none. */
+  private agentCli(): string | undefined {
+    const cli = this.tools.agentCli?.()
+    return cli?.ok ? cli.command : undefined
+  }
+
   /**
    * Why a direct-process run cannot start on this machine, in the tool's own words, or null. Asked
    * before a launch is planned, which would throw instead: a missing tool ends the run with this
    * reason and never falls back to a shell that might find something else.
    */
   private launchProblemOf(record: SessionRecord): string | null {
+    const hostProblem = record.scriptOf === undefined ? null : this.hostGate?.managedProblemOf()
+    if (hostProblem) return hostProblem
     if (record.process === undefined) return null
     const resolved = this.tools.resolve(record.process.tool)
     return resolved.ok ? null : resolved.detail
   }
 
   /** Best effort: the worst a failure may do is cost one sentence, never the launch. */
-  private seedTrust(record: SessionRecord): void {
-    const seeded = this.seedClaudeTrust(LaunchPlanner.cwdOf(record))
+  private seedTrust(record: SessionRecord, accountEnv: Record<string, string>): void {
+    const seeded = this.seedClaudeTrust(LaunchPlanner.cwdOf(record), ClaudeTrustSeed.defaultPath({ ...process.env, ...accountEnv }))
     if (seeded.problem !== null)
       this.report(`Session ${record.sessionId}: Claude's trust file could not be written `
         + `(${seeded.problem}); Claude will ask about this directory itself`)
@@ -560,13 +549,10 @@ export class SessionLifecycle {
       const landed = await this.writeTwice(sessionId, (current) => {
         const next: SessionRecord = { ...current,
           commitReceipts: [...current.commitReceipts ?? [], ...target.entries].slice(-SessionLifecycle.commitReceiptsMaxConst) }
-        // An SVN action reviews and removes the worktree itself.
-        if (target.holds && current.worktree?.kind === 'svn' && current.svnAction === undefined
-          && !this.finishing(sessionId) && current.worktreeCleanup?.phase !== 'pending')
-          next.worktreeCleanup = WorktreeCleanupPacing.pending('committed', at)
         return next
       })
       latched ||= !landed
+      if (landed && target.holds) await this.svnActions.foreignCommit(sessionId, target.entries)
     }
     return latched ? OperationOutcomes.latched() : { ok: true, value: undefined }
   }
@@ -591,8 +577,7 @@ export class SessionLifecycle {
   /** Tried twice: a failed atomic rename is often transient. A record gone meanwhile needs nothing. */
   private async writeTwice(sessionId: string, compose: (current: SessionRecord) => SessionRecord): Promise<boolean> {
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const current = this.records.get(sessionId)
-      if (!current || await this.records.put(compose(current))) return true
+      if (!this.records.get(sessionId) || await this.records.update(sessionId, compose)) return true
     }
     return false
   }
@@ -624,20 +609,22 @@ export class SessionLifecycle {
     else if (kind !== 'svn') throw new Error(`Unknown worktree kind: ${JSON.stringify(kind satisfies never)}`)
     const finishing = this.finishingRefusal(record)
     if (finishing) return finishing
-    const current = record.worktreeCleanup
-    const worktreeCleanup = current?.phase === 'pending'
-      ? WorktreeCleanupPacing.pending(current.trigger, current.requestedAt)
-      : WorktreeCleanupPacing.pending('requested', this.now())
-    if (!await this.records.put({ ...record, worktreeCleanup })) return OperationOutcomes.latched()
+    if (!await this.records.update(sessionId, (latest) => {
+      if (latest.worktree?.worktreePath !== worktree.worktreePath || this.finishingRefusal(latest)) return null
+      const current = latest.worktreeCleanup
+      return { ...latest, worktreeCleanup: current?.phase === 'pending'
+        ? WorktreeCleanupPacing.pending(current.trigger, current.requestedAt)
+        : WorktreeCleanupPacing.pending('requested', this.now()) }
+    })) return OperationOutcomes.latched()
     return { ok: true, value: undefined }
   }
 
   /** Recover confirmations written while the UI was closed, including terminals that already ended. */
-  async nameCodexOnStartup(): Promise<void> {
-    if (this.codexStartupNamingDone) return
-    this.codexStartupNamingDone = true
+  async nameConversationsOnStartup(): Promise<void> {
+    if (this.startupNamingDone) return
+    this.startupNamingDone = true
     for (const record of this.records.list())
-      if (SessionLifecycle.tracksCodex(record)) await this.applyCodexName(record.sessionId)
+      if (SessionLifecycle.tracksIdentity(record)) await this.applyConfirmedName(record.sessionId)
   }
 
   /**
@@ -651,6 +638,11 @@ export class SessionLifecycle {
     marks: SessionInternalMarks,
   ): Promise<SessionsOpResult<{ sessionId: string }>> {
     return this.createWith(spec, { marks })
+  }
+
+  async createCommandSession(spec: Omit<SessionCreateSpec, 'kind' | 'agent'>, command: string,
+    prepareAccount?: () => Promise<Record<string, string>>): Promise<SessionsOpResult<{ sessionId: string }>> {
+    return this.createWith({ ...spec, kind: 'shell' }, { command, prepareAccount })
   }
 
   /**
@@ -685,7 +677,7 @@ export class SessionLifecycle {
     if (problem) return { ok: false, code: 'invalid-spec', detail: problem }
     if (directory.mode !== 'project')
       return { ok: false, code: 'invalid-spec', detail: 'history needs a catalog project' }
-    await this.captureProjectCodexIds(directory.projectPath)
+    await this.captureProjectConfirmedIds(directory.projectPath)
     const references: SessionHistoryReference[] = []
     for (const record of this.records.list()) {
       if (!SessionLifecycle.isProjectRecord(record, directory.projectPath)) continue
@@ -709,7 +701,7 @@ export class SessionLifecycle {
   ): Promise<SessionsOpResult<{ sessionId: string }>> {
     const problem = SessionLifecycle.historyOpenProblem(spec)
     if (problem) return { ok: false, code: 'invalid-spec', detail: problem }
-    await this.captureProjectCodexIds(spec.directory.projectPath)
+    await this.captureProjectConfirmedIds(spec.directory.projectPath)
     const matching = this.historyRecordsOf(spec)
     const runningRecord = matching.find((record) =>
       record.life === 'starting' || record.life === 'live')
@@ -762,15 +754,26 @@ export class SessionLifecycle {
     spec: SessionCreateSpec,
     options?: {
       marks?: SessionInternalMarks
+      command?: string
+      prepareAccount?: () => Promise<Record<string, string>>
       /** Set by `createComposed` alone: the title has already been through the counter. */
       titleFinal?: true
       /** Set by `create` alone, for a session a control request asked for. */
       origin?: SessionCreateOrigin
     },
   ): Promise<SessionsOpResult<{ sessionId: string }>> {
+    const hostProblem = this.hostGate?.problemOf(options?.marks?.scriptOf !== undefined || spec.worktree !== undefined)
+    if (hostProblem) return { ok: false, code: 'host-unreachable', detail: hostProblem }
     const marks = options?.marks
     const problem = SessionLifecycle.specProblem(spec)
     if (problem) return { ok: false, code: 'invalid-spec', detail: problem }
+    const selectedAccount = spec.kind === 'agent' && spec.agent
+      ? { agentId: spec.agent.agentId, accountId: spec.agent.accountId ?? (await this.accounts?.defaultAccount(spec.agent.agentId))?.accountId ?? 'main' }
+      : spec.account
+    if (selectedAccount && !(this.accounts?.exists(selectedAccount.agentId, selectedAccount.accountId) ?? selectedAccount.accountId === 'main'))
+      return { ok: false, code: 'invalid-spec', detail: 'account not found' }
+    if (spec.kind === 'agent' && spec.agent && selectedAccount)
+      spec = { ...spec, agent: { ...spec.agent, accountId: selectedAccount.accountId } }
     const notified = spec.worktree?.notify?.sessionId
     if (notified !== undefined && this.records.get(notified) === null)
       return { ok: false, code: 'invalid-spec', detail: `The worktree notify names session ${notified}, which this computer does not have` }
@@ -801,7 +804,9 @@ export class SessionLifecycle {
     // Before the worktree, not after: a refusal here has to leave nothing behind, and what it asks
     // about is readable at the owner alone.
     const agreement = await this.setupFlow.setupAgreement(spec, placement)
-    if (agreement) return agreement
+    const waitingAgreement = agreement?.ok === false && agreement.code === 'setup-not-acknowledged' && spec.deferSetupAgreement === true
+      ? agreement.setup : undefined
+    if (agreement && waitingAgreement === undefined) return agreement
     // Before the cut, so the worktree folder carries the number; a refused cut spends it.
     const token = options?.titleFinal === true ? null : await this.numberFor(spec, counted)
     const provision = await this.provisionWorktree(spec, placement, token)
@@ -811,18 +816,19 @@ export class SessionLifecycle {
     const sessionId = marks?.sessionId ?? this.newId()
     const operationId = this.newId()
     const record = this.recordOf(spec, sessionId, facts, operationId, token, marks, options?.origin)
+    if (options?.command !== undefined) record.commands = [{ cwd: LaunchPlanner.cwdOf(record), command: options.command }]
+    if (waitingAgreement !== undefined && facts !== null)
+      return this.setupFlow.createWaiting(record, facts, waitingAgreement, provision.value?.checkout ?? null)
     /*
      * Only a worktree is empty enough to need this, and only a worktree create can name the
-     * repository the steps come back relative to. The resolution itself is a couple of file reads in
-     * the main copy, which is why it may sit on the one queue every operation shares and needs no
-     * checkout yet; the chain it decides on runs as runtimes on the Host, where nothing waits for it.
-     * An SVN checkout leads that chain, so the record names the worktree before a file is in it.
+       * repository the steps come back relative to. An SVN checkout leads the chain; after it completes,
+       * SetupFlow rebuilds the install steps from the actual checkout under the main copy's agreement.
      */
     if (facts !== null) {
       const setupProject = SetupFlow.setupProjectOf(spec.directory, facts)
       if (setupProject === null) throw new Error(`Session ${sessionId}: a worktree was placed with no project to set it up from`)
-      const plan = await this.setupFlow.beforePlanFor(setupProject, facts.repositoryRoot, facts.worktreePath)
       const checkout = provision.value?.checkout ?? null
+      const plan = await this.setupFlow.beforePlanFor(setupProject, facts.repositoryRoot, facts.worktreePath, SetupFlow.setupScopeOf(facts), checkout === null)
       const lead = checkout === null ? [] : [ScriptChain.processStepOf('svn', 'checkout', checkout)]
       if (plan.kind === 'run') {
         if (plan.skipped !== null) this.markSetupSkipped(record, plan.skipped)
@@ -844,11 +850,14 @@ export class SessionLifecycle {
     // wire refuses to carry. Reading the spec here dropped `oneShot` on the floor: the merge
     // resolver's own launch never carried `-p`, so what was meant to answer once and exit came up as
     // an interactive agent nobody was watching, and only a REPLAY of it ran the way it was meant to.
-    const agentArgs = record.agent ? AgentPresets.replayArgs(record.agent) : undefined
+    const agentArgs = record.agent ? AgentPresets.replayArgs(record.agent, this.agentCli()) : undefined
+    let launch: RuntimeLaunchSpec
+    try { launch = await this.plannedLaunch(record, 'create', { agentArgs }, options?.prepareAccount) }
+    catch (error) { return { ok: false, code: 'invalid-spec', detail: `Account launch failed: ${ErrorText.of(error)}`, recordedSessionId: sessionId } }
     const created = await this.host.runtimeCreate({
       operationId,
       runtimeSessionId: sessionId,
-      launch: this.plannedLaunch(record, 'create', { agentArgs }),
+      launch,
     })
     if (!created.ok) {
       // No decision leaves the record `starting` with its pending id on purpose: that is exactly the
@@ -886,14 +895,10 @@ export class SessionLifecycle {
    * already was, which the next pass replays as before.
    */
   private async markLaunchWait(sessionId: string, reason: string): Promise<void> {
-    const record = this.records.get(sessionId)
     // Only while the launch is still the one being waited for. A record that bound, ended or was
     // removed while the Host was answering has nothing left to pace.
-    if (!record || record.life !== 'starting' || record.pendingOperationId === undefined) return
-    await this.records.put({
-      ...record,
-      launchWait: LaunchBackoff.after(record.launchWait, reason, this.now()),
-    })
+    await this.records.update(sessionId, (record) => record.life !== 'starting' || record.pendingOperationId === undefined ? null
+      : { ...record, launchWait: LaunchBackoff.after(record.launchWait, reason, this.now()) })
   }
 
   /**
@@ -904,16 +909,17 @@ export class SessionLifecycle {
    * snapshot beside every other session, and `remove()` takes it away when the user is done with it.
    */
   private async endRefused(record: SessionRecord, detail: string): Promise<void> {
-    await this.records.put({
-      ...record,
+    await this.records.update(record.sessionId, (latest) => latest.pendingOperationId !== record.pendingOperationId ? null : ({
+      ...latest,
       life: 'ended',
+      accountSegments: SessionAccounts.close(latest, this.now()),
       binding: null,
       pendingOperationId: undefined,
       pendingOperationKind: undefined,
       launchWait: undefined,
       endedAt: this.now(),
       endedReason: detail,
-    })
+    }))
   }
 
   /**
@@ -940,7 +946,7 @@ export class SessionLifecycle {
         problems.push(`Adopt or stop runtime ${runtime.runtimeSessionId} before restarting the Host.`)
         continue
       }
-      const record = await this.withCapturedCodexId(stored)
+      const record = await this.withConfirmedId(stored)
       const gone = await SessionLifecycle.worktreeGone(record)
       // A restart would kill the run's process and lose its verdict.
       const problem = record.scriptOf !== undefined
@@ -954,12 +960,24 @@ export class SessionLifecycle {
       else
         sessions.push(record.sessionId)
     }
+    // Sessions that still run, or cannot come back, hold the restart back; the request itself was valid.
     if (problems.length > 0)
-      return { ok: false, code: 'invalid-spec', detail: `Host restart was cancelled. Resolve these sessions first:\n${problems.join('\n')}` }
+      return { ok: false, code: 'live-refused', detail: `Host restart was cancelled. Resolve these sessions first:\n${problems.join('\n')}` }
     return { ok: true, value: sessions }
   }
 
-  async reopen(sessionId: string): Promise<SessionsOpResult> {
+  async resumeWorker(sessionId: string): Promise<SessionsOpResult> {
+    const record = this.records.get(sessionId)
+    if (record === null || !WorkerLiveness.open(record) || record.worktreeLifecycle?.facts.worker.liveness !== 'dead')
+      return { ok: false, code: 'merge-pending', detail: 'No interrupted worktree worker can resume' }
+    return this.reopen(sessionId, 'liveness')
+  }
+
+  /**
+   * `liveness`: a worktree worker resumes past its Finish. `restore`: a session that lived until an
+   * explicit Host restart comes back. Both continue the session's lifetime; a `person` Reopen starts a new one.
+   */
+  async reopen(sessionId: string, by: 'person' | 'liveness' | 'restore' = 'person'): Promise<SessionsOpResult> {
     let record = this.records.get(sessionId)
     if (!record) return OperationOutcomes.notFound(sessionId)
     // A run is judged by its exit code for its parent; a run nobody's flow asked for judges nothing.
@@ -997,7 +1015,7 @@ export class SessionLifecycle {
       }
     // The checks of a Finish run in the worktree on behalf of the ended session; running the session
     // in it meanwhile would change what they check.
-    if (SessionScriptDefinitions.judging('finish', record))
+    if (by !== 'liveness' && SessionScriptDefinitions.judging('finish', record))
       return {
         ok: false,
         code: 'merge-pending',
@@ -1022,12 +1040,12 @@ export class SessionLifecycle {
         code: 'launch-pending',
         detail: `Session ${sessionId} has a launch waiting for the Host to answer; it is replayed as soon as the Host can`,
       }
-    const finishing = this.finishingRefusal(record)
+    const finishing = by === 'liveness' ? null : this.finishingRefusal(record)
     if (finishing !== null) return finishing
     const gone = await SessionLifecycle.worktreeGone(record)
     if (gone !== null) return SessionLifecycle.goneRefusal(sessionId, gone)
     // Consume a pending confirmation before deciding whether the conversation can be resumed.
-    record = await this.withCapturedCodexId(record)
+    record = await this.withConfirmedId(record)
     // Asked before the Host is touched: a record that cannot name the conversation it would land on
     // is refused outright rather than started on a guess.
     const reopenable = record.agent ? AgentPresets.reopenProblem(record.agent) : null
@@ -1058,15 +1076,20 @@ export class SessionLifecycle {
     // comes from the listing, never from here, so nothing reads the binding this drops. The ended
     // fields go for the same reason: a record the snapshot reports as `starting` must not also be
     // reporting when and why it ended.
-    const pending: SessionRecord = WorktreeCleanupPacing.relaunched({
-      ...record,
-      ...(record.agent?.agentId === 'codex' ? {
-        agent: {...record.agent, identityLaunchId: operationId, identitySequence: undefined},
+    if (!await this.records.update(sessionId, (latest) => latest.life !== record.life || latest.pendingOperationId !== record.pendingOperationId ? null
+      : WorktreeCleanupPacing.relaunched({
+      ...latest,
+      ...(latest.agent !== undefined ? {
+        agent: { ...latest.agent,
+          ...(latest.agent.launchAccountId !== undefined ? { launchAccountId: latest.agent.accountId ?? 'main' } : {}),
+          ...(AgentPresets.confirmsIdentity(latest.agent) ? { identityLaunchId: operationId, identitySequence: undefined } : {}) },
       } : {}),
       binding: null,
       life: 'starting',
+      accountSegments: SessionAccounts.open(latest, this.now()),
       pendingOperationId: operationId,
       pendingOperationKind: 'reopen',
+      pendingKeepsHistory: by === 'person' ? undefined : true,
       endedAt: undefined,
       exitCode: undefined,
       endedReason: undefined,
@@ -1074,12 +1097,17 @@ export class SessionLifecycle {
       stopRequested: undefined,
       // A pass of the checks counts only until the session runs again, and a failure stops nothing now.
       finishChecks: undefined,
+      // A restore and a liveness resume continue the lifetime, and Session actions draws the current
+      // Keep section with its buttons from this outcome (UA1-J14-6); a person's Reopen starts afresh.
+      worktreeOutcome: by === 'person' ? undefined : latest.worktreeOutcome,
       // Running it again is the opposite of being done with it, so the mark goes. Without this a
       // reopened session would be live and still filed as finished, which is to say invisible.
       completed: undefined,
-    }, this.now())
-    if (!await this.records.put(pending)) return OperationOutcomes.latched()
-    const launch = this.plannedLaunch(pending, 'reopen')
+    }, this.now()))) return OperationOutcomes.latched()
+    const pending = this.records.get(sessionId)!
+    let launch: RuntimeLaunchSpec
+    try { launch = await this.plannedLaunch(pending, 'reopen') }
+    catch (error) { return { ok: false, code: 'invalid-spec', detail: `Account launch failed: ${ErrorText.of(error)}` } }
     let result: HostCallResult<RuntimeResult>
     if (route.kind === 'replace')
       result = await this.host.runtimeReplace({ target: route.target, operationId, launch })
@@ -1091,7 +1119,17 @@ export class SessionLifecycle {
       // The Host judged the request, so nothing is pending any more and the record goes back to what
       // it was before this attempt. Only a call that decided nothing leaves the pending record to
       // replay.
-      if (OperationOutcomes.decided(result)) await this.records.put(record)
+      if (OperationOutcomes.decided(result)) await this.records.update(sessionId, (latest) => {
+        if (latest.pendingOperationId !== operationId) return null
+        return { ...latest, life: record.life, accountSegments: record.accountSegments, binding: record.binding, pendingOperationId: record.pendingOperationId,
+          pendingOperationKind: record.pendingOperationKind, pendingKeepsHistory: record.pendingKeepsHistory, endedAt: record.endedAt, exitCode: record.exitCode,
+          endedReason: record.endedReason, exitReason: record.exitReason, stopRequested: record.stopRequested,
+          finishChecks: latest.finishChecks ?? record.finishChecks, worktreeOutcome: latest.worktreeOutcome ?? record.worktreeOutcome,
+          completed: record.completed, worktreeCleanup: latest.worktreeCleanup ?? record.worktreeCleanup,
+          ...(latest.agent !== undefined && record.agent !== undefined && AgentPresets.confirmsIdentity(latest.agent)
+            ? { agent: { ...latest.agent, launchAccountId: record.agent.launchAccountId,
+              identityLaunchId: record.agent.identityLaunchId, identitySequence: record.agent.identitySequence } } : {}) }
+      })
       return OperationOutcomes.failureOf(result)
     }
     await this.bindLive(pending, result.value)
@@ -1142,7 +1180,7 @@ export class SessionLifecycle {
          * mark stays where it has always been, after a stop the Host confirmed.
          */
         if (record.scriptOf === undefined && !record.stopRequested)
-          await this.records.put({ ...this.records.get(sessionId) ?? record, stopRequested: true })
+          await this.records.update(sessionId, (latest) => ({ ...latest, stopRequested: true }))
         return OperationOutcomes.failureOf(stopped)
       }
       // A session that was stopped did not end on its own, whatever exit code the platform gives a
@@ -1163,7 +1201,10 @@ export class SessionLifecycle {
       // the ending readable: two judgements ask `stopRequested` BEFORE the exit code, and on
       // POSIX a signalled process reports 0, so a stopped install without the mark reads as a
       // clean run and the session it was preparing starts in a half-installed worktree.
-      if (Object.keys(marks).length > 0 && !await this.records.put({ ...current, ...marks }))
+      if (Object.keys(marks).length > 0 && !await this.records.update(sessionId, (latest) => {
+        const stopped: SessionRecord = { ...latest, stopRequested: true }
+        return SessionLifecycle.completesOn(stopped) ? { ...stopped, completed: true } : stopped
+      }))
         this.report(
           `Session ${sessionId} was stopped, but the record could not be written; its ending may `
           + 'read as a crash, and a stopped install or merge resolver may read as a clean run',
@@ -1276,7 +1317,7 @@ export class SessionLifecycle {
     if (gone !== null) return SessionLifecycle.goneRefusal(sessionId, gone)
     const agentId = record.agent.agentId
     // A receipt can be newer than the last reconciliation tick.
-    const captured = await this.withCapturedCodexId(record)
+    const captured = await this.withConfirmedId(record)
     const parentId = captured.agent?.nativeSessionId
     if (parentId === undefined)
       return {
@@ -1348,16 +1389,18 @@ export class SessionLifecycle {
     const record = this.records.get(sessionId)
     if (!record) return OperationOutcomes.notFound(sessionId)
     if (this.records.latched) return OperationOutcomes.latched()
-    const painted: SessionRecord = { ...record }
-    if (color === null) delete painted.color
-    else painted.color = color
-    if (!await this.records.put(painted)) return OperationOutcomes.latched()
+    if (!await this.records.update(sessionId, (current) => {
+      const painted = { ...current }
+      if (color === null) delete painted.color
+      else painted.color = color
+      return painted
+    })) return OperationOutcomes.latched()
     return { ok: true, value: undefined }
   }
 
   /**
    * The details dialog's Save: whichever of name, note and colour actually moved, merged into ONE
-   * record put, so the save is one revision and one broadcast. A field that is absent is not
+   * record update, so the save is one revision and one broadcast. A field that is absent is not
    * touched - a name-only save must never revert a colour another surface wrote moments earlier -
    * and `null` clears the note and the colour. The number prefix is not the caller's to touch: the
    * record's own is kept and the name is composed behind it, so `014 - old` renamed to `new` stays
@@ -1391,49 +1434,54 @@ export class SessionLifecycle {
     const record = this.records.get(sessionId)
     if (!record) return OperationOutcomes.notFound(sessionId)
     if (this.records.latched) return OperationOutcomes.latched()
-    const parts = SessionTitle.partsOf(record.title)
-    let name = parts.name
+    let name = ''
     let nameChanged = false
-    let title = record.title
-    if (update.name !== undefined) {
-      name = SessionTitle.normalizeName(update.name)
-      // On a record with no prefix the name IS the whole title, and a name shaped like a session
-      // number would come back out of `partsOf` as one: the next save would edit `planning notes`
-      // behind a chip reading `2026`. Refused here, where the shape is still the caller's choice.
-      // The number that would be read is named, because a custom one is not obviously a number to
-      // whoever typed it: `x64 build` is refused for its `x64`, and the sentence has to say so.
-      if (parts.number === null && SessionTitle.titlePrefixConst.test(name))
-        return {
-          ok: false,
-          code: 'invalid-spec',
-          detail: 'A name must not begin like a session number, and '
-            + `${JSON.stringify(SessionTitle.partsOf(name).number)} reads as one`,
+    let saved = record
+    let refusal: SessionsOpResult<SessionDetailsSaved> | undefined
+    const landed = await this.records.update(sessionId, (current) => {
+      const parts = SessionTitle.partsOf(current.title)
+      name = parts.name
+      let title = current.title
+      if (update.name !== undefined) {
+        name = SessionTitle.normalizeName(update.name)
+        // Without a prefix a numeric-looking name would be parsed as a session number next time.
+        if (parts.number === null && SessionTitle.titlePrefixConst.test(name)) {
+          refusal = {
+            ok: false,
+            code: 'invalid-spec',
+            detail: 'A name must not begin like a session number, and '
+              + `${JSON.stringify(SessionTitle.partsOf(name).number)} reads as one`,
+          }
+          return null
         }
-      const composed = SessionTitle.compose(parts.number, name)
-      if (composed.trim().length === 0)
-        return { ok: false, code: 'invalid-spec', detail: 'The session name is empty' }
-      nameChanged = name !== parts.name
-      // The title is rewritten only for a changed name: an unrelated save must not canonize a
-      // separator, and a rewrite here would fire the provider propagation below over nothing.
-      if (nameChanged) title = composed
-    }
-    const detailed: SessionRecord = { ...record, title }
-    if (note !== undefined) {
-      if (note === '') delete detailed.note
-      else detailed.note = note
-    }
-    if (update.color !== undefined) {
-      if (update.color === null) delete detailed.color
-      else detailed.color = update.color
-    }
-    if (!await this.records.put(detailed)) return OperationOutcomes.latched()
+        const composed = SessionTitle.compose(parts.number, name)
+        if (composed.trim().length === 0) {
+          refusal = { ok: false, code: 'invalid-spec', detail: 'The session name is empty' }
+          return null
+        }
+        nameChanged = name !== parts.name
+        // Preserve the original separator when the name did not change.
+        if (nameChanged) title = composed
+      }
+      saved = { ...current, title }
+      if (note !== undefined) {
+        if (note === '') delete saved.note
+        else saved.note = note
+      }
+      if (update.color !== undefined) {
+        if (update.color === null) delete saved.color
+        else saved.color = update.color
+      }
+      return saved
+    })
+    if (!landed) return refusal ?? OperationOutcomes.latched()
     // Only after the record landed, and best-effort: a transcript the name never reached is a fact
     // for the report channel, never a failed save. The bare name goes over - the prefix is V3's.
     if (nameChanged && name !== ''
-        && record.agent?.agentId === 'claude' && record.agent.nativeSessionId !== undefined) {
+        && saved.agent?.agentId === 'claude' && saved.agent.nativeSessionId !== undefined) {
       const written = await this.claudeTitles.appendTitle({
-        cwd: LaunchPlanner.cwdOf(record),
-        nativeSessionId: record.agent.nativeSessionId,
+        cwd: LaunchPlanner.cwdOf(saved),
+        nativeSessionId: saved.agent.nativeSessionId,
         title: name,
       }).catch(() => false)
       if (!written)
@@ -1443,7 +1491,7 @@ export class SessionLifecycle {
       ok: true,
       value: {
         titleChanged: nameChanged,
-        notifyAgent: SessionLifecycle.renameNoticeOf(record, name, nameChanged),
+        notifyAgent: SessionLifecycle.renameNoticeOf(saved, name, nameChanged),
       },
     }
   }
@@ -1469,18 +1517,18 @@ export class SessionLifecycle {
   }
 
   /** Applies a newer confirmation, including a native /new, /resume or /fork in the same terminal. */
-  private async applyCodexName(sessionId: string): Promise<boolean> {
+  private async applyConfirmedName(sessionId: string): Promise<boolean> {
     const record = this.records.get(sessionId)
     if (!record) return false
-    const named = await this.withCapturedCodexId(record)
+    const named = await this.withConfirmedId(record)
     return named.agent?.nativeSessionId !== record.agent?.nativeSessionId
   }
 
-  private async captureProjectCodexIds(projectPath: string): Promise<void> {
+  private async captureProjectConfirmedIds(projectPath: string): Promise<void> {
     const unnamed = this.records.list().filter((record) =>
       SessionLifecycle.isProjectRecord(record, projectPath)
-      && SessionLifecycle.tracksCodex(record))
-    for (const record of unnamed) await this.withCapturedCodexId(record)
+      && SessionLifecycle.tracksIdentity(record))
+    for (const record of unnamed) await this.withConfirmedId(record)
   }
 
   private historyRecordsOf(spec: SessionHistoryOpenSpec): SessionRecord[] {
@@ -1490,22 +1538,49 @@ export class SessionLifecycle {
       && record.agent.nativeSessionId === spec.nativeSessionId)
   }
 
-  /** A receipt is scoped to one persisted launch; timestamps and rollout contents are never evidence. */
-  private async withCapturedCodexId(record: SessionRecord): Promise<SessionRecord> {
+  /**
+   * A receipt is scoped to one persisted launch; timestamps, transcripts and rollout contents are
+   * never evidence. A Claude id the relay confirms may differ from the one it was launched with (UA1-J14-1).
+   */
+  private async withConfirmedId(record: SessionRecord): Promise<SessionRecord> {
     const agent = record.agent
-    if (!agent || !SessionLifecycle.tracksCodex(record) || this.records.latched) return record
-    const receipt = this.codexSessions.identity(record)
+    if (!agent || !SessionLifecycle.tracksIdentity(record) || this.records.latched) return record
+    const receipt = this.confirmedIdOf(record)
     if (receipt === null || receipt.sequence <= (agent.identitySequence ?? 0)) return record
-    const named: SessionRecord = { ...record, agent: { ...agent,
-      nativeSessionId: receipt.nativeSessionId, nativeSessionIdSource: 'codex-app-server',
-      identitySequence: receipt.sequence,
-    } }
-    return await this.records.put(named) ? named : record
+    await this.records.update(record.sessionId, (latest) => {
+      if (latest.agent?.identityLaunchId !== agent.identityLaunchId || receipt.sequence <= (latest.agent?.identitySequence ?? 0)) return null
+      return this.withAgentStartProof({ ...latest, agent: { ...latest.agent!,
+        nativeSessionId: receipt.nativeSessionId, nativeSessionIdSource: receipt.source, identitySequence: receipt.sequence } })
+    })
+    return this.records.get(record.sessionId) ?? record
   }
 
-  private static tracksCodex(record: SessionRecord): boolean {
-    return record.agent?.agentId === 'codex' && record.agent.identityLaunchId !== undefined
-      && record.endedReason === undefined
+  /** What the running agent of this launch generation reported, through the witness of its kind. */
+  private confirmedIdOf(record: SessionRecord): { nativeSessionId: string; sequence: number; source: 'codex-app-server' | 'claude-statusline' } | null {
+    const agent = record.agent!
+    if (agent.agentId === 'codex') {
+      const receipt = this.codexSessions.identity(record)
+      return receipt === null ? null : { nativeSessionId: receipt.nativeSessionId, sequence: receipt.sequence, source: 'codex-app-server' }
+    }
+    else if (agent.agentId === 'claude') {
+      const receipt = this.claudeStatusLine.identity(record.sessionId, agent.identityLaunchId!)
+      return receipt === null ? null : { ...receipt, source: 'claude-statusline' }
+    }
+    else throw new Error(`Unknown agent: ${JSON.stringify(agent.agentId satisfies never)}`)
+  }
+
+  private withAgentStartProof(record: SessionRecord): SessionRecord {
+    const worktree = record.worktree
+    if (worktree?.kind !== 'svn' || worktree.agentStartedAt !== undefined || record.kind !== 'agent'
+      || record.pendingSetup !== undefined || record.binding === null) return record
+    if (record.agent?.nativeSessionId === undefined && this.agentActivityOf(record.sessionId) !== 'working') return record
+    return { ...record, worktree: { ...worktree, agentStartedAt: this.now() } }
+  }
+
+  private static tracksIdentity(record: SessionRecord): boolean {
+    return record.agent !== undefined && record.agent.identityLaunchId !== undefined
+      && (record.endedReason === undefined || record.life === 'live' || record.agent.launchAccountId !== undefined
+        && record.agent.launchAccountId !== (record.agent.accountId ?? 'main'))
   }
 
   /**
@@ -1569,6 +1644,11 @@ export class SessionLifecycle {
     return { ok: true, value: undefined }
   }
 
+  async clearActions(sessionId: string): Promise<SessionsOpResult> {
+    if (this.records.get(sessionId) === null) return OperationOutcomes.notFound(sessionId)
+    return await this.records.clearActions(sessionId) ? { ok: true, value: undefined } : OperationOutcomes.latched()
+  }
+
   /**
    * Plans against the Host's answer and carries out what it decided. The changes handed back are the
    * ones that landed, plus every orphan - an orphan is reported on every pass, because it is a fact
@@ -1576,6 +1656,10 @@ export class SessionLifecycle {
    */
   async reconcile(listing: RuntimeListResult | null): Promise<ReconcileChange[]> {
     if (this.records.latched) return []
+    for (const record of this.records.list()) {
+      const proved = this.withAgentStartProof(record)
+      if (proved !== record) await this.records.update(record.sessionId, (latest) => this.withAgentStartProof(latest))
+    }
     const applied: ReconcileChange[] = []
     const planned = Reconciler.plan(this.records.list(), listing, this.now(), this.startedAt, this.svnActions.held())
     for (const change of planned) {
@@ -1587,10 +1671,14 @@ export class SessionLifecycle {
       else if (change.kind === 'mark-ended') {
         const previous = this.records.get(change.sessionId)
         if (previous) {
-          const record = await this.withCapturedCodexId(previous)
+          await this.withConfirmedId(previous)
+          const saved = await this.records.update(change.sessionId, (record) => {
           const ended: SessionRecord = {
             ...record,
             life: 'ended',
+            accountSegments: SessionAccounts.close(record, change.endedAt),
+            // A fast run may end before its create response has bound the record.
+            binding: change.binding,
             exitCode: change.exitCode,
             // The Host's own word for the ending, kept beside the mark this client may have written
             // itself: either one on its own is enough to read the ending as wanted.
@@ -1606,7 +1694,9 @@ export class SessionLifecycle {
           // the witness of who asked for it is on the record. Judged on the ENDED record, so the
           // Host's own word arriving with this change counts as well as the client's own mark.
           if (SessionLifecycle.completesOn(ended)) ended.completed = true
-          if (await this.records.put(ended)) applied.push(change)
+            return ended
+          })
+          if (saved) applied.push(change)
         }
       }
       else if (change.kind === 'mark-lost') {
@@ -1623,8 +1713,8 @@ export class SessionLifecycle {
       else if (change.kind === 'script-failed') {
         if (await this.gateHandlers[change.gate].failed(change.sessionId, change.reason)) applied.push(change)
       }
-      else if (change.kind === 'name-codex-conversation') {
-        if (await this.applyCodexName(change.sessionId)) applied.push(change)
+      else if (change.kind === 'name-conversation') {
+        if (await this.applyConfirmedName(change.sessionId)) applied.push(change)
       }
       else if (change.kind === 'clean-worktree') {
         // Fired and not awaited for the reason a resumed merge is: svn work must not hold this loop.
@@ -1681,38 +1771,27 @@ export class SessionLifecycle {
    * what finishes the job.
    */
   private async applyResolveFailed(sessionId: string, reason: string): Promise<boolean> {
-    const record = this.records.get(sessionId)
-    if (!record?.worktreeMerge) return false
-    return this.records.put({
-      ...record,
-      worktreeMerge: { ...record.worktreeMerge, failure: reason },
-    })
+    return this.records.update(sessionId, (record) => record.worktreeMerge === undefined ? null
+      : { ...record, worktreeMerge: { ...record.worktreeMerge, failure: reason } })
   }
 
   /** The attempt is written before the apply runs, so the next pass waits its turn instead of judging again. */
   private async applyCleanAttempt(sessionId: string): Promise<boolean> {
-    const record = this.records.get(sessionId)
-    if (!record?.worktreeCleanup || this.finishing(sessionId)) return false
-    return this.records.put({ ...record, worktreeCleanup: WorktreeCleanupPacing.attempted(record.worktreeCleanup, this.now()) })
+    return this.records.update(sessionId, (record) => record.worktreeCleanup === undefined || this.finishing(sessionId) ? null
+      : { ...record, worktreeCleanup: WorktreeCleanupPacing.attempted(record.worktreeCleanup, this.now()) })
   }
 
   /** The binding named a runtime this Host answered it does not have, so it stops being true. */
   private async markLost(sessionId: string): Promise<boolean> {
-    const record = this.records.get(sessionId)
-    if (!record) return false
-    const lost: SessionRecord = {
-      ...record,
-      life: 'lost',
-      binding: null,
-      pendingOperationId: undefined,
-      pendingOperationKind: undefined,
-      launchWait: undefined,
-    }
-    // The other way a refused stop ends up: the Host restarts before the exit is ever reported, so
-    // the runtime is unfindable rather than dead. `lost` is what became of it, but somebody had
-    // already said they were done with it, and that verdict is not weakened by losing the Host.
-    if (SessionLifecycle.completesOn(lost)) lost.completed = true
-    return this.records.put(lost)
+    const previous = this.records.get(sessionId)
+    if (previous?.life === 'live') await this.withConfirmedId(previous)
+    return this.records.update(sessionId, (record) => {
+      const lost: SessionRecord = { ...record, life: 'lost', accountSegments: SessionAccounts.close(record, this.now()), binding: null, pendingOperationId: undefined,
+        pendingOperationKind: undefined, launchWait: undefined }
+      // Losing the Host does not weaken an earlier request to complete this session.
+      if (SessionLifecycle.completesOn(lost)) lost.completed = true
+      return lost
+    })
   }
 
   private async applyBindLive(
@@ -1728,12 +1807,14 @@ export class SessionLifecycle {
       && record.binding?.hostInstanceId === binding.hostInstanceId
       && record.binding.generation === binding.generation)
       return false
-    return this.records.put(WorktreeCleanupPacing.relaunched({
-      ...record,
+    return this.records.update(sessionId, (latest) => latest.pendingOperationId !== record.pendingOperationId ? null
+      : this.withAgentStartProof(WorktreeCleanupPacing.relaunched({
+      ...latest,
       binding,
       life: 'live',
       pendingOperationId: undefined,
       pendingOperationKind: undefined,
+      pendingKeepsHistory: undefined,
       launchWait: undefined,
       pendingSetup: undefined,
       // The next Finish checks again: the session ran since any chain this record holds.
@@ -1747,7 +1828,7 @@ export class SessionLifecycle {
       // witness they have that a killed process reporting 0 on POSIX did not finish its work. A pass
       // that merely OBSERVES a runtime has no business erasing that; the two places that do erase it
       // are `reopen` and the create replay, where a new run is being launched on purpose.
-    }, this.now()))
+    }, this.now())), { newLifetime: record.pendingOperationKind === 'reopen' && record.pendingKeepsHistory !== true })
   }
 
   /**
@@ -1794,14 +1875,17 @@ export class SessionLifecycle {
       return null
     }
     const agentArgs = record.agent
-      ? SessionLifecycle.replayArgsOf(record.agent, change.operation)
+      ? SessionLifecycle.replayArgsOf(record.agent, change.operation, this.agentCli())
       : undefined
+    let launch: RuntimeLaunchSpec
+    try { launch = await this.plannedLaunch(record, change.operation, { agentArgs }) }
+    catch { return null }
     const created = await this.host.runtimeCreate({
       operationId: change.operationId,
       runtimeSessionId: change.sessionId,
       // A replay is whatever the interrupted operation was, so the pending kind decides: a replayed
       // create founds the conversation and carries the model, a replayed reopen does not.
-      launch: this.plannedLaunch(record, change.operation, { agentArgs }),
+      launch,
     })
     // A replay the Host decided nothing about keeps the pending pair: a later pass tries it under
     // the same id, once the wait this refusal just extended is up. A decision ends the record,
@@ -1835,16 +1919,17 @@ export class SessionLifecycle {
   private static replayArgsOf(
     agent: SessionRecordAgent,
     operation: 'create' | 'reopen',
+    cli: string | undefined,
   ): string[] {
-    if (operation === 'create') return AgentPresets.replayArgs(agent)
-    else if (operation === 'reopen') return AgentPresets.reopenArgs(agent)
+    if (operation === 'create') return AgentPresets.replayArgs(agent, cli)
+    else if (operation === 'reopen') return AgentPresets.reopenArgs(agent, cli)
     else throw new Error(`Unknown pending operation: ${JSON.stringify(operation)}`)
   }
 
   /** A session with a runtime of its own is not waiting for anything, so `pendingSetup` goes too. */
   private async bindLive(record: SessionRecord, result: RuntimeResult): Promise<boolean> {
-    return this.records.put(WorktreeCleanupPacing.relaunched({
-      ...record,
+    return this.records.update(record.sessionId, (latest) => latest.pendingOperationId !== record.pendingOperationId ? null : this.withAgentStartProof(WorktreeCleanupPacing.relaunched({
+      ...latest,
       binding: {
         hostInstanceId: result.hostInstanceId,
         generation: result.session.generation,
@@ -1852,6 +1937,7 @@ export class SessionLifecycle {
       life: 'live',
       pendingOperationId: undefined,
       pendingOperationKind: undefined,
+      pendingKeepsHistory: undefined,
       launchWait: undefined,
       pendingSetup: undefined,
       finishChecks: undefined,
@@ -1860,7 +1946,7 @@ export class SessionLifecycle {
       endedReason: undefined,
       exitReason: undefined,
       // `stopRequested` survives a bind, for the reason `applyBindLive` gives.
-    }, this.now()))
+    }, this.now())), { newLifetime: record.pendingOperationKind === 'reopen' && record.pendingKeepsHistory !== true })
   }
 
   /**
@@ -1879,8 +1965,32 @@ export class SessionLifecycle {
     return this.worktrees.create({ placement, folder, baseRef: spec.worktree.baseRef })
   }
 
+  /**
+   * Where a worktree of `directory` would stand and whose counter would number its session, by the
+   * very rules a create applies. Nothing is reserved, checked out or counted: the create card draws
+   * its preview from this rather than guessing the owner.
+   */
+  async worktreePlacementOf(directory: SessionWorktreeDirectory):
+    Promise<SessionsOpResult<Omit<SessionWorktreePreview, 'token'> & { countedProject: string | null }>> {
+    const spec = { directory, worktree: { slug: '' } }
+    const placed = await this.placeWorktree(spec)
+    if (!placed.ok) return { ok: false, code: placed.code, detail: placed.detail }
+    const placement = placed.value
+    if (placement === null) throw new Error('A worktree spec placed no worktree')
+    return { ok: true, value: { kind: placement.kind, ownerDir: placement.ownerDir, owner: SessionLifecycle.ownerOf(placement),
+      countedProject: SessionLifecycle.countedProjectOf(spec, placement) } }
+  }
+
+  /** A product shares its worktree among its members; otherwise its catalog project owns it, else the directory itself. */
+  private static ownerOf(placement: WorktreePlacement): SessionWorktreePreview['owner'] {
+    if (placement.setupScope === 'members') return 'product'
+    if (placement.catalogProject !== null
+      && PathCompare.comparable(placement.catalogProject) === PathCompare.comparable(placement.ownerDir)) return 'project'
+    return 'directory'
+  }
+
   /** A catalog project names its own directory; an ad-hoc directory may carry a worktree in SVN only, which the port decides. */
-  private placeWorktree(spec: SessionCreateSpec): Promise<WorktreePlacing | { ok: true; value: null }> {
+  private placeWorktree(spec: Pick<SessionCreateSpec, 'directory' | 'worktree'>): Promise<WorktreePlacing | { ok: true; value: null }> {
     if (!spec.worktree) return Promise.resolve({ ok: true, value: null })
     const directory = spec.directory
     const owner = spec.worktree.owner
@@ -1895,7 +2005,7 @@ export class SessionLifecycle {
    * The project whose counter numbers the session: the catalog project it was opened on, or for a
    * worktree of an ad-hoc directory the catalog project that holds it. Null counts nothing.
    */
-  private static countedProjectOf(spec: SessionCreateSpec, placement: WorktreePlacement | null): string | null {
+  private static countedProjectOf(spec: Pick<SessionCreateSpec, 'directory'>, placement: WorktreePlacement | null): string | null {
     if (spec.directory.mode === 'project') return spec.directory.projectPath
     return placement?.catalogProject ?? null
   }
@@ -1980,11 +2090,14 @@ export class SessionLifecycle {
       createdAt: this.now(),
     }
     if (agent) {
-      if (agent.agentId === 'codex') agent.identityLaunchId = operationId
+      if (AgentPresets.confirmsIdentity(agent)) agent.identityLaunchId = operationId
       record.agent = agent
       record.transcriptCwd = cwd
       if (agent.initialPrompt) record.lastUserInputAt = record.createdAt
     }
+    if (spec.account) record.account = { ...spec.account }
+    const account = SessionAccounts.ref(record)
+    if (account) record.accountSegments = [{ accountId: account.accountId, from: record.createdAt, to: null }]
     if (marks) record.scriptOf = marks.scriptOf
     if (spec.parent !== undefined) record.parent = { sessionId: spec.parent.sessionId, kind: spec.parent.kind }
     if (spec.flowId) record.flowId = spec.flowId
@@ -2008,7 +2121,8 @@ export class SessionLifecycle {
   private recordAgentOf(agent: SessionAgentSpec, sessionId: string, marks?: SessionInternalMarks): SessionRecordAgent {
     const nativeSessionId = agent.nativeSessionId
       ?? (AgentPresets.mintsNativeSessionId(agent) ? sessionId : undefined)
-    const stored: SessionRecordAgent = { agentId: agent.agentId, launchMode: agent.mode }
+    const stored: SessionRecordAgent = { agentId: agent.agentId, launchMode: agent.mode,
+      accountId: agent.accountId ?? 'main' }
     if (nativeSessionId) stored.nativeSessionId = nativeSessionId
     if (agent.agentId === 'codex' && nativeSessionId) stored.nativeSessionIdSource = 'provided'
     if (agent.forkParentId) stored.forkParentId = agent.forkParentId
@@ -2052,8 +2166,8 @@ export class SessionLifecycle {
    * under it until its ending is written. An action that waits for the person holds nothing.
    */
   private finishingRefusal(record: SessionRecord): SessionsOpResult<never> | null {
-    const action = record.svnAction
-    const phase = action !== undefined && action.needs === undefined ? action.stage
+    const action = FinishProjection.action(record)
+    const phase = action !== undefined && SvnActionStages.running(record) ? action.stage
       : this.finishing(record.sessionId) ? 'starting' : null
     if (phase === null) return null
     const what = action?.kind === 'update-main' ? `the UPDATE of ${action.root}` : 'the finish of its worktree'
@@ -2108,6 +2222,9 @@ export class SessionLifecycle {
 
   private static specProblem(spec: SessionCreateSpec): string | null {
     if (!spec || typeof spec !== 'object') return 'a create spec is required'
+    if (spec.account !== undefined && (spec.kind !== 'shell' || !spec.account
+      || (spec.account.agentId !== 'claude' && spec.account.agentId !== 'codex')
+      || !SessionLifecycle.filled(spec.account.accountId))) return 'invalid shell account'
     const directory = SessionLifecycle.directoryProblem(spec.directory)
     if (directory) return directory
     if (spec.worktree) {
@@ -2175,6 +2292,7 @@ export class SessionLifecycle {
 
   private static agentProblem(agent: SessionAgentSpec | undefined): string | null {
     if (!agent) return 'an agent session needs an agent'
+    if (agent.accountId !== undefined && !SessionLifecycle.filled(agent.accountId)) return 'accountId must be non-empty'
     if (agent.agentId !== 'claude' && agent.agentId !== 'codex')
       return `unknown agent ${JSON.stringify(agent.agentId)}`
     if (agent.mode !== 'new' && agent.mode !== 'continue'

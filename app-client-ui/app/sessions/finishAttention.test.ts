@@ -62,6 +62,16 @@ describe('app-client-ui/app/sessions/finishAttention', () => {
     expect(shown).toHaveLength(2)
   })
 
+  it('notifies once per authoritative review wait even when the review version changes', () => {
+    const { shown, it: told } = attention()
+    told.seen(snapshot([]))
+    const view = { version: 7, phase: 'waiting' as const, step: 'reviewing' as const, outOfDate: 0, conflicts: 0,
+      wait: { kind: 'waiting-for-review' as const, at: 1234, reason: 'Open Session actions' }, summary: 'Waiting for review' }
+    told.seen(snapshot([session('s1', { worktreeView: view })]))
+    told.seen(snapshot([session('s1', { worktreeView: { ...view, version: 8 } })]))
+    expect(shown).toEqual([{ sessionId: 's1', title: 'Finish waits: s1 title', body: 'Open Session actions' }])
+  })
+
   it('tells nothing for an UPDATE of a main copy or a running action', () => {
     const { shown, it: told } = attention()
     told.seen(snapshot([]))

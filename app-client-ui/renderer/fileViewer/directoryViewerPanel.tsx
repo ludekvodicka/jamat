@@ -1,3 +1,4 @@
+import type { SessionDirectoryPorts } from '../../shared/sessionWorkspace'
 import type { IDockviewPanelProps } from 'dockview'
 
 import type {
@@ -7,6 +8,7 @@ import type {
 import { DirectoryExplorer } from './directoryExplorer'
 
 export type DirectoryViewerPanelProps = IDockviewPanelProps & {
+  ports: SessionDirectoryPorts
   openFile(source: FileViewerDocumentSource, documentKey: string): void
 }
 
@@ -18,7 +20,7 @@ export function DirectoryViewerPanel(props: DirectoryViewerPanelProps): React.JS
       props.openFile(document.source, document.documentKey)
     }
     finally {
-      void window.appClient.fileViewer.release(document.documentId)
+      void props.ports.release(document.documentId)
     }
   }
   return (
@@ -26,7 +28,7 @@ export function DirectoryViewerPanel(props: DirectoryViewerPanelProps): React.JS
       className="file-directory-viewer"
       aria-label={targetPath === null ? 'Project directory' : 'Directory'}
     >
-      <DirectoryExplorer
+      <DirectoryExplorer ports={props.ports}
         sessionId={sessionId}
         targetPath={targetPath}
         documentId={null}

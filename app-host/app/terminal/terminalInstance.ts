@@ -8,8 +8,10 @@ import type {
   RuntimeSessionInfo,
 } from '../wire/hostWire.js'
 import { ProcessStartIdentity } from '../shared/processStartIdentity.js'
+import { TerminalDescendants, type TerminalDescendant } from './terminalDescendants.js'
 import { TerminalProjection } from './terminalProjection.js'
 import { TerminalLaunchError } from './terminalLaunchError.js'
+import { TerminalStopRefusal } from './terminalStopRefusal.js'
 import type { TerminalExit, TerminalInstanceEvent } from './terminal.types.js'
 
 export class TerminalInstance {
@@ -44,7 +46,10 @@ export class TerminalInstance {
   private readonly exited: Promise<void>
   private resolveExit: () => void = () => {}
   private aliveValue = true
-  private stopping = false
+  private stopping: Promise<void> | null = null
+  private descendantFailure: string | null = null
+  private readonly stopDescendants: boolean
+  private descendants: TerminalDescendant[] = []
   private released = false
   private processStartedAtValue: number | null = null
   private exitValue: TerminalExit | null = null
@@ -57,6 +62,7 @@ export class TerminalInstance {
     launch: RuntimeLaunchSpec,
     private readonly onEvent: (event: TerminalInstanceEvent) => void,
   ) {
+    this.stopDescendants = launch.stopDescendants === true
     this.exited = new Promise((resolveExit) => {
       this.resolveExit = resolveExit
     })
@@ -154,9 +160,33 @@ export class TerminalInstance {
     })
   }
 
-  async stop(): Promise<void> {
-    if (!this.aliveValue || this.stopping) return
-    this.stopping = true
+  stop(confirmExternalStop = false): Promise<void> {
+    this.stopping ??= this.stopCurrent(confirmExternalStop).finally(() => { this.stopping = null })
+    return this.stopping
+  }
+
+  private async stopCurrent(confirmExternalStop: boolean): Promise<void> {
+    if (!this.aliveValue) {
+      await TerminalInstance.stopDescendants(this.descendants)
+      if (confirmExternalStop) this.descendantFailure = null
+      if (this.descendantFailure !== null) throw new TerminalStopRefusal(this.descendantFailure)
+      this.descendants = []
+      return
+    }
+    // A shell can exit on the first Ctrl+C and orphan children before CIM sees their parent.
+    const captured = await (this.stopDescendants ? TerminalDescendants.capture(this.pid, this.processStartedAtValue)
+      .then((children) => ({ children, error: null }), (error: unknown) => ({ children: [] as TerminalDescendant[], error }))
+      : Promise.resolve({ children: [] as TerminalDescendant[], error: null }))
+    this.descendants = [...new Map([...this.descendants, ...captured.children].map((child) => [`${child.pid}:${child.startedAt}`, child])).values()]
+    if (captured.error !== null) {
+      // Kept only when the root ended during the inspection: a live root keeps its tree readable, and is not interrupted here.
+      this.descendantFailure = this.aliveValue ? null
+        : `Terminal root PID ${this.pid} ended during its descendant inspection, so its child processes cannot be proven stopped: `
+          + `${String(captured.error)}; stop them, then confirm the stop manually`
+      throw new TerminalStopRefusal(this.descendantFailure
+        ?? `Terminal descendant inspection failed for root PID ${this.pid}; retry Stop: ${String(captured.error)}`)
+    }
+    this.descendantFailure = null
     try { this.process.write('\x03') } catch {}
     await TerminalInstance.sleep(50)
     try { this.process.write('\x03') } catch {}
@@ -169,8 +199,14 @@ export class TerminalInstance {
       this.hardKill()
       await this.awaitExit(TerminalInstance.hardKillConfirmMsConst)
     }
-    // a child that outlived the kill race must not latch the guard, or a retried stop would be a no-op
-    if (this.aliveValue) this.stopping = false
+    if (this.descendants.length > 0) await TerminalInstance.stopDescendants(this.descendants)
+    if (this.descendantFailure !== null) throw new TerminalStopRefusal(this.descendantFailure)
+    this.descendants = []
+  }
+
+  private static async stopDescendants(children: readonly TerminalDescendant[]): Promise<void> {
+    try { await TerminalDescendants.stop(children) }
+    catch (error) { throw new TerminalStopRefusal(`Owned child processes did not stop; retry Stop: ${error instanceof Error ? error.message : String(error)}`) }
   }
 
   info(startedAt: number): RuntimeSessionInfo {
@@ -220,18 +256,12 @@ export class TerminalInstance {
     return Promise.race([this.exited, TerminalInstance.sleep(budgetMs)])
   }
 
-  /**
-   * The kill of last resort, and the only one that reaches the whole tree: the pty's pid is the
-   * shell that was spawned and the agent runs as its child, so `/T` is what the escalation is for.
-   * It costs a process of its own, which is why it sits behind a budget rather than in front of it.
-   * Its failure is the outcome that was wanted - the process is already gone - so nothing but the
-   * exit that follows decides anything.
-   */
+  // Descendants of managed runs are killed separately against captured process identities.
   private hardKill(): void {
     const pid = this.process.pid
     if (pid <= 0) return
     if (process.platform === 'win32')
-      execFile('taskkill', ['/PID', String(pid), '/T', '/F'], () => undefined)
+      execFile('taskkill', ['/PID', String(pid), '/F'], { windowsHide: true }, () => undefined)
     else
       try { process.kill(pid, 'SIGKILL') } catch {}
   }

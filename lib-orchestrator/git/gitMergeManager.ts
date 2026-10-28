@@ -1,3 +1,5 @@
+import { relative } from 'node:path'
+import { PathCompare } from '../shared/pathCompare'
 import { GitManager } from './gitManager'
 import type { GitCommandOutcome, GitResult } from './git.types'
 
@@ -37,6 +39,15 @@ export interface MergeStatus {
  * copy is always the project's own repository.
  */
 export class GitMergeManager extends GitManager {
+  async revision(path: string, ref = 'HEAD'): Promise<GitResult<string>> {
+    const outcome = await this.invoker.run(path, ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`])
+    const failure = GitManager.failureOf(outcome, 'git-failed')
+    if (failure) return failure
+    const revision = outcome.stdout.trim()
+    return /^[a-f0-9]{40,64}$/.test(revision) ? { ok: true, value: revision }
+      : { ok: false, code: 'git-failed', detail: 'Git returned no verified commit revision' }
+  }
+
   /** Git says this when a merge stops on conflicts, which is a state to enter and not an error. */
   private static readonly conflictConst = /conflict|fix conflicts|automatic merge failed/i
 
@@ -124,24 +135,18 @@ export class GitMergeManager extends GitManager {
     return false
   }
 
-  /**
-   * Everything in the worktree, committed to the branch it is standing on.
-   *
-   * It exists so that finishing with a session is one action rather than a refusal: an agent leaves
-   * its work uncommitted as a matter of course, and a merge cannot start over that. The commit lands
-   * on the session's own branch and reaches the main copy only through the merge that follows, which
-   * is the step somebody already confirms.
-   *
-   * A tree with nothing in it is not a failure. `add` is happy with nothing to add and `commit` exits
-   * 1 saying so, and the caller asked for the work to be committed, which it now is.
-   */
-  async commitAll(worktreePath: string, message: string): Promise<GitResult<void>> {
-    const added = await this.invoker.run(worktreePath, ['add', '--all'])
+  /** Selected paths only, including both sides of a rename; unrelated index entries stay staged. */
+  async commitAll(worktreePath: string, message: string, paths?: readonly string[], onOutput?: (text: string) => void): Promise<GitResult<void>> {
+    if (!message.trim() || message.includes('\0') || paths === undefined || paths.length === 0
+      || paths.some((path) => !PathCompare.isInside(worktreePath, path) || relative(worktreePath, path) === '' || /[\0\r\n]/.test(path)))
+      return { ok: false, code: 'git-failed', detail: 'Select files inside the worktree and enter a commit message' }
+    const selected = [...new Set(paths.map((path) => `:(literal)${relative(worktreePath, path).replace(/\\/g, '/')}`))]
+    const added = await this.invoker.run(worktreePath, ['add', '-A', '--', ...selected], onOutput)
     const addFailure = GitManager.failureOf(added, 'git-failed')
     if (addFailure) return addFailure
     // Hooks are the project's own, and a pre-commit hook that refuses is an answer worth hearing:
     // it comes back as the git failure it is rather than being skipped on the session's behalf.
-    const committed = await this.invoker.run(worktreePath, ['commit', '--message', message])
+    const committed = await this.invoker.run(worktreePath, ['commit', '--only', '--message', message, '--', ...selected], onOutput)
     if (GitMergeManager.saysAbsent(committed, GitMergeManager.nothingToCommitConst))
       return { ok: true, value: undefined }
     const failure = GitManager.failureOf(committed, 'git-failed')
@@ -160,10 +165,12 @@ export class GitMergeManager extends GitManager {
   async mergeIntoWorktree(
     worktreePath: string,
     baseBranch: string,
+    onOutput?: (text: string) => void,
   ): Promise<GitResult<{ conflict: boolean }>> {
     const outcome = await this.invoker.run(
       worktreePath,
       ['merge', '--no-edit', '--end-of-options', baseBranch],
+      onOutput,
     )
     if (!outcome.failure && outcome.code !== 0
       && GitMergeManager.conflictConst.test(`${outcome.stderr}\n${outcome.stdout}`))
@@ -192,10 +199,11 @@ export class GitMergeManager extends GitManager {
    * session visible in the history afterwards, and a fast-forward would leave no trace that the work
    * happened on a branch of its own.
    */
-  async mergeToMain(repositoryRoot: string, branch: string): Promise<GitResult<{ conflict: boolean }>> {
+  async mergeToMain(repositoryRoot: string, branch: string, onOutput?: (text: string) => void): Promise<GitResult<{ conflict: boolean }>> {
     const outcome = await this.invoker.run(
       repositoryRoot,
       ['merge', '--no-ff', '--no-edit', '--end-of-options', branch],
+      onOutput,
     )
     // Read the same way `mergeIntoWorktree` reads it, and for a sharper reason: git's conflict
     // text matches none of the failure signatures, so this used to fall through as `git-failed`
@@ -214,10 +222,11 @@ export class GitMergeManager extends GitManager {
    * what is in it and the branch is established as merged, or after a person answered a two-step
    * confirmation about abandoning it.
    */
-  async removeWorktreeForced(repositoryRoot: string, worktreePath: string): Promise<GitResult<void>> {
+  async removeWorktreeForced(repositoryRoot: string, worktreePath: string, onOutput?: (text: string) => void): Promise<GitResult<void>> {
     const outcome = await this.invoker.run(
       repositoryRoot,
       ['worktree', 'remove', '--force', '--end-of-options', worktreePath],
+      onOutput,
     )
     if (GitMergeManager.saysAbsent(outcome, GitMergeManager.worktreeAbsentConst)) {
       if (!(await GitManager.exists(worktreePath))) return { ok: true, value: undefined }
@@ -228,10 +237,11 @@ export class GitMergeManager extends GitManager {
   }
 
   /** `-d` refuses a branch that is not merged, which is the safety; `-D` is the discard saying so. */
-  async deleteBranch(repositoryRoot: string, branch: string, force: boolean): Promise<GitResult<void>> {
+  async deleteBranch(repositoryRoot: string, branch: string, force: boolean, onOutput?: (text: string) => void): Promise<GitResult<void>> {
     const outcome = await this.invoker.run(
       repositoryRoot,
       ['branch', force ? '-D' : '-d', '--end-of-options', branch],
+      onOutput,
     )
     if (GitMergeManager.saysAbsent(outcome, GitMergeManager.branchAbsentConst))
       return { ok: true, value: undefined }

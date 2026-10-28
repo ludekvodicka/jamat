@@ -1,3 +1,4 @@
+import { WorktreeWords } from '../../../../lib-orchestrator/worktrees/worktreeViews'
 import { describe, expect, it } from 'vitest'
 
 import type {
@@ -8,10 +9,62 @@ import type {
   SvnFinishPhase,
   SvnFinishResult,
   SessionSvnActionInfo,
+  SessionWorkflowInfo,
+  SessionWorkflowStep,
 } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { type SessionAction, type SessionGlyph, SessionNodeState } from './sessionNodeState'
 
 describe('app-client-ui/renderer/views/sessionsTree/sessionNodeState', () => {
+  it('uses one actions mark and opens the item for a waiting setup', () => {
+    const actions: SessionInfo['actions'] = { sections: [{ kind: 'before', workflowId: 'setup:s1', title: 'Setup', badge: '',
+      summary: 'Approve commands', open: true, actions: [], rounds: [{ title: 'Setup', steps: [{ key: 'agree', title: 'Agree',
+        state: 'waits', detail: '', startedAt: null, endedAt: null, target: { kind: 'none' } }] }] }] }
+    expect(SessionNodeState.actionsMarkOf(actions)).toEqual({ text: 'actions waiting', title: 'Approve commands', waiting: true })
+    expect(SessionNodeState.opensWorkflow({ actions }, 'local')).toBe(true)
+    expect(SessionNodeState.opensWorkflow({ actions }, 'remote')).toBe(false)
+  })
+
+  it('lets Finish… go on past a requested run, which is no action of the session (UA1-J07-1)', () => {
+    const run: SessionWorkflowInfo = { kind: 'script', workflowId: 'script:v1', title: 'Worktree validation', badge: 'running',
+      summary: 'Worktree validation', open: true, actions: [{ id: 'stop-run', label: 'Stop', primary: false, runId: 'v1' }], rounds: [] }
+    const kept: SessionWorkflowInfo = { kind: 'finish', workflowId: 'ended:5', title: 'Finish', badge: 'partial', summary: '', open: false, actions: [], rounds: [] }
+    expect(SessionNodeState.opensWorkflow({ actions: { sections: [kept, run] } }, 'local')).toBe(false)
+    expect(SessionNodeState.opensWorkflow({ actions: { sections: [{ ...kept, open: true }, run] } }, 'local')).toBe(true)
+  })
+
+  it('names the runs and the step the Session actions item draws, and nothing for a paired computer', () => {
+    const step = (key: string, state: SessionWorkflowStep['state'], target: SessionWorkflowStep['target'], body?: SessionWorkflowStep['body']): SessionWorkflowStep =>
+      ({ key, title: key, state, detail: '', startedAt: null, endedAt: null, target, ...body === undefined ? {} : { body } })
+    const section = (open: boolean, steps: SessionWorkflowStep[]): SessionWorkflowInfo =>
+      ({ kind: 'finish', workflowId: `w-${String(open)}`, title: 'Finish', badge: '', summary: '', open, actions: [], rounds: [{ title: 'Finish', steps }] })
+    const actions: SessionInfo['actions'] = { sections: [
+      section(false, [step('install', 'done', { kind: 'none' }, { kind: 'log', runId: 'r-install' }), step('old', 'running', { kind: 'none' })]),
+      section(true, [step('check', 'done', { kind: 'run', runId: 'r-check' }), step('fix', 'done', { kind: 'agent', runId: 'r-agent' }),
+        step('conflicts', 'waits', { kind: 'conflicts' }), step('remove', 'running', { kind: 'none' })]),
+    ] }
+
+    const held = SessionNodeState.heldByActionsOf(actions, 'local')
+    expect([...held.runs].sort()).toEqual(['r-agent', 'r-check', 'r-install'])
+    expect(held.step).toBe(true)
+    expect(SessionNodeState.heldByActionsOf({ sections: [actions.sections[0]!] }, 'local').step).toBe(false)
+    expect(SessionNodeState.heldByActionsOf(undefined, 'local')).toEqual({ runs: new Set(), step: false })
+    expect(SessionNodeState.heldByActionsOf(actions, 'remote')).toEqual({ runs: new Set(), step: false })
+  })
+
+  it('keeps the waiting review visible while a later validation application runs', () => {
+    const review: SessionWorkflowInfo = { kind: 'finish', workflowId: 'finish', title: 'Finish', badge: 'Ready for validation',
+      summary: 'Review and publish the prepared changes', open: true, actions: [], rounds: [{ title: 'Finish', steps: [{
+        key: 'review', title: 'Review', state: 'waits', detail: '', startedAt: null, endedAt: null, target: { kind: 'none' },
+      }] }] }
+    const run: SessionWorkflowInfo = { ...review, kind: 'script', workflowId: 'run', badge: 'running', summary: 'Dev server',
+      rounds: [{ title: 'Run', steps: [{ key: 'dev', title: 'Dev server', state: 'running', detail: '', startedAt: 1,
+        endedAt: null, target: { kind: 'run', runId: 'dev' } }] }] }
+    expect(SessionNodeState.actionsMarkOf({ sections: [review, run] }))
+      .toEqual({ text: 'Ready for validation', title: review.summary, waiting: true })
+    expect(SessionNodeState.actionsMarkOf({ sections: [{ ...review, open: false }, run] }))
+      .toEqual({ text: 'actions running', title: 'Dev server', waiting: false })
+    expect(SessionNodeState.actionsMarkOf({ sections: [{ ...review, open: false }] })).toBeNull()
+  })
   type Life = SessionInfo['life']
   type Kind = SessionInfo['kind']
   type Detail = SessionInfo['activityDetail']
@@ -449,7 +502,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionNodeState', () => {
 
     it('titles the finish mark with the stage of the action, and a review with its place among the roots', () => {
       const action = (stage: SessionSvnActionInfo['stage'], review: SessionSvnActionInfo['review'] = null): SessionSvnActionInfo =>
-        ({ kind: 'finish', stage, needs: null, needsKind: null, review })
+        ({ kind: 'finish', stage, needs: null, needsKind: null, review, title: WorktreeWords.legacyActionTitle({ kind: 'finish', stage, needs: null, needsKind: null, review }) })
       expect(SessionNodeState.finishTitleOf({ phase: 'updating' }, action('checks'))).toBe("Running the project's checks")
       expect(SessionNodeState.finishTitleOf({ phase: 'reviewing' }, action('reviewing', { index: 1, count: 2, scopeRoot: 'C:/w/lib' })))
         .toBe('Waiting for the commit review 1 of 2: C:/w/lib')
@@ -469,10 +522,10 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionNodeState', () => {
   })
 
   describe('a landed row', () => {
-    const landing = (behind: number | null) => ({
+    const landing = (behind: number | null, behindRoots?: { root: string; behind: number }[]): SessionInfo['retiredWorktree'] => ({
       worktreePath: 'C:/w/.worktrees/016-fix',
       revisions: ['http://svn/repo:r52'],
-      landing: { mainCopy: 'C:/w', behind, newest: ['http://svn/repo:r52'] },
+      landing: { mainCopy: 'C:/w', behind, newest: ['http://svn/repo:r52'], ...behindRoots === undefined ? {} : { behindRoots } },
     })
 
     it('offers Update main copy first on an ended row, where the library admitted it', () => {
@@ -491,10 +544,33 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionNodeState', () => {
       expect(SessionNodeState.landingOf(undefined)).toBeNull()
     })
 
+    it('names the external working copies that are behind, and the main copy root among them', () => {
+      const externals = landing(2, [{ root: 'shared/ea', behind: 1 }, { root: 'shared/eb', behind: 1 }])
+      expect(SessionNodeState.landingOf(externals)?.text).toBe('main copy behind: shared/ea 1, shared/eb 1')
+      expect(SessionNodeState.landingOf(externals)?.title)
+        .toBe('The main copy C:/w does not hold r52 yet; it is 2 revisions behind HEAD (shared/ea 1, shared/eb 1). Update main copy brings them in; '
+          + 'the row goes once the main copy holds them, whoever updates it.')
+      expect(SessionNodeState.landingOf(landing(4, [{ root: '.', behind: 3 }, { root: 'shared/ea', behind: 1 }]))?.text)
+        .toBe('main copy behind: root 3, shared/ea 1')
+      expect(SessionNodeState.landingOf(landing(3, [{ root: '.', behind: 3 }]))?.text).toBe('main copy 3 behind')
+    })
+
+    it('names the local state of the main copy that keeps the landing unproven instead of claiming an update brings it in', () => {
+      const summary = 'docs/gone.txt is locally deleted in the main copy, and an update does not change that, so the landing cannot be proven. '
+        + 'Revert or commit the local delete in an SVN client. To accept it, Remove this row; the worktree result stays.'
+      const blocked = landing(0)!
+      blocked.landing = { ...blocked.landing!, local: { path: 'docs/gone.txt', item: 'deleted', summary } }
+      expect(SessionNodeState.landingOf(blocked)).toEqual({
+        text: 'main copy: docs/gone.txt deleted',
+        title: `The main copy C:/w does not show r52 as landed. ${summary}`,
+      })
+    })
+
     it('draws an UPDATE by its stage, or why it waits, and leaves a Finish to the worktree marks', () => {
       const update = (stage: SessionSvnActionInfo['stage'], needs: string | null = null): SessionSvnActionInfo =>
-        ({ kind: 'update-main', stage, needs, needsKind: needs === null ? null : 'locked', review: null })
+        ({ kind: 'update-main', stage, needs, needsKind: needs === null ? null : 'locked', review: null, title: WorktreeWords.legacyActionTitle({ kind: 'update-main', stage, needs, needsKind: null, review: null }) })
       expect(SessionNodeState.mainUpdateOf(update('updating'))).toEqual({ waiting: false, title: 'Updating the main copy' })
+      expect(SessionNodeState.mainUpdateOf(update('main-update'))).toEqual({ waiting: true, title: 'Update the main copy from Session actions' })
       expect(SessionNodeState.mainUpdateOf(update('diffing'))).toEqual({ waiting: false, title: 'Showing the merge of the resolved files' })
       expect(SessionNodeState.mainUpdateOf(update('updating', 'C:/w is locked'))).toEqual({ waiting: true, title: 'C:/w is locked' })
       expect(SessionNodeState.mainUpdateOf({ kind: 'finish', stage: 'checks', needs: null, needsKind: null, review: null })).toBeNull()

@@ -1,3 +1,4 @@
+import { localTerminalNotesPorts } from './terminalNotesPorts'
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -29,7 +30,7 @@ describe('app-client-ui/renderer/panels/terminal/notes/useTerminalNotes', () => 
   }
 
   function Harness(props: { sessionId?: string; enabled?: boolean }): React.JSX.Element {
-    model = useTerminalNotes({
+    model = useTerminalNotes({ ports: localTerminalNotesPorts,
       sessionId: props.sessionId ?? 's1',
       enabled: props.enabled ?? true,
       paste: (text) => {

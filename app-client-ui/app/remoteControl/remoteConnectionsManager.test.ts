@@ -13,6 +13,7 @@ import type {
   TerminalFrame,
 } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { RemoteConnectionsManager } from './remoteConnectionsManager'
+import { RemoteSessionSnapshots } from './remoteSessionSnapshots'
 
 describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
   it('keeps a disconnected terminal without redialling until Connect is pressed', async () => {
@@ -374,6 +375,46 @@ describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
     harness.manager.stop()
   })
 
+  it('publishes new nested descendants, reattaches on explicit reconnect and preserves an independent child', async () => {
+    const harness = new RemoteConnectionsManagerTest()
+    harness.manager.start()
+    await harness.manager.connectComputer('dialog', 'target-endpoint')
+    await harness.manager.selectSession('target-endpoint', 'session-a')
+    const transport = harness.transports[0]!
+    const parent = harness.manager.snapshot().outbound[0]!.sessions!.sessions[0]!
+    const child = { ...parent, sessionId: 'child', parent: { sessionId: 'session-a', kind: 'worker' as const, sameProject: false } }
+    const grandchild = { ...parent, sessionId: 'grandchild', parent: { sessionId: 'child', kind: 'worktree' as const, sameProject: true } }
+    const run = { ...parent, sessionId: 'nested-run', script: { parentId: 'grandchild', phase: 'before' as const, scriptId: 'setup' as const } }
+    transport.additionalSessions = [child, grandchild, run, { ...parent, sessionId: 'sibling' }]
+    transport.emitEvent(2)
+    await harness.waitUntil(() => harness.manager.admitsTerminal('target-endpoint', 'nested-run'))
+    expect(harness.manager.snapshot().outbound[0]?.reachableSessionIds)
+      .toEqual(['session-a', 'run-a', 'child', 'grandchild', 'nested-run'])
+    expect(harness.manager.admitsTerminal('target-endpoint', 'sibling')).toBe(false)
+    await harness.manager.attachTerminal('target-endpoint', 'nested', { sessionId: 'nested-run', size: null }, () => {})
+    expect(transport.attachRequests).toBe(1)
+    await harness.manager.selectSession('target-endpoint', 'child')
+    await harness.manager.disconnectSessions('target-endpoint', ['session-a'])
+    expect(transport.detachRequests).toBe(0)
+    expect(harness.manager.snapshot().outbound[0]?.reachableSessionIds).toEqual(['child', 'grandchild', 'nested-run'])
+
+    transport.close()
+    await harness.settle()
+    expect(harness.dials).toHaveLength(1)
+    await harness.manager.connectComputer('dialog', 'target-endpoint')
+    const reconnected = harness.transports[1]!
+    expect(reconnected.attachRequests).toBe(0)
+    reconnected.additionalSessions = transport.additionalSessions
+    reconnected.emitEvent(3)
+    await harness.waitUntil(() => reconnected.attachRequests === 1)
+    reconnected.additionalSessions = []
+    reconnected.emitEvent(4)
+    await harness.waitUntil(() => !harness.manager.admitsTerminal('target-endpoint', 'nested-run'))
+    await harness.manager.disconnectSessions('target-endpoint', ['child'])
+    expect(reconnected.detachRequests).toBe(1)
+    harness.manager.stop()
+  })
+
   it('detaches a script run terminal with its parent after the peer collapsed the run', async () => {
     const harness = new RemoteConnectionsManagerTest()
     harness.manager.start()
@@ -423,6 +464,72 @@ describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
     await harness.waitUntil(() => transport.attachRequests === 1)
     expect(await harness.manager.terminalInput('target-endpoint', 'restored', 'typed')).toMatchObject({ ok: true })
     harness.manager.stop()
+  })
+
+  it('uses versioned source pages and restarts discovery when a revision changes', async () => {
+    const harness = new RemoteConnectionsManagerTest(undefined, { workspace: true })
+    harness.manager.start()
+    await harness.manager.connectComputer('dialog', 'target-endpoint')
+    const transport = harness.transports[0]!
+    expect(transport.sessionLists).toBe(0)
+    expect(harness.manager.snapshot().outbound[0]?.workspaceCapabilities).toEqual(['session-workspace.read'])
+    const parent = harness.manager.snapshot().outbound[0]!.sessions!.sessions[0]!
+    transport.additionalSessions = [{ ...parent, sessionId: 'waiting', life: 'ended', workflow: {
+      workflowId: 'update', kind: 'update-main', title: 'Update', badge: 'waits', summary: 'pending', open: true, rounds: [], actions: [],
+    } }, { ...parent, sessionId: 'history', life: 'ended' }]
+    transport.changePageRevision = true
+    transport.emitEvent(3)
+    await harness.waitUntil(() => harness.manager.snapshot().outbound[0]?.sessions?.sessions.some((row) => row.sessionId === 'waiting') === true)
+    expect(harness.manager.snapshot().outbound[0]?.sessions?.revision).toBe(2)
+    expect(harness.manager.snapshot().outbound[0]?.sessions?.sessions.some((row) => row.sessionId === 'history')).toBe(false)
+    harness.manager.stop()
+  })
+
+  it('assembles selected-session details across bounded pages and refuses foreign epochs or unselected sessions', async () => {
+    const harness = new RemoteConnectionsManagerTest(undefined, { workspace: true })
+    harness.manager.start()
+    await harness.manager.connectComputer('dialog', 'target-endpoint')
+    const transport = harness.transports[0]!
+    const parent = harness.manager.snapshot().outbound[0]!.sessions!.sessions[0]!
+    transport.additionalSessions = [{ ...parent, sessionId: 'large', note: 'x'.repeat(150_000) }]
+    await harness.manager.selectSession('target-endpoint', 'large')
+    const view = { viewId: 'view', viewerId: 'viewer', epoch: transport.connectionId, sessionId: 'large' }
+    const answer = await harness.manager.sessionDetail('target-endpoint', view)
+    expect(answer).toMatchObject({ ok: true, value: { session: { sessionId: 'large', note: 'x'.repeat(150_000) } } })
+    expect(await harness.manager.sessionDetail('target-endpoint', { ...view, epoch: 'foreign' })).toMatchObject({ ok: false })
+    expect(await harness.manager.sessionDetail('target-endpoint', { ...view, sessionId: 'session-a' })).toMatchObject({ ok: false, error: { code: 'forbidden' } })
+    harness.manager.stop()
+  })
+
+  it('closes only the selected remote session whose current source confirms its removal', async () => {
+    const harness = new RemoteConnectionsManagerTest(undefined, { workspace: true })
+    harness.manager.start()
+    try {
+      await harness.manager.connectComputer('dialog', 'target-endpoint')
+      const transport = harness.transports[0]!
+      const parent = harness.manager.snapshot().outbound[0]!.sessions!.sessions[0]!
+      transport.additionalSessions = [{ ...parent, sessionId: 'finished' }]
+      await harness.manager.selectSession('target-endpoint', 'finished')
+      const view = { viewId: 'view', viewerId: 'viewer', epoch: transport.connectionId, sessionId: 'finished' }
+      transport.additionalSessions = [{ ...parent, sessionId: 'finished', life: 'ended' }]
+      transport.snapshotRevision++
+      transport.emitEvent(transport.snapshotRevision)
+      await harness.waitUntil(() => !harness.manager.snapshot().outbound[0]?.sessions?.sessions.some((row) => row.sessionId === 'finished'))
+      expect(await harness.manager.sessionDetail('target-endpoint', view)).toMatchObject({ ok: true, value: { session: { life: 'ended' } } })
+      expect(harness.removedSessions).toEqual([])
+
+      transport.additionalSessions = []
+      transport.snapshotRevision++
+      expect(await harness.manager.sessionDetail('target-endpoint', { ...view, epoch: 'old-connection' })).toMatchObject({ ok: false, error: { code: 'unavailable' } })
+      expect(await harness.manager.sessionDetail('target-endpoint', { ...view, sessionId: 'unselected' })).toMatchObject({ ok: false, error: { code: 'forbidden' } })
+      expect(harness.removedSessions).toEqual([])
+      expect(await harness.manager.sessionDetail('target-endpoint', view)).toMatchObject({ ok: false, error: { code: 'not-found' } })
+      expect(harness.removedSessions).toEqual([{ remoteEndpointId: 'target-endpoint', sessionId: 'finished' }])
+
+      transport.close()
+      expect(await harness.manager.sessionDetail('target-endpoint', { ...view, sessionId: 'session-a' })).toMatchObject({ ok: false, error: { code: 'unavailable' } })
+      expect(harness.removedSessions).toHaveLength(1)
+    } finally { harness.manager.stop() }
   })
 
   it('waits for a reconciled peer snapshot before reattaching after a restart', async () => {
@@ -524,6 +631,7 @@ interface RemoteConnectionsManagerTestTimer {
 }
 
 interface RemoteConnectionsManagerTestOptions {
+  workspace?: boolean
   heldTimers?: boolean
   /** A peer that grants no hello - an older computer, which is a refusal and not a failure. */
   offersHello?: boolean
@@ -531,6 +639,7 @@ interface RemoteConnectionsManagerTestOptions {
 
 class RemoteConnectionsManagerTest {
   readonly transports: RemoteConnectionsManagerTestTransport[] = []
+  readonly removedSessions: { remoteEndpointId: string; sessionId: string }[] = []
   readonly timers: RemoteConnectionsManagerTestTimer[] = []
   readonly dials: string[] = []
   readonly manager: RemoteConnectionsManager
@@ -563,12 +672,14 @@ class RemoteConnectionsManagerTest {
           `connection-${this.transports.length + 1}`,
           this.transports.length + 1,
           options.offersHello !== false,
+          options.workspace === true,
         )
         transport.reconciled = this.reconciled
         this.transports.push(transport)
         return { ok: true, value: transport }
       },
       onChanged: () => {},
+      onSessionRemoved: (remoteEndpointId: string, sessionId: string) => { this.removedSessions.push({ remoteEndpointId, sessionId }) },
       onError: (message) => { throw new Error(message) },
       requestId: () => `request-${++this.requestSequence}`,
       operationId: () => `operation-${this.requestSequence}`,
@@ -645,6 +756,8 @@ class RemoteConnectionsManagerTest {
 }
 
 class RemoteConnectionsManagerTestTransport implements RemoteControlPeerTransport {
+  private readonly sessionSnapshots = new RemoteSessionSnapshots(() => this.listed())
+  changePageRevision = false
   readonly capabilities: readonly RemoteControlPeerCapability[]
   private readonly messages = new Set<(message: RemoteControlPeerApplicationMessage) => void>()
   private readonly closes = new Set<() => void>()
@@ -655,6 +768,7 @@ class RemoteConnectionsManagerTestTransport implements RemoteControlPeerTranspor
   reconciled = true
   /** The peer has collapsed its script run: the run is gone from what it lists. */
   runCollapsed = false
+  additionalSessions: SessionsSnapshot['sessions'][number][] = []
   refuseAttach = false
   attachGate: Promise<void> | null = null
   attachRequests = 0
@@ -666,8 +780,10 @@ class RemoteConnectionsManagerTestTransport implements RemoteControlPeerTranspor
     readonly connectionId: string,
     public snapshotRevision: number,
     offersHello: boolean,
+    workspace = false,
   ) {
     this.capabilities = [
+      ...(workspace ? ['session-workspace.read' as const] : []),
       // A peer that grants no hello is a peer this side asks nothing of: the channel refuses the
       // call itself, which is how an older computer arrives rather than as a broken connection.
       ...(offersHello ? ['control:system.hello' as const] : []),
@@ -733,7 +849,14 @@ class RemoteConnectionsManagerTestTransport implements RemoteControlPeerTranspor
 
   private answer(message: RemoteControlPeerApplicationMessage): void {
     if (!this.open) return
-    if (message.type === 'control-request') {
+    if (message.type === 'session-state-request') {
+      if (this.changePageRevision && message.request.kind === 'sessions') {
+        this.snapshotRevision++
+        this.changePageRevision = false
+      }
+      this.emit({ type: 'session-state-response', response: { requestId: message.request.requestId,
+        result: this.sessionSnapshots.page(message.request) } })
+    } else if (message.type === 'control-request') {
       if (message.request.operation === 'system.hello') {
         this.hellos += 1
         this.emit({
@@ -818,7 +941,10 @@ class RemoteConnectionsManagerTestTransport implements RemoteControlPeerTranspor
     return {
       ...snapshot,
       reconciled: this.reconciled,
-      sessions: this.runCollapsed ? snapshot.sessions.filter((session) => session.script === undefined) : snapshot.sessions,
+      sessions: [
+        ...(this.runCollapsed ? snapshot.sessions.filter((session) => session.script === undefined) : snapshot.sessions),
+        ...this.additionalSessions,
+      ],
     }
   }
 

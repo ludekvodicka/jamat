@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from 'react'
 
 import type {
   HostStatusInfo,
+  HostStopWarnings,
   SessionsOpResult,
   SessionsSnapshot,
 } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
@@ -15,10 +16,10 @@ import { ContextMenu, type ContextMenuPosition } from '../widgets/contextMenu'
 export interface HostStatusPorts {
   reportError(message: string): void
   startHost(): Promise<IpcResult<SessionsOpResult>>
-  restartHost(hostInstanceId: string): Promise<IpcResult<SessionsOpResult>>
-  stopHost(hostInstanceId: string): Promise<IpcResult<SessionsOpResult>>
+  restartHost(hostInstanceId: string): Promise<IpcResult<SessionsOpResult<HostStopWarnings>>>
+  stopHost(hostInstanceId: string): Promise<IpcResult<SessionsOpResult<HostStopWarnings>>>
   confirmHostRestart(liveCount: number): Promise<IpcResult<boolean>>
-  confirmHostStop(liveCount: number): Promise<IpcResult<boolean>>
+  confirmHostStop(liveCount: number, workingAgents?: readonly string[]): Promise<IpcResult<boolean>>
 }
 
 type HostAction = 'restart' | 'stop'
@@ -26,8 +27,8 @@ type HostAction = 'restart' | 'stop'
 interface HostActionSpec {
   verb: string
   busyText: string
-  confirm(ports: HostStatusPorts, liveCount: number): Promise<IpcResult<boolean>>
-  run(ports: HostStatusPorts, hostInstanceId: string): Promise<IpcResult<SessionsOpResult>>
+  confirm(ports: HostStatusPorts, liveCount: number, workingAgents?: readonly string[]): Promise<IpcResult<boolean>>
+  run(ports: HostStatusPorts, hostInstanceId: string): Promise<IpcResult<SessionsOpResult<HostStopWarnings>>>
 }
 
 const hostActionsConst: Record<HostAction, HostActionSpec> = {
@@ -40,7 +41,7 @@ const hostActionsConst: Record<HostAction, HostActionSpec> = {
   stop: {
     verb: 'stopped',
     busyText: 'Host stopping…',
-    confirm: (ports, liveCount) => ports.confirmHostStop(liveCount),
+    confirm: (ports, liveCount, workingAgents) => ports.confirmHostStop(liveCount, workingAgents),
     run: (ports, hostInstanceId) => ports.stopHost(hostInstanceId),
   },
 }
@@ -79,6 +80,19 @@ export class HostStatusReading {
       return { text: 'Host unreachable', startable: true, title: null, warning: false }
     else
       throw new Error(`Unknown host presence: ${JSON.stringify(host.presence)}`)
+  }
+}
+
+/**
+ * What Stop apphost asks before it stops. A Host stop marks each SVN worktree worker dead and its
+ * Finish resumes the saved conversation once a Host answers again, so the text names that split.
+ */
+export class HostStopConfirmation {
+  static textOf(liveCount: number, workingAgents: readonly string[]): string {
+    const agents = workingAgents.length === 0 ? '' : `\n\nWorking agents:\n${workingAgents.join('\n')}`
+    return `This will end all ${liveCount} running terminal${liveCount === 1 ? '' : 's'}. Running commands will be interrupted. `
+      + 'When the AppHost starts again, agents working in an SVN worktree resume their conversations; '
+      + `shells and other sessions are not reopened. Start the AppHost again from the status bar menu.${agents}`
   }
 }
 
@@ -140,7 +154,7 @@ export function HostStatusItem(props: {
     const spec = hostActionsConst[action]
     actionPending.current = true
     try {
-      const confirmed = await spec.confirm(ports, menu.liveCount)
+      const confirmed = await spec.confirm(ports, menu.liveCount, snapshot?.host.workingAgents)
       if (!confirmed.ok) {
         reportFailure(`The Host could not be ${spec.verb}: ${confirmed.error}`)
         return
@@ -148,8 +162,12 @@ export function HostStatusItem(props: {
       if (!confirmed.value) return
       setOperationError(null)
       setBusy(action)
-      const failure = IpcFailure.of(await spec.run(ports, hostInstanceId))
+      const answer = await spec.run(ports, hostInstanceId)
+      const failure = IpcFailure.of(answer)
       if (failure) reportFailure(`The Host could not be ${spec.verb}: ${failure}`)
+      // Processes the old Host could not stop may still run, so a clean-looking answer says so.
+      else if (answer.ok && answer.value.ok && answer.value.value.warnings.length > 0)
+        reportFailure(`The Host was ${spec.verb}, but it could not stop everything: ${answer.value.value.warnings.join('; ')}`)
     } catch (thrown) {
       reportFailure(`The Host could not be ${spec.verb}: ${ErrorText.of(thrown)}`)
     } finally {

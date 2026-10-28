@@ -58,7 +58,7 @@ export class AppHub {
     return this.sessions.counts()
   }
 
-  stopAllRuntimes(beforeMutation?: () => void): Promise<void> {
+  stopAllRuntimes(beforeMutation?: () => void): Promise<string[]> {
     return this.sessions.stopAll(beforeMutation)
   }
 

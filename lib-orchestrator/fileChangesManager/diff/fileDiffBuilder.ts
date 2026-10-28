@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+
 import type {
   FileChangeStatus,
   FileDiffData,
@@ -39,9 +41,11 @@ export class FileDiffBuilder {
     context?: FileDiffExecutionContext,
   ): Promise<FileDiffResult> {
     const current = FileDiffBuilder.textOf(input.current)
-    if (current.kind !== 'text') return current.result
+    if (current.kind === 'too-large') return current.result
     const baseline = FileDiffBuilder.textOf(input.baseline)
-    if (baseline.kind !== 'text') return baseline.result
+    if (baseline.kind === 'too-large') return baseline.result
+    if (current.kind === 'binary' || baseline.kind === 'binary')
+      return { ok: true, kind: 'binary', detail: FileDiffBuilder.binaryDetailOf(input) }
     if (!current.value.version.exists && !baseline.value.version.exists)
       return { ok: true, kind: 'missing', detail: 'Both file versions are missing' }
     const execution = await this.execute(baseline.value, current.value, context)
@@ -104,7 +108,7 @@ export class FileDiffBuilder {
     label: string
     path: string
     content: Buffer | string | null
-  }): { kind: 'text'; value: TextValue } | { kind: 'result'; result: FileDiffResult } {
+  }): { kind: 'text'; value: TextValue } | { kind: 'too-large'; result: FileDiffResult } | { kind: 'binary' } {
     if (input.content === null)
       return {
         kind: 'text',
@@ -124,7 +128,7 @@ export class FileDiffBuilder {
       : input.content.length
     if (bytes > FileDiffBuilder.maxContentBytesConst)
       return {
-        kind: 'result',
+        kind: 'too-large',
         result: {
           ok: true,
           kind: 'too-large',
@@ -132,19 +136,36 @@ export class FileDiffBuilder {
         },
       }
     if (Buffer.isBuffer(input.content)) {
-      if (input.content.includes(0))
-        return { kind: 'result', result: { ok: true, kind: 'binary', detail: `${input.label} is binary` } }
+      if (input.content.includes(0)) return { kind: 'binary' }
       const decoded = input.content.toString('utf8')
-      if (!Buffer.from(decoded, 'utf8').equals(input.content))
-        return {
-          kind: 'result',
-          result: { ok: true, kind: 'binary', detail: `${input.label} is not valid UTF-8 text` },
-        }
+      if (!Buffer.from(decoded, 'utf8').equals(input.content)) return { kind: 'binary' }
       return { kind: 'text', value: FileDiffBuilder.textValue(input.label, input.path, decoded) }
     }
-    if (input.content.includes('\0'))
-      return { kind: 'result', result: { ok: true, kind: 'binary', detail: `${input.label} is binary` } }
+    if (input.content.includes('\0')) return { kind: 'binary' }
     return { kind: 'text', value: FileDiffBuilder.textValue(input.label, input.path, input.content) }
+  }
+
+  /**
+   * Both sides of a binary file by size and SHA-256, and whether the working file equals the baseline,
+   * so a person can tell which side a settled conflict kept without a text diff.
+   */
+  private static binaryDetailOf(input: FileDiffBuilderInput): string {
+    const current = FileDiffBuilder.bytesOf(input.current.content)
+    const baseline = FileDiffBuilder.bytesOf(input.baseline.content)
+    const sideOf = (label: string, side: Buffer | 'absent' | 'unknown'): string => side === 'absent' ? `${label}: absent.`
+      : side === 'unknown' ? `${label}: size and SHA-256 not known, it was read as text.`
+      : `${label}: ${side.length} bytes, SHA-256 ${createHash('sha256').update(side).digest('hex')}.`
+    const words = ['Binary file, no text diff.', sideOf(input.current.label, current), sideOf(input.baseline.label, baseline)]
+    if (Buffer.isBuffer(current) && Buffer.isBuffer(baseline))
+      words.push(`The ${input.current.label.toLowerCase()} file ${current.equals(baseline) ? 'equals' : 'differs from'} ${input.baseline.label}.`)
+    return words.join(' ')
+  }
+
+  /** A string side holds its bytes only if decoding replaced none of them. */
+  private static bytesOf(content: Buffer | string | null): Buffer | 'absent' | 'unknown' {
+    if (content === null) return 'absent'
+    if (Buffer.isBuffer(content)) return content
+    return content.includes('�') ? 'unknown' : Buffer.from(content, 'utf8')
   }
 
   private static textValue(label: string, path: string, original: string): TextValue {

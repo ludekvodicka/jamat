@@ -12,6 +12,7 @@ import './contextCompactionPanel.css'
 
 export function ContextCompactionPanel(props: {
   session: SessionInfo | null
+  remoteEndpointId?: string
   sessionModel: SessionModelStore
   settings: AgentSettingsStore
   compact: SessionCompact
@@ -24,8 +25,8 @@ export function ContextCompactionPanel(props: {
     [props.sessionModel],
   )
   const currentModel = useCallback(
-    () => sessionId === null ? null : props.sessionModel.readingFor(sessionId),
-    [props.sessionModel, sessionId],
+    () => sessionId === null ? null : props.sessionModel.readingFor(sessionId, props.remoteEndpointId),
+    [props.sessionModel, sessionId, props.remoteEndpointId],
   )
   const reading = useSyncExternalStore(subscribeModel, currentModel, currentModel)
   const subscribeSettings = useCallback(
@@ -45,7 +46,7 @@ export function ContextCompactionPanel(props: {
     setError(null)
     setHintOpen(false)
     setDismissed(false)
-  }, [sessionId])
+  }, [sessionId, props.remoteEndpointId])
   useEffect(() => {
     if (props.now !== undefined || reading === null) return
     const remaining = SessionContextUsage.freshMillisecondsRemaining(Date.now() - reading.readAt)
@@ -78,11 +79,11 @@ export function ContextCompactionPanel(props: {
         <button
           className="jamat-context-compaction__compact"
           type="button"
-          onClick={() => props.compact.manual(sessionId)}
+          onClick={() => props.remoteEndpointId ? props.compact.manual(sessionId, props.remoteEndpointId) : props.compact.manual(sessionId)}
         >
           Compact
         </button>
-        <span
+        {props.remoteEndpointId === undefined && <span
           className="jamat-context-compaction__auto-hint"
           onMouseEnter={() => setHintOpen(true)}
           onMouseLeave={() => setHintOpen(false)}
@@ -105,7 +106,7 @@ export function ContextCompactionPanel(props: {
             sessionId={sessionId}
             controller={props.controller}
           />}
-        </span>
+        </span>}
       </div>
       {error !== null && <p className="jamat-context-compaction__error">{error}</p>}
       <button

@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type {
   RemoteControlRequestUnion,
@@ -18,13 +18,43 @@ import type {
 } from '../../../lib-orchestrator/remoteControl/remoteControlPeerApi.types'
 import { RemoteControlPeerConst } from '../../../lib-orchestrator/remoteControl/remoteControlPeerProtocol'
 import type { TerminalFrame } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
-import { RemoteControlInboundRegistry } from './remoteControlInboundRegistry'
+import { RemoteControlInboundRegistry, type RemoteControlInboundRegistryDeps } from './remoteControlInboundRegistry'
 
 describe('app-client-ui/app/remoteControl/remoteControlInboundRegistry', () => {
   const roots: string[] = []
 
   afterEach(() => {
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  })
+
+  it('keeps terminal and view closure responsive while bounding concurrent source work', async () => {
+    let finish!: () => void
+    const pending = new Promise<void>((resolve) => { finish = resolve })
+    const request = vi.fn(async (_peer, body) => {
+      if (body.operation !== 'views.close') await pending
+      return { ok: true as const, value: null }
+    })
+    const releaseConnection = vi.fn()
+    const harness = new RemoteControlInboundRegistryTest(roots, undefined, { request, releaseConnection })
+    const peer = new RemoteControlInboundRegistryTestTransport('computer-a', 'endpoint-a')
+    harness.registry.add(peer)
+    const base = { epoch: peer.connectionId, viewId: 'view', viewerId: 'window', sessionId: 'session' }
+    for (let index = 0; index < 17; index++) peer.emit({ type: 'session-view-request', request: {
+      ...base, requestId: `read-${index}`, operation: 'files.request', body: { kind: 'project-directory' },
+    } })
+    peer.emit({ type: 'session-view-request', request: { ...base, requestId: 'close', operation: 'views.close', body: {} } })
+    peer.emit(RemoteControlInboundRegistryTest.attach('attach', 'attach', 'session'))
+    await harness.waitUntil(() => peer.sent.some((message) => message.type === 'socket-response'))
+    expect(peer.sent).toContainEqual(expect.objectContaining({ type: 'session-view-response', response: expect.objectContaining({ requestId: 'close', result: { ok: true, value: null } }) }))
+    expect(peer.sent).toContainEqual(expect.objectContaining({ type: 'session-view-response', response: expect.objectContaining({ requestId: 'read-16', result: expect.objectContaining({ ok: false }) }) }))
+    expect(request).toHaveBeenCalledTimes(17)
+    peer.close()
+    const sentBeforeCompletion = peer.sent.length
+    finish()
+    await pending; await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(peer.sent).toHaveLength(sentBeforeCompletion)
+    expect(releaseConnection).toHaveBeenCalledWith(peer)
+    harness.registry.stop()
   })
 
   it('lists live inbound peers without credentials and tracks attaches per peer', async () => {
@@ -56,7 +86,7 @@ describe('app-client-ui/app/remoteControl/remoteControlInboundRegistry', () => {
     harness.registry.stop()
   })
 
-  it('dispatches only remote capabilities and never grants target tab control', async () => {
+  it('dispatches only remote capabilities and admits explicit source file opens', async () => {
     const harness = new RemoteControlInboundRegistryTest(roots)
     const peer = new RemoteControlInboundRegistryTestTransport('computer-a', 'endpoint-a')
     harness.registry.add(peer)
@@ -72,7 +102,7 @@ describe('app-client-ui/app/remoteControl/remoteControlInboundRegistry', () => {
     await harness.waitUntil(() => peer.sent.some((message) => message.type === 'control-response'))
     expect(harness.control.contexts[0]?.callerKind).toBe('remote-peer')
     expect(harness.control.contexts[0]?.allowedOperations).not.toContain('tabs.open')
-    expect(harness.control.contexts[0]?.allowedOperations).not.toContain('tabs.openFile')
+    expect(harness.control.contexts[0]?.allowedOperations).toContain('tabs.openFile')
     expect(harness.control.contexts[0]?.allowedOperations).toEqual(
       RemoteControlPeerConst.controlOperations,
     )
@@ -223,11 +253,12 @@ class RemoteControlInboundRegistryTest {
   readonly terminal = new RemoteControlInboundRegistryTestTerminal()
   readonly registry: RemoteControlInboundRegistry
 
-  constructor(roots: string[], eventLimit?: number) {
+  constructor(roots: string[], eventLimit?: number, sessionViews?: RemoteControlInboundRegistryDeps['sessionViews']) {
     const root = mkdtempSync(join(tmpdir(), 'jamat-v3-inbound-registry-test-'))
     roots.push(root)
     this.auditFile = join(root, 'audit.jsonl')
     this.registry = new RemoteControlInboundRegistry({
+      sessionViews,
       control: this.control,
       terminal: this.terminal,
       auditFile: this.auditFile,

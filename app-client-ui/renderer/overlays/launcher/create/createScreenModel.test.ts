@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import type { AccountView } from '../../../../../lib-orchestrator/agentAccounts/agentAccountsApi.types'
 
 import type {
   SessionCreateSpec,
@@ -19,6 +20,60 @@ import type {
 import { CreateScreenModel } from './createScreenModel'
 
 describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', () => {
+  const mainAccount: AccountView = { agentId: 'claude', accountId: 'main', label: 'Main', isMain: true,
+    state: 'active', identity: null, profileProblem: null }
+  const secondAccount: AccountView = { ...mainAccount, accountId: 'second', label: 'Second', isMain: false }
+
+  it('preselects the target recommendation, explains it and preserves an explicit main selection', () => {
+    const opened = CreateScreenModel.opened({ mode: 'adHoc', path: 'Q:/fixture' }).state
+    const ready = CreateScreenModel.transition(opened, { input: 'accountsLoaded', remoteEndpointId: null,
+      accounts: [mainAccount, { ...secondAccount, defaultChoice: { noFreeAccount: false, resetsAt: '2026-10-28T12:00:00Z' } }] }).state
+    expect(ready.accountId).toBe('second')
+    expect(CreateScreenModel.accountReasonOf(ready)).toBe(`resets ${new Date('2026-10-28T12:00:00Z').toLocaleString()}`)
+    const main = CreateScreenModel.transition(ready, { input: 'chooseAccount', accountId: 'main' }).state
+    expect(CreateScreenModel.specOf(main, null).agent?.accountId).toBe('main')
+    const reload = CreateScreenModel.transition(main, { input: 'accountsLoaded', remoteEndpointId: null, accounts: ready.accounts }).state
+    expect(reload.accountId).toBe('main')
+    const exhausted = CreateScreenModel.transition(opened, { input: 'accountsLoaded', remoteEndpointId: null,
+      accounts: [{ ...mainAccount, defaultChoice: { noFreeAccount: true, resetsAt: null } }, secondAccount] }).state
+    expect(CreateScreenModel.accountReasonOf(exhausted)).toBe('No account has free quota')
+  })
+
+  it('accepts accounts only for the current target and leaves a refused peer on its default', () => {
+    const state = CreateScreenModel.opened({ mode: 'adHoc', path: 'Q:/fixture' },
+      { target: { kind: 'remote', remoteEndpointId: 'peer', displayName: 'Peer' } }).state
+    expect(CreateScreenModel.transition(state, { input: 'accountsLoaded', remoteEndpointId: null, accounts: [mainAccount, secondAccount] }).state).toBe(state)
+    const ready = CreateScreenModel.transition(state, { input: 'accountsLoaded', remoteEndpointId: 'peer', accounts: [mainAccount, secondAccount] }).state
+    const chosen = CreateScreenModel.transition(ready, { input: 'chooseAccount', accountId: 'second' }).state
+    expect(CreateScreenModel.specOf(chosen, null).agent?.accountId).toBe('second')
+    const refused = CreateScreenModel.transition(chosen, { input: 'accountsLoaded', remoteEndpointId: 'peer', accounts: [] }).state
+    expect(CreateScreenModel.specOf(refused, null).agent).toEqual({ agentId: 'claude', mode: 'new' })
+    expect(CreateScreenModel.fieldsOf(refused)).not.toContain('account')
+  })
+
+
+  it('leaves a single-account create unchanged and offers only active accounts of the selected agent', () => {
+    const loaded = (accounts: readonly AccountView[]) => CreateScreenModel.transition(
+      CreateScreenModel.opened({ mode: 'adHoc', path: 'Q:/fixture' }).state, { input: 'accountsLoaded', remoteEndpointId: null, accounts }).state
+    const single = loaded([mainAccount])
+    expect(CreateScreenModel.fieldsOf(single)).not.toContain('account')
+    expect(CreateScreenModel.specOf(single, null).agent).toEqual({ agentId: 'claude', mode: 'new' })
+    const state = loaded([mainAccount, secondAccount, { ...secondAccount, accountId: 'pending', state: 'pending-login' },
+      { ...secondAccount, accountId: 'disabled', state: 'disabled' }, { ...secondAccount, accountId: 'codex', agentId: 'codex' }])
+    expect(CreateScreenModel.accountOptionsOf(state).map(account => account.accountId)).toEqual(['main', 'second'])
+    expect(CreateScreenModel.fieldsOf(state)).toContain('account')
+    const pointer = CreateScreenModel.transition(state, { input: 'chooseAccount', accountId: 'second' }).state
+    const keyboard = CreateScreenModel.transition({ ...state, field: 'account' }, { input: 'stepChoice', delta: 1 }).state
+    expect(CreateScreenModel.specOf(pointer, null).agent).toEqual({ agentId: 'claude', mode: 'new', accountId: 'second' })
+    expect(CreateScreenModel.specOf(keyboard, null)).toEqual(CreateScreenModel.specOf(pointer, null))
+    expect(CreateScreenModel.transition(pointer, { input: 'escape' }).effects).toEqual([{ effect: 'back' }])
+    expect(CreateScreenModel.transition(pointer, { input: 'chooseAgent', agentId: 'codex' }).state.accountId).toBe('main')
+    expect(CreateScreenModel.transition(pointer, { input: 'chooseAccount', accountId: 'disabled' }).state).toBe(pointer)
+    const removed = CreateScreenModel.transition(pointer, { input: 'accountsLoaded', remoteEndpointId: null, accounts: [mainAccount] }).state
+    expect(removed.accountId).toBe('main')
+    expect(removed.field).toBe('agent')
+  })
+
   /** The two profiles the type list is asked about, spelled once. */
   const CreateProfilesConst: Readonly<
     Record<'local' | 'remote', { target: LauncherTarget; source: CreateSessionTarget | null }>
@@ -278,10 +333,10 @@ describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', ()
     }
   }
 
-  it('peeks the number for a catalog project and asks for nothing anywhere else', () => {
+  it('reads accounts everywhere and peeks the number only for a catalog project', () => {
     expect(Run.opened().effects)
-      .toEqual([{ effect: 'fetchNumber', projectPath: 'C:\\Projects\\NodeJs\\AppJamatV3' }])
-    expect(Run.opened({ mode: 'adHoc', path: 'D:\\work' }).effects).toEqual([])
+      .toEqual([{ effect: 'fetchAccounts', remoteEndpointId: null }, { effect: 'fetchNumber', projectPath: 'C:\\Projects\\NodeJs\\AppJamatV3' }])
+    expect(Run.opened({ mode: 'adHoc', path: 'D:\\work' }).effects).toEqual([{ effect: 'fetchAccounts', remoteEndpointId: null }])
   })
 
   // The opener asks for no type at all: which row a session starts on is the create screen's own
@@ -305,6 +360,7 @@ describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', ()
       expect(CreateScreenModel.actingOn(run.state)).toEqual(forkConst)
       expect(run.state.name).toBe('the wire')
       expect(run.effects).toEqual([
+        { effect: 'fetchAccounts', remoteEndpointId: null },
         { effect: 'fetchNumber', projectPath: projectPathConst },
         {
           effect: 'fetchExistingSessions',
@@ -365,7 +421,7 @@ describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', ()
       const run = Run.forking()
 
       expect(CreateScreenModel.fieldsOf(run.state))
-        .toEqual(['name', 'type', 'agent', 'existingSessions'])
+        .toEqual(['name', 'agent', 'type', 'existingSessions'])
       expect(CreateScreenModel.worktreeRefusal(run.state)).toMatch(/runs in its project/)
       expect(run.on({ input: 'toggleWorktree' }).state.worktree).toBe(false)
     })
@@ -390,7 +446,7 @@ describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', ()
 
       expect(CreateScreenModel.actingOn(moved.state)).toBeNull()
       expect(CreateScreenModel.tokenLabelOf(moved.state)).toBe('015')
-      expect(CreateScreenModel.fieldsOf(moved.state)).toEqual(['type', 'agent', 'existingSessions'])
+      expect(CreateScreenModel.fieldsOf(moved.state)).toEqual(['agent', 'type', 'existingSessions'])
       const effect = moved.on({ input: 'activate' }).effects[0]
       expect(effect?.effect === 'openHistory' && effect.spec.nativeSessionId).toBe('codex-1')
     })
@@ -408,7 +464,7 @@ describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', ()
       expect(CreateScreenModel.typeOf(run.state).kind).toBe('existing')
       expect(CreateScreenModel.actingOn(run.state)).toEqual(resumeConst)
       expect(run.state.field).toBe('existingSessions')
-      expect(CreateScreenModel.fieldsOf(run.state)).toEqual(['type', 'agent', 'existingSessions'])
+      expect(CreateScreenModel.fieldsOf(run.state)).toEqual(['agent', 'type', 'existingSessions'])
       expect(CreateScreenModel.tokenLabelOf(run.state)).toBe('015')
     })
 
@@ -443,7 +499,7 @@ describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', ()
     it('acts on that session where there is no project list to read', () => {
       const run = Run.actingIn({ mode: 'adHoc', path: 'Q:\\somewhere' }, resumeConst)
 
-      expect(run.effects).toEqual([])
+      expect(run.effects).toEqual([{ effect: 'fetchAccounts', remoteEndpointId: null }])
       expect(CreateScreenModel.existingLoaded(run.state)).toBe(true)
       expect(CreateScreenModel.existingRefusal(run.state)).toBeNull()
       expect(CreateScreenModel.typeRefusal(run.state, { kind: 'existing' })).toBeNull()
@@ -466,7 +522,7 @@ describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', ()
       expect(CreateScreenModel.typeOf(raw.state).kind).toBe('raw')
       expect(CreateScreenModel.actingOn(raw.state)).toBeNull()
       expect(CreateScreenModel.tokenLabelOf(raw.state)).toBe('015')
-      expect(CreateScreenModel.fieldsOf(raw.state)).toEqual(['name', 'type', 'isolation', 'agent'])
+      expect(CreateScreenModel.fieldsOf(raw.state)).toEqual(['name', 'agent', 'type', 'isolation'])
     })
   })
 
@@ -503,7 +559,7 @@ describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', ()
       }])
       expect(opened.state.existingAgentFilter).toBe('all')
       expect(CreateScreenModel.fieldsOf(opened.state))
-        .toEqual(['type', 'agent', 'existingSessions'])
+        .toEqual(['agent', 'type', 'existingSessions'])
     })
 
     it('filters the cached rows by agent and resets the cursor', () => {
@@ -573,13 +629,13 @@ describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', ()
       expect(CreateScreenModel.existingRefusal(empty.state)).toBe('nothing to continue')
     })
 
-    it('walks the session rows and returns to Agent from the first one', () => {
+    it('walks the session rows and returns to Type from the first one', () => {
       const atRows = Run.existing()
-        .on({ input: 'setField', field: 'agent' })
+        .on({ input: 'setField', field: 'type' })
         .on({ input: 'moveField', delta: 1 })
       expect(atRows.state.field).toBe('existingSessions')
       expect(atRows.on({ input: 'moveField', delta: 1 }).state.existingCursor).toBe(1)
-      expect(atRows.on({ input: 'moveField', delta: -1 }).state.field).toBe('agent')
+      expect(atRows.on({ input: 'moveField', delta: -1 }).state.field).toBe('type')
     })
 
     it('drops a history answer for another project', () => {
@@ -710,6 +766,34 @@ describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', ()
     expect(refused.state.submitError).toMatchObject({ code: 'invalid-spec', detail })
   })
 
+  // UA1-J02-2: the owner and the number of a picked folder's worktree are the library's to say.
+  it('asks the library where the worktree of a picked folder stands, and draws its number and owner', () => {
+    const picked = 'D:\w\ToolAlpha\src'
+    const chosen = Run.opened({ mode: 'adHoc', path: picked })
+      .on({ input: 'nameChanged', name: 'Alpha W3' }, { input: 'chooseIsolation', worktree: true })
+    expect(chosen.effects).toEqual([{ effect: 'fetchWorktreePreview', directory: { mode: 'adHoc', path: picked } }])
+    expect(CreateScreenModel.worktreeLineOf(chosen.state)).toEqual({ folder: '.worktrees/alpha-w3', owner: null })
+
+    const preview = { kind: 'svn' as const, ownerDir: 'D:\w\ToolAlpha', owner: 'project' as const, token: '001' }
+    const late = chosen.on({ input: 'worktreePreviewLoaded', path: 'D:\elsewhere', answer: { ok: true, preview } })
+    expect(CreateScreenModel.worktreeLineOf(late.state)).toEqual({ folder: '.worktrees/alpha-w3', owner: null })
+
+    const loaded = chosen.on({ input: 'worktreePreviewLoaded', path: picked, answer: { ok: true, preview } })
+    expect(CreateScreenModel.worktreeLineOf(loaded.state))
+      .toEqual({ folder: '.worktrees/001-alpha-w3', owner: { kind: 'project', dir: 'D:\w\ToolAlpha' } })
+    // The create still sends the typed title: the library takes the number itself.
+    expect(CreateScreenModel.specOf(loaded.state, null)).toMatchObject({ title: 'Alpha W3', worktree: { slug: 'Alpha W3' } })
+    // Asked once per card.
+    expect(loaded.on({ input: 'chooseIsolation', worktree: false }, { input: 'chooseIsolation', worktree: true }).effects).toEqual([])
+
+    const refused = chosen.on({ input: 'worktreePreviewLoaded', path: picked, answer: { ok: false, detail: 'a collection of independent projects' } })
+    expect(CreateScreenModel.worktreeLineOf(refused.state))
+      .toEqual({ folder: '.worktrees/alpha-w3', owner: null, refusal: 'a collection of independent projects' })
+    // A remote card asks its own computer nothing about this one's folders.
+    expect(Run.remote({ mode: 'adHoc', path: picked }).on({ input: 'nameChanged', name: 'x' }, { input: 'chooseIsolation', worktree: true }).effects)
+      .toEqual([])
+  })
+
   /**
    * With no number and no name the slug comes out empty, and git would refuse it one step later with
    * a message about slugs rather than about this screen. So this screen refuses first.
@@ -754,11 +838,11 @@ describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', ()
   it('walks the rows with the arrows and stops at both ends', () => {
     const run = Run.numbered()
     expect(run.state.field).toBe('name')
-    expect(run.on({ input: 'moveField', delta: 1 }).state.field).toBe('type')
+    expect(run.on({ input: 'moveField', delta: 1 }).state.field).toBe('agent')
     expect(run.on({ input: 'moveField', delta: -1 }).state.field).toBe('name')
     expect(run.on({ input: 'moveField', delta: -1 }, { input: 'moveField', delta: -1 }).state.field)
       .toBe('name')
-    expect(run.on(...Array(9).fill({ input: 'moveField', delta: 1 })).state.field).toBe('agent')
+    expect(run.on(...Array(9).fill({ input: 'moveField', delta: 1 })).state.field).toBe('isolation')
   })
 
   /** One keystroke, four meanings, decided by the row it is pressed on. */
@@ -842,25 +926,25 @@ describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', ()
      */
     it('asks this machine for nothing and the target only what it can run', () => {
       expect(Run.remote().effects)
-        .toEqual([{ effect: 'describeAgents', remoteEndpointId: 'endpoint-a' }])
+        .toEqual([{ effect: 'describeAgents', remoteEndpointId: 'endpoint-a' }, { effect: 'fetchAccounts', remoteEndpointId: 'endpoint-a' }])
       expect(Run.remote().state.token).toBeNull()
       expect(Run.remote().state.models).toEqual({ status: 'loading' })
     })
 
-    it('drops the isolation row and refuses a worktree in words', () => {
+    it('offers remote worktree isolation and requires its source name', () => {
       const run = Run.remote()
 
-      expect(CreateScreenModel.fieldsOf(run.state)).toEqual(['name', 'type', 'agent', 'model'])
-      expect(CreateScreenModel.worktreeRefusal(run.state))
-        .toBe('worktree isolation is set up on the target computer')
-      expect(run.on({ input: 'toggleWorktree' }).state.worktree).toBe(false)
+      expect(CreateScreenModel.fieldsOf(run.state)).toEqual(['name', 'agent', 'type', 'isolation', 'model'])
+      expect(CreateScreenModel.worktreeRefusal(run.state)).toBe('a worktree needs a name to be called after')
+      const named = run.on({ input: 'nameChanged', name: 'remote-child' }, { input: 'toggleWorktree' })
+      expect(named.state.worktree).toBe(true)
+      expect(CreateScreenModel.specOf(named.state, null).worktree).toEqual({ slug: 'remote-child' })
     })
 
     it('names every row it does not draw', () => {
       expect(CreateScreenModel.remoteRefusals(Run.remote().state)).toEqual([
         'Flows run where they were defined; this card starts on another computer.',
         'A plain tab lives outside the tree; the remote card starts tree sessions only.',
-        'Worktree isolation is set up on the target; use the CLI --worktree for now.',
         'The number belongs to that project on that computer, which names the session itself.',
         "The session opens in a tab here; nothing is opened on the target's own screen.",
       ])

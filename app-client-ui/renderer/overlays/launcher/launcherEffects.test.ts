@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { AppClientUiBridge } from '../../../shared/appClientUiIpc'
 import type { TerminalTarget } from '../../../shared/terminalTarget'
@@ -9,6 +9,8 @@ import { LauncherFixtures } from './fixtures/launcherFixtures'
 import { LauncherEffects, type LauncherPorts } from './launcherEffects'
 import type { LauncherInput } from './projects/launcherModel'
 import { ControlBridgeFixture } from '../../ipc/fixtures/controlBridgeFixture'
+import { AppControl } from '../../ipc/appControl'
+import { WorkflowPortsOf } from '../../workflow/workflowPorts'
 
 /**
  * The I/O layer of the launcher, and the one thing about it that cannot be seen from the models: an
@@ -16,8 +18,65 @@ import { ControlBridgeFixture } from '../../ipc/fixtures/controlBridgeFixture'
  * cannot tell that the effect handed it the wrong name in the first place.
  */
 describe('app-client-ui/renderer/overlays/launcher/launcherEffects', () => {
+  it('loads local account views through the shared operation registry', async () => {
+    const accounts = [{ agentId: 'claude', accountId: 'second', label: 'Second', isMain: false,
+      state: 'active', identity: null, profileProblem: null }]
+    installControl(new ControlBridgeFixture().on('accounts.list', { ok: true, value: accounts }))
+    const create = vi.fn()
+    await LauncherEffects.runCreate({ effect: 'fetchAccounts', remoteEndpointId: null },
+      CreateScreenModel.opened({ mode: 'adHoc', path: 'Q:/fixture' }).state, { create } as unknown as LauncherPorts)
+    expect(create).toHaveBeenCalledWith({ input: 'accountsLoaded', remoteEndpointId: null, accounts })
+  })
+
+  it.each([true, false])('reads the target account offer and handles an old peer, offered=%s', async offered => {
+    const accounts = [{ agentId: 'claude', accountId: 'second', label: 'Second', isMain: false,
+      state: 'active', identity: null, profileProblem: null }]
+    const listAccounts = vi.fn(async () => ({ ok: true, value: offered ? { ok: true, value: accounts }
+      : { ok: false, error: { code: 'forbidden', detail: 'Remote peer did not grant agents.accounts' } } }))
+    ;(window as unknown as { appClient: unknown }).appClient = { remote: { listAccounts } }
+    const create = vi.fn()
+    const state = CreateScreenModel.opened({ mode: 'adHoc', path: 'Q:/fixture' },
+      { target: { kind: 'remote', remoteEndpointId: 'peer', displayName: 'Peer' } }).state
+    await LauncherEffects.runCreate({ effect: 'fetchAccounts', remoteEndpointId: 'peer' }, state, { create } as unknown as LauncherPorts)
+    expect(listAccounts).toHaveBeenCalledWith('peer')
+    expect(create).toHaveBeenCalledWith({ input: 'accountsLoaded', remoteEndpointId: 'peer', accounts: offered ? accounts : [] })
+  })
+
   afterEach(() => {
+    vi.restoreAllMocks()
     delete (window as unknown as { appClient?: unknown }).appClient
+  })
+
+  it('opens Session actions after a local worktree create and leaves ordinary creates alone', async () => {
+    vi.spyOn(AppControl, 'createSession').mockResolvedValue({ ok: true, value: { ok: true, value: { sessionId: 's1', tabTitle: 'Work' } } })
+    const open = vi.spyOn(WorkflowPortsOf, 'openWorkflow').mockImplementation(() => {})
+    const ports = { openTerminal: vi.fn(async () => ({ kind: 'opened', panelId: 'terminal:s1' })), create: vi.fn(),
+      markHandedOff: vi.fn(), close: vi.fn() } as unknown as LauncherPorts
+    const state = CreateScreenModel.opened({ mode: 'adHoc', path: 'Q:/Work' }, { name: 'task' }).state
+    await LauncherEffects.runCreate({ effect: 'submit' }, state, ports)
+    expect(open).not.toHaveBeenCalled()
+    await LauncherEffects.runCreate({ effect: 'submit' }, { ...state, worktree: true }, ports)
+    expect(open).toHaveBeenCalledWith('s1')
+  })
+
+  it('asks the library where a worktree would stand and names the directory it answered for', async () => {
+    const preview = { kind: 'svn', ownerDir: 'Q:/Work', owner: 'project', token: '001' }
+    const control = new ControlBridgeFixture()
+      .on('sessions.worktreePreview', ControlBridgeFixture.library({ ok: true, value: preview }))
+    installControl(control)
+    const reported: CreateScreenInput[] = []
+    const ports = { create: (input: CreateScreenInput) => reported.push(input) } as unknown as LauncherPorts
+    const state = CreateScreenModel.opened({ mode: 'adHoc', path: 'Q:/Work/src' }).state
+    await LauncherEffects.runCreate({ effect: 'fetchWorktreePreview', directory: { mode: 'adHoc', path: 'Q:/Work/src' } }, state, ports)
+    expect(reported).toEqual([{ input: 'worktreePreviewLoaded', path: 'Q:/Work/src', answer: { ok: true, preview } }])
+
+    const refusing = new ControlBridgeFixture().on('sessions.worktreePreview',
+      ControlBridgeFixture.library({ ok: false, code: 'invalid-spec', detail: 'a collection of independent projects' }))
+    installControl(refusing)
+    reported.length = 0
+    await LauncherEffects.runCreate({ effect: 'fetchWorktreePreview', directory: { mode: 'adHoc', path: 'Q:/Work/src' } }, state, ports)
+    expect(reported).toEqual([{ input: 'worktreePreviewLoaded', path: 'Q:/Work/src',
+      answer: { ok: false, detail: 'a collection of independent projects' } }])
   })
 
   /** Only what a history read touches; everything else on the bridge would be noise here. */
@@ -66,6 +125,18 @@ describe('app-client-ui/renderer/overlays/launcher/launcherEffects', () => {
       projectName: 'AppJamatV3',
       summaries: [],
     }])
+  })
+
+  it('asks for a fresh listing when the effect says so, so a card shows a project made since the last one (UA1-J13-7)', async () => {
+    const control = new ControlBridgeFixture().on('projects.listing', { ok: true, value: LauncherFixtures.web() })
+    installControl(control)
+
+    await LauncherEffects.run(
+      { effect: 'fetchProjects', categoryId: 'web', sort: 'alpha', remoteEndpointId: null, fresh: true },
+      { dispatch: () => undefined } as unknown as LauncherPorts,
+    )
+
+    expect(control.bodiesOf('projects.listing')).toEqual([{ categoryId: 'web', sort: 'alpha', fresh: true }])
   })
 
   it('returns the sort that produced a project listing', async () => {
@@ -221,6 +292,22 @@ describe('app-client-ui/renderer/overlays/launcher/launcherEffects', () => {
       expect(sent[1]?.[3]).toBe(sent[0]?.[3])
       expect(sent[1]?.[3]).toBe(first.retryCreate?.operationId)
       expect(sent[1]?.[2]).toEqual(sent[0]?.[2])
+    })
+
+    it('opens a shared setup view after creating a remote worktree and releases its temporary lease', async () => {
+      const record = { calls: [] as unknown[][] }
+      installRemote({ createSession: { ok: true, value: { ok: true, value: { session: { sessionId: 'child', tabTitle: 'Child' } } } } }, record)
+      const openView = vi.fn(async () => ({ ok: true, value: { ok: true, value: { viewId: 'setup-view' } } }))
+      const openSharedItem = vi.fn(async () => ({ ok: true, value: { ok: true, value: {} } }))
+      const closeView = vi.fn(async () => ({ ok: true, value: { ok: true, value: null } }))
+      Object.assign(window.appClient.remote, { openView, openSharedItem, closeView })
+      const opened = vi.fn(async (): Promise<PanelOpenOutcome> => ({ kind: 'opened', panelId: 'child' }))
+      await LauncherEffects.runCreate({ effect: 'submit' }, remoteState({ name: 'Child', worktree: true }), portsOf([], opened))
+      expect(record.calls[0]).toEqual(['createSession', 'endpoint-a', expect.objectContaining({ worktree: { slug: 'Child' }, deferSetupAgreement: true }), expect.any(String)])
+      expect(openView).toHaveBeenCalledWith('endpoint-a', 'child')
+      expect(openSharedItem).toHaveBeenCalledWith('endpoint-a', 'setup-view', { openId: expect.any(String), item: { kind: 'workflow' } })
+      expect(closeView).toHaveBeenCalledWith('endpoint-a', 'setup-view')
+      expect(opened).toHaveBeenCalledWith({ kind: 'remote', remoteEndpointId: 'endpoint-a', sessionId: 'child' }, 'Child')
     })
 
     // A decided refusal is not replayed: the id is dropped, and the next attempt mints its own.

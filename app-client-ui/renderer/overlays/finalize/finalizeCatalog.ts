@@ -13,7 +13,7 @@ export interface FinalizeAgreement {
   /** The hash of the commands the target asked about. */
   acknowledgeSetup?: string
   /** The person finishes a session that is still working. */
-  confirmWorking?: true
+  confirmWorking?: true; overrideChecks?: true
 }
 
 export interface SessionFinalizePorts {

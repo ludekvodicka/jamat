@@ -1,4 +1,4 @@
-import type { SessionSetupAgreement } from '../../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
+import type { SessionSetupAgreement, SessionWorktreePreview } from '../../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { useEffect, useRef } from 'react'
 
 import { FlowCatalog } from '../flows/flowCatalog'
@@ -40,7 +40,7 @@ export function LauncherCreateScreen(props: {
     if (input === null || document.activeElement === input) return
     input.focus()
   }, [state.field])
-  const preview = CreateScreenModel.worktreePreviewOf(state, state.token)
+  const preview = CreateScreenModel.worktreeLineOf(state)
   const worktreeRefusal = CreateScreenModel.worktreeRefusal(state)
   const agentRefusal = CreateScreenModel.agentRefusal(state)
   const existing = CreateScreenModel.typeOf(state).kind === 'existing'
@@ -58,6 +58,7 @@ export function LauncherCreateScreen(props: {
   const modelOptions = CreateScreenModel.modelOptionsOf(state)
   const modelRefusal = CreateScreenModel.modelRefusal(state)
   const modelNote = CreateScreenModel.modelNoteOf(state)
+  const accountOptions = CreateScreenModel.accountOptionsOf(state)
 
   return (
     <div className="jamat-launcher-create">
@@ -92,6 +93,35 @@ export function LauncherCreateScreen(props: {
         </span>
       </ChoiceRow>
       )}
+
+      <ChoiceRow label="Agent" current={state.field === 'agent'}>
+        <div className="jamat-choice__cards">
+          {(existing ? ['claude', 'codex', 'all'] as const : ['claude', 'codex'] as const)
+            .map((agentId) => (
+            <ChoiceCard
+              key={agentId}
+              title={agentId === 'all' ? 'All' : LauncherLabels.agentLabelOf(agentId)}
+              note={null}
+              glyph={agentId === 'all' ? '∗' : AgentGlyph.markOf(agentId)}
+              glyphClass={agentId === 'all'
+                ? 'jamat-choice__glyph'
+                : `jamat-launcher__agent jamat-launcher__agent--${agentId}`}
+              chosen={existing
+                ? state.existingAgentFilter === agentId
+                : state.agentId === agentId}
+              refusal={agentRefusal}
+              onChoose={() => agentId === 'all'
+                ? dispatch({ input: 'chooseExistingAgent', agentId })
+                : dispatch(existing
+                    ? { input: 'chooseExistingAgent', agentId }
+                    : { input: 'chooseAgent', agentId })}
+            />
+            ))}
+        </div>
+        {agentRefusal !== null && (
+          <p className="jamat-launcher-create__refusal">{agentRefusal}</p>
+        )}
+      </ChoiceRow>
 
       <ChoiceRow label="Type" current={state.field === 'type'}>
         <div className="jamat-choice__cards">
@@ -136,43 +166,19 @@ export function LauncherCreateScreen(props: {
           <p className="jamat-launcher-create__note">
             {'Runs in '}
             <code>{preview.folder}</code>
-            {' of its product group, catalog project or directory, from HEAD'}
+            {preview.owner === null
+              ? ' of its product group, catalog project or directory, from HEAD'
+              : <>{` of the ${WorktreeOwnerWords.of(preview.owner.kind)} `}<code>{preview.owner.dir}</code>{', from HEAD'}</>}
           </p>
+        )}
+        {state.worktree && preview?.refusal !== undefined && (
+          <p className="jamat-launcher-create__refusal">{preview.refusal}</p>
         )}
         {!state.worktree && worktreeRefusal !== null && (
           <p className="jamat-launcher-create__refusal">{worktreeRefusal}</p>
         )}
       </ChoiceRow>
       )}
-
-      <ChoiceRow label="Agent" current={state.field === 'agent'}>
-        <div className="jamat-choice__cards">
-          {(existing ? ['claude', 'codex', 'all'] as const : ['claude', 'codex'] as const)
-            .map((agentId) => (
-            <ChoiceCard
-              key={agentId}
-              title={agentId === 'all' ? 'All' : LauncherLabels.agentLabelOf(agentId)}
-              note={null}
-              glyph={agentId === 'all' ? '∗' : AgentGlyph.markOf(agentId)}
-              glyphClass={agentId === 'all'
-                ? 'jamat-choice__glyph'
-                : `jamat-launcher__agent jamat-launcher__agent--${agentId}`}
-              chosen={existing
-                ? state.existingAgentFilter === agentId
-                : state.agentId === agentId}
-              refusal={agentRefusal}
-              onChoose={() => agentId === 'all'
-                ? dispatch({ input: 'chooseExistingAgent', agentId })
-                : dispatch(existing
-                    ? { input: 'chooseExistingAgent', agentId }
-                    : { input: 'chooseAgent', agentId })}
-            />
-            ))}
-        </div>
-        {agentRefusal !== null && (
-          <p className="jamat-launcher-create__refusal">{agentRefusal}</p>
-        )}
-      </ChoiceRow>
 
       {/* Remote only: what a session started HERE runs on is this computer's own setting, and the
           row that would ask is the settings tab. On a remote card the offer is the target's, so it
@@ -219,6 +225,19 @@ export function LauncherCreateScreen(props: {
         )}
       </ChoiceRow>
       )}
+
+      {accountOptions.length > 1 && (
+        <ChoiceRow label="Account" current={state.field === 'account'}>
+          <select className="jamat-launcher-create__model" aria-label="Account" value={state.accountId}
+            onFocus={() => dispatch({ input: 'setField', field: 'account' })}
+            onChange={event => dispatch({ input: 'chooseAccount', accountId: event.currentTarget.value })}>
+            {!accountOptions.some(account => account.accountId === state.accountId) && <option value="main" disabled>Main (default)</option>}
+            {accountOptions.map(account => <option key={account.accountId} value={account.accountId}>{account.label}</option>)}
+          </select>
+        </ChoiceRow>
+      )}
+
+      {CreateScreenModel.accountReasonOf(state) && <p className="jamat-launcher-create__note">{CreateScreenModel.accountReasonOf(state)}</p>}
 
       {existing && (
         <ChoiceRow
@@ -384,5 +403,15 @@ export class CreateTypes {
     else if (type.kind === 'raw' || type.kind === 'shell') return 'Start'
     else
       throw new Error(`Unknown create type: ${JSON.stringify(type)}`)
+  }
+}
+
+/** The owner of a worktree as the card names it. */
+class WorktreeOwnerWords {
+  static of(owner: SessionWorktreePreview['owner']): string {
+    if (owner === 'product') return 'product group'
+    else if (owner === 'project') return 'catalog project'
+    else if (owner === 'directory') return 'directory'
+    else throw new Error(`Unknown worktree owner: ${JSON.stringify(owner satisfies never)}`)
   }
 }

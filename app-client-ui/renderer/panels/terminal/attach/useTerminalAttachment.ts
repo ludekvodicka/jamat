@@ -16,7 +16,7 @@ import { TerminalInterrupt } from '../input/terminalInterrupt'
 import { TerminalKeyGate } from '../input/terminalKeyGate'
 import { TerminalWheelRepeat } from '../input/terminalWheelRepeat'
 import { TerminalHeldOutput } from './terminalHeldOutput'
-import { type TerminalRefusalCode, TerminalTransports } from './terminalTransport'
+import { type TerminalRefusalCode, type TerminalAttachTransport, TerminalTransports } from './terminalTransport'
 import { type TerminalAgentId, TerminalPromptNewline } from '../input/terminalPromptNewline'
 import { TerminalLinks } from '../view/terminalLinks'
 import { TerminalTheme } from '../view/terminalTheme'
@@ -131,6 +131,7 @@ export function useTerminalAttachment(
   onTyped: (data: string) => void,
   /** Why the last paste put nothing in the prompt, or null once one did. Read lazily like `onMenu`. */
   onPasteNote: (note: string | null) => void,
+  detect?: TerminalAttachTransport['detect'],
 ): TerminalAttachmentHandle {
   const [state, setState] = useState<TerminalSurfaceState>({
     status: 'connecting',
@@ -152,6 +153,7 @@ export function useTerminalAttachment(
   const onMenuRef = useRef(onMenu)
   const onTypedRef = useRef(onTyped)
   const onPasteNoteRef = useRef(onPasteNote)
+  const detectRef = useRef(detect)
   // Committed rather than written mid-render. A render can be started and thrown away, and a
   // discarded one would leave these pointing at callbacks belonging to a tree that was never
   // committed - which in this surface means a wrong `readAgent` answer becoming wrong bytes, since
@@ -162,6 +164,7 @@ export function useTerminalAttachment(
     onMenuRef.current = onMenu
     onTypedRef.current = onTyped
     onPasteNoteRef.current = onPasteNote
+    detectRef.current = detect
   })
 
   useEffect(() => {
@@ -182,7 +185,7 @@ export function useTerminalAttachment(
      * branches together, so one of them was left unfinished and compiled: paste took the key from
      * xterm and then returned at once for a remote screen.
      */
-    const transport = TerminalTransports.of(target).attachment(attachId)
+    const transport = TerminalTransports.of(target, detect ? (capture) => detectRef.current!(capture) : undefined).attachment(attachId)
     const settings = UiSettingsStore.current()
     const appearance = TerminalTheme.current(settings)
     const terminal = new Terminal({
@@ -226,6 +229,16 @@ export function useTerminalAttachment(
     // Set by the cleanup below. Everything that awaits between a key and a write reads it after the
     // await: the surface can be gone by then.
     let disposed = false
+    /**
+     * Set while this attach is lost. Its keys reach no PTY, so they are not sent and not counted as
+     * typed; the panel's note says so. They used to vanish into an attach main had never made (UA1-J13-6).
+     */
+    let lost = false
+    const typed = (data: string): void => {
+      if (lost) return
+      onTypedRef.current(data)
+      transport.input(data)
+    }
 
     /**
      * The clipboard as text to paste: an image or a file arrives as its path on the computer the
@@ -253,8 +266,7 @@ export function useTerminalAttachment(
       if (text === null) return
       const bytes = TerminalClipboard.pasteOf(text)
       if (bytes === null) return
-      onTypedRef.current(bytes)
-      transport.input(bytes)
+      typed(bytes)
     }
 
     // The same clipboard, through the same attach-bound channel, laid out as lines the agent will
@@ -269,10 +281,7 @@ export function useTerminalAttachment(
       // The lines are spaced out over seconds, so a run outlives the click that started it: whatever
       // replaces it - a second paste, or this attach going away - stops it first.
       pasteAsTextRun?.()
-      pasteAsTextRun = TerminalClipboard.pasteAsTextByLines(text, (data) => {
-        onTypedRef.current(data)
-        transport.input(data)
-      })
+      pasteAsTextRun = TerminalClipboard.pasteAsTextByLines(text, typed)
     }
 
     // Before `open`, so no keystroke can reach xterm unfiltered: a command's accelerator would
@@ -302,8 +311,7 @@ export function useTerminalAttachment(
       const interrupt = TerminalInterrupt.sequenceOf(event, readAgentRef.current())
       if (interrupt !== null) {
         event.preventDefault()
-        onTypedRef.current(interrupt)
-        transport.input(interrupt)
+        typed(interrupt)
         return false
       }
       const newline = TerminalPromptNewline.sequenceOf(event, readAgentRef.current())
@@ -311,17 +319,13 @@ export function useTerminalAttachment(
       // Sent here rather than through xterm, which has one spelling of Enter and would send the CR
       // that submits the prompt. `preventDefault` is what stops the browser adding one as well.
       event.preventDefault()
-      onTypedRef.current(newline)
-      transport.input(newline)
+      typed(newline)
       return false
     })
     const fit = new FitAddon()
     terminal.loadAddon(fit)
     terminal.open(holder)
-    terminal.onData((data) => {
-      onTypedRef.current(data)
-      transport.input(data)
-    })
+    terminal.onData(typed)
     senderRef.current = (data) => transport.input(data)
     /*
      * Both arms, and the local one is why this exists at all: an attach that goes inactive hands
@@ -466,7 +470,8 @@ export function useTerminalAttachment(
         show()
         terminal.resize(frame.cols, frame.rows)
       }
-      else if (frame.type === 'terminal.attached')
+      else if (frame.type === 'terminal.attached') {
+        lost = false
         // A runtime the Host still has and no longer runs answers an attach with the screen it died
         // on. There is no exit event coming - that already happened - so what it says about itself
         // in the ack is the only place this learns it is over.
@@ -477,13 +482,16 @@ export function useTerminalAttachment(
           ended: current.ended || !frame.session.alive,
           exitCode: frame.session.alive ? current.exitCode : frame.session.exitCode ?? null,
         }))
-      else if (frame.type === 'terminal.status')
+      }
+      else if (frame.type === 'terminal.status') {
+        lost = frame.status === 'lost'
         setState((current) => ({
           ...current,
           status: frame.status,
           detail: frame.detail,
           refusalCode: frame.code ?? null,
         }))
+      }
       // The end of the session, and the end of this surface: the library has already closed the
       // attach, so nothing more is addressed to it.
       else if (frame.type === 'terminal.exit')
@@ -573,6 +581,7 @@ export function useTerminalAttachment(
      */
     void transport.attach(measure()).then((refusal) => {
       if (disposed || refusal === null) return
+      lost = true
       setState((current) => ({
         ...current,
         status: 'lost',

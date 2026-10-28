@@ -144,6 +144,8 @@ export type LauncherEffect =
       categoryId: string
       sort: LauncherSort
       remoteEndpointId: string | null
+      /** The first listing of a card on this computer, read past the catalog's cache. */
+      fresh?: true
     }
   | { effect: 'createProject'; categoryId: string; name: string; virtualFolderPrefix: string | null }
   /**
@@ -533,13 +535,17 @@ export class LauncherModel {
     // the listing for the category in front is already held by the time this runs.
     if (LauncherModel.listingOf(next, activeCategoryId) !== null)
       return LauncherModel.requestForeignListings(next)
+    // A card opens on what is on disk now: a project made since the last card waited out the
+    // catalog's cache before it was listed (UA1-J13-7). A remote catalog answers in its own way.
+    const remoteEndpointId = LauncherModel.endpointOf(state)
     return LauncherModel.requestForeignListings(
       next,
       {
         effect: 'fetchProjects',
         categoryId: activeCategoryId,
         sort: state.sort,
-        remoteEndpointId: LauncherModel.endpointOf(state),
+        remoteEndpointId,
+        ...remoteEndpointId === null ? { fresh: true as const } : {},
       },
     )
   }

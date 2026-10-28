@@ -24,6 +24,12 @@ describe('app-client-ui/shared/terminalTarget', () => {
     expect(TerminalTargetCodec.read({})).toBeNull()
   })
 
+  it('keeps the source target when a directory panel also carries a session ID', () => {
+    const target = { kind: 'remote' as const, remoteEndpointId: 'source', sessionId: 'same' }
+    expect(TerminalTargetCodec.read({ sessionId: 'same', target })).toEqual({ target })
+    expect(TerminalTargetCodec.read({ sessionId: 'same', target: { kind: 'remote' } })).toBeNull()
+  })
+
   /*
    * A window saved before 2026-09-23 still carries the key a plain tab was marked with. The panel
    * is an ordinary terminal now, and refusing its parameters would leave it out of the restored

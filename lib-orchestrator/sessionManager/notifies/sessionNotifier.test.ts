@@ -8,7 +8,7 @@ import { ScriptLogStore } from '../scripts/scriptLogStore'
 import type { SessionInfo } from '../sessionManagerApi.types'
 import { SessionNotifier } from './sessionNotifier'
 import { SessionNotifyStore } from './sessionNotifyStore'
-import { type WorktreeResultRecord, WorktreeResultsStore } from '../results/worktreeResultsStore'
+import { type WorktreeResultRecord, WorktreeResultsStore } from '../../worktrees/worktreeResults'
 
 describe('lib-orchestrator/sessionManager/notifies/sessionNotifier', () => {
   const minuteConst = 60_000

@@ -18,6 +18,10 @@ import {
   type RemoteControlSocketSubscription,
 } from './core/remoteControlSocketOperations'
 import { RemoteControlAudit, type RemoteControlAuditCaller } from './remoteControlAudit'
+import { RemoteSessionSchemas } from '../../../lib-orchestrator/remoteControl/remoteSessionSchemas'
+import { JsonShape } from '../../../lib-orchestrator/shared/jsonShape'
+import type { RemoteSessionViews } from './remoteSessionViews'
+import type { RemoteSessionSnapshots } from './remoteSessionSnapshots'
 
 export interface RemoteControlInboundRegistryDeps {
   control: Pick<RemoteControl, 'execute'>
@@ -30,6 +34,8 @@ export interface RemoteControlInboundRegistryDeps {
   onError(message: string): void
   now?(): number
   eventLimit?: number
+  sessionViews?: Pick<RemoteSessionViews, 'request' | 'releaseConnection'>
+  sessionSnapshots?: Pick<RemoteSessionSnapshots, 'page'>
 }
 
 interface InboundPeerState {
@@ -41,6 +47,7 @@ interface InboundPeerState {
   subscribed: boolean
   closed: boolean
   queue: Promise<void>
+  viewRequests: number
 }
 
 export class RemoteControlInboundRegistry {
@@ -74,9 +81,19 @@ export class RemoteControlInboundRegistry {
       subscribed: false,
       closed: false,
       queue: Promise.resolve(),
+      viewRequests: 0,
     }
     this.byEndpoint.set(key, state)
     connection.onMessage((message) => {
+      if (message.type === 'session-view-request') {
+        // A publication may outlive its viewer; close, terminal and discovery must still progress.
+        void this.viewRequest(state, message).catch((error: unknown) => {
+          if (state.closed) return
+          this.deps.onError(`Remote peer view failed: ${ErrorText.of(error)}`)
+          connection.close()
+        })
+        return
+      }
       state.queue = state.queue
         .then(() => this.handle(state, message))
         .catch((error: unknown) => {
@@ -120,6 +137,7 @@ export class RemoteControlInboundRegistry {
     const state = this.byEndpoint.get(key)
     if (state === undefined) return
     state.closed = true
+    this.deps.sessionViews?.releaseConnection(state.connection)
     this.deps.terminal.detachOwner(state.ownerId)
     state.attachments.clear()
     this.byEndpoint.delete(key)
@@ -141,6 +159,7 @@ export class RemoteControlInboundRegistry {
   stop(): void {
     for (const state of this.byEndpoint.values()) {
       state.closed = true
+      this.deps.sessionViews?.releaseConnection(state.connection)
       this.deps.terminal.detachOwner(state.ownerId)
       state.connection.close()
     }
@@ -151,16 +170,49 @@ export class RemoteControlInboundRegistry {
     this.audit.flush()
   }
 
+  private async viewRequest(state: InboundPeerState, message: Extract<RemoteControlPeerInboundApplicationMessage, { type: 'session-view-request' }>): Promise<void> {
+    if (state.closed) return
+    const request = RemoteSessionSchemas.viewRequest(message.request)
+    if (!request) { state.connection.close(); return }
+    const counted = request.operation !== 'views.close'
+    if (counted && state.viewRequests >= 16) {
+      state.connection.send({ type: 'session-view-response', response: { requestId: request.requestId, operation: request.operation,
+        result: { ok: false, error: { code: 'unavailable', detail: 'Too many source view requests are in flight' } } } })
+      return
+    }
+    if (counted) state.viewRequests++
+    try { await this.handle(state, message) }
+    finally { if (counted) state.viewRequests-- }
+  }
+
   private async handle(
     state: InboundPeerState,
     message: RemoteControlPeerInboundApplicationMessage,
   ): Promise<void> {
     if (state.closed) return
-    if (message.type === 'control-request')
+    if (message.type === 'session-view-request') {
+      const request = RemoteSessionSchemas.viewRequest(message.request)
+      if (!request) { state.connection.close(); return }
+      const result = this.deps.sessionViews
+        ? await this.deps.sessionViews.request(state.connection, request)
+        : { ok: false as const, error: { code: 'unavailable' as const, detail: 'Session views are unavailable' } }
+      if (!state.closed) state.connection.send({ type: 'session-view-response', response: { requestId: request.requestId, operation: request.operation, result } })
+    } else if (message.type === 'session-state-request') {
+      const request = RemoteSessionSchemas.stateRequest(message.request)
+      const record = JsonShape.record(message.request)
+      const requestId = request?.requestId ?? (typeof record?.requestId === 'string' ? record.requestId.slice(0, 256) : 'invalid')
+      const result = !state.connection.capabilities.includes('session-workspace.read')
+        ? { ok: false as const, error: { code: 'forbidden' as const, detail: 'Session workspace discovery was not granted' } }
+        : request === null
+          ? { ok: false as const, error: { code: 'invalid-request' as const, detail: 'Invalid session state request' } }
+          : this.deps.sessionSnapshots?.page(request)
+            ?? { ok: false as const, error: { code: 'unavailable' as const, detail: 'Session discovery is unavailable' } }
+      state.connection.send({ type: 'session-state-response', response: { requestId, result } })
+    } else if (message.type === 'control-request')
       await this.control(state, message.request)
     else if (message.type === 'socket-request')
       await this.socket(state, message.request)
-    else if (message.type === 'control-response' || message.type === 'socket-response') {
+    else if (message.type === 'control-response' || message.type === 'socket-response' || message.type === 'session-state-response' || message.type === 'session-view-response') {
       this.deps.onError('Remote peer sent a response on an inbound-only connection')
       state.connection.close()
     } else
@@ -231,6 +283,7 @@ export class RemoteControlInboundRegistry {
   private closed(key: string, state: InboundPeerState): void {
     if (state.closed) return
     state.closed = true
+    this.deps.sessionViews?.releaseConnection(state.connection)
     this.deps.terminal.detachOwner(state.ownerId)
     state.attachments.clear()
     if (this.byEndpoint.get(key) === state) {

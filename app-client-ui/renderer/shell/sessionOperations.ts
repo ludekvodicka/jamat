@@ -9,6 +9,7 @@ import type { IpcResult } from '../../shared/appClientUiIpc'
 import { IpcFailure } from '../ipc/ipcFailure'
 import type { SessionCompact } from '../contextCompaction/sessionCompact'
 import type { SnapshotStore } from '../ipc/snapshotStore'
+import { FinalizeAsks } from '../overlays/finalize/finalizeModel'
 import { SessionFolder } from '../sessions/sessionFolder'
 import type { TabSessionFacts } from '../widgets/tabs/tabContextMenu'
 import { SessionTabOpener, type OpenTerminalPort } from './sessionTabOpener'
@@ -29,7 +30,7 @@ export class SessionOperations {
    * that acted on a guess would be worse than one that does nothing.
    */
   static sessionInfoOf(
-    sessions: SnapshotStore<SessionsSnapshot>,
+    sessions: Pick<SnapshotStore<SessionsSnapshot>, 'current'>,
     target: { sessionId: string } | null,
   ): SessionInfo | null {
     if (target === null) return null
@@ -43,7 +44,7 @@ export class SessionOperations {
    * pointed at.
    */
   static sessionFactsOf(
-    sessions: SnapshotStore<SessionsSnapshot>,
+    sessions: Pick<SnapshotStore<SessionsSnapshot>, 'current'>,
     sessionId: string,
   ): TabSessionFacts | null {
     const info = sessions.current().snapshot?.sessions
@@ -52,10 +53,13 @@ export class SessionOperations {
     return {
       live: info.life === 'live',
       agentId: info.agent?.agentId ?? null,
+      ...(info.agent?.accountId ? { accountId: info.agent.accountId } : {}),
       color: info.color ?? null,
       directoryPath: SessionFolder.ofDirectory(info.directory),
       ended: info.life === 'ended' || info.life === 'lost',
       admits: info.admits,
+      // UI01 is about worktree sessions; any other row's Finish arms a second click on the row itself.
+      finish: info.worktree !== undefined && FinalizeAsks.rowActionsOf(info, 'local').includes('finalize'),
     }
   }
 
@@ -74,7 +78,7 @@ export class SessionOperations {
    * somebody is waiting on. The question is a client's to ask - the operation itself just acts.
    */
   static async restartSession(
-    sessions: SnapshotStore<SessionsSnapshot>,
+    sessions: Pick<SnapshotStore<SessionsSnapshot>, 'current'>,
     target: { sessionId: string } | null,
   ): Promise<void> {
     const info = SessionOperations.sessionInfoOf(sessions, target)
@@ -97,7 +101,7 @@ export class SessionOperations {
   }
 
   static async resumeSession(
-    sessions: SnapshotStore<SessionsSnapshot>,
+    sessions: Pick<SnapshotStore<SessionsSnapshot>, 'current'>,
     target: { sessionId: string } | null,
     openTerminal: OpenTerminalPort,
   ): Promise<void> {
@@ -135,7 +139,7 @@ export class SessionOperations {
   }
 
   static async copyProjectFolder(
-    sessions: SnapshotStore<SessionsSnapshot>,
+    sessions: Pick<SnapshotStore<SessionsSnapshot>, 'current'>,
     target: { sessionId: string } | null,
   ): Promise<void> {
     const info = SessionOperations.sessionInfoOf(sessions, target)
@@ -163,16 +167,25 @@ export class SessionOperations {
     remoteEndpointId: string | null,
   ): Promise<void> {
     if (target === null) return
+    const reference = await SessionOperations.sessionReferenceText(target.sessionId, remoteEndpointId, 'Copying the session id')
+    if (reference.kind === 'refused') AppClientUiReport.error(reference.detail)
+    else if (reference.kind === 'text') await SessionOperations.copyText(reference.text, 'the session id')
+    else throw new Error(`Unknown session reference answer: ${JSON.stringify(reference)}`)
+  }
+
+  /** The text the copy above writes, also pasted by a terminal a session row was dropped on. */
+  static async sessionReferenceText(
+    sessionId: string,
+    remoteEndpointId: string | null,
+    label: string,
+  ): Promise<{ kind: 'text'; text: string } | { kind: 'refused'; detail: string }> {
     const answer = remoteEndpointId === null
-      ? await AppControl.sessions('sessions.reference', { session: AppControl.sessionOf(target.sessionId) })
-      : await window.appClient.remote.sessionReference(remoteEndpointId, target.sessionId)
-    const refusal = IpcFailure.of(answer, 'Copying the session id')
-    if (refusal !== null) {
-      AppClientUiReport.error(`${refusal}`)
-      return
-    }
-    if (!answer.ok || !answer.value.ok) return
-    await SessionOperations.copyText(answer.value.value.text, 'the session id')
+      ? await AppControl.sessions('sessions.reference', { session: AppControl.sessionOf(sessionId) })
+      : await window.appClient.remote.sessionReference(remoteEndpointId, sessionId)
+    const refusal = IpcFailure.of(answer, label)
+    if (refusal !== null) return { kind: 'refused', detail: refusal }
+    if (!answer.ok || !answer.value.ok) throw new Error(`${label}: a refusal without a reason`)
+    return { kind: 'text', text: answer.value.value.text }
   }
 
   /** The write itself, shared by the session's folder and the project row's. */

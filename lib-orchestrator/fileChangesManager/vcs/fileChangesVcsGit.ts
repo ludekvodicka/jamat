@@ -137,26 +137,6 @@ export class FileChangesVcsGit extends FileChangesVcsBase implements FileChanges
     }
   }
 
-  /**
-   * Untracked files count as dirt, which is the parity the Finish label used to get from
-   * `GitMergeManager.mergeStatus`. `normal` rather than `all`, because one entry per untracked
-   * DIRECTORY already proves the answer and walking into it cannot change it.
-   */
-  async dirty(detection: FileChangesVcsDetection): Promise<FileChangesVcsResult<boolean>> {
-    const outcome = await this.run(detection.root, [
-      'status',
-      '--porcelain',
-      '-z',
-      '--untracked-files=normal',
-      '--ignored=no',
-      '--',
-      FileChangesVcsGit.pathspecOf(detection),
-    ])
-    if (!FileChangesVcsGit.succeeded(outcome))
-      return { ok: false, detail: this.detailOf(outcome) }
-    return { ok: true, value: outcome.stdout.length > 0 }
-  }
-
   async history(
     detection: FileChangesVcsDetection,
     limit: number,

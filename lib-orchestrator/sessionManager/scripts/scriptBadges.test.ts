@@ -69,7 +69,7 @@ describe('lib-orchestrator/sessionManager/scripts/scriptBadges', () => {
         .toEqual({ phase: 'before', state: 'succeeded', text: 'setup ✓ 23.6 s', title: 'Setup succeeded in 23.6 s', runId: 'h' })
     })
 
-    it('says what the after chain is doing, and never names the install there', () => {
+    it('says what the after chain is doing, and names the install an SVN Finish runs again', () => {
       const tests = { kind: 'declared', name: 'tests' } as const
       expect(ScriptBadges.of({ phase: 'after', state: 'running', step: tests, runId: 'r', commands: ['pnpm test'] }))
         .toMatchObject({ phase: 'after', state: 'running', text: 'checks: tests', runId: 'r' })
@@ -77,7 +77,11 @@ describe('lib-orchestrator/sessionManager/scripts/scriptBadges', () => {
         .toMatchObject({ phase: 'after', state: 'failed', text: 'checks failed: tests', runId: 'r' })
       expect(ScriptBadges.of({ phase: 'after', state: 'succeeded', runId: 'h', durationMs: 72_000 }))
         .toMatchObject({ phase: 'after', state: 'succeeded', text: 'checks ✓ 1 min 12 s', runId: 'h' })
-      expect(() => ScriptBadges.of({ phase: 'after', state: 'running', step: { kind: 'setup' }, runId: 'r', commands: [] }))
+      expect(ScriptBadges.of({ phase: 'after', state: 'running', step: { kind: 'setup' }, runId: 'r', commands: ['pnpm install'] }))
+        .toMatchObject({ phase: 'after', state: 'running', text: 'installing dependencies', runId: 'r' })
+      expect(ScriptBadges.of({ phase: 'after', state: 'failed', step: { kind: 'setup' }, runId: 'r', reason: null }))
+        .toMatchObject({ phase: 'after', state: 'failed', text: 'setup failed', runId: 'r' })
+      expect(() => ScriptBadges.of({ phase: 'after', state: 'running', step: { kind: 'checkout' }, runId: 'r', commands: [] }))
         .toThrow('never runs after')
     })
 

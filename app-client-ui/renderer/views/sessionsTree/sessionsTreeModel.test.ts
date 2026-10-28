@@ -40,7 +40,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
     options?: SessionsTreeBuildOptions,
   ): TreeResult {
     return SessionsTreeModel.build(
-      snapshot,
+      SessionsFixtures.present(snapshot),
       { inFront: noneInFront, tabbed: noneTabbed, now: nowConst, ...view },
       marks,
       previous,
@@ -343,7 +343,6 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
         kind: 'svn',
         path: 'C:/Projects/NodeJs/AppJamatV3/.worktrees/014-svn-worktree',
         branch: 'http://svn.local/applications/AppJamatV3',
-        baseMoved: false,
         finish: null,
         outcome: null,
       })
@@ -462,22 +461,15 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
       throw new Error('The fixture sessions are not session nodes')
 
     expect(working.badges.worktree)
-      // `changedFiles` is deliberately NOT carried: the mark draws two numbers, and a third
-      // that moves on its own is a tree rebuild nobody asked for.
       .toEqual({
         kind: 'git',
         path: 'C:/Projects/NodeJs/AppJamatV3/.worktrees/alpha',
         branch: 'feature/alpha',
-        diff: { added: 12, removed: 3 },
-        baseMoved: true,
         finish: null,
         outcome: null,
         needs: null,
         cleanup: null,
       })
-    // Nothing has measured this worktree yet, which is not the same as no changes.
-    expect(waiting.badges.worktree?.diff).toBe(null)
-    expect(waiting.badges.worktree?.baseMoved).toBe(false)
     expect(working.badges.agentId).toBe('claude')
     expect(ended.exitCode).toBe(1)
     expect(ended.endedAt).toBe(1754200500000)
@@ -812,11 +804,33 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
       title: 'Installing dependencies:\npnpm install', runId: 's-install', open, logRunId: null,
     })
     expect(primary.waitingOn).toEqual(open)
-    expect(primary.scriptRuns.map((run) => [run.summary, run.open])).toEqual([['Setup alpha · running', open]])
     expect(primary.filedWithParent).toBe(false)
     expect(install.filedWithParent).toBe(true)
     expect(install.scriptsBadge).toBe(null)
     expect(install.waitingOn).toBe(null)
+  })
+
+  it('draws no row for a run or a step that the Session actions item draws', () => {
+    const fixture = SessionsFixtures.setupPending()
+    const held: SessionsSnapshot = {
+      ...fixture,
+      sessions: fixture.sessions.map((session) => session.sessionId !== 's-primary' ? session : {
+        ...session,
+        step: { text: 'Removing the worktree', detail: '12,000 of 48,000 files', progress: { done: 12000, total: 48000 }, startedAt: 1 },
+        actions: { sections: [{ kind: 'before', workflowId: 'setup:s-primary', title: 'Setup', badge: '', summary: 'Installing',
+          open: true, actions: [], rounds: [{ title: 'Setup', steps: [
+            { key: 'install', title: 'Install', state: 'running', detail: '', startedAt: 1, endedAt: null, target: { kind: 'run', runId: 's-install' } },
+            { key: 'remove', title: 'Remove', state: 'running', detail: '', startedAt: 1, endedAt: null, target: { kind: 'none' } },
+          ] }] }] },
+      }),
+    }
+    const local = build(held)
+    const primary = find(local.nodes, 'session:s-primary')
+    if (primary.kind !== 'session') throw new Error('no session node')
+
+    expect(lookup(local.nodes, 'session:s-install')).toBeNull()
+    expect(primary.step).toBeNull()
+    expect(primary.actionsMark).toEqual({ text: 'actions running', title: 'Installing', waiting: false })
   })
 
   it('gives a succeeded badge and the history no terminal to open, and the badge its saved log', () => {
@@ -828,7 +842,6 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
     expect(installed.scriptsBadge?.logRunId).toBe('r-second')
     expect(installed.waitingOn).toBe(null)
     expect(installed.children).toEqual([])
-    expect(installed.scriptRuns.map((run) => [run.runId, run.open])).toEqual([['r-second', null], ['r-first', null]])
   })
 
   it('opens a remote run on the computer that runs it', () => {
@@ -845,7 +858,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
     expect(primary.waitingOn?.target).toEqual({ kind: 'remote', remoteEndpointId: 'endpoint-a', sessionId: 's-install' })
   })
 
-  it('gives a remote succeeded badge no log: the log stays on the computer that ran it', () => {
+  it('keeps the source saved-run identity on a remote succeeded badge', () => {
     const options: SessionsTreeBuildOptions = {
       namespace: 'remote:endpoint-a',
       target: { kind: 'remote', remoteEndpointId: 'endpoint-a' },
@@ -856,7 +869,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
     const installed = find(build(SessionsFixtures.setupCollapsed(), all, noMarks, null, options).nodes, 'remote:endpoint-a/session:s-installed')
     if (installed.kind !== 'session') throw new Error('no session node')
 
-    expect(installed.scriptsBadge).toMatchObject({ state: 'succeeded', open: null, logRunId: null })
+    expect(installed.scriptsBadge).toMatchObject({ state: 'succeeded', open: null, logRunId: 'r-second' })
   })
 
   it('draws an install on its own once its session is filtered away', () => {
@@ -915,23 +928,6 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
 
     for (const id of everyId(second.nodes))
       expect(find(second.nodes, id)).toBe(find(first.nodes, id))
-  })
-
-  /**
-   * Absence is not a measurement. A directory nothing has looked at yet draws nothing, exactly as a
-   * clean one does, rather than claiming there is nothing to commit.
-   */
-  it('carries the VCS only where a measurement actually said dirty', () => {
-    const snapshot = SessionsFixtures.stoppedWorktree()
-    const result = build(snapshot)
-
-    const dirty = find(result.nodes, 'session:s-dirty')
-    const clean = find(result.nodes, 'session:s-clean')
-    if (dirty.kind !== 'session' || clean.kind !== 'session')
-      throw new Error('expected two session rows')
-
-    expect(dirty.badges.vcs).toBe('git')
-    expect(clean.badges.vcs).toBeNull()
   })
 
   describe('session children', () => {
@@ -1347,7 +1343,6 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
       const result = build(snapshot, { ...all, openTaskKeys })
       const node = sessionOf(result, 'session:s-installed')
       expect(node.scriptHistoryRows.map((entry) => entry.runId)).toEqual(['recent', 'open', 'open-unknown'])
-      expect(node.scriptRuns).toHaveLength(5)
       expect(result.nextTaskExpiryAt).toBe(nowConst + 3_000)
       expect(sessionOf(build(SessionsFixtures.setupOutcomes()), 'session:s-failed-install')).toBeTruthy()
     })
@@ -1396,7 +1391,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
       expect(sessionOf(second, 'session:s-working')).toBe(sessionOf(first, 'session:s-working'))
     })
 
-    it('builds no task rows on a remote snapshot, even when a listing names its session', () => {
+    it('builds task rows from the selected source listing on a remote snapshot', () => {
       const result = buildWith(new Map([['s-working', listing([subagent('a1')])]]), null, {
         namespace: 'remote:pc',
         target: { kind: 'remote', remoteEndpointId: 'pc' },
@@ -1414,7 +1409,8 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
       walk(result.nodes)
 
       expect(tasks.length).toBeGreaterThan(0)
-      expect(tasks.every((one) => one === null)).toBe(true)
+      expect(tasks.filter((one) => one !== null)).toHaveLength(1)
+      expect(tasks.find((one) => one !== null)).toMatchObject({ rows: [{ task: { kind: 'subagent', subagentId: 'a1' } }] })
     })
   })
 })

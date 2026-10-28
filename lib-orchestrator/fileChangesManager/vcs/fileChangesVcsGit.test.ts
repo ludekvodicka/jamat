@@ -170,7 +170,6 @@ describe('lib-orchestrator/fileChangesManager/vcs/fileChangesVcsGit', () => {
     const detected = await vcs.detect(cwd)
 
     await vcs.status(detected!)
-    await vcs.dirty(detected!)
 
     for (const call of runner.calls.slice(1))
       expect(call.args.at(-1)).toBe(':(literal)app [old]')
@@ -295,33 +294,5 @@ describe('lib-orchestrator/fileChangesManager/vcs/fileChangesVcsGit', () => {
       kind: 'git-head',
       revision: 'HEAD',
     })).toEqual({ kind: 'unavailable', detail: message })
-  })
-
-  it('answers dirty from whether the cheap porcelain probe printed anything', async () => {
-    const { root, cwd } = repository()
-    const runner = new Runner((args) => args[0] === 'rev-parse'
-      ? ok(`${root}\n`)
-      : ok(' M nested/changed.ts\0'))
-    const vcs = new FileChangesVcsGit(runner)
-    const detected = await vcs.detect(cwd)
-
-    expect(await vcs.dirty(detected!)).toEqual({ ok: true, value: true })
-    // The probe must not pay for the walk `status()` does: untracked files are counted, but only
-    // one entry per untracked directory.
-    expect(runner.calls[1].args).toContain('--untracked-files=normal')
-    expect(runner.calls[1].args).not.toContain('--untracked-files=all')
-  })
-
-  it('answers clean on empty output and reports a failed probe rather than guessing', async () => {
-    const { root, cwd } = repository()
-    const clean = new Runner((args) => args[0] === 'rev-parse' ? ok(`${root}\n`) : ok(''))
-    const vcs = new FileChangesVcsGit(clean)
-    const detected = await vcs.detect(cwd)
-    expect(await vcs.dirty(detected!)).toEqual({ ok: true, value: false })
-
-    const broken = new FileChangesVcsGit(new Runner((args) => args[0] === 'rev-parse'
-      ? ok(`${root}\n`)
-      : { code: 128, stdout: '', stderr: 'not a git repository', failure: null }))
-    expect(await broken.dirty(detected!)).toEqual({ ok: false, detail: 'not a git repository' })
   })
 })

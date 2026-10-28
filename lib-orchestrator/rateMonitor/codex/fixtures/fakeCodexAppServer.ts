@@ -164,9 +164,11 @@ export class FakeCodexAppServer {
   readonly children: FakeCodexAppServerChild[] = []
   /** Kept apart from the invocations above: nothing here is a server a test can drive. */
   readonly killers: FakeCodexSpawnCall[] = []
+  readonly killerChildren: FakeCodexAppServerChild[]
   readonly spawnImpl: typeof spawn
 
   constructor(private readonly options: FakeCodexAppServerOptions = {}) {
+    this.killerChildren = []
     this.spawnImpl = ((
       command: string,
       args: readonly string[],
@@ -174,7 +176,9 @@ export class FakeCodexAppServer {
     ) => {
       if (command === FakeCodexAppServer.killCommandConst) {
         this.killers.push({ command, args, options: spawnOptions })
-        return new FakeCodexAppServerChild(0, {})
+        const killer = new FakeCodexAppServerChild(0, {})
+        this.killerChildren.push(killer)
+        return killer
       }
       this.invocations.push({ command, args, options: spawnOptions })
       if (this.options.spawnError !== undefined) throw this.options.spawnError

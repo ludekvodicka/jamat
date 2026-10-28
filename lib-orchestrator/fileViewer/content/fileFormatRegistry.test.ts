@@ -71,6 +71,10 @@ describe('fileViewer/content/fileFormatRegistry', () => {
       .to.deep.equal({ kind: 'html' })
     expect(FileFormatRegistry.classify({ path: 'INDEX.HTM', exists: true, sample: text }))
       .to.deep.equal({ kind: 'html' })
+    expect(FileFormatRegistry.classify({ path: 'report.HTMLX', exists: true, sample: text }))
+      .to.deep.equal({ kind: 'html' })
+    expect(FileFormatRegistry.classify({ path: 'report.htmlx', exists: true, sample: nulByte }))
+      .to.deep.equal({ kind: 'hex' })
     expect(FileFormatRegistry.classify({
       path: 'report.html',
       exists: true,
@@ -145,13 +149,19 @@ describe('fileViewer/content/fileFormatRegistry', () => {
       .to.deep.equal(['rendered', 'raw', 'diff', 'hex'])
     expect(FileFormatRegistry.modes({ kind: 'html' }, true))
       .to.deep.equal(['rendered', 'raw', 'diff', 'hex'])
-    // A page is read whole to be drawn, so the same ceiling the other text kinds carry applies.
     expect(FileFormatRegistry.modes({ kind: 'html' }, false, 2 * 1024 * 1024 + 1))
+      .to.deep.equal(['rendered', 'raw', 'hex'])
+    expect(FileFormatRegistry.modes({ kind: 'html' }, true, 32 * 1024 * 1024))
+      .to.deep.equal(['rendered', 'raw', 'diff', 'hex'])
+    expect(FileFormatRegistry.modes({ kind: 'html' }, false, 32 * 1024 * 1024 + 1))
       .to.deep.equal(['hex'])
     expect(FileFormatRegistry.modes({ kind: 'text' }, false)).to.deep.equal(['raw', 'hex'])
     expect(FileFormatRegistry.modes({ kind: 'image', mimeType: 'image/png', animated: false }, true))
       .to.deep.equal(['preview', 'hex'])
     expect(FileFormatRegistry.modes({ kind: 'missing' }, false)).to.deep.equal([])
+    // A binary file opened from a change list compares its two sides by size and SHA-256 in the diff.
+    expect(FileFormatRegistry.modes({ kind: 'hex' }, true)).to.deep.equal(['hex', 'diff'])
+    expect(FileFormatRegistry.modes({ kind: 'hex' }, false)).to.deep.equal(['hex'])
     expect(FileFormatRegistry.modes(
       { kind: 'code', language: 'typescript' },
       true,

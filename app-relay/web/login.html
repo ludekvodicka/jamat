@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Přihlášení · Jamat</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100svh; display: grid; place-items: center; padding: 28px 20px; background: #10141e; color: #edf0f7; font: 15px/1.5 system-ui, sans-serif; }
+    main { width: 100%; max-width: 420px; }
+    .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 38px; font-size: 22px; font-weight: 700; letter-spacing: -.5px; }
+    .mark { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 12px; background: #92c5ff; color: #10141e; font-size: 24px; }
+    h1 { margin: 0 0 8px; font-size: 30px; letter-spacing: -.8px; line-height: 1.2; }
+    .intro { color: #a9b3c6; margin: 0 0 28px; }
+    label { display: block; margin-bottom: 7px; font-size: 14px; font-weight: 550; }
+    input { display: block; width: 100%; padding: 13px 14px; border: 1px solid #394458; border-radius: 8px; background: #191f2c; color: #edf0f7; font: inherit; margin-bottom: 20px; }
+    input:focus-visible, button:focus-visible { outline: 3px solid #92c5ff; outline-offset: 3px; }
+    button { width: 100%; border: 1px solid transparent; border-radius: 8px; padding: 13px 16px; cursor: pointer; font: inherit; font-weight: 650; }
+    .primary { background: #92c5ff; color: #10141e; }
+    .primary:hover { background: #b5d8ff; }
+    .google { background: #fff; color: #202124; border-color: #dadce0; display: flex; align-items: center; justify-content: center; gap: 12px; }
+    .google:hover { background: #edf2f7; }
+    .google:disabled { cursor: not-allowed; opacity: .5; }
+    .google span { font-size: 20px; font-weight: 700; }
+    .divider { display: flex; align-items: center; gap: 16px; margin: 24px 0; color: #8995ab; font-size: 13px; }
+    .divider::before, .divider::after { content: ''; height: 1px; background: #30394b; flex: 1; }
+    .message:empty, .notice:empty { display: none; }
+    .message { background: #3d252b; border: 1px solid #8f4e5a; border-radius: 8px; padding: 12px 14px; margin: 0 0 22px; color: #ffcbd4; }
+    .notice { color: #c5cedd; font-size: 13px; }
+    footer { color: #8995ab; margin-top: 30px; font-size: 12px; text-align: center; }
+    @media (max-width: 480px) { .brand { margin-bottom: 30px; } h1 { font-size: 27px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand"><span class="mark" aria-hidden="true">J</span>Jamat</div>
+    <h1>Přihlaste se do Jamatu</h1>
+    <p class="intro">Vaše projekty a relace na jednom místě.</p>
+    <p class="message" role="alert">{{message}}</p>
+    <form action="/auth/password" method="post">
+      <input type="hidden" name="csrf" value="{{csrf}}">
+      <label for="username">Uživatelské jméno</label>
+      <input id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="128" required>
+      <label for="password">Heslo</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" maxlength="4096" required>
+      <button class="primary" type="submit">Přihlásit se</button>
+    </form>
+    <div class="divider">nebo</div>
+    <form action="/auth/google" method="post">
+      <input type="hidden" name="csrf" value="{{csrf}}">
+      <button class="google" type="submit" {{googleDisabled}}>Přihlásit se přes Google</button>
+    </form>
+    <p class="notice">{{googleNotice}}</p>
+    <footer>Přístup mají pouze povolené účty.</footer>
+  </main>
+</body>
+</html>

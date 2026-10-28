@@ -62,6 +62,13 @@ describe('app-client-ui/renderer/overlays/launcher/flows/flowScreenModel', () =>
     expect(run.effects).toEqual([])
   })
 
+  it('carries the create card account through the flow prompt composition', () => {
+    const state = Run.filled(options(projectConst, { accountId: 'second', accounts: [
+      { agentId: 'claude', accountId: 'second', label: 'Second', isMain: false, state: 'active', identity: null, profileProblem: null },
+    ] })).state
+    expect(FlowScreenModel.specOf(state, null).agent?.accountId).toBe('second')
+  })
+
   /** The same invariant the two screens beside it keep: Enter reports rather than refusing. */
   it('reports the problem instead of submitting an unfinished form', () => {
     const run = Run.opened().on({ input: 'activate' })
@@ -158,11 +165,11 @@ describe('app-client-ui/renderer/overlays/launcher/flows/flowScreenModel', () =>
    * session will run; the create screen's own rules still decide, and an ad-hoc directory may carry
    * one (the library's owner rule answers for it).
    */
-  it('drops the suggested worktree where the card cannot carry one, and keeps it for an ad-hoc directory', () => {
+  it('keeps suggested isolation for local ad-hoc and remote source directories', () => {
     const adHoc = options({ mode: 'adHoc', path: 'D:\\work' }, { token: null })
     expect(FlowScreenModel.specOf(Run.filled(adHoc).state, null).worktree).toEqual({ slug: 'Merge a worktree back' })
     const remote = options(undefined, { target: { kind: 'remote', remoteEndpointId: 'endpoint-a', displayName: 'Other' } })
-    expect(FlowScreenModel.specOf(Run.filled(remote).state, null).worktree).toBeUndefined()
+    expect(FlowScreenModel.specOf(Run.filled(remote).state, null).worktree).toEqual({ slug: 'Merge a worktree back' })
   })
 
   it('keeps a worktree the person had already chosen', () => {

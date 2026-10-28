@@ -1,3 +1,6 @@
+import type { RemoteSessionTasksStore } from '../../sessions/remoteSessionTasksStore'
+import type { RemoteTaskListing } from '../../../../lib-orchestrator/remoteControl/remoteTaskApi.types'
+import type { TabControlTaskRef } from '../../../shared/tabControl'
 import {
   memo,
   useCallback,
@@ -12,6 +15,7 @@ import {
 
 import type {
   OrphanInfo,
+  SessionInfo,
   SessionOutcome,
   SessionSetupAgreement,
   SessionsOpResult,
@@ -46,11 +50,12 @@ import type {
   ConfigurationTabId,
 } from '../../overlays/configuration/configurationTab.types'
 import { type FinalizeAsk, FinalizeAsks } from '../../overlays/finalize/finalizeModel'
-import { type UpdateMainAsk, UpdateMainAsks } from '../../overlays/updateMain/updateMainOverlay'
 import { WorkflowPortsOf } from '../../workflow/workflowPorts'
 import type { LauncherIntent } from '../../overlays/launcher/launcherIntentStore'
 import type { ActiveTerminalStore } from '../../shell/activeTerminalStore'
 import { AgentGlyph } from '../../sessions/agentGlyph'
+import { SessionDrag } from '../../sessions/sessionDrag'
+import type { SessionFinishRequests } from '../../sessions/sessionFinishRequests'
 import type { SessionsMarksStore } from '../../sessions/sessionsMarksStore'
 import type { SessionTasksStore } from '../../sessions/sessionTasksStore'
 import type { ContextMenuSubmenu, ContextMenuEntry, ContextMenuPosition } from '../../widgets/contextMenu'
@@ -70,6 +75,7 @@ import { SessionRowTooltip, useSessionRowTooltip } from './sessionRowTooltip'
 import { SessionStepRow } from './sessionStepRow'
 import { SessionTaskRows } from './sessionTaskRows'
 import { SessionsTreeActionButton } from './sessionsTreeActionButton'
+import { SessionsTreeGroupLabel } from './sessionsTreeGroupLabel'
 import {
   type SessionAction,
   type SessionGlyph,
@@ -80,7 +86,9 @@ import {
   type SessionLaunchBadge,
 } from './sessionNodeState'
 import './sessionsTree.css'
-import { SessionsTreeContextMenu, SessionsTreeScriptsMenu } from './sessionsTreeContextMenu'
+import { SessionsTreeContextMenu, SessionsTreeMenuItems } from './sessionsTreeContextMenu'
+import { SwitchAccountDialog } from './switchAccountDialog'
+import type { AccountView } from '../../../../lib-orchestrator/agentAccounts/agentAccountsApi.types'
 import {
   type GroupRowFacts,
   SessionsTreeGroupItems,
@@ -100,7 +108,7 @@ import {
 } from './sessionsTreeModel'
 import { useSessionsSnapshot, useSnapshotStore } from './useSessionsSnapshot'
 import { useSessionStateFlash } from './useSessionStateFlash'
-import { type CommitOpenStore, useCommitOpen } from '../../versioning/commitOpenStore'
+import { CommitOpenStore, useCommitOpen } from '../../versioning/commitOpenStore'
 import { SessionsFilterMenu } from './sessionsFilterMenu'
 import { SessionsSavedFilters } from './sessionsSavedFilters'
 import { useSavedSessionsFilters, type SavedSessionsFiltersPorts } from './useSavedSessionsFilters'
@@ -152,7 +160,7 @@ export interface SessionsTreeViewProps extends SidebarViewProps {
    * What the clicked row's session is, for that row's menu - the same accessor the tabs host
    * reads, asked when the menu opens and never subscribed to: a menu lives for a moment.
    */
-  sessionFacts(sessionId: string): TabSessionFacts | null
+  sessionFacts(sessionId: string, remoteEndpointId?: string): TabSessionFacts | null
   /**
    * What each session is marked as, computed once per window rather than here. The tree stopped
    * owning it the day a tab had to draw the same fact with the sidebar closed.
@@ -161,6 +169,8 @@ export interface SessionsTreeViewProps extends SidebarViewProps {
   commitOpen: CommitOpenStore
   /** The shell owns polling; the tree reports the local sessions it draws. */
   tasks: SessionTasksStore
+  remoteTasks?: Pick<RemoteSessionTasksStore, 'current' | 'subscribe' | 'setDrawn'>
+  onOpenTask(target: TerminalTarget, task: TabControlTaskRef, title: string): void
   openTasks: {
     read(): ReadonlySet<string>
     subscribe(listener: () => void): () => void
@@ -170,9 +180,8 @@ export interface SessionsTreeViewProps extends SidebarViewProps {
   /** Writes the intent and opens the launcher; what the launcher then does is its own business. */
   onLaunch(intent: LauncherIntent): void
   /** A row is how a session already running is looked at; the tab is the only place it is visible. */
+  onOpenSessionActions?(target: TerminalTarget, title: string): void
   onOpenTerminal(target: TerminalTarget, tabTitle: string, intent: SessionOpenIntent): void
-  /** The saved log of a finished run of this computer's own session, in FileViewer; main proves it. */
-  onOpenScriptLog(parentId: string, runId: string): void
   /**
    * And the way back out: a stop that the library accepted leaves nothing to look at, so whatever
    * was drawing that session goes with it. Called on the stop alone - a session that ends by itself
@@ -187,8 +196,9 @@ export interface SessionsTreeViewProps extends SidebarViewProps {
   onRerunTerminal(target: TerminalTarget): void
   /** Opens the finalize dialog with questions captured from the snapshot at click time. */
   onFinalizeAsk(ask: FinalizeAsk): void
+  /** A tab's Finish, run here as the row's own Finish so the two never differ. */
+  finishRequests?: SessionFinishRequests
   /** Opens the confirmation an UPDATE needs while live sessions work in its main copy. */
-  onUpdateMainAsk(ask: UpdateMainAsk): void
   /**
    * Opens the settings card on one of its screens. A prop rather than a command, for the same reason
    * `onLaunch` beside it is one: the tab a row asks for is a renderer type, and the command catalog
@@ -261,6 +271,7 @@ type TreeMenuState =
     }
   | {
       kind: 'remote-session'
+      facts: TabSessionFacts | null
       position: ContextMenuPosition
       node: SessionTreeNode
     }
@@ -301,9 +312,11 @@ interface SessionsTreeChrome {
   toggle(nodeId: string): void
   request(node: SessionTreeNode, action: SessionAction): void
   launch(intent: LauncherIntent): void
+  openTask(target: TerminalTarget, task: TabControlTaskRef, title: string): void
+  openActions(node: SessionTreeNode): void
+  supportsActions(target: TerminalTarget): boolean
   openTerminal(target: TerminalTarget, tabTitle: string, intent: SessionOpenIntent): void
-  openScriptLog(parentId: string, runId: string): void
-  scriptParentOf(runId: string): { sessionId: string; waiting: boolean } | null
+  scriptParentOf(target: TerminalTarget): { sessionId: string; waiting: boolean } | null
   openMenu(node: SessionTreeNode, position: ContextMenuPosition): void
   openGroupMenu(facts: GroupRowFacts, position: ContextMenuPosition): void
   openRemoteMenu: RemoteRowMenu
@@ -319,6 +332,8 @@ interface SessionsTreeChrome {
  * opinion about: what is collapsed, what is typed into the filter, which destructive action is
  * waiting for its second click, and which failures are worth a line of text.
  */
+const emptyRemoteTasks: ReadonlyMap<string, RemoteTaskListing> = new Map()
+
 export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Element {
   const {
     ports,
@@ -329,7 +344,6 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     onOpenSettings,
     sessionFacts,
     onFinalizeAsk,
-    onUpdateMainAsk,
   } = props
   const { snapshot, error, refresh } = useSessionsSnapshot(snapshotStore)
   const {
@@ -343,12 +357,16 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     useCallback(() => props.marks.current(), [props.marks]),
   )
   const marks = marksView.marks
-  const commitOpen = useCommitOpen(props.commitOpen)
+  const localCommitOpen = useCommitOpen(props.commitOpen)
+  const commitOpen = useMemo(() => CommitOpenStore.withRemote(localCommitOpen, remoteSnapshot), [localCommitOpen, remoteSnapshot])
   const taskListings = useSyncExternalStore(
     useCallback((listener) => props.tasks.subscribe(listener), [props.tasks]),
     useCallback(() => props.tasks.current(), [props.tasks]),
     useCallback(() => props.tasks.current(), [props.tasks]),
   )
+  const remoteTaskListings = useSyncExternalStore(useCallback((changed) => props.remoteTasks?.subscribe(changed) ?? (() => {}), [props.remoteTasks]),
+    useCallback(() => props.remoteTasks?.current() ?? emptyRemoteTasks, [props.remoteTasks]))
+  useEffect(() => () => props.remoteTasks?.setDrawn([]), [props.remoteTasks])
   useEffect(() => () => props.tasks.setDrawn(new Set()), [props.tasks])
   const [openTaskKeys, setOpenTaskKeys] = useState(() => props.openTasks.read())
   useEffect(() => {
@@ -392,6 +410,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
   const questionReveal = useRef(new SessionsQuestionReveal())
   const [pending, setPending] = useState<PendingConfirm | null>(null)
   const [menu, setMenu] = useState<TreeMenuState | null>(null)
+  const [switchAccount, setSwitchAccount] = useState<{ sessionId: string; accounts: readonly AccountView[] } | null>(null)
   const [orphansOpen, setOrphansOpen] = useState(false)
   /**
    * The failure of ONE operation, named by the `sessionId:action` it belongs to. Keyed rather than
@@ -443,8 +462,8 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       : RemoteSessionsTreeModel.build(
           remoteSnapshot, snapshot,
           { filters, filterText, now, inFront: visibleTargetKeys, tabbed: tabbedTargetKeys, stateGroup,
-            assignments, group, nesting },
-          marks, cursors.current.remoteOf(cursorOf(stateGroup, group)),
+            assignments, group, nesting, openTaskKeys },
+          marks, cursors.current.remoteOf(cursorOf(stateGroup, group)), remoteTaskListings,
         )
     /*
      * A section nothing is assigned to is not built. Every revision used to build all four of them
@@ -466,11 +485,11 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       })) }
     else
       throw new Error(`Unknown sessions view: ${JSON.stringify(view)}`)
-  }, [snapshot, remoteSnapshot, filters, filterText, marks, view, visibleTargetKeys, tabbedTargetKeys, commitOpen, assignments, sections, taskListings, nesting, openTaskKeys, expiryRevision])
+  }, [snapshot, remoteSnapshot, filters, filterText, marks, view, visibleTargetKeys, tabbedTargetKeys, commitOpen, assignments, sections, taskListings, remoteTaskListings, nesting, openTaskKeys, expiryRevision])
 
   useEffect(() => {
     if (trees === null) return
-    const expiries = SessionsTreeChoices.localTreesOf(trees).flatMap((tree) =>
+    const expiries = SessionsTreeChoices.allTreesOf(trees).flatMap((tree) =>
       tree.nextTaskExpiryAt === null ? [] : [tree.nextTaskExpiryAt])
     if (expiries.length === 0) return
     const timer = setTimeout(expireTasks, Math.max(0, Math.min(...expiries) - Date.now()))
@@ -486,6 +505,21 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     [trees, collapsed],
   )
   useEffect(() => props.tasks.setDrawn(drawnSessionIds), [props.tasks, drawnSessionIds])
+  const drawnRemoteTargets = useMemo(() => {
+    const targets = new Map<string, Extract<TerminalTarget, { kind: 'remote' }>>()
+    if (!trees) return []
+    const visit = (nodes: readonly TreeNode[]): void => {
+      for (const node of nodes) {
+        if (node.kind === 'session' && node.target.kind === 'remote') targets.set(TerminalTargetCodec.key(node.target), node.target)
+        if (!collapsed.has(node.id)) visit(node.children)
+      }
+    }
+    for (const tree of SessionsTreeChoices.revealTreesOf(trees))
+      if (tree.above.every((id) => !collapsed.has(id))) visit(tree.nodes)
+    return [...targets.values()]
+  }, [trees, collapsed])
+  useEffect(() => props.remoteTasks?.setDrawn(drawnRemoteTargets), [props.remoteTasks, drawnRemoteTargets])
+
 
   /*
    * The cursor moves AFTER the commit, never during the render that produced the tree. React may run
@@ -599,11 +633,12 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       : next)), [ports])
 
   // `onDone` runs only when the library accepted: a stop that was refused leaves a session running,
-  // and closing what shows it would hide the one thing still worth looking at.
+  // and closing what shows it would hide the one thing still worth looking at. A call that answers
+  // null handed its refusal to a question the person now sees, so it leaves no line either.
   const run = useCallback((
     key: string,
     label: string,
-    call: () => Promise<IpcResult<SessionsOpResult | RemoteControlResponse>>,
+    call: () => Promise<IpcResult<SessionsOpResult | RemoteControlResponse> | null>,
     onDone?: () => void,
   ) => {
     // Written before the call goes out, so the button is dead by the time a second click could land.
@@ -623,6 +658,10 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     }
     void call()
       .then((answer) => {
+        if (answer === null) {
+          settle(null)
+          return
+        }
         const failure = SessionsTreeOperation.failureOf(answer, label)
         settle(failure)
         if (failure === null)
@@ -673,10 +712,9 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
   }, [ports])
 
   /**
-   * UPDATE asks nothing on its first press; live sessions in the main copy turn the refusal into the
-   * confirmation overlay, which asks again naming them.
+   * UPDATE opens its waiting step; the step names the live sessions the person confirms.
    */
-  const updateMain = useCallback((key: string, sessionId: string, sessionTitle: string) => {
+  const updateMain = useCallback((key: string, sessionId: string) => {
     setInFlight((current) => new Set(current).add(key))
     const settle = (failure: string | null): void => {
       setInFlight((current) => {
@@ -691,15 +729,13 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     }
     void ports.updateMain(sessionId)
       .then((answer) => {
-        const live = UpdateMainAsks.liveOf(answer)
-        settle(live === null ? IpcFailure.of(answer, 'Update main copy') : null)
-        if (live !== null) onUpdateMainAsk({ sessionId, sessionTitle, live })
-        else if (answer.ok && answer.value.ok) WorkflowPortsOf.openWorkflow(answer.value.value.sessionId)
+        settle(IpcFailure.of(answer, 'Update main copy'))
+        if (answer.ok && answer.value.ok) WorkflowPortsOf.openWorkflow(answer.value.value.sessionId)
       })
       .catch((thrown: unknown) => settle(`Update main copy failed: ${ErrorText.of(thrown)}`))
-  }, [ports, onUpdateMainAsk])
+  }, [ports])
 
-  const { onCloseTerminal, onOpenTerminal, onOpenScriptLog, onRerunTerminal } = props
+  const { onCloseTerminal, onOpenTerminal, onRerunTerminal } = props
   // The Finish dialog names the section a row is drawn in. Assignments are pruned to the sections
   // they were read with, so an id missing here is a section removed since, shown by its id.
   const sectionLabelOf = useCallback((group: SessionGroup): string => {
@@ -744,7 +780,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       else if (action === 'retrySetup')
         retrySetup(key, sessionId)
       else if (action === 'updateMain')
-        updateMain(key, sessionId, node.title)
+        updateMain(key, sessionId)
       else
         throw new Error(`Unknown local session action: ${JSON.stringify(action)}`)
     } else if (node.operationScope === 'remote') {
@@ -795,6 +831,36 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
           WorkflowPortsOf.openWorkflow(node.target.sessionId)
           return
         }
+        if (node.target.kind === 'local' && found.info.worktree !== undefined) {
+          const sessionId = node.target.sessionId
+          setPending(null)
+          const asked = SessionsTreeOperation.preparesOf(found.info.worktree) ? null
+            : FinalizeAsks.of(found.info, node.target, found.scope, sectionLabelOf(node.group))
+          if (asked !== null) {
+            onOpenTerminal(node.target, found.info.tabTitle, 'preview')
+            onFinalizeAsk(asked)
+            return
+          }
+          run(SessionsTreeActions.keyOf(targetKey, action), 'Finish', async () => {
+            const answer = await AppControl.sessionsDone('sessions.finishWorktree', {
+              session: AppControl.sessionOf(sessionId), choice: 'commit',
+            })
+            if (answer.ok && !answer.value.ok && answer.value.code === 'never-started') {
+              const latest = currentSnapshots.current
+              const current = FinalizeAwait.findOf(node.target, latest.snapshot, latest.remoteSnapshot)
+              if (current.state === 'found') {
+                const ask = FinalizeAsks.of(current.info, node.target, current.scope, sectionLabelOf(node.group))
+                if (ask !== null) {
+                  onOpenTerminal(node.target, current.info.tabTitle, 'preview')
+                  onFinalizeAsk(ask)
+                  return null
+                }
+              }
+            }
+            return answer
+          }, () => WorkflowPortsOf.openWorkflow(sessionId))
+          return
+        }
         const live = SessionNodeState.isLive(found.info.life)
         if (live && !found.info.admits.includes('finalize')) return
         currentNode = {
@@ -840,6 +906,14 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     })
   }, [pending, perform, onOpenTerminal, inFlight, awaitingAsk, onFinalizeAsk, sectionLabelOf])
 
+  const { finishRequests } = props
+  useEffect(() => finishRequests?.subscribe((sessionId) => {
+    const node = trees === null ? null : SessionsTreeChoices.sessionNodeOf(trees, TerminalTargetCodec.key({ kind: 'local', sessionId }))
+    if (node === null) return false
+    request(node, 'finalize')
+    return true
+  }), [finishRequests, trees, request])
+
   const toggle = useCallback((nodeId: string) => {
     setCollapsed((current) => SessionsTreeChoices.toggled(current, nodeId))
   }, [])
@@ -852,7 +926,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
   ) => {
     if (!node.interactive) return
     if (node.operationScope === 'remote')
-      setMenu({ kind: 'remote-session', position, node })
+      setMenu({ kind: 'remote-session', position, node, facts: sessionFacts(node.sessionId, TerminalTargetCodec.endpointOf(node.target) ?? undefined) })
     else if (node.operationScope === 'local') {
       const facts = sessionFacts(node.sessionId)
       if (facts !== null)
@@ -913,10 +987,26 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     toggle,
     request,
     launch: onLaunch,
+    openTask: props.onOpenTask,
+    openActions: (node) => {
+      if (props.onOpenSessionActions) props.onOpenSessionActions(node.target, node.tabTitle)
+      else onOpenTerminal(node.target, node.tabTitle, 'permanent')
+    },
+    supportsActions: (target) => {
+      if (target.kind === 'local') return true
+      else if (target.kind === 'remote') return remoteSnapshot?.outbound.find((entry) => entry.remoteEndpointId === target.remoteEndpointId)
+        ?.workspaceCapabilities?.includes('session-workspace.actions') === true
+      else throw new Error(`Unknown session target: ${JSON.stringify(target)}`)
+    },
     openTerminal: onOpenTerminal,
-    openScriptLog: onOpenScriptLog,
-    scriptParentOf: (runId) => {
-      const sessions = currentSnapshots.current.snapshot?.sessions ?? []
+    scriptParentOf: (target) => {
+      const runId = target.sessionId
+      let sessions: readonly SessionInfo[]
+      switch (target.kind) {
+        case 'local': sessions = currentSnapshots.current.snapshot?.sessions ?? []; break
+        case 'remote': sessions = currentSnapshots.current.remoteSnapshot?.outbound.find((entry) => entry.remoteEndpointId === target.remoteEndpointId)?.sessions?.sessions ?? []; break
+        default: throw new Error(`Unknown session target: ${JSON.stringify(target satisfies never)}`)
+      }
       const run = sessions.find((session) => session.sessionId === runId)
       const parent = sessions.find((session) => session.sessionId === run?.script?.parentId
         || session.scripts?.runs.some((candidate) => candidate.runId === runId))
@@ -936,7 +1026,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     },
   }), [
     pending, collapsed, activeTargetKey, inFlight, awaitingAsk,
-    toggle, request, onLaunch, onOpenTerminal, onOpenScriptLog, openMenu, openGroupMenu, openRemoteMenu,
+    toggle, request, onLaunch, onOpenTerminal, props.onOpenTask, props.onOpenSessionActions, openMenu, openGroupMenu, openRemoteMenu,
     onOpenSettings, remotePorts, remoteSnapshot, onCloseTerminal,
     groupState.ready, groupState.saving, groupState.assign, sections,
   ])
@@ -1124,9 +1214,11 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
           menu={shownMenu}
           commands={props.commands}
           chrome={chrome}
+          onSwitchAccount={(sessionId, accounts) => setSwitchAccount({ sessionId, accounts })}
           onClose={() => setMenu(null)}
         />
       )}
+      {switchAccount !== null && <SwitchAccountDialog key={switchAccount.sessionId} {...switchAccount} onClose={() => setSwitchAccount(null)} />}
     </section>
   )
 }
@@ -1136,6 +1228,7 @@ function TreeMenu(props: {
   menu: TreeMenuState
   commands: CommandRegistry
   chrome: SessionsTreeChrome
+  onSwitchAccount(sessionId: string, accounts: readonly AccountView[]): void
   onClose(): void
 }): React.JSX.Element {
   const { menu, commands, onClose } = props
@@ -1147,19 +1240,12 @@ function TreeMenu(props: {
         sessionId={menu.node.sessionId}
         facts={menu.facts}
         actions={menu.node.actions}
-        scripts={SessionsTreeScriptsMenu.itemOf(
-          menu.node.scriptRuns,
-          'local',
-          ScriptRunOpens.opener(props.chrome),
-          (runId) => props.chrome.openScriptLog(menu.node.sessionId, runId),
-        )}
         // A nested row is filed in its parent's group, so a group of its own would change nothing on screen.
         groupItem={menu.node.filedWithParent
           ? undefined
           : props.chrome.groupItem(SessionsTreeModel.groupKeyOf(menu.node), menu.node.group)}
-        onShowWorkflow={menu.node.workflow && menu.node.target.kind === 'local'
-          ? () => WorkflowPortsOf.openWorkflow(menu.node.sessionId) : undefined}
         onAction={(action) => props.chrome.request(menu.node, action)}
+        onSwitchAccount={accounts => props.onSwitchAccount(menu.node.sessionId, accounts)}
         onClose={onClose}
       />
     )
@@ -1179,7 +1265,7 @@ function TreeMenu(props: {
         position={menu.position}
         ariaLabel="Remote session actions"
         className="jamat-tab-menu"
-        items={RemoteSessionMenu.items(menu.node, props.chrome, commands)}
+        items={RemoteSessionMenu.items(menu.node, props.chrome, commands, menu.facts)}
         onClose={onClose}
       />
     )
@@ -1525,7 +1611,7 @@ function GroupRow(props: {
       >
         <TreeTwisty open={open} label={node.label} onToggle={() => chrome.toggle(node.id)} />
         <span className="jamat-sessions__group" title={props.title}>
-          <span className="jamat-sessions__label">{node.label}</span>
+          <SessionsTreeGroupLabel node={node} />
         </span>
         {launch !== null && (
           <span className="jamat-sessions__group-actions">
@@ -1633,6 +1719,11 @@ function SessionRow(props: {
           event.preventDefault()
           chrome.openMenu(node, { x: event.clientX, y: event.clientY })
         }}
+        draggable
+        onDragStart={(event) => {
+          SessionDrag.write(event.dataTransfer, node.target)
+          event.dataTransfer.effectAllowed = 'copy'
+        }}
       >
         {/* The one-shot tint that says this row's state moved. An element of its own rather than a
             class on the row, because the key is what restarts it, and it lies UNDER the text and
@@ -1654,6 +1745,8 @@ function SessionRow(props: {
         <button
           type="button"
           className="jamat-sessions__title"
+          // Bright only where the session wants a person: a question waiting, or a result not yet seen.
+          data-attention={node.glyph === 'waiting' || marked}
           disabled={!node.interactive}
           {...tooltip.anchorProps}
           onClick={() => ScriptRunOpens.openRow(node, chrome, 'preview')}
@@ -1680,9 +1773,14 @@ function SessionRow(props: {
             endedReason={node.endedReason}
           />
         )}
-        {node.scriptsBadge !== null && (
+        {node.actionsMark !== undefined && <span className={`jamat-sessions__finish${node.actionsMark.waiting ? '' : ' jamat-sessions__finish--running'}`}
+          title={node.actionsMark.title} {...WorkflowMarks.propsOf(node.target.kind === 'local' && !node.actionsMark.waiting
+            ? () => WorkflowPortsOf.openWorkflow(node.sessionId) : null)}>
+          {node.actionsMark.text}</span>}
+        {node.scriptsBadge !== null && node.actionsMark === undefined && (
           <ScriptsBadge
             parentId={node.sessionId}
+            target={node.target}
             badge={node.scriptsBadge}
             interactive={node.interactive}
             chrome={chrome}
@@ -1697,7 +1795,7 @@ function SessionRow(props: {
             {SessionsTreeGlyphs.launchTextOf(node.launch)}
           </span>
         )}
-        {node.merge !== null && (
+        {node.merge !== null && node.actionsMark === undefined && (
           <span
             className={`jamat-sessions__merge jamat-sessions__merge--${node.merge}`}
             data-merge={node.merge}
@@ -1707,12 +1805,15 @@ function SessionRow(props: {
             {SessionsTreeGlyphs.mergeTextOf(node.merge)}
           </span>
         )}
-        {node.badges.worktree !== null && <WorktreeFinishMark worktree={node.badges.worktree}
+        {node.badges.worktree !== null && node.actionsMark === undefined && <WorktreeFinishMark worktree={node.badges.worktree}
           onOpen={node.target.kind === 'local' ? () => WorkflowPortsOf.openWorkflow(node.sessionId) : null} />}
         {node.badges.worktree !== null && <WorktreeCleanupMark worktree={node.badges.worktree} />}
-        {node.badges.mainUpdate !== null && <MainUpdateMark update={node.badges.mainUpdate} />}
-        {node.badges.landing !== null && node.badges.mainUpdate === null && <LandingMark landing={node.badges.landing} />}
+        {node.badges.mainUpdate !== null && node.actionsMark === undefined && <MainUpdateMark update={node.badges.mainUpdate} />}
+        {node.badges.landing !== null && node.badges.mainUpdate === null && node.actionsMark === undefined && <LandingMark landing={node.badges.landing}
+          onOpen={node.target.kind === 'local' ? () => chrome.request(node, 'updateMain') : null} />}
         <span className="jamat-sessions__actions">
+          {SessionsTreeActions.opensActions(node) && <SessionsTreeActionButton label="Open actions" title={node.actionsMark?.title}
+            onClick={() => WorkflowPortsOf.openWorkflow(node.sessionId)} />}
           {inlineActions.map((action) => (
             <ActionButton
               key={action}
@@ -1730,11 +1831,12 @@ function SessionRow(props: {
           {nestedTasks !== null && (
             <SessionTaskRows
               tasks={nestedTasks}
+              onOpen={(row, title) => chrome.openTask(node.target, row.task, title)}
             />
           )}
           {node.children.map((child) => <TreeRow key={child.id} node={child} chrome={chrome} />)}
           {finishedRuns.map((run) => (
-            <ScriptRunRow key={run.runId} parentId={node.sessionId} run={run} interactive={node.interactive} />
+            <ScriptRunRow key={run.runId} parentId={node.sessionId} run={run} interactive={node.interactive} onOpen={() => chrome.openTask(node.target, { kind: 'script', runId: run.runId }, run.title)} />
           ))}
         </div>
       )}
@@ -1743,6 +1845,7 @@ function SessionRow(props: {
       {besideTasks !== null && (
         <SessionTaskRows
           tasks={besideTasks}
+          onOpen={(row, title) => chrome.openTask(node.target, row.task, title)}
         />
       )}
     </div>
@@ -1755,9 +1858,10 @@ function SessionRow(props: {
 function ScriptRunRow(props: {
   parentId: string
   run: ScriptRunNode
+  onOpen(): void
   interactive: boolean
 }): React.JSX.Element {
-  const { parentId, run } = props
+  const { run } = props
   const opens = props.interactive
   const paint = SessionNodeState.runPaintOf(run.state)
   return (
@@ -1768,7 +1872,7 @@ function ScriptRunRow(props: {
         title={run.logDetail ?? run.summary}
         onClick={(event) => {
           if (opens && event.target instanceof Element && !event.target.closest('button'))
-            ScriptRunOpens.openTask(parentId, run.runId, run.title)
+            props.onOpen()
         }}
       >
         <span className={`jamat-sessions__glyph jamat-sessions__glyph--paint-${paint}`} data-paint={paint} aria-hidden="true">
@@ -1778,7 +1882,7 @@ function ScriptRunRow(props: {
           type="button"
           className="jamat-sessions__title"
           disabled={!opens}
-          onClick={() => ScriptRunOpens.openTask(parentId, run.runId, run.title)}
+          onClick={() => props.onOpen()}
         >
           {run.summary}
         </button>
@@ -1793,6 +1897,7 @@ function ScriptRunRow(props: {
  */
 function ScriptsBadge(props: {
   parentId: string
+  target: TerminalTarget
   badge: ScriptsBadgeNode
   interactive: boolean
   chrome: SessionsTreeChrome
@@ -1808,7 +1913,7 @@ function ScriptsBadge(props: {
         className={className}
         data-script-badge={badge.state}
         title={badge.title}
-        onClick={() => ScriptRunOpens.openTask(props.parentId, logRunId, badge.text)}
+        onClick={() => chrome.openTask(props.target, { kind: 'script', runId: logRunId }, badge.text)}
       >
         {badge.text}
       </button>
@@ -1839,11 +1944,17 @@ function Badges(props: { badges: SessionBadges }): React.JSX.Element {
         </span>
       )}
       {badges.worktree !== null && <WorktreeMark worktree={badges.worktree} />}
-      {(badges.vcs !== null || badges.commitOpen) && (
+      {badges.accountExhausted && <span className="jamat-sessions__pill" data-account-exhausted>Account exhausted</span>}
+      {badges.accountLabel !== undefined && (
+        <span className="jamat-sessions__pill" data-account-badge title={`Account: ${badges.accountLabel}`}>
+          {badges.accountLabel}
+        </span>
+      )}
+      {badges.commitOpen && (
         <span
-          className={`jamat-sessions__vcs${badges.commitOpen ? ' is-commit-open' : ''}`}
-          title={badges.commitOpen ? 'Commit dialog open' : `Uncommitted changes (${badges.vcs})`}
-          aria-label={badges.commitOpen ? 'Commit dialog open' : `Uncommitted changes (${badges.vcs})`}
+          className="jamat-sessions__vcs is-commit-open"
+          title="Commit review pending"
+          aria-label="Commit review pending"
         >
           *
         </span>
@@ -1937,10 +2048,7 @@ function ExitPill(props: {
     throw new Error(`Unknown session outcome: ${JSON.stringify(outcome)}`)
 }
 
-/**
- * Drawn for every worktree session of either kind, so a row says where it runs. The line counts
- * against the base stay in the title only.
- */
+/** Drawn for every worktree session of either kind, so a row says where it runs. */
 function WorktreeMark(props: { worktree: WorktreeBadge }): React.JSX.Element {
   const { worktree } = props
   const title = SessionsTreeGlyphs.worktreeTitleOf(worktree)
@@ -1952,15 +2060,6 @@ function WorktreeMark(props: { worktree: WorktreeBadge }): React.JSX.Element {
       aria-label={title}
     >
       <span className="jamat-sessions__worktree-mark">WT</span>
-      {worktree.baseMoved && (
-        <span
-          className="jamat-sessions__base"
-          title="The branch this worktree was cut from has moved on"
-          aria-label="The branch this worktree was cut from has moved on"
-        >
-          BASE
-        </span>
-      )}
     </span>
   )
 }
@@ -1982,10 +2081,10 @@ function WorktreeCleanupMark(props: { worktree: WorktreeBadge }): React.JSX.Elem
 }
 
 /** A landed row: how far its main copy is behind HEAD; the title says what it lacks and what brings it in. */
-function LandingMark(props: { landing: SessionLandingBadge }): React.JSX.Element {
+function LandingMark(props: { landing: SessionLandingBadge; onOpen: (() => void) | null }): React.JSX.Element {
   const { landing } = props
   return (
-    <span className="jamat-sessions__landing" data-landing="true" title={landing.title} aria-label={landing.title}>
+    <span className="jamat-sessions__landing" data-landing="true" title={landing.title} aria-label={landing.title} {...WorkflowMarks.propsOf(props.onOpen)}>
       {landing.text}
     </span>
   )
@@ -2016,7 +2115,7 @@ function WorktreeFinishMark(props: { worktree: WorktreeBadge; onOpen: (() => voi
   if (needs !== null)
     return (
       <span
-        className="jamat-sessions__finish jamat-sessions__finish--needs"
+        className={`jamat-sessions__finish jamat-sessions__finish--${needs.tone === 'error' ? 'failed' : 'needs'}`}
         data-finish-needs="true"
         title={needs.title}
         aria-label={needs.title}
@@ -2164,12 +2263,12 @@ class SessionsTreeChoices {
     if (menu.kind === 'session' || menu.kind === 'remote-session') {
       const node = SessionsTreeChoices.sessionNodeOf(trees, TerminalTargetCodec.key(menu.node.target))
       if (node === null) return null
-      return node.scriptRuns === menu.node.scriptRuns ? menu : { ...menu, node: { ...menu.node, scriptRuns: node.scriptRuns } }
+      return menu
     } else if (menu.kind === 'group' || menu.kind === 'remote-computer') return menu
     else throw new Error(`Unknown tree menu: ${JSON.stringify(menu)}`)
   }
 
-  private static sessionNodeOf(trees: SessionsTrees, targetKey: string): SessionTreeNode | null {
+  static sessionNodeOf(trees: SessionsTrees, targetKey: string): SessionTreeNode | null {
     const find = (nodes: readonly TreeNode[]): SessionTreeNode | null => {
       for (const node of nodes) {
         if (node.kind === 'session' && TerminalTargetCodec.key(node.target) === targetKey) return node
@@ -2189,13 +2288,22 @@ class SessionsTreeChoices {
    * Every tree on screen, each with the groups standing above it. Which trees exist is the view's
    * choice, and the remote sections hang two group rows deeper than the local ones.
    */
-  /** Every local tree on screen; the remote ones carry no task rows. */
+  /** Every local tree on screen, polled through local task readers. */
   static localTreesOf(trees: SessionsTrees): TreeResult[] {
     const assigned = trees.assigned.map((group) => group.tree)
     if (trees.view === 'together') return [...assigned, trees.both]
     else if (trees.view === 'states') return [...assigned, ...trees.groups.map((group) => group.tree)]
     else
       throw new Error(`Unknown sessions view: ${JSON.stringify(trees)}`)
+  }
+
+  static allTreesOf(trees: SessionsTrees): TreeResult[] {
+    const sections = trees.assigned.map((group) => group.remote)
+    if (trees.view === 'together') sections.push(trees.remote)
+    else if (trees.view === 'states') sections.push(...trees.groups.map((group) => group.remote))
+    else throw new Error(`Unknown sessions view: ${JSON.stringify(trees)}`)
+    return [...SessionsTreeChoices.localTreesOf(trees), ...sections.flatMap((section) => section === null ? []
+      : [...section.outbound, ...section.inbound].flatMap((computer) => computer.endpoints.map((endpoint) => endpoint.tree)))]
   }
 
   static revealTreesOf(trees: SessionsTrees): QuestionRevealTree[] {
@@ -2252,6 +2360,8 @@ class SessionsTreeActions {
   ): readonly SessionAction[] {
     const targetKey = TerminalTargetCodec.key(node.target)
     if (pending?.targetKey === targetKey && pending.action === 'remove') return ['remove']
+    // An open Session actions section runs the session's next steps itself; the row only opens it.
+    if (node.actionsMark !== undefined && node.target.kind === 'local' && node.opensWorkflow) return []
     return node.actions.filter((action) => {
       if (action === 'finalize' || action === 'close' || action === 'updateMain') return true
       else if (action === 'remove')
@@ -2261,6 +2371,11 @@ class SessionsTreeActions {
       else
         throw new Error(`Unknown session action: ${JSON.stringify(action)}`)
     })
+  }
+
+  /** Only a step that waits for the person offers the press; a running Finish says so and opens from its mark (Finish 072). */
+  static opensActions(node: SessionTreeNode): boolean {
+    return node.actionsMark?.waiting === true && node.target.kind === 'local'
   }
 
   /** The Remove of an SVN worktree session takes the worktree too when nothing is left in it. */
@@ -2276,9 +2391,9 @@ class ScriptRunOpens {
    * the run's, in the mode the row's own terminal would have taken.
    */
   static openRow(node: SessionTreeNode, chrome: SessionsTreeChrome, intent: SessionOpenIntent): void {
-    const parent = node.target.kind === 'local' ? chrome.scriptParentOf(node.sessionId) : null
+    const parent = chrome.scriptParentOf(node.target)
     if (parent !== null && !parent.waiting) {
-      ScriptRunOpens.openTask(parent.sessionId, node.sessionId, node.title)
+      chrome.openTask({ ...node.target, sessionId: parent.sessionId }, { kind: 'script', runId: node.sessionId }, node.title)
       return
     }
     const opened = node.waitingOn ?? { target: node.target, tabTitle: node.tabTitle }
@@ -2286,24 +2401,12 @@ class ScriptRunOpens {
   }
 
   static openBadge(parentId: string, open: ScriptRunOpen, chrome: SessionsTreeChrome, intent: SessionOpenIntent): void {
-    if (open.target.kind === 'local' && chrome.scriptParentOf(open.target.sessionId)?.waiting !== true)
-      ScriptRunOpens.openTask(parentId, open.target.sessionId, open.tabTitle)
+    if (chrome.scriptParentOf(open.target)?.waiting !== true)
+      chrome.openTask({ ...open.target, sessionId: parentId }, { kind: 'script', runId: open.target.sessionId }, open.tabTitle)
     else
       chrome.openTerminal(open.target, open.tabTitle, intent)
   }
 
-  static openTask(sessionId: string, runId: string, title: string): void {
-    void AppControl.call('sessionTasks.open', { sessionId, task: { kind: 'script', runId }, title: title.slice(0, 200) })
-      .then((answer) => {
-        if (!answer.ok) AppClientUiReport.error(`The script run could not be opened: ${answer.error}`)
-        else if (!answer.value.ok) AppClientUiReport.error(`The script run could not be opened: ${answer.value.error.detail}`)
-      })
-      .catch((error: unknown) => AppClientUiReport.error(`The script run could not be opened: ${ErrorText.of(error)}`))
-  }
-
-  static opener(chrome: SessionsTreeChrome): (open: ScriptRunOpen) => void {
-    return (open) => chrome.openTerminal(open.target, open.tabTitle, 'preview')
-  }
 }
 
 class SessionsTreeOperation {
@@ -2320,6 +2423,11 @@ class SessionsTreeOperation {
     return answer.value.setup ?? null
   }
 
+  /** The row presses Prepare at once only where the library offers it; otherwise it asks what is left. */
+  static preparesOf(worktree: NonNullable<SessionInfo['worktree']>): boolean {
+    return worktree.choices.includes('commit') || worktree.choices.includes('merge')
+  }
+
   /** Both shapes, local and remote, are `IpcFailure`'s to read; this only names the operation. */
   static failureOf(
     answer: IpcResult<SessionsOpResult | RemoteControlResponse>,
@@ -2334,6 +2442,7 @@ class RemoteSessionMenu {
     node: SessionTreeNode,
     chrome: SessionsTreeChrome,
     commands: CommandRegistry,
+    facts: TabSessionFacts | null,
   ): readonly ContextMenuEntry[] {
     const items: ContextMenuEntry[] = [{
       key: 'open',
@@ -2346,6 +2455,9 @@ class RemoteSessionMenu {
     const endpointId = TerminalTargetCodec.endpointOf(node.target)
     if (endpointId === null)
       throw new Error(`A remote row was drawn for a local session: ${node.sessionId}`)
+    if (facts) items.push(...SessionsTreeMenuItems.forNode(commands, node.sessionId, facts, [], () => {}, endpointId)
+      .filter((entry) => entry.key !== 'session.showActions' && entry.key !== 'session.copyReference'))
+    items.push({ key: 'session-actions', label: 'Session actions', disabled: !chrome.supportsActions(node.target), onSelect: () => chrome.openActions(node) })
     items.push({ key: 'disconnect', label: 'Disconnect',
       onSelect: () => chrome.disconnect(endpointId, [node.sessionId]) })
     items.push({
@@ -2364,8 +2476,6 @@ class RemoteSessionMenu {
           : SessionNodeState.actionLabelOf(action),
         onSelect: () => chrome.request(node, action),
       })
-    const scripts = SessionsTreeScriptsMenu.itemOf(node.scriptRuns, 'remote', ScriptRunOpens.opener(chrome), null)
-    if (scripts !== null) items.push(scripts)
     if (!node.filedWithParent)
       items.push({ kind: 'separator', key: 'tree-groups' }, chrome.groupItem(SessionsTreeModel.groupKeyOf(node), node.group))
     return items
@@ -2415,14 +2525,10 @@ class RemoteComputerMenu {
 }
 
 class SessionsTreeGlyphs {
-  /** The row draws no line counts, so the title carries the lines against the worktree's base. */
   static worktreeTitleOf(worktree: WorktreeBadge): string {
-    const lines = worktree.diff === null
-      ? ''
-      : ` - +${worktree.diff.added} -${worktree.diff.removed} lines vs base`
-    if (worktree.kind === 'git') return `Git worktree ${worktree.path}, branch ${worktree.branch}${lines}`
+    if (worktree.kind === 'git') return `Git worktree ${worktree.path}, branch ${worktree.branch}`
     else if (worktree.kind === 'svn')
-      return `SVN worktree ${worktree.path}, a checkout of ${worktree.branch}${lines}`
+      return `SVN worktree ${worktree.path}, a checkout of ${worktree.branch}`
     else
       throw new Error(`Unknown worktree kind: ${JSON.stringify(worktree.kind satisfies never)}`)
   }

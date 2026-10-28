@@ -23,13 +23,16 @@ export class CliArguments {
    * command.
    */
   private static readonly commandSpecsConst = {
+    'snapins pass brief': { options: ['--pass'], flags: [], mutation: false },
+    'snapins pass event': { options: ['--pass', '--kind', '--agent', '--pp-version', '--trail', '--outcome', '--waiting', '--detail-file', '--note-file', '--report-file'], flags: [], mutation: false },
     'commit-svn-jamat': { options: ['--session-id', '--number', '--working-directory', '--path', '--paths-file', '--message', '--message-file', '--fallback', '--timeout-ms'], flags: ['--self', '--wait'], mutation: true },
     'commit-git-jamat': { options: ['--session-id', '--number', '--working-directory', '--path', '--paths-file', '--message', '--message-file', '--fallback', '--timeout-ms'], flags: ['--self', '--wait'], mutation: true },
     'commit status': { options: ['--commit-session-id', '--timeout-ms'], flags: ['--wait'], mutation: false },
     'commit cancel': { options: ['--commit-session-id'], flags: [], mutation: true },
     /* A worker's message for its worktree's review; nothing opens and nothing is committed. */
-    'commit propose': { options: ['--message', '--message-file'], flags: ['--self'], mutation: true },
+    'commit propose': { options: ['--message', '--message-file', '--directory'], flags: ['--self'], mutation: true },
     'status': { options: [CliArguments.remoteComputerOptionConst], flags: [], mutation: false },
+    'accounts list': { options: [CliArguments.remoteComputerOptionConst], flags: [], mutation: false },
     'projects list': {
       options: ['--category-id', '--sort', CliArguments.remoteComputerOptionConst],
       flags: [],
@@ -46,6 +49,7 @@ export class CliArguments {
         '--category-id',
         '--project-path',
         '--agent',
+        '--account',
         '--mode',
         '--native-session-id',
         '--fork-parent-id',
@@ -95,56 +99,61 @@ export class CliArguments {
       mutation: true,
     },
     'sessions worktree': {
-      options: ['--session-id', '--number', '--working-directory'],
-      flags: [],
+      options: [CliArguments.remoteComputerOptionConst, '--session-id', '--number', '--working-directory'],
+      flags: ['--self'],
       mutation: false,
     },
     'sessions remove': {
-      options: ['--session-id', '--number', '--working-directory'],
+      options: [CliArguments.remoteComputerOptionConst, '--session-id', '--number', '--working-directory'],
       flags: [],
       mutation: true,
     },
     'sessions discard-worktree': {
-      options: ['--session-id', '--number', '--working-directory'],
+      options: [CliArguments.remoteComputerOptionConst, '--session-id', '--number', '--working-directory'],
       flags: [],
       mutation: true,
     },
     'sessions retry-setup': {
-      options: ['--session-id', '--number', '--working-directory', '--acknowledge-setup'],
+      options: [CliArguments.remoteComputerOptionConst, '--session-id', '--number', '--working-directory', '--acknowledge-setup'],
       flags: [],
       mutation: true,
     },
     'sessions cleanup-worktree': {
-      options: ['--session-id', '--number', '--working-directory'],
+      options: [CliArguments.remoteComputerOptionConst, '--session-id', '--number', '--working-directory'],
       flags: [],
       mutation: true,
     },
     'sessions finish-worktree': {
-      options: ['--session-id', '--number', '--working-directory', '--choice', '--acknowledge-setup'],
-      flags: ['--self', '--confirm-working', '--agent'],
+      options: [CliArguments.remoteComputerOptionConst, '--session-id', '--number', '--working-directory', '--choice', '--acknowledge-setup'],
+      flags: ['--self', '--confirm-working', '--agent', '--refresh-preparation'],
       mutation: true,
     },
     'sessions update-main': {
-      options: ['--session-id', '--number', '--working-directory', '--confirm-live'],
+      options: [CliArguments.remoteComputerOptionConst, '--session-id', '--number', '--working-directory', '--confirm-live'],
       flags: ['--self'],
       mutation: true,
     },
-    /* The command of a review run of an SVN action; agents never call it. */
-    'sessions worktree-review': { options: ['--timeout-ms'], flags: ['--self', '--wait'], mutation: true },
-    'sessions worktree-results': { options: ['--tag', '--session-id'], flags: ['--unacknowledged'], mutation: false },
+    'sessions worktree-results': { options: [CliArguments.remoteComputerOptionConst, '--tag', '--session-id'], flags: ['--unacknowledged'], mutation: false },
     'sessions notifies': { options: ['--session-id'], flags: [], mutation: false },
-    'sessions conflicts': { options: ['--session-id', '--number', '--working-directory'], flags: ['--self'], mutation: false },
+    'sessions sync': { options: [CliArguments.remoteComputerOptionConst, '--session-id', '--number', '--working-directory'], flags: ['--self'], mutation: true },
+    'sessions conflicts': { options: [CliArguments.remoteComputerOptionConst, '--session-id', '--number', '--working-directory'], flags: ['--self'], mutation: false },
     /* No confirm flag: an option that loses incoming work is the person's, in the window. */
-    'sessions resolve-conflict': { options: ['--session-id', '--number', '--working-directory', '--path', '--option'], flags: ['--self'], mutation: true },
-    'sessions children': { options: ['--session-id'], flags: [], mutation: false },
-    'sessions acknowledge-worktree-result': { options: ['--action-id'], flags: [], mutation: true },
-    'sessions transcript': {
+    'sessions resolve-conflict': { options: [CliArguments.remoteComputerOptionConst, '--session-id', '--number', '--working-directory', '--path', '--kind', '--option'], flags: ['--self'], mutation: true },
+    'sessions back-to-work': { options: [CliArguments.remoteComputerOptionConst, '--session-id', '--number', '--working-directory'], flags: ['--self'], mutation: true },
+    'sessions solve-with-agent': {
       options: ['--session-id', '--number', '--working-directory'],
+      flags: [],
+      mutation: true,
+    },
+    'sessions children': { options: [CliArguments.remoteComputerOptionConst, '--session-id'], flags: [], mutation: false },
+    'sessions acknowledge-worktree-result': { options: [CliArguments.remoteComputerOptionConst, '--action-id'], flags: [], mutation: true },
+    'sessions transcript': {
+      options: [CliArguments.remoteComputerOptionConst, '--session-id', '--number', '--working-directory'],
       flags: [],
       mutation: false,
     },
     'sessions scripts': {
-      options: ['--session-id', '--number', '--working-directory', '--run-id'],
+      options: [CliArguments.remoteComputerOptionConst, '--session-id', '--number', '--working-directory', '--run-id'],
       flags: ['--self'],
       mutation: false,
     },
@@ -198,7 +207,7 @@ export class CliArguments {
       mutation: true,
     },
     'tabs open-file': {
-      options: ['--session-id', '--number', '--working-directory', '--path'],
+      options: ['--session-id', '--number', '--working-directory', '--path', CliArguments.remoteComputerOptionConst],
       flags: [],
       mutation: true,
     },
@@ -308,6 +317,8 @@ export class CliArguments {
     if (!CliArguments.isCommand(command))
       throw CliArguments.usage(`Unknown command ${JSON.stringify(command)}`)
     const spec: CliCommandSpec = CliArguments.commandSpecsConst[command]
+    if (command.startsWith('snapins pass ') && CliArguments.globalOptionsConst.some((option) => options.has(option)))
+      throw CliArguments.usage('Pass commands derive their controller only from --pass')
     for (const option of options.keys())
       if (!(CliArguments.globalOptionsConst as readonly string[]).includes(option)
         && !spec.options.includes(option))

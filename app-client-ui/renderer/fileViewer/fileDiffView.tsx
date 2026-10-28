@@ -5,6 +5,7 @@ import type {
   FileDiffLineKind,
 } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import { FileHighlighter } from '../../../mdext-renderer/renderer'
+import { FilePropertyChanges } from './filePropertyChanges'
 
 export interface FileDiffVisualLine {
   key: string
@@ -75,6 +76,7 @@ export function FileDiffView(props: {
       {props.data.completeness === 'full' && props.currentText !== null && !fullAvailable && (
         <p className="file-diff-detail">The current file no longer matches this diff. Refresh it.</p>
       )}
+      {props.data.properties && <FilePropertyChanges properties={props.data.properties} />}
       {lines.length === 0
         ? <p className="file-viewer-note">No text changes.</p>
         : (

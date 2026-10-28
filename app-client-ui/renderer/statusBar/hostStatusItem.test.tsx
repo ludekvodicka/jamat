@@ -4,13 +4,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type {
   HostPresence,
   HostStatusInfo,
+  HostStopWarnings,
   SessionsOpResult,
   SessionsSnapshot,
 } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type { IpcResult } from '../../shared/appClientUiIpc'
 import { SnapshotStore, type SnapshotStorePorts } from '../ipc/snapshotStore'
 import { SessionsFixtures } from '../sessions/fixtures/sessionsFixtures'
-import { type HostStatusPorts, HostStatusItem, HostStatusReading } from './hostStatusItem'
+import { type HostStatusPorts, HostStatusItem, HostStatusReading, HostStopConfirmation } from './hostStatusItem'
 
 describe('app-client-ui/renderer/statusBar/hostStatusItem', () => {
   /** A snapshot of `null` is a read that never answers, which is the item's first second of life. */
@@ -22,8 +23,9 @@ describe('app-client-ui/renderer/statusBar/hostStatusItem', () => {
     stops: string[] = []
     confirmations: number[] = []
     stopConfirmations: number[] = []
+    stopAgentNames: string[][] = []
     confirmed = true
-    answer: IpcResult<SessionsOpResult> = { ok: true, value: { ok: true, value: undefined } }
+    answer: IpcResult<SessionsOpResult<HostStopWarnings>> = { ok: true, value: { ok: true, value: { warnings: [] } } }
 
     constructor(
       private readonly snapshot: SessionsSnapshot | null,
@@ -49,7 +51,8 @@ describe('app-client-ui/renderer/statusBar/hostStatusItem', () => {
 
     startHost(): Promise<IpcResult<SessionsOpResult>> {
       this.starts += 1
-      return Promise.resolve(this.answer)
+      const answer = this.answer
+      return Promise.resolve(answer.ok && answer.value.ok ? { ok: true, value: { ok: true, value: undefined } } : answer as IpcResult<SessionsOpResult>)
     }
 
     confirmHostRestart(liveCount: number): Promise<IpcResult<boolean>> {
@@ -57,17 +60,18 @@ describe('app-client-ui/renderer/statusBar/hostStatusItem', () => {
       return Promise.resolve({ ok: true, value: this.confirmed })
     }
 
-    restartHost(hostInstanceId: string): Promise<IpcResult<SessionsOpResult>> {
+    restartHost(hostInstanceId: string): Promise<IpcResult<SessionsOpResult<HostStopWarnings>>> {
       this.restarts.push(hostInstanceId)
       return Promise.resolve(this.answer)
     }
 
-    confirmHostStop(liveCount: number): Promise<IpcResult<boolean>> {
+    confirmHostStop(liveCount: number, workingAgents: readonly string[] = []): Promise<IpcResult<boolean>> {
       this.stopConfirmations.push(liveCount)
+      this.stopAgentNames.push([...workingAgents])
       return Promise.resolve({ ok: true, value: this.confirmed })
     }
 
-    stopHost(hostInstanceId: string): Promise<IpcResult<SessionsOpResult>> {
+    stopHost(hostInstanceId: string): Promise<IpcResult<SessionsOpResult<HostStopWarnings>>> {
       this.stops.push(hostInstanceId)
       return Promise.resolve(this.answer)
     }
@@ -230,10 +234,21 @@ describe('app-client-ui/renderer/statusBar/hostStatusItem', () => {
     expect(view.queryByRole('alert')).toBeNull()
     restart()
     await view.findByRole('alert')
-    ports.answer = { ok: true, value: { ok: true, value: undefined } }
+    ports.answer = { ok: true, value: { ok: true, value: { warnings: [] } } }
     restart()
     await waitFor(() => expect(ports.restarts).toHaveLength(3))
     expect(view.queryByRole('alert')).toBeNull()
+  })
+
+  // A refused instance's surviving descendants outlive the old Host; a clean-looking restart hid them (UA1-J10-6).
+  it('says what the old Host could not stop after a restart that otherwise worked', async () => {
+    const ports = new Ports(SessionsFixtures.mixed())
+    ports.answer = { ok: true, value: { ok: true, value: { warnings: ['run-1: descendant 88824 survived'] } } }
+    const view = mount(ports)
+    fireEvent.contextMenu(await view.findByText('Host v2026.08.04.09.30 · 4 live'))
+    fireEvent.click(view.getByRole('menuitem', { name: 'Restart apphost' }))
+    expect((await view.findByRole('alert')).textContent)
+      .toContain('The Host was restarted, but it could not stop everything: run-1: descendant 88824 survived')
   })
 
   it('displays confirmation and transport failures', async () => {
@@ -254,12 +269,14 @@ describe('app-client-ui/renderer/statusBar/hostStatusItem', () => {
 
   it('offers Stop apphost on right click and stops the confirmed Host', async () => {
     const snapshot = SessionsFixtures.mixed()
+    snapshot.host.workingAgents = ['Claude worker', 'Codex worker']
     const ports = new Ports(snapshot)
     const view = mount(ports)
     fireEvent.contextMenu(await view.findByText('Host v2026.08.04.09.30 · 4 live'))
     fireEvent.click(view.getByRole('menuitem', { name: 'Stop apphost' }))
     await waitFor(() => expect(ports.stops).toEqual([snapshot.host.hostInstanceId]))
     expect(ports.stopConfirmations).toEqual([4])
+    expect(ports.stopAgentNames).toEqual([['Claude worker', 'Codex worker']])
     expect(ports.restarts).toEqual([])
   })
 
@@ -367,6 +384,18 @@ describe('app-client-ui/renderer/statusBar/hostStatusItem', () => {
 
     expect(ports.reads).toBe(6)
     expect(container.textContent).toContain('Host …')
+  })
+
+  // After Start Host the worktree workers came back by themselves, which "will not be reopened" denied (UA1-J10-7).
+  it('says in the stop confirmation which sessions resume after a later start and which do not', () => {
+    const text = HostStopConfirmation.textOf(2, ['001 - W1 (w1)'])
+
+    expect(text).not.toContain('the sessions will not be reopened')
+    expect(text).toContain('This will end all 2 running terminals. Running commands will be interrupted.')
+    expect(text).toContain('When the AppHost starts again, agents working in an SVN worktree resume their conversations; '
+      + 'shells and other sessions are not reopened.')
+    expect(text).toContain('Working agents:\n001 - W1 (w1)')
+    expect(HostStopConfirmation.textOf(1, [])).toContain('This will end all 1 running terminal.')
   })
 
   // The one derivation the bar and the Debug window's host section both read, so it is exhaustive

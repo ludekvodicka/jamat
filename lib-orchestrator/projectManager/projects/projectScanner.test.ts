@@ -193,6 +193,24 @@ describe('lib-orchestrator/projectManager/projects/projectScanner', () => {
     expect(calls).toBe(2)
   })
 
+  it('walks again for a fresh scan and keeps that walk for the next one (UA1-J13-7)', async () => {
+    let calls = 0
+    const fileSystem: ScannerFileSystem = {
+      readdir: async () => {
+        calls += 1
+        return [directoryEntry('AppOne')]
+      },
+      stat: async () => ({ isDirectory: () => true }),
+    }
+    const scanner = new ProjectScanner(fileSystem)
+
+    await scanner.scan(category('Q:/root'))
+    await scanner.scan(category('Q:/root'), { fresh: true })
+    expect(calls).toBe(2)
+    await scanner.scan(category('Q:/root'))
+    expect(calls).toBe(2)
+  })
+
   function makeGroup(root: string, ...segments: string[]): string {
     const group = join(root, ...segments)
     mkdirSync(group, { recursive: true })

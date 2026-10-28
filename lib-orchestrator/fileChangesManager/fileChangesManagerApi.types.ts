@@ -52,6 +52,7 @@ export interface FileChangeGitState {
 }
 
 export interface FileChangeEntry {
+  origin?: 'setup'
   fileId: string
   path: string
   displayPath: string
@@ -75,6 +76,22 @@ export interface FileChangeEntry {
    * it carries. The commit publishes them with the directory as one copy.
    */
   carriedItems?: number
+  /** Set only on a node whose own properties changed: what a commit would publish beside its content. */
+  properties?: FileChangeProperties
+}
+
+/** One property of a node: `before` at the baseline (SVN BASE), `after` in the working copy, null where it is absent. */
+export interface FileChangeProperty {
+  name: string
+  before: string | null
+  after: string | null
+}
+
+export interface FileChangeProperties {
+  /** Only the properties that differ, by name. */
+  changes: readonly FileChangeProperty[]
+  /** Why the list is not the whole story: a read failed, or a value or the number of nodes hit its limit. */
+  detail: string | null
 }
 
 export type FileChangeBaselineKind =
@@ -195,6 +212,8 @@ export interface FileDiffData {
   baseline: FileDiffVersion
   hunks: readonly FileDiffHunk[]
   detail: string | null
+  /** The node's property changes against the working copy's own baseline; absent for any other baseline. */
+  properties?: FileChangeProperties
 }
 
 export type FileDiffUnavailableKind =
@@ -208,7 +227,7 @@ export type FileDiffUnavailableKind =
 
 export type FileDiffResult =
   | { ok: true; kind: 'text'; data: FileDiffData }
-  | { ok: true; kind: FileDiffUnavailableKind; detail: string }
+  | { ok: true; kind: FileDiffUnavailableKind; detail: string; properties?: FileChangeProperties }
   | {
     ok: false
     code: 'snapshot-expired' | 'unknown-file' | 'unknown-baseline' | 'invalid-pair'
@@ -219,9 +238,7 @@ export type FileDiffResult =
  * What kind of working copy governs a directory, and where its scope sits inside it.
  *
  * On the subsystem ROOT rather than inside `vcs/`, because `VcsStatusView` hands it out and takes it
- * back: any consumer that reads through that view has to be able to name it. While it lived in
- * `vcs/fileChangesVcs.types.ts`, the one thing the view exists to prevent - another subsystem
- * importing this one's internals - was exactly what `vcsFacts` had to do to use it.
+ * back: any consumer that reads through that view has to be able to name it.
  */
 export interface FileChangesVcsDetection {
   id: FileChangesVcsId
@@ -233,9 +250,8 @@ export interface FileChangesVcsDetection {
 }
 
 /**
- * What a VCS read answers with. On the root beside `FileChangesVcsDetection` and for the same
- * reason: `VcsStatusView.dirty` returns it, so a consumer reading through that view has to be able
- * to name it without reaching into `vcs/`.
+ * What a VCS read answers with. On the root beside `FileChangesVcsDetection`, so a consumer reading
+ * through `VcsStatusView` names it without reaching into `vcs/`.
  */
 export type FileChangesVcsResult<T> =
   | { ok: true; value: T }

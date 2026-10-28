@@ -1,7 +1,18 @@
+import type { FileViewerDocumentKind } from './fileViewerApi.types'
+
 export class FileViewerLimits {
   static readonly sampleBytes = 64 * 1024
   static readonly chunkBytes = 64 * 1024
   static readonly fullTextBytes = 2 * 1024 * 1024
+  static readonly htmlBytes = 32 * 1024 * 1024
+
+  static textBytes(kind: FileViewerDocumentKind): number {
+    if (kind.kind === 'html') return FileViewerLimits.htmlBytes
+    else if (kind.kind === 'markdown' || kind.kind === 'code' || kind.kind === 'text'
+      || kind.kind === 'svg' || kind.kind === 'image' || kind.kind === 'video'
+      || kind.kind === 'hex' || kind.kind === 'missing') return FileViewerLimits.fullTextBytes
+    else throw new Error(`Unknown file viewer document kind: ${JSON.stringify(kind satisfies never)}`)
+  }
   /**
    * How much source may be syntax-highlighted, which is a question about the DRAWING THREAD, not
    * about how much a reader can carry.

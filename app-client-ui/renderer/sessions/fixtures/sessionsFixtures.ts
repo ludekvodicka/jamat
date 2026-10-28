@@ -1,3 +1,4 @@
+import { WorktreeWords } from '../../../../lib-orchestrator/worktrees/worktreeViews'
 import type { ProjectBinding } from '../../../../lib-orchestrator/projectManager/projectManagerApi.types'
 import type {
   SessionInfo,
@@ -20,7 +21,7 @@ export class SessionsFixtures {
 
   /** Categories in catalog order, both worktree badge shapes, ad-hoc, no-project, an orphan. */
   static mixed(): SessionsSnapshot {
-    return {
+    return SessionsFixtures.present({
       revision: 7,
       reconciled: true,
       host: {
@@ -186,12 +187,12 @@ export class SessionsFixtures {
         },
       ],
       orphans: [{ runtimeSessionId: 'orphan-1', alive: true, startedAt: 1754290000000 }],
-    }
+    })
   }
 
   /** A session waiting on its install, the install session itself, and an ended neighbour. */
   static setupPending(): SessionsSnapshot {
-    return {
+    return SessionsFixtures.present({
       revision: 3,
       reconciled: true,
       host: {
@@ -270,12 +271,12 @@ export class SessionsFixtures {
         },
       ],
       orphans: [],
-    }
+    })
   }
 
   /** The two outcomes an install can leave behind: skipped, and failed with its install session. */
   static setupOutcomes(): SessionsSnapshot {
-    return {
+    return SessionsFixtures.present({
       revision: 4,
       reconciled: true,
       host: {
@@ -372,7 +373,7 @@ export class SessionsFixtures {
         },
       ],
       orphans: [],
-    }
+    })
   }
 
   /**
@@ -380,7 +381,7 @@ export class SessionsFixtures {
    * lists: the success with its saved log, and the earlier failed attempt whose log the Host lost.
    */
   static setupCollapsed(): SessionsSnapshot {
-    return {
+    return SessionsFixtures.present({
       revision: 5,
       reconciled: true,
       host: {
@@ -434,12 +435,12 @@ export class SessionsFixtures {
         },
       ],
       orphans: [],
-    }
+    })
   }
 
   /** Stopped worktrees whose remaining decision is asked by the finalize dialog. */
   static stoppedWorktree(): SessionsSnapshot {
-    return {
+    return SessionsFixtures.present({
       revision: 11,
       reconciled: true,
       host: {
@@ -458,7 +459,6 @@ export class SessionsFixtures {
           tabTitle: 'AppJamatV3 - Dirty worktree',
           ...SessionsFixtures.inProject('nodejs', 'AppJamatV3', SessionsFixtures.jamatConst),
           agent: { agentId: 'claude', nativeSessionId: 'native-dirty' },
-          vcs: { vcsId: 'git', dirty: true },
           worktree: {
             worktreePath: `${SessionsFixtures.jamatConst}/.worktrees/dirty`,
             branch: 'jamat/dirty',
@@ -483,7 +483,6 @@ export class SessionsFixtures {
           tabTitle: 'AppJamatV3 - Clean worktree',
           ...SessionsFixtures.inProject('nodejs', 'AppJamatV3', SessionsFixtures.jamatConst),
           agent: { agentId: 'claude', nativeSessionId: 'native-clean' },
-          vcs: { vcsId: 'git', dirty: false },
           worktree: {
             worktreePath: `${SessionsFixtures.jamatConst}/.worktrees/clean`,
             branch: 'jamat/clean',
@@ -502,7 +501,7 @@ export class SessionsFixtures {
         },
       ],
       orphans: [],
-    }
+    })
   }
 
   /**
@@ -532,7 +531,7 @@ export class SessionsFixtures {
       endedAt: 1754600100000,
       exitCode: 0,
     }
-    return {
+    return SessionsFixtures.present({
       revision: 17,
       reconciled: true,
       host: {
@@ -717,7 +716,7 @@ export class SessionsFixtures {
         },
       ],
       orphans: [],
-    }
+    })
   }
 
   /**
@@ -728,7 +727,7 @@ export class SessionsFixtures {
    * drawn by code no test ever ran.
    */
   static merging(): SessionsSnapshot {
-    return {
+    return SessionsFixtures.present({
       revision: 13,
       reconciled: true,
       host: {
@@ -839,11 +838,11 @@ export class SessionsFixtures {
         },
       ],
       orphans: [],
-    }
+    })
   }
 
   static hostUnreachable(): SessionsSnapshot {
-    return {
+    return SessionsFixtures.present({
       revision: 9,
       reconciled: true,
       host: {
@@ -892,14 +891,15 @@ export class SessionsFixtures {
         },
       ],
       orphans: [],
-    }
+    })
   }
 
-  /**
-   * A title and the parts the library would split it into. Spelled here rather than computed - the
-   * renderer program types the library `import type` only - which is honest for these fixtures
-   * because none of their titles carries a numeric prefix.
-   */
+  /** Test snapshots pass through the same presentation producer as current and admitted older peers. */
+  static present(snapshot: SessionsSnapshot): SessionsSnapshot {
+    for (const session of snapshot.sessions) WorktreeWords.decorate(session)
+    return snapshot
+  }
+
   private static titled(title: string): { title: string; titleParts: SessionTitleParts } {
     return { title, titleParts: { number: null, name: title } }
   }

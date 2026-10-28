@@ -24,7 +24,7 @@ export function TabsHost(props: {
   controller: TabsController
   commands: CommandRegistry
   /** What a tab's session is, read when its menu opens. `null` where the tab has no session. */
-  sessionFacts(sessionId: string): TabSessionFacts | null
+  sessionFacts(sessionId: string, remoteEndpointId?: string): TabSessionFacts | null
   /** Where a clicked tab hands the caret back to the panel below it. */
   panelFocus: PanelFocusRegistry
   onReady(): void

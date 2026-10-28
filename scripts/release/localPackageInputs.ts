@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path'
 export class LocalPackageInputs {
   private static readonly pathsConst = [
     'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'tsconfig.json', 'LICENSE',
+    // Includes the named fileDiffWorker and tokenUsageWorker main inputs; renderer includes usage.html.
     'app-client-ui/app', 'app-client-ui/preload', 'app-client-ui/renderer',
     'app-client-ui/shared', 'app-client-ui/buildResources', 'app-client-ui/start.ts',
     'app-client-ui/package.json', 'app-client-ui/pnpm-lock.yaml',
@@ -14,6 +15,7 @@ export class LocalPackageInputs {
     'mdext-renderer/renderer', 'mdext-renderer/USAGE.md', 'mdext-renderer/reference.md',
     'mdext-renderer/svg-style.md', 'mdext-renderer/examples',
     'skills', 'app-client-cli', 'configs/remarkable-sidecar', 'scripts/release',
+    'scripts/smoke/finishUiScenario.ts',
     'scripts/setup/prepare-remarkable-sidecar.ts', 'scripts/setup/install-launcher.ps1',
   ]
   private static readonly skippedDirectoriesConst = new Set([

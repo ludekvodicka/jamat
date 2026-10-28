@@ -1,4 +1,5 @@
-import { SvnActionStages } from '../lifecycle/svnActionStages'
+import { FinishProjection } from '../../worktrees/worktreeFinish'
+import { SvnActionStages } from '../../worktrees/worktreeFinish'
 import type { SessionRecord, SessionRecordScriptLink } from '../records/sessionRecord.types'
 import type { SessionScriptId, SessionScriptPhase } from '../sessionManagerApi.types'
 
@@ -149,6 +150,19 @@ export class SessionScriptDefinitions {
     liveLine: true,
   }
 
+  /** The dependency install an SVN Finish runs again when only the worktree's dependency inputs changed. */
+  private static readonly afterSetupConst: SessionScriptDefinition = {
+    phase: 'after',
+    scriptId: 'setup',
+    gate: 'action',
+    pointerOf: (parent) => SessionScriptDefinitions.actionPointerOf(parent),
+    words: { session: 'setup', actor: 'setup' },
+    replayable: true,
+    stopsWithParent: false,
+    handoff: 'close',
+    liveLine: true,
+  }
+
   /** The Claude one-shot that resolves the text conflicts an SVN action's update left; the action verifies its work. */
   private static readonly svnResolverConst: SessionScriptDefinition = {
     phase: 'after',
@@ -179,14 +193,14 @@ export class SessionScriptDefinitions {
     liveLine: false,
   }
 
-  /** The commit review of one root of an SVN action, hosted by `jamat-v3 sessions worktree-review`. */
+  /** Dormant reader for retained after/review records; new Finish reviews create no run. */
   private static readonly reviewConst: SessionScriptDefinition = {
     phase: 'after',
     scriptId: 'review',
     gate: 'action',
     pointerOf: (parent) => SessionScriptDefinitions.actionPointerOf(parent),
     words: { session: 'review', actor: 'review' },
-    replayable: true,
+    replayable: false,
     stopsWithParent: false,
     handoff: 'close',
     liveLine: false,
@@ -213,6 +227,7 @@ export class SessionScriptDefinitions {
     SessionScriptDefinitions.resolverConst,
     SessionScriptDefinitions.afterSvnConst,
     SessionScriptDefinitions.afterChecksConst,
+    SessionScriptDefinitions.afterSetupConst,
     SessionScriptDefinitions.svnResolverConst,
     SessionScriptDefinitions.svnMergerConst,
     SessionScriptDefinitions.reviewConst,
@@ -224,7 +239,8 @@ export class SessionScriptDefinitions {
    * it moved past collapses into the history.
    */
   private static actionPointerOf(parent: SessionRecord): string | null {
-    const action = parent.svnAction
+    const action = FinishProjection.action(parent)
+    if (parent.worktreeLifecycle?.journal.some((entry) => entry.runId === action?.runId)) return null
     return action !== undefined && SvnActionStages.isRun(action.stage) ? action.runId ?? null : null
   }
 
@@ -317,7 +333,7 @@ export class SessionScriptDefinitions {
     }
     else if (gate === 'merge') return { phase: candidate.phase, scriptId: candidate.scriptId, name: 'resolver' }
     else if (gate === 'action') {
-      const action = parent.svnAction
+      const action = FinishProjection.action(parent)
       if (action === undefined) throw new Error(`Session ${parent.sessionId} names an SVN action it does not hold`)
       return SvnActionStages.linkOf(action)
     }
@@ -343,7 +359,7 @@ export class SessionScriptDefinitions {
    */
   static judging(gate: SessionScriptGate, parent: SessionRecord): boolean {
     if (gate === 'before')
-      return parent.life === 'starting'
+      return parent.pendingSetup?.local !== true && parent.life === 'starting'
         && Boolean(parent.pendingSetup && parent.pendingOperationId && parent.pendingOperationKind)
     else if (gate === 'finish')
       return parent.finishChecks !== undefined && parent.finishChecks.result === undefined
@@ -352,7 +368,7 @@ export class SessionScriptDefinitions {
         && parent.worktreeMerge.resolveSessionId !== undefined
         && parent.worktreeMerge.failure === undefined
     else if (gate === 'action') {
-      const action = parent.svnAction
+      const action = FinishProjection.action(parent)
       return action?.runId !== undefined && action.needs === undefined && action.verdict === undefined
         && action.retryAt === undefined && SvnActionStages.isRun(action.stage)
     }

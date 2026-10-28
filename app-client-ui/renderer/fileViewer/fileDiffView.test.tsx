@@ -113,4 +113,29 @@ describe('app-client-ui/renderer/fileViewer/fileDiffView', () => {
     expect(() => FileDiffVisual.full({ ...data, completeness: 'region' }, 'one\nnew\n'))
       .toThrow(/region diff/)
   })
+
+  it('shows a property-only change with both values instead of only saying there are no text changes', () => {
+    const data: FileDiffData = {
+      status: 'modified',
+      completeness: 'full',
+      current: { label: 'Working tree', path: 'limit.txt', exists: true, eol: 'lf', finalNewline: true },
+      baseline: { label: 'SVN BASE', path: 'limit.txt', exists: true, eol: 'lf', finalNewline: true },
+      hunks: [],
+      detail: null,
+      properties: { changes: [
+        { name: 'jamat:test', before: 'base', after: 'w1-prop-only' },
+        { name: 'svn:keywords', before: null, after: 'Id' },
+      ], detail: 'Values longer than 4000 characters are cut.' },
+    }
+    const view = render(<FileDiffView data={data} currentText={'20\n'} language="text" />)
+
+    expect(view.getByText('No text changes.')).toBeInTheDocument()
+    const panel = view.getByRole('region', { name: 'Property changes' })
+    expect([...panel.querySelectorAll('tr')].map((row) => row.textContent)).toEqual([
+      'PropertyChangeBASEWorking copy',
+      'jamat:testchangedbasew1-prop-only',
+      'svn:keywordsadded(none)Id',
+    ])
+    expect(panel).toHaveTextContent('Values longer than 4000 characters are cut.')
+  })
 })

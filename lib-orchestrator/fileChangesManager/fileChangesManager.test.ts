@@ -50,9 +50,6 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
           gitState: { index: ' ', worktree: 'M' },
         }] } }
       },
-      async dirty() {
-        return { ok: true, value: true }
-      },
       async history() {
         return { ok: true, value: [{
           id: 'commit',
@@ -284,6 +281,40 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
     })).toEqual(expect.objectContaining({ ok: true, kind: 'text' }))
   })
 
+  it('lists property changes of files and directories and adds a file\'s to its diff against the working baseline', async () => {
+    const root = cwd()
+    writeFileSync(join(root, 'binary.bin'), 'a\0b', 'utf8')
+    const adapter = vcs(root)
+    const detected = (await adapter.detect(root))!
+    const status = await adapter.status(detected)
+    if (!status.ok) throw new Error(status.detail)
+    const properties = { changes: [{ name: 'jamat:test', before: 'base', after: 'w1-prop-only' }], detail: null }
+    const ignore = { changes: [{ name: 'svn:ignore', before: 'x\n', after: null }], detail: null }
+    const entries = [
+      { ...status.value.entries[0], properties },
+      { ...status.value.entries[0], absolutePath: join(root, 'binary.bin'), repositoryPath: 'binary.bin', properties },
+      { ...status.value.entries[0], absolutePath: root, repositoryPath: '.', nodeKind: 'directory' as const, properties: ignore },
+    ]
+    const managerInstance = new FileChangesManager({
+      diffExecutor: new FileDiffComputer(),
+      workingSources: { read: async () => ({
+        selection: { requested: 'svn', selected: 'svn', available: ['svn'], fallbackReason: null },
+        selected: { adapter, detection: detected, baseline: adapter.defaultBaselineRef, baselineLabel: 'SVN BASE' },
+        entries, externalRoots: [], warnings: [],
+      }) } as unknown as FileChangesWorkingTreeSources,
+    })
+
+    const listed = await managerInstance.workingTree({ sessionId: 'session', cwd: root, agent: null, worktree: null }, 'svn', true)
+    if (!listed.ok) throw new Error(listed.detail)
+    const byName = new Map(listed.value.entries.map((entry) => [entry.displayPath, entry]))
+    expect(byName.get('file.ts')?.properties).toEqual(properties)
+    expect(byName.get('.')?.properties).toEqual(ignore)
+    const diffOf = (path: string) => managerInstance.diff({ snapshotId: listed.value.snapshotId,
+      fileId: byName.get(path)!.fileId, baselineId: listed.value.defaultBaseline!.baselineId })
+    expect(await diffOf('file.ts')).toMatchObject({ ok: true, kind: 'text', data: { properties } })
+    expect(await diffOf('binary.bin')).toMatchObject({ ok: true, kind: 'binary', properties })
+  })
+
   it('rejects single-file reads outside their scope or without a commit VCS', async () => {
     const root = cwd()
     const instance = manager(root)
@@ -291,6 +322,9 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
     expect(await instance.workingTree(context, 'svn', true, join(root, '..', 'outside.txt'))).toMatchObject({ ok: false })
     expect(await instance.workingTree(context, 'svn', false, join(root, 'file.ts'))).toMatchObject({ ok: false })
     expect(await instance.workingTree(context, 'checkpoint', true, join(root, 'file.ts'))).toMatchObject({ ok: false })
+    expect(await instance.workingTree(context, 'svn', true, undefined, [join(root, '..', 'outside.txt')])).toMatchObject({ ok: false })
+    expect(await instance.workingTree(context, 'svn', false, undefined, [join(root, 'file.ts')])).toMatchObject({ ok: false })
+    expect(await instance.workingTree(context, 'checkpoint', true, undefined, [join(root, 'file.ts')])).toMatchObject({ ok: false })
   })
 
   it('groups external file ids in the working snapshot', async () => {

@@ -32,6 +32,7 @@ export interface WorkStateMonitorDeps {
 }
 
 interface SessionWorkState {
+  polledAt: number
   activity: SessionActivity
   activityDetail: SessionActivityDetail | null
   outputSeq: number
@@ -115,6 +116,8 @@ export class WorkStateMonitor {
   }
 
   /** Null for a session this has never classified; the caller decides what that means. */
+  polledAt(runtimeSessionId: string): number | null { return this.states.get(runtimeSessionId)?.polledAt ?? null }
+
   activity(runtimeSessionId: string): SessionActivity | null {
     return this.states.get(runtimeSessionId)?.activity ?? null
   }
@@ -146,7 +149,11 @@ export class WorkStateMonitor {
       const agentId = this.deps.agentOf(session.runtimeSessionId)
       if (agentId === null || !session.alive) continue
       seen.add(session.runtimeSessionId)
-      if (!this.needsInspection(session, now)) continue
+      if (!this.needsInspection(session, now)) {
+        const previous = this.states.get(session.runtimeSessionId)
+        if (previous !== undefined) previous.polledAt = now
+        continue
+      }
       const inspection = await this.classify(listing.hostInstanceId, session, agentId)
       // Checked after every await: `stop` can land in any of these gaps, and what it means is that
       // nothing more is written and nobody is told.
@@ -206,6 +213,7 @@ export class WorkStateMonitor {
   ): boolean {
     const state: SessionWorkState = this.states.get(session.runtimeSessionId)
       ?? {
+        polledAt: now,
         activity: 'unknown',
         activityDetail: null,
         outputSeq: session.outputSeq,
@@ -215,6 +223,7 @@ export class WorkStateMonitor {
     const previousActivity = state.activity
     const previousDetail = state.activityDetail
     const previousCompacting = this.compacting(session.runtimeSessionId)
+    state.polledAt = now
     state.inspection = inspection
     const mapped = WorkStateMonitor.activityOf(inspection.hint)
     // Claude can leave a dead busy row on screen, so its foreground evidence ages by output. Codex

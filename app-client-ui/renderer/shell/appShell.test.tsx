@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { AppControl } from '../ipc/appControl'
 
 import type { FileChangesWorkingTreeSnapshot } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import type { FileViewerDocument } from '../../../lib-orchestrator/fileViewer/fileViewerApi.types'
@@ -27,7 +28,6 @@ import { CommandRegistry } from '../commands/commandRegistry'
 import { ConfigurationLastTab } from '../overlays/configuration/configurationLastTab'
 import type { FinalizeAsk } from '../overlays/finalize/finalizeModel'
 import { SessionsFixtures } from '../sessions/fixtures/sessionsFixtures'
-import { SessionTasksStore } from '../sessions/sessionTasksStore'
 import { TabsController } from '../widgets/tabs/tabsController'
 import { type ActiveTerminalReading, ActiveTerminalStore } from './activeTerminalStore'
 import { HolderShell, MainShell } from './appShell'
@@ -268,6 +268,8 @@ class AppClientStub {
       },
       control: this.control(),
       tabs: {
+        openSharedItem: vi.fn(),
+        sessionItems: async () => ({ ok: true as const, value: { epoch: 'catalog', revision: 0, after: 0, next: null, items: [] } }),
         claimPanel: (panel) => {
           this.claimedPanels.push({ panelId: panel.panelId, title: panel.title })
           if (panel.sessionId !== null)
@@ -321,6 +323,9 @@ class AppClientStub {
           this.movedPanels.push({ panel, target })
           return Promise.resolve({ ok: true as const, value: undefined })
         },
+        openSessionTask: vi.fn(),
+        projectReview: vi.fn(), projectedReviewChanged: vi.fn(),
+        openSessionActions: async () => ({ ok: true as const, value: undefined }),
         controlAck: (ack) => {
           this.tabControlAcks.push(ack)
           return Promise.resolve({ ok: true as const, value: undefined })
@@ -338,6 +343,9 @@ class AppClientStub {
         openCommitTab: async () => { throw new Error('unused') },
         commitFiles: async () => { throw new Error('unused') },
         readCommit: async () => { throw new Error('unused') },
+        decideCommit: async () => { throw new Error('unused') },
+        editCommit: async () => { throw new Error('unused') },
+        cancelCommit: async () => { throw new Error('unused') },
         setCommitMessage: async () => { throw new Error('unused') },
         runCommit: async () => { throw new Error('unused') },
         closeCommit: async () => ({ ok: true, value: undefined }),
@@ -440,6 +448,23 @@ class AppClientStub {
         deliver: () => Promise.resolve({ ok: true as const, value: { kind: 'delivered' as const, proof: 'working' as const } }),
       },
       remote: {
+        requestSidebar: vi.fn(), readSidebarPage: vi.fn(),
+        requestReviews: vi.fn(), readReviewPage: vi.fn(),
+        requestTasks: vi.fn(), readTaskPage: vi.fn(),
+        startImageDrag: vi.fn(),
+      exportFile: () => { throw new Error("Unexpected remote export") },
+        mediaResource: () => { throw new Error("Unexpected remote media") },
+        requestChanges: vi.fn(),
+      readChangesPage: vi.fn(),
+      openSharedItem: vi.fn(),
+    requestItems: vi.fn(),
+    readItemsPage: vi.fn(),
+    requestFiles: () => { throw new Error("Unexpected remote file read") },
+        readFilePage: () => { throw new Error("Unexpected remote file page") },
+        readView: () => { throw new Error('unused') },
+        openView: () => { throw new Error('unused') },
+        closeView: () => { throw new Error('unused') },
+        pressAction: () => { throw new Error('unused') },
         snapshot: () => Promise.resolve({
           ok: true as const,
           value: { revision: 0, outbound: [], inbound: [] },
@@ -449,8 +474,11 @@ class AppClientStub {
         disconnect: () => Promise.resolve({ ok: true as const, value: undefined }),
         release: () => Promise.resolve({ ok: true as const, value: undefined }),
         describeAgents: () => { throw new Error('No test of the shell describes remote agents') },
+        listAccounts: () => Promise.resolve({ ok: true as const, value: { protocol: 'appjamat-v3-control.v1' as const,
+          requestId: 'accounts', operation: 'accounts.list' as const, operationId: null, ok: true as const, value: [] } }),
         listProjects: () => { throw new Error('No test of the shell lists remote projects') },
         createSession: () => { throw new Error('No test of the shell creates a remote session') },
+        sessionCommand: () => { throw new Error('No test of the shell sends a remote session command') },
         reopenSession: () => { throw new Error('No test of the shell reopens a remote session') },
         finalizeSession: () => { throw new Error('No test of the shell finalizes a remote session') },
         sessionReference: (endpointId: string, sessionId: string) => {
@@ -540,6 +568,8 @@ class AppClientStub {
       onCommitChanged: () => () => undefined,
       onAgentSettingsChanged: () => () => undefined,
       onRateChanged: () => () => undefined,
+      onUsageChanged: () => () => undefined,
+      onSnapinsChanged: () => () => undefined,
       onHostPingResult: () => () => undefined,
       // Answered rather than refused: opening a session's tab is how the shell's two panel-id
       // derivations are compared. What the surface then draws is the panel's own business.
@@ -611,6 +641,12 @@ class AppClientStub {
         openReleasePage: () => Promise.resolve(),
         onChanged: () => () => undefined,
       },
+        agentCliUpdates: {
+          get: async () => ({ ok: true as const, value: { revision: 0, agents: [] } }),
+          check: async () => ({ ok: true as const, value: undefined }),
+          install: async () => ({ ok: true as const, value: undefined }),
+        },
+        onAgentCliUpdatesChanged: () => () => undefined,
     } satisfies Window['appClient']
     ;(window as unknown as { appClient: Window['appClient'] }).appClient = bridge
   }
@@ -847,7 +883,7 @@ class AppClientStub {
     return {
       snapshot: () => {
         this.sessionSnapshotReads += 1
-        return Promise.resolve({ ok: true as const, value: this.sessionsSnapshot })
+        return Promise.resolve({ ok: true as const, value: SessionsFixtures.present(this.sessionsSnapshot) })
       },
       create: refuse('create'),
       // This project has no recorded history, so the fork card contains only its source row.
@@ -887,15 +923,12 @@ class AppClientStub {
       discardWorktree: refuse('discardWorktree'),
       retrySetup: refuse('retrySetup'),
       adoptOrphan: refuse('adoptOrphan'),
-      // A coordinator works in the main copy: the first press is refused with it, a confirmation naming it starts.
+      // The first window press opens the wait; its step sends confirmation on the next press.
       updateMain: (sessionId: string, confirmLive?: readonly string[]) => {
         this.updates.push({ sessionId, confirmLive: confirmLive ?? null })
         return Promise.resolve({
           ok: true as const,
-          value: confirmLive?.includes('s-coordinator') === true
-            ? { ok: true as const, value: { sessionId, actionId: 'update-1' } }
-            : { ok: false as const, code: 'live-sessions', detail: '1 live session works in the main copy',
-              liveSessions: [{ sessionId: 's-coordinator', title: '020 - coordinator', number: '020' }] },
+          value: { ok: true as const, value: { sessionId, actionId: 'update-1' } },
         })
       },
       nextNumber: () => Promise.resolve({
@@ -907,7 +940,7 @@ class AppClientStub {
       stopHost: refuse('stopHost'),
       restartHost: () => {
         this.sessionsSnapshot.host.hostInstanceId = 'replacement-host'
-        return Promise.resolve({ ok: true as const, value: { ok: true as const, value: undefined } })
+        return Promise.resolve({ ok: true as const, value: { ok: true as const, value: { warnings: [] } } })
       },
       reference: (sessionId: string) => {
         this.referenced.push(sessionId)
@@ -1109,7 +1142,7 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     expect(AppShellTest.previewTabTitles(restored.container))
       .toEqual(reopen === 'preview replacement' ? ['AppJamatV3 - Alpha worktree'] : [])
     const terminal = restored.getByLabelText('Terminal for session s-working')
-    await waitFor(() => expect(openDraft).toHaveBeenCalledWith('s-working', vcs, 'C:/work', undefined))
+    await waitFor(() => expect(openDraft).toHaveBeenCalledWith('s-working', vcs, 'C:/work', undefined, undefined, undefined))
     await waitFor(() => expect(restoredViewer).toHaveFocus())
     expect(fireEvent.keyDown(restoredViewer.ownerDocument.activeElement!, { key: 'Escape' })).toBe(false)
     await waitFor(() => expect(restored.queryByLabelText('Split file')).toBeNull())
@@ -1336,74 +1369,6 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     expect(client.rateSnapshotReads).toBe(1)
   })
 
-  it('polls Processes in a holder without a sessions tree and opens and marks its split item', async () => {
-    const start = vi.spyOn(SessionTasksStore.prototype, 'start')
-    const { client, view } = await mountHolder()
-    vi.spyOn(window.appClient.fileChanges, 'workingTree').mockResolvedValue({
-      ok: true, value: { ok: false, code: 'invalid-context', detail: 'No working tree' },
-    })
-    vi.spyOn(window.appClient.fileChanges, 'list').mockResolvedValue({
-      ok: true, value: { ok: false, code: 'invalid-context', detail: 'No file changes' },
-    })
-    const listed: string[][] = []
-    const original = window.appClient.control.call
-    vi.spyOn(window.appClient.control, 'call').mockImplementation((operation, body) => {
-      if (operation === 'sessionTasks.list') {
-        const { sessionIds } = body as { sessionIds: string[] }
-        listed.push(sessionIds)
-        return Promise.resolve(ControlBridgeFixture.valueOf(operation, { ok: true, value: {
-          's-working': { kind: 'tasks', olderFinished: 0, catchingUp: false, rows: [
-            { kind: 'shell', shellId: 'process-shell', command: 'pnpm test', description: null,
-              state: 'running', startedAt: Date.now(), endedAt: null },
-          ] },
-        } }))
-      }
-      if (operation === 'sessionTasks.open') {
-        client.controlTabs({ kind: 'open-task', requestId: 'process-open', panelId: 'terminal:{"sessionId":"s-working"}',
-          item: { key: 'task:s-working:shell:process-shell', sessionId: 's-working',
-            task: { kind: 'shell', shellId: 'process-shell' }, title: '$ pnpm test' } })
-        return Promise.resolve(ControlBridgeFixture.valueOf(operation, { ok: true, value: {} }))
-      }
-      return original(operation, body)
-    })
-    await waitFor(() => expect(client.readinessOrder).toContain('rendererReady'))
-    client.controlTabs({ kind: 'open-session', requestId: 'process-parent', sessionId: 's-working', tabTitle: 'Work' })
-    await view.findByLabelText('Terminal for session s-working')
-    expect(start).toHaveBeenCalledTimes(1)
-    expect(listed).toEqual([])
-    client.run('view.toggleTabSidebar')
-    fireEvent.click(await view.findByRole('tab', { name: 'Processes' }))
-    const row = (await view.findByText('$ pnpm test', {}, { timeout: 3_000 })).closest('button')!
-    expect(listed).toEqual([['s-working']])
-    fireEvent.click(row)
-    const pane = await view.findByLabelText('$ pnpm test', { selector: '.task-pane' })
-    await waitFor(() => expect(row).toHaveAttribute('aria-current', 'true'))
-    row.focus()
-    expect(row).toHaveFocus()
-    fireEvent.click(row)
-    await act(async () => { await new Promise<void>((resolve) => requestAnimationFrame(() => resolve())) })
-    expect(view.getByLabelText('$ pnpm test', { selector: '.task-pane' })).toBe(pane)
-    expect(pane).toHaveFocus()
-    expect(fireEvent.keyDown(document.activeElement!, { key: 'Escape' })).toBe(false)
-    await waitFor(() => expect(view.container.querySelector('.task-pane')).toBeNull())
-
-    vi.useFakeTimers()
-    fireEvent.click(view.getByRole('tab', { name: 'File Changes' }))
-    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
-    expect(listed).toHaveLength(1)
-    fireEvent.click(view.getByRole('tab', { name: 'Processes' }))
-    await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
-    expect(listed).toHaveLength(2)
-    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
-    act(() => document.dispatchEvent(new Event('visibilitychange')))
-    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
-    expect(listed).toHaveLength(2)
-    visibility.mockReturnValue('visible')
-    await act(async () => document.dispatchEvent(new Event('visibilitychange')))
-    expect(listed).toHaveLength(3)
-    view.unmount()
-  })
-
   it('flushes only the tab controller when a holder closes', async () => {
     const { client } = await mountHolder()
 
@@ -1460,6 +1425,22 @@ describe('app-client-ui/renderer/shell/appShell', () => {
 
     await waitFor(() => expect(client.layoutClears).toBe(clearsBefore + 1))
     expect(view.container.textContent).not.toContain('Transferred Terminal')
+  })
+
+  it('clears the saved layout when the source closes the last session tab in a holder', async () => {
+    const { client, view } = await mountHolder()
+    await waitFor(() => expect(client.readinessOrder).toContain('rendererReady'))
+    const payload = transferPanel('terminal')
+    client.transferLease = { token: 'finished-session', panel: payload }
+    client.transferIn('finished-session')
+    await waitFor(() => expect(client.transferCalls).toContain('commit:finished-session'))
+    expect(client.savedLayouts.at(-1)).toContain(payload.panelId)
+    const clearsBefore = client.layoutClears
+
+    client.closePanel(payload.panelId)
+
+    await waitFor(() => expect(view.container.textContent).not.toContain('Transferred Terminal'))
+    await waitFor(() => expect(client.layoutClears).toBe(clearsBefore + 1))
   })
 
   it('keeps Move to New Window inert on Home and sends the exact active payload otherwise', async () => {
@@ -2006,13 +1987,21 @@ describe('app-client-ui/renderer/shell/appShell', () => {
       .toBe('Dirty worktree')
   })
 
-  it('opens finalize from an ended worktree row on its first click', async () => {
+  it('requests Session actions from an ended worktree row on its first click', async () => {
     const client = new AppClientStub(
       { sidebars: null, failed: false },
       false,
       SessionsFixtures.stoppedWorktree(),
     )
     client.install()
+    const original = window.appClient.control.call
+    const control = vi.spyOn(window.appClient.control, 'call').mockImplementation(async (operation, body) => {
+      if (operation === 'sessions.finishWorktree')
+        return ControlBridgeFixture.valueOf(operation, { ok: true, value: undefined })
+      else if (operation === 'sessionTasks.openWorkflow')
+        return ControlBridgeFixture.valueOf(operation, { ok: true, value: { panelId: 'terminal:s-dirty' } })
+      return original(operation, body)
+    })
     const view = render(<MainShell />)
     const tree = await waitFor(() => Sidebars.of(view.container, 'Sessions'))
     const row = await waitFor(() => {
@@ -2022,19 +2011,45 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     })
     const finish = [...row.querySelectorAll('button')]
       .find((button) => button.textContent === 'Finish…')
-    if (!(finish instanceof HTMLElement)) throw new Error('The row offered no finalize dialog')
+    if (!(finish instanceof HTMLElement)) throw new Error('The row offered no Finish action')
 
     fireEvent.click(finish)
 
-    await waitFor(() => expect(view.container.querySelector('.jamat-finalize')).toBeTruthy())
-    expect(view.container.querySelector('.jamat-finalize__session')?.textContent)
-      .toBe('Dirty worktree')
+    await waitFor(() => expect(control).toHaveBeenCalledWith('sessionTasks.openWorkflow', { sessionId: 's-dirty' }))
+    expect(control).toHaveBeenCalledWith('sessions.finishWorktree', {
+      session: { kind: 'sessionId', sessionId: 's-dirty' }, choice: 'commit',
+    })
+    expect(view.container.querySelector('.jamat-finalize')).toBeNull()
     expect(finish.textContent).toBe('Finish…')
   })
 
-  it('confirms an UPDATE of a landed row in an overlay that names the live sessions, and closes once it started', async () => {
-    const client = new AppClientStub({ sidebars: null, failed: false }, false, SessionsFixtures.svnWorktrees())
+  it('offers only Open actions on a row with an open section, and confirms the live list there', async () => {
+    const snapshot = SessionsFixtures.svnWorktrees()
+    const landed = snapshot.sessions.find((session) => session.sessionId === 's-landed')!
+    landed.actions = { sections: [{ kind: 'update-main', workflowId: 'update-1', title: 'Update main copy', badge: 'waits', summary: '', open: true,
+      rounds: [{ title: 'Update', steps: [{ key: 'main-update', title: 'Update main copy', detail: '', state: 'waits', startedAt: null, endedAt: null,
+        target: { kind: 'none' }, body: { kind: 'sessions', sessions: [{ sessionId: 's-coordinator', title: '020 - Coordinator', number: '020' }] } }] }],
+      actions: [{ id: 'update-main', label: 'Update', primary: true, place: 'step', confirmLive: ['s-coordinator'] },
+        { id: 'later', label: 'Later', primary: false, place: 'step' }],
+    }] }
+    const client = new AppClientStub({ sidebars: null, failed: false }, false, snapshot)
     client.install()
+    vi.spyOn(window.appClient.fileChanges, 'list').mockResolvedValue({
+      ok: true, value: { ok: false, code: 'invalid-context', detail: 'The worktree was removed' },
+    })
+    const original = window.appClient.control.call
+    vi.spyOn(window.appClient.control, 'call').mockImplementation(async (operation, body) => {
+      if (operation === 'sessionTasks.openWorkflow') {
+        client.controlTabs({ kind: 'open-session', requestId: 'update-tab', sessionId: 's-landed', tabTitle: 'Landed' })
+        await waitFor(() => expect(client.tabControlAcks).toContainEqual({ requestId: 'update-tab', result: {
+          kind: 'opened', panelId: 'terminal:{"sessionId":"s-landed"}',
+        } }))
+        client.controlTabs({ kind: 'open-workflow', requestId: 'update-step', panelId: 'terminal:{"sessionId":"s-landed"}', sessionId: 's-landed' })
+        return ControlBridgeFixture.valueOf(operation, { ok: true, value: { panelId: 'terminal:{"sessionId":"s-landed"}' } })
+      }
+      if (operation === 'sessionTasks.list') return ControlBridgeFixture.valueOf(operation, { ok: true, value: {} })
+      return original(operation, body)
+    })
     const view = render(<MainShell />)
     const tree = await waitFor(() => Sidebars.of(view.container, 'Sessions'))
     const row = await waitFor(() => {
@@ -2042,19 +2057,51 @@ describe('app-client-ui/renderer/shell/appShell', () => {
       if (!(found instanceof HTMLElement)) throw new Error('The tree drew no landed row')
       return found
     })
-    const update = [...row.querySelectorAll('button')].find((button) => button.textContent === 'Update main copy')
-    if (!(update instanceof HTMLElement)) throw new Error('The landed row offered no Update main copy')
+    // The open section runs the update, so the row offers only the way to it.
+    expect([...row.querySelectorAll('button.jamat-sessions__action')].map((button) => button.textContent)).toEqual(['Open actions'])
+    const open = [...row.querySelectorAll('button')].find((button) => button.textContent === 'Open actions')
+    if (!(open instanceof HTMLElement)) throw new Error('The landed row offered no Open actions')
 
-    fireEvent.click(update)
+    fireEvent.click(open)
 
-    await waitFor(() => expect(view.container.querySelector('.jamat-update-main')).toBeTruthy())
-    expect(view.container.querySelector('.jamat-update-main__live')?.textContent).toBe('020020 - coordinator')
+    expect((await view.findByRole('list', { name: 'Live sessions in the main copy' })).textContent).toBe('020 - Coordinator')
+    expect(view.container.querySelector('[role="dialog"]')).toBeNull()
     fireEvent.click(view.getByRole('button', { name: 'Update' }))
-    await waitFor(() => expect(view.container.querySelector('.jamat-update-main')).toBeNull())
-    expect(client.updates).toEqual([
-      { sessionId: 's-landed', confirmLive: null },
-      { sessionId: 's-landed', confirmLive: ['s-coordinator'] },
-    ])
+    await waitFor(() => expect(client.updates).toEqual([{ sessionId: 's-landed', confirmLive: ['s-coordinator'] }]))
+  })
+
+  it('draws a running Finish as its mark, which opens the actions, and offers no Open actions press (Finish 072)', async () => {
+    const snapshot = SessionsFixtures.svnWorktrees()
+    const landed = snapshot.sessions.find((session) => session.sessionId === 's-landed')!
+    landed.actions = { sections: [{ kind: 'finish', workflowId: 'finish-1', title: 'Finish', badge: 'committing', summary: 'Committing r814', open: true,
+      rounds: [{ title: 'Finish', steps: [{ key: 'committing', title: 'Commit', detail: '', state: 'running', startedAt: 1, endedAt: null,
+        target: { kind: 'none' } }] }], actions: [] }] }
+    const client = new AppClientStub({ sidebars: null, failed: false }, false, snapshot)
+    client.install()
+    const opened: unknown[] = []
+    const original = window.appClient.control.call
+    vi.spyOn(window.appClient.control, 'call').mockImplementation(async (operation, body) => {
+      if (operation === 'sessionTasks.openWorkflow') {
+        opened.push(body)
+        return ControlBridgeFixture.valueOf(operation, { ok: true, value: { panelId: 'terminal:{"sessionId":"s-landed"}' } })
+      }
+      if (operation === 'sessionTasks.list') return ControlBridgeFixture.valueOf(operation, { ok: true, value: {} })
+      return original(operation, body)
+    })
+    const view = render(<MainShell />)
+    const tree = await waitFor(() => Sidebars.of(view.container, 'Sessions'))
+    const row = await waitFor(() => {
+      const found = tree.querySelector('[data-session="s-landed"]')
+      if (!(found instanceof HTMLElement)) throw new Error('The tree drew no landed row')
+      return found
+    })
+    expect([...row.querySelectorAll('button.jamat-sessions__action')].map((button) => button.textContent)).toEqual([])
+    const mark = row.querySelector('.jamat-sessions__finish--running')
+    if (!(mark instanceof HTMLElement)) throw new Error('The row drew no running mark')
+    expect(mark).toMatchObject({ textContent: 'actions running', title: 'Committing r814' })
+    expect(mark.getAttribute('role')).toBe('button')
+    fireEvent.click(mark)
+    await waitFor(() => expect(opened).toHaveLength(1))
   })
 
   it('does not open finalize while another overlay owns the shell', async () => {
@@ -2266,6 +2313,7 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     await waitFor(() => expect(AppShellTest.barText(bar)).toEqual([
       'v0.0.0',
       'Updates off',
+      'CLI updates',
       'Host v2026.08.04.09.30 · 4 live',
       '|',
       'development',
@@ -2312,6 +2360,7 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     await waitFor(() => expect(AppShellTest.barText(bar)).toEqual([
       'v0.0.0',
       'Updates off',
+      'CLI updates',
       'Host v2026.08.04.09.30 · 4 live',
       'NodeJs / AppJamatV3 / Alpha worktree',
       '|',
@@ -2341,6 +2390,7 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     await waitFor(() => expect(AppShellTest.barText(bar)).toEqual([
       'v0.0.0',
       'Updates off',
+      'CLI updates',
       'Host v2026.08.04.09.30 · 4 live',
       'NodeJs / AppJamatV3 / Beta worktree',
       '|',
@@ -2435,8 +2485,13 @@ describe('app-client-ui/renderer/shell/appShell', () => {
    * `panelIdOf` is the params stringified, so a key added on one side and not the other closes
    * nothing at all while every other test stays green.
    */
-  it('takes the tab of a session away when that session is stopped', async () => {
-    const { view } = await mount({ sidebars: null, failed: false })
+  it('takes the tab of an ordinary session away when that session is stopped', async () => {
+    const snapshot = SessionsFixtures.mixed()
+    delete snapshot.sessions.find((session) => session.sessionId === 's-working')!.worktree
+    const client = new AppClientStub({ sidebars: null, failed: false }, false, snapshot)
+    client.install()
+    const view = render(<MainShell />)
+    await waitFor(() => expect(view.container.querySelector('[data-session="s-working"]')).toBeTruthy())
     const tree = Sidebars.of(view.container, 'Sessions')
     const row = tree.querySelector('[data-session="s-working"]')
     if (!(row instanceof HTMLElement))
@@ -2599,6 +2654,14 @@ describe('app-client-ui/renderer/shell/appShell', () => {
   })
 
   // The Compact precedent: a window holding no live terminal for the session refuses with a log.
+  it('opens the named session actions through the existing local control operation without a terminal', async () => {
+    const commandsOf = AppShellTest.captureCommands()
+    await mount({ sidebars: null, failed: false })
+    const call = vi.spyOn(AppControl, 'call').mockResolvedValue({ ok: true, value: { ok: true, value: { panelId: 'history' } } } as never)
+    act(() => void commandsOf().execute('session.showActions', { sessionId: 's-lost' }))
+    await waitFor(() => expect(call).toHaveBeenCalledWith('sessionTasks.openWorkflow', { sessionId: 's-lost' }))
+  })
+
   it('logs and does nothing for a compact whose named session has no terminal here', async () => {
     const commandsOf = AppShellTest.captureCommands()
     await mount({ sidebars: null, failed: false })

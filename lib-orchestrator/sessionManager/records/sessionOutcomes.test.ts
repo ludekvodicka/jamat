@@ -4,7 +4,7 @@ import type { SessionRecord } from './sessionRecord.types'
 import { SessionOutcomes } from './sessionOutcomes'
 
 describe('lib-orchestrator/sessionManager/records/sessionOutcomes', () => {
-  type Facts = Pick<SessionRecord, 'life' | 'stopRequested' | 'exitReason' | 'exitCode'>
+  type Facts = Pick<SessionRecord, 'life' | 'stopRequested' | 'exitReason' | 'exitCode' | 'pendingSetup'>
 
   const windowsKillCodeConst = -1073741510
 
@@ -79,6 +79,21 @@ describe('lib-orchestrator/sessionManager/records/sessionOutcomes', () => {
       stopRequested: true,
       exitReason: 'host-lost',
     }))).toBe('finished')
+  })
+
+  /**
+   * A worktree session waiting for the person to agree to its setup commands is written `ended`,
+   * because no runtime stands behind it, but nothing has run and nothing has failed.
+   */
+  it('gives no verdict on a session whose setup waits for command approval', () => {
+    const waiting = facts('ended', { pendingSetup: { setupSessionId: 'setup', agreement: { hash: 'h', commands: ['pnpm install'] } } })
+    expect(SessionOutcomes.awaitsSetupApproval(waiting)).toBe(true)
+    expect(SessionOutcomes.of(waiting)).toBe(null)
+    // A failed install keeps its gate without an agreement, and that one did fail.
+    const failed = facts('ended', { pendingSetup: { setupSessionId: 'setup' } })
+    expect(SessionOutcomes.awaitsSetupApproval(failed)).toBe(false)
+    expect(SessionOutcomes.of(failed)).toBe('failed')
+    expect(SessionOutcomes.awaitsSetupApproval(facts('ended'))).toBe(false)
   })
 
   it('throws on a life it does not know', () => {

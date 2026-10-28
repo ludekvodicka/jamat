@@ -104,11 +104,26 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionSteps', () => {
     expect(steps.infoOf(recordOf({ svnAction: actionOf({ stage: 'recording' }) }))?.detail).toBe('run logs, durable result, session record')
   })
 
+  it('names the publication a Finish verifies, and keeps the resolver words for an UPDATE of the main copy', () => {
+    const { steps } = harness()
+    const verifying = recordOf({
+      commitReceipts: [{ scopeRoot: 'Q:/Work/App/.worktrees/014-fix', revision: 1481, paths: ['a.txt'], at: 450 }],
+      worktreeLifecycle: {
+        version: 9, actionId: 'a1', phase: 'finishing', step: 'verifying', outOfDate: 0, approvedAt: 300,
+        facts: { worker: { liveness: 'alive', resumeFailures: 0 } }, journal: [],
+        execution: { root: 'Q:/Work/App/.worktrees/014-fix', checks: [], checkCursor: 0, rootCursor: 0, evidence: [], requestedBy: 'window', startedAt: 100 },
+      },
+    })
+    expect(steps.infoOf(verifying)).toMatchObject({ text: 'Verifying the publication r1481', startedAt: null })
+    expect(steps.infoOf(recordOf({ svnAction: actionOf({ kind: 'update-main', stage: 'verifying' }) })))
+      .toMatchObject({ text: 'Checking what the resolver left', detail: 'waiting to start' })
+  })
+
   it('has words for every fact and every read', () => {
     const reads = {
       'owner': true, 'own-commits': true, 'receipts': true, 'fingerprint': true, 'schedule-missing': true, 'base-revision': true,
       'lock': true, 'conflicts': true, 'incoming': true, 'review-roots': true, 'review-bounds': true, 'review-labels': true,
-      'markers': true, 'changes': true, 'resolve': true, 'leftovers': true,
+      'markers': true, 'changes': true, 'resolve': true, 'leftovers': true, 'assembly': true,
     } satisfies Record<SessionStepRead, true>
     const facts = {
       'stopping': { kind: 'stopping', limitSeconds: 60 },
@@ -117,6 +132,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionSteps', () => {
       'read': { kind: 'read', read: 'owner' },
       'removal': removing,
       'recording': { kind: 'recording' },
+      'publication': { kind: 'publication', revision: 1481 },
       'fixing': { kind: 'fixing', path: 'src/catalog.ts', option: 'merged', index: 1, count: 3 },
     } satisfies Record<SessionStepFacts['kind'], SessionStepFacts>
     const all: SessionStepFacts[] = [

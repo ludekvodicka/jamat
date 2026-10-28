@@ -97,7 +97,7 @@ describe('lib-orchestrator/rateMonitor/cache/rateMonitorCacheStore', () => {
 
     expect(existsSync(file)).toBe(true)
     expect(existsSync(`${file}.tmp`)).toBe(false)
-    expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({ schemaVersion: 1 })
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({ schemaVersion: 2 })
   })
 
   it('treats a file that is not JSON as no cache at all', async () => {
@@ -164,4 +164,18 @@ describe('lib-orchestrator/rateMonitor/cache/rateMonitorCacheStore', () => {
     expect(await new RateMonitorCacheStore(file).load())
       .toEqual({ providers: { codex: { fetchedAt: 7, windows: [], extras: [] } }, attempts: {} })
   })
+  it('migrates schema 1 to main keys on disk and preserves added account entries', async () => {
+    const file = cacheFile()
+    const entry = { fetchedAt: 5, windows: [{ durationMinutes: 300, usedPercent: 40, resetsAt: null }], extras: [] }
+    write(file, JSON.stringify({ schemaVersion: 1, providers: { claude: entry }, attempts: { claude: 7 } }))
+    const store = new RateMonitorCacheStore(file)
+    expect(await store.load()).toEqual({ providers: { claude: entry }, attempts: { claude: 7 } })
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ schemaVersion: 2,
+      accounts: [{ key: { agentId: 'claude', accountId: 'main' }, entry, attemptAt: 7 }] })
+    const content = { providers: { claude: entry }, attempts: { claude: 7 },
+      accounts: [{ key: { agentId: 'claude' as const, accountId: 'other' }, entry, attemptAt: 9 }] }
+    store.save(content)
+    expect(await store.load()).toEqual(content)
+  })
+
 })

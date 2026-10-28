@@ -1,5 +1,7 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { AppControl } from '../ipc/appControl'
+import type { TaskPanePorts } from './taskPaneStore'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionSubagentTranscript } from '../../../lib-orchestrator/sessionTasks/sessionTasksApi.types'
 import { ControlBridgeFixture } from '../ipc/fixtures/controlBridgeFixture'
@@ -8,6 +10,10 @@ import { TaskPane } from './taskPane'
 import { ScriptOutputView } from './scriptOutputView'
 
 describe('app-client-ui/renderer/taskView/taskPane', () => {
+  const ports: TaskPanePorts = { transcript: (request) => AppControl.call('sessionTasks.transcript', request),
+    shellOutput: (request) => AppControl.call('sessionTasks.shellOutput', request), scriptOutput: (request) => AppControl.call('sessions.scriptOutput', request),
+    openTerminal: async (runId) => { const answer = await AppControl.call('tabs.open', { session: { kind: 'sessionId', sessionId: runId } }); return !answer.ok ? answer.error : !answer.value.ok ? answer.value.error.detail : null },
+  }
   afterEach(() => cleanup())
 
   const itemConst: PanelSplitTaskItem = { kind: 'task', key: 'task:s-1:subagent:a1', title: 'Explore: Look at docs',
@@ -31,7 +37,7 @@ describe('app-client-ui/renderer/taskView/taskPane', () => {
       ],
       earlierStepsOmitted: false,
     })
-    render(<TaskPane item={itemConst} visible />)
+    render(<TaskPane ports={ports} item={itemConst} visible />)
 
     expect(await screen.findByText('Explore: Look at docs')).toBeTruthy()
     expect(screen.getByText('Done · claude-opus-5 · 31,200 context tokens')).toBeTruthy()
@@ -52,7 +58,7 @@ describe('app-client-ui/renderer/taskView/taskPane', () => {
       text: 'Reply from <b>127.0.0.1</b>\nDone\n', earlierOutputOmitted: true,
     } })
     ;(window as unknown as { appClient: unknown }).appClient = { control: control.bridge() }
-    render(<TaskPane item={{ kind: 'task', key: 'task:s-1:shell:b1', title: '$ ping -n 30 127.0.0.1', sessionId: 's-1',
+    render(<TaskPane ports={ports} item={{ kind: 'task', key: 'task:s-1:shell:b1', title: '$ ping -n 30 127.0.0.1', sessionId: 's-1',
       task: { kind: 'shell', shellId: 'b1' } }} visible />)
 
     expect(await screen.findByText('$ ping -n 30 127.0.0.1')).toBeTruthy()
@@ -66,7 +72,7 @@ describe('app-client-ui/renderer/taskView/taskPane', () => {
 
   it('says why there is nothing to show', async () => {
     install({ kind: 'none', code: 'unknown-task', reason: 'The session lists no such sub-agent' })
-    render(<TaskPane item={itemConst} visible />)
+    render(<TaskPane ports={ports} item={itemConst} visible />)
 
     expect(await screen.findByText('The session lists no such sub-agent')).toBeTruthy()
   })
@@ -76,7 +82,7 @@ describe('app-client-ui/renderer/taskView/taskPane', () => {
       state: 'succeeded', source: 'log', lines: ['<b>installed</b>', 'done'], terminal: null, endedAt: 123,
     } })
     ;(window as unknown as { appClient: unknown }).appClient = { control: control.bridge() }
-    render(<TaskPane item={{ kind: 'task', key: 'task:s-1:script:r1', title: 'Setup project', sessionId: 's-1',
+    render(<TaskPane ports={ports} item={{ kind: 'task', key: 'task:s-1:script:r1', title: 'Setup project', sessionId: 's-1',
       task: { kind: 'script', runId: 'r1' } }} visible />)
     expect(await screen.findByText('Setup project')).toBeTruthy()
     expect(screen.getByText('Succeeded · Saved log')).toBeTruthy()
@@ -88,7 +94,7 @@ describe('app-client-ui/renderer/taskView/taskPane', () => {
   it('offers Open terminal only while script output has a terminal, and keeps the view through collapse', async () => {
     const control = new ControlBridgeFixture().on('tabs.open', { ok: true, value: {} })
     ;(window as unknown as { appClient: unknown }).appClient = { control: control.bridge() }
-    const { rerender } = render(<ScriptOutputView title="Setup project" runId="r1" output={{
+    const { rerender } = render(<ScriptOutputView openTerminal={ports.openTerminal} title="Setup project" runId="r1" output={{
       state: 'running', source: 'live', lines: ['installing'],
       terminal: { hostInstanceId: 'host', runtimeSessionId: 'runtime', generation: 1 },
     }} />)
@@ -96,7 +102,7 @@ describe('app-client-ui/renderer/taskView/taskPane', () => {
     await waitFor(() => expect(control.bodiesOf('tabs.open')).toEqual([{ session: { kind: 'sessionId', sessionId: 'r1' } }]))
     expect(screen.getByTestId('script-output-text').textContent).toBe('installing')
 
-    rerender(<ScriptOutputView title="Setup project" runId="r1" output={{
+    rerender(<ScriptOutputView openTerminal={ports.openTerminal} title="Setup project" runId="r1" output={{
       state: 'succeeded', source: 'log', lines: ['installed'], terminal: null,
     }} />)
     expect(screen.getByText('Setup project')).toBeTruthy()
@@ -106,21 +112,50 @@ describe('app-client-ui/renderer/taskView/taskPane', () => {
   })
 
   it('shows an unavailable script log reason without offering a terminal', () => {
-    render(<ScriptOutputView title="Setup project" runId="r1" output={{
+    render(<ScriptOutputView openTerminal={ports.openTerminal} title="Setup project" runId="r1" output={{
       state: 'lost', source: 'log', lines: [], terminal: null, logReason: 'The Host restarted before saving output',
+      failureReason: 'The SVN command ended without an exit code',
     }} />)
     expect(screen.getByText('The Host restarted before saving output')).toBeTruthy()
+    expect(screen.getByText('Lost · Log unavailable')).toBeTruthy()
+    expect(screen.getByText('The SVN command ended without an exit code').closest('header')).toBeTruthy()
+    expect(screen.queryByText('Lost · Saved log')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Open terminal' })).toBeNull()
+  })
+
+  it('says why a stopped run ended without marking it as a failure', () => {
+    render(<ScriptOutputView openTerminal={ports.openTerminal} title="Worktree validation" runId="r1" output={{
+      state: 'stopped', source: 'log', lines: [], terminal: null, failureReason: 'its run was stopped',
+    }} />)
+    expect(screen.getByText('Stopped · Saved log')).toBeTruthy()
+    expect(screen.getByText('its run was stopped').className).not.toContain('task-view__failed')
   })
 
   it('reads nothing while its tab is hidden and once when it is shown', async () => {
     const control = install({ kind: 'none', code: 'unknown-task', reason: 'The session lists no such sub-agent' })
-    const { rerender } = render(<TaskPane item={itemConst} visible={false} />)
+    const { rerender } = render(<TaskPane ports={ports} item={itemConst} visible={false} />)
     expect(screen.getByText('Reading the sub-agent…')).toBeTruthy()
     await Promise.resolve()
     expect(control.bodiesOf('sessionTasks.transcript')).toEqual([])
 
-    rerender(<TaskPane item={itemConst} visible />)
+    rerender(<TaskPane ports={ports} item={itemConst} visible />)
     await waitFor(() => expect(control.bodiesOf('sessionTasks.transcript')).toHaveLength(1))
+  })
+
+  it('replaces equal task IDs on a new source generation and ignores a late retired read', async () => {
+    let release!: (value: Awaited<ReturnType<TaskPanePorts['scriptOutput']>>) => void
+    const oldRead = vi.fn(() => new Promise<Awaited<ReturnType<TaskPanePorts['scriptOutput']>>>((resolve) => { release = resolve }))
+    const newRead = vi.fn(async () => ({ ok: true as const, value: { ok: true as const, value: {
+      source: 'log' as const, state: 'succeeded' as const, terminal: null, lines: ['Source two'],
+    } } }))
+    const item: PanelSplitTaskItem = { kind: 'task', key: 'same-key', title: 'Script', sessionId: 'same-session', task: { kind: 'script', runId: 'same-run' } }
+    const view = render(<TaskPane ports={{ ...ports, scriptOutput: oldRead }} item={item} visible />)
+    await waitFor(() => expect(oldRead).toHaveBeenCalledOnce())
+    view.rerender(<TaskPane ports={{ ...ports, scriptOutput: newRead }} item={item} visible />)
+    expect(await screen.findByText('Source two')).toBeTruthy()
+    await act(async () => release({ ok: true, value: { ok: true, value: { source: 'log', state: 'succeeded', terminal: null, lines: ['Retired source'] } } }))
+    expect(screen.queryByText('Retired source')).toBeNull()
+    expect(screen.getByText('Source two')).toBeTruthy()
+    expect(newRead).toHaveBeenCalledExactlyOnceWith({ sessionId: 'same-session', runId: 'same-run' })
   })
 })

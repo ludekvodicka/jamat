@@ -1,4 +1,4 @@
-import type { SvnConflictFact, SvnConflictLoss, SvnConflictOption, SvnConflictPlan, SvnConflictShape } from './svn.types'
+import type { SvnConflictFact, SvnConflictKind, SvnConflictLoss, SvnConflictOption, SvnConflictPlan, SvnConflictShape } from './svn.types'
 
 /**
  * The classifier: one conflicted path's svn facts and content to its shape, the options the shape
@@ -16,12 +16,13 @@ export class SvnConflictShapes {
     'mergeinfo': { options: ['union', 'take-incoming', 'keep-mine'], agent: true },
     'line-list-property': { options: ['union', 'merged', 'take-incoming', 'keep-mine'], agent: true },
     'property-value': { options: ['merged', 'take-incoming', 'keep-mine'], agent: true },
+    'property-unknown': { options: ['merged', 'take-incoming', 'keep-mine'], agent: false },
     'externals': { options: ['merged', 'take-incoming', 'keep-mine'], agent: false },
     'obstructed-file': { options: ['merged', 'take-incoming', 'keep-mine'], agent: true },
     'obstructed-dir': { options: ['keep-both', 'take-incoming', 'keep-mine'], agent: true },
     'added-both': { options: ['keep-both', 'merged', 'take-incoming', 'keep-mine'], agent: true },
     'kind-mismatch': { options: ['take-incoming', 'keep-mine'], agent: false },
-    'edit-vs-delete': { options: ['merged', 'take-incoming', 'keep-mine'], agent: true },
+    'edit-vs-delete': { options: ['keep-both', 'merged', 'take-incoming', 'keep-mine'], agent: true },
     'edit-vs-replace': { options: ['merged', 'take-incoming', 'keep-mine'], agent: true },
     'delete-vs-edit': { options: ['take-incoming', 'keep-mine'], agent: false },
     'delete-vs-delete': { options: ['merged'], agent: true },
@@ -55,6 +56,12 @@ export class SvnConflictShapes {
     return SvnConflictShapes.plansConst[shape].agent
   }
 
+  static agentOption(shape: SvnConflictShape, kind: SvnConflictKind, option: SvnConflictOption, properties: readonly string[] = []): boolean {
+    return SvnConflictShapes.agentOf(shape) && SvnConflictShapes.optionsOf(shape).includes(option)
+      && SvnConflictShapes.lossOf(option) !== 'incoming'
+      && (option !== 'merged' || (kind === 'text' || kind === 'diverged') && properties.length === 0)
+  }
+
   /** Whether a value read from disk names a shape of this build. */
   static isShape(value: unknown): value is SvnConflictShape {
     return typeof value === 'string' && Object.hasOwn(SvnConflictShapes.plansConst, value)
@@ -74,9 +81,12 @@ export class SvnConflictShapes {
   }
 
   /**
-   * A text conflict that also has a property conflict gets no rule: no single proof covers both. Equal
-   * bytes, or text that differs only in line ends, take the incoming file, which keeps its
-   * `svn:eol-style`; the working file holds svn's markers, so `merged` could not settle it.
+   * A fact that names conflicted properties gets no text rule: no single proof covers both. (The read
+   * splits a file's property conflict into its own fact, so a text fact names none.) Equal bytes, or
+   * text that differs only in line ends, take the incoming file, which keeps its `svn:eol-style`; the
+   * working file holds svn's markers, so `merged` could not settle it. Differing text whose sides merge
+   * cleanly against the side before the update, line ends ignored, is `merged` by Jamat: its executor
+   * writes that merge first (`write-merged`), keeping every line either side changed.
    */
   private static textOf(fact: SvnConflictFact): SvnConflictPlan {
     const content = fact.content
@@ -85,17 +95,16 @@ export class SvnConflictShapes {
     if (content.unreadable) return SvnConflictShapes.of('text-unreadable', null)
     if (content.binary) return SvnConflictShapes.of('binary', proven && content.equal === 'bytes' ? 'take-incoming' : null)
     if (content.equal === 'bytes' || content.equal === 'eol') return SvnConflictShapes.of('text-same', proven ? 'take-incoming' : null)
-    return SvnConflictShapes.of('text-overlap', null)
+    return SvnConflictShapes.of('text-overlap', proven && content.merge === 'clean' ? 'merged' : null)
   }
 
   /**
-   * svn names no property in a conflict; an empty list means every value agrees on two sides. Line
-   * lists merge three ways without a loss. `svn:mergeinfo` gets no rule: svn 1.14 merges its ranges
-   * itself on update, so a Finish never meets it (the spike).
+   * An empty property comparison is not evidence that SVN's recorded conflict was resolved.
+   * Only the supported line-list properties admit an automatic three-way union.
    */
   private static propertyOf(fact: SvnConflictFact): SvnConflictPlan {
     const names = fact.properties.map((property) => property.name)
-    if (names.length === 0) return SvnConflictShapes.of('property-value', 'merged')
+    if (names.length === 0) return SvnConflictShapes.of('property-unknown', null)
     if (names.includes('svn:externals')) return SvnConflictShapes.of('externals', null)
     if (names.every((name) => name === 'svn:mergeinfo')) return SvnConflictShapes.of('mergeinfo', null)
     if (names.every((name) => SvnConflictShapes.lineListPropertiesConst.includes(name))) return SvnConflictShapes.of('line-list-property', 'union')
@@ -105,6 +114,7 @@ export class SvnConflictShapes {
   private static treeOf(fact: SvnConflictFact): SvnConflictPlan {
     const tree = fact.tree
     if (tree === null) return SvnConflictShapes.of('unrecognized', null)
+    if (tree.operation === 'merge') return { shape: 'unrecognized', options: ['merged', 'keep-mine'], rule: null, agent: false }
     const { reason, action, localKind, incomingKind } = tree
     if (reason === 'unrecognized' || action === 'unrecognized') return SvnConflictShapes.of('unrecognized', null)
     if (localKind !== 'none' && incomingKind !== 'none' && localKind !== incomingKind)
@@ -117,9 +127,15 @@ export class SvnConflictShapes {
       return SvnConflictShapes.addedBoth(fact)
     if ((reason === 'deleted' || reason === 'missing' || reason === 'moved-away') && action === 'deleted')
       return SvnConflictShapes.of('delete-vs-delete', 'merged')
+    if (reason === 'moved-away' && action === 'edited')
+      return { ...SvnConflictShapes.of('delete-vs-edit', null), options: ['keep-both', 'keep-mine'] }
     if ((reason === 'deleted' || reason === 'missing' || reason === 'moved-away') && (action === 'edited' || action === 'replaced'))
       return SvnConflictShapes.of('delete-vs-edit', null)
-    if (reason === 'edited' && action === 'deleted') return SvnConflictShapes.of('edit-vs-delete', null)
+    if (reason === 'edited' && action === 'deleted') {
+      const plan = SvnConflictShapes.of('edit-vs-delete', null)
+      // svn drops the session's unversioned files below a folder it carries to the new place, so only a file follows an incoming move.
+      return tree.movedTo !== undefined && localKind === 'file' ? plan : { ...plan, options: plan.options.filter((option) => option !== 'keep-both') }
+    }
     if (reason === 'edited' && action === 'replaced') return SvnConflictShapes.of('edit-vs-replace', null)
     if (reason === 'replaced') return SvnConflictShapes.of('replace-or-case', null)
     return SvnConflictShapes.of('unrecognized', null)

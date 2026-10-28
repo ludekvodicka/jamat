@@ -32,6 +32,8 @@ export interface HostClientDeps {
   /** Random per client process by default: two clients sharing one id would steal each other's lease. */
   controllerId?: string
   descriptorPollMilliseconds?: number
+  /** The controller lease is held under a new id (`ControllerLeaseKeeperDeps.onGranted`). */
+  onLeaseGranted?: () => void
 }
 
 /**
@@ -68,6 +70,7 @@ export class HostClient {
       controllerId: deps.controllerId ?? `jamat-client-${randomUUID()}`,
       call: (name, body) => this.http.call(name, body),
       onError: deps.onError,
+      onGranted: () => deps.onLeaseGranted?.(),
     })
   }
 
@@ -153,9 +156,11 @@ export class HostClient {
     runtimeSessionId: string
     launch: RuntimeLaunchSpec
   }): Promise<HostCallResult<RuntimeResult>> {
+    if (request.launch.stopDescendants && this.watcher.current() !== null && !this.watcher.current()?.capabilities.includes('runtime.managed-descendants.v1'))
+      return { ok: false, code: 'op-rejected', status: 400, detail: 'This Host does not support managed descendants. Restart the Host before starting managed runs.' }
     return this.mutate<RuntimeResult>(
       'runtime.create',
-      (controllerLeaseId) => ({ controllerLeaseId, ...request }),
+      (controllerLeaseId) => ({ controllerLeaseId, ...request, launch: { ...request.launch, stopDescendants: request.launch.stopDescendants === true } }),
     )
   }
 
@@ -164,27 +169,37 @@ export class HostClient {
     operationId: string
     launch: RuntimeLaunchSpec
   }): Promise<HostCallResult<RuntimeResult>> {
+    if (request.launch.stopDescendants && this.watcher.current() !== null && !this.watcher.current()?.capabilities.includes('runtime.managed-descendants.v1'))
+      return { ok: false, code: 'op-rejected', status: 400, detail: 'This Host does not support managed descendants. Restart the Host before starting managed runs.' }
     return this.mutate<RuntimeResult>(
       'runtime.replace',
-      (controllerLeaseId) => ({ controllerLeaseId, ...request }),
+      (controllerLeaseId) => ({ controllerLeaseId, ...request, launch: { ...request.launch, stopDescendants: request.launch.stopDescendants === true } }),
     )
   }
 
-  async runtimeStop(target: RuntimeRef): Promise<HostCallResult<RuntimeMutationAck>> {
+  async runtimeStop(target: RuntimeRef, confirmExternalStop = false): Promise<HostCallResult<RuntimeMutationAck>> {
+    const current = this.watcher.current()
+    if (confirmExternalStop && current !== null && current.hostInstanceId !== target.hostInstanceId)
+      return { ok: true, value: { servedByHostInstanceId: current.hostInstanceId, target, diagnostic: 'already-removed' } }
     return this.mutate<RuntimeMutationAck>(
       'runtime.stop',
-      (controllerLeaseId) => ({ controllerLeaseId, target }),
+      (controllerLeaseId) => ({ controllerLeaseId, target, ...(confirmExternalStop ? { confirmExternalStop: true } : {}) }),
     )
   }
 
+  /** A previous instance holds nothing any more, and the current Host refuses its targets. */
   async runtimeRemove(target: RuntimeRef): Promise<HostCallResult<RuntimeMutationAck>> {
+    const current = this.watcher.current()
+    if (current !== null && current.hostInstanceId !== target.hostInstanceId)
+      return { ok: true, value: { servedByHostInstanceId: current.hostInstanceId, target, diagnostic: 'already-removed' } }
     return this.mutate<RuntimeMutationAck>(
       'runtime.remove',
       (controllerLeaseId) => ({ controllerLeaseId, target }),
     )
   }
 
-  async stopHost(expectedHostInstanceId: string): Promise<HostCallResult<{ stopping: true; live: number }>> {
+  /** `warnings` names what the old Host could not stop; a Host older than that answer leaves it out. */
+  async stopHost(expectedHostInstanceId: string): Promise<HostCallResult<{ stopping: true; live: number; warnings?: string[] }>> {
     if (this.watcher.current()?.hostInstanceId !== expectedHostInstanceId)
       return { ok: false, code: 'host-unreachable', detail: 'The Host changed before the restart. Try again.' }
     return this.mutate('host.stop', (controllerLeaseId) => ({ controllerLeaseId, force: true }))

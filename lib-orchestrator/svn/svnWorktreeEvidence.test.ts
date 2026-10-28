@@ -24,6 +24,26 @@ const foreign = (): SvnVerboseItem[] => SvnWorktreeEvidence.statusVerboseRows(fi
 const noHistory = async (): Promise<SvnLoggedRow[]> => { throw new Error('history must not be read') }
 
 describe('lib-orchestrator/svn/svnWorktreeEvidence', () => {
+  it('requires native file-external registration rather than only a matching switched URL', () => {
+    const xml = (attributes: string) => `<status><target path="."><entry path="file"><wc-status ${attributes}/></entry></target></status>`
+    expect(SvnWorktreeEvidence.registeredFileExternal(xml('item="normal" file-external="true"'))).toBe(true)
+    expect(SvnWorktreeEvidence.registeredFileExternal(xml('item="normal" switched="true"'))).toBe(false)
+  })
+
+  it('rejects skipped, switched and mixed BASE paths after update, allowing scheduled changes and independent externals', () => {
+    const rows = [
+      ['current', 'item="normal" revision="8"'], ['mixed', 'item="modified" revision="7"'],
+      ['switched', 'item="normal" revision="8" switched="true"'], ['missing', 'item="missing" revision="8"'],
+      ['obstructed', 'item="obstructed"'], ['incomplete', 'item="incomplete"'], ['added', 'item="added" revision="-1"'],
+      ['deleted', 'item="deleted" revision="7"'], ['external', 'item="external"'],
+      ['file-external', 'item="normal" revision="3" file-external="true"'],
+      ['moved/modified-child', 'item="modified" copied="true"'], ['copied/normal-child', 'item="normal" copied="true"'],
+      ['copied/obstructed', 'item="obstructed" copied="true"'],
+    ]
+    const xml = `<status><target path=".">${rows.map(([path, status]) => `<entry path="${path}"><wc-status ${status}/></entry>`).join('')}</target></status>`
+    expect(SvnWorktreeEvidence.updateProblems(xml, root, 8)).toEqual(['mixed', 'switched', 'missing', 'obstructed', 'incomplete', 'copied/obstructed'])
+  })
+
   describe('status', () => {
     it('reads every change kind, keeps a non-ASCII name and names paths relative to the root', () => {
       expect(SvnWorktreeEvidence.statusRows(fixture('status-before-update.xml'), root)).toEqual([
@@ -34,7 +54,7 @@ describe('lib-orchestrator/svn/svnWorktreeEvidence', () => {
         { kind: 'props', conflict: false, path: 'src' },
         { kind: 'item', conflict: false, path: 'src/a.txt' },
         { kind: 'item', conflict: false, path: 'src/added.txt' },
-        { kind: 'item', conflict: false, path: 'src/c.txt' },
+        { kind: 'item', conflict: false, path: 'src/c.txt', deleted: true },
         { kind: 'item', conflict: false, path: 'src/loose.txt' },
         { kind: 'item', conflict: false, path: 'src/přehled.md' },
         { kind: 'item', conflict: false, path: 'tree.txt' },
@@ -65,6 +85,15 @@ describe('lib-orchestrator/svn/svnWorktreeEvidence', () => {
       expect(() => SvnWorktreeEvidence.statusRows(`<status><target path="${root}"><entry path="x"></entry></target></status>`, root))
         .toThrow(/no state for x/)
       expect(() => SvnWorktreeEvidence.statusRows('<info/>', root)).toThrow(/no <status>/)
+    })
+
+    // UA1-J10-10: a Keep listed src/limit.txt.mine, .r1 and .r2 as unpublished work beside the conflict.
+    it('leaves svn conflict files of a conflicted path out of the unpublished paths', () => {
+      const row = (path: string, conflict = false) => ({ path, kind: 'item' as const, conflict })
+      expect(SvnWorktreeEvidence.unpublished([row('src/limit.txt', true), row('src/limit.txt.mine'), row('src/limit.txt.r1'),
+        row('src/limit.txt.r2'), row('src/other.txt.r3'), row('lib/a.c.working'), row('lib/a.c.merge-left.r4'), row('lib/a.c', true),
+        row('dir', true), row('dir/dir_conflicts.prej'), row('notes.mine')]))
+        .toEqual(['src/limit.txt', 'src/other.txt.r3', 'lib/a.c', 'dir', 'notes.mine'])
     })
 
     it('keeps only the change kinds as changed rows', () => {
@@ -112,6 +141,11 @@ describe('lib-orchestrator/svn/svnWorktreeEvidence', () => {
         .toEqual([{ revision: 5, action: 'M', path: 'mount/l.txt' }])
     })
 
+    it('reads a range no commit touched as no rows, and only a missing <log> as an error', () => {
+      expect(SvnWorktreeEvidence.loggedRows('<?xml version="1.0" encoding="UTF-8"?>\n<log>\n</log>\n', '/Project', '')).toEqual([])
+      expect(() => SvnWorktreeEvidence.loggedRows('<info/>', '/Project', '')).toThrow(/no <log>/)
+    })
+
     it('reads revision, author and message of each commit, non-ASCII text intact, and a commit without an author', () => {
       const xml = '<?xml version="1.0" encoding="UTF-8"?><log><logentry revision="2"><author>luděk</author><date>2026-10-13T10:00:00Z</date>'
         + '<msg>Přidej stopu enginů\n\nřádek 2 &amp; „uvozovky“</msg></logentry><logentry revision="3"><msg></msg></logentry></log>'
@@ -131,6 +165,12 @@ describe('lib-orchestrator/svn/svnWorktreeEvidence', () => {
         { revision: 12, action: 'A', path: 'src/přehled.md' },
       ])
       expect(SvnWorktreeEvidence.loggedRows(xml, '/Project', 'm')[0].path).toBe('m')
+    })
+
+    it('names a repository-root property publication as the current directory', () => {
+      const xml = '<log><logentry revision="3"><paths><path action="M" kind="dir">/</path></paths></logentry></log>'
+      expect(SvnWorktreeEvidence.loggedRows(xml, '', '')).toEqual([{ revision: 3, action: 'M', path: '.' }])
+      expect(SvnWorktreeEvidence.loggedRows(xml, '', 'mount')).toEqual([{ revision: 3, action: 'M', path: 'mount' }])
     })
   })
 
@@ -169,6 +209,12 @@ describe('lib-orchestrator/svn/svnWorktreeEvidence', () => {
   describe('pinned externals', () => {
     const properties = (target: string, value: string): string =>
       `<properties><target path="${target}"><property name="svn:externals">${value}</property></target></properties>`
+
+    it('uses the update parser for date pins and quoted or escaped local names', () => {
+      const value = ['^/lib@{2026-10-18} "date pin"', '^/lib@%7B2026-10-18%7D escaped\\ pin',
+        "'old style' -r1 ^/lib", '^/lib floating'].join('\n')
+      expect(SvnWorktreeEvidence.pinnedExternals(properties(root, value), root)).toEqual(['date pin', 'escaped pin', 'old style'])
+    })
 
     it('reads a revision in both definition formats and a peg revision, and nothing from a floating one', () => {
       const value = [

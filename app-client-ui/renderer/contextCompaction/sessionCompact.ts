@@ -1,14 +1,15 @@
 import type { IpcResult } from '../../shared/appClientUiIpc'
 import type { ContextCompactionCooldown } from '../../shared/contextCompactionCooldown'
 import type { ContextCompactionDelivery } from '../../shared/contextCompactionDelivery'
+import { TerminalTargetCodec } from '../../shared/terminalTarget'
 import { ErrorText } from '../../shared/errorText'
 import type { TerminalInputRegistry } from '../shell/terminalInputRegistry'
 
 export interface SessionCompactPorts {
-  claimAutomatic(sessionId: string): Promise<IpcResult<boolean>>
-  noteManual(sessionId: string): Promise<IpcResult<void>>
-  cooldown(sessionId: string): Promise<IpcResult<ContextCompactionCooldown | null>>
-  deliver(sessionId: string): Promise<IpcResult<ContextCompactionDelivery>>
+  claimAutomatic(sessionId: string, remoteEndpointId?: string): Promise<IpcResult<boolean>>
+  noteManual(sessionId: string, remoteEndpointId?: string): Promise<IpcResult<void>>
+  cooldown(sessionId: string, remoteEndpointId?: string): Promise<IpcResult<ContextCompactionCooldown | null>>
+  deliver(sessionId: string, remoteEndpointId?: string): Promise<IpcResult<ContextCompactionDelivery>>
   reportError(message: string): void
 }
 
@@ -44,12 +45,13 @@ export class SessionCompact {
     return answer.value
   }
 
-  manual(sessionId: string): boolean {
-    if (!this.inputs.focus(sessionId)) {
+  manual(sessionId: string, remoteEndpointId?: string): boolean {
+    const key = remoteEndpointId ? TerminalTargetCodec.key({ kind: 'remote', sessionId, remoteEndpointId }) : sessionId
+    if (!this.inputs.focus(key)) {
       this.reportNoTarget(sessionId)
       return false
     }
-    void this.runManual(sessionId)
+    void this.runManual(sessionId, remoteEndpointId)
     return true
   }
 
@@ -67,14 +69,14 @@ export class SessionCompact {
     return this.deliver(sessionId, 'auto-compact')
   }
 
-  private async runManual(sessionId: string): Promise<void> {
-    await this.noteManual(sessionId)
-    await this.deliver(sessionId, 'compact')
+  private async runManual(sessionId: string, remoteEndpointId?: string): Promise<void> {
+    await this.noteManual(sessionId, remoteEndpointId)
+    await this.deliver(sessionId, 'compact', remoteEndpointId)
   }
 
-  private async deliver(sessionId: string, label: string): Promise<SessionCompactResult> {
+  private async deliver(sessionId: string, label: string, remoteEndpointId?: string): Promise<SessionCompactResult> {
     try {
-      const answer = await this.ports.deliver(sessionId)
+      const answer = await (remoteEndpointId ? this.ports.deliver(sessionId, remoteEndpointId) : this.ports.deliver(sessionId))
       if (!answer.ok) return this.failed(`${label} failed: ${answer.error}`)
       const delivery = answer.value
       if (delivery.kind === 'delivered') return { kind: 'delivered', proof: delivery.proof }
@@ -94,9 +96,9 @@ export class SessionCompact {
     return { kind: 'failed', detail }
   }
 
-  private async noteManual(sessionId: string): Promise<void> {
+  private async noteManual(sessionId: string, remoteEndpointId?: string): Promise<void> {
     try {
-      const noted = await this.ports.noteManual(sessionId)
+      const noted = await (remoteEndpointId ? this.ports.noteManual(sessionId, remoteEndpointId) : this.ports.noteManual(sessionId))
       if (!noted.ok)
         this.ports.reportError(`compact cooldown failed: ${noted.error}`)
     } catch (error) {

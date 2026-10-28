@@ -1,12 +1,38 @@
 import { lstat, readdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 
+import { ErrnoCode } from './errnoCode'
+
 /** How far a counted removal is: the files counted so far, then the files deleted of how many. */
 export interface TreeRemovalProgress {
   phase: 'counting' | 'deleting'
   done: number
   /** Null while the count still runs, and for a removal whose walk failed. */
   total: number | null
+  /** A program holds this path, and the removal waits to try again (UA1-J11-6). */
+  held?: TreeRemovalHeld
+}
+
+/** The path an `rm` was refused on, its error code, the try that was refused, of how many, and the wait before the next. */
+export interface TreeRemovalHeld {
+  path: string
+  code: string
+  attempt: number
+  attempts: number
+  delayMilliseconds: number
+}
+
+/** How often a counted removal tries a held directory again, and how long it waits between tries. */
+export interface TreeRemovalHeldPolicy {
+  attempts: number
+  delayMilliseconds: number
+}
+
+export interface TreeRemovalRmOptions {
+  recursive: true
+  force: true
+  maxRetries: number
+  retryDelay: number
 }
 
 export type TreeRemovalListener = (progress: TreeRemovalProgress) => void
@@ -26,7 +52,7 @@ export interface TreeRemovalEntry {
 
 /** The promise API a remover runs over: Node's own, or `original-fs` inside Electron. */
 export interface TreeRemovalFs {
-  rm(path: string, options: typeof TreeRemoval.rmOptionsConst): Promise<void>
+  rm(path: string, options: TreeRemovalRmOptions): Promise<void>
   readdir(path: string, options: { withFileTypes: true }): Promise<TreeRemovalEntry[]>
   lstat(path: string): Promise<Pick<TreeRemovalEntry, 'isDirectory' | 'isSymbolicLink'>>
 }
@@ -50,16 +76,24 @@ interface WalkedDirectory {
  * walk reads through that same fs.
  *
  * The counted removal still deletes with Node's `rm`, one directory at a time, each only after every
- * directory below it is gone, so retries, long paths and the unlink of a junction stay Node's.
+ * directory below it is gone, so long paths and the unlink of a junction stay Node's. Its retries
+ * are its own: Node retries inside `rm` at every level of the tree, so one held file kept a purge
+ * silent for minutes (UA1-J11-6). A counted `rm` retries briefly, and a directory still held is tried
+ * again `heldPolicyConst` times, each refusal reported with the held path.
  */
 export class TreeRemoval {
   /** Windows keeps a just-closed file locked for a moment, which is what the retries are for. */
   static readonly rmOptionsConst = { recursive: true, force: true, maxRetries: 10, retryDelay: 300 } as const
+  /** About 1.2 s on a held file, which covers a file closed a moment ago; a longer hold is reported. */
+  static readonly countedRmOptionsConst = { recursive: true, force: true, maxRetries: 2, retryDelay: 100 } as const
+  /** About one minute in all for a held directory; then the removal fails and names the held path. */
+  static readonly heldPolicyConst: TreeRemovalHeldPolicy = { attempts: 10, delayMilliseconds: 5_000 }
+  private static readonly heldCodesConst = ['EBUSY', 'EPERM', 'EACCES', 'ENOTEMPTY']
   static readonly node: TreeRemove = TreeRemoval.over({ rm, readdir, lstat })
   /** One call at a time took about three times as long as one `rm` of a real `node_modules` (svn-worktrees.md, Cost). */
   static readonly parallelConst = 8
 
-  static over(fs: TreeRemovalFs): TreeRemove {
+  static over(fs: TreeRemovalFs, held: TreeRemovalHeldPolicy = TreeRemoval.heldPolicyConst): TreeRemove {
     return async (path, onProgress) => {
       if (onProgress === undefined) return fs.rm(path, TreeRemoval.rmOptionsConst)
       const root = await fs.lstat(path).catch(() => null)
@@ -73,9 +107,9 @@ export class TreeRemoval {
       if (directories === null) {
         // A tree the walk cannot read still goes; it only goes without a count.
         onProgress({ phase: 'deleting', done: 0, total: null })
-        return fs.rm(path, TreeRemoval.rmOptionsConst)
+        return TreeRemoval.removeHeld(fs, path, held, (refused) => onProgress({ phase: 'deleting', done: 0, total: null, held: refused }))
       }
-      await TreeRemoval.removeUp(fs, directories, onProgress)
+      await TreeRemoval.removeUp(fs, directories, held, onProgress)
     }
   }
 
@@ -84,7 +118,7 @@ export class TreeRemoval {
    * `parallelConst` `rm` calls at a time. After a failure no further `rm` starts; the ones in flight
    * end, then the first failure is thrown.
    */
-  private static async removeUp(fs: TreeRemovalFs, directories: readonly WalkedDirectory[], onProgress: TreeRemovalListener): Promise<void> {
+  private static async removeUp(fs: TreeRemovalFs, directories: readonly WalkedDirectory[], held: TreeRemovalHeldPolicy, onProgress: TreeRemovalListener): Promise<void> {
     const total = directories.reduce((sum, directory) => sum + directory.files, 0)
     const slot = TreeRemoval.pool(TreeRemoval.parallelConst)
     let done = 0
@@ -92,7 +126,7 @@ export class TreeRemoval {
     const remove = async (directory: WalkedDirectory): Promise<void> => {
       const removed = await slot(async () => {
         if (failures.length > 0) return false
-        await fs.rm(directory.path, TreeRemoval.rmOptionsConst)
+        await TreeRemoval.removeHeld(fs, directory.path, held, (refused) => onProgress({ phase: 'deleting', done, total, held: refused }))
         return true
       }).catch((error: unknown) => {
         failures.push(error)
@@ -108,6 +142,21 @@ export class TreeRemoval {
     }
     await Promise.all(directories.filter((directory) => directory.pending === 0).map(remove))
     if (failures.length > 0) throw failures[0]
+  }
+
+  /** One `rm` of `path`, tried again while a program holds something below it; the last refusal is thrown. */
+  private static async removeHeld(fs: TreeRemovalFs, path: string, policy: TreeRemovalHeldPolicy, onHeld: (held: TreeRemovalHeld) => void): Promise<void> {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await fs.rm(path, TreeRemoval.countedRmOptionsConst)
+      } catch (error) {
+        const code = ErrnoCode.of(error)
+        if (attempt >= policy.attempts || code === null || !TreeRemoval.heldCodesConst.includes(code)) throw error
+        const refused = (error as { path?: unknown }).path
+        onHeld({ path: typeof refused === 'string' ? refused : path, code, attempt, attempts: policy.attempts, delayMilliseconds: policy.delayMilliseconds })
+        await new Promise((resolve) => setTimeout(resolve, policy.delayMilliseconds))
+      }
+    }
   }
 
   /**

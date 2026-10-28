@@ -1,3 +1,4 @@
+import { WorktreeWords } from '../../../lib-orchestrator/worktrees/worktreeViews'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -12,6 +13,8 @@ import { ControlBridgeFixture } from '../ipc/fixtures/controlBridgeFixture'
 import { WorkflowPane, type WorkflowPorts, WorkflowStepGlyphs } from './workflowPane'
 import { WorkflowPortsOf } from './workflowPorts'
 
+const sourcePress: typeof WorkflowPortsOf.press = (id, action, agreement, commit) => WorkflowPortsOf.press(id, { ...action, command: WorktreeWords.command(action) }, agreement, commit)
+
 describe('app-client-ui/renderer/workflow/workflowPane', () => {
   afterEach(() => {
     cleanup()
@@ -22,7 +25,7 @@ describe('app-client-ui/renderer/workflow/workflowPane', () => {
     ({ key, title, detail: '', state, startedAt: null, endedAt: null, target: { kind: 'none' }, ...extra })
 
   function workflowOf(overrides?: Partial<SessionWorkflowInfo>): SessionWorkflowInfo {
-    return {
+    const result: SessionWorkflowInfo = {
       kind: 'finish', workflowId: 'a1', title: 'Finish of 014 - fix login', badge: 'updating', summary: 'Running svn update', open: true,
       rounds: [{ title: 'Finish', steps: [
         step('1:stopping', 'Stop the session', 'done', { startedAt: 0, endedAt: 1_500 }),
@@ -35,6 +38,8 @@ describe('app-client-ui/renderer/workflow/workflowPane', () => {
       actions: [{ id: 'finish-again', label: 'Finish again', primary: true }, { id: 'keep', label: 'Keep worktree', primary: false }],
       ...overrides,
     }
+    result.actions = result.actions.map((action) => ({ ...action, command: WorktreeWords.command(action) }))
+    return result
   }
 
   const conflictPorts = () => ({
@@ -60,6 +65,36 @@ describe('app-client-ui/renderer/workflow/workflowPane', () => {
       },
     }
   }
+
+  it('draws the presses of the step that waits under it, Solve with agent opening its own operation, and the rest in the footer', async () => {
+    const ports = portsOf()
+    const waiting = workflowOf({
+      rounds: [{ title: 'Finish', steps: [
+        step('1:updating', 'svn update', 'waits', { detail: 'other commits changed this project: a.ts', target: { kind: 'run', runId: 'u1' } }),
+        step('1:review:.', 'Review', 'pending'),
+      ] }],
+      actions: [
+        { id: 'finish-again', label: 'Continue to review', primary: true, place: 'step' },
+        { id: 'solve-with-agent', label: 'Solve with agent', primary: false, place: 'step' },
+        { id: 'keep', label: 'Keep worktree', primary: false },
+      ],
+    })
+    render(<WorkflowPane session={session(waiting)} sessions={storeOf([])} visible ports={ports} />)
+
+    const under = screen.getByRole('group', { name: 'svn update actions' })
+    expect(within(under).getAllByRole('button').map((button) => button.textContent)).toEqual(['Continue to review', 'Solve with agent'])
+    expect(within(document.querySelector('.workflow__footer') as HTMLElement).getAllByRole('button').map((button) => button.textContent))
+      .toEqual(['Keep worktree'])
+    fireEvent.click(within(under).getByRole('button', { name: 'Solve with agent' }))
+    await waitFor(() => expect(ports.press).toHaveBeenCalledWith({ id: 'solve-with-agent', label: 'Solve with agent', primary: false, place: 'step', command: { operation: 'sessions.solveWithAgent', body: {} } }, {}))
+
+    cleanup()
+    // Without a step that waits or runs, a step press goes to the footer.
+    const ended = workflowOf({ rounds: [{ title: 'Finish', steps: [step('1:review:.', 'Review', 'done')] }],
+      actions: [{ id: 'finish-again', label: 'Finish again', primary: true, place: 'step' }] })
+    render(<WorkflowPane session={session(ended)} sessions={storeOf([])} visible ports={portsOf()} />)
+    expect(within(document.querySelector('.workflow__footer') as HTMLElement).getByRole('button', { name: 'Finish again' })).toBeTruthy()
+  })
 
   it('draws every step state with its glyph, its duration and its detail, and the run line of a running run', () => {
     vi.useFakeTimers()
@@ -121,23 +156,31 @@ describe('app-client-ui/renderer/workflow/workflowPane', () => {
     })
     ;(window as unknown as { appClient: unknown }).appClient = { control: control.bridge() }
     for (const id of ['finish-again', 'keep', 'discard'] as const)
-      expect(await WorkflowPortsOf.press('s1', { id, label: id, primary: false }, {})).toEqual({ kind: 'done' })
+      expect(await sourcePress('s1', { id, label: id, primary: false }, {})).toEqual({ kind: 'done' })
     expect(pressed).toEqual([
       { session: { kind: 'sessionId', sessionId: 's1' }, choice: 'commit' },
       { session: { kind: 'sessionId', sessionId: 's1' }, choice: 'keep' },
       { session: { kind: 'sessionId', sessionId: 's1' }, choice: 'discard' },
     ])
     control.on('sessions.retrySetup', { ok: true, value: { sessionId: 's1' } })
-    expect(await WorkflowPortsOf.press('s1', { id: 'retry-setup', label: 'Retry setup', primary: true }, { acknowledgeSetup: 'hash-2' }))
+    expect(await sourcePress('s1', { id: 'retry-setup', label: 'Retry setup', primary: true }, { acknowledgeSetup: 'hash-2' }))
       .toEqual({ kind: 'done' })
     expect(control.bodiesOf('sessions.retrySetup')).toEqual([{ session: { kind: 'sessionId', sessionId: 's1' }, acknowledgeSetup: 'hash-2' }])
+  })
+
+  it('reports a refused press by its sentence, without the code meant for programs', async () => {
+    const control = new ControlBridgeFixture().on('sessions.finishWorktree',
+      { ok: false, error: { code: 'conflict', detail: 'The worktree now lies at Q:/wt.deleting; press Try again', data: { sourceCode: 'svn-failed' } } })
+    ;(window as unknown as { appClient: unknown }).appClient = { control: control.bridge() }
+    expect(await sourcePress('s1', { id: 'finish-again', label: 'Try again', primary: true }, {}))
+      .toEqual({ kind: 'refused', sentence: 'Try again failed: The worktree now lies at Q:/wt.deleting; press Try again' })
   })
 
   it('sends Stop agent as a stop of the agent run it names, and offers it with Keep and Discard while the resolver works', async () => {
     const control = new ControlBridgeFixture().on('sessions.finalize', { ok: true, value: { sessionId: 'cl' } })
     ;(window as unknown as { appClient: unknown }).appClient = { control: control.bridge() }
     const stopAgent = { id: 'stop-agent' as const, label: 'Stop agent', primary: false, runId: 'cl' }
-    expect(await WorkflowPortsOf.press('s1', stopAgent, {})).toEqual({ kind: 'done' })
+    expect(await sourcePress('s1', stopAgent, {})).toEqual({ kind: 'done' })
     expect(control.bodiesOf('sessions.finalize')).toEqual([{ session: { kind: 'sessionId', sessionId: 'cl' }, expect: 'stop' }])
 
     const ports = portsOf()
@@ -147,7 +190,7 @@ describe('app-client-ui/renderer/workflow/workflowPane', () => {
     expect(Array.from(document.querySelectorAll('.workflow__action')).map((button) => button.textContent))
       .toEqual(['Stop agent', 'Keep worktree', 'Discard'])
     fireEvent.click(screen.getByRole('button', { name: 'Keep worktree' }))
-    await waitFor(() => expect(ports.press).toHaveBeenCalledWith({ id: 'keep', label: 'Keep worktree', primary: false }, {}))
+    await waitFor(() => expect(ports.press).toHaveBeenCalledWith({ id: 'keep', label: 'Keep worktree', primary: false, command: { operation: 'sessions.finishWorktree', body: { choice: 'keep' } } }, {}))
   })
 
   it('sends Resolve with agent as Commit with agent, and Open merger as a tab open of the merger run', async () => {
@@ -155,9 +198,9 @@ describe('app-client-ui/renderer/workflow/workflowPane', () => {
       .on('sessions.finishWorktree', { ok: true, value: { sessionId: 's1', actionId: 'a1' } })
       .on('tabs.open', { ok: true, value: { windowId: 'w', panelId: 'p' } })
     ;(window as unknown as { appClient: unknown }).appClient = { control: control.bridge() }
-    expect(await WorkflowPortsOf.press('s1', { id: 'resolve-with-agent', label: 'Resolve with agent', primary: false }, {})).toEqual({ kind: 'done' })
+    expect(await sourcePress('s1', { id: 'resolve-with-agent', label: 'Resolve with agent', primary: false }, {})).toEqual({ kind: 'done' })
     expect(control.bodiesOf('sessions.finishWorktree')).toEqual([{ session: { kind: 'sessionId', sessionId: 's1' }, choice: 'commit', agent: true }])
-    expect(await WorkflowPortsOf.press('s1', { id: 'open-merger', label: 'Open merger', primary: false, runId: 'm1' }, {})).toEqual({ kind: 'done' })
+    expect(await sourcePress('s1', { id: 'open-merger', label: 'Open merger', primary: false, runId: 'm1' }, {})).toEqual({ kind: 'done' })
     expect(control.bodiesOf('tabs.open')).toEqual([{ session: { kind: 'sessionId', sessionId: 'm1' } }])
   })
 
@@ -165,10 +208,10 @@ describe('app-client-ui/renderer/workflow/workflowPane', () => {
     const openProjectVsCode = vi.fn(async () => ({ ok: true as const, value: true }))
     ;(window as unknown as { appClient: unknown }).appClient = { terminalMenu: { openProjectVsCode } }
     const open = { id: 'open-in-vscode' as const, label: 'Open in VS Code', primary: false }
-    expect(await WorkflowPortsOf.press('s1', open, {})).toEqual({ kind: 'done' })
+    expect(await sourcePress('s1', open, {})).toEqual({ kind: 'done' })
     expect(openProjectVsCode).toHaveBeenCalledWith('s1')
     openProjectVsCode.mockResolvedValueOnce({ ok: true, value: false })
-    expect(await WorkflowPortsOf.press('s1', open, {})).toEqual({ kind: 'refused', sentence: 'Open in VS Code failed: no session s1' })
+    expect(await sourcePress('s1', open, {})).toEqual({ kind: 'refused', sentence: 'Open in VS Code failed: no session s1' })
   })
 
   it('settles a path as a window press, with the confirmation only when the person gave it, and answers a refusal as its sentence', async () => {
@@ -210,7 +253,7 @@ describe('app-client-ui/renderer/workflow/workflowPane', () => {
     const press = vi.fn(async (action: Parameters<WorkflowPorts['press']>[0], agreement: Parameters<WorkflowPorts['press']>[1]) => {
       const control = new ControlBridgeFixture().on('sessions.finishWorktree', answers.shift()!)
       ;(window as unknown as { appClient: unknown }).appClient = { control: control.bridge() }
-      return WorkflowPortsOf.press('s1', action, agreement)
+      return sourcePress('s1', action, agreement)
     })
     render(<WorkflowPane session={session(workflowOf())} sessions={storeOf([])} visible ports={{ openStep: vi.fn(), press, conflicts: conflictPorts() }} />)
 
@@ -229,7 +272,7 @@ describe('app-client-ui/renderer/workflow/workflowPane', () => {
     render(<WorkflowPane session={session(workflowOf())} sessions={storeOf([])} visible ports={ports} />)
     fireEvent.click(screen.getByRole('button', { name: 'Keep worktree' }))
     await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('Keep worktree failed: no'))
-    expect(ports.press).toHaveBeenCalledWith({ id: 'keep', label: 'Keep worktree', primary: false }, {})
+    expect(ports.press).toHaveBeenCalledWith({ id: 'keep', label: 'Keep worktree', primary: false, command: { operation: 'sessions.finishWorktree', body: { choice: 'keep' } } }, {})
   })
 
   it('draws the conflict list inside the Conflicts step, follows a new snapshot, and a click on the step brings the list into view', () => {

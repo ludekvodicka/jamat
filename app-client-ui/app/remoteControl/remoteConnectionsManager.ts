@@ -22,6 +22,7 @@ import type {
   RemoteControlPeerProfile,
 } from '../../../lib-orchestrator/remoteControl/remoteControlPeerApi.types'
 import { RemoteControlPeerChannel } from '../../../lib-orchestrator/remoteControl/remoteControlPeerChannel'
+import { RemoteControlPeerConst } from '../../../lib-orchestrator/remoteControl/remoteControlPeerProtocol'
 import type {
   SessionsOpResult,
   SessionsSnapshot,
@@ -31,12 +32,15 @@ import type {
 import { SessionReference } from '../../../lib-orchestrator/sessionManager/sessionReference'
 import { SessionsSnapshotValidation } from '../../../lib-orchestrator/sessionManager/sessionsSnapshotValidation'
 import { JsonShape } from '../../../lib-orchestrator/shared/jsonShape'
+import { RemoteSessionSelection } from './remoteSessionSelection'
+import type { RemoteSessionRevision, RemoteSessionViewRequest, RemoteSessionViewResponse, RemoteSessionView, RemoteSessionDetail } from '../../../lib-orchestrator/remoteControl/remoteSessionApi.types'
 
 export interface RemoteConnectionsManagerDeps {
   identity: RemoteControlPeerIdentity
   profiles(): readonly RemoteControlPeerProfile[]
   connect(profile: RemoteControlPeerProfile, signal: AbortSignal): Promise<RemoteControlStepResult<RemoteControlPeerTransport>>
   onChanged(): void
+  onSessionRemoved(remoteEndpointId: string, sessionId: string): void
   onError(message: string): void
   requestId?(): string
   operationId?(): string
@@ -50,12 +54,8 @@ export interface RemoteConnectionsManagerDeps {
 interface ManagedRemoteAttachment {
   attachId: string
   spec: TerminalAttachSpec
-  /**
-   * The selected session a script run's terminal was admitted through, or null. Kept from the attach
-   * because the peer drops the run from its snapshot when the run collapses, and its tab must still
-   * go with its parent's disconnect.
-   */
-  parentId: string | null
+  /** Retained when a collapsed run disappears, so deselection still detaches its terminal. */
+  ancestors: ReadonlySet<string>
   onFrame(frame: TerminalFrame): void
   attached: boolean
   attachPromise: Promise<RemoteControlStepResult<{ attachId: string; sessionId: string }>> | null
@@ -75,6 +75,7 @@ interface RemoteOutboundState {
   applicationVersion: string | null
   optionalOperations: readonly RemoteControlOptionalOperation[] | null
   selectedSessionIds: Set<string>
+  reachableSessionIds: Set<string>
   abort: AbortController | null
   /** Set while a dial is in flight, so a second caller waits for it instead of starting another. */
   connectPromise: Promise<void> | null
@@ -89,6 +90,7 @@ interface RemoteOutboundState {
 
 export class RemoteConnectionsManager implements RemoteConnectionsPort {
   static readonly idleDelayMillisecondsConst = 0
+  private readonly deps: RemoteConnectionsManagerDeps
   private readonly byEndpoint = new Map<string, RemoteOutboundState>()
   private readonly holders = new Map<string, string>()
   private readonly requestId: () => string
@@ -104,7 +106,8 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
   private started = false
   private stopping = false
 
-  constructor(private readonly deps: RemoteConnectionsManagerDeps) {
+  constructor(deps: RemoteConnectionsManagerDeps) {
+    this.deps = deps
     this.requestId = deps.requestId ?? randomUUID
     this.operationId = deps.operationId ?? randomUUID
     this.setTimer = deps.setTimer ?? setTimeout
@@ -157,21 +160,73 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
     if (state.status !== 'connected' || !state.sessions?.sessions.some((session) => session.sessionId === sessionId))
       return RemoteConnectionsManager.error('not-found', 'Remote session is no longer available')
     state.selectedSessionIds.add(sessionId)
+    RemoteConnectionsManager.refreshSelection(state)
     this.cancelIdle(state)
     this.changed()
     this.reattachAvailable(state)
     return { ok: true, value: undefined }
   }
 
-  /**
-   * A selected session's terminal, or the terminal of a script run whose parent is selected: a run
-   * is never selected on its own, it is shown with its parent. The link is read off the peer's
-   * validated snapshot.
-   */
+  async sessionDetail(endpointId: string, view: RemoteSessionView): Promise<RemoteControlStepResult<RemoteSessionDetail>> {
+    const state = this.byEndpoint.get(endpointId)
+    const channel = state?.channel
+    if (!state || !channel || state.status !== 'connected' || state.connectionId !== view.epoch)
+      return RemoteConnectionsManager.error('unavailable', 'Remote session is offline. Reconnect explicitly.')
+    if (!state.reachableSessionIds.has(view.sessionId))
+      return RemoteConnectionsManager.error('forbidden', 'Remote session is not selected')
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let expected: RemoteSessionRevision | null = null
+      let offset = 0
+      let total: number | null = null
+      const chunks: Buffer[] = []
+      for (;;) {
+        const answer = await channel.sessionState({ requestId: this.requestId(), kind: 'detail', sessionId: view.sessionId, expected, offset })
+        if (state.channel !== channel || !state.reachableSessionIds.has(view.sessionId))
+          return RemoteConnectionsManager.error('unavailable', 'Remote session view was disconnected')
+        if (!answer.ok) {
+          if (answer.error.code === 'conflict') break
+          // Discovery omits some ended sessions; only the current source's exact detail can prove removal.
+          if (answer.error.code === 'not-found') this.deps.onSessionRemoved(endpointId, view.sessionId)
+          return answer
+        }
+        const page = answer.value
+        if (page.kind !== 'detail' || page.totalBytes > 16 * 1024 * 1024 || total !== null && page.totalBytes !== total)
+          return RemoteConnectionsManager.error('invalid-request', 'Invalid remote session detail')
+        total = page.totalBytes
+        expected = { epoch: page.epoch, revision: page.revision }
+        chunks.push(Buffer.from(page.base64, 'base64'))
+        if (page.next !== null) { offset = page.next; continue }
+        try {
+          const session: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+          const validated = SessionsSnapshotValidation.parse({ ...state.sessions, revision: page.revision, sessions: [session] })
+          const found = validated?.sessions[0]
+          if (!found || found.sessionId !== view.sessionId) throw new Error('Invalid session detail')
+          return { ok: true, value: { revision: page.sourceRevision ?? page.revision, session: found } }
+        } catch { return RemoteConnectionsManager.error('invalid-request', 'Malformed remote session detail') }
+      }
+    }
+    return RemoteConnectionsManager.error('conflict', 'Remote session kept changing. Read it again.')
+  }
+
+  viewEpoch(endpointId: string): string | null {
+    const state = this.byEndpoint.get(endpointId)
+    return state?.status === 'connected' ? state.connectionId : null
+  }
+
+  sessionView(endpointId: string, request: RemoteSessionViewRequest): Promise<RemoteSessionViewResponse['result']> {
+    const state = this.byEndpoint.get(endpointId)
+    if (!state || state.status !== 'connected' || !state.channel || request.epoch !== state.connectionId)
+      return Promise.resolve(RemoteConnectionsManager.error('unavailable', 'Remote session view disconnected. Reconnect explicitly.'))
+    const sessionId = request.operation === 'views.open' ? request.body.sessionId : request.sessionId
+    if (request.operation !== 'views.close' && !state.reachableSessionIds.has(sessionId))
+      return Promise.resolve(RemoteConnectionsManager.error('forbidden', 'Remote session is not selected'))
+    return state.channel.sessionView(request)
+  }
+
   admitsTerminal(remoteEndpointId: string, sessionId: string): boolean {
     const state = this.byEndpoint.get(remoteEndpointId)
     if (!state) return false
-    return RemoteConnectionsManager.reachedThrough(state, sessionId, state.selectedSessionIds)
+    return state.reachableSessionIds.has(sessionId)
   }
 
   async disconnectSessions(remoteEndpointId: string, sessionIds?: readonly string[]): Promise<void> {
@@ -179,14 +234,16 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
     if (!state) return
     const removed = new Set(sessionIds ?? state.selectedSessionIds)
     for (const id of removed) state.selectedSessionIds.delete(id)
+    RemoteConnectionsManager.refreshSelection(state)
     if (sessionIds === undefined)
       for (const [holder, endpointId] of this.holders)
         if (endpointId === remoteEndpointId) this.holders.delete(holder)
     this.changed()
     const attachments = [...state.attachments.values()].filter((attachment) =>
       sessionIds === undefined
-      || (attachment.parentId !== null && removed.has(attachment.parentId))
-      || RemoteConnectionsManager.reachedThrough(state, attachment.spec.sessionId, removed))
+      || (!state.reachableSessionIds.has(attachment.spec.sessionId)
+        && [...attachment.ancestors].some((id) => removed.has(id))
+        && ![...attachment.ancestors].some((id) => state.selectedSessionIds.has(id))))
     await Promise.all(attachments.map(async (attachment) => {
       RemoteConnectionsManager.safeFrame(attachment, {
         type: 'terminal.status', status: 'lost', detail: 'Disconnected locally. The remote session continues running.',
@@ -218,6 +275,7 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
         state.status = 'idle'
         state.error = null
         state.sessions = null
+        RemoteConnectionsManager.refreshSelection(state)
         // Everything the connection said belongs to the address it said it at. A moved endpoint is
         // another computer until one answers there, so its version is not carried across the edit.
         state.lastConnectedAt = null
@@ -253,6 +311,7 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
       state.error = null
       // Hung up, so what it last said about its sessions is history rather than an answer.
       state.sessions = null
+      RemoteConnectionsManager.refreshSelection(state)
       this.changed()
     }, this.idleDelay)
     state.idleTimer.unref?.()
@@ -373,7 +432,7 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
     const attachment: ManagedRemoteAttachment = {
       attachId,
       spec: structuredClone(spec),
-      parentId: RemoteConnectionsManager.parentOf(state, spec.sessionId),
+      ancestors: RemoteSessionSelection.ancestors(spec.sessionId, state.sessions?.sessions ?? []),
       onFrame,
       attached: false,
       attachPromise: null,
@@ -671,7 +730,9 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
   ): Promise<boolean> {
     const channel = state.channel
     if (!channel) return false
-    const response = await channel.control({
+    const response = channel.transport.capabilities.includes('session-workspace.read')
+      ? await this.pagedSessions(channel)
+      : await channel.control({
       protocol: RemoteControlConst.protocol,
       requestId: this.requestId(),
       operation: 'sessions.list',
@@ -688,9 +749,45 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
       return false
     }
     state.sessions = snapshot
+    RemoteConnectionsManager.refreshSelection(state)
     this.reattachAvailable(state)
     this.changed()
     return true
+  }
+
+  private async pagedSessions(channel: RemoteControlPeerChannel): Promise<RemoteControlStepResult<SessionsSnapshot>> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let expected: RemoteSessionRevision | null = null
+      let combined: SessionsSnapshot | null = null
+      let changed = false
+      for (const kind of ['categories', 'sessions'] as const) {
+        let offset = 0
+        do {
+          const answer = await channel.sessionState({ requestId: this.requestId(), kind, expected, offset })
+          if (!answer.ok) {
+            if (answer.error.code !== 'conflict') return answer
+            changed = true
+            break
+          }
+          const page = answer.value
+          if (page.kind !== kind)
+            return RemoteConnectionsManager.error('operation-failed', 'Remote discovery returned the wrong page kind')
+          expected = { epoch: page.epoch, revision: page.revision }
+          combined ??= { ...page.snapshot, categories: [], sessions: [], orphans: [] }
+          combined.categories.push(...page.snapshot.categories)
+          combined.sessions.push(...page.snapshot.sessions)
+          offset = page.next ?? -1
+        } while (offset !== -1)
+        if (changed) break
+      }
+      if (!changed && combined) {
+        if (new Set(combined.sessions.map((row) => row.sessionId)).size !== combined.sessions.length
+          || new Set(combined.categories.map((row) => row.id)).size !== combined.categories.length)
+          return RemoteConnectionsManager.error('operation-failed', 'Remote discovery returned duplicate identities')
+        return { ok: true, value: combined }
+      }
+    }
+    return RemoteConnectionsManager.error('conflict', 'Remote session state kept changing; refresh to retry discovery')
   }
 
   private event(
@@ -700,7 +797,7 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
   ): void {
     if (!this.current(state, generation)) return
     if (event.kind === 'sessions.changed') void this.refreshSessions(state, generation)
-    else if (event.kind === 'tabs.changed') return
+    else if (event.kind === 'tabs.changed') this.changed()
     else
       throw new Error(`Unknown remote event kind: ${JSON.stringify(event)}`)
   }
@@ -710,7 +807,7 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
     if (state.status !== 'connected' || state.sessions?.reconciled !== true) return
     for (const attachment of state.attachments.values())
       if (!attachment.attached
-        && RemoteConnectionsManager.reachedThrough(state, attachment.spec.sessionId, state.selectedSessionIds)
+        && state.reachableSessionIds.has(attachment.spec.sessionId)
         && state.sessions?.sessions.some((session) =>
         session.sessionId === attachment.spec.sessionId && session.life === 'live'))
         void this.attach(state, attachment)
@@ -723,6 +820,7 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
     if (attachment.attached)
       return Promise.resolve({ ok: true, value: { attachId: attachment.attachId, sessionId: attachment.spec.sessionId } })
     if (attachment.attachPromise) return attachment.attachPromise
+    attachment.ancestors = RemoteSessionSelection.ancestors(attachment.spec.sessionId, state.sessions?.sessions ?? [])
     const promise = this.attachNow(state, attachment)
     attachment.attachPromise = promise
     return promise.finally(() => {
@@ -816,6 +914,7 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
     state.abort?.abort()
     state.connectPromise = null
     state.selectedSessionIds.clear()
+    RemoteConnectionsManager.refreshSelection(state)
     this.disposeConnection(state)
     for (const attachment of state.attachments.values())
       RemoteConnectionsManager.safeFrame(attachment, {
@@ -846,15 +945,8 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
     this.deps.onChanged()
   }
 
-  /** The session is one of `sessionIds`, or a script run whose parent is. */
-  private static reachedThrough(state: RemoteOutboundState, sessionId: string, sessionIds: ReadonlySet<string>): boolean {
-    if (sessionIds.has(sessionId)) return true
-    const parentId = RemoteConnectionsManager.parentOf(state, sessionId)
-    return parentId !== null && sessionIds.has(parentId)
-  }
-
-  private static parentOf(state: RemoteOutboundState, sessionId: string): string | null {
-    return state.sessions?.sessions.find((session) => session.sessionId === sessionId)?.script?.parentId ?? null
+  private static refreshSelection(state: RemoteOutboundState): void {
+    state.reachableSessionIds = RemoteSessionSelection.reachable(state.selectedSessionIds, state.sessions?.sessions ?? [])
   }
 
   private static state(profile: RemoteControlPeerProfile): RemoteOutboundState {
@@ -871,6 +963,7 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
       applicationVersion: null,
       optionalOperations: null,
       selectedSessionIds: new Set(),
+      reachableSessionIds: new Set(),
       abort: null,
       connectPromise: null,
       pending: 0,
@@ -901,6 +994,9 @@ export class RemoteConnectionsManager implements RemoteConnectionsPort {
       connectionId: state.connectionId,
       sessions: structuredClone(state.sessions),
       selectedSessionIds: [...state.selectedSessionIds],
+      reachableSessionIds: [...state.reachableSessionIds],
+      workspaceCapabilities: RemoteControlPeerConst.workspaceCapabilities.filter((capability) =>
+        state.channel?.transport.capabilities.includes(capability)),
     }
   }
 

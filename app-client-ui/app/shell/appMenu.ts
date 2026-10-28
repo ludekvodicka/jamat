@@ -34,12 +34,25 @@ export class AppMenu {
     debug: 'Debug',
   } as const satisfies Record<CommandMenuSection, string>
   private windowEntries: readonly WindowMenuEntry[] = []
+  private readonly runMainCommand: (id: CommandId) => void
+  private readonly publishRendererCommand: (id: CommandId) => void
+  private readonly focusOrRecreate: (windowId: string) => void
+  private readonly snapins: readonly { kind: string; title: string }[]
+  private readonly openSnapin: (kind: string) => void
 
   constructor(
-    private readonly runMainCommand: (id: CommandId) => void,
-    private readonly publishRendererCommand: (id: CommandId) => void,
-    private readonly focusOrRecreate: (windowId: string) => void,
-  ) {}
+    runMainCommand: (id: CommandId) => void,
+    publishRendererCommand: (id: CommandId) => void,
+    focusOrRecreate: (windowId: string) => void,
+    snapins: readonly { kind: string; title: string }[],
+    openSnapin: (kind: string) => void,
+  ) {
+    this.runMainCommand = runMainCommand
+    this.publishRendererCommand = publishRendererCommand
+    this.focusOrRecreate = focusOrRecreate
+    this.snapins = snapins
+    this.openSnapin = openSnapin
+  }
 
   install(): void {
     Menu.setApplicationMenu(Menu.buildFromTemplate(this.buildTemplate()))
@@ -57,10 +70,15 @@ export class AppMenu {
   buildTemplate(): MenuItemConstructorOptions[] {
     // The cast is what `satisfies` above earns: the literal has exactly the union's keys, and
     // `Object.entries` cannot say so on its own.
-    return Object.entries(AppMenu.sectionsConst).map(([section, label]) => ({
-      label,
-      submenu: this.submenuOf(section as CommandMenuSection),
-    }))
+    // Tasks is no command section: its entries are the snap-ins, so it joins the bar before Tools.
+    return Object.entries(AppMenu.sectionsConst).flatMap(([section, label]) => [
+      ...(section === 'tools' ? [{ label: 'Tasks', submenu: this.tasksTailOf() }] : []),
+      { label, submenu: this.submenuOf(section as CommandMenuSection) },
+    ])
+  }
+
+  private tasksTailOf(): MenuItemConstructorOptions[] {
+    return this.snapins.map((entry) => ({ label: entry.title, click: () => this.openSnapin(entry.kind) }))
   }
 
   private submenuOf(section: CommandMenuSection): MenuItemConstructorOptions[] {

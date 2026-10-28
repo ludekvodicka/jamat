@@ -6,6 +6,17 @@ import { RemoteSessionGroups } from './remoteSessionGroups'
 import type { SessionInfo } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 
 describe('app-client-ui/app/sessionGroups/remoteSessionGroups', () => {
+  it('exports current custom titles and ordering without exposing assignments or config', () => {
+    let sections = [{ id: 'waiting', title: 'Na mě' }, { id: 'none', title: 'Sessions' }, { id: 'pinned', title: 'Pinned' }]
+    const port = new RemoteSessionGroups(() => sections, {
+      loadSessionGroups: () => [], assignSessionGroup: () => true, inheritSessionGroup: () => false,
+    }, () => {})
+    const first = port.definitions()
+    expect(first).toEqual(sections)
+    expect(first).not.toBe(sections)
+    sections = [sections[2], { id: 'waiting', title: 'Review' }, sections[1]]
+    expect(port.definitions().map(group => group.title)).toEqual(['Pinned', 'Review', 'Sessions'])
+  })
   it('reads current effective groups with the tree precedence and prunes removed sections', () => {
     const session: SessionInfo = {
       sessionId: 'session-1', kind: 'shell', title: 'Session', tabTitle: 'Session',

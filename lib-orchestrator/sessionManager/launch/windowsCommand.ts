@@ -30,6 +30,11 @@ export class WindowsCommand {
     return hit !== null && WindowsCommand.isImage(hit) ? hit : null
   }
 
+  /** The file a bare name starts, an image or a shim, or null when nothing on `PATH` answers it. */
+  static programOf(command: string, environment: NodeJS.ProcessEnv): string | null {
+    return WindowsCommand.hitOf(command, environment)
+  }
+
   /**
    * The PowerShell script beside the shim this name starts, or null when the name starts an image,
    * starts nothing, or starts a shim standing on its own - a `.cmd` written by hand has no sibling
@@ -70,7 +75,7 @@ export class WindowsCommand {
   }
 
   /** Lower-cased because `PATHEXT` is conventionally shouted and a Windows extension has no case. */
-  private static extensionsOf(environment: NodeJS.ProcessEnv): string[] {
+  static extensionsOf(environment: NodeJS.ProcessEnv): string[] {
     return WindowsCommand
       .split(environment.PATHEXT ?? WindowsCommand.defaultExtensionsConst)
       .filter((entry) => entry.startsWith('.'))

@@ -18,6 +18,7 @@ export interface FileChangesVcsEntry {
   previousRepositoryPath: string | null
   gitState: FileChangeGitState | null
   carriedItems?: FileChangeEntry['carriedItems']
+  properties?: FileChangeEntry['properties']
 }
 
 export interface FileChangesVcsHistoryGroup {
@@ -48,7 +49,8 @@ export interface FileChangesVcsBaselineRef {
 }
 
 export type FileChangesVcsContentResult =
-  | { kind: 'content'; content: string }
+  /** Bytes where the adapter can read them as such; a string is decoded UTF-8. */
+  | { kind: 'content'; content: string | Buffer }
   | { kind: 'missing'; detail: string }
   | { kind: 'unavailable'; detail: string }
 
@@ -67,8 +69,6 @@ export interface FileChangesVcs {
   detect(cwd: string): Promise<FileChangesVcsDetection | null>
   /** SVN may return an unversioned ancestor of the file for ignore-aware expansion. */
   status(detection: FileChangesVcsDetection, filePath?: string): Promise<FileChangesVcsResult<FileChangesVcsStatus>>
-  /** One cheap question - is the scope dirty - without parsing per-file entries. */
-  dirty(detection: FileChangesVcsDetection): Promise<FileChangesVcsResult<boolean>>
   history(
     detection: FileChangesVcsDetection,
     limit: number,

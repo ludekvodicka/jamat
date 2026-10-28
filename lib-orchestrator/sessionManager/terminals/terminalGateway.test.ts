@@ -105,6 +105,40 @@ describe('lib-orchestrator/sessionManager/terminals/terminalGateway', () => {
     return socket.sent.flatMap((frame) => frame.type === 'terminal.input' ? [frame.data] : [])
   }
 
+  it('queues writer input while held and refuses observers without acknowledging their input', () => {
+    attach('writer', { sessionId: 'worker', size: null })
+    const socket = latest()
+    socket.serve(attached())
+    const release = world.gateway.holdInput('worker')
+    expect(world.gateway.input('writer', 'queued\r')).toEqual({ kind: 'sent' })
+    expect(inputsOf(socket)).toEqual([])
+    expect(world.gateway.pendingInput('worker')).toBe(1)
+    release()
+    release()
+    expect(inputsOf(socket)).toEqual(['queued\r'])
+    expect(world.gateway.pendingInput('worker')).toBe(0)
+    attach('observer', { sessionId: 'worker', size: null })
+    latest().serve(attached(false))
+    const releaseObserver = world.gateway.holdInput('worker')
+    expect(world.gateway.input('observer', 'lost')).toEqual({ kind: 'not-writer' })
+    expect(world.gateway.pendingInput('worker')).toBe(0)
+    releaseObserver()
+  })
+
+  it('never replays queued input into a reused attach ID and reports its refusal', () => {
+    attach('same-id', { sessionId: 'worker', size: null })
+    latest().serve(attached())
+    const release = world.gateway.holdInput('worker')
+    expect(world.gateway.input('same-id', 'old-worker-command')).toEqual({ kind: 'sent' })
+    world.gateway.detach('same-id')
+    attach('same-id', { sessionId: 'other-session', size: null })
+    const other = latest()
+    other.serve(attached())
+    release()
+    expect(inputsOf(other)).toEqual([])
+    expect(world.errors).toEqual([expect.stringContaining('attachment changed')])
+  })
+
   function attach(
     attachId: string,
     spec: { sessionId: string; size: { cols: number; rows: number } | null },
@@ -354,6 +388,31 @@ describe('lib-orchestrator/sessionManager/terminals/terminalGateway', () => {
     latest().serve(attached(false))
     expect(statuses()).toHaveLength(1)
     expect(statuses()[0]).toMatchObject({ status: 'read-only' })
+  })
+
+  // UA1-J09-9: a restarted client attaches before the dead client's lease lapses. The grant that
+  // comes later must make the terminal a writer without a keystroke being spent and dropped for it.
+  it('attaches again as a writer when a lease arrives, and leaves a writer and an observer alone', () => {
+    world.leaseId = null
+    attach('a1', { sessionId: 'session-1', size: null })
+    latest().serve(attached(false))
+    world.gateway.leaseChanged()
+    expect(world.sockets).toHaveLength(1)
+
+    world.leaseId = 'lease-2'
+    world.gateway.leaseChanged()
+    expect(world.sockets).toHaveLength(2)
+    expect(latest().attachFrame().controllerLeaseId).toBe('lease-2')
+    latest().serve(attached(true))
+    world.gateway.leaseChanged()
+    expect(world.sockets).toHaveLength(2)
+
+    world.resolution = { ok: true, ref: refConst, alive: false }
+    attach('observer', { sessionId: 'session-1', size: null })
+    latest().serve(attached(false))
+    world.leaseId = 'lease-3'
+    world.gateway.leaseChanged()
+    expect(world.sockets).toHaveLength(3)
   })
 
   it('re-resolves the ref once on a conflict and calls the second one lost', () => {

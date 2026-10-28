@@ -26,6 +26,7 @@ export class OrchestratorPaths {
   private static readonly terminalOpenedPathsFileNameConst = 'terminal-opened-paths.json'
   private static readonly claudeStatusLineNameConst = 'claude-statusline'
   private static readonly claudeContextSnapshotsNameConst = 'claude-context'
+  private static readonly claudeIdentitiesNameConst = 'claude-identity'
   private static readonly pastedFilesNameConst = 'pasted-files'
 
   // The override names the state ROOT, never one channel's directory: consuming it verbatim
@@ -127,6 +128,11 @@ export class OrchestratorPaths {
     )
   }
 
+  /** Persistent quota samples; a provider read cannot reconstruct deleted history. */
+  static rateHistoryDirectory(configIdentity: string, channel: RuntimeChannel): string {
+    return join(OrchestratorPaths.directory(configIdentity, channel), 'rate-history')
+  }
+
   /**
    * The rate limits both agents last reported. A cache and never a record: deleting it costs the next
    * client its first drawing of the widget and one read against an endpoint that counts them.
@@ -195,8 +201,17 @@ export class OrchestratorPaths {
     return join(OrchestratorPaths.directory(configIdentity, channel), OrchestratorPaths.claudeContextSnapshotsNameConst)
   }
 
+  /** One receipt per Jamat session: the conversation its running Claude reported through the status line relay. */
+  static claudeIdentitiesDirectory(configIdentity: string, channel: RuntimeChannel): string {
+    return join(OrchestratorPaths.directory(configIdentity, channel), OrchestratorPaths.claudeIdentitiesNameConst)
+  }
+
   static sessionNotifiesDirectory(configIdentity: string, channel: RuntimeChannel): string {
     return join(OrchestratorPaths.directory(configIdentity, channel), OrchestratorPaths.sessionNotifiesNameConst)
+  }
+
+  static snapinsDirectory(configIdentity: string, channel: RuntimeChannel): string {
+    return join(OrchestratorPaths.directory(configIdentity, channel), 'snapins')
   }
 
   /**

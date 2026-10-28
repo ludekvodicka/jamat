@@ -26,6 +26,8 @@ export class SessionCommandRun {
     'session.resume',
     'session.restart',
     'session.compact',
+    'session.showActions',
+    'session.finish',
     'session.commitSvn',
     'session.commitGit',
     'tab.openProjectFolder',
@@ -38,7 +40,7 @@ export class SessionCommandRun {
     return SessionCommandRun.targetedConst.has(id)
   }
 
-  static at(commands: CommandRegistry, id: CommandId, sessionId: string): void {
+  static at(commands: CommandRegistry, id: CommandId, sessionId: string, remoteEndpointId?: string): void {
     switch (id) {
       case 'session.details':
       case 'session.newBeside':
@@ -48,13 +50,15 @@ export class SessionCommandRun {
       case 'session.resume':
       case 'session.restart':
       case 'session.compact':
+      case 'session.showActions':
+      case 'session.finish':
       case 'session.commitSvn':
       case 'session.commitGit':
       case 'tab.openProjectFolder':
       case 'session.openInVsCode':
       case 'tab.copyProjectFolder':
       case 'session.copyReference':
-        commands.execute(id, { sessionId })
+        commands.execute(id, { sessionId, ...(remoteEndpointId ? { remoteEndpointId } : {}) })
         return
       default:
         throw new Error(`${JSON.stringify(id)} cannot be aimed at a session`)

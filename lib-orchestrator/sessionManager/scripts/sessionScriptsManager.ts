@@ -1,7 +1,9 @@
+import { FinishProjection } from '../../worktrees/worktreeFinish'
 import type { HostClient } from '../../hostClient/hostClient'
 import { ErrorText } from '../../shared/errorText'
 import { LaunchBackoff } from '../lifecycle/launchBackoff'
 import { OperationOutcomes } from '../lifecycle/operationOutcomes'
+import { SessionWorkflows } from '../lifecycle/sessionWorkflows'
 import type {
   SessionRecord,
   SessionRecordLaunchWait,
@@ -13,6 +15,7 @@ import type {
   SessionInfo,
   SessionScriptOutput,
   SessionScriptPhase,
+  SessionScriptId,
   SessionScriptRunInfo,
   SessionScriptsInfo,
   SessionScriptsReading,
@@ -46,6 +49,19 @@ export interface SessionScriptsManagerDeps {
   now: () => number
 }
 
+export interface LocalScriptOptions {
+  phase?: SessionScriptPhase
+  scriptId?: SessionScriptId
+  commands?: string[]
+  durable?: boolean
+  recordStart?: (record: SessionRecord, startedAt: number) => SessionRecord
+}
+
+type CollapseOutcome =
+  | { kind: 'collapsed' }
+  | { kind: 'host-refused'; detail: string }
+  | { kind: 'not-collapsed' }
+
 type ScriptRows =
   | { ok: true; rows: readonly string[] }
   | { ok: false; reason: string }
@@ -59,14 +75,14 @@ type ScriptRows =
  * worktree sessions would otherwise push every real recovery point out of the ring of ten.
  */
 export class SessionScriptsManager {
-  static readonly historyMaxConst = 10
+  private readonly localRuns = new Map<string, { parentId: string; info: SessionScriptRunInfo; text: string }>()
   private static readonly commandsMaxConst = 8
   private static readonly commandCharactersMaxConst = 300
   /** The install's whole output fits in a thousand rows far more often than the cap of the log does. */
   private static readonly scrollbackRowsConst = 1000
   private static readonly hostRestartedConst = 'the Host restarted before the output was saved'
   private static readonly olderBuildConst = 'ended before this build kept logs'
-  private static readonly neverRanConst = 'the Host never ran it'
+  private static readonly noReferenceConst = 'Jamat could not capture the output of this command'
   private static readonly sweepAgeConst = 24 * 60 * 60 * 1000
 
   private readonly records: SessionRecordsStore
@@ -94,6 +110,77 @@ export class SessionScriptsManager {
     this.startedAt = this.now()
   }
 
+  async runLocal<T extends { ok: boolean; exitCode?: number }>(parentId: string, runId: string, title: string,
+    work: (output: (text: string) => void) => Promise<T>, changed: () => void, options: LocalScriptOptions = {}): Promise<T> {
+    const startedAt = this.now()
+    const phase = options.phase ?? 'after'
+    const scriptId = options.scriptId ?? 'declared'
+    const local = { parentId, text: '', info: { runId, phase, scriptId,
+      name: title, title, state: 'running' as const, summary: title, startedAt, commands: options.commands ?? [], row: false, log: 'none' as const } }
+    let truncated = false
+    let pendingSave: Promise<void> | null = null
+    let needsSave = false
+    const save = (): void => {
+      needsSave = true
+      if (pendingSave !== null) return
+      pendingSave = (async () => {
+        while (needsSave) {
+          needsSave = false
+          await this.logs.write(parentId, runId, local.text)
+        }
+      })().catch((error: unknown) => { this.report(`Local script log: ${ErrorText.of(error)}`) })
+        .finally(() => { pendingSave = null })
+    }
+    const initial = await this.logs.write(parentId, runId, '')
+    if (!initial.ok && options.durable) throw new Error(`The local command log could not be started: ${initial.detail}`)
+    const entry: SessionRecordScriptRun = { runId, phase, scriptId, name: title, title,
+      commands: options.commands ?? [], startedAt, endedAt: startedAt, outcome: 'lost', reason: 'The client stopped before the command finished',
+      log: initial.ok ? { state: 'saved', bytes: 0, truncated: false } : { state: 'unavailable', reason: initial.detail } }
+    if (!await this.records.update(parentId, (current) => ({ ...options.recordStart?.(current, startedAt) ?? current,
+      scriptRuns: [...current.scriptRuns ?? [], entry] }))) {
+      await this.logs.removeRun(parentId, runId)
+      throw new Error('The local command could not record its start')
+    }
+    this.localRuns.set(runId, local)
+    changed()
+    let succeeded = false
+    let exitCode: number | undefined
+    try {
+      const result = await work((text) => {
+        const bytes = Buffer.from(local.text + text, 'utf8')
+        truncated ||= bytes.length > ScriptLogText.maxBytesConst
+        let start = Math.max(0, bytes.length - ScriptLogText.maxBytesConst)
+        while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) start += 1
+        local.text = bytes.subarray(start).toString('utf8')
+        save()
+        changed()
+      })
+      succeeded = result.ok
+      exitCode = result.exitCode
+      return result
+    } finally {
+      try {
+        await pendingSave
+        const endedAt = this.now()
+        const saved = await this.logs.write(parentId, runId, local.text)
+        if (!saved.ok && options.durable) throw new Error(`The local command log could not be saved: ${saved.detail}`)
+        const completed: SessionRecordScriptRun = { ...entry, endedAt, exitCode,
+          outcome: succeeded ? 'succeeded' : 'failed', reason: undefined,
+          log: saved.ok ? { state: 'saved', bytes: saved.bytes, truncated }
+            : { state: 'unavailable', reason: saved.detail } }
+        const written = await this.records.update(parentId, (current) => ({ ...current,
+          scriptRuns: (current.scriptRuns ?? []).map((run) => run.runId === runId ? completed : run) }))
+        if (!written && options.durable) throw new Error('The local command result could not be saved')
+      } finally {
+        this.localRuns.delete(runId)
+        const parent = this.records.get(parentId)
+        if (parent === null || SessionWorkflows.endedHistoryOf(this.records.list()).has(parent.sessionId)) await this.parentRemoved(parentId)
+        else if (!SessionScriptsManager.entryOf(parent, runId)) await this.logs.removeRun(parentId, runId)
+        changed()
+      }
+    }
+  }
+
   /**
    * Captures the log while the Host still holds the dead runtime and appends the history entry.
    * Idempotent: a run its parent's history already names is not settled twice. False also when the
@@ -102,9 +189,9 @@ export class SessionScriptsManager {
   async settle(runId: string): Promise<boolean> {
     const run = this.records.get(runId)
     const link = run?.scriptOf
-    if (!run || !link || (run.life !== 'ended' && run.life !== 'lost')) return false
+    if (!run || !link || link.historyExpired === true || (run.life !== 'ended' && run.life !== 'lost')) return false
     const parent = this.records.get(link.sessionId)
-    if (!parent || SessionScriptsManager.entryOf(parent, runId)) return false
+    if (!parent || SessionWorkflows.endedHistoryOf(this.records.list()).has(parent.sessionId) || SessionScriptsManager.entryOf(parent, runId)) return false
     // The record is all there is to judge by: an ended run carries the exit code the Host reported.
     const judged = ScriptRunOutcome.judge(runId, [run], new Map(), SessionScriptDefinitions.wordsOf(link))
     if (judged.kind === 'running') return false
@@ -129,44 +216,34 @@ export class SessionScriptsManager {
     if (link.stepKey !== undefined) entry.stepKey = link.stepKey
     if (judged.exitCode !== undefined) entry.exitCode = judged.exitCode
     if (judged.kind === 'failed') entry.reason = judged.reason
-    let dropped: SessionRecordScriptRun[] = []
-    const landed = await this.records.update(link.sessionId, (current) => {
-      if (SessionScriptsManager.entryOf(current, runId)) return null
-      const history = [...(current.scriptRuns ?? []), entry]
-      dropped = this.evictedOf(history)
-      return { ...current, scriptRuns: history.filter((old) => !dropped.includes(old)) }
-    })
-    if (!landed) return false
-    for (const old of dropped) await this.removeLog(link.sessionId, old.runId)
+    const landed = await this.records.update(link.sessionId, (current) => SessionScriptsManager.entryOf(current, runId)
+      || this.records.get(runId)?.scriptOf?.historyExpired === true || this.records.get(runId) === null ? null
+      : { ...current, scriptRuns: [...current.scriptRuns ?? [], entry] })
+    if (!landed) {
+      if (this.records.get(link.sessionId) === null) await this.parentRemoved(link.sessionId)
+      else if (this.records.get(runId)?.scriptOf?.historyExpired === true || this.records.get(runId) === null)
+        await this.logs.removeRun(link.sessionId, runId)
+      return false
+    }
     if (log.state === 'unavailable') this.unlogged += 1
     return true
   }
 
-  /**
-   * The oldest entries over the cap, skipping every entry whose run record still exists: that entry
-   * is what keeps its run settled, and losing it would settle the run again and evict another.
-   */
-  private evictedOf(history: readonly SessionRecordScriptRun[]): SessionRecordScriptRun[] {
-    let excess = history.length - SessionScriptsManager.historyMaxConst
-    const evicted: SessionRecordScriptRun[] = []
-    for (const entry of history) {
-      if (excess <= 0) break
-      if (this.records.get(entry.runId) !== null) continue
-      evicted.push(entry)
-      excess -= 1
-    }
-    return evicted
+  /** `runtimeRemove`, then the record goes without a recovery point; emits `onCollapsed`. */
+  async collapse(runId: string): Promise<boolean> {
+    return (await this.collapseRun(runId)).kind === 'collapsed'
   }
 
-  /** Best-effort `runtimeRemove`, then the record goes without a recovery point; emits `onCollapsed`. */
-  async collapse(runId: string): Promise<boolean> {
+  private async collapseRun(runId: string): Promise<CollapseOutcome> {
     const run = this.records.get(runId)
     const link = run?.scriptOf
-    if (!run || !link || ScriptRunPlanning.liveOrBound(run)) return false
+    if (!run || !link || ScriptRunPlanning.liveOrBound(run)) return { kind: 'not-collapsed' }
     const target = OperationOutcomes.targetOf(run)
-    // The dead entry is only a diagnostic once the record is gone, and the Host's next start drops it.
-    if (run.life === 'ended' && target) await this.host.runtimeRemove(target)
-    if (!await this.records.remove(runId, { recoveryPoint: false })) return false
+    if (target) {
+      const removed = await this.host.runtimeRemove(target)
+      if (!removed.ok) return { kind: 'host-refused', detail: `${removed.code}: ${removed.detail}` }
+    }
+    if (!await this.records.remove(runId, { recoveryPoint: false })) return { kind: 'not-collapsed' }
     this.stopRefusals.delete(runId)
     this.stopsConfirmed.delete(runId)
     const parent = this.records.get(link.sessionId)
@@ -176,7 +253,7 @@ export class SessionScriptsManager {
     const next = parent?.life === 'starting' ? parent.pendingSetup?.setupSessionId : undefined
     const handoffTo = next !== undefined && next !== runId && this.records.get(next) !== null ? next : link.sessionId
     this.onCollapsed({ runId, parentId: link.sessionId, handoff, handoffTo })
-    return true
+    return { kind: 'collapsed' }
   }
 
   /**
@@ -190,6 +267,44 @@ export class SessionScriptsManager {
     const run = this.records.get(runId)
     const target = run === null ? null : OperationOutcomes.targetOf(run)
     if (!run || !target || !ScriptRunPlanning.liveOrBound(run) || this.stopsConfirmed.has(runId)) return false
+    return this.stopBoundRun(runId)
+  }
+
+  /** What the Host answered to the last refused stop of a run, while that refusal stands. */
+  stopRefusalOf(runId: string): string | undefined {
+    return this.stopRefusals.get(runId)?.reason
+  }
+
+  /** A gate needs confirmation, including retained descendants of an already ended root. */
+  async confirmStopped(runId: string, manuallyStopped = false): Promise<boolean> {
+    if (this.stopsConfirmed.has(runId)) return true
+    const run = this.records.get(runId)
+    if (run === null) return !this.stopRefusals.has(runId)
+    if (run.manuallyStoppedAt !== undefined) return true
+    if (manuallyStopped) {
+      if (run.life !== 'ended' && run.life !== 'lost') return false
+      const target = OperationOutcomes.targetOf(run)
+      if (target !== null) {
+        const stopped = await this.host.runtimeStop(target, true)
+        // A reachable Host still owns known descendants; a person cannot waive a failed kill.
+        if (!stopped.ok && run.life !== 'lost' && stopped.code !== 'host-unreachable') return false
+      }
+      const saved = await this.records.update(runId, (current) => current.life !== run.life
+        || current.binding?.hostInstanceId !== run.binding?.hostInstanceId || current.binding?.generation !== run.binding?.generation ? null
+        : { ...current, life: 'ended', binding: null, pendingOperationId: undefined, pendingOperationKind: undefined,
+          launchWait: undefined, stopRequested: true, manuallyStoppedAt: this.now(), endedAt: current.endedAt ?? this.now() })
+      if (!saved) return false
+      this.stopRefusals.delete(runId)
+      this.stopsConfirmed.add(runId)
+      return true
+    }
+    if (OperationOutcomes.targetOf(run) === null) return run.life === 'ended'
+    return this.stopBoundRun(runId)
+  }
+
+  private async stopBoundRun(runId: string): Promise<boolean> {
+    const run = this.records.get(runId)!
+    const target = OperationOutcomes.targetOf(run)!
     const refused = this.stopRefusals.get(runId)
     if (!LaunchBackoff.due(refused, this.now())) return false
     const stopped = await this.host.runtimeStop(target)
@@ -233,7 +348,7 @@ export class SessionScriptsManager {
       const target = OperationOutcomes.targetOf(run)
       if (ScriptRunPlanning.liveOrBound(run)) await this.stopRun(run.sessionId)
       else {
-        if (run.life === 'ended' && target) await this.host.runtimeRemove(target)
+        if (target && !(await this.host.runtimeRemove(target)).ok) continue
         removeWith.push(run.sessionId)
       }
     }
@@ -277,14 +392,19 @@ export class SessionScriptsManager {
     if (parent !== null && SessionScriptDefinitions.awaitsVerdictOf(runId, link, parent))
       return { ok: false, code: 'live-refused', detail: `The script run ${runId} is still being judged for `
         + `session ${link.sessionId}; remove it once its verdict is written` }
-    if (parent !== null && (run.life === 'ended' || run.life === 'lost')) {
+    if (parent !== null && link.historyExpired !== true && !SessionWorkflows.endedHistoryOf(this.records.list()).has(parent.sessionId) && (run.life === 'ended' || run.life === 'lost')) {
       await this.settle(runId)
       if (!SessionScriptsManager.entryOf(this.records.get(link.sessionId) ?? parent, runId))
         return { ok: false, code: 'live-refused', detail: `The output of script run ${runId} is not saved yet, `
           + 'because the Host could not be asked or the history could not be written; try again in a moment' }
     }
-    if (!await this.collapse(runId)) return OperationOutcomes.latched()
-    return { ok: true, value: undefined }
+    const collapsed = await this.collapseRun(runId)
+    if (collapsed.kind === 'collapsed') return { ok: true, value: undefined }
+    if (collapsed.kind === 'host-refused')
+      return { ok: false, code: 'live-refused', detail: `The Host did not remove the runtime of script run ${runId} `
+        + `(${collapsed.detail}); stop its processes, then remove the row` }
+    if (collapsed.kind === 'not-collapsed') return OperationOutcomes.latched()
+    throw new Error(`Unknown collapse outcome ${JSON.stringify(collapsed)}`)
   }
 
   /**
@@ -327,6 +447,9 @@ export class SessionScriptsManager {
   async outputOf(parentId: string, runId: string): Promise<SessionsOpResult<SessionScriptOutput>> {
     const parent = this.records.get(parentId)
     if (!parent) return OperationOutcomes.notFound(parentId)
+    const local = this.localRuns.get(runId)
+    if (local?.parentId === parentId)
+      return { ok: true, value: { state: 'running', source: 'live', lines: local.text === '' ? [] : local.text.split('\n'), terminal: null } }
     const run = this.records.get(runId)
     if (run?.scriptOf?.sessionId !== parentId) {
       const entry = SessionScriptsManager.entryOf(parent, runId)
@@ -344,16 +467,18 @@ export class SessionScriptsManager {
       case 'stopped':
       case 'lost':
         settled = SessionScriptsManager.entryOf(parent, runId)
-        missingRuntimeReason = SessionScriptsManager.neverRanConst
+        missingRuntimeReason = SessionScriptsManager.noReferenceConst
         break
       default: throw new Error(`Unknown script run state: ${JSON.stringify(info.state satisfies never)}`)
     }
     const target = OperationOutcomes.targetOf(run)
+    const judged = info.state === 'running' ? null : ScriptRunOutcome.judge(runId, [run], new Map(), SessionScriptDefinitions.wordsOf(run.scriptOf))
     const output: SessionScriptOutput = {
       state: info.state,
       source: 'live',
       lines: [],
       terminal: target,
+      ...(judged?.kind === 'failed' ? { failureReason: judged.reason } : {}),
       ...(info.endedAt === undefined ? {} : { endedAt: info.endedAt }),
     }
     if (target === null) {
@@ -386,6 +511,7 @@ export class SessionScriptsManager {
     return { ok: true, value: {
       state: entry.outcome,
       source: 'log',
+      ...(entry.reason === undefined ? {} : { failureReason: entry.reason }),
       lines: reading.log?.text ? reading.log.text.split('\n') : [],
       ...(reading.logDetail === undefined ? {} : { logReason: reading.logDetail }),
       terminal: null,
@@ -444,7 +570,7 @@ export class SessionScriptsManager {
     const checks = record.finishChecks
     // The after chain is the newer fact while it is on the record: a Finish press comes after the
     // before chain, and a reopen, which runs the session again, clears it.
-    const actionRun = record.svnAction?.runId
+    const actionRun = FinishProjection.action(record)?.runId
     const badge = ScriptBadges.actionOf(record, actionRun === undefined ? null : this.records.get(actionRun))
       ?? ScriptBadges.afterOf(record, checks === undefined ? null : this.records.get(checks.runId))
       ?? ScriptBadges.beforeOf(record, pending === undefined ? null : this.records.get(pending.setupSessionId))
@@ -466,11 +592,12 @@ export class SessionScriptsManager {
    */
   private runsOf(parent: SessionRecord, requestedCommands: boolean): SessionScriptRunInfo[] {
     const history = parent.scriptRuns ?? []
-    const rows = this.records.list().filter((run) => run.scriptOf?.sessionId === parent.sessionId)
+    const rows = this.records.list().filter((run) => run.scriptOf?.sessionId === parent.sessionId && run.scriptOf.historyExpired !== true)
     const rowIds = new Set(rows.map((run) => run.sessionId))
     const settledIds = new Set(history.map((entry) => entry.runId))
     const runs = [
-      ...history.map((entry) => SessionScriptsManager.settledInfoOf(entry, rowIds.has(entry.runId))),
+      ...[...this.localRuns.values()].filter((run) => run.parentId === parent.sessionId).map((run) => run.info),
+      ...history.filter((entry) => !this.localRuns.has(entry.runId)).map((entry) => SessionScriptsManager.settledInfoOf(entry, rowIds.has(entry.runId))),
       ...rows.filter((run) => !settledIds.has(run.sessionId)).map((run) => SessionScriptsManager.rowInfoOf(run)),
     ]
     if (!requestedCommands)
@@ -567,7 +694,7 @@ export class SessionScriptsManager {
   private async rowsOf(run: SessionRecord): Promise<ScriptRows | null> {
     const target = OperationOutcomes.targetOf(run)
     if (target === null)
-      return { ok: false, reason: run.life === 'lost' ? this.goneReasonOf(run) : SessionScriptsManager.neverRanConst }
+      return { ok: false, reason: run.life === 'lost' ? this.goneReasonOf(run) : SessionScriptsManager.noReferenceConst }
     const inspected = await this.host.runtimeInspect(target, {
       rawTailChars: 0,
       screenScrollbackRows: SessionScriptsManager.scrollbackRowsConst,
@@ -618,11 +745,4 @@ export class SessionScriptsManager {
       : { state: 'unavailable', reason: `the log could not be written (${written.detail})` }
   }
 
-  private async removeLog(parentId: string, runId: string): Promise<void> {
-    try {
-      await this.logs.removeRun(parentId, runId)
-    } catch (error) {
-      this.report(`The log of script run ${runId} could not be removed: ${ErrorText.of(error)}`)
-    }
-  }
 }

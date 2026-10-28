@@ -1,3 +1,5 @@
+import { WorktreeWords } from '../worktrees/worktreeViews'
+import type { WorktreeLifecycle } from '../worktrees/worktreeState'
 import { describe, expect, it } from 'vitest'
 
 import type { SessionsSnapshot } from './sessionManagerApi.types'
@@ -48,8 +50,93 @@ describe('lib-orchestrator/sessionManager/sessionsSnapshotValidation', () => {
     }
   }
 
+  it('accepts the optional lifecycle view on current and 3.10 peers, dropping only malformed views', () => {
+    const worktreeView = { version: 12, phase: 'finishing', step: 'committing', outOfDate: 0, conflicts: 0, summary: 'finishing/committing v12' }
+    const good = snapshot([session({ worktreeView })])
+    expect(SessionsSnapshotValidation310.parse(good)).not.toBeNull()
+    expect(SessionsSnapshotValidation.parse(good)?.sessions[0].worktreeView).toEqual(worktreeView)
+    for (const bad of [null, 'bad', { ...worktreeView, version: -1 }, { ...worktreeView, phase: 'future' },
+      { ...worktreeView, step: undefined }, { ...worktreeView, wait: { kind: 'future', reason: '', at: 1 } }]) {
+      const parsed = SessionsSnapshotValidation.parse(snapshot([session({ worktreeView: bad })]))
+      expect(parsed?.sessions).toHaveLength(1)
+      expect(parsed?.sessions[0].sessionId).toBe('s1')
+      expect(parsed?.sessions[0].worktreeView).toBeUndefined()
+    }
+  })
+
   it('takes a snapshot shaped the way this build composes one', () => {
     expect(SessionsSnapshotValidation.parse(snapshot())).not.toBeNull()
+  })
+
+  it('retains the generated worktree presentation across the peer boundary', () => {
+    const state: WorktreeLifecycle = { version: 12, actionId: 'finish', phase: 'waiting', step: 'reviewing',
+      wait: { kind: 'review', reason: 'Validate the prepared application', at: 1 }, outOfDate: 0, journal: [],
+      preparation: { format: 1, manifest: 'manifest', content: 'content', metadata: 'metadata', commands: 'commands', checks: 'none', checkedAt: 1, attempt: 1 },
+      facts: { worker: { liveness: 'alive', resumeFailures: 0 } } }
+    const worktreeView = { ...WorktreeWords.presentation(state), version: state.version, phase: state.phase,
+      step: state.step, wait: state.wait, outOfDate: 0, conflicts: 0, summary: 'waiting/reviewing v12' }
+    const parsed = SessionsSnapshotValidation.parse(JSON.parse(JSON.stringify(snapshot([session({ worktreeView })]))))
+    expect(parsed?.sessions[0].worktreeView).toEqual(worktreeView)
+    expect(parsed?.sessions[0].worktreeView?.title).toBe('Ready for validation')
+    expect(parsed?.sessions[0].worktreeView?.actions).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'discard' })]))
+  })
+
+  it('accepts bounded working-agent names and drops only malformed optional names', () => {
+    const good = snapshot() as SessionsSnapshot
+    good.host.workingAgents = ['Claude worker', 'Codex worker']
+    expect(SessionsSnapshotValidation.parse(good)?.host.workingAgents).toEqual(good.host.workingAgents)
+    for (const names of [null, 'worker', [42], ['x'.repeat(1025)], Array(1025).fill('worker')]) {
+      const value = snapshot() as { host: Record<string, unknown> }
+      value.host.workingAgents = names
+      const parsed = SessionsSnapshotValidation.parse(value)
+      expect(parsed?.sessions).toHaveLength(1)
+      expect(parsed?.host.workingAgents).toBeUndefined()
+    }
+  })
+
+  it('drops only a malformed actions section and accepts the sections on an older peer', () => {
+    const section = { kind: 'before', workflowId: 'setup:s1', title: 'Setup', badge: 'done', summary: 'Done',
+      open: false, rounds: [], actions: [] }
+    const value = snapshot([session({ actions: { sections: [section, { ...section, kind: 'unknown' }, { ...section, workflowId: 'second' }] } })])
+    expect(SessionsSnapshotValidation310.parse(value)).not.toBeNull()
+    expect(SessionsSnapshotValidation.parse(value)?.sessions[0].actions?.sections.map((entry) => entry.workflowId))
+      .toEqual(['setup:s1', 'second'])
+  })
+
+  it('drops unknown or malformed bodies without dropping the step or section', () => {
+    const bodies = [{ kind: 'log', runId: 'r1' }, { kind: 'conflicts' }, { kind: 'log' }, { kind: 'future' }]
+    const section = { kind: 'finish', workflowId: 'a1', title: 'Finish', badge: 'runs', summary: '', open: true,
+      actions: [], rounds: [{ title: 'Finish', steps: bodies.map((body, index) => ({ key: String(index), title: 'Step',
+        detail: '', state: 'done', startedAt: null, endedAt: null, target: { kind: 'none' }, body })) }] }
+    const parsed = SessionsSnapshotValidation.parse(snapshot([session({ actions: { sections: [section] }, workflow: section })]))
+    for (const workflow of [parsed?.sessions[0].workflow, parsed?.sessions[0].actions?.sections[0]]) {
+      expect(workflow?.rounds[0].steps).toHaveLength(4)
+      expect(workflow?.rounds[0].steps.map((step) => step.body)).toEqual([bodies[0], bodies[1], undefined, undefined])
+    }
+  })
+
+  it('keeps the Resume worker press of a lost worker with its command (UA1-J14R-3)', () => {
+    const resume = { id: 'resume-worker', label: 'Resume worker', primary: true, place: 'step' }
+    const section = { kind: 'finish', workflowId: 'worker-lost:9', title: 'Worker of W', badge: 'Worker needs to be resumed', summary: '', open: true,
+      actions: [resume], rounds: [] }
+    const parsed = SessionsSnapshotValidation.parse(snapshot([session({ actions: { sections: [section] } })]))?.sessions[0].actions?.sections[0]
+    expect(parsed?.actions).toEqual([{ ...resume, command: { operation: 'sessions.reopen', body: {} } }])
+  })
+
+  it('keeps the sessions body and requires explicit live IDs on Update, dropping only malformed additive fields', () => {
+    const body = { kind: 'sessions', sessions: [{ sessionId: 'one', title: 'Coordinator', number: '021' }] }
+    const update = { id: 'update-main', label: 'Update', primary: true, confirmLive: ['one'] }
+    const section = { kind: 'update-main', workflowId: 'a1', title: 'Update', badge: 'waits', summary: '', open: true,
+      actions: [update, { ...update, confirmLive: undefined }, { ...update, confirmLive: [3] }, { id: 'later', label: 'Later', primary: false, deferred: 'Left for later.' },
+        { id: 'later', label: 'Later', primary: false, deferred: 3 }],
+      rounds: [{ title: 'Update', steps: [body, { ...body, sessions: [{ sessionId: 'one', title: 'bad', number: 3 }] }].map((body, index) => ({
+        key: String(index), title: 'Update', detail: '', state: 'waits', startedAt: null, endedAt: null, target: { kind: 'none' }, body,
+      })) }] }
+    const value = snapshot([session({ actions: { sections: [section] } })])
+    expect(SessionsSnapshotValidation310.parse(value)).not.toBeNull()
+    const parsed = SessionsSnapshotValidation.parse(value)?.sessions[0].actions?.sections[0]
+    expect(parsed?.actions).toEqual([update, section.actions[3]].map((action) => ({ ...action, command: WorktreeWords.command(action as never) })))
+    expect(parsed?.rounds[0].steps.map((step) => step.body)).toEqual([body, undefined])
   })
 
   /*
@@ -339,12 +426,13 @@ describe('lib-orchestrator/sessionManager/sessionsSnapshotValidation', () => {
       runId, phase: 'after', scriptId, name: 'update', title: 'svn update 014-fix', state: 'running', summary: 'svn update 014-fix · running',
       startedAt: 1, commands: ['svn update'], row: true, log: 'none',
     })
-    const parent = session({ sessionId: 'p', worktree, svnAction, scripts: { runs: [run('r1', 'svn'), run('r2', 'future-kind')] } })
+    const parent = session({ sessionId: 'p', worktree, svnAction, worktreeView: { phase: 'unknown' }, scripts: { runs: [run('r1', 'svn'), run('r2', 'future-kind')] } })
     const child = session({ sessionId: 'r1', setupFor: 'p', script: { parentId: 'p', phase: 'after', scriptId: 'future-kind' } })
 
     expect(SessionsSnapshotValidation310.parse(snapshot([parent, child]))).not.toBeNull()
     const parsed = SessionsSnapshotValidation.parse(snapshot([parent, child]))
     expect(parsed?.sessions[0]?.svnAction).toEqual(svnAction)
+    expect(parsed?.sessions[0]?.worktreeView).toBeUndefined()
     expect(parsed?.sessions[0]?.worktree?.liveFinish).toBe(true)
     expect(parsed?.sessions[0]?.scripts?.runs.map((entry) => entry.runId)).toEqual(['r1'])
     expect(parsed?.sessions[1]?.script).toEqual({ parentId: 'p', phase: 'before', scriptId: 'setup' })
@@ -369,7 +457,40 @@ describe('lib-orchestrator/sessionManager/sessionsSnapshotValidation', () => {
     const parsed = SessionsSnapshotValidation.parse(snapshot([parent]))
     expect(parsed?.sessions[0]?.svnAction).toEqual(svnAction)
     expect(parsed?.sessions[0]?.worktree?.finish).toEqual({ phase: 'updating' })
-    expect(parsed?.sessions[0]?.workflow?.actions).toEqual([{ id: 'stop-agent', label: 'Stop agent', primary: false, runId: 'cl' }])
+    expect(parsed?.sessions[0]?.workflow?.actions).toEqual([{ id: 'stop-agent', label: 'Stop agent', primary: false, runId: 'cl', command: { operation: 'sessions.finalize', sessionId: 'cl', body: { expect: 'stop' } } }])
+  })
+
+  it('keeps a stop-run action with its run and the live validation runs, dropping only malformed ones', () => {
+    const stop = { id: 'stop-run', label: 'Stop', primary: false, runId: 'v1' }
+    const validation = { cwd: 'Q:/wt', checks: 'none', canRun: true, runs: [{ runId: 'v1', title: 'Worktree validation', startedAt: 5, stop }] }
+    const workflow = { kind: 'finish', workflowId: 'a1', title: 'Finish of 014', badge: 'Ready for validation', summary: 'Validate', open: true,
+      rounds: [], actions: [stop, { id: 'stop-run', label: 'Stop', primary: false }], validation }
+    const command = { operation: 'sessions.finalize', sessionId: 'v1', body: { expect: 'stop' } }
+
+    const parsed = SessionsSnapshotValidation.parse(snapshot([session({ sessionId: 'p', workflow })]))
+    expect(parsed?.sessions[0]?.workflow?.actions).toEqual([{ ...stop, command }])
+    expect(parsed?.sessions[0]?.workflow?.validation?.runs).toEqual([{ runId: 'v1', title: 'Worktree validation', startedAt: 5, stop: { ...stop, command } }])
+    const malformed = SessionsSnapshotValidation.parse(snapshot([session({ sessionId: 'p', workflow: { ...workflow,
+      validation: { ...validation, runs: [{ runId: 'v1', title: 'Worktree validation', startedAt: 5, stop: { ...stop, runId: undefined } }] } } })]))
+    expect(malformed?.sessions[0]?.workflow?.validation).toEqual({ cwd: 'Q:/wt', checks: 'none', canRun: true })
+  })
+
+  it('keeps a remove-run action that names its run and drops one that does not', () => {
+    const remove = { id: 'remove-run', label: 'Remove', primary: false, runId: 'r1' }
+    const workflow = { kind: 'script', workflowId: 'script:r1', title: 'j10-requested-fail', badge: 'failed', summary: 'exit 1', open: false,
+      rounds: [], actions: [remove, { id: 'remove-run', label: 'Remove', primary: false }] }
+
+    const parsed = SessionsSnapshotValidation.parse(snapshot([session({ sessionId: 'p', workflow })]))
+    expect(parsed?.sessions[0]?.workflow?.actions).toEqual([{ ...remove, command: { operation: 'sessions.remove', sessionId: 'r1', body: {} } }])
+  })
+
+  it('keeps a confirm-stopped action that names its run and drops one that does not', () => {
+    const confirm = { id: 'confirm-stopped', label: 'I stopped the processes manually', primary: false, runId: 'm1' }
+    const workflow = { kind: 'finish', workflowId: 'finish:a1', title: 'Finish', badge: 'waits', summary: 'Processes may still run', open: true,
+      rounds: [], actions: [confirm, { id: 'confirm-stopped', label: 'I stopped the processes manually', primary: false }] }
+
+    const parsed = SessionsSnapshotValidation.parse(snapshot([session({ sessionId: 'p', workflow })]))
+    expect(parsed?.sessions[0]?.workflow?.actions).toEqual([{ ...confirm, command: { operation: 'sessions.backToWork', body: { confirmStoppedRunId: 'm1' } } }])
   })
 
   it('draws a resolver run and an action that waits on its verification, which a 3.10 peer still accepts', () => {
@@ -399,7 +520,7 @@ describe('lib-orchestrator/sessionManager/sessionsSnapshotValidation', () => {
     expect(SessionsSnapshotValidation310.parse(snapshot([session({ sessionId: 'p', worktree, svnAction })]))).not.toBeNull()
     expect(SessionsSnapshotValidation.parse(snapshot([session({ sessionId: 'p', worktree, svnAction })]))?.sessions[0]?.svnAction).toEqual(svnAction)
     const damaged = SessionsSnapshotValidation.parse(snapshot([session({ sessionId: 'p', worktree, svnAction: { ...svnAction, mergerRunId: 7 } })]))
-    expect(damaged?.sessions[0]?.svnAction).toEqual({ kind: 'finish', stage: 'merging', needs: null, needsKind: null, review: null, mergeBrief: 'L:/m.md' })
+    expect(damaged?.sessions[0]?.svnAction).toEqual({ kind: 'finish', stage: 'merging', needs: null, needsKind: null, review: null, mergeBrief: 'L:/m.md', title: 'The merger settles the conflicts the rules left' })
   })
 
   it('draws a merger run, which a 3.10 peer still accepts, and drops a run of an unknown kind without the session', () => {
@@ -435,6 +556,30 @@ describe('lib-orchestrator/sessionManager/sessionsSnapshotValidation', () => {
 
     const damaged = SessionsSnapshotValidation.parse(snapshot([session({ retiredWorktree: { ...retiredWorktree, landing: { ...landing, behind: -1 } } })]))
     expect(damaged?.sessions[0]?.retiredWorktree).toEqual({ worktreePath: retiredWorktree.worktreePath, revisions: retiredWorktree.revisions })
+  })
+
+  it('keeps the roots a landed main copy is behind in, and drops only that list when it is malformed', () => {
+    const landing = { mainCopy: 'Q:/work', behind: 2, newest: ['https://svn/repo:r52'], behindRoots: [{ root: 'lib/ea', behind: 1 }, { root: '.', behind: 1 }] }
+    const retiredWorktree = { worktreePath: 'Q:/work/.worktrees/014-fix', revisions: ['https://svn/repo:r52'], landing }
+    const parsed = SessionsSnapshotValidation.parse(snapshot([session({ sessionId: 'p', life: 'ended', retiredWorktree })]))
+    expect(parsed?.sessions[0]?.retiredWorktree?.landing).toEqual(landing)
+
+    for (const behindRoots of [[{ root: '', behind: 1 }], [{ root: 'lib/ea', behind: 0 }], [{ root: 'lib/ea' }], 'lib/ea']) {
+      const odd = SessionsSnapshotValidation.parse(snapshot([session({ sessionId: 'p', life: 'ended', retiredWorktree: { ...retiredWorktree, landing: { ...landing, behindRoots } } })]))
+      expect(odd?.sessions[0]?.retiredWorktree?.landing).toEqual({ mainCopy: 'Q:/work', behind: 2, newest: ['https://svn/repo:r52'] })
+    }
+  })
+
+  it('keeps the local state that keeps a landing unproven, and drops only that when it is malformed or of an unknown item', () => {
+    const landing = { mainCopy: 'Q:/work', behind: 0, newest: ['https://svn/repo:r52'],
+      local: { path: 'docs/gone.txt', item: 'deleted', summary: 'docs/gone.txt is locally deleted in the main copy.' } }
+    const retiredWorktree = { worktreePath: 'Q:/work/.worktrees/014-fix', revisions: ['https://svn/repo:r52'], landing }
+    expect(SessionsSnapshotValidation.parse(snapshot([session({ sessionId: 'p', life: 'ended', retiredWorktree })]))?.sessions[0]?.retiredWorktree?.landing)
+      .toEqual(landing)
+    for (const local of [null, 'docs/gone.txt', { ...landing.local, path: '' }, { ...landing.local, item: 'normal' }, { ...landing.local, summary: 3 }]) {
+      const odd = SessionsSnapshotValidation.parse(snapshot([session({ sessionId: 'p', life: 'ended', retiredWorktree: { ...retiredWorktree, landing: { ...landing, local } } })]))
+      expect(odd?.sessions[0]?.retiredWorktree?.landing).toEqual({ mainCopy: 'Q:/work', behind: 0, newest: ['https://svn/repo:r52'] })
+    }
   })
 
   it('keeps a well-formed parent link, which a 3.10 peer still accepts, and drops a malformed one or an unknown kind', () => {
@@ -496,7 +641,7 @@ describe('lib-orchestrator/sessionManager/sessionsSnapshotValidation', () => {
     expect(SessionsSnapshotValidation310.parse(snapshot(sessions))).not.toBeNull()
     const parsed = SessionsSnapshotValidation.parse(snapshot(sessions))
     expect(parsed?.sessions.map((entry) => entry.sessionId)).toEqual(['a', 'b', 'c', 'd', 'e'])
-    expect(parsed?.sessions[0]?.workflow).toEqual({ ...workflow, actions: [workflow.actions[0]] })
+    expect(parsed?.sessions[0]?.workflow).toEqual({ ...workflow, actions: [workflow.actions[0]].map((action) => ({ ...action, command: WorktreeWords.command(action as never) })) })
     expect(parsed?.sessions.slice(1).every((entry) => entry.workflow === undefined)).toBe(true)
   })
 

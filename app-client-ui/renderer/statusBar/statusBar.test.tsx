@@ -85,11 +85,16 @@ describe('app-client-ui/renderer/statusBar/statusBar', () => {
         runtimeChannel: 'development' as const,
       }
       const { container } = render(
-        <StatusBar left={AppShellItems.left(appInfo, window.appClient.autoUpdate, null, null)} right={[]} />,
+        <StatusBar left={AppShellItems.left(appInfo, window.appClient.autoUpdate, null, null, {
+          read: async () => ({ ok: true, value: { revision: 0, agents: [] } }),
+          subscribe: () => () => {}, reportError: () => {},
+          check: async () => ({ ok: true, value: undefined }),
+          install: async () => ({ ok: true, value: undefined }),
+        })} right={[]} />,
       )
 
       expect(await screen.findByText('Up to date')).toBeInTheDocument()
-      expect(container.querySelectorAll('.jamat-status__separator').length).toBe(1)
+      expect(container.querySelectorAll('.jamat-status__separator').length).toBe(2)
       expect(container.querySelector('.auto-update-indicator.jamat-update-status')).not.toBeNull()
     } finally {
       delete (window as unknown as { appClient?: unknown }).appClient

@@ -15,6 +15,9 @@ export class AppContext {
    */
   readonly smoke = process.argv.includes('--smoke')
   readonly appVersion: string
+  readonly usageRendererPath: string
+  readonly usageRendererDevUrl: string | undefined
+  readonly tokenUsageWorkerPath: string
   readonly fileDiffWorkerPath: string
   readonly preloadPath: string
   readonly rendererPath: string
@@ -27,10 +30,13 @@ export class AppContext {
   constructor(readonly config: AppConfig, mainModuleUrl: string) {
     const outputMainDir = dirname(fileURLToPath(mainModuleUrl))
     this.appVersion = app.getVersion()
+    this.tokenUsageWorkerPath = join(outputMainDir, 'tokenUsageWorker.js')
     this.fileDiffWorkerPath = join(outputMainDir, 'fileDiffWorker.js')
     this.preloadPath = join(outputMainDir, '../preload/index.js')
     this.rendererPath = join(outputMainDir, '../renderer/index.html')
     this.rendererDevUrl = process.env.ELECTRON_RENDERER_URL
+    this.usageRendererPath = join(outputMainDir, '../renderer/usage.html')
+    this.usageRendererDevUrl = this.rendererDevUrl ? new URL('usage.html', this.rendererDevUrl).toString() : undefined
     this.debugRendererPath = join(outputMainDir, '../renderer/debug.html')
     // Derived rather than a second variable: one dev server serves both documents, and electron-vite
     // publishes its address once.

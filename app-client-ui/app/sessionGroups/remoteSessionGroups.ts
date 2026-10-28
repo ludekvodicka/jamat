@@ -43,6 +43,10 @@ export class RemoteSessionGroups implements RemoteControlSessionGroupsPort {
     }))
   }
 
+  definitions(): readonly SessionGroupDefinition[] {
+    return this.sections().map(({ id, title }) => ({ id, title }))
+  }
+
   assign(sessionId: string, group: SessionGroup): RemoteControlStepResult<{ group: SessionGroup }> {
     const sections = this.sections()
     if (!SessionsGroupsState.isGroup(group, sections))

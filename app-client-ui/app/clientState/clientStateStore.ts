@@ -27,7 +27,7 @@ export interface WindowBounds {
   maximized: boolean
 }
 
-export type WindowBoundsKey = 'main' | 'debug' | { extraWindowId: string }
+export type WindowBoundsKey = 'main' | 'debug' | 'usage' | { extraWindowId: string }
 
 interface WindowAppearanceState {
   name?: string
@@ -44,6 +44,7 @@ interface ClientStateFields {
   layout?: string
   windowBounds?: WindowBounds
   debugWindowBounds?: WindowBounds
+  usageWindowBounds?: WindowBounds
   sidebars?: SidebarsStateValue
   sessionsView?: SessionsTabsView
   sessionFilters?: readonly SavedSessionsFilter[]
@@ -251,6 +252,8 @@ export class ClientStateStore {
       return document.windowBounds ?? null
     else if (key === 'debug')
       return document.debugWindowBounds ?? null
+    else if (key === 'usage')
+      return document.usageWindowBounds ?? null
     else if (key !== null && typeof key === 'object' && typeof key.extraWindowId === 'string')
       return document.extraWindows?.[key.extraWindowId]?.bounds ?? null
     else
@@ -266,6 +269,8 @@ export class ClientStateStore {
       return this.write({ ...document, windowBounds: normalized }, { snapshotLayout: false })
     else if (key === 'debug')
       return this.write({ ...document, debugWindowBounds: normalized }, { snapshotLayout: false })
+    else if (key === 'usage')
+      return this.write({ ...document, usageWindowBounds: normalized }, { snapshotLayout: false })
     else if (key !== null && typeof key === 'object' && typeof key.extraWindowId === 'string')
       return this.updateExtraWindow(
         key.extraWindowId,
@@ -449,6 +454,7 @@ export class ClientStateStore {
       layout?: unknown
       windowBounds?: unknown
       debugWindowBounds?: unknown
+      usageWindowBounds?: unknown
       sidebars?: unknown
       sessionsView?: unknown
       sessionFilters?: unknown
@@ -465,6 +471,7 @@ export class ClientStateStore {
       'Debug window bounds',
       report,
     )
+    const usageBounds = ClientStateStore.coerceBounds(document.usageWindowBounds, 'Usage window bounds', report)
     const newSessionAgent = ClientStateStore
       .coerceNewSessionAgent(document.newSessionAgent, report)
     return {
@@ -482,6 +489,7 @@ export class ClientStateStore {
       }),
       ...(bounds === undefined ? {} : { windowBounds: bounds }),
       ...(debugBounds === undefined ? {} : { debugWindowBounds: debugBounds }),
+      ...(usageBounds === undefined ? {} : { usageWindowBounds: usageBounds }),
       ...(document.sidebars === undefined
         ? {}
         : { sidebars: SidebarsState.coerce(document.sidebars) }),

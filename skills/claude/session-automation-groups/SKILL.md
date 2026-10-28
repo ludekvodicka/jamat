@@ -26,8 +26,11 @@ a person's unrelated session. Do not opt an interactive session into automation 
 
 For own transitions use `apply --self --state STATE`. Keep the workflow's active color with
 `--active-color COLOR` when resuming. An optional `--note-file PATH` replaces the entire note:
-preserve ticket/worktree identification and give a concrete reason when waiting or blocked.
-Omitting the note preserves it. Move no files, tickets, tabs or worktrees as part of this skill.
+preserve ticket/worktree identification. A `waiting` note states what the person must answer or
+approve and where, matching the request that ends the reply; a `blocked` note states the obstacle;
+a `completed` note states the result and replaces any earlier waiting text. Omitting the note
+preserves it. Move no files, tickets, tabs or worktrees as part of this skill. Stopping and removing a
+finished session belongs to the session or workflow that launched it, through `appjamat-v3`.
 
 Do not ask permission for the presentation change itself. An unsuccessful result must be reported;
 preserve the actual task result and pending work. Do not repeat a commit or create a replacement

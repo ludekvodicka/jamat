@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
-import { mkdir, rename, unlink, writeFile } from 'node:fs/promises'
+import { closeSync, fsyncSync, mkdirSync, openSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { mkdir, open, rename, unlink, writeFile } from 'node:fs/promises'
+import { dirname } from 'node:path'
+import { setTimeout } from 'node:timers/promises'
+import { ErrnoCode } from './errnoCode'
 
 /**
  * Canonical home of the helper both app-host and app-client-ui carried a copy of. The Host's version
@@ -34,8 +37,12 @@ export class AtomicJsonFile {
     const temporaryFile = `${file}.${process.pid}.${randomUUID()}.tmp`
     let committed = false
     try {
-      writeFileSync(temporaryFile, JSON.stringify(value, null, 2), { encoding: 'utf-8', mode })
+      writeFileSync(temporaryFile, JSON.stringify(value, null, 2), { encoding: 'utf-8', mode, flush: true })
       renameSync(temporaryFile, file)
+      if (process.platform !== 'win32') {
+        const directory = openSync(dirname(file), 'r')
+        try { fsyncSync(directory) } finally { closeSync(directory) }
+      }
       committed = true
     } finally {
       if (!committed)
@@ -67,8 +74,19 @@ export class AtomicJsonFile {
     const temporaryFile = `${file}.${process.pid}.${randomUUID()}.tmp`
     let committed = false
     try {
-      await writeFile(temporaryFile, JSON.stringify(value, null, 2), { encoding: 'utf-8', mode })
-      await rename(temporaryFile, file)
+      await writeFile(temporaryFile, JSON.stringify(value, null, 2), { encoding: 'utf-8', mode, flush: true })
+      for (let attempt = 0; ; attempt++) {
+        try { await rename(temporaryFile, file); break }
+        catch (error) {
+          // Windows readers/scanners can briefly deny replacement. Retry only the same atomic rename.
+          if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(ErrnoCode.of(error) ?? '') || attempt >= 5) throw error
+          await setTimeout(20 * 2 ** attempt)
+        }
+      }
+      if (process.platform !== 'win32') {
+        const directory = await open(dirname(file), 'r')
+        try { await directory.sync() } finally { await directory.close() }
+      }
       committed = true
     } finally {
       if (!committed)

@@ -22,9 +22,9 @@ interface LatestWorkingTreeSnapshot {
 
 export function useWorkingTreeChanges(
   sessionId: string,
+  reader: AppClientUiBridge['fileChanges']['workingTree'] | null,
   enabled: boolean,
   requiredSource?: FileChangesWorkingTreeSource,
-  reader?: AppClientUiBridge['fileChanges']['workingTree'],
 ): FileChangesWorkingTreeViewModel {
   const [selected, setSelected] = useState<FileChangesWorkingTreeSource | null>(null)
   const [readings, setReadings] = useState<Record<string, WorkingTreeReading>>({})
@@ -52,7 +52,7 @@ export function useWorkingTreeChanges(
         error: null,
       },
     }))
-    const answer = await (reader ?? window.appClient.fileChanges.workingTree)(sessionId, source)
+    const answer = await (reader ? reader(sessionId, source) : Promise.resolve({ ok: false as const, error: 'Changes are unavailable for this session.' }))
     if (generations.current.get(key) !== current || !desired.current.has(key)) return null
     const refusal = IpcFailure.of(answer)
     if (refusal !== null) {
@@ -103,6 +103,10 @@ export function useWorkingTreeChanges(
       sources.set(UseWorkingTreeChanges.keyOf(sessionId, requiredSource), requiredSource)
     const previous = desired.current
     const readerChanged = previousReader.current !== reader
+    if (readerChanged) {
+      latestSnapshot.current = null
+      for (const key of previous) generations.current.set(key, (generations.current.get(key) ?? 0) + 1)
+    }
     previousReader.current = reader
     const next = new Set(sources.keys())
     desired.current = next
@@ -113,7 +117,7 @@ export function useWorkingTreeChanges(
         generations.current.set(key, (generations.current.get(key) ?? 0) + 1)
     }
     setReadings((value) => Object.fromEntries(
-      Object.entries(value).filter(([key]) => next.has(key)),
+      Object.entries(value).filter(([key]) => !readerChanged && next.has(key)),
     ))
     for (const [key, source] of sources) {
       if (readerChanged || !previous.has(key)) void read(source)

@@ -62,6 +62,17 @@ describe('app-client-ui/app/sessionGroups/sessionGroupsOperations', () => {
 
   const save = () => bench.call('sessionGroups.save', { groups: keptConst })
 
+  it('ensures a deleted waiting group without replacing other groups or their titles', () => {
+    const config = configUnderTest()
+    config.readSection = (() => [{ id: 'none', title: 'Sessions' }, { id: 'pinned', title: 'Pinned' },
+      { id: 'custom', title: 'My group' }]) as ConfigStore['readSection']
+    const operations = new SessionGroupsOperations(config, stateUnderTest(), () => { changed++ })
+    expect(operations.ensure([{ id: 'waiting', title: 'Waiting' }])).toEqual({ ok: true })
+    expect(written[0]).toEqual([{ id: 'none', title: 'Sessions' }, { id: 'pinned', title: 'Pinned' },
+      { id: 'custom', title: 'My group' }, { id: 'waiting', title: 'Waiting' }])
+    expect(changed).toBe(1)
+  })
+
   it('answers the read with the sections the config holds', async () => {
     expect(await bench.call('sessionGroups.list'))
       .toEqual({ ok: true, value: SessionsGroupsState.defaultsConst })

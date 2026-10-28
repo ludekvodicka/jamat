@@ -1,10 +1,11 @@
+import { CommitPaneBridge, CommitPaneChannel } from '../versioning/commitPanePorts'
 import type { FileViewerDocument } from '../../../lib-orchestrator/fileViewer/fileViewerApi.types'
 import type { RemoteControlStepResult } from '../../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import type {
   SessionWorkflowAction,
-  SessionWorkflowActionId,
   SessionWorkflowTarget,
 } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
+import type { AppControlRequest } from '../../shared/appOperationMap'
 import type { IpcResult } from '../../shared/appClientUiIpc'
 import { AppClientUiReport } from '../../shared/appClientUiReport'
 import { ErrorText } from '../../shared/errorText'
@@ -14,7 +15,7 @@ import type { FinalizeAgreement } from '../overlays/finalize/finalizeCatalog'
 import { FinalizeAgreements, FinalizeWorking } from '../overlays/finalize/finalizeModel'
 import { FinalizePorts } from '../overlays/finalize/finalizeOverlay'
 import type { ConflictListPorts } from './conflictList'
-import type { WorkflowPorts, WorkflowPressAnswer } from './workflowPane'
+import type { WorkflowPorts, WorkflowPressAnswer, WorkflowCommit } from './workflowPane'
 
 /**
  * What the workflow pane of one local session does. A step click opens its process in a further
@@ -27,8 +28,22 @@ export class WorkflowPortsOf {
   /** `openInSplit` puts a granted file beside the workflow item and answers a refusal, or null. */
   static of(sessionId: string, report: (sentence: string | null) => void, openInSplit: (document: FileViewerDocument) => string | null): WorkflowPorts {
     return {
+      requestRun: async (command, cwd) => IpcFailure.of(await AppControl.sessions('sessions.runScript', {
+        session: AppControl.sessionOf(sessionId), command, cwd, title: 'Worktree validation',
+      }), 'Start validation run'),
+      clearHistory: async () => IpcFailure.of(await AppControl.sessions('sessions.clearActions', { session: AppControl.sessionOf(sessionId) }), 'Clear'),
+      reviews: CommitPaneBridge.of(),
+      tasks: {
+        openTerminal: async (runId) => {
+          const answer = await AppControl.call('tabs.open', { session: { kind: 'sessionId', sessionId: runId } })
+          return !answer.ok ? answer.error : !answer.value.ok ? answer.value.error.detail : null
+        },
+        scriptOutput: (request) => AppControl.call('sessions.scriptOutput', request),
+        transcript: (request) => AppControl.call('sessionTasks.transcript', request),
+        shellOutput: (request) => AppControl.call('sessionTasks.shellOutput', request),
+      },
       openStep: (target, title) => WorkflowPortsOf.openStep(sessionId, target, title, report),
-      press: (action, agreement) => WorkflowPortsOf.press(sessionId, action, agreement),
+      press: (action, agreement, commit) => WorkflowPortsOf.press(sessionId, action, agreement, commit),
       conflicts: WorkflowPortsOf.conflictsOf(sessionId, openInSplit),
     }
   }
@@ -41,10 +56,10 @@ export class WorkflowPortsOf {
    */
   static conflictsOf(sessionId: string, openInSplit: (document: FileViewerDocument) => string | null): ConflictListPorts {
     return {
-      resolve: async (path, option, confirm) => {
+      resolve: async (path, option, confirm, kind) => {
         try {
-          return IpcFailure.of(await AppControl.sessions('sessions.resolveConflict', {
-            session: AppControl.sessionOf(sessionId), path, option, ...confirm ? { confirm: true as const } : {},
+          return IpcFailure.sentenceOf(await AppControl.sessions('sessions.resolveConflict', {
+            session: AppControl.sessionOf(sessionId), path, ...kind === undefined ? {} : { kind }, option, ...confirm ? { confirm: true as const } : {},
           }), 'Settle')
         } catch (thrown: unknown) {
           return `Settle failed: ${ErrorText.of(thrown)}`
@@ -105,12 +120,22 @@ export class WorkflowPortsOf {
     }
   }
 
-  static async press(sessionId: string, action: SessionWorkflowAction, agreement: FinalizeAgreement): Promise<WorkflowPressAnswer> {
+  static async press(sessionId: string, action: SessionWorkflowAction, agreement: FinalizeAgreement, commit?: WorkflowCommit): Promise<WorkflowPressAnswer> {
+    if (commit?.reviewed) {
+      if (action.id !== 'finish-again' || !action.requiresCommit) return { kind: 'refused', sentence: 'This action no longer accepts a commit review' }
+      const decide = window.appClient.versioning.decideCommit
+      if (!decide) return { kind: 'refused', sentence: 'This client cannot approve a shared Finish review' }
+      return WorkflowPortsOf.reviewResult(await decide({ ...commit.reviewed.proof, kind: 'finish', operationId: crypto.randomUUID(),
+        workflow: { workflowId: commit.reviewed.workflowId, revision: commit.reviewed.revision, actionId: 'finish-again', agreement, acknowledgedFindings: commit.acknowledgedFindings, repositories: commit.repositories,
+          ...commit.reviewVersion === undefined ? {} : { reviewVersion: commit.reviewVersion } } }))
+    }
+    if (action.id === 'later') return { kind: 'done' }
     if (action.id === 'open-in-vscode') return WorkflowPortsOf.openInVsCode(sessionId)
     if (action.id === 'open-merger') return WorkflowPortsOf.openMerger(action)
+    if (action.id === 'resume-worker') return WorkflowPortsOf.resumeWorker(sessionId, action.label)
     let answer: Awaited<ReturnType<ReturnType<typeof FinalizePorts.of>['finishWorktree']>>
     try {
-      answer = await WorkflowPortsOf.sent(sessionId, action, agreement)
+      answer = await WorkflowPortsOf.sent(sessionId, action, agreement, commit)
     } catch (thrown: unknown) {
       return { kind: 'refused', sentence: ErrorText.of(thrown) }
     }
@@ -118,41 +143,36 @@ export class WorkflowPortsOf {
     if (setup !== null) return { kind: 'agreement', setup }
     const working = FinalizeWorking.of(answer)
     if (working !== null) return { kind: 'working', sentence: working }
-    const failure = IpcFailure.of(answer, WorkflowPortsOf.labelOf(action.id))
+    // The step redraws the current list with the refusal, so the person only has to look and press again.
+    if (IpcFailure.codeOf(answer) === 'live-sessions') return { kind: 'refused', sentence: WorkflowPortsOf.liveSessionsChangedConst }
+    const failure = IpcFailure.sentenceOf(answer, action.label)
     return failure === null ? { kind: 'done' } : { kind: 'refused', sentence: failure }
+  }
+
+  static readonly liveSessionsChangedConst = 'The sessions in the main copy changed. Check the list and press Update again.'
+
+  static reviewResult(answer: IpcResult<import('../../shared/versioningCommit').VersioningCommitRunResult>): WorkflowPressAnswer {
+    const lost = CommitPaneChannel.lossOf(answer)
+    if (lost !== null) return { kind: 'refused', sentence: CommitPaneChannel.unansweredOf(lost) }
+    if (!answer.ok) return { kind: 'refused', sentence: answer.error }
+    if (answer.value.ok) return { kind: 'done' }
+    if (answer.value.setup) return { kind: 'agreement', setup: answer.value.setup }
+    if (answer.value.working) return { kind: 'working', sentence: answer.value.detail }
+    return { kind: 'refused', sentence: answer.value.detail }
   }
 
   /**
    * Finish again (Check again), Keep worktree and Discard are the Finish press with that choice;
-   * Resolve with agent is Commit with `agent`; Retry setup is the row's retry; Stop agent stops the
+   * Resolve with agent is Commit with `agent`; Solve with agent is an operation of its own; Retry setup is the row's retry; Stop agent stops the
    * agent run it names, and the action then reads what it left.
    */
-  private static sent(sessionId: string, action: SessionWorkflowAction, agreement: FinalizeAgreement)
+  private static sent(sessionId: string, action: SessionWorkflowAction, agreement: FinalizeAgreement, commit?: WorkflowCommit)
     : ReturnType<ReturnType<typeof FinalizePorts.of>['finishWorktree']> {
-    const finish = FinalizePorts.of({ kind: 'local', sessionId })
-    const id = action.id
-    switch (id) {
-      case 'finish-again': return finish.finishWorktree('commit', agreement)
-      case 'keep': return finish.finishWorktree('keep', agreement)
-      case 'discard': return finish.finishWorktree('discard', agreement)
-      case 'resolve-with-agent': return AppControl.sessionsDone('sessions.finishWorktree', {
-        session: AppControl.sessionOf(sessionId),
-        choice: 'commit',
-        agent: true,
-        ...(agreement.acknowledgeSetup === undefined ? {} : { acknowledgeSetup: agreement.acknowledgeSetup }),
-        ...(agreement.confirmWorking === true ? { confirmWorking: true } : {}),
-      })
-      case 'retry-setup': return AppControl.sessionsDone('sessions.retrySetup', {
-        session: AppControl.sessionOf(sessionId),
-        ...(agreement.acknowledgeSetup === undefined ? {} : { acknowledgeSetup: agreement.acknowledgeSetup }),
-      })
-      case 'stop-agent': {
-        if (action.runId === undefined) throw new Error('A Stop agent press names no agent run')
-        return AppControl.sessionsDone('sessions.finalize', { session: AppControl.sessionOf(action.runId), expect: 'stop' })
-      }
-      case 'open-in-vscode': case 'open-merger': throw new Error(`${WorkflowPortsOf.labelOf(id)} is no operation of the Finish`)
-      default: throw new Error(`Unknown workflow action: ${JSON.stringify(id satisfies never)}`)
-    }
+    const command = action.command
+    if (command === undefined) throw new Error(`${action.label} has no source operation`)
+    return AppControl.sessionsDone(command.operation, {
+      session: AppControl.sessionOf(command.sessionId ?? sessionId), ...agreement, ...commit, ...command.body,
+    } as AppControlRequest<typeof command.operation>)
   }
 
   /** The merger's tab, where the person talks to it, as a click on its step opens it. */
@@ -167,6 +187,18 @@ export class WorkflowPortsOf {
     }
   }
 
+  /** The row's Resume session: the reopen, then every panel that holds the session reattaches. */
+  private static async resumeWorker(sessionId: string, label: string): Promise<WorkflowPressAnswer> {
+    try {
+      const refusal = IpcFailure.sentenceOf(await AppControl.sessionsDone('sessions.reopen', { session: AppControl.sessionOf(sessionId) }), label)
+      if (refusal !== null) return { kind: 'refused', sentence: refusal }
+      const published = await window.appClient.tabs.publishTerminalRestarted(sessionId)
+      return published.ok ? { kind: 'done' } : { kind: 'refused', sentence: `${label}: the terminal restart was not published: ${published.error}` }
+    } catch (thrown: unknown) {
+      return { kind: 'refused', sentence: `${label} failed: ${ErrorText.of(thrown)}` }
+    }
+  }
+
   /** The worktree in VS Code, read off the session by main, as the row menu opens it. */
   private static async openInVsCode(sessionId: string): Promise<WorkflowPressAnswer> {
     try {
@@ -175,20 +207,6 @@ export class WorkflowPortsOf {
       return answer.value ? { kind: 'done' } : { kind: 'refused', sentence: `Open in VS Code failed: no session ${sessionId}` }
     } catch (thrown: unknown) {
       return { kind: 'refused', sentence: `Open in VS Code failed: ${ErrorText.of(thrown)}` }
-    }
-  }
-
-  private static labelOf(action: SessionWorkflowActionId): string {
-    switch (action) {
-      case 'finish-again': return 'Finish again'
-      case 'keep': return 'Keep worktree'
-      case 'discard': return 'Discard'
-      case 'retry-setup': return 'Retry setup'
-      case 'stop-agent': return 'Stop agent'
-      case 'open-in-vscode': return 'Open in VS Code'
-      case 'resolve-with-agent': return 'Resolve with agent'
-      case 'open-merger': return 'Open merger'
-      default: throw new Error(`Unknown workflow action: ${JSON.stringify(action satisfies never)}`)
     }
   }
 

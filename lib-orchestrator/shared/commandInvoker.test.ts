@@ -25,6 +25,18 @@ describe('lib-orchestrator/shared/commandInvoker', () => {
 
   afterEach(() => vi.useRealTimers())
 
+  it.each([true, false])('distinguishes a proved child close from the post-kill timer: close=%s', async (closes) => {
+    vi.useFakeTimers()
+    const child = new FakeChild(), spawnImpl = vi.fn(() => child) as unknown as typeof spawn
+    const running = new CommandInvoker({ spawnImpl, timeoutMilliseconds: 50, platform: 'linux' })
+      .run({ command: 'tool', args: [], cwd: import.meta.dirname, env: {}, trackClose: true })
+    await vi.waitFor(() => expect(spawnImpl).toHaveBeenCalled())
+    await vi.advanceTimersByTimeAsync(50)
+    if (closes) child.emit('close', null)
+    else await vi.advanceTimersByTimeAsync(2_000)
+    expect(await running).toMatchObject({ failure: 'timeout', closed: closes })
+  })
+
   it('returns an interactive launch before close, without timing out the editor', async () => {
     const child = new FakeChild()
     const spawnImpl = vi.fn(() => child) as unknown as typeof spawn
@@ -67,6 +79,24 @@ describe('lib-orchestrator/shared/commandInvoker', () => {
     })
   })
 
+  it('answers the raw stdout bytes only to a run that asks, so a binary file survives the UTF-8 decoding', async () => {
+    const bytes = Buffer.from([0x89, 0x00, 0xff, 0xfe])
+    const outcomeOf = async (stdoutBytes: boolean) => {
+      const child = new FakeChild()
+      const spawnImpl = (() => child) as unknown as typeof spawn
+      const running = new CommandInvoker({ spawnImpl })
+        .run({ command: 'tool', args: [], cwd: import.meta.dirname, env: {}, ...stdoutBytes ? { stdoutBytes: true as const } : {} })
+      await vi.waitFor(() => expect(child.listenerCount('close')).toBeGreaterThan(0))
+      child.stdout.emit('data', bytes.subarray(0, 2))
+      child.stdout.emit('data', bytes.subarray(2))
+      child.emit('close', 0)
+      return running
+    }
+
+    expect((await outcomeOf(true)).stdoutBytes).toEqual(bytes)
+    expect(await outcomeOf(false)).not.toHaveProperty('stdoutBytes')
+  })
+
   it('does not spawn a command whose signal is already aborted', async () => {
     const controller = new AbortController()
     controller.abort()
@@ -102,6 +132,36 @@ describe('lib-orchestrator/shared/commandInvoker', () => {
     expect(await running).toEqual({ code: 0, stdout: 'žluť', stderr: '', failure: 'output-limit' })
     child.stdout.emit('data', Buffer.from('late'))
     expect(onStdout).toHaveBeenCalledTimes(1)
+  })
+
+  it('streams twenty MiB while retaining only the combined tail', async () => {
+    const child = new FakeChild()
+    const spawnImpl = vi.fn(() => child) as unknown as typeof spawn
+    let streamed = 0
+    const running = new CommandInvoker({ spawnImpl }).run({ command: 'tool', args: [], cwd: import.meta.dirname, env: {},
+      retain: { tailBytes: 32 }, onStdout: (text) => { streamed += Buffer.byteLength(text) } })
+    await vi.waitFor(() => expect(spawnImpl).toHaveBeenCalled())
+    for (let index = 0; index < 20; index += 1) child.stdout.emit('data', Buffer.alloc(1_048_576, 'x'))
+    child.stderr.emit('data', Buffer.from('done'))
+    child.emit('close', 0)
+    expect(streamed).toBe(20 * 1_048_576)
+    expect(await running).toEqual({ code: 0, stdout: 'x'.repeat(28), stderr: 'done', failure: null })
+  })
+
+  it('honors a per-call timeout without changing the invoker default', async () => {
+    vi.useFakeTimers()
+    const child = new FakeChild()
+    let started!: () => void
+    const spawned = new Promise<void>((resolve) => { started = resolve })
+    const spawnImpl = (() => { started(); return child }) as unknown as typeof spawn
+    const running = new CommandInvoker({ spawnImpl, platform: 'linux', timeoutMilliseconds: 1000 }).run({
+      command: 'tool', args: [], cwd: import.meta.dirname, env: {}, timeoutMs: 10,
+    })
+    await spawned
+    await vi.advanceTimersByTimeAsync(10)
+    expect(child.killed).toBe(true)
+    child.emit('close', null)
+    expect((await running).failure).toBe('timeout')
   })
 
   it('preserves command completion when a progress observer throws', async () => {
@@ -364,5 +424,67 @@ describe('lib-orchestrator/shared/commandInvoker', () => {
       stderr: '',
       failure: 'output-limit',
     })
+  })
+
+  it.each(['timeout', 'aborted'] as const)('keeps lifetime pending after bounded %s with zero retained output', async reason => {
+    vi.useFakeTimers()
+    const child = new FakeChild(), controller = new AbortController(), released = vi.fn()
+    const spawnImpl = vi.fn(() => child) as unknown as typeof spawn
+    let started!: () => void
+    const ready = new Promise<void>(resolve => { started = resolve })
+    const onLifetime = vi.fn((exited: Promise<void>) => { void exited.then(released); started() })
+    const running = new CommandInvoker({ spawnImpl, platform: 'linux', timeoutMilliseconds: 50 }).run({
+      command: 'tool', args: [], cwd: import.meta.dirname, env: {}, signal: controller.signal,
+      retain: { tailBytes: 0 }, onLifetime,
+    })
+    await ready
+    expect(onLifetime).toHaveBeenCalledOnce()
+    child.stdout.emit('data', Buffer.from('SENSITIVE_STDOUT'))
+    child.stderr.emit('data', Buffer.from('SENSITIVE_STDERR'))
+    if (reason === 'timeout') await vi.advanceTimersByTimeAsync(50)
+    else if (reason === 'aborted') controller.abort()
+    else throw new Error(`Unknown stop reason: ${reason}`)
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(await running).toEqual({ code: -1, stdout: '', stderr: '', failure: reason })
+    expect(released).not.toHaveBeenCalled()
+    child.emit('exit', null, 'SIGTERM')
+    child.emit('close', null, 'SIGTERM')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(released).toHaveBeenCalledOnce()
+  })
+
+  it.each([true, false])('accounts for spawn error lifetime when a native PID exists=%s', async hasPid => {
+    const child = new FakeChild(), released = vi.fn()
+    if (!hasPid) Object.defineProperty(child, 'pid', { value: undefined })
+    const onLifetime = vi.fn((exited: Promise<void>) => { void exited.then(released) })
+    const running = new CommandInvoker({ spawnImpl: (() => child) as unknown as typeof spawn, platform: 'linux' }).run({
+      command: 'tool', args: [], cwd: import.meta.dirname, env: {}, retain: { tailBytes: 0 }, onLifetime,
+    })
+    await vi.waitFor(() => expect(onLifetime).toHaveBeenCalledOnce())
+    child.emit('error', new Error('fixture spawn error'))
+    expect(await running).toEqual({ code: -1, stdout: '', stderr: '', failure: 'spawn-failed' })
+    if (hasPid) {
+      expect(released).not.toHaveBeenCalled()
+      expect(child.killed).toBe(true)
+      child.emit('exit', 1)
+      child.emit('close', 1)
+      await Promise.resolve()
+    }
+    expect(released).toHaveBeenCalledOnce()
+  })
+
+  it.each(['aborted', 'throws'] as const)('creates no lifetime for a command that never spawns: %s', async outcome => {
+    const controller = new AbortController(), onLifetime = vi.fn()
+    const spawnImpl = vi.fn(() => { throw new Error('fixture refused spawn') }) as unknown as typeof spawn
+    if (outcome === 'aborted') controller.abort()
+    else if (outcome === 'throws') expect(controller.signal.aborted).toBe(false)
+    else throw new Error(`Unknown startup outcome: ${outcome}`)
+    const result = await new CommandInvoker({ spawnImpl }).run({
+      command: 'tool', args: [], cwd: import.meta.dirname, env: {}, signal: controller.signal, onLifetime,
+    })
+    if (outcome === 'aborted') expect(result.failure).toBe('aborted')
+    else if (outcome === 'throws') expect(result.failure).toBe('spawn-failed')
+    else throw new Error(`Unknown startup outcome: ${outcome}`)
+    expect(onLifetime).not.toHaveBeenCalled()
   })
 })

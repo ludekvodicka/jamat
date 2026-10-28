@@ -7,6 +7,11 @@ export interface ControllerLeaseKeeperDeps {
   controllerId: string
   call: <T>(name: HostOpName, body: Record<string, unknown>) => Promise<HostCallResult<T>>
   onError: (message: string) => void
+  /**
+   * A lease under a new id is held now: after none, or after the Host took the old one away. A
+   * terminal attached without it can attach again as a writer (UA1-J09-9). A renew says nothing.
+   */
+  onGranted: () => void
 }
 
 /**
@@ -107,11 +112,13 @@ export class ControllerLeaseKeeper {
     )
     if (generation !== this.generation) return
     if (result.ok) {
+      const fresh = this.grant?.controllerLeaseId !== result.value.controllerLeaseId
       // Recorded even when a stop is already pending: the queued release is what consumes it, and
       // the answer is the only carrier of the id the Host is holding for us.
       this.grant = result.value
       this.failureReported = false
       this.schedule(generation, ControllerLeaseKeeper.renewDelay(result.value.expiresAt))
+      if (fresh && this.running) this.deps.onGranted()
       return
     }
     this.grant = null

@@ -1,3 +1,7 @@
+import { dirname, join } from 'node:path'
+import { RateHistoryStore } from './history/rateHistoryStore'
+import { estimate } from './quotaEstimator'
+import type { AccountView } from '../agentAccounts/agentAccountsApi.types'
 import type { RuntimeChannel } from '../shared/configIdentity.types'
 import { ErrorText } from '../shared/errorText'
 import { OrchestratorPaths } from '../shared/orchestratorPaths'
@@ -8,6 +12,8 @@ import {
 } from './cache/rateMonitorCacheStore'
 import { RateMonitorSources } from './rateMonitorSources'
 import type {
+  RateAccountKey,
+  RateSampleSource,
   RateAgentId,
   RateExtra,
   RateMonitorDebugStatus,
@@ -19,7 +25,7 @@ import type {
 
 /** What a source may set off outside a read of its own. Today the Codex push notification, nothing else. */
 export interface RateSourceHooks {
-  nudge(agentId: RateAgentId): void
+  nudge(agentId: RateAgentId, accountId?: string): void
 }
 
 export type RateSourceReading =
@@ -41,8 +47,19 @@ export type RateSourceReading =
  */
 export interface RateLimitSource {
   readonly agentId: RateAgentId
+  readonly accountId?: string
+  readonly label?: string
+  readonly minimumIntervalMilliseconds?: number
   read(): Promise<RateSourceReading>
   stop(): void
+}
+
+export interface RateExternalReading {
+  key: RateAccountKey
+  at: number
+  windows: readonly RateWindow[]
+  source: RateSampleSource
+  backfill?: boolean
 }
 
 export interface RateMonitorDeps {
@@ -57,6 +74,10 @@ export interface RateMonitorDeps {
    * thing a source sets off that no read asked for.
    */
   sources?: (hooks: RateSourceHooks) => readonly RateLimitSource[]
+  readings?: () => Promise<readonly RateExternalReading[]>
+  accounts?: () => Promise<readonly AccountView[]>
+  sourceForAccount?: (account: AccountView, hooks: RateSourceHooks) => RateLimitSource
+  historyDirectory?: string
   cacheFile?: string
   now?: () => number
 }
@@ -68,7 +89,7 @@ export interface RateMonitorDeps {
  * Three things are genuinely this class's own, and every one of them exists because a source must not
  * be the place that holds it:
  *
- * 1. **One cadence.** Ten minutes while anything is visible, nothing at all while nothing is. Coming
+ * 1. **One cadence.** Ten minutes, including when no window is visible. Coming
  *    back into view reads only what has gone stale meanwhile, so a window toggled twice in a minute
  *    costs no requests. Claude carries a floor on top of that, measured from the last ATTEMPT.
  * 2. **The last good windows.** A failed read never destroys them: it becomes `stale` over the same
@@ -94,31 +115,41 @@ export class RateMonitor {
    */
   private static readonly nudgeFloorMillisecondsConst = 5_000
 
-  private readonly sources: ReadonlyMap<RateAgentId, RateLimitSource>
+  private readonly deps: RateMonitorDeps
+  private readonly hooks: RateSourceHooks
+  private readonly sources: Map<string, RateLimitSource>
+  private readonly readingSources = new Map<string, RateSampleSource>()
+  private feedTimer: ReturnType<typeof setInterval> | null = null
+  private feedReading = false
+  private readonly labels = new Map<string, string>()
+  private syncing: Promise<void> | null = null
+  private hydrated: RateMonitorCacheContent | null = null
+  private readonly history: RateHistoryStore
+  private pendingFeed: readonly RateExternalReading[] | null = null
   private readonly cache: RateMonitorCacheStore
   private readonly cacheFile: string
   private readonly now: () => number
-  private readonly providers: Record<RateAgentId, RateProviderState> = {
+  private readonly providers: Record<string, RateProviderState> = {
     claude: { kind: 'never-read' },
     codex: { kind: 'never-read' },
   }
-  private readonly lastGood = new Map<RateAgentId, RateMonitorCacheEntry>()
-  private readonly attemptAt: Record<RateAgentId, number | null> = { claude: null, codex: null }
-  private readonly successAt: Record<RateAgentId, number | null> = { claude: null, codex: null }
-  private readonly lastReason: Record<RateAgentId, string | null> = { claude: null, codex: null }
-  private readonly oauthExpiresAt: Record<RateAgentId, number | null> = { claude: null, codex: null }
-  private readonly extras: Record<RateAgentId, readonly RateExtra[]> = { claude: [], codex: [] }
-  private readonly raw: Record<RateAgentId, unknown> = { claude: null, codex: null }
-  private readonly inFlight = new Map<RateAgentId, Promise<void>>()
+  private readonly lastGood = new Map<string, RateMonitorCacheEntry>()
+  private readonly attemptAt: Record<string, number | null> = { claude: null, codex: null }
+  private readonly successAt: Record<string, number | null> = { claude: null, codex: null }
+  private readonly lastReason: Record<string, string | null> = { claude: null, codex: null }
+  private readonly oauthExpiresAt: Record<string, number | null> = { claude: null, codex: null }
+  private readonly extras: Record<string, readonly RateExtra[]> = { claude: [], codex: [] }
+  private readonly raw: Record<string, unknown> = { claude: null, codex: null }
+  private readonly inFlight = new Map<string, Promise<void>>()
   /**
    * Providers whose push arrived while a read was already out.
    *
    * That read answers with the state from before the push, so merging into it loses what the push
    * was about. One repeat when it lands is enough, and the flag is cleared before the repeat starts.
    */
-  private readonly nudgedMidRead = new Set<RateAgentId>()
-  private readonly nudgedReadAt: Record<RateAgentId, number | null> = { claude: null, codex: null }
-  private readonly nudgedWhileHidden = new Set<RateAgentId>()
+  private readonly nudgedMidRead = new Set<string>()
+  private readonly nudgedReadAt: Record<string, number | null> = { claude: null, codex: null }
+  private readonly nudgedWhileHidden = new Set<string>()
   private snapshotValue: RateMonitorSnapshot
   private serializedValue: string
   private revision = 1
@@ -127,20 +158,27 @@ export class RateMonitor {
   private started = false
   private stopped = false
 
-  constructor(private readonly deps: RateMonitorDeps) {
+  constructor(deps: RateMonitorDeps) {
+    this.deps = deps
     this.now = deps.now ?? (() => Date.now())
     this.cacheFile = deps.cacheFile
       ?? OrchestratorPaths.rateMonitorCacheFile(deps.configIdentity, deps.channel)
     this.cache = new RateMonitorCacheStore(this.cacheFile)
-    const hooks: RateSourceHooks = { nudge: (agentId) => this.nudge(agentId) }
-    const sources = deps.sources?.(hooks) ?? RateMonitorSources.of(hooks)
-    this.sources = new Map(sources.map((source) => [source.agentId, source]))
-    this.serializedValue = JSON.stringify(this.providers)
+    this.history = new RateHistoryStore(deps.historyDirectory ?? (deps.cacheFile
+      ? join(dirname(deps.cacheFile), 'rate-history') : OrchestratorPaths.rateHistoryDirectory(deps.configIdentity, deps.channel)))
+    const hooks: RateSourceHooks = { nudge: (agentId, accountId = 'main') => this.nudge(this.keyOf(agentId, accountId)) }
+    this.hooks = hooks
+    const sources = deps.sources?.(hooks) ?? (deps.accounts ? [] : RateMonitorSources.of(hooks))
+    this.sources = new Map()
+    for (const source of sources) this.addSource(source)
+    this.serializedValue = this.serializedSnapshot()
     this.snapshotValue = this.composeSnapshot()
   }
 
+  readHistory(range: { from: number; to: number }) { return this.history.read(range) }
+
   /**
-   * Hydrates from the cache, and then lets the cadence run if a window is already on screen. No
+   * Hydrates from the cache, then starts the cadence even when no window is visible. No
    * network is touched by the hydration itself on purpose: a read costs a request against an endpoint
    * that counts them, and what is on disk is the same answer one interval ago.
    *
@@ -157,7 +195,10 @@ export class RateMonitor {
     if (this.started) return
     this.started = true
     try {
+      await this.history.prune(this.now())
+      await this.syncAccounts()
       const cached = await this.cache.load()
+      this.hydrated = cached
       if (cached !== null) {
         this.hydrate(cached)
         this.changed()
@@ -165,29 +206,33 @@ export class RateMonitor {
     } catch (error) {
       this.deps.onError(`The rate monitor could not start: ${ErrorText.of(error)}`)
     }
-    if (!this.started || !this.visible) return
-    this.detach(this.readDue())
+    if (!this.started) return
+    if (this.deps.readings) {
+      this.feedTimer = setInterval(() => this.detach(this.readFeed()), 5_000)
+      this.feedTimer.unref()
+      this.detach(this.readFeed())
+    }
+    if (this.visible) this.detach(this.readDue())
     this.arm()
   }
 
   /** Idempotent. Stops the timer and the sources, which is what ends a live provider child process. */
-  stop(): void {
+  stop(): Promise<void> {
     this.stopped = true
-    if (!this.started) return
+    if (!this.started) return this.history.flush()
     this.started = false
     this.visible = false
     this.clearTimer()
+    if (this.feedTimer !== null) clearInterval(this.feedTimer)
+    this.feedTimer = null
     for (const source of this.sources.values()) source.stop()
+    return this.history.flush()
   }
 
   setWindowVisible(visible: boolean): void {
     if (this.stopped || this.visible === visible) return
     this.visible = visible
-    if (!visible) {
-      this.clearTimer()
-      return
-    }
-    this.detach(this.readDue())
+    if (visible) this.detach(this.readDue())
     this.arm()
   }
 
@@ -200,6 +245,7 @@ export class RateMonitor {
    * reads have settled - so a caller never has to race the event it would otherwise wait for.
    */
   async refresh(): Promise<RateMonitorSnapshot> {
+    await this.syncAccounts()
     await this.readAll()
     return this.snapshotValue
   }
@@ -221,6 +267,8 @@ export class RateMonitor {
         claude: this.debugProviderOf('claude'),
         codex: this.debugProviderOf('codex'),
       },
+      accounts: [...this.sources].map(([key, source]) => ({ key: { agentId: source.agentId, accountId: source.accountId ?? 'main' },
+        label: this.labels.get(key) ?? 'Main', provider: this.debugProviderOf(key), source: this.readingSources.get(key) ?? (this.lastGood.has(key) ? 'poll' : null) })),
     }
   }
 
@@ -229,7 +277,7 @@ export class RateMonitor {
    * the seam that makes carrying one impossible rather than merely forbidden: a source holding a
    * token has nowhere to put it, and a spread is what would have found somewhere.
    */
-  private debugProviderOf(agentId: RateAgentId): RateProviderDebug {
+  private debugProviderOf(agentId: string): RateProviderDebug {
     return {
       state: this.providers[agentId],
       lastAttemptAt: this.attemptAt[agentId],
@@ -244,16 +292,13 @@ export class RateMonitor {
   /**
    * A push from a provider: one coalesced read of THAT provider, and nobody else's cadence moves.
    *
-   * While nothing is visible the read is not made but the signal is not thrown away either. Reading
-   * would break the one promise this cadence makes, and dropping it would leave a value the provider
-   * has just said is wrong on screen until the next interval - so the provider is remembered as due
-   * and read the moment a window comes back, however recently it last succeeded.
+   * While hidden, pushes wait for the background cadence or the next visible window.
    *
    * Past the floor above the push is dropped rather than deferred: what it says is that the answer
    * moved, and the read a few seconds ago already asked for the answer. The cadence collects whatever
    * moved after it.
    */
-  private nudge(agentId: RateAgentId): void {
+  private nudge(agentId: string): void {
     // A push arrives inside a `'line'` listener on a provider child's stdout, where a throw has no
     // caller at all: it becomes an uncaught exception and ends the process this library is linked
     // into. The same reason `detach` exists for the asynchronous half.
@@ -263,7 +308,7 @@ export class RateMonitor {
     }
   }
 
-  private takePush(agentId: RateAgentId): void {
+  private takePush(agentId: string): void {
     if (!this.visible) {
       this.nudgedWhileHidden.add(agentId)
       return
@@ -282,15 +327,17 @@ export class RateMonitor {
   }
 
   private async tick(): Promise<void> {
-    if (!this.visible) return
+    if (!this.started) return
     try {
       await this.readAll()
     } finally {
+      this.changed()
       this.arm()
     }
   }
 
   private async readAll(): Promise<void> {
+    await this.syncAccounts()
     await Promise.all([...this.sources.keys()].map((agentId) => this.readProvider(agentId)))
   }
 
@@ -316,7 +363,7 @@ export class RateMonitor {
    * notifications is one read, and a click on the widget during the poll's own read waits for it
    * instead of doubling it.
    */
-  private readProvider(agentId: RateAgentId): Promise<void> {
+  private readProvider(agentId: string): Promise<void> {
     if (!this.started) return Promise.resolve()
     const running = this.inFlight.get(agentId)
     if (running) return running
@@ -333,16 +380,14 @@ export class RateMonitor {
     return work
   }
 
-  private flooredOut(agentId: RateAgentId): boolean {
-    if (agentId === 'codex') return false
-    else if (agentId === 'claude') {
-      const attempt = this.attemptAt.claude
-      return attempt !== null && this.now() - attempt < RateMonitor.claudeFloorMillisecondsConst
-    }
-    else throw new Error(`Unknown rate agent: ${JSON.stringify(agentId)}`)
+  private flooredOut(key: string): boolean {
+    const source = this.sources.get(key)
+    if (!source) return false
+    const attempt = this.attemptAt[key]
+    return attempt !== null && this.now() - attempt < (source.minimumIntervalMilliseconds ?? 0)
   }
 
-  private async runRead(agentId: RateAgentId): Promise<void> {
+  private async runRead(agentId: string): Promise<void> {
     const source = this.sources.get(agentId)
     if (source === undefined) return
     this.attemptAt[agentId] = this.now()
@@ -355,7 +400,12 @@ export class RateMonitor {
       reading = { kind: 'failed', reason: ErrorText.of(error), oauthExpiresAt: null }
       this.deps.onError(`Reading the ${agentId} rate limits threw: ${ErrorText.of(error)}`)
     }
+    if (!this.started || this.sources.get(agentId) !== source) return
+    if ((this.lastGood.get(agentId)?.fetchedAt ?? -Infinity) > this.attemptAt[agentId]!) return
     this.apply(agentId, reading)
+    const accepted = this.lastGood.get(agentId)
+    if (reading.kind === 'ok' && reading.windows.length > 0 && accepted)
+      this.detach(this.recordSample(agentId, accepted))
     // Every read and not only a success: what the cache owes the next start is the ATTEMPT time too.
     this.save()
     this.changed()
@@ -365,7 +415,7 @@ export class RateMonitor {
    * Field by field and never a spread, on the seam a credential would have to cross: a reading is
    * built out of a file this process may only read, and a spread would carry whatever else it holds.
    */
-  private apply(agentId: RateAgentId, reading: RateSourceReading): void {
+  private apply(agentId: string, reading: RateSourceReading): void {
     this.oauthExpiresAt[agentId] = reading.oauthExpiresAt
     if (reading.kind === 'ok') {
       const fetchedAt = this.now()
@@ -381,6 +431,7 @@ export class RateMonitor {
       if (reading.windows.length === 0 && previous !== undefined)
         this.providers[agentId] = { kind: 'ok', fetchedAt: previous.fetchedAt, windows: previous.windows }
       else {
+        this.readingSources.set(agentId, 'poll')
         this.lastGood.set(agentId, { fetchedAt, windows: reading.windows, extras: reading.extras })
         this.providers[agentId] = { kind: 'ok', fetchedAt, windows: reading.windows }
       }
@@ -418,6 +469,9 @@ export class RateMonitor {
           claude: this.attemptAt.claude ?? undefined,
           codex: this.attemptAt.codex ?? undefined,
         },
+        accounts: [...this.sources].filter(([, source]) => (source.accountId ?? 'main') !== 'main')
+          .map(([key, source]) => ({ key: { agentId: source.agentId, accountId: source.accountId! },
+            entry: this.lastGood.get(key), attemptAt: this.attemptAt[key] ?? undefined })),
       })
     } catch (error) {
       this.deps.onError(
@@ -430,6 +484,10 @@ export class RateMonitor {
   private hydrate(cached: RateMonitorCacheContent): void {
     this.hydrateProvider('claude', cached)
     this.hydrateProvider('codex', cached)
+    for (const account of cached.accounts ?? []) {
+      const key = this.keyOf(account.key.agentId, account.key.accountId)
+      if (this.sources.has(key)) this.hydrateEntry(key, account.entry, account.attemptAt)
+    }
   }
 
   /**
@@ -441,14 +499,17 @@ export class RateMonitor {
    * answering: that run is what leaves a floor to honour and no windows to carry it.
    */
   private hydrateProvider(agentId: RateAgentId, cached: RateMonitorCacheContent): void {
+    this.hydrateEntry(agentId, cached.providers[agentId], cached.attempts[agentId])
+  }
+
+  private hydrateEntry(agentId: string, entry: RateMonitorCacheEntry | undefined, attemptAt: number | undefined): void {
     // Every gate here subtracts a persisted moment from `now()`, so one that is AHEAD of now never
     // elapses: a future attempt floors Claude for good and a future success is never due again,
     // while the tooltip reports it as read moments ago. A clock corrected backwards and a cache
     // file copied from a machine that was ahead both produce it. Dropping one costs a read.
     const now = this.now()
-    const attempt = cached.attempts[agentId] ?? null
+    const attempt = attemptAt ?? null
     this.attemptAt[agentId] = attempt !== null && attempt <= now ? attempt : null
-    const entry: RateMonitorCacheEntry | undefined = cached.providers[agentId]
     if (entry === undefined || entry.fetchedAt > now) return
     this.successAt[agentId] = entry.fetchedAt
     this.extras[agentId] = entry.extras
@@ -463,25 +524,145 @@ export class RateMonitor {
    * reason - which on a machine without one of the two agents is every poll it will ever make.
    */
   private changed(): void {
-    const serialized = JSON.stringify(this.providers)
+    const next = this.composeSnapshot()
+    const { revision: _revision, ...content } = next
+    const serialized = JSON.stringify(content)
     if (serialized === this.serializedValue) return
     this.serializedValue = serialized
     this.revision += 1
-    this.snapshotValue = this.composeSnapshot()
+    this.snapshotValue = { ...next, revision: this.revision }
     this.deps.onChanged()
   }
 
   /** Field by field: the snapshot is the one value of this subsystem's that reaches every window. */
   private composeSnapshot(): RateMonitorSnapshot {
+    const now = this.now()
     return {
       revision: this.revision,
       providers: { claude: this.providers.claude, codex: this.providers.codex },
+      accounts: [...this.sources].map(([key, source]) => ({
+        key: { agentId: source.agentId, accountId: source.accountId ?? 'main' },
+        label: this.labels.get(key) ?? 'Main', state: this.providers[key], estimated: this.estimateOf(key, now),
+        source: this.readingSources.get(key) ?? (this.lastGood.has(key) ? 'poll' : null),
+      })),
+      pools: [],
     }
+  }
+
+  private async recordSample(key: string, entry: RateMonitorCacheEntry): Promise<void> {
+    const source = this.sources.get(key)
+    if (!source) return
+    try {
+      await this.history.append({ at: entry.fetchedAt, agentId: source.agentId, accountId: source.accountId ?? 'main',
+        windows: entry.windows, source: this.readingSources.get(key) ?? 'poll' })
+    } catch (error) { this.deps.onError(`The rate history could not be written: ${ErrorText.of(error)}`) }
+  }
+
+  private estimateOf(key: string, now: number) {
+    const last = this.lastGood.get(key)
+    const source = this.sources.get(key)
+    if (!last || !source || (this.providers[key].kind === 'ok' && now - last.fetchedAt <= 900_000)) return null
+    return estimate({ at: last.fetchedAt, agentId: source.agentId, accountId: source.accountId ?? 'main',
+      source: this.readingSources.get(key) ?? 'poll', windows: last.windows }, now)
+  }
+
+  private async readFeed(): Promise<void> {
+    if (this.feedReading || !this.started || !this.deps.readings) return
+    this.feedReading = true
+    try {
+      const readings = this.pendingFeed ?? await this.deps.readings()
+      if (!this.started) return
+      this.pendingFeed = readings
+      await this.history.backfill(readings.filter(reading => reading.backfill && reading.at <= this.now()
+        && this.sources.has(this.keyOf(reading.key.agentId, reading.key.accountId)))
+        .map(reading => ({ ...reading.key, at: reading.at, windows: reading.windows, source: reading.source })))
+      this.pendingFeed = null
+      if (!this.started) return
+      for (const reading of readings) {
+        const key = this.keyOf(reading.key.agentId, reading.key.accountId)
+        if (!this.sources.has(key) || reading.at > this.now()
+          || reading.at <= (this.lastGood.get(key)?.fetchedAt ?? -Infinity)) continue
+        this.lastGood.set(key, { fetchedAt: reading.at, windows: reading.windows, extras: this.extras[key] })
+        this.successAt[key] = reading.at
+        this.lastReason[key] = null
+        this.readingSources.set(key, reading.source)
+        this.providers[key] = { kind: 'ok', fetchedAt: reading.at, windows: reading.windows }
+        if (!reading.backfill) this.detach(this.recordSample(key, this.lastGood.get(key)!))
+        this.save()
+        this.changed()
+      }
+    } finally { this.feedReading = false }
+  }
+
+  accountsChanged(): void {
+    if (this.stopped) return
+    this.detach(this.syncAccounts().then(() => this.readDue()))
+  }
+
+  private syncAccounts(): Promise<void> {
+    if (!this.deps.accounts || !this.deps.sourceForAccount) return Promise.resolve()
+    if (this.syncing) return this.syncing
+    this.syncing = this.updateAccounts().finally(() => { this.syncing = null })
+    return this.syncing
+  }
+
+  private async updateAccounts(): Promise<void> {
+    const accounts = await this.deps.accounts!()
+    if (this.stopped) return
+    const keys = new Set<string>()
+    for (const account of accounts) {
+      const key = this.keyOf(account.agentId, account.accountId)
+      keys.add(key)
+      if (!this.sources.has(key)) {
+        this.addSource(this.deps.sourceForAccount!(account, this.hooks))
+        if (this.hydrated !== null) {
+          const cached = this.hydrated.accounts?.find(entry => entry.key.agentId === account.agentId && entry.key.accountId === account.accountId)
+          this.hydrateEntry(key, account.accountId === 'main' ? this.hydrated.providers[account.agentId] : cached?.entry,
+            account.accountId === 'main' ? this.hydrated.attempts[account.agentId] : cached?.attemptAt)
+        }
+      }
+      this.labels.set(key, account.label)
+    }
+    for (const [key, source] of this.sources) {
+      if (keys.has(key)) continue
+      source.stop()
+      this.sources.delete(key)
+      this.labels.delete(key)
+      delete this.providers[key]
+      this.lastGood.delete(key)
+      this.readingSources.delete(key)
+      this.nudgedMidRead.delete(key)
+      this.nudgedWhileHidden.delete(key)
+    }
+    this.changed()
+  }
+
+  private addSource(source: RateLimitSource): void {
+    const key = this.keyOf(source.agentId, source.accountId ?? 'main')
+    this.sources.set(key, source)
+    this.labels.set(key, source.label ?? 'Main')
+    this.providers[key] = { kind: 'never-read' }
+    this.attemptAt[key] = null
+    this.successAt[key] = null
+    this.lastReason[key] = null
+    this.oauthExpiresAt[key] = null
+    this.extras[key] = []
+    this.raw[key] = null
+    this.nudgedReadAt[key] = null
+  }
+
+  private keyOf(agentId: RateAgentId, accountId: string): string {
+    return accountId === 'main' ? agentId : `${agentId}/${accountId}`
+  }
+
+  private serializedSnapshot(): string {
+    const { revision: _revision, ...content } = this.composeSnapshot()
+    return JSON.stringify(content)
   }
 
   private arm(): void {
     this.clearTimer()
-    if (!this.started || !this.visible) return
+    if (!this.started) return
     this.timer = setTimeout(() => {
       this.timer = null
       this.detach(this.tick())

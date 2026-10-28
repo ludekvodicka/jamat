@@ -17,6 +17,7 @@ import type {
 } from '../terminal/terminal.types.js'
 import { TerminalInstanceManager } from '../terminal/terminalInstanceManager.js'
 import { TerminalLaunchError } from '../terminal/terminalLaunchError.js'
+import { TerminalStopRefusal } from '../terminal/terminalStopRefusal.js'
 import {
   TerminalProjection,
   type TerminalProjectionDelta,
@@ -123,12 +124,12 @@ export class SessionManager {
       return this.replay(replay.target)
     const previous = this.requireExact(request.target)
     const existing = this.terminals.get(request.target.runtimeSessionId)
-    if (existing?.alive) {
+    if (existing !== undefined) {
       this.stopReasons.set(request.target.runtimeSessionId, 'stopped')
       try { await existing.stop() }
       catch (error) {
         this.stopReasons.delete(request.target.runtimeSessionId)
-        throw error
+        throw SessionManager.stopFailure(error)
       }
       if (existing.alive) {
         // The reason STAYS. This is the ending nobody could confirm in time, not one nobody asked
@@ -205,15 +206,16 @@ export class SessionManager {
   async stop(
     target: RuntimeRef,
     beforeMutation?: () => void,
+    confirmExternalStop = false,
   ): Promise<RuntimeMutationAck> {
     return this.serializeMutation(() => {
       this.requireAcceptingMutations()
       beforeMutation?.()
-      return this.stopOwned(target)
+      return this.stopOwned(target, confirmExternalStop)
     })
   }
 
-  private async stopOwned(target: RuntimeRef): Promise<RuntimeMutationAck> {
+  private async stopOwned(target: RuntimeRef, confirmExternalStop: boolean): Promise<RuntimeMutationAck> {
     this.validateTarget(target)
     const current = this.currentForMutation(target)
     if (!current)
@@ -222,8 +224,13 @@ export class SessionManager {
       return this.ack(target, 'superseded')
     if (current.generation < target.generation)
       return this.ack(target, 'already-removed')
-    if (!current.alive)
+    if (!current.alive) {
+      const ended = this.terminals.get(target.runtimeSessionId)
+      if (ended?.generation === target.generation)
+        try { await ended.stop(confirmExternalStop) }
+        catch (error) { throw SessionManager.stopFailure(error) }
       return this.ack(target, 'already-dead')
+    }
     const terminal = this.terminals.get(target.runtimeSessionId)
     if (!terminal
       || terminal.generation !== target.generation
@@ -236,7 +243,7 @@ export class SessionManager {
     try { await terminal.stop() }
     catch (error) {
       this.stopReasons.delete(target.runtimeSessionId)
-      throw error
+      throw SessionManager.stopFailure(error)
     }
     const stopped = this.get(target.runtimeSessionId)
     if (!stopped
@@ -272,7 +279,7 @@ export class SessionManager {
     })
   }
 
-  private removeOwned(target: RuntimeRef): RuntimeMutationAck {
+  private async removeOwned(target: RuntimeRef): Promise<RuntimeMutationAck> {
     this.validateTarget(target)
     const current = this.currentForMutation(target)
     if (!current)
@@ -283,6 +290,8 @@ export class SessionManager {
       return this.ack(target, 'already-removed')
     if (current.alive)
       throw new SessionError('conflict', `Runtime is alive: ${target.runtimeSessionId}`)
+    try { await this.terminals.get(target.runtimeSessionId)?.stop() }
+    catch (error) { throw SessionManager.stopFailure(error) }
     this.terminals.remove(target.runtimeSessionId)
     this.store.remove(target.runtimeSessionId)
     this.events.publish({ kind: 'runtime-removed', runtimeSessionId: target.runtimeSessionId })
@@ -297,22 +306,18 @@ export class SessionManager {
    * Host-wide stop takes its place in the same queue, so work ahead of it finishes and everything
    * behind it is rejected: no request can create a PTY in the gap before process shutdown.
    */
-  async stopAll(beforeMutation?: () => void): Promise<void> {
+  async stopAll(beforeMutation?: () => void): Promise<string[]> {
     return this.serializeMutation(async () => {
       beforeMutation?.()
       this.acceptingMutations = false
-      try { await this.stopAllOwned() }
-      catch (error) {
-        this.acceptingMutations = true
-        throw error
-      }
+      return this.stopAllOwned()
     })
   }
 
-  private async stopAllOwned(): Promise<void> {
+  private async stopAllOwned(): Promise<string[]> {
     for (const session of this.list().filter((value) => value.alive))
       this.stopReasons.set(session.runtimeSessionId, 'stopped')
-    await this.terminals.stopAll()
+    return this.terminals.stopAll()
   }
 
   liveCount(): number {
@@ -424,6 +429,11 @@ export class SessionManager {
   /** A client that learns endings from `runtime-exited` hears of this one too. */
   private publishExitedAtStart(session: RuntimeSessionInfo): void {
     if (!session.alive) this.events.publish({ kind: 'runtime-exited', session })
+  }
+
+  /** A Stop the terminal refused names what to do next; anything else is a defect of this Host. */
+  private static stopFailure(error: unknown): unknown {
+    return error instanceof TerminalStopRefusal ? new SessionError('conflict', error.message) : error
   }
 
   private static launchFailure(error: unknown): unknown {

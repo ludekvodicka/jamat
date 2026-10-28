@@ -4,7 +4,7 @@ import type { SessionTranscriptReading } from '../../../../../lib-orchestrator/s
 import type { SessionOutcome } from '../../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { ErrorText } from '../../../../shared/errorText'
 import type { FileChangesViewModel } from '../../../fileViewer/fileViewerPanel.types'
-import { AppControl } from '../../../ipc/appControl'
+import type { IpcResult } from '../../../../shared/appClientUiIpc'
 
 /**
  * What is left of a session once the screen it exited on is gone.
@@ -17,6 +17,7 @@ import { AppControl } from '../../../ipc/appControl'
  * repository's.
  */
 export function TerminalPostMortem(props: {
+  read(): Promise<IpcResult<SessionTranscriptReading>>
   sessionId: string
   outcome: SessionOutcome
   endedAt: number | null
@@ -33,11 +34,11 @@ export function TerminalPostMortem(props: {
   useEffect(() => {
     let live = true
     setTranscript(null)
-    void AppControl.value('sessions.transcript', { session: AppControl.sessionOf(sessionId) })
+    void props.read()
       .then((answer) => {
         if (!live) return
         setTranscript(answer.ok
-          ? answer.value.reading
+          ? answer.value
           : { kind: 'none', code: 'transcript-unreadable', reason: answer.error })
       })
       .catch((thrown: unknown) => {
@@ -49,7 +50,7 @@ export function TerminalPostMortem(props: {
         })
       })
     return () => { live = false }
-  }, [sessionId])
+  }, [sessionId, props.read])
 
   return (
     <div className="jamat-postmortem">

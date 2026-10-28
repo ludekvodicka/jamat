@@ -1,11 +1,11 @@
-import type { FileChangesVcsId } from '../../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
+import { SessionTreeHierarchy, type SessionTreeNesting, type SessionTreeParent } from '../../../../lib-orchestrator/sessionManager/sessionTreeHierarchy'
+import { SessionWorkspaceKeys } from '../../../shared/sessionWorkspace'
 import type { ProjectBinding } from '../../../../lib-orchestrator/projectManager/projectManagerApi.types'
 import type {
   SessionAgentId,
   SessionColorName,
   SessionInfo,
   SessionOutcome,
-  SessionParentKind,
   SessionScriptRunInfo,
   SessionScriptsBadge,
   SessionsSnapshot,
@@ -22,7 +22,6 @@ import type {
   SessionTaskListing,
   SessionTaskRow,
 } from '../../../../lib-orchestrator/sessionTasks/sessionTasksApi.types'
-import { PathText } from '../../../shared/pathText'
 import { TabControlTask } from '../../../shared/tabControl'
 import { SessionsGroupsState, type SessionGroup } from '../../../shared/sessionsGroupsState'
 import { SessionsFilterState, type SessionFilterStatus, type SessionsFilterValue } from '../../../shared/sessionsFilterState'
@@ -45,21 +44,12 @@ export interface WorktreeBadge {
   path: string
   /** git: the branch; svn: the checked-out URL. */
   branch: string
-  /*
-   * `changedFiles` was here until 2026-08-24 and is not any more: `WorktreeMark` draws `added`
-   * and `removed` and nothing else, and every field of this node is part of the fingerprint the
-   * tree is rebuilt from. A number nobody draws that moves on its own is a rebuild nobody asked
-   * for - the same reason `outputSeq` left `SessionInfo` in the same change.
-   */
-  diff: { added: number; removed: number } | null
-  /** The branch this worktree was cut from has moved on: the `BASE` chip of the rail design. */
-  baseMoved: boolean
   /** A running SVN finish, or null; the title names the scope a review waits for. */
   finish: { phase: SvnFinishPhase; title: string } | null
   /** How the last SVN finish ended, or null while one runs or none has; the title is its lines. */
   outcome: { result: SvnFinishResult; title: string } | null
   /** An SVN action that waits for the person; the text is the workflow's badge, the title says why. It outranks the outcome. */
-  needs: { text: string; title: string } | null
+  needs: { text: string; title: string; tone?: 'wait' | 'error' | 'done' | 'running' } | null
   /** Why the worktree is still there after the session's end, or null; the title is the library's sentence. */
   cleanup: { phase: SessionWorktreeCleanupPhase; title: string } | null
 }
@@ -75,6 +65,8 @@ export type ProjectLaunch = Extract<ProjectBinding, { kind: 'project' }>
 export interface SessionBadges {
   commitOpen: boolean
   agentId: SessionAgentId | null
+  accountLabel?: string
+  accountExhausted?: boolean
   worktree: WorktreeBadge | null
   /** A landed row: its main copy lacks what its worktree committed, and how far it is behind HEAD. */
   landing: SessionLandingBadge | null
@@ -82,12 +74,6 @@ export interface SessionBadges {
   mainUpdate: SessionMainUpdateBadge | null
   /** A turn settled or a runtime exited while the person was looking somewhere else. */
   attention: boolean
-  /**
-   * Which VCS says this session's working copy has uncommitted work, or null for none - either
-   * because it is clean, or because nothing has measured it yet. The two are the same to a row:
-   * an unmeasured directory draws nothing rather than claiming to be clean.
-   */
-  vcs: FileChangesVcsId | null
   completed: boolean
   /**
    * Whether this session has a terminal tab open in any workspace window. It is already what keeps
@@ -193,11 +179,12 @@ export type TreeNode = { group: SessionGroup } & (
       scriptsBadge: ScriptsBadgeNode | null
       /** The run this session's own launch waits for: a click on the row opens it instead. */
       waitingOn: ScriptRunOpen | null
-      /** Every run of this session, rows and history, newest first, as the `Scripts` menu lists them. */
-      scriptRuns: readonly ScriptRunNode[]
       scriptHistoryRows: readonly ScriptRunNode[]
       /** The library composed a workflow for this session: the row's menu offers Show workflow. */
       workflow: boolean
+      actionsMark?: { text: string; title: string; waiting: boolean }
+      /** Finish… brings an open action forward; a requested run alone leaves Finish… on the row. */
+      opensWorkflow: boolean
       /**
        * This row is filed in the section of the session above it, a script run under the session it
        * runs for or a session child under its parent, so a group of its own would change nothing on
@@ -305,17 +292,9 @@ export interface SessionsTreeBuildOptions {
 }
 
 /** The one session a row is drawn under: the session a run runs for, or a session child's parent. */
-interface ParentLink {
-  parent: SessionEntry
-  via: 'script' | 'session'
-}
+type ParentLink = SessionTreeParent<SessionEntry>
 
-/** Which kinds of session child are drawn under their parent rather than as rows of their own. */
-export interface SessionsNesting {
-  subagents: boolean
-  worktrees: boolean
-  tickets: boolean
-}
+export type SessionsNesting = SessionTreeNesting
 
 /** What every session node of one build reads beside its own entry. */
 interface NodeContext {
@@ -329,19 +308,6 @@ interface NodeContext {
   now: number
   openTaskKeys: ReadonlySet<string>
   nextTaskExpiryAt: number | null
-}
-
-interface ProjectGroup {
-  id: string
-  label: string
-  path: string
-  launch: ProjectLaunch | null
-  entries: SessionEntry[]
-}
-
-interface CategoryGroup {
-  label: string
-  projects: Map<string, ProjectGroup>
 }
 
 /**
@@ -369,7 +335,7 @@ export class SessionsTreeModel {
     nextTaskExpiryAt: null,
     fingerprints: new Map(),
   }
-  static readonly nestedConst: SessionsNesting = { subagents: true, worktrees: true, tickets: true }
+  static readonly nestedConst: SessionsNesting = SessionTreeHierarchy.nestedConst
 
   /** The Settings toggles as the build reads them; only `false` turns one off. */
   static nestingOf(settings: Pick<UiSettingsValue, UiSettingsNestingKey>): SessionsNesting {
@@ -395,10 +361,11 @@ export class SessionsTreeModel {
       SessionsTreeModel.entryOf(info, marks, options, commitOpen, view.assignments, view.tabbed))
     const byId = new Map(entries.map((entry) => [entry.info.sessionId, entry]))
     const nesting = view.nesting ?? SessionsTreeModel.nestedConst
-    const links = SessionsTreeModel.linksOf(entries, byId, nesting)
+    const links = SessionTreeHierarchy.linksOf(entries, nesting)
     const families = SessionsTreeModel.familyGroupsOf(entries, links)
     const matching = entries.filter((entry) => {
-      const section = SessionsTreeModel.sectionOf(entry, links)
+      if (SessionsTreeModel.heldByActions(entry, links, options)) return false
+      const section = SessionTreeHierarchy.sectionOf(entry, links)
       const family = families.get(section.info.sessionId) ?? SessionsTreeModel.stateGroupOf(section)
       if (SessionsTreeModel.matches(section, family, entry, view)) return true
       // A run happened TO its parent, so a filter that keeps the parent keeps its running work. A
@@ -409,7 +376,7 @@ export class SessionsTreeModel {
     if (matching.length === 0)
       return { nodes: [], emptyState: 'noMatch', nextTaskExpiryAt: null, fingerprints: new Map() }
 
-    const children = SessionsTreeModel.childrenByParent(matching, links)
+    const children = SessionTreeHierarchy.childrenByParent(matching, links)
     const nested = new Set([...children.values()].flat().map((entry) => entry.info.sessionId))
     const roots = matching.filter((entry) => !nested.has(entry.info.sessionId))
     const context: NodeContext = { children, links, byId, options, tasks, nesting, now: view.now,
@@ -427,7 +394,7 @@ export class SessionsTreeModel {
     })
   }
 
-  private static worktreeBadgeOf(worktree: SessionWorktreeInfo, action: SessionInfo['svnAction'], workflow: SessionInfo['workflow']): WorktreeBadge {
+  private static worktreeBadgeOf(worktree: SessionWorktreeInfo, action: SessionInfo['svnAction'], workflow: SessionInfo['workflow'], view?: SessionInfo['worktreeView']): WorktreeBadge {
     const phase = SessionNodeState.finishBadgeOf(worktree.finish)
     const needs = SessionNodeState.actionNeedsOf(action)
     const result = SessionNodeState.outcomeBadgeOf(worktree)
@@ -436,15 +403,13 @@ export class SessionsTreeModel {
       kind: worktree.kind,
       path: worktree.worktreePath,
       branch: worktree.branch,
-      diff: worktree.diff ? { added: worktree.diff.added, removed: worktree.diff.removed } : null,
-      baseMoved: worktree.baseMoved,
       finish: phase === null
         ? null
-        : { phase, title: SessionNodeState.finishTitleOf(worktree.finish, action) ?? phase },
+        : { phase, title: view?.title ?? SessionNodeState.finishTitleOf(worktree.finish, action) ?? phase },
       outcome: result === null
         ? null
         : { result, title: SessionNodeState.outcomeTitleOf(worktree) ?? result },
-      needs: needs === null ? null : { text: SessionNodeState.needsTextOf(workflow), title: needs },
+      needs: needs === null ? null : { text: view?.title ?? SessionNodeState.needsTextOf(workflow), title: needs, tone: view?.tone },
       cleanup: cleanup === null ? null : { phase: cleanup, title: worktree.cleanup?.summary ?? cleanup },
     }
   }
@@ -478,12 +443,14 @@ export class SessionsTreeModel {
     const target = SessionsTreeModel.targetOf(info.sessionId, options)
     const targetKey = TerminalTargetCodec.key(target)
     const badges: SessionBadges = {
-      commitOpen: options.target.kind === 'local' && commitOpen.has(info.sessionId),
+      commitOpen: commitOpen.has(options.target.kind === 'local' ? info.sessionId : targetKey),
       agentId: info.agent?.agentId ?? null,
-      worktree: info.worktree ? SessionsTreeModel.worktreeBadgeOf(info.worktree, info.svnAction, info.workflow) : null,
+      ...(info.agent?.accountExhausted ? { accountExhausted: true } : {}),
+      ...(info.agent?.accountId && info.agent.accountId !== 'main'
+        ? { accountLabel: info.agent.accountLabel ?? info.agent.accountId } : {}),
+      worktree: info.worktree ? SessionsTreeModel.worktreeBadgeOf(info.worktree, info.svnAction, info.workflow, info.worktreeView) : null,
       landing: SessionNodeState.landingOf(info.retiredWorktree),
       mainUpdate: SessionNodeState.mainUpdateOf(info.svnAction),
-      vcs: info.vcs?.dirty === true ? info.vcs.vcsId : null,
       attention: marks.has(targetKey),
       completed: info.completed === true,
       tabbed: tabbed.has(targetKey),
@@ -491,7 +458,7 @@ export class SessionsTreeModel {
     const searchText = [
       info.title,
       info.agent?.agentId ?? '',
-      SessionsTreeModel.projectTextOf(info.project),
+      SessionTreeHierarchy.projectTextOf(info.project),
     ].join(' ').toLowerCase()
     const groupKeys = SessionsGroupsState.keysOf(target, info.project, options.namespace)
     return { info, badges, searchText, targetKey, group: SessionsGroupsState.groupOf(groupKeys, assignments) }
@@ -505,19 +472,6 @@ export class SessionsTreeModel {
 
   private static namespaced(id: string, options: SessionsTreeBuildOptions): string {
     return options.namespace.length === 0 ? id : `${options.namespace}/${id}`
-  }
-
-  /**
-   * A nested row is filed where the session at the top of its family is filed: that one's assigned
-   * group and its family's state group. A run has neither of its own that means anything - an install
-   * has no group, and an ended install under a session still starting is part of that start, not
-   * something to attend to - and a session child read apart from its parent would split one piece of
-   * work over two sections. Two hops at most: a run, the session child it runs for, that child's parent.
-   */
-  private static sectionOf(entry: SessionEntry, links: ReadonlyMap<string, ParentLink>): SessionEntry {
-    const first = links.get(entry.info.sessionId)?.parent
-    if (first === undefined) return entry
-    return links.get(first.info.sessionId)?.parent ?? first
   }
 
   /**
@@ -619,93 +573,11 @@ export class SessionsTreeModel {
     return rank(right) < rank(left) ? right : left
   }
 
-  /**
-   * Which sessions belong under which, among the ones that survived the filter. Every script run
-   * nests for the same reason and is read the same way: an install prepares a session, a resolver
-   * settles its merge, a check runs before its Finish. Each happened TO the row above it rather than
-   * beside it. A session child of the same project nests under its parent, because it is part of
-   * that one's work.
-   *
-   * A hidden parent does not hide its child: the child is drawn where its own directory puts it
-   * instead, because a tree that answers "show me what is running" must not lose a running session
-   * to its parent.
-   */
-  private static childrenByParent(
-    entries: readonly SessionEntry[],
-    links: ReadonlyMap<string, ParentLink>,
-  ): Map<string, SessionEntry[]> {
-    const shown = new Set(entries.map((entry) => entry.info.sessionId))
-    const children = new Map<string, SessionEntry[]>()
-    for (const entry of entries) {
-      const parentId = links.get(entry.info.sessionId)?.parent.info.sessionId
-      if (parentId === undefined || !shown.has(parentId))
-        continue
-      children.set(parentId, [...(children.get(parentId) ?? []), entry])
-    }
-    return children
-  }
-
-  /** Every session's link to the row it is drawn under, read over the whole snapshot, filter or not. */
-  private static linksOf(
-    entries: readonly SessionEntry[],
-    byId: ReadonlyMap<string, SessionEntry>,
-    nesting: SessionsNesting,
-  ): ReadonlyMap<string, ParentLink> {
-    const links = new Map<string, ParentLink>()
-    for (const entry of entries) {
-      const link = SessionsTreeModel.parentOf(entry, byId, nesting)
-      if (link !== undefined) links.set(entry.info.sessionId, link)
-    }
-    return links
-  }
-
-  /**
-   * Two links, one hop each. A script run's link comes first: it nests under its session, which may
-   * itself be a nested session child, so a worktree child's setup run stays under the child. A run of
-   * a run is not something the session manager writes, and neither is a parent that is a run.
-   * Refusing them is what keeps a hand-edited record from folding two sessions into each other, where
-   * both would leave the roots and neither would be drawn.
-   */
-  private static parentOf(
-    entry: SessionEntry,
-    byId: ReadonlyMap<string, SessionEntry>,
-    nesting: SessionsNesting,
-  ): ParentLink | undefined {
-    const runFor = entry.info.script?.parentId
-    if (runFor !== undefined) {
-      const parent = byId.get(runFor)
-      return parent === undefined || parent === entry || parent.info.script !== undefined
-        ? undefined
-        : { parent, via: 'script' }
-    }
-    const parent = SessionsTreeModel.ownParentOf(entry, byId, nesting)
-    // One hop: a parent whose own link nests nests nothing, so a grandchild is a root. Only the
-    // parent's own link is read, so a hand-edited cycle cannot recurse.
-    if (parent === undefined || SessionsTreeModel.ownParentOf(parent, byId, nesting) !== undefined)
-      return undefined
-    return { parent, via: 'session' }
-  }
-
-  /** The parent a session's own link names, when that link nests at all. */
-  private static ownParentOf(
-    entry: SessionEntry,
-    byId: ReadonlyMap<string, SessionEntry>,
-    nesting: SessionsNesting,
-  ): SessionEntry | undefined {
-    const link = entry.info.parent
-    if (link === undefined || !link.sameProject || !SessionsTreeModel.nests(link.kind, nesting))
-      return undefined
-    const parent = byId.get(link.sessionId)
-    return parent === undefined || parent === entry || parent.info.script !== undefined ? undefined : parent
-  }
-
-  private static nests(kind: SessionParentKind, nesting: SessionsNesting): boolean {
-    switch (kind) {
-      case 'worktree': return nesting.worktrees
-      case 'ticket': return nesting.tickets
-      case 'worker': return nesting.subagents
-      default: throw new Error(`Unknown session parent kind: ${JSON.stringify(kind satisfies never)}`)
-    }
+  /** A run its parent's Session actions item draws: it is neither a child row nor a root. */
+  private static heldByActions(entry: SessionEntry, links: ReadonlyMap<string, ParentLink>, options: SessionsTreeBuildOptions): boolean {
+    const link = links.get(entry.info.sessionId)
+    return link?.via === 'script'
+      && SessionNodeState.heldByActionsOf(link.parent.info.actions, options.operationScope).runs.has(entry.info.sessionId)
   }
 
   private static rootNodes(
@@ -713,135 +585,18 @@ export class SessionsTreeModel {
     snapshot: SessionsSnapshot,
     context: NodeContext,
   ): readonly TreeNode[] {
-    const categories = new Map<string, CategoryGroup>()
-    const adHoc = new Map<string, ProjectGroup>()
-    const loose: SessionEntry[] = []
-
-    for (const entry of roots) {
-      const binding = entry.info.project
-      const group = SessionsGroupsState.projectGroupOf(binding)
-      if (binding.kind === 'project')
-        SessionsTreeModel.push(
-          SessionsTreeModel.categoryOf(categories, binding.categoryId, snapshot).projects,
-          group.rootId,
-          { path: binding.projectPath, label: binding.projectName, launch: binding },
-          entry,
-        )
-      else if (binding.kind === 'adHoc')
-        SessionsTreeModel.push(
-          adHoc,
-          group.rootId,
-          { path: binding.path, label: SessionsTreeModel.leafOf(binding.path), launch: null },
-          entry,
-        )
-      else if (binding.kind === 'none')
-        loose.push(entry)
-      else
-        throw new Error(`Unknown project binding: ${JSON.stringify(binding)}`)
-    }
-
-    // The two roots the catalog does not name are held apart from it rather than under invented
-    // category ids: a configured category called `adhoc` would otherwise have its sessions quietly
-    // folded into this one.
-    const nodes = SessionsTreeModel.orderedCategories(categories, snapshot)
-      .map(([id, group]) => SessionsTreeModel.categoryNode(
-        `category:${id}`,
-        group.label,
-        id,
-        SessionsTreeModel.projectNodes(group.projects, context),
-      ))
-    if (adHoc.size > 0)
-      nodes.push(SessionsTreeModel.categoryNode(
-        SessionsGroupsState.adHocRootConst,
-        'AD-HOC',
-        null,
-        SessionsTreeModel.projectNodes(adHoc, context),
-      ))
-    if (loose.length > 0)
-      nodes.push(SessionsTreeModel.categoryNode(
-        SessionsGroupsState.noProjectRootConst,
-        'NO PROJECT',
-        null,
-        SessionsTreeModel.sessionNodes(loose, context),
-      ))
-    return nodes
-  }
-
-  private static categoryOf(
-    categories: Map<string, CategoryGroup>,
-    categoryId: string,
-    snapshot: SessionsSnapshot,
-  ): CategoryGroup {
-    const found = categories.get(categoryId)
-    if (found)
-      return found
-    const label = snapshot.categories.find((category) => category.id === categoryId)?.label
-      ?? categoryId
-    const created: CategoryGroup = { label, projects: new Map() }
-    categories.set(categoryId, created)
-    return created
-  }
-
-  private static push(
-    projects: Map<string, ProjectGroup>,
-    rootId: string,
-    seed: Omit<ProjectGroup, 'id' | 'entries'>,
-    entry: SessionEntry,
-  ): void {
-    // Two sessions in `C:\work` and `c:/work` are two sessions in one directory, and one project row
-    // is what says so. The path drawn stays the first one seen; only the key is normalised.
-    const key = PathText.comparable(seed.path)
-    const found = projects.get(key)
-    if (found) {
-      found.entries.push(entry)
-      return
-    }
-    projects.set(key, { ...seed, id: SessionsGroupsState.projectKeyOf(rootId, seed.path), entries: [entry] })
-  }
-
-  /**
-   * Catalog order. A binding naming a category the snapshot does not list cannot happen - both are
-   * read from one catalog pass - but a session that got here is still a session someone is running,
-   * and dropping it silently is the one outcome this tree exists to prevent, so it sorts last.
-   */
-  private static orderedCategories(
-    categories: ReadonlyMap<string, CategoryGroup>,
-    snapshot: SessionsSnapshot,
-  ): readonly [string, CategoryGroup][] {
-    const indexOf = (id: string): number => {
-      const found = snapshot.categories.findIndex((category) => category.id === id)
-      return found < 0 ? snapshot.categories.length : found
-    }
-    return [...categories.entries()].sort(([left], [right]) => indexOf(left) - indexOf(right))
-  }
-
-  private static projectNodes(
-    projects: ReadonlyMap<string, ProjectGroup>,
-    context: NodeContext,
-  ): readonly TreeNode[] {
-    return [...projects.values()]
-      .sort((left, right) => left.label.localeCompare(right.label))
-      .map((project): TreeNode => ({
-        kind: 'project',
-        group: 'none',
-        id: project.id,
-        label: project.label,
-        path: project.path,
-        launch: project.launch,
-        // The first one the tree draws, so the folder actions do not change what they prove with
-        // whenever the entries happen to be gathered in another order.
-        folderSessionId: SessionsTreeModel.sorted(project.entries)[0].info.sessionId,
-        children: SessionsTreeModel.sessionNodes(project.entries, context),
-      }))
-  }
-
-  private static categoryNode(
-    id: string,
-    label: string,
-    categoryId: string | null,
-    children: readonly TreeNode[],
-  ): TreeNode {
-    return { kind: 'category', id, label, categoryId, children, group: 'none' }
+    return SessionTreeHierarchy.categories(roots, snapshot.categories).map(category => ({
+      kind: 'category', group: 'none', id: category.id, label: category.label, categoryId: category.categoryId,
+      children: [
+        ...category.projects.map((project): TreeNode => ({
+          kind: 'project', group: 'none', id: project.id, label: project.label,
+          path: project.path, launch: project.launch,
+          folderSessionId: SessionTreeHierarchy.sorted(project.entries)[0].info.sessionId,
+          children: SessionsTreeModel.sessionNodes(project.entries, context),
+        })),
+        ...SessionsTreeModel.sessionNodes(category.sessions, context),
+      ],
+    }))
   }
 
   /** Sorted by what the user reads, so a row does not move when a random session id sorts elsewhere. */
@@ -849,18 +604,13 @@ export class SessionsTreeModel {
     entries: readonly SessionEntry[],
     context: NodeContext,
   ): readonly TreeNode[] {
-    return SessionsTreeModel.sorted(entries).map((entry) => SessionsTreeModel.sessionNode(
+    return SessionTreeHierarchy.sorted(entries).map((entry) => SessionsTreeModel.sessionNode(
       entry,
       // Ends after two levels: `parentOf` never puts a session child under a nested row, and never a
       // run under a run.
       SessionsTreeModel.sessionNodes(context.children.get(entry.info.sessionId) ?? [], context),
       context,
     ))
-  }
-
-  private static sorted(entries: readonly SessionEntry[]): readonly SessionEntry[] {
-    return [...entries].sort((left, right) => left.info.title.localeCompare(right.info.title)
-      || left.info.sessionId.localeCompare(right.info.sessionId))
   }
 
   private static sessionNode(
@@ -870,14 +620,12 @@ export class SessionsTreeModel {
   ): TreeNode {
     const { options } = context
     const info = entry.info
-    const badge = SessionNodeState.scriptsBadgeOf(info.scripts)
-    const waitingOn = info.scripts?.waitingOn
+    const badge = info.actions === undefined ? SessionNodeState.scriptsBadgeOf(info.scripts) : null
+    const waitingOn = info.actions === undefined ? info.scripts?.waitingOn : undefined
+    const actionsMark = SessionNodeState.actionsMarkOf(info.actions)
+    const held = SessionNodeState.heldByActionsOf(info.actions, options.operationScope)
     const target = SessionsTreeModel.targetOf(info.sessionId, options)
-    const actions = SessionsTreeModel.scopedActions(
-      SessionNodeState.actionsOf(info, FinalizeAsks.offered(info, options.operationScope)
-        || SessionNodeState.opensWorkflow(info, options.operationScope)),
-      options,
-    )
+    const actions = SessionsTreeModel.scopedActions(FinalizeAsks.rowActionsOf(info, options.operationScope), options)
     const scriptRuns = (info.scripts?.runs ?? []).map((run) => ({
       ...run,
       open: run.row ? SessionsTreeModel.runOpenOf(run.runId, context) : null,
@@ -903,13 +651,14 @@ export class SessionsTreeModel {
           ? SessionsTreeModel.runOpenOf(badge.runId, context)
           : null,
         logRunId: badge.runId !== undefined && SessionNodeState.scriptsBadgeClickOf(badge.state) === 'log'
-          ? SessionsTreeModel.savedLogOf(badge.runId, info, options)
+          ? SessionsTreeModel.savedLogOf(badge.runId, info)
           : null,
       },
       waitingOn: waitingOn === undefined ? null : SessionsTreeModel.runOpenOf(waitingOn, context),
-      scriptRuns,
-      scriptHistoryRows: SessionsTreeModel.scriptHistoryOf(info.sessionId, scriptRuns, context),
-      workflow: info.workflow !== undefined,
+      scriptHistoryRows: SessionsTreeModel.scriptHistoryOf(info.sessionId, scriptRuns.filter((run) => !held.runs.has(run.runId)), context),
+      workflow: info.actions?.sections.length !== undefined ? info.actions.sections.length > 0 : info.workflow !== undefined,
+      ...actionsMark === null ? {} : { actionsMark },
+      opensWorkflow: SessionNodeState.opensWorkflow(info, options.operationScope),
       filedWithParent: context.links.has(info.sessionId),
       launch: SessionNodeState.launchBadgeOf(info.launchWait),
       launchTitle: SessionNodeState.launchTitleOf(info.launchWait),
@@ -925,24 +674,19 @@ export class SessionsTreeModel {
       exitCode: info.exitCode ?? null,
       endedReason: info.endedReason ?? null,
       tasks: SessionsTreeModel.tasksOf(info, context),
-      step: info.step ?? null,
+      step: held.step ? null : info.step ?? null,
       children,
     }
   }
 
-  /** Only a local row reads a listing: a paired computer hands over no sub-agent content. */
   private static tasksOf(info: SessionInfo, context: NodeContext): SessionTasksNode | null {
     const sessionId = info.sessionId
-    const target = context.options.target
-    if (target.kind === 'remote') return null
-    else if (target.kind !== 'local')
-      throw new Error(`Unknown sessions tree target: ${JSON.stringify(target satisfies never)}`)
     const listing = context.tasks.get(sessionId)
     if (listing === undefined || listing.kind === 'none') return null
     else if (listing.kind !== 'tasks')
       throw new Error(`Unknown session task listing: ${JSON.stringify(listing satisfies never)}`)
     const rows = SessionsTreeModel.underTheirParents(listing.rows.filter((row) =>
-      SessionsTreeModel.keepsTask(TabControlTask.keyOf(sessionId, row), row.state === 'running', row.endedAt, context)))
+      SessionsTreeModel.keepsTask(SessionsTreeModel.taskKey(sessionId, row, context), row.state === 'running', row.endedAt, context)))
     if (rows.length === 0) return null
     const nested = context.nesting.subagents
     return {
@@ -950,6 +694,14 @@ export class SessionsTreeModel {
       numberPrefix: nested ? null : info.titleParts.number,
       rows: rows.map((row) => SessionsTreeModel.taskRowOf(sessionId, row)),
     }
+  }
+
+  private static taskKey(sessionId: string, task: Parameters<typeof TabControlTask.keyOf>[1], context: NodeContext): string {
+    const target = { ...context.options.target, sessionId }
+    const key = TabControlTask.keyOf(sessionId, task)
+    if (target.kind === 'local') return key
+    else if (target.kind === 'remote') return SessionWorkspaceKeys.of(target, key)
+    else throw new Error(`Unknown task target: ${JSON.stringify(target satisfies never)}`)
   }
 
   private static keepsTask(key: string, running: boolean, endedAt: number | null, context: NodeContext): boolean {
@@ -962,12 +714,8 @@ export class SessionsTreeModel {
   }
 
   private static scriptHistoryOf(sessionId: string, runs: readonly ScriptRunNode[], context: NodeContext): readonly ScriptRunNode[] {
-    const target = context.options.target
-    if (target.kind === 'remote') return []
-    else if (target.kind !== 'local')
-      throw new Error(`Unknown sessions tree target: ${JSON.stringify(target satisfies never)}`)
     return runs.filter((run) => !run.row && SessionsTreeModel.keepsTask(
-      TabControlTask.keyOf(sessionId, { kind: 'script', runId: run.runId }),
+      SessionsTreeModel.taskKey(sessionId, { kind: 'script', runId: run.runId }, context),
       run.state === 'running', run.endedAt ?? null, context))
   }
 
@@ -1028,12 +776,8 @@ export class SessionsTreeModel {
   }
 
   /** The run id when its log is saved and this computer holds it; the main process proves it again. */
-  private static savedLogOf(runId: string, info: SessionInfo, options: SessionsTreeBuildOptions): string | null {
-    if (options.target.kind === 'remote') return null
-    else if (options.target.kind === 'local')
-      return info.scripts?.runs.some((run) => run.runId === runId && run.log === 'saved') ? runId : null
-    else
-      throw new Error(`Unknown sessions tree target: ${JSON.stringify(options.target)}`)
+  private static savedLogOf(runId: string, info: SessionInfo): string | null {
+    return info.scripts?.runs.some((run) => run.runId === runId && run.log === 'saved') ? runId : null
   }
 
   private static decorate(
@@ -1108,20 +852,6 @@ export class SessionsTreeModel {
       interactive: true,
       allowLocalPaths: true,
     }
-  }
-
-  private static projectTextOf(project: ProjectBinding): string {
-    if (project.kind === 'project') return `${project.projectName} ${project.projectPath}`
-    else if (project.kind === 'adHoc') return project.path
-    else if (project.kind === 'none') return ''
-    else
-      throw new Error(`Unknown project binding: ${JSON.stringify(project)}`)
-  }
-
-
-  private static leafOf(path: string): string {
-    const parts = path.replaceAll('\\', '/').replace(/\/+$/, '').split('/')
-    return parts[parts.length - 1] || path
   }
 
   /**

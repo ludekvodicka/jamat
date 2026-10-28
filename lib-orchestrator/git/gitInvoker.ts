@@ -40,12 +40,14 @@ export class GitInvoker implements GitCommandRunner {
    * `syscall: 'spawn git'`, byte for byte what a machine without git produces. Removing a worktree
    * somebody deleted by hand would otherwise be reported as git not being installed.
    */
-  async run(cwd: string, args: string[]): Promise<GitCommandOutcome> {
+  async run(cwd: string, args: string[], onOutput?: (text: string) => void): Promise<GitCommandOutcome> {
     const outcome = await this.invoker.run({
       command: 'git',
       args,
       cwd,
       env: GitInvoker.childEnv(),
+      onStdout: onOutput,
+      onStderr: onOutput,
     })
     return {
       ...outcome,

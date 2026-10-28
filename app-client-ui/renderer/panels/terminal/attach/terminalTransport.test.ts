@@ -374,3 +374,20 @@ describe('app-client-ui/renderer/panels/terminal/terminalTransport', () => {
     })
   })
 })
+
+
+it('uses an admitted source detector for remote attachments without changing clipboard upload', async () => {
+  const bridge = new BridgeStub()
+  bridge.install()
+  const capture = { token: 'C:/source/file.ts:12', selection: null, contextText: '', fallbackToken: null }
+  const calls: unknown[] = []
+  const transport = TerminalTransports.of({ kind: 'remote', remoteEndpointId: 'peer', sessionId: 'session' }, async (value) => {
+    calls.push(value)
+    return { ok: true, value: { requestId: 'source-proof', detections: [] } }
+  }).attachment('remote-attach')
+  expect(await transport.detect!(capture)).toEqual({ ok: true, value: { requestId: 'source-proof', detections: [] } })
+  expect(calls).toEqual([capture])
+  expect(bridge.calls).toEqual([])
+  expect(transport.agentSharesClipboard).toBe(false)
+  expect(TerminalTransports.of({ kind: 'remote', remoteEndpointId: 'legacy', sessionId: 'session' }).attachment('legacy').detect).toBeUndefined()
+})

@@ -10,6 +10,8 @@ import type {
 export interface SessionDetailsOpenRequest {
   requestId: number
   sessionId: string
+  remoteEndpointId?: string
+  session?: SessionInfo
 }
 
 /** The three editable fields, exactly as the controls hold them. */

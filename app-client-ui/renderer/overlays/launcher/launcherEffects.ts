@@ -3,6 +3,7 @@ import type {
   ProjectsOpResult,
   RelocationReport,
 } from '../../../../lib-orchestrator/projectManager/projectManagerApi.types'
+import type { AccountView } from '../../../../lib-orchestrator/agentAccounts/agentAccountsApi.types'
 import type {
   SessionAgentId,
   SessionCreateSpec,
@@ -10,6 +11,7 @@ import type {
   SessionHistoryReference,
   SessionInfo,
   SessionSetupAgreement,
+  SessionWorktreeDirectory,
   SessionsOpResult,
 } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type {
@@ -27,6 +29,7 @@ import { ErrorText } from '../../../shared/errorText'
 import type { TerminalTarget } from '../../../shared/terminalTarget'
 import type { PanelOpenOutcome } from '../../shell/appShell.types'
 import { SessionTabOpener } from '../../shell/sessionTabOpener'
+import { WorkflowPortsOf } from '../../workflow/workflowPorts'
 import type {
   ComputersScreenEffect,
   ComputersScreenInput,
@@ -126,7 +129,7 @@ export class LauncherEffects {
         : LauncherEffects.fetchRemoteCatalog(effect.remoteEndpointId, ports)
     else if (effect.effect === 'fetchProjects')
       return effect.remoteEndpointId === null
-        ? LauncherEffects.fetchProjects(effect.categoryId, effect.sort, ports)
+        ? LauncherEffects.fetchProjects(effect.categoryId, effect.sort, effect.fresh === true, ports)
         : LauncherEffects.fetchRemoteProjects(
             effect.remoteEndpointId, effect.categoryId, effect.sort, ports)
     else if (effect.effect === 'createProject')
@@ -197,12 +200,24 @@ export class LauncherEffects {
     ports: LauncherPorts,
   ): Promise<void> {
     if (effect.effect === 'fetchNumber') return LauncherEffects.peekNumber(effect.projectPath, ports)
+    else if (effect.effect === 'fetchWorktreePreview') return LauncherEffects.previewWorktree(effect.directory, ports)
     else if (effect.effect === 'submit') return LauncherEffects.startCreate(state, ports)
     else if (effect.effect === 'fetchRemoteSessions')
       return LauncherEffects.readRemoteSessions(
         effect.remoteEndpointId, effect.projectPath, ports)
     else if (effect.effect === 'describeAgents')
       return LauncherEffects.describeRemoteAgents(effect.remoteEndpointId, ports)
+    else if (effect.effect === 'fetchAccounts') {
+      if (effect.remoteEndpointId === null) {
+        const answer = await AppControl.value('accounts.list', {})
+        ports.create({ input: 'accountsLoaded', remoteEndpointId: null, accounts: answer.ok ? answer.value : [] })
+      } else {
+        const answer = await window.appClient.remote.listAccounts(effect.remoteEndpointId)
+        ports.create({ input: 'accountsLoaded', remoteEndpointId: effect.remoteEndpointId,
+          accounts: answer.ok && answer.value.ok ? LauncherEffects.accountsOf(answer.value.value) : [] })
+      }
+      return
+    }
     else if (effect.effect === 'openRemoteSession')
       return LauncherEffects.openRemoteSession(effect, ports)
     else if (effect.effect === 'fetchExistingSessions')
@@ -236,6 +251,19 @@ export class LauncherEffects {
     if (!answer.ok || !answer.value.ok)
       return ports.create({ input: 'numberLoaded', projectPath, token: null })
     ports.create({ input: 'numberLoaded', projectPath, token: answer.value.value.token })
+  }
+
+  /**
+   * Where the worktree would stand, by the library's placement rule, and the number its session would
+   * take. Nothing is taken; a channel failure reads as a refusal the card shows, never as a block.
+   */
+  private static async previewWorktree(directory: SessionWorktreeDirectory, ports: LauncherPorts): Promise<void> {
+    const path = directory.mode === 'project' ? directory.projectPath : directory.path
+    const answer = await AppControl.sessions('sessions.worktreePreview', { directory })
+    if (!answer.ok) return ports.create({ input: 'worktreePreviewLoaded', path, answer: { ok: false, detail: answer.error } })
+    const value = answer.value
+    ports.create({ input: 'worktreePreviewLoaded', path,
+      answer: value.ok ? { ok: true, preview: value.value } : { ok: false, detail: value.detail } })
   }
 
   /** Which computer the form is aimed at decides the whole submit, and nothing else does. */
@@ -283,8 +311,9 @@ export class LauncherEffects {
     // The whole request comes back unchanged from an uncertain attempt: the far side refuses the
     // same id with a different body, so the spec cannot be rebuilt from a form somebody has since
     // typed into.
+    const spec = CreateScreenModel.specOf(state, null)
     const pending = state.pendingCreate
-      ?? { operationId: crypto.randomUUID(), spec: CreateScreenModel.specOf(state, null) }
+      ?? { operationId: crypto.randomUUID(), spec: { ...spec, ...(spec.worktree === undefined ? {} : { deferSetupAgreement: true as const }) } }
     const answer = await window.appClient.remote
       .createSession(remoteEndpointId, pending.spec, pending.operationId)
     // The channel itself failing says nothing about whether the request reached that computer, so
@@ -306,7 +335,7 @@ export class LauncherEffects {
         detail: 'That computer answered the create with something this one cannot read.',
       })
     return LauncherEffects.openRemoteTab(
-      remoteEndpointId, created.sessionId, created.tabTitle, ports)
+      remoteEndpointId, created.sessionId, created.tabTitle, ports, pending.spec.worktree !== undefined)
   }
 
   /**
@@ -358,6 +387,18 @@ export class LauncherEffects {
       && Array.isArray(agent.models))
   }
 
+  private static accountsOf(value: RemoteResponseValue): readonly AccountView[] {
+    if (!Array.isArray(value)) return []
+    return value.filter((account): account is AccountView => account !== null && typeof account === 'object'
+      && (account.agentId === 'claude' || account.agentId === 'codex')
+      && typeof account.accountId === 'string' && typeof account.label === 'string'
+      && typeof account.isMain === 'boolean'
+      && ['active', 'disabled', 'needs-login', 'pending-login'].includes(account.state)
+      && (account.profileProblem === null || typeof account.profileProblem === 'string')
+      && (account.identity === null || typeof account.identity === 'object'
+        && typeof account.identity.key === 'string' && typeof account.identity.label === 'string'))
+  }
+
   /**
    * Continue on a remote card. A running session only needs its tab here; an ended one is asked to
    * reopen on the target first, which is exactly what its row in the tree does.
@@ -388,6 +429,7 @@ export class LauncherEffects {
     sessionId: string,
     tabTitle: string,
     ports: LauncherPorts,
+    workflow = false,
   ): Promise<void> {
     const selected = await window.appClient.remote.selectSession(remoteEndpointId, sessionId)
     if (!selected.ok || !selected.value.ok) {
@@ -396,6 +438,19 @@ export class LauncherEffects {
       ports.create({ input: 'submitFailed', code: 'unavailable', detail })
       return
     }
+    if (workflow) try {
+      const opened = await window.appClient.remote.openView(remoteEndpointId, sessionId)
+      if (!opened.ok || !opened.value.ok)
+        AppClientUiReport.error(!opened.ok ? opened.error : !opened.value.ok ? opened.value.error.detail : 'Session actions could not open')
+      else {
+        try {
+          const answer = await window.appClient.remote.openSharedItem(remoteEndpointId, opened.value.value.viewId,
+            { openId: crypto.randomUUID(), item: { kind: 'workflow' } })
+          if (!answer.ok || !answer.value.ok)
+            AppClientUiReport.error(!answer.ok ? answer.error : !answer.value.ok ? answer.value.error.detail : 'Session actions could not open')
+        } finally { await window.appClient.remote.closeView(remoteEndpointId, opened.value.value.viewId) }
+      }
+    } catch (error) { AppClientUiReport.error(`Session actions could not open: ${ErrorText.of(error)}`) }
     const outcome = await ports
       .openTerminal({ kind: 'remote', remoteEndpointId, sessionId }, tabTitle)
       .catch((error: unknown): PanelOpenOutcome => ({
@@ -486,9 +541,10 @@ export class LauncherEffects {
   private static async fetchProjects(
     categoryId: string,
     sort: LauncherSort,
+    fresh: boolean,
     ports: LauncherPorts,
   ): Promise<void> {
-    const answer = await AppControl.projects('projects.listing', { categoryId: categoryId, sort: sort })
+    const answer = await AppControl.projects('projects.listing', { categoryId: categoryId, sort: sort, ...fresh ? { fresh } : {} })
     const listing = LauncherEffects.listed(answer, (detail) => ports.dispatch({
       input: 'projectsLoadFailed',
       categoryId,
@@ -607,8 +663,10 @@ export class LauncherEffects {
     ) => void,
     ports: LauncherPorts,
   ): Promise<void> {
-    const answer = await AppControl.createSession(spec)
-    return LauncherEffects.openSessionResult(answer, onFailure, ports)
+    const answer = await AppControl.createSession({ ...spec, ...spec.worktree === undefined ? {} : { deferSetupAgreement: true } })
+    await LauncherEffects.openSessionResult(answer, onFailure, ports)
+    if (spec.worktree !== undefined && answer.ok && answer.value.ok)
+      WorkflowPortsOf.openWorkflow(answer.value.value.sessionId)
   }
 
   private static async openHistory(

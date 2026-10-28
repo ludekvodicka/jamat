@@ -58,9 +58,13 @@ export class InnerRunFlow {
       return InnerRunFlow.refusal(`Session ${parentId} is a script run, and a run has no runs of its own`)
     if (parent.life !== 'live')
       return InnerRunFlow.refusal(`Session ${parentId} is not running; a requested run belongs to a running session`)
+    const finish = parent.worktreeLifecycle
+    if (finish?.approvedAt !== undefined || finish?.phase === 'finishing' && finish.step !== 'reviewing'
+      || finish?.phase === 'waiting' && finish.step !== 'reviewing' && finish.step !== 'checking')
+      return InnerRunFlow.refusal('The worktree is preparing or publishing. Start the application while validation is waiting.')
     const problem = InnerRunFlow.commandProblem(request.command) ?? InnerRunFlow.titleProblem(request.title)
     if (problem !== null) return InnerRunFlow.refusal(problem)
-    const cwd = await InnerRunFlow.cwdOf(SessionWorkingDirectory.ofRecord(parent), request.cwd)
+    const cwd = await InnerRunFlow.cwdOf(InnerRunFlow.boundOf(parent), SessionWorkingDirectory.ofRecord(parent), request.cwd)
     if (!cwd.ok) return InnerRunFlow.refusal(cwd.problem)
     if (this.liveRuns(parentId) >= InnerRunFlow.liveRunsPerParentMaxConst)
       return InnerRunFlow.refusal(`Session ${parentId} already runs ${InnerRunFlow.liveRunsPerParentMaxConst} `
@@ -117,22 +121,33 @@ export class InnerRunFlow {
   }
 
   /**
-   * An existing directory inside the session's own place, its worktree when it has one. A relative
-   * `cwd` is read from that place; absent, the run starts there. Both are compared after links are
-   * followed: a junction inside the place may lead anywhere.
+   * The whole worktree of a worktree session, even one started below its root: Finish validates and
+   * publishes the whole worktree, so its application may need to start at the root.
+   */
+  private static boundOf(parent: SessionRecord): { path: string; name: string } {
+    return parent.worktree !== undefined
+      ? { path: parent.worktree.worktreePath, name: 'worktree' }
+      : { path: SessionWorkingDirectory.ofRecord(parent), name: 'directory' }
+  }
+
+  /**
+   * An existing directory inside the session's bound. A relative `cwd` is read from the session's
+   * own place; absent, the run starts there. Both are compared after links are followed: a junction
+   * inside the bound may lead anywhere.
    */
   private static async cwdOf(
+    bound: { path: string; name: string },
     place: string,
     requested: string | undefined,
   ): Promise<{ ok: true; value: string } | { ok: false; problem: string }> {
     const cwd = requested === undefined || requested === ''
       ? resolve(place)
       : isAbsolute(requested) ? resolve(requested) : resolve(place, requested)
-    const outside = { ok: false as const, problem: `The directory ${cwd} is outside the session's directory ${place}` }
-    if (!PathCompare.isInside(place, cwd)) return outside
+    const outside = { ok: false as const, problem: `The directory ${cwd} is outside the session's ${bound.name} ${bound.path}` }
+    if (!PathCompare.isInside(bound.path, cwd)) return outside
     try {
       const realCwd = await realpath(cwd)
-      if (!PathCompare.isInside(await realpath(place), realCwd)) return outside
+      if (!PathCompare.isInside(await realpath(bound.path), realCwd)) return outside
       if (!(await stat(realCwd)).isDirectory()) return { ok: false, problem: `${cwd} is not a directory` }
     } catch (error) {
       return { ok: false, problem: `The directory ${cwd} cannot be used: ${ErrorText.of(error)}` }

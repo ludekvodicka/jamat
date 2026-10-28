@@ -63,6 +63,18 @@ export class IpcFailure {
     return 'error' in answer.value ? answer.value.error.code : answer.value.code
   }
 
+  /**
+   * The refusal's sentence alone, for a surface whose reader is the person and whose library sentence
+   * already says what was refused and why; the code is for programs. Null means it worked.
+   */
+  static sentenceOf(answer: IpcResult<LibraryAnswer>, label?: string): string | null {
+    let sentence: string
+    if (!answer.ok) sentence = answer.error
+    else if (answer.value.ok) return null
+    else sentence = 'error' in answer.value ? answer.value.error.detail : answer.value.detail
+    return label === undefined ? sentence : `${label} failed: ${sentence}`
+  }
+
   private static reasonOf(answer: IpcResult<LibraryAnswer>): string | null {
     if (!answer.ok) return answer.error
     if (answer.value.ok) return null

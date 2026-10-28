@@ -1,3 +1,5 @@
+import type { RemoteTaskListing } from '../../../../lib-orchestrator/remoteControl/remoteTaskApi.types'
+import { TerminalTargetCodec } from '../../../shared/terminalTarget'
 import type {
   RemoteConnectionsSnapshot,
   RemoteInboundConnectionDto,
@@ -38,6 +40,7 @@ export class RemoteSessionsTreeModel {
     view: Omit<TreeViewState, 'content'>,
     marks: ReadonlySet<string>,
     previous: ReadonlyMap<string, TreeResult>,
+    tasks: ReadonlyMap<string, RemoteTaskListing> = new Map(),
   ): RemoteSessionsSections {
     const next = new Map<string, TreeResult>()
     const outbound = RemoteSessionsTreeModel.outbound(
@@ -46,6 +49,7 @@ export class RemoteSessionsTreeModel {
       marks,
       previous,
       next,
+      tasks,
     )
     const inbound = RemoteSessionsTreeModel.inbound(
       remote.inbound,
@@ -64,14 +68,30 @@ export class RemoteSessionsTreeModel {
     marks: ReadonlySet<string>,
     previous: ReadonlyMap<string, TreeResult>,
     next: Map<string, TreeResult>,
+    tasks: ReadonlyMap<string, RemoteTaskListing>,
   ): readonly RemoteSessionsComputerTree[] {
     const computers = new Map<string, RemoteSessionsComputerTree>()
     for (const entry of entries) {
       const selected = new Set(entry.selectedSessionIds ?? [])
       if (selected.size === 0 || entry.sessions === null) continue
+      const reachable = entry.reachableSessionIds === undefined ? null : new Set(entry.reachableSessionIds)
       const key = `remote:${entry.remoteEndpointId}`
+      const rows = entry.sessions.sessions.map((session) => {
+        const reading = tasks.get(TerminalTargetCodec.key({ kind: 'remote', remoteEndpointId: entry.remoteEndpointId, sessionId: session.sessionId }))
+        return reading ? { ...session, scripts: reading.scripts ?? undefined } : session
+      })
+      const listings = new Map(rows.flatMap((session) => {
+        const reading = tasks.get(TerminalTargetCodec.key({ kind: 'remote', remoteEndpointId: entry.remoteEndpointId, sessionId: session.sessionId }))
+        return reading ? [[session.sessionId, reading.listing] as const] : []
+      }))
       const tree = SessionsTreeModel.build(
-        { ...entry.sessions, sessions: RemoteSessionsTreeModel.shown(entry.sessions.sessions, selected), orphans: [] },
+        {
+          ...entry.sessions,
+          sessions: reachable === null
+            ? RemoteSessionsTreeModel.shown(rows, selected)
+            : rows.filter((session) => reachable.has(session.sessionId)),
+          orphans: [],
+        },
         view,
         marks,
         previous.get(key) ?? null,
@@ -82,6 +102,8 @@ export class RemoteSessionsTreeModel {
           interactive: true,
           allowLocalPaths: false,
         },
+        undefined,
+        listings,
       )
       next.set(key, tree)
       if (tree.nodes.length === 0) continue

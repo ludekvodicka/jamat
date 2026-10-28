@@ -241,6 +241,12 @@ function SessionLauncherOverlay(props: LauncherOverlayProps & { intent: Launcher
         // answer, not a fault: there is nothing left to tell, and a throw here would surface as an
         // unhandled rejection from a card the user has already left.
         const current = screenRef.current
+        if (current.kind === 'flow' && input.input === 'accountsLoaded') {
+          const step = CreateScreenModel.transition(current.state.options, input)
+          screenRef.current = { ...current, state: { ...current.state, options: step.state } }
+          setScreen(screenRef.current)
+          return
+        }
         if (current.kind !== 'create')
           return
         const step = CreateScreenModel.transition(current.state, input)

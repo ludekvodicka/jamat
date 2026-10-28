@@ -1,0 +1,13 @@
+.jamat-usage { height: 100vh; overflow: auto; padding: calc(var(--space-3) * 2); box-sizing: border-box; color: var(--color-text-1); }
+.jamat-usage section { margin-bottom: calc(var(--space-4) * 2); }
+.jamat-usage__cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, calc(var(--space-4) * 15)), 1fr)); gap: var(--space-3); }
+.jamat-usage__card { background: var(--color-surface-raised); border: 1px solid var(--color-border-frame); border-radius: var(--radius-surface); padding: var(--space-4); }
+.jamat-usage__card progress { width: 100%; accent-color: var(--color-accent); }
+.jamat-usage button, .jamat-usage select, .jamat-usage input { color: inherit; background: var(--color-surface-control); border: 1px solid var(--color-border-frame); padding: calc(var(--space-3) / 2) calc(var(--space-2) + var(--space-1) / 2); border-radius: var(--radius-control); font: inherit; }
+.jamat-usage button { cursor: pointer; }
+.jamat-usage button:disabled { cursor: default; opacity: .6; }
+.jamat-usage__controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); margin: var(--space-3) 0; }
+.jamat-usage__facts { display: flex; flex-wrap: wrap; gap: calc(var(--space-3) * 2); }
+.jamat-usage__graph { width: 100%; overflow: hidden; min-height: calc(var(--space-4) * 15); }
+.jamat-usage table { border-collapse: collapse; width: 100%; }
+.jamat-usage th, .jamat-usage td { text-align: left; border-bottom: 1px solid var(--color-border-frame); padding: var(--space-2); }

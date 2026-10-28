@@ -1,3 +1,4 @@
+import { FinishProjection, SvnActionStages } from '../../worktrees/worktreeFinish'
 import type { SessionRecord, SessionRecordScriptLink, SessionRecordScriptRun } from '../records/sessionRecord.types'
 import type {
   SessionScriptRunState,
@@ -71,7 +72,9 @@ export class ScriptBadges {
     const pending = parent.pendingSetup
     if (pending !== undefined) {
       const runId = pending.setupSessionId
-      const link = current?.scriptOf
+      const planned = pending.steps?.[pending.cursor ?? 0]
+      const link = current?.scriptOf ?? (planned === undefined ? undefined
+        : { sessionId: parent.sessionId, phase: 'before' as const, scriptId: planned.scriptId, name: planned.name })
       const step = link?.phase === 'before' ? ScriptBadges.stepOf(link) : ScriptBadges.setupStepConst
       if (parent.life === 'starting')
         return { phase: 'before', state: 'running', step, runId, commands: (current === null ? [] : ScriptRunRecords.commandsOf(current)).map((command) => command.command) }
@@ -122,10 +125,11 @@ export class ScriptBadges {
    * words as a Git Finish's checks. Every other stage speaks through the row's finish mark.
    */
   static actionOf(parent: SessionRecord, current: SessionRecord | null): ScriptBadgeFacts | null {
-    const action = parent.svnAction
+    const action = FinishProjection.action(parent)
     if (action === undefined || action.stage !== 'checks' || action.runId === undefined) return null
-    const check = action.checks[action.checkCursor]
-    const step: ScriptBadgeStep = { kind: 'declared', name: check.name }
+    const install = SvnActionStages.installOf(action)
+    const check = install ?? action.checks[action.checkCursor]
+    const step: ScriptBadgeStep = install === null ? { kind: 'declared', name: check.name } : ScriptBadges.setupStepConst
     if (action.needs === undefined)
       return {
         phase: 'after',
@@ -203,13 +207,13 @@ export class ScriptBadges {
 
   private static runningTextOf(phase: SessionScriptsBadge['phase'], step: ScriptBadgeStep): string {
     if (phase === 'before') return ScriptBadges.beforeTextOf(step, 'checking out', 'installing dependencies', 'setup')
-    else if (phase === 'after') return `checks: ${ScriptBadges.declaredNameOf(step)}`
+    else if (phase === 'after') return step.kind === 'setup' ? 'installing dependencies' : `checks: ${ScriptBadges.declaredNameOf(step)}`
     else throw new Error(`Unknown script phase: ${JSON.stringify(phase satisfies never)}`)
   }
 
   private static failedTextOf(phase: SessionScriptsBadge['phase'], step: ScriptBadgeStep): string {
     if (phase === 'before') return ScriptBadges.beforeTextOf(step, 'checkout failed', 'setup failed', 'setup failed')
-    else if (phase === 'after') return `checks failed: ${ScriptBadges.declaredNameOf(step)}`
+    else if (phase === 'after') return step.kind === 'setup' ? 'setup failed' : `checks failed: ${ScriptBadges.declaredNameOf(step)}`
     else throw new Error(`Unknown script phase: ${JSON.stringify(phase satisfies never)}`)
   }
 

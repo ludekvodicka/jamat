@@ -11,13 +11,6 @@ export interface WorktreeFacts {
   repositoryRoot: string
 }
 
-export interface WorktreeDiff {
-  added: number
-  removed: number
-  changedFiles: number
-  capturedAt: number
-}
-
 /**
  * Which worktree a session gets. `checkpoints` is the default and the only mode the shared
  * instructions know: an SVN checkout where SVN versions the project, else a branch of the project's
@@ -72,5 +65,5 @@ export interface GitCommandOutcome {
 
 /** All the worktree manager needs of a git process, so a test can hand it a scripted one instead. */
 export interface GitCommandRunner {
-  run(cwd: string, args: string[]): Promise<GitCommandOutcome>
+  run(cwd: string, args: string[], onOutput?: (text: string) => void): Promise<GitCommandOutcome>
 }

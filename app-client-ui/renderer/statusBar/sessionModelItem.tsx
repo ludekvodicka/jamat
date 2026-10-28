@@ -55,7 +55,7 @@ export function SessionModelItem(props: {
     <span
       className={`jamat-session-model jamat-session-model--${level}`
         + (stale ? ' jamat-session-model--stale' : '')}
-      title={SessionModelLine.tooltipOf(info, focus.agentId, age)}
+      title={(focus.remoteEndpointId ? `Source computer: ${focus.remoteEndpointId}\n` : '') + SessionModelLine.tooltipOf(info, focus.agentId, age)}
     >
       {SessionModelLine.lineOf(info)}
       {!stale && SessionModelLine.compactVisible(focus.life) && (
@@ -63,7 +63,7 @@ export function SessionModelItem(props: {
           className="jamat-session-model__compact"
           type="button"
           title="Compact this session: types /compact into its terminal and runs it"
-          onClick={() => props.compact.manual(focus.sessionId)}
+          onClick={() => props.compact.manual(focus.sessionId, focus.remoteEndpointId)}
         >
           Compact
         </button>

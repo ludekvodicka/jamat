@@ -80,8 +80,11 @@ export class TerminalInstanceManager {
     return [...this.instances.values()]
   }
 
-  async stopAll(): Promise<void> {
-    await Promise.all(this.list().map((instance) => instance.stop()))
+  async stopAll(): Promise<string[]> {
+    const instances = this.list()
+    const results = await Promise.allSettled(instances.map((instance) => instance.stop()))
+    return results.flatMap((result, index) => result.status === 'rejected'
+      ? [`${instances[index].runtimeSessionId}: ${String(result.reason)}`] : [])
   }
 
   dispose(): void {

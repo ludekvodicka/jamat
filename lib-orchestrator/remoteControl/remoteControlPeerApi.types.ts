@@ -9,6 +9,7 @@ import type { RuntimeChannel } from '../shared/configIdentity.types'
 
 export type RemoteControlPeerProtocol = typeof RemoteControlPeerConst.protocol
 export type RemoteControlPeerCapability = typeof RemoteControlPeerConst.capabilities[number]
+export type RemoteControlPeerWorkspaceCapability = typeof RemoteControlPeerConst.workspaceCapabilities[number]
 export type RemoteControlPeerHandshakeErrorCode =
   | 'invalid-handshake'
   | 'protocol-mismatch'
@@ -112,6 +113,10 @@ export interface RemoteControlPeerSealedFrame {
 }
 
 export type RemoteControlPeerApplicationMessage =
+  | { type: 'session-view-request'; request: import('./remoteSessionApi.types').RemoteSessionViewRequest }
+  | { type: 'session-view-response'; response: import('./remoteSessionApi.types').RemoteSessionViewResponse }
+  | { type: 'session-state-request'; request: import('./remoteSessionApi.types').RemoteSessionStateRequest }
+  | { type: 'session-state-response'; response: import('./remoteSessionApi.types').RemoteSessionStateResponse }
   | { type: 'control-request'; request: RemoteControlRequestUnion }
   | { type: 'control-response'; response: RemoteControlResponse }
   | { type: 'socket-request'; request: RemoteControlSocketRequest }
@@ -132,6 +137,10 @@ export type RemoteControlPeerEncryptedMessage =
  * receiver gets.
  */
 export type RemoteControlPeerInboundApplicationMessage =
+  | { type: 'session-view-request'; request: unknown }
+  | { type: 'session-view-response'; response: unknown }
+  | { type: 'session-state-request'; request: unknown }
+  | { type: 'session-state-response'; response: unknown }
   | { type: 'control-request'; request: unknown }
   | { type: 'control-response'; response: unknown }
   | { type: 'socket-request'; request: unknown }

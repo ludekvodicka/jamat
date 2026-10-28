@@ -18,13 +18,13 @@ export class RemoteControlPeerConst {
     'sessions.list',
     'sessions.create',
     'sessions.reopen',
+    'sessions.restart', 'sessions.switchAccount', 'sessions.fork', 'sessions.remove', 'sessions.setDetails',
+    'sessions.worktree', 'sessions.children', 'sessions.conflicts', 'sessions.resolveConflict',
+    'sessions.finishWorktree', 'sessions.backToWork', 'sessions.discardWorktree', 'sessions.cleanupWorktree', 'sessions.updateMain',
+    'sessions.retrySetup', 'sessions.transcript', 'sessions.scripts',
+    'sessions.worktreeResults', 'sessions.acknowledgeWorktreeResult', 'sessions.clearActions',
     'sessions.finalize',
-    /*
-     * `sessions.remove` is deliberately NOT here. Finalize is offered because it ends work the way
-     * the session's owner set it up; a remove deletes the record and its history from the list, which
-     * cannot be undone, and nothing on the controller needs it: throwaway sessions are cleaned up by
-     * whoever sits at that computer.
-     */
+    'tabs.openFile',
     /*
      * Grantable for the reason `sessions.create` is: a create already names a colour and a group on
      * the computer that will RUN the session, so being able to name them at birth and never again
@@ -48,6 +48,7 @@ export class RemoteControlPeerConst {
      * exact keys and refuses the entire request over one it does not know.
      */
     'agents.describe',
+    'accounts.list',
   ] as const satisfies readonly RemoteControlOperation[]
   /*
    * Every socket operation, taken from the one list rather than copied beside it. `satisfies` only
@@ -64,8 +65,25 @@ export class RemoteControlPeerConst {
    */
   static readonly maximumPlaintextBytes = 1_048_576
   static readonly maximumFrameBytes = 1_500_000
+  // Pre-model peers rejected unknown names; agents.describe arrived with tolerant negotiation.
+  static readonly legacyCapabilities = [
+    'control:system.hello', 'control:system.status', 'control:projects.list', 'control:sessions.list',
+    'control:sessions.create', 'control:sessions.reopen', 'control:sessions.finalize',
+    'control:terminal.peek', 'control:terminal.send',
+    'socket:events.subscribe', 'socket:terminal.attach', 'socket:terminal.input',
+    'socket:terminal.resize', 'socket:terminal.active', 'socket:terminal.detach',
+  ] as const
+  static readonly workspaceCapabilities = [
+    'session-workspace.read', 'session-workspace.views', 'session-workspace.files',
+    'session-workspace.changes', 'session-workspace.tasks', 'session-workspace.reviews',
+    'session-workspace.actions', 'session-workspace.metadata', 'session-workspace.notes',
+    'session-workspace.model', 'session-workspace.finish', 'session-workspace.conflicts', 'session-workspace.history', 'session-workspace.sidebar', 'session-workspace.commands',
+    'session-workspace.commit-receipts',
+  ] as const
   static readonly capabilities = [
+    'agents.accounts',
     ...RemoteControlPeerConst.controlOperations.map((operation) => `control:${operation}` as const),
     ...RemoteControlPeerConst.socketOperations.map((operation) => `socket:${operation}` as const),
+    ...RemoteControlPeerConst.workspaceCapabilities,
   ] as const
 }

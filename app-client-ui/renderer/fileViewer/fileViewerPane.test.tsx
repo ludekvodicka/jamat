@@ -156,7 +156,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
     }
 
     render(
-      <FileViewerPane
+      <FileViewerPane ports={{ viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges }}
         reloadRequest={0}
         backPath={null}
         onBack={vi.fn()}
@@ -180,7 +180,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
     FileViewerPaneHarness.install([document])
 
     render(
-      <FileViewerPane
+      <FileViewerPane ports={{ viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges }}
         reloadRequest={0}
         backPath={null}
         onBack={vi.fn()}
@@ -201,7 +201,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
     const document = FileViewerPaneHarness.document()
     const { fileViewer } = FileViewerPaneHarness.install([document])
     const pane = (reloadRequest: number) => (
-      <FileViewerPane
+      <FileViewerPane ports={{ viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges }}
         reloadRequest={reloadRequest}
         backPath={null}
         onBack={vi.fn()}
@@ -235,7 +235,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
     const onBack = vi.fn()
     const onClose = vi.fn()
     const view = render(
-      <FileViewerPane
+      <FileViewerPane ports={{ viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges }}
         reloadRequest={0}
         backPath="C:/work/previous.md"
         onBack={onBack}
@@ -253,7 +253,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
     expect(onBack).toHaveBeenCalledOnce()
     expect(onClose).not.toHaveBeenCalled()
     view.rerender(
-      <FileViewerPane
+      <FileViewerPane ports={{ viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges }}
         reloadRequest={0}
         backPath={null}
         onBack={onBack}
@@ -279,7 +279,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
 
     const onClose = vi.fn()
     render(
-      <FileViewerPane
+      <FileViewerPane ports={{ viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges }}
         reloadRequest={0}
         backPath={null}
         onBack={vi.fn()}
@@ -311,7 +311,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
       const item = state.items.find((candidate) => candidate.key === state.active)
       if (item === undefined) return <p>Terminal</p>
       return (
-        <FileViewerPane
+        <FileViewerPane ports={{ viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges }}
           reloadRequest={0}
           key={item.key}
           item={item.kind === 'file' ? item : (() => { throw new Error('Expected file') })()}
@@ -369,7 +369,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
     const onRefused = vi.fn()
 
     render(
-      <FileViewerPane
+      <FileViewerPane ports={{ viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges }}
         reloadRequest={0}
         backPath={null}
         onBack={vi.fn()}
@@ -392,4 +392,18 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
     expect(onRefused).toHaveBeenCalledWith('The split already holds 8 files.')
     expect(fileViewer.release).toHaveBeenCalledWith('document-b')
   })
+  it('uses injected document ports and releases their grant without a local bridge', async () => {
+    const document = FileViewerPaneHarness.document({ kind: { kind: 'text' }, modes: ['raw'] })
+    const { fileViewer } = FileViewerPaneHarness.install([document])
+    const ports = { viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges }
+    vi.stubGlobal('appClient', undefined)
+    const view = render(<FileViewerPane ports={ports} item={FileViewerPaneHarness.item(document)}
+      changes={FileViewerPaneHarness.changes()} workingTree={FileViewerPaneHarness.workingTree()}
+      backPath={null} reloadRequest={0} onBack={vi.fn()} onClose={vi.fn()} onOpenItem={() => null} onRefused={vi.fn()} />)
+    await screen.findByText('body')
+    expect(fileViewer.restore).toHaveBeenCalledWith(document.source, true)
+    view.unmount()
+    expect(fileViewer.release).toHaveBeenCalledWith(document.documentId)
+  })
+
 })

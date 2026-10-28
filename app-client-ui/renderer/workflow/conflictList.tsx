@@ -3,15 +3,19 @@ import { useState } from 'react'
 import type {
   SessionSvnConflictInfo,
   SessionSvnConflictOptionInfo,
-  SvnConflictActor,
+  SvnConflictWireActor,
   SvnConflictState,
 } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
-import type { SvnConflictOption } from '../../../lib-orchestrator/svn/svn.types'
+import type { SvnConflictKind, SvnConflictOption } from '../../../lib-orchestrator/svn/svn.types'
 
 /** What a row does; each answers the refusal the row shows, or null. */
 export interface ConflictListPorts {
-  /** One option on the path; `confirm` only after the person confirmed a loss of incoming work. */
-  resolve(path: string, option: SvnConflictOption, confirm: boolean): Promise<string | null>
+  editorUnavailable?: string
+  /**
+   * One option on the path; `confirm` only after the person confirmed a loss of incoming work, never for Take incoming.
+   * `kind` only where the path holds a text and a property conflict, each its own row.
+   */
+  resolve(path: string, option: SvnConflictOption, confirm: boolean, kind?: SvnConflictKind): Promise<string | null>
   /** The worktree file in a further inner tab, beside the workflow item. */
   openFile(path: string): Promise<string | null>
   /** TortoiseSVN's conflict editor for the path. */
@@ -32,10 +36,13 @@ interface ConflictGroup {
  * The conflict set of an action inside its "Conflicts" step: the summary, then the paths grouped by
  * who works on them. Every sentence is the library's (`SessionSvnActionInfo.summary`, each entry's
  * description); the list only groups by `state` and draws. Each open row offers the options its entry
- * admits, with the library's labels and notes; an option that loses incoming work shows its note as a
- * warning on the first click and runs, confirmed, only on the second, and any other click disarms it.
+ * admits, with the library's labels and notes; an option that loses either side (Keep mine the incoming
+ * work, Take incoming the session's own changes) shows its note as a warning on the first click and
+ * runs only on the second, and any other click disarms it. Only a loss of incoming work carries the
+ * wire's confirmation.
  * Each row also opens its path in the viewer or in TortoiseSVN's conflict editor, and shows the
- * refusal of the last thing it ran. A settled row moves to Fixed with the next snapshot.
+ * refusal of the last thing it ran while the row keeps the state it had then. A settled row moves to
+ * Fixed with the next snapshot, without the failure of an option chosen before it settled.
  */
 export function ConflictList(props: {
   ref?: React.Ref<HTMLElement>
@@ -46,28 +53,36 @@ export function ConflictList(props: {
   ports: ConflictListPorts
 }): React.JSX.Element {
   const { more } = props.conflicts
-  const [notes, setNotes] = useState<ReadonlyMap<string, string>>(new Map())
+  const [notes, setNotes] = useState<ReadonlyMap<string, { text: string; state: SvnConflictState }>>(new Map())
   const [armed, setArmed] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [briefRefusal, setBriefRefusal] = useState<string | null>(null)
-  const run = (path: string, work: () => Promise<string | null>): void => {
+  const run = (entry: SessionSvnConflictInfo, work: () => Promise<string | null>): void => {
+    const row = ConflictOptions.rowOf(entry)
     void work().then((refusal) => setNotes((current) => {
       const next = new Map(current)
-      if (refusal === null) next.delete(path)
-      else next.set(path, refusal)
+      if (refusal === null) next.delete(row)
+      else next.set(row, { text: refusal, state: entry.state })
       return next
     }))
   }
+  const noteOf = (entry: SessionSvnConflictInfo): string | null => {
+    const note = notes.get(ConflictOptions.rowOf(entry))
+    return note === undefined || note.state !== entry.state ? null : note.text
+  }
+  const named = (entry: SessionSvnConflictInfo): boolean => props.conflicts.entries.some((other) => other !== entry && other.path === entry.path)
   const press = (entry: SessionSvnConflictInfo, option: SessionSvnConflictOptionInfo): void => {
-    const key = ConflictOptions.keyOf(entry.path, option.id)
-    const confirms = option.loses === 'incoming'
-    if (confirms && armed !== key) {
+    const row = ConflictOptions.rowOf(entry)
+    const key = ConflictOptions.keyOf(row, option.id)
+    if (option.loses !== 'nothing' && armed !== key) {
       setArmed(key)
       return
     }
     setArmed(null)
-    setBusy(entry.path)
-    run(entry.path, () => props.ports.resolve(entry.path, option.id, confirms).finally(() => setBusy(null)))
+    setBusy(row)
+    const confirm = option.loses === 'incoming'
+    const settled = named(entry) ? props.ports.resolve(entry.path, option.id, confirm, entry.kind) : props.ports.resolve(entry.path, option.id, confirm)
+    run(entry, () => settled.finally(() => setBusy(null)))
   }
   return (
     <section className="workflow__conflicts" ref={props.ref} tabIndex={-1} aria-label={props.summary} onClick={() => setArmed(null)}>
@@ -84,17 +99,18 @@ export function ConflictList(props: {
           <h4 className="workflow__conflict-group-title">{group.title}</h4>
           <ul className="workflow__conflict-rows">
             {group.entries.map((entry) => (
-              <li key={entry.path} className="workflow__conflict" data-state={entry.state}>
-                <span className="workflow__conflict-path">{entry.path}</span>
+              <li key={ConflictOptions.rowOf(entry)} className="workflow__conflict" data-state={entry.state}>
+                <span className="workflow__conflict-path">{named(entry) ? `${entry.path} (${entry.kind})` : entry.path}</span>
                 <span className="workflow__conflict-description">{entry.description}</span>
-                {entry.by !== null && <span className="workflow__conflict-note">{ConflictGroups.byOf(entry.by)}</span>}
+                {entry.settled !== undefined ? <span className="workflow__conflict-note">{entry.settled}</span>
+                  : entry.by !== null && <span className="workflow__conflict-note">{ConflictGroups.byOf(entry.by)}</span>}
                 {entry.saved !== null && <span className="workflow__conflict-note">saved: <code>{entry.saved}</code></span>}
                 {ConflictOptions.offered(entry) && (
-                  <span className="workflow__conflict-options" role="group" aria-label={`Options for ${entry.path}`}>
+                  <span className="workflow__conflict-options" role="group" aria-label={`Options for ${named(entry) ? `the ${entry.kind} conflict of ` : ''}${entry.path}`}>
                     {entry.options.map((option) => {
-                      const key = ConflictOptions.keyOf(entry.path, option.id)
+                      const key = ConflictOptions.keyOf(ConflictOptions.rowOf(entry), option.id)
                       return (
-                        <button key={option.id} type="button" title={option.note} disabled={busy === entry.path}
+                        <button key={option.id} type="button" title={option.note} disabled={busy === ConflictOptions.rowOf(entry)}
                           className={`workflow__conflict-option${armed === key ? ' workflow__conflict-option--armed' : ''}`}
                           data-loses={option.loses} aria-pressed={armed === key}
                           onClick={(event) => {
@@ -108,18 +124,19 @@ export function ConflictList(props: {
                     })}
                   </span>
                 )}
-                {entry.options.filter((option) => armed === ConflictOptions.keyOf(entry.path, option.id)).map((option) => (
+                {entry.options.filter((option) => armed === ConflictOptions.keyOf(ConflictOptions.rowOf(entry), option.id)).map((option) => (
                   <span key={option.id} className="workflow__conflict-warning" role="alert">
                     {option.label}: {option.note}. Click it again to confirm.
                   </span>
                 ))}
                 <span className="workflow__conflict-actions">
-                  <button type="button" className="workflow__conflict-action" onClick={() => run(entry.path, () => props.ports.openFile(entry.path))}>Open</button>
-                  <button type="button" className="workflow__conflict-action" onClick={() => run(entry.path, () => props.ports.openConflictEditor(entry.path))}>
+                  <button type="button" className="workflow__conflict-action" onClick={() => run(entry, () => props.ports.openFile(entry.path))}>Open</button>
+                  <button type="button" className="workflow__conflict-action" disabled={!!props.ports.editorUnavailable} title={props.ports.editorUnavailable}
+                    onClick={() => run(entry, () => props.ports.openConflictEditor(entry.path))}>
                     Edit in TortoiseSVN
                   </button>
                 </span>
-                {notes.has(entry.path) && <span className="workflow__conflict-refusal" role="alert">{notes.get(entry.path)}</span>}
+                {noteOf(entry) !== null && <span className="workflow__conflict-refusal" role="alert">{noteOf(entry)}</span>}
               </li>
             ))}
           </ul>
@@ -140,8 +157,13 @@ export class ConflictOptions {
     return ConflictGroups.groupOf(entry.state) !== 'fixed' && entry.options.length > 0
   }
 
-  static keyOf(path: string, option: SvnConflictOption): string {
-    return `${path}\n${option}`
+  static keyOf(row: string, option: SvnConflictOption): string {
+    return `${row}\n${option}`
+  }
+
+  /** One row per conflict: a path with a text and a property conflict draws a row for each. */
+  static rowOf(entry: Pick<SessionSvnConflictInfo, 'path' | 'kind'>): string {
+    return `${entry.kind}\n${entry.path}`
   }
 }
 
@@ -165,10 +187,11 @@ export class ConflictGroups {
     }
   }
 
-  static byOf(by: SvnConflictActor): string {
+  /** Only for an older peer, which sends no `settled`; its `agent` was the worker or the merger. */
+  static byOf(by: SvnConflictWireActor): string {
     switch (by) {
       case 'jamat': return 'fixed by Jamat'
-      case 'agent': return 'fixed by the merger'
+      case 'agent': return 'fixed by an agent'
       case 'person': return 'fixed by you'
       default: throw new Error(`Unknown conflict actor: ${JSON.stringify(by satisfies never)}`)
     }

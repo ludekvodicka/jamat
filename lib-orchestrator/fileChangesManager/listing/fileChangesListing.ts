@@ -48,11 +48,11 @@ export class FileChangesListing {
     const byPath = new Map<string, MutableListingItem>()
     for (const vcs of input.vcsEntries) {
       const item = FileChangesListing.fromVcs(input.cwd, vcs)
-      byPath.set(PathCompare.comparable(item.absolutePath), item)
+      byPath.set(PathCompare.normalized(item.absolutePath), item)
     }
     const lastMutations = FileChangesListing.lastMutations(input.logGroups)
     for (const mutation of lastMutations.values()) {
-      const key = PathCompare.comparable(mutation.path)
+      const key = PathCompare.normalized(mutation.path)
       const existing = byPath.get(key)
       if (existing) {
         if (!existing.entry.sources.includes('chat')) existing.entry.sources.push('chat')
@@ -143,6 +143,7 @@ export class FileChangesListing {
         sources: ['vcs'],
         gitState: vcs.gitState,
         ...(vcs.carriedItems === undefined ? {} : { carriedItems: vcs.carriedItems }),
+        ...(vcs.properties === undefined ? {} : { properties: vcs.properties }),
       },
     }
   }
@@ -195,7 +196,7 @@ export class FileChangesListing {
       if (item.entry.location !== 'workspace' || item.entry.nodeKind === 'directory') continue
       let parent = dirname(item.absolutePath)
       while (PathCompare.isInside(cwd, parent) && PathCompare.comparable(parent) !== PathCompare.comparable(cwd)) {
-        const key = PathCompare.comparable(parent)
+        const key = PathCompare.normalized(parent)
         const grouped = children.get(key)
         if (grouped) grouped.push(item)
         else children.set(key, [item])
@@ -230,7 +231,7 @@ export class FileChangesListing {
 
   private static parentMatching(start: string, comparable: string): string {
     let candidate = start
-    while (PathCompare.comparable(candidate) !== comparable) candidate = dirname(candidate)
+    while (PathCompare.normalized(candidate) !== comparable) candidate = dirname(candidate)
     return candidate
   }
 

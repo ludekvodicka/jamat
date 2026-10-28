@@ -15,11 +15,21 @@ import { SessionGroupsSection } from './sessionGroupsSection'
 
 /** The sections of the sessions tree, which a person edits in the settings. */
 export class SessionGroupsOperations {
+  private readonly configStore: ConfigStore
+  private readonly store: ClientStateStore
+  private readonly onChanged: () => void
+
   constructor(
-    private readonly configStore: ConfigStore,
-    private readonly store: ClientStateStore,
-    private readonly onChanged: () => void,
-  ) {}
+    configStore: ConfigStore,
+    store: ClientStateStore,
+    onChanged: () => void,
+  ) { this.configStore = configStore; this.store = store; this.onChanged = onChanged }
+
+  ensure(groups: readonly SessionGroupDefinition[]): SessionGroupsSaveResult {
+    const current = this.configStore.readSection(SessionGroupsSection.spec)
+    const missing = groups.filter((group) => !current.some((existing) => existing.id === group.id))
+    return missing.length ? this.save([...current, ...missing]) : { ok: true }
+  }
 
   register(registry: Pick<RemoteControlRegistry, 'registrar'>): void {
     const op = registry.registrar<AppOperationMap>()

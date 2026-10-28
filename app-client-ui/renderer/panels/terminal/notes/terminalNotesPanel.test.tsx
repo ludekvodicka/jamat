@@ -1,3 +1,4 @@
+import { localTerminalNotesPorts } from './terminalNotesPorts'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -190,7 +191,7 @@ describe('app-client-ui/renderer/panels/terminal/notes/terminalNotesPanel', () =
       onDirectoryNotesChanged: () => () => undefined,
     } as unknown as AppClientUiBridge
     function Harness(): React.JSX.Element {
-      const model = useTerminalNotes({ sessionId: 's1', enabled: true, paste: () => true, onTaken: () => undefined })
+      const model = useTerminalNotes({ ports: localTerminalNotesPorts, sessionId: 's1', enabled: true, paste: () => true, onTaken: () => undefined })
       return <TerminalNotesPanel model={model} canPaste canImport />
     }
     const view = render(<Harness />)

@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
+import { readFileSync, statSync } from 'node:fs'
+import { PassInbox, type PassEvent } from '../../lib-orchestrator/snapins/passInboxView'
 
 import type {
   RemoteControlCatalogEntryDto,
@@ -52,7 +54,6 @@ import { CommitMessageFile } from './commitMessageFile'
 import { CommitAsideLauncher, type CommitAsideRequest } from './commitAsideLauncher'
 import { CommitStatusReader } from './commitStatusReader'
 import { ScriptRunReader } from './scriptRunReader'
-import { ReviewRunExit } from '../../lib-orchestrator/shared/reviewRunExit'
 
 export interface AppClientCliClientPort {
   execute(request: RemoteControlRequestUnion): Promise<RemoteControlResponse>
@@ -89,9 +90,8 @@ export interface AppClientCliDeps {
 
 type AppClientCliPlan =
   | CommitPlan
+  | { kind: 'pass'; directory: string; event?: PassEvent }
   | { kind: 'commit-status'; id: string; wait: boolean; timeoutMs: number }
-  /** `sessions worktree-review`: the review run's own review, and with `wait` its ending as the exit code. */
-  | { kind: 'worktree-review'; request: RemoteControlRequest<'sessions.worktreeReview'>; wait: boolean; timeoutMs: number }
   | {
       kind: 'request'
       request: RemoteControlRequestUnion
@@ -158,6 +158,7 @@ export class AppClientCli {
     try {
       const args = CliArguments.parse(this.argv)
       plan = this.plan(args)
+      if (plan.kind === 'pass') return await this.runPass(plan)
       if (plan.kind === 'commit') return await this.runCommit(plan)
       const config = this.deps.loadConfig(args)
       const descriptor = await this.deps.discover(config)
@@ -171,7 +172,6 @@ export class AppClientCli {
           return this.finishFailure(plan, { code: 'unavailable', detail: 'tabs.commitStatus is not exposed by this AppClientUI' })
         return await this.readCommitStatus(client, plan.id, plan.wait, plan.timeoutMs)
       }
-      if (plan.kind === 'worktree-review') return await this.worktreeReview(client, plan)
       if (plan.kind === 'request') {
         if (AppClientCli.capabilityGatedConst.includes(plan.request.operation)
           && !RemoteControlCapabilities.of(descriptor.value).includes(plan.request.operation))
@@ -190,6 +190,37 @@ export class AppClientCli {
           const endpoint = await this.remoteEndpoint(client, plan.computer)
           if (!endpoint.ok) return this.finishFailure(plan, endpoint.error)
           remoteEndpointId = endpoint.value.remoteEndpointId
+          const required = [...new Set([plan.request.operation, ...(feature ? [feature.operation] : [])])]
+            .filter((operation) => RemoteControlConst.optionalOperations.some((optional) => optional === operation))
+          if (required.length > 0) {
+            let offered: readonly string[] | null = endpoint.value.optionalOperations
+            if (offered === null) {
+              const hello = await client.executeRemote(remoteEndpointId, this.request('system.hello', {}, this.deps.requestId()))
+              if (!hello.ok) return this.finishFailure(plan, hello.error)
+              offered = 'optionalOperations' in hello.value && Array.isArray(hello.value.optionalOperations)
+                ? hello.value.optionalOperations.filter((operation): operation is string => typeof operation === 'string') : []
+            }
+            const missing = required.find((operation) => !offered.includes(operation))
+            if (missing) return this.finishFailure(plan, { code: 'unavailable', detail: `${missing} is not exposed by ${endpoint.value.displayName}; update the source AppJamatV3` })
+          }
+        }
+        if (plan.request.operation === 'sessions.create' && args.option('--account') !== null) {
+          const selected = args.option('--account')!
+          const requestedAgent = plan.request.body.spec.agent
+          if (!requestedAgent) throw new AppClientCliError('invalid-request', '--account requires --agent')
+          const listing = this.request('accounts.list', {}, this.deps.requestId())
+          const response = remoteEndpointId === null ? await client.execute(listing) : await client.executeRemote(remoteEndpointId, listing)
+          if (response.ok) {
+            if (!Array.isArray(response.value)) throw new AppClientCliError('invalid-request', 'Invalid accounts response')
+            const candidates = response.value.filter((value: unknown) => JsonShape.isRecord(value)
+              && value.agentId === requestedAgent.agentId && (value.accountId === selected || value.label === selected))
+            const exact = candidates.filter(value => value.accountId === selected)
+            const match = exact.length === 1 ? exact : candidates
+            if (match.length !== 1 || typeof match[0].accountId !== 'string')
+              throw new AppClientCliError('invalid-request', `Account not found or ambiguous: ${selected}`)
+            requestedAgent.accountId = match[0].accountId
+          } else if (remoteEndpointId === null || response.error.code !== 'forbidden')
+            return this.finishFailure(plan, response.error)
         }
         const canonical = await this.canonicalRequest(
           client,
@@ -207,7 +238,10 @@ export class AppClientCli {
           && (!CommitStatusReader.valid(response.value, plan.request.body.commitSessionId)
             || response.value.state !== 'cancelled' || !response.value.closed))
           return this.finishFailure(plan, { code: 'operation-failed', detail: 'The response did not confirm a closed, cancelled review; check the same review before reopening' })
-        this.write(response)
+        const worktree = (plan.request.operation === 'sessions.worktree' || plan.request.operation === 'sessions.finishWorktree') && response.ok ? JsonShape.record(response.value) : null
+        const view = JsonShape.record(worktree?.worktreeView)
+        this.write(worktree !== null && typeof view?.summary === 'string'
+          ? { ...response, value: { ...worktree, lifecycle: view.summary } } : response)
         return AppClientCli.exitCode(response.ok ? null : response.error.code)
       } else if (plan.kind === 'local') {
         const response = await client.executeLocal(plan.request)
@@ -259,22 +293,77 @@ export class AppClientCli {
     }
   }
 
+  private passPlan(args: CliArguments): AppClientCliPlan {
+    const directory = args.required('--pass')
+    const kind = args.required('--kind')
+    const allowed: Record<string, string[]> = { started: ['--agent', '--pp-version', '--trail'], working: [],
+      note: ['--note-file'], done: ['--outcome', '--waiting', '--detail-file', '--note-file', '--report-file'] }
+    if (!Object.hasOwn(allowed, kind)) throw new AppClientCliError('invalid-request', `Unknown event kind ${kind}`)
+    for (const flag of ['--agent', '--pp-version', '--trail', '--outcome', '--waiting', '--detail-file', '--note-file', '--report-file'])
+      if (args.option(flag) !== null && !allowed[kind]!.includes(flag))
+        throw new AppClientCliError('invalid-request', `${flag} is not valid for ${kind}`)
+    const file = (flag: string, required: boolean): string | undefined => {
+      const path = required ? args.required(flag) : args.option(flag)
+      if (path === null) return undefined
+      try {
+        if (statSync(path).size > 65_536) throw new Error(`${flag} exceeds 64 KiB`)
+        return readFileSync(path, 'utf8')
+      } catch (error) { throw new AppClientCliError('invalid-request', ErrorText.of(error)) }
+    }
+    let event: unknown
+    if (kind === 'started') event = { kind, at: this.deps.now(), agent: args.option('--agent') ?? undefined,
+      ppVersion: args.option('--pp-version') ?? undefined, trail: args.option('--trail') ?? undefined }
+    else if (kind === 'working') event = { kind, at: this.deps.now() }
+    else if (kind === 'note') event = { kind, at: this.deps.now(), note: file('--note-file', true) }
+    else if (kind === 'done') event = { kind, at: this.deps.now(), outcome: args.required('--outcome'),
+      waiting: args.option('--waiting') ?? undefined, detail: file('--detail-file', true),
+      note: file('--note-file', false), report: file('--report-file', false) }
+    else throw new Error(`Unknown event kind ${kind}`)
+    try { return { kind: 'pass', directory, event: PassInbox.validateEvent(event) } }
+    catch (error) { throw new AppClientCliError('invalid-request', ErrorText.of(error)) }
+  }
+
+  private async runPass(plan: Extract<AppClientCliPlan, { kind: 'pass' }>): Promise<number> {
+    let inbox: PassInbox
+    try { inbox = await PassInbox.open(plan.directory) }
+    catch (error) {
+      this.write({ ok: false, error: { code: 'pass-refused', detail: ErrorText.of(error) } })
+      return 3
+    }
+    if (!plan.event) {
+      this.write({ ok: true, value: await inbox.brief() })
+      return 0
+    }
+    let stored: number
+    try { stored = await inbox.append(plan.event) }
+    catch (error) {
+      this.write({ ok: false, error: { code: 'write-failed', detail: ErrorText.of(error) } })
+      return 5
+    }
+    let delivered = false
+    try {
+      const descriptor = await this.deps.discover({ configDir: null, identity: null,
+        configIdentity: inbox.identity, runtimeChannel: inbox.channel })
+      if (descriptor.ok && descriptor.value.configIdentity === inbox.identity && descriptor.value.runtimeChannel === inbox.channel) {
+        const operation: string = 'snapins.passWake'
+        const answer = await this.deps.client(descriptor.value).execute({ protocol: RemoteControlConst.protocol,
+          requestId: this.deps.requestId(), operationId: this.deps.operationId(), operation,
+          body: { passDirectory: inbox.directory } } as unknown as RemoteControlRequestUnion)
+        delivered = answer.ok
+      }
+    } catch { delivered = false }
+    this.write({ ok: true, value: { stored, delivered } })
+    return 0
+  }
+
   private plan(args: CliArguments): AppClientCliPlan {
+    if (args.command === 'snapins pass brief') return { kind: 'pass', directory: args.required('--pass') }
+    if (args.command === 'snapins pass event') return this.passPlan(args)
     if (args.command === 'commit-svn-jamat') return this.commitPlan(args, 'svn')
     else if (args.command === 'commit-git-jamat') return this.commitPlan(args, 'git')
     else if (args.command === 'commit status') {
       const id = this.commitId(args)
       return { kind: 'commit-status', id, wait: args.has('--wait'), timeoutMs: this.commitTimeout(args) }
-    }
-    else if (args.command === 'sessions worktree-review') {
-      if (!args.has('--self'))
-        throw new AppClientCliError('invalid-request', 'sessions worktree-review is the command of a review run and needs --self')
-      return {
-        kind: 'worktree-review',
-        request: this.request('sessions.worktreeReview', { session: this.selfOrSelector(args) }, this.deps.requestId(), this.operationId(args)),
-        wait: args.has('--wait'),
-        timeoutMs: this.commitTimeout(args),
-      }
     }
     if (args.command === 'operations get')
       return {
@@ -348,7 +437,9 @@ export class AppClientCli {
           ...(categoryId === null ? {} : { categoryId }),
           ...(sort === null ? {} : { sort }),
         }, requestId))
-    } else if (args.command === 'sessions list')
+    } else if (args.command === 'accounts list')
+      return this.requestPlan(args, this.request('accounts.list', {}, requestId))
+    else if (args.command === 'sessions list')
       return this.requestPlan(args, this.request('sessions.list', {}, requestId))
     else if (args.command === 'sessions create') {
       const group = AppClientCli.groupOf(args.option('--group'))
@@ -387,22 +478,31 @@ export class AppClientCli {
     } else if (args.command === 'sessions worktree')
       return this.requestPlan(args, this.request(
           'sessions.worktree',
-          { session: this.selector(args) },
+          { session: this.selfOrSelector(args) },
           requestId,
         ))
+    else if (args.command === 'sessions sync')
+      return this.requestPlan(args, this.request('sessions.sync', { session: this.selfOrSelector(args) }, requestId, this.operationId(args)))
     else if (args.command === 'sessions conflicts')
       return this.requestPlan(args, this.request('sessions.conflicts', { session: this.selfOrSelector(args) }, requestId))
     else if (args.command === 'sessions resolve-conflict') {
       const option = args.required('--option')
       if (option !== 'merged' && option !== 'take-incoming' && option !== 'keep-mine' && option !== 'keep-both' && option !== 'union')
         throw new AppClientCliError('invalid-request', '--option must be merged, take-incoming, keep-mine, keep-both or union')
+      const kind = args.option('--kind')
+      if (kind !== null && kind !== 'text' && kind !== 'property' && kind !== 'tree' && kind !== 'diverged')
+        throw new AppClientCliError('invalid-request', '--kind must be text, property, tree or diverged')
       return this.requestPlan(args, this.request(
           'sessions.resolveConflict',
-          { session: this.selfOrSelector(args), path: args.required('--path'), option },
+          { session: this.selfOrSelector(args), path: args.required('--path'), ...kind === null ? {} : { kind }, option },
           requestId,
           this.operationId(args),
         ))
     }
+    else if (args.command === 'sessions back-to-work')
+      return this.requestPlan(args, this.request('sessions.backToWork', { session: this.selfOrSelector(args) }, requestId, this.operationId(args)))
+    else if (args.command === 'sessions solve-with-agent')
+      return this.requestPlan(args, this.request('sessions.solveWithAgent', { session: this.selector(args) }, requestId, this.operationId(args)))
     else if (args.command === 'sessions remove')
       return this.requestPlan(args, this.request(
           'sessions.remove',
@@ -431,6 +531,8 @@ export class AppClientCli {
         throw new AppClientCliError('invalid-request', '--choice must be commit, discard or keep')
       if (args.has('--agent') && choice !== 'commit')
         throw new AppClientCliError('invalid-request', '--agent goes with --choice commit: it starts the merger for the conflicts that are left')
+      if (args.has('--refresh-preparation') && (choice !== 'commit' || args.has('--agent')))
+        throw new AppClientCliError('invalid-request', '--refresh-preparation goes with --choice commit and does not start a conflict resolver')
       const acknowledgeSetup = args.option('--acknowledge-setup')
       return this.requestPlan(args, this.request(
           'sessions.finishWorktree',
@@ -439,6 +541,7 @@ export class AppClientCli {
             choice,
             ...(acknowledgeSetup === null ? {} : { acknowledgeSetup }),
             ...(args.has('--confirm-working') ? { confirmWorking: true as const } : {}),
+            ...(args.has('--refresh-preparation') ? { refreshPreparation: true as const } : {}),
             ...(args.has('--agent') ? { agent: true as const } : {}),
           },
           requestId,
@@ -573,7 +676,7 @@ export class AppClientCli {
       if (!message.trim()) throw new AppClientCliError('invalid-request', 'The proposed commit message is empty')
       return this.requestPlan(args, this.request(
           'sessions.proposeCommit',
-          { session: this.selfOrSelector(args), message: CommitMessageFile.validate(message) },
+          { session: this.selfOrSelector(args), message: CommitMessageFile.validate(message), ...(args.option('--directory') === null ? {} : { directory: args.option('--directory')! }) },
           requestId,
           this.operationId(args),
         ))
@@ -752,48 +855,6 @@ export class AppClientCli {
     return AppClientCli.exitCode(response.ok ? null : response.error.code)
   }
 
-  /**
-   * The review run of an SVN action: its review opens once, and the run exits with how it ended
-   * (`ReviewRunExit`). Whatever leaves the ending unknown, a client that went away included, is
-   * an interrupted review, which the action never opens again by itself.
-   */
-  private async worktreeReview(
-    client: AppClientCliClientPort,
-    plan: Extract<AppClientCliPlan, { kind: 'worktree-review' }>,
-  ): Promise<number> {
-    const opened = await client.execute(plan.request).catch((error: unknown) => ({
-      ok: false as const,
-      error: { code: 'operation-failed' as const, detail: `The review could not be asked for: ${ErrorText.of(error)}` },
-    }))
-    if (!opened.ok) {
-      this.write({ ...AppClientCli.answerIds(plan.request), ok: false, error: opened.error })
-      return ReviewRunExit.interruptedConst
-    }
-    if (!plan.wait) {
-      this.write(opened)
-      return 0
-    }
-    const review = JsonShape.record(opened.value)
-    if (typeof review?.commitSessionId !== 'string') {
-      this.write({ ...AppClientCli.answerIds(plan.request), ok: false,
-        error: { code: 'operation-failed', detail: 'The review opened without a trackable UUID; its outcome is unknown' } })
-      return ReviewRunExit.interruptedConst
-    }
-    const reader = new CommitStatusReader({
-      read: () => client.execute(this.request('tabs.commitStatus', { commitSessionId: review.commitSessionId as string }, this.deps.requestId())),
-      now: this.deps.now,
-      pause: this.deps.pause,
-    })
-    const status = await reader.read(review.commitSessionId, true, plan.timeoutMs, this.deps.signal).catch((error: unknown) => {
-      this.write({ ...AppClientCli.answerIds(plan.request), ok: false, error: { code: 'operation-failed', detail: ErrorText.of(error) } })
-      return null
-    })
-    if (status === null) return ReviewRunExit.interruptedConst
-    this.write(status)
-    if (!status.ok || !CommitStatusReader.valid(status.value, review.commitSessionId)) return ReviewRunExit.interruptedConst
-    return ReviewRunExit.codeOf(status.value.state, status.value.closed, status.value.detail)
-  }
-
   private async finishAside(plan: CommitPlan, reason: CommitAsideRequest['reason'], scope = resolve(this.deps.cwd(), plan.scope ?? '.')): Promise<number> {
     if (plan.fallback === 'report') {
       this.write({ ok: true, value: { kind: 'fallback-required', reason, scope,
@@ -821,8 +882,10 @@ export class AppClientCli {
       throw new AppClientCliError('invalid-request', '--computer must not be empty')
     if (computer !== null && request.operation === 'sessions.create' && request.body.spec.notify !== undefined)
       throw new AppClientCliError('invalid-request', '--notify-* options are local only and cannot be used with --computer')
-    if (computer !== null && request.operation === 'sessions.create' && request.body.spec.parent !== undefined)
-      throw new AppClientCliError('invalid-request', '--parent-session and --parent-kind are local only and cannot be used with --computer')
+    if (computer !== null && args.has('--self'))
+      throw new AppClientCliError('invalid-request', '--self belongs to this computer; name the source session explicitly with --session-id')
+    if (computer !== null && (args.option('--acknowledge-setup') !== null || args.has('--confirm-working') || args.option('--confirm-live') !== null))
+      throw new AppClientCliError('invalid-request', 'Human agreements must be confirmed in the source Session actions view')
     if (computer !== null
       && request.operation === 'sessions.create'
       && args.has('--open-tab'))
@@ -863,7 +926,7 @@ export class AppClientCli {
     const forkParentId = args.option('--fork-parent-id')
     const initialPrompt = args.option('--prompt')
     if (agentId === null
-      && [mode, nativeSessionId, forkParentId, initialPrompt].some((value) => value !== null))
+      && [mode, nativeSessionId, forkParentId, initialPrompt, args.option('--account')].some((value) => value !== null))
       throw new AppClientCliError('invalid-request', 'Agent options require --agent')
     if (agentId !== null && agentId !== 'claude' && agentId !== 'codex')
       throw new AppClientCliError('invalid-request', '--agent must be claude or codex')
@@ -1086,8 +1149,11 @@ export class AppClientCli {
     if (request.operation === 'sessions.reopen'
       || request.operation === 'sessions.finalize'
       || request.operation === 'sessions.worktree'
+      || request.operation === 'sessions.sync'
       || request.operation === 'sessions.conflicts'
       || request.operation === 'sessions.resolveConflict'
+      || request.operation === 'sessions.solveWithAgent'
+      || request.operation === 'sessions.backToWork'
       || request.operation === 'sessions.remove'
       || request.operation === 'sessions.discardWorktree'
       || request.operation === 'sessions.retrySetup'
@@ -1133,6 +1199,7 @@ export class AppClientCli {
         } as RemoteControlRequestUnion,
       }
     } else if (request.operation === 'system.hello'
+      || request.operation === 'accounts.list'
       || request.operation === 'system.status'
       || request.operation === 'system.operations'
       || request.operation === 'system.calls'
@@ -1368,8 +1435,11 @@ export class AppClientCli {
     'sessions.children',
     'sessions.acknowledgeWorktreeResult',
     'sessions.proposeCommit',
+    'sessions.sync',
     'sessions.conflicts',
     'sessions.resolveConflict',
+    'sessions.solveWithAgent',
+    'sessions.backToWork',
   ]
 
   private static readonly deliverMarginMillisecondsConst = 5_000

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { FileViewerGrantStore } from './access/fileViewerGrantStore'
 import { FileViewer } from './fileViewer'
+import { FileViewerLimits } from './fileViewerLimits'
 import type { FileViewerDocumentSource } from './fileViewerApi.types'
 
 describe('fileViewer/fileViewer', () => {
@@ -36,6 +37,42 @@ describe('fileViewer/fileViewer', () => {
     expect(content).to.deep.include({ ok: true, kind: 'text', text: 'export const answer = 42\n' })
     expect(await viewer.text('window-two', opened.value.documentId))
       .to.deep.include({ ok: false, code: 'wrong-owner' })
+  })
+
+  it.each(['html', 'htm', 'HTMLX'])('opens and reads an 18 MB %s report in rendered mode', async (extension) => {
+    const cwd = await root()
+    const path = join(cwd, `report.${extension}`)
+    const source = '<!doctype html><h1>Report</h1>' + ' '.repeat(18_367_676)
+    await writeFile(path, source)
+    const viewer = new FileViewer()
+    const opened = await viewer.openWorkspace('owner', 'session', cwd, path)
+    if (!opened.ok) throw new Error(opened.detail)
+    expect(opened.value.kind).toEqual({ kind: 'html' })
+    expect(opened.value.modes).toEqual(['rendered', 'raw', 'hex'])
+    const result = await viewer.text('owner', opened.value.documentId)
+    expect(result.ok && result.kind === 'text' && result.text === source).toBe(true)
+    expect(await viewer.text('other-owner', opened.value.documentId)).toMatchObject({ ok: false, code: 'wrong-owner' })
+  })
+
+  it('keeps the smaller text limit for a non-HTML document', async () => {
+    const cwd = await root(), path = join(cwd, 'report.txt'), viewer = new FileViewer()
+    await writeFile(path, 'a'.repeat(FileViewerLimits.fullTextBytes + 1))
+    const opened = await viewer.openWorkspace('owner', 'session', cwd, path)
+    if (!opened.ok) throw new Error(opened.detail)
+    expect(opened.value.modes).toEqual(['hex'])
+    expect(await viewer.text('owner', opened.value.documentId)).toMatchObject({ ok: true, kind: 'too-large', limit: FileViewerLimits.fullTextBytes })
+  })
+
+  it('derives shared references only from the producing viewer grant and keeps an accepted proof through release', async () => {
+    const cwd = await root(), path = join(cwd, 'shared.txt'), viewer = new FileViewer()
+    await writeFile(path, 'source bytes')
+    const opened = await viewer.openWorkspace('owner', 'session', cwd, path)
+    if (!opened.ok) throw new Error(opened.detail)
+    expect((await viewer.document('foreign', opened.value.documentId)).ok).toBe(false)
+    const pending = viewer.document('owner', opened.value.documentId)
+    viewer.release('owner', opened.value.documentId)
+    expect(await pending).toEqual(opened)
+    expect((await viewer.document('owner', opened.value.documentId)).ok).toBe(false)
   })
 
   it('answers what changed under an open document without reading it again', async () => {

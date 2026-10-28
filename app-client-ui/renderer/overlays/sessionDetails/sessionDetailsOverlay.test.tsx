@@ -11,6 +11,7 @@ import type { AppClientUiBridge, IpcResult } from '../../../shared/appClientUiIp
 import { SnapshotStore } from '../../ipc/snapshotStore'
 import { TerminalInputRegistry } from '../../shell/terminalInputRegistry'
 import { SessionsFixtures } from '../../sessions/fixtures/sessionsFixtures'
+import { AppControl } from '../../ipc/appControl'
 import { SessionDetailsOverlay } from './sessionDetailsOverlay'
 import { ControlBridgeFixture } from '../../ipc/fixtures/controlBridgeFixture'
 
@@ -79,7 +80,7 @@ describe('app-client-ui/renderer/overlays/sessionDetails/sessionDetailsOverlay',
     const inputs = new TerminalInputRegistry()
     const onClose = vi.fn()
     const view = render(
-      <SessionDetailsOverlay
+      <SessionDetailsOverlay save={(sessionId, update) => AppControl.sessions('sessions.setDetails', { session: AppControl.sessionOf(sessionId), update })}
         request={{ requestId: 1, sessionId }}
         snapshot={store}
         inputs={inputs}

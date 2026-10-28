@@ -52,6 +52,15 @@ export class FileChangesLimits {
    */
   static readonly copiedListingEntriesMax = 200
 
+  /**
+   * How many nodes with changed properties have their values read, and how long one value may be.
+   *
+   * The values travel in the snapshot to every review, and `svn:externals` or `svn:mergeinfo` can be
+   * long. Past these the entry says its values were cut instead of growing the snapshot.
+   */
+  static readonly propertyNodesMax = 200
+  static readonly propertyValueCharactersMax = 4_000
+
   /** How much of a tool's own output may become the text of a warning. */
   static readonly failureDetailCharactersMax = 2_000
 }

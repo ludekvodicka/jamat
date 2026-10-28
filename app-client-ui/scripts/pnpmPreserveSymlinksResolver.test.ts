@@ -1,4 +1,6 @@
 import { dirname, join } from 'node:path'
+import { realpathSync } from 'node:fs'
+import { BuildEnvironment, normalizePath, resolveConfig } from 'vite'
 
 import { describe, expect, it } from 'vitest'
 
@@ -109,5 +111,33 @@ describe('app-client-ui/scripts/pnpmPreserveSymlinksResolver', () => {
     const importer = join(packageRoot, 'node_modules', 'vega', 'build', 'vega.module.js')
 
     expect(await build.ask({ path: 'nothing-like-this', importer })).toBeNull()
+  })
+
+  it('unifies dependency identities while preserving queries and resolver metadata', async () => {
+    const plugin = PnpmPreserveSymlinksResolver.plugin(), resolveId = plugin.resolveId
+    if (typeof resolveId !== 'function') throw new Error('Expected a renderer resolver hook')
+    const config = await resolveConfig({ configFile: false, root: packageRoot, resolve: { preserveSymlinks: true } }, 'build')
+    if (typeof plugin.configResolved !== 'function') throw new Error('Expected renderer resolver initialization')
+    await plugin.configResolved.call({} as never, config)
+    const dependency = join(packageRoot, 'node_modules/vega/build/vega.module.js')
+    const resolved = { id: `${dependency}?raw`, moduleSideEffects: false, meta: { fixture: true } }
+    const answer = await resolveId.call({ environment: new BuildEnvironment('client', config), resolve: async (id: string) => ({ ...resolved, id }) } as never, 'vega?raw',
+      join(packageRoot, 'renderer/usageWindow/usageChart.tsx'), { attributes: {}, isEntry: false })
+    expect(answer).toEqual({ ...resolved, id: `${normalizePath(realpathSync(dependency))}?raw` })
+  })
+
+  it('preserves application identities and external resolutions', async () => {
+    const plugin = PnpmPreserveSymlinksResolver.plugin(), resolveId = plugin.resolveId
+    if (typeof resolveId !== 'function') throw new Error('Expected a renderer resolver hook')
+    const application = join(packageRoot, 'renderer/usageWindow/usageChart.tsx')
+    const config = await resolveConfig({ configFile: false, root: packageRoot,
+      resolve: { preserveSymlinks: true, alias: { fixture: application } } }, 'build')
+    if (typeof plugin.configResolved !== 'function') throw new Error('Expected renderer resolver initialization')
+    await plugin.configResolved.call({} as never, config)
+    const resolved = { id: 'external-module', external: true }
+    const context = { environment: new BuildEnvironment('client', config), resolve: async () => resolved }
+    expect(await resolveId.call(context as never, 'fixture', application, { attributes: {}, isEntry: false })).toBeNull()
+    expect(await resolveId.call(context as never, './poolGraphSpec', application, { attributes: {}, isEntry: false })).toBeNull()
+    expect(await resolveId.call(context as never, 'vega', application, { attributes: {}, isEntry: false })).toBe(resolved)
   })
 })

@@ -1,3 +1,9 @@
+import { UsageUiScenario } from './usageUiScenario.js'
+import { FinishUiScenario } from './finishUiScenario.js'
+import { WorktreeUiExtensions } from './worktreeUiExtensions.js'
+import { SnapinsUiScenario } from './snapinsUiScenario.js'
+import { FinishUiReceipt } from '../release/finishUiReceipt.js'
+import { SvnSmokeIsolation } from './svnSmokeIsolation.js'
 /**
  * End-to-end proof that app-client-ui composes and boots: it builds the three bundles, launches the
  * real Electron binary with `--smoke`, and waits for the main process to report that the renderer
@@ -18,6 +24,7 @@
  * touches the machine's own %LOCALAPPDATA%\jamat-v3, a window the developer has open, or a Host they
  * are working with.
  */
+import { RemoteUiScenarios } from './remoteUiScenarios.js'
 import { SmokeHarness } from './smokeHarness.js'
 import { spawnSync, spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -43,9 +50,46 @@ class SmokeUi extends SmokeHarness {
   ])
 
   static async run(): Promise<void> {
+    const repository = join(import.meta.dirname, '..', '..')
+    if (process.argv[2] === 'worktree-extensions') {
+      const option = process.argv.indexOf('--test-root')
+      const requested = option === -1 ? tmpdir() : process.argv[option + 1]
+      if (requested === undefined || requested.startsWith('--')) throw new Error('--test-root needs a directory')
+      const parent = await SvnSmokeIsolation.parent(requested)
+      SmokeUi.build()
+      await WorktreeUiExtensions.run(parent)
+      return
+    }
+    if (process.argv[2] === 'usage') {
+      SmokeUi.build()
+      await UsageUiScenario.run()
+      return
+    }
+    if (process.argv[2] === 'snapins') {
+      SmokeUi.build()
+      await SnapinsUiScenario.run()
+      console.log('[smoke:ui] Snap-ins walkthrough passed')
+      return
+    }
+    if (process.argv[2] === 'finish') {
+      const option = process.argv.indexOf('--test-root')
+      const requested = option === -1 ? tmpdir() : process.argv[option + 1]
+      if (requested === undefined || requested.startsWith('--')) throw new Error('--test-root needs a directory')
+      const parent = await SvnSmokeIsolation.parent(requested)
+      const tested = await FinishUiReceipt.hash(repository)
+      SmokeUi.build()
+      await FinishUiScenario.run(parent, process.argv.includes('--real-agent'), process.argv.includes('--externals'))
+      if (process.argv.includes('--externals')) {
+        await FinishUiReceipt.save(repository, tested)
+        console.log('[smoke:ui] UI receipt saved; the release gate also requires the complete smoke:worktrees-acceptance run')
+      } else console.log('[smoke:ui] Finish passed; release receipt requires --externals')
+      return
+    }
     SmokeUi.build()
     await SmokeUi.checkSmokeStartsNoHost()
     await SmokeUi.checkAutoStartStartsAHost()
+    await RemoteUiScenarios.run()
+    await UsageUiScenario.run()
     console.log('[smoke:ui] OK')
   }
 

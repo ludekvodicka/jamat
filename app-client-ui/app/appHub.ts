@@ -1,3 +1,20 @@
+import { AccountProblem } from '../../lib-orchestrator/agentAccounts/accountProblem'
+import { SessionTaskAccess } from './sessionTasks/sessionTaskAccess'
+import type { SessionViewOpenRequest } from '../../lib-orchestrator/remoteControl/remoteSessionApi.types'
+import { SessionViewItemsStore } from './tabs/sessionViewItemsStore'
+import { RemoteContentPages } from './remoteControl/remoteContentPages'
+import { FileViewerDragExport } from './fileViewer/fileViewerDragExport'
+import { FileViewerExport } from './fileViewer/fileViewerExport'
+import { LocalFileMediaSource } from './fileViewer/localFileMediaSource'
+import { RemoteFileMediaSource } from './fileViewer/remoteFileMediaSource'
+import { RemoteContentClient } from './remoteControl/remoteContentClient'
+import type { FileViewerResourceResult } from '../../lib-orchestrator/fileViewer/fileViewerApi.types'
+import { RemoteChangesAccess } from './remoteControl/remoteChangesAccess'
+import { RemoteSidebarAccess } from './remoteControl/remoteSidebarAccess'
+import { RemoteContentAccess } from './remoteControl/remoteContentAccess'
+import { RemoteReviewAccess } from './remoteControl/remoteReviewAccess'
+import { RemoteSessionViews } from './remoteControl/remoteSessionViews'
+import { RemoteSessionActions } from './remoteControl/remoteSessionActions'
 import { CatalogSection } from '../../lib-orchestrator/projectManager/catalog/catalogSection'
 import { AppClientUiReport } from '../shared/appClientUiReport'
 import { DetectionRefusal } from './shared/detectionRefusal'
@@ -6,7 +23,7 @@ import { createRequire } from 'node:module'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-import { app, net, Notification, safeStorage, type WebContents } from 'electron'
+import { app, dialog, net, Notification, safeStorage, type WebContents } from 'electron'
 
 import { ConfigStore } from '../../lib-orchestrator/configStore/configStore'
 import { FileChangesManager } from '../../lib-orchestrator/fileChangesManager/fileChangesManager'
@@ -14,12 +31,15 @@ import { VcsStatusView } from '../../lib-orchestrator/fileChangesManager/vcsStat
 import { GitCommitManager } from '../../lib-orchestrator/git/gitCommitManager'
 import { GitInvoker } from '../../lib-orchestrator/git/gitInvoker'
 import { SvnCommitManager } from '../../lib-orchestrator/svn/svnCommitManager'
-import { SvnInvoker } from '../../lib-orchestrator/svn/svnInvoker'
 import type { FileChangesContext } from '../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import { FileViewer } from '../../lib-orchestrator/fileViewer/fileViewer'
 import { PastedFileStore } from '../../lib-orchestrator/pastedFiles/pastedFileStore'
 import { ProjectManager } from '../../lib-orchestrator/projectManager/projectManager'
 import { RateMonitor } from '../../lib-orchestrator/rateMonitor/rateMonitor'
+import { AgentCliUpdates } from '../../lib-orchestrator/agentCliUpdates/agentCliUpdates'
+import { AgentCliUpdateSources } from '../../lib-orchestrator/agentCliUpdates/agentCliUpdateSources'
+import { ServiceAgentCliUpdatesIpc } from './agentCliUpdates/serviceAgentCliUpdatesIpc'
+import { RateMonitorSources } from '../../lib-orchestrator/rateMonitor/rateMonitorSources'
 import { RemoteControl } from '../../lib-orchestrator/remoteControl/remoteControl'
 import { RemoteControlInstanceRegistry } from '../../lib-orchestrator/remoteControl/remoteControlInstanceRegistry'
 import { RemoteControlPeerClient } from '../../lib-orchestrator/remoteControl/remoteControlPeerClient'
@@ -29,6 +49,13 @@ import { SessionModelReader } from '../../lib-orchestrator/sessionModelReader/se
 import { SessionTasks } from '../../lib-orchestrator/sessionTasks/sessionTasks'
 import { SessionTranscriptReader } from '../../lib-orchestrator/sessionTranscriptReader/sessionTranscriptReader'
 import { OrchestratorPaths } from '../../lib-orchestrator/shared/orchestratorPaths'
+import { SnapinsManager } from '../../lib-orchestrator/snapins/snapinsManager'
+import { BuiltInSnapins } from '../../lib-orchestrator/snapins/builtInSnapinsView'
+import { SvnInvoker } from '../../lib-orchestrator/svn/svnInvoker'
+import { SvnWorktreeManager } from '../../lib-orchestrator/svn/svnWorktreeManager'
+import { SnapinsOperations } from './snapins/snapinsOperations'
+import { SnapinsPorts } from './snapins/snapinsPorts'
+import { SnapinsSettingsSection } from './snapins/snapinsSettingsSection'
 import { TortoiseCommitDialog } from '../../lib-orchestrator/shared/tortoiseCommitDialog'
 import { type TreeRemovalListener, type TreeRemovalProgress, TreeRemoval } from '../../lib-orchestrator/shared/treeRemoval'
 import { OpenedPathsStore } from '../../lib-orchestrator/terminalDetector/register/openedPathsStore'
@@ -51,6 +78,10 @@ import { TerminalTargetCodec } from '../shared/terminalTarget'
 import type { RemoteControlListenerSettings } from '../shared/remoteControlSettings'
 import { AgentSettingsSection } from './agents/agentSettingsSection'
 import { AgentSettingsOperations } from './agents/agentSettingsOperations'
+import { AgentAccounts } from '../../lib-orchestrator/agentAccounts/agentAccounts'
+import { builtInAccountProfiles } from '../../lib-orchestrator/agentAccounts/builtInAccountsView'
+import { AccountsSection } from './accounts/accountsSection'
+import { AccountsOperations } from './accounts/accountsOperations'
 import type { AppContext } from './appContext'
 import { AutolauncherConnection } from './autolauncher/autolauncherConnection'
 import { AutolauncherManager } from './autolauncher/autolauncherManager'
@@ -58,28 +89,36 @@ import { AutolauncherTarget } from './autolauncher/autolauncherTarget'
 import { ServiceAutolauncherIpc } from './autolauncher/serviceAutolauncherIpc'
 import { WindowsLauncherSetup } from './autolauncher/windowsLauncherSetup'
 import { ClientStatePaths } from './clientState/clientStatePaths'
+import { ReviewInteractionAccess } from './versioning/reviewInteractionAccess'
+import { VersioningReviewStore } from './versioning/versioningReviewStore'
 import { VersioningCommitMessageStore } from './versioning/versioningCommitMessageStore'
 import { ClientStateStore } from './clientState/clientStateStore'
 import { FinishAttention, type FinishAttentionNotice } from './sessions/finishAttention'
+import { MainCopyUpdateNotice, type MainCopyUpdateNoticeView } from './sessions/mainCopyUpdateNotice'
+import { ExternalOpener } from './terminals/externalOpener'
 import { ServiceContextCompactionIpc } from './contextCompaction/serviceContextCompactionIpc'
 import { DirectoryNotesOperations } from './directoryNotes/directoryNotesOperations'
 import { HostPingLoop } from './debug/hostPingLoop'
 import { ServiceDebugIpc } from './debug/serviceDebugIpc'
-import { FileChangesSettingsSection } from './fileChanges/fileChangesSettingsSection'
 import { FileDiffWorker } from './fileChanges/diff/fileDiffWorker'
 import { FileChangesSettingsOperations } from './fileChanges/fileChangesSettingsOperations'
 import { VersioningSettingsOperations } from './versioning/versioningSettingsOperations'
 import { ServiceVersioningCommitIpc } from './versioning/serviceVersioningCommitIpc'
 import { ExternalDiffLauncher } from './versioning/externalDiffLauncher'
 import { VersioningCommitManager } from './versioning/versioningCommitManager'
+import { VersioningWorkflowAccess } from './versioning/versioningWorkflowAccess'
 import { SessionReviewPortAdapter } from './versioning/sessionReviewPortAdapter'
 import { WorktreeSettingsOperations } from './worktrees/worktreeSettingsOperations'
 import { VersioningSettings } from '../shared/versioningSettings'
 import { VersioningSettingsSection } from './versioning/versioningSettingsSection'
 import { WorktreeSettingsSection } from './worktrees/worktreeSettingsSection'
+import { FileChangesAccess } from './fileChanges/fileChangesAccess'
 import { ServiceFileChangesIpc } from './fileChanges/serviceFileChangesIpc'
+import { FileViewerAccess } from './fileViewer/fileViewerAccess'
 import { ServiceFileViewerIpc } from './fileViewer/serviceFileViewerIpc'
 import { FileViewerProtocol } from './fileViewer/fileViewerProtocol'
+import { TokenUsageWorker } from './tokenUsage/tokenUsageWorker'
+import { TokenUsageOperations } from './tokenUsage/tokenUsageOperations'
 import { RateMonitorOperations } from './rateMonitor/rateMonitorOperations'
 import { SessionNotifyDelivery } from './sessions/sessionNotifyDelivery'
 import { RemarkableManager } from './remarkable/remarkableManager'
@@ -93,6 +132,7 @@ import { RemarkableCredentialStore } from './remarkable/storage/remarkableCreden
 import { RemarkableRunStore } from './remarkable/storage/remarkableRunStore'
 import { RemoteConnectionsManager } from './remoteControl/remoteConnectionsManager'
 import { RemoteControlInboundRegistry } from './remoteControl/remoteControlInboundRegistry'
+import { RemoteSessionSnapshots } from './remoteControl/remoteSessionSnapshots'
 import { RemoteControlPairingManager } from './remoteControl/remoteControlPairingManager'
 import { RemoteControlPeerServer } from './remoteControl/remoteControlPeerServer'
 import { RemoteControlServer } from './remoteControl/remoteControlServer'
@@ -114,6 +154,7 @@ import { HistoricSessions } from './sessions/history/historicSessions'
 import { SkillLinkInstaller } from './skills/skillLinkInstaller'
 import { AppMenu } from './shell/appMenu'
 import { AppRestart } from './shell/appRestart'
+import { UsageWindow } from './shell/usageWindow'
 import { DebugWindow } from './shell/debugWindow'
 import { ServiceClipboardIpc } from './shell/serviceClipboardIpc'
 import { ServiceDialogIpc } from './shell/serviceDialogIpc'
@@ -128,8 +169,6 @@ import { TabTransferBroker } from './tabs/tabTransferBroker'
 import { WorkspacePanelIndex } from './tabs/workspacePanelIndex'
 import { ServiceTerminalIpc } from './terminals/serviceTerminalIpc'
 import { ServiceTerminalMenuIpc } from './terminals/serviceTerminalMenuIpc'
-import { VsCodeLauncher } from './terminals/vsCodeLauncher'
-import { VsCodeWorkspace } from './terminals/vsCodeWorkspace'
 import { RemoteSessionGroups } from './sessionGroups/remoteSessionGroups'
 import { SessionGroupsOperations } from './sessionGroups/sessionGroupsOperations'
 import { SessionGroupsSection } from './sessionGroups/sessionGroupsSection'
@@ -180,6 +219,7 @@ export class AppHub {
     ServiceFileViewerIpc.channelsConst,
     ServiceRemarkableIpc.channelsConst,
     ServiceContextCompactionIpc.channelsConst,
+    ServiceAgentCliUpdatesIpc.channelsConst,
     ServiceControlIpc.channelsConst,
   ] as const) satisfies Record<keyof AppClientUiIpcInvokeMap, true>
 
@@ -196,6 +236,8 @@ export class AppHub {
   private readonly transferBroker: TabTransferBroker
   private readonly tabControlBroker: TabControlBroker
   private readonly debugWindow: DebugWindow
+  private readonly usageWindow: UsageWindow
+  private usageVisible = false
   private readonly shellIpc: ServiceShellIpc
   private readonly windowsIpc: ServiceWindowsIpc
   private readonly dialogIpc: ServiceDialogIpc
@@ -226,8 +268,15 @@ export class AppHub {
   private readonly fileDiffWorker: FileDiffWorker
   private readonly fileChanges: FileChangesManager
   private readonly fileViewer: FileViewer
+  private readonly fileChangesAccess: FileChangesAccess
   private readonly fileChangesIpc: ServiceFileChangesIpc
+  private readonly remoteChangesAccess: RemoteChangesAccess
+  private readonly remoteContentAccess: RemoteContentAccess
+  private readonly fileViewerAccess: FileViewerAccess
   private readonly fileViewerIpc: ServiceFileViewerIpc
+  private readonly remoteDrag: FileViewerDragExport
+  private readonly remoteMedia: RemoteFileMediaSource
+  private readonly contentClient: RemoteContentClient
   private readonly fileViewerProtocol: FileViewerProtocol
   private readonly remarkable: RemarkableManager
   private readonly remarkableIpc: ServiceRemarkableIpc
@@ -236,7 +285,11 @@ export class AppHub {
   private readonly contextCompactionIpc: ServiceContextCompactionIpc
   private readonly directoryNotes: DirectoryNotesOperations
   private readonly rateMonitor: RateMonitor
+  private readonly cliUpdates: AgentCliUpdates
+  private readonly cliUpdatesIpc: ServiceAgentCliUpdatesIpc
+  private readonly tokenUsage: TokenUsageWorker
   private readonly sessionNotifier: SessionNotifier
+  private readonly snapins: SnapinsManager
   /** Tells the person when a local Finish starts to wait; a click opens its workflow tab. */
   private readonly finishAttention: FinishAttention
   /** The notifications on screen: Electron drops the click of one nothing holds. */
@@ -252,6 +305,8 @@ export class AppHub {
   >()
   private debugVisible = false
   private remoteRevision = 0
+
+  private readonly accounts: AgentAccounts
 
   constructor(context: AppContext) {
     this.finishAttention = new FinishAttention({ show: (notice) => this.showNotice(notice) })
@@ -281,6 +336,10 @@ export class AppHub {
       store: this.store,
       onVisibilityChanged: (visible) => this.debugVisibilityChanged(visible),
     })
+    this.usageWindow = new UsageWindow(context, { store: this.store, onVisibilityChanged: visible => {
+      this.usageVisible = visible
+      this.refreshVisibilityConsumers()
+    } })
     this.shellIpc = new ServiceShellIpc(
       context.appInfo,
       this.store,
@@ -310,6 +369,7 @@ export class AppHub {
       legacySnapshotSection: CatalogSection.spec.key,
     })
     this.projects = new ProjectManager({
+      claudeHomes: () => accounts.homesOf('claude'),
       configStore,
       configIdentity,
       channel,
@@ -334,27 +394,86 @@ export class AppHub {
       transcriptResolver: this.projects.transcripts,
     })
     this.fileViewer = new FileViewer()
-    this.fileViewerProtocol = new FileViewerProtocol(this.fileViewer)
+    const localMedia = new LocalFileMediaSource(this.fileViewer)
+    this.contentClient = new RemoteContentClient((endpointId, request) => this.remoteConnections.sessionView(endpointId, request))
+    this.remoteMedia = new RemoteFileMediaSource(this.contentClient, (endpointId, epoch) => this.remoteConnections.viewEpoch(endpointId) === epoch)
+    this.remoteDrag = new FileViewerDragExport(join(ClientStatePaths.directory(configIdentity, channel), 'drag-exports'), this.remoteMedia)
+    this.fileViewerProtocol = new FileViewerProtocol({
+      metadata: (token) => (this.remoteMedia.owns(token) ? this.remoteMedia : localMedia).metadata(token),
+      read: (token, version, offset, length, signal) => (this.remoteMedia.owns(token) ? this.remoteMedia : localMedia).read(token, version, offset, length, signal),
+    })
+    const sessionGroupsOperations = new SessionGroupsOperations(configStore, this.store, () => this.broadcast('state:session-groups-changed'))
     this.settingsOperations = [
       new UiSettingsOperations(configStore, () => this.broadcast('ui:settings-changed')),
       // The same event an assignment sends, because a tree reads both back together: which sections
       // exist and which session is in one are two halves of one picture, and a window that learned
       // about the first alone would redraw with rows still filed under a section it just lost.
-      new SessionGroupsOperations(configStore, this.store, () => this.broadcast('state:session-groups-changed')),
+      sessionGroupsOperations,
       new AgentSettingsOperations(configStore, () => this.broadcast('agents:settings-changed')),
       new WorktreeSettingsOperations(configStore, (projectPath) => this.projects.authorizeProjectPath(projectPath)),
       new FileChangesSettingsOperations(configStore),
       new VersioningSettingsOperations(configStore),
     ]
+    const accounts = new AgentAccounts({
+      ...builtInAccountProfiles(process.env),
+      accountsRoot: join(context.config.configDir, 'accounts'),
+      rates: () => this.rateMonitor?.snapshot().accounts ?? [],
+      stored: () => configStore.readSection(AccountsSection.spec),
+      store: value => {
+        const result = configStore.saveSection(AccountsSection.spec, value)
+        if (!result.ok) throw new Error(result.detail)
+      },
+      login: {
+        open: async request => {
+          const created = await this.sessions.createCommandSession({ directory: { mode: 'adHoc', path: request.home },
+            account: { agentId: request.agentId, accountId: request.accountId }, title: `Login: ${request.label}` }, request.command, request.prepare)
+          if (!created.ok) throw new AccountProblem(created.detail)
+          await this.tabControlBroker.open(created.value.sessionId, created.value.tabTitle, { activate: true })
+          return { sessionId: created.value.sessionId }
+        },
+        result: id => this.sessions.terminalResult(id),
+        stop: async id => {
+          const stopped = await this.sessions.stopSession(id)
+          if (!stopped.ok) throw new AccountProblem(stopped.detail)
+        },
+      },
+      hasRunningSession: (agentId, accountId) => this.sessions.hasAccountSession(agentId, accountId),
+      onChanged: () => { this.broadcast('agents:settings-changed'); this.broadcast('usage:changed'); this.rateMonitor?.accountsChanged() },
+    })
+    this.accounts = accounts
+    this.cliUpdates = new AgentCliUpdates(
+      AgentCliUpdateSources.create(process.env, join(accounts.homeOf('claude', 'main'), 'settings.json')),
+      () => this.broadcast('agentCliUpdates:changed'),
+    )
+    this.cliUpdatesIpc = new ServiceAgentCliUpdatesIpc(this.cliUpdates)
+    const statusLineRates = RateMonitorSources.statusLine(join(OrchestratorPaths.directory(configIdentity, channel), 'rates'),
+      (sessionId, launchId, at) => this.sessions.accountForLaunch(sessionId, launchId, at))
+    const rolloutRates = RateMonitorSources.rollouts(accounts.homeOf('codex', 'main'), () => accounts.list())
     this.rateMonitor = new RateMonitor({
+      readings: async () => [...await statusLineRates.read(), ...await rolloutRates.read()],
+      accounts: () => accounts.list(),
+      sourceForAccount: (account, hooks) => RateMonitorSources.forAccount(account,
+        accounts.homeOf(account.agentId, account.accountId), hooks, accounts.homeOf(account.agentId, 'main'),
+        undefined, read => accounts.withProfile(account.agentId, account.accountId, read)),
       configIdentity,
       channel,
       // The same path the session snapshot takes: every workspace window draws the widget and the
       // Debug window draws the section, and the monitor only says this when the content moved.
-      onChanged: () => this.broadcast('rate:changed'),
+      onChanged: () => { this.broadcast('rate:changed'); this.broadcast('usage:changed'); this.sessions?.ratesChanged() },
       onError: (message) => this.report(message),
     })
+    const remoteIdentity = {
+      configIdentity,
+      runtimeChannel: channel,
+      instanceId: randomUUID(),
+      startedAt: Date.now(),
+      applicationVersion: context.appVersion,
+    }
     this.sessions = new SessionManager({
+      accounts,
+      rates: () => this.rateMonitor.snapshot().accounts ?? [],
+      instanceId: remoteIdentity.instanceId,
+      skillRoots: () => this.skillLinks.roots(),
       // Electron's app path is this package; `app-host` stands beside it. It is named here rather
       // than measured in the library, which is bundled into `out/main` and can only measure that.
       applicationRoot,
@@ -367,11 +486,12 @@ export class AppHub {
       configIdentity,
       channel,
       autoStartHost: !context.smoke,
-      onChanged: () => this.sessionsChanged(),
+      onChanged: () => { accounts.sessionsChanged(); this.sessionsChanged() },
       onError: (message) => this.report(message),
       // A session whose worktree ended goes as Remove takes it, and Remove's caller closes the tab.
       onRemovedItself: (sessionId) =>
         this.tabsIpc.closeTerminalPanels(TerminalTargetCodec.key({ kind: 'local', sessionId })),
+      onMainCopyUpdated: (update) => this.showUpdateNotice(MainCopyUpdateNotice.of(update)),
       onScriptCollapsed: (event) => this.scriptCollapsed(event),
       removeTree: (path, onProgress) => AppHub.removeTree(path, onProgress),
       // Read per launch rather than captured once: `readSection` re-reads whenever the file's mtime
@@ -386,10 +506,6 @@ export class AppHub {
         AgentSettings.modelFor(configStore.readSection(AgentSettingsSection.spec), agentId),
       effortFor: (agentId) =>
         AgentSettings.effortFor(configStore.readSection(AgentSettingsSection.spec), agentId),
-      // One view for the whole client: it holds nothing, so a second instance would buy nothing
-      // either. Which VCS is preferred is read per probe for the same reason the two above are.
-      vcsStatusView: new VcsStatusView(),
-      preferredVcsOf: () => configStore.readSection(FileChangesSettingsSection.spec).primaryVcs,
       // The same view the two transcript readers below take, for the same reason: resolving a Codex
       // rollout is not free, and a view of one's own has no memo behind its index.
       transcripts: this.projects.transcripts,
@@ -406,8 +522,8 @@ export class AppHub {
     // The broker is built further down; an open reaches it only after the hub is composed.
     const sessionTasks = new SessionTasksOperations(new SessionTasks(this.projects.transcripts), this.sessions,
       {
-        openTask: (tabTitle, item) => this.tabControlBroker.openTask(tabTitle, item),
-        openWorkflow: (sessionId, tabTitle) => this.tabControlBroker.openWorkflow(sessionId, tabTitle),
+        openTask: (tabTitle, item, intentId) => this.tabControlBroker.openTask(tabTitle, item, intentId),
+        openWorkflow: (sessionId, tabTitle, intentId) => this.tabControlBroker.openWorkflow(sessionId, tabTitle, intentId),
       })
     const transcriptReader = new SessionTranscriptReader({ transcripts: this.projects.transcripts })
     const transcriptAccess = new SessionTranscriptAccess(this.sessions, transcriptReader)
@@ -451,40 +567,58 @@ export class AppHub {
       remarkableCredentialStore,
       workspaceOwnerIdOf,
     )
-    this.fileChangesIpc = new ServiceFileChangesIpc(
+    this.fileChangesAccess = new FileChangesAccess(
       this.fileChanges,
       this.fileViewer,
       this.sessions,
       configStore,
-      workspaceOwnerIdOf,
     )
+    this.fileChangesIpc = new ServiceFileChangesIpc(this.fileChangesAccess, workspaceOwnerIdOf)
     const commitGit = new GitInvoker()
+    const reviewInteractions = new ReviewInteractionAccess()
+    const externalDiff = new ExternalDiffLauncher({
+      readBaseline: (request) => this.fileChanges.readBaseline(request),
+      fileAccess: (owner, snapshot, file) => this.fileChangesAccess.ownedFileAccess(owner, snapshot, file),
+      toolOf: () => configStore.readSection(VersioningSettingsSection.spec).diffTool,
+      reportError: (detail) => AppClientUiReport.error(detail),
+    })
     this.commits = new VersioningCommitManager({
+      workflow: new VersioningWorkflowAccess(this.sessions, this.sessions.worktreeResultsStore()),
+      interactions: reviewInteractions,
+      splitReview: async (sessionId, vcs, scopeRoot, operationId) => {
+      const title = this.sessions.snapshot().sessions.find((session) => session.sessionId === sessionId)?.tabTitle ?? 'Commit review'
+      const answer = await this.tabControlBroker.openCommit(sessionId, title, vcs, scopeRoot, null, { intentId: operationId })
+      if (!answer.ok) throw new Error(answer.error.detail)
+      if (!answer.value.commitSessionId) throw new Error('The source did not create a separate review')
+      return answer.value.commitSessionId
+    },
+      externalDiff: (owner, request) => externalDiff.launch(owner, request),
+      externalDiffAvailable: () => {
+        const tool = configStore.readSection(VersioningSettingsSection.spec).diffTool
+        return tool.kind === 'external' && VersioningSettings.isDiffTool(tool)
+      },
+      reviews: new VersioningReviewStore(join(ClientStatePaths.directory(configIdentity, channel), 'commit-reviews.json'), (message) => this.report(message)),
       messages: new VersioningCommitMessageStore(ClientStatePaths.commitMessagesFile(configIdentity, channel), (message) => this.report(message)),
       sessions: this.sessions,
       vcsStatus: new VcsStatusView(),
-      fileAccess: (owner, snapshot, file) => this.fileChangesIpc.ownedFileAccess(owner, snapshot, file),
-      snapshotOf: (owner, snapshot) => this.fileChangesIpc.ownedWorkingTreeSnapshot(owner, snapshot),
+      fileAccess: (owner, snapshot, file) => this.fileChangesAccess.ownedFileAccess(owner, snapshot, file),
+      snapshotOf: (owner, snapshot) => this.fileChangesAccess.ownedWorkingTreeSnapshot(owner, snapshot),
       git: new GitCommitManager(commitGit),
-      svn: new SvnCommitManager(new SvnInvoker()),
+      svn: new SvnCommitManager(this.sessions.svnCommands, (root, paths, work) => this.sessions.withinSvnWrite(root, paths, work)),
       tortoise: new TortoiseCommitDialog(),
       onChanged: () => {
         this.broadcast('versioning:commit-changed')
         this.tabControlBroker.commitsChanged()
         this.remoteControl.activity.publish('commits.changed')
+        this.remoteInbound?.publishEvent('sessions.changed')
       },
       committed: (receipt) => this.sessions.noteCommitted(receipt),
     })
-    this.versioningCommitIpc = new ServiceVersioningCommitIpc(this.commits, workspaceOwnerIdOf, this.fileChangesIpc, async (sessionId, vcs, scope) => {
+    this.versioningCommitIpc = new ServiceVersioningCommitIpc(this.commits, workspaceOwnerIdOf, this.fileChangesAccess, async (sessionId, vcs, scope) => {
       const info = this.sessions.snapshot().sessions.find((session) => session.sessionId === sessionId)
       if (info?.life !== 'live') return { ok: false, error: { code: 'not-found', detail: 'The session is not live' } }
       return this.tabControlBroker.openCommit(sessionId, info.tabTitle, vcs, scope ?? null, null, { showRefusal: true })
-    }, new ExternalDiffLauncher({
-      readBaseline: (request) => this.fileChanges.readBaseline(request),
-      fileAccess: (owner, snapshot, file) => this.fileChangesIpc.ownedFileAccess(owner, snapshot, file),
-      toolOf: () => configStore.readSection(VersioningSettingsSection.spec).diffTool,
-      reportError: (detail) => AppClientUiReport.error(detail),
-    }), (sender, paths, vcs) => this.dialogIpc.confirmRevert(sender, paths, vcs))
+    }, reviewInteractions)
     this.terminalDetector = new TerminalDetector({
       workingContext: (sessionId) => this.sessions.workingContext(sessionId),
       // Names only. What an agent wrote about narrows which file a half-written token means, and it
@@ -495,36 +629,38 @@ export class AppHub {
         (message) => this.report(message),
       ),
     })
+    const sessionViewItems = new SessionViewItemsStore(join(ClientStatePaths.directory(configIdentity, channel), 'session-view-items.json'), (message) => this.report(message))
+    const itemPages = new RemoteContentPages()
+    sessionViewItems.subscribe(() => {
+      this.workspaceWindows.broadcast('tabs:open-terminal-targets', this.panelIndex.openTerminalTargetKeys())
+      this.remoteInbound.publishEvent('tabs.changed')
+    })
+    const tabFileResolver = new TabFileOpenResolver(this.sessions, this.fileViewer, this.terminalDetector)
     this.tabControlBroker = new TabControlBroker(
       this.workspaceWindows,
       this.panelIndex,
-      new TabFileOpenResolver(this.sessions, this.fileViewer, this.terminalDetector),
+      tabFileResolver,
       this.commits,
       {
+        recordOpen: (open) => sessionViewItems.record(open),
+        reportError: (message) => this.report(message),
         activateSessionOnCommit: () => configStore.readSection(VersioningSettingsSection.spec).activateSessionOnCommit !== false,
         activateSessionOnDocument: () => configStore.readSection(UiSettingsSection.spec).activateSessionOnDocument === true,
         returnToPreviousSessionAfterCommit: () => configStore.readSection(VersioningSettingsSection.spec).returnToPreviousSessionAfterCommit !== false,
         returnWindowMilliseconds: () => VersioningSettings.returnWindowMilliseconds(configStore.readSection(VersioningSettingsSection.spec)),
       },
     )
-    // Bound late, like the resumed merge: the sessions are built before the commit dialog and its
-    // broker, and an SVN worktree's Commit opens its reviews there.
-    this.sessions.setReviewPort(new SessionReviewPortAdapter(this.tabControlBroker, this.commits,
-      (sessionId) => this.tabTitleOf(sessionId)))
-    this.sessions.setEditor({
-      openWorktree: (worktreePath, ownerName) => void VsCodeWorkspace.open(VsCodeLauncher, worktreePath, ownerName)
-        .catch((error: unknown) => this.report(`VS Code could not open ${worktreePath}: ${ErrorText.of(error)}`)),
-    })
-    this.fileViewerIpc = new ServiceFileViewerIpc(
-      this.fileViewer,
-      this.sessions,
-      workspaceOwnerIdOf,
+    this.sessions.setReviewPort(new SessionReviewPortAdapter(this.commits))
+    this.fileViewerAccess = new FileViewerAccess({
+      viewer: this.fileViewer,
+      sessions: this.sessions,
+      restoreExternal:
       (ownerId, source, supportsDiff) =>
-        this.fileChangesIpc.restoreExternal(ownerId, source, supportsDiff),
+        this.fileChangesAccess.restoreExternal(ownerId, source, supportsDiff),
       // A detected panel proves itself again out of the register of opens, which main alone writes
       // and keeps across restarts for a week: a stored layout path that it never proved still
       // refuses rather than reopening itself unchecked.
-      (ownerId, source, supportsDiff) =>
+      restoreDetected: (ownerId, source, supportsDiff) =>
         this.terminalDetector.wasOpened(source.path)
           ? this.fileViewer.openDetected(ownerId, source.sessionId, null, source.path, supportsDiff)
           : Promise.resolve({
@@ -532,15 +668,36 @@ export class AppHub {
             code: 'proof-expired' as const,
             detail: DetectionRefusal.detailOf('file'),
           }),
-      (path) => this.terminalDetector.wasOpened(path),
-      (ownerId, source) => this.fileChangesIpc.restoreWorkingTree(ownerId, source),
-    )
+      allowsDetected: (path) => this.terminalDetector.wasOpened(path),
+      restoreWorkingTree: (ownerId, source) => this.fileChangesAccess.restoreWorkingTree(ownerId, source),
+    })
+    const openSharedItem = async (owner: string, sessionId: string, body: SessionViewOpenRequest) => {
+      if (!this.sessions.snapshot().sessions.some((session) => session.sessionId === sessionId)) throw new Error('Source session no longer exists')
+      if (body.item.kind === 'file') {
+        const answer = await this.fileViewer.document(owner, body.item.documentId)
+        if (!answer.ok) throw new Error(answer.detail)
+        if (answer.value.source.sessionId !== sessionId) throw new Error('Shared file belongs to another session')
+        return sessionViewItems.record({ openId: body.openId, sessionId, key: answer.value.documentKey, title: answer.value.name,
+          item: { kind: 'file', source: answer.value.source } })
+      } else if (body.item.kind === 'workflow') return sessionViewItems.record({ openId: body.openId, sessionId, key: `workflow:${sessionId}`, title: 'Session actions', item: body.item })
+      else if (body.item.kind === 'task') {
+        const item = await sessionTasks.itemOf(sessionId, body.item.task)
+        return sessionViewItems.record({ openId: body.openId, sessionId, key: item.key, title: item.title, item: body.item })
+      } else throw new Error('Unknown shared item request')
+    }
+    this.remoteContentAccess = new RemoteContentAccess(this.fileViewerAccess, this.fileViewer, tabFileResolver, this.sessions)
+    this.remoteChangesAccess = new RemoteChangesAccess(this.fileChangesAccess,
+      (view, source) => this.remoteContentAccess.allowsSource(view, source),
+      (view, source) => this.remoteContentAccess.admitSource(view, source))
+    this.fileViewerIpc = new ServiceFileViewerIpc(this.fileViewer, this.fileViewerAccess, workspaceOwnerIdOf)
     this.tabsIpc = new ServiceTabsIpc(
       this.workspaceWindows,
       this.panelIndex,
       this.transferBroker,
       this.tabControlBroker,
       () => this.tabsPresenceChanged(),
+      { page: (sessionId, cursor) => sessionViewItems.page(sessionId, cursor),
+        open: (owner, sessionId, body) => openSharedItem(owner, sessionId, body) },
     )
     // One store for both directions: a local paste and an image or file sent from another computer.
     const pastedFiles = new PastedFileStore(OrchestratorPaths.pastedFilesDirectory(configIdentity, channel))
@@ -568,6 +725,8 @@ export class AppHub {
       (id) => this.runMainCommand(id),
       (id) => this.publishRendererCommand(id),
       (windowId) => this.workspaceWindows.focusOrRecreate(windowId),
+      BuiltInSnapins.all(),
+      (kind) => this.openSnapin(kind),
     )
     this.appRestart = new AppRestart({
       devRendererUrl: context.rendererDevUrl,
@@ -583,13 +742,7 @@ export class AppHub {
         ? `https://github.com/ludekvodicka/jamat/releases/tag/v${version}`
         : 'https://github.com/ludekvodicka/jamat/releases',
     })
-    const remoteIdentity = {
-      configIdentity,
-      runtimeChannel: channel,
-      instanceId: randomUUID(),
-      startedAt: Date.now(),
-      applicationVersion: context.appVersion,
-    }
+
     const remoteTerminal = new RemoteControlTerminal(this.sessions, {
       onError: (message) => this.report(message),
       files: pastedFiles,
@@ -610,9 +763,18 @@ export class AppHub {
       this.store,
       () => this.broadcast('state:session-groups-changed'),
     )
+    this.snapins = new SnapinsManager({ definitions: BuiltInSnapins.all(),
+      ports: SnapinsPorts.of({ sessions: this.sessions, svn: new SvnWorktreeManager(new SvnInvoker()),
+        projects: this.projects, tabs: this.tabControlBroker,
+        versioningMode: () => configStore.readSection(VersioningSettingsSection.spec).mode }),
+      settings: () => configStore.readSection(SnapinsSettingsSection.spec),
+      presentation: SnapinsPorts.presentation({ groups: sessionGroups, groupsOperations: sessionGroupsOperations, sessions: this.sessions }),
+      directory: OrchestratorPaths.snapinsDirectory(configIdentity, channel),
+      onChanged: (kind) => this.broadcast('snapins:changed', { kind }), report: (message) => this.report(message),
+    })
     // The same terminal once more: a wake-up line never types into a prompt another delivery holds.
     this.sessionNotifier = new SessionNotifier({
-      sources: [this.sessions.worktreeResultsStore().notifySource(), this.sessions.sessionNotifyStore(), this.sessions.svnWaitNotices()],
+      sources: [this.sessions.worktreeResultsStore().notifySource(), this.sessions.sessionNotifyStore(), this.sessions.svnWaitNotices(), this.sessions.workerHandoffs()],
       watch: this.sessions.sessionNotifyStore(),
       sessions: () => this.sessions.snapshot().sessions,
       groups: (sessions) => sessionGroups.read(sessions),
@@ -621,6 +783,7 @@ export class AppHub {
       report: (message) => this.report(message),
     })
     const remoteControl = new RemoteControl({
+      accounts,
       system: { identity: () => remoteIdentity },
       projects: this.projects,
       sessions: this.sessions,
@@ -659,7 +822,15 @@ export class AppHub {
     this.remoteControl = remoteControl
     HistoricSessionsOperations.register(remoteControl.registry, historicSessions)
     for (const operations of this.settingsOperations) operations.register(remoteControl.registry)
-    new RateMonitorOperations(this.rateMonitor).register(remoteControl.registry)
+    new SnapinsOperations(this.snapins, configStore).register(remoteControl.registry)
+    this.tokenUsage = new TokenUsageWorker(context.tokenUsageWorkerPath, async rescan => ({
+      kind: 'scan', rescan, cacheFile: join(OrchestratorPaths.directory(configIdentity, channel), 'token-usage.json'),
+      configDir: context.config.configDir, claudeHome: accounts.homeOf('claude', 'main'), codexHome: accounts.homeOf('codex', 'main'),
+      records: this.sessions.usageRecords(), accounts: await accounts.list(),
+    }), () => this.broadcast('usage:changed'))
+    new TokenUsageOperations(this.tokenUsage, accounts).register(remoteControl.registry)
+    new RateMonitorOperations(this.rateMonitor, this.accounts).register(remoteControl.registry)
+    new AccountsOperations(accounts).register(remoteControl.registry)
     sessionModel.register(remoteControl.registry)
     sessionTasks.register(remoteControl.registry)
     this.directoryNotes.register(remoteControl.registry)
@@ -699,9 +870,50 @@ export class AppHub {
       profiles: () => configStore.readSection(RemoteControlSettingsSection.spec).profiles,
       connect: (profile, signal) => peerClient.connect(profile, signal),
       onChanged: () => this.remoteChanged(),
+      onSessionRemoved: (remoteEndpointId, sessionId) =>
+        this.tabsIpc.closeTerminalPanels(TerminalTargetCodec.key({ kind: 'remote', remoteEndpointId, sessionId })),
       onError: (message) => this.report(message),
     })
+    const taskAccess = new SessionTaskAccess(sessionTasks)
+    const sessionActions = new RemoteSessionActions(() => this.sessions.snapshot(), remoteControl.registry)
+    let sourceViews: RemoteSessionViews
+    const sidebarAccess = new RemoteSidebarAccess(remoteControl.registry, transcriptAccess, (view) => sourceViews.isActive(view), this.contextCompactionIpc)
+    const reviewAccess = new RemoteReviewAccess(this.commits, reviewInteractions, this.fileChangesAccess, (view) => sourceViews.isActive(view), (view, source) => this.remoteContentAccess.admitSource(view, source),
+      async (sessionId, vcs, result, openId) => {
+        await sessionViewItems.record({ sessionId, openId, key: result.value.draftId, title: result.value.title,
+          item: { kind: 'review', reviewId: result.value.draftId, vcs, scopeRoot: result.value.scopeRoot } })
+      })
+    sourceViews = new RemoteSessionViews({
+        read: async (view, request) => {
+          if (request.operation === 'sidebar.request') return sidebarAccess.request(view, request.body)
+          else if (request.operation === 'sidebar.page') return sidebarAccess.page(view, request.body)
+          else if (request.operation === 'reviews.request') return reviewAccess.request(view, request.body)
+          else if (request.operation === 'reviews.page') return Promise.resolve(reviewAccess.page(view, request.body))
+          else if (request.operation === 'items.open') {
+            const item = await openSharedItem(RemoteContentAccess.owner(view), view.sessionId, request.body)
+            return itemPages.put(RemoteContentAccess.owner(view), item)
+          }
+          else if (request.operation === 'items.request') {
+            const page = sessionViewItems.page(view.sessionId, request.body)
+            for (const entry of page.items) if (entry.item.kind === 'file') this.remoteContentAccess.admitSource(view, entry.item.source)
+            return Promise.resolve(itemPages.put(RemoteContentAccess.owner(view), page))
+          }
+          else if (request.operation === 'items.page') return Promise.resolve(itemPages.read(RemoteContentAccess.owner(view), request.body))
+          else if (request.operation === 'tasks.request') return taskAccess.request(view, request.body)
+          else if (request.operation === 'tasks.page') return taskAccess.page(view, request.body.task, request.body.cursor)
+          else if (request.operation === 'files.request') return this.remoteContentAccess.request(view, request.body)
+          else if (request.operation === 'files.page') return Promise.resolve(this.remoteContentAccess.page(view, request.body))
+          else if (request.operation === 'changes.request') return this.remoteChangesAccess.request(view, request.body)
+          else if (request.operation === 'changes.page') return Promise.resolve(this.remoteChangesAccess.page(view, request.body))
+          else throw new Error(`Unknown content operation: ${JSON.stringify(request)}`)
+        },
+        release: (view) => { sidebarAccess.release(view); reviewAccess.release(view); taskAccess.release(view); itemPages.release(RemoteContentAccess.owner(view)); this.remoteChangesAccess.release(view); this.remoteContentAccess.release(view) },
+        exists: (sessionId) => this.sessions.snapshot().sessions.some((session) => session.sessionId === sessionId),
+        press: (view, body, operationId) => sessionActions.press(view, body, operationId),
+      })
     this.remoteInbound = new RemoteControlInboundRegistry({
+      sessionViews: sourceViews,
+      sessionSnapshots: new RemoteSessionSnapshots(() => this.sessions.snapshot(), () => this.commits.discovery()),
       control: remoteControl,
       terminal: remoteTerminal,
       auditFile: ClientStatePaths.controlAuditFile(configIdentity, channel),
@@ -792,6 +1004,36 @@ export class AppHub {
       this.remoteConnections,
       this.remoteInbound,
       {
+        startImageDrag: async (sender, endpointId, view, documentId) => {
+          const result = await this.contentClient.read<FileViewerResourceResult>(endpointId, view, { kind: 'media', documentId })
+          if (!result.ok) throw new Error(result.detail)
+          const resource = this.remoteMedia.issue(endpointId, view, documentId, result.value)
+          try {
+            const path = await this.remoteDrag.copy(resource.resourceId, new AbortController().signal)
+            const icon = await app.getFileIcon(path, { size: 'normal' })
+            if (sender.isDestroyed() || !this.workspaceWindows.acceptsRenderer(sender) || icon.isEmpty()
+              || (await this.remoteMedia.metadata(resource.resourceId)).kind !== 'ready') return false
+            sender.startDrag({ file: path, icon })
+            return true
+          } finally { this.remoteMedia.releaseToken(resource.resourceId) }
+        },
+        exportFile: async (sender, endpointId, view, documentId, name) => {
+          const result = await this.contentClient.read<FileViewerResourceResult>(endpointId, view, { kind: 'export', documentId })
+          if (!result.ok) throw new Error(result.detail)
+          const resource = this.remoteMedia.issue(endpointId, view, documentId, result.value)
+          try {
+            const selected = await dialog.showSaveDialog({ title: 'Save source file copy', defaultPath: name.replace(/[\\/:*?"<>|]/g, '_').slice(0, 255) })
+            if (selected.canceled || !selected.filePath || sender.isDestroyed()) return false
+            await new FileViewerExport(this.remoteMedia).save(resource.resourceId, selected.filePath, new AbortController().signal)
+            return true
+          } finally { this.remoteMedia.releaseToken(resource.resourceId) }
+        },
+        mediaResource: async (endpointId, view, documentId, reference) => {
+          const result = await this.contentClient.read<FileViewerResourceResult>(endpointId, view, reference === null
+            ? { kind: 'media', documentId } : { kind: 'relative', documentId, reference })
+          return result.ok ? { ok: true, value: this.remoteMedia.issue(endpointId, view, documentId, result.value) } : result
+        },
+        releaseMedia: (endpointId, viewId, documentId) => this.remoteMedia.releaseView(endpointId, viewId, documentId),
         revision: () => this.remoteRevision,
         acceptsRenderer: (sender) => this.workspaceWindows.acceptsRenderer(sender),
       },
@@ -813,6 +1055,7 @@ export class AppHub {
     this.skillLinks = new SkillLinkInstaller({
       repoRoot: applicationRoot,
       homeRoot: homedir(),
+      skip: process.env.JAMAT_V3_SKIP_SKILL_LINKS === '1',
       ...(process.env.CODEX_HOME === undefined ? {} : { codexHome: process.env.CODEX_HOME }),
       report: (message) => this.report(`Skill link: ${message}`),
     })
@@ -838,11 +1081,14 @@ export class AppHub {
     this.fileViewerProtocol.initialize()
     this.remarkableIpc.initialize()
     this.contextCompactionIpc.initialize()
+    this.cliUpdatesIpc.initialize()
     // Its channels return raw values rather than IpcResult, so they sit outside the contract above.
     this.autoUpdate.start()
     this.menu.install()
     this.workspaceWindows.restoreAtStart()
-    this.skillLinks.install()
+    const skipSkillLinks = this.skillLinks.skipReason()
+    if (skipSkillLinks !== null) this.report(`skill links skipped: ${skipSkillLinks}`)
+    else this.skillLinks.install()
     void this.remoteControlServer.start().catch((error: unknown) =>
       this.report(`Remote control server could not start: ${ErrorText.of(error)}`))
     this.remoteConnections.start()
@@ -854,13 +1100,15 @@ export class AppHub {
     void this.projects.start()
     // Same reasoning, and the manager reports through the same channel: reaching the Host, reading
     // what it has and possibly starting one all take longer than a window should wait for.
-    void this.sessions.start()
+    void this.sessions.start().then(() => this.tokenUsage.start())
     // The cache first, and then a live read of whatever it could not answer for. The windows are
     // already up by this line, so a provider whose cached success is older than one interval is read
     // now, and on a machine with no cache at all that is both of them. The monitor reports its own
     // failures.
     void this.rateMonitor.start()
+    this.cliUpdates.start()
     this.sessionNotifier.start()
+    this.snapins.wake()
   }
 
   /**
@@ -871,16 +1119,22 @@ export class AppHub {
   async dispose(): Promise<void> {
     this.remarkable.beginStop()
     this.fileDiffWorker.beginStop()
+    this.tokenUsage.beginStop()
     this.remoteControlServer.beginStop()
     this.remoteListener.beginStop()
     this.remoteConnections.stop()
+    await this.settleStep('the agent CLI updater', () => this.cliUpdates.stop())
     // reMarkable first because it may be waiting for an atomic copy or a child; the monitor remains
     // before the two servers because it owns a Codex app-server child. Every step is guarded, so a
     // rejection costs its own step and no other.
     await this.settleStep('the reMarkable manager', () => this.remarkable.stop())
+    await this.settleStep('the remote image exports', () => this.remoteDrag.dispose())
     await this.settleStep('the file diff worker', () => this.fileDiffWorker.stop())
-    await this.settleStep('the rate monitor', () => { this.rateMonitor.stop() })
+    await this.settleStep('the token usage worker', () => this.tokenUsage.stop())
+    this.accounts.stop()
+    await this.settleStep('the rate monitor', () => this.rateMonitor.stop())
     await this.settleStep('the session notifier', () => { this.sessionNotifier.stop() })
+    await this.settleStep('the snap-ins manager', () => this.snapins.stop())
     await this.settleStep('the updater', () => { this.autoUpdate.stop() })
     await this.settleStep('the control server', () => this.remoteControlServer.stop())
     await this.settleStep('the peer listener', () => this.remoteListener.stop())
@@ -899,11 +1153,13 @@ export class AppHub {
   beginQuit(): void {
     this.remarkable.beginStop()
     this.fileDiffWorker.beginStop()
+    this.tokenUsage.beginStop()
     this.remoteControlServer.beginStop()
     this.remoteListener.beginStop()
     this.remoteConnections.stop()
     this.transferBroker.cancelAll()
     this.tabControlBroker.cancelAll()
+    this.usageWindow.close()
     this.workspaceWindows.beginQuit()
   }
 
@@ -1012,6 +1268,7 @@ export class AppHub {
   ): void {
     this.workspaceWindows.broadcast(channel, ...args)
     this.debugWindow.publish(channel, ...args)
+    this.usageWindow.publish(channel, ...args)
   }
 
   /**
@@ -1039,7 +1296,7 @@ export class AppHub {
     this.transferBroker.rendererGone(windowId)
     this.tabControlBroker.rendererGone(windowId)
     this.panelIndex.releaseWindow(windowId)
-    this.fileChangesIpc.revokeOwner(windowId)
+    this.fileChangesAccess.revokeOwner(windowId)
     this.fileViewer.revokeOwner(windowId)
     this.updateWindowMenu()
     this.tabsPresenceChanged()
@@ -1049,7 +1306,7 @@ export class AppHub {
     this.transferBroker.rendererGone(windowId)
     this.tabControlBroker.rendererGone(windowId)
     this.panelIndex.releaseWindow(windowId)
-    this.fileChangesIpc.revokeOwner(windowId)
+    this.fileChangesAccess.revokeOwner(windowId)
     this.fileViewer.revokeOwner(windowId)
     this.tabsPresenceChanged()
   }
@@ -1061,7 +1318,7 @@ export class AppHub {
   }
 
   private refreshVisibilityConsumers(): void {
-    const anythingVisible = this.visibleWorkspaceWindowIds.size > 0 || this.debugVisible
+    const anythingVisible = this.visibleWorkspaceWindowIds.size > 0 || this.debugVisible || this.usageVisible
     this.sessions.setWindowVisible(anythingVisible)
     // The same expression rather than the workspace alone: the Debug window draws the rate section,
     // so it is a surface these numbers are read on.
@@ -1073,6 +1330,14 @@ export class AppHub {
       'tabs:visible-terminal-targets',
       this.panelIndex.visibleTerminalTargetKeys(this.visibleWorkspaceWindowIds),
     )
+  }
+
+  private openSnapin(kind: string): void {
+    const definition = BuiltInSnapins.all().find((entry) => entry.kind === kind)
+    if (!definition) { this.report(`Unknown snap-in ${kind}`); return }
+    void this.tabControlBroker.openSnapin(kind, definition.title).then((answer) => {
+      if (!answer.ok) this.report(answer.error.detail)
+    }).catch((error: unknown) => this.report(ErrorText.of(error)))
   }
 
   private tabTitleOf(sessionId: string): string | null {
@@ -1093,6 +1358,10 @@ export class AppHub {
   }
 
   private sessionsChanged(): void {
+    try { this.commits?.workflowChanged() }
+    catch (error) { this.report(`Commit review marks could not be refreshed: ${ErrorText.of(error)}`) }
+    try { this.snapins?.wake() }
+    catch (error) { this.report(`Snap-ins wake failed: ${ErrorText.of(error)}`) }
     this.noticeWaits()
     this.broadcast('sessions:changed')
     this.remoteControlServer.publishEvent('sessions.changed')
@@ -1121,7 +1390,31 @@ export class AppHub {
     toast.show()
   }
 
+  /**
+   * The UPDATE of a landed row, whose tab closes with the row: a click opens the UPDATE log the
+   * worktree result kept, or the session's workflow while there is no log.
+   */
+  private showUpdateNotice(notice: MainCopyUpdateNoticeView): void {
+    if (!Notification.isSupported()) return
+    const toast = new Notification({ title: notice.title, body: notice.body })
+    this.notices.add(toast)
+    toast.on('click', () => {
+      this.notices.delete(toast)
+      if (notice.log === null)
+        void this.tabControlBroker.openWorkflow(notice.sessionId, this.tabTitleOf(notice.sessionId) ?? notice.title).then((opened) => {
+          if (!opened.ok) this.report(`The workflow of session ${notice.sessionId} could not be opened: ${opened.error.detail}`)
+        })
+      else
+        void ExternalOpener.open(notice.log).then((refusal) => {
+          if (refusal !== null) this.report(`The update log ${notice.log} could not be opened: ${refusal}`)
+        })
+    })
+    toast.on('close', () => { this.notices.delete(toast) })
+    toast.show()
+  }
+
   private remoteChanged(): void {
+    this.remoteMedia.reconcile()
     this.remoteRevision += 1
     this.broadcast('remote:changed')
   }
@@ -1402,7 +1695,8 @@ export class AppHub {
    * the workspace, which is the window this shell is for.
    */
   private reloadFocused(): void {
-    if (this.debugWindow.focused()) this.debugWindow.reload()
+    if (this.usageWindow.focused()) this.usageWindow.reload()
+    else if (this.debugWindow.focused()) this.debugWindow.reload()
     else (this.workspaceWindows.focusedWorkspace() ?? this.workspaceWindows.main()).reload()
   }
 
@@ -1451,6 +1745,8 @@ export class AppHub {
         .catch((error: unknown) => this.report(`The restart failed: ${ErrorText.of(error)}`))
     else if (id === 'window.new')
       this.workspaceWindows.createHolder()
+    else if (id === 'tools.usage')
+      this.usageWindow.open()
     else if (id === 'debug.open')
       this.debugWindow.open()
     // The result is drawn by the status bar's update item, so the menu asks no question of its own.

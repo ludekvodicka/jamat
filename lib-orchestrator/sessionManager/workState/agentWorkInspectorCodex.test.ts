@@ -266,6 +266,16 @@ describe('lib-orchestrator/sessionManager/workState/agentWorkInspectorCodex', ()
       expect(recorded(file).recorded, `${file} must carry recorded {build, capturedAt}`).toBeDefined()
   })
 
+  it('reads a finished turn with a draft in the box as idle, and nothing between the turn end and the box (Finish 072)', () => {
+    const frame = recorded('codex-live-idle-draft.json').frame
+    expect(AgentWorkInspectorCodex.inspect(frame)).toEqual({ hint: 'idle',
+      evidence: [{ source: 'wide-screen', signal: 'turnEnded', match: 'workedfor2h59m37s•18:03›' }] })
+    const submitted = frame.wideScreenTail.replace('\x1b[1m›\x1b[0m tak', '\x1b[1m›\x1b[0m run the tests\n\n\x1b[1m›\x1b[0m ')
+    expect(AgentWorkInspectorCodex.inspect({ ...frame, screenTail: submitted.slice(-400), wideScreenTail: submitted }).hint).toBe('unknown')
+    const prose = frame.wideScreenTail.replace('Worked for 2h 59m 37s • 18:03', 'I worked for 2h on this today')
+    expect(AgentWorkInspectorCodex.inspect({ ...frame, wideScreenTail: prose }).hint).toBe('unknown')
+  })
+
   it.each(fixtures.map((fixture) => [fixture.file, fixture] as const))(
     'classifies %s as its recorded screen says',
     (_file, fixture: WorkFixture) => {
@@ -341,6 +351,55 @@ describe('lib-orchestrator/sessionManager/workState/agentWorkInspectorCodex', ()
     }
   })
 
+  it('reads a background wait above its command preview, tip, composer and footer', () => {
+    const frame = recorded('codex-background-terminal-tip.json').frame
+    expect(frame.screenTail).not.toContain('Waiting for background terminal')
+    for (const screen of [
+      frame.wideScreenTail,
+      frame.wideScreenTail.replaceAll(' ', '\x1b[1C'),
+      frame.wideScreenTail.replace('• Waiting', '◦ Waiting'),
+      frame.wideScreenTail.replace('previous conversation', 'previous\n    conversation'),
+      frame.wideScreenTail.replace('--config test.config.ts', '--config\n    test.config.ts'),
+      frame.wideScreenTail.replace('Ask Codex to do anything', 'Continue after tests'),
+    ])
+      for (const cols of [103, 127, 259]) {
+        const inspection = AgentWorkInspectorCodex.inspect(ScreenTail.frameOf({ raw: '', screen, cols }))
+        expect(inspection.hint, `${cols} columns: ${screen}`).toBe('background')
+        expect(inspection.evidence).toEqual([
+          expect.objectContaining({ source: 'wide-screen', signal: 'backgroundTerminal' }),
+        ])
+      }
+
+    expect(AgentWorkInspectorCodex.inspect(ScreenTail.frameOf({
+      raw: '', screen: '', cols: 127, screenLines: frame.wideScreenTail.split('\n'),
+    })).hint).toBe('background')
+  })
+
+  it('rejects historical or incomplete wide background waits', () => {
+    const frame = recorded('codex-background-terminal-tip.json').frame
+    for (const screen of [
+      frame.wideScreenTail.replace('  └ npx vitest run --config test.config.ts > test.log', ''),
+      frame.wideScreenTail.replace('  └ Tip:', '  └ Result:'),
+      frame.wideScreenTail.replace('  └ Tip: You can resume a previous conversation by running codex resume', ''),
+      frame.wideScreenTail.replace('› Ask Codex', '• Tests finished.\n› Ask Codex'),
+      frame.wideScreenTail.replace('• Waiting', 'Previous status: • Waiting'),
+      frame.wideScreenTail.split('\n').slice(1).join('\n'),
+    ])
+      expect(AgentWorkInspectorCodex.inspect(ScreenTail.frameOf({
+        raw: frame.wideScreenTail, screen: frame.wideScreenTail,
+        cols: 127, screenLines: screen.split('\n'),
+      })).hint).toBe('idle')
+
+    for (const file of [
+      'codex-live-idle.json', 'codex-live-working.json',
+      'codex-live-approval.json', 'codex-queued-question-compacting.json',
+    ]) {
+      const current = recorded(file).frame
+      expect(AgentWorkInspectorCodex.inspect({ ...current, wideScreenTail: frame.wideScreenTail }).hint)
+        .toBe(AgentWorkInspectorCodex.inspect(current).hint)
+    }
+  })
+
   // The approval pass waited for a frame from 2026-08-19 to 2026-08-20 rather than guessing a
   // wording, and this is the frame it waited for. Producing it took `-a untrusted`: Codex approves
   // inside its own sandbox without asking, so an ordinary session never draws this screen.
@@ -386,9 +445,7 @@ describe('lib-orchestrator/sessionManager/workState/agentWorkInspectorCodex', ()
     expect(inspection.evidence.some((item) => item.signal === 'approvalPrompt')).toBe(false)
   })
 
-  // The status is about what is alive NOW. Its old text in the wide window is history, just like a
-  // finished spinner in the raw ring, and cannot hold the row green after the shallow screen moves.
-  it('does not read background work outside the shallow screen', () => {
+  it('does not read an old background wait when the current composer has moved on', () => {
     const background = recorded('codex-live-background-terminal.json').frame
     const idle = recorded('codex-live-idle.json').frame
     const inspection = AgentWorkInspectorCodex.inspect({

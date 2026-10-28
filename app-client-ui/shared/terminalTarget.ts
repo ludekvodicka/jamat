@@ -54,7 +54,7 @@ export class TerminalTargetCodec {
    */
   static read(params: unknown): TerminalPanelReading | null {
     if (!TerminalTargetCodec.record(params)) return null
-    if (typeof params.sessionId === 'string' && params.sessionId.length > 0)
+    if (params.target === undefined && typeof params.sessionId === 'string' && params.sessionId.length > 0)
       return { target: { kind: 'local', sessionId: params.sessionId } }
     const target = params.target
     if (!TerminalTargetCodec.record(target)

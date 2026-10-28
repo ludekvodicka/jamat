@@ -1,3 +1,4 @@
+import type { SessionFilePorts } from '../../shared/sessionWorkspace'
 import { useEffect, useRef, useState } from 'react'
 
 import { FileViewerLimits } from '../../../lib-orchestrator/fileViewer/fileViewerLimits'
@@ -11,7 +12,7 @@ import { FileViewerLimits } from '../../../lib-orchestrator/fileViewer/fileViewe
  * nodes. Now a chunk is turned into rows once, and the window keeps the last
  * `FileViewerLimits.hexRowsMax` of them.
  */
-export function FileHexView(props: { documentId: string }): React.JSX.Element {
+export function FileHexView(props: { documentId: string; ports: Pick<SessionFilePorts['viewer'], 'chunk'> }): React.JSX.Element {
   const [rows, setRows] = useState<readonly FileHexRow[]>([])
   /** Where the next page starts. Held apart from the rows, which no longer start at zero. */
   const [readTo, setReadTo] = useState(0)
@@ -34,7 +35,7 @@ export function FileHexView(props: { documentId: string }): React.JSX.Element {
   const load = async (documentId: string, offset: number): Promise<void> => {
     setLoading(true)
     setError(null)
-    const answer = await window.appClient.fileViewer.chunk(documentId, offset)
+    const answer = await props.ports.chunk(documentId, offset)
     if (documentId !== current.current) return
     setLoading(false)
     if (!answer.ok) {

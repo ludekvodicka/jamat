@@ -5,6 +5,7 @@ import { XMLParser } from 'fast-xml-parser'
 
 import { PathCompare } from '../../shared/pathCompare'
 import type {
+  FileChangeProperties,
   FileChangeStatus,
   FileChangesVcsDetection,
   FileChangesVcsResult,
@@ -23,6 +24,7 @@ import { FileChangesLimits } from '../fileChangesLimits'
 import type { CommandOutcome, CommandRunner } from '../../shared/commandInvoker.types'
 import { FileChangesVcsBase } from './fileChangesVcsBase'
 import { SvnInvoker } from '../../svn/svnInvoker'
+import { SvnConflictFacts } from '../../svn/svnConflictFacts'
 
 interface XmlNode {
   [key: string]: unknown
@@ -110,32 +112,6 @@ export class FileChangesVcsSvn extends FileChangesVcsBase implements FileChanges
     }
   }
 
-  /**
-   * Deliberately NOT the `--xml --verbose --depth infinity` form `status()` uses: that one reports
-   * every versioned node and walks the whole working copy, which is the cost this probe exists to
-   * avoid. Plain `status` prints only what changed.
-   *
-   * An `X` row is the external itself rather than a change inside it. The narration svn prints while
-   * descending into an external is NOT filtered, because `--ignore-externals` means it never
-   * descends: a filter for output this call cannot produce is a filter nobody can check. An
-   * unversioned `?` counts as dirt, for parity with git.
-   */
-  async dirty(detection: FileChangesVcsDetection): Promise<FileChangesVcsResult<boolean>> {
-    const outcome = await this.runner.run(detection.cwd, [
-      'status',
-      '--ignore-externals',
-      '--non-interactive',
-      '--',
-      '.',
-    ])
-    if (!FileChangesVcsSvn.succeeded(outcome))
-      return { ok: false, detail: this.detailOf(outcome) }
-    const changed = outcome.stdout.split('\n')
-      .map((line) => line.trimEnd())
-      .filter((line) => line.length > 0 && !line.startsWith('X'))
-    return { ok: true, value: changed.length > 0 }
-  }
-
   async history(
     detection: FileChangesVcsDetection,
     limit: number,
@@ -180,13 +156,34 @@ export class FileChangesVcsSvn extends FileChangesVcsBase implements FileChanges
       revision,
       '--',
       `${target}@`,
-    ])
-    if (FileChangesVcsSvn.succeeded(outcome)) return { kind: 'content', content: outcome.stdout }
+    ], { stdoutBytes: true })
+    if (FileChangesVcsSvn.succeeded(outcome)) return { kind: 'content', content: outcome.stdoutBytes ?? outcome.stdout }
     const detail = this.detailOf(outcome)
+    if (baseline.kind === 'svn-base' && /has no pristine version/i.test(detail)) {
+      const replaced = await this.replacedBaseline(detection, target)
+      if (replaced !== null) return replaced
+    }
     if (outcome.failure !== null) return { kind: 'unavailable', detail }
     return /not found|does not exist|is not a file|E200009|W160013/i.test(detail)
       ? { kind: 'missing', detail }
       : { kind: 'unavailable', detail }
+  }
+
+  /**
+   * A replaced node (an add over a versioned one, as an add/add conflict leaves it) has no pristine,
+   * so `svn cat -r BASE` refuses it; its status still names the revision it replaced, whose file is
+   * the incoming side. `svn info` gives no revision for such a node.
+   */
+  private async replacedBaseline(detection: FileChangesVcsDetection, target: string): Promise<FileChangesVcsContentResult | null> {
+    const status = await this.runner.run(detection.root, ['status', '--xml', '--depth', 'empty', '--non-interactive', '--', `${target}@`])
+    if (!FileChangesVcsSvn.succeeded(status)) return null
+    const entry = FileChangesVcsSvn.objectOf(FileChangesVcsSvn.objectOf(FileChangesVcsSvn.objectOf(
+      (this.parser.parse(status.stdout) as XmlNode).status).target).entry)
+    const revision = Number(FileChangesVcsSvn.objectOf(entry['wc-status'])['@_revision'])
+    if (!Number.isSafeInteger(revision) || revision < 1) return null
+    const outcome = await this.runner.run(detection.root, ['cat', '--non-interactive', '-r', String(revision), '--', `${target}@${revision}`],
+      { stdoutBytes: true })
+    return FileChangesVcsSvn.succeeded(outcome) ? { kind: 'content', content: outcome.stdoutBytes ?? outcome.stdout } : null
   }
 
   private infoItem(cwd: string, item: string): Promise<CommandOutcome> {
@@ -237,7 +234,7 @@ export class FileChangesVcsSvn extends FileChangesVcsBase implements FileChanges
     }
     const own = infos.get(PathCompare.comparable(detection.cwd))
     if (own === undefined) throw new Error('SVN info did not describe the requested scope')
-    const entries = new Map(value.entries.map((entry) => [PathCompare.comparable(entry.absolutePath), entry]))
+    const entries = new Map(value.entries.map((entry) => [PathCompare.normalized(entry.absolutePath), entry]))
     const externalRoots = new Set(value.externalRoots)
     for (const candidate of nested) {
       const info = infos.get(PathCompare.comparable(candidate.path))
@@ -259,8 +256,8 @@ export class FileChangesVcsSvn extends FileChangesVcsBase implements FileChanges
       else externalRoots.add(candidate.path)
       for (const root of status.value.externalRoots) externalRoots.add(root)
       for (const entry of status.value.entries)
-        if (!entries.has(PathCompare.comparable(entry.absolutePath)))
-          entries.set(PathCompare.comparable(entry.absolutePath), { ...entry,
+        if (!entries.has(PathCompare.normalized(entry.absolutePath)))
+          entries.set(PathCompare.normalized(entry.absolutePath), { ...entry,
             repositoryPath: FileChangesVcsSvn.repositoryPath(relative(detection.root, entry.absolutePath)) })
     }
     return { ok: true, value: { entries: [...entries.values()], externalRoots: [...externalRoots] } }
@@ -282,6 +279,7 @@ export class FileChangesVcsSvn extends FileChangesVcsBase implements FileChanges
     const parsed: FileChangesVcsEntry[] = []
     const externalRoots = new Set<string>()
     const nested: { path: string; external: boolean }[] = []
+    const propertied = new Set<string>()
     for (const entry of entries) {
       const wcStatus = FileChangesVcsSvn.objectOf(entry['wc-status'])
       const item = String(wcStatus['@_item'] ?? '')
@@ -305,17 +303,120 @@ export class FileChangesVcsSvn extends FileChangesVcsBase implements FileChanges
         nested.push({ path: absolutePath, external: false })
         continue
       }
+      const movedFrom = wcStatus['@_moved-from'] === undefined ? null : resolve(detection.cwd, String(wcStatus['@_moved-from']))
       parsed.push({
         absolutePath,
         repositoryPath: FileChangesVcsSvn.repositoryPath(relative(detection.root, absolutePath)),
         nodeKind,
         status: mapped,
-        previousAbsolutePath: null,
-        previousRepositoryPath: null,
+        previousAbsolutePath: movedFrom,
+        previousRepositoryPath: movedFrom === null ? null : FileChangesVcsSvn.repositoryPath(relative(detection.root, movedFrom)),
         gitState: null,
       })
+      if ((props === 'modified' || props === 'conflicted') && FileChangesVcsSvn.hasWorkingNode(mapped))
+        propertied.add(PathCompare.comparable(absolutePath))
     }
-    return { entries: parsed, externalRoots: [...externalRoots], nested }
+    // SVN also marks unversioned mount containers as X, without naming the checkout below them.
+    const roots = new Set<string>()
+    const workingRoots = new Map<string, boolean>()
+    const isRoot = async (path: string): Promise<boolean> => {
+      const key = PathCompare.comparable(path)
+      if (!workingRoots.has(key)) workingRoots.set(key, await FileChangesVcsSvn.workingCopyRoot(path))
+      return workingRoots.get(key)!
+    }
+    for (const container of externalRoots) {
+      if (await isRoot(container)) { roots.add(container); continue }
+      for (const entry of parsed.filter((entry) => PathCompare.isInside(container, entry.absolutePath))) {
+        let path = entry.nodeKind === 'directory' ? entry.absolutePath : dirname(entry.absolutePath)
+        while (PathCompare.isInside(container, path) && !await isRoot(path)) path = dirname(path)
+        if (!PathCompare.isInside(container, path))
+          throw new Error(`Could not identify the external working copy for ${entry.absolutePath}`)
+        roots.add(path)
+      }
+    }
+    const conflicts = parsed.filter((entry) => entry.status === 'conflicted')
+    const sidecars = new Set<string>()
+    for (let offset = 0; offset < conflicts.length; offset += 64) {
+      const outcome = await this.runner.run(detection.cwd, ['info', '--xml', '--non-interactive', '--',
+        ...conflicts.slice(offset, offset + 64).map((entry) => `${entry.absolutePath}@`)])
+      if (!FileChangesVcsSvn.succeeded(outcome)) throw new Error(`Could not identify SVN conflict files: ${this.detailOf(outcome)}`)
+      for (const conflict of SvnConflictFacts.infoConflicts(outcome.stdout))
+        for (const path of Object.values(conflict.sidecars))
+          if (path !== null) sidecars.add(PathCompare.comparable(resolve(detection.cwd, path)))
+    }
+    const listed = parsed.filter((entry) => entry.status !== 'untracked' || !sidecars.has(PathCompare.comparable(entry.absolutePath)))
+    return { entries: await this.withProperties(detection, listed, propertied), externalRoots: [...roots], nested }
+  }
+
+  /**
+   * The values behind `props="modified"`, so a review shows what a commit publishes beside content.
+   * BASE answers nothing for a node without one (added, replaced): its properties are all new. A
+   * failed read keeps the changes list and says why on each node it concerns.
+   */
+  private async withProperties(
+    detection: FileChangesVcsDetection,
+    entries: FileChangesVcsEntry[],
+    propertied: ReadonlySet<string>,
+  ): Promise<FileChangesVcsEntry[]> {
+    const nodes = entries.filter((entry) => propertied.has(PathCompare.comparable(entry.absolutePath)))
+    if (nodes.length === 0) return entries
+    const found = new Map<string, FileChangeProperties>()
+    const read = nodes.slice(0, FileChangesLimits.propertyNodesMax)
+    for (let offset = 0; offset < read.length; offset += 64) {
+      const batch = read.slice(offset, offset + 64)
+      const targets = batch.map((entry) => `${entry.absolutePath}@`)
+      const working = await this.runner.run(detection.cwd, ['proplist', '--xml', '--verbose', '--non-interactive', '--', ...targets])
+      const base = FileChangesVcsSvn.succeeded(working)
+        ? await this.runner.run(detection.cwd, ['proplist', '--xml', '--verbose', '--non-interactive', '-r', 'BASE', '--', ...targets])
+        : working
+      let values: { before: Map<string, Map<string, string>>; after: Map<string, Map<string, string>> } | string
+      if (!FileChangesVcsSvn.succeeded(base)) values = this.detailOf(base)
+      else {
+        try { values = { before: FileChangesVcsSvn.propertiesByPath(detection, base.stdout), after: FileChangesVcsSvn.propertiesByPath(detection, working.stdout) } }
+        catch (error) { values = ErrorText.of(error) }
+      }
+      for (const entry of batch) {
+        const key = PathCompare.comparable(entry.absolutePath)
+        found.set(key, typeof values === 'string' ? { changes: [], detail: `Property values could not be read: ${values}` }
+          : FileChangesVcsSvn.propertyChangesOf(values.before.get(key) ?? new Map(), values.after.get(key) ?? new Map()))
+      }
+    }
+    const unread: FileChangeProperties = { changes: [], detail: `Property values are read for the first ${FileChangesLimits.propertyNodesMax} nodes only.` }
+    return entries.map((entry) => {
+      const key = PathCompare.comparable(entry.absolutePath)
+      return propertied.has(key) ? { ...entry, properties: found.get(key) ?? unread } : entry
+    })
+  }
+
+  private static propertiesByPath(detection: FileChangesVcsDetection, xml: string): Map<string, Map<string, string>> {
+    const byPath = new Map<string, Map<string, string>>()
+    for (const [path, values] of SvnConflictFacts.propertiesOf(xml))
+      byPath.set(PathCompare.comparable(resolve(detection.cwd, path)), values)
+    return byPath
+  }
+
+  private static propertyChangesOf(before: ReadonlyMap<string, string>, after: ReadonlyMap<string, string>): FileChangeProperties {
+    const max = FileChangesLimits.propertyValueCharactersMax
+    let cut = false
+    const shown = (value: string | undefined): string | null => {
+      if (value === undefined) return null
+      if (value.length <= max) return value
+      cut = true
+      return `${value.slice(0, max)}…`
+    }
+    const changes = [...new Set([...before.keys(), ...after.keys()])].sort()
+      .filter((name) => before.get(name) !== after.get(name))
+      .map((name) => ({ name, before: shown(before.get(name)), after: shown(after.get(name)) }))
+    return { changes, detail: cut ? `Values longer than ${max} characters are cut.` : null }
+  }
+
+  /** A node the working copy still holds properties of; a deleted, missing or unversioned one has none to read. */
+  private static hasWorkingNode(status: FileChangeStatus): boolean {
+    switch (status) {
+      case 'added': case 'modified': case 'replaced': case 'copied': case 'renamed': case 'conflicted': return true
+      case 'deleted': case 'missing': case 'untracked': case 'obstructed': return false
+      default: throw new Error(`Unknown file change status: ${status satisfies never}`)
+    }
   }
 
   private static async workingCopyRoot(path: string): Promise<boolean> {

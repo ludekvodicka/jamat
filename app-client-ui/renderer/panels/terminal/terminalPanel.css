@@ -25,6 +25,26 @@
   padding: var(--space-1);
 }
 
+.jamat-terminal__pending-reviews {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  max-height: 30%;
+  overflow: auto;
+  color: var(--color-text-1);
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+}
+
+.jamat-terminal__pending-reviews button {
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
 .jamat-terminal__screen .xterm {
   --vscode-scrollbarSliderBackground: var(--color-surface-control-hover);
   --vscode-scrollbar-shadow: var(--color-surface-sunken);
@@ -52,7 +72,8 @@
   font-size: var(--fs-base);
 }
 
-.jamat-terminal__restart {
+.jamat-terminal__restart,
+.jamat-terminal__workspace-action {
   padding: var(--space-1) var(--space-3);
   border: 1px solid var(--color-border-frame);
   border-radius: var(--radius-control);
@@ -63,7 +84,8 @@
   cursor: pointer;
 }
 
-.jamat-terminal__restart:hover {
+.jamat-terminal__restart:hover,
+.jamat-terminal__workspace-action:hover {
   border-color: var(--color-accent);
   color: var(--color-accent);
 }
@@ -145,4 +167,10 @@
 .jamat-postmortem__changes {
   margin: var(--space-2) 0 0;
   color: var(--color-text-3);
+}
+
+.jamat-terminal__workspace-action {
+  flex: none;
+  align-self: flex-start;
+  margin: var(--space-1);
 }

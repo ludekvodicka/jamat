@@ -9,6 +9,7 @@ import { ErrorText } from '../../shared/errorText'
 import type { SnapshotStore } from '../ipc/snapshotStore'
 
 export interface SessionTasksPorts {
+  canRead?(info: SessionInfo): boolean
   list(sessionIds: readonly string[]): Promise<IpcResult<RemoteControlStepResult<Record<string, SessionTaskListing>>>>
   reportError(message: string): void
 }
@@ -29,10 +30,10 @@ type SessionTasksAnswer =
   | { kind: 'unavailable' }
 
 /**
- * The poll behind the task rows and Processes tabs. It holds readings only: what a row means is
+ * The poll behind the task rows. It holds readings only: what a row means is
  * the library's listing, and the tree draws it.
  *
- * Sessions drawn by the tree or watched by a Processes tab are asked, each on its own clock: every 3 s while it
+ * Sessions drawn by the tree are asked, each on its own clock: every 3 s while the session
  * works or a task of it runs, every 15 s while it is live and idle, once after it ended and again
  * only when its end moves. A shell session and an agent without a native id are never asked, and
  * nothing is asked while the window is out of sight. One call is out at a time and carries at most
@@ -56,9 +57,9 @@ export class SessionTasksStore {
   private readonly subscribers = new Set<() => void>()
   private listings: ReadonlyMap<string, SessionTaskListing> = new Map()
   private drawn: ReadonlySet<string> = new Set()
-  private readonly watchers = new Map<string, number>()
   private timer: ReturnType<typeof setTimeout> | null = null
   private timerAt = 0
+  private generation = 0
   private reading = false
   private stopped = true
   private visible = true
@@ -95,29 +96,12 @@ export class SessionTasksStore {
     void this.tick()
   }
 
-  /** The sessions the tree draws now, independent of the terminal panels' watches. */
   setDrawn(sessionIds: ReadonlySet<string>): void {
     if (sessionIds.size === this.drawn.size && [...sessionIds].every((sessionId) => this.drawn.has(sessionId)))
       return
     this.drawn = new Set(sessionIds)
     if (!this.reading)
       this.arm()
-  }
-
-  watch(sessionId: string): () => void {
-    this.watchers.set(sessionId, (this.watchers.get(sessionId) ?? 0) + 1)
-    if (!this.reading)
-      this.arm()
-    let released = false
-    return () => {
-      if (released) return
-      released = true
-      const count = this.watchers.get(sessionId) ?? 0
-      if (count <= 1) this.watchers.delete(sessionId)
-      else this.watchers.set(sessionId, count - 1)
-      if (!this.reading)
-        this.arm()
-    }
   }
 
   subscribe(onChanged: () => void): () => void {
@@ -130,6 +114,15 @@ export class SessionTasksStore {
   /** Held rather than built per call: `useSyncExternalStore` reads this on every render. */
   current(): ReadonlyMap<string, SessionTaskListing> {
     return this.listings
+  }
+
+  invalidate(): void {
+    this.generation++
+    this.held.clear()
+    this.failedAt = null
+    this.unavailable = false
+    this.publish()
+    if (!this.reading) this.arm()
   }
 
   private stop(): void {
@@ -163,8 +156,11 @@ export class SessionTasksStore {
       .slice(0, SessionTasksStore.sessionIdsPerCallConst)
     if (due.length > 0) {
       this.reading = true
+      const generation = this.generation
       const answer = await this.listOf(due.map((info) => info.sessionId))
       this.reading = false
+      if (this.stopped) return
+      if (generation !== this.generation) { this.arm(); return }
       switch (answer.kind) {
         case 'listings':
           this.failedAt = null
@@ -234,7 +230,7 @@ export class SessionTasksStore {
 
   /** When this session is next due, or null when it is never asked again. */
   private dueAt(info: SessionInfo): number | null {
-    if (info.kind !== 'agent' || info.agent?.nativeSessionId === undefined)
+    if (!this.canRead(info))
       return null
     const held = this.held.get(info.sessionId)
     const endedKey = SessionTasksStore.endedKeyOf(info)
@@ -277,11 +273,15 @@ export class SessionTasksStore {
   }
 
   private agentSessions(): readonly SessionInfo[] {
-    return this.sessions.current().snapshot?.sessions.filter((info) => info.kind === 'agent') ?? []
+    return this.sessions.current().snapshot?.sessions.filter((info) => this.ports.canRead ? this.ports.canRead(info) : info.kind === 'agent') ?? []
+  }
+
+  private canRead(info: SessionInfo): boolean {
+    return this.ports.canRead ? this.ports.canRead(info) : info.kind === 'agent' && info.agent?.nativeSessionId !== undefined
   }
 
   private drawnSessions(): readonly SessionInfo[] {
-    return this.agentSessions().filter((info) => this.drawn.has(info.sessionId) || this.watchers.has(info.sessionId))
+    return this.agentSessions().filter((info) => this.drawn.has(info.sessionId))
   }
 
   private arm(): void {

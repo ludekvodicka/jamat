@@ -1,6 +1,6 @@
 export type FileToolsTab = 'workingTree' | 'fileChanges' | 'directoryExplorer'
 
-export type TerminalToolsTab = FileToolsTab | 'notes' | 'processes'
+export type TerminalToolsTab = FileToolsTab | 'notes'
 
 export interface PanelFileToolsHandle {
   toggle(): void
@@ -35,7 +35,8 @@ export class PanelFileToolsRegistry {
   }
 
   static terminalTab(value: string | null): TerminalToolsTab {
-    if (value === 'notes' || value === 'processes') return value
+    if (value === 'notes') return value
+    else if (value === 'processes') return 'workingTree'
     else return PanelFileToolsRegistry.tab(value)
   }
 }

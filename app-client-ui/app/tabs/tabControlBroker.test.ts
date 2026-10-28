@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TabControlAck, TabControlCommand } from '../../shared/tabControl'
 import type { WorkspaceWindows } from '../shell/workspaceWindows'
 import type { VersioningCommitManager } from '../versioning/versioningCommitManager'
-import { TabControlBroker } from './tabControlBroker'
+import { TabControlBroker, type TabControlBrokerDeps } from './tabControlBroker'
 import type { TabFileOpenResolution } from './tabFileOpenResolver'
 import { WorkspacePanelIndex } from './workspacePanelIndex'
 
@@ -70,13 +70,14 @@ class TabControlHarness {
   activateDocuments = false
 
   constructor(timeoutMilliseconds = 1_000, activateSessionOnCommit = true, returnToPreviousSessionAfterCommit = true,
-    returnWindowMilliseconds: number | null = 300_000) {
+    returnWindowMilliseconds: number | null = 300_000, recordOpen?: TabControlBrokerDeps['recordOpen']) {
     this.broker = new TabControlBroker(
       this.windows.asWindows(),
       this.index,
       this.resolver,
       this.commits,
       {
+        recordOpen,
         requestId: () => `request-${++this.nextRequest}`,
         timeoutMilliseconds,
         activateSessionOnCommit: () => activateSessionOnCommit,
@@ -174,6 +175,36 @@ class FakeFileOpenResolver {
 }
 
 describe('app-client-ui/app/tabs/tabControlBroker', () => {
+  it.each([true, false])('projects remote reviews through viewer activation=%s and consumes each open once', async (activate) => {
+    const h = new TabControlHarness(1000, activate)
+    h.session('previous')
+    const target = { kind: 'remote' as const, remoteEndpointId: 'peer', sessionId: 'session' }
+    h.index.claimOpen('main', { panelId: 'remote', key: 'terminal', title: 'Remote', sessionId: null, params: { target } })
+    const draft: import('../../shared/versioningCommit').VersioningCommitDraftDto = { draftId: 'review', sessionId: 'session', vcs: 'svn', source: 'svn', scopeRoot: 'Q:/app', scopeTooltip: 'Q:/app', message: 'Human', proposedByAgent: false, editedByPerson: true, phase: { kind: 'editing' }, revision: 1 }
+    const first = h.broker.projectReview(target, draft, 'item', 'open-1')
+    const command = await h.command()
+    expect(command).toMatchObject({ kind: 'open-commit', activate, reviewId: 'review', openId: 'open-1' })
+    h.acceptReview(command)
+    await first
+    await h.broker.projectReview(target, draft, 'item', 'open-1')
+    expect(h.windows.published).toHaveLength(1)
+    h.broker.updateProjectedReview(target, draft, true)
+    if (activate) {
+      const back = await h.command(1)
+      expect(back).toMatchObject({ kind: 'focus-panel', panelId: 'previous' })
+      h.index.setActivePanel('main', 'previous')
+      h.acknowledge('main', back, { kind: 'focused', panelId: 'previous' })
+    }
+    await h.settled()
+    const count = h.windows.published.length
+    await h.broker.projectReview(target, draft, 'item', 'open-1')
+    expect(h.windows.published).toHaveLength(count)
+    const reopened = h.broker.projectReview(target, draft, 'item', 'open-2')
+    const fresh = await h.command(count)
+    expect(fresh).toMatchObject({ activate, openId: 'open-2' })
+    h.acceptReview(fresh)
+    await reopened
+  })
   it('lists review identities on their owning session and waits for cancellation before preparing another', async () => {
     const h = new TabControlHarness()
     h.session('commit')
@@ -1116,6 +1147,40 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
         error: { code: 'operation-failed', detail: 'The split already holds 8 task views.' } })
     })
   })
+  describe('openSessionActions', () => {
+    it('forwards a source task to its target owner without matching a local session with the same ID', async () => {
+      const harness = new TabControlHarness()
+      harness.session('session', 'main')
+      const target = { kind: 'remote', remoteEndpointId: 'peer', sessionId: 'session' } as const
+      const task = { kind: 'script', runId: 'run' } as const
+      harness.index.claimOpen('holder', { panelId: 'remote', key: 'terminal', title: 'Remote', sessionId: null, params: { target } })
+      const pending = harness.broker.openSessionTask(target, task, 'Script')
+      const command = await harness.command()
+      expect(command).toMatchObject({ kind: 'open-task', panelId: 'remote', target, item: { sessionId: 'session', task } })
+      expect(harness.windows.published.map((entry) => entry.windowId)).toEqual(['holder'])
+      harness.acknowledge('holder', command, { kind: 'task-opened', panelId: 'remote' })
+      expect(await pending).toMatchObject({ ok: true, value: { windowId: 'holder' } })
+      expect(await harness.broker.openSessionTask({ ...target, remoteEndpointId: 'foreign' }, task, 'Script'))
+        .toMatchObject({ ok: false, error: { code: 'not-found' } })
+      expect(harness.windows.published).toHaveLength(1)
+    })
+    it('routes an endpoint-qualified remote session to its owning window and refuses missing targets', async () => {
+      const harness = new TabControlHarness()
+      harness.session('session', 'main')
+      const target = { kind: 'remote', remoteEndpointId: 'peer', sessionId: 'session' } as const
+      harness.index.claimOpen('holder', { panelId: 'remote', key: 'terminal', title: 'Remote', sessionId: null, params: { target } })
+      const pending = harness.broker.openSessionActions(target)
+      const command = await harness.command()
+      expect(harness.windows.published.map((entry) => entry.windowId)).toEqual(['holder'])
+      expect(command).toMatchObject({ kind: 'open-workflow', panelId: 'remote', target })
+      harness.acknowledge('holder', command, { kind: 'workflow-opened', panelId: 'remote' })
+      expect(await pending).toMatchObject({ ok: true, value: { windowId: 'holder' } })
+      expect(await harness.broker.openSessionActions({ ...target, remoteEndpointId: 'foreign' }))
+        .toMatchObject({ ok: false, error: { code: 'not-found' } })
+      expect(harness.windows.published).toHaveLength(1)
+    })
+  })
+
   describe('openWorkflow', () => {
     it('opens a missing tab first, focuses its window, then sends open-workflow where it landed', async () => {
       const harness = new TabControlHarness()
@@ -1158,4 +1223,52 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
       await expect(opened).resolves.toMatchObject({ ok: false, error: { code: 'operation-failed' } })
     })
   })
+})
+
+
+it.each([false, true])('opens a snap-in through its owner, existing: %s', async (existing) => {
+  const harness = new TabControlHarness()
+  if (existing) harness.index.claimOpen('holder', { panelId: 'snapin:review-todos', key: 'snapin', title: 'Review todos', params: { kind: 'review-todos' }, sessionId: null })
+  const opened = harness.broker.openSnapin('review-todos', 'Review todos')
+  const command = await harness.command()
+  expect(command).toMatchObject({ kind: 'open-snapin', panelId: 'snapin:review-todos', snapinKind: 'review-todos', title: 'Review todos' })
+  const windowId = existing ? 'holder' : 'main'
+  harness.acknowledge(windowId, command, { kind: 'snapin-opened', panelId: 'snapin:review-todos' })
+  expect(await opened).toEqual({ ok: true, value: { kind: 'snapin-opened', panelId: 'snapin:review-todos', windowId } })
+  expect(harness.windows.focused).toEqual([windowId])
+})
+
+it('records a semantic task once and does not let a failed observer block the local open', async () => {
+  const recorded = vi.fn<NonNullable<TabControlBrokerDeps['recordOpen']>>(async (item) => ({ ...item, sequence: 1 }))
+  const harness = new TabControlHarness(1000, true, true, 300000, recorded)
+  harness.session('parent')
+  const item = { sessionId: 'parent', key: 'task:parent:script:run', title: 'Script', task: { kind: 'script' as const, runId: 'run' } }
+  const first = harness.broker.openTask('Parent', item)
+  const command = await harness.command()
+  expect(command.sharedOpen).toMatchObject({ sessionId: 'parent', item: { kind: 'task', task: item.task }, sequence: 1 })
+  harness.acknowledge('main', command, { kind: 'task-opened', panelId: 'parent' })
+  expect((await first).ok).toBe(true)
+  expect(recorded).toHaveBeenCalledOnce()
+  recorded.mockRejectedValueOnce(new Error('peer unavailable'))
+  const second = harness.broker.openTask('Parent', item)
+  const next = await harness.command(1)
+  expect(next.sharedOpen).toBeUndefined()
+  harness.acknowledge('main', next, { kind: 'task-opened', panelId: 'parent' })
+  expect((await second).ok).toBe(true)
+})
+
+
+it('preserves the source control intent ID across real broker retries and gives a new reopen another ID', async () => {
+  const recorded = vi.fn<NonNullable<TabControlBrokerDeps['recordOpen']>>(async (item) => ({ ...item, sequence: 1 }))
+  const harness = new TabControlHarness(1000, true, true, 300000, recorded)
+  harness.session('parent')
+  const item = { sessionId: 'parent', key: 'task', title: 'Script', task: { kind: 'script' as const, runId: 'run' } }
+  for (const [index, intent] of ['operation-1', 'operation-1', 'operation-2'].entries()) {
+    const pending = harness.broker.openTask('Parent', item, intent)
+    const command = await harness.command(index)
+    harness.acknowledge('main', command, { kind: 'task-opened', panelId: 'parent' })
+    expect((await pending).ok).toBe(true)
+  }
+  expect(recorded.mock.calls[0][0].openId).toBe(recorded.mock.calls[1][0].openId)
+  expect(recorded.mock.calls[1][0].openId).not.toBe(recorded.mock.calls[2][0].openId)
 })

@@ -248,7 +248,6 @@ class RemoteControlServerHarness {
         discardWorktree: async () => ({ ok: true, value: undefined }),
         finishWorktreeSession: async (sessionId) => ({ ok: true, value: { sessionId, actionId: null } }),
         updateMain: async (sessionId) => ({ ok: true, value: { sessionId, actionId: 'update-1' } }),
-        openActionReview: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         worktreeResults: async () => ({ ok: true, value: { results: [] } }),
         notifies: async () => ({ ok: true, value: { notifies: [] } }),
         children: async () => ({ ok: true, value: { children: [] } }),
@@ -263,6 +262,7 @@ class RemoteControlServerHarness {
         historyReferences: async () => ({ ok: true, value: { references: [] } }),
         openHistorySession: async () => ({ ok: true, value: { sessionId: 'history-1', tabTitle: 'History' } }),
         nextSessionNumber: async () => ({ ok: true, value: { token: '002' } }),
+        worktreePreview: async () => ({ ok: true, value: { kind: 'svn', ownerDir: 'Q:/Apps/One', owner: 'project', token: '002' } }),
         allocateSessionNumber: async () => ({ ok: true, value: { token: '002' } }),
         worktreeOf: async (sessionId) => ({
           ok: true,
@@ -270,8 +270,11 @@ class RemoteControlServerHarness {
         }),
         conflictsOf: async (sessionId) => ({ ok: false, code: 'not-found', detail: `Session ${sessionId} has no conflicts of an SVN action` }),
         resolveConflict: async (sessionId) => ({ ok: false, code: 'not-found', detail: `Session ${sessionId} has no conflicts of an SVN action` }),
+        solveWithAgent: async (sessionId) => ({ ok: false, code: 'not-found', detail: `No session ${sessionId}` }),
+        backToWork: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         runScript: async () => ({ ok: true, value: { runId: 'run-1' } }),
         scriptsOf: async (sessionId) => ({ ok: true, value: { sessionId, runs: [], log: null } }),
+        clearActions: async () => ({ ok: true, value: undefined }),
         setSessionColor: async () => ({ ok: true, value: undefined }),
         setSessionDetails: async () => ({ ok: true, value: { titleChanged: false, notifyAgent: null } }),
       },
@@ -279,8 +282,8 @@ class RemoteControlServerHarness {
         debugStatus: () => { throw new Error('unused') },
         pingHost: async () => { throw new Error('unused') },
         startHost: async () => ({ ok: true, value: undefined }),
-        restartHost: async () => ({ ok: true, value: undefined }),
-        stopHost: async () => ({ ok: true, value: undefined }),
+        restartHost: async () => ({ ok: true, value: { warnings: [] } }),
+        stopHost: async () => ({ ok: true, value: { warnings: [] } }),
       },
       groups: { read: () => new Map(), assign: (_sessionId, group) => ({ ok: true, value: { group } }), inherit: () => undefined },
       tabs: {
@@ -793,7 +796,7 @@ describe('app-client-ui/app/remoteControl/remoteControlServer', () => {
     expect(readFileSync(harness.auditFile, 'utf8')).toContain('endpoint-remote')
   })
 
-  it('serves transcripts locally, refuses peer routing and audits only the canonical session id', async () => {
+  it('serves transcripts from the selected source and audits only the canonical session id', async () => {
     const harness = new RemoteControlServerHarness(2, true)
     harnesses.push(harness)
     await harness.start()
@@ -823,10 +826,10 @@ describe('app-client-ui/app/remoteControl/remoteControlServer', () => {
         reading: { kind: 'messages', messages: [{ text: 'secret transcript message' }] },
       },
     })
-    expect(peer.status).toBe(403)
-    expect(await peer.json()).toMatchObject({ ok: false, error: { code: 'forbidden' } })
+    expect(peer.status).toBe(200)
+    expect(await peer.json()).toMatchObject({ ok: true, operation: 'sessions.transcript' })
     expect(harness.transcriptReads).toEqual(['session-1'])
-    expect(harness.remoteExecutions).toEqual([])
+    expect(harness.remoteExecutions).toMatchObject([{ remoteEndpointId: 'endpoint-remote', request: { operation: 'sessions.transcript', body: { session: { kind: 'sessionId', sessionId: 'session-1' } } } }])
 
     await harness.server.stop()
     const audit = readFileSync(harness.auditFile, 'utf8')

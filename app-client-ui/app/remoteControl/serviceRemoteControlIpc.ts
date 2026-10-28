@@ -1,3 +1,5 @@
+import type { FileViewerResourceResult } from '../../../lib-orchestrator/fileViewer/fileViewerApi.types'
+import type { RemoteSessionView } from '../../../lib-orchestrator/remoteControl/remoteSessionApi.types'
 import { randomUUID } from 'node:crypto'
 
 import type { WebContents } from 'electron'
@@ -13,6 +15,7 @@ import type {
 import type { RemoteControlInboundRegistry } from './remoteControlInboundRegistry'
 import type { RemoteConnectionsManager } from './remoteConnectionsManager'
 import { RemoteClipboardPaste } from './remoteClipboardPaste'
+import { RemoteSessionCommandsContract } from '../../shared/remoteSessionCommand'
 import { ServiceIpcBase } from '../shared/serviceIpcBase'
 
 interface RemoteRendererAttach {
@@ -22,6 +25,10 @@ interface RemoteRendererAttach {
 }
 
 export interface ServiceRemoteControlIpcDeps {
+  startImageDrag?(sender: WebContents, endpointId: string, view: RemoteSessionView, documentId: string): Promise<boolean>
+  exportFile?(sender: WebContents, endpointId: string, view: RemoteSessionView, documentId: string, name: string): Promise<boolean>
+  mediaResource?(endpointId: string, view: RemoteSessionView, documentId: string, reference: string | null): Promise<FileViewerResourceResult>
+  releaseMedia?(endpointId: string, viewId: string, documentId?: string): void
   revision(): number
   acceptsRenderer(sender: WebContents): boolean
   requestId?(): string
@@ -31,12 +38,34 @@ export interface ServiceRemoteControlIpcDeps {
 export class ServiceRemoteControlIpc
   extends ServiceIpcBase<typeof ServiceRemoteControlIpc.channelsConst> {
   static readonly channelsConst = {
+    'remote:session-command': true,
+    'remote:start-image-drag': true,
+    'remote:export-file': true,
+    'remote:media-resource': true,
+    'remote:changes-request': true,
+    'remote:changes-page': true,
+    'remote:reviews-request': true,
+    'remote:reviews-page': true,
+    'remote:sidebar-request': true,
+    'remote:sidebar-page': true,
+    'remote:tasks-request': true,
+    'remote:tasks-page': true,
+    'remote:items-open': true,
+    'remote:items-request': true,
+    'remote:items-page': true,
+    'remote:files-request': true,
+    'remote:files-page': true,
+    'remote:view-detail': true,
+    'remote:view-open': true,
+    'remote:view-close': true,
+    'remote:view-press': true,
     'remote:snapshot': true,
     'remote:connect': true,
     'remote:select-session': true,
     'remote:disconnect': true,
     'remote:release': true,
     'remote:agents-describe': true,
+    'remote:accounts-list': true,
     'remote:projects-list': true,
     'remote:sessions-create': true,
     'remote:sessions-reopen': true,
@@ -50,6 +79,8 @@ export class ServiceRemoteControlIpc
     'remote:terminal-clipboard-paste': true,
   } as const
 
+  private readonly viewers = new Map<WebContents, string>()
+  private readonly views = new Map<string, { sender: WebContents; endpointId: string; view: RemoteSessionView }>()
   private readonly owned = new Map<WebContents, Set<string>>()
   private readonly attaches = new Map<string, RemoteRendererAttach>()
   /** Window ownership releases an explicitly connected endpoint when its dialog closes. */
@@ -71,6 +102,155 @@ export class ServiceRemoteControlIpc
   }
 
   initialize(): void {
+    this.register('remote:session-command', (event, endpointId, command) => {
+      if (!this.deps.acceptsRenderer(event.sender)) throw new Error('The workspace window is closing')
+      if (!RemoteSessionCommandsContract.operations.some((operation) => operation === command.operation))
+        throw new Error('This session command is not admitted')
+      return this.outbound.execute(endpointId, { ...command, protocol: RemoteControlConst.protocol, requestId: this.requestId() })
+    })
+    this.register('remote:start-image-drag', (event, endpointId, viewId, documentId) => {
+      const held = this.ownedView(event.sender, endpointId, viewId)
+      return this.deps.startImageDrag?.(event.sender, endpointId, held.view, documentId) ?? false
+    })
+    this.register('remote:export-file', (event, endpointId, viewId, documentId, name) => {
+      const held = this.ownedView(event.sender, endpointId, viewId)
+      return this.deps.exportFile?.(event.sender, endpointId, held.view, documentId, name) ?? false
+    })
+    this.register('remote:media-resource', (event, endpointId, viewId, documentId, reference) => {
+      const held = this.ownedView(event.sender, endpointId, viewId)
+      return this.deps.mediaResource?.(endpointId, held.view, documentId, reference)
+        ?? { ok: false, code: 'not-found', detail: 'Remote media is unavailable' }
+    })
+    this.register('remote:changes-request', async (event, endpointId, viewId, body) => {
+      const held = this.ownedView(event.sender, endpointId, viewId)
+      const answer = await this.outbound.sessionView(endpointId, { ...held.view, requestId: this.requestId(), operation: 'changes.request', body })
+      if (!answer.ok) return answer
+      if (!answer.value || !('transferId' in answer.value)) throw new Error('Invalid remote content response')
+      return { ok: true, value: answer.value }
+    })
+    this.register('remote:changes-page', async (event, endpointId, viewId, body) => {
+      const held = this.ownedView(event.sender, endpointId, viewId)
+      const answer = await this.outbound.sessionView(endpointId, { ...held.view, requestId: this.requestId(), operation: 'changes.page', body })
+      if (!answer.ok) return answer
+      if (!answer.value || !('transferId' in answer.value)) throw new Error('Invalid remote content page')
+      return { ok: true, value: answer.value }
+    })
+    this.register('remote:reviews-request', async (event, endpointId, viewId, body) => {
+      const held = this.ownedView(event.sender, endpointId, viewId)
+      const answer = await this.outbound.sessionView(endpointId, { ...held.view, requestId: this.requestId(), operation: 'reviews.request', body })
+      if (!answer.ok) return answer
+      if (!answer.value || !('transferId' in answer.value)) throw new Error('Invalid task content page')
+      return { ok: true, value: answer.value }
+    })
+    this.register('remote:reviews-page', async (event, endpointId, viewId, body) => {
+      const held = this.ownedView(event.sender, endpointId, viewId)
+      const answer = await this.outbound.sessionView(endpointId, { ...held.view, requestId: this.requestId(), operation: 'reviews.page', body })
+      if (!answer.ok) return answer
+      if (!answer.value || !('transferId' in answer.value)) throw new Error('Invalid task content page')
+      return { ok: true, value: answer.value }
+    })
+    this.register('remote:sidebar-request', async (event, endpointId, viewId, body) => {
+      const held = this.ownedView(event.sender, endpointId, viewId)
+      const answer = await this.outbound.sessionView(endpointId, { ...held.view, requestId: this.requestId(), operation: 'sidebar.request', body })
+      if (!answer.ok) return answer
+      if (!answer.value || !('transferId' in answer.value)) throw new Error('Invalid task content page')
+      return { ok: true, value: answer.value }
+    })
+    this.register('remote:sidebar-page', async (event, endpointId, viewId, body) => {
+      const held = this.ownedView(event.sender, endpointId, viewId)
+      const answer = await this.outbound.sessionView(endpointId, { ...held.view, requestId: this.requestId(), operation: 'sidebar.page', body })
+      if (!answer.ok) return answer
+      if (!answer.value || !('transferId' in answer.value)) throw new Error('Invalid task content page')
+      return { ok: true, value: answer.value }
+    })
+    this.register('remote:tasks-request', async (event, endpointId, viewId, body) => {
+      const held = this.ownedView(event.sender, endpointId, viewId)
+      const answer = await this.outbound.sessionView(endpointId, { ...held.view, requestId: this.requestId(), operation: 'tasks.request', body })
+      if (!answer.ok) return answer
+      if (!answer.value || !('transferId' in answer.value)) throw new Error('Invalid task content page')
+      return { ok: true, value: answer.value }
+    })
+    this.register('remote:tasks-page', async (event, endpointId, viewId, body) => {
+      const held = this.ownedView(event.sender, endpointId, viewId)
+      const answer = await this.outbound.sessionView(endpointId, { ...held.view, requestId: this.requestId(), operation: 'tasks.page', body })
+      if (!answer.ok) return answer
+      if (!answer.value || !('transferId' in answer.value)) throw new Error('Invalid task content page')
+      return { ok: true, value: answer.value }
+    })
+    this.register('remote:items-open', async (event, endpointId, viewId, body) => {
+      const held = this.ownedView(event.sender, endpointId, viewId)
+      const answer = await this.outbound.sessionView(endpointId, { ...held.view, requestId: this.requestId(), operation: 'items.open', body })
+      if (!answer.ok) return answer
+      if (!answer.value || !('transferId' in answer.value)) throw new Error('Invalid shared open response')
+      return { ok: true, value: answer.value }
+    })
+    this.register('remote:items-request', async (event, endpointId, viewId, body) => {
+      const held = this.ownedView(event.sender, endpointId, viewId)
+      const answer = await this.outbound.sessionView(endpointId, { ...held.view, requestId: this.requestId(), operation: 'items.request', body })
+      if (!answer.ok) return answer
+      if (!answer.value || !('transferId' in answer.value)) throw new Error('Invalid shared items response')
+      return { ok: true, value: answer.value }
+    })
+    this.register('remote:items-page', async (event, endpointId, viewId, body) => {
+      const held = this.ownedView(event.sender, endpointId, viewId)
+      const answer = await this.outbound.sessionView(endpointId, { ...held.view, requestId: this.requestId(), operation: 'items.page', body })
+      if (!answer.ok) return answer
+      if (!answer.value || !('transferId' in answer.value)) throw new Error('Invalid shared items page')
+      return { ok: true, value: answer.value }
+    })
+    this.register('remote:files-request', async (event, endpointId, viewId, body) => {
+      const held = this.ownedView(event.sender, endpointId, viewId)
+      if (body.kind === 'release') this.deps.releaseMedia?.(endpointId, viewId, body.documentId)
+      const answer = await this.outbound.sessionView(endpointId, { ...held.view, requestId: this.requestId(), operation: 'files.request', body })
+      if (!answer.ok) return answer
+      if (!answer.value || !('transferId' in answer.value)) throw new Error('Invalid remote content response')
+      return { ok: true, value: answer.value }
+    })
+    this.register('remote:files-page', async (event, endpointId, viewId, body) => {
+      const held = this.ownedView(event.sender, endpointId, viewId)
+      const answer = await this.outbound.sessionView(endpointId, { ...held.view, requestId: this.requestId(), operation: 'files.page', body })
+      if (!answer.ok) return answer
+      if (!answer.value || !('transferId' in answer.value)) throw new Error('Invalid remote content page')
+      return { ok: true, value: answer.value }
+    })
+    this.register('remote:view-open', async (event, endpointId, sessionId) => {
+      if (!this.deps.acceptsRenderer(event.sender)) throw new Error('The workspace window is closing')
+      const epoch = this.outbound.viewEpoch(endpointId)
+      if (!epoch) return { ok: false, error: { code: 'unavailable', detail: 'Remote session is offline' } }
+      let ownerGeneration = this.viewers.get(event.sender)
+      if (!ownerGeneration) {
+        ownerGeneration = randomUUID()
+        this.viewers.set(event.sender, ownerGeneration)
+      }
+      const viewerId = randomUUID()
+      this.wire(event.sender)
+      const answer = await this.outbound.sessionView(endpointId, {
+        requestId: this.requestId(), epoch, operation: 'views.open', body: { sessionId, viewerId },
+      })
+      if (!answer.ok) return answer
+      if (!answer.value || !('viewId' in answer.value)) throw new Error('The peer returned no session view')
+      if (!this.deps.acceptsRenderer(event.sender) || this.viewers.get(event.sender) !== ownerGeneration) {
+        void this.outbound.sessionView(endpointId, { ...answer.value, requestId: this.requestId(), operation: 'views.close', body: {} })
+        return { ok: false, error: { code: 'unavailable', detail: 'The workspace window closed' } }
+      }
+      this.views.set(JSON.stringify([endpointId, answer.value.viewId]), { sender: event.sender, endpointId, view: answer.value })
+      return { ok: true, value: answer.value }
+    })
+    this.register('remote:view-detail', (event, endpointId, viewId) =>
+      this.outbound.sessionDetail(endpointId, this.ownedView(event.sender, endpointId, viewId).view))
+    this.register('remote:view-close', async (event, endpointId, viewId) => {
+      const held = this.ownedView(event.sender, endpointId, viewId)
+      this.views.delete(JSON.stringify([endpointId, viewId]))
+      this.deps.releaseMedia?.(endpointId, viewId)
+      const answer = await this.outbound.sessionView(endpointId, { ...held.view, requestId: this.requestId(), operation: 'views.close', body: {} })
+      return answer.ok ? { ok: true, value: null } : answer
+    })
+    this.register('remote:view-press', async (event, endpointId, viewId, body, operationId) => {
+      const held = this.ownedView(event.sender, endpointId, viewId)
+      if (!this.deps.acceptsRenderer(event.sender)) throw new Error('The workspace window is closing')
+      const answer = await this.outbound.sessionView(endpointId, { ...held.view, requestId: this.requestId(), operationId, operation: 'actions.press', body })
+      return answer.ok ? { ok: true, value: null } : answer
+    })
     this.register('remote:snapshot', () => ({
       revision: this.deps.revision(),
       outbound: this.outbound.snapshot().outbound,
@@ -94,10 +274,22 @@ export class ServiceRemoteControlIpc
       this.outbound.disconnectSessions(endpointId, sessionIds))
     this.register('remote:agents-describe', (_event, endpointId) =>
       this.outbound.execute(endpointId, this.describeRequest()))
+    this.register('remote:accounts-list', (_event, endpointId) =>
+      this.outbound.execute(endpointId, { protocol: RemoteControlConst.protocol,
+        requestId: this.requestId(), operation: 'accounts.list', body: {} }))
     this.register('remote:projects-list', (_event, endpointId, request) =>
       this.outbound.execute(endpointId, this.projectsRequest(request)))
-    this.register('remote:sessions-create', (_event, endpointId, spec, operationId) =>
-      this.outbound.execute(endpointId, this.createRequest(spec, operationId)))
+    this.register('remote:sessions-create', (event, endpointId, spec, operationId) => {
+      if (!this.deps.acceptsRenderer(event.sender)) throw new Error('The workspace window is closing')
+      const request = this.createRequest(spec, operationId)
+      if (spec.worktree !== undefined) {
+        const capabilities = this.outbound.snapshot().outbound.find((entry) => entry.remoteEndpointId === endpointId)?.workspaceCapabilities
+        if (!capabilities?.includes('session-workspace.views') || !capabilities.includes('session-workspace.actions'))
+          return { protocol: request.protocol, requestId: request.requestId, operation: request.operation, operationId,
+            ok: false, error: { code: 'unavailable', detail: 'This peer cannot display worktree setup approval. Update it before creating a worktree here.' } }
+      }
+      return this.outbound.execute(endpointId, request)
+    })
     this.register('remote:sessions-reopen', (_event, endpointId, sessionId) =>
       this.outbound.execute(endpointId, this.sessionRequest('sessions.reopen', sessionId)))
     this.register('remote:sessions-finalize', (_event, endpointId, sessionId, acknowledgeSetup) =>
@@ -245,7 +437,20 @@ export class ServiceRemoteControlIpc
     if (held.size === 0) this.owned.delete(sender)
   }
 
+  private ownedView(sender: WebContents, endpointId: string, viewId: string) {
+    const held = this.views.get(JSON.stringify([endpointId, viewId]))
+    if (!held || held.sender !== sender || held.endpointId !== endpointId) throw new Error('Session view is not owned by this renderer')
+    return held
+  }
+
   private releaseAll(sender: WebContents): void {
+    this.viewers.delete(sender)
+    for (const [viewId, held] of this.views) {
+      if (held.sender !== sender) continue
+      this.views.delete(viewId)
+      this.deps.releaseMedia?.(held.endpointId, held.view.viewId)
+      void this.outbound.sessionView(held.endpointId, { ...held.view, requestId: this.requestId(), operation: 'views.close', body: {} })
+    }
     const reasons = this.holds.get(sender)
     if (reasons) {
       this.holds.delete(sender)

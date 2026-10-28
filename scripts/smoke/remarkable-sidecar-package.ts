@@ -109,7 +109,7 @@ class RemarkableSidecarPackageSmoke extends SmokeHarness {
     const manifest = RemarkableSidecarPackageSmoke.manifest()
     this.check('resource manifest uses schema 1', manifest.schemaVersion === 1)
     this.check('resource manifest targets win32-x64', manifest.platform === 'win32-x64')
-    this.check('resource manifest pins Node 22.23.2', manifest.node.version === '22.23.2')
+    this.check('resource manifest pins Node 22.23.4', manifest.node.version === '22.23.4')
     this.check(
       'resource manifest pins remarkable-cli 0.3.0',
       manifest.cli.package === 'remarkable-cli' && manifest.cli.version === '0.3.0',

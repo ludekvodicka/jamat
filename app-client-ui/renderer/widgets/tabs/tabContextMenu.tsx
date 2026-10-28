@@ -1,3 +1,4 @@
+import { TerminalTargetCodec } from '../../../shared/terminalTarget'
 import type {
   SessionAgentId,
   SessionColorName,
@@ -20,6 +21,7 @@ export type TabContextMenuPosition = ContextMenuPosition
  * question about the record, and a second derivation in a drawing surface is a copy that drifts.
  */
 export interface TabSessionFacts {
+  accountId?: string
   live: boolean
   agentId: SessionAgentId | null
   color: SessionColorName | null
@@ -32,6 +34,8 @@ export interface TabSessionFacts {
    */
   ended: boolean
   admits: readonly SessionOperation[]
+  /** Whether the sessions tree row offers Finish for this worktree session; the tab runs that same Finish. */
+  finish: boolean
 }
 
 /**
@@ -52,6 +56,8 @@ export function TabContextMenu(props: {
   preview: boolean
   onClose(): void
 }): React.JSX.Element {
+  const target = TerminalTargetCodec.read(props.params)?.target
+  const endpoint = target ? TerminalTargetCodec.endpointOf(target) : null
   return (
     <ContextMenu
       position={props.position}
@@ -71,9 +77,7 @@ export function TabContextMenu(props: {
            * for session A, filtered against A's `admits`, and running on B.
            */
           run: (id) => {
-            const sessionId = typeof props.params.sessionId === 'string'
-              ? props.params.sessionId
-              : null
+            const sessionId = target?.sessionId ?? null
             if (sessionId === null || !SessionCommandRun.targets(id)) {
               // Everything left here runs with no argument. A value-carrying command reaching this
               // branch is a catalog edit nobody followed through - `project.openFolder` gaining the
@@ -84,13 +88,11 @@ export function TabContextMenu(props: {
               props.commands.execute(id)
               return
             }
-            SessionCommandRun.at(props.commands, id, sessionId)
+            SessionCommandRun.at(props.commands, id, sessionId, endpoint ?? undefined)
           },
           setColor: (color) => props.commands.execute('session.setColor', {
             color,
-            ...(typeof props.params.sessionId === 'string'
-              ? { sessionId: props.params.sessionId }
-              : {}),
+            ...(target ? { sessionId: target.sessionId, ...(endpoint ? { remoteEndpointId: endpoint } : {}) } : {}),
           }),
         },
       )}
@@ -138,13 +140,17 @@ class TabContextMenuItems {
       .filter((descriptor) => descriptor.id !== 'session.restart'
         || onSession && admits('restart') && facts?.ended === false)
       .filter((descriptor) => descriptor.id !== 'session.compact' || onSession && admits('compact'))
+      .filter((descriptor) => descriptor.id !== 'session.showActions' || onSession)
+      // The row's Finish runs on this computer's tree, so a paired computer's tab has none here.
+      .filter((descriptor) => descriptor.id !== 'session.finish'
+        || onSession && facts?.finish === true && TerminalTargetCodec.read(params)?.target.kind !== 'remote')
       .filter((descriptor) => (descriptor.id !== 'session.commitSvn' && descriptor.id !== 'session.commitGit')
-        || onSession && facts?.live === true && typeof params.remoteEndpointId !== 'string')
+        || onSession && facts?.live === true)
       .filter((descriptor) => descriptor.id !== 'tab.copyProjectFolder'
         || facts?.directoryPath !== null && facts?.directoryPath !== undefined)
       // The main process opens a session of THIS computer; a paired computer's path means nothing here.
       .filter((descriptor) => descriptor.id !== 'session.openInVsCode'
-        || onSession && placed && typeof params.remoteEndpointId !== 'string')
+        || onSession && placed && TerminalTargetCodec.read(params)?.target.kind !== 'remote')
       // A session and nothing else, the same gate the details dialog takes: a file viewer carries a
       // `sessionId` too, and no admits gate either - an ended session is still worth naming.
       .filter((descriptor) => descriptor.id !== 'session.copyReference' || onSession)

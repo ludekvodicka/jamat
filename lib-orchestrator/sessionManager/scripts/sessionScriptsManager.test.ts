@@ -44,12 +44,13 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => 
     const snapshotsDirectory = join(root, 'session-snapshots')
     const reports: string[] = []
     const recordsFile = join(root, 'session-records.json')
+    const logsDirectory = join(root, 'script-logs')
+    const logs = new ScriptLogStore(logsDirectory)
     const store = await SessionRecordsStore.load(recordsFile, {
+      removeSessionLogs: (id, keepIds) => logs.removeParent(id, keepIds),
       snapshotsDirectory,
       report: (message) => reports.push(message),
     })
-    const logsDirectory = join(root, 'script-logs')
-    const logs = new ScriptLogStore(logsDirectory)
     const runtimes: Harness['runtimes'] = new Map()
     const failure: Harness['failure'] = { value: null }
     const calls: Harness['calls'] = []
@@ -131,6 +132,61 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => 
     }
   }
 
+  it('streams bounded local output without a terminal and retains failed output after reload', async () => {
+    const context = await harness()
+    await context.store.put(record('pp-u11-parent'))
+    const changed = vi.fn()
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let emitted = false
+    const running = context.manager.runLocal('pp-u11-parent', 'pp-u11-run', 'Commit selected changes', async (output) => {
+      output('ž'.repeat(ScriptLogText.maxBytesConst))
+      output('\npre-commit hook refused\n')
+      emitted = true
+      await gate
+      return { ok: false }
+    }, changed)
+    await vi.waitFor(() => expect(emitted).toBe(true))
+    const live = await context.manager.outputOf('pp-u11-parent', 'pp-u11-run')
+    expect(live).toMatchObject({ ok: true, value: { state: 'running', source: 'live', terminal: null } })
+    if (!live.ok) throw new Error(live.detail)
+    expect(live.value.lines.join('\n')).toContain('pre-commit hook refused')
+    expect(Buffer.byteLength(live.value.lines.join('\n'))).toBeLessThanOrEqual(ScriptLogText.maxBytesConst)
+    expect(changed.mock.calls.length).toBeGreaterThan(1)
+    release()
+    await running
+    const store = await SessionRecordsStore.load(context.recordsFile, { snapshotsDirectory: context.snapshotsDirectory, report: () => {} })
+    const restored = new SessionScriptsManager({ records: store, host: context.host, logs: context.logs,
+      now: () => context.clock.now, onCollapsed: () => {}, report: () => {} })
+    expect(await restored.outputOf('pp-u11-parent', 'pp-u11-run'))
+      .toMatchObject({ ok: true, value: { source: 'log', state: 'failed', terminal: null,
+        lines: expect.arrayContaining(['pre-commit hook refused']) } })
+    expect(store.get('pp-u11-parent')?.scriptRuns?.[0]?.log).toMatchObject({ state: 'saved', truncated: true })
+    expect(context.calls).toEqual([])
+  })
+
+  it('removes late local output when the parent was removed while the command ran', async () => {
+    const context = await harness()
+    await context.store.put(record('p', { life: 'ended', worktreeMerge: { phase: 'tearing-down', startedAt: 1 } }))
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let started = false
+    const running = context.manager.runLocal('p', 'local', 'Remove worktree', async (output) => {
+      output('before removal')
+      started = true
+      await gate
+      output('after removal')
+      return { ok: true }
+    }, () => {})
+    await vi.waitFor(() => expect(started).toBe(true))
+    expect(existsSync(context.logs.pathOf('p', 'local'))).toBe(true)
+    await context.store.remove('p')
+    release()
+    await running
+    expect(context.store.get('p')).toBeNull()
+    expect(existsSync(join(context.logsDirectory, 'p'))).toBe(false)
+  })
+
   /** An install that ran on the Host and exited; the parent `p` no longer waits on it. */
   function install(sessionId: string, overrides?: Partial<SessionRecord>): SessionRecord {
     return record(sessionId, {
@@ -168,6 +224,31 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => 
     return context.store.get('p')?.scriptRuns ?? []
   }
 
+  it('discards a settlement captured before reopen without deleting a new run log', async () => {
+    const context = await harness()
+    await context.store.put(record('p'))
+    await context.store.put(install('s'))
+    context.runtimes.set('s', dead('s', ['old output']))
+    const inspect = context.host.runtimeInspect
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let inspecting = false
+    context.host.runtimeInspect = async (...args) => {
+      inspecting = true
+      await gate
+      return inspect(...args)
+    }
+    const settling = context.manager.settle('s')
+    await vi.waitFor(() => expect(inspecting).toBe(true))
+    await context.store.put(record('p'), { newLifetime: true })
+    await context.logs.write('p', 'new-run', 'new output')
+    release()
+    expect(await settling).toBe(false)
+    expect(historyOf(context)).toEqual([])
+    expect(existsSync(context.logs.pathOf('p', 's'))).toBe(false)
+    expect(await context.logs.read('p', 'new-run', 100)).toMatchObject({ text: 'new output' })
+  })
+
   it('saves the log off the dead runtime and writes a succeeded entry on the parent', async () => {
     const context = await harness()
     await context.store.put(record('p', { title: 'Fix the bug' }))
@@ -202,6 +283,17 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => 
     expect(text).not.toContain('\u001b')
     // The run's own record is not the manager's to touch here: collapsing is a separate step.
     expect(context.store.get('s')).not.toBeNull()
+  })
+
+  it('saves failed setup output while its ended parent retains the worktree', async () => {
+    const context = await harness()
+    await context.store.put(record('p', { life: 'ended', endedReason: 'setup failed', pendingSetup: { setupSessionId: 's' },
+      worktree: { worktreePath: 'C:/work/.worktrees/fix', repositoryRoot: 'C:/work', branch: 'jamat/fix', baseCommit: 'base' } }))
+    await context.store.put(install('s', { exitCode: 7 }))
+    context.runtimes.set('s', dead('s', ['install failure detail']))
+    expect(await context.manager.settle('s')).toBe(true)
+    expect(historyOf(context)).toEqual([expect.objectContaining({ runId: 's', outcome: 'failed', exitCode: 7, log: { state: 'saved', bytes: expect.any(Number), truncated: false } })])
+    expect(readFileSync(context.logs.pathOf('p', 's'), 'utf8')).toContain('install failure detail')
   })
 
   it('writes a failed entry with the exit code and the reason', async () => {
@@ -279,7 +371,7 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => 
     expect(await context.manager.settle('later')).toBe(false)
 
     expect(historyOf(context).map((entry) => [entry.runId, entry.outcome, entry.log])).toEqual([
-      ['never', 'failed', { state: 'unavailable', reason: 'the Host never ran it' }],
+      ['never', 'failed', { state: 'unavailable', reason: 'Jamat could not capture the output of this command' }],
     ])
   })
 
@@ -295,14 +387,19 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => 
     }
   }
 
-  it('keeps ten entries, dropping the oldest with its log', async () => {
+  it('keeps every entry and its log beyond ten runs', async () => {
     const context = await harness()
     await settledRuns(context, 11)
 
     expect(historyOf(context).map((entry) => entry.runId)).toEqual(
-      ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10'])
-    expect(existsSync(context.logs.pathOf('p', 's0'))).toBe(false)
+      Array.from({ length: 11 }, (_, index) => `s${index}`))
+    expect(existsSync(context.logs.pathOf('p', 's0'))).toBe(true)
     expect(existsSync(context.logs.pathOf('p', 's1'))).toBe(true)
+    const restarted = await reloaded(context)
+    const output = await restarted.manager.outputOf('p', 's0')
+    expect(output).toMatchObject({ ok: true, value: { source: 'log', state: 'succeeded' } })
+    if (!output.ok) throw new Error(output.detail)
+    expect(output.value.lines.join('\n')).toContain('run 0')
   })
 
   // The entry is what marks its run settled; without it the run would be settled again and evict another.
@@ -311,13 +408,13 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => 
     await settledRuns(context, 12, ['s0'])
 
     expect(historyOf(context).map((entry) => entry.runId)).toEqual(
-      ['s0', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10', 's11'])
+      Array.from({ length: 12 }, (_, index) => `s${index}`))
     expect(existsSync(context.logs.pathOf('p', 's0'))).toBe(true)
-    expect(existsSync(context.logs.pathOf('p', 's2'))).toBe(false)
+    expect(existsSync(context.logs.pathOf('p', 's2'))).toBe(true)
     expect(await context.manager.settle('s0')).toBe(false)
   })
 
-  it('lets the history pass the cap while every older entry still names a row', async () => {
+  it('retains every settled row without settling it again', async () => {
     const context = await harness()
     await context.store.put(record('p'))
     for (let index = 0; index < 11; index += 1) {
@@ -413,6 +510,33 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => 
     // Confirmed: the exit the Host reports next moves the run on, so it is not asked again.
     expect(await context.manager.stopRun('live')).toBe(false)
     expect(stops()).toBe(4)
+    expect(await context.manager.confirmStopped('live')).toBe(true)
+    expect(stops()).toBe(4)
+  })
+
+  it('requires Host confirmation of retained descendants even when the script root already ended', async () => {
+    const context = await harness()
+    await context.store.put(record('p'))
+    await context.store.put(install('ended'))
+    context.failure.value = { ok: false, code: 'op-rejected', status: 500, detail: 'descendant inspection failed' }
+    expect(await context.manager.confirmStopped('ended')).toBe(false)
+    expect(await context.manager.confirmStopped('ended')).toBe(false)
+    expect(context.calls.filter((call) => call.name === 'stop')).toHaveLength(2)
+    context.failure.value = null
+    context.clock.now += 60_000
+    expect(await context.manager.confirmStopped('ended')).toBe(true)
+  })
+
+  it('records human confirmation for a lost check, but cannot cancel a launch whose result is unknown', async () => {
+    const context = await harness()
+    await context.store.put(record('p'))
+    await context.store.put(install('lost', { life: 'lost', binding: null }))
+    await context.store.put(install('pending', { life: 'starting', binding: null, pendingOperationId: 'op', pendingOperationKind: 'create' }))
+    expect(await context.manager.confirmStopped('lost')).toBe(false)
+    expect(await context.manager.confirmStopped('lost', true)).toBe(true)
+    expect(context.store.get('lost')).toMatchObject({ life: 'ended', stopRequested: true, manuallyStoppedAt: context.clock.now })
+    expect(await context.manager.confirmStopped('pending', true)).toBe(false)
+    expect(context.store.get('pending')?.pendingOperationId).toBe('op')
   })
 
   // Nothing waits on its verdict, and a killed POSIX process reports 0: unmarked, it would read as a success.
@@ -460,6 +584,25 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => 
     context.failure.value = null
     expect(await context.manager.dismiss('s')).toEqual({ ok: true, value: undefined })
     expect(historyOf(context).map((entry) => entry.runId)).toEqual(['s'])
+  })
+
+  it('says the Host refused the removal of a dismissed run instead of a records failure', async () => {
+    const context = await harness()
+    await context.store.put(record('p'))
+    await context.store.put(install('s'))
+    context.runtimes.set('s', dead('s', ['done']))
+    context.host.runtimeRemove = async (target) => {
+      context.calls.push({ name: 'remove', target })
+      return { ok: false, code: 'op-rejected', status: 409, detail: 'Owned child 42 has not exited' }
+    }
+
+    expect(await context.manager.dismiss('s')).toEqual({
+      ok: false,
+      code: 'live-refused',
+      detail: 'The Host did not remove the runtime of script run s (op-rejected: Owned child 42 has not exited); '
+        + 'stop its processes, then remove the row',
+    })
+    expect(context.store.get('s')).not.toBeNull()
   })
 
   // The last check exited 0 and its gate waits a pass for the record to end: removed now, it would read as gone.
@@ -577,6 +720,7 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => 
       expect(await context.manager.outputOf('p', 's')).toEqual({ ok: true, value: {
         state: 'failed',
         source: 'live',
+        failureReason: 'the setup ended with 2',
         lines: ['failed'],
         terminal: { hostInstanceId: 'h', runtimeSessionId: 's', generation: 1 },
         endedAt: 20_000,
@@ -585,14 +729,14 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => 
 
     it('reads a retained failed run from its saved log after the Host instance changes', async () => {
       const context = await harness()
-      await context.store.put(record('p', { life: 'ended', pendingSetup: { setupSessionId: 's' } }))
+      await context.store.put(record('p', { life: 'starting', pendingSetup: { setupSessionId: 's' } }))
       await context.store.put(install('s', { exitCode: 2 }))
       context.runtimes.set('s', dead('s', ['installation failed']))
       await context.manager.settle('s')
       context.failure.value = { ok: false, code: 'op-rejected', status: 409, detail: 'Host instance mismatch' }
 
       expect(await context.manager.outputOf('p', 's')).toEqual({ ok: true, value: {
-        state: 'failed', source: 'log',
+        state: 'failed', source: 'log', failureReason: 'the setup ended with 2',
         lines: readFileSync(context.logs.pathOf('p', 's'), 'utf8').split('\n'),
         terminal: null, endedAt: 20_000,
       } })
@@ -601,7 +745,7 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => 
 
     it('keeps the missing saved-log reason for a retained failed run with an unavailable runtime', async () => {
       const context = await harness()
-      await context.store.put(record('p', { life: 'ended', pendingSetup: { setupSessionId: 's' } }))
+      await context.store.put(record('p', { life: 'starting', pendingSetup: { setupSessionId: 's' } }))
       await context.store.put(install('s', { exitCode: 2 }))
       context.runtimes.set('s', dead('s', ['installation failed']))
       await context.manager.settle('s')
@@ -609,7 +753,7 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => 
       context.failure.value = { ok: false, code: 'op-rejected', status: 409, detail: 'Host instance mismatch' }
 
       expect(await context.manager.outputOf('p', 's')).toEqual({ ok: true, value: {
-        state: 'failed', source: 'log', lines: [], logReason: 'the saved log is gone',
+        state: 'failed', source: 'log', failureReason: 'the setup ended with 2', lines: [], logReason: 'the saved log is gone',
         terminal: null, endedAt: 20_000,
       } })
     })
@@ -675,6 +819,7 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => 
       expect(await context.manager.outputOf('p', 's')).toEqual({ ok: true, value: {
         state: 'lost',
         source: 'log',
+        failureReason: 'its setup session was lost',
         lines: [],
         logReason: 'the Host restarted before the output was saved',
         terminal: null,
@@ -772,6 +917,7 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => 
   async function reloaded(context: Harness): Promise<{ manager: SessionScriptsManager; store: SessionRecordsStore }> {
     const store = await SessionRecordsStore.load(context.recordsFile, {
       snapshotsDirectory: context.snapshotsDirectory,
+      removeSessionLogs: (id) => context.logs.removeParent(id),
       report: (message) => context.reports.push(message),
     })
     const manager = new SessionScriptsManager({

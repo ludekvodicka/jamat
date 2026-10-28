@@ -1,3 +1,4 @@
+import { AccountsTab } from './tabs/accounts/accountsTab'
 import { CatalogEntries } from '../../../shared/catalogEntries'
 import type { ConfigurationTabDescriptor, ConfigurationTabId } from './configurationTab.types'
 import { AgentSettingsTab } from './tabs/agents/agentSettingsTab'
@@ -9,6 +10,7 @@ import { RemoteControlConnectTab } from './tabs/remoteControl/remoteControlConne
 import { RemoteControlConnectionsTab } from './tabs/remoteControl/remoteControlConnectionsTab'
 import { RemoteControlThisComputerTab } from './tabs/remoteControl/remoteControlThisComputerTab'
 import { SessionGroupsSettingsTab } from './tabs/sessionGroups/sessionGroupsSettingsTab'
+import { SnapinsSettingsTab } from './tabs/snapins/snapinsSettingsTab'
 import { UiSettingsTab } from './tabs/ui/uiSettingsTab'
 import { VersioningSettingsTab } from './tabs/versioning/versioningSettingsTab'
 import { WindowSettingsTab } from './tabs/window/windowSettingsTab'
@@ -30,7 +32,9 @@ export class ConfigurationTabs {
     { id: 'projects', title: 'Projects', order: 0, Component: ProjectsSettingsTab },
     { id: 'ui', title: 'UI', order: 1, Component: UiSettingsTab },
     { id: 'sessionGroups', title: 'Session groups', order: 2, Component: SessionGroupsSettingsTab },
+    { id: 'snapins', title: 'Snap-ins', order: 3, Component: SnapinsSettingsTab },
     { id: 'agents', title: 'AI agents', order: 4, Component: AgentSettingsTab },
+    { id: 'accounts', title: 'Accounts', order: 4.5, Component: AccountsTab },
     { id: 'versioning', title: 'Versioning', order: 5, Component: VersioningSettingsTab },
     { id: 'worktrees', title: 'Worktrees', order: 6, Component: WorktreesSettingsTab },
     {

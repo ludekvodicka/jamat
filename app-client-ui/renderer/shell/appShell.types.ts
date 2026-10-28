@@ -1,3 +1,4 @@
+import type { RemoteSessionTasksStore } from '../sessions/remoteSessionTasksStore'
 import type { CommitOpenStore } from '../versioning/commitOpenStore'
 import type {
   RateMonitorSnapshot,
@@ -15,6 +16,7 @@ import type { IpcResult } from '../../shared/appClientUiIpc'
 import type { AutoUpdateApi } from '../../shared/electron/autoUpdate/common/autoUpdateApi'
 import type { TerminalTarget } from '../../shared/terminalTarget'
 import type { SnapshotStore, SnapshotStorePorts } from '../ipc/snapshotStore'
+import type { SessionFinishRequests } from '../sessions/sessionFinishRequests'
 import type { SessionsMarksStore } from '../sessions/sessionsMarksStore'
 import type { SessionTasksStore } from '../sessions/sessionTasksStore'
 import type { HostStatusPorts } from '../statusBar/hostStatusItem'
@@ -34,7 +36,6 @@ import type { AgentSettingsStore } from '../contextCompaction/agentSettingsStore
 import type { ContextCompactionController } from '../contextCompaction/contextCompactionController'
 import type { WorktreeSetupIntentStore } from '../overlays/configuration/worktreeSetupIntentStore'
 import type { FinalizeAsk } from '../overlays/finalize/finalizeModel'
-import type { UpdateMainAsk } from '../overlays/updateMain/updateMainOverlay'
 import type { LauncherIntentStore } from '../overlays/launcher/launcherIntentStore'
 import type { ConfigurationTabId } from '../overlays/configuration/configurationTab.types'
 import type { ActiveTerminalStore } from './activeTerminalStore'
@@ -101,6 +102,7 @@ export interface WorkspaceShellWiring {
   sessionPorts: AppShellSessionPorts
   sessionsSnapshot: SnapshotStore<SessionsSnapshot>
   sessionTasks: SessionTasksStore
+  remoteTasks: RemoteSessionTasksStore
   remotePorts: AppShellRemotePorts
   remoteSnapshot: SnapshotStore<RemoteConnectionsSnapshot>
   /**
@@ -118,6 +120,7 @@ export interface WorkspaceShellWiring {
   rateSnapshot: SnapshotStore<RateMonitorSnapshot>
   /** Every workspace draws the update too: what is installed is the application's, not one window's. */
   autoUpdate: AutoUpdateApi
+  cliUpdates: import('../statusBar/agentCliUpdateStatusItem').AgentCliUpdatePorts
   /**
    * Which source-aware terminal target this document has in front, written by the wrap around the
    * active-panel port. Per document rather than per application: the cross-window answer clears
@@ -131,9 +134,10 @@ export interface WorkspaceShellWiring {
   sessionModel: SessionModelStore
   launcherCommands: LateBoundCommandPort<void>
   settingsCommands: LateBoundCommandPort<ConfigurationTabId | null>
-  detailsCommands: LateBoundCommandPort<string>
+  detailsCommands: LateBoundCommandPort<{ sessionId: string; remoteEndpointId?: string }>
   finalizeCommands: LateBoundCommandPort<FinalizeAsk>
-  updateMainCommands: LateBoundCommandPort<UpdateMainAsk>
+  /** A tab's Finish, handed to the sessions tree row that owns what Finish does. */
+  finishRequests: SessionFinishRequests
   remarkableCommands: LateBoundCommandPort<void>
   intents: LauncherIntentStore
   worktreeSetupIntents: WorktreeSetupIntentStore
@@ -146,7 +150,7 @@ export interface WorkspaceShellWiring {
    * What a tab's menu is drawn from, read when that menu opens. It is a function rather than the
    * store itself because a tab asks about ONE session, and the menu that asks lives for a moment.
    */
-  sessionFacts(sessionId: string): TabSessionFacts | null
+  sessionFacts(sessionId: string, remoteEndpointId?: string): TabSessionFacts | null
 }
 
 export interface MainShellWiring extends WorkspaceShellWiring {

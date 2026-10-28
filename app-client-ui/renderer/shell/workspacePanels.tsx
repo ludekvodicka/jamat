@@ -1,3 +1,7 @@
+import type { SessionViewOpenRequest } from '../../../lib-orchestrator/remoteControl/remoteSessionApi.types'
+import { TabControlTask, type TabControlTaskRef } from '../../shared/tabControl'
+import { SharedSessionViews } from '../panels/terminal/sharedSessionViews'
+import { SessionWorkspaceKeys } from '../../shared/sessionWorkspace'
 import type {
   FileViewerDocumentSource,
   FileViewerLocation,
@@ -50,11 +54,13 @@ export class WorkspacePanels {
     documentKey: string,
     baselineHint?: FileViewerBaselineHint,
     location?: FileViewerLocation,
+    target?: TerminalTarget,
   ): Promise<PanelOpenOutcome> {
     const title = WorkspacePanels.leafOf(source.path, 'File')
     const params = {
       sessionId: source.sessionId,
       source,
+      ...(target?.kind === 'remote' ? { target } : {}),
       ...(baselineHint === undefined ? {} : { baselineHint }),
       ...(location === undefined ? {} : { location }),
     }
@@ -77,8 +83,9 @@ export class WorkspacePanels {
    */
   static commandTargetOf(
     controller: TabsController,
-    arg: { sessionId?: string } | undefined,
+    arg: { sessionId?: string; remoteEndpointId?: string } | undefined,
   ): { sessionId: string; panelId: string | null } | null {
+    if (arg?.remoteEndpointId !== undefined) return null
     if (arg?.sessionId !== undefined)
       return { sessionId: arg.sessionId, panelId: null }
     const active = WorkspacePanels.activeTerminalOf(controller.activePanelId())
@@ -120,12 +127,13 @@ export class WorkspacePanels {
     sessionId: string,
     path: string,
     directoryKey: string,
+    target?: TerminalTarget,
   ): void {
     void controller.openPanel(
       PanelKeysConst.directoryViewer,
       WorkspacePanels.leafOf(path, 'Directory'),
-      { sessionId, path },
-      `${PanelKeysConst.directoryViewer}:${directoryKey}`,
+      { sessionId, path, ...(target?.kind === 'remote' ? { target } : {}) },
+      `${PanelKeysConst.directoryViewer}:${target?.kind === 'remote' ? SessionWorkspaceKeys.of(target, directoryKey) : directoryKey}`,
     ).then((outcome) => WorkspacePanels.reportPanelOpen(outcome))
   }
 
@@ -220,13 +228,81 @@ export class WorkspacePanels {
     )
   }
 
+  static async openTask(controller: TabsController, target: TerminalTarget, task: TabControlTaskRef, title: string): Promise<void> {
+    const outcome = await WorkspacePanels.openTerminal(controller, target, title)
+    if (outcome.kind === 'failed') { WorkspacePanels.reportPanelOpen(outcome); return }
+    const key = TabControlTask.keyOf(target.sessionId, task)
+    const result = await WorkspacePanels.tabControlResult(controller, { kind: 'open-task', requestId: crypto.randomUUID(), panelId: outcome.panelId,
+      target, item: { sessionId: target.sessionId, task, title, key: target.kind === 'remote' ? SessionWorkspaceKeys.of(target, key) : key } })
+    if (result.kind === 'failed') {
+      const forwarded = await window.appClient.tabs.openSessionTask(target, task, title)
+      if (!forwarded.ok) { AppClientUiReport.error(forwarded.error); return }
+    }
+    await WorkspacePanels.shareItem(target, { kind: 'task', task })
+  }
+
+  static async openSessionActions(controller: TabsController, target: TerminalTarget, title: string): Promise<void> {
+    const outcome = await WorkspacePanels.openTerminal(controller, target, title)
+    if (outcome.kind === 'failed') { WorkspacePanels.reportPanelOpen(outcome); return }
+    const applied = controller.applyPanelParameters(outcome.panelId, (params) => {
+      const reading = TerminalTargetCodec.read(params)
+      if (!reading || TerminalTargetCodec.key(reading.target) !== TerminalTargetCodec.key(target)) return params
+      const item = PanelSplitParams.workflowItemOf(target.sessionId, target.kind === 'remote' ? target : undefined)
+      const opened = PanelSplitParams.opened(PanelSplitParams.of(params), item)
+      return opened.ok ? PanelSplitParams.merged(params, opened.state) : params
+    })
+    if (applied) {
+      requestAnimationFrame(() => controller.focusPanelContent(outcome.panelId))
+      await WorkspacePanels.shareItem(target, { kind: 'workflow' })
+    }
+    else {
+      const result = await window.appClient.tabs.openSessionActions(target)
+      if (!result.ok) AppClientUiReport.error(result.error)
+      else await WorkspacePanels.shareItem(target, { kind: 'workflow' })
+    }
+  }
+
+  private static async shareItem(target: TerminalTarget, item: SessionViewOpenRequest['item']): Promise<void> {
+    const openId = crypto.randomUUID()
+    try {
+      SharedSessionViews.remember(target, openId)
+      if (target.kind === 'local') {
+        if (!window.appClient.tabs.openSharedItem) return
+        const result = await window.appClient.tabs.openSharedItem(target.sessionId, { openId, item })
+        if (!result.ok) throw new Error(result.error)
+      } else if (target.kind === 'remote') {
+        if (!window.appClient.remote.openSharedItem) return
+        const opened = await window.appClient.remote.openView(target.remoteEndpointId, target.sessionId)
+        if (!opened.ok) throw new Error(opened.error)
+        if (!opened.value.ok) throw new Error(opened.value.error.detail)
+        try {
+          const result = await window.appClient.remote.openSharedItem(target.remoteEndpointId, opened.value.value.viewId, { openId, item })
+          if (!result.ok) throw new Error(result.error)
+          if (!result.value.ok) throw new Error(result.value.error.detail)
+        } finally { await window.appClient.remote.closeView(target.remoteEndpointId, opened.value.value.viewId) }
+      } else throw new Error(`Unknown session target: ${JSON.stringify(target)}`)
+    } catch (error) { AppClientUiReport.error(`Shared session item open failed: ${ErrorText.of(error)}`) }
+  }
+
   static async runTabControlCommand(
     controller: TabsController,
     command: TabControlCommand,
   ): Promise<void> {
     let result: TabControlCommandResult
     try {
-      result = await WorkspacePanels.tabControlResult(controller, command)
+      const shared = command.sharedOpen
+      const target = shared ? { kind: 'local' as const, sessionId: shared.sessionId } : null
+      if (shared && target && SharedSessionViews.consumed(target, shared.openId) && 'panelId' in command) {
+        if (command.kind === 'open-file') result = { kind: 'file-opened', panelId: command.panelId }
+        else if (command.kind === 'open-task') result = { kind: 'task-opened', panelId: command.panelId }
+        else if (command.kind === 'open-workflow') result = { kind: 'workflow-opened', panelId: command.panelId }
+        else if (command.kind === 'open-commit') result = { kind: 'commit-opened', panelId: command.panelId }
+        else if (command.kind === 'open-snapin') result = await WorkspacePanels.tabControlResult(controller, command)
+        else throw new Error('Shared identity is only valid for a semantic open')
+      } else {
+        result = await WorkspacePanels.tabControlResult(controller, command)
+        if (shared && target && result.kind !== 'failed') SharedSessionViews.remember(target, shared.openId)
+      }
     } catch (error) {
       result = { kind: 'failed', detail: ErrorText.of(error) }
     }
@@ -242,7 +318,16 @@ export class WorkspacePanels {
     controller: TabsController,
     command: TabControlCommand,
   ): Promise<TabControlCommandResult> {
-    if (command.kind === 'open-session') {
+    if (command.kind === 'open-snapin') {
+      if (controller.keyOf(command.panelId) === PanelKeysConst.snapin) {
+        controller.activatePanel(command.panelId)
+        return { kind: 'snapin-opened', panelId: command.panelId }
+      }
+      const outcome = await controller.openPanel(PanelKeysConst.snapin, command.title, { kind: command.snapinKind }, command.panelId)
+      if (outcome.kind === 'opened' || outcome.kind === 'focusedExisting') return { kind: 'snapin-opened', panelId: outcome.panelId }
+      else if (outcome.kind === 'failed') return outcome
+      else throw new Error(`Unknown panel open outcome: ${JSON.stringify(outcome satisfies never)}`)
+    } else if (command.kind === 'open-session') {
       const outcome = await WorkspacePanels.openTerminal(
         controller,
         { kind: 'local', sessionId: command.sessionId },
@@ -287,7 +372,10 @@ export class WorkspacePanels {
         return { kind: 'failed', detail: `Not a terminal panel: ${command.panelId}` }
       let refusal: string | null = null
       const applied = controller.applyPanelParameters(command.panelId, (params) => {
-        const result = PanelSplitParams.opened(PanelSplitParams.of(params), { kind: 'task', ...command.item })
+        const target = command.target ?? { kind: 'local' as const, sessionId: command.item.sessionId }
+        const reading = TerminalTargetCodec.read(params)
+        if (!reading || TerminalTargetCodec.key(reading.target) !== TerminalTargetCodec.key(target)) { refusal = 'The session terminal target has changed'; return params }
+        const result = PanelSplitParams.opened(PanelSplitParams.of(params), { kind: 'task', ...command.item, ...(command.target ? { target: command.target } : {}) })
         if (!result.ok) { refusal = result.refusal; return params }
         return PanelSplitParams.merged(params, result.state)
       })
@@ -301,7 +389,14 @@ export class WorkspacePanels {
         return { kind: 'failed', detail: `Not a terminal panel: ${command.panelId}` }
       let refusal: string | null = null
       const applied = controller.applyPanelParameters(command.panelId, (params) => {
-        const result = PanelSplitParams.workflowOpened(PanelSplitParams.of(params), command.sessionId)
+        const target = command.target ?? { kind: 'local' as const, sessionId: command.sessionId }
+        const reading = TerminalTargetCodec.read(params)
+        if (reading === null || TerminalTargetCodec.key(reading.target) !== TerminalTargetCodec.key(target)) {
+          refusal = 'The session terminal target has changed'
+          return params
+        }
+        const result = PanelSplitParams.opened(PanelSplitParams.of(params),
+          PanelSplitParams.workflowItemOf(target.sessionId, target.kind === 'remote' ? target : undefined))
         if (!result.ok) { refusal = result.refusal; return params }
         return PanelSplitParams.merged(params, result.state)
       })
@@ -316,19 +411,24 @@ export class WorkspacePanels {
       let refusal: string | null = null
       const applied = controller.applyPanelParameters(command.panelId, (params) => {
         const previous = PanelSplitParams.of(params)
-        const key = PanelSplitParams.commitKeyOf(command.vcs, command.scopeRoot, command.paths)
+        if (command.target && TerminalTargetCodec.key(TerminalTargetCodec.read(params)?.target ?? { kind: 'local', sessionId: '' }) !== TerminalTargetCodec.key(command.target)) {
+          refusal = 'The review belongs to another session target'
+          return params
+        }
+        const key = command.itemKey ?? PanelSplitParams.commitKeyOf(command.vcs, command.scopeRoot, command.paths)
         if (command.existingOnly && !previous.items.some((item) => item.key === key)) {
           refusal = 'The commit dialog is no longer open'
           return params
         }
         const result = PanelSplitParams.opened(previous, {
           kind: 'commit', key, title: command.title,
+          ...(command.target ? { target: command.target } : {}), ...(command.reviewId ? { reviewId: command.reviewId } : {}), ...(command.openId ? { openId: command.openId } : {}),
           vcs: command.vcs, scopeRoot: command.scopeRoot,
           ...(command.paths === undefined ? {} : { paths: command.paths }),
         })
         if (!result.ok) { refusal = result.refusal; return params }
         return PanelSplitParams.merged(params, command.activate === false && previous.active !== null
-          ? { ...result.state, active: previous.active, history: previous.history } : result.state)
+          ? { ...result.state, active: previous.active, history: previous.history, recent: previous.recent } : result.state)
       })
       if (applied && refusal === null && command.activate !== false) {
         controller.activatePanel(command.panelId)
@@ -427,8 +527,8 @@ export class WorkspacePanels {
       AppClientUiReport.error(`${what} failed: ${ErrorText.of(error)}`))
   }
 
-  static async finishTransferOut(controller: TabsController, panelId: string): Promise<void> {
-    await controller.removeTransferred(panelId)
+  static async closeReleasedPanel(controller: TabsController, panelId: string): Promise<void> {
+    await controller.hidePanel(panelId, { silent: true })
     if (controller.panelCount() === 0)
       await controller.clearLayoutOrThrow()
     else

@@ -6,7 +6,7 @@ import type { SessionHostPort } from './sessionLifecycle'
 
 /** What the lifecycle does for a launched run: the record writes every other launch makes too. */
 export interface ScriptRunLaunchPort {
-  plannedLaunch(record: SessionRecord, launch: 'create' | 'reopen'): RuntimeLaunchSpec
+  plannedLaunch(record: SessionRecord, launch: 'create' | 'reopen'): RuntimeLaunchSpec | Promise<RuntimeLaunchSpec>
   /** Why this run cannot be planned on this machine (a direct-process tool that is not there), or null. */
   launchProblem(record: SessionRecord): string | null
   bindLive(record: SessionRecord, result: RuntimeResult): Promise<boolean>
@@ -48,7 +48,7 @@ export class ScriptRunLauncher {
     const result = await this.host.runtimeCreate({
       operationId: run.pendingOperationId,
       runtimeSessionId: run.sessionId,
-      launch: this.port.plannedLaunch(run, 'create'),
+      launch: await this.port.plannedLaunch(run, 'create'),
     })
     if (!result.ok) {
       if (OperationOutcomes.decided(result)) await this.port.endRefused(run, result.detail)

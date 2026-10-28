@@ -2,7 +2,6 @@ import { useLayoutEffect, useRef, useState } from 'react'
 
 import type { SessionScriptOutput, SessionScriptRunState } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { ErrorText } from '../../shared/errorText'
-import { AppControl } from '../ipc/appControl'
 import { SubagentTranscriptText } from './subagentTranscriptView'
 
 export function ScriptOutputView(props: {
@@ -10,6 +9,8 @@ export function ScriptOutputView(props: {
   title: string
   runId: string
   error?: string
+  openTerminal?(runId: string): Promise<string | null>
+  onClose?(): void
 }): React.JSX.Element {
   const { output } = props
   const body = useRef<HTMLDivElement | null>(null)
@@ -23,13 +24,11 @@ export function ScriptOutputView(props: {
   }, [output])
 
   const openTerminal = async (): Promise<void> => {
-    if (opening || output.terminal === null) return
+    if (opening || output.terminal === null || !props.openTerminal) return
     setOpening(true)
     setOpenError(null)
     try {
-      const answer = await AppControl.call('tabs.open', { session: { kind: 'sessionId', sessionId: props.runId } })
-      if (!answer.ok) setOpenError(answer.error)
-      else if (!answer.value.ok) setOpenError(answer.value.error.detail)
+      setOpenError(await props.openTerminal(props.runId))
     } catch (thrown) {
       setOpenError(ErrorText.of(thrown))
     } finally {
@@ -40,21 +39,25 @@ export function ScriptOutputView(props: {
   return (
     <div className="task-view">
       <header className="task-view__header">
-        <div className="task-view__title">{props.title}</div>
-        <div className="task-view__facts" data-state={output.state}>
-          {ScriptOutputText.stateOf(output.state)} · {ScriptOutputText.sourceOf(output.source)}
+        <div className="task-view__heading"><div className="task-view__title">{props.title}</div>
+          {props.onClose !== undefined && <button type="button" className="task-view__close" aria-label={`Close log: ${props.title}`}
+            onClick={props.onClose}>Close log</button>}
         </div>
-        {output.terminal !== null && <button className="task-view__more" type="button" disabled={opening}
+        <div className="task-view__facts" data-state={output.state}>
+          {ScriptOutputText.stateOf(output.state)} · {output.source === 'log' && output.logReason !== undefined ? 'Log unavailable' : ScriptOutputText.sourceOf(output.source)}
+        </div>
+        {props.openTerminal && output.terminal !== null && <button className="task-view__more" type="button" disabled={opening}
           onClick={() => { void openTerminal() }}>Open terminal</button>}
         {props.error !== undefined && <p className="task-view__note task-view__failed">{props.error}</p>}
         {openError !== null && <p className="task-view__note task-view__failed">{openError}</p>}
+        {output.failureReason !== undefined && <p className={output.state === 'stopped' ? 'task-view__note' : 'task-view__note task-view__failed'}>{output.failureReason}</p>}
+        {output.logReason !== undefined && <p className="task-view__note">{output.logReason}</p>}
       </header>
       <div className="task-view__entries" ref={body} onScroll={(event) => {
         const element = event.currentTarget
         stick.current = element.scrollHeight - element.scrollTop - element.clientHeight
           <= SubagentTranscriptText.bottomSlackPixelsConst
       }}>
-        {output.logReason !== undefined && <p className="task-view__note">{output.logReason}</p>}
         {output.lines.length === 0
           ? <p className="task-view__note">{output.state === 'running' ? 'No output yet.' : 'No output.'}</p>
           : <div className="task-view__text" data-testid="script-output-text">{output.lines.join('\n')}</div>}

@@ -1,0 +1,31 @@
+{
+  "agent": "codex",
+  "expected": {
+    "hint": "idle",
+    "composer": {
+      "state": "text",
+      "text": "tak"
+    },
+    "queuedRow": false,
+    "echoHead": null,
+    "pastePlaceholders": 0
+  },
+  "provenance": {
+    "origin": "the terminal snapshot (sessions terminal peek) of the Codex worker of Finish 072 in this tree's live Host, read during that Finish",
+    "case": "a finished turn whose input box holds a draft the person typed and never sent",
+    "capture": "the frame that made a Finish wait for hours: the turn closed with \"Worked for 2h 59m 37s • 18:03\", the box held \"tak\", and the inspector read unknown, so the Commit step said the activity of the worker is unknown. Built with ScreenTail.frameOf from the snapshot screen (no raw ring in a snapshot); worktree path, session title and a temporary folder name sanitized; ANSI intact",
+    "ported": "nothing - recorded in this tree",
+    "identical": "not present in the V1 or V2 corpus"
+  },
+  "recorded": {
+    "build": "codex-cli, version not in the snapshot (model GPT-6-Astra xhigh)",
+    "capturedAt": "2026-10-27",
+    "cols": 127,
+    "rows": 72
+  },
+  "frame": {
+    "rawTail": "",
+    "screenTail": "                                                                                                                               \n     \u001b[0m                                                                                                                          \n                                                                                                                               \n       \n\n\u001b[1m›\u001b[0m tak\n\n  \u001b[36mGPT-6-Astra xhigh \u001b[0m· \u001b[32mQ:\\PROJECT\\.worktrees\\072-task \u001b[0m· \u001b[35mSession title \u001b[0m· Main [default]\u001b[2A\u001b[141D\u001b[?2004h\u001b[?1004h\u001b[?1003h\u001b[?1006h",
+    "wideScreenTail": "                                                                                                                              A\nutomatická kontrola schválení odmítla smazání dočasné složky \u001b[38;2;166;227;161musage-ui-XXXXXX \u001b[0ms důvodem „blocked by policy“. Složka zůstala     \n                                                                                                                               \n zachovaná, její pomocný proces je ukončený.                                                                                  v\nisející proces byl ukončen.                                                                                                    \n                                                                                                                               \n ------------------------------------------------------------------------------------------------------------------------------\n----\u001b[1D\u001b[1X\u001b[A\u001b[127C\u001b[129X\u001b[127D\u001b[B\u001b[2m  Worked for 2h 59m 37s • 18:03                                                                                             \n                                                                                                                               \n     \u001b[0m                                                                                                                          \n                                                                                                                               \n       \n\n\u001b[1m›\u001b[0m tak\n\n  \u001b[36mGPT-6-Astra xhigh \u001b[0m· \u001b[32mQ:\\PROJECT\\.worktrees\\072-task \u001b[0m· \u001b[35mSession title \u001b[0m· Main [default]\u001b[2A\u001b[141D\u001b[?2004h\u001b[?1004h\u001b[?1003h\u001b[?1006h"
+  }
+}

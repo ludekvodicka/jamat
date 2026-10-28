@@ -57,6 +57,8 @@ class DirectoryViewerHarness {
         value: { ok: true as const, value: document },
       })),
       release: vi.fn(async () => ({ ok: true as const, value: undefined })),
+      mediaResource: vi.fn(async () => ({ ok: true as const, value: { ok: true as const, value: { resourceId: 'image-token', mimeType: 'image/png', size: 10, contentVersion: '10:1' } } })),
+      text: vi.fn(),
     }
     ;(window as unknown as { appClient: AppClientUiBridge }).appClient = {
       fileViewer,
@@ -155,14 +157,32 @@ describe('app-client-ui/renderer/fileViewer/directoryViewerPanel', () => {
     delete (window as unknown as { appClient?: unknown }).appClient
   })
 
+  it.each(['panel', 'sidebar'] as const)('opens images directly from a %s menu and releases them when closed', async (place) => {
+    const root = DirectoryViewerHarness.root()
+    const image = { ...root.entries[1], name: 'picture.PNG', path: 'C:/work/picture.PNG' }
+    const { fileViewer, document } = DirectoryViewerHarness.install({ ...root, entries: [image] })
+    document.kind = { kind: 'image', mimeType: 'image/png', animated: false }
+    const onOpen = vi.fn()
+    render(<DirectoryExplorer ports={fileViewer} sessionId="session-1" documentId={null} targetPath={null} place={place} onOpen={onOpen} />)
+    fireEvent.contextMenu(await screen.findByRole('button', { name: /picture.PNG/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Open image full screen' }))
+    expect(await screen.findByRole('img')).toHaveAttribute('src', 'jamat-v3-file://resource/image-token')
+    expect(onOpen).not.toHaveBeenCalled()
+    expect(fileViewer.release).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Close image viewer' }))
+    expect(fileViewer.release).toHaveBeenCalledExactlyOnceWith(document.documentId)
+    expect(screen.getByRole('button', { name: /picture.PNG/ })).toHaveFocus()
+  })
+
   it('opens a file from View in another FileViewer flow and releases the temporary grant', async () => {
     const { document, fileViewer } = DirectoryViewerHarness.install()
     const openFile = vi.fn()
     const props = {
       params: { sessionId: 'session-1' },
+      ports: window.appClient.fileViewer,
       openFile,
     } as unknown as DirectoryViewerPanelProps
-    render(<DirectoryViewerPanel {...props} />)
+    render(<DirectoryViewerPanel {...props} ports={window.appClient.fileViewer} />)
     const file = await screen.findByRole('button', { name: /readme\.md/ })
 
     fireEvent.contextMenu(file, { clientX: 20, clientY: 30 })
@@ -184,7 +204,7 @@ describe('app-client-ui/renderer/fileViewer/directoryViewerPanel', () => {
       params: { sessionId: 'session-1' },
       openFile: vi.fn(),
     } as unknown as DirectoryViewerPanelProps
-    render(<DirectoryViewerPanel {...props} />)
+    render(<DirectoryViewerPanel {...props} ports={window.appClient.fileViewer} />)
     const directory = await screen.findByRole('button', { name: /src/ })
 
     fireEvent.contextMenu(directory, { clientX: 20, clientY: 30 })
@@ -220,7 +240,7 @@ describe('app-client-ui/renderer/fileViewer/directoryViewerPanel', () => {
       params: { sessionId: 'session-1' },
       openFile: vi.fn(),
     } as unknown as DirectoryViewerPanelProps
-    render(<DirectoryViewerPanel {...props} />)
+    render(<DirectoryViewerPanel {...props} ports={window.appClient.fileViewer} />)
     const directory = await screen.findByRole('button', { name: /src/ })
 
     fireEvent.contextMenu(directory, { clientX: 20, clientY: 30 })
@@ -242,7 +262,7 @@ describe('app-client-ui/renderer/fileViewer/directoryViewerPanel', () => {
     const { fileViewer } = DirectoryViewerHarness.install()
     const onOpen = vi.fn()
     render(
-      <DirectoryExplorer
+      <DirectoryExplorer ports={window.appClient.fileViewer}
         sessionId="session-1"
         documentId={null}
         targetPath={null}
@@ -271,7 +291,7 @@ describe('app-client-ui/renderer/fileViewer/directoryViewerPanel', () => {
     }))
     const onOpen = vi.fn()
     render(
-      <DirectoryExplorer
+      <DirectoryExplorer ports={window.appClient.fileViewer}
         sessionId="session-1"
         documentId={null}
         targetPath={null}
@@ -297,7 +317,7 @@ describe('app-client-ui/renderer/fileViewer/directoryViewerPanel', () => {
     }))
     const onOpen = vi.fn()
     const view = render(
-      <DirectoryExplorer
+      <DirectoryExplorer ports={window.appClient.fileViewer}
         sessionId="session-1"
         documentId={null}
         targetPath={null}
@@ -334,7 +354,7 @@ describe('app-client-ui/renderer/fileViewer/directoryViewerPanel', () => {
       openFile: vi.fn(),
     } as unknown as DirectoryViewerPanelProps
 
-    render(<DirectoryViewerPanel {...props} />)
+    render(<DirectoryViewerPanel {...props} ports={window.appClient.fileViewer} />)
 
     expect(await screen.findByRole('button', { name: /run\.log/ })).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Directory path' }))
@@ -359,7 +379,7 @@ describe('app-client-ui/renderer/fileViewer/directoryViewerPanel', () => {
       openFile: vi.fn(),
     } as unknown as DirectoryViewerPanelProps
 
-    render(<DirectoryViewerPanel {...props} />)
+    render(<DirectoryViewerPanel {...props} ports={window.appClient.fileViewer} />)
 
     expect(await screen.findByText(/open it from the terminal again/))
       .toHaveClass('file-tools-error')
@@ -377,7 +397,7 @@ describe('app-client-ui/renderer/fileViewer/directoryViewerPanel', () => {
       openFile: vi.fn(),
     } as unknown as DirectoryViewerPanelProps
 
-    render(<DirectoryViewerPanel {...props} />)
+    render(<DirectoryViewerPanel {...props} ports={window.appClient.fileViewer} />)
 
     expect(await screen.findByRole('navigation', { name: 'Directory path' }))
       .toHaveAttribute('title', 'C:/work')
@@ -415,7 +435,7 @@ describe('app-client-ui/renderer/fileViewer/directoryViewerPanel', () => {
       params: { sessionId: 'session-1' },
       openFile: vi.fn(),
     } as unknown as DirectoryViewerPanelProps
-    render(<DirectoryViewerPanel {...props} />)
+    render(<DirectoryViewerPanel {...props} ports={window.appClient.fileViewer} />)
 
     const root = await screen.findByRole('button', { name: 'C:\\' })
     expect(screen.getByRole('button', { name: 'Projects' })).toBeInTheDocument()

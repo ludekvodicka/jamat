@@ -84,6 +84,17 @@ describe('lib-orchestrator/sessionManager/scripts/scriptRunOutcome', () => {
       .toEqual({ kind: 'failed', outcome: 'stopped', reason: 'its setup was stopped' })
   })
 
+  // A Finish cleanup stops a run while a reconcile pass may settle its exit before the client marks the
+  // stop; the Host's own witness then says the ending was asked, and Ctrl+C on Windows exits 0xC000013A.
+  it('reads a run the Host stopped as stopped, whatever exit code the stop left', () => {
+    expect(judge([run({ life: 'live' })], [runtime({ alive: false, exitCode: -1073741510, exitReason: 'stopped' })]))
+      .toEqual({ kind: 'failed', outcome: 'stopped', reason: 'its setup was stopped' })
+    expect(judge([run({ life: 'ended', exitCode: -1073741510, exitReason: 'stopped' })]))
+      .toEqual({ kind: 'failed', outcome: 'stopped', reason: 'its setup was stopped' })
+    expect(judge([run({ life: 'ended', exitCode: -1073741510, exitReason: 'process-exit' })]))
+      .toMatchObject({ outcome: 'failed', exitCode: -1073741510 })
+  })
+
   it('reads a run nothing can finish any more as lost', () => {
     expect(judge([])).toEqual({ kind: 'failed', outcome: 'lost', reason: 'its setup session record is gone' })
     expect(judge([run({ pendingOperationId: undefined, pendingOperationKind: undefined })]))

@@ -1,9 +1,10 @@
+import type { RemoteSessionViewRequest } from '../../../lib-orchestrator/remoteControl/remoteSessionApi.types'
 import type { IpcMainInvokeEvent, WebContents } from 'electron'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { RemoteControlRequestUnion } from '../../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import type { RemoteControlPeerApplicationMessage } from '../../../lib-orchestrator/remoteControl/remoteControlPeerApi.types'
-import type { AppClientUiIpcInvokeMap } from '../../shared/appClientUiIpc'
+import type { AppClientUiIpcInvokeMap, IpcResult } from '../../shared/appClientUiIpc'
 import type { RemoteControlInboundRegistry } from './remoteControlInboundRegistry'
 import type { RemoteConnectionsManager } from './remoteConnectionsManager'
 import { ServiceRemoteControlIpc } from './serviceRemoteControlIpc'
@@ -56,6 +57,18 @@ describe('app-client-ui/app/remoteControl/serviceRemoteControlIpc', () => {
     expect(serialized).not.toContain('token')
   })
 
+  it('preserves source command operation IDs and admits no approval through the generic command channel', async () => {
+    const sender = new ServiceRemoteControlIpcTestSender()
+    const command = { operation: 'sessions.fork' as const, operationId: 'one-fork', body: { session: { kind: 'sessionId' as const, sessionId: 'source' } } }
+    await ServiceRemoteControlIpcTest.invoke('remote:session-command', sender, 'endpoint-a', command)
+    expect(calls).toContainEqual({ method: 'execute', args: ['endpoint-a', expect.objectContaining(command)] })
+    const answer = await ServiceRemoteControlIpcTest.invoke('remote:session-command', sender, 'endpoint-a', {
+      ...command, operation: 'sessions.finishWorktree', body: { ...command.body, choice: 'commit', confirmWorking: true },
+    } as never)
+    expect(answer).toMatchObject({ ok: false, error: expect.stringContaining('not admitted') })
+    expect(calls.filter((call) => call.method === 'execute')).toHaveLength(1)
+  })
+
   /*
    * Two windows on the same screen are two holds, so one closing its card cannot hang up the other
    * one's connection. The key carries the window and the reason for exactly that reason.
@@ -91,6 +104,14 @@ describe('app-client-ui/app/remoteControl/serviceRemoteControlIpc', () => {
       `renderer ${sender.id} launcher-computers`,
       `renderer ${sender.id} network-settings`,
     ])
+  })
+
+  it('refuses worktree creation before sending to a peer without setup views', async () => {
+    const sender = new ServiceRemoteControlIpcTestSender()
+    const answer = await ServiceRemoteControlIpcTest.invoke('remote:sessions-create', sender, 'outbound',
+      { kind: 'shell', directory: { mode: 'default' }, worktree: { slug: 'child' } }, 'child-create')
+    expect(answer).toMatchObject({ ok: true, value: { ok: false, error: { code: 'unavailable' } } })
+    expect(calls.filter((call) => call.method === 'execute')).toEqual([])
   })
 
   it('builds exact semantic requests for create, reopen and finalize', async () => {
@@ -172,11 +193,13 @@ describe('app-client-ui/app/remoteControl/serviceRemoteControlIpc', () => {
     await ServiceRemoteControlIpcTest.invoke(
       'remote:projects-list', sender, 'endpoint-a', { categoryId: 'nodejs', sort: 'recent' })
     await ServiceRemoteControlIpcTest.invoke('remote:agents-describe', sender, 'endpoint-a')
+    await ServiceRemoteControlIpcTest.invoke('remote:accounts-list', sender, 'endpoint-a')
 
     const requests = calls.filter((call) => call.method === 'execute').map((call) => call.args[1])
     expect(requests).toMatchObject([
       { operation: 'projects.list', body: { categoryId: 'nodejs', sort: 'recent' } },
       { operation: 'agents.describe', body: {} },
+      { operation: 'accounts.list', body: {} },
     ])
     expect(requests.every((request) =>
       !Object.hasOwn(request as Record<string, unknown>, 'operationId'))).toBe(true)
@@ -241,6 +264,22 @@ describe('app-client-ui/app/remoteControl/serviceRemoteControlIpc', () => {
       error: 'Remote terminal attach is not owned by this renderer: attach-a',
     })
   })
+  it('owns independent view leases per pane and releases every lease on navigation', async () => {
+    const one = new ServiceRemoteControlIpcTestSender()
+    const other = new ServiceRemoteControlIpcTestSender()
+    const a = await ServiceRemoteControlIpcTest.invoke('remote:view-open', one, 'endpoint', 'session')
+    const b = await ServiceRemoteControlIpcTest.invoke('remote:view-open', one, 'endpoint', 'session')
+    if (!a.ok || !a.value.ok || !b.ok || !b.value.ok) throw new Error('No view')
+    expect(a.value.value.viewId).not.toBe(b.value.value.viewId)
+    expect(await ServiceRemoteControlIpcTest.invoke('remote:view-close', other, 'endpoint', a.value.value.viewId)).toMatchObject({ ok: false })
+    expect(await ServiceRemoteControlIpcTest.invoke('remote:view-detail', one, 'foreign-endpoint', a.value.value.viewId)).toMatchObject({ ok: false })
+    await ServiceRemoteControlIpcTest.invoke('remote:view-close', one, 'endpoint', a.value.value.viewId)
+    expect(await ServiceRemoteControlIpcTest.invoke('remote:view-detail', one, 'endpoint', b.value.value.viewId)).toMatchObject({ ok: true })
+    one.fire('did-start-navigation')
+    const closes = calls.filter((call) => call.method === 'sessionView' && (call.args[1] as RemoteSessionViewRequest).operation === 'views.close')
+    expect(closes).toHaveLength(2)
+  })
+
 })
 
 class ServiceRemoteControlIpcTest {
@@ -249,6 +288,12 @@ class ServiceRemoteControlIpcTest {
     captureFrame: (callback: (frame: unknown) => void) => void,
   ): RemoteConnectionsManager {
     return {
+      viewEpoch: () => 'epoch',
+      sessionView: async (endpoint: string, request: RemoteSessionViewRequest) => {
+        calls.push({ method: 'sessionView', args: [endpoint, request] })
+        return { ok: true, value: request.operation === 'views.open' ? { viewId: request.body.viewerId, epoch: request.epoch, ...request.body } : null }
+      },
+      sessionDetail: async () => ({ ok: true, value: {} }),
       snapshot: () => ({
         revision: 1,
         outbound: [{ remoteEndpointId: 'outbound' }],
@@ -315,14 +360,14 @@ class ServiceRemoteControlIpcTest {
     }
   }
 
-  static async invoke(
-    channel: keyof AppClientUiIpcInvokeMap,
+  static async invoke<K extends keyof AppClientUiIpcInvokeMap>(
+    channel: K,
     sender: ServiceRemoteControlIpcTestSender,
     ...args: unknown[]
-  ): Promise<unknown> {
+  ): Promise<IpcResult<ReturnType<AppClientUiIpcInvokeMap[K]>>> {
     const handler = ipcMainMock.handlers.get(channel)
     if (!handler) throw new Error(`No handler for ${channel}`)
-    return handler({ sender: sender.asSender() } as IpcMainInvokeEvent, ...args)
+    return await handler({ sender: sender.asSender() } as IpcMainInvokeEvent, ...args) as IpcResult<ReturnType<AppClientUiIpcInvokeMap[K]>>
   }
 }
 
@@ -353,3 +398,24 @@ class ServiceRemoteControlIpcTestSender {
 
   asSender(): WebContents { return this as unknown as WebContents }
 }
+
+
+it('keeps equal source view ids on two endpoints owned and released independently', async () => {
+  const releaseMedia = vi.fn()
+  const source = {
+    viewEpoch: () => 'epoch',
+    sessionView: vi.fn(async (_endpoint: string, request: RemoteSessionViewRequest) => request.operation === 'views.open'
+      ? { ok: true, value: { viewId: 'same', epoch: 'epoch', ...request.body } }
+      : { ok: true, value: null }),
+    sessionDetail: vi.fn(async (endpoint: string) => ({ ok: true, value: { endpoint } })),
+  }
+  new ServiceRemoteControlIpc(source as unknown as RemoteConnectionsManager, {} as RemoteControlInboundRegistry,
+    { revision: () => 1, acceptsRenderer: () => true, releaseMedia }).initialize()
+  const sender = new ServiceRemoteControlIpcTestSender()
+  await ServiceRemoteControlIpcTest.invoke('remote:view-open', sender, 'one', 'session')
+  await ServiceRemoteControlIpcTest.invoke('remote:view-open', sender, 'two', 'session')
+  expect(await ServiceRemoteControlIpcTest.invoke('remote:view-detail', sender, 'one', 'same')).toMatchObject({ value: { ok: true, value: { endpoint: 'one' } } })
+  await ServiceRemoteControlIpcTest.invoke('remote:view-close', sender, 'one', 'same')
+  expect(releaseMedia).toHaveBeenCalledWith('one', 'same')
+  expect(await ServiceRemoteControlIpcTest.invoke('remote:view-detail', sender, 'two', 'same')).toMatchObject({ value: { ok: true, value: { endpoint: 'two' } } })
+})

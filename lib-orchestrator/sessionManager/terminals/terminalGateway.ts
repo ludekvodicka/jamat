@@ -49,6 +49,29 @@ interface ManagedTerminalAttachment {
 export class TerminalGateway {
   private static readonly earlyDetachLimitConst = 64
 
+  private readonly heldInput = new Map<string, { holders: number; queued: { attachId: string; managed: ManagedTerminalAttachment; data: string }[] }>()
+
+  holdInput(sessionId: string): () => void {
+    const held = this.heldInput.get(sessionId) ?? { holders: 0, queued: [] }
+    held.holders++
+    this.heldInput.set(sessionId, held)
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      if (--held.holders > 0) return
+      this.heldInput.delete(sessionId)
+      for (const input of held.queued) {
+        if (this.attachments.get(input.attachId) !== input.managed)
+          this.deps.onError(`Queued input for ${sessionId} was refused because its terminal attachment changed`)
+        else if (this.input(input.attachId, input.data).kind !== 'sent')
+          this.deps.onError(`Queued input for ${sessionId} was refused because its terminal is no longer a writer`)
+      }
+    }
+  }
+
+  pendingInput(sessionId: string): number { return this.heldInput.get(sessionId)?.queued.length ?? 0 }
+
   private readonly attachments = new Map<string, ManagedTerminalAttachment>()
   private readonly detachedEarly = new Set<string>()
   private geometryOrder = 0
@@ -110,6 +133,12 @@ export class TerminalGateway {
   input(attachId: string, data: string): TerminalInputResult {
     const managed = this.attachments.get(attachId)
     if (!managed) return { kind: 'unknown-attach' }
+    const held = this.heldInput.get(managed.sessionId)
+    if (held !== undefined) {
+      if (!managed.attachment.acceptsInput()) return { kind: 'not-writer' }
+      held.queued.push({ attachId, managed, data })
+      return { kind: 'sent' }
+    }
     if (!managed.attachment.input(data)) return { kind: 'not-writer' }
     if (TerminalInputActivity.isUserInput(data)) this.deps.onUserInput?.(managed.sessionId)
     return { kind: 'sent' }
@@ -150,6 +179,11 @@ export class TerminalGateway {
       if (!oldest.done) this.detachedEarly.delete(oldest.value)
     }
     this.detachedEarly.add(attachId)
+  }
+
+  /** The controller lease is held under a new id: every read-only attach that asked to write asks again. */
+  leaseChanged(): void {
+    for (const managed of [...this.attachments.values()]) managed.attachment.leaseChanged()
   }
 
   detachAll(attachIds: readonly string[]): void {

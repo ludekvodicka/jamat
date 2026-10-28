@@ -40,9 +40,10 @@ import { VsCodeWorkspace } from './vsCodeWorkspace'
  * folder. The session tree and the tab menu send it too (`session.openInVsCode`). The only check it
  * makes is that the sender is a window this app knows.
  *
- * The two conflict openers of the workflow name a session and a worktree-relative path: the path
- * is resolved inside that session's worktree root, read from its working context, and refused when
- * it leaves it. `menu-open-conflict-file` grants the file to the viewer as any workspace file;
+ * The two conflict openers of the workflow name a session and a path relative to where its SVN
+ * action works: the path is resolved inside the main copy of a main-copy UPDATE, else inside the
+ * session's worktree root, as the library places it, and refused when it leaves it. `menu-open-conflict-file` grants the file to the viewer as a workspace file with a
+ * Diff mode, whose BASE after the update holds the incoming side (also of an add/add file);
  * `menu-open-conflict-editor` hands it to TortoiseSVN's conflict editor. `menu-open-merge-brief`
  * grants the merger's brief the session's action names, outside the worktree.
  */
@@ -188,7 +189,7 @@ export class ServiceTerminalMenuIpc extends ServiceIpcBase<
       const ownerId = this.ownerId(event.sender)
       const place = await this.conflictPlaceOf(sessionId, path)
       if (!place.ok) return { ok: false, code: 'outside-root', detail: place.detail }
-      return this.viewer.openDetected(ownerId, sessionId, place.root, place.absolute)
+      return this.viewer.openDetected(ownerId, sessionId, place.root, place.absolute, true)
     })
     this.register('terminal:menu-open-conflict-editor', async (event, sessionId, path) => {
       this.ownerId(event.sender)
@@ -206,17 +207,16 @@ export class ServiceTerminalMenuIpc extends ServiceIpcBase<
     this.assertComplete(ServiceTerminalMenuIpc.channelsConst)
   }
 
-  /** A worktree-relative path of a session's conflict, as an absolute path inside its worktree root. */
+  /** A root-relative path of a session's conflict, as an absolute path inside its main copy or worktree. */
   private async conflictPlaceOf(sessionId: string, path: string)
     : Promise<{ ok: true; root: string; absolute: string } | { ok: false; detail: string }> {
-    const context = await this.sessions.workingContext(sessionId)
-    if (!context.ok) return { ok: false, detail: context.detail }
-    const worktree = context.value.worktree
-    if (worktree === null) return { ok: false, detail: `Session ${sessionId} has no worktree` }
-    const absolute = path === '.' ? worktree.worktreePath : join(worktree.worktreePath, ...path.split('/'))
-    if (path === '' || isAbsolute(path) || !PathCompare.isInside(worktree.worktreePath, absolute))
-      return { ok: false, detail: `${path} is not inside the worktree ${worktree.worktreePath}` }
-    return { ok: true, root: worktree.worktreePath, absolute }
+    const place = await this.sessions.conflictRootOf(sessionId)
+    if (!place.ok) return { ok: false, detail: place.detail }
+    const { root } = place.value
+    const absolute = path === '.' ? root : join(root, ...path.split('/'))
+    if (path === '' || isAbsolute(path) || !PathCompare.isInside(root, absolute))
+      return { ok: false, detail: `${path} is not inside the ${place.value.place} ${root}` }
+    return { ok: true, root, absolute }
   }
 
   /**

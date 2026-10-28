@@ -59,11 +59,45 @@ describe('app-client-ui/app/skills/skillLinkInstaller', () => {
     for (const world of worlds.splice(0)) world.cleanup()
   })
 
+  it.each(['Q:/x/.worktrees/043/Jamat', 'Q:\\x\\.worktrees\\043\\Jamat'])(
+    'skips all links from the worktree checkout %s', repoRoot => {
+      const world = new SkillLinkWorld()
+      worlds.push(world)
+      const installer = new SkillLinkInstaller({ repoRoot, homeRoot: world.home, report: () => {} })
+      expect(installer.skipReason()).toBe('worktree checkout')
+      expect(installer.install()).toEqual([])
+      expect(existsSync(world.home)).toBe(false)
+    },
+  )
+
+  it('skips all links when the environment opt-out is supplied', () => {
+    const world = new SkillLinkWorld()
+    worlds.push(world)
+    const installer = new SkillLinkInstaller({ repoRoot: world.repo, homeRoot: world.home, skip: true, report: () => {} })
+    expect(installer.skipReason()).toBe('JAMAT_V3_SKIP_SKILL_LINKS=1')
+    expect(installer.install()).toEqual([])
+    expect(existsSync(world.home)).toBe(false)
+  })
+
+  it('repoints a receipt-owned link whose previous worktree target has disappeared', () => {
+    const world = new SkillLinkWorld()
+    worlds.push(world)
+    const target = world.target('claude')
+    const stale = join(world.root, '.worktrees', '043', 'Jamat', 'skills', 'claude', 'appjamat-v3')
+    mkdirSync(join(target, '..'), { recursive: true })
+    symlinkSync(stale, target, 'junction')
+    writeFileSync(`${target}.jamat-link.json`, JSON.stringify({ source: stale }))
+    expect(world.installer.skipReason()).toBeNull()
+    expect(world.installer.install()[0]?.kind).toBe('repointed')
+    expect(realpathSync(target)).toBe(realpathSync(world.source('claude')))
+  })
+
   it('installs automation for a custom Codex home and safely follows the next packaged release', () => {
     const world = new SkillLinkWorld()
     worlds.push(world)
     const codexHome = join(world.root, 'custom-codex')
     const deps = { repoRoot: world.repo, homeRoot: world.home, codexHome, report: () => {} }
+    expect(new SkillLinkInstaller(deps).roots()).toEqual([join(world.home, '.claude', 'skills'), join(codexHome, 'skills')])
     const initial = new SkillLinkInstaller(deps).install()
     const target = join(codexHome, 'skills', 'session-automation-groups')
     expect(initial.find(result => result.target === target)?.kind).toBe('created')

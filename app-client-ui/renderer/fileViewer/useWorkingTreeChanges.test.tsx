@@ -40,8 +40,9 @@ describe('app-client-ui/renderer/fileViewer/useWorkingTreeChanges', () => {
     sessionId?: string
     enabled: boolean
     required?: FileChangesWorkingTreeSource
+    reader?: AppClientUiBridge['fileChanges']['workingTree']
   }): React.JSX.Element {
-    model = useWorkingTreeChanges(props.sessionId ?? 'session-1', props.enabled, props.required)
+    model = useWorkingTreeChanges(props.sessionId ?? 'session-1', props.reader ?? window.appClient.fileChanges.workingTree, props.enabled, props.required)
     return <div />
   }
 
@@ -189,4 +190,17 @@ describe('app-client-ui/renderer/fileViewer/useWorkingTreeChanges', () => {
     expect(read().snapshot).toBeNull()
     expect(read().snapshots).toEqual([])
   })
+  it('replaces same-session snapshots when the injected source generation changes', async () => {
+    let finish!: (value: unknown) => void
+    const pending = new Promise((resolve) => { finish = resolve })
+    const oldReader = (() => pending) as AppClientUiBridge['fileChanges']['workingTree']
+    const newReader: AppClientUiBridge['fileChanges']['workingTree'] = async () => ({ ok: true, value: { ok: true, value: snapshot('git', 'new') } })
+    const view = render(<Harness enabled reader={oldReader} />)
+    await act(async () => { view.rerender(<Harness enabled reader={newReader} />) })
+    expect(read().snapshot?.snapshotId).toBe('new')
+    await act(async () => { finish(answer(snapshot('svn', 'old'))); await pending })
+    expect(read().snapshot?.snapshotId).toBe('new')
+    expect(calls).toHaveLength(0)
+  })
+
 })

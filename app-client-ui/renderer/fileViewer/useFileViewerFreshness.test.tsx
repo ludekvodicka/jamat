@@ -32,11 +32,26 @@ describe('app-client-ui/renderer/fileViewer/useFileViewerFreshness', () => {
     delete (window as unknown as { appClient?: unknown }).appClient
   })
 
+  it('retires an in-flight poll when the target ports change', async () => {
+    vi.useFakeTimers()
+    let settle!: (value: unknown) => void
+    const previous = { version: vi.fn(() => new Promise((resolve) => { settle = resolve })) } as unknown as Pick<AppClientUiBridge['fileViewer'], 'version'>
+    const current = { version: vi.fn(async () => ({ ok: true as const, value: { ok: true as const, kind: 'unchanged' as const } })) }
+    const reload = vi.fn()
+    const hook = renderHook(({ ports }) => useFileViewerFreshness('same-token', reload, ports), { initialProps: { ports: previous } })
+    await FreshnessHarness.tick()
+    hook.rerender({ ports: current })
+    await act(async () => settle({ ok: true, value: { ok: true, kind: 'changed', contentVersion: 'old-source' } }))
+    await FreshnessHarness.tick()
+    expect(reload).not.toHaveBeenCalled()
+    expect(current.version).toHaveBeenCalledOnce()
+  })
+
   it('reloads once per disk version and keeps asking afterwards', async () => {
     vi.useFakeTimers()
     const { version } = FreshnessHarness.install()
     const reload = vi.fn()
-    renderHook(() => useFileViewerFreshness('document-1', reload))
+    renderHook(() => useFileViewerFreshness('document-1', reload, window.appClient.fileViewer))
 
     await FreshnessHarness.tick()
     expect(reload).toHaveBeenCalledTimes(0)
@@ -65,7 +80,7 @@ describe('app-client-ui/renderer/fileViewer/useFileViewerFreshness', () => {
     vi.useFakeTimers()
     const { version } = FreshnessHarness.install()
     const reload = vi.fn()
-    const view = renderHook(() => useFileViewerFreshness('document-1', reload))
+    const view = renderHook(() => useFileViewerFreshness('document-1', reload, window.appClient.fileViewer))
 
     version.mockResolvedValue({ ok: true, value: { ok: true, kind: 'missing' } } as never)
     await FreshnessHarness.tick()
@@ -85,7 +100,7 @@ describe('app-client-ui/renderer/fileViewer/useFileViewerFreshness', () => {
     vi.useFakeTimers()
     const { version } = FreshnessHarness.install()
     const view = renderHook(
-      (documentId: string | null) => useFileViewerFreshness(documentId, vi.fn()),
+      (documentId: string | null) => useFileViewerFreshness(documentId, vi.fn(), window.appClient.fileViewer),
       { initialProps: null as string | null },
     )
 

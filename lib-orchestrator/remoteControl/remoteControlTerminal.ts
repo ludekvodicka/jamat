@@ -36,6 +36,7 @@ import type {
 import { RemoteControlDeliverConst } from './remoteControlProtocol'
 
 export interface RemoteControlTerminalSessionPort {
+  deliveryPending?(sessionId: string, pending: boolean): void
   terminalAttach(
     attachId: string,
     spec: TerminalAttachSpec,
@@ -381,10 +382,12 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
         },
       }
     this.delivering.add(sessionId)
+    this.sessions.deliveryPending?.(sessionId, true)
     try {
       return await this.deliverOnce(sessionId, text, options, proof)
     } finally {
       this.delivering.delete(sessionId)
+      this.sessions.deliveryPending?.(sessionId, false)
     }
   }
 
@@ -799,10 +802,12 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
     if (this.delivering.has(sessionId))
       return { kind: 'refused', reason: 'in-flight', detail: 'Another delivery to this session is still running' }
     this.delivering.add(sessionId)
+    this.sessions.deliveryPending?.(sessionId, true)
     try {
       return await this.takeOnce(sessionId, keep)
     } finally {
       this.delivering.delete(sessionId)
+      this.sessions.deliveryPending?.(sessionId, false)
     }
   }
 

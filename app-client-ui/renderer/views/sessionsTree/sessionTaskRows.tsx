@@ -2,8 +2,6 @@ import type {
   SessionShellState,
   SessionSubagentState,
 } from '../../../../lib-orchestrator/sessionTasks/sessionTasksApi.types'
-import { AppClientUiReport } from '../../../shared/appClientUiReport'
-import { AppControl } from '../../ipc/appControl'
 import { SignalGlyph } from '../../widgets/signalGlyph'
 import type { SessionPaint } from './sessionNodeState'
 import type { SessionTasksNode, TaskRowNode } from './sessionsTreeModel'
@@ -11,18 +9,19 @@ import type { SessionTasksNode, TaskRowNode } from './sessionsTreeModel'
 /** Retained sub-agents and shells, opening in the parent's split. */
 export function SessionTaskRows(props: {
   tasks: SessionTasksNode
+  onOpen(row: TaskRowNode, title: string): void
 }): React.JSX.Element {
   const { tasks } = props
   return (
     <div className="jamat-sessions__tasks">
-      {tasks.rows.map((row) => <TaskRow key={row.id} row={row} numberPrefix={tasks.numberPrefix} />)}
+      {tasks.rows.map((row) => <TaskRow key={row.id} row={row} numberPrefix={tasks.numberPrefix} onOpen={props.onOpen} />)}
     </div>
   )
 }
 
-function TaskRow(props: { row: TaskRowNode; numberPrefix: string | null }): React.JSX.Element {
+function TaskRow(props: { row: TaskRowNode; numberPrefix: string | null; onOpen(row: TaskRowNode, title: string): void }): React.JSX.Element {
   const { row } = props
-  const open = (): void => SessionTaskOpen.open(row)
+  const open = (): void => props.onOpen(row, SessionTaskOpen.titleOf(row))
   return (
     <div
       className="jamat-sessions__task"
@@ -104,23 +103,6 @@ class SessionTaskOpen {
     return title.length <= SessionTaskOpen.titleMaxConst ? title : `${title.slice(0, SessionTaskOpen.titleMaxConst - 1)}…`
   }
 
-  private static nounOf(task: TaskRowNode['task']): string {
-    switch (task.kind) {
-      case 'subagent': return 'sub-agent'
-      case 'shell': return 'shell'
-      default: throw new Error(`Unknown session task: ${JSON.stringify(task satisfies never)}`)
-    }
-  }
-
-  static open(row: TaskRowNode): void {
-    const failed = `The ${SessionTaskOpen.nounOf(row.task)} could not be opened`
-    void AppControl.call('sessionTasks.open', { sessionId: row.sessionId, task: row.task, title: SessionTaskOpen.titleOf(row) })
-      .then((answer) => {
-        if (!answer.ok) AppClientUiReport.error(`${failed}: ${answer.error}`)
-        else if (!answer.value.ok) AppClientUiReport.error(`${failed}: ${answer.value.error.detail}`)
-      })
-      .catch((error: unknown) => AppClientUiReport.error(`${failed}: ${String(error)}`))
-  }
 }
 
 /** A sub-agent's or shell's state as one character and one paint, the shapes a script run's row uses. */

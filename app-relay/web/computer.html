@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Jamat | Sessions</title>
+  <link rel="stylesheet" href="/computer.css">
+  <script src="/computer.js" type="module"></script>
+</head>
+<body>
+  <header><a href="/">← Počítače</a><strong id="computer-name">Jamat</strong><span id="account"></span><form action="/auth/logout" method="post"><button>Odhlásit se</button></form></header>
+  <main>
+    <div class="heading"><h1>Sessions</h1><div class="heading-actions"><button id="new-session" disabled>+ Nová session</button><button id="refresh">Obnovit</button></div></div>
+    <p id="status" role="status">Připojuji…</p>
+    <p id="launch-notice" role="status" class="hint"></p>
+    <div class="workspace">
+      <section id="list-pane" aria-label="Seznam sessions">
+        <div class="filters">
+          <label>Hledat<input id="search" type="search" placeholder="Projekt nebo název session"></label>
+          <label>Stav<select id="filter"><option value="live">Běžící</option><option value="all">Všechny dostupné</option></select></label>
+        </div>
+        <p class="hint">Seznam neobsahuje celou ukončenou historii. Hledání rozbalí odpovídající větve.</p>
+        <p id="groups-status" class="hint" role="status"></p>
+        <p id="preferences-status" class="hint" role="status"></p>
+        <div id="sessions" aria-label="Sessions" aria-busy="true"></div>
+      </section>
+      <section id="preview" hidden>
+        <div class="heading"><h2 id="session-title"></h2><button id="close-preview">← Zpět na seznam</button></div>
+        <div class="preview-actions"><button id="terminal">Terminál</button><button id="transcript">Konverzace</button></div>
+        <p id="preview-status" role="status"></p>
+        <div id="content" tabindex="0" role="region" aria-label="Obsah náhledu"></div>
+      </section>
+    </div>
+  </main>
+  <dialog id="launch-dialog" aria-labelledby="launch-heading">
+    <form id="launch-form">
+      <div class="heading"><h2 id="launch-heading">Nová session</h2><button id="launch-close" type="button">Zavřít</button></div>
+      <fieldset id="launch-fields">
+        <label>Projekt<select id="launch-project" required><option value="">Vyberte projekt…</option></select></label>
+        <p id="launch-catalog-status" class="hint"></p>
+        <label>Název<input id="launch-title" required maxlength="256" placeholder="Na čem budete pracovat" autocomplete="off"></label>
+        <div class="launch-pair">
+          <label>Agent<select id="launch-agent"><option value="codex">Codex</option><option value="claude">Claude</option></select></label>
+          <label>Model<select id="launch-model"><option value="">Výchozí na PC</option></select></label>
+        </div>
+        <p id="launch-model-status" class="hint"></p>
+        <label class="launch-check"><input type="checkbox" id="launch-worktree">Spustit v samostatném worktree</label>
+        <p id="launch-worktree-status" class="hint" hidden>Práce poběží v oddělené pracovní kopii. Pokud projekt vyžaduje schválení přípravných příkazů, dokončete je v desktopovém Jamatu.</p>
+      </fieldset>
+      <p id="launch-status" role="status"></p>
+      <div class="launch-actions"><button id="launch-submit" type="submit">Spustit session</button><button id="launch-check" type="button" hidden>Ověřit spuštění</button><button id="launch-reset" type="button" hidden>Nový požadavek…</button></div>
+    </form>
+  </dialog>
+</body>
+</html>

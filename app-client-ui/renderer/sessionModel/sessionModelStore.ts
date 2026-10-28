@@ -10,7 +10,7 @@ import {
 } from '../statusBar/useActiveAgentTerminal'
 
 export interface SessionModelPorts {
-  read(sessionId: string): Promise<IpcResult<SessionModelReading>>
+  read(sessionId: string, remoteEndpointId?: string): Promise<IpcResult<SessionModelReading>>
   reportError(message: string): void
 }
 
@@ -133,17 +133,19 @@ export class SessionModelStore {
     return this.state
   }
 
-  readingFor(sessionId: string): SessionModelHeld | null {
-    return this.readings.get(sessionId) ?? null
+  readingFor(sessionId: string, remoteEndpointId?: string): SessionModelHeld | null {
+    return this.readings.get(SessionModelStore.key(sessionId, remoteEndpointId)) ?? null
   }
 
-  async readNow(sessionId: string): Promise<SessionModelInfo | null> {
-    const reading = await this.readSession(sessionId)
+  async readNow(sessionId: string, remoteEndpointId?: string): Promise<SessionModelInfo | null> {
+    const reading = await this.readSession(sessionId, remoteEndpointId)
     if (reading === null || reading.kind === 'none') return null
     else if (reading.kind === 'ok') return reading.info
     else
       throw new Error(`Unknown session model reading: ${JSON.stringify(reading)}`)
   }
+
+  private static key(sessionId: string, endpointId?: string): string { return endpointId ? JSON.stringify([endpointId, sessionId]) : sessionId }
 
   private stop(): void {
     this.stopped = true
@@ -155,7 +157,7 @@ export class SessionModelStore {
     if (focus === null || this.stopped || this.reading || !this.visible)
       return
     this.reading = true
-    const answer = await this.readSession(focus.sessionId)
+    const answer = await this.readSession(focus.sessionId, focus.remoteEndpointId)
     this.reading = false
     // `accept` refuses a reading it was never taught, and this runs behind a bare `void tick()`:
     // uncaught, the throw would both escape as a rejected promise and skip the re-arm below, so
@@ -175,9 +177,9 @@ export class SessionModelStore {
   }
 
   /** Null is a read that never landed. It is reported, and what is drawn is left alone. */
-  private async readOf(sessionId: string): Promise<SessionModelReading | null> {
+  private async readOf(sessionId: string, remoteEndpointId?: string): Promise<SessionModelReading | null> {
     try {
-      const answer = await this.ports.read(sessionId)
+      const answer = await (remoteEndpointId ? this.ports.read(sessionId, remoteEndpointId) : this.ports.read(sessionId))
       if (answer.ok)
         return answer.value
       this.ports.reportError(`The session model could not be read: ${answer.error}`)
@@ -188,23 +190,24 @@ export class SessionModelStore {
     }
   }
 
-  private readSession(sessionId: string): Promise<SessionModelReading | null> {
-    const current = this.inFlight.get(sessionId)
+  private readSession(sessionId: string, remoteEndpointId?: string): Promise<SessionModelReading | null> {
+    const key = SessionModelStore.key(sessionId, remoteEndpointId)
+    const current = this.inFlight.get(key)
     if (current !== undefined) return current
-    const reading = this.readAndRemember(sessionId)
+    const reading = this.readAndRemember(sessionId, remoteEndpointId)
       .finally(() => {
-        if (this.inFlight.get(sessionId) === reading) this.inFlight.delete(sessionId)
+        if (this.inFlight.get(key) === reading) this.inFlight.delete(key)
       })
-    this.inFlight.set(sessionId, reading)
+    this.inFlight.set(key, reading)
     return reading
   }
 
-  private async readAndRemember(sessionId: string): Promise<SessionModelReading | null> {
-    const reading = await this.readOf(sessionId)
+  private async readAndRemember(sessionId: string, remoteEndpointId?: string): Promise<SessionModelReading | null> {
+    const reading = await this.readOf(sessionId, remoteEndpointId)
     if (reading === null || reading.kind === 'none') return reading
     else if (reading.kind === 'ok') {
       try {
-        this.remember(sessionId, reading.info)
+        this.remember(SessionModelStore.key(sessionId, remoteEndpointId), reading.info)
         return reading
       } catch (error) {
         this.ports.reportError(
@@ -247,7 +250,7 @@ export class SessionModelStore {
     this.clearTimer()
     if (this.stopped || this.focus === null || !this.visible)
       return
-    const warm = this.readings.has(this.focus.sessionId)
+    const warm = this.readings.has(SessionModelStore.key(this.focus.sessionId, this.focus.remoteEndpointId))
       || this.silentAsks >= SessionModelStore.coldAsksConst
     const delay = warm
       ? SessionModelStore.warmMillisecondsConst
@@ -274,7 +277,7 @@ export class SessionModelStore {
   private readingOf(): SessionModelCurrent | null {
     if (this.focus === null)
       return null
-    const held = this.readings.get(this.focus.sessionId)
+    const held = this.readings.get(SessionModelStore.key(this.focus.sessionId, this.focus.remoteEndpointId))
     return held === undefined
       ? null
       : { focus: this.focus, info: held.info, readAt: held.readAt }

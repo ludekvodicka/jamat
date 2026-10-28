@@ -45,10 +45,6 @@ describe('lib-orchestrator/fileChangesManager/vcs/fileChangesVcsDetector', () =>
       return { ok: true, value: { entries: [], externalRoots: [] } }
     }
 
-    async dirty(): Promise<FileChangesVcsResult<boolean>> {
-      return { ok: true, value: false }
-    }
-
     async history(): Promise<FileChangesVcsResult<readonly FileChangesVcsHistoryGroup[]>> {
       return { ok: true, value: [] }
     }

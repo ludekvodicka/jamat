@@ -5,6 +5,7 @@
  */
 
 export type SetupFamilyId = 'node' | 'python' | 'rust' | 'go'
+export type SetupScope = 'project' | 'members'
 
 /**
  * How THIS machine installs, per family: the middle of the three tiers, under everything a project

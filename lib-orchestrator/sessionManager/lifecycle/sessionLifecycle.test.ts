@@ -1,3 +1,9 @@
+import { AgentAccounts, type StoredAccount } from '../../agentAccounts/agentAccounts'
+import { FinishProjection } from '../../worktrees/worktreeFinish'
+import { emptyUpdateTargets, testAssembly } from '../../worktrees/worktreeTesting'
+import { WorktreeLease } from '../../worktrees/worktreeLease'
+import { SvnStepRunner } from '../../worktrees/svnStepRunner'
+import type { SessionWorktreePort, WorktreePlaceRequest, WorktreePlacing, WorktreeProvision, WorktreeRequest } from '../../worktrees/worktreeLifecycle.types'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
@@ -24,7 +30,7 @@ import { CommandAgreement } from '../scripts/commandAgreement'
 import { CommandTrustStore } from '../scripts/commandTrustStore'
 import { DeclaredScripts } from '../scripts/declaredScripts'
 import { ScriptLogStore } from '../scripts/scriptLogStore'
-import { WorktreeResultsStore } from '../results/worktreeResultsStore'
+import { WorktreeResultsStore } from '../../worktrees/worktreeResults'
 import { SessionScriptDefinitions } from '../scripts/sessionScriptDefinitions'
 import { type ScriptCollapsed, SessionScriptsManager } from '../scripts/sessionScriptsManager'
 import type {
@@ -39,17 +45,12 @@ import {
   type SessionHostPort,
   type SessionNumbersPort,
   type SessionSetupPort,
-  type SessionWorktreePort,
-  type WorktreePlaceRequest,
-  type WorktreePlacing,
-  type WorktreeProvision,
-  type WorktreeRequest,
 } from './sessionLifecycle'
 import type { ReconcileChange } from './reconciler'
-import type { SvnActionPort } from './svnActionFlow'
-import { type SvnCleanupPort, SvnWorktreeFinishFlow } from './svnWorktreeFinishFlow'
-import type { SvnWorktreeRemoved } from './svnWorktreeRemoval'
-import { WorktreeCleanupPacing } from './worktreeCleanupPacing'
+import type { SvnActionPort } from '../../worktrees/worktreeFinish'
+import { type SvnCleanupPort, SvnWorktreeFinishFlow } from '../../worktrees/worktreeFinish'
+import type { SvnWorktreeRemoved } from '../../worktrees/worktreeRemoval'
+import { WorktreeCleanupPacing } from '../../worktrees/worktreeRemoval'
 
 describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
   const created: string[] = []
@@ -144,6 +145,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     trustFile: string
     numbers: FakeNumbers
     identities: Map<string, CodexSessionIdentity>
+    claudeIdentities: Map<string, { launchId: string; nativeSessionId: string; sequence: number }>
     claudeTitles: FakeClaudeTitles
     snapshotsDirectory: string
     /** The records file itself, so a case can make it unwritable AFTER it has been seeded. */
@@ -157,7 +159,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     /** The stored default effort per agent, on the same footing as the model beside it. */
     efforts: Map<'claude' | 'codex', string>
     /** What the relay answers, and every directory it was asked for. */
-    statusLine: { file: string | null; cwds: string[] }
+    statusLine: { file: string | null; cwds: string[]; identities: ({ sessionId: string; launchId: string } | undefined)[] }
     /** Every directory the Claude trust seed was asked to answer for. */
     seeded: string[]
     /** Every session id the reconciler asked to have its merge carried on. */
@@ -183,6 +185,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       detached: Promise<unknown>[]
       /** The conflicted files a resolver left markers in. */
       markers: string[]
+      syncs: string[]
     }
   }
 
@@ -453,6 +456,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
 
   async function harness(
     options?: {
+      accounts?: import('../sessionAccounts').SessionAccountsPort
+      seed?: (cwd: string, file?: string) => { changed: boolean; problem: string | null }
       damagedRecords?: boolean
       unwritableRecords?: boolean
       /** What the trust seed answers; the default is the quiet success of an already-trusted one. */
@@ -473,8 +478,11 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       writeFileSync(file, JSON.stringify({ schemaVersion: 1, savedAt: 1, records: options.seedRecords }), 'utf8')
     const snapshotsDirectory = join(root, 'session-snapshots')
     const reports: string[] = []
+    const logsDirectory = join(root, 'script-logs')
+    const logs = new ScriptLogStore(logsDirectory)
     const store = await SessionRecordsStore.load(file, {
       snapshotsDirectory,
+      removeSessionLogs: (id, keepIds) => logs.removeParent(id, keepIds),
       report: (message) => reports.push(message),
     })
     const host = fakeHost()
@@ -486,6 +494,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     })
     const numbers = fakeNumbers()
     const identities = new Map<string, CodexSessionIdentity>()
+    /** What the Claude status line relay reported per Jamat session: its launch generation and conversation. */
+    const claudeIdentities = new Map<string, { launchId: string; nativeSessionId: string; sequence: number }>()
     const claudeTitles = fakeClaudeTitles()
     let minted = 0
     // Movable, because the replay backoff is measured against it: a fixed clock makes every pass
@@ -494,13 +504,28 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     const yolo = new Set<'claude' | 'codex'>()
     const models = new Map<'claude' | 'codex', string>()
     const efforts = new Map<'claude' | 'codex', string>()
-    const statusLine: { file: string | null; cwds: string[] } = { file: null, cwds: [] }
+    const statusLine: { file: string | null; cwds: string[]; identities: ({ sessionId: string; launchId: string } | undefined)[] } = { file: null, cwds: [], identities: [] }
     const seeded: string[] = []
     const resumed: string[] = []
     const finishing = new Set<string>()
     const tools = new Map<string, RunToolResolution>()
     const svnAction: Harness['svnAction'] = {
       svn: {
+        updateTargets: emptyUpdateTargets,
+        assembly: async () => ({ ok: true, value: testAssembly() }),
+        present: async () => true,
+        publicationRows: async () => ({ ok: true, value: { changed: [], items: [] } }),
+        advancePublished: async () => ({ ok: true, value: undefined }),
+        landingPaths: async () => ({ ok: true, value: [] }),
+        landingProof: async () => ({ ok: true, value: { holds: true } }),
+        saveLocalPaths: async () => ({ ok: true, value: 'saved' }),
+        logSince: async () => ({ ok: true, value: [] }),
+        headRevisionOf: async () => ({ ok: true, value: 42 }),
+        revertSetup: async () => ({ ok: true, value: undefined }),
+        commitHashes: async (_root, paths) => ({ ok: true, value: Object.fromEntries(paths.map((path) => [path, 'same'])) }),
+        publicationHashes: async (_root, paths) => ({ ok: true, value: Object.fromEntries(paths.map((path) => [path, 'same'])) }),
+        unprepareCommit: async () => ({ ok: true, value: undefined }),
+        prepareCommit: async (_root, paths) => ({ ok: true, value: { targets: [...paths], added: [] } }),
         ownerCheck: async () => ({ ok: true, value: undefined }),
         scheduleMissing: async () => ({ ok: true, value: undefined }),
         revisionOf: async () => ({ ok: true, value: 41 }),
@@ -511,7 +536,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         locked: async () => false,
         reviewRoots: async () => ({ ok: true, value: [] }),
         fingerprint: async () => ({ ok: true, value: 'fingerprint' }),
-        lowerBounds: async () => ({ ok: true, value: {} }),
+        lowerBounds: async (roots) => ({ ok: true, value: Object.fromEntries(roots.map((root) => [root.own, { repository: 'url', base: '/trunk', rootBase: 1, since: 1 }])) }),
         conflictSet: async () => ({ ok: true, value: { revision: 41, facts: [], rows: [] } }),
         logOf: async () => ({ ok: true, value: [] }),
         hashes: async () => ({ ok: true, value: {} }),
@@ -521,10 +546,11 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       ended: [],
       detached: [],
       markers: [],
+      syncs: [],
     }
+    const lease = new WorktreeLease('lifecycle-test', () => [])
+    lease.within = async (_root, _purpose, work) => work()
     const collapsed: ScriptCollapsed[] = []
-    const logsDirectory = join(root, 'script-logs')
-    const logs = new ScriptLogStore(logsDirectory)
     const scripts = new SessionScriptsManager({
       records: store,
       host: {
@@ -553,6 +579,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       trustFile,
       numbers,
       identities,
+      claudeIdentities,
       claudeTitles,
       snapshotsDirectory,
       reports,
@@ -566,6 +593,9 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       finishing,
       clock,
       lifecycle: wire(new SessionLifecycle({
+        accounts: options?.accounts,
+        localStateDir: projectParent,
+        localBefore: { accepts: () => false, run: async () => { throw new Error('local before not expected by legacy Host fixture') } },
         controller: { configIdentity: 'controller-1', channel: 'development' },
         records: store,
         host: host.port,
@@ -578,18 +608,49 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
           identity: record => identities.get(record.sessionId) ?? null,
         },
         claudeStatusLine: {
-          settingsFileFor: (cwd) => {
+          settingsFileFor: (cwd, identity) => {
             statusLine.cwds.push(cwd)
+            statusLine.identities.push(identity)
             return statusLine.file
           },
+          identity: (sessionId, launchId) => {
+            const reported = claudeIdentities.get(sessionId)
+            return reported?.launchId === launchId ? { nativeSessionId: reported.nativeSessionId, sequence: reported.sequence } : null
+          },
         },
-        tools: { resolve: (tool) => tools.get(tool) ?? { ok: true, command: tool, prefixArgs: [], env: {} } },
+        tools: { resolve: (tool) => tools.get(tool) ?? { ok: true, command: tool, prefixArgs: [], env: {} },
+          node: () => ({ ok: true, command: process.execPath, prefixArgs: [], env: {} }),
+          agentCli: () => ({ ok: true, command: 'node "C:/Jamat/skills/claude/appjamat-v3/scripts/jamat-v3.mjs"' }) },
         claudeTitles: claudeTitles.port,
         scripts,
+        finish: { commands: { lease, accept: async () => {}, verify: async () => {}, acceptInterrupted: async () => {} },
+          sync: { recover: async () => false, withControl: async (_id, work) => work(), run: async (id) => { svnAction.syncs.push(id); await store.update(id, (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!, version: record.worktreeLifecycle!.version + 1, step: 'checking', phase: 'finishing', wait: undefined } })); return { ok: true, value: { revision: 1, conflicts: [] } } }, resolve: async () => ({ ok: false, code: 'invalid-spec', detail: 'No conflict' }) },
+          handoffs: { checksFailed: async () => {}, conflicts: async () => {}, notifyCaller: async () => {} }, idle: () => true, busyReason: () => null,
+          holdInput: () => () => {}, awaitExit: async () => true, liveness: async () => {} },
+
+
+          activityOf: () => null,
         svnActions: {
+          runner: new SvnStepRunner({ records: store, scripts, svn: { run: async (_cwd, _args, options) => { options?.onStdout?.('Updated.'); return { code: 0, stdout: 'Updated.', stderr: '', failure: null } } }, now: () => clock.now, newId: () => `local-${++minted}`, changed: () => {} }),
+          logs,
           svn: {
+            updateTargets: svnAction.svn.updateTargets,
+            assembly: (...args) => svnAction.svn.assembly(...args),
+            present: (root) => svnAction.svn.present(root),
+            publicationRows: (...args) => svnAction.svn.publicationRows(...args),
+            advancePublished: (...args) => svnAction.svn.advancePublished(...args),
+            landingPaths: (...args) => svnAction.svn.landingPaths(...args),
+            landingProof: (...args) => svnAction.svn.landingProof(...args),
+            saveLocalPaths: (...args) => svnAction.svn.saveLocalPaths(...args),
+            revertSetup: (...args) => svnAction.svn.revertSetup(...args),
+            commitHashes: (root, paths) => svnAction.svn.commitHashes(root, paths),
+            publicationHashes: (root, paths, revision) => svnAction.svn.publicationHashes(root, paths, revision),
+            unprepareCommit: (root, paths) => svnAction.svn.unprepareCommit(root, paths),
+            logSince: (root, revision) => svnAction.svn.logSince(root, revision),
+            prepareCommit: (root, paths) => svnAction.svn.prepareCommit(root, paths),
             ownerCheck: (location) => svnAction.svn.ownerCheck(location),
             scheduleMissing: (path) => svnAction.svn.scheduleMissing(path),
+            headRevisionOf: (root) => svnAction.svn.headRevisionOf(root),
             revisionOf: (path) => svnAction.svn.revisionOf(path),
             status: (path) => svnAction.svn.status(path),
             changes: (path) => svnAction.svn.changes(path),
@@ -606,11 +667,9 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
           },
           labels: { ownCommits: async () => ({ ok: true, value: [] }), afterReview: async () => [], inferred: async () => [] },
           removal: { remove: (sessionId) => svnAction.remove(sessionId) },
-          resolver: { unavailable: () => null, briefs: logs, withMarkers: async () => svnAction.markers },
-          resolutions: { apply: async () => ({ ok: true, value: undefined }) },
+          resolver: { unavailable: () => null, briefs: logs, withMarkers: async () => svnAction.markers, cli: () => ({ ok: true as const, command: 'node "C:/Jamat/skills/claude/appjamat-v3/scripts/jamat-v3.mjs"' }), instance: { configIdentity: 'cfg-test', channel: 'development' as const } },
+          resolutions: { recoverLocked: async () => ({ ok: true, value: undefined }), apply: async () => ({ ok: true, value: undefined }) },
           results: new WorktreeResultsStore(join(root, 'worktree-results'), { now: () => clock.now, logs, report: (message) => reports.push(message) }),
-          finishRefusal: () => null,
-          activityOf: () => null,
           ended: (sessionId) => { svnAction.ended.push(sessionId) },
           landedDue: () => undefined,
           proposalsSpent: () => undefined,
@@ -625,7 +684,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         modelFor: (agentId) => models.get(agentId),
         effortFor: (agentId) => efforts.get(agentId),
         finishing: (sessionId) => finishing.has(sessionId),
-        seedClaudeTrust: (cwd) => {
+        seedClaudeTrust: (cwd, file) => {
+          if (options?.seed) return options.seed(cwd, file)
           seeded.push(cwd)
           return options?.seedProblem === undefined
             ? { changed: true, problem: null }
@@ -807,7 +867,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       agent: { agentId: 'claude', mode: 'new' },
     })
     expect(context.store.get('id-1')?.agent)
-      .toEqual({ agentId: 'claude', launchMode: 'new', nativeSessionId: 'id-1' })
+      .toEqual({ agentId: 'claude', accountId: 'main', launchMode: 'new', nativeSessionId: 'id-1', identityLaunchId: expect.any(String) as unknown as string })
     expect(launchOf(context.host.calls[0]).args.slice(-2)).toEqual(['--session-id', 'id-1'])
     expect(launchOf(context.host.calls[0]).env).toMatchObject({
       JAMAT_V3_SESSION_ID: 'id-1', JAMAT_V3_SESSION_CONTROLLER: 'controller-1',
@@ -816,6 +876,122 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     expect(context.store.get('id-1')?.title)
       .toBe(`${basename(context.workDirectory)} (claude)`)
     expect(context.store.get('id-1')?.transcriptCwd).toBe(context.workDirectory)
+  })
+
+  it('persists a login shell command and launches it with its account environment', async () => {
+    const env = { CLAUDE_CONFIG_DIR: projectRoot }
+    const context = await harness({ accounts: { exists: () => true,
+      defaultAccount: () => ({ accountId: 'main', noFreeAccount: false }), launchEnv: async () => env } })
+    const result = await context.lifecycle.createCommandSession({ directory: { mode: 'adHoc', path: projectRoot },
+      account: { agentId: 'claude', accountId: 'work' }, title: 'Login' }, 'fixture-login')
+    if (!result.ok) throw new Error(result.detail)
+    const created = result.value
+    expect(context.store.get(created.sessionId)).toMatchObject({ kind: 'shell', account: { agentId: 'claude', accountId: 'work' },
+      commands: [{ cwd: projectRoot, command: 'fixture-login' }], accountSegments: [{ accountId: 'work', from: 5_000, to: null }] })
+    const launch = callsNamed(context.host, 'runtime.create')[0]!.body.launch as RuntimeLaunchSpec
+    expect(launch.env.CLAUDE_CONFIG_DIR).toBe(projectRoot)
+    expect(launch.args.join(' ')).toContain('fixture-login')
+  })
+
+  it('refuses creation and reopening after a relogin changes the registered identity', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'jamat-account-launch-'))
+    created.push(root)
+    const main = join(root, 'main')
+    mkdirSync(main)
+    let stored: readonly StoredAccount[] = []
+    let identity = { key: 'org/original', label: 'original' }
+    let terminalEnded = false
+    let context: Harness
+    const accounts = new AgentAccounts({ mainHomes: { claude: main, codex: main }, accountsRoot: join(root, 'accounts'),
+      specs: [{ agentId: 'claude', mainHome: () => main, homeVariable: 'CLAUDE_CONFIG_DIR', extraEnv: () => ({}),
+        shareTable: { directories: [], files: [], neverShared: [] }, loginCommand: 'fixture-login',
+        probe: async home => home === main ? { kind: 'logged-out' } : { kind: 'logged-in', identity } }],
+      stored: () => stored, store: value => { stored = value }, hasRunningSession: () => false, onChanged: () => {},
+      login: { open: async request => successOf(await context.lifecycle.createCommandSession({
+        directory: { mode: 'adHoc', path: request.home }, account: { agentId: request.agentId, accountId: request.accountId },
+      }, request.command, request.prepare)), result: () => terminalEnded ? { ended: true, exitCode: 0 } : { ended: false }, stop: async () => {} },
+    })
+    try {
+      const { accountId } = await accounts.add('claude', 'Work')
+      stored = stored.map(account => ({ ...account, identity }))
+      context = await harness({ accounts })
+      const spec: SessionCreateSpec = { kind: 'agent', directory: { mode: 'adHoc', path: context.workDirectory },
+        agent: { agentId: 'claude', mode: 'new', accountId } }
+      const original = successOf(await context.lifecycle.create(spec))
+      context.host.runtimes.set(original.sessionId, runtime(original.sessionId, { alive: false, exitCode: 0, exitedAt: 6_000 }))
+      await context.lifecycle.reconcile(context.host.listing())
+      identity = { key: 'org/rejected', label: 'rejected' }
+      const login = await accounts.login(accountId)
+      expect(callsNamed(context.host, 'runtime.create')).toHaveLength(2)
+      context.host.runtimes.set(login.sessionId, runtime(login.sessionId, { alive: false, exitCode: 0, exitedAt: 7_000 }))
+      await context.lifecycle.reconcile(context.host.listing())
+      terminalEnded = true
+      accounts.sessionsChanged()
+      await vi.waitFor(async () => expect((await accounts.list()).find(account => account.accountId === accountId)?.profileProblem)
+        .toBe('Log in again must use the same account identity'))
+      expect(stored[0]!.identity).toEqual({ key: 'org/original', label: 'original' })
+      for (const result of [await context.lifecycle.create(spec), await context.lifecycle.reopen(original.sessionId),
+        await context.lifecycle.reopen(login.sessionId)])
+        expect(result).toMatchObject({ ok: false, detail: expect.stringContaining('same account identity') })
+      expect(callsNamed(context.host, 'runtime.create')).toHaveLength(2)
+      expect((await accounts.list()).find(account => account.accountId === accountId)?.profileProblem)
+        .toBe('Log in again must use the same account identity')
+    } finally { accounts.stop() }
+  })
+
+  it('ends a failed account preflight with its reason without creating a runtime', async () => {
+    const context = await harness({ accounts: { exists: () => true,
+      defaultAccount: () => ({ accountId: 'main', noFreeAccount: false }),
+      launchEnv: async () => { throw new Error('settings link cannot be repaired') } } })
+    const result = await context.lifecycle.create({ kind: 'agent', directory: { mode: 'adHoc', path: context.workDirectory },
+      agent: { agentId: 'claude', mode: 'new', accountId: 'work' } })
+    expect(result).toMatchObject({ ok: false, code: 'invalid-spec', detail: expect.stringContaining('settings link cannot be repaired') })
+    expect(callsNamed(context.host, 'runtime.create')).toEqual([])
+    expect(context.store.get('id-1')).toMatchObject({ life: 'ended',
+      endedReason: expect.stringContaining('settings link cannot be repaired'),
+      accountSegments: [{ accountId: 'work', from: 5_000, to: 5_000 }] })
+  })
+
+  it('closes the selected account segment when the process ends', async () => {
+    const context = await harness({ accounts: { exists: () => true,
+      defaultAccount: () => ({ accountId: 'main', noFreeAccount: false }), launchEnv: async () => ({}) } })
+    const created = successOf(await context.lifecycle.create({ kind: 'agent', directory: { mode: 'adHoc', path: context.workDirectory },
+      agent: { agentId: 'claude', mode: 'new', accountId: 'work' } }))
+    context.host.runtimes.set(created.sessionId, runtime(created.sessionId, { alive: false, exitCode: 0, exitedAt: 8_000 }))
+    await context.lifecycle.reconcile(context.host.listing())
+    expect(context.store.get(created.sessionId)?.accountSegments).toEqual([{ accountId: 'work', from: 5_000, to: 8_000 }])
+  })
+
+  it('passes the actual Codex trust, model and effort settings to preflight before creating a runtime', async () => {
+    const launchEnv = vi.fn(async () => { throw new Error('Codex sqlite_home must use the main profile home for added accounts') })
+    const context = await harness({ accounts: { exists: () => true,
+      defaultAccount: () => ({ accountId: 'main', noFreeAccount: false }), launchEnv } })
+    context.yolo.add('codex')
+    context.models.set('codex', 'fixture-model')
+    context.efforts.set('codex', 'low')
+    const result = await context.lifecycle.create({ kind: 'agent', directory: { mode: 'adHoc', path: context.workDirectory },
+      agent: { agentId: 'codex', mode: 'new', accountId: 'work' } })
+    expect(launchEnv).toHaveBeenCalledExactlyOnceWith('codex', 'work', context.workDirectory,
+      { yolo: true, model: 'fixture-model', effort: 'low' })
+    expect(result).toMatchObject({ ok: false, detail: expect.stringContaining('sqlite_home must use the main profile home') })
+    expect(callsNamed(context.host, 'runtime.create')).toEqual([])
+  })
+
+  it('carries the account through launch, targeted trust and a lost Host generation', async () => {
+    const files: (string | undefined)[] = []
+    const context = await harness({ accounts: { exists: () => true,
+      defaultAccount: () => ({ accountId: 'work', noFreeAccount: false }),
+      launchEnv: async () => ({ CLAUDE_CONFIG_DIR: 'C:/disposable/profile' }) },
+      seed: (_cwd, file) => { files.push(file); return { changed: true, problem: null } } })
+    context.yolo.add('claude')
+    const created = successOf(await context.lifecycle.create({ kind: 'agent', directory: { mode: 'adHoc', path: context.workDirectory },
+      agent: { agentId: 'claude', mode: 'new' } }))
+    expect(context.store.get(created.sessionId)?.accountSegments).toEqual([{ accountId: 'work', from: 5_000, to: null }])
+    expect(launchOf(context.host.calls[0]).env.CLAUDE_CONFIG_DIR).toBe('C:/disposable/profile')
+    expect(files).toEqual([join('C:/disposable/profile', '.claude.json')])
+    context.clock.now = 6_000
+    await context.lifecycle.reconcile({ ...context.host.listing(), hostInstanceId: 'host-2', sessions: [] })
+    expect(context.store.get(created.sessionId)?.accountSegments).toEqual([{ accountId: 'work', from: 5_000, to: 6_000 }])
   })
 
   /*
@@ -869,6 +1045,23 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         },
       })
       expect(context.worktrees.calls).toEqual([])
+    })
+
+    it('creates a waiting session without running commands, then starts after agreement', async () => {
+      const context = await harness()
+      declare({ setup: ['./bootstrap.sh'] })
+      context.setup.resolution = installing([{ command: './bootstrap.sh', cwd: '' }], 'project')
+      const result = await context.lifecycle.create({ ...worktreeSpec(), deferSetupAgreement: true })
+      expect(result.ok).toBe(true)
+      if (!result.ok) throw new Error(result.detail)
+      expect(context.host.calls).toHaveLength(0)
+      const waiting = context.store.get(result.value.sessionId)
+      expect(waiting).toMatchObject({ life: 'ended', pendingSetup: { agreement: { hash: bootstrapHash } } })
+      expect(agreedHash(context)).toBeNull()
+      expect(await context.lifecycle.retrySetup(result.value.sessionId, bootstrapHash)).toMatchObject({ ok: true })
+      expect(agreedHash(context)).toBe(bootstrapHash)
+      expect(context.store.get(result.value.sessionId)?.pendingSetup?.agreement).toBeUndefined()
+      expect(context.host.calls.length).toBeGreaterThan(0)
     })
 
     // A skipped check would read as a passed one, so a key the gate cannot judge is a refusal.
@@ -1078,7 +1271,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
 
     expect(context.worktrees.places).toEqual([{ directory: projectRoot, projectRoot, owner }])
     expect(context.worktrees.calls).toMatchObject([{ placement: { ownerDir: owner }, folder: '007-fix' }])
-    expect(context.setup.calls).toEqual([{ projectRoot: owner, repositoryRoot: owner }])
+    const checkedOut = join(owner, '.worktrees', '007-fix')
+    expect(context.setup.calls).toEqual([{ projectRoot: checkedOut, repositoryRoot: checkedOut }])
   })
 
   it('refuses a spec that does not describe a session it could launch', async () => {
@@ -1307,6 +1501,36 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
    * a paired computer, the skill - got a session the tree could not order and `--number` could not
    * reach.
    */
+  // The create card draws the worktree before it exists: same owner and same counter as the create, nothing taken.
+  describe('the place a worktree would stand', () => {
+    it('answers the owner and the counted project of a picked folder without reserving or counting', async () => {
+      const context = await harness()
+      const picked = join(projectRoot, 'src')
+      context.worktrees.placing = { ok: true, value: { kind: 'svn', ownerDir: projectRoot, cwdSubpath: 'src', catalogProject: projectRoot, setupScope: 'project' } }
+
+      expect(await context.lifecycle.worktreePlacementOf({ mode: 'adHoc', path: picked }))
+        .toEqual({ ok: true, value: { kind: 'svn', ownerDir: projectRoot, owner: 'project', countedProject: projectRoot } })
+      expect(context.worktrees.places).toEqual([{ directory: picked, projectRoot: null }])
+      expect(context.worktrees.calls).toEqual([])
+      expect(context.numbers.calls).toEqual([])
+    })
+
+    it('names a product group and a bare directory as what they are', async () => {
+      const context = await harness()
+      context.worktrees.placing = { ok: true, value: { kind: 'svn', ownerDir: projectParent, cwdSubpath: 'one', catalogProject: projectRoot, setupScope: 'members' } }
+      expect(await context.lifecycle.worktreePlacementOf({ mode: 'project', categoryId: 'nodejs', projectPath: projectRoot }))
+        .toEqual({ ok: true, value: { kind: 'svn', ownerDir: projectParent, owner: 'product', countedProject: projectRoot } })
+
+      context.worktrees.placing = { ok: true, value: { kind: 'svn', ownerDir: projectParent, cwdSubpath: '', catalogProject: null, setupScope: 'project' } }
+      expect(await context.lifecycle.worktreePlacementOf({ mode: 'adHoc', path: projectParent }))
+        .toEqual({ ok: true, value: { kind: 'svn', ownerDir: projectParent, owner: 'directory', countedProject: null } })
+
+      context.worktrees.placing = { ok: false, code: 'invalid-spec', detail: 'a collection of independent projects' }
+      expect(await context.lifecycle.worktreePlacementOf({ mode: 'adHoc', path: projectParent }))
+        .toEqual({ ok: false, code: 'invalid-spec', detail: 'a collection of independent projects' })
+    })
+  })
+
   describe('numbering a create', () => {
     it('numbers a create in a catalog project whose title carries no number', async () => {
       const context = await harness()
@@ -2185,7 +2409,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
 
     expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([
       { kind: 'mark-lost', sessionId: 's1' },
-      { kind: 'mark-ended', sessionId: 's2', exitCode: 3, endedAt: 8_000 },
+      { kind: 'mark-ended', sessionId: 's2', binding: { hostInstanceId: 'host-1', generation: 1 }, exitCode: 3, endedAt: 8_000 },
     ])
     expect(context.store.get('s1')).toEqual(expect.objectContaining({
       life: 'lost',
@@ -2557,11 +2781,12 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     expect(context.reports[0]).toContain(worktreePath)
     expect(context.reports[0]).toContain('jamat/fix')
 
-    // Ended is where it stops: the pass after it decides nothing and launches nothing, and the failed
-    // install its parent still names stays in the list.
     expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([])
-    expect(context.store.get('s1')).not.toBeNull()
-    expect(context.host.calls).toEqual([])
+    expect(context.store.get('s1')).toMatchObject({ life: 'ended', exitCode: 1 })
+    expect(context.store.get('p1')?.scriptRuns).toEqual([expect.objectContaining({
+      runId: 's1', outcome: 'failed', exitCode: 1, log: { state: 'unavailable', reason: expect.stringContaining('capture') },
+    })])
+    expect(callsNamed(context.host, 'runtime.create')).toEqual([])
   })
 
   /*
@@ -2594,6 +2819,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     expect(withoutScriptRuns(await context.lifecycle.reconcile(context.host.listing()))).toEqual([{
       kind: 'mark-ended',
       sessionId: 'p1',
+      binding: { hostInstanceId: 'host-1', generation: 4 },
       exitCode: 2,
       endedAt: 8_000,
     }])
@@ -2636,8 +2862,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     const result = await context.lifecycle.create(worktreeSpec())
 
     expect(result).toEqual({ ok: true, value: { sessionId: 'id-1' } })
-    // Read in the main copy, run in the worktree: that is why the steps come back relative.
-    expect(context.setup.calls).toEqual([{ projectRoot, repositoryRoot: projectRoot }])
+    expect(context.setup.calls).toEqual([{ projectRoot: worktreePath, repositoryRoot: worktreePath }])
     expect(context.store.get('id-1')).toEqual(expect.objectContaining({
       life: 'starting',
       binding: null,
@@ -2978,6 +3203,10 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     const retired = failedWaiting({ retiredWorktree: { worktreePath, kind: 'svn', revisions: [], removedAt: 6_000 } })
     delete retired.worktree
     await context.store.put(retired)
+    expect(failureOf(await context.lifecycle.retrySetup('p1')))
+      .toMatchObject({ code: 'worktree-removed', detail: expect.stringContaining(worktreePath) })
+
+    await context.store.put({ ...retired, pendingSetup: undefined })
     expect(failureOf(await context.lifecycle.retrySetup('p1')))
       .toMatchObject({ code: 'worktree-removed', detail: expect.stringContaining(worktreePath) })
 
@@ -3509,10 +3738,11 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(context.scripts.infoOf(parent).scripts?.badge)
         .toMatchObject({ state: 'failed', text: 'setup failed: codegen', runId: 'id-7' })
       expect(context.reports.some((message) => message.includes('the before script codegen failed'))).toBe(true)
-      // The failed step stays a row; the steps that passed are history.
-      expect(context.store.list().map((entry) => entry.sessionId)).toEqual(['id-1', 'id-7'])
-      expect(context.store.get('id-1')?.scriptRuns?.map((entry) => [entry.name, entry.outcome]))
-        .toEqual([['setup', 'succeeded'], ['prepare', 'succeeded'], ['codegen', 'failed']])
+      expect(context.store.list().map((entry) => entry.sessionId).sort()).toEqual(['id-1', 'id-7'])
+      expect(parent.scriptRuns?.map((entry) => [entry.runId, entry.outcome]))
+        .toEqual([['id-3', 'succeeded'], ['id-5', 'succeeded'], ['id-7', 'failed']])
+      expect(parent.scriptRuns?.find((entry) => entry.runId === 'id-7')).toMatchObject({ exitCode: 2, log: { state: 'saved' } })
+      expect(existsSync(context.logs.pathOf('id-1', 'id-7'))).toBe(true)
     })
 
     it('retries from the failed step when nothing before it changed', async () => {
@@ -3531,8 +3761,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(callsNamed(context.host, 'runtime.create')[4].body.operationId).toBe('id-11')
     })
 
-    // The history keeps ten entries for every phase; the gate keeps its own steps and where it stopped.
-    it('retries from the failed step after the history lost the steps that passed', async () => {
+    it('retries from the failed step while the worktree keeps its setup logs', async () => {
       const context = await harness()
       await failedAtCodegen(context)
       for (let attempt = 0; attempt < 9; attempt += 1) {
@@ -3542,7 +3771,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         await exits(context, runId, 2)
         await settleAll(context)
       }
-      expect(context.store.get('id-1')?.scriptRuns?.some((entry) => entry.name === 'setup')).toBe(false)
+      expect(context.store.get('id-1')?.scriptRuns).toEqual(expect.arrayContaining([expect.objectContaining({ runId: 'id-3' })]))
       const created = createdRuntimes(context).length
 
       successOf(await context.lifecycle.retrySetup('id-1'))
@@ -3666,6 +3895,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         expect(context.worktrees.places).toEqual([{ directory, projectRoot: null, owner: undefined }])
         const parent = context.store.get('id-1')!
         expect(parent.worktree).toMatchObject({ worktreePath: reserved, branch: url, baseCommit: 'r41', cwdSubpath: 'WebMirabiaAdmin/src' })
+        expect(parent.worktree?.agentStartedAt).toBeUndefined()
         expect(parent.transcriptCwd).toBe(join(reserved, 'WebMirabiaAdmin', 'src'))
         expect(parent.pendingSetup?.steps?.map((step) => [step.scriptId, step.name])).toEqual([['svn', 'checkout']])
         // The owner's own `.worktree.json` is what the setup is resolved from.
@@ -3680,6 +3910,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
 
         await exits(context, 'id-3', 0)
         expect(context.store.get('id-1')?.life).toBe('live')
+        expect(context.store.get('id-1')?.worktree?.agentStartedAt).toBe(context.clock.now)
         expect(createdRuntimes(context)).toEqual(['id-3', 'id-1'])
         expect(launchOf(callsNamed(context.host, 'runtime.create')[1]).cwd).toBe(join(reserved, 'WebMirabiaAdmin', 'src'))
       })
@@ -3693,6 +3924,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         await settleAll(context)
         const parent = context.store.get('id-1')!
         expect(parent).toMatchObject({ life: 'ended', endedReason: 'setup failed: the checkout exited with 1' })
+        expect(parent.worktree?.agentStartedAt).toBeUndefined()
         expect(context.scripts.infoOf(parent).scripts?.badge).toMatchObject({ state: 'failed', text: 'checkout failed', runId: 'id-3' })
         expect(context.reports.some((message) => message.includes('the checkout failed'))).toBe(true)
 
@@ -3827,7 +4059,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       const context = await checking()
 
       expect(withoutScriptRuns(await exits(context, 'id-1', 0)))
-        .toEqual([{ kind: 'mark-ended', sessionId: 'id-1', exitCode: 0, endedAt: 6_000 }])
+        .toEqual([{ kind: 'mark-ended', sessionId: 'id-1', binding: { hostInstanceId: 'host-1', generation: 1 }, exitCode: 0, endedAt: 6_000 }])
       expect(context.continued).toEqual([])
 
       expect(withoutScriptRuns(await context.lifecycle.reconcile(context.host.listing())))
@@ -3848,7 +4080,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
 
       expect(withoutScriptRuns(await exits(context, 'id-1', 1))).toEqual([
         { kind: 'script-failed', sessionId: 'p1', gate: 'finish', reason: 'the tests check exited with 1' },
-        { kind: 'mark-ended', sessionId: 'id-1', exitCode: 1, endedAt: 6_000 },
+        { kind: 'mark-ended', sessionId: 'id-1', binding: { hostInstanceId: 'host-1', generation: 1 }, exitCode: 1, endedAt: 6_000 },
       ])
       for (let pass = 0; pass < 3; pass += 1) await context.lifecycle.reconcile(context.host.listing())
       expect(context.continued).toEqual([])
@@ -3871,8 +4103,19 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       await exits(context, 'id-1', 1)
       expect(context.store.get('p1')?.finishChecks?.result).toMatchObject({ kind: 'failed' })
 
+      context.host.launchFailure = { ok: false, code: 'op-rejected', status: 400, detail: 'launch refused' }
+      expect(await context.lifecycle.reopen('p1')).toMatchObject({ ok: false })
+      expect(context.store.get('p1')?.finishChecks?.result).toMatchObject({ kind: 'failed' })
+      expect(context.store.get('p1')?.actionHistory).toBeUndefined()
+      context.host.launchFailure = null
+
       expect(await context.lifecycle.reopen('p1')).toEqual({ ok: true, value: undefined })
       expect(context.store.get('p1')).toEqual(expect.objectContaining({ life: 'live', finishChecks: undefined }))
+      await context.lifecycle.reconcile(context.host.listing())
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.store.get('p1')?.actionHistory).toBeUndefined()
+      expect(context.store.get('p1')?.scriptRuns).toBeUndefined()
+      expect(existsSync(context.logs.pathOf('p1', 'id-1'))).toBe(false)
     })
 
     // A client restart in between: the pass is written and said, and the next press finds it.
@@ -3917,7 +4160,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
 
       expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([
         { kind: 'retry-launch', sessionId: 'id-1', operationId: 'id-2', operation: 'create' },
-        { kind: 'mark-ended', sessionId: 'id-3', exitCode: 0, endedAt: 9_000 },
+        { kind: 'mark-ended', sessionId: 'id-3', binding: { hostInstanceId: 'host-1', generation: 1 }, exitCode: 0, endedAt: 9_000 },
       ])
       expect(context.store.get('id-1')?.life).toBe('live')
 
@@ -3942,7 +4185,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([])
     })
 
-    it('keeps a failed setup its parent names, and a retry supersedes it with a run of its own', async () => {
+    it('retains a failed setup and its log while a retry starts a run with separate history', async () => {
       const context = await harness()
       context.setup.resolution = installing([{ command: 'pnpm install', cwd: '' }])
       await context.lifecycle.create(worktreeSpec())
@@ -3954,14 +4197,15 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(await context.lifecycle.reconcile(context.host.listing()))
         .toEqual([{ kind: 'settle-script-run', runId: 'id-3' }])
       expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([])
-      expect(context.store.get('id-3')).not.toBeNull()
+      expect(context.store.get('id-3')).toMatchObject({ life: 'ended', exitCode: 1 })
+      expect(context.store.get('id-1')?.scriptRuns).toEqual([expect.objectContaining({ runId: 'id-3', outcome: 'failed', exitCode: 1 })])
+      expect(readFileSync(context.logs.pathOf('id-1', 'id-3'), 'utf8')).toContain('ERR_PNPM_FETCH_404')
 
       expect(await context.lifecycle.retrySetup('id-1')).toEqual({ ok: true, value: undefined })
       expect(context.store.get('id-1')?.pendingSetup).toMatchObject({ setupSessionId: 'id-5', cursor: 0 })
       context.host.runtimes.set('id-5', runtime('id-5', { alive: false, exitCode: 0, exitedAt: 12_000 }))
 
-      expect(await context.lifecycle.reconcile(context.host.listing()))
-        .toContainEqual({ kind: 'collapse-script-run', runId: 'id-3' })
+      await context.lifecycle.reconcile(context.host.listing())
       await context.lifecycle.reconcile(context.host.listing())
       await context.lifecycle.reconcile(context.host.listing())
 
@@ -3969,17 +4213,12 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(context.store.get('id-1')?.scriptRuns?.map((entry) => [entry.runId, entry.outcome]))
         .toEqual([['id-3', 'failed'], ['id-5', 'succeeded']])
       expect(context.store.list().map((entry) => entry.sessionId)).toEqual(['id-1'])
-      expect(existsSync(context.logs.pathOf('id-1', 'id-3'))).toBe(true)
+      expect(readFileSync(context.logs.pathOf('id-1', 'id-3'), 'utf8')).toContain('ERR_PNPM_FETCH_404')
+      expect(existsSync(context.logs.pathOf('id-1', 'id-5'))).toBe(true)
       expect(context.collapsed.map((event) => event.runId)).toEqual(['id-3', 'id-5'])
     })
 
-    /*
-     * The upgrade: installs an older build left behind, linked by the old setupFor and with no
-     * history. The Host restarted since, so each is settled without a log, over passes of at most
-     * four, and said once; the successful ones collapse, the failed one its parent names stays, and
-     * one whose parent is gone simply goes.
-     */
-    it('settles the installs an older build left, and removes an orphaned one', async () => {
+    it('removes expired old script rows while retaining failed setup evidence for a worktree', async () => {
       const old = (sessionId: string, parentId: string, exitCode: number): Record<string, unknown> => ({
         sessionId,
         kind: 'shell',
@@ -4008,34 +4247,35 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(existsSync(join(context.logsDirectory, 'gone'))).toBe(false)
 
       expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([
-        { kind: 'settle-script-run', runId: 'sa' },
-        { kind: 'settle-script-run', runId: 'sb' },
+        { kind: 'collapse-script-run', runId: 'sa' },
+        { kind: 'collapse-script-run', runId: 'sb' },
         { kind: 'settle-script-run', runId: 'sc' },
         { kind: 'collapse-script-run', runId: 'sd' },
       ])
-      for (const parentId of ['pa', 'pb', 'pc'])
-        expect(context.store.get(parentId)?.scriptRuns?.[0].log)
-          .toEqual({ state: 'unavailable', reason: 'ended before this build kept logs' })
-      expect(context.reports).toEqual([])
-
-      expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([
-        { kind: 'collapse-script-run', runId: 'sa' },
-        { kind: 'collapse-script-run', runId: 'sb' },
-      ])
-      expect(context.reports).toEqual(['3 script runs were settled without a saved log; each history entry says why'])
+      for (const parentId of ['pa', 'pb'])
+        expect(context.store.get(parentId)?.scriptRuns).toBeUndefined()
+      expect(context.store.get('pc')?.scriptRuns).toEqual([expect.objectContaining({
+        runId: 'sc', outcome: 'failed', exitCode: 1, log: { state: 'unavailable', reason: 'ended before this build kept logs' },
+      })])
       expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([])
+      expect(context.reports).toEqual(['1 script run was settled without a saved log; each history entry says why'])
       expect(context.store.list().map((entry) => entry.sessionId).sort()).toEqual(['pa', 'pb', 'pc', 'sc'])
-      expect(context.store.get('pc')?.scriptRuns?.[0]).toEqual(expect.objectContaining({ runId: 'sc', outcome: 'failed' }))
     })
 
-    it('dismisses a run row on Remove: its entry stays on the parent, its record goes', async () => {
+    it.each([true, false])('dismisses a run row and retains history only for a worktree (worktree: %s)', async (withWorktree) => {
       const context = await harness()
-      await context.store.put(failedWaiting())
+      const parent = failedWaiting()
+      if (!withWorktree) delete parent.worktree
+      await context.store.put(parent)
       await context.store.put(setupRecord({ exitCode: 1 }))
 
       expect(await context.lifecycle.remove('s1')).toEqual({ ok: true, value: undefined })
       expect(context.store.get('s1')).toBeNull()
-      expect(context.store.get('p1')?.scriptRuns?.map((entry) => entry.runId)).toEqual(['s1'])
+      if (withWorktree)
+        expect(context.store.get('p1')?.scriptRuns).toEqual([expect.objectContaining({
+          runId: 's1', outcome: 'failed', exitCode: 1, log: { state: 'unavailable', reason: expect.stringContaining('capture') },
+        })])
+      else expect(context.store.get('p1')?.scriptRuns).toBeUndefined()
       expect(snapshotCount(context.snapshotsDirectory)).toBe(0)
     })
   })
@@ -4051,6 +4291,31 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       context.host.runtimes.set(runId, runtime(runId, { alive: false, exitCode, exitedAt: 9_000 }))
       context.host.screens.set(runId, rows)
     }
+
+    it.each(['exit', 'stop', 'host-loss'] as const)('clears saved logs on %s and reopens without old action sections', async (ending) => {
+      const context = await harness()
+      await asking(context)
+      successOf(await context.lifecycle.runScript('p1', { command: 'pnpm test' }))
+      ends(context, 'id-1', 0, ['tests passed'])
+      await context.lifecycle.reconcile(context.host.listing())
+      await context.lifecycle.reconcile(context.host.listing())
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.store.get('p1')?.scriptRuns).toHaveLength(1)
+      expect(existsSync(context.logs.pathOf('p1', 'id-1'))).toBe(true)
+      switch (ending) {
+        case 'exit': ends(context, 'p1', 0); break
+        case 'stop': successOf(await context.lifecycle.stop('p1')); break
+        case 'host-loss': context.host.runtimes.delete('p1'); break
+        default: throw new Error(`Unknown ending: ${ending satisfies never}`)
+      }
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.store.get('p1')?.scriptRuns).toBeUndefined()
+      expect(existsSync(context.logs.pathOf('p1', 'id-1'))).toBe(false)
+      successOf(await context.lifecycle.reopen('p1'))
+      expect(context.store.get('p1')?.life).toBe('live')
+      expect(context.store.get('p1')?.scriptRuns).toBeUndefined()
+      expect(context.store.get('p1')?.actionHistory).toBeUndefined()
+    })
 
     it('writes the run under its parent, launches it and answers its id', async () => {
       const context = await harness()
@@ -4084,7 +4349,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(context.store.get('p1')?.scriptRuns).toEqual([expect.objectContaining({
         runId: 'id-1',
         outcome: 'failed',
-        log: { state: 'unavailable', reason: 'the Host never ran it' },
+        log: { state: 'unavailable', reason: 'Jamat could not capture the output of this command' },
       })])
     })
 
@@ -4138,7 +4403,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       ends(context, 'id-1', 0, ['Tests  12 passed'])
 
       expect(await context.lifecycle.reconcile(context.host.listing()))
-        .toEqual([{ kind: 'mark-ended', sessionId: 'id-1', exitCode: 0, endedAt: 9_000 }])
+        .toEqual([{ kind: 'mark-ended', sessionId: 'id-1', binding: { hostInstanceId: 'host-1', generation: 1 }, exitCode: 0, endedAt: 9_000 }])
       expect(await context.lifecycle.reconcile(context.host.listing()))
         .toEqual([{ kind: 'settle-script-run', runId: 'id-1' }])
       expect(await context.lifecycle.reconcile(context.host.listing()))
@@ -4192,7 +4457,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         .toEqual([{ kind: 'collapse-script-run', runId: 'id-1' }])
     })
 
-    it('stops a running run once its parent ended, and judges it stopped', async () => {
+    it('stops a running run once its parent ended, then removes it without saving history', async () => {
       const context = await harness()
       await asking(context)
       successOf(await context.lifecycle.runScript('p1', { command: 'pnpm dev' }))
@@ -4206,11 +4471,9 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(await context.lifecycle.reconcile(context.host.listing()))
         .toEqual([expect.objectContaining({ kind: 'mark-ended', sessionId: 'id-1' })])
       expect(await context.lifecycle.reconcile(context.host.listing()))
-        .toEqual([{ kind: 'settle-script-run', runId: 'id-1' }])
-      expect(context.store.get('p1')?.scriptRuns?.[0])
-        .toMatchObject({ runId: 'id-1', outcome: 'stopped', reason: 'its run was stopped' })
-      expect(await context.lifecycle.reconcile(context.host.listing()))
         .toEqual([{ kind: 'collapse-script-run', runId: 'id-1' }])
+      expect(context.store.get('p1')?.scriptRuns).toBeUndefined()
+      expect(existsSync(context.logs.pathOf('p1', 'id-1'))).toBe(false)
     })
 
     it('stops a running run in the same call that stops its parent', async () => {
@@ -4300,7 +4563,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     })
 
     // A restart is a stop and a reopen in one call; no planning pass sees the parent ended between them.
-    it('leaves no run running across a restart of its parent, and judges it stopped', async () => {
+    it('leaves no old run or history across a restart without an ended reconciliation', async () => {
       const context = await harness()
       await asking(context)
       successOf(await context.lifecycle.runScript('p1', { command: 'pnpm dev' }))
@@ -4313,8 +4576,9 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       await context.lifecycle.reconcile(context.host.listing())
       await context.lifecycle.reconcile(context.host.listing())
       expect(context.store.get('p1')?.life).toBe('live')
-      expect(context.store.get('p1')?.scriptRuns?.[0])
-        .toMatchObject({ runId: 'id-1', outcome: 'stopped', reason: 'its run was stopped' })
+      expect(context.store.get('p1')?.scriptRuns).toBeUndefined()
+      expect(context.store.get('id-1')).toBeNull()
+      expect(existsSync(context.logs.pathOf('p1', 'id-1'))).toBe(false)
     })
 
     it('refuses a Host restart while a run is live, naming it', async () => {
@@ -4322,9 +4586,10 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       await asking(context)
       successOf(await context.lifecycle.runScript('p1', { command: 'pnpm test', title: 'tests' }))
 
-      expect(failureOf(await context.lifecycle.prepareHostRestart(context.host.listing())).detail).toContain(
-        'tests (id-1): the script run tests is still running; let it finish or stop it before restarting the Host',
-      )
+      const refused = failureOf(await context.lifecycle.prepareHostRestart(context.host.listing()))
+      expect(refused.detail).toContain('tests (id-1): the script run tests is still running; let it finish or stop it before restarting the Host')
+      // Sessions that still run hold the restart back; the request itself was well formed (UA1-J13-7).
+      expect(refused.code).toBe('live-refused')
     })
   })
 
@@ -4584,6 +4849,17 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(context.store.get('s1')?.completed).toBeUndefined()
     })
 
+    // A restore and a worker's liveness resume continue the lifetime, and the Keep section is drawn
+    // from the outcome; only a person's Reopen starts an empty history (UA1-J14-6).
+    it.each([['restore', true], ['liveness', true], ['person', false]] as const)('keeps the last worktree outcome on a %s reopen: %s', async (by, keeps) => {
+      const context = await harness()
+      const outcome = { result: 'not-committed' as const, revisions: [], main: 'none' as const, worktree: 'kept' as const, lines: ['Worktree kept'], at: 5 }
+      await context.store.put(record('s1', { life: 'ended', binding: null, worktreeOutcome: outcome }))
+
+      expect(await context.lifecycle.reopen('s1', by)).toEqual({ ok: true, value: undefined })
+      expect(context.store.get('s1')?.worktreeOutcome).toEqual(keeps ? outcome : undefined)
+    })
+
     // The new run has its own ending; inheriting the last one's would have it read as finished from
     // the second it starts.
     it('takes both witnesses of the last ending off a session it reopens', async () => {
@@ -4622,7 +4898,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         life: 'lost', binding: null, createdAt: -9_000_000,
       }))
       context.identities.set('s1', identity('s1', 'conv-1'))
-      await context.lifecycle.nameCodexOnStartup()
+      await context.lifecycle.nameConversationsOnStartup()
       expect(context.store.get('s1')?.agent?.nativeSessionId).toBe('conv-1')
     })
 
@@ -4632,7 +4908,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         kind: 'agent', agent: {agentId: 'codex', launchMode: 'new'}, life: 'lost', binding: null,
       }))
       context.identities.set('s1', identity('s1', 'conv-1'))
-      await context.lifecycle.nameCodexOnStartup()
+      await context.lifecycle.nameConversationsOnStartup()
       expect(context.store.get('s1')?.agent?.nativeSessionId).toBeUndefined()
       expect(failureOf(await context.lifecycle.reopen('s1')).code).toBe('invalid-spec')
       expect(callsNamed(context.host, 'runtime.create')).toEqual([])
@@ -4669,6 +4945,114 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     })
   })
 
+  /**
+   * Claude Code 2.1.304 was started with `--session-id` and wrote its conversation under another id;
+   * a resume of the launched id found no conversation (UA1-J14-1). The status line relay of THAT
+   * launch reports the id Claude really runs, and only that report names the conversation.
+   */
+  describe('the conversation a running Claude reports', () => {
+    function claudeRecord(overrides?: Partial<SessionRecord>): SessionRecord {
+      return record('s1', { kind: 'agent', agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 's1', identityLaunchId: 'proof' }, ...overrides })
+    }
+
+    it('binds an interactive Claude launch to a generation and hands it to the status line', async () => {
+      const context = await harness()
+      context.statusLine.file = join(context.workDirectory, 'settings-relay.json')
+      const sessionId = successOf(await context.lifecycle.create({
+        kind: 'agent', directory: { mode: 'adHoc', path: context.workDirectory }, agent: { agentId: 'claude', mode: 'new' },
+      })).sessionId
+      const launchId = context.store.get(sessionId)?.agent?.identityLaunchId
+      expect(launchId).toEqual(expect.any(String))
+      expect(context.statusLine.identities).toEqual([{ sessionId, launchId }])
+    })
+
+    it('adopts the conversation the running Claude reported for its launch and resumes that one', async () => {
+      const context = await harness()
+      await context.store.put(claudeRecord({ life: 'lost', binding: null }))
+      context.claudeIdentities.set('s1', { launchId: 'proof', nativeSessionId: 'real-1', sequence: 5 })
+      expect(await context.lifecycle.reopen('s1')).toEqual({ ok: true, value: undefined })
+      expect(context.store.get('s1')?.agent).toMatchObject({
+        nativeSessionId: 'real-1', nativeSessionIdSource: 'claude-statusline', identityLaunchId: 'id-1',
+      })
+      expect(launchOf(callsNamed(context.host, 'runtime.create')[0]).args.slice(-2)).toEqual(['--resume', 'real-1'])
+    })
+
+    it.each(['live', 'lost'] as const)('keeps confirming the original launch after a failed account switch while %s', async life => {
+      const context = await harness()
+      await context.store.put(claudeRecord({ life, endedReason: 'stop refused',
+        agent: { agentId: 'claude', launchMode: 'new', accountId: 'b', launchAccountId: 'a',
+          nativeSessionId: 'old-conversation', identityLaunchId: 'proof' } }))
+      context.claudeIdentities.set('s1', { launchId: 'proof', nativeSessionId: 'latest-conversation', sequence: 5 })
+      if (life === 'live') {
+        context.host.runtimes.set('s1', runtime('s1'))
+        await context.lifecycle.reconcile(context.host.listing())
+        expect(context.store.get('s1')?.agent?.launchAccountId).toBe('a')
+      }
+      else if (life === 'lost') {
+        expect(await context.lifecycle.reopen('s1')).toEqual({ ok: true, value: undefined })
+        expect(context.store.get('s1')?.agent?.launchAccountId).toBe('b')
+        expect(launchOf(callsNamed(context.host, 'runtime.create')[0]).args.slice(-2)).toEqual(['--resume', 'latest-conversation'])
+      }
+      else throw new Error(`Unknown session life: ${life}`)
+      expect(context.store.get('s1')?.agent?.nativeSessionId).toBe('latest-conversation')
+    })
+
+    it.each(['live', 'ended', 'missing'] as const)('confirms a retained launch with matching account selection before its runtime becomes %s', async runtimeState => {
+      const context = await harness()
+      await context.store.put(claudeRecord({ life: 'live', endedReason: 'earlier stop refused',
+        agent: { agentId: 'claude', launchMode: 'new', accountId: 'a', launchAccountId: 'a',
+          nativeSessionId: 'old-conversation', identityLaunchId: 'proof' } }))
+      context.claudeIdentities.set('s1', { launchId: 'proof', nativeSessionId: 'final-conversation', sequence: 5 })
+      if (runtimeState === 'live') context.host.runtimes.set('s1', runtime('s1'))
+      else if (runtimeState === 'ended') context.host.runtimes.set('s1', runtime('s1', { alive: false, exitedAt: 2000, exitCode: 0 }))
+      else if (runtimeState === 'missing') context.host.runtimes.delete('s1')
+      else throw new Error(`Unknown runtime state: ${runtimeState}`)
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.store.get('s1')?.agent?.nativeSessionId).toBe('final-conversation')
+      if (runtimeState === 'ended' || runtimeState === 'missing') {
+        expect(await context.lifecycle.reopen('s1')).toEqual({ ok: true, value: undefined })
+        const launch = context.host.calls.find(call => call.name === 'runtime.create' || call.name === 'runtime.replace')!
+        expect(launchOf(launch).args.slice(-2)).toEqual(['--resume', 'final-conversation'])
+      }
+      else if (runtimeState !== 'live') throw new Error(`Unknown runtime state: ${runtimeState}`)
+    })
+
+    it.each([undefined, 'a'])('rejects a late receipt on an ordinary ended record with launch account %s', async launchAccountId => {
+      const context = await harness()
+      await context.store.put(claudeRecord({ life: 'ended', endedReason: 'launch refused',
+        agent: { agentId: 'claude', launchMode: 'new', accountId: 'a', launchAccountId,
+          nativeSessionId: 'saved-conversation', identityLaunchId: 'proof' } }))
+      context.claudeIdentities.set('s1', { launchId: 'proof', nativeSessionId: 'late-conversation', sequence: 5 })
+      expect(await context.lifecycle.reopen('s1')).toEqual({ ok: true, value: undefined })
+      expect(context.store.get('s1')?.agent?.nativeSessionId).toBe('saved-conversation')
+      expect(launchOf(callsNamed(context.host, 'runtime.create')[0]).args.slice(-2)).toEqual(['--resume', 'saved-conversation'])
+    })
+
+    it('never adopts a report of another launch generation', async () => {
+      const context = await harness()
+      await context.store.put(claudeRecord({ life: 'lost', binding: null }))
+      context.claudeIdentities.set('s1', { launchId: 'earlier', nativeSessionId: 'other', sequence: 5 })
+      expect(await context.lifecycle.reopen('s1')).toEqual({ ok: true, value: undefined })
+      expect(context.store.get('s1')?.agent?.nativeSessionIdSource).toBeUndefined()
+      expect(launchOf(callsNamed(context.host, 'runtime.create')[0]).args.slice(-2)).toEqual(['--resume', 's1'])
+    })
+
+    it('follows a running Claude to the conversation it moved to, and ignores an older report', async () => {
+      const context = await harness()
+      context.host.runtimes.set('s1', runtime('s1'))
+      await context.store.put(claudeRecord())
+      context.claudeIdentities.set('s1', { launchId: 'proof', nativeSessionId: 's1', sequence: 1 })
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.store.get('s1')?.agent).toMatchObject({ nativeSessionId: 's1', nativeSessionIdSource: 'claude-statusline' })
+      context.claudeIdentities.set('s1', { launchId: 'proof', nativeSessionId: 'real-1', sequence: 2 })
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.store.get('s1')?.agent?.nativeSessionId).toBe('real-1')
+      context.claudeIdentities.set('s1', { launchId: 'proof', nativeSessionId: 's1', sequence: 1 })
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.store.get('s1')?.agent?.nativeSessionId).toBe('real-1')
+    })
+  })
+
   describe('forking a session', () => {
     /** Robust against the ComSpec wrap and against a yolo flag appended behind the mode flags. */
     function argsOf(context: Harness): string[] {
@@ -4690,9 +5074,11 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       // The fork starts a conversation of its own, so Claude is told the id it will run under.
       expect(child?.agent).toEqual({
         agentId: 'claude',
+        accountId: 'main',
         launchMode: 'fork',
         forkParentId: 'native-1',
         nativeSessionId: expect.stringMatching(/^id-\d+$/) as unknown as string,
+        identityLaunchId: expect.any(String) as unknown as string,
       })
       expect(argsOf(context).slice(-2))
         .toEqual(['--session-id', child?.agent?.nativeSessionId])
@@ -4808,7 +5194,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         createdAt: 5_000,
       }))
 
-      await context.lifecycle.nameCodexOnStartup()
+      await context.lifecycle.nameConversationsOnStartup()
 
       expect(context.store.get('f1')?.agent?.nativeSessionId).toBe('conv-2')
     })
@@ -4966,9 +5352,11 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         const opened = successOf(await context.lifecycle.openHistory(spec(agentId, 'native-1')))
         expect(context.store.get(opened.sessionId)?.agent).toEqual({
           agentId,
+          accountId: 'main',
           launchMode: 'resume',
           nativeSessionId: 'native-1',
-          ...(agentId === 'codex' ? {nativeSessionIdSource: 'provided', identityLaunchId: 'id-2'} : {}),
+          ...(agentId === 'codex' ? {nativeSessionIdSource: 'provided'} : {}),
+          identityLaunchId: 'id-2',
         })
         expect(context.store.get(opened.sessionId)?.title).toBe('007 - Provider task')
       }
@@ -4998,9 +5386,11 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       const opened = successOf(await context.lifecycle.openHistory(spec('claude', 'native-1', true)))
       expect(context.store.get(opened.sessionId)?.agent).toEqual({
         agentId: 'claude',
+        accountId: 'main',
         launchMode: 'fork',
         forkParentId: 'native-1',
         nativeSessionId: expect.stringMatching(/^id-\d+$/) as unknown as string,
+        identityLaunchId: expect.any(String) as unknown as string,
       })
       expect(context.store.get(opened.sessionId)?.title).toBe('007 - Provider task')
     })
@@ -5021,9 +5411,11 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
           const opened = successOf(await context.lifecycle.openHistory(spec('claude', 'native-1')))
           expect(context.store.get(opened.sessionId)?.agent).toEqual({
             agentId: 'claude',
+            accountId: 'main',
             launchMode: 'fork',
             forkParentId: 'native-1',
             nativeSessionId: expect.stringMatching(/^id-\d+$/) as unknown as string,
+            identityLaunchId: expect.any(String) as unknown as string,
           })
           expect(context.store.get(opened.sessionId)?.title).toBe('014-015 - Existing task')
         }
@@ -5044,6 +5436,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(context.store.get('s1')?.agent?.nativeSessionId).toBe('conv-1')
       expect(context.store.get(opened.sessionId)?.agent).toEqual({
         agentId: 'codex',
+        accountId: 'main',
         launchMode: 'fork',
         forkParentId: 'conv-1',
         identityLaunchId: 'id-2',
@@ -5148,17 +5541,37 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
   })
 
   describe('the details on a session', () => {
+    it.each(['colour', 'note', 'name'] as const)('preserves a queued SVN journal when changing the %s', async (field) => {
+      const context = await harness()
+      await context.store.put(record('s1', { title: '014 - old' }))
+      const journal = [{ stepId: 'checkout', kind: 'checkout' as const, attempt: 1, startedAt: 10, runId: 'checkout-run' }]
+      const checkout = context.store.update('s1', (current) => ({ ...current, title: '015 - current',
+        worktreeLifecycle: { version: 1, actionId: null, phase: 'active', outOfDate: 0, journal,
+          facts: { worker: { liveness: 'alive', resumeFailures: 0 } } } }))
+      const changed = field === 'colour' ? context.lifecycle.setColor('s1', 'teal')
+        : context.lifecycle.setDetails('s1', field === 'note' ? { note: 'task attempt' } : { name: 'renamed' })
+      expect(await checkout).toBe(true)
+      expect((await changed).ok).toBe(true)
+      const saved = context.store.get('s1')!
+      expect(saved.worktreeLifecycle).toMatchObject({ version: 1, journal })
+      expect(saved.title).toBe(field === 'name' ? '015 - renamed' : '015 - current')
+      if (field === 'colour') expect(saved.color).toBe('teal')
+      else if (field === 'note') expect(saved.note).toBe('task attempt')
+      else if (field !== 'name') throw new Error(`Unknown metadata: ${field}`)
+      expect(JSON.parse(readFileSync(context.recordsFile, 'utf8')).records).toContainEqual(saved)
+    })
+
     it('writes the name, the note and the colour as one record', async () => {
       const context = await harness()
       await context.store.put(record('s1', { title: '014 - staré' }))
-      const puts = vi.spyOn(context.store, 'put')
+      const updates = vi.spyOn(context.store, 'update')
 
       expect(successOf(await context.lifecycle.setDetails('s1', {
         name: 'nové',
         note: 'why this one exists',
         color: 'teal',
       }))).toEqual({ titleChanged: true, notifyAgent: null })
-      expect(puts).toHaveBeenCalledTimes(1)
+      expect(updates).toHaveBeenCalledTimes(1)
       const stored = context.store.get('s1')
       expect(stored?.title).toBe('014 - nové')
       expect(stored?.note).toBe('why this one exists')
@@ -5699,13 +6112,15 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(args).not.toContain('-p')
       expect(args).toContain('--settings')
       expect(args).toContain('--allowedTools')
+      // This client's own CLI line, never the person's ~/.claude skill (UA1-J14-9).
+      expect(args).toContain('Bash(node "C:/Jamat/skills/claude/appjamat-v3/scripts/jamat-v3.mjs" sessions resolve-conflict:*)')
       expect(args.slice(args.indexOf('--disallowedTools'), args.indexOf('--disallowedTools') + 5))
         .toEqual(['--disallowedTools', 'Bash(svn:*)', 'Bash(svnadmin:*)', '--permission-mode', 'acceptEdits'])
       expect(args.at(-1)).toBe('merge it')
       const stored = context.store.get('merge-1')?.agent
       expect(stored?.permission).toBe('merger')
       expect(stored?.oneShot).toBeUndefined()
-      expect(AgentPresets.replayArgs(stored!)).not.toContain('-p')
+      expect(AgentPresets.replayArgs(stored!, 'node "C:/Jamat/cli.mjs"')).not.toContain('-p')
     })
 
     /*
@@ -5846,7 +6261,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       context.host.screens.set('r1', ['Resolved 1 conflict', 'Committed'])
     }
 
-    it('settles a resolver that exited 0, and collapses it into history once the merge landed', async () => {
+    it('keeps resolver output until the merge lands, then clears the ended session history', async () => {
       const context = await harness()
       await context.store.put(merging())
       await hostedResolver(context, 0)
@@ -5869,8 +6284,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         .toEqual([{ kind: 'collapse-script-run', runId: 'r1' }])
       expect(context.store.get('r1')).toBeNull()
       expect(context.host.runtimes.has('r1')).toBe(false)
-      expect(context.store.get('m1')?.scriptRuns?.map((entry) => entry.runId)).toEqual(['r1'])
-      expect(readFileSync(context.logs.pathOf('m1', 'r1'), 'utf8')).toContain('Resolved 1 conflict\nCommitted\n')
+      expect(context.store.get('m1')?.scriptRuns).toBeUndefined()
+      expect(existsSync(context.logs.pathOf('m1', 'r1'))).toBe(false)
       // The resolver's tab closes rather than handing over: nothing of the parent's belongs in it.
       expect(context.collapsed).toEqual([{ runId: 'r1', parentId: 'm1', handoff: 'close', handoffTo: 'm1' }])
     })
@@ -6462,30 +6877,98 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     })
 
     // The verdict of a run is written in the reconcile pass; the next stage is launched off it.
-    it('judges a check of an SVN action through the action gate and launches the update off the reconcile loop', async () => {
+    it('judges a check of an SVN action through the action gate and returns unapproved changes off the reconcile loop', async () => {
       const context = await harness()
       const worktree = join(context.workDirectory, '.worktrees', 'acting')
       mkdirSync(worktree, { recursive: true })
       const check = { key: 'k', scriptId: 'checks' as const, name: 'tests', commands: [{ command: 'pnpm test', cwd: worktree }] }
       await context.store.put({ ...withWorktree(context, 'acting'), svnAction: svnActionOf(worktree, { stage: 'checks', runId: 'check-run', checks: [check] }) })
+      await context.logs.write('s1', 'check-run', 'Complete retained check output')
+      await context.store.update('s1', (current) => ({ ...current, scriptRuns: [{ runId: 'check-run', title: 'tests', phase: 'after', scriptId: 'checks', name: 'tests', commands: check.commands.map((command) => command.command), startedAt: 1, endedAt: 4_000, exitCode: 0, outcome: 'succeeded', log: { state: 'saved', bytes: 30, truncated: false } }] }))
       await context.store.put(record('check-run', {
         life: 'ended', binding: null, exitCode: 0, exitReason: 'process-exit', endedAt: 4_000, commands: check.commands,
         scriptOf: { sessionId: 's1', phase: 'after', scriptId: 'checks', name: 'tests', stepKey: 'k' },
       }))
       context.tools.set('svn', { ok: true, command: 'C:/svn/svn.exe', prefixArgs: [], env: {} })
 
+      context.svnAction.svn.reviewRoots = async () => ({ ok: true, value: [{ path: worktree, own: '', changed: [{ path: 'a.txt', kind: 'item', conflict: false }], pinned: false }] })
+      context.svnAction.svn.changes = async () => ({ ok: true, value: [{ path: 'a.txt', kind: 'item', conflict: false }] })
       const applied = await context.lifecycle.reconcile(context.host.listing())
       expect(applied).toContainEqual({ kind: 'script-succeeded', sessionId: 's1', gate: 'action' })
-      expect(context.store.get('s1')?.svnAction?.verdict).toEqual({ kind: 'succeeded', exitCode: 0 })
       await Promise.all(context.svnAction.detached.splice(0))
 
-      const action = context.store.get('s1')?.svnAction
-      expect(action).toMatchObject({ stage: 'updating', baseRevision: 41 })
-      expect(action?.verdict).toBeUndefined()
-      const update = context.store.get(action?.runId ?? '')
-      expect(update).toMatchObject({ process: { tool: 'svn', args: ['--non-interactive', 'update', '--accept', 'postpone', '--', '.'] } })
-      const created = callsNamed(context.host, 'runtime.create').at(-1)
-      expect(created && launchOf(created)).toMatchObject({ command: 'C:/svn/svn.exe', args: ['--non-interactive', 'update', '--accept', 'postpone', '--', '.'], cwd: worktree })
+      expect(FinishProjection.action(context.store.get('s1')!)).toMatchObject({ stage: 'changes' })
+      expect(context.store.get('s1')?.worktreeLifecycle?.review?.selection).toEqual(['a.txt'])
+      expect(callsNamed(context.host, 'runtime.create')).toEqual([])
+    })
+
+    it.each(['E155011', 'E160028', 'E170004', 'success', 'no-exit'])('waits for the saved commit log of a fast run before handling %s', async (result) => {
+      const context = await harness()
+      const worktree = join(context.workDirectory, '.worktrees', 'committing')
+      mkdirSync(worktree, { recursive: true })
+      const exitCode = result === 'no-exit' ? undefined : result === 'success' ? 0 : 1
+      await context.store.put({ ...withWorktree(context, 'committing'), svnAction: svnActionOf(worktree, {
+        stage: 'committing', runId: 'commit-run',
+        roots: [{ path: worktree, own: '', changed: ['a.txt'], selection: [join(worktree, 'a.txt')], bounds: { repository: 'url', base: '/trunk', rootBase: 41, since: 41 } }],
+        commit: { selection: [join(worktree, 'a.txt')], hashes: { 'a.txt': 'same' }, message: '[App] Change', preparedAdds: [] },
+      }) })
+      await context.store.put(record('commit-run', {
+        life: 'starting', binding: null, pendingOperationId: 'commit-launch', pendingOperationKind: 'create',
+        directory: { mode: 'adHoc', path: worktree }, process: { tool: 'svn', args: ['commit'] },
+        scriptOf: { sessionId: 's1', phase: 'after', scriptId: 'svn', name: 'commit' },
+      }))
+      context.host.runtimes.set('commit-run', runtime('commit-run', { alive: false, exitCode, exitedAt: 4_000 }))
+      context.host.screens.set('commit-run', [result === 'no-exit' ? 'Could not start svn: access denied'
+        : result === 'success' ? 'Committed revision 51.' : `svn: ${result}: File is out of date`])
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.store.get('commit-run')).toMatchObject({ life: 'ended', exitCode,
+        binding: { hostInstanceId: 'host-1', generation: 1 } })
+      const inspect = vi.spyOn(context.host, 'inspect').mockResolvedValueOnce({ ok: false, code: 'host-unreachable', detail: 'try again' })
+
+      for (let pass = 0; pass < 2; pass += 1) {
+        const applied = await context.lifecycle.reconcile(context.host.listing())
+        await Promise.all(context.svnAction.detached.splice(0))
+        expect(applied.some((change) => change.kind === 'script-failed' || change.kind === 'script-succeeded')).toBe(false)
+        expect(FinishProjection.action(context.store.get('s1')!)).toMatchObject({ stage: 'committing', rounds: { outOfDate: 0 } })
+        expect(FinishProjection.action(context.store.get('s1')!)?.needs).toBeUndefined()
+      }
+      expect(inspect).toHaveBeenCalledTimes(2)
+      expect(context.store.get('s1')?.scriptRuns?.[0].log.state).toBe('saved')
+
+      await context.lifecycle.reconcile(context.host.listing())
+      await Promise.all(context.svnAction.detached.splice(0))
+      if (result === 'success')
+        expect(context.store.get('s1')?.commitReceipts).toContainEqual(expect.objectContaining({ revision: 51 }))
+      else if (result === 'no-exit')
+        expect(FinishProjection.action(context.store.get('s1')!)?.needs?.reason).toContain('Could not start svn: access denied')
+      else {
+        expect(FinishProjection.action(context.store.get('s1')!)).toMatchObject({ rounds: { outOfDate: 1 } })
+        while (context.svnAction.detached.length > 0) await Promise.all(context.svnAction.detached.splice(0))
+        expect(context.svnAction.syncs).toEqual([])
+        expect(context.store.get('s1')?.worktreeLifecycle?.wait?.kind).toBe('repository-busy')
+        expect(callsNamed(context.host, 'runtime.create')).toEqual([])
+      }
+    })
+
+    it.each([0, 1])('finishes judging commit exit %i when its log is permanently unavailable', async (exitCode) => {
+      const context = await harness()
+      const worktree = join(context.workDirectory, '.worktrees', 'committing')
+      await context.store.put({ ...withWorktree(context, 'committing'), svnAction: svnActionOf(worktree, {
+        stage: 'committing', runId: 'commit-run',
+      }) })
+      await context.store.put(record('commit-run', {
+        life: 'ended', binding: null, exitCode, endedAt: 4_000,
+        directory: { mode: 'adHoc', path: worktree }, process: { tool: 'svn', args: ['commit'] },
+        scriptOf: { sessionId: 's1', phase: 'after', scriptId: 'svn', name: 'commit' },
+      }))
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.store.get('s1')?.scriptRuns?.[0].log.state).toBe('unavailable')
+      await context.lifecycle.reconcile(context.host.listing())
+      await Promise.all(context.svnAction.detached.splice(0))
+      expect(FinishProjection.action(context.store.get('s1')!)?.needs?.kind).toBe('svn-failed')
+      expect(FinishProjection.action(context.store.get('s1')!)?.needs?.reason).toContain('full log')
+      expect(context.store.get('s1')?.commitReceipts).toBeUndefined()
+      expect(callsNamed(context.host, 'runtime.create')).toEqual([])
     })
 
     // After a restart nothing drives a client stage until the reconciler asks for it.
@@ -6494,14 +6977,26 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       const worktree = join(context.workDirectory, '.worktrees', 'removing')
       mkdirSync(worktree, { recursive: true })
       await context.store.put({ ...withWorktree(context, 'removing'), svnAction: svnActionOf(worktree, { stage: 'removing' }) })
+      context.svnAction.remove = async (sessionId) => {
+        await context.store.update(sessionId, (current) => {
+          const next: SessionRecord = { ...current, completed: true,
+            retiredWorktree: { worktreePath: worktree, kind: 'svn', revisions: [], removedAt: context.clock.now, ownerDir: context.workDirectory } }
+          delete next.worktree
+          return next
+        })
+        return { state: 'removed', lines: [] }
+      }
 
       const applied = await context.lifecycle.reconcile(context.host.listing())
       expect(applied).toContainEqual({ kind: 'svn-action-due', sessionId: 's1' })
       await Promise.all(context.svnAction.detached.splice(0))
 
+      // The resumed Finish reads no change in the worktree, so its review ends without a dialog.
       expect(context.store.get('s1')?.svnAction).toBeUndefined()
-      expect(context.store.get('s1')?.worktreeOutcome).toMatchObject({ result: 'nothing', worktree: 'removed' })
-      expect(context.svnAction.ended).toEqual(['s1'])
+      expect(context.store.get('s1')?.worktreeOutcome?.result).toBe('nothing')
+      expect(context.store.get('s1')?.worktreeOutcome?.worktree).toBe('removed')
+      expect(context.reports).toEqual([])
+      expect(context.store.get('s1')?.worktreeLifecycle?.wait).toBeUndefined()
     })
 
     // A waiting action holds nothing: the person may run the session again and press Finish later.
@@ -6653,7 +7148,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       }
     }
 
-    it('keeps a changed worktree after Discard IN USE, a reopen and a stop, because the reopen made the cleanup count changes', async () => {
+    it('keeps a changed worktree after a persisted legacy Discard IN USE, a reopen and a stop', async () => {
       const context = await wired()
       const worktree = join(context.workDirectory, 'repo', '.worktrees', '014-fix')
       mkdirSync(worktree, { recursive: true })
@@ -6667,7 +7162,6 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
           flowLog.push(`changes ${path}`)
           return { ok: true as const, value: [{ kind: 'item' as const, conflict: false, path: 'after-reopen.txt' }] }
         },
-        facts: async () => ({ ok: true as const, value: { added: 0, removed: 0, changedFiles: 0 } }),
       }
       let renameAnswer: 'in-use' | 'removed' = 'in-use'
       const removal = {
@@ -6691,7 +7185,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         results: new WorktreeResultsStore(join(context.workDirectory, 'cleanup-results'), {
           now: () => context.clock.now, logs: context.logs, report: () => undefined,
         }),
-        finishRefusal: () => null,
+
         changed: () => undefined,
         ended: (sessionId) => { ended.push(sessionId) },
         landedDue: () => undefined,
@@ -6702,7 +7196,10 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       context.lifecycle.setCleanWorktree((sessionId) => { cleanups.push(flow.cleanUp(sessionId)) })
 
       context.clock.now = 2_000
-      expect(failureOf(await flow.discard('w1')).code).toBe('locked')
+      await context.store.update('w1', (current) => ({ ...current, worktreeLifecycle: undefined,
+        worktreeCleanup: { phase: 'pending', trigger: 'discard-unfinished', requestedAt: 2_000, attempts: 0 } }))
+      await flow.cleanUp('w1')
+      expect(context.store.get('w1')?.worktreeCleanup?.reason).toBe('in use')
       expect(context.store.get('w1')?.worktreeCleanup?.trigger).toBe('discard-unfinished')
 
       context.clock.now = 3_000
@@ -6807,7 +7304,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     const commit = (sessionId: string, scopeRoot: string, revision: number | null = 50, paths: string[] = []): SessionCommitReceipt =>
       ({ sessionId, scopes: [{ scopeRoot, revision }], paths })
 
-    it('writes a committed cleanup for a review inside a session\'s SVN worktree, and nothing for a main-copy review', async () => {
+    it('waits visibly for incomplete foreign worktree evidence and leaves a main-copy review alone', async () => {
       const context = await harness()
       await context.store.put(cleaning({ life: 'live', binding: { hostInstanceId: 'host-1', generation: 1 }, worktreeCleanup: undefined }))
       context.clock.now = 7_000
@@ -6817,8 +7314,10 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(context.store.get('w1')?.worktreeCleanup).toBeUndefined()
 
       await context.lifecycle.noteCommitted(commit('main', 'C:/repo/.worktrees/014-fix/mount'))
-      expect(context.store.get('w1')?.worktreeCleanup)
-        .toEqual({ phase: 'pending', trigger: 'committed', requestedAt: 7_000, attempts: 0 })
+      expect(context.store.get('w1')?.worktreeCleanup).toBeUndefined()
+      expect(context.store.get('w1')?.worktreeLifecycle?.wait?.kind).toBe('published-with-differences')
+      expect(context.svnAction.ended).toEqual([])
+      expect(callsNamed(context.host, 'runtime.create')).toEqual([])
     })
 
     it('leaves a running finish and a pending trigger alone, and judges a kept worktree again', async () => {
@@ -6835,7 +7334,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       await context.store.put(reviewing)
       await context.lifecycle.noteCommitted(commit('w1', scope))
       expect(cleanupOf()).toBeUndefined()
-      expect(context.store.get('w1')?.svnAction).toEqual(reviewing.svnAction)
+      expect(context.store.get('w1')?.worktreeLifecycle?.wait?.kind).toBe('published-with-differences')
       expect(context.store.get('w1')?.commitReceipts?.at(-1)).toMatchObject({ scopeRoot: scope, revision: 50 })
 
       await context.store.put(cleaning({ worktreeCleanup: undefined }))
@@ -6847,7 +7346,9 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       await context.store.put(cleaning({ worktreeCleanup: { phase: 'kept', trigger: 'committed', reason: '2 changes', requestedAt: 1, attempts: 1 } }))
       context.clock.now = 9_000
       await context.lifecycle.noteCommitted(commit('w1', scope))
-      expect(cleanupOf()).toEqual({ phase: 'pending', trigger: 'committed', requestedAt: 9_000, attempts: 0 })
+      expect(cleanupOf()?.phase).toBe('kept')
+      expect(context.store.get('w1')?.worktreeLifecycle?.wait?.kind).toBe('published-with-differences')
+      expect(context.svnAction.ended).toEqual([])
     })
 
     it('keeps a receipt per scope on the split\'s session, each path relative to the deepest scope holding it', async () => {
@@ -6864,7 +7365,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         { scopeRoot: `${root}\\mount`, revision: 1234, paths: ['a.txt'], at: 7_000 },
         { scopeRoot: root, revision: 1235, paths: ['src/b.txt', 'c.txt'], at: 7_000 },
       ])
-      expect(context.store.get('w1')?.worktreeCleanup).toMatchObject({ phase: 'pending', trigger: 'committed' })
+      expect(context.store.get('w1')?.worktreeCleanup).toBeUndefined()
+      expect(context.store.get('w1')?.worktreeLifecycle?.step).toBe('verifying')
     })
 
     it('lands a main-copy commit inside another session\'s worktree on both, and a run\'s on its parent', async () => {
@@ -6883,8 +7385,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(context.store.get('main')?.commitReceipts).toEqual([first, { scopeRoot: 'C:\\repo', revision: null, paths: [], at: 7_000 }])
       expect(context.store.get('run-1')?.commitReceipts).toBeUndefined()
       expect(context.store.get('w1')?.commitReceipts).toEqual([first])
-      expect(context.store.get('w1')?.worktreeCleanup)
-        .toEqual({ phase: 'pending', trigger: 'committed', requestedAt: 7_000, attempts: 0 })
+      expect(context.store.get('w1')?.worktreeCleanup).toBeUndefined()
+      expect(context.store.get('w1')?.worktreeLifecycle?.step).toBe('verifying')
     })
 
     it('keeps the newest 50 receipts and at most 200 paths in one', async () => {

@@ -1,3 +1,4 @@
+import type { RemoteControlStepResult } from '../../../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import type { RemoteControlResponse } from '../../../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import type {
   SessionInfo,
@@ -6,7 +7,7 @@ import type {
 } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type { IpcResult } from '../../../shared/appClientUiIpc'
 import type { TerminalTarget } from '../../../shared/terminalTarget'
-import { type SessionGlyph, SessionNodeState } from '../../views/sessionsTree/sessionNodeState'
+import { type SessionAction, type SessionGlyph, SessionNodeState } from '../../views/sessionsTree/sessionNodeState'
 import { FinalizeCatalog, type SessionFinalizeQuestionSpec } from './finalizeCatalog'
 
 export type FinalizeScope = 'local' | 'remote'
@@ -75,6 +76,15 @@ export class FinalizeAsks {
     }
   }
 
+  /**
+   * The actions the sessions tree row offers, Finish among them. The tab's menu asks the same
+   * question, so the two cannot disagree about whether a session can be finished.
+   */
+  static rowActionsOf(session: SessionInfo, scope: FinalizeScope): readonly SessionAction[] {
+    return SessionNodeState.actionsOf(session,
+      FinalizeAsks.offered(session, scope) || SessionNodeState.opensWorkflow(session, scope))
+  }
+
   /** Whether a Finish of this session has anything to ask, without building the ask. */
   static offered(
     session: SessionInfo,
@@ -116,7 +126,7 @@ export class FinalizeAgreements {
    * refusal carries them beside its code; a remote one behind `error.data`, and that payload crossed
    * a network, so it is checked before it is shown or answered.
    */
-  static of(answer: IpcResult<SessionsOpResult | RemoteControlResponse>): SessionSetupAgreement | null {
+  static of(answer: IpcResult<SessionsOpResult | RemoteControlResponse | RemoteControlStepResult<unknown>>): SessionSetupAgreement | null {
     if (!answer.ok || answer.value.ok) return null
     const refusal = answer.value
     if ('error' in refusal) {
@@ -140,10 +150,11 @@ export class FinalizeAgreements {
 export class FinalizeWorking {
   /**
    * Why the press was refused because the session still works, or null for every other answer. The
-   * person reads it and finishes anyway; only this computer's window gets the refusal.
+   * person reads it and may confirm finishing through the same admitted workspace view.
    */
-  static of(answer: IpcResult<SessionsOpResult | RemoteControlResponse>): string | null {
-    if (!answer.ok || answer.value.ok || 'error' in answer.value) return null
+  static of(answer: IpcResult<SessionsOpResult | RemoteControlResponse | RemoteControlStepResult<unknown>>): string | null {
+    if (!answer.ok || answer.value.ok) return null
+    if ('error' in answer.value) return answer.value.error.data?.sourceCode === 'session-working' ? answer.value.error.detail : null
     return answer.value.code === 'session-working' ? answer.value.detail : null
   }
 }

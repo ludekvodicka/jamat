@@ -1,7 +1,6 @@
 import type {
   FileChangesVcsDetection,
   FileChangesVcsId,
-  FileChangesVcsResult,
 } from './fileChangesManagerApi.types'
 import type {
   FileChangesVcs,
@@ -12,7 +11,7 @@ import { FileChangesVcsSvn } from './vcs/fileChangesVcsSvn'
 
 /**
  * The subsystem's second surface, beside the facade and the wire types: which VCS governs a
- * directory, and whether that directory has anything uncommitted. `catalogView.ts` in the project
+ * directory. `catalogView.ts` in the project
  * manager is the precedent - a root file that lets another subsystem stop importing `vcs/`
  * internals, without `vcs/` itself moving anywhere.
  *
@@ -25,7 +24,7 @@ import { FileChangesVcsSvn } from './vcs/fileChangesVcsSvn'
  * It owns NOTHING. No timer, no cache, no memo, not even a detection remembered between calls: the
  * facade's written rule is that this subsystem watches nothing and every read is initiated by its
  * caller, and a cache here would be the first thing to break it. How often to ask, and what to
- * remember of the answer, belongs to whoever calls - today `sessionManager/vcsFacts/`.
+ * remember of the answer, belongs to whoever calls - today the commit dialog of AppClientUI.
  */
 export class VcsStatusView {
   private readonly adapters: readonly FileChangesVcs[]
@@ -43,12 +42,5 @@ export class VcsStatusView {
   async detect(cwd: string, preferred: FileChangesVcsId): Promise<FileChangesVcsDetection | null> {
     const selection = await this.detector.select(cwd, preferred)
     return selection.selected?.detection ?? null
-  }
-
-  async dirty(detection: FileChangesVcsDetection): Promise<FileChangesVcsResult<boolean>> {
-    const adapter = this.adapters.find((candidate) => candidate.id === detection.id)
-    if (adapter === undefined)
-      throw new Error(`Unknown VCS id: ${JSON.stringify(detection.id)}`)
-    return adapter.dirty(detection)
   }
 }

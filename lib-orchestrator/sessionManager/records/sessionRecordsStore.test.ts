@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import type { SessionRecord } from './sessionRecord.types'
 import { SessionRecordsStore } from './sessionRecordsStore'
+import { SessionAccounts } from '../sessionAccounts'
 
 describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
   const created: string[] = []
@@ -65,6 +66,87 @@ describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
   function snapshotCount(directory: string): number {
     return existsSync(directory) ? readdirSync(directory).length : 0
   }
+
+  it('reads legacy agents as main without rewriting their stored shape', async () => {
+    const legacy = record('legacy', { kind: 'agent', agent: { agentId: 'claude', launchMode: 'new' } })
+    const h = harness()
+    await (await h.load()).put(legacy)
+    const restored = (await h.load()).get('legacy')!
+    expect(SessionAccounts.ref(restored)).toEqual({ agentId: 'claude', accountId: 'main' })
+    expect(SessionAccounts.launchRef(restored)).toEqual({ agentId: 'claude', accountId: 'main' })
+    expect(SessionAccounts.segments(restored)).toEqual([{ accountId: 'main', from: 1, to: null }])
+    expect(restored).toEqual(legacy)
+  })
+
+  it('preserves the launched account separately from a selected account across reload', async () => {
+    const h = harness()
+    const saved = record('switch', { kind: 'agent', agent: { agentId: 'claude', launchMode: 'new',
+      accountId: 'b', launchAccountId: 'a' },
+      accountSegments: [{ accountId: 'a', from: 1, to: 1 }, { accountId: 'b', from: 1, to: null }] })
+    await (await h.load()).put(saved)
+    const restored = (await h.load()).get('switch')!
+    expect(restored).toEqual(saved)
+    expect(SessionAccounts.launchRef(restored)).toEqual({ agentId: 'claude', accountId: 'a' })
+    expect(SessionAccounts.ref(restored)).toEqual({ agentId: 'claude', accountId: 'b' })
+  })
+
+  it('keeps run history and log folders when an ended session retains its worktree', async () => {
+    const h = harness()
+    const removed: string[] = []
+    const store = await SessionRecordsStore.load(h.file, { snapshotsDirectory: h.snapshotsDirectory,
+      removeSessionLogs: async (id) => { removed.push(id) } })
+    const worktree = { worktreePath: 'Q:/work', branch: 'https://svn.test/work', baseCommit: 'r1', repositoryRoot: 'Q:/main', kind: 'svn' as const }
+    const scriptRuns: NonNullable<SessionRecord['scriptRuns']> = [{ runId: 'attempt', phase: 'after', scriptId: 'svn', name: 'commit', title: 'svn commit',
+      commands: [], startedAt: 1, endedAt: 2, outcome: 'failed', log: { state: 'saved', bytes: 4, truncated: false } }]
+    await store.put(record('a', { life: 'live', worktree, scriptRuns,
+      worktreeLifecycle: { version: 0, actionId: null, phase: 'active', outOfDate: 0, journal: [], facts: { worker: { liveness: 'alive', resumeFailures: 0 } } } }))
+    await store.put({ ...store.get('a')!, life: 'ended', completed: true, endedAt: 3 })
+    expect(store.get('a')?.scriptRuns).toEqual(scriptRuns)
+    await store.put({ ...store.get('a')!, life: 'starting', pendingOperationKind: 'reopen' }, { newLifetime: true })
+    expect(store.get('a')?.scriptRuns).toEqual(scriptRuns)
+    expect(removed).not.toContain('a')
+  })
+
+  it.each([null, '1', -1])('drops malformed agent start proof %s without losing the worktree', async (agentStartedAt) => {
+    const worktree = { worktreePath: 'Q:/work', branch: 'https://svn.test/work', baseCommit: 'r1', repositoryRoot: 'Q:/main', kind: 'svn' }
+    const h = harness({ schemaVersion: 1, records: [record('a', { worktree: { ...worktree, agentStartedAt } as unknown as SessionRecord['worktree'] })] })
+    expect((await h.load()).get('a')?.worktree).toEqual(worktree)
+    expect(h.reports.join(' ')).toContain('dropping malformed worktree agent start proof')
+  })
+
+  it('drops malformed setup hashes without losing the worktree', async () => {
+    const worktree = { worktreePath: 'Q:/work', branch: 'https://svn.test/work', baseCommit: 'r1', repositoryRoot: 'Q:/main', kind: 'svn' }
+    const it_ = harness({ schemaVersion: 1, records: [record('a', { worktree: { ...worktree, setupBaseline: { at: 1, hashes: { '../outside': 'hash' } } } as SessionRecord['worktree'] })] })
+    expect((await it_.load()).get('a')?.worktree).toEqual(worktree)
+    expect(it_.reports.join(' ')).toContain('dropping malformed worktree setup baseline')
+  })
+
+  it('drops malformed conflict memory without losing its worktree', async () => {
+    const worktree = { worktreePath: 'Q:/work', branch: 'https://svn.test/work', baseCommit: 'r1', repositoryRoot: 'Q:/main', kind: 'svn' }
+    const it_ = harness({ schemaVersion: 1, records: [record('a', { worktree: { ...worktree, conflictMemory: { paths: 'bad' } } as unknown as SessionRecord['worktree'] })] })
+    const store = await it_.load()
+    expect(store.get('a')?.worktree).toEqual(worktree)
+    expect(it_.reports.join(' ')).toContain('dropping malformed worktree conflict memory')
+  })
+
+  it('preserves Git approval and completed logs, drops malformed additions, and closes interrupted command runs', async () => {
+    const context = harness({ schemaVersion: 1, records: [
+      record('pp-u11-approved', { worktreeMerge: { phase: 'base-merging', startedAt: 1,
+        approval: { selection: ['Q:/work/a.txt'], message: 'Approved' },
+        runs: [{ phase: 'commit', runId: 'commit-1', startedAt: 1, endedAt: 2 },
+          { phase: 'base-merging', runId: 'base-1', startedAt: 2 }] } }),
+      { ...record('pp-u11-malformed'), worktreeMerge: { phase: 'base-merging', startedAt: 1,
+        approval: { selection: 9 }, runs: [null, { phase: 'future', runId: 8 }], changes: 'yes', endedAt: 'later', future: true } },
+    ] })
+    const store = await context.load()
+    expect(store.get('pp-u11-approved')?.worktreeMerge).toMatchObject({
+      approval: { selection: ['Q:/work/a.txt'], message: 'Approved' },
+      failure: expect.stringContaining('interrupted'),
+      runs: [{ phase: 'commit', runId: 'commit-1', startedAt: 1, endedAt: 2 },
+        { phase: 'base-merging', runId: 'base-1', startedAt: 2, endedAt: expect.any(Number), failed: true }],
+    })
+    expect(store.get('pp-u11-malformed')?.worktreeMerge).toEqual({ phase: 'base-merging', startedAt: 1, runs: [], future: true })
+  })
 
   it('quarantines legacy guessed Codex IDs while preserving the original for recovery', async () => {
     const context = harness({schemaVersion: 1, records: [
@@ -475,6 +557,27 @@ describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
       directoryId: '12:34:5678',
     }
 
+    it.each([true, false])('migrates setup left pending on a removed worktree, agreement=%s (UA2-J01-01)', async (agreement) => {
+      const pendingSetup = { setupSessionId: 'setup-1', ...agreement ? { agreement: { hash: 'setup-hash', commands: ['node setup.js'] } } : {} }
+      const endedReason = agreement ? 'Setup waits for command approval' : 'Setup failed with exit 3'
+      const retiredWorktree = { kind: 'svn' as const, worktreePath: svnWorktree.worktreePath, revisions: [], removedAt: 8, ownerDir: svnWorktree.repositoryRoot }
+      const context = harness({ schemaVersion: 1, savedAt: 9, records: [
+        record('removed', { life: 'ended', pendingSetup, endedReason, retiredWorktree, completed: true }),
+        record('waiting', { life: 'ended', pendingSetup, endedReason, worktree: svnWorktree }),
+        record('local', { life: 'ended', pendingSetup, endedReason }),
+      ] })
+      const store = await context.load()
+      expect(store.get('removed')?.pendingSetup).toBeUndefined()
+      expect(store.get('removed')?.endedReason).toBe(agreement ? 'Setup cancelled; worktree removed' : endedReason)
+      expect(store.get('removed')?.stopRequested).toBe(agreement ? true : undefined)
+      expect(store.get('waiting')?.pendingSetup).toEqual(pendingSetup)
+      expect(store.get('local')?.pendingSetup).toEqual(pendingSetup)
+      const saved = JSON.parse(readFileSync(context.file, 'utf8')).records.find((entry: SessionRecord) => entry.sessionId === 'removed')
+      expect(saved.pendingSetup).toBeUndefined()
+      expect((await context.load()).get('removed')?.retiredWorktree).toEqual(retiredWorktree)
+      expect(context.reports).toEqual([])
+    })
+
     it('round-trips an SVN worktree, its outcome and a tombstone through a fresh load', async () => {
       const context = harness()
       const store = await context.load()
@@ -636,13 +739,45 @@ describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
     })
 
     const action = {
-      kind: 'finish' as const, actionId: 'act-1', stage: 'reviewing' as const, runId: 'run-1',
+      kind: 'finish' as const, flowVersion: 1 as const, actionId: 'act-1', stage: 'checks' as const, runId: 'run-1',
       root: 'C:\\repo\\.worktrees\\014-fix', checks: [], checkCursor: 0, rootCursor: 0,
       roots: [{ path: 'C:\\repo\\.worktrees\\014-fix', own: '', changed: ['a.txt'] }],
       rounds: { incoming: 0, outOfDate: 0, lock: 0 },
       evidence: [{ repository: 'https://svn/repo', revision: 12, label: 'receipt' as const }],
       requestedBy: 'window' as const, startedAt: 4,
     }
+
+    it('loads a waiting main-update with its Finish history unchanged under schema version 1', async () => {
+      const waiting = { ...action, stage: 'main-update' as const, runId: undefined,
+        passes: [{ stage: 'removing' as const, startedAt: 4, endedAt: 5, result: 'done' as const }] }
+      const context = harness({ schemaVersion: 1, savedAt: 5, records: [record('a', { life: 'ended', svnAction: waiting,
+        retiredWorktree: { worktreePath: action.root, kind: 'svn', revisions: [], removedAt: 5, ownerDir: 'C:/repo', landed: action.evidence },
+      })] })
+      expect((await context.load()).get('a')?.svnAction).toEqual(waiting)
+    })
+
+    it.each(['stopping', 'evidence', 'checks', 'updating', 'cleaning', 'resolving', 'merging', 'verifying', 'fixing', 'diffing', 'reviewing', 'removing', 'recording'] as const)(
+      'migrates a 3.13 Finish at %s to Changes and persists it without its old run pointer', async (stage) => {
+        const conflictSet = { readAt: 5, baseRevision: 1, revision: 2, entries: [], more: 0 }
+        const legacy = { ...action, flowVersion: undefined, stage, conflictSet, reviewCommitId: 'dialog-1', retryAt: 10,
+          verdict: { kind: 'succeeded' as const }, needs: { kind: 'conflict' as const, reason: 'needs review', at: 5 } }
+        const context = harness({ schemaVersion: 1, savedAt: 5, records: [record('a', { life: 'ended', worktree: svnWorktree, svnAction: legacy })] })
+        const store = await context.load()
+        const migrated = store.get('a')?.svnAction
+        expect(migrated).toMatchObject({ flowVersion: 1, stage: 'changes', evidence: action.evidence, conflictSet })
+        for (const field of ['runId', 'verdict', 'retryAt', 'needs', 'merger', 'commit'] as const)
+          expect(migrated?.[field]).toBeUndefined()
+        expect(migrated).not.toHaveProperty('reviewCommitId')
+        expect(store.get('a')?.worktree).toEqual(svnWorktree)
+        expect(JSON.parse(readFileSync(context.file, 'utf8')).records[0].svnAction).toEqual(migrated)
+      },
+    )
+
+    it.each(['discard', 'update-main'] as const)('keeps a 3.13 %s action unchanged', async (kind) => {
+      const legacy = { ...action, flowVersion: undefined, kind, stage: 'updating' as const }
+      const context = harness({ schemaVersion: 1, savedAt: 5, records: [record('a', { life: 'ended', worktree: svnWorktree, svnAction: legacy })] })
+      expect((await context.load()).get('a')?.svnAction).toEqual(legacy)
+    })
 
     // A running action continues from the record and the disk after a restart, unlike a 3.10 finish.
     it('loads an SVN action as it stands and never reads it as interrupted', async () => {
@@ -664,7 +799,7 @@ describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
 
       expect(store.get('a')?.svnAction).toBeUndefined()
       expect(store.get('a')?.worktree).toEqual(svnWorktree)
-      expect(context.reports.some((line) => line.includes('dropping its SVN action (unknown SVN action stage "landing")'))).toBe(true)
+      expect(context.reports.some((line) => line.includes('Unreadable SVN action (unknown SVN action stage "landing")'))).toBe(true)
     })
 
     it('loads a resolving action with its conflicts and its resolver in accept-edits mode, and drops a malformed one', async () => {
@@ -934,7 +1069,7 @@ describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
             scriptOf: { sessionId: 'p', phase: 'before', scriptId: 'mystery', name: 'setup' },
           } as unknown as Partial<SessionRecord>),
           record('b2', {
-            scriptOf: { sessionId: 'p', phase: 'after', scriptId: 'setup', name: 'setup' },
+            scriptOf: { sessionId: 'p', phase: 'inner', scriptId: 'setup', name: 'setup' },
           }),
           record('c', {
             scriptOf: { sessionId: 'p', phase: 'before', scriptId: 'setup' },
@@ -949,7 +1084,7 @@ describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
       expect(context.reports).toHaveLength(5)
       expect(context.reports[0]).toContain('unknown script phase')
       expect(context.reports[1]).toContain('unknown script "mystery"')
-      expect(context.reports[2]).toContain('unknown script "after/setup"')
+      expect(context.reports[2]).toContain('unknown script "inner/setup"')
       expect(context.reports[3]).toContain('scriptOf needs a name string')
       expect(context.reports[4]).toContain('scriptOf must be an object')
     })
@@ -982,7 +1117,7 @@ describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
           scriptRuns: [{ ...entry, outcome: 'crashed' }, { ...entry, runId: 'r3' }, { ...entry, runId: 'r4', phase: 'later' }],
         } as unknown as Partial<SessionRecord>),
         record('c', { scriptRuns: [{ ...entry, log: { state: 'saved', bytes: 10 } }] } as unknown as Partial<SessionRecord>),
-        record('d', { scriptRuns: [{ ...entry, phase: 'after' }] }),
+        record('d', { scriptRuns: [{ ...entry, phase: 'inner' }] } as unknown as Partial<SessionRecord>),
         record('e', { scriptRuns: entry } as unknown as Partial<SessionRecord>),
       ],
     })
@@ -997,7 +1132,7 @@ describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
     expect(context.reports).toEqual([
       expect.stringMatching(/record "b": dropping 2 script history entries it cannot read \(unknown run outcome "crashed"\)$/),
       expect.stringMatching(/record "c": dropping 1 script history entries it cannot read \(a saved log needs a bytes count/),
-      expect.stringMatching(/record "d": dropping 1 script history entries it cannot read \(unknown script "after\/setup"\)$/),
+      expect.stringMatching(/record "d": dropping 1 script history entries it cannot read \(unknown script "inner\/setup"\)$/),
       expect.stringMatching(/record "e": dropping its script history \(scriptRuns must be an array\)$/),
     ])
     await expect(store.put(record('f', { scriptRuns: [{ ...entry, commands: [1] }] } as unknown as Partial<SessionRecord>)))
@@ -1455,4 +1590,90 @@ describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
     expect(context.reports[0]).toContain('1500 old inferred bindings are unverified')
     expect(store.get('legacy-1499')?.agent?.unverifiedNativeSessionId).toBe('old-1499')
   })
+  it('preserves an unreadable lifecycle without rewriting the file and refuses every mutation of that record', async () => {
+    const current = record('worker', { worktree: { kind: 'svn', worktreePath: 'C:/tree', repositoryRoot: 'C:/main', branch: 'url', baseCommit: 'r1' } })
+    const h = harness({ schemaVersion: 1, records: [{ ...current, worktreeLifecycle: { version: -1, phase: 'future' } }] })
+    const before = readFileSync(h.file, 'utf8')
+    const store = await h.load()
+    expect(store.list()).toHaveLength(1)
+    expect(store.get('worker')?.worktree).toEqual(current.worktree)
+    expect(store.get('worker')?.worktreeLifecycle).toMatchObject({ phase: 'waiting', unreadable: expect.any(String) })
+    expect(readFileSync(h.file, 'utf8')).toBe(before)
+    expect(await store.update('worker', (record) => ({ ...record, title: 'lost' }))).toBe(false)
+    expect(await store.put({ ...store.get('worker')!, title: 'lost' })).toBe(false)
+    expect(await store.remove('worker')).toBe(false)
+    expect(await store.clearActions('worker')).toBe(false)
+    expect(await store.adopt(current)).toBe(false)
+    expect(await store.put(record('other'))).toBe(true)
+    expect(JSON.parse(readFileSync(h.file, 'utf8')).records.find((record: SessionRecord) => record.sessionId === 'worker'))
+      .toEqual(JSON.parse(before).records[0])
+    expect(h.reports.join(' ')).toContain('read-only')
+    expect((await h.load()).get('worker')?.worktreeLifecycle).toEqual(store.get('worker')?.worktreeLifecycle)
+  })
+
+  it.each(['journal', 'wait'])('quarantines unknown nested %s fields even with another malformed record field', async (field) => {
+    const lifecycle = { version: 1, actionId: 'action', phase: 'waiting', step: 'syncing', outOfDate: 0,
+      journal: [{ stepId: 'update', kind: 'update', runId: 'run', attempt: 1, startedAt: 1, ...field === 'journal' ? { future: 'retain' } : {} }],
+      wait: { kind: 'svn-failed', reason: 'inspect', at: 1, ...field === 'wait' ? { future: 'retain' } : {} },
+      facts: { worker: { liveness: 'alive', resumeFailures: 0 } } }
+    const raw = { ...record('worker', { worktree: { kind: 'svn', worktreePath: 'C:/tree', repositoryRoot: 'C:/main', branch: 'url', baseCommit: 'r1' } }), worktreeLifecycle: lifecycle, life: 'future-life' }
+    const h = harness({ schemaVersion: 1, records: [raw] }), before = readFileSync(h.file, 'utf8')
+    const store = await h.load()
+    expect(store.get('worker')?.worktreeLifecycle?.unreadable).toBeDefined()
+    expect(store.get('worker')?.worktreeLifecycle?.unreadable).toContain(h.file)
+    expect(store.get('worker')?.worktree).toEqual(raw.worktree)
+    expect(store.quarantinedSessionIds().has('worker')).toBe(true)
+    expect(readFileSync(h.file, 'utf8')).toBe(before)
+    await store.put(record('other'))
+    expect(JSON.parse(readFileSync(h.file, 'utf8')).records.find((row: SessionRecord) => row.sessionId === 'worker')).toEqual(raw)
+  })
+
+  it.each(['update', 'execution', 'preparation'])('preserves an unknown %s payload and its journal through unrelated writes', async (field) => {
+    const current = record('worker', { worktree: { kind: 'svn', worktreePath: 'C:/tree', repositoryRoot: 'C:/main', branch: 'url', baseCommit: 'r1' } })
+    const lifecycle = { version: 1, actionId: 'a', phase: 'active', outOfDate: 0,
+      journal: [{ stepId: 'commit', kind: 'commit', runId: 'run', attempt: 1, startedAt: 1 }],
+      facts: { worker: { liveness: 'alive', resumeFailures: 0 } }, [field]: { future: true, evidence: 'must survive' } }
+    const h = harness({ schemaVersion: 1, records: [{ ...current, worktreeLifecycle: lifecycle }] })
+    const before = readFileSync(h.file, 'utf8')
+    const store = await h.load()
+    expect(readFileSync(h.file, 'utf8')).toBe(before)
+    expect(store.get('worker')?.worktreeLifecycle?.unreadable).toBeDefined()
+    await store.put(record('other'))
+    expect(JSON.parse(readFileSync(h.file, 'utf8')).records.find((record: SessionRecord) => record.sessionId === 'worker').worktreeLifecycle).toEqual(lifecycle)
+  })
+
+  it('keeps a newer unknown action record in a non-committing lifecycle wait', async () => {
+    const current = record('newer', { worktree: { kind: 'svn', worktreePath: 'C:/tree', repositoryRoot: 'C:/main', branch: 'url', baseCommit: 'r1' } })
+    const h = harness({ schemaVersion: 1, records: [{ ...current, svnAction: { kind: 'finish', stage: 'future-stage', actionId: 'future' } }] })
+    const store = await h.load()
+    expect(store.get('newer')?.worktree).toEqual(current.worktree)
+    expect(store.get('newer')?.svnAction).toBeUndefined()
+    expect(store.get('newer')?.worktreeLifecycle).toMatchObject({ phase: 'waiting', wait: { kind: 'svn-failed' } })
+    expect(store.get('newer')?.worktreeLifecycle?.step).toBeUndefined()
+  })
+
+  it('keeps a session with an unknown action and malformed memory without losing lifecycle evidence', async () => {
+    const lifecycle = { version: 12, actionId: 'action', phase: 'finishing', step: 'committing', outOfDate: 2,
+      journal: [{ stepId: 'commit-1', kind: 'commit', attempt: 1, startedAt: 2, runId: 'run' }],
+      facts: { worker: { liveness: 'alive', resumeFailures: 1, ready: { at: 1, hashes: { a: 'hash' } } },
+        syncedAt: { revision: 17, at: 2 }, fingerprint: 'proof' } }
+    const current = record('combined', { worktree: { kind: 'svn', worktreePath: 'C:/tree', repositoryRoot: 'C:/main', branch: 'url', baseCommit: 'r1' } })
+    for (const previous of [undefined, lifecycle]) {
+      const h = harness({ schemaVersion: 1, records: [{ ...current,
+        worktree: { ...current.worktree, conflictMemory: { paths: 'damaged' } }, worktreeLifecycle: previous,
+        svnAction: { kind: 'finish', stage: 'future-stage', actionId: 'future' } }] })
+      const store = await h.load()
+      expect(store.list()).toHaveLength(1)
+      expect(store.get('combined')?.worktree?.conflictMemory).toBeUndefined()
+      const state = store.get('combined')?.worktreeLifecycle
+      expect(state).toMatchObject({ phase: 'waiting', wait: { kind: 'svn-failed' } })
+      expect(state?.step).toBeUndefined()
+      if (previous !== undefined) {
+        expect(state?.unreadable).toBeDefined()
+        expect(JSON.parse(readFileSync(h.file, 'utf8')).records[0].worktreeLifecycle).toEqual(previous)
+      }
+      expect((await h.load()).get('combined')?.worktreeLifecycle).toEqual(state)
+    }
+  })
+
 })

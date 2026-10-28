@@ -1,3 +1,8 @@
+import { versioningReviewSchema } from '../../shared/versioningReviewSchemas'
+import { RemoteSessionSchemas } from '../../../lib-orchestrator/remoteControl/remoteSessionSchemas'
+import type { SessionViewOpenRequest } from '../../../lib-orchestrator/remoteControl/remoteSessionApi.types'
+import type { SessionOpen } from '../../shared/sessionViewItems'
+import type { SessionViewItemsStore } from './sessionViewItemsStore'
 import { PanelKeysConst } from '../../shared/tabTransfer'
 import { randomUUID } from 'node:crypto'
 
@@ -18,6 +23,8 @@ export type ScriptRunHandOff = { target: TerminalTarget; title: string } | null
 /** Panel ownership and cross-window transfer routing. */
 export class ServiceTabsIpc extends ServiceIpcBase<typeof ServiceTabsIpc.channelsConst> {
   static readonly channelsConst = {
+    'tabs:open-shared-item': true,
+    'tabs:session-items': true,
     'tabs:claim-panel': true,
     'tabs:reconcile-panels': true,
     'tabs:release-panel': true,
@@ -31,6 +38,10 @@ export class ServiceTabsIpc extends ServiceIpcBase<typeof ServiceTabsIpc.channel
     'tabs:transfer-abort': true,
     'tabs:move-panel': true,
     'tabs:control-ack': true,
+    'tabs:open-session-task': true,
+    'tabs:project-review': true,
+    'tabs:projected-review-changed': true,
+    'tabs:open-session-actions': true,
   } as const
 
   private static readonly collapsedRunsMaxConst = 64
@@ -41,17 +52,42 @@ export class ServiceTabsIpc extends ServiceIpcBase<typeof ServiceTabsIpc.channel
    */
   private readonly collapsedRuns = new Map<string, ScriptRunHandOff>()
 
+  private readonly items?: Pick<SessionViewItemsStore, 'page'> & { open(owner: string, sessionId: string, body: SessionViewOpenRequest): Promise<SessionOpen> }
+
+  private readonly windows: WorkspaceWindows
+  private readonly index: WorkspacePanelIndex
+  private readonly broker: TabTransferBroker
+  private readonly controlBroker: TabControlBroker
+  private readonly onPresenceChanged: () => void
+
   constructor(
-    private readonly windows: WorkspaceWindows,
-    private readonly index: WorkspacePanelIndex,
-    private readonly broker: TabTransferBroker,
-    private readonly controlBroker: TabControlBroker,
-    private readonly onPresenceChanged: () => void,
+    windows: WorkspaceWindows,
+    index: WorkspacePanelIndex,
+    broker: TabTransferBroker,
+    controlBroker: TabControlBroker,
+    onPresenceChanged: () => void,
+    items?: Pick<SessionViewItemsStore, 'page'> & { open(owner: string, sessionId: string, body: SessionViewOpenRequest): Promise<SessionOpen> },
   ) {
     super()
+    this.windows = windows
+    this.index = index
+    this.broker = broker
+    this.controlBroker = controlBroker
+    this.onPresenceChanged = onPresenceChanged
+    this.items = items
   }
 
   initialize(): void {
+    this.register('tabs:open-shared-item', (event, sessionId, body) => {
+      const owner = this.requireAcceptingWindowId(event.sender)
+      if (!this.items) throw new Error('Shared items are unavailable')
+      return this.items.open(owner, sessionId, RemoteSessionSchemas.sharedOpen.parse(body))
+    })
+    this.register('tabs:session-items', (event, sessionId, cursor) => {
+      this.requireAcceptingWindowId(event.sender)
+      if (!this.items) throw new Error('Shared session items are unavailable')
+      return this.items.page(sessionId, cursor)
+    })
     this.register('tabs:claim-panel', (event, panel, activate) => {
       const windowId = this.windows.windowIdOf(event.sender)
       if (windowId === null)
@@ -105,6 +141,34 @@ export class ServiceTabsIpc extends ServiceIpcBase<typeof ServiceTabsIpc.channel
     this.register('tabs:set-active-panel', (event, panelId) => {
       this.index.setActivePanel(this.requireWindowId(event.sender), panelId)
       this.announcePresence()
+    })
+    this.register('tabs:open-session-task', async (event, target, task, title) => {
+      this.requireAcceptingWindowId(event.sender)
+      const decoded = target.kind === 'local' ? TerminalTargetCodec.read({ sessionId: target.sessionId }) : TerminalTargetCodec.read({ target })
+      if (!decoded || typeof title !== 'string' || title.length > 400) throw new Error('Invalid task target')
+      const parsed = RemoteSessionSchemas.sharedOpen.parse({ openId: 'validate-task', item: { kind: 'task', task } })
+      if (parsed.item.kind !== 'task') throw new Error('Invalid task reference')
+      const result = await this.controlBroker.openSessionTask(decoded.target, parsed.item.task, title)
+      if (!result.ok) throw new Error(result.error.detail)
+    })
+    this.register('tabs:project-review', (event, target, input, itemKey, openId) => {
+      this.requireAcceptingWindowId(event.sender)
+      const draft = versioningReviewSchema.parse(input)
+      if (target.kind !== 'remote' || target.sessionId !== draft.sessionId || typeof itemKey !== 'string' || itemKey.length > 32768)
+        throw new Error('Invalid review projection')
+      if (typeof openId !== 'string' || openId.length === 0 || openId.length > 256) throw new Error('Invalid review open identity')
+      return this.controlBroker.projectReview(target, draft, itemKey, openId)
+    })
+    this.register('tabs:projected-review-changed', (event, target, input, closed) => {
+      this.requireAcceptingWindowId(event.sender)
+      const draft = versioningReviewSchema.parse(input)
+      if (target.kind !== 'remote' || target.sessionId !== draft.sessionId || typeof closed !== 'boolean') throw new Error('Invalid review projection')
+      this.controlBroker.updateProjectedReview(target, draft, closed)
+    })
+    this.register('tabs:open-session-actions', async (event, target) => {
+      this.requireAcceptingWindowId(event.sender)
+      const result = await this.controlBroker.openSessionActions(target)
+      if (!result.ok) throw new Error(result.error.detail)
     })
     this.register('tabs:open-session-ids', (event) => {
       this.requireMain(event.sender)

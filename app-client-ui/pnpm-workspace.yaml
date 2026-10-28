@@ -31,5 +31,6 @@ minimumReleaseAgeExclude:
   - vega-voronoi@5.1.3
   - vega-wordcloud@5.1.3
   - vega@6.4.0
+  - electron@43.8.4
 pmOnFail: error
 sideEffectsCache: true

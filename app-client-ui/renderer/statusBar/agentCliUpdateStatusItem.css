@@ -1,0 +1,49 @@
+.jamat-cli-updates__indicator {
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.jamat-cli-updates__indicator.is-available { color: var(--color-attention); }
+.jamat-cli-updates {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-scrim);
+  color: var(--color-text-2);
+  font: var(--fs-base) var(--font-ui);
+}
+.jamat-cli-updates__panel {
+  box-sizing: border-box;
+  width: min(680px, 92vw);
+  max-height: 85vh;
+  overflow: auto;
+  padding: var(--space-4);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-surface);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-overlay);
+  outline: none;
+}
+.jamat-cli-updates header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.jamat-cli-updates h2, .jamat-cli-updates h3 { margin: 0; color: var(--color-text-1); }
+.jamat-cli-updates p { margin: var(--space-2) 0; }
+.jamat-cli-updates section { border-top: 1px solid var(--color-border-frame); padding: var(--space-3) 0; }
+.jamat-cli-updates button {
+  padding: var(--space-1) var(--space-2);
+  font: inherit;
+  color: var(--color-text-1);
+  background: var(--color-surface-control);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.jamat-cli-updates button:disabled { opacity: 0.5; cursor: default; }
+.jamat-cli-updates [role="alert"] { color: var(--color-danger); white-space: pre-wrap; overflow-wrap: anywhere; }
+.jamat-cli-updates__path { overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--fs-secondary); }
+.jamat-cli-updates pre { max-height: 25vh; overflow: auto; padding: var(--space-2); background: var(--color-surface-sunken); white-space: pre-wrap; overflow-wrap: anywhere; }

@@ -1,0 +1,16 @@
+.snapins-settings { display: flex; flex-direction: column; gap: var(--space-3); }
+.snapins-settings label { display: flex; align-items: center; gap: var(--space-2); margin-block: var(--space-2); }
+.snapins-settings input:not([type='checkbox']), .snapins-settings textarea, .snapins-settings select {
+  min-width: 0;
+  flex: 1;
+  padding: var(--space-1) var(--space-2);
+  font: inherit;
+  color: var(--color-text-1);
+  background: var(--color-surface-control);
+  border: thin solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+.snapins-settings textarea { min-height: calc(var(--space-4) * 5); resize: vertical; }
+.snapins-settings fieldset { border: thin solid var(--color-border-frame); border-radius: var(--radius-control); }
+.snapins-settings p { color: var(--color-text-3); font-size: var(--fs-secondary); }
+.snapins-settings input:focus-visible, .snapins-settings textarea:focus-visible, .snapins-settings select:focus-visible { outline: thin solid var(--color-accent); }

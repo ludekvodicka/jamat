@@ -21,6 +21,16 @@ describe('app-client-ui/renderer/ipc/ipcFailure', () => {
     expect(IpcFailure.of(answer, 'Merge')).toBe('Merge failed: dirty: commit it first')
   })
 
+  // UA1-J05-7: a person reads the library's sentence, never its internal code.
+  it('reports only the sentence of a refusal for a surface the person reads', () => {
+    expect(IpcFailure.sentenceOf({ ok: true, value: { ok: true } })).toBeNull()
+    expect(IpcFailure.sentenceOf({ ok: false, error: 'no bridge' })).toBe('no bridge')
+    expect(IpcFailure.sentenceOf({ ok: true, value: { ok: false, code: 'svn-failed', detail: 'a.txt was not settled: it holds markers' } }))
+      .toBe('a.txt was not settled: it holds markers')
+    expect(IpcFailure.sentenceOf({ ok: true, value: { ok: false, error: { code: 'operation-failed', detail: 'the peer refused' } } })).toBe('the peer refused')
+    expect(IpcFailure.sentenceOf({ ok: true, value: { ok: false, code: 'invalid-spec', detail: 'a.txt was not settled' } }, 'Settle')).toBe('Settle failed: a.txt was not settled')
+  })
+
   describe('unwrap', () => {
     it('hands back the value the channel carried', () => {
       expect(IpcFailure.unwrap({ ok: true, value: ['s-1', 's-2'] })).toEqual(['s-1', 's-2'])

@@ -4,11 +4,12 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { SvnConflictFlow } from '../../lib-orchestrator/sessionManager/lifecycle/svnConflictFlow.js'
-import { SvnConflictGuard } from '../../lib-orchestrator/sessionManager/lifecycle/svnConflictGuard.js'
-import { SvnResolverLauncher } from '../../lib-orchestrator/sessionManager/lifecycle/svnResolverLauncher.js'
+import { SvnConflictFlow } from '../../lib-orchestrator/worktrees/worktreeConflicts.js'
+import { SvnConflictGuard } from '../../lib-orchestrator/worktrees/worktreeConflicts.js'
+import { SvnResolverLauncher } from '../../lib-orchestrator/worktrees/worktreeConflicts.js'
+import { SvnConflictWords } from '../../lib-orchestrator/worktrees/worktreeConflicts.js'
 import { CommandInvoker } from '../../lib-orchestrator/shared/commandInvoker.js'
-import type { SvnConflictJournal, SvnConflictKind, SvnConflictOption, SvnConflictPlan, SvnConflictShape } from '../../lib-orchestrator/svn/svn.types.js'
+import type { SvnConflictApply, SvnConflictJournal, SvnConflictKind, SvnConflictOption, SvnConflictPlan, SvnConflictShape } from '../../lib-orchestrator/svn/svn.types.js'
 import { type SvnConflictedRow, SvnConflictFacts, type SvnInfoConflicts } from '../../lib-orchestrator/svn/svnConflictFacts.js'
 import { SvnConflictResolutions } from '../../lib-orchestrator/svn/svnConflictResolutions.js'
 import { SvnConflictShapes } from '../../lib-orchestrator/svn/svnConflictShapes.js'
@@ -111,6 +112,23 @@ export interface ConflictSpikeDeps {
  * page `svn-conflict-resolution.md`.
  */
 export class ConflictShapesSpike {
+  static readonly incidentEolPaths = Array.from({ length: 22 }, (_, index) => `conflict-${index}.txt`)
+  /**
+   * CF16: the other commit moves the file and edits its first line, the session edits its third. svn
+   * writes the facts of `edit-vs-delete`; only the log of the other commit names the new place.
+   */
+  static readonly incomingMoveConst: SpikeCase = {
+    name: 'edit-vs-move',
+    victim: 'src/legacy.txt',
+    expected: { shape: 'edit-vs-delete', rule: null },
+    base: (side) => side.write('src/legacy.txt', 'one\ntwo\nthree\n'),
+    incoming: async (side) => {
+      await side.run(['move', '--', 'src/legacy.txt', 'src/renamed.txt'])
+      await side.write('src/renamed.txt', 'one theirs\ntwo\nthree\n')
+    },
+    mine: (side) => side.write('src/legacy.txt', 'one\ntwo\nthree mine\n'),
+  }
+
   /** A 1x1 PNG in three colours: r1, the session's and the other commit's. */
   private static readonly pngConst = {
     red: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC',
@@ -386,8 +404,61 @@ export class ConflictShapesSpike {
       misread.length === 0)
     await this.trials(outcomes)
     await this.options(outcomes)
+    await this.moves(outcomes)
     await this.rules(outcomes)
     return captures
+  }
+
+  /**
+   * UA1-J05-6, CF15 and CF16: keep-both of a move on real svn, from the set read through the words
+   * the person sees to the executor. A local move against an incoming edit carries the edit to the
+   * move target (`--accept mine-conflict`); a local edit against an incoming move carries the edit to
+   * the new place the other commit's log names (`--accept recommended`); a plain incoming delete names
+   * no place and offers no keep-both, and a keep-both sent anyway changes nothing.
+   */
+  async moves(outcomes: ReadonlyMap<string, SpikeOutcome> = new Map()): Promise<void> {
+    const { check } = this.deps
+    const cases = [...ConflictShapesSpike.casesConst.filter((spikeCase) => spikeCase.name === 'moved-vs-edit' || spikeCase.name === 'edit-vs-delete'),
+      ConflictShapesSpike.incomingMoveConst]
+    const spiked = new Map(outcomes)
+    for (const spikeCase of cases) if (!spiked.has(spikeCase.name)) spiked.set(spikeCase.name, await this.spike(spikeCase))
+    const manager = new SvnWorktreeManager(this.deps.svn)
+    const entryOf = async (name: string) => {
+      const outcome = spiked.get(name) ?? ConflictShapesSpike.missing(name)
+      const read = await manager.conflictSet(outcome.checkout.path, ConflictShapesSpike.baseRevisionConst)
+      if (!read.ok) throw new Error(`The conflict set of ${name}: ${read.detail}`)
+      const entry = SvnConflictFlow.setOf(read.value, ConflictShapesSpike.baseRevisionConst, 0, false).entries.find((candidate) => candidate.path === 'src/legacy.txt')
+      if (entry === undefined) throw new Error(`No entry of ${name}`)
+      return { outcome, entry, info: SvnConflictWords.infoOf(entry) }
+    }
+
+    const away = await entryOf('moved-vs-edit')
+    const carried = await this.applied(away.outcome, 'move-away', 'src/legacy.txt', 'tree', 'keep-both', undefined, undefined, undefined, 'away')
+    console.log(`  info: CF15 reads "${away.info.description}", options ${away.info.options.map((option) => option.label).join(' / ')}`)
+    check('moves: CF15 a local move against an incoming edit names the move target, and keep-both applies the edit there with no conflict left',
+      away.entry.facts.movedTo === 'src/moved.txt' && JSON.stringify(away.entry.options) === JSON.stringify(['keep-both', 'keep-mine'])
+      && away.info.options[0]?.label === 'Apply to src/moved.txt'
+      && carried.ok && await carried.checkout.read('src/moved.txt') === 'one\ntwo theirs\nthree\n'
+      && !(await ConflictShapesSpike.rowsOf(carried.checkout)).some((row) => row.conflict))
+
+    const incoming = await entryOf('edit-vs-move')
+    const moved = await this.applied(incoming.outcome, 'move-incoming', 'src/legacy.txt', 'tree', 'keep-both', undefined, undefined, undefined, 'incoming')
+    console.log(`  info: CF16 reads "${incoming.info.description}", options ${incoming.info.options.map((option) => option.label).join(' / ')}`)
+    check('moves: CF16 a local edit against an incoming move names the new place, and keep-both applies the edit there and drops the old place, saved first',
+      incoming.entry.facts.movedTo === 'src/renamed.txt' && incoming.entry.options[0] === 'keep-both'
+      && incoming.info.options[0]?.label === 'Move my changes to src/renamed.txt'
+      && moved.ok && await moved.checkout.read('src/renamed.txt') === 'one theirs\ntwo\nthree mine\n'
+      && !await ConflictShapesSpike.onDisk(moved.checkout, 'src/legacy.txt')
+      && await readFile(join(moved.savedDir, 'src', 'legacy.txt'), 'utf8') === 'one\ntwo\nthree mine\n'
+      && !(await ConflictShapesSpike.rowsOf(moved.checkout)).some((row) => row.conflict))
+
+    const deleted = await entryOf('edit-vs-delete')
+    const refused = await this.applied(deleted.outcome, 'move-none', 'src/legacy.txt', 'tree', 'keep-both', undefined, undefined, undefined, 'incoming')
+    check('moves: a plain incoming delete names no place and offers no keep-both; a keep-both sent anyway is refused and leaves the conflict and the edit',
+      deleted.entry.facts.movedTo === undefined && !deleted.entry.options.includes('keep-both')
+      && !refused.ok && refused.detail.startsWith('svn found no single place')
+      && await refused.checkout.read('src/legacy.txt') === 'legacy mine\n'
+      && (await ConflictShapesSpike.rowsOf(refused.checkout)).some((row) => row.path === 'src/legacy.txt' && row.conflict))
   }
 
   /**
@@ -608,6 +679,10 @@ export class ConflictShapesSpike {
     const mineConflict = await this.copyOf(moved, 'mine-conflict')
     const resolved = await mineConflict.attempt(['resolve', '--accept', 'mine-conflict', '--', 'src/legacy.txt'])
     console.log(`  info: --accept mine-conflict on a local move against an incoming edit exits ${resolved.code}${resolved.code === 0 ? '' : ` (${resolved.stderr.split(/\r?\n/)[0]})`}; the move target then holds ${JSON.stringify(await mineConflict.read('src/moved.txt'))}`)
+    const recommended = await this.copyOf(moved, 'recommended-away')
+    const unresolved = await recommended.attempt(['resolve', '--accept', 'recommended', '--', 'src/legacy.txt'])
+    check('spike: --accept recommended on a local move against an incoming edit exits 0 and leaves the conflict, so CF15 takes mine-conflict',
+      unresolved.code === 0 && (await ConflictShapesSpike.rowsOf(recommended)).some((row) => row.conflict))
 
     const mergeinfo = of('mergeinfo')
     const mergedInfo = (await mergeinfo.checkout.run(['propget', 'svn:mergeinfo', '--', '.'])).trim().split(/\s+/).join(' ')
@@ -700,6 +775,7 @@ export class ConflictShapesSpike {
     before?: (checkout: SpikeCheckout) => Promise<void>,
     properties?: readonly string[],
     stopAfter?: number,
+    move?: SvnConflictApply['move'],
   ): Promise<{ checkout: SpikeCheckout; savedDir: string; ok: boolean; detail: string; diverged: string[] }> {
     const checkout = await this.copyOf(outcome, `option-${label}`)
     const savedDir = join(dirname(checkout.path), 'results', 'a1', 'saved')
@@ -709,7 +785,7 @@ export class ConflictShapesSpike {
     let stop = stopAfter
     const diverged: string[] = []
     const run = (): ReturnType<SvnConflictResolutions['apply']> => executor.apply({
-      root: checkout.path, savedDir, path, kind, option, journal, ...properties === undefined ? {} : { properties },
+      root: checkout.path, savedDir, path, kind, option, journal, ...properties === undefined ? {} : { properties }, ...move === undefined ? {} : { move },
       baseRevision: ConflictShapesSpike.baseRevisionConst,
       onStep: async (next, left) => {
         journal = next

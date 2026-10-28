@@ -66,7 +66,7 @@ export interface TerminalInstanceDriver {
   ready(): Promise<void>
   write(data: string): void
   resize(cols: number, rows: number): void
-  stop(): Promise<void>
+  stop(confirmExternalStop?: boolean): Promise<void>
   info(startedAt: number): RuntimeSessionInfo
   dispose(): void
 }

@@ -2,12 +2,10 @@ import { appendFile, mkdir, readFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 
 import { ErrorText } from '../shared/errorText'
-import { PathCompare } from '../shared/pathCompare'
 import { WorktreeNaming } from './worktreeNaming'
 import { GitManager } from './gitManager'
 import type {
   GitResult,
-  WorktreeDiff,
   WorktreeFacts,
 } from './git.types'
 
@@ -55,10 +53,6 @@ interface WorktreeIdentity {
 export class GitWorktreeManager extends GitManager {
   private static readonly excludeLineConst =
     `/${WorktreeNaming.folderNameConst}/`
-  private static readonly diffThrottleMillisecondsConst = 30_000
-  /** What a stored base may look like before it is handed back to git as a revision. */
-  private static readonly commitShaConst = /^[0-9a-f]{4,40}$/i
-  private readonly diffs = new Map<string, WorktreeDiff>()
 
   /** The naming rule itself is `WorktreeNaming`'s; the launcher draws a preview from the same one. */
   static slugOf(value: string): string {
@@ -151,47 +145,6 @@ export class GitWorktreeManager extends GitManager {
   }
 
   /**
-   * Tracked line counts against the base plus the number of untracked files, throttled to one
-   * measurement per worktree per 30 s. `force` is the user asking for it now, which the throttle does
-   * not stand in the way of.
-   */
-  async refreshDiff(
-    worktreePath: string,
-    baseCommit: string,
-    options?: { force?: boolean },
-  ): Promise<GitResult<WorktreeDiff>> {
-    const key = PathCompare.comparable(worktreePath)
-    const cached = this.diffs.get(key)
-    if (cached && options?.force !== true
-      && Date.now() - cached.capturedAt < GitWorktreeManager.diffThrottleMillisecondsConst)
-      return { ok: true, value: cached }
-    // The shape is checked here rather than in the caller: `--` only separates revisions from
-    // pathspecs, so a dash-leading value in front of it is still read as an option. What stops that
-    // is `--end-of-options`, and what stops a base that is not a revision at all is this test.
-    if (!GitWorktreeManager.commitShaConst.test(baseCommit))
-      return {
-        ok: false,
-        code: 'missing-base',
-        detail: `Base is not a commit id: ${JSON.stringify(baseCommit)}`,
-      }
-    const numstat = await this.invoker.run(
-      worktreePath,
-      ['diff', '--numstat', '--end-of-options', baseCommit, '--'],
-    )
-    const numstatFailure = GitManager.failureOf(numstat, 'missing-base')
-    if (numstatFailure) return numstatFailure
-    const status = await this.invoker.run(
-      worktreePath,
-      ['status', '--porcelain=v1', '--untracked-files=all'],
-    )
-    const statusFailure = GitManager.failureOf(status, 'git-failed')
-    if (statusFailure) return statusFailure
-    const diff = GitWorktreeManager.diffOf(numstat.stdout, status.stdout)
-    this.diffs.set(key, diff)
-    return { ok: true, value: diff }
-  }
-
-  /**
    * The tree is read before anything is attempted, so uncommitted work is refused as `dirty` while
    * the worktree is still whole. `--force` is never passed: throwing away a user's changes is not
    * this library's decision to make.
@@ -218,18 +171,7 @@ export class GitWorktreeManager extends GitManager {
     ])
     const failure = GitManager.failureOf(removed, 'git-failed')
     if (failure) return failure
-    this.diffs.delete(PathCompare.comparable(worktreePath))
     return { ok: true, value: undefined }
-  }
-
-  /**
-   * The facts do not remember which ref the base was taken from, so the repository's own HEAD is the
-   * evidence there is: a worktree branched from an explicit ref reports moved once HEAD moves.
-   */
-  async baseMoved(repositoryRoot: string, facts: WorktreeFacts): Promise<GitResult<boolean>> {
-    const head = await this.resolveCommit(repositoryRoot, 'HEAD')
-    if (!head.ok) return head
-    return { ok: true, value: head.value !== facts.baseCommit }
   }
 
   private async identityOf(path: string): Promise<GitResult<WorktreeIdentity>> {
@@ -318,22 +260,5 @@ export class GitWorktreeManager extends GitManager {
     return facts
   }
 
-  /** A binary file reports "-" in both columns and still counts as a changed file. */
-  private static diffOf(numstat: string, status: string): WorktreeDiff {
-    let added = 0
-    let removed = 0
-    let changedFiles = 0
-    for (const line of numstat.split('\n')) {
-      const columns = line.trim().split('\t')
-      if (columns.length < 3) continue
-      changedFiles++
-      added += Number.parseInt(columns[0], 10) || 0
-      removed += Number.parseInt(columns[1], 10) || 0
-    }
-    // Untracked files are counted, never read: a file count is honest and cheap, a line count for
-    // them is neither.
-    const untracked = status.split('\n').filter((line) => line.startsWith('?? ')).length
-    return { added, removed, changedFiles: changedFiles + untracked, capturedAt: Date.now() }
-  }
 
 }

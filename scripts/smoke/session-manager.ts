@@ -273,11 +273,9 @@ class SmokeSessionManager extends SmokeHarness {
     this.check(`the snapshot changed as the run went along (${this.changes} times)`, this.changes > 0)
     // The merge checks run against a project with no package.json and no `setup`, so the setup
     // manager truthfully says it installed nothing in each of their worktrees. Those lines are
-    // this run's own doing, and so is the wait F28 makes on purpose; anything else reaching the error
-    // channel is a fault.
+    // this run's own doing; anything else reaching the error channel is a fault.
     const unexpected = this.errors
       .filter((line) => !line.includes('nothing was installed in the worktree'))
-      .filter((line) => !/\d{3}-svn-wait waits for you \(incoming\)/.test(line))
     this.check(`nothing unexpected was reported through onError (${unexpected.join(' | ')})`,
       unexpected.length === 0)
     console.log(`\nsmoke-session-manager: ${this.passed} checks passed`)
@@ -301,21 +299,23 @@ class SmokeSessionManager extends SmokeHarness {
     this.check(`a starting record with a pending operation is replayed onto the Host (pid ${
       replayed.pid})`, replayed.alive)
 
+    // The controller has to be named here exactly as `SessionLifecycle.plannedLaunch` names it:
+    // it puts two variables into the child's environment, and the Host compares the whole
+    // request. Without it this probe is a DIFFERENT request under the same operationId, which
+    // the replay store answers with a 409 rather than with the runtime it already made.
+    const planned = LaunchPlanner.plan(this.crashedRecord, {
+      controller: {
+        configIdentity: this.configIdentity,
+        channel: SmokeSessionManager.channelConst,
+      },
+    })
     const again = await SmokeSessionManager.op<RuntimeResult>(
       this.readDescriptor(), 'runtime.create', {
         controllerLeaseId: await this.acquireLease(),
         operationId: SmokeSessionManager.crashedOperationIdConst,
         runtimeSessionId: sessionId,
-        // The controller has to be named here exactly as `SessionLifecycle.plannedLaunch` names it:
-        // it puts two variables into the child's environment, and the Host compares the whole
-        // request. Without it this probe is a DIFFERENT request under the same operationId, which
-        // the replay store answers with a 409 rather than with the runtime it already made.
-        launch: LaunchPlanner.plan(this.crashedRecord, {
-          controller: {
-            configIdentity: this.configIdentity,
-            channel: SmokeSessionManager.channelConst,
-          },
-        }),
+        // The Host requires the key; `HostClient.runtimeCreate` sends it the same way.
+        launch: { ...planned, stopDescendants: planned.stopDescendants === true },
       },
     )
     this.check('replaying that operationId answers with the runtime it already made',
@@ -573,27 +573,41 @@ class SmokeSessionManager extends SmokeHarness {
       () => this.sessionOf(failed) === undefined)
     this.check('the next one is running', this.sessionOf(running)?.life === 'live')
 
-    // A restart brings the session back before any poll pass sees it ended; the stop inside it is
-    // what ends the run.
+    SmokeSessionManager.valueOf(await this.manager.stopSession(running), 'stopSession')
+    await this.checkWait('stopping a requested run while its parent lives saves a stopped history entry and log',
+      () => this.scriptRunsOf(parent).some((entry) => entry.runId === running
+        && entry.outcome === 'stopped' && entry.log.state === 'saved'))
+    this.check('stopping that run leaves its parent live', this.sessionOf(parent)?.life === 'live')
+
+    const restarting = SmokeSessionManager.valueOf(
+      await this.manager.runScript(parent, { command: command('wait'), title: 'requested before restart' }), 'runScript').runId
+    await this.checkWait('the stopped run goes once the session asks for the next one',
+      () => this.sessionOf(running) === undefined)
+    this.check('the run asked for before the restart is running', this.sessionOf(restarting)?.life === 'live')
+
+    // A successful reopen starts a new history lifetime before a poll can settle the old run.
     SmokeSessionManager.valueOf(await this.manager.restartSession(parent), 'restartSession')
-    await this.waitUntil(() => this.scriptRunsOf(parent).some((candidate) => candidate.runId === running),
-      'the run the restart stopped was never settled')
-    const restarted = this.scriptRunsOf(parent).find((candidate) => candidate.runId === running)
-    this.check(`restarting the session stops the run it asked for (${restarted?.outcome}), and the session `
-      + `runs again (${this.sessionOf(parent)?.life})`,
-      restarted?.outcome === 'stopped' && this.sessionOf(parent)?.life === 'live')
+    await this.waitUntilAsync(async () => this.sessionOf(restarting) === undefined
+      && !(await this.listRuntimes()).sessions.some((runtime) => runtime.runtimeSessionId === restarting),
+      'the restart did not stop and retire the requested run')
+    this.check('restarting stops the old run and its runtime, and the parent runs again',
+      this.sessionOf(parent)?.life === 'live')
+    const logs = join(OrchestratorPaths.scriptLogsDirectory(this.configIdentity, SmokeSessionManager.channelConst), parent)
+    await this.checkWait('the new session lifetime has no previous run history or saved logs',
+      () => this.scriptRunsOf(parent).length === 0 && !existsSync(logs))
 
     const again = SmokeSessionManager.valueOf(
       await this.manager.runScript(parent, { command: command('wait'), title: 'requested again' }), 'runScript').runId
-    await this.checkWait('the stopped run goes once the session asks for the next one',
-      () => this.sessionOf(running) === undefined)
     this.check('the run asked for after the restart is running', this.sessionOf(again)?.life === 'live')
 
     SmokeSessionManager.valueOf(await this.manager.stopSession(parent), 'stopSession')
-    await this.checkWait('stopping the session stops the run it asked for, and the run leaves the list',
-      () => this.sessionOf(again) === undefined)
-    const stopped = this.scriptRunsOf(parent).find((candidate) => candidate.runId === again)
-    this.check(`its history entry says it was stopped (${stopped?.outcome})`, stopped?.outcome === 'stopped')
+    await this.waitUntilAsync(async () => this.sessionOf(again) === undefined
+      && !(await this.listRuntimes()).sessions.some((runtime) => runtime.runtimeSessionId === again),
+      'stopping the parent did not stop and retire the requested run')
+    this.check('stopping the parent stops its requested run and removes the dead runtime',
+      this.sessionOf(parent)?.life === 'ended')
+    await this.checkWait('the ended parent retains no requested-run history or saved logs',
+      () => this.scriptRunsOf(parent).length === 0 && !existsSync(logs))
     SmokeSessionManager.valueOf(await this.manager.removeSession(parent), 'removeSession')
   }
 
@@ -1082,12 +1096,15 @@ class SmokeSessionManager extends SmokeHarness {
     const session = await this.worktreeSession('finish-checks', 'checked.txt', 'merged after its checks')
     const check = (exitCode: number): string =>
       `node ${SmokeSessionManager.setupScriptConst} ${exitCode} ${SmokeSessionManager.finishCheckProofConst}`
-    const press = async (): Promise<void> => {
-      const refused = await this.manager.finalizeSession(session.sessionId)
+    const press = async (selection?: string[]): Promise<void> => {
+      const request = (acknowledgeSetup?: string): Promise<SessionsOpResult<unknown>> => selection === undefined
+        ? this.manager.finalizeSession(session.sessionId, { acknowledgeSetup })
+        : this.manager.finishWorktreeSession(session.sessionId, { choice: 'commit', requestedBy: 'window', selection,
+          message: '[Jamat] Keep the reviewed check proof', messageSource: 'person-local', acknowledgeSetup })
+      const refused = await request()
       this.check(`a Finish press asks about the changed after checks first (${refused.ok ? 'accepted' : refused.code})`,
         !refused.ok && refused.code === 'setup-not-acknowledged')
-      SmokeSessionManager.valueOf(await this.manager.finalizeSession(session.sessionId,
-        { acknowledgeSetup: refused.ok ? undefined : refused.setup?.hash }), 'finalizeSession')
+      SmokeSessionManager.valueOf(await request(refused.ok ? undefined : refused.setup?.hash), 'finish after checks')
     }
     this.writeWorktreeConfig({ scripts: { after: [{ name: 'tests', command: check(3) }] } })
     await press()
@@ -1108,7 +1125,9 @@ class SmokeSessionManager extends SmokeHarness {
     this.check('the stop is said once on the error channel', stopped.length === 1)
 
     this.writeWorktreeConfig({ scripts: { after: [{ name: 'tests', command: check(0) }] } })
-    await press()
+    const unreviewed = await this.manager.finalizeSession(session.sessionId)
+    this.check('the check-created file needs review before another Finish', !unreviewed.ok && unreviewed.code === 'review-unavailable')
+    await press([join(session.worktreePath, SmokeSessionManager.finishCheckProofConst)])
     this.check('the check passed and the Finish continued into the merge by itself, taking the session',
       await this.removedOnItsOwn(session.sessionId, SmokeSessionManager.settleMillisecondsConst))
     this.check('the merged work is in the main copy, with the proof the check ran in the worktree before it',
@@ -1243,13 +1262,15 @@ class SmokeSessionManager extends SmokeHarness {
     }), 'createSession')
     const wakeLine = 'svn-smoke worktree ended'
     const session = SmokeSessionManager.valueOf(await this.manager.createSession({
-      kind: 'shell',
+      kind: 'agent',
+      agent: { agentId: 'claude', mode: 'new' },
       directory: { mode: 'project', categoryId: 'smoke', projectPath: this.svnProjectRoot },
       worktree: { slug: 'svn-smoke', tag: SmokeSessionManager.worktreeTagConst, notify: { sessionId: coordinator.sessionId, text: wakeLine } },
     }), 'createSession')
     const worktree = this.sessionOf(session.sessionId)?.worktree
     // The checkout is the first run of the before chain; the session starts once it exited cleanly.
-    await this.waitUntil(() => this.sessionOf(session.sessionId)?.life === 'live', 'the SVN worktree session never started after its checkout')
+    await this.waitUntil(() => this.sessionOf(session.sessionId)?.life === 'live'
+      && this.sessionOf(session.sessionId)?.agent?.nativeSessionId !== undefined, 'the SVN worktree session never started after its checkout')
 
     this.check(`an SVN working copy gets an SVN worktree, also beside a human .git (${worktree?.kind})`,
       worktree?.kind === 'svn' && worktree.branch === url && /^r\d+$/.test(worktree.baseCommit))
@@ -1258,13 +1279,14 @@ class SmokeSessionManager extends SmokeHarness {
       && /^\d{3}-svn-smoke$/.test(worktree.worktreePath.split(/[\\/]/).pop() ?? '')
       && existsSync(join(worktree.worktreePath, '.svn'))
       && readFileSync(join(worktree.worktreePath, 'tracked.txt'), 'utf8').includes('from SVN'))
-    SmokeSessionManager.valueOf(await this.manager.stopSession(session.sessionId), 'stopSession')
-    await this.waitUntil(() => this.sessionOf(session.sessionId)?.life === 'ended', 'the SVN worktree session never ended')
-
-    const discarded = await this.manager.discardWorktree(session.sessionId)
+    const liveRefused = await this.manager.discardWorktree(session.sessionId)
+    this.check('the older Discard endpoint refuses a live SVN worker', !liveRefused.ok && liveRefused.code === 'live-refused')
+    const discarded = await this.manager.finishWorktreeSession(session.sessionId, { choice: 'discard', requestedBy: 'window' })
     this.check(`the Discard of the SVN worktree removes it (${discarded.ok ? 'ok' : `${discarded.code}: ${discarded.detail}`})`,
       discarded.ok && worktree !== undefined && !existsSync(worktree.worktreePath))
     await this.waitUntil(() => this.sessionOf(session.sessionId) === undefined, 'the discarded SVN worktree session was never removed')
+    this.check('Discard stopped the SVN worker before removing its worktree',
+      !(await this.listRuntimes()).sessions.some((runtime) => runtime.runtimeSessionId === session.sessionId && runtime.alive))
     const results = SmokeSessionManager.valueOf(
       await this.manager.worktreeResults({ tag: SmokeSessionManager.worktreeTagConst }), 'worktreeResults').results
     this.check(`its result is read by the caller's tag after the session is gone (${results.map((result) => result.result).join()})`,
@@ -1280,8 +1302,8 @@ class SmokeSessionManager extends SmokeHarness {
 
   /**
    * F28: a worktree Finish that starts to wait types its caller's own line once into the caller's
-   * session through the notifier, never over a draft. The wait is `incoming` (another commit changed
-   * the project and no checks are declared), which needs no agent.
+   * session through the notifier, never over a draft. An incoming commit is synced before the
+   * no-window Finish waits for the person to review the worker's changes.
    */
   private async checkWaitNotice(run: (cwd: string, args: string[]) => Promise<void>): Promise<void> {
     const coordinator = SmokeSessionManager.valueOf(await this.manager.createSession({
@@ -1290,22 +1312,22 @@ class SmokeSessionManager extends SmokeHarness {
     }), 'createSession')
     const line = 'status svn-wait'
     const worker = SmokeSessionManager.valueOf(await this.manager.createSession({
-      kind: 'shell',
+      kind: 'agent',
+      agent: { agentId: 'claude', mode: 'new' },
       directory: { mode: 'project', categoryId: 'smoke', projectPath: this.svnProjectRoot },
       worktree: { slug: 'svn-wait', notify: { sessionId: coordinator.sessionId, text: line } },
     }), 'createSession')
-    await this.waitUntil(() => this.sessionOf(worker.sessionId)?.life === 'live', 'the waiting worker never started after its checkout')
+    await this.waitUntil(() => this.sessionOf(worker.sessionId)?.life === 'live'
+      && this.sessionOf(worker.sessionId)?.agent?.nativeSessionId !== undefined, 'the waiting worker never started after its checkout')
     const worktreePath = this.sessionOf(worker.sessionId)?.worktree?.worktreePath
     if (worktreePath === undefined) throw new Error('FAILED: the waiting worker has no worktree')
     writeFileSync(join(worktreePath, 'tracked.txt'), 'from SVN\nand the worker\n', 'utf8')
-    SmokeSessionManager.valueOf(await this.manager.stopSession(worker.sessionId), 'stopSession')
-    await this.waitUntil(() => this.sessionOf(worker.sessionId)?.life === 'ended', 'the waiting worker never ended')
     await run(this.svnProjectRoot, ['update', '-q'])
     writeFileSync(join(this.svnProjectRoot, 'other.txt'), 'another commit\n', 'utf8')
     await run(this.svnProjectRoot, ['add', '-q', '--', 'other.txt'])
     await run(this.svnProjectRoot, ['commit', '-q', '-m', 'another commit', '--', '.'])
 
-    // Commit needs the commit dialog to be there; no review opens before the wait.
+    // A CLI Finish syncs and waits for a person; it cannot open its own review.
     this.manager.setReviewPort({
       open: async () => { throw new Error('FAILED: a review opened before the wait') },
       known: () => false,
@@ -1313,15 +1335,18 @@ class SmokeSessionManager extends SmokeHarness {
       proposalOf: () => null,
       forgetProposal: () => undefined,
     })
-    const pressed = await this.manager.finishWorktreeSession(worker.sessionId, { choice: 'commit', requestedBy: 'cli' })
+    const pressed = await this.manager.finishWorktreeSession(worker.sessionId, { choice: 'commit', requestedBy: 'cli', confirmWorking: true })
     this.check(`F28 Commit of the worker is taken (${pressed.ok ? 'ok' : `${pressed.code}: ${pressed.detail}`})`, pressed.ok)
-    await this.waitUntil(() => this.sessionOf(worker.sessionId)?.svnAction?.needsKind === 'incoming',
-      'the Finish of the waiting worker never waited on the incoming commit')
+    await this.waitUntil(() => this.sessionOf(worker.sessionId)?.worktreeView?.wait?.kind === 'waiting-for-review',
+      'the Finish of the waiting worker never waited for review')
+    this.check('F28 the worker stays live while its Finish awaits review', this.sessionOf(worker.sessionId)?.life === 'live')
+    this.check('F28 the incoming commit is synced before review',
+      readFileSync(join(worktreePath, 'other.txt'), 'utf8') === 'another commit\n')
 
     const terminal = { composer: 'a draft of the coordinator', typed: [] as string[], asked: 0 }
     const clock = { now: Date.now() }
     const notifier = new SessionNotifier({
-      sources: [this.manager.worktreeResultsStore().notifySource(), this.manager.svnWaitNotices()],
+      sources: [this.manager.worktreeResultsStore().notifySource(), this.manager.workerHandoffs()],
       watch: { watched: () => [], observe: async () => undefined },
       sessions: () => this.manager.snapshot().sessions,
       groups: () => new Map(),
@@ -1339,17 +1364,19 @@ class SmokeSessionManager extends SmokeHarness {
     })
     await notifier.tick()
     this.check('F28 a draft in the caller\'s composer keeps the wait\'s line pending',
-      terminal.asked === 1 && terminal.typed.length === 0 && this.manager.svnWaitNotices().pending().length === 1)
+      terminal.asked === 1 && terminal.typed.length === 0 && this.manager.workerHandoffs().pending().length === 1)
     terminal.composer = ''
     clock.now += SessionNotifier.paceMillisecondsConst[1] + 1_000
     await notifier.tick()
     await notifier.tick()
     this.check(`F28 the waiting Finish types the caller's own line once into its session (${JSON.stringify(terminal.typed)})`,
-      JSON.stringify(terminal.typed) === JSON.stringify([line]) && this.manager.svnWaitNotices().pending().length === 0)
+      JSON.stringify(terminal.typed) === JSON.stringify([line]) && this.manager.workerHandoffs().pending().length === 0)
 
     // The ending's own line follows as before: the Discard's result types it once more.
-    SmokeSessionManager.valueOf(await this.manager.finishWorktreeSession(worker.sessionId, { choice: 'discard', requestedBy: 'cli' }), 'discard')
+    SmokeSessionManager.valueOf(await this.manager.finishWorktreeSession(worker.sessionId, { choice: 'discard', requestedBy: 'window' }), 'discard')
     await this.waitUntil(() => this.sessionOf(worker.sessionId) === undefined, 'the waiting worker was never discarded')
+    this.check('F28 Discard stops the worker and removes its worktree', !existsSync(worktreePath)
+      && !(await this.listRuntimes()).sessions.some((runtime) => runtime.runtimeSessionId === worker.sessionId && runtime.alive))
     await notifier.tick()
     this.check(`F28 the Discard's result types the line once more, as before (${JSON.stringify(terminal.typed)})`,
       JSON.stringify(terminal.typed) === JSON.stringify([line, line]))
@@ -1793,6 +1820,7 @@ class SmokeSessionManager extends SmokeHarness {
         env: ChildEnvironment.withoutJamat(process.env),
         cols: 120,
         rows: 30,
+        stopDescendants: false,
       },
     })
   }

@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type { SessionFilePorts } from '../../shared/sessionWorkspace'
 import type {
   FileViewerDocument,
 } from '../../../lib-orchestrator/fileViewer/fileViewerApi.types'
@@ -40,7 +41,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerContent', () => {
     mode: 'rendered' | 'raw' | 'preview',
   ): React.JSX.Element {
     return (
-      <FileViewerContent
+      <FileViewerContent ports={window.appClient?.fileViewer ?? {} as SessionFilePorts['viewer']}
         document={document}
         mode={mode}
         text={textOf(text)}
@@ -51,6 +52,19 @@ describe('app-client-ui/renderer/fileViewer/fileViewerContent', () => {
       />
     )
   }
+
+  it('renders a granted remote GIF and exports only after an explicit click', async () => {
+    const exportFile = vi.fn(async () => ({ ok: true as const, value: true }))
+    const ports = { mediaResource: async () => ({ ok: true, value: { ok: true, value: { resourceId: 'controller-token', mimeType: 'image/gif', size: 10, contentVersion: 'v' } } }),
+      exportFile, startImageDrag: vi.fn() } as unknown as SessionFilePorts['viewer']
+    const view = render(<FileViewerContent ports={ports} document={documentOf({ kind: 'image', mimeType: 'image/gif', animated: true }, 'remote.gif')}
+      mode="preview" text={null} diff={null} baselines={{ error: null, loading: false, chosen: false }} onOpenSource={vi.fn()} />)
+    await act(async () => {})
+    expect(view.container.querySelector('img')?.getAttribute('src')).toBe('jamat-v3-file://resource/controller-token')
+    expect(exportFile).not.toHaveBeenCalled()
+    fireEvent.click(view.getByRole('button', { name: 'Save copy…' }))
+    expect(exportFile).toHaveBeenCalledWith('document-1', 'remote.gif')
+  })
 
   it('hides a UTF-8 BOM only from rendered content', () => {
     expect(FileViewerText.withoutBom('\uFEFF# Title')).toBe('# Title')

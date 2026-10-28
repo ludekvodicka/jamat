@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { dirname, join } from 'node:path'
 import { SessionManager } from '../../lib-orchestrator/sessionManager/sessionManager'
@@ -39,6 +39,11 @@ async function run(): Promise<void> {
   const userInputs: string[] = []
   const permissionInstructions = new Map<string, string>()
   const api = createServer((request, response) => {
+    if (request.url === '/mcp') {
+      response.writeHead(403, {'content-type': 'application/json'})
+        .end(JSON.stringify({error: {code: 'challenge', message: 'JAMAT_MCP_CHALLENGE_TEST'}}))
+      return
+    }
     if (request.method !== 'POST' || !request.url?.endsWith('/responses')) {
       response.writeHead(404).end()
       return
@@ -83,6 +88,7 @@ async function run(): Promise<void> {
   assert.ok(address && typeof address !== 'string')
   writeFileSync(join(home, 'config.toml'), [
     'model="gpt-6.1-sol"', 'model_provider="jamat_identity_test"',
+    'check_for_update_on_startup=false',
     '[model_providers.jamat_identity_test]', 'name="Jamat identity smoke"',
     `base_url="http://127.0.0.1:${address.port}/v1"`, 'wire_api="responses"', 'requires_openai_auth=false',
   ].join('\n'))
@@ -238,6 +244,19 @@ async function run(): Promise<void> {
       () => `gated session did not resume: ${output.get(gated.sessionId)}`)
     attach(gated.sessionId)
     await verifyYolo(gated.sessionId, 'resume of a previously restricted session')
+    appendFileSync(join(home, 'config.toml'), `\n[mcp_servers.rejected_test]\nurl="http://127.0.0.1:${address.port}/mcp"\n`)
+    const diagnostic = value(await manager.createSession({kind: 'agent', directory: {mode: 'adHoc', path: cwd},
+      agent: {agentId: 'codex', mode: 'new'}, title: 'MCP diagnostics'}))
+    sessions.push(diagnostic.sessionId)
+    attach(diagnostic.sessionId)
+    await waitFor(() => !!row(diagnostic.sessionId)?.agent?.nativeSessionId, () => 'No MCP test identity')
+    const logFile = join(OrchestratorPaths.directory(identity, 'development'), 'codex-sessions', diagnostic.sessionId,
+      `${stored(diagnostic.sessionId).agent!.identityLaunchId}.server.log`)
+    await waitFor(() => readFileSync(logFile, 'utf8').includes('JAMAT_MCP_CHALLENGE_TEST'),
+      () => `Missing MCP diagnostic in ${logFile}`)
+    await verifyYolo(diagnostic.sessionId, 'session with an MCP failure')
+    assert.ok(!(output.get(diagnostic.sessionId) ?? '').includes('rmcp::transport::worker'), 'Server diagnostics reached the TUI')
+    console.log('ok: native MCP HTTP 403 diagnostics are logged without writing over the terminal')
     assert.deepEqual(errors, [])
   } finally {
     for (const id of sessions) await manager.stopSession(id).catch(() => {})

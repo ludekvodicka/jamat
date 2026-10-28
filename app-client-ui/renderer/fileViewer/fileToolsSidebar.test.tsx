@@ -5,6 +5,7 @@ import type {
   FileChangesViewModel,
   FileChangesWorkingTreeViewModel,
 } from './fileViewerPanel.types'
+import type { AppClientUiBridge } from '../../shared/appClientUiIpc'
 import { FileToolsSidebar } from './fileToolsSidebar'
 
 describe('app-client-ui/renderer/fileViewer/fileToolsSidebar', () => {
@@ -34,7 +35,7 @@ describe('app-client-ui/renderer/fileViewer/fileToolsSidebar', () => {
 
   it.each(['svn', 'git', 'checkpoint', 'worktree-base'] as const)('offers Commit only for a writable %s source', (source) => {
     const open = vi.fn()
-    render(<FileToolsSidebar sessionId="session" documentId={null} selected="workingTree" changes={changesConst}
+    render(<FileToolsSidebar changesPorts={{ openFile: vi.fn() } as unknown as AppClientUiBridge['fileChanges']} release={vi.fn()} sessionId="session" documentId={null} selected="workingTree" changes={changesConst}
       workingTree={{ ...workingConst, selectedSource: source }} onSelect={vi.fn()} onOpenChanged={vi.fn()} onOpenDocument={vi.fn()} onOpenCommit={open} />)
     const commit = screen.queryByRole('button', { name: 'Commit…' })
     if (source === 'svn' || source === 'git') {
@@ -48,7 +49,7 @@ describe('app-client-ui/renderer/fileViewer/fileToolsSidebar', () => {
   it('shows File Changes, Changelog and Explorer in that order', () => {
     const onSelect = vi.fn()
     render(
-      <FileToolsSidebar
+      <FileToolsSidebar changesPorts={{ openFile: vi.fn() } as unknown as AppClientUiBridge['fileChanges']} release={vi.fn()}
         sessionId="session-1"
         documentId={null}
         selected="workingTree"
@@ -71,7 +72,7 @@ describe('app-client-ui/renderer/fileViewer/fileToolsSidebar', () => {
 
   it('renders the old fileChanges key as Changelog', () => {
     const view = render(
-      <FileToolsSidebar
+      <FileToolsSidebar changesPorts={{ openFile: vi.fn() } as unknown as AppClientUiBridge['fileChanges']} release={vi.fn()}
         sessionId="session-1"
         documentId={null}
         selected="fileChanges"
@@ -90,7 +91,7 @@ describe('app-client-ui/renderer/fileViewer/fileToolsSidebar', () => {
   it('adds Notes as the fourth tab only when Notes content is given', () => {
     const onSelect = vi.fn()
     const view = render(
-      <FileToolsSidebar
+      <FileToolsSidebar changesPorts={{ openFile: vi.fn() } as unknown as AppClientUiBridge['fileChanges']} release={vi.fn()}
         sessionId="session-1"
         documentId={null}
         selected="workingTree"
@@ -112,7 +113,7 @@ describe('app-client-ui/renderer/fileViewer/fileToolsSidebar', () => {
 
   it('draws the Notes content as the body when Notes is selected', () => {
     const view = render(
-      <FileToolsSidebar
+      <FileToolsSidebar changesPorts={{ openFile: vi.fn() } as unknown as AppClientUiBridge['fileChanges']} release={vi.fn()}
         sessionId="session-1"
         documentId={null}
         selected="notes"
@@ -133,7 +134,7 @@ describe('app-client-ui/renderer/fileViewer/fileToolsSidebar', () => {
   it('refuses Notes selected without Notes content', () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined)
     expect(() => render(
-      <FileToolsSidebar
+      <FileToolsSidebar changesPorts={{ openFile: vi.fn() } as unknown as AppClientUiBridge['fileChanges']} release={vi.fn()}
         sessionId="session-1"
         documentId={null}
         selected="notes"
@@ -147,27 +148,4 @@ describe('app-client-ui/renderer/fileViewer/fileToolsSidebar', () => {
     vi.restoreAllMocks()
   })
 
-  it('adds Processes after Notes and renders it from a restored selection', () => {
-    const onSelect = vi.fn()
-    const view = render(<FileToolsSidebar sessionId="session" documentId={null} selected="processes"
-      changes={changesConst} workingTree={workingConst} onSelect={onSelect}
-      onOpenChanged={vi.fn()} onOpenDocument={vi.fn()}
-      notes={<p>notes body</p>} processes={<p className="processes-probe">processes body</p>} />)
-
-    expect(screen.getAllByRole('tab').map((tab) => tab.textContent))
-      .toEqual(['File Changes', 'Changelog', 'Explorer', 'Notes', 'Processes'])
-    expect(screen.getByRole('tab', { name: 'Processes' })).toHaveAttribute('aria-selected', 'true')
-    expect(view.container.querySelector('.file-tools-body .processes-probe')?.textContent).toBe('processes body')
-    expect(screen.queryByText('notes body')).toBeNull()
-    fireEvent.click(screen.getByRole('tab', { name: 'Processes' }))
-    expect(onSelect).toHaveBeenCalledWith('processes')
-  })
-
-  it('refuses Processes selected without content', () => {
-    vi.spyOn(console, 'error').mockImplementation(() => undefined)
-    expect(() => render(<FileToolsSidebar sessionId="session" documentId={null} selected="processes"
-      changes={changesConst} workingTree={workingConst} onSelect={vi.fn()}
-      onOpenChanged={vi.fn()} onOpenDocument={vi.fn()} />)).toThrow('Processes selected without Processes content')
-    vi.restoreAllMocks()
-  })
 })

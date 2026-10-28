@@ -5,6 +5,7 @@ import { StringDecoder } from 'node:string_decoder'
 import type { CommandFailure, CommandInvocation, CommandOutcome } from './commandInvoker.types'
 import { ErrnoCode } from './errnoCode'
 import { ErrorText } from './errorText'
+import { ChildProcessLifetime } from './childProcessLifetime'
 
 export interface CommandInvokerOptions {
   spawnImpl?: typeof spawn
@@ -39,6 +40,10 @@ export class CommandInvoker {
   }
 
   async run(invocation: CommandInvocation): Promise<CommandOutcome> {
+    if (typeof invocation.retain === 'object' && (!Number.isSafeInteger(invocation.retain.tailBytes) || invocation.retain.tailBytes < 0))
+      throw new RangeError('tailBytes must be a nonnegative safe integer')
+    if (invocation.timeoutMs !== undefined && (!Number.isFinite(invocation.timeoutMs) || invocation.timeoutMs <= 0))
+      throw new RangeError('timeoutMs must be positive')
     if (invocation.signal?.aborted) return CommandInvoker.abortedOutcome()
     if (!await CommandInvoker.isDirectory(invocation.cwd))
       return {
@@ -84,9 +89,9 @@ export class CommandInvoker {
         settle(CommandInvoker.abortedOutcome())
         return
       }
-      const stdout: Buffer[] = []
-      const stderr: Buffer[] = []
+      const chunks: { stream: 'stdout' | 'stderr'; data: Buffer }[] = []
       const decoder = new StringDecoder('utf8')
+      const errorDecoder = new StringDecoder('utf8')
       let collected = 0
       let failure: CommandFailure | null = null
       let settled = false
@@ -111,33 +116,39 @@ export class CommandInvoker {
         })
         return
       }
+      const lifetime = new ChildProcessLifetime(child, this.spawnImpl, this.platform)
       /**
        * A timeout or abort answers, rather than only asking the child to stop.
        *
        * `'close'` fires when the process has exited AND every stdio pipe is closed, so a grandchild
        * that inherited stdout keeps it open after the parent is gone - on win32 `child.kill()` ends
-       * the direct handle only, which is the very reason the Codex client carries its own
-       * `taskkill /T`. Waiting for `'close'` as the ONLY way out left `run()` pending for the life
+       * the direct handle only, which is why the shared lifetime uses `taskkill /T`.
+       * Waiting for `'close'` as the ONLY way out left `run()` pending for the life
        * of the process, and whatever awaited it with it: `git` blocking on a credential helper,
        * `svn` waiting on an editor.
        *
        * So: kill the tree, then settle a short while later with whatever was collected. `'close'`
        * arriving first is the ordinary case and still wins - `finish` is idempotent.
        */
-      const finish = (code: number | null): void => {
+      const finish = (code: number | null, closed = false): void => {
         if (settled) return
         settled = true
         const tail = decoder.end()
         if (tail) CommandInvoker.reportStdout(invocation, tail)
+        const errorTail = errorDecoder.end()
+        if (errorTail) CommandInvoker.reportStderr(invocation, errorTail)
         if (timeoutTimer !== null) clearTimeout(timeoutTimer)
         if (settleTimer !== null) clearTimeout(settleTimer)
         if (abortListener !== null)
           invocation.signal?.removeEventListener('abort', abortListener)
+        const stdout = Buffer.concat(chunks.filter((chunk) => chunk.stream === 'stdout').map((chunk) => chunk.data))
         settle({
           code: code ?? -1,
-          stdout: Buffer.concat(stdout).toString('utf8'),
-          stderr: Buffer.concat(stderr).toString('utf8'),
+          stdout: stdout.toString('utf8'),
+          ...(invocation.stdoutBytes === true ? { stdoutBytes: stdout } : {}),
+          stderr: Buffer.concat(chunks.filter((chunk) => chunk.stream === 'stderr').map((chunk) => chunk.data)).toString('utf8'),
           failure,
+          ...(invocation.trackClose === true ? { closed } : {}),
         })
       }
       const stop = (reason: 'aborted' | 'timeout'): void => {
@@ -145,7 +156,7 @@ export class CommandInvoker {
         if (stopping) return
         stopping = true
         if (timeoutTimer !== null) clearTimeout(timeoutTimer)
-        this.terminate(child)
+        lifetime.terminate()
         settleTimer = setTimeout(
           () => finish(null),
           CommandInvoker.settleAfterKillMillisecondsConst,
@@ -154,66 +165,66 @@ export class CommandInvoker {
         // else has finished there is nobody left to hand it to.
         settleTimer.unref?.()
       }
-      const collect = (target: Buffer[]) => (chunk: Buffer): void => {
+      const collect = (stream: 'stdout' | 'stderr') => (chunk: Buffer): void => {
         if (settled) return
-        const room = this.maxOutputBytes - collected
-        if (room <= 0) {
+        const room = invocation.retain === undefined ? this.maxOutputBytes - collected : chunk.length
+        if (room <= 0 && invocation.retain === undefined) {
           failure ??= 'output-limit'
           return
         }
         if (chunk.length > room) failure ??= 'output-limit'
         const accepted = chunk.subarray(0, room)
-        target.push(accepted)
+        chunks.push({ stream, data: accepted })
         collected += accepted.length
-        if (target === stdout && invocation.onStdout !== undefined) {
+        if (typeof invocation.retain === 'object')
+          while (collected > invocation.retain.tailBytes) {
+            const first = chunks[0]
+            const removed = Math.min(first.data.length, collected - invocation.retain.tailBytes)
+            first.data = first.data.subarray(removed)
+            collected -= removed
+            if (first.data.length === 0) chunks.shift()
+          }
+        if (stream === 'stdout') {
           const text = decoder.write(accepted)
           if (text) CommandInvoker.reportStdout(invocation, text)
-        }
+        } else if (stream === 'stderr') {
+          const text = errorDecoder.write(accepted)
+          if (text) CommandInvoker.reportStderr(invocation, text)
+        } else throw new Error(`Unknown stream: ${stream}`)
       }
-      child.stdout?.on('data', collect(stdout))
-      child.stderr?.on('data', collect(stderr))
+      child.stdout?.on('data', collect('stdout'))
+      child.stderr?.on('data', collect('stderr'))
       child.once('error', (error) => {
         failure ??= ErrnoCode.of(error) === 'ENOENT' ? 'command-missing' : 'spawn-failed'
-        finish(null)
+        lifetime.terminate()
+        finish(null, child.pid === undefined)
       })
-      child.once('close', (code) => finish(code))
-      timeoutTimer = setTimeout(() => stop('timeout'), this.timeoutMilliseconds)
+      child.once('close', (code) => finish(code, true))
+      child.once('spawn', () => {
+        try { if (child.pid !== undefined) invocation.onSpawn?.(child.pid) }
+        catch (error) {
+          failure = 'spawn-failed'
+          chunks.push({ stream: 'stderr', data: Buffer.from(`Process identity could not be retained: ${ErrorText.of(error)}`) })
+          stop('aborted')
+        }
+      })
+      timeoutTimer = setTimeout(() => stop('timeout'), invocation.timeoutMs ?? this.timeoutMilliseconds)
       abortListener = () => stop('aborted')
       invocation.signal?.addEventListener('abort', abortListener, { once: true })
       if (invocation.signal?.aborted) abortListener()
+      try { invocation.onLifetime?.(lifetime.exited) }
+      catch { failure = 'spawn-failed'; stop('aborted') }
     })
-  }
-
-  /**
-   * The whole tree on win32, the direct handle elsewhere.
-   *
-   * `child.kill()` on Windows ends the process it was given and nothing it started, and a grandchild
-   * holding the inherited pipes is exactly what keeps `'close'` from arriving. The same shape the
-   * Codex client uses, for the same reason.
-   */
-  private terminate(child: ReturnType<typeof spawn>): void {
-    if (this.platform !== 'win32' || child.pid === undefined) {
-      child.kill()
-      return
-    }
-    try {
-      const killer = this.spawnImpl('taskkill', ['/T', '/F', '/PID', String(child.pid)], {
-        stdio: 'ignore',
-        windowsHide: true,
-      })
-      // `'error'` is a taskkill that could not start; a non-zero `'exit'` is one that ran and was
-      // refused. Either way the direct handle is what is left to try.
-      killer.once('error', () => child.kill())
-      killer.once('exit', (code) => { if (code !== 0) child.kill() })
-      killer.unref()
-    } catch {
-      child.kill()
-    }
   }
 
   private static reportStdout(invocation: CommandInvocation, text: string): void {
     // An observer cannot interrupt a VCS write or prevent its actual result from being returned.
     try { invocation.onStdout?.(text) }
+    catch {}
+  }
+
+  private static reportStderr(invocation: CommandInvocation, text: string): void {
+    try { invocation.onStderr?.(text) }
     catch {}
   }
 }

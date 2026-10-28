@@ -131,7 +131,8 @@ describe('app-client-ui/renderer/overlays/launcher/launcherModel', () => {
       .then({ input: 'categoriesLoaded', categories: LauncherFixtures.categories() })
 
     expect(run.state.activeCategoryId).toBe('nodejs')
-    expect(run.effects).toEqual([{ effect: 'fetchProjects', categoryId: 'nodejs', sort: 'recent', remoteEndpointId: null }])
+    // The first listing of a card is read fresh: a project made since the last card is on it (UA1-J13-7).
+    expect(run.effects).toEqual([{ effect: 'fetchProjects', categoryId: 'nodejs', sort: 'recent', remoteEndpointId: null, fresh: true }])
   })
 
   /**
@@ -144,7 +145,7 @@ describe('app-client-ui/renderer/overlays/launcher/launcherModel', () => {
       .then({ input: 'categoriesLoaded', categories: LauncherFixtures.categories() })
 
     expect(run.state.activeCategoryId).toBe('web')
-    expect(run.effects).toEqual([{ effect: 'fetchProjects', categoryId: 'web', sort: 'recent', remoteEndpointId: null }])
+    expect(run.effects).toEqual([{ effect: 'fetchProjects', categoryId: 'web', sort: 'recent', remoteEndpointId: null, fresh: true }])
   })
 
   // A category that has been retired since the row was drawn is not a reason to open on nothing.
@@ -338,7 +339,7 @@ describe('app-client-ui/renderer/overlays/launcher/launcherModel', () => {
     })
 
     expect(loaded.effects).toEqual([
-      { effect: 'fetchProjects', categoryId: 'nodejs', sort: 'recent', remoteEndpointId: null },
+      { effect: 'fetchProjects', categoryId: 'nodejs', sort: 'recent', remoteEndpointId: null, fresh: true },
       { effect: 'fetchProjects', categoryId: 'web', sort: 'recent', remoteEndpointId: null },
       { effect: 'fetchProjects', categoryId: 'ai', sort: 'recent', remoteEndpointId: null },
     ])

@@ -26,7 +26,7 @@ export interface SnapshotFile {
   currentPath: string
   nodeKind: FileChangeNodeKind
   status: FileChangeStatus
-  workingState?: { modifiedAt: number | null; vcsEntry: boolean }
+  workingState?: { modifiedAt: number | null; vcsEntry: boolean; fingerprint?: string }
 }
 
 export interface SnapshotBaselineFile {

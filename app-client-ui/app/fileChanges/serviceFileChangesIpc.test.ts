@@ -14,6 +14,7 @@ import type { FileViewer } from '../../../lib-orchestrator/fileViewer/fileViewer
 import type { FileViewerDocument } from '../../../lib-orchestrator/fileViewer/fileViewerApi.types'
 import type { SessionManager } from '../../../lib-orchestrator/sessionManager/sessionManager'
 import type { AppClientUiIpcInvokeMap } from '../../shared/appClientUiIpc'
+import { FileChangesAccess } from './fileChangesAccess'
 import { ServiceFileChangesIpc } from './serviceFileChangesIpc'
 
 const ipcMainMock = vi.hoisted(() => ({
@@ -76,7 +77,7 @@ describe('app-client-ui/app/fileChanges/serviceFileChangesIpc', () => {
     warnings: [],
   }
   let calls: { method: string; args: unknown[] }[]
-  let service: ServiceFileChangesIpc
+  let service: FileChangesAccess
   let runDiff: (
     request: FileDiffRequest,
     context?: FileDiffExecutionContext,
@@ -135,14 +136,8 @@ describe('app-client-ui/app/fileChanges/serviceFileChangesIpc', () => {
       }),
     } as unknown as SessionManager
     const config = { readSection: () => ({ primaryVcs: 'git' }) } as unknown as ConfigStore
-    service = new ServiceFileChangesIpc(
-      manager,
-      viewer,
-      sessions,
-      config,
-      (value) => value === sender ? 'window-1' : value === other ? 'window-2' : null,
-    )
-    service.initialize()
+    service = new FileChangesAccess(manager, viewer, sessions, config)
+    new ServiceFileChangesIpc(service, (value) => value === sender ? 'window-1' : value === other ? 'window-2' : null).initialize()
   })
 
   async function invoke(
@@ -158,7 +153,7 @@ describe('app-client-ui/app/fileChanges/serviceFileChangesIpc', () => {
   it('allows an owned commit read outside the session while ordinary reads stay scoped', async () => {
     expect(await service.workingTree('window-1', 'session-1', 'svn', 'C:/outside', true)).toMatchObject({ ok: true })
     expect(calls.find((call) => call.method === 'workingTree')?.args).toEqual([
-      { sessionId: 'session-1', cwd: 'C:/outside', agent: null, worktree: null }, 'svn', true, undefined,
+      { sessionId: 'session-1', cwd: 'C:/outside', agent: null, worktree: null }, 'svn', true, undefined, undefined,
     ])
     calls.length = 0
     expect(await service.workingTree('window-1', 'session-1', 'svn', 'C:/outside')).toMatchObject({ ok: false })
@@ -214,6 +209,7 @@ describe('app-client-ui/app/fileChanges/serviceFileChangesIpc', () => {
       { sessionId: 'session-1', cwd: 'C:/work', agent: null, worktree: null },
       'checkpoint',
       false,
+      undefined,
       undefined,
     ])
     for (const answer of answers)

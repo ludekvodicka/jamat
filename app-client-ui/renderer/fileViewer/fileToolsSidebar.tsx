@@ -1,3 +1,5 @@
+import type { AppClientUiBridge } from '../../shared/appClientUiIpc'
+import type { SessionDirectoryPorts } from '../../shared/sessionWorkspace'
 import type { FileChangesVcsId } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import type { FileViewerDocument } from '../../../lib-orchestrator/fileViewer/fileViewerApi.types'
 import { DirectoryExplorer } from './directoryExplorer'
@@ -11,6 +13,9 @@ import type {
 import type { TerminalToolsTab } from './panelFileToolsRegistry'
 
 export function FileToolsSidebar(props: {
+  changesPorts?: AppClientUiBridge['fileChanges']
+  release?: AppClientUiBridge['fileViewer']['release']
+  directoryPorts?: SessionDirectoryPorts
   sessionId: string
   documentId: string | null
   selected: TerminalToolsTab
@@ -22,7 +27,6 @@ export function FileToolsSidebar(props: {
   onOpenDocument(document: FileViewerDocument): void
   /** The terminal's Notes; absent in the FileViewer, which then draws exactly its three tabs. */
   notes?: React.ReactNode
-  processes?: React.ReactNode
 }): React.JSX.Element {
   return (
     <div className="file-tools">
@@ -61,43 +65,33 @@ export function FileToolsSidebar(props: {
             Notes
           </button>
         )}
-        {props.processes !== undefined && (
-          <button
-            type="button"
-            role="tab"
-            aria-selected={props.selected === 'processes'}
-            onClick={() => props.onSelect('processes')}
-          >
-            Processes
-          </button>
-        )}
       </div>
       <div className="file-tools-body">
-        {props.selected === 'workingTree'
+        {(props.selected === 'workingTree' || props.selected === 'fileChanges') && (!props.changesPorts || !props.release)
+          ? <p role="status">Changes are unavailable for this session.</p>
+          : props.selected === 'workingTree'
           ? <>
               {props.onOpenCommit && (props.workingTree.selectedSource === 'svn' || props.workingTree.selectedSource === 'git') && <button type="button"
                 onClick={() => {
                   const source = props.workingTree.selectedSource
                   if (source === 'svn' || source === 'git') props.onOpenCommit?.(source)
                 }}>Commit…</button>}
-              <FileChangesTreeWidget model={props.workingTree} onOpen={props.onOpenChanged} />
+              <FileChangesTreeWidget openFile={props.changesPorts!.openFile} release={props.release!} model={props.workingTree} onOpen={props.onOpenChanged} />
             </>
           : props.selected === 'fileChanges'
-            ? <FileChangesWidget model={props.changes} onOpen={props.onOpenChanged} />
+            ? <FileChangesWidget openFile={props.changesPorts!.openFile} release={props.release!} model={props.changes} onOpen={props.onOpenChanged} />
           : props.selected === 'directoryExplorer'
-            ? (
-              <DirectoryExplorer
+            ? (props.directoryPorts ?
+              <DirectoryExplorer ports={props.directoryPorts}
                 sessionId={props.sessionId}
                 documentId={props.documentId}
                 targetPath={null}
                 place="sidebar"
                 onOpen={props.onOpenDocument}
-              />
+              /> : <p role="status">Directory access is unavailable for this session.</p>
             )
           : props.selected === 'notes'
             ? (props.notes ?? (() => { throw new Error('Notes selected without Notes content') })())
-          : props.selected === 'processes'
-            ? (props.processes ?? (() => { throw new Error('Processes selected without Processes content') })())
             : (() => { throw new Error(`Unknown file tools tab: ${JSON.stringify(props.selected)}`) })()}
       </div>
     </div>

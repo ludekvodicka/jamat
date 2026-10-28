@@ -5,7 +5,7 @@ import type { HostClient } from '../hostClient/hostClient'
 import type { HostCallResult, HostConnectionPresence } from '../hostClient/hostClient.types'
 import type { RuntimeChannel } from '../shared/configIdentity.types'
 import { ErrorText } from '../shared/errorText'
-import type { HostDebugStatus, HostPresence } from '../sessionManager/sessionManagerApi.types'
+import type { HostDebugStatus, HostPresence, HostStopWarnings } from '../sessionManager/sessionManagerApi.types'
 import { HostLaunchLocator } from './hostLaunchLocator'
 
 export type HostStartErrorCode = 'already-running' | 'spawn-failed' | 'boot-timeout'
@@ -14,9 +14,9 @@ export type HostStartResult =
   | { ok: true }
   | { ok: false; code: HostStartErrorCode; detail: string }
 
-export type HostRestartResult = HostCallResult<void> | Extract<HostStartResult, { ok: false }>
+export type HostRestartResult = HostCallResult<HostStopWarnings> | Extract<HostStartResult, { ok: false }>
 
-export type HostStopResult = HostCallResult<void> | { ok: false; code: 'already-running'; detail: string }
+export type HostStopResult = HostCallResult<HostStopWarnings> | { ok: false; code: 'already-running'; detail: string }
 
 export interface HostControllerDeps {
   /**
@@ -97,7 +97,7 @@ export class HostController {
       const started = this.record(await (this.deps.descriptorOf() === null
         ? this.launch()
         : this.awaitRunning({ spawnError: null, exited: null })))
-      return started.ok ? { ok: true, value: undefined } : started
+      return started.ok ? stopped : started
     } finally {
       this.launching = false
     }
@@ -150,7 +150,7 @@ export class HostController {
     }
   }
 
-  private async stopAndWait(expectedHostInstanceId: string): Promise<HostCallResult<void>> {
+  private async stopAndWait(expectedHostInstanceId: string): Promise<HostCallResult<HostStopWarnings>> {
     const stopped = await this.deps.stopHost(expectedHostInstanceId)
     if (!stopped.ok) return stopped
     const timeout = this.deps.bootTimeoutMilliseconds ?? HostController.bootTimeoutMillisecondsConst
@@ -161,7 +161,7 @@ export class HostController {
         return { ok: false, code: 'host-unreachable', detail: `The old Host did not finish stopping within ${timeout} ms` }
       await HostController.delay(this.deps.presencePollMilliseconds ?? HostController.presencePollMillisecondsConst)
     }
-    return { ok: true, value: undefined }
+    return { ok: true, value: { warnings: stopped.value.warnings ?? [] } }
   }
 
   private async attempt(): Promise<HostStartResult> {

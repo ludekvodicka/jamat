@@ -105,6 +105,17 @@ describe('lib-orchestrator/sessionManager/launch/windowsCommand', () => {
     expect(WindowsCommand.powershellScriptOf('absent', environment([first, second]))).toBeNull()
   })
 
+  // What the ComSpec wrap starts for a one-line launch: image or shim, whatever cmd.exe finds first.
+  it('answers the program a bare name starts, a shim as well as an image, and the extensions it tried', () => {
+    const shim = put(second, 'shimmed.bat')
+    expect(WindowsCommand.programOf('shimmed', environment([first, second]))).toBe(shim)
+    expect(WindowsCommand.programOf('shimmed', environment([first, second], '.EXE;.CMD'))).toBeNull()
+    expect(WindowsCommand.programOf('both', environment([first, second]))).toBe(join(first, 'both.cmd'))
+    expect(WindowsCommand.programOf('absent', environment([first, second]))).toBeNull()
+    expect(WindowsCommand.extensionsOf(environment([first], '.EXE;CMD;.Bat'))).toEqual(['.exe', '.bat'])
+    expect(WindowsCommand.extensionsOf({})).toEqual(['.com', '.exe', '.bat', '.cmd'])
+  })
+
   // The same first-hit rule the image question follows: an earlier shim is what would run.
   it('reads the script of the shim that would run, not of a later one', () => {
     put(first, 'twice.cmd')

@@ -64,6 +64,10 @@ export class AgentWorkInspectorCodex {
    */
   private static readonly backgroundTerminalScreenConst =
     /(?:^|\n)\s*[›❯>◦•]\s*waiting\s*for\s*background\s*terminal\s*\(\s*(?:\d+\s*(?:h|m|s)\s*)+[•·]\s*esc\s*to\s*interrupt\s*\)\s*[•·]\s*\d+\s*background\s*terminals?\s*running(?:\s*[•·]\s*\/ps\s*to\s*view\s*[•·]\s*\/stop\s*to\s*close|[^\n]*…)\s*(?:\n|$)/i
+  // codex-background-terminal-tip.json: the command preview and tip push the timer above eight
+  // rows. Require their uninterrupted connection to the current composer before trusting it.
+  private static readonly backgroundFooterScreenConst =
+    /^\s*└[ \t]*(?!tip:)[^\n]+(?:\n[ \t]*[^\s›❯>◦•└][^\n]*)*\s*\n[ \t]*└\s*tip:[^\n]*(?:\n[ \t]*[^\s›❯>◦•└][^\n]*)*\s*\n[ \t]*[›❯>][^\n]*(?:\n(?![ \t]*[›❯>◦•└])[^\n]*)*$/i
   /**
    * The empty input box, which is Codex saying it is waiting for a person rather than working.
    * Admitted by `codex-live-idle.json`. It is deliberately the placeholder text and not the `›`
@@ -71,6 +75,13 @@ export class AgentWorkInspectorCodex {
    * not this state.
    */
   private static readonly emptyPromptConst = /askcodextodoanything/
+  /**
+   * The line Codex closes a turn with, `Worked for 2h 59m 37s • 18:03` (`codex-live-idle-draft.json`) or
+   * `─ Worked for 45m 12s ───` (`codex-live-idle.json`), with the input box right under it: the box's
+   * marker is the next and last one on screen. Read whatever the box holds, so a draft the person left
+   * in it reads as the finished turn it is.
+   */
+  private static readonly turnEndedConst = /workedfor(?:\d+[hms])+(?:•\d{1,2}:\d{2})?─*›[^›]*$/
   /**
    * Codex's approval prompt. The array was empty until 2026-08-20 for the reason this file exists
    * to enforce: no frame of one had ever been captured, and a pattern written from memory is a
@@ -147,6 +158,16 @@ export class AgentWorkInspectorCodex {
     if (foreground)
       return { hint: 'working', evidence: [{ source: 'screen', signal: 'workingRow', match: foreground[0].trim() }] }
     const wideScreen = ScreenTail.stripAnsiLower(frame.wideScreenTail)
+    const wideBackground = AgentWorkInspectorCodex.backgroundTerminalScreenConst.exec(wideScreen)
+    if (wideBackground
+      && wideScreen.endsWith(ScreenTail.stripAnsiLower(frame.screenTail))
+      && AgentWorkInspectorCodex.backgroundFooterScreenConst.test(
+        wideScreen.slice(wideBackground.index + wideBackground[0].length),
+      ))
+      return {
+        hint: 'background',
+        evidence: [{ source: 'wide-screen', signal: 'backgroundTerminal', match: wideBackground[0].trim() }],
+      }
     const wideForeground = AgentWorkInspectorCodex.foregroundScreenConst.exec(wideScreen)
     if (wideForeground?.groups?.compacting
       && wideScreen.endsWith(ScreenTail.stripAnsiLower(frame.screenTail))
@@ -170,6 +191,11 @@ export class AgentWorkInspectorCodex {
       .match(AgentWorkInspectorCodex.emptyPromptConst)?.[0]
     if (emptyPrompt)
       return { hint: 'idle', evidence: [{ source: 'screen', signal: 'emptyPrompt', match: emptyPrompt }] }
+    // A finished turn whose box holds a draft: the 072 worker sat here for hours as `unknown`, and its
+    // Finish waited on it (Finish 072). A delivery still reads the box itself and waits on a draft.
+    const ended = ScreenTail.normalizeTty(frame.wideScreenTail).match(AgentWorkInspectorCodex.turnEndedConst)?.[0]
+    if (ended)
+      return { hint: 'idle', evidence: [{ source: 'wide-screen', signal: 'turnEnded', match: ended.slice(0, ended.indexOf('›') + 1) }] }
     return { hint: 'unknown', evidence: [] }
   }
 

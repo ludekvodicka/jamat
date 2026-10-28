@@ -1,3 +1,7 @@
+import { SessionContentPanel } from '../panels/terminal/sessionContentPanel'
+import { SessionWorkspaceProviders, type SessionWorkspacePorts } from '../panels/terminal/sessionWorkspaceProviders'
+import type { SnapshotStore } from '../ipc/snapshotStore'
+import type { RemoteConnectionsSnapshot } from '../../../lib-orchestrator/remoteControl/remoteConnectionsApi.types'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -131,6 +135,8 @@ class PanelHarness {
           }
         },
       },
+      ports: { viewer: window.appClient.fileViewer, directories: window.appClient.fileViewer, changes: window.appClient.fileChanges },
+      changesPorts: window.appClient.fileChanges,
       fileTools: new PanelFileToolsRegistry(),
     } as unknown as FileViewerPanelProps
     return {
@@ -162,6 +168,43 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPanel', () => {
     cleanup()
     vi.restoreAllMocks()
     delete (window as unknown as { appClient?: unknown }).appClient
+  })
+
+  it('remounts a standalone source panel after reconnect and target switch even when grant IDs are reused', async () => {
+    const controller = PanelHarness.install()
+    const panel = PanelHarness.panel({ ...PanelHarness.workspaceParams(), zoom: 1.25, ratio: 0.6 })
+    const source = (text: string) => {
+      const viewer = { ...controller.fileViewer,
+        restore: vi.fn(async () => ({ ok: true as const, value: { ok: true as const, value: PanelHarness.document() } })),
+        text: vi.fn(async () => ({ ok: true as const, value: { ok: true as const, kind: 'text' as const, text, contentVersion: '24:1' } })),
+        release: vi.fn(async () => ({ ok: true as const, value: undefined })),
+      }
+      return { viewer, directories: viewer, changes: controller.fileChanges } as unknown as FileViewerPanelProps['ports']
+    }
+    let files = source('source epoch one'), revision = 0
+    const listeners = new Set<() => void>()
+    const workspace = { get files() { return files }, changes: null, start: () => () => {},
+      subscribe: (changed: () => void) => { listeners.add(changed); return () => { listeners.delete(changed) } },
+      contentRevision: () => revision } as SessionWorkspacePorts
+    vi.spyOn(SessionWorkspaceProviders, 'forTarget').mockReturnValue(workspace)
+    const remote = {} as SnapshotStore<RemoteConnectionsSnapshot>
+    const content = (endpoint: string) => <SessionContentPanel params={{ ...panel.props.params,
+      target: { kind: 'remote', remoteEndpointId: endpoint, sessionId: 'session-1' } }} remote={remote}>
+      {(ports, changes) => <FileViewerPanel {...panel.props} ports={ports} changesPorts={changes} />}
+    </SessionContentPanel>
+    const view = render(content('first'))
+    expect(await screen.findByText('source epoch one')).toBeInTheDocument()
+    const first = files
+    act(() => { files = source('source epoch two'); revision++; for (const changed of listeners) changed() })
+    expect(await screen.findByText('source epoch two')).toBeInTheDocument()
+    expect(first.viewer.release).toHaveBeenCalledWith('document-1')
+    files = source('different source peer')
+    view.rerender(content('second'))
+    expect(await screen.findByText('different source peer')).toBeInTheDocument()
+    expect(controller.fileViewer.restore).not.toHaveBeenCalled()
+    expect(controller.fileViewer.text).not.toHaveBeenCalled()
+    expect(panel.props.params).toMatchObject({ zoom: 1.25, ratio: 0.6 })
+    view.unmount()
   })
 
   it('restores what the layout remembered, reads it, and gives the grant back on unmount', async () => {
@@ -354,7 +397,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPanel', () => {
 
     await waitFor(() => expect(fileViewer.release).toHaveBeenCalledWith('document-1'))
     expect(fileViewer.restore).toHaveBeenCalledTimes(2)
-    expect(fileViewer.text).toHaveBeenLastCalledWith('document-2')
+    await waitFor(() => expect(fileViewer.text).toHaveBeenLastCalledWith('document-2'))
 
     view.unmount()
     expect(fileViewer.release).toHaveBeenCalledWith('document-2')

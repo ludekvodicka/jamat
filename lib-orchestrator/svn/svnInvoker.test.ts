@@ -21,4 +21,19 @@ describe('lib-orchestrator/svn/svnInvoker', () => {
     expect(invocation.env).not.toHaveProperty('SVN_EDITOR')
     expect(invocation.env).not.toHaveProperty('SVN_SSH')
   })
+  it('makes write commands noninteractive and forwards streaming controls', async () => {
+    const run = vi.spyOn(CommandInvoker.prototype, 'run').mockResolvedValue({ code: 0, stdout: '', stderr: '', failure: null })
+    const signal = new AbortController().signal
+    await new SvnInvoker().run('C:/work', ['update', '--', '.'], { signal, timeoutMs: 1234, retain: { tailBytes: 100 } })
+    expect(run.mock.calls[0][0]).toMatchObject({ args: ['--non-interactive', 'update', '--', '.'], signal, timeoutMs: 1234,
+      retain: { tailBytes: 100 } })
+  })
+
+  it.each([['ci', '--', '--non-interactive'], ['--username', 'person', 'up', '--', '.'], ['co', 'url', 'folder']])(
+    'makes aliases and global options noninteractive without mistaking targets for options: %j', async (...args) => {
+      const run = vi.spyOn(CommandInvoker.prototype, 'run').mockResolvedValue({ code: 0, stdout: '', stderr: '', failure: null })
+      await new SvnInvoker().run('C:/work', args)
+      expect(run.mock.calls[0][0].args).toEqual(['--non-interactive', ...args])
+    })
+
 })

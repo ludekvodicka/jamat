@@ -1,4 +1,12 @@
+import { ReviewRunExit } from '../../lib-orchestrator/shared/reviewRunExit'
 import { resolve } from 'node:path'
+import { execFile } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+import { mkdtemp, mkdir, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { promisify } from 'node:util'
+import { PassInbox } from '../../lib-orchestrator/snapins/passInboxView'
 import { describe, expect, it } from 'vitest'
 
 import type {
@@ -27,6 +35,85 @@ import {
   type AppClientCliDeps,
 } from './app'
 
+describe('offline pass CLI entry', () => {
+  it('stores without a controller and rejects unsafe passes and invalid event flags before discovery', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'offline-pass-'))
+    const id = randomUUID()
+    const directory = join(root, 'orchestrator', randomUUID(), 'development', 'snapins', 'test', 'passes', id)
+    const brief = { schema: 1, attemptId: id, kind: 'test', mode: 'wc', projectDirectory: root,
+      priorAttemptId: null, work: { kind: 'fixture' } }
+    const run = async (...args: string[]) => {
+      try {
+        const result = await promisify(execFile)(process.execPath, ['--import', 'tsx', 'start.ts', 'snapins', 'pass', ...args], {
+          cwd: resolve('.'), env: { ...process.env, JAMAT_V3_LOCAL_STATE_DIR: root, JAMAT_V3_CONFIG_DIR: join(root, 'missing-config') },
+        })
+        return { code: 0, value: JSON.parse(result.stdout) }
+      } catch (error) {
+        const result = error as { code: number; stdout: string }
+        return { code: result.code, value: JSON.parse(result.stdout) }
+      }
+    }
+    try {
+      await mkdir(directory, { recursive: true })
+      await writeFile(join(directory, 'brief.json'), JSON.stringify(brief))
+      const note = join(root, 'note.md')
+      await writeFile(note, 'hello')
+      expect(await run('event', '--pass', directory, '--kind', 'note', '--note-file', note))
+        .toEqual({ code: 0, value: { ok: true, value: { stored: 1, delivered: false } } })
+      expect(await readdir(join(directory, 'inbox'))).toEqual(['000001.json'])
+      expect((await run('brief', '--pass', directory)).value).toEqual({ ok: true, value: brief })
+      expect((await run('event', '--pass', directory, '--kind', 'done', '--outcome', 'ready')).code).toBe(2)
+      await writeFile(note, 'x'.repeat(70 * 1024))
+      expect((await run('event', '--pass', directory, '--kind', 'done', '--outcome', 'ready', '--detail-file', note)).code).toBe(2)
+      expect((await run('event', '--pass', directory, '--kind', 'working', '--kind', 'working')).code).toBe(2)
+      expect((await run('event', '--pass', root, '--kind', 'working')).code).toBe(3)
+      await writeFile(join(directory, 'brief.json'), JSON.stringify({ ...brief, attemptId: randomUUID() }))
+      expect((await run('event', '--pass', directory, '--kind', 'working')).code).toBe(3)
+      const outside = join(root, 'outside')
+      const redirected = join(directory, '..', randomUUID())
+      await mkdir(outside)
+      await symlink(outside, redirected, 'junction')
+      expect((await run('event', '--pass', redirected, '--kind', 'working')).code).toBe(3)
+      expect(await readdir(outside)).toEqual([])
+      expect(await readdir(join(directory, 'inbox'))).toEqual(['000001.json'])
+    } finally { await rm(root, { recursive: true, force: true }) }
+  }, 30_000)
+
+  it('never wakes a descriptor belonging to a different identity', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'offline-identity-'))
+    const prior = process.env.JAMAT_V3_LOCAL_STATE_DIR
+    process.env.JAMAT_V3_LOCAL_STATE_DIR = root
+    try {
+      const attemptId = randomUUID()
+      const directory = join(root, 'orchestrator', 'owner', 'development', 'snapins', 'test', 'passes', attemptId)
+      await PassInbox.create(directory, { schema: 1, attemptId, kind: 'test', mode: 'wc', projectDirectory: root,
+        priorAttemptId: null, work: { kind: 'fixture' } })
+      let wakes = 0
+        let identity = 'other'
+        const client = new FakeCliClient()
+      const output: string[] = []
+      const cli = new AppClientCli(['snapins', 'pass', 'event', '--pass', directory, '--kind', 'working'], {
+        loadConfig: () => { throw new Error('must not load') },
+        discover: (config) => {
+          expect(config.configIdentity).toBe('owner')
+            return { ok: true, value: { configIdentity: identity, runtimeChannel: 'development' } as RemoteControlDescriptor }
+          }, client: () => { wakes++; return client }, write: (value) => output.push(value),
+      })
+      expect(await cli.run()).toBe(0)
+      expect(wakes).toBe(0)
+      expect(JSON.parse(output[0]!)).toEqual({ ok: true, value: { stored: 1, delivered: false } })
+        identity = 'owner'
+        expect(await cli.run()).toBe(0)
+        expect(client.requests).toEqual([expect.objectContaining({ operation: 'snapins.passWake', body: { passDirectory: directory } })])
+        expect(JSON.parse(output[1]!)).toEqual({ ok: true, value: { stored: 2, delivered: true } })
+    } finally {
+      if (prior === undefined) delete process.env.JAMAT_V3_LOCAL_STATE_DIR
+      else process.env.JAMAT_V3_LOCAL_STATE_DIR = prior
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
 class FakeCliClient implements AppClientCliClientPort {
   readonly requests: RemoteControlRequestUnion[] = []
   readonly localRequests: RemoteControlLocalRequestUnion[] = []
@@ -41,6 +128,7 @@ class FakeCliClient implements AppClientCliClientPort {
     FakeCliClient.session('session-007', '007', 'Q:/Apps/Seven'),
     FakeCliClient.session('session-014-015', '014-015', 'Q:/Apps/Fork'),
   ]
+  worktreeView: unknown = undefined
   invalidSessionsSnapshot = false
   /** The run `sessions.scripts` reports, already settled unless it is running. */
   scriptRun: Pick<SessionScriptRunInfo, 'state' | 'log'> = { state: 'succeeded', log: 'saved' }
@@ -112,6 +200,9 @@ class FakeCliClient implements AppClientCliClientPort {
     request: RemoteControlRequestUnion,
   ): Promise<RemoteControlResponse> {
     this.remoteRequests.push({ remoteEndpointId, request })
+    const error = this.operationErrors.get(request.operation)
+    if (error) return Promise.resolve({ protocol: RemoteControlConst.protocol, requestId: request.requestId,
+      operation: request.operation, operationId: request.operationId ?? null, ok: false, error })
     return Promise.resolve({
       protocol: RemoteControlConst.protocol,
       requestId: request.requestId,
@@ -123,18 +214,21 @@ class FakeCliClient implements AppClientCliClientPort {
   }
 
   private value(operation: RemoteControlRequestUnion['operation']): unknown {
+    if (operation === 'accounts.list') return [{ agentId: 'claude', accountId: 'work-1', label: 'Work' }]
     if (operation === 'tabs.openCommit') return { kind: 'commit-opened', commitSessionId: '11111111-1111-4111-8111-111111111111',
       panelId: 'panel', windowId: 'main', scopeRoot: 'Q:/Apps/One', messageApplied: true }
     if (operation === 'tabs.commitStatus') return { kind: 'commit-status', commitSessionId: '11111111-1111-4111-8111-111111111111',
       sessionId: 'session-001', vcs: 'svn', scopeRoot: 'Q:/Apps/One', state: 'committed', closed: false, revision: '42', detail: null,
       ...this.commitStatus }
+    if (operation === 'sessions.worktree') return { sessionId: 'session-001', worktreeView: this.worktreeView }
     if (operation === 'sessions.worktreeReview') return { commitSessionId: '11111111-1111-4111-8111-111111111111', scopeRoot: 'Q:/Apps/One' }
-    if (operation === 'sessions.finishWorktree') return { sessionId: 'session-001', actionId: 'action-1' }
+    if (operation === 'sessions.finishWorktree') return { sessionId: 'session-001', actionId: 'action-1', ...this.worktreeView === undefined ? {} : { worktreeView: this.worktreeView } }
     if (operation === 'sessions.updateMain') return { sessionId: 'session-001', actionId: 'update-1' }
     if (operation === 'sessions.worktreeResults') return { results: [] }
     if (operation === 'sessions.notifies') return { notifies: [] }
     if (operation === 'sessions.conflicts')
       return { sessionId: 'session-001', actionId: 'action-1', stage: 'updating', summary: '3 conflicts need you', entries: [], more: 3 }
+    if (operation === 'sessions.sync') return { revision: 42, conflicts: [{ path: 'a', kind: 'text' }] }
     if (operation === 'sessions.resolveConflict') return { sessionId: 'session-001', path: '.aidocs/engines', state: 'settled', left: 2 }
     if (operation === 'sessions.children') return { children: [] }
     if (operation === 'sessions.acknowledgeWorktreeResult') return { actionId: 'action-1' }
@@ -326,7 +420,7 @@ class CliHarness {
       lastConnectedAt: 1_700_000_000_000,
       nextRetryAt: null,
       applicationVersion: '2026.08.31.10.00',
-      optionalOperations: ['sessions.transcript'],
+      optionalOperations: RemoteControlConst.optionalOperations,
       sessionCount: 2,
       ...overrides,
     }
@@ -350,6 +444,53 @@ class CliHarness {
 }
 
 describe('app-client-cli/app/app', () => {
+  it.each([
+    ['worktree', 'sessions.worktree'], ['conflicts', 'sessions.conflicts'],
+    ['transcript', 'sessions.transcript'], ['scripts', 'sessions.scripts'],
+    ['remove', 'sessions.remove'], ['retry-setup', 'sessions.retrySetup'],
+    ['cleanup-worktree', 'sessions.cleanupWorktree'], ['discard-worktree', 'sessions.discardWorktree'],
+  ])('routes %s to the selected source and checks its own capability before sending', async (command, operation) => {
+    const h = new CliHarness()
+    h.client.computers = [CliHarness.computer()]
+    const args = ['sessions', command, '--number', '001', '--computer', 'endpoint-remote']
+    expect(await new AppClientCli(args, h.deps()).run()).toBe(0)
+    expect(h.client.requests).toEqual([])
+    expect(h.client.remoteRequests.at(-1)).toMatchObject({ remoteEndpointId: 'endpoint-remote',
+      request: { operation, body: { session: { kind: 'sessionId', sessionId: 'session-001' } } } })
+    const old = new CliHarness()
+    old.client.computers = [CliHarness.computer({ optionalOperations: [] })]
+    expect(await new AppClientCli(args, old.deps()).run()).toBe(6)
+    expect(old.client.remoteRequests).toEqual([])
+    expect(old.parsedOutput()).toMatchObject({ error: { detail: expect.stringContaining(operation) } })
+  })
+
+  it('creates source children and initiates Finish with a reusable operation ID', async () => {
+    const h = new CliHarness()
+    h.client.computers = [CliHarness.computer()]
+    expect(await new AppClientCli(['sessions', 'create', '--directory', 'Q:/source', '--parent-session', 'parent',
+      '--parent-kind', 'worktree', '--computer', 'endpoint-remote', '--operation-id', 'create-source'], h.deps()).run()).toBe(0)
+    expect(h.client.remoteRequests.at(-1)).toMatchObject({ request: { operation: 'sessions.create', operationId: 'create-source',
+      body: { spec: { parent: { sessionId: 'parent', kind: 'worktree' } } } } })
+    expect(await new AppClientCli(['sessions', 'finish-worktree', '--session-id', 'source-child', '--choice', 'commit',
+      '--computer', 'endpoint-remote', '--operation-id', 'finish-source'], h.deps()).run()).toBe(0)
+    expect(h.client.remoteRequests.at(-1)).toMatchObject({ request: { operation: 'sessions.finishWorktree', operationId: 'finish-source',
+      body: { session: { kind: 'sessionId', sessionId: 'source-child' }, choice: 'commit' } } })
+    expect(h.client.requests).toEqual([])
+  })
+
+  it.each([
+    ['sessions', 'finalize', '--session-id', 'source', '--acknowledge-setup', 'hash'],
+    ['sessions', 'finish-worktree', '--session-id', 'source', '--choice', 'commit', '--confirm-working'],
+    ['sessions', 'update-main', '--session-id', 'source', '--confirm-live', 'running'],
+    ['sessions', 'scripts', '--self'],
+  ])('refuses caller-manufactured source agreements or local self identity: %j', async (...args) => {
+    const h = new CliHarness()
+    h.env.JAMAT_V3_SESSION_ID = 'local'
+    expect(await new AppClientCli([...args, '--computer', 'endpoint-remote'], h.deps()).run()).toBe(2)
+    expect(h.discoveries).toBe(0)
+    expect(h.client.remoteRequests).toEqual([])
+  })
+
   it('cancels a review by UUID without closing its session or launching Tortoise', async () => {
     const h = new CliHarness()
     h.client.sessions = []
@@ -668,6 +809,34 @@ describe('app-client-cli/app/app', () => {
     expect(await new AppClientCli(['events', 'poll', '--wait-ms', '30001'], harness.deps()).run()).toBe(2)
   })
 
+  it('resolves an account label and rejects an unknown account before sending create', async () => {
+    const known = new CliHarness()
+    expect(await new AppClientCli(['sessions', 'create', '--directory', 'Q:/One', '--agent', 'claude', '--account', 'Work'], known.deps()).run()).toBe(0)
+    expect(known.client.requests.at(-1)).toMatchObject({ operation: 'sessions.create', body: { spec: { agent: { accountId: 'work-1' } } } })
+    const unknown = new CliHarness()
+    expect(await new AppClientCli(['sessions', 'create', '--directory', 'Q:/One', '--agent', 'claude', '--account', 'Missing'], unknown.deps()).run()).toBe(2)
+    expect(unknown.client.requests.map(request => request.operation)).toEqual(['accounts.list'])
+  })
+
+  it('lists target accounts and selects one, while an older peer keeps its default', async () => {
+    const known = new CliHarness()
+    known.client.computers = [CliHarness.computer()]
+    const listed = await new AppClientCli(['accounts', 'list', '--computer', 'endpoint-remote'], known.deps()).run()
+    expect(listed, JSON.stringify(known.parsedOutput())).toBe(0)
+    expect(known.client.remoteRequests.at(-1)?.request).toMatchObject({ operation: 'accounts.list', body: {} })
+    const argv = ['sessions', 'create', '--directory', 'Q:/One', '--agent', 'claude', '--account', 'Work', '--computer', 'endpoint-remote']
+    expect(await new AppClientCli(argv, known.deps()).run()).toBe(0)
+    expect(known.client.remoteRequests.at(-1)?.request).toMatchObject({ operation: 'sessions.create', body: { spec: { agent: { accountId: 'work-1' } } } })
+    const old = new CliHarness()
+    old.client.computers = [CliHarness.computer({ optionalOperations: [] })]
+    old.client.operationErrors.set('accounts.list', { code: 'forbidden', detail: 'Remote peer did not grant agents.accounts' })
+    expect(await new AppClientCli(argv, old.deps()).run()).toBe(0)
+    const created = old.client.remoteRequests.at(-1)?.request
+    expect(created).toMatchObject({ operation: 'sessions.create' })
+    if (created?.operation !== 'sessions.create') throw new Error('Expected create')
+    expect(created.body.spec.agent).toEqual({ agentId: 'claude', mode: 'new' })
+  })
+
   it('maps every HTTP command to its operation and keeps explicit selectors', async () => {
     const cases: { args: string[]; operation: RemoteControlRequestUnion['operation'] }[] = [
       { args: [], operation: 'system.status' },
@@ -950,11 +1119,6 @@ describe('app-client-cli/app/app', () => {
       body: { session: { kind: 'sessionId' } },
     })
 
-    // Local only, like the peer negotiation: the CLI does not offer it through --computer.
-    expect(await new AppClientCli(
-      ['sessions', 'remove', '--number', '001', '--computer', 'Remote computer'],
-      new CliHarness().deps(),
-    ).run()).toBe(2)
 
     const old = new CliHarness()
     old.descriptor.optionalOperations = []
@@ -985,10 +1149,6 @@ describe('app-client-cli/app/app', () => {
     })
 
     for (const command of ['discard-worktree', 'retry-setup', 'cleanup-worktree']) {
-      expect(await new AppClientCli(
-        ['sessions', command, '--number', '001', '--computer', 'Remote computer'],
-        new CliHarness().deps(),
-      ).run()).toBe(2)
       const old = new CliHarness()
       old.descriptor.optionalOperations = []
       expect(await new AppClientCli(['sessions', command, '--number', '001'], old.deps()).run()).toBe(6)
@@ -1016,6 +1176,8 @@ describe('app-client-cli/app/app', () => {
     expect(h.asideCalls).toEqual([])
     expect(await new AppClientCli(['commit', 'propose', '--self', '--message', 'Fix orders'], h.deps()).run()).toBe(0)
     expect(h.client.requests.at(-1)).toMatchObject({ body: { message: 'Fix orders' } })
+    expect(await new AppClientCli(['commit', 'propose', '--self', '--directory', 'shared/library', '--message', '[library] Fix'], h.deps()).run()).toBe(0)
+    expect(h.client.requests.at(-1)).toMatchObject({ body: { message: '[library] Fix', directory: 'shared/library' } })
 
     const oversized = new CliHarness()
     oversized.env.JAMAT_V3_SESSION_ID = 'session-001'
@@ -1061,7 +1223,7 @@ describe('app-client-cli/app/app', () => {
     expect(h.client.requests.at(-1)).toMatchObject({ body: { session: { kind: 'sessionId', sessionId: 'session-007' }, choice: 'keep' } })
 
     for (const args of [['sessions', 'finish-worktree', '--number', '001'], ['sessions', 'finish-worktree', '--number', '001', '--choice', 'merge'],
-      ['sessions', 'finish-worktree', '--number', '001', '--choice', 'commit', '--computer', 'Remote computer']]) {
+      ['sessions', 'finish-worktree', '--number', '001', '--choice', 'commit', '--computer', 'Remote computer', '--confirm-working']]) {
       const refused = new CliHarness()
       expect(await new AppClientCli(args, refused.deps()).run()).toBe(2)
       expect(refused.client.requests).toEqual([])
@@ -1072,6 +1234,26 @@ describe('app-client-cli/app/app', () => {
     const working = new CliHarness()
     working.client.responseError = { code: 'conflict', detail: 'Session session-001 is still working', data: { sourceCode: 'session-working' } }
     expect(await new AppClientCli(['sessions', 'finish-worktree', '--number', '001', '--choice', 'commit'], working.deps()).run()).toBe(4)
+  })
+
+  it('refreshes preparation without granting human approval and rejects incompatible choices', async () => {
+    const h = new CliHarness()
+    expect(await new AppClientCli(['sessions', 'finish-worktree', '--number', '001', '--choice', 'commit', '--refresh-preparation'], h.deps()).run()).toBe(0)
+    expect(h.client.requests.at(-1)).toMatchObject({ operation: 'sessions.finishWorktree', body: { refreshPreparation: true, choice: 'commit' } })
+    expect(h.client.requests.at(-1)?.body).not.toHaveProperty('selection')
+    for (const extra of [['--choice', 'keep'], ['--choice', 'commit', '--agent']]) {
+      const invalid = new CliHarness()
+      expect(await new AppClientCli(['sessions', 'finish-worktree', '--number', '001', '--refresh-preparation', ...extra], invalid.deps()).run()).toBe(2)
+      expect(invalid.client.requests).toEqual([])
+    }
+  })
+
+  it('returns the current no-window review wait in one JSON response', async () => {
+    const h = new CliHarness()
+    h.client.worktreeView = { version: 7, phase: 'waiting', step: 'reviewing', outOfDate: 0, conflicts: 0,
+      wait: { kind: 'waiting-for-review', at: 1234, reason: 'Open Session actions' }, summary: 'waiting-for-review since 1234' }
+    expect(await new AppClientCli(['sessions', 'finish-worktree', '--number', '001', '--choice', 'commit'], h.deps()).run()).toBe(0)
+    expect(h.parsedOutput()).toMatchObject({ ok: true, value: { lifecycle: 'waiting-for-review since 1234', worktreeView: h.client.worktreeView } })
   })
 
   it('sends --agent with Commit to start the merger, refuses it with another choice, and only to a Jamat that offers sessions.conflicts', async () => {
@@ -1121,7 +1303,8 @@ describe('app-client-cli/app/app', () => {
     expect(crowded.parsedOutput()).toMatchObject({ ok: false, error: { data: { sourceCode: 'live-sessions' } } })
 
     const remote = new CliHarness()
-    expect(await new AppClientCli(['sessions', 'update-main', '--number', '001', '--computer', 'Remote computer'], remote.deps()).run()).toBe(2)
+    remote.client.computers = [CliHarness.computer()]
+    expect(await new AppClientCli(['sessions', 'update-main', '--number', '001', '--computer', 'Remote computer'], remote.deps()).run()).toBe(0)
     expect(remote.client.requests).toEqual([])
     const old = new CliHarness()
     old.descriptor.optionalOperations = []
@@ -1129,7 +1312,7 @@ describe('app-client-cli/app/app', () => {
   })
 
   // The command of a review run: its exit code is how the review ended, which the SVN action reads back.
-  it('opens the review of a review run once and exits with how it ended', async () => {
+  it('rejects the retired review command and retains old run exit decoding', async () => {
     const cases: { status: Record<string, unknown>; code: number }[] = [
       { status: { state: 'committed', closed: true }, code: 0 },
       { status: { state: 'cancelled', closed: true, revision: null }, code: 10 },
@@ -1141,21 +1324,21 @@ describe('app-client-cli/app/app', () => {
       const h = new CliHarness()
       h.env.JAMAT_V3_SESSION_ID = 'review-run'
       h.client.commitStatus = item.status
-      expect(await new AppClientCli(['sessions', 'worktree-review', '--self', '--wait'], h.deps()).run(), JSON.stringify(item.status)).toBe(item.code)
-      expect(h.client.requests.map((request) => request.operation)).toEqual(['sessions.worktreeReview', 'tabs.commitStatus'])
-      expect(h.client.requests[0]).toMatchObject({ body: { session: { kind: 'sessionId', sessionId: 'review-run' } }, operationId: expect.any(String) })
+      expect(ReviewRunExit.codeOf(item.status.state as never, true, (item.status.detail as string | undefined) ?? null)).toBe(item.code)
+      expect(await new AppClientCli(['sessions', 'worktree-review', '--self', '--wait'], h.deps()).run()).toBe(2)
+      expect(h.client.requests).toEqual([])
     }
 
     const lost = new CliHarness()
     lost.env.JAMAT_V3_SESSION_ID = 'review-run'
     lost.client.reviewError = { code: 'unavailable', detail: 'The review of this run was lost with the client that opened it' }
-    expect(await new AppClientCli(['sessions', 'worktree-review', '--self', '--wait'], lost.deps()).run()).toBe(14)
-    expect(lost.client.requests.map((request) => request.operation)).toEqual(['sessions.worktreeReview'])
+    expect(await new AppClientCli(['sessions', 'worktree-review', '--self', '--wait'], lost.deps()).run()).toBe(2)
+    expect(lost.client.requests).toEqual([])
 
     const gone = new CliHarness()
     gone.env.JAMAT_V3_SESSION_ID = 'review-run'
     gone.client.statusThrows = true
-    expect(await new AppClientCli(['sessions', 'worktree-review', '--self', '--wait'], gone.deps()).run()).toBe(14)
+    expect(await new AppClientCli(['sessions', 'worktree-review', '--self', '--wait'], gone.deps()).run()).toBe(2)
 
     const noSelf = new CliHarness()
     expect(await new AppClientCli(['sessions', 'worktree-review', '--wait'], noSelf.deps()).run()).toBe(2)
@@ -1202,7 +1385,6 @@ describe('app-client-cli/app/app', () => {
       ['sessions', 'scripts', 'run', '--self', '--number', '001', '--command', 'pnpm test'],
       ['sessions', 'scripts', 'run', '--number', '001', '--command', 'pnpm test', '--timeout-ms', '1000'],
       ['sessions', 'scripts', 'run', '--number', '001'],
-      ['sessions', 'scripts', '--number', '001', '--computer', 'Remote computer'],
     ]) {
       const refused = new CliHarness()
       expect(await new AppClientCli(args, refused.deps()).run()).toBe(2)
@@ -1286,6 +1468,15 @@ describe('app-client-cli/app/app', () => {
    * An older AppClientUI validates a create and a finalize with exact keys and refuses the whole
    * request over one it does not know, so the option is refused by name here and nothing is sent.
    */
+  it('prints the library lifecycle summary inside one JSON worktree response and accepts older responses', async () => {
+    for (const view of [undefined, { version: 12, phase: 'finishing', step: 'committing', outOfDate: 0, conflicts: 0, summary: 'finishing/committing v12' }]) {
+      const h = new CliHarness()
+      h.client.worktreeView = view
+      expect(await new AppClientCli(['sessions', 'worktree', '--number', '001'], h.deps()).run()).toBe(0)
+      expect(h.parsedOutput().value).toEqual({ sessionId: 'session-001', ...view === undefined ? {} : { worktreeView: view, lifecycle: 'finishing/committing v12' } })
+    }
+  })
+
   it('sends a worktree owner, removeWhenEnded and expect stop only to a Jamat that offers sessions.worktree', async () => {
     const harness = new CliHarness()
     expect(await new AppClientCli([
@@ -1318,7 +1509,6 @@ describe('app-client-cli/app/app', () => {
       ['sessions', 'finalize', '--session-id', 'session-1', '--expect', 'finish'],
       ['sessions', 'create', '--directory', 'Q:/Apps/One', '--worktree-owner', 'Q:/Apps/One'],
       ['sessions', 'create', '--directory', 'Q:/Apps/One', '--worktree-remove-when-ended'],
-      ['sessions', 'worktree', '--session-id', 'session-1', '--computer', 'Remote computer'],
     ]) {
       const refused = new CliHarness()
       expect(await new AppClientCli(args, refused.deps()).run()).toBe(2)
@@ -1426,6 +1616,14 @@ describe('app-client-cli/app/app', () => {
     }
   })
 
+  // UA1-J14R2-1: the resume handoff tells the worker to run this line, and the parser refused --self.
+  it('reads the worktree of its own session with --self, as the resume handoff asks the worker to', async () => {
+    const self = new CliHarness()
+    self.env.JAMAT_V3_SESSION_ID = 'session-001'
+    expect(await new AppClientCli(['sessions', 'worktree', '--self'], self.deps()).run()).toBe(0)
+    expect(self.client.requests.at(-1)).toMatchObject({ operation: 'sessions.worktree', body: { session: { kind: 'sessionId', sessionId: 'session-001' } } })
+  })
+
   it('reads the conflicts of a session by selector or for its own run with --self, locally, and exits 6 against a Jamat without them', async () => {
     const byNumber = new CliHarness()
     expect(await new AppClientCli(['sessions', 'conflicts', '--number', '001'], byNumber.deps()).run()).toBe(0)
@@ -1445,8 +1643,21 @@ describe('app-client-cli/app/app', () => {
     expect(old.parsedOutput()).toMatchObject({ ok: false, error: { code: 'unavailable', detail: expect.stringContaining('sessions.conflicts') } })
 
     const remote = new CliHarness()
-    expect(await new AppClientCli(['sessions', 'conflicts', '--number', '001', '--computer', 'remote'], remote.deps()).run()).toBe(2)
-    expect(remote.discoveries).toBe(0)
+    remote.client.computers = [CliHarness.computer({ optionalOperations: [] })]
+    expect(await new AppClientCli(['sessions', 'conflicts', '--number', '001', '--computer', 'endpoint-remote'], remote.deps()).run()).toBe(6)
+    expect(remote.client.remoteRequests).toEqual([])
+  })
+
+  it('syncs the worker itself and returns conflicts without a separate notification', async () => {
+    const h = new CliHarness()
+    h.env.JAMAT_V3_SESSION_ID = 'session-001'
+    expect(await new AppClientCli(['sessions', 'sync', '--self'], h.deps()).run()).toBe(0)
+    expect(h.client.requests.at(-1)).toMatchObject({ operation: 'sessions.sync', body: { session: { kind: 'sessionId', sessionId: 'session-001' } } })
+    expect(h.parsedOutput()).toMatchObject({ ok: true, value: { revision: 42, conflicts: [{ path: 'a', kind: 'text' }] } })
+    const old = new CliHarness()
+    old.env.JAMAT_V3_SESSION_ID = 'session-001'
+    old.descriptor.optionalOperations = RemoteControlConst.optionalOperations.filter((operation) => operation !== 'sessions.sync')
+    expect(await new AppClientCli(['sessions', 'sync', '--self'], old.deps()).run()).toBe(6)
   })
 
   it('settles one conflicted path by selector or for its own run with --self, with no confirm flag, and maps a person-only refusal to exit 4', async () => {
@@ -1464,6 +1675,13 @@ describe('app-client-cli/app/app', () => {
     self.env.JAMAT_V3_SESSION_ID = 'session-001'
     expect(await new AppClientCli(['sessions', 'resolve-conflict', '--self', '--path', 'src/a.ts', '--option', 'merged'], self.deps()).run()).toBe(0)
     expect(self.client.requests.at(-1)).toMatchObject({ body: { session: { kind: 'sessionId', sessionId: 'session-001' }, path: 'src/a.ts', option: 'merged' } })
+    expect(self.client.requests.at(-1)?.body).not.toHaveProperty('kind')
+
+    // A path with a text and a property conflict: --kind names the one to settle.
+    const kind = new CliHarness()
+    kind.env.JAMAT_V3_SESSION_ID = 'session-001'
+    expect(await new AppClientCli(['sessions', 'resolve-conflict', '--self', '--path', 'src/both.txt', '--kind', 'property', '--option', 'take-incoming'], kind.deps()).run()).toBe(0)
+    expect(kind.client.requests.at(-1)).toMatchObject({ body: { path: 'src/both.txt', kind: 'property', option: 'take-incoming' } })
 
     const refused = new CliHarness()
     refused.client.operationErrors.set('sessions.resolveConflict', { code: 'conflict', detail: 'only you can choose it', data: { sourceCode: 'person-only' } })
@@ -1471,7 +1689,8 @@ describe('app-client-cli/app/app', () => {
     expect(refused.parsedOutput()).toMatchObject({ ok: false, error: { code: 'conflict', data: { sourceCode: 'person-only' } } })
     expect(refused.client.requests.map((request) => request.operation)).toContain('sessions.resolveConflict')
 
-    for (const args of [['--option', 'squash', '--path', 'a'], ['--option', 'merged'], ['--path', 'a', '--option', 'merged', '--confirm']]) {
+    for (const args of [['--option', 'squash', '--path', 'a'], ['--option', 'merged'], ['--path', 'a', '--option', 'merged', '--confirm'],
+      ['--path', 'a', '--kind', 'binary', '--option', 'merged']]) {
       const wrong = new CliHarness()
       expect(await new AppClientCli(['sessions', 'resolve-conflict', '--number', '001', ...args], wrong.deps()).run()).toBe(2)
       expect(wrong.client.requests.filter((request) => request.operation === 'sessions.resolveConflict')).toEqual([])
@@ -1514,20 +1733,17 @@ describe('app-client-cli/app/app', () => {
     expect(h.parsedOutput()).toMatchObject({ ok: true, value: { children: [] } })
   })
 
-  it('refuses an incomplete, unknown or remote parent link and a children read without a session id before discovery', async () => {
+  it('refuses an incomplete or unknown parent link and a children read without a session id before discovery', async () => {
     for (const args of [
       ['sessions', 'create', '--parent-session', 'parent'], ['sessions', 'create', '--parent-kind', 'worktree'],
       ['sessions', 'create', '--parent-session', 'parent', '--parent-kind', 'child'],
-      ['sessions', 'create', '--parent-session', 'parent', '--parent-kind', 'worktree', '--computer', 'remote'],
-      ['sessions', 'children'], ['sessions', 'children', '--session-id', 'parent', '--computer', 'remote'],
+      ['sessions', 'children'],
     ]) {
       const h = new CliHarness()
       expect(await new AppClientCli(args, h.deps()).run()).toBe(2)
       expect(h.discoveries).toBe(0)
       expect(h.client.requests).toEqual([])
       expect(h.client.remoteRequests).toEqual([])
-      if (args.includes('--parent-kind') && args.includes('--computer'))
-        expect(h.parsedOutput()).toMatchObject({ error: { detail: expect.stringContaining('local only') } })
     }
   })
 
@@ -1819,8 +2035,9 @@ describe('app-client-cli/app/app', () => {
     expect(ambiguous.client.requests).toHaveLength(1)
   })
 
-  it('rejects remote transcript selection before discovery and old descriptors before HTTP', async () => {
+  it('reads source transcripts remotely and refuses old descriptors before HTTP', async () => {
     const remote = new CliHarness()
+    remote.client.computers = [CliHarness.computer()]
     const old = new CliHarness()
     old.descriptor.optionalOperations = undefined
 
@@ -1831,9 +2048,9 @@ describe('app-client-cli/app/app', () => {
       'session-001',
       '--computer',
       'computer-remote',
-    ], remote.deps()).run()).toBe(2)
-    expect(remote.configLoads).toBe(0)
-    expect(remote.discoveries).toBe(0)
+    ], remote.deps()).run()).toBe(0)
+    expect(remote.configLoads).toBe(1)
+    expect(remote.discoveries).toBe(1)
     expect(remote.client.requests).toEqual([])
 
     expect(await new AppClientCli(

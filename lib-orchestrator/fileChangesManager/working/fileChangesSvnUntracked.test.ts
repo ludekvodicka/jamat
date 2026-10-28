@@ -120,6 +120,33 @@ describe('lib-orchestrator/fileChangesManager/working/fileChangesSvnUntracked', 
     await expect(f.reader.expand([f.entry])).rejects.toThrow('check-ignore failed')
   })
 
+  it.each([false, true])('includes only explicitly named Git-ignored nodes and their parents (checkpoint: %s)', async (checkpoint) => {
+    const f = await fixture()
+    const selected = join(f.directory, 'nested', '.selected')
+    await writeFile(selected, 'selected\n')
+    await writeFile(join(f.directory, 'nested', '.unselected'), 'local\n')
+    f.deps.git.run = vi.fn(async (_cwd, args) => ({ code: args.includes('--show-toplevel') && checkpoint ? 128 : args.includes('check-ignore') ? 1 : 0,
+      failure: null, stderr: '', stdout: args.includes('--show-toplevel') ? f.root : '' }))
+    if (checkpoint) f.deps.checkpointStore.existingContextOf = vi.fn(async () => ({ ok: true as const, value: { root: f.root, gitDirArgs: ['--git-dir', 'store'], storeDir: 'store' } }))
+    expect((await f.reader.expand([f.entry], [selected])).map((entry) => entry.repositoryPath))
+      .toEqual(['new', 'new/nested', 'new/nested/.selected'])
+    expect((await f.reader.expand([f.entry], [join(f.directory, 'nested')])).map((entry) => entry.repositoryPath))
+      .toEqual(['new', 'new/nested'])
+  })
+
+  it('keeps SVN ignores and directory-link boundaries for explicitly named Git-ignored files', async () => {
+    const f = await fixture()
+    const outside = join(f.root, 'outside')
+    await mkdir(outside)
+    await writeFile(join(outside, 'secret.txt'), 'outside')
+    await symlink(outside, join(f.directory, 'linked'), 'junction')
+    await writeFile(f.deps.configFile, '[miscellany]\nglobal-ignores = .hidden nested\n')
+    f.deps.git.run = vi.fn(async (_cwd, args) => ({ code: args.includes('check-ignore') ? 1 : 0,
+      failure: null, stderr: '', stdout: args.includes('--show-toplevel') ? f.root : '' }))
+    const entries = await f.reader.expand([f.entry], [join(f.directory, '.hidden'), join(f.directory, 'nested', 'chosen.txt'), join(f.directory, 'linked', 'secret.txt')])
+    expect(entries.map((entry) => entry.repositoryPath)).toEqual(['new', 'new/linked'])
+  })
+
   it('does not follow a directory link into an unrelated tree', async () => {
     const f = await fixture()
     const outside = join(f.root, 'outside')

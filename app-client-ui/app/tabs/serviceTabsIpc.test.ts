@@ -109,6 +109,8 @@ class FakeBroker {
 }
 
 class FakeControlBroker {
+  readonly openSessionTask = vi.fn<TabControlBroker['openSessionTask']>(async () => ({ ok: true, value: { kind: 'task-opened', panelId: 'remote', windowId: 'holder' } }))
+  readonly openSessionActions = vi.fn<TabControlBroker['openSessionActions']>(async () => ({ ok: true, value: { kind: 'workflow-opened', panelId: 'remote', windowId: 'holder' } }))
   readonly acknowledgements: { windowId: string; ack: unknown }[] = []
 
   acknowledge(windowId: string, ack: unknown): void {
@@ -178,6 +180,17 @@ describe('app-client-ui/app/tabs/serviceTabsIpc', () => {
 
   afterEach(() => vi.restoreAllMocks())
 
+  it('admits task navigation only from a registered renderer and validates target and task tags', async () => {
+    const target = { kind: 'remote', remoteEndpointId: 'peer', sessionId: 'same' } as const
+    const task = { kind: 'script', runId: 'run' } as const
+    expect(await invoke(windows.mainSender, 'tabs:open-session-task', target, task, 'Source script')).toEqual({ ok: true, value: undefined })
+    expect(controlBroker.openSessionTask).toHaveBeenCalledExactlyOnceWith(target, task, 'Source script')
+    expect(await invoke(windows.mainSender, 'tabs:open-session-task', target, { kind: 'unknown', runId: 'run' }, 'Source script')).toMatchObject({ ok: false })
+    windows.rejected.add(windows.holderSender)
+    expect(await invoke(windows.holderSender, 'tabs:open-session-task', target, task, 'Source script')).toMatchObject({ ok: false })
+    expect(controlBroker.openSessionTask).toHaveBeenCalledTimes(1)
+  })
+
   async function invoke(
     sender: WebContents,
     channel: keyof AppClientUiIpcInvokeMap,
@@ -191,6 +204,15 @@ describe('app-client-ui/app/tabs/serviceTabsIpc', () => {
   it('registers every channel it declares', () => {
     expect([...ipcMainMock.handlers.keys()].sort())
       .toEqual(Object.keys(ServiceTabsIpc.channelsConst).sort())
+  })
+
+  it('routes Session actions only from an admitted workspace sender', async () => {
+    const target = { kind: 'remote', remoteEndpointId: 'peer', sessionId: 'session' } as const
+    expect(await invoke(windows.mainSender, 'tabs:open-session-actions', target)).toEqual({ ok: true, value: undefined })
+    expect(controlBroker.openSessionActions).toHaveBeenCalledWith(target)
+    windows.rejected.add(windows.holderSender)
+    expect(await invoke(windows.holderSender, 'tabs:open-session-actions', target)).toMatchObject({ ok: false })
+    expect(controlBroker.openSessionActions).toHaveBeenCalledTimes(1)
   })
 
   it('routes a tab control acknowledgement with the renderer identity', async () => {

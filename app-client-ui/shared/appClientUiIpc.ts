@@ -1,3 +1,12 @@
+import type { RemoteSidebarRequest } from '../../lib-orchestrator/remoteControl/remoteSidebarApi.types'
+import type { RemoteSessionCommand } from './remoteSessionCommand'
+import type { RemoteTaskRequest } from '../../lib-orchestrator/remoteControl/remoteTaskApi.types'
+import type { SessionViewOpenRequest } from '../../lib-orchestrator/remoteControl/remoteSessionApi.types'
+import type { SessionOpen } from './sessionViewItems'
+import type { SessionOpenCursor, SessionOpenPage } from './sessionViewItems'
+import type { RemoteChangesRequest, RemoteFileRequest, RemoteContentCursor, RemoteContentPage } from '../../lib-orchestrator/remoteControl/remoteContentApi.types'
+import type { TerminalTarget } from './terminalTarget'
+import type { RemoteSessionView, RemoteSessionDetail, SessionViewOperationMap } from '../../lib-orchestrator/remoteControl/remoteSessionApi.types'
 import type {
   SessionGroup,
   SessionGroupAssignment,
@@ -132,6 +141,9 @@ export interface LoadSessionsViewResult {
 }
 
 export interface AppClientUiIpcInvokeMap {
+  'agentCliUpdates:get': () => import('../../lib-orchestrator/agentCliUpdates/agentCliUpdatesApi.types').AgentCliUpdatesSnapshot
+  'agentCliUpdates:check': () => void
+  'agentCliUpdates:install': (id: string) => void
   /**
    * Every operation of the control API, by name: the window calls the same registry, schemas and
    * call log a script reaches over HTTP. The answer is the protocol envelope; `renderer/ipc/appControl`
@@ -200,6 +212,28 @@ export interface AppClientUiIpcInvokeMap {
    * gives; putting text INTO the clipboard gives a page nothing it did not already hand over.
    */
   'clipboard:write-text': (text: string) => void
+  'remote:start-image-drag': (endpointId: string, viewId: string, documentId: string) => boolean
+  'remote:export-file': (endpointId: string, viewId: string, documentId: string, name: string) => boolean
+  'remote:media-resource': (endpointId: string, viewId: string, documentId: string, reference: string | null) => FileViewerResourceResult
+  'remote:changes-request': (endpointId: string, viewId: string, body: RemoteChangesRequest) => RemoteControlStepResult<RemoteContentPage>
+  'remote:changes-page': (endpointId: string, viewId: string, body: RemoteContentCursor) => RemoteControlStepResult<RemoteContentPage>
+  'remote:reviews-request': (endpointId: string, viewId: string, body: import('../../lib-orchestrator/remoteControl/remoteReviewApi.types').RemoteReviewRequest) => RemoteControlStepResult<RemoteContentPage>
+  'remote:reviews-page': (endpointId: string, viewId: string, body: RemoteContentCursor) => RemoteControlStepResult<RemoteContentPage>
+  'remote:sidebar-request': (endpointId: string, viewId: string, body: RemoteSidebarRequest) => RemoteControlStepResult<RemoteContentPage>
+  'remote:sidebar-page': (endpointId: string, viewId: string, body: RemoteContentCursor) => RemoteControlStepResult<RemoteContentPage>
+  'remote:tasks-request': (endpointId: string, viewId: string, body: RemoteTaskRequest) => RemoteControlStepResult<RemoteContentPage>
+  'remote:tasks-page': (endpointId: string, viewId: string, body: { task: RemoteTaskRequest; cursor: RemoteContentCursor }) => RemoteControlStepResult<RemoteContentPage>
+  'remote:items-open': (endpointId: string, viewId: string, body: SessionViewOpenRequest) => RemoteControlStepResult<RemoteContentPage>
+  'tabs:open-shared-item': (sessionId: string, body: SessionViewOpenRequest) => SessionOpen
+  'remote:items-request': (endpointId: string, viewId: string, body: SessionOpenCursor) => RemoteControlStepResult<RemoteContentPage>
+  'remote:items-page': (endpointId: string, viewId: string, body: RemoteContentCursor) => RemoteControlStepResult<RemoteContentPage>
+  'tabs:session-items': (sessionId: string, cursor: SessionOpenCursor) => SessionOpenPage
+  'remote:files-request': (endpointId: string, viewId: string, body: RemoteFileRequest) => RemoteControlStepResult<RemoteContentPage>
+  'remote:files-page': (endpointId: string, viewId: string, body: RemoteContentCursor) => RemoteControlStepResult<RemoteContentPage>
+  'remote:view-detail': (endpointId: string, viewId: string) => RemoteControlStepResult<RemoteSessionDetail>
+  'remote:view-open': (endpointId: string, sessionId: string) => RemoteControlStepResult<RemoteSessionView>
+  'remote:view-close': (endpointId: string, viewId: string) => RemoteControlStepResult<null>
+  'remote:view-press': (endpointId: string, viewId: string, body: SessionViewOperationMap['actions.press']['request'], operationId: string) => RemoteControlStepResult<null>
   'remote:snapshot': () => RemoteConnectionsSnapshot
   /**
    * Connect one explicitly chosen computer while the dialog is open.
@@ -220,6 +254,7 @@ export interface AppClientUiIpcInvokeMap {
    * validator reads exact keys and would refuse the entire request over it.
    */
   'remote:agents-describe': (remoteEndpointId: string) => RemoteControlResponse
+  'remote:accounts-list': (remoteEndpointId: string) => RemoteControlResponse
   /** That computer's own catalog, as its projects screen would draw it: categories and listings. */
   'remote:projects-list': (
     remoteEndpointId: string,
@@ -231,6 +266,7 @@ export interface AppClientUiIpcInvokeMap {
    * or it creates a second session. Every other remote channel keeps the per-call id the service
    * mints, because nothing there is worth replaying.
    */
+  'remote:session-command': (endpointId: string, command: RemoteSessionCommand) => RemoteControlResponse
   'remote:sessions-create': (
     remoteEndpointId: string,
     spec: SessionCreateSpec,
@@ -338,6 +374,10 @@ export interface AppClientUiIpcInvokeMap {
   'tabs:transfer-abort': (token: string) => void
   'tabs:move-panel': (panel: TabTransferPayload, target: TabMoveTarget) => void
   'tabs:control-ack': (ack: TabControlAck) => void
+  'tabs:open-session-task': (target: TerminalTarget, task: import('./tabControl').TabControlTaskRef, title: string) => void
+  'tabs:project-review': (target: TerminalTarget, draft: VersioningCommitDraftDto, itemKey: string, openId: string) => void
+  'tabs:projected-review-changed': (target: TerminalTarget, draft: VersioningCommitDraftDto, closed: boolean) => void
+  'tabs:open-session-actions': (target: TerminalTarget) => void
   /**
    * The terminal surface, and the reason it is channels rather than a socket in the renderer:
    * a browser WebSocket cannot set the `Authorization` header the Host reads, so an attach opened
@@ -428,15 +468,18 @@ export interface AppClientUiIpcInvokeMap {
    */
   /** Which section is on screen, so the main process can stop pinging for one that is not. */
   'debug:section-active': (section: DebugSectionId | null) => void
-  'versioning:commit-open-draft': (sessionId: string, vcs: FileChangesVcsId, scope: string | null, paths?: readonly import('./versioningCommit').VersioningCommitPath[]) => VersioningCommitOpenResult
+  'versioning:commit-open-draft': (sessionId: string, vcs: FileChangesVcsId, scope: string | null, paths?: readonly import('./versioningCommit').VersioningCommitPath[], reviewId?: string, reviewOnly?: true) => VersioningCommitOpenResult
   'versioning:commit-read': (draftId: string) => VersioningCommitDraftDto | null
   'versioning:commit-files': (draftId: string) => import('./versioningCommit').VersioningCommitFilesResult
   'versioning:commit-external-diff': (request: FileDiffRequest) => import('./versioningCommit').VersioningExternalDiffResult
   'versioning:commit-open-tab': (sessionId: string, vcs: FileChangesVcsId, scope?: string) => import('../../lib-orchestrator/remoteControl/remoteControlApi.types').RemoteControlStepResult<import('../../lib-orchestrator/remoteControl/remoteControlApi.types').RemoteControlTabOpenCommitDto>
+  'versioning:commit-decide': (request: import('./versioningCommit').VersioningReviewDecision) => VersioningCommitRunResult
+  'versioning:commit-edit': (request: import('./versioningCommit').VersioningReviewEdit) => import('./versioningCommit').VersioningReviewEditResult
   'versioning:commit-set-message': (draftId: string, message: string) => boolean
   'versioning:commit-run': (request: VersioningCommitRunRequest) => VersioningCommitRunResult
   'versioning:commit-revert': (request: import('./versioningCommit').VersioningRevertRequest) => import('./versioningCommit').VersioningRevertResult
   'versioning:commit-tortoise': (draftId: string, message: string) => import('./versioningCommit').VersioningTortoiseResult
+  'versioning:commit-cancel': (draftId: string) => import('../../lib-orchestrator/remoteControl/remoteControlApi.types').RemoteControlStepResult<import('../../lib-orchestrator/remoteControl/remoteControlApi.types').RemoteControlCommitStatusDto>
   'versioning:commit-close': (draftId: string) => void
   'versioning:commit-open-sessions': () => VersioningCommitOpenSessions
   'fileChanges:list': (
@@ -527,6 +570,7 @@ export interface AppClientUiIpcInvokeMap {
 }
 
 export interface AppClientUiIpcEventMap {
+  'agentCliUpdates:changed': () => void
   'autolauncher:changed': (snapshot: AutolauncherSnapshot) => void
   'versioning:commit-changed': () => void
   'menu:command': (commandId: BareCommandId) => void
@@ -570,6 +614,8 @@ export interface AppClientUiIpcEventMap {
    * `rate:get`, and the Debug window reads its own unreduced view off the same signal.
    */
   'rate:changed': () => void
+  'usage:changed': () => void
+  'snapins:changed': (change: { kind: string }) => void
   /** Published to the Debug window alone: the answer to a ping the main process asked on its own. */
   'debug:host-ping-result': (result: HostPingResult) => void
   /**
@@ -623,6 +669,11 @@ export const AppClientUiBridgeCallsConst = {
     disable: 'autolauncher:disable',
   },
   appInfo: 'app:info',
+  agentCliUpdates: {
+    get: 'agentCliUpdates:get',
+    check: 'agentCliUpdates:check',
+    install: 'agentCliUpdates:install',
+  },
   rendererReady: 'app:renderer-ready',
   windows: {
     info: 'shell:window-info',
@@ -657,12 +708,34 @@ export const AppClientUiBridgeCallsConst = {
     writeText: 'clipboard:write-text',
   },
   remote: {
+    startImageDrag: 'remote:start-image-drag',
+    exportFile: 'remote:export-file',
+    mediaResource: 'remote:media-resource',
+    requestChanges: 'remote:changes-request',
+    readChangesPage: 'remote:changes-page',
+    requestReviews: 'remote:reviews-request',
+    readReviewPage: 'remote:reviews-page',
+    sessionCommand: 'remote:session-command',
+    requestSidebar: 'remote:sidebar-request',
+    readSidebarPage: 'remote:sidebar-page',
+    requestTasks: 'remote:tasks-request',
+    readTaskPage: 'remote:tasks-page',
+    openSharedItem: 'remote:items-open',
+    requestItems: 'remote:items-request',
+    readItemsPage: 'remote:items-page',
+    requestFiles: 'remote:files-request',
+    readFilePage: 'remote:files-page',
+    readView: 'remote:view-detail',
+    openView: 'remote:view-open',
+    closeView: 'remote:view-close',
+    pressAction: 'remote:view-press',
     snapshot: 'remote:snapshot',
     connect: 'remote:connect',
     selectSession: 'remote:select-session',
     disconnect: 'remote:disconnect',
     release: 'remote:release',
     describeAgents: 'remote:agents-describe',
+    listAccounts: 'remote:accounts-list',
     listProjects: 'remote:projects-list',
     createSession: 'remote:sessions-create',
     reopenSession: 'remote:sessions-reopen',
@@ -685,6 +758,8 @@ export const AppClientUiBridgeCallsConst = {
     revokeInbound: 'remoteSettings:inbound-revoke',
   },
   tabs: {
+    openSharedItem: 'tabs:open-shared-item',
+    sessionItems: 'tabs:session-items',
     claimPanel: 'tabs:claim-panel',
     reconcilePanels: 'tabs:reconcile-panels',
     releasePanel: 'tabs:release-panel',
@@ -698,6 +773,10 @@ export const AppClientUiBridgeCallsConst = {
     transferAbort: 'tabs:transfer-abort',
     movePanel: 'tabs:move-panel',
     controlAck: 'tabs:control-ack',
+    openSessionTask: 'tabs:open-session-task',
+    projectReview: 'tabs:project-review',
+    projectedReviewChanged: 'tabs:projected-review-changed',
+    openSessionActions: 'tabs:open-session-actions',
   },
   terminal: {
     attach: 'terminal:attach',
@@ -729,10 +808,13 @@ export const AppClientUiBridgeCallsConst = {
     commitFiles: 'versioning:commit-files',
     externalDiff: 'versioning:commit-external-diff',
     openCommitTab: 'versioning:commit-open-tab',
+    decideCommit: 'versioning:commit-decide',
+    editCommit: 'versioning:commit-edit',
     setCommitMessage: 'versioning:commit-set-message',
     runCommit: 'versioning:commit-run',
     revertCommitFile: 'versioning:commit-revert',
     openTortoise: 'versioning:commit-tortoise',
+    cancelCommit: 'versioning:commit-cancel',
     closeCommit: 'versioning:commit-close',
     openCommitSessions: 'versioning:commit-open-sessions',
   },
@@ -812,6 +894,9 @@ export const AppClientUiBridgeEventsConst = {
   onCommitChanged: 'versioning:commit-changed',
   onAgentSettingsChanged: 'agents:settings-changed',
   onRateChanged: 'rate:changed',
+  onAgentCliUpdatesChanged: 'agentCliUpdates:changed',
+  onUsageChanged: 'usage:changed',
+  onSnapinsChanged: 'snapins:changed',
   onHostPingResult: 'debug:host-ping-result',
   onTerminalFrame: 'terminal:frame',
   onRemoteTerminalFrame: 'remote:terminal-frame',

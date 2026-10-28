@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import type { AppClientUiBridge } from '../../shared/appClientUiIpc'
 import { IpcFailure } from '../ipc/ipcFailure'
 
 import type {
@@ -9,7 +10,7 @@ import type {
 } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import type { FileChangesViewModel } from './fileViewerPanel.types'
 
-export function useFileChanges(sessionId: string, enabled = true): FileChangesViewModel {
+export function useFileChanges(sessionId: string, ports: Pick<AppClientUiBridge['fileChanges'], 'list' | 'history'> | null, enabled = true): FileChangesViewModel {
   const [snapshot, setSnapshot] = useState<FileChangesSnapshot | null>(null)
   const [groups, setGroups] = useState<readonly FileChangeGroup[]>([])
   const [nextCursor, setNextCursor] = useState<string | null>(null)
@@ -19,8 +20,10 @@ export function useFileChanges(sessionId: string, enabled = true): FileChangesVi
   const [error, setError] = useState<string | null>(null)
   const generation = useRef(0)
   const loadedGroups = useRef(0)
+  const previousContext = useRef({ sessionId, ports })
 
   const reload = useCallback(async (requested?: FileChangesVcsId | null): Promise<FileChangesSnapshot | null> => {
+    if (!ports) { setLoading(false); setError('Changes are unavailable for this session.'); return null }
     const selected = requested === undefined ? preferredVcs : requested
     const depth = requested === undefined ? loadedGroups.current : 0
     const current = ++generation.current
@@ -28,7 +31,7 @@ export function useFileChanges(sessionId: string, enabled = true): FileChangesVi
     setLoading(true)
     setLoadingMore(false)
     setError(null)
-    const answer = await window.appClient.fileChanges.list(sessionId, selected)
+    const answer = await ports.list(sessionId, selected)
     if (current !== generation.current) return null
     const refusal = IpcFailure.of(answer)
     if (refusal !== null) {
@@ -39,7 +42,7 @@ export function useFileChanges(sessionId: string, enabled = true): FileChangesVi
     if (!answer.ok || !answer.value.ok) { setLoading(false); return null }
     let fresh = answer.value.value
     while (fresh.history.groups.length < depth && fresh.history.nextCursor !== null) {
-      const page = await window.appClient.fileChanges.history(fresh.snapshotId, fresh.history.nextCursor)
+      const page = await ports.history(fresh.snapshotId, fresh.history.nextCursor)
       if (current !== generation.current) return null
       const failure = IpcFailure.of(page)
       if (failure !== null) { setLoading(false); setError(failure); return null }
@@ -52,9 +55,13 @@ export function useFileChanges(sessionId: string, enabled = true): FileChangesVi
     setGroups(fresh.history.groups)
     setNextCursor(fresh.history.nextCursor)
     return fresh
-  }, [preferredVcs, sessionId])
+  }, [preferredVcs, sessionId, ports])
 
   useEffect(() => {
+    if (previousContext.current.sessionId !== sessionId || previousContext.current.ports !== ports) {
+      setSnapshot(null); setGroups([]); setNextCursor(null); loadedGroups.current = 0
+      previousContext.current = { sessionId, ports }
+    }
     if (enabled) void reload(null)
     else setLoading(false)
     // Belt to `reload`'s braces. When this effect runs again its own `++generation` already retires
@@ -62,19 +69,20 @@ export function useFileChanges(sessionId: string, enabled = true): FileChangesVi
     // setState a silent no-op anyway. Kept because the rule of the file is "a later ask wins" and
     // this is the one path that used to rely on somebody else enforcing it.
     return () => { generation.current += 1 }
-  }, [enabled, sessionId])
+  }, [enabled, sessionId, ports])
 
   const loadMore = useCallback(async (): Promise<void> => {
-    if (!snapshot || !nextCursor || loadingMore) return
+    if (!ports || !snapshot || !nextCursor || loadingMore) return
     // A page belongs to the snapshot it was asked of - cursors are kept per snapshot - so a reload
     // that lands first makes this answer meaningless. Appended anyway, it mixed two snapshots' groups
     // into one list and installed the old snapshot's cursor, after which the next Load older changes
     // answered `invalid-cursor` and paging was dead until the next reload.
     const current = generation.current
     setLoadingMore(true)
-    const answer = await window.appClient.fileChanges.history(snapshot.snapshotId, nextCursor)
+    const answer = await ports.history(snapshot.snapshotId, nextCursor)
     if (current !== generation.current) return
     setLoadingMore(false)
+    if (answer.ok && !answer.value.ok && answer.value.code === 'snapshot-expired') { await reload(); return }
     const refusal = IpcFailure.of(answer)
     if (refusal !== null) {
       setError(refusal)
@@ -89,7 +97,7 @@ export function useFileChanges(sessionId: string, enabled = true): FileChangesVi
       return next
     })
     setNextCursor(page.nextCursor)
-  }, [loadingMore, nextCursor, snapshot])
+  }, [loadingMore, nextCursor, snapshot, ports, reload])
 
   return {
     snapshot,

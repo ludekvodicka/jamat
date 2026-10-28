@@ -1,15 +1,18 @@
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { CommandOutcome, CommandRunner } from '../shared/commandInvoker.types'
 import type { SvnRoot, SvnWorktreeLocation } from './svn.types'
 import { SvnWorktreeManager } from './svnWorktreeManager'
+import { CommandInvoker } from '../shared/commandInvoker'
+import { SvnInvoker } from './svnInvoker'
 
 /** Paths whose next purge fails, the way a file another process holds makes it fail. */
 const purgeFailures = vi.hoisted(() => new Map<string, Error>())
@@ -46,12 +49,25 @@ function scripted(handler: Handler) {
 const failed = (stderr: string): Reply => ({ code: 1, stderr })
 
 function infoXml(options: { revision?: number; entryUrl?: string; wcRoot?: string; path?: string } = {}): string {
-  const entryUrl = options.entryUrl ?? url
-  return `<?xml version="1.0"?><info><entry kind="dir" path="${options.path ?? '.'}" revision="${options.revision ?? 41}">`
-    + `<url>${entryUrl}</url><relative-url>^${entryUrl.slice(repository.length) || '/'}</relative-url>`
-    + `<repository><root>${repository}</root></repository>`
-    + (options.wcRoot === undefined ? '' : `<wc-info><wcroot-abspath>${options.wcRoot}</wcroot-abspath></wc-info>`)
-    + '</entry></info>'
+  return infoListXml([options])
+}
+
+function infoListXml(entries: Parameters<typeof infoXml>[0][]): string {
+  return '<?xml version="1.0"?><info>' + entries.map((options = {}) => {
+    const entryUrl = options.entryUrl ?? url
+    return `<entry kind="dir" path="${options.path ?? '.'}" revision="${options.revision ?? 41}">`
+      + `<url>${entryUrl}</url><relative-url>^${entryUrl.slice(repository.length) || '/'}</relative-url>`
+      + `<repository><root>${repository}</root></repository>`
+      + (options.wcRoot === undefined ? '' : `<wc-info><wcroot-abspath>${options.wcRoot}</wcroot-abspath></wc-info>`)
+      + '</entry>'
+  }).join('') + '</info>'
+}
+
+function landingInfoXml(args: readonly string[], base = url, wcRoot?: string): string {
+  return infoListXml(args.slice(args.indexOf('--') + 1).map((target) => {
+    const path = target.replace(/@$/, '')
+    return { path, wcRoot, entryUrl: path === '.' ? base : `${base}/${path}` }
+  }))
 }
 
 interface Entry { path: string; item: string; props?: string; revision?: number; changed?: number; tree?: true }
@@ -74,6 +90,20 @@ function logXml(revision: number, paths: readonly { action: string; path: string
 const has = (args: readonly string[], ...flags: string[]): boolean => flags.every((flag) => args.includes(flag))
 
 describe('lib-orchestrator/svn/svnWorktreeManager', () => {
+  it('snap-in public reads return URL, HEAD names and local changes non-interactively', async () => {
+    const fixture = scripted((_cwd, args) => {
+      if (args[0] === 'info') return { stdout: infoXml() }
+      if (args[0] === 'list') return { stdout: '<lists><list path="test"><entry kind="file"><name>900-pending-p1-a.md</name></entry></list></lists>' }
+      if (args[0] === 'status') return { stdout: statusXml([{ path: '900-pending-p1-a.md', item: 'modified' }]) }
+      throw new Error('unexpected command')
+    })
+    expect(await fixture.manager.urlOf(process.cwd())).toEqual({ ok: true, value: url })
+    expect(await fixture.manager.listAtHead(url)).toEqual({ ok: true, value: ['900-pending-p1-a.md'] })
+    expect(await fixture.manager.changedNames(process.cwd())).toEqual({ ok: true, value: ['900-pending-p1-a.md'] })
+    expect(fixture.calls.every((call) => call.args.includes('--non-interactive'))).toBe(true)
+    expect(fixture.calls[1].args).toContain('HEAD')
+  })
+
   let temporary: string
 
   beforeEach(async () => {
@@ -83,6 +113,582 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
   afterEach(async () => {
     vi.useRealTimers()
     await rm(temporary, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 })
+  })
+
+  it('keeps approved property hashes stable across XML order and formatting while retaining values', async () => {
+    await writeFile(join(temporary, 'a'), 'content')
+    let xml = '<properties><target path="a"><property name="z">one</property><property name="p">two</property></target></properties>'
+    const { manager } = scripted((_cwd, args) => args[0] === 'proplist' ? { stdout: xml } : undefined)
+    const first = await manager.commitHashes(temporary, ['a'])
+    xml = '<properties>\n<target path="a">\n<property name="p">two</property>\n<property name="z">one</property>\n</target>\n</properties>'
+    expect(await manager.commitHashes(temporary, ['a'])).toEqual(first)
+    xml = xml.replace('two', 'changed')
+    expect(await manager.commitHashes(temporary, ['a'])).not.toEqual(first)
+  })
+
+  it('refuses incomplete directory hashes for ready and review proof', async () => {
+    const folder = join(temporary, 'folder')
+    await mkdir(folder)
+    for (let index = 0; index <= 2000; index++) await writeFile(join(folder, String(index)), '')
+    const { manager } = scripted(() => ({ stdout: '<properties/>' }))
+    expect(await manager.commitHashes(temporary, ['folder'])).toMatchObject({ ok: false, detail: expect.stringContaining('complete directory hash') })
+    const proof = await manager.commitHashes(temporary, ['folder'], 'node')
+    expect(proof.ok).toBe(true)
+    await writeFile(join(folder, '2001'), 'dev server output')
+    expect(await manager.commitHashes(temporary, ['folder'], 'node')).toEqual(proof)
+  })
+
+  it('hashes an external carrier independently of its proved external content and properties', async () => {
+    const mount = join(temporary, 'modules', 'Library')
+    await mkdir(join(mount, '.svn'), { recursive: true })
+    await writeFile(join(mount, '.before-svn'), 'external hidden bytes')
+    await writeFile(join(mount, 'file'), 'before')
+    let mapping = '^/library Library', property = 'before'
+    const { manager } = scripted((cwd, args) => {
+      if (args[0] === 'status') return { stdout: statusXml([{ path: 'modules/Library', item: 'external' }]) }
+      if (args[0] === 'info') return { stdout: infoXml({ wcRoot: cwd }) }
+      if (args[0] === 'proplist') return { stdout: `<properties><target path="modules"><property name="svn:externals">${mapping}</property></target><target path="modules/Library/file"><property name="p">${property}</property></target></properties>` }
+    })
+    const paths = ['modules', 'modules/Library/file']
+    const before = await manager.commitHashes(temporary, paths)
+    expect(before.ok).toBe(true)
+    await writeFile(join(mount, 'file'), 'after')
+    await writeFile(join(mount, '.before-svn'), 'changed hidden bytes')
+    property = 'after'
+    const changed = await manager.commitHashes(temporary, paths)
+    if (!before.ok || !changed.ok) throw new Error('External carrier proof failed')
+    expect(changed.value.modules).toBe(before.value.modules)
+    expect(changed.value['modules/Library/file']).not.toBe(before.value['modules/Library/file'])
+    mapping = '^/other Library'
+    expect(await manager.commitHashes(temporary, paths)).not.toEqual(changed)
+    expect(await manager.hashes(temporary, ['modules'], true)).toMatchObject({ ok: false, detail: expect.stringContaining('nested SVN metadata') })
+  })
+
+  it.each(['unmapped', 'wrong-root'] as const)('refuses %s nested metadata in a commit proof', async (kind) => {
+    await mkdir(join(temporary, 'folder', 'nested', '.svn'), { recursive: true })
+    const { manager } = scripted((_cwd, args) => {
+      if (args[0] === 'status') return { stdout: statusXml(kind === 'unmapped' ? [] : [{ path: 'folder/nested', item: 'external' }]) }
+      if (args[0] === 'info') return { stdout: infoXml({ wcRoot: temporary }) }
+    })
+    expect(await manager.commitHashes(temporary, ['folder'])).toMatchObject({ ok: false })
+  })
+
+  it('batches property proof without losing versioned values beside unversioned targets', async () => {
+    await writeFile(join(temporary, 'versioned'), 'one')
+    await writeFile(join(temporary, 'new'), 'two')
+    let value = 'original'
+    const { manager, calls } = scripted((_cwd, args) => args[0] === 'proplist' ? {
+      code: 1, stderr: "svn: W200005: 'new' is not under version control\nsvn: E200009: Could not display properties of all targets",
+      stdout: `<properties><target path="versioned"><property name="p">${value}</property></target></properties>`,
+    } : undefined)
+    const first = await manager.commitHashes(temporary, ['versioned', 'new'])
+    expect(first.ok).toBe(true)
+    expect(calls).toHaveLength(1)
+    value = 'changed'
+    const second = await manager.commitHashes(temporary, ['versioned', 'new'])
+    if (!first.ok || !second.ok) throw new Error('Property proof failed')
+    expect(second.value.versioned).not.toBe(first.value.versioned)
+    expect(second.value.new).toBe(first.value.new)
+  })
+
+  it('keeps a directory proof identical when a property-free descendant is also an explicit target', async () => {
+    await mkdir(join(temporary, 'dir'))
+    await writeFile(join(temporary, 'dir', 'file'), 'same bytes')
+    const { manager } = scripted((_cwd, args) => ({ stdout: '<properties><target path="dir"><property name="p">value</property></target>'
+      + (args.includes('dir/file@') ? '<target path="dir/file"/>' : '') + '</properties>' }))
+    const alone = await manager.commitHashes(temporary, ['dir'])
+    const combined = await manager.commitHashes(temporary, ['dir', 'dir/file'])
+    if (!alone.ok || !combined.ok) throw new Error('Directory proof failed')
+    expect(combined.value.dir).toBe(alone.value.dir)
+  })
+
+  it('binds a reviewed directory to descendant properties and refuses incomplete property reads', async () => {
+    await mkdir(join(temporary, 'dir'))
+    await writeFile(join(temporary, 'dir', 'child'), 'same content')
+    let property = 'before'
+    let denied = false
+    const { manager } = scripted((_cwd, args) => args[0] !== 'proplist' ? undefined : denied
+      ? { code: 1, stderr: 'svn: E155004: Working copy locked', stdout: '<properties/>' }
+      : { stdout: `<properties><target path="dir/child"><property name="p">${property}</property></target></properties>` })
+    const before = await manager.commitHashes(temporary, ['dir'])
+    property = 'after'
+    expect(await manager.commitHashes(temporary, ['dir'])).not.toEqual(before)
+    denied = true
+    expect(await manager.commitHashes(temporary, ['dir'])).toMatchObject({ ok: false })
+  })
+
+  it.each(['added', 'modified', 'replaced'] as const)('prepares a selected %s directory without reading it as text', async (item) => {
+    const path = join(temporary, 'directory')
+    await mkdir(path)
+    const { manager } = scripted((_cwd, args) => {
+      if (args[0] === 'status') return { stdout: statusXml([{ path, item, props: 'modified' }]) }
+      if (args[0] === 'info') return { stdout: '<info><entry kind="dir"><wc-info><schedule>normal</schedule></wc-info></entry></info>' }
+      return undefined
+    })
+    expect(await manager.prepareCommit(temporary, [path])).toEqual({ ok: true, value: { targets: [path], added: [] } })
+  })
+
+  it('keeps absent selected regular files fail-closed while scheduled deletions remain preparable', async () => {
+    const path = join(temporary, 'missing')
+    for (const item of ['modified', 'deleted']) {
+      const { manager } = scripted((_cwd, args) => args[0] === 'status'
+        ? { stdout: statusXml([{ path, item }]) }
+        : args[0] === 'info' ? { stdout: '<info><entry kind="dir"><wc-info><schedule>normal</schedule></wc-info></entry></info>' } : undefined)
+      const result = await manager.prepareCommit(temporary, [path])
+      expect(result.ok).toBe(item === 'deleted')
+    }
+  })
+
+  it.each(['modified', 'added', 'unversioned', 'deleted'] as const)('saves unchanged setup %s files and properties before reverting them', async (item) => {
+    const file = join(temporary, 'lock')
+    if (item !== 'deleted') await writeFile(file, 'setup')
+    const { manager, calls } = scripted(async (_cwd, args) => {
+      if (args[0] === 'proplist') return { stdout: '<properties>setup property</properties>' }
+      if (args[0] === 'status') return { stdout: statusXml([{ path: 'lock', item }]) }
+      if (args[0] === 'info') return { stdout: infoXml({ path: 'lock' }).replace('kind="dir"', 'kind="file"') }
+      if (args[0] === 'revert') {
+        if (item !== 'added') await writeFile(file, 'base')
+        return {}
+      }
+    })
+    const baseline = await manager.commitHashes(temporary, ['lock'])
+    if (!baseline.ok) throw new Error(baseline.detail)
+    const saved = join(temporary, 'results', 'setup')
+    expect(await manager.revertSetup(temporary, ['lock'], baseline.value, saved)).toEqual({ ok: true, value: undefined })
+    const copy = join(saved, (await readdir(saved))[0])
+    expect(JSON.parse(await readFile(join(copy, 'state.json'), 'utf8'))).toMatchObject({ path: 'lock', item, missing: item === 'deleted', properties: '<properties>setup property</properties>' })
+    if (item !== 'deleted') expect(await readFile(join(copy, 'working'), 'utf8')).toBe('setup')
+    if (item === 'modified' || item === 'deleted') expect(await readFile(file, 'utf8')).toBe('base')
+    else expect(existsSync(file)).toBe(false)
+    expect(calls.filter((call) => call.args[0] === 'revert')).toHaveLength(item === 'unversioned' ? 0 : 1)
+  })
+
+  it.each(['content', 'properties', 'during-copy'] as const)('keeps a setup file whose %s changed after the baseline', async (change) => {
+    const file = join(temporary, 'lock')
+    await writeFile(file, 'setup')
+    let properties = 'setup'
+    let reads = 0
+    const { manager, calls } = scripted(async (_cwd, args) => {
+      if (args[0] === 'proplist') {
+        reads += 1
+        if (change === 'during-copy' && reads === 3) await writeFile(file, 'worker')
+        return { stdout: `<properties><target path="lock"><property name="p">${properties}</property></target></properties>` }
+      }
+      if (args[0] === 'status') return { stdout: statusXml([{ path: 'lock', item: 'modified' }]) }
+    })
+    const baseline = await manager.commitHashes(temporary, ['lock'])
+    if (!baseline.ok) throw new Error(baseline.detail)
+    if (change === 'content') await writeFile(file, 'worker')
+    else if (change === 'properties') properties = 'worker'
+    expect(await manager.revertSetup(temporary, ['lock'], baseline.value, join(temporary, 'setup'))).toEqual({ ok: true, value: undefined })
+    expect(calls.some((call) => call.args[0] === 'revert')).toBe(false)
+    expect(await readFile(file, 'utf8')).toBe(change === 'properties' ? 'setup' : 'worker')
+  })
+
+  it('keeps setup directories without matching complete proof', async () => {
+    await mkdir(join(temporary, 'dir'))
+    await writeFile(join(temporary, 'dir', 'worker'), 'keep')
+    const { manager, calls } = scripted(() => ({ stdout: '<properties/>' }))
+    expect(await manager.revertSetup(temporary, ['dir'], { dir: 'hash' }, join(temporary, 'setup'))).toEqual({ ok: true, value: undefined })
+    expect(calls.every((call) => call.args[0] === 'proplist')).toBe(true)
+    expect(await readFile(join(temporary, 'dir', 'worker'), 'utf8')).toBe('keep')
+  })
+
+  it('copies and removes a proven unversioned setup directory including empty descendants', async () => {
+    await mkdir(join(temporary, 'dir', 'empty'), { recursive: true })
+    await writeFile(join(temporary, 'dir', 'lock'), 'setup')
+    const { manager } = scripted((_cwd, args) => args[0] === 'status'
+      ? { stdout: statusXml([{ path: 'dir', item: 'unversioned' }]) } : { stdout: '<properties/>' })
+    const baseline = await manager.commitHashes(temporary, ['dir'])
+    if (!baseline.ok) throw new Error(baseline.detail)
+    const saved = join(temporary, 'saved')
+    expect((await manager.revertSetup(temporary, ['dir'], baseline.value, saved)).ok).toBe(true)
+    expect(existsSync(join(temporary, 'dir'))).toBe(false)
+    const copy = join(saved, (await readdir(saved))[0], 'working')
+    expect(await readFile(join(copy, 'lock'), 'utf8')).toBe('setup')
+    expect(existsSync(join(copy, 'empty'))).toBe(true)
+  })
+
+  it.each(['content', 'properties'] as const)('preserves a setup directory with late %s', async (change) => {
+    await mkdir(join(temporary, 'dir'))
+    await writeFile(join(temporary, 'dir', 'file'), 'setup')
+    let value = 'setup'
+    let reads = 0
+    const { manager, calls } = scripted(async (_cwd, args) => {
+      if (args[0] === 'status') return { stdout: statusXml([{ path: 'dir', item: 'unversioned' }]) }
+      if (args[0] === 'proplist') {
+        reads++
+        if (reads === 4) {
+          if (change === 'content') await writeFile(join(temporary, 'dir', 'file'), 'worker')
+          else value = 'worker'
+        }
+        return { stdout: `<properties><target path="dir"><property name="p">${value}</property></target></properties>` }
+      }
+    })
+    const baseline = await manager.commitHashes(temporary, ['dir'])
+    if (!baseline.ok) throw new Error(baseline.detail)
+    expect((await manager.revertSetup(temporary, ['dir'], baseline.value, join(temporary, 'saved'))).ok).toBe(true)
+    expect(await readFile(join(temporary, 'dir', 'file'), 'utf8')).toBe(change === 'content' ? 'worker' : 'setup')
+    expect(value).toBe(change === 'properties' ? 'worker' : 'setup')
+    expect(calls.some((call) => call.args[0] === 'revert')).toBe(false)
+  })
+
+  it('reverts directory properties with depth empty and semantic XML order while preserving children', async () => {
+    await mkdir(join(temporary, 'dir'))
+    await writeFile(join(temporary, 'dir', 'file'), 'worker')
+    let reads = 0
+    const { manager, calls } = scripted((_cwd, args) => {
+      if (args[0] === 'status') return { stdout: statusXml([{ path: 'dir', item: 'normal', props: 'modified' }]) }
+      if (args[0] === 'proplist') {
+        const props = ['<property name="a">1</property>', '<property name="b">2</property>']
+        return { stdout: `<properties><target path="dir">${(++reads % 2 ? props : props.reverse()).join('')}</target></properties>` }
+      }
+      return {}
+    })
+    const baseline = await manager.commitHashes(temporary, ['dir'])
+    if (!baseline.ok) throw new Error(baseline.detail)
+    expect((await manager.revertSetup(temporary, ['dir'], baseline.value, join(temporary, 'saved'))).ok).toBe(true)
+    expect(calls.filter((call) => call.args[0] === 'revert').map((call) => call.args)).toEqual([['revert', '--non-interactive', '--depth', 'empty', '--', 'dir@']])
+    expect(await readFile(join(temporary, 'dir', 'file'), 'utf8')).toBe('worker')
+  })
+
+  it('disposes proven added descendants before removing empty added scaffolding', async () => {
+    await mkdir(join(temporary, 'dir'))
+    await writeFile(join(temporary, 'dir', 'file'), 'setup')
+    const { manager, calls } = scripted((_cwd, args) => args[0] === 'status'
+      ? { stdout: statusXml([{ path: args.at(-1)!.slice(0, -1), item: 'added' }]) }
+      : args[0] === 'proplist' ? { stdout: '<properties/>' } : {})
+    const baseline = await manager.commitHashes(temporary, ['dir/file', 'dir'])
+    if (!baseline.ok) throw new Error(baseline.detail)
+    expect((await manager.revertSetup(temporary, ['dir/file', 'dir'], baseline.value, join(temporary, 'saved'))).ok).toBe(true)
+    expect(existsSync(join(temporary, 'dir'))).toBe(false)
+    expect(calls.filter((call) => call.args[0] === 'revert').map((call) => call.args.at(-1))).toEqual(['dir/file@', 'dir@'])
+  })
+
+  it.each([false, true])('restores a setup directory deletion only while absent (recreated=%s)', async (recreated) => {
+    const { manager, calls } = scripted(async (_cwd, args) => {
+      if (args[0] === 'proplist') return { stdout: '<properties/>' }
+      if (args[0] === 'status') return { stdout: statusXml([{ path: 'dir', item: 'deleted' }]) }
+      if (args[0] === 'info') return { stdout: infoXml({ path: 'dir' }) }
+      if (args[0] === 'revert') { await mkdir(join(temporary, 'dir')); return {} }
+    })
+    const baseline = await manager.commitHashes(temporary, ['dir'])
+    if (!baseline.ok) throw new Error(baseline.detail)
+    if (recreated) {
+      await mkdir(join(temporary, 'dir'))
+      await writeFile(join(temporary, 'dir', 'worker'), 'keep')
+    }
+    const saved = join(temporary, 'saved')
+    expect((await manager.revertSetup(temporary, ['dir'], baseline.value, saved)).ok).toBe(true)
+    expect(calls.filter((call) => call.args[0] === 'revert')).toHaveLength(recreated ? 0 : 1)
+    if (recreated) expect(await readFile(join(temporary, 'dir', 'worker'), 'utf8')).toBe('keep')
+    else expect(JSON.parse(await readFile(join(saved, (await readdir(saved))[0], 'state.json'), 'utf8'))).toMatchObject({ missing: true, missingKind: 'dir', item: 'deleted' })
+  })
+
+  it('restores an actual SVN setup directory deletion and its separately proven descendants', async () => {
+    const repo = join(temporary, 'repo')
+    const wc = join(temporary, 'wc')
+    expect(await new CommandInvoker().run({ command: 'svnadmin', args: ['create', repo], cwd: temporary, env: process.env })).toMatchObject({ code: 0 })
+    const svn = new SvnInvoker()
+    expect(await svn.run(temporary, ['checkout', pathToFileURL(repo).href, wc])).toMatchObject({ code: 0 })
+    await mkdir(join(wc, 'dir'))
+    await writeFile(join(wc, 'dir', 'child'), 'original child bytes\r\n')
+    expect(await svn.run(wc, ['add', 'dir'])).toMatchObject({ code: 0 })
+    expect(await svn.run(wc, ['commit', '-m', 'Disposable setup fixture'])).toMatchObject({ code: 0 })
+    expect(await svn.run(wc, ['delete', 'dir'])).toMatchObject({ code: 0 })
+    const manager = new SvnWorktreeManager(svn)
+    const changes = await manager.changes(wc)
+    if (!changes.ok) throw new Error(changes.detail)
+    const paths = changes.value.map((row) => row.path)
+    expect(paths).toEqual(['dir'])
+    const baseline = await manager.commitHashes(wc, paths)
+    if (!baseline.ok) throw new Error(baseline.detail)
+    expect(await manager.revertSetup(wc, paths, baseline.value, join(temporary, 'saved'))).toEqual({ ok: true, value: undefined })
+    expect(await manager.changes(wc)).toEqual({ ok: true, value: [] })
+    expect(await readFile(join(wc, 'dir', 'child'), 'utf8')).toBe('original child bytes\r\n')
+  })
+
+  it.each(['/', ''])('proves repository-root properties for the receipt path %j', async (path) => {
+    const { manager } = scripted((_cwd, args) => {
+      if (args[0] === 'status') return { stdout: statusXml([{ path: '.', item: 'normal', revision: 50 }]) }
+      if (args[0] === 'info') return { stdout: landingInfoXml(args, repository) }
+      if (args[0] === 'log') return { stdout: logXml(50, [{ action: 'M', path: '/' }]) }
+    })
+    expect(await manager.landingPaths(temporary, [{ repository, revision: 50, paths: [path] }]))
+      .toMatchObject({ ok: true, value: [{ root: temporary, path: '.', repositoryPath: '' }] })
+    expect(await manager.landingProof(temporary, [{ repository, revision: 50, paths: [path] }]))
+      .toEqual({ ok: true, value: { holds: true } })
+  })
+
+  it('proves landing per path, including old receipts, and reports a conflicted skipped node', async () => {
+    await writeFile(join(temporary, 'older'), 'local')
+    await writeFile(join(temporary, 'newer'), 'new')
+    let oldBase = 40
+    let conflict = true
+    const { manager } = scripted((_cwd, args) => {
+      if (args[0] === 'status' && !args.includes('--depth')) return { stdout: statusXml([]) }
+      if (args[0] === 'info') return { stdout: landingInfoXml(args) }
+      if (args[0] === 'log') { const revision = Number(args[args.indexOf('-r') + 1]); return { stdout: logXml(revision, [{ action: 'M', path: '/Project/' + (revision === 41 ? 'older' : 'newer') }]) } }
+      if (args[0] === 'status') return { stdout: statusXml(args.slice(args.indexOf('--') + 1).map((target) => {
+        const path = target.slice(0, -1)
+        return { path, item: path === 'older' && conflict ? 'conflicted' : 'normal', revision: path === 'older' ? oldBase : 50 }
+      })) }
+    })
+    const landed = [{ repository, revision: 41, paths: ['/Project/older'] }, { repository, revision: 50, paths: ['/Project/newer'] }]
+    expect(await manager.landingProof(temporary, landed)).toMatchObject({ ok: true, value: { holds: false, reason: 'older still at r40 (conflict)' } })
+    conflict = false
+    expect(await manager.landingProof(temporary, landed)).toMatchObject({ ok: true, value: { holds: false } })
+    oldBase = 50
+    expect(await manager.landingProof(temporary, landed)).toEqual({ ok: true, value: { holds: true } })
+  })
+
+  it('expands a directory landing target so its stale child cannot disappear behind a current parent', async () => {
+    await mkdir(join(temporary, 'dir'))
+    await writeFile(join(temporary, 'dir', 'child'), 'old')
+    const { manager } = scripted((_cwd, args) => {
+      if (args[0] === 'status' && !args.includes('--depth')) return { stdout: statusXml([]) }
+      if (args[0] === 'info') return { stdout: landingInfoXml(args) }
+      if (args[0] === 'log') return { stdout: logXml(50, [{ action: 'M', path: '/Project/dir' }, { action: 'M', path: '/Project/dir/child' }]) }
+      if (args[0] === 'status') return { stdout: statusXml(args.slice(args.indexOf('--') + 1).map((target) => {
+        const path = target.slice(0, -1)
+        return { path, item: 'normal', revision: path === 'dir' ? 50 : 40 }
+      })) }
+    })
+    expect(await manager.landingProof(temporary, [{ repository, revision: 50, paths: ['/Project/dir'] }]))
+      .toMatchObject({ ok: true, value: { holds: false, reason: 'dir/child still at r40 (normal)' } })
+  })
+
+  it('batches landing status without attributing a later conflict to an earlier path', async () => {
+    for (const path of ['first', 'second']) await writeFile(join(temporary, path), 'local')
+    const { manager, calls } = scripted((_cwd, args) => {
+      if (args[0] === 'status' && !args.includes('--depth')) return { stdout: statusXml([]) }
+      if (args[0] === 'info') return { stdout: landingInfoXml(args) }
+      if (args[0] === 'log') return { stdout: logXml(50, ['first', 'second'].map((path) => ({ action: 'M', path: `/Project/${path}` }))) }
+      if (args[0] === 'status') return { stdout: '<status>' + ['first', 'second'].map((path) =>
+        `<target path="${path}"><entry path="${path}"><wc-status item="normal" props="none" revision="50"${path === 'second' ? ' tree-conflicted="true"' : ''}/></entry></target>`).join('') + '</status>' }
+    })
+    expect(await manager.landingProof(temporary, [{ repository, revision: 50 }]))
+      .toEqual({ ok: true, value: { holds: false, reason: 'second still at r50 (conflict)', local: { path: 'second', item: 'conflicted' } } })
+    expect(calls.filter((call) => call.args[0] === 'status' && call.args.includes('--depth')).map((call) => call.args))
+      .toEqual([['status', '--non-interactive', '--xml', '--verbose', '--depth', 'empty', '--', 'first@', 'second@']])
+  })
+
+  it('names the local state of the main copy that keeps a landed path unproven, and none for a path that is only behind', async () => {
+    let item = 'deleted'
+    let base = 50
+    const { manager } = scripted((_cwd, args) => {
+      if (args[0] === 'status' && !args.includes('--depth')) return { stdout: statusXml([]) }
+      if (args[0] === 'info') return { stdout: landingInfoXml(args) }
+      if (args[0] === 'log') return { stdout: logXml(50, [{ action: 'M', path: '/Project/docs/gone.txt' }]) }
+      if (args[0] === 'status') return { stdout: statusXml([{ path: 'docs/gone.txt', item, revision: base }]) }
+    })
+    expect(await manager.landingProof(temporary, [{ repository, revision: 50 }]))
+      .toEqual({ ok: true, value: { holds: false, reason: 'docs/gone.txt is locally deleted', local: { path: 'docs/gone.txt', item: 'deleted' } } })
+    await mkdir(join(temporary, 'docs'))
+    await writeFile(join(temporary, 'docs', 'gone.txt'), 'kept on disk')
+    expect(await manager.landingProof(temporary, [{ repository, revision: 50 }]))
+      .toEqual({ ok: true, value: { holds: false, reason: 'docs/gone.txt still at r50 (deleted)', local: { path: 'docs/gone.txt', item: 'deleted' } } })
+    item = 'normal'
+    base = 40
+    expect(await manager.landingProof(temporary, [{ repository, revision: 50 }]))
+      .toEqual({ ok: true, value: { holds: false, reason: 'docs/gone.txt still at r40 (normal)' } })
+  })
+
+  it('bounds long landing status and info commands and deduplicates paths across receipts', async () => {
+    const paths = Array.from({ length: 160 }, (_, index) => `${index}-${'a'.repeat(95)}`)
+    await Promise.all(paths.map((path) => writeFile(join(temporary, path), 'local')))
+    const { manager, calls } = scripted((_cwd, args) => {
+      if (args[0] === 'status' && !args.includes('--depth')) return { stdout: statusXml([]) }
+      if (args[0] === 'info') return { stdout: landingInfoXml(args) }
+      if (args[0] === 'log') return { stdout: logXml(Number(args[args.indexOf('-r') + 1]), paths.map((path) => ({ action: 'M', path: `/Project/${path}` }))) }
+      if (args[0] === 'status') return { stdout: statusXml(args.slice(args.indexOf('--') + 1).map((target) => ({ path: target.slice(0, -1), item: 'normal', revision: 50 }))) }
+    })
+    expect(await manager.landingProof(temporary, [{ repository, revision: 49 }, { repository, revision: 50 }]))
+      .toEqual({ ok: true, value: { holds: true } })
+    const batches = calls.filter((call) => call.args[0] === 'status' && call.args.includes('--depth'))
+    expect(batches).toHaveLength(2)
+    expect(batches.flatMap((call) => call.args.slice(call.args.indexOf('--') + 1))).toEqual(paths.map((path) => `${path}@`))
+    for (const call of batches) expect(call.args.join(' ').length).toBeLessThan(32_767)
+    const infoBatches = calls.filter((call) => call.args[0] === 'info' && call.args.includes('--depth'))
+    expect(infoBatches).toHaveLength(2)
+    expect(infoBatches.flatMap((call) => call.args.slice(call.args.indexOf('--') + 1))).toEqual(paths.map((path) => `${path}@`))
+  })
+
+  it('keeps the status and URL proof of each external in its own root', async () => {
+    const mount = join(temporary, 'lib')
+    await mkdir(join(mount, '.svn'), { recursive: true })
+    await writeFile(join(temporary, 'a'), 'main')
+    await writeFile(join(mount, 'a'), 'external')
+    let switched = false
+    const { manager, calls } = scripted((cwd, args) => {
+      if (args[0] === 'status' && !args.includes('--depth')) return { stdout: statusXml([{ path: 'lib', item: 'external' }]) }
+      if (args[0] === 'info' && !args.includes('--depth')) return { stdout: infoListXml([{ path: '.', entryUrl: `${repository}/Project` }, { path: 'lib', entryUrl: `${repository}/External` }]) }
+      if (args[0] === 'info') return { stdout: switched
+        ? infoXml({ path: 'a', entryUrl: `${repository}/wrong` })
+        : landingInfoXml(args, `${repository}${cwd === temporary ? '/Project' : '/External'}`, cwd) }
+      if (args[0] === 'log') return { stdout: logXml(50, [{ action: 'M', path: '/Project/a' }, { action: 'M', path: '/External/a' }]) }
+      if (args[0] === 'status') return { stdout: statusXml([{ path: 'a', item: 'normal', revision: 50 }]) }
+    })
+    expect(await manager.landingProof(temporary, [{ repository, revision: 50 }])).toEqual({ ok: true, value: { holds: true } })
+    expect(calls.filter((call) => call.args[0] === 'status' && call.args.includes('--depth')).map((call) => call.cwd)).toEqual([temporary, mount])
+    expect(calls.filter((call) => call.args[0] === 'info' && !call.args.includes('--depth')).map((call) => call.args))
+      .toEqual([['info', '--non-interactive', '--xml', '--', '.@', 'lib@']])
+    switched = true
+    expect(await manager.landingProof(temporary, [{ repository, revision: 50 }]))
+      .toEqual({ ok: true, value: { holds: false, reason: 'a checks out a different repository path' } })
+  })
+
+  it('shares the roots and the revision log of a main copy until an svn write moves its stamp', async () => {
+    await mkdir(join(temporary, '.svn'))
+    await writeFile(join(temporary, '.svn', 'wc.db'), 'db')
+    await writeFile(join(temporary, 'a'), 'main')
+    const { manager, calls } = scripted((_cwd, args) => {
+      if (args[0] === 'status' && !args.includes('--depth')) return { stdout: statusXml([]) }
+      if (args[0] === 'info') return { stdout: landingInfoXml(args) }
+      if (args[0] === 'log') return { stdout: logXml(50, [{ action: 'M', path: '/Project/a' }]) }
+      if (args[0] === 'status') return { stdout: statusXml([{ path: 'a', item: 'normal', revision: 50 }]) }
+    })
+    const reads = () => calls.filter((call) => !call.args.includes('--depth')).map((call) => call.args[0])
+    const landed = [{ repository, revision: 50 }]
+    expect(await manager.landingStamp(temporary)).toBeNull()
+    for (let read = 0; read < 3; read++) expect(await manager.landingProof(temporary, landed)).toEqual({ ok: true, value: { holds: true } })
+    // The first proof reads the roots under no stamp yet, the second under one, the third reuses them.
+    expect(reads()).toEqual(['status', 'info', 'log', 'status', 'info'])
+    expect(await manager.landingStamp(temporary)).not.toBeNull()
+    await writeFile(join(temporary, '.svn', 'wc.db'), 'db after an update')
+    expect(await manager.landingProof(temporary, landed)).toEqual({ ok: true, value: { holds: true } })
+    expect(reads()).toEqual(['status', 'info', 'log', 'status', 'info', 'status', 'info'])
+  })
+
+  it('does not prove a landing when a batched status command fails', async () => {
+    const { manager } = scripted((_cwd, args) => {
+      if (args[0] === 'status' && !args.includes('--depth')) return { stdout: statusXml([]) }
+      if (args[0] === 'info') return { stdout: infoXml() }
+      if (args[0] === 'log') return { stdout: logXml(50, [{ action: 'M', path: '/Project/a' }]) }
+      if (args[0] === 'status') return failed('E155004: Working copy locked')
+    })
+    expect(await manager.landingProof(temporary, [{ repository, revision: 50 }])).toMatchObject({ ok: false, code: 'locked' })
+  })
+
+  it.each(['missing', 'failed'])('does not prove a landing with %s batched info evidence', async (evidence) => {
+    await writeFile(join(temporary, 'a'), 'local')
+    const { manager } = scripted((_cwd, args) => {
+      if (args[0] === 'status' && !args.includes('--depth')) return { stdout: statusXml([]) }
+      if (args[0] === 'info' && !args.includes('--depth')) return { stdout: infoXml() }
+      if (args[0] === 'log') return { stdout: logXml(50, [{ action: 'M', path: '/Project/a' }]) }
+      if (args[0] === 'status') return { stdout: statusXml([{ path: 'a', item: 'normal', revision: 50 }]) }
+      if (args[0] === 'info') return evidence === 'missing' ? { stdout: infoXml({ path: 'b' }) } : failed('E155010: node not found')
+    })
+    expect(await manager.landingProof(temporary, [{ repository, revision: 50 }])).toMatchObject({ ok: false, code: 'svn-failed' })
+  })
+
+  it('maps landing by working-copy URL even when an external uses the same repository', async () => {
+    await mkdir(join(temporary, 'lib', '.svn'), { recursive: true })
+    const { manager } = scripted((cwd, args) => {
+      if (args[0] === 'status') return { stdout: statusXml([{ path: 'lib', item: 'external' }]) }
+      if (args[0] === 'info') return { stdout: infoXml({ entryUrl: cwd === temporary ? url : repository + '/branches/other', wcRoot: cwd }) }
+      if (args[0] === 'log') return { stdout: logXml(50, [{ action: 'M', path: '/Project/lib/a' }]) }
+    })
+    expect(await manager.landingPaths(temporary, [{ repository, revision: 50, paths: ['/Project/lib/a'] }]))
+      .toMatchObject({ ok: true, value: [{ root: null, repositoryPath: '/Project/lib/a' }] })
+    expect(await manager.landingProof(temporary, [{ repository, revision: 50, paths: ['/Project/lib/a'] }]))
+      .toMatchObject({ ok: true, value: { holds: false, reason: expect.stringContaining('no matching working-copy URL') } })
+  })
+
+  it('proves landing with repository deletion evidence for an absent landed path', async () => {
+    let deleted = false
+    const { manager } = scripted((_cwd, args) => {
+      if (args[0] === 'status') return { stdout: statusXml([]) }
+      if (args[0] === 'info') return { stdout: infoXml({ revision: 50 }) }
+      if (args[0] === 'log') return { stdout: logXml(41, [{ action: args.includes('41:50') && deleted ? 'D' : 'M', path: '/Project/gone' }]) }
+    })
+    const receipts = [{ repository, revision: 41, paths: ['/Project/gone'] }]
+    expect(await manager.landingProof(temporary, receipts)).toMatchObject({ ok: true, value: { holds: false, reason: expect.stringContaining('without a repository deletion proof') } })
+    deleted = true
+    expect(await manager.landingProof(temporary, receipts)).toEqual({ ok: true, value: { holds: true } })
+  })
+
+  it('proves both nodes of a case-only rename without confusing the new file with the deleted name', async () => {
+    await writeFile(join(temporary, 'title.txt'), 'renamed')
+    let deleted = false
+    let base = 40
+    const { manager } = scripted((_cwd, args) => {
+      if (args[0] === 'status' && !args.includes('--depth')) return { stdout: statusXml([]) }
+      if (args[0] === 'status') return { stdout: statusXml([{ path: 'title.txt', item: 'normal', revision: base }]) }
+      if (args[0] === 'info' && !args.includes('--depth')) return { stdout: infoXml({ revision: 50 }) }
+      if (args[0] === 'info') return { stdout: landingInfoXml(args) }
+      if (args[0] === 'log') return { stdout: logXml(41, [
+        { action: args.includes('41:50') && !deleted ? 'M' : 'D', path: '/Project/Title.txt' },
+        { action: 'A', path: '/Project/title.txt' },
+      ]) }
+    })
+    const receipts = [{ repository, revision: 41, paths: ['/Project/Title.txt', '/Project/title.txt'] }]
+    expect(await manager.landingProof(temporary, receipts)).toMatchObject({ ok: true, value: { holds: false, reason: expect.stringContaining('without a repository deletion proof') } })
+    deleted = true
+    expect(await manager.landingProof(temporary, receipts)).toEqual({ ok: true, value: { holds: false, reason: 'title.txt still at r40 (normal)' } })
+    base = 50
+    expect(await manager.landingProof(temporary, receipts)).toEqual({ ok: true, value: { holds: true } })
+  })
+
+  it('keeps case-renamed directory contents in the assembly without treating them as recreated deletions', async () => {
+    await mkdir(join(temporary, 'Old'))
+    await writeFile(join(temporary, 'Old/child.txt'), 'edited after move')
+    const { manager } = scripted((_cwd, args) => {
+      if (args[0] === 'info') return { stdout: infoXml().replace('</root>', '</root><uuid>fixture</uuid>') }
+      if (args[0] === 'proplist') return { stdout: '<properties/>' }
+      if (args[0] === 'status') return { stdout: statusXml([
+        { path: '.', item: 'normal' }, { path: 'Old', item: 'added' }, { path: 'Old/child.txt', item: 'modified' },
+        { path: 'old', item: 'deleted' }, { path: 'old/child.txt', item: 'deleted' },
+      ]) }
+    })
+    const first = await manager.assembly(temporary)
+    if (!first.ok) throw new Error(first.detail)
+    expect(first.value.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'old/child.txt', content: '' }), expect.objectContaining({ path: 'Old/child.txt' }),
+    ]))
+    await writeFile(join(temporary, 'Old/child.txt'), 'another edit')
+    const next = await manager.assembly(temporary)
+    if (!next.ok) throw new Error(next.detail)
+    expect(next.value.content).not.toBe(first.value.content)
+  })
+
+  it('saves overlap content, properties and local deletion evidence before UPDATE', async () => {
+    await writeFile(join(temporary, 'edited'), 'person bytes')
+    const { manager } = scripted((_cwd, args) => {
+      if (args[0] === 'proplist') return { stdout: '<properties><target path="edited"><property name="local">person property</property></target></properties>' }
+      if (args[0] === 'status') return { stdout: statusXml([{ path: args.at(-1)!.slice(0, -1), item: args.at(-1) === 'gone@' ? 'deleted' : 'modified' }]) }
+    })
+    const saved = await manager.saveLocalPaths(temporary, ['edited', 'gone'], join(temporary, 'saved'))
+    if (!saved.ok) throw new Error(saved.detail)
+    const copies = await Promise.all((await readdir(saved.value)).map(async (name) => ({ path: join(saved.value, name), state: JSON.parse(await readFile(join(saved.value, name, 'state.json'), 'utf8')) })))
+    const edited = copies.find((copy) => copy.state.path === 'edited')!
+    expect(await readFile(join(edited.path, 'working'), 'utf8')).toBe('person bytes')
+    expect(edited.state.properties).toContain('person property')
+    expect(copies.find((copy) => copy.state.path === 'gone')!.state.missing).toBe(true)
+  })
+
+  it('includes working properties in the approved selection hash', async () => {
+    await writeFile(join(temporary, 'a.txt'), 'same content')
+    let property = 'before'
+    const { manager } = scripted((_cwd, args) => args[0] === 'proplist' ? { stdout: `<properties><target path="a.txt"><property name="p">${property}</property></target></properties>` } : undefined)
+    const before = await manager.commitHashes(temporary, ['a.txt'])
+    property = 'after'
+    const after = await manager.commitHashes(temporary, ['a.txt'])
+    expect(before.ok && after.ok && before.value['a.txt'] !== after.value['a.txt']).toBe(true)
+  })
+
+  it('undoes only still-scheduled preparation adds deepest first and keeps file contents', async () => {
+    await mkdir(join(temporary, 'new'))
+    await writeFile(join(temporary, 'new', 'a.txt'), 'keep this')
+    const { manager, calls } = scripted((_cwd, args) => {
+      if (args[0] === 'status') return { stdout: statusXml([{ path: args.at(-1)!.slice(0, -1), item: args.at(-1) === 'existing.txt@' ? 'modified' : 'added' }]) }
+      if (args[0] === 'revert') return {}
+      return undefined
+    })
+    expect((await manager.unprepareCommit(temporary, [join(temporary, 'new'), join(temporary, 'existing.txt'), join(temporary, 'new', 'a.txt')])).ok).toBe(true)
+    expect(calls.filter((call) => call.args[0] === 'revert').map((call) => call.args.at(-1))).toEqual(['new/a.txt@', 'new@'])
+    expect(await readFile(join(temporary, 'new', 'a.txt'), 'utf8')).toBe('keep this')
+    expect((await manager.unprepareCommit(temporary, [join(temporary, '..', 'outside')])).ok).toBe(false)
   })
 
   describe('owner', () => {
@@ -411,6 +1017,21 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
       expect(plain.calls.some((call) => call.args[0] === 'propget')).toBe(false)
     })
 
+    it('reads a nested external pin from the containing external working copy', async () => {
+      await mkdir(join(temporary, 'outer', '.svn'), { recursive: true })
+      await mkdir(join(temporary, 'outer', 'nested', '.svn'), { recursive: true })
+      const rows: Entry[] = [{ path: 'outer', item: 'external' }, { path: 'outer/nested', item: 'external' },
+        { path: 'outer/nested/a.txt', item: 'modified', revision: 1 }]
+      const { manager, calls } = scripted((cwd, args) => args[0] === 'status' ? { stdout: statusXml(rows) }
+        : args[0] === 'propget' ? { stdout: `<properties><target path="."><property name="svn:externals">${cwd === temporary ? '^/outer outer' : '-r1 ^/nested@1 nested'}</property></target></properties>` }
+          : undefined)
+      const roots = await manager.reviewRoots(temporary)
+      expect(roots.ok && roots.value.map(({ own, pinned }) => ({ own, pinned }))).toEqual([
+        { own: 'outer/nested', pinned: true }, { own: 'outer', pinned: false }, { own: '', pinned: false },
+      ])
+      expect(calls.filter((call) => call.args[0] === 'propget').map((call) => call.cwd)).toEqual([join(temporary, 'outer'), temporary])
+    })
+
     it('fingerprints the worktree by its status and the size and time of each changed file', async () => {
       await writeFile(join(temporary, 'a.txt'), 'one\n')
       const { manager } = scripted((_cwd, args) => args[0] === 'status' ? { stdout: statusXml([{ path: 'a.txt', item: 'modified', revision: 5 }]) } : undefined)
@@ -544,14 +1165,45 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
       expect(calls.find((call) => call.args.includes('--depth'))?.args).toEqual(['info', '--non-interactive', '--xml', '--depth', 'empty', '--', '.'])
     })
 
+    it('gives a conflict inside an external the revision of the external\'s own working copy, read once per root (UA1-J06-3)', async () => {
+      const external = join(temporary, 'lib', 'ea')
+      await mkdir(external, { recursive: true })
+      const slash = (path: string): string => path.replaceAll(sep, '/')
+      const inExternal = (name: string): string => `<entry kind="file" path="${name}" revision="2"><url>${url}/lib/ea/${name}</url>`
+        + `<wc-info><wcroot-abspath>${slash(external)}</wcroot-abspath><schedule>normal</schedule></wc-info><conflict type="text">`
+        + `<prev-base-file>${slash(external)}/${name}.r1</prev-base-file><cur-base-file>${slash(external)}/${name}.r2</cur-base-file></conflict></entry>`
+      const { manager, calls } = scripted((cwd, args) => {
+        if (args[0] === 'status') return { stdout: statusXml([
+          { path: 'src/k.txt', item: 'conflicted', revision: 3 }, { path: 'lib/ea/a.txt', item: 'conflicted', revision: 2 }, { path: 'lib/ea/b.txt', item: 'conflicted', revision: 2 },
+        ]) }
+        if (args[0] === 'info' && !args.includes('--depth')) return { stdout: infoXml({ revision: cwd === external ? 2 : 3 }) }
+        if (args[0] === 'info' && cwd === external) return { stdout: `<info>${inExternal('a.txt')}${inExternal('b.txt')}</info>` }
+        if (args[0] === 'info' && cwd === join(temporary, 'src'))
+          return { stdout: `<info><entry kind="file" path="k.txt" revision="3"><url>${url}/src/k.txt</url><wc-info><wcroot-abspath>${slash(temporary)}</wcroot-abspath></wc-info>`
+            + '<conflict type="text"/></entry></info>' }
+        return undefined
+      })
+      const read = await manager.conflictSet(temporary, 2)
+      expect(read).toMatchObject({ ok: true, value: { revision: 3 } })
+      expect(read.ok && read.value.facts.map((fact) => [fact.path, fact.rootRevision])).toEqual([['src/k.txt', 3], ['lib/ea/a.txt', 2], ['lib/ea/b.txt', 2]])
+      expect(calls.filter((call) => call.args[0] === 'info' && !call.args.includes('--depth')).map((call) => call.cwd)).toEqual([temporary, external])
+    })
+
     it('answers a failed read as an svn failure and reads nothing more for a set without conflicts', async () => {
       expect(await scripted(() => failed('svn: E155037: Previous operation has not finished')).manager.conflictSet(temporary, 5))
         .toMatchObject({ ok: false, code: 'locked' })
       const clean = scripted((_cwd, args) => args[0] === 'status' ? { stdout: statusXml([{ path: 'a.txt', item: 'modified', revision: 9 }]) }
         : args[0] === 'info' ? { stdout: infoXml({ revision: 9 }) } : undefined)
-      expect(await clean.manager.conflictSet(temporary, 5)).toEqual({ ok: true, value: { revision: 9, facts: [],
+      expect(await clean.manager.conflictSet(temporary, 5)).toEqual({ ok: true, value: { revision: 9, facts: [], lockedPaths: [],
         rows: [{ path: 'a.txt', item: 'modified', conflict: false, base: 9 }] } })
       expect(clean.calls).toHaveLength(2)
+    })
+
+    it('includes nested working-copy locks even when SVN has cleared their conflict flag', async () => {
+      const locked = scripted((_cwd, args) => args[0] === 'status' ? { stdout:
+        '<status><target path="."><entry path="EA/EC"><wc-status item="normal" props="none" revision="2" wc-locked="true"/></entry></target></status>' }
+        : args[0] === 'info' ? { stdout: infoXml({ revision: 9 }) } : undefined)
+      expect(await locked.manager.conflictSet(temporary, 5)).toMatchObject({ ok: true, value: { facts: [], lockedPaths: ['EA/EC'] } })
     })
   })
 
@@ -647,6 +1299,28 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
       expect(existsSync(location.worktreePath)).toBe(true)
     })
 
+    it('selects a surviving removal remainder only when its directory identity matches', async () => {
+      const location = await worktree()
+      const { manager } = scripted(noSvn)
+      expect(await manager.removalSource(location)).toMatchObject({ ok: true, value: { path: location.worktreePath, aside: false, present: true } })
+      await manager.renameAside(location)
+      expect(await manager.removalSource(location)).toMatchObject({ ok: true, value: { path: `${location.worktreePath}.deleting`, aside: true, present: true } })
+      expect(await manager.removalSource({ ...location, directoryId: 'wrong' })).toMatchObject({ ok: false, code: 'refused' })
+      await mkdir(location.worktreePath)
+      expect(await manager.removalSource(location)).toMatchObject({ ok: false, detail: expect.stringContaining('Both the worktree') })
+    })
+
+    it('does not treat a linked worktree or linked SVN metadata as absent removal evidence', async () => {
+      const location = await worktree()
+      const { manager } = scripted(noSvn)
+      const linked = join(temporary, 'linked-worktree')
+      await symlink(location.worktreePath, linked, 'junction')
+      expect(await manager.removalStatus(linked)).toMatchObject({ ok: false, detail: expect.stringContaining('linked directory') })
+      await rm(join(location.worktreePath, '.svn'), { recursive: true })
+      await symlink(join(temporary, 'missing-metadata'), join(location.worktreePath, '.svn'), 'junction')
+      expect(await manager.removalStatus(location.worktreePath)).toMatchObject({ ok: false, detail: expect.stringContaining('linked directory') })
+    })
+
     it('without a file ID decides by the URL the worktree checks out', async () => {
       const location = { ...await worktree(), directoryId: undefined }
       let checkedOut = `${repository}/Other`
@@ -663,7 +1337,8 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
       try {
         // The child opens its working directory while it starts, after `spawn` already fired.
         await new Promise<void>((resolve, reject) => { child.stdout.once('data', () => resolve()); child.once('error', reject) })
-        expect(await scripted(noSvn).manager.renameAside(location)).toEqual({ ok: true, value: 'in-use' })
+        expect(await scripted(noSvn).manager.renameAside(location)).toEqual({ ok: true,
+          value: { blocked: 'EBUSY', path: location.worktreePath, detail: expect.stringContaining('EBUSY') } })
         expect(await readFile(join(location.worktreePath, 'a.txt'), 'utf8')).toBe('a\n')
       }
       finally {
@@ -726,24 +1401,86 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
       const entries = '<?xml version="1.0"?><log><logentry revision="58"><author>a</author></logentry>'
         + '<logentry revision="60"><author>a</author></logentry><logentry\n   revision="61"></logentry></log>'
       const behind = scripted((_cwd, args) => {
+        if (args[0] === 'status') return { stdout: statusXml([]) }
         if (args[0] === 'info') return { stdout: infoXml({ revision: 57 }) }
         if (args[0] === 'log') return { stdout: entries }
         return undefined
       })
-      expect(await behind.manager.behind(temporary)).toEqual({ ok: true, value: 3 })
-      expect(behind.calls[1].args).toEqual(['log', '--non-interactive', '-q', '--xml', '-r', '58:HEAD', '--', '.'])
+      expect(await behind.manager.behind(temporary)).toEqual({ ok: true, value: [{ own: '', behind: 3 }] })
+      expect(behind.calls.find((call) => call.args[0] === 'log')?.args).toEqual(['log', '--non-interactive', '-q', '--xml', '-r', '58:HEAD', '--', '.'])
       const current = scripted((_cwd, args) => {
+        if (args[0] === 'status') return { stdout: statusXml([]) }
         if (args[0] === 'info') return { stdout: infoXml({ revision: 61 }) }
         if (args[0] === 'log') return { code: 1, stdout: '<?xml version="1.0"?>\n<log>\n', stderr: 'svn: E160006: No such revision 62' }
         return undefined
       })
-      expect(await current.manager.behind(temporary)).toEqual({ ok: true, value: 0 })
+      expect(await current.manager.behind(temporary)).toEqual({ ok: true, value: [{ own: '', behind: 0 }] })
       const offline = scripted((_cwd, args) => {
+        if (args[0] === 'status') return { stdout: statusXml([]) }
         if (args[0] === 'info') return { stdout: infoXml({ revision: 61 }) }
         if (args[0] === 'log') return failed('svn: E170013: Unable to connect to a repository')
         return undefined
       })
       expect(await offline.manager.behind(temporary)).toMatchObject({ ok: false, code: 'svn-failed' })
+    })
+
+    it('counts every floating external working copy against its own repository, one log per root, and skips a pinned one', async () => {
+      for (const mount of ['ea', 'eb', 'pinned']) await mkdir(join(temporary, 'lib', mount, '.svn'), { recursive: true })
+      const rows: Entry[] = [{ path: 'lib/ea', item: 'external' }, { path: 'lib/eb', item: 'external' }, { path: 'lib/pinned', item: 'external' }]
+      const revisions: Record<string, number> = { '': 4, 'lib/ea': 3, 'lib/eb': 2, 'lib/pinned': 1 }
+      const heads: Record<string, number> = { '': 4, 'lib/ea': 4, 'lib/eb': 3, 'lib/pinned': 9 }
+      const ownOf = (cwd: string): string => cwd === temporary ? '' : cwd.slice(temporary.length + 1).split(sep).join('/')
+      const { manager, calls } = scripted((cwd, args) => {
+        if (args[0] === 'status') return { stdout: statusXml(rows) }
+        if (args[0] === 'propget') return { stdout: '<properties><target path="lib"><property name="svn:externals">^/ea ea\n^/eb eb\n^/p@1 pinned</property></target></properties>' }
+        if (args[0] === 'info') return { stdout: infoXml({ revision: revisions[ownOf(cwd)] }) }
+        if (args[0] !== 'log') return undefined
+        const own = ownOf(cwd)
+        const from = revisions[own] + 1
+        if (from > heads[own]) return { code: 1, stderr: `svn: E160006: No such revision ${from}` }
+        return { stdout: '<log>' + Array.from({ length: heads[own] - from + 1 }, (_, index) => `<logentry revision="${from + index}"></logentry>`).join('') + '</log>' }
+      })
+      expect(await manager.behind(temporary)).toEqual({ ok: true, value: [
+        { own: '', behind: 0 }, { own: 'lib/ea', behind: 1 }, { own: 'lib/eb', behind: 1 },
+      ] })
+      expect(calls.filter((call) => call.args[0] === 'status')).toHaveLength(1)
+      expect(calls.filter((call) => call.args[0] === 'log').map((call) => ownOf(call.cwd)).sort()).toEqual(['', 'lib/ea', 'lib/eb'])
+    })
+
+    it('reads a real main copy behind in its externals only, each from its own repository', { timeout: 60_000 }, async () => {
+      const svn = new SvnInvoker()
+      const must = async (cwd: string, args: string[]): Promise<void> => {
+        const outcome = await svn.run(cwd, args)
+        expect(outcome.code, outcome.stderr).toBe(0)
+      }
+      const repos: Record<string, string> = {}
+      for (const name of ['app', 'ea', 'eb']) {
+        repos[name] = join(temporary, 'repos', name)
+        await mkdir(repos[name], { recursive: true })
+        expect(await new CommandInvoker().run({ command: 'svnadmin', args: ['create', repos[name]], cwd: temporary, env: process.env })).toMatchObject({ code: 0 })
+      }
+      const seed = join(temporary, 'seed')
+      for (const name of ['ea', 'eb']) {
+        await must(temporary, ['checkout', pathToFileURL(repos[name]).href, join(seed, name)])
+        await writeFile(join(seed, name, 'notes.txt'), `${name} 1\n`)
+        await must(join(seed, name), ['add', '--', 'notes.txt'])
+        await must(join(seed, name), ['commit', '-m', 'seed', '--', '.'])
+      }
+      const main = join(temporary, 'main')
+      await must(temporary, ['checkout', pathToFileURL(repos.app).href, main])
+      await mkdir(join(main, 'lib'))
+      await must(main, ['add', '--', 'lib'])
+      await must(main, ['propset', 'svn:externals', `${pathToFileURL(repos.ea).href} ea\n${pathToFileURL(repos.eb).href} eb\n-r1 ${pathToFileURL(repos.ea).href} pinned\n`, '--', 'lib'])
+      await must(main, ['commit', '-m', 'externals', '--', '.'])
+      await must(main, ['update', '--', '.'])
+      for (const name of ['ea', 'eb']) {
+        await writeFile(join(seed, name, 'notes.txt'), `${name} 2\n`)
+        await must(join(seed, name), ['commit', '-m', 'published from a worktree', '--', '.'])
+      }
+
+      expect(await new SvnWorktreeManager(svn).behind(main)).toEqual({ ok: true, value: [
+        { own: '', behind: 0 }, { own: 'lib/ea', behind: 1 }, { own: 'lib/eb', behind: 1 },
+      ] })
     })
 
     it('lists the working copies of the mounts below a main copy, never the main copy itself', async () => {
@@ -753,29 +1490,57 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
       expect(await manager.mountRootsOf(temporary)).toEqual({ ok: true, value: [join(temporary, 'shared', 'frontend')] })
     })
   })
+})
 
-  describe('facts', () => {
-    it('counts diff lines per working copy and each file of an unversioned directory, never an ignored one', async () => {
-      await mkdir(join(temporary, 'newdir', 'inner'), { recursive: true })
-      await writeFile(join(temporary, 'newdir', 'one.txt'), '1\n')
-      await writeFile(join(temporary, 'newdir', 'inner', 'two.txt'), '2\n')
-      await writeFile(join(temporary, 'u.txt'), 'u\n')
-      await mkdir(join(temporary, 'src'))
-      await mkdir(join(temporary, 'mount', '.svn'), { recursive: true })
-      const status = statusXml([{ path: 'a.txt', item: 'modified', revision: 3 }, { path: 'newdir', item: 'unversioned' },
-        { path: 'u.txt', item: 'unversioned' }, { path: 'build', item: 'ignored' }, { path: 'src', item: 'normal', props: 'modified', revision: 3 },
-        { path: 'mount', item: 'external' }, { path: 'mount/l.txt', item: 'modified', revision: 2 }])
-      const diff = ['Index: a.txt', '='.repeat(67), '--- a.txt\t(revision 3)', '+++ a.txt\t(working copy)', '@@ -1,2 +1,3 @@',
-        ' keep', '-old', '+new', '+++ a line that begins with two pluses', 'Property changes on: src', '_'.repeat(67),
-        'Added: svn:ignore', '## -0,0 +1 ##', '+build', ''].join('\n')
-      const { manager, calls } = scripted((cwd, args) => {
-        if (args[0] === 'status') return { stdout: status }
-        if (args[0] === 'diff') return { stdout: cwd === temporary ? diff : 'Index: l.txt\n@@ -1 +1 @@\n-l\n+m\n' }
-        return undefined
-      })
-      expect(await manager.facts(temporary)).toEqual({ ok: true, value: { added: 3, removed: 2, changedFiles: 6 } })
-      expect(calls.some((call) => call.args.includes('--no-ignore'))).toBe(false)
-      expect(calls.filter((call) => call.args[0] === 'diff').map((call) => call.cwd)).toEqual([join(temporary, 'mount'), temporary])
-    })
+
+describe('SVN commit recovery evidence', () => {
+  it('reads verbose history with exact message, author, time and repository paths', async () => {
+    const h = scripted((_cwd, args) => args[0] === 'info' ? { stdout: infoXml({ revision: 42 }) }
+      : args[0] === 'log' ? { stdout: '<log><logentry revision="42"><author>ana</author><date>2026-10-16T10:00:00Z</date><paths><path action="M">/Project/a.txt</path></paths><msg>\n[App] Change &amp; test\n\nDetails\n</msg></logentry></log>' } : undefined)
+    expect(await h.manager.logSince('C:/tree', 41)).toEqual({ ok: true, value: [{ revision: 42, author: 'ana',
+      date: Date.parse('2026-10-16T10:00:00Z'), paths: ['/Project/a.txt'], message: '\n[App] Change & test\n\nDetails\n' }] })
+    expect(h.calls[1].args).toEqual(['log', '--non-interactive', '--xml', '-v', '-r', '42:42', '--', '.'])
+  })
+
+  /**
+   * UA1-J09-2 on real svn: a copy of the working copy taken before the commit is the working copy of a
+   * client killed after the server accepted it, its nodes still at BASE r1 with the published bytes as edits.
+   */
+  it('gives the published nodes of a killed commit their revision and leaves every byte as it was', async () => {
+    const temporary = await realpath(await mkdtemp(join(tmpdir(), 'jamat-v3-killed-commit-')))
+    try {
+      const svn = new SvnInvoker(), repo = join(temporary, 'repo'), wc = join(temporary, 'wc'), killed = join(temporary, 'killed')
+      const run = async (cwd: string, args: string[]): Promise<string> => {
+        const result = await svn.run(cwd, args)
+        expect(result.code, result.stderr).toBe(0)
+        return result.stdout
+      }
+      expect(await new CommandInvoker().run({ command: 'svnadmin', args: ['create', repo], cwd: temporary, env: process.env })).toMatchObject({ code: 0 })
+      await run(temporary, ['checkout', pathToFileURL(repo).href, wc])
+      for (const name of ['edit.txt', 'gone.txt', 'kept.txt', 'other.txt']) await writeFile(join(wc, name), `${name} one\n`)
+      await run(wc, ['add', '--', 'edit.txt', 'gone.txt', 'kept.txt', 'other.txt'])
+      await run(wc, ['commit', '-m', 'base'])
+      await writeFile(join(wc, 'edit.txt'), 'edit.txt two\n')
+      await run(wc, ['propset', 'jamat:note', 'reviewed', 'edit.txt'])
+      await writeFile(join(wc, 'new.txt'), 'new\n')
+      await mkdir(join(wc, 'nd'))
+      await writeFile(join(wc, 'nd', 'f.txt'), 'f\n')
+      await run(wc, ['add', '--', 'new.txt', 'nd'])
+      await run(wc, ['delete', '--', 'gone.txt'])
+      await run(wc, ['delete', '--keep-local', '--', 'kept.txt'])
+      await writeFile(join(wc, 'other.txt'), 'other.txt not selected\n')
+      await cp(wc, killed, { recursive: true })
+      const selection = ['edit.txt', 'new.txt', 'nd', 'nd/f.txt', 'gone.txt', 'kept.txt']
+      await run(wc, ['commit', '-m', 'published', '--depth', 'empty', '--', ...selection])
+      expect(await new SvnWorktreeManager(svn).advancePublished(killed, selection, 2)).toEqual({ ok: true, value: undefined })
+      const status = (await run(killed, ['status'])).split(/\r?\n/).filter(Boolean).sort()
+      expect(status).toEqual(['?       kept.txt', 'M       other.txt'])
+      for (const name of ['edit.txt', 'new.txt', 'nd', 'nd/f.txt']) expect((await run(killed, ['info', '--show-item', 'revision', '--', name])).trim()).toBe('2')
+      expect((await run(killed, ['info', '--show-item', 'depth', '--', 'nd'])).trim()).toBe('infinity')
+      expect(await readFile(join(killed, 'edit.txt'), 'utf8')).toBe('edit.txt two\n')
+      expect(await readFile(join(killed, 'kept.txt'), 'utf8')).toBe('kept.txt one\n')
+      expect(await readFile(join(killed, 'other.txt'), 'utf8')).toBe('other.txt not selected\n')
+      expect(existsSync(join(killed, 'gone.txt'))).toBe(false)
+    } finally { await rm(temporary, { recursive: true, force: true }) }
   })
 })

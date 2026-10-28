@@ -4,7 +4,6 @@ import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { FileViewer } from '../../../lib-orchestrator/fileViewer/fileViewer'
 import type {
   FileViewerGrantedFile,
 } from '../../../lib-orchestrator/fileViewer/fileViewerApi.types'
@@ -43,7 +42,7 @@ describe('app-client-ui/app/fileViewer/fileViewerProtocol', () => {
       // Minted the way the reader mints it. Written by hand here and in the protocol, the two
       // spellings would drift the moment `versionOf` gained an inode or a hash, and every
       // `jamat-file://resource/...` would answer 409 for a file nobody touched.
-      contentVersion: FileContentReader.versionOf(info.size, info.mtimeMs),
+      contentVersion: FileContentReader.versionOf(info.size, info.mtimeMs, info),
     }
     protocolMock.registrations = []
     protocolMock.handler = null
@@ -52,12 +51,20 @@ describe('app-client-ui/app/fileViewer/fileViewerProtocol', () => {
   afterEach(async () => { await rm(directory, { recursive: true, force: true }) })
 
   function initialize(): (request: Request) => Promise<Response> {
-    const viewer = {
-      resourceAccess: (resourceId: string) => Promise.resolve(
-        resourceId === 'token' ? resource : null,
-      ),
-    } as unknown as FileViewer
-    new FileViewerProtocol(viewer).initialize()
+    new FileViewerProtocol({
+      metadata: async (token) => {
+        if (token !== 'token') return { kind: 'missing' }
+        let info
+        try { info = await stat(resource.path) } catch { return { kind: 'missing' } }
+        if (!info.isFile() || FileContentReader.versionOf(info.size, info.mtimeMs, info) !== resource.contentVersion) return { kind: 'changed' }
+        return { kind: 'ready', mimeType: resource.mimeType, size: resource.size, version: resource.contentVersion }
+      },
+      read: async (_token, version, offset, length, signal) => {
+        const result = await new FileContentReader().range(resource.path, version, offset, length, signal)
+        if (result.kind !== 'chunk') throw new Error(result.kind)
+        return result.value.bytes
+      },
+    }).initialize()
     if (!protocolMock.handler) throw new Error('Protocol handler was not installed')
     return protocolMock.handler
   }

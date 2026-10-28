@@ -135,9 +135,9 @@ const { FakeWindow, captured, updaterMock } = vi.hoisted(() => {
       onChanged: () => void
       onError: (message: string) => void
       onScriptCollapsed?: (event: { runId: string; parentId: string; handoff: 'parent-tab' | 'close'; handoffTo: string }) => void
+      onMainCopyUpdated?: (update: { sessionId: string; title: string; mainCopy: string; revision: number; by: 'person' | 'agent'; log: string | null }) => void
     },
     reviewPort: null as unknown,
-    editor: null as unknown,
     receipts: [] as unknown[],
     rateDeps: null as null | {
       onChanged: () => void
@@ -145,6 +145,7 @@ const { FakeWindow, captured, updaterMock } = vi.hoisted(() => {
     },
     visible: [] as boolean[],
     rateVisible: [] as boolean[],
+    rateSessionChanges: 0,
     /** Both managers write their name here, so the order they are ended in is readable. */
     disposeOrder: [] as string[],
     menuTemplate: [] as MenuItemConstructorOptions[],
@@ -168,6 +169,8 @@ const { FakeWindow, captured, updaterMock } = vi.hoisted(() => {
     snapshotSessions: null as unknown[] | null,
     /** Every Windows notification shown, with its click. */
     notices: [] as { title: string; body: string; click: () => void }[],
+    /** Every path handed to the desktop's own opener. */
+    openedPaths: [] as string[],
   }
 
   /** How often anything read `autoUpdater`: reading it is what builds the platform updater. */
@@ -213,7 +216,7 @@ vi.mock('electron', () => ({
       captured.ipcHandlers.set(channel, handler),
     removeHandler: (channel: string) => captured.ipcHandlers.delete(channel),
   },
-  shell: { openExternal: () => Promise.resolve() },
+  shell: { openExternal: () => Promise.resolve(), openPath: (path: string) => { captured.openedPaths.push(path); return Promise.resolve('') } },
   protocol: { handle: () => {} },
   Menu: {
     setApplicationMenu: () => {},
@@ -309,6 +312,7 @@ vi.mock('./remarkable/sidecar/remarkableCli', () => ({
 vi.mock('../../lib-orchestrator/sessionManager/sessionManager', async (importOriginal) => ({
   SessionNotifier: (await importOriginal<typeof import('../../lib-orchestrator/sessionManager/sessionManager')>()).SessionNotifier,
   SessionManager: class {
+    ratesChanged(): void { captured.rateSessionChanges += 1 }
     constructor(deps: {
       onChanged: () => void
       onError: (message: string) => void
@@ -347,10 +351,6 @@ vi.mock('../../lib-orchestrator/sessionManager/sessionManager', async (importOri
       captured.reviewPort = port
     }
 
-    setEditor(port: unknown): void {
-      captured.editor = port
-    }
-
     noteCommitted(receipt: unknown): void {
       captured.receipts.push(receipt)
     }
@@ -364,6 +364,10 @@ vi.mock('../../lib-orchestrator/sessionManager/sessionManager', async (importOri
     }
 
     svnWaitNotices(): unknown {
+      return { pending: () => [], note: async () => undefined }
+    }
+
+    workerHandoffs(): unknown {
       return { pending: () => [], note: async () => undefined }
     }
 
@@ -416,6 +420,14 @@ vi.mock('../../lib-orchestrator/rateMonitor/rateMonitor', () => ({
   },
 }))
 
+vi.mock('../../lib-orchestrator/agentCliUpdates/agentCliUpdates', () => ({
+  AgentCliUpdates: class {
+    snapshot(): { revision: number; agents: never[] } { return { revision: 0, agents: [] } }
+    start(): void {}
+    async stop(): Promise<void> {}
+  },
+}))
+
 vi.mock('../../lib-orchestrator/projectManager/projectManager', () => ({
   ProjectManager: class {
     /** The memo-carrying view. Resolving a Codex rollout is not free, and this pair is POLLED. */
@@ -464,12 +476,21 @@ vi.mock('./remoteControl/remoteControlServer', () => ({
 
 vi.mock('./skills/skillLinkInstaller', () => ({
   SkillLinkInstaller: class {
+    skipReason(): null { return null }
     install(): readonly [] {
       captured.skillInstalls += 1
       return []
     }
   },
 }))
+
+vi.mock('./tokenUsage/tokenUsageWorker', () => ({ TokenUsageWorker: class {
+  start(): void {}
+  beginStop(): void {}
+  async stop(): Promise<void> {}
+  async refresh(): Promise<void> {}
+  snapshot() { return { buckets: [], labels: {}, accountLabels: {}, progress: { running: false, completed: 0, total: 0, error: null, scannedAt: null } } }
+} }))
 
 describe('app-client-ui/app/appHub', () => {
   let stateRoot: string
@@ -480,6 +501,9 @@ describe('app-client-ui/app/appHub', () => {
       smoke: true,
       appVersion: '0.0.0',
       fileDiffWorkerPath: 'fileDiffWorker.js',
+      tokenUsageWorkerPath: 'tokenUsageWorker.js',
+      usageRendererPath: 'usage.html',
+      usageRendererDevUrl: undefined,
       preloadPath: 'preload.js',
       rendererPath: 'index.html',
       rendererDevUrl: undefined,
@@ -561,7 +585,6 @@ describe('app-client-ui/app/appHub', () => {
     FakeWindow.created = []
     captured.sessionDeps = null
     captured.reviewPort = null
-    captured.editor = null
     captured.receipts = []
     captured.rateDeps = null
     captured.visible = []
@@ -673,7 +696,9 @@ describe('app-client-ui/app/appHub', () => {
     const holder = routedWindow()
     replaceWorkspaceRegistry(hub, main, holder, () => holder)
 
+    const before = captured.rateSessionChanges
     captured.rateDeps?.onChanged()
+    expect(captured.rateSessionChanges).toBe(before + 1)
     captured.rateDeps?.onError('the usage endpoint answered 429')
 
     for (const window of [main, holder, debug])
@@ -713,7 +738,6 @@ describe('app-client-ui/app/appHub', () => {
     hubUnderTest()
 
     expect(captured.reviewPort).toBeInstanceOf(SessionReviewPortAdapter)
-    expect(captured.editor).toEqual({ openWorktree: expect.any(Function) })
   })
 
   it('hands every receipt of the commit dialog to the sessions', () => {
@@ -809,7 +833,7 @@ describe('app-client-ui/app/appHub', () => {
     }
 
     expect(services.sessionNotifier.port.terminal).toBe(services.directoryNotes.terminal)
-    expect(services.sessionNotifier.sources).toHaveLength(3)
+    expect(services.sessionNotifier.sources).toHaveLength(4)
     hub.initialize()
     expect(services.sessionNotifier.started).toBe(true)
     await hub.dispose()
@@ -817,9 +841,11 @@ describe('app-client-ui/app/appHub', () => {
   })
 
   it('holds the final IPC parity counts', () => {
-    expect(Object.keys(AppHub.ipcChannelsConst)).toHaveLength(137)
-    expect(Object.keys(AppClientUiBridgeEventsConst)).toHaveLength(24)
-    expect(Object.keys(ServiceTabsIpc.channelsConst)).toHaveLength(13)
+    expect(Object.keys(AppHub.ipcChannelsConst)).toHaveLength(171)
+    expect(Object.keys(AppClientUiBridgeEventsConst)).toHaveLength(27)
+    expect(AppClientUiBridgeEventsConst).toHaveProperty('onUsageChanged', 'usage:changed')
+    expect(AppClientUiBridgeEventsConst).toHaveProperty('onSnapinsChanged')
+    expect(Object.keys(ServiceTabsIpc.channelsConst)).toHaveLength(19)
     expect(Object.keys(ServiceRemarkableIpc.channelsConst)).toHaveLength(16)
   })
 
@@ -1074,6 +1100,21 @@ describe('app-client-ui/app/appHub', () => {
     captured.notices[0]?.click()
     await Promise.resolve()
     expect(openWorkflow).toHaveBeenCalledWith('s1', 'Work - 014')
+  })
+
+  it('tells an UPDATE of a landed row once with its revision, and its click opens the kept update log', async () => {
+    const hub = hubUnderTest()
+    hub.initialize()
+    captured.notices = []
+    captured.openedPaths = []
+    captured.sessionDeps?.onMainCopyUpdated?.({ sessionId: 's1', title: '001 - J01 W1', mainCopy: 'Q:/Work/App', revision: 1481, by: 'person',
+      log: 'C:/state/worktree-results/a1/run.log' })
+
+    expect(captured.notices.map(({ title, body }) => ({ title, body }))).toEqual([{ title: 'Main copy updated: 001 - J01 W1',
+      body: 'Q:/Work/App is at r1481. Click to open the update log, kept with the worktree result.' }])
+    captured.notices[0]?.click()
+    await Promise.resolve()
+    expect(captured.openedPaths).toEqual(['C:/state/worktree-results/a1/run.log'])
   })
 
   it('broadcasts session changes to every workspace window and Debug', () => {

@@ -1,9 +1,17 @@
+import type { HostGate } from '../hostGate'
+import { existsSync } from 'node:fs'
 import { isAbsolute, join, normalize, sep } from 'node:path'
 
+import type { SvnWorktreeManager } from '../../svn/svnWorktreeManager'
+import { ErrorText } from '../../shared/errorText'
+import { ProductGroup } from '../../shared/productGroup'
+import { SetupPaths } from '../../projectSetup/setupPaths'
+import { SetupInputs } from '../../projectSetup/setupInputs'
 import type { WorktreeFacts } from '../../git/git.types'
 import type {
   SessionDirectoryRef,
   SessionRecord,
+  SessionRecordProcess,
   SessionRecordScriptStep,
   SessionRecordSetupCommand,
   SessionRecordWorktree,
@@ -12,10 +20,11 @@ import type { ReconcileChange } from './reconciler'
 import type { SessionRecordsStore } from '../records/sessionRecordsStore'
 import type {
   SessionCreateSpec,
+  SessionSetupAgreement,
   SessionsOpErrorCode,
   SessionsOpResult,
 } from '../sessionManagerApi.types'
-import type { SetupResolution } from '../../projectSetup/projectSetup.types'
+import type { SetupResolution, SetupScope } from '../../projectSetup/projectSetup.types'
 import type { CommandAgreement, DeclaredCommandsRead } from '../scripts/commandAgreement'
 import { DeclaredScripts } from '../scripts/declaredScripts'
 import { ScriptChain } from '../scripts/scriptChain'
@@ -24,9 +33,10 @@ import { ScriptRunRecords } from '../scripts/scriptRunRecords'
 import type { SessionScriptsManager } from '../scripts/sessionScriptsManager'
 import { SessionScriptDefinitions } from '../scripts/sessionScriptDefinitions'
 import { ScriptRunLauncher } from './scriptRunLauncher'
-import type { SessionSetupPort, SessionWorktreePort, WorktreePlacement } from './sessionLifecycle'
+import type { SessionSetupPort } from './sessionLifecycle'
+import type { LocalBeforeStep, SessionWorktreePort, WorktreePlacement } from '../../worktrees/worktreeLifecycle.types'
 import { OperationOutcomes } from './operationOutcomes'
-import { WorktreeCleanupPacing } from './worktreeCleanupPacing'
+import { WorktreeCleanupPacing } from '../../worktrees/worktreeRemoval'
 
 /** What the setup resolution means for one worktree: run these commands, or install nothing. */
 type SetupPlan =
@@ -67,19 +77,16 @@ export interface SetupLaunchPort {
  * The before chain of a worktree session: its dependency install, then the project's declared
  * `scripts.before`, before the session that waits on them starts.
  *
- * Each step runs as a session of its own - a shell with a script instead of a prompt - and the
- * session that needs it waits, recorded, naming the step's run by id. That is what makes every step here
- * a record write plus a launch rather than a process this class babysits: a client that dies mid
- * install leaves a record saying what was being attempted, and the next reconcile pass judges it.
- *
- * Carved out of `SessionLifecycle`, which held it as ~450 lines and seventeen members beside the
- * session operations and the reconcile applier, and whose job could not be stated without three
- * "and"s. It follows `WorktreeMergeFlow`, carved out of the same file the same way: narrow deps, its
- * own record fields, its own phase writes, and one port back for what only the lifecycle can do.
+ * Local operations keep a gate on the parent; repository-authored commands get separate Host records.
+ * Both persist their ownership before execution, so the worker cannot start on an incomplete tree.
  */
 export interface SetupFlowDeps {
+  hostGate?: Pick<HostGate, 'problemOf'>
   records: SessionRecordsStore
   setup: SessionSetupPort
+  svn: Pick<SvnWorktreeManager, 'changes' | 'commitHashes' | 'assembly'>
+  localBefore: LocalBeforeStep
+  detach: (work: Promise<unknown>, what: string) => void
   /** The gate in front of every repository-authored command, and the second look before one runs. */
   agreement: Pick<CommandAgreement, 'declared' | 'gate' | 'agreed'>
   /** Which steps succeeded, read off the parent's history, for a gate an older build wrote without its steps. */
@@ -95,7 +102,12 @@ export interface SetupFlowDeps {
 }
 
 export class SetupFlow {
+  private readonly hostGate: SetupFlowDeps['hostGate']
+  private readonly localBefore: SetupFlowDeps['localBefore']
+  private readonly detach: SetupFlowDeps['detach']
+  private readonly localRuns: Map<string, Promise<void>>
   private readonly records: SessionRecordsStore
+  private readonly svn: SetupFlowDeps['svn']
   private readonly setup: SessionSetupPort
   private readonly agreement: Pick<CommandAgreement, 'declared' | 'gate' | 'agreed'>
   private readonly scripts: Pick<SessionScriptsManager, 'succeededKeys'>
@@ -107,7 +119,12 @@ export class SetupFlow {
   private readonly now: () => number
 
   constructor(deps: SetupFlowDeps) {
+    this.hostGate = deps.hostGate
+    this.localRuns = new Map()
+    this.localBefore = deps.localBefore
+    this.detach = deps.detach
     this.records = deps.records
+    this.svn = deps.svn
     this.setup = deps.setup
     this.agreement = deps.agreement
     this.scripts = deps.scripts
@@ -119,24 +136,29 @@ export class SetupFlow {
     this.now = deps.now
   }
 
-  /**
-   * Two records and ONE runtime: the session's own launch is not started here at all. It waits on
-   * disk under the pending pair its record was already written with, named by `pendingSetup`, until a
-   * reconcile pass sees the last step of its chain exit cleanly - so the caller is handed the
-   * session's id the moment both records are written, however long the chain takes.
-   *
-   * The waiting record is written before the first step is launched, for the same reason every launch
-   * here writes its record first: a client that dies while the Host is installing must leave
-   * something on disk that says what that install belongs to.
-   *
-   * Every step is an ordinary shell session, which is what makes it visible in the list, attachable
-   * while it runs and readable after it fails, with no infrastructure of its own.
-   */
+  async createWaiting(record: SessionRecord, facts: WorktreeFacts, agreement: SessionSetupAgreement,
+    checkout: (SessionRecordProcess & { cwd: string }) | null): Promise<SessionsOpResult<{ sessionId: string }>> {
+    const steps = checkout === null ? undefined : [ScriptChain.processStepOf('svn', 'checkout', checkout)]
+    const waiting: SessionRecord = { ...record, life: 'ended', binding: null, pendingOperationId: undefined, pendingOperationKind: undefined,
+      endedAt: this.now(), endedReason: 'Setup waits for command approval',
+      pendingSetup: { setupSessionId: this.newId(), agreement, ...steps === undefined ? {} : { steps, cursor: 0 } } }
+    if (!await this.records.put(waiting)) return this.launch.unrecordedWorktree(facts)
+    return { ok: true, value: { sessionId: record.sessionId } }
+  }
+
+  /** The parent gate is durable before execution, so a restart can recover a local step or judge its Host run. */
   async createWithSetup(
     record: SessionRecord,
     facts: WorktreeFacts,
     steps: SessionRecordScriptStep[],
   ): Promise<SessionsOpResult<{ sessionId: string }>> {
+    if (steps[0] !== undefined && this.localBefore.accepts(steps[0])) {
+      const setupSessionId = this.newId()
+      if (!await this.records.put({ ...record, pendingSetup: { local: true, setupSessionId, steps, cursor: 0 } }))
+        return this.launch.unrecordedWorktree(facts)
+      this.detach(this.localRun(record.sessionId), `Before step of ${record.sessionId}`)
+      return { ok: true, value: { sessionId: record.sessionId } }
+    }
     const run = this.runOf(record.sessionId, steps, 0, facts.worktreePath)
     // Two writes, two different things left behind, so two different answers. The first one failing
     // is `create`'s own case: the worktree is on disk and no record names it. The second one failing
@@ -151,6 +173,44 @@ export class SetupFlow {
     // record then says.
     await this.runs.launch(run)
     return { ok: true, value: { sessionId: record.sessionId } }
+  }
+
+  async recoverLocalBefore(sessionId: string): Promise<boolean> {
+    await this.localRun(sessionId, true)
+    const record = this.records.get(sessionId)
+    return record !== null && record.pendingSetup?.local !== true
+  }
+
+  private localRun(sessionId: string, recover = false): Promise<void> {
+    const current = this.localRuns.get(sessionId)
+    if (current !== undefined) return current
+    const work = this.performLocalBefore(sessionId, recover).catch(async (error: unknown) => {
+      await this.applyBeforeFailed(sessionId, ErrorText.of(error))
+    }).finally(() => { this.localRuns.delete(sessionId) })
+    this.localRuns.set(sessionId, work)
+    return work
+  }
+
+  private async performLocalBefore(sessionId: string, recover: boolean): Promise<void> {
+    const runId = await this.localBefore.run(sessionId, recover)
+    const record = this.records.get(sessionId)
+    const worktree = record?.worktree
+    if (record === null || worktree === undefined || record.pendingSetup === undefined)
+      throw new Error('The completed checkout lost its setup owner')
+    const project = SetupFlow.setupProjectOf(record.directory, worktree)
+    if (project === null) throw new Error('The completed checkout has no setup project')
+    const read = await this.agreement.declared(project)
+    const agreement = this.agreement.gate(project, read, undefined)
+    if (agreement !== null) throw new Error(agreement.ok ? 'Setup agreement changed' : agreement.detail)
+    const plan = await this.beforePlanOf(read, project, worktree.repositoryRoot, worktree.worktreePath, SetupFlow.setupScopeOf(worktree), true)
+    const completed = record.pendingSetup.steps!.slice(0, (record.pendingSetup.cursor ?? 0) + 1)
+    const steps = [...completed, ...plan.kind === 'run' ? plan.steps : []]
+    const skipped = plan.kind === 'skip' ? plan : plan.skipped
+    if (!await this.records.update(sessionId, (latest) => latest.pendingSetup === undefined ? null
+      : { ...latest, setupSkipped: skipped === null ? undefined : { reason: skipped.reason },
+        pendingSetup: { ...latest.pendingSetup, setupSessionId: runId, steps } }))
+      throw new Error('The completed before step could not be recorded')
+    await this.applyBeforeSucceeded(sessionId)
   }
 
   /** The run of one step of a parent's before chain, not yet written. */
@@ -271,8 +331,12 @@ export class SetupFlow {
    * exists to open, one door further along.
    */
   async retrySetup(sessionId: string, acknowledgeSetup?: string): Promise<SessionsOpResult> {
+    const hostProblem = this.hostGate?.problemOf(true)
+    if (hostProblem) return { ok: false, code: 'host-unreachable', detail: hostProblem }
     const record = this.records.get(sessionId)
     if (!record) return OperationOutcomes.notFound(sessionId)
+    const held = await this.launch.startRefusal(record)
+    if (held) return held
     // `pendingSetup` on a record that is over IS the marker of a failed setup: every path that puts a
     // runtime of its own behind the session clears it, and a live or starting session has one coming.
     if (!record.pendingSetup || (record.life !== 'ended' && record.life !== 'lost'))
@@ -281,8 +345,6 @@ export class SetupFlow {
         code: 'invalid-spec',
         detail: `Session ${sessionId} has no failed setup to retry`,
       }
-    const held = await this.launch.startRefusal(record)
-    if (held) return held
     /*
      * Every retry is a new run under a new id, so each attempt keeps its own history entry and its own
      * log, and the failed one collapses as superseded once its parent names the new one. It also means
@@ -316,8 +378,14 @@ export class SetupFlow {
     // read answers both the question and what runs, so nothing can change the file in between.
     const read = await this.agreement.declared(projectRoot)
     const agreement = this.agreement.gate(projectRoot, read, acknowledgeSetup)
-    if (agreement) return agreement
-    const plan = await this.beforePlanOf(read, projectRoot, worktree.repositoryRoot, worktree.worktreePath)
+    if (agreement) {
+      if (!agreement.ok && agreement.setup !== undefined)
+        await this.records.put({ ...record, pendingSetup: { ...record.pendingSetup, agreement: agreement.setup } })
+      return agreement
+    }
+    const checkedOut = record.pendingSetup.steps?.[0]?.scriptId === 'svn'
+      && ScriptChain.firstDue(record.pendingSetup.steps.slice(0, 1), this.chainEvidenceOf(record)) === 1
+    const plan = await this.beforePlanOf(read, projectRoot, worktree.repositoryRoot, worktree.worktreePath, SetupFlow.setupScopeOf(worktree), checkedOut)
     // The checkout is no resolution of the file: the one the chain was created with leads it again.
     const first = record.pendingSetup.steps?.[0]
     const lead = first?.scriptId === 'svn' ? [first] : []
@@ -337,7 +405,7 @@ export class SetupFlow {
     // Every step already succeeded: what failed was a run whose step a later attempt had passed.
     if (cursor === steps.length) return this.startWithoutSetup(record, skipped, plan.kind === 'skip' ? plan : null)
     // A failed checkout may leave half a working copy, which a second checkout cannot take.
-    if (steps[cursor].scriptId === 'svn') {
+    if (steps[cursor].scriptId === 'svn' && record.pendingSetup.local !== true) {
       const purged = await this.worktrees.purgeReserved(worktree)
       if (!purged.ok) return purged
     }
@@ -402,6 +470,13 @@ export class SetupFlow {
     cursor: number,
     skipped: SetupSkip | null,
   ): Promise<SessionsOpResult> {
+    if (this.localBefore.accepts(steps[cursor])) {
+      if (!await this.records.put({ ...this.rearmed(record, this.newId()),
+        pendingSetup: { local: true, setupSessionId: this.newId(), steps, cursor },
+        setupSkipped: skipped === null ? undefined : { reason: skipped.reason } })) return OperationOutcomes.latched()
+      this.detach(this.localRun(record.sessionId, true), `Retry before step of ${record.sessionId}`)
+      return { ok: true, value: undefined }
+    }
     const run = this.runOf(record.sessionId, steps, cursor, worktree.worktreePath)
     if (!await this.records.put(run)) return OperationOutcomes.latched()
     if (!await this.records.put({
@@ -464,7 +539,25 @@ export class SetupFlow {
     const next = (gate.cursor ?? 0) + 1
     if (gate.steps !== undefined && next < gate.steps.length)
       return this.startStep(record, gate.setupSessionId, gate.steps, next)
-    if (!await this.records.put({ ...record, pendingSetup: undefined })) return null
+    let worktree = record.worktree
+    if (worktree?.kind === 'svn') {
+      try {
+        const changed = await this.svn.changes(worktree.worktreePath)
+        if (!changed.ok) throw new Error(changed.detail)
+        const hashes = await this.svn.commitHashes(worktree.worktreePath, changed.value.map((row) => row.path))
+        if (!hashes.ok) throw new Error(hashes.detail)
+        const assembly = await this.svn.assembly(worktree.worktreePath)
+        if (!assembly.ok) throw new Error(assembly.detail)
+        const inputs = SetupInputs.of(assembly.value.nodes)
+        worktree = { ...worktree, setupBaseline: { at: this.now(), hashes: hashes.value, inputs: inputs.digest, inputHashes: inputs.hashes,
+          commands: SetupInputs.commands(gate.steps ?? []) } }
+      }
+      catch (error) {
+        await this.applyBeforeFailed(sessionId, `Setup baseline could not be saved: ${ErrorText.of(error)}`)
+        return null
+      }
+    }
+    if (!await this.records.put({ ...record, worktree, pendingSetup: undefined })) return null
     return this.launch.replayLaunch({
       kind: 'retry-launch',
       sessionId,
@@ -558,8 +651,25 @@ export class SetupFlow {
     projectRoot: string,
     repositoryRoot: string,
     worktreePath: string,
+    scope?: SetupScope,
+    checkedOut = false,
   ): Promise<BeforePlan> {
-    return this.beforePlanOf(await this.agreement.declared(projectRoot), projectRoot, repositoryRoot, worktreePath)
+    return this.beforePlanOf(await this.agreement.declared(projectRoot), projectRoot, repositoryRoot, worktreePath, scope, checkedOut)
+  }
+
+  /** The digest of the setup a worktree runs now, and its dependency install alone, which a Finish may run again. */
+  async environmentOf(record: SessionRecord, read: DeclaredCommandsRead): Promise<{ commands: string; install?: SessionRecordScriptStep } | undefined> {
+    const worktree = record.worktree
+    if (worktree === undefined) return undefined
+    const project = SetupFlow.setupProjectOf(record.directory, worktree)
+    if (project === null) return undefined
+    const plan = await this.beforePlanOf(read, project, worktree.repositoryRoot, worktree.worktreePath, SetupFlow.setupScopeOf(worktree), true)
+    if (plan.kind === 'skip') return undefined
+    else if (plan.kind === 'run') {
+      const commands = SetupInputs.commands(plan.steps), install = plan.steps.find((step) => step.scriptId === 'setup')
+      return commands === undefined ? undefined : { commands, ...install === undefined ? {} : { install } }
+    }
+    else throw new Error(`Unknown before plan: ${JSON.stringify(plan satisfies never)}`)
   }
 
   private async beforePlanOf(
@@ -567,8 +677,10 @@ export class SetupFlow {
     projectRoot: string,
     repositoryRoot: string,
     worktreePath: string,
+    scope?: SetupScope,
+    checkedOut = false,
   ): Promise<BeforePlan> {
-    if (read.kind === 'read') return this.beforePlanOfRead(read, projectRoot, repositoryRoot, worktreePath)
+    if (read.kind === 'read') return this.beforePlanOfRead(read, projectRoot, repositoryRoot, worktreePath, scope, checkedOut)
     // Nothing of a file that cannot be read, or whose scripts nobody can be shown, runs; not even a
     // machine install, since the file is the project's word on what replaces it.
     else if (read.kind === 'unreadable' || read.kind === 'damaged') return SetupFlow.skipOf(worktreePath, read.problem)
@@ -580,8 +692,13 @@ export class SetupFlow {
     projectRoot: string,
     repositoryRoot: string,
     worktreePath: string,
+    scope?: SetupScope,
+    checkedOut = false,
   ): Promise<BeforePlan> {
-    const resolution = await this.setup.resolve(projectRoot, repositoryRoot, read.config)
+    const projectPath = SetupPaths.relativeOf(repositoryRoot, projectRoot)
+    if (projectPath === null) return SetupFlow.skipOf(worktreePath, 'The setup project is outside its repository')
+    const resolution = await this.setup.resolve(checkedOut ? join(worktreePath, projectPath) : projectRoot,
+      checkedOut ? worktreePath : repositoryRoot, read.config, scope)
     const declared = read.value?.scripts.before ?? []
     const runsAnything = resolution.kind === 'setup' || declared.length > 0
     if (runsAnything && !this.agreement.agreed(projectRoot, read)) {
@@ -645,6 +762,16 @@ export class SetupFlow {
     if (kind === 'git') return directory.mode === 'project' ? directory.projectPath : null
     else if (kind === 'svn') return worktree.repositoryRoot
     else throw new Error(`Unknown worktree kind: ${JSON.stringify(kind satisfies never)}`)
+  }
+
+  static setupScopeOf(worktree: SessionRecordWorktree): SetupScope {
+    if (worktree.setupScope !== undefined) return worktree.setupScope
+    // Old group checkouts retain member setup even after the main-copy marker is migrated.
+    const kind = worktree.kind ?? 'git'
+    if (kind === 'git') return 'project'
+    else if (kind === 'svn')
+      return existsSync(join(worktree.repositoryRoot, ProductGroup.markerConst)) ? 'members' : 'project'
+    else throw new Error(`Unknown worktree kind: ${kind satisfies never}`)
   }
 
   /**

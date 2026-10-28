@@ -1,5 +1,10 @@
 import type { SessionGroup } from './sessionManagerApi.types'
 
+export interface SessionGroupDefinition {
+  id: SessionGroup
+  title: string
+}
+
 /**
  * What a group id may look like, and the two ids nothing may take away.
  *
@@ -15,6 +20,34 @@ import type { SessionGroup } from './sessionManagerApi.types'
  * target does not have is refused by the target, by name, which is the only place that knows.
  */
 export class SessionGroups {
+  static readonly maxGroupsConst = 24
+
+  static isDefinition(value: unknown): value is SessionGroupDefinition {
+    if (value === null || typeof value !== 'object') return false
+    const definition = value as { id?: unknown; title?: unknown }
+    return SessionGroups.isId(definition.id) && SessionGroups.isTitle(definition.title)
+  }
+
+  static definitionsProblemOf(value: unknown): string | null {
+    if (!Array.isArray(value)) return 'session groups must be an array'
+    if (value.length > SessionGroups.maxGroupsConst)
+      return `session groups must hold at most ${SessionGroups.maxGroupsConst} groups`
+    const ids = new Set<string>()
+    for (const definition of value) {
+      if (!SessionGroups.isDefinition(definition))
+        return `every session group needs an id (${SessionGroups.idRuleConst}) and a title of at most `
+          + `${SessionGroups.titleMaxLengthConst} characters`
+      if (ids.has(definition.id)) return `session group ${JSON.stringify(definition.id)} is listed twice`
+      ids.add(definition.id)
+    }
+    for (const id of SessionGroups.structuralConst)
+      if (!ids.has(id)) return `session groups must keep ${JSON.stringify(id)}`
+    return null
+  }
+
+  static isList(value: unknown): value is readonly SessionGroupDefinition[] {
+    return SessionGroups.definitionsProblemOf(value) === null
+  }
   /** No group: a session put back into Sessions on purpose, which outranks what its project says. */
   static readonly noneConst: SessionGroup = 'none'
   /** What the pin-only surfaces write, and the reason this one cannot be removed either. */

@@ -1,3 +1,4 @@
+import { TerminalTargetCodec } from '../../../shared/terminalTarget'
 import type { IDockviewPanelHeaderProps } from 'dockview'
 import { useCallback, useState, useSyncExternalStore } from 'react'
 
@@ -19,7 +20,7 @@ import './tabs.css'
 export type CustomTabProps = IDockviewPanelHeaderProps & {
   controller: TabsController
   commands: CommandRegistry
-  sessionFacts(sessionId: string): TabSessionFacts | null
+  sessionFacts(sessionId: string, remoteEndpointId?: string): TabSessionFacts | null
   /** Where the panel behind this tab said its caret is, for the click below to hand it back. */
   panelFocus: PanelFocusRegistry
 }
@@ -92,11 +93,11 @@ export function CustomTab(props: CustomTabProps): React.JSX.Element {
         // Activated BEFORE the menu opens: every command in the menu acts on the active panel, so a
         // menu opened on an inactive tab would otherwise close or split a different tab.
         api.setActive()
-        const sessionId = props.params.sessionId
+        const target = TerminalTargetCodec.read(props.params)?.target
         setMenu({
           position: { x: event.clientX, y: event.clientY },
-          facts: typeof sessionId === 'string' && sessionId.length > 0
-            ? props.sessionFacts(sessionId)
+          facts: target
+            ? props.sessionFacts(target.sessionId, TerminalTargetCodec.endpointOf(target) ?? undefined)
             : null,
         })
       }}

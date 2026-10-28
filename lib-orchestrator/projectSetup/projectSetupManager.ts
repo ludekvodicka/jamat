@@ -10,6 +10,7 @@ import type {
   PlatformSettingsValue,
   SetupDetector,
   SetupResolution,
+  SetupScope,
   SetupStep,
   SetupToolId,
 } from './projectSetup.types'
@@ -67,8 +68,15 @@ export class ProjectSetupManager {
    * `config` is what the project's `.worktree.json` says about `setup`, read by the caller: the caller
    * checks the agreement over that same read, so what resolves here is what was agreed to.
    */
-  async resolve(projectRoot: string, repositoryRoot: string, config: WorktreeConfigRead): Promise<SetupResolution> {
+  async resolve(projectRoot: string, repositoryRoot: string, config: WorktreeConfigRead, scope?: SetupScope): Promise<SetupResolution> {
     if (!config.ok) return { kind: 'none', reason: config.problem }
+    if (scope === undefined) {
+      const group = ProductGroup.readAt(projectRoot)
+      if (!group.ok) return { kind: 'none', reason: group.detail }
+      if (group.kind === 'product') scope = 'members'
+      else if (group.kind === 'collection' || group.kind === null) scope = 'project'
+      else throw new Error(`Unknown group kind: ${group.kind satisfies never}`)
+    }
     // The step's directory is repository-relative or there is no step: a project outside the
     // repository its worktree was cut from would otherwise be installed in the real checkout.
     const projectCwd = SetupPaths.relativeOf(repositoryRoot, projectRoot)
@@ -90,10 +98,9 @@ export class ProjectSetupManager {
     if (root.kind === 'steps') return { kind: 'setup', origin: 'machine', steps: root.steps }
     else if (root.kind === 'refused') return { kind: 'none', reason: root.reason }
     else if (root.kind !== 'nothing') throw new Error(`Unknown detection at the root: ${JSON.stringify(root)}`)
-    // An SVN worktree of a product group checks out the whole group, and the group root is no project
-    // of its own: what installs is each member, the way each member's own checkout would install.
-    if (!await SetupPaths.isFile(join(projectRoot, ProductGroup.markerConst)))
+    if (scope === 'project')
       return { kind: 'none', reason: ProjectSetupManager.nothingDetectedConst }
+    else if (scope !== 'members') throw new Error(`Unknown setup scope: ${scope satisfies never}`)
     const steps: SetupStep[] = []
     for (const member of await ProjectSetupManager.membersOf(projectRoot)) {
       const memberCwd = projectCwd === '' ? member : `${projectCwd}/${member}`

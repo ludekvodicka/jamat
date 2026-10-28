@@ -31,6 +31,13 @@ describe('lib-orchestrator/remoteControl/remoteControlInstanceRegistry', () => {
     rmSync(root, { recursive: true, force: true })
   })
 
+  it('accepts a complete empty registry and rejects a directory symlink', () => {
+    expect(RemoteControlInstanceRegistry.readComplete(registry)).toEqual([])
+    const linked = join(root, 'linked-registry')
+    symlinkSync(registry, linked, 'junction')
+    expect(() => RemoteControlInstanceRegistry.readComplete(linked)).toThrow('real directory')
+  })
+
   it('builds stable, distinct files for each controller instance', () => {
     const development = RemoteControlInstanceRegistry.fileOf(
       'config-1', 'development', 'instance-1', 1_000,
@@ -116,6 +123,8 @@ describe('lib-orchestrator/remoteControl/remoteControlInstanceRegistry', () => {
     symlinkSync(target, join(registry, 'linked.json'), 'junction')
 
     expect(RemoteControlInstanceRegistry.read(registry)).toEqual([valid])
+    expect(() => RemoteControlInstanceRegistry.readComplete(registry)).toThrow('Cannot verify')
+    expect(() => RemoteControlInstanceRegistry.readComplete(join(root, 'missing'))).toThrow()
     expect(RemoteControlInstanceRegistry.read(join(root, 'missing'))).toEqual([])
   })
 
@@ -133,6 +142,7 @@ describe('lib-orchestrator/remoteControl/remoteControlInstanceRegistry', () => {
 
     expect(RemoteControlInstanceRegistry.read(registry))
       .toHaveLength(RemoteControlInstanceRegistry.entriesMaximumConst)
+    expect(() => RemoteControlInstanceRegistry.readComplete(registry)).toThrow('incomplete')
   })
 })
 

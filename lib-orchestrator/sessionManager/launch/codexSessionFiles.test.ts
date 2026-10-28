@@ -75,6 +75,19 @@ it('keeps gated launches free of YOLO overrides', () => {
   }
 })
 
+it('keeps both account homes in the bridge environment while retaining the same resume thread', () => {
+  const { files } = harness()
+  const env = { CODEX_HOME: 'C:/fixture/added', CODEX_SQLITE_HOME: 'C:/fixture/main', JAMAT_V3_SESSION_ID: 'tab' }
+  const native = { command: 'codex', args: ['resume', nativeId], cwd: 'Q:/work', env, cols: 120, rows: 30 }
+  const switched: SessionRecord = { ...record, pendingOperationKind: 'reopen',
+    agent: { ...record.agent!, accountId: 'added', nativeSessionId: nativeId } }
+  const wrapped = files.launch(switched, native, ['resume', nativeId], {})
+  expect(wrapped.env).toEqual(env)
+  const launch = JSON.parse(readFileSync(wrapped.args.at(-1)!, 'utf8'))
+  expect(launch).toMatchObject({ mode: 'resume', nativeSessionId: nativeId, client: { args: ['resume', nativeId] } })
+  expect(launch).not.toHaveProperty('env')
+})
+
 it('refuses path traversal in a persisted launch identity', () => {
   const {files} = harness()
   expect(files.identity({...record, agent: {...record.agent!, identityLaunchId: '../other'}})).toBeNull()

@@ -47,8 +47,8 @@ describe('app-client-ui/renderer/fileViewer/useFileChanges', () => {
     return { groupId, label: groupId, createdAt: 1, entries: [] } as unknown as FileChangeGroup
   }
 
-  function Harness(props: { enabled?: boolean }): React.JSX.Element {
-    model = useFileChanges('session-1', props.enabled ?? true)
+  function Harness(props: { enabled?: boolean; ports?: AppClientUiBridge['fileChanges'] }): React.JSX.Element {
+    model = useFileChanges('session-1', props.ports ?? window.appClient.fileChanges, props.enabled ?? true)
     return <div />
   }
 
@@ -182,4 +182,28 @@ describe('app-client-ui/renderer/fileViewer/useFileChanges', () => {
     await settle(lists[1], listAnswer(snapshotOf('current', 'group-2', 'cursor-2')))
     expect(read().snapshot?.snapshotId).to.equal('current')
   })
+  it('reloads an expired history snapshot through its injected owner', async () => {
+    render(<Harness />)
+    await settle(lists[0], listAnswer(snapshotOf('expired', 'old', 'cursor')))
+    act(() => { void read().loadMore() })
+    await settle(histories[0], { ok: true, value: { ok: false, code: 'snapshot-expired', detail: 'expired' } })
+    expect(lists).toHaveLength(2)
+    await settle(lists[1], listAnswer(snapshotOf('fresh', 'fresh-group', null)))
+    expect(read().snapshot?.snapshotId).toBe('fresh')
+    expect(read().groups.map((group) => group.groupId)).toEqual(['fresh-group'])
+  })
+
+  it('drops a pending read when injected target ports change for the same session ID', async () => {
+    const first = pending<unknown>()
+    const second = pending<unknown>()
+    const ports = { list: () => first.promise } as unknown as AppClientUiBridge['fileChanges']
+    const next = { list: () => second.promise } as unknown as AppClientUiBridge['fileChanges']
+    const view = render(<Harness ports={ports} />)
+    view.rerender(<Harness ports={next} />)
+    await settle(second, listAnswer(snapshotOf('source-two', 'group-two', null)))
+    await settle(first, listAnswer(snapshotOf('source-one', 'group-one', null)))
+    expect(read().snapshot?.snapshotId).toBe('source-two')
+    expect(lists).toHaveLength(0)
+  })
+
 })

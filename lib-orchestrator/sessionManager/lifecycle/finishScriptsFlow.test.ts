@@ -56,6 +56,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/finishScriptsFlow', () => {
     let minted = 0
     const flow = new FinishScriptsFlow({
       records: store,
+      setup: { environmentOf: async () => undefined },
       agreement,
       runs: {
         async launch(run) {

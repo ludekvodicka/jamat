@@ -64,6 +64,7 @@ export class RateLimitSourceClaude implements RateLimitSource {
   private static readonly expiryMarginMillisecondsConst = 30_000
 
   readonly agentId = 'claude' as const
+  readonly minimumIntervalMilliseconds = 180_000
 
   private readonly credentials: ClaudeCredentialsReader
   private readonly transport: ClaudeUsageTransport

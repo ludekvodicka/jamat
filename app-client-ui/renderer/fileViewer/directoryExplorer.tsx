@@ -1,3 +1,4 @@
+import type { SessionDirectoryPorts } from '../../shared/sessionWorkspace'
 import { Fragment, useEffect, useRef, useState } from 'react'
 
 import type {
@@ -6,11 +7,14 @@ import type {
   FileViewerDocument,
 } from '../../../lib-orchestrator/fileViewer/fileViewerApi.types'
 import { DirectoryEntryContextMenu } from './directoryEntryContextMenu'
+import { FileImageSource } from './fileImageSource'
+import { useImageViewer } from './imageViewer'
 import './fileTools.css'
 
 interface DirectoryEntryMenuState {
   entry: FileViewerDirectoryEntry
   position: { x: number; y: number }
+  origin: HTMLButtonElement
 }
 
 export type DirectoryExplorerPathMode = 'relative' | 'absolute'
@@ -62,6 +66,7 @@ export interface DirectoryExplorerBreadcrumb {
 }
 
 export function DirectoryExplorer(props: {
+  ports: SessionDirectoryPorts
   sessionId: string
   documentId: string | null
   /** Where to start, when it is not this session's own root. Main proves the path on every read. */
@@ -70,6 +75,7 @@ export function DirectoryExplorer(props: {
   onOpen(document: FileViewerDocument): void
 }): React.JSX.Element {
   const settings = directoryExplorerSettingsOf(props.place)
+  const image = useImageViewer()
   const [directory, setDirectory] = useState<FileViewerDirectory | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -87,13 +93,13 @@ export function DirectoryExplorer(props: {
     setError(null)
     let read
     if (props.documentId !== null)
-      read = window.appClient.fileViewer.documentDirectory(props.documentId)
+      read = props.ports.documentDirectory(props.documentId)
     else if (props.targetPath !== null)
-      read = window.appClient.fileViewer.directoryAt(props.sessionId, props.targetPath)
+      read = props.ports.directoryAt(props.sessionId, props.targetPath)
     else if (settings.rootMode === 'workspace')
-      read = window.appClient.fileViewer.rootDirectory(props.sessionId)
+      read = props.ports.rootDirectory(props.sessionId)
     else if (settings.rootMode === 'project')
-      read = window.appClient.fileViewer.projectDirectory(props.sessionId)
+      read = props.ports.projectDirectory(props.sessionId)
     else
       throw new Error(`Unknown directory root mode: ${JSON.stringify(settings.rootMode)}`)
     void read.then((answer) => {
@@ -107,7 +113,7 @@ export function DirectoryExplorer(props: {
       alive = false
       navigation.current += 1
     }
-  }, [props.documentId, props.place, props.sessionId, props.targetPath])
+  }, [props.documentId, props.place, props.sessionId, props.targetPath, props.ports])
 
   useEffect(() => {
     mounted.current = true
@@ -138,7 +144,7 @@ export function DirectoryExplorer(props: {
 
   const settle = (
     current: number,
-    answer: Awaited<ReturnType<typeof window.appClient.fileViewer.directoryEntry>>,
+    answer: Awaited<ReturnType<SessionDirectoryPorts['directoryEntry']>>,
   ): void => {
     if (current !== navigation.current) return
     if (!answer.ok) setError(answer.error)
@@ -147,7 +153,7 @@ export function DirectoryExplorer(props: {
   }
 
   const update = async (
-    operation: ReturnType<typeof window.appClient.fileViewer.directoryEntry>,
+    operation: ReturnType<SessionDirectoryPorts['directoryEntry']>,
   ): Promise<void> => {
     await walk(async () => {
       const current = navigation.current
@@ -161,7 +167,7 @@ export function DirectoryExplorer(props: {
       const current = navigation.current
       let next = directory
       for (let index = 0; index < parents; index += 1) {
-        const answer = await window.appClient.fileViewer.parentDirectory(next.directoryId)
+        const answer = await props.ports.parentDirectory(next.directoryId)
         if (current !== navigation.current) return
         if (!answer.ok) {
           setError(answer.error)
@@ -180,15 +186,15 @@ export function DirectoryExplorer(props: {
   const open = async (entry: FileViewerDirectoryEntry): Promise<void> => {
     if (!directory || !entry.openable) return
     if (entry.targetKind === 'directory') {
-      await update(window.appClient.fileViewer.directoryEntry(directory.directoryId, entry.entryId))
+      await update(props.ports.directoryEntry(directory.directoryId, entry.entryId))
       return
     }
     if (entry.targetKind === 'file') {
       const current = ++navigation.current
-      const answer = await window.appClient.fileViewer.openEntry(directory.directoryId, entry.entryId)
+      const answer = await props.ports.openEntry(directory.directoryId, entry.entryId)
       if (!mounted.current || current !== navigation.current) {
         if (answer.ok && answer.value.ok)
-          await window.appClient.fileViewer.release(answer.value.value.documentId)
+          await props.ports.release(answer.value.value.documentId)
         return
       }
       if (!answer.ok) setError(answer.error)
@@ -208,7 +214,7 @@ export function DirectoryExplorer(props: {
           aria-label="Parent directory"
           onClick={() => {
             if (directory)
-              void update(window.appClient.fileViewer.parentDirectory(directory.directoryId))
+              void update(props.ports.parentDirectory(directory.directoryId))
           }}
         >
           ↑
@@ -255,11 +261,12 @@ export function DirectoryExplorer(props: {
                 disabled={!entry.openable}
                 title={entry.detail ?? entry.path}
                 onContextMenu={(event) => {
-                  if (!settings.entryContextMenu || !entry.openable) return
+                  if (!entry.openable || (!settings.entryContextMenu && !FileImageSource.supports(entry))) return
                   event.preventDefault()
                   setEntryMenu({
                     entry,
                     position: { x: event.clientX, y: event.clientY },
+                    origin: event.currentTarget,
                   })
                 }}
                 onDoubleClick={() => {
@@ -285,9 +292,14 @@ export function DirectoryExplorer(props: {
           entry={entryMenu.entry}
           position={entryMenu.position}
           onView={() => void open(entryMenu.entry)}
+          onImageFullScreen={() => {
+            entryMenu.origin.focus()
+            if (directory) image.open(FileImageSource.directory(props.ports, directory.directoryId, entryMenu.entry))
+          }}
           onClose={() => setEntryMenu(null)}
         />
       )}
+      {image.viewer}
       {directory?.truncated && <p className="file-tools-warning">Directory listing is truncated.</p>}
     </div>
   )

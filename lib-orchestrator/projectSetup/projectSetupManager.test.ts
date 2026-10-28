@@ -164,7 +164,7 @@ describe('lib-orchestrator/projectSetup/projectSetupManager', () => {
     const pnpmMember = { 'package.json': '{}', 'pnpm-lock.yaml': '' }
 
     function group(members: Record<string, Record<string, string>>, own: Record<string, string> = {}): string {
-      const files: Record<string, string> = { '.appgroup': '', ...own }
+      const files: Record<string, string> = { '.appgroup': '{"kind":"product"}', ...own }
       for (const [member, memberFiles] of Object.entries(members))
         for (const [name, content] of Object.entries(memberFiles))
           files[`${member}/${name}`] = content
@@ -184,7 +184,7 @@ describe('lib-orchestrator/projectSetup/projectSetupManager', () => {
     })
 
     it('keeps the group directory in each member path when the group sits below the repository root', async () => {
-      const root = repository({ 'Group/.appgroup': '', 'Group/A/package.json': '{}', 'Group/A/pnpm-lock.yaml': '' })
+      const root = repository({ 'Group/.appgroup': '{"kind":"product"}', 'Group/A/package.json': '{}', 'Group/A/pnpm-lock.yaml': '' })
       expect(await resolved(harness().manager, join(root, 'Group'), root)).toMatchObject({
         steps: [{ command: 'pnpm install', cwd: 'Group/A' }],
       })
@@ -260,5 +260,28 @@ describe('lib-orchestrator/projectSetup/projectSetupManager', () => {
     expect(await resolved(manager, root, root)).toMatchObject({ kind: 'none' })
     expect(JSON.parse(readFileSync(join(root, '.worktree.json'), 'utf8')))
       .toEqual({ dev: 'pnpm dev' })
+  })
+
+  it.each(['', '{"kind":"collection"}'])('never installs sibling apps for a collection marker %j', async (marker) => {
+    const root = repository({ '.appgroup': marker, 'A/package.json': '{}', 'B/package.json': '{}' })
+    const manager = harness().manager
+    expect(await resolved(manager, root, root)).toMatchObject({ kind: 'none' })
+    expect(await resolved(manager, join(root, 'A'), join(root, 'A')))
+      .toMatchObject({ steps: [{ command: 'npm install', cwd: '' }] })
+  })
+
+  it('keeps a recorded member setup after migration and a recorded project setup after reclassification', async () => {
+    const root = repository({ '.appgroup': '{"kind":"collection"}', 'A/package.json': '{}' })
+    const manager = harness().manager
+    expect(await manager.resolve(root, root, await WorktreeConfig.read(root), 'members'))
+      .toMatchObject({ steps: [{ command: 'npm install', cwd: 'A' }] })
+    writeFileSync(join(root, '.appgroup'), '{"kind":"product"}')
+    expect(await manager.resolve(root, root, await WorktreeConfig.read(root), 'project')).toMatchObject({ kind: 'none' })
+  })
+
+  it('refuses malformed group metadata before any automatic setup', async () => {
+    const root = repository({ '.appgroup': '{', 'package.json': '{}', 'A/package.json': '{}' })
+    expect(await resolved(harness().manager, root, root))
+      .toMatchObject({ kind: 'none', reason: expect.stringContaining('not valid JSON') })
   })
 })

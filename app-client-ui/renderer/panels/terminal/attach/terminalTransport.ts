@@ -77,11 +77,7 @@ export interface TerminalAttachTransport {
  * half-working paths.
  */
 export interface TerminalTransport {
-  /**
-   * Whether the surfaces only this machine's Host can answer belong on this panel: the file changes
-   * it reads, the file tools sidebar, the post-mortem block and the bar's input registry. A remote
-   * session has none of them, because every one of those subsystems answers for this machine alone.
-   */
+  /** Local terminal tools; shared workspace panes negotiate their own capabilities at composition. */
   readonly localTools: boolean
   /** What a screen reader is told this panel is. */
   readonly label: string
@@ -91,10 +87,10 @@ export interface TerminalTransport {
 }
 
 export class TerminalTransports {
-  static of(target: TerminalTarget): TerminalTransport {
+  static of(target: TerminalTarget, detect?: TerminalAttachTransport['detect']): TerminalTransport {
     if (target.kind === 'local') return TerminalTransports.local(target.sessionId)
     else if (target.kind === 'remote')
-      return TerminalTransports.remote(target.remoteEndpointId, target.sessionId)
+      return TerminalTransports.remote(target.remoteEndpointId, target.sessionId, detect)
     else
       throw new Error(`Unknown terminal target: ${JSON.stringify(target)}`)
   }
@@ -137,7 +133,7 @@ export class TerminalTransports {
     }
   }
 
-  private static remote(remoteEndpointId: string, sessionId: string): TerminalTransport {
+  private static remote(remoteEndpointId: string, sessionId: string, detect?: TerminalAttachTransport['detect']): TerminalTransport {
     return {
       localTools: false,
       label: `Remote terminal ${remoteEndpointId} for session ${sessionId}`,
@@ -175,6 +171,7 @@ export class TerminalTransports {
           return answer.value.value
         },
         agentSharesClipboard: false,
+        ...(detect ? { detect } : {}),
         onFrame: (handler) => window.appClient.onRemoteTerminalFrame((endpointId, id, frame) => {
           if (endpointId === remoteEndpointId && id === attachId) handler(frame)
         }),

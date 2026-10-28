@@ -1,3 +1,4 @@
+import { AppControl } from '../../ipc/appControl'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -7,6 +8,7 @@ import type { SessionTasksNode, TaskRowNode } from './sessionsTreeModel'
 
 describe('app-client-ui/renderer/views/sessionsTree/sessionTaskRows', () => {
   afterEach(() => cleanup())
+  const onOpen = (row: TaskRowNode, title: string) => { void AppControl.call('sessionTasks.open', { sessionId: row.sessionId, task: row.task, title }) }
 
   function row(subagentId: string, fields: Partial<TaskRowNode> = {}): TaskRowNode {
     return {
@@ -33,7 +35,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionTaskRows', () => {
   }
 
   function Harness(): React.JSX.Element {
-    return <SessionTaskRows tasks={tasks} />
+    return <SessionTaskRows onOpen={onOpen} tasks={tasks} />
   }
 
   function drawnIds(container: HTMLElement): string[] {
@@ -53,12 +55,12 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionTaskRows', () => {
   })
 
   it('prefixes each row with the session number only when the rows stand beside the session', () => {
-    const nested = render(<SessionTaskRows tasks={tasks} />)
+    const nested = render(<SessionTaskRows onOpen={onOpen} tasks={tasks} />)
     expect(nested.container.querySelector('.jamat-sessions__task-number')).toBeNull()
     nested.unmount()
 
     const { container } = render(
-      <SessionTaskRows tasks={{ ...tasks, placement: 'beside', numberPrefix: '018' }} />,
+      <SessionTaskRows onOpen={onOpen} tasks={{ ...tasks, placement: 'beside', numberPrefix: '018' }} />,
     )
     expect([...container.querySelectorAll('.jamat-sessions__task-number')].map((node) => node.textContent))
       .toEqual(['018', '018', '018', '018', '018'])
@@ -87,7 +89,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionTaskRows', () => {
       depth: 1,
     }
     const { container } = render(
-      <SessionTaskRows tasks={{ ...tasks, rows: [shell] }} />,
+      <SessionTaskRows onOpen={onOpen} tasks={{ ...tasks, rows: [shell] }} />,
     )
 
     const drawn = container.querySelector<HTMLElement>('[data-task="task:s-1:shell:b1"]')!
@@ -103,7 +105,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionTaskRows', () => {
   })
 
   it('draws no finished row when nothing finished', () => {
-    render(<SessionTaskRows tasks={{ ...tasks, rows: [] }} />)
+    render(<SessionTaskRows onOpen={onOpen} tasks={{ ...tasks, rows: [] }} />)
 
     expect(screen.queryByRole('button', { name: /finished/ })).toBeNull()
   })

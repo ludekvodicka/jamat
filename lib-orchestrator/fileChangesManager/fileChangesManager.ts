@@ -151,18 +151,23 @@ export class FileChangesManager {
     requested: FileChangesWorkingTreeSource | null,
     forCommit = false,
     filePath?: string,
+    includedPaths: readonly string[] = [],
   ): Promise<FileChangesWorkingTreeSnapshotResult> {
     const invalid = await FileChangesManager.invalidContext(context)
     if (invalid !== null) return { ok: false, code: 'invalid-context', detail: invalid }
     if (filePath !== undefined && (!forCommit || !PathCompare.isInside(context.cwd, filePath)
       || requested !== 'svn' && requested !== 'git'))
       return { ok: false, code: 'invalid-context', detail: 'A file read requires an SVN or Git commit path inside its scope' }
+    if (includedPaths.length > 0 && (!forCommit || requested !== 'svn' && requested !== 'git'
+      || includedPaths.some((path) => !PathCompare.isInside(context.cwd, path))))
+      return { ok: false, code: 'invalid-context', detail: 'Explicit commit paths must be inside their SVN or Git scope' }
     const read = await this.workingSources.read(context, requested, filePath, forCommit)
     let vcsEntries = read.entries
     if (forCommit && read.selection.selected === 'svn') {
       // Untracked first: it can turn a new directory into the files under it, and a copied one
       // that is ALSO new to SVN must be walked as a copy rather than off disk.
-      try { vcsEntries = await this.svnCopied.expand(await this.svnUntracked.expand(vcsEntries)) }
+      try { vcsEntries = await this.svnCopied.expand(await this.svnUntracked.expand(vcsEntries,
+        filePath === undefined ? includedPaths : [...includedPaths, filePath])) }
       catch (error) { return { ok: false, code: 'invalid-context', detail: ErrorText.of(error) } }
     }
     if (filePath !== undefined) vcsEntries = vcsEntries.filter((entry) =>
@@ -179,10 +184,14 @@ export class FileChangesManager {
     const registry: FileRegistry = { ids: new Map(), files: new Map() }
     const entries = items.map((item) => this.publicEntry(item, item.absolutePath, registry))
     for (const item of items) {
-      const file = registry.files.get(registry.ids.get(PathCompare.comparable(item.absolutePath))!)!
+      const file = registry.files.get(registry.ids.get(PathCompare.normalized(item.absolutePath))!)!
       // Folder labels show the newest descendant; committing needs the node's own timestamp.
       const stamp = await lstat(item.absolutePath).then((value) => Math.round(value.mtimeMs)).catch(() => null)
       file.workingState = { modifiedAt: stamp, vcsEntry: item.repositoryPath !== null }
+      if (forCommit) {
+        try { file.workingState.fingerprint = await FileChangesFingerprint.of(item.absolutePath) }
+        catch (error) { return { ok: false, code: 'invalid-context', detail: ErrorText.of(error) } }
+      }
     }
     const baselines = new Map<string, SnapshotBaseline>()
     const defaultBaseline = read.selected === null
@@ -339,7 +348,7 @@ export class FileChangesManager {
     else if (baseline.kind === 'missing') return { ok: true, kind: 'missing', label: found.baseline.public.label }
     else if (baseline.kind === 'content') {
       if (baseline.content.includes('\0')) return { ok: true, kind: 'binary', detail: 'Baseline file is binary' }
-      return { ok: true, kind: 'content', content: baseline.content, label: found.baseline.public.label }
+      return { ok: true, kind: 'content', content: baseline.content.toString('utf8'), label: found.baseline.public.label }
     } else throw new Error(`Unknown baseline content: ${JSON.stringify(baseline)}`)
   }
 
@@ -369,7 +378,10 @@ export class FileChangesManager {
       )
       if (baseline.kind === 'unavailable')
         return { ok: true, kind: 'source-unavailable', detail: baseline.detail }
-      return this.diffBuilder.build({
+      const properties = found.baseline.ref.kind === selected.adapter.defaultBaselineRef.kind
+        && found.baseline.ref.revision === selected.adapter.defaultBaselineRef.revision
+        ? found.snapshot.working?.entries.find((entry) => entry.fileId === request.fileId)?.properties : undefined
+      const built = await this.diffBuilder.build({
         status: found.baselineFile.status,
         completeness: 'full',
         detail: null,
@@ -384,6 +396,7 @@ export class FileChangesManager {
           content: baseline.kind === 'content' ? baseline.content : null,
         },
       }, execution)
+      return FileChangesManager.withProperties(built, properties)
     }
     else if (found.baseline.kind === 'chat') {
       const text = FileChangesManager.currentText(current.content)
@@ -414,6 +427,12 @@ export class FileChangesManager {
     }
     else
       throw new Error(`Unknown snapshot baseline: ${JSON.stringify(found.baseline)}`)
+  }
+
+  /** A property change is part of the node's change whatever its content is, binary or too large included. */
+  private static withProperties(result: FileDiffResult, properties: FileChangeEntry['properties']): FileDiffResult {
+    if (properties === undefined || !result.ok) return result
+    return result.kind === 'text' ? { ...result, data: { ...result.data, properties } } : { ...result, properties }
   }
 
   private async readLogGroups(
@@ -610,7 +629,7 @@ export class FileChangesManager {
     status: FileChangeEntry['status'],
     registry: FileRegistry,
   ): string {
-    const key = PathCompare.comparable(identityPath)
+    const key = PathCompare.normalized(identityPath)
     const existing = registry.ids.get(key)
     if (existing) return existing
     const fileId = randomUUID()
@@ -688,3 +707,4 @@ export class FileChangesManager {
     return { ok: true, content: text }
   }
 }
+import { FileChangesFingerprint } from './fileChangesFingerprint'

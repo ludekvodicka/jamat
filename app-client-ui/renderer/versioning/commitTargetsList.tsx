@@ -3,81 +3,10 @@ import { useRef, useState } from 'react'
 import type { FileChangeEntry, FileChangesWorkingTreeSnapshot } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import { VersioningRevert } from '../../shared/versioningCommit'
 import { FileChangesStatusMark } from '../fileViewer/fileChangesStatusMark'
+import { FilePropertyChanges } from '../fileViewer/filePropertyChanges'
 import { ContextMenu, type ContextMenuPosition } from '../widgets/contextMenu'
 
-export class CommitTargets {
-  static blocked(entry: FileChangeEntry): boolean {
-    return entry.status === 'conflicted' || entry.status === 'obstructed'
-  }
-
-  static eligible(snapshot: FileChangesWorkingTreeSnapshot): readonly FileChangeEntry[] {
-    return snapshot.entries.filter((entry) => !CommitTargets.blocked(entry)
-      && CommitTargets.carrier(entry, snapshot.entries) === null
-      && CommitTargets.removedBy(entry, snapshot.entries) === null)
-  }
-
-  /**
-   * The deleted directory a row sits inside, or null when this commit removes nothing above it.
-   *
-   * `svn delete --keep-local` publishes the removal and leaves the files on disk, so every one of
-   * them comes back as an untracked row below a `deleted` directory. Checking one is not a second
-   * change beside the deletion: staging it runs `svn add --parents`, which REPLACES that directory
-   * instead, and the subtree the dialog says it deletes is published again. Every eligible row is
-   * checked by default, which puts that reversal one confirmation away, so this row carries no
-   * checkbox of its own.
-   *
-   * SVN only, without asking which VCS: git has no directory node, and a directory row this
-   * listing composes is `deleted` only when every descendant it has is, which leaves no untracked
-   * row inside it.
-   */
-  static removedBy(entry: FileChangeEntry, entries: readonly FileChangeEntry[]): FileChangeEntry | null {
-    if (entry.status !== 'untracked') return null
-    const path = entry.path.replace(/\\/g, '/')
-    return entries.filter((candidate) => candidate.nodeKind === 'directory' && candidate.status === 'deleted'
-      && path.startsWith(`${candidate.path.replace(/\\/g, '/').replace(/\/$/, '')}/`))
-      .sort((left, right) => right.path.length - left.path.length)[0] ?? null
-  }
-
-  /**
-   * The copied directory a row is published by, or null when the row stands on its own.
-   *
-   * A copy commits as ONE node: the server takes the whole subtree from the copyfrom source, so a
-   * file inside it has no commit of its own to be kept out of. Its checkbox therefore follows the
-   * directory's instead of offering a choice SVN would ignore. A file MODIFIED after the copy is
-   * not one of these - it reaches the pane with its own status and stays its own target.
-   */
-  static carrier(entry: FileChangeEntry, entries: readonly FileChangeEntry[]): FileChangeEntry | null {
-    if (entry.status !== 'copied') return null
-    const path = entry.path.replace(/\\/g, '/')
-    return entries.filter((candidate) => candidate.nodeKind === 'directory' && candidate.status === 'added'
-      && path.startsWith(`${candidate.path.replace(/\\/g, '/').replace(/\/$/, '')}/`))
-      .sort((left, right) => right.path.length - left.path.length)[0] ?? null
-  }
-
-  static requiredParent(entry: FileChangeEntry, entries: readonly FileChangeEntry[], checked: ReadonlySet<string>): boolean {
-    const prefix = `${entry.path.replace(/\\/g, '/').replace(/\/$/, '')}/`
-    return entry.nodeKind === 'directory' && (entry.status === 'added' || entry.status === 'untracked')
-      && entries.some((child) => checked.has(child.fileId) && child.path.replace(/\\/g, '/').startsWith(prefix))
-  }
-
-  static selected(entries: readonly FileChangeEntry[], checked: ReadonlySet<string>): readonly FileChangeEntry[] {
-    return entries.filter((entry) => checked.has(entry.fileId) || CommitTargets.requiredParent(entry, entries, checked))
-  }
-
-  /**
-   * Directories and files in one alphabetical order, compared segment by segment. A whole-path
-   * localeCompare puts `.` before `/`, so `foo.ts` would land between `foo/` and `foo/x.ts`.
-   */
-  static byPath(left: FileChangeEntry, right: FileChangeEntry): number {
-    const leftSegments = left.displayPath.split(/[\\/]/)
-    const rightSegments = right.displayPath.split(/[\\/]/)
-    for (let index = 0; index < Math.min(leftSegments.length, rightSegments.length); index++) {
-      const order = leftSegments[index]!.localeCompare(rightSegments[index]!)
-      if (order !== 0) return order
-    }
-    return leftSegments.length - rightSegments.length
-  }
-}
+import { CommitTargets } from '../../shared/commitTargets'
 
 export function CommitTargetsList(props: {
   snapshot: FileChangesWorkingTreeSnapshot
@@ -89,16 +18,20 @@ export function CommitTargetsList(props: {
   onOpenExternal: ((entry: FileChangeEntry) => void) | null
   onRevert(entry: FileChangeEntry): void
   onOpenSeparately(scopeRoot: string): void
+  separateMessages?: boolean
 }): React.JSX.Element {
   const element = useRef<HTMLDivElement>(null)
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [menu, setMenu] = useState<{ path: string; position: ContextMenuPosition } | null>(null)
+  const [propertiesPath, setPropertiesPath] = useState<string | null>(null)
   const externalOf = new Map<string, FileChangesWorkingTreeSnapshot['externalRoots'][number]>()
   for (const root of [...props.snapshot.externalRoots].sort((left, right) => left.path.length - right.path.length))
     for (const id of root.fileIds) externalOf.set(id, root)
   const entries = [...props.snapshot.entries].sort(CommitTargets.byPath)
+  const conventions = FileChangesStatusMark.ofSource(props.snapshot.source.selected)
   const mainEntries = entries.filter((entry) => !externalOf.has(entry.fileId))
   const menuEntry = entries.find((entry) => entry.path === menu?.path)
+  const propertiesEntry = entries.find((entry) => entry.path === propertiesPath && entry.properties !== undefined)
   const activePath = entries.some((entry) => entry.path === selectedPath) ? selectedPath : mainEntries[0]?.path ?? entries[0]?.path
   const change = (entry: FileChangeEntry, checked: boolean): void => {
     const next = new Set(props.checked)
@@ -109,9 +42,10 @@ export function CommitTargetsList(props: {
   const open = (entry: FileChangeEntry): void => {
     if (!props.disabled && entry.nodeKind === 'file') props.onOpen(entry)
   }
+  // The scope directory's own row, a property change of the folder under review, has no relative path.
+  const nameOf = (entry: FileChangeEntry): string => entry.displayPath === '' ? '.' : `${entry.displayPath}${entry.nodeKind === 'directory' ? '/' : ''}`
   const row = (entry: FileChangeEntry): React.JSX.Element => {
-    // The scope directory's own row, a property change of the folder under review, has no relative path.
-    const name = entry.displayPath === '' ? '.' : `${entry.displayPath}${entry.nodeKind === 'directory' ? '/' : ''}`
+    const name = nameOf(entry)
     const requiredParent = CommitTargets.requiredParent(entry, entries, props.checked)
     const carrier = CommitTargets.carrier(entry, entries)
     const removedBy = CommitTargets.removedBy(entry, entries)
@@ -125,7 +59,12 @@ export function CommitTargetsList(props: {
       className="commit-target" tabIndex={entry.path === activePath ? 0 : -1}
       title={entry.path} onFocus={() => setSelectedPath(entry.path)}
       onClick={(event) => { setSelectedPath(entry.path); if (!(event.target instanceof HTMLInputElement)) event.currentTarget.focus() }}
-      onDoubleClick={(event) => { if (!(event.target instanceof HTMLInputElement)) open(entry) }}
+      onDoubleClick={(event) => {
+        if (event.target instanceof HTMLInputElement) return
+        // A directory has no content diff, so its properties are what there is to show.
+        if (entry.nodeKind !== 'file' && entry.properties !== undefined) setPropertiesPath(entry.path)
+        else open(entry)
+      }}
       onContextMenu={(event) => {
         event.preventDefault()
         event.stopPropagation()
@@ -157,10 +96,12 @@ export function CommitTargetsList(props: {
         checked={requiredParent || props.checked.has(carrier?.fileId ?? entry.fileId)}
         disabled={props.disabled || CommitTargets.blocked(entry) || requiredParent || carrier !== null || removedBy !== null}
         onChange={(event) => change(entry, event.target.checked)} /></span>
-      <span role="gridcell" className={`file-tools-status file-tools-status--${entry.status}`} title={entry.status} aria-label={entry.status}>{FileChangesStatusMark.of(entry.status)}</span>
+      <span role="gridcell" className={`file-tools-status file-tools-status--${entry.status}`} title={entry.status} aria-label={entry.status}>{FileChangesStatusMark.of(entry.status, conventions)}</span>
       <span role="gridcell" className={`commit-target-path commit-target-path--${entry.status}`}>{name}
+        {entry.origin === 'setup' && <span className="commit-target-previous"> (setup)</span>}
         {entry.carriedItems !== undefined && <span className="commit-target-previous"> ({entry.carriedItems} items)</span>}
-        {entry.previousDisplayPath !== null && <span className="commit-target-previous"> (from {entry.previousDisplayPath})</span>}
+        {entry.previousDisplayPath !== null && <span className="commit-target-previous"> ({entry.status === 'renamed' ? 'from' : 'moved from'} {entry.previousDisplayPath})</span>}
+        {entry.properties !== undefined && <span className="commit-target-previous" title="Properties changed" aria-label="Properties changed"> (properties)</span>}
         {hint !== null && <span className="commit-target-hint" title={hint} aria-label={hint}>ⓘ</span>}
       </span>
     </div>
@@ -171,11 +112,12 @@ export function CommitTargetsList(props: {
       <button type="button" disabled={props.disabled} onClick={() => props.onChange(new Set())}>Select none</button>
       <span>{CommitTargets.selected(entries, props.checked).length} selected</span>
     </div>
-    {entries.some((entry) => externalOf.has(entry.fileId)) && <div className="commit-groups-note">One message for all selected groups. Each group is committed separately.</div>}
+    {entries.some((entry) => externalOf.has(entry.fileId)) && <div className="commit-groups-note">
+      {props.separateMessages ? 'Each repository has its own message.' : 'One message for all selected groups.'} Each group is committed separately.</div>}
     <div className="commit-files" ref={element} role="grid" aria-label="Commit files">
       <div role="row" className="commit-files-heading"><span role="columnheader" aria-label="Include" /><span role="columnheader" aria-label="Status" /><span role="columnheader">Path</span></div>
       <div role="rowgroup">{mainEntries.map((entry) => row(entry))}</div>
-      {props.snapshot.externalRoots.map((root) => {
+      {[...props.snapshot.externalRoots].sort(CommitTargets.byPath).map((root) => {
         const changes = entries.filter((entry) => externalOf.get(entry.fileId) === root)
         if (changes.length === 0) return null
         return <div key={root.path} role="rowgroup" className="commit-external">
@@ -191,11 +133,14 @@ export function CommitTargetsList(props: {
         </div>
       })}
     </div>
+    {propertiesEntry?.properties !== undefined && <FilePropertyChanges properties={propertiesEntry.properties}
+      label={`Property changes of ${nameOf(propertiesEntry)}`} onClose={() => setPropertiesPath(null)} />}
     {menu !== null && menuEntry !== undefined && <ContextMenu position={menu.position} ariaLabel={`Actions for ${menuEntry.displayPath}`}
       items={[
         { key: 'diff', label: 'Show diff', disabled: props.disabled || menuEntry.nodeKind !== 'file', onSelect: () => open(menuEntry) },
         ...(props.onOpenExternal === null ? [] : [{ key: 'external-diff', label: 'Show external diff',
           disabled: props.disabled || menuEntry.nodeKind !== 'file', onSelect: () => props.onOpenExternal?.(menuEntry) }]),
+        { key: 'properties', label: 'Show property changes', disabled: menuEntry.properties === undefined, onSelect: () => setPropertiesPath(menuEntry.path) },
         { kind: 'separator', key: 'changes' },
         { key: 'revert', label: 'Revert…', disabled: props.disabled || externalOf.has(menuEntry.fileId) || !VersioningRevert.allows(menuEntry), onSelect: () => props.onRevert(menuEntry) },
       ]}

@@ -16,14 +16,22 @@
 .workflow__step-title { grid-column: 2; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .workflow__time { grid-column: 3; color: var(--color-text-4); font-size: var(--fs-status); }
 .workflow__detail { grid-column: 2 / 4; min-width: 0; color: var(--color-text-3); font-size: var(--fs-secondary); overflow-wrap: anywhere; }
+.workflow__bar { grid-column: 2 / 4; display: block; height: 3px; overflow: hidden; background: var(--color-surface-control); border-radius: var(--radius-control); }
+.workflow__bar-fill { display: block; width: calc(var(--step-fraction, 0) * 100%); height: 100%; background: var(--color-accent); }
 .workflow__step[data-state="running"] .workflow__glyph { color: var(--color-accent); }
 .workflow__step[data-state="running"] .workflow__detail { color: var(--color-accent); font-family: var(--font-mono); }
 .workflow__step[data-state="done"] .workflow__glyph { color: var(--color-ok); }
 .workflow__step[data-state="failed"] .workflow__glyph, .workflow__step[data-state="failed"] .workflow__detail { color: var(--color-danger); }
 .workflow__step[data-state="waits"] .workflow__glyph, .workflow__step[data-state="waits"] .workflow__detail { color: var(--color-warn); }
 .workflow__step[data-state="pending"] .workflow__step-title, .workflow__step[data-state="skipped"] .workflow__step-title { color: var(--color-text-3); }
+.workflow__step-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-1) var(--space-2) var(--space-2) calc(var(--space-2) * 2 + 1ch); }
 .workflow__footer { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2); border-top: 1px solid var(--color-border-hairline); }
+.workflow__action { padding: 3px 10px; font: inherit; font-size: var(--fs-secondary); color: var(--color-text-2); background: var(--color-surface-control); border: 1px solid var(--color-border-frame); border-radius: var(--radius-control); cursor: pointer; }
+.workflow__action:hover:not(:disabled) { background: var(--color-surface-control-hover); color: var(--color-text-1); }
+.workflow__action:focus-visible { outline: 1px solid var(--color-accent); outline-offset: 1px; }
+.workflow__action:disabled { color: var(--color-text-5); cursor: default; }
 .workflow__action--primary { border-color: var(--color-accent); color: var(--color-text-1); }
+.workflow__action-notes { flex-basis: 100%; margin: 2px 0 0; padding: 0; list-style: none; font-size: var(--fs-secondary); color: var(--color-text-4); }
 .workflow__refusal { flex-basis: 100%; margin: 0; color: var(--color-danger); font-size: var(--fs-secondary); overflow-wrap: anywhere; }
 .workflow__agreement { flex-basis: 100%; display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--fs-secondary); color: var(--color-text-2); }
 .workflow__agreement p, .workflow__agreement ul { margin: 0; }

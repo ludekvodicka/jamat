@@ -1,28 +1,23 @@
-import type {
-  SvnConflictJournal,
-  SvnConflictKind,
-  SvnConflictOption,
-  SvnConflictShape,
-  SvnContentFacts,
-  SvnNodeKind,
-  SvnTreeAction,
-  SvnTreeReason,
-} from '../../svn/svn.types'
+import type { WorktreeExecution } from '../../worktrees/worktreeExecution'
+import type { AccountSegment, SessionAccountRef } from '../sessionAccounts'
+import type { SessionRecordConflictMemory, SvnActionConflictSet } from '../../worktrees/worktreeContracts'
+export type { SessionRecordConflictMemory, SvnActionRoot, SvnActionConflicts, SvnActionPass, SvnActionConflictEntry, SvnActionConflictSet, SvnActionNotice, SvnActionMerger, SvnActionFixed, SvnActionVerdict } from '../../worktrees/worktreeContracts'
+import type { SessionRecordSetupCommand, SessionRecordProcess, SessionRecordScriptStep } from '../sessionScriptTypes'
+export type { SessionRecordSetupCommand, SessionRecordProcess, SessionRecordScriptStep } from '../sessionScriptTypes'
+import type { WorktreeLifecycle } from '../../worktrees/worktreeState'
 import type {
   SessionAgentId,
   SessionColorName,
   SessionParentKind,
   SessionScriptId,
   SessionScriptPhase,
+  SessionSetupAgreement,
   SessionWorktreeKind,
   SessionWorktreeOutcome,
   SvnActionKind,
   SvnActionNeed,
   SvnActionStage,
-  SvnConflictActor,
-  SvnConflictState,
   SvnFinishPhase,
-  SvnFinishWorktreeResult,
   SvnLabelledRevision,
 } from '../sessionManagerApi.types'
 
@@ -47,6 +42,9 @@ export type SessionDirectoryRef =
   | { mode: 'default' }
 
 export interface SessionRecordAgent {
+  accountId?: string
+  /** The latest launch keeps its profile while a switch selects the next account. Absent means accountId. */
+  launchAccountId?: string
   agentId: SessionAgentId
   /**
    * The command line this session was asked to start with, so a replayed create can repeat exactly
@@ -57,12 +55,19 @@ export interface SessionRecordAgent {
   launchMode: 'new' | 'continue' | 'resume' | 'fork'
   /**
    * The conversation this session is holding, however it came to be known: minted by the client
-   * before launch, equal to the Jamat session id, for a Claude `new` or `fork`; confirmed by the launch bridge for a
+   * before launch, equal to the Jamat session id, for a Claude `new` or `fork`, until the running
+   * Claude reports another through the status line relay; confirmed by the launch bridge for a
    * Codex `new` or `fork`, and handed in by the caller for a `resume`. Absent means the record can
    * name no conversation, which is what every reopen and every fork is refused for.
    */
   nativeSessionId?: string
-  nativeSessionIdSource?: 'provided' | 'codex-app-server'
+  /**
+   * Who named `nativeSessionId`: `provided` by the caller of a resume, or confirmed by the running
+   * agent for this launch generation (`identityLaunchId`): the Codex app-server bridge, or the Claude
+   * status line relay, which reports the conversation Claude Code actually writes (UA1-J14-1).
+   * Absent: minted before launch and never confirmed.
+   */
+  nativeSessionIdSource?: 'provided' | 'codex-app-server' | 'claude-statusline'
   unverifiedNativeSessionId?: string
   identityLaunchId?: string
   identitySequence?: number
@@ -107,6 +112,13 @@ export type SessionMergePhase = 'base-merging' | 'resolving' | 'main-merging' | 
 
 export interface SessionRecordMerge {
   phase: SessionMergePhase
+  revisions?: string[]
+  mergedRevision?: string
+  discard?: true
+  changes?: true
+  approval?: { selection: string[]; message: string; hashes?: Record<string, string> }
+  runs?: { phase: 'commit' | SessionMergePhase; runId: string; startedAt: number; endedAt?: number; failed?: true }[]
+  endedAt?: number
   /** The session resolving the conflicts, once one was launched. */
   resolveSessionId?: string
   startedAt: number
@@ -114,11 +126,15 @@ export interface SessionRecordMerge {
   failure?: string
 }
 
-/**
- * `branch` and `baseCommit` stay mandatory non-empty strings for an SVN worktree as well, because an
- * older peer validates them that way and accepts unknown keys: SVN fills them with the checked-out
- * URL and `r<rev>`.
- */
+export interface SessionRecordSetupBaseline {
+  at: number
+  hashes: Record<string, string>
+  inputs?: string
+  /** Each dependency input's content hash at setup (`SetupInputs.of`); absent on records before 3.15. */
+  inputHashes?: Record<string, string>
+  commands?: string
+}
+
 export interface SessionRecordWorktree {
   worktreePath: string
   /** git: the branch; svn: the checked-out URL. */
@@ -131,13 +147,20 @@ export interface SessionRecordWorktree {
   kind?: SessionWorktreeKind
   /** svn: `dev:ino:birthtimeNs` of the checkout, so a removal never deletes a reused name. */
   directoryId?: string
+  /** Preservation belongs to this directory, including retries under a different cleanup action. */
+  preservationActionId?: string
   /**
    * svn: where the session's directory lies below the owner, '/'-separated; absent at the owner
    * itself and on every record older than 3.11. The session starts in `worktreePath` joined with it.
    */
   cwdSubpath?: string
+  /** Frozen at creation; absent on legacy worktrees, whose recorded owner keeps the old setup. */
+  setupScope?: 'project' | 'members'
   /** What the create's caller asked of the results: its tag and its wake-up line. */
   caller?: SessionRecordWorktreeCaller
+  conflictMemory?: SessionRecordConflictMemory
+  setupBaseline?: SessionRecordSetupBaseline
+  agentStartedAt?: number
 }
 
 /** The create's `worktree.tag` and `worktree.notify`, kept for every result the worktree writes. */
@@ -200,16 +223,6 @@ export interface SessionRecordWorktreeCleanup {
 }
 
 /**
- * One step of a scripted shell. Unlike the `SetupStep` a resolution is made of, `cwd` here is
- * absolute and already inside the worktree: the record is what a launch is planned from, and a launch
- * has no repository root to resolve a relative step against.
- */
-export interface SessionRecordSetupCommand {
-  command: string
-  cwd: string
-}
-
-/**
  * The link from a script run to the session it runs for. A run is a runtime judged by its exit code
  * on behalf of its parent; this one field is how every reader tells a run from an ordinary session.
  */
@@ -222,39 +235,14 @@ export interface SessionRecordScriptLink {
   name: string
   /** Chain steps only: the `SessionRecordScriptStep.key` this run attempts. */
   stepKey?: string
+  /** The parent reopened; this run may still need stopping, but cannot enter its new history. */
+  historyExpired?: boolean
 }
 
 /** The session that started this one, as its creator stated it; see `SessionCreateSpec.parent`. */
 export interface SessionRecordParentLink {
   sessionId: string
   kind: SessionParentKind
-}
-
-/**
- * A run that spawns an executable directly, with no shell between: `tool` is resolved on this machine
- * at every launch (`RunTools`), and each argument reaches the process as one argv element, byte for byte.
- */
-export interface SessionRecordProcess {
-  tool: 'svn' | 'jamat-cli'
-  /** Only what `SvnWorktreeEvidence.takesArgument` admits; `ScriptRunRecords.processRun` enforces it. */
-  args: string[]
-}
-
-/** One step of a chain, resolved when the chain starts. `key` is its identity for resume and evidence. */
-export interface SessionRecordScriptStep {
-  /** `ScriptChain.keyOf({ scriptId, name, commands, process })`. */
-  key: string
-  /**
-   * `checks`: a `scripts.after` entry frozen on an SVN action; `declared` serves the before chain and
-   * Git's Finish checks; `svn`: the checkout that leads the before chain of an SVN worktree.
-   */
-  scriptId: 'setup' | 'declared' | 'checks' | 'svn'
-  /** 'setup', 'checkout', or the `.worktree.json` entry name. */
-  name: string
-  /** Absolute directories inside the worktree; empty for a process step. */
-  commands: SessionRecordSetupCommand[]
-  /** A direct-process step and the absolute directory it runs in. */
-  process?: SessionRecordProcess & { cwd: string }
 }
 
 /** A commit made from a session's commit split or into its worktree, written when the commit dialog settles. */
@@ -267,190 +255,29 @@ export interface SessionRecordCommitReceipt {
   at: number
 }
 
-/** One working copy an SVN action reviews: an external mount, or the worktree itself. */
-export interface SvnActionRoot {
-  /** Absolute directory. */
-  path: string
-  /** Its place in the worktree: `''` for the worktree itself, else the mount path. */
-  own: string
-  /** Its changed paths, worktree-relative with `/`. */
-  changed: string[]
-  /** What a proof of its review needs, read when its review run is launched. */
-  bounds?: { repository: string; base: string; rootBase: number; since: number }
-}
-
-/** What the SVN conflict resolver of an action was started on; paths are worktree-relative with `/`. */
-export interface SvnActionConflicts {
-  paths: string[]
-  before: string[]
-  at: number
-}
-
-/** One stage the action left, written with the move; the workflow reads its steps and rounds from these. */
-export interface SvnActionPass {
-  stage: SvnActionStage
-  /** The run the stage waited on. */
-  runId?: string
-  startedAt: number
-  endedAt: number
-  /** `waited`: the action waited for the person at this stage, and a press moved it on. */
-  result: 'done' | 'failed' | 'waited'
-  /**
-   * What its words need: the newest revision a review committed; the conflicts an update left; for
-   * `fixing`, the conflicts of the set, how many Jamat's rules settled and how many were left open.
-   */
-  facts?: { revision?: number; conflicts?: number; fixed?: number; left?: number }
-}
-
-/** One conflicted path of a conflict set: svn's facts and the classifier's plan, never words. */
-export interface SvnActionConflictEntry {
-  /** Worktree-relative with '/'. */
-  path: string
-  kind: SvnConflictKind
-  shape: SvnConflictShape
-  state: SvnConflictState
-  options: SvnConflictOption[]
-  /** The lossless option the facts prove. */
-  rule?: SvnConflictOption
-  /** The svn facts the words are composed from at snapshot time. */
-  facts: {
-    reason?: SvnTreeReason
-    action?: SvnTreeAction
-    localKind?: SvnNodeKind
-    incomingKind?: SvnNodeKind
-    /** The revision the update brought. */
-    incomingRevision?: number
-    files?: SvnContentFacts['files']
-    /** The conflicted property names. */
-    properties?: string[]
-    /** svn cannot take the name as an argument. */
-    unsafe?: true
-    /** The files below a settled path a guard found scheduled for deletion or missing. */
-    dropped?: number
-  }
-  by?: SvnConflictActor
-  /** The option a settled entry was settled with; absent when svn stopped marking it by other hands. */
-  settledWith?: SvnConflictOption
-  /** The step an option reached on this path; a restart or a second call resumes after it. */
-  journal?: SvnConflictJournal
-  /** Absolute path of the saved copy. */
-  saved?: string
-  /** Keep mine of incoming work, confirmed by the person in the window. */
-  confirmedLoss?: true
-}
-
-/** Every conflict one update left, read together; the next update reads it again. */
-export interface SvnActionConflictSet {
-  readAt: number
-  /** BASE before the update. */
-  baseRevision: number
-  /** BASE after it. */
-  revision: number
-  /** At most 200 (`SvnConflictFlow.entriesMaxConst`); the next read takes the rest from svn. */
-  entries: SvnActionConflictEntry[]
-  more: number
-  /** The action waited on this set for the person, so Check again reads what they changed; a fresh read has none. */
-  waited?: true
-}
-
-/** The caller's line of one wait, typed once by the notifier; see `SessionRecordSvnAction.notice`. */
-export interface SvnActionNotice {
-  id: string
-  at: number
-  /** Deliveries tried and refused (a draft, a dialog, a session that does not run). */
-  attempts: number
-  state: 'pending' | 'delivered' | 'expired'
-  settledAt?: number
-}
-
-/** The merger of an SVN action; see `SessionRecordSvnAction.merger`. */
-export interface SvnActionMerger {
-  runId: string
-  setAt: number
-  startedAt: number
-  endedAt?: number
-  checkedAt?: number
-}
-
-/** A path Jamat's rules settled during an action, for the FIXED lines of its result. */
-export interface SvnActionFixed {
-  path: string
-  option: SvnConflictOption
-}
-
-/** How the run a run stage waited on ended, written by the gate verdict and judged by the next client step. */
-export type SvnActionVerdict =
-  | { kind: 'succeeded'; exitCode?: number }
-  | { kind: 'failed'; reason: string; exitCode?: number }
-
 /**
  * Finish (Commit) or Discard of an SVN worktree, or the UPDATE of a main copy, as a chain of stages
  * (`SvnActionFlow`). Run stages
  * wait on `runId` through the `action` gate; client stages are driven by this client and resumed
  * from the disk after a restart.
  */
-export interface SessionRecordSvnAction {
+export interface SessionRecordSvnAction extends WorktreeExecution {
   kind: SvnActionKind
   /** Also the name of its result. */
   actionId: string
   stage: SvnActionStage
-  /** The run a run stage waits on, or the last run of a stage that moved on. */
-  runId?: string
-  /** Absent while the run is judged; then the next client step reads the disk. */
-  verdict?: SvnActionVerdict
-  /** The worktree the action works in; the main copy for `update-main`. */
-  root: string
-  /** `scripts.after` frozen at the press, scriptId `checks`. */
-  checks: SessionRecordScriptStep[]
-  checkCursor: number
-  /** The worktree the checks passed on, so Finish again reviews without running them. */
-  checksPassed?: { fingerprint: string; at: number }
-  /** BASE of `root` before the last update. */
-  baseRevision?: number
-  /**
-   * The text conflicts the resolver was started on, the changed paths before it started (its edits
-   * outside the conflicts are measured against them) and when it was started (its time limit).
-   */
-  conflicts?: SvnActionConflicts
-  /** One resolver per press: a conflict after its checks and update needs the person. */
-  resolverSpent?: true
   /** Every conflict the last update left, all kinds; an update that leaves none clears it. */
   conflictSet?: SvnActionConflictSet
-  /** What Jamat's rules settled in this action, oldest first, at most 200; it outlives the set an update clears. */
-  fixed?: SvnActionFixed[]
-  /** The merger's brief of the set, absolute (`ScriptLogStore.mergeBriefPathOf`), once it was written. */
-  mergeBrief?: string
-  /**
-   * The last merger of this action: its run, the set it was started on (`conflictSet.readAt`; one
-   * merger starts by itself per set), when it started and ended, and when the check after it ran.
-   */
-  merger?: SvnActionMerger
-  /** The caller's wake-up line for this wait (`worktree.notify`); the next wait writes a new id. */
-  notice?: SvnActionNotice
-  /** The review plan, mounts first. */
-  roots?: SvnActionRoot[]
-  rootCursor: number
   /** The review the current review run opened. */
-  reviewCommitId?: string
   rounds: { incoming: number; outOfDate: number; lock: number }
-  /** A locked working copy relaunches the update then. */
-  retryAt?: number
-  /** This worktree's commits, labelled. */
-  evidence: SvnLabelledRevision[]
-  removal?: SvnFinishWorktreeResult
   needs?: { kind: SvnActionNeed; reason: string; at: number }
-  requestedBy: 'window' | 'cli' | 'peer'
-  /** When this press started; the stop limit and the receipts of its reviews are counted from it. */
-  startedAt: number
-  /** The stages this action left, oldest first, at most 40 (`SvnActionStages.passesMaxConst`). */
-  passes?: SvnActionPass[]
-  /** When the current stage, or the current run of a run stage, began. */
-  stageAt?: number
 }
 
 /** The before gate on a parent; see `SessionRecord.pendingSetup`. `steps` and `cursor` come together. */
 export interface SessionRecordPendingSetup {
+  local?: true
   setupSessionId: string
+  agreement?: SessionSetupAgreement
   steps?: SessionRecordScriptStep[]
   cursor?: number
 }
@@ -517,7 +344,19 @@ export interface SessionRecordLaunchWait {
   reason: string
 }
 
+export interface SessionRecordActionHistory {
+  key: string
+  startedAt: number
+  endedAt: number
+  source: Pick<SessionRecord, 'svnAction' | 'worktreeMerge' | 'finishChecks' | 'worktree' | 'worktreeOutcome'>
+  outcome?: SessionWorktreeOutcome
+  /** The Finish ended by Back to work; `checks-stopped` where its checks were running then. Absent: any other ending. */
+  ending?: 'checks-stopped' | 'back-to-work'
+}
+
 export interface SessionRecord {
+  account?: SessionAccountRef
+  accountSegments?: AccountSegment[]
   lastUserInputAt?: number
   /** Equals `runtimeSessionId` on the Host, forever. The Host separates instances by binding. */
   sessionId: string
@@ -555,7 +394,12 @@ export interface SessionRecord {
   /** An SVN action of this session's worktree, running or waiting for the person. */
   svnAction?: SessionRecordSvnAction
   /** The result of the last finish of this record; a later finish replaces it. */
+  worktreeLifecycle?: WorktreeLifecycle
   worktreeOutcome?: SessionWorktreeOutcome
+  /** Closed action sources, oldest first; cleared after the session and its open actions end. */
+  actionHistory?: SessionRecordActionHistory[]
+  /** Cleared sections still derivable from operational state must not reappear after a write or restart. */
+  clearedWorkflowIds?: string[]
   /** Set once the worktree was removed, together with `worktree` going. */
   retiredWorktree?: SessionRecordRetiredWorktree
   /** SVN only: the worktree goes once the process ended; the removal clears it with `worktree`. */
@@ -565,8 +409,7 @@ export interface SessionRecord {
   /** Set at create, never changed. Absent = no parent, so no migration. Removing the parent leaves it. */
   parent?: SessionRecordParentLink
   /**
-   * On a parent only: its settled runs, oldest first, at most `SessionScriptsManager.historyMaxConst`
-   * plus the entries whose run records still exist.
+   * On a parent only: its settled runs, oldest first; cleared after the session and its open actions end.
    */
   scriptRuns?: SessionRecordScriptRun[]
   /** Oldest first, at most 50 (`SessionLifecycle.commitReceiptsMaxConst`). */
@@ -588,6 +431,11 @@ export interface SessionRecord {
    * nothing at all, because what it was asking for is no longer knowable.
    */
   pendingOperationKind?: 'create' | 'reopen'
+  /**
+   * The pending reopen restores a session that lived until its Host stopped (a Host restart, or a
+   * worker's liveness resume), so its history and runs go on. Only a person's Reopen starts empty.
+   */
+  pendingKeepsHistory?: true
   /**
    * Set only while a pending launch is being refused by a Host that decided nothing. Absent means
    * either that no launch is pending or that the one that is has not been refused yet.
@@ -640,6 +488,7 @@ export interface SessionRecord {
    * the platform gives a killed process - 0 on POSIX - and read as a clean resolution.
    */
   stopRequested?: true
+  manuallyStoppedAt?: number
 }
 
 export interface SessionRecordsDocument {

@@ -124,6 +124,20 @@ describe('app-client-ui/renderer/views/sessionsTree/remoteSessionsTreeModel', ()
     expect(category).toMatchObject({ kind: 'category', categoryId: null })
   })
 
+  it('uses the main-computed closure for nested and cross-project descendants', () => {
+    const parent = RemoteSessionsTreeFixtures.session('root', 'Alpha')
+    const child = { ...RemoteSessionsTreeFixtures.session('child', 'Beta'), parent: { sessionId: 'root', kind: 'worker' as const, sameProject: false } }
+    const grandchild = { ...RemoteSessionsTreeFixtures.session('grandchild', 'Beta'), parent: { sessionId: 'child', kind: 'worktree' as const, sameProject: true } }
+    const sessions = RemoteSessionsTreeFixtures.snapshot([parent, child, grandchild, RemoteSessionsTreeFixtures.session('hidden', 'Beta')])
+    const endpoint = RemoteSessionsTreeFixtures.outbound('profile', 'computer', 'endpoint', 'Computer', sessions)
+    const result = RemoteSessionsTreeModel.build(
+      RemoteSessionsTreeFixtures.remote([{ ...endpoint, selectedSessionIds: ['root'], reachableSessionIds: ['root', 'child', 'grandchild'] }]),
+      sessions, RemoteSessionsTreeFixtures.view(), new Set(), new Map(),
+    )
+    expect([...RemoteSessionsTreeFixtures.sessionIds(result.outbound[0]!.endpoints[0]!.tree.nodes)].sort())
+      .toEqual(['child', 'grandchild', 'root'])
+  })
+
   /**
    * The connected-only rule, pinned rather than merely implemented.
    *

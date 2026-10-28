@@ -65,6 +65,7 @@ class SmokeHost extends SmokeHarness {
         operationId: 'smoke-1',
         runtimeSessionId: 'smoke-cli',
         launch: {
+          stopDescendants: false,
           command: process.env.ComSpec ?? 'cmd.exe',
           args: ['/d', '/q', '/k', 'echo ready'],
           cwd: configDir,
@@ -227,7 +228,7 @@ class SmokeHost extends SmokeHarness {
       controllerLeaseId,
       operationId: runtimeSessionId,
       runtimeSessionId,
-      launch: { command, args, cwd, env: SmokeHost.childEnv(), cols: 80, rows: 24 },
+      launch: { stopDescendants: false, command, args, cwd, env: SmokeHost.childEnv(), cols: 80, rows: 24 },
     })
     SmokeHost.check(`a fast exit ${exitCode} is created dead with exit code ${exitCode}`
       + ` (alive ${created.session.alive}, exitCode ${created.session.exitCode})`,

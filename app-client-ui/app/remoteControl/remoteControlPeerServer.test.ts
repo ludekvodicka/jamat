@@ -9,6 +9,7 @@ import type {
   RemoteControlPeerProfile,
 } from '../../../lib-orchestrator/remoteControl/remoteControlPeerApi.types'
 import { RemoteControlPeerClient } from '../../../lib-orchestrator/remoteControl/remoteControlPeerClient'
+import { RemoteControlPeerConst } from '../../../lib-orchestrator/remoteControl/remoteControlPeerProtocol'
 import type { RemoteControlPeerConnection } from '../../../lib-orchestrator/remoteControl/remoteControlPeerConnection'
 import {
   RemoteControlPeerKeys,
@@ -28,6 +29,7 @@ describe('app-client-ui/app/remoteControl/remoteControlPeerServer', () => {
     const connected = await harness.connect()
     expect(connected.ok).toBe(true)
     if (!connected.ok) throw new Error(connected.error.detail)
+    expect(connected.value.capabilities).toEqual(RemoteControlPeerConst.capabilities)
     const received: RemoteControlPeerInboundApplicationMessage[] = []
     connected.value.onMessage((message) => received.push(message))
     const request = RemoteControlPeerServerTest.request('request-1')
@@ -66,7 +68,7 @@ describe('app-client-ui/app/remoteControl/remoteControlPeerServer', () => {
     const connected = await harness.connect()
 
     expect(connected).toMatchObject({ ok: false, error: { code: 'unavailable' } })
-    expect(harness.unknownPeers).toHaveLength(1)
+    expect(harness.unknownPeers).toHaveLength(2)
     expect(harness.unknownPeers[0]?.claimant).toEqual(harness.clientIdentity)
     expect(harness.unknownPeers[0]?.remoteAddress).not.toBe('')
   })

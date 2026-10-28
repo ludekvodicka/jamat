@@ -28,6 +28,7 @@ function factsOf(over: Partial<TabSessionFacts> = {}): TabSessionFacts {
     ended: false,
     live: over.ended !== true,
     admits: everyOperationConst,
+    finish: false,
     ...over,
   }
 }
@@ -135,7 +136,47 @@ class MenuView {
 describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
   afterEach(() => vi.restoreAllMocks())
 
-  it('routes commit to the clicked local live session and hides it for ended and remote tabs', () => {
+  it('opens actions below Compact for local sessions, including ended ones with no admitted operation', () => {
+    const commands = new CommandRegistry()
+    const opened = vi.fn()
+    commands.register('session.showActions', opened)
+    const view = render(<MenuHost commands={commands} panelKey="terminal" params={{ sessionId: 'clicked' }} facts={factsOf()} />)
+    const titles = MenuView.titles()
+    expect(titles[titles.indexOf('Compact session') + 1]).toBe('Show session actions')
+    fireEvent.click(MenuView.itemTitled('Show session actions'))
+    expect(opened).toHaveBeenCalledWith({ sessionId: 'clicked' })
+    view.unmount()
+    const ended = render(<MenuHost commands={commands} panelKey="terminal" params={{ sessionId: 'ended' }} facts={factsOf({ ended: true, admits: [], directoryPath: null })} />)
+    expect(MenuView.titles()).toContain('Show session actions')
+    ended.unmount()
+    render(<MenuHost commands={commands} panelKey="terminal" params={{ target: { kind: 'remote', sessionId: 'remote', remoteEndpointId: 'peer' } }} facts={factsOf()} />)
+    fireEvent.click(MenuView.itemTitled('Show session actions'))
+    expect(opened).toHaveBeenLastCalledWith({ sessionId: 'remote', remoteEndpointId: 'peer' })
+  })
+
+  // UI01: Finish is reachable from the tab as well as the tree row, and runs the row's own Finish.
+  it('offers Finish where the tree row offers it, aimed at the clicked local session', () => {
+    const commands = new CommandRegistry()
+    const finish = vi.fn()
+    commands.register('session.finish', finish)
+    const view = render(<MenuHost commands={commands} panelKey="terminal" params={{ sessionId: 'clicked' }} facts={factsOf({ finish: true })} />)
+    const titles = MenuView.titles()
+    expect(titles[titles.indexOf('Show session actions') + 1]).toBe('Finish…')
+    fireEvent.click(MenuView.itemTitled('Finish…'))
+    expect(finish).toHaveBeenCalledWith({ sessionId: 'clicked' })
+    view.unmount()
+    for (const options of [
+      { facts: factsOf({ finish: false }) },
+      { facts: factsOf({ finish: true }), params: { target: { kind: 'remote', sessionId: 'clicked', remoteEndpointId: 'peer' } } },
+      { facts: factsOf({ finish: true }), panelKey: 'fileViewer' },
+    ]) {
+      const other = render(<MenuHost commands={commands} panelKey="terminal" params={{ sessionId: 'clicked' }} {...options} />)
+      expect(MenuView.titles()).not.toContain('Finish…')
+      other.unmount()
+    }
+  })
+
+  it('routes commit to the clicked local or remote session and hides it for ended tabs', () => {
     const commands = new CommandRegistry()
     const run = vi.fn()
     commands.register('session.commitSvn', run)
@@ -143,7 +184,11 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
     fireEvent.click(MenuView.itemTitled('Commit (SVN)…'))
     expect(run).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'clicked' }))
     view.unmount()
-    for (const options of [{ facts: factsOf({ ended: true }) }, { facts: factsOf(), params: { sessionId: 'clicked', remoteEndpointId: 'peer' } }]) {
+    const remote = render(<MenuHost commands={commands} panelKey="terminal" params={{ target: { kind: 'remote', sessionId: 'clicked', remoteEndpointId: 'peer' } }} facts={factsOf()} />)
+    fireEvent.click(MenuView.itemTitled('Commit (SVN)…'))
+    expect(run).toHaveBeenLastCalledWith({ sessionId: 'clicked', remoteEndpointId: 'peer' })
+    remote.unmount()
+    for (const options of [{ facts: factsOf({ ended: true }) }]) {
       const other = render(<MenuHost commands={commands} panelKey="terminal" params={{ sessionId: 'clicked' }} {...options} />)
       expect(MenuView.titles()).not.toContain('Commit (SVN)…')
       expect(MenuView.titles()).not.toContain('Commit (Git)…')
@@ -174,6 +219,7 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
       'Fork session',
       'Restart session',
       'Compact session',
+      'Show session actions',
       'Commit (SVN)…',
       'Commit (Git)…',
       'Open project folder',
@@ -306,7 +352,7 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
     view.unmount()
     for (const options of [
       { facts: factsOf({ directoryPath: null }) },
-      { facts: factsOf(), params: { sessionId: 's1', remoteEndpointId: 'peer' } },
+      { facts: factsOf(), params: { target: { kind: 'remote', sessionId: 's1', remoteEndpointId: 'peer' } } },
       { facts: factsOf(), panelKey: 'fileViewer' },
     ]) {
       const other = render(<MenuHost commands={new CommandRegistry()} panelKey="terminal" params={{ sessionId: 's1' }} {...options} />)
@@ -571,6 +617,7 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
       'session.restart',
       'session.fork',
       'session.compact',
+      'session.showActions',
       'tab.copyProjectFolder',
       'session.openInVsCode',
     ]

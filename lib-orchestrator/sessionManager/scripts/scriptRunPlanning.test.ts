@@ -69,10 +69,28 @@ describe('lib-orchestrator/sessionManager/scripts/scriptRunPlanning', () => {
     expect(plan([waiting(), install('s', { life: 'starting', binding: null })])).toEqual([])
   })
 
+  it('settles the failed setup of a retained worktree before keeping its failure row', () => {
+    const failed = waiting({ life: 'ended', pendingOperationId: undefined, pendingOperationKind: undefined,
+      worktree: { worktreePath: 'C:/work/.worktrees/fix', repositoryRoot: 'C:/work', branch: 'jamat/fix', baseCommit: 'base' } })
+    const run = install('s', { exitCode: 7 })
+    expect(plan([failed, run])).toEqual([{ kind: 'settle-script-run', runId: 's' }])
+    expect(plan([{ ...failed, scriptRuns: [entry('s', 'failed')] }, run])).toEqual([])
+  })
+
   it('plans at most four settles in one pass', () => {
     const runs = ['a', 'b', 'c', 'd', 'e', 'f'].map((id) => install(id))
     expect(plan([record('p'), ...runs]).map((change) => change.runId))
       .toEqual(['a', 'b', 'c', 'd'])
+  })
+
+  it('stops a live action run whose pointer was dropped by the Finish migration', () => {
+    const parent = record('p', { life: 'ended' })
+    const oldRun = install('review', { life: 'live', scriptOf: { sessionId: 'p', phase: 'after', scriptId: 'review', name: '.' } })
+    expect(plan([parent, oldRun], ['review'])).toEqual([{ kind: 'stop-script-run', runId: 'review' }])
+    const settled = { ...oldRun, life: 'ended' as const }
+    expect(plan([parent, settled])).toEqual([{ kind: 'collapse-script-run', runId: 'review' }])
+    expect(plan([{ ...parent, scriptRuns: [entry('review', 'succeeded')] }, settled]))
+      .toEqual([{ kind: 'collapse-script-run', runId: 'review' }])
   })
 
   it('collapses a settled run its gate no longer names', () => {
@@ -81,12 +99,12 @@ describe('lib-orchestrator/sessionManager/scripts/scriptRunPlanning', () => {
       .toEqual([{ kind: 'collapse-script-run', runId: 's' }])
   })
 
-  it('keeps a failed run its gate still names, whatever the gate judges', () => {
+  it('collapses a failed setup run after its parent ends', () => {
     const failed = waiting({ life: 'ended', pendingOperationId: undefined, pendingOperationKind: undefined })
     expect(plan([
       { ...failed, scriptRuns: [entry('s', 'failed')] },
       install('s', { exitCode: 1 }),
-    ])).toEqual([])
+    ])).toEqual([{ kind: 'collapse-script-run', runId: 's' }])
   })
 
   it('keeps a successful run while its gate still judges, and collapses it once the gate moved on', () => {

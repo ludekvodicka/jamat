@@ -73,6 +73,8 @@ describe('lib-orchestrator/shared/orchestratorPaths', () => {
       .toBe(join(directory, 'script-logs'))
     expect(OrchestratorPaths.worktreeResultsDirectory('identity-a', 'production'))
       .toBe(join(directory, 'worktree-results'))
+    expect(OrchestratorPaths.snapinsDirectory('identity-a', 'production'))
+      .toBe(join(directory, 'snapins'))
   })
 
   // One file, one latch. A counter sharing the records file would be lost to the records' damage,

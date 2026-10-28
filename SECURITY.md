@@ -43,11 +43,17 @@ Pairing is explicit in both directions and pins the other machine's public key. 
 another computer may do asks you to confirm its name and key fingerprint; narrowing it asks nobody
 and drops live connections immediately.
 
-What a paired computer may ask for is a **closed allowlist**: status, projects, sessions, terminal
-attach and input. Everything else is refused, including reading files, listing or opening tabs,
-reading transcripts, and every pairing operation, which is what stops one paired machine from using
-another as a relay to a third. Every accepted operation is audit-logged, and the log records no
-token, no request body and no terminal text.
+Paired control uses a closed operation allowlist and negotiated workspace capabilities. A live
+session view can read source files, rich media, diffs, tasks, notes and transcripts through bounded
+source grants. Paths are resolved on the source; they never become controller filesystem authority.
+Shared commit and workflow approvals require a renderer-owned view plus current source revision and
+operation identity. Generic CLI/control requests cannot approve publication or human-only agreements.
+Revocation expires views and media reads; already accepted source work may finish and retains its
+receipt. Crash uncertainty prevents automatic publication replay.
+
+Arbitrary target tabs, pairing administration and forwarding into another Remote tree are excluded.
+Accepted operations are audit-logged without tokens, request bodies or terminal text. Details and
+limits are in [Remote session workspace](docs/architecture/remote-session-workspace.md).
 
 ## Especially interested in
 

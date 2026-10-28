@@ -1,9 +1,12 @@
+import type { SessionOpen } from './sessionViewItems'
 import type { FileViewerDocumentSource } from '../../lib-orchestrator/fileViewer/fileViewerApi.types'
 import type { FileChangesVcsId } from '../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import type { VersioningCommitPath } from './versioningCommit'
+import type { TerminalTarget } from './terminalTarget'
 
-export type TabControlCommand =
-  | { kind: 'open-commit'; requestId: string; panelId: string; vcs: FileChangesVcsId; scopeRoot: string; paths?: readonly VersioningCommitPath[]; title: string; messageApplied: boolean; activate?: boolean; existingOnly?: true }
+export type TabControlCommand = { sharedOpen?: SessionOpen } & (
+  | { kind: 'open-snapin'; requestId: string; panelId: string; snapinKind: string; title: string }
+  | { kind: 'open-commit'; target?: TerminalTarget; reviewId?: string; openId?: string; itemKey?: string; requestId: string; panelId: string; vcs: FileChangesVcsId; scopeRoot: string; paths?: readonly VersioningCommitPath[]; title: string; messageApplied: boolean; activate?: boolean; existingOnly?: true }
   | {
       kind: 'open-session'
       requestId: string
@@ -19,13 +22,15 @@ export type TabControlCommand =
       documentKey: string
       title: string
     }
-  | { kind: 'open-task'; requestId: string; panelId: string; item: TabControlTaskItem }
+  | { kind: 'open-task'; requestId: string; panelId: string; item: TabControlTaskItem; target?: TerminalTarget }
   /** The session's workflow item in its own tab's split, made active. */
-  | { kind: 'open-workflow'; requestId: string; panelId: string; sessionId: string }
+  | { kind: 'open-workflow'; requestId: string; panelId: string; sessionId: string; target?: TerminalTarget }
   | { kind: 'focus-panel'; requestId: string; panelId: string }
   | { kind: 'close-panel'; requestId: string; panelId: string }
+)
 
 export type TabControlCommandResult =
+  | { kind: 'snapin-opened'; panelId: string }
   | { kind: 'opened'; panelId: string }
   | { kind: 'focused-existing'; panelId: string; windowId: string }
   | { kind: 'focused'; panelId: string }

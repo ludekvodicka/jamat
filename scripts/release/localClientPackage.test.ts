@@ -55,7 +55,7 @@ function fixture(): string {
     'skills/codex/session-automation-groups/SKILL.md', 'app-client-cli/start.ts', 'configs/remarkable-sidecar/package-lock.json',
     'configs/remarkable-sidecar/manifest.json',
     'scripts/release/prepare-host-bundle.ts', 'scripts/release/prepare-launcher.ts',
-    'scripts/release/start-packaged-client.ts', 'scripts/setup/prepare-remarkable-sidecar.ts',
+    'scripts/release/start-packaged-client.ts', 'scripts/smoke/finishUiScenario.ts', 'scripts/setup/prepare-remarkable-sidecar.ts',
     'scripts/setup/install-launcher.ps1'])
     write(join(root, path), path)
   for (const directory of ['', 'app-client-ui', 'app-host', 'lib-orchestrator'])

@@ -46,7 +46,7 @@ export class ServiceContextCompactionIpc extends ServiceIpcBase<
     this.assertComplete(ServiceContextCompactionIpc.channelsConst)
   }
 
-  private claimAutomatic(sessionId: string): boolean {
+  claimAutomatic(sessionId: string): boolean {
     const now = this.now()
     this.prune(now)
     if ((this.cooldowns.get(sessionId) ?? 0) > now) return false
@@ -57,7 +57,7 @@ export class ServiceContextCompactionIpc extends ServiceIpcBase<
     return true
   }
 
-  private noteManual(sessionId: string): void {
+  noteManual(sessionId: string): void {
     const now = this.now()
     this.prune(now)
     this.cooldowns.set(
@@ -71,7 +71,7 @@ export class ServiceContextCompactionIpc extends ServiceIpcBase<
       if (expiresAt <= now) this.cooldowns.delete(sessionId)
   }
 
-  private cooldown(sessionId: string): ContextCompactionCooldown | null {
+  cooldown(sessionId: string): ContextCompactionCooldown | null {
     this.prune(this.now())
     const expiresAt = this.cooldowns.get(sessionId)
     return expiresAt === undefined ? null : {
@@ -84,7 +84,7 @@ export class ServiceContextCompactionIpc extends ServiceIpcBase<
    * Typed, not pasted: a slash command is what a person types, and a bracketed paste reaches the
    * TUI as pasted content, which Codex may hold as text rather than parse as a command.
    */
-  private async deliver(sessionId: string): Promise<ContextCompactionDelivery> {
+  async deliver(sessionId: string): Promise<ContextCompactionDelivery> {
     const result = await this.terminal.deliver(sessionId, ServiceContextCompactionIpc.commandConst, {
       input: 'typed',
       readyTimeoutMs: RemoteControlDeliverConst.readyTimeoutMillisecondsConst,

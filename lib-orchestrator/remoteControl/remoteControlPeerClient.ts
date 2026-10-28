@@ -4,6 +4,7 @@ import type { RemoteControlStepResult } from './remoteControlApi.types'
 import type {
   RemoteControlPeerIdentity,
   RemoteControlPeerProfile,
+  RemoteControlPeerCapability,
 } from './remoteControlPeerApi.types'
 import { RemoteControlPeerConst } from './remoteControlPeerProtocol'
 import { RemoteControlPeerCodec } from './remoteControlPeerCodec'
@@ -21,16 +22,32 @@ export interface RemoteControlPeerClientOptions extends RemoteControlPeerConnect
 
 export class RemoteControlPeerClient {
   private static readonly connectTimeoutMillisecondsConst = 10_000
+  private readonly identity: RemoteControlPeerIdentity
+  private readonly sign: (payload: Buffer) => string
+  private readonly options: RemoteControlPeerClientOptions | undefined
 
   constructor(
-    private readonly identity: RemoteControlPeerIdentity,
-    private readonly sign: (payload: Buffer) => string,
-    private readonly options?: RemoteControlPeerClientOptions,
-  ) {}
+    identity: RemoteControlPeerIdentity,
+    sign: (payload: Buffer) => string,
+    options?: RemoteControlPeerClientOptions,
+  ) {
+    this.identity = identity
+    this.sign = sign
+    this.options = options
+  }
 
   connect(
     profile: RemoteControlPeerProfile,
     signal?: AbortSignal,
+  ): Promise<RemoteControlStepResult<RemoteControlPeerConnection>> {
+    return this.attempt(structuredClone(profile), signal, RemoteControlPeerConst.capabilities, true)
+  }
+
+  private attempt(
+    profile: RemoteControlPeerProfile,
+    signal: AbortSignal | undefined,
+    capabilities: readonly RemoteControlPeerCapability[],
+    mayRetry: boolean,
   ): Promise<RemoteControlStepResult<RemoteControlPeerConnection>> {
     if (signal?.aborted)
       return Promise.resolve(RemoteControlPeerClient.error('unavailable', 'Remote connection cancelled'))
@@ -39,7 +56,7 @@ export class RemoteControlPeerClient {
         this.identity,
         profile,
         this.sign,
-        { now: this.options?.now?.() },
+        { now: this.options?.now?.(), capabilities },
       )
       let socket: WebSocket
       try {
@@ -54,7 +71,9 @@ export class RemoteControlPeerClient {
         return
       }
       let settled = false
-      const finish = (result: RemoteControlStepResult<RemoteControlPeerConnection>): void => {
+      let helloSent = false
+      let receivedHello = false
+      const finish = (result: RemoteControlStepResult<RemoteControlPeerConnection>, retryLegacy = false): void => {
         if (settled) return
         settled = true
         clearTimeout(timer)
@@ -66,13 +85,20 @@ export class RemoteControlPeerClient {
         socket.off('error', failed)
         socket.on('error', () => undefined)
         if (!result.ok) try { socket.terminate() } catch {}
-        resolve(result)
+        // A pre-hello 1008 can also mean server-side authentication refusal; retry changes no pin.
+        resolve(retryLegacy
+          ? this.attempt(profile, signal, RemoteControlPeerConst.legacyCapabilities, false)
+          : result)
       }
       const opened = (): void => {
-        try { socket.send(JSON.stringify(state.hello)) }
+        try {
+          helloSent = true
+          socket.send(JSON.stringify(state.hello))
+        }
         catch { finish(RemoteControlPeerClient.error('unavailable', 'Remote handshake could not start')) }
       }
       const message = (data: WebSocket.RawData, isBinary: boolean): void => {
+        receivedHello = true
         try {
           if (isBinary) throw new Error('Remote handshake returned a binary frame')
           const codec = RemoteControlPeerCodec.acceptServerHello(
@@ -90,8 +116,9 @@ export class RemoteControlPeerClient {
       }
       const failed = (): void =>
         finish(RemoteControlPeerClient.error('unavailable', 'Remote AppClientUI is unavailable'))
-      const closed = (): void =>
-        finish(RemoteControlPeerClient.error('unavailable', 'Remote handshake was closed'))
+      const closed = (code: number): void =>
+        finish(RemoteControlPeerClient.error('unavailable', 'Remote handshake was closed'),
+          mayRetry && helloSent && !receivedHello && code === 1008 && !signal?.aborted)
       const aborted = (): void =>
         finish(RemoteControlPeerClient.error('unavailable', 'Remote connection cancelled'))
       socket.once('open', opened)

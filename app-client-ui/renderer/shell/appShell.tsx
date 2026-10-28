@@ -1,3 +1,8 @@
+import { RemoteSessionCommands } from './remoteSessionCommands'
+import { RemoteSessionTasksStore } from '../sessions/remoteSessionTasksStore'
+import { SessionContentPanel } from '../panels/terminal/sessionContentPanel'
+import { SessionWorkspaceTargets } from '../../shared/sessionWorkspace'
+import { WorkflowPortsOf } from '../workflow/workflowPorts'
 import { CommitOpenStore } from '../versioning/commitOpenStore'
 import {
   Suspense,
@@ -45,7 +50,6 @@ import type {
 } from '../overlays/configuration/configurationTab.types'
 import { WorktreeSetupIntentStore } from '../overlays/configuration/worktreeSetupIntentStore'
 import type { FinalizeAsk, FinalizeOpenRequest } from '../overlays/finalize/finalizeModel'
-import { type UpdateMainAsk, UpdateMainAsks, UpdateMainOverlay, type UpdateMainOpenRequest } from '../overlays/updateMain/updateMainOverlay'
 import { FinalizeOverlay } from '../overlays/finalize/finalizeOverlay'
 import type { LauncherBinding } from '../overlays/launcher/launcherBinding'
 import {
@@ -57,6 +61,7 @@ import { RemarkableOverlay } from '../overlays/remarkable/remarkableOverlay'
 import type { SessionDetailsOpenRequest } from '../overlays/sessionDetails/sessionDetailsModel'
 import { SessionDetailsOverlay } from '../overlays/sessionDetails/sessionDetailsOverlay'
 import { ProbePanel } from '../panels/probePanel'
+import { SnapinPanel } from '../snapins/snapinPanel'
 import { SessionFolder } from '../sessions/sessionFolder'
 import { TerminalPanel } from '../panels/terminal/terminalPanel'
 import type { TerminalSplitPinsStore } from '../panels/terminal/split/useTerminalSplitPins'
@@ -64,8 +69,11 @@ import { WelcomePanel } from '../panels/welcomePanel'
 import { SessionOperations } from './sessionOperations'
 import { WorkspacePanels } from './workspacePanels'
 import { WorkspaceChannels } from './workspaceChannels'
+import { SessionFinishRequests } from '../sessions/sessionFinishRequests'
 import { SessionsMarksStore } from '../sessions/sessionsMarksStore'
 import { SessionTasksStore } from '../sessions/sessionTasksStore'
+import { RemoteSidebarPorts } from '../panels/terminal/remoteSidebarPorts'
+import { HostStopConfirmation } from '../statusBar/hostStatusItem'
 import { useSessionModel } from '../statusBar/sessionModelItem'
 import { type SessionModelPorts, SessionModelStore } from '../sessionModel/sessionModelStore'
 import { AppShellItems } from '../statusBar/appShellItems'
@@ -147,12 +155,11 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
   const [settingsRequest, setSettingsRequest] = useState<ConfigurationOpenRequest | null>(null)
   const [detailsRequest, setDetailsRequest] = useState<SessionDetailsOpenRequest | null>(null)
   const [finalizeRequest, setFinalizeRequest] = useState<FinalizeOpenRequest | null>(null)
-  const [updateMainRequest, setUpdateMainRequest] = useState<UpdateMainOpenRequest | null>(null)
   const [remarkableRequest, setRemarkableRequest] = useState<RemarkableOpenRequest | null>(null)
   const overlayOpen = useRef(false)
   const { wiring } = props
   // What both terminal widgets are about: the session of the tab in front, and whose agent it is.
-  const focus = useActiveAgentTerminal(wiring.activeTerminal, wiring.sessionsSnapshot)
+  const focus = useActiveAgentTerminal(wiring.activeTerminal, wiring.sessionsSnapshot, wiring.remoteSnapshot)
   const currentProject = useCurrentProject(
     wiring.activeTerminal, wiring.sessionsSnapshot, wiring.remoteSnapshot,
   )
@@ -169,8 +176,10 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
   useEffect(() => wiring.sessionsMarks.start(), [wiring])
   useEffect(() => wiring.commitOpen.start(), [wiring])
   useEffect(() => {
+    wiring.remoteTasks.setWindowVisible(document.visibilityState === 'visible')
     wiring.sessionTasks.setWindowVisible(document.visibilityState === 'visible')
-    return wiring.sessionTasks.start()
+    const stopLocal = wiring.sessionTasks.start(), stopRemote = wiring.remoteTasks.start()
+    return () => { stopLocal(); stopRemote() }
   }, [wiring])
   useEffect(() => window.appClient.onTabsVisibleTerminalTargets(
     (targetKeys) => wiring.sessionsMarks.setActiveTargets(new Set(targetKeys)),
@@ -197,6 +206,7 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
   useEffect(() => {
     const report = (): void => {
       wiring.sessionModel.setWindowVisible(document.visibilityState === 'visible')
+      wiring.remoteTasks.setWindowVisible(document.visibilityState === 'visible')
       wiring.sessionTasks.setWindowVisible(document.visibilityState === 'visible')
     }
     report()
@@ -251,9 +261,8 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
       || settingsRequest !== null
       || detailsRequest !== null
       || finalizeRequest !== null
-      || updateMainRequest !== null
       || remarkableRequest !== null
-  }, [launcherOpen, settingsRequest, detailsRequest, finalizeRequest, updateMainRequest, remarkableRequest])
+  }, [launcherOpen, settingsRequest, detailsRequest, finalizeRequest, remarkableRequest])
   useEffect(() => wiring.launcherCommands.bind(() => {
     if (claimOverlay())
       setLauncherOpen(true)
@@ -262,17 +271,13 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
     if (claimOverlay())
       setSettingsRequest((current) => ({ requestId: (current?.requestId ?? 0) + 1, tab }))
   }), [wiring, claimOverlay])
-  useEffect(() => wiring.detailsCommands.bind((sessionId) => {
+  useEffect(() => wiring.detailsCommands.bind((target) => {
     if (claimOverlay())
-      setDetailsRequest((current) => ({ requestId: (current?.requestId ?? 0) + 1, sessionId }))
+      setDetailsRequest((current) => ({ requestId: (current?.requestId ?? 0) + 1, ...target }))
   }), [wiring, claimOverlay])
   useEffect(() => wiring.finalizeCommands.bind((ask) => {
     if (claimOverlay())
       setFinalizeRequest((current) => ({ requestId: (current?.requestId ?? 0) + 1, ask }))
-  }), [wiring, claimOverlay])
-  useEffect(() => wiring.updateMainCommands.bind((ask) => {
-    if (claimOverlay())
-      setUpdateMainRequest((current) => ({ requestId: (current?.requestId ?? 0) + 1, ask }))
   }), [wiring, claimOverlay])
   useEffect(() => wiring.remarkableCommands.bind(() => {
     const target = wiring.activeTerminal.current()
@@ -333,7 +338,8 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
       .catch((error: unknown) => WorkspacePanels.reportTabsError(error))
   }), [wiring])
   useEffect(() => window.appClient.onTabsClosePanel((panelId) => {
-    void wiring.controller.hidePanel(panelId, { silent: true })
+    void WorkspacePanels.closeReleasedPanel(wiring.controller, panelId)
+      .catch((error: unknown) => WorkspacePanels.reportTabsError(error))
       .catch((error: unknown) => WorkspacePanels.reportTabsError(error))
   }), [wiring])
   useEffect(() => window.appClient.onTabsHandOffPanel((panelId, params, title) => {
@@ -348,7 +354,7 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
       .catch((error: unknown) => WorkspacePanels.reportTabsError(error))
   }), [wiring])
   useEffect(() => window.appClient.onTabsTransferOut((panelId) => {
-    void WorkspacePanels.finishTransferOut(wiring.controller, panelId)
+    void WorkspacePanels.closeReleasedPanel(wiring.controller, panelId)
       .catch((error: unknown) => WorkspacePanels.reportTabsError(error))
   }), [wiring])
 
@@ -408,7 +414,7 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
           : AppShellSidebars.render('right', props.sidebars.registry, props.sidebars.handle)}
       </div>
       <StatusBar
-        left={AppShellItems.left(appInfo, wiring.autoUpdate, props.hostStatus, currentProject)}
+        left={AppShellItems.left(appInfo, wiring.autoUpdate, props.hostStatus, currentProject, wiring.cliUpdates)}
         right={AppShellItems.right(appInfo, windowInfo, focus, {
           sessionModel,
           compact: wiring.contextCompact,
@@ -441,7 +447,14 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
           // Keyed so a fresh request is a fresh card: the baseline is captured at mount.
           key={detailsRequest.requestId}
           request={detailsRequest}
-          snapshot={wiring.sessionsSnapshot}
+          snapshot={detailsRequest.remoteEndpointId === undefined ? wiring.sessionsSnapshot : { current: () => ({
+            snapshot: wiring.remoteSnapshot.current().snapshot?.outbound.find((entry) => entry.remoteEndpointId === detailsRequest.remoteEndpointId)?.sessions ?? null, error: null }) }}
+          save={(sessionId, update) => detailsRequest.remoteEndpointId === undefined
+            ? AppControl.sessions('sessions.setDetails', { session: AppControl.sessionOf(sessionId), update })
+            : RemoteSessionCommands.saveDetails(detailsRequest.remoteEndpointId, sessionId, update)}
+          inputKey={TerminalTargetCodec.key(detailsRequest.remoteEndpointId === undefined
+            ? { kind: 'local', sessionId: detailsRequest.sessionId } : { kind: 'remote', sessionId: detailsRequest.sessionId, remoteEndpointId: detailsRequest.remoteEndpointId })}
+          sourceLabel={detailsRequest.remoteEndpointId === undefined ? undefined : wiring.remoteSnapshot.current().snapshot?.outbound.find((entry) => entry.remoteEndpointId === detailsRequest.remoteEndpointId)?.displayName}
           inputs={wiring.terminalInputs}
           onClose={() => setDetailsRequest(null)}
         />
@@ -451,13 +464,6 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
           key={finalizeRequest.requestId}
           request={finalizeRequest}
           onClose={() => setFinalizeRequest(null)}
-        />
-      )}
-      {updateMainRequest !== null && (
-        <UpdateMainOverlay
-          key={updateMainRequest.requestId}
-          request={updateMainRequest}
-          onClose={() => setUpdateMainRequest(null)}
         />
       )}
       {remarkableRequest !== null && (
@@ -503,7 +509,7 @@ class AppShellComposition {
     if (role === 'main') {
       const sidebarCommands = new LateBoundCommand<SidebarSide>('sidebar')
       const common = AppShellComposition.workspaceWiring(role, sidebarCommands)
-      const { sessionPorts, sessionsSnapshot, sessionsMarks, commitOpen, sessionTasks } = common
+      const { sessionPorts, sessionsSnapshot, sessionsMarks, commitOpen, sessionTasks, remoteTasks } = common
       const restartChain = new SessionRestartChain({
         read: async () => {
           const snapshot = sessionsSnapshot.current().snapshot
@@ -544,6 +550,8 @@ class AppShellComposition {
               marks={sessionsMarks}
               commitOpen={commitOpen}
               tasks={sessionTasks}
+              remoteTasks={remoteTasks}
+              onOpenTask={(target, task, title) => void WorkspacePanels.openTask(common.controller, target, task, title)}
               openTasks={openTasks}
               activeTerminal={common.activeTerminal}
               onLaunch={(intent) =>
@@ -551,22 +559,17 @@ class AppShellComposition {
               // The row of a paired computer opens the card on the screen that answers what the row
               // cannot: offline and switched-off computers are drawn there and nowhere else.
               onOpenSettings={(tab) => common.settingsCommands.open(tab)}
+              onOpenSessionActions={(target, title) => void WorkspacePanels.openSessionActions(common.controller, target, title)}
               onOpenTerminal={(target, title, intent) =>
                 void common.openTerminal(target, title, WorkspacePanels.openOptionsOf(intent))
                   .then((outcome) => WorkspacePanels.reportPanelOpen(outcome))}
-              // The path is left empty: main reads the log's path off the parent's history.
-              onOpenScriptLog={(parentId, runId) => void WorkspacePanels.openFileViewer(
-                common.controller,
-                { kind: 'scriptLog', sessionId: parentId, runId, path: '' },
-                `scriptLog:${parentId}:${runId}`,
-              )}
               // The tree never keeps the caret: what it puts in front is what gets typed into.
               onFocusTerminal={() =>
                 common.panelFocus.focus(common.controller.activePanelId())}
               onCloseTerminal={(target) => AppShellComposition.closeTerminal(target)}
               onRerunTerminal={(target) => AppShellComposition.rerunTerminal(target)}
               onFinalizeAsk={(ask) => common.finalizeCommands.open(ask)}
-              onUpdateMainAsk={(ask) => common.updateMainCommands.open(ask)}
+              finishRequests={common.finishRequests}
             />
           )
         },
@@ -618,6 +621,7 @@ class AppShellComposition {
       'The remote connections snapshot',
       remotePorts,
     )
+    const remoteTasks = new RemoteSessionTasksStore(remoteSnapshot)
     const sessionsMarks = new SessionsMarksStore(sessionsSnapshot, remoteSnapshot)
     const commitOpen = new CommitOpenStore({ read: () => window.appClient.versioning.openCommitSessions(),
       subscribe: (onChanged) => window.appClient.onCommitChanged(onChanged), reportError: AppClientUiReport.error })
@@ -634,6 +638,7 @@ class AppShellComposition {
     })
     let controller: TabsController
     panels.register({ key: PanelKeysConst.welcome, title: 'Home', component: WelcomePanel })
+    panels.register({ key: PanelKeysConst.snapin, title: 'Snap-in', component: SnapinPanel })
     panels.register({
       key: PanelKeysConst.probe,
       title: WorkspacePanels.probeTitleConst,
@@ -644,9 +649,9 @@ class AppShellComposition {
     const terminalDrafts = new TerminalDraftRegistry()
     const contextCompact = new SessionCompact(terminalInputs, {
       claimAutomatic: (sessionId) => window.appClient.contextCompaction.claimAutomatic(sessionId),
-      noteManual: (sessionId) => window.appClient.contextCompaction.noteManual(sessionId),
+      noteManual: (sessionId, endpointId) => endpointId ? RemoteSidebarPorts.compact(endpointId, sessionId, 'note') : window.appClient.contextCompaction.noteManual(sessionId),
       cooldown: (sessionId) => window.appClient.contextCompaction.cooldown(sessionId),
-      deliver: (sessionId) => window.appClient.contextCompaction.deliver(sessionId),
+      deliver: (sessionId, endpointId) => endpointId ? RemoteSidebarPorts.compact(endpointId, sessionId, 'deliver') : window.appClient.contextCompaction.deliver(sessionId),
       reportError: (message) => AppClientUiReport.error(message),
     })
     const contextCompaction = new ContextCompactionController(
@@ -678,7 +683,7 @@ class AppShellComposition {
             drafts={terminalDrafts}
             panelFocus={panelFocus}
             sessions={sessionsSnapshot}
-            tasks={sessionTasks}
+            openTerminal={async (target, title) => { const result = await WorkspacePanels.openTerminal(controller, target, title); return result.kind === 'failed' ? result.detail : null }}
             remoteSessions={remoteSnapshot}
             sessionModel={sessionModel}
             settings={agentSettings}
@@ -688,10 +693,10 @@ class AppShellComposition {
               commitOpen={commitOpen}
             fileTools={fileTools}
             splitPins={splitPins}
-            openFile={(source, documentKey, hint, location) =>
-              WorkspacePanels.openFileViewer(controller, source, documentKey, hint, location)}
-            openDirectoryAt={(sessionId, path, directoryKey) =>
-              WorkspacePanels.openDirectoryAt(controller, sessionId, path, directoryKey)}
+            openFile={(source, documentKey, hint, location, target) =>
+              WorkspacePanels.openFileViewer(controller, source, documentKey, hint, location, target)}
+            openDirectoryAt={(sessionId, path, directoryKey, target) =>
+              WorkspacePanels.openDirectoryAt(controller, sessionId, path, directoryKey, target)}
           />
         </ErrorBoundary>
       ),
@@ -706,7 +711,9 @@ class AppShellComposition {
       component: (props) => (
         <ErrorBoundary what="The file viewer">
           <Suspense fallback={<p>Opening file...</p>}>
-            <AppShellComposition.fileViewerPanelConst {...props} fileTools={fileTools} />
+            <SessionContentPanel params={props.params} remote={remoteSnapshot}>
+              {(ports, changesPorts) => <AppShellComposition.fileViewerPanelConst {...props} fileTools={fileTools} ports={ports} changesPorts={changesPorts} />}
+            </SessionContentPanel>
           </Suspense>
         </ErrorBoundary>
       ),
@@ -717,12 +724,15 @@ class AppShellComposition {
       component: (props) => (
         <ErrorBoundary what="The project folder">
           <Suspense fallback={<p>Opening project folder...</p>}>
-            <AppShellComposition.directoryViewerPanelConst
+            <SessionContentPanel params={props.params} remote={remoteSnapshot}>
+              {(ports) => <AppShellComposition.directoryViewerPanelConst
+                ports={ports.directories!}
               {...props}
               openFile={(source, documentKey) => {
-                void WorkspacePanels.openFileViewer(controller, source, documentKey)
+                void WorkspacePanels.openFileViewer(controller, source, documentKey, undefined, undefined, SessionWorkspaceTargets.panel(props.params))
               }}
-            />
+            />}
+            </SessionContentPanel>
           </Suspense>
         </ErrorBoundary>
       ),
@@ -731,9 +741,9 @@ class AppShellComposition {
       WorkspacePanels.openTerminal(controller, { kind: 'local', sessionId }, title, options)
     const launcherCommands = new LateBoundCommand('launcher')
     const settingsCommands = new LateBoundCommand<ConfigurationTabId | null>('settings')
-    const detailsCommands = new LateBoundCommand<string>('session details')
+    const detailsCommands = new LateBoundCommand<{ sessionId: string; remoteEndpointId?: string; session?: SessionInfo }>('session details')
     const finalizeCommands = new LateBoundCommand<FinalizeAsk>('finalize')
-    const updateMainCommands = new LateBoundCommand<UpdateMainAsk>('update main copy')
+    const finishRequests = new SessionFinishRequests()
     const remarkableCommands = new LateBoundCommand('reMarkable')
     const intents = new LauncherIntentStore()
     const worktreeSetupIntents = new WorktreeSetupIntentStore()
@@ -765,6 +775,7 @@ class AppShellComposition {
       sessionPorts,
       sessionsSnapshot,
       sessionTasks,
+      remoteTasks,
       remotePorts,
       remoteSnapshot,
       sessionsMarks,
@@ -772,6 +783,13 @@ class AppShellComposition {
       ratePorts,
       rateSnapshot,
       autoUpdate: AppShellComposition.autoUpdatePorts(),
+      cliUpdates: {
+        read: () => window.appClient.agentCliUpdates.get(),
+        subscribe: listener => window.appClient.onAgentCliUpdatesChanged(listener),
+        reportError: message => AppClientUiReport.error(message),
+        check: () => window.appClient.agentCliUpdates.check(),
+        install: id => window.appClient.agentCliUpdates.install(id),
+      },
       activeTerminal,
       sessionModel,
       agentSettings,
@@ -787,8 +805,9 @@ class AppShellComposition {
         intents,
         worktreeSetupIntents,
         fileTools,
-        { snapshot: sessionsSnapshot, openTerminal, compact: contextCompact },
+        { snapshot: sessionsSnapshot, remote: remoteSnapshot, openTerminal, compact: contextCompact, finishRequests },
       ),
+      finishRequests,
       refresh,
       terminalInputs,
       panelFocus,
@@ -798,7 +817,6 @@ class AppShellComposition {
       settingsCommands,
       detailsCommands,
       finalizeCommands,
-      updateMainCommands,
       remarkableCommands,
       intents,
       worktreeSetupIntents,
@@ -808,8 +826,9 @@ class AppShellComposition {
           await WorkspaceChannels.publishTerminalRestarted(TerminalTargetCodec.key(target))
         return outcome
       },
-      sessionFacts: (sessionId) =>
-        SessionOperations.sessionFactsOf(sessionsSnapshot, sessionId),
+      sessionFacts: (sessionId, endpointId) =>
+        SessionOperations.sessionFactsOf(endpointId === undefined ? sessionsSnapshot : { current: () => ({
+          snapshot: remoteSnapshot.current().snapshot?.outbound.find((entry) => entry.remoteEndpointId === endpointId)?.sessions ?? null, error: null }) }, sessionId),
     }
   }
 
@@ -823,10 +842,12 @@ class AppShellComposition {
       retrySetup: (sessionId, acknowledgeSetup) =>
         AppControl.sessionsDone('sessions.retrySetup', { session: AppControl.sessionOf(sessionId), ...(acknowledgeSetup === undefined ? {} : { acknowledgeSetup: acknowledgeSetup }) }),
       adoptOrphan: (runtimeSessionId) => AppControl.sessionsDone('sessions.adoptOrphan', { runtimeSessionId: runtimeSessionId }),
-      updateMain: (sessionId, confirmLive) => UpdateMainAsks.localPorts.updateMain(sessionId, confirmLive),
+      updateMain: (sessionId, confirmLive) => AppControl.sessions('sessions.updateMain', {
+        session: AppControl.sessionOf(sessionId), ...(confirmLive === undefined ? {} : { confirmLive: [...confirmLive] }),
+      }),
       startHost: () => AppControl.sessionsDone('host.start', {}),
       restartHost: async (hostInstanceId) => {
-        const answer = await AppControl.sessionsDone('host.restart', { expectedHostInstanceId: hostInstanceId })
+        const answer = await AppControl.sessions('host.restart', { expectedHostInstanceId: hostInstanceId })
         const snapshot = await AppControl.snapshot()
         if (snapshot.ok && snapshot.value.host.hostInstanceId !== hostInstanceId)
           for (const session of snapshot.value.sessions)
@@ -834,11 +855,9 @@ class AppShellComposition {
               await WorkspaceChannels.publishTerminalRestarted(session.sessionId)
         return answer
       },
-      stopHost: (hostInstanceId) => AppControl.sessionsDone('host.stop', { expectedHostInstanceId: hostInstanceId }),
-      confirmHostStop: (liveCount) => window.appClient.dialog.confirm(
-        'Stop AppHost?',
-        `This will end all ${liveCount} running terminal${liveCount === 1 ? '' : 's'}. Running commands will be interrupted and the sessions will not be reopened. Start the AppHost again from the status bar menu.`,
-      ),
+      stopHost: (hostInstanceId) => AppControl.sessions('host.stop', { expectedHostInstanceId: hostInstanceId }),
+      confirmHostStop: (liveCount, workingAgents = []) =>
+        window.appClient.dialog.confirm('Stop AppHost?', HostStopConfirmation.textOf(liveCount, workingAgents)),
       confirmHostRestart: (liveCount) => window.appClient.dialog.confirm(
         'Restart AppHost?',
         `This will restart all ${liveCount} running terminal${liveCount === 1 ? '' : 's'} and automatically reopen their sessions. Agent conversations will resume by their saved IDs. Running commands will be interrupted.`,
@@ -910,7 +929,7 @@ class AppShellComposition {
    */
   private static sessionModelPorts(): SessionModelPorts {
     return {
-      read: (sessionId) => AppControl.value('sessions.model', { sessionId }),
+      read: (sessionId, endpointId) => endpointId ? RemoteSidebarPorts.model(endpointId, sessionId) : AppControl.value('sessions.model', { sessionId }),
       reportError: (message) => AppClientUiReport.error(`${message}`),
     }
   }
@@ -1041,18 +1060,37 @@ class AppShellComposition {
     sidebarCommands: LateBoundCommand<SidebarSide> | null,
     launcherCommands: LateBoundCommand,
     settingsCommands: LateBoundCommand<ConfigurationTabId | null>,
-    detailsCommands: LateBoundCommand<string>,
+    detailsCommands: LateBoundCommand<{ sessionId: string; remoteEndpointId?: string; session?: SessionInfo }>,
     remarkableCommands: LateBoundCommand,
     intents: LauncherIntentStore,
     worktreeSetupIntents: WorktreeSetupIntentStore,
     fileTools: PanelFileToolsRegistry,
     session: {
       snapshot: SnapshotStore<SessionsSnapshot>
+      remote: SnapshotStore<RemoteConnectionsSnapshot>
       openTerminal: OpenTerminalPort
       compact: SessionCompact
+      finishRequests: SessionFinishRequests
     },
   ): CommandRegistry {
-    const commands = new CommandRegistry()
+    const remoteCommands = new RemoteSessionCommands({
+      active: () => {
+        const id = controller.activePanelId()
+        return id === null || controller.keyOf(id) === PanelKeysConst.welcome ? null : TerminalTargetCodec.read(controller.transferPayload(id).params)?.target ?? null
+      },
+      snapshot: () => session.remote.current().snapshot,
+      details: (target, session) => detailsCommands.open({ sessionId: target.sessionId, remoteEndpointId: target.remoteEndpointId, session }),
+      launch: (intent) => AppShellComposition.launch(intents, launcherCommands, intent),
+      open: (target, title) => WorkspacePanels.openTerminal(controller, target, title),
+      folder: (target, path) => WorkspacePanels.openDirectoryAt(controller, target.sessionId, path, WorkspacePanels.projectFolderKeyOf(path), target),
+      compact: (target) => session.compact.manual(target.sessionId, target.remoteEndpointId),
+      review: async (target, vcs) => {
+        await RemoteSessionCommands.openReview(target, vcs)
+        const info = session.remote.current().snapshot?.outbound.find((entry) => entry.remoteEndpointId === target.remoteEndpointId)?.sessions?.sessions.find((entry) => entry.sessionId === target.sessionId)
+        await WorkspacePanels.openTerminal(controller, target, info?.tabTitle ?? target.sessionId)
+      },
+    })
+    const commands = new CommandRegistry((id, arg) => remoteCommands.dispatch(id, arg))
     commands.register('session.new', () =>
       AppShellComposition.launch(intents, launcherCommands, {}))
     commands.register('session.history', () =>
@@ -1124,7 +1162,7 @@ class AppShellComposition {
     // before executing, so there the active terminal IS the clicked one.
     commands.register('session.details', (arg) => {
       const target = WorkspacePanels.commandTargetOf(controller, arg)
-      if (target !== null) detailsCommands.open(target.sessionId)
+      if (target !== null) detailsCommands.open({ sessionId: target.sessionId })
     })
     commands.register('session.setColor', (arg) =>
       WorkspacePanels.started('session.setColor',
@@ -1158,6 +1196,17 @@ class AppShellComposition {
     commands.register('session.compact', (arg) =>
       SessionOperations.compactSession(session.compact,
         WorkspacePanels.commandTargetOf(controller, arg)))
+    commands.register('session.showActions', (arg) => {
+      const target = WorkspacePanels.commandTargetOf(controller, arg)
+      if (target !== null) WorkflowPortsOf.openWorkflow(target.sessionId)
+    })
+    // The row's own Finish, handed to the sessions tree that draws it.
+    commands.register('session.finish', (arg) => {
+      const target = WorkspacePanels.commandTargetOf(controller, arg)
+      if (target !== null && !session.finishRequests.request(target.sessionId))
+        AppClientUiReport.error('Finish starts from the row of the session in the sessions tree, and no row for it is shown here; '
+          + 'clear the tree filter or use the main window')
+    })
     commands.register('session.commitSvn', (arg) => WorkspacePanels.started('session.commitSvn',
       SessionOperations.commitSession(session.snapshot, WorkspacePanels.commandTargetOf(controller, arg), 'svn')))
     commands.register('session.commitGit', (arg) => WorkspacePanels.started('session.commitGit',

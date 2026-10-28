@@ -29,9 +29,10 @@ describe('app-client-ui/renderer/fileViewer/panelFileToolsRegistry', () => {
     expect(() => PanelFileToolsRegistry.tab(null)).toThrow(/Unknown file tools tab/)
   })
 
-  it('accepts Notes, Processes and the three file keys for a terminal, and throws on anything else', () => {
-    for (const key of ['workingTree', 'fileChanges', 'directoryExplorer', 'notes', 'processes'] as const)
+  it('accepts Notes and the three file keys, restores retired Processes as File Changes, and rejects unknown keys', () => {
+    for (const key of ['workingTree', 'fileChanges', 'directoryExplorer', 'notes'] as const)
       expect(PanelFileToolsRegistry.terminalTab(key)).toBe(key)
+    expect(PanelFileToolsRegistry.terminalTab('processes')).toBe('workingTree')
     expect(() => PanelFileToolsRegistry.terminalTab('scratch')).toThrow(/Unknown file tools tab: "scratch"/)
   })
 })

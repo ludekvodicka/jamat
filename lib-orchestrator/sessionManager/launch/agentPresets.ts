@@ -1,5 +1,3 @@
-import { homedir } from 'node:os'
-
 import type { SessionRecordAgent } from '../records/sessionRecord.types'
 import type { SessionAgentId, SessionCreateSpec } from '../sessionManagerApi.types'
 
@@ -51,15 +49,16 @@ export type AgentLaunchSpec = SessionAgentSpec & { oneShot?: true; permission?: 
 export class AgentPresets {
   /**
    * The command line a create asked for. `minted` is the native id this client generated for the
-   * launch, when it generated one.
+   * launch, when it generated one. `cli` is this client's own Jamat CLI line (`RunTools.agentCli`),
+   * which only the merger's rights name.
    */
-  static createArgs(agent: AgentLaunchSpec, minted: string | undefined): string[] {
+  static createArgs(agent: AgentLaunchSpec, minted: string | undefined, cli?: string): string[] {
     const args = AgentPresets.modeArgs(agent, minted)
     // In FRONT of the mode flags, because print mode is what the whole invocation is, and after the
     // prompt it would be read as more prompt.
     if (agent.oneShot) args.unshift(...AgentPresets.oneShotArgsOf(agent.agentId))
     if (agent.permission !== undefined)
-      args.unshift(...AgentPresets.permissionArgsOf(agent.agentId, agent.permission, AgentPresets.jamatCliOf(homedir())))
+      args.unshift(...AgentPresets.permissionArgsOf(agent.agentId, agent.permission, cli))
     // LAST, and positional: both CLIs read a trailing bare argument as the first thing to answer.
     // Anything appended after it would be read as more prompt rather than as a flag.
     if (agent.initialPrompt) args.push(agent.initialPrompt)
@@ -77,7 +76,7 @@ export class AgentPresets {
    * the resume shape on purpose: nothing ran, so there is no conversation to resume, and a session
    * started under a minted id must be replayed under that same id.
    */
-  static replayArgs(agent: SessionRecordAgent): string[] {
+  static replayArgs(agent: SessionRecordAgent, cli?: string): string[] {
     return AgentPresets.createArgs(
       {
         agentId: agent.agentId,
@@ -92,6 +91,7 @@ export class AgentPresets {
         permission: agent.permission,
       },
       agent.nativeSessionId,
+      cli,
     )
   }
 
@@ -104,7 +104,7 @@ export class AgentPresets {
    * that gate refuses cannot arrive here; if one does, the gate was bypassed, and that is an
    * invariant violation rather than a launch to improvise.
    */
-  static reopenArgs(agent: SessionRecordAgent): string[] {
+  static reopenArgs(agent: SessionRecordAgent, cli?: string): string[] {
     const problem = AgentPresets.reopenProblem(agent)
     if (problem) throw new Error(`Refusing to build a reopen launch: ${problem}`)
     // `initialPrompt` is deliberately NOT carried: the conversation being resumed has already been
@@ -119,6 +119,7 @@ export class AgentPresets {
         permission: agent.permission,
       },
       undefined,
+      cli,
     )
   }
 
@@ -157,17 +158,37 @@ export class AgentPresets {
       throw new Error(`Unknown agent: ${JSON.stringify(agent.agentId)}`)
   }
 
-  /**
-   * A Codex `continue` becomes resumable only after the server confirms its selected thread.
-   * Claude `continue` has no equivalent confirmation here.
-   */
+  /** A `continue` becomes resumable only after the running agent confirms the conversation it selected. */
   private static reopenModeOf(agent: SessionRecordAgent): SessionAgentSpec['mode'] {
     if (agent.launchMode === 'new' || agent.launchMode === 'resume' || agent.launchMode === 'fork')
       return agent.nativeSessionId ? 'resume' : 'continue'
     else if (agent.launchMode === 'continue')
-      return agent.nativeSessionIdSource === 'codex-app-server' && agent.nativeSessionId ? 'resume' : 'continue'
+      return AgentPresets.identityConfirmed(agent) && agent.nativeSessionId ? 'resume' : 'continue'
     else
       throw new Error(`Unknown launch mode: ${JSON.stringify(agent.launchMode)}`)
+  }
+
+  /**
+   * Whether the running agent itself named `nativeSessionId` for its launch generation. A minted or
+   * provided id is only what this client asked for: Claude Code 2.1.304 was started with
+   * `--session-id` and wrote its conversation under another id (UA1-J14-1).
+   */
+  static identityConfirmed(agent: Pick<SessionRecordAgent, 'nativeSessionIdSource'>): boolean {
+    const source = agent.nativeSessionIdSource
+    if (source === undefined || source === 'provided') return false
+    else if (source === 'codex-app-server' || source === 'claude-statusline') return true
+    else throw new Error(`Unknown native identity source: ${JSON.stringify(source satisfies never)}`)
+  }
+
+  /**
+   * Whether a launch of this agent reports the conversation it runs, so it gets a launch generation
+   * (`identityLaunchId`) to bind that report to. Codex reports through its app-server bridge; an
+   * interactive Claude through its status line relay. A one-shot Claude run draws no status line.
+   */
+  static confirmsIdentity(agent: Pick<SessionRecordAgent, 'agentId' | 'oneShot'>): boolean {
+    if (agent.agentId === 'codex') return true
+    else if (agent.agentId === 'claude') return agent.oneShot !== true
+    else throw new Error(`Unknown agent: ${JSON.stringify(agent.agentId satisfies never)}`)
   }
 
   /**
@@ -205,23 +226,33 @@ export class AgentPresets {
    * also inside a compound command), and any other command asks the person at its tab. Probed with
    * Claude Code 2.1.296 on 2026-10-13 (docs/architecture/svn-conflict-resolution.md, "Merger rights").
    */
-  private static permissionArgsOf(agentId: SessionAgentId, permission: NonNullable<SessionRecordAgent['permission']>, cli: string): string[] {
+  private static permissionArgsOf(agentId: SessionAgentId, permission: NonNullable<SessionRecordAgent['permission']>, cli: string | undefined): string[] {
     if (agentId === 'codex') throw new Error('Codex has no edits-only mode this build starts; the SVN resolver and merger are always Claude')
     else if (agentId !== 'claude') throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
     if (permission === 'accept-edits') return ['--disallowedTools', 'Bash', '--permission-mode', 'acceptEdits']
-    else if (permission === 'merger')
+    else if (permission === 'merger') {
+      // The person's ~/.claude skill can belong to another installation, and a call there reached
+      // the wrong instance (UA1-J14-9); there is no fallback to it.
+      if (cli === undefined) throw new Error('The SVN merger needs the Jamat CLI line of this client')
       return ['--allowedTools', `Bash(${cli} sessions resolve-conflict:*)`, `Bash(${cli} sessions conflicts:*)`,
         '--disallowedTools', 'Bash(svn:*)', 'Bash(svnadmin:*)', '--permission-mode', 'acceptEdits']
+    }
     else throw new Error(`Unknown agent permission: ${JSON.stringify(permission satisfies never)}`)
   }
 
   /**
-   * The command an agent runs the Jamat CLI with: the `appjamat-v3` skill's wrapper, which AppClientUI
-   * links into `~/.claude/skills`. Forward slashes and quotes, so Claude's Bash and its permission
-   * rules read one string whatever the home path holds.
+   * A worktree worker runs the Jamat CLI lines its handoffs give (`WorkerHandoffs.linesOf`) unasked:
+   * Claude's auto mode blocked the line of a resume handoff as a script from outside the project
+   * (UA1-J14R-2). Each line is allowed as the merger's are, a `Bash(<line>:*)` prefix rule, and no
+   * other command gains a right. `--allowedTools` is variadic and only a flag ends it, so the rights go
+   * in front of the launch's first flag; a launch that starts with a bare prompt gets none, and the
+   * worker asks for each call. Codex has no such rule this build sets, so its launch stays as it is.
    */
-  static jamatCliOf(home: string): string {
-    return `node "${home.replace(/\\/g, '/').replace(/\/+$/, '')}/.claude/skills/appjamat-v3/scripts/jamat-v3.mjs"`
+  static workerRightsOf(agentId: SessionAgentId, args: readonly string[], lines: readonly string[]): string[] {
+    if (agentId === 'codex') return [...args]
+    else if (agentId !== 'claude') throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
+    if (lines.length === 0 || args[0]?.startsWith('-') !== true) return [...args]
+    return ['--allowedTools', ...lines.map((line) => `Bash(${line}:*)`), ...args]
   }
 
   /**

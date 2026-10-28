@@ -1,5 +1,6 @@
 import type { RuntimeSessionInfo } from '../../../app-host/app/wire/hostWire.js'
 import type { SessionRecord } from '../records/sessionRecord.types'
+import { SessionOutcomes } from '../records/sessionOutcomes'
 import type { SessionScriptWords } from './sessionScriptDefinitions'
 
 /** What a run that is no longer running did, in the words its history entry keeps. */
@@ -35,11 +36,13 @@ export class ScriptRunOutcome {
     if (!run) return ScriptRunOutcome.failed('lost', `its ${session} session record is gone`)
     // Asked before the exit code, because a stopped run did not finish whatever code the platform
     // reports for a killed process - and on POSIX a signalled process reports 0, which would read
-    // here as a clean run.
-    if (run.stopRequested) return ScriptRunOutcome.failed('stopped', `its ${actor} was stopped`)
+    // here as a clean run. The Host's witness counts too: a pass can settle the exit before the
+    // client that asked for the stop has written its own.
+    if (SessionOutcomes.endingWasAsked(run)) return ScriptRunOutcome.failed('stopped', `its ${actor} was stopped`)
     const runtime = live.get(runId)
     if (runtime) {
       if (runtime.alive) return { kind: 'running' }
+      if (runtime.exitReason === 'stopped') return ScriptRunOutcome.failed('stopped', `its ${actor} was stopped`)
       return runtime.exitCode === 0
         ? ScriptRunOutcome.succeededConst
         : ScriptRunOutcome.failed('failed', `the ${actor} exited with ${runtime.exitCode ?? 'no exit code'}`, runtime.exitCode)

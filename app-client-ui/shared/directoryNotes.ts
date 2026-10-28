@@ -1,12 +1,8 @@
 import { JsonShape } from './jsonShape'
 import { PathText } from './pathText'
 
-export interface DirectoryNote {
-  text: string
-  /** Written only when true, so a hand-edited config.json stays short. */
-  large?: boolean
-  sticky?: boolean
-}
+export type { RemoteDirectoryNote as DirectoryNote } from '../../lib-orchestrator/remoteControl/remoteSidebarApi.types'
+import type { RemoteDirectoryNote as DirectoryNote } from '../../lib-orchestrator/remoteControl/remoteSidebarApi.types'
 
 /** The `directoryNotes` section: working directory -> its notes, in the order they are shown. */
 export type DirectoryNotesValue = Readonly<Record<string, readonly DirectoryNote[]>>

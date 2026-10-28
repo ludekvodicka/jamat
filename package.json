@@ -9,8 +9,11 @@
     "host": "tsx app-host/start.ts",
     "ui": "pnpm -C app-client-ui run dev",
     "jamat-v3": "tsx app-client-cli/start.ts",
+    "relay": "pnpm -C app-relay start",
+    "test:relay": "pnpm -C app-relay test",
+    "typecheck:relay": "pnpm -C app-relay typecheck",
     "typecheck": "tsc --noEmit -p app-host && tsc --noEmit -p lib-orchestrator && tsc --noEmit -p app-codex && tsc --noEmit && pnpm -C app-client-ui run typecheck && pnpm -C app-client-cli run typecheck && tsx scripts/checks/skills-adapters-identical.ts && tsc -p MiniWolService && tsc -p app-launcher",
-    "test": "pnpm -C app-host run test && pnpm -C lib-orchestrator run test && pnpm -C app-client-ui run test && pnpm -C app-client-cli run test && pnpm -C MiniWolService run test && node --import tsx --test app-codex/app/*.test.ts app-launcher/app/*.test.ts scripts/release/*.test.ts scripts/setup/*.test.ts && node --test scripts/checks/session-automation-groups.test.mjs",
+    "test": "pnpm -C app-host run test && pnpm -C lib-orchestrator run test && pnpm -C app-client-ui run test && pnpm -C app-client-cli run test && pnpm -C MiniWolService run test && node --import tsx --test app-codex/app/*.test.ts app-launcher/app/*.test.ts scripts/release/*.test.ts scripts/setup/*.test.ts scripts/smoke/*.test.ts && node --test scripts/checks/session-automation-groups.test.mjs",
     "smoke:host": "tsx scripts/smoke/host.ts",
     "smoke:codex-identity": "tsx scripts/smoke/codex-identity.ts",
     "smoke:packaged-host": "tsx scripts/smoke/packaged-host.ts",
@@ -22,6 +25,7 @@
     "smoke:remote-control": "tsx scripts/smoke/remote-control.ts",
     "smoke:session-manager": "tsx scripts/smoke/session-manager.ts",
     "smoke:svn-worktree": "tsx scripts/smoke/svn-worktree.ts",
+    "smoke:worktrees-acceptance": "tsx scripts/smoke/worktreesAcceptance.ts",
     "smoke:terminal": "tsx scripts/smoke/terminal.ts",
     "smoke:terminal-detector": "tsx scripts/smoke/terminal-detector.ts",
     "smoke:ui": "tsx scripts/smoke/ui.ts",
@@ -46,7 +50,7 @@
     "dev:testbed": "tsx scripts/dev/make-file-viewer-testbed.ts"
   },
   "engines": {
-    "node": ">=22.16.0"
+    "node": ">=22.19.0"
   },
   "dependencies": {
     "tsx": "4.22.0",

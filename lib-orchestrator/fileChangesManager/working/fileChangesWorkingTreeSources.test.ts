@@ -58,7 +58,6 @@ describe('lib-orchestrator/fileChangesManager/working/fileChangesWorkingTreeSour
       historyBaselineRef: (revision) => ({ kind: 'svn-revision', revision }),
       detect: async (cwd) => { asked.push(cwd); return detection('svn') },
       status: async () => ({ ok: true, value: { entries: [], externalRoots: [] } }),
-      dirty: async () => ({ ok: true, value: false }),
       history: async () => ({ ok: true, value: [] }),
       readBaseline: async () => ({ kind: 'missing', detail: 'not used' }),
     }

@@ -32,6 +32,11 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
     expect(opened.state.history).toEqual([])
   })
 
+  it('preserves a shared review identity in saved split params', () => {
+    const item = { kind: 'commit', key: 'review:source', title: 'Review', vcs: 'svn', scopeRoot: 'Q:/scope', reviewId: 'source-review' }
+    expect(PanelSplitParams.of({ split: { items: [item] } }).items[0]).toEqual(item)
+  })
+
   it('restores a commit selection with a node-only directory and drops one whose depth is unknown', () => {
     const paths = [{ path: 'Q:/Group', depth: 'empty' }, 'Q:/Group/notes.md']
     const commit = (value: unknown) => ({ kind: 'commit', key: 'c', title: 'c', vcs: 'svn', scopeRoot: 'Q:/Group', paths: value })
@@ -270,6 +275,7 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
         preview: null,
         items: [],
         history: [],
+        recent: [],
       })
       expect(PanelSplitParams.of(null)).toEqual(PanelSplitParams.default())
       expect(PanelSplitParams.of({ split: 'yes' })).toEqual(PanelSplitParams.default())
@@ -384,17 +390,36 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
       expect(replacement.state.preview).toBe('key:replacement.md')
     })
 
-    it('hands the active tab to its next sibling on close, and to the previous one at the end', () => {
-      let state = PanelSplitParams.default()
-      for (const path of ['a.md', 'b.md', 'c.md']) {
-        const step = PanelSplitParams.opened(state, itemFixture(path))
-        if (!step.ok) throw new Error('expected the file to fit')
-        state = PanelSplitParams.keptOpen(step.state, `key:${path}`)
-      }
-      const middle = PanelSplitParams.closed(PanelSplitParams.activated(state, 'key:b.md'), 'key:b.md')
+    it('without an earlier active tab, hands the active tab to its next sibling on close, and to the previous one at the end', () => {
+      const items = ['a.md', 'b.md', 'c.md'].map(itemFixture)
+      const middle = PanelSplitParams.closed({ ...PanelSplitParams.default(), items, active: 'key:b.md', recent: ['key:b.md'] }, 'key:b.md')
       expect(middle.active).toBe('key:c.md')
       const last = PanelSplitParams.closed(middle, 'key:c.md')
       expect(last.active).toBe('key:a.md')
+    })
+
+    it('returns to the tab that was in front before, not to the neighbour of the closed one', () => {
+      const commit = (key: string) => ({ kind: 'commit' as const, key, title: key, vcs: 'svn' as const, scopeRoot: `Q:/${key}` })
+      let state = PanelSplitParams.default()
+      for (const key of ['c1', 'c2', 'c3']) {
+        const step = PanelSplitParams.opened(state, commit(key))
+        if (!step.ok) throw new Error('expected the commit to fit')
+        state = step.state
+      }
+      const file = PanelSplitParams.opened(PanelSplitParams.activated(state, 'c1'), itemFixture('changed.ts'))
+      if (!file.ok) throw new Error('expected the file to fit')
+
+      const closed = PanelSplitParams.closed(file.state, 'key:changed.ts')
+      expect(closed.active).toBe('c1')
+      expect(PanelSplitParams.closed(closed, 'c1').active).toBe('c3')
+    })
+
+    it('reads a layout without the activation order as its active tab alone', () => {
+      const items = ['a.md', 'b.md', 'c.md'].map(itemFixture)
+      const restored = PanelSplitParams.of({ split: { items, active: 'key:b.md' } })
+      expect(restored.recent).toEqual(['key:b.md'])
+      const stored = { split: { items, active: 'key:b.md', recent: ['key:gone.md', 'key:a.md', 'key:a.md', 7, 'key:b.md'] } }
+      expect(PanelSplitParams.of(stored).recent).toEqual(['key:a.md', 'key:b.md'])
     })
 
     it('closing an inactive tab leaves the active one where it was', () => {
@@ -957,4 +982,14 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
       expect(container.querySelector('.jamat-panel-split__pane')).not.toBeNull()
     })
   })
+})
+
+it('restores only target-matching split items, treating legacy items as local', () => {
+  const local = PanelSplitParams.workflowItemOf('same')
+  const target = { kind: 'remote', remoteEndpointId: 'peer-a', sessionId: 'same' } as const
+  const remote = PanelSplitParams.workflowItemOf('same', target)
+  const split = { items: [local, remote], active: remote.key, history: [] }
+  expect(PanelSplitParams.of({ sessionId: 'same', split }).items).toEqual([local])
+  expect(PanelSplitParams.of({ target, split }).items).toEqual([remote])
+  expect(PanelSplitParams.of({ target: { ...target, remoteEndpointId: 'peer-b' }, split }).items).toEqual([])
 })

@@ -65,6 +65,7 @@ class ProbeAgent {
         operationId: 'probe-1',
         runtimeSessionId: 'probe-agent',
         launch: {
+          stopDescendants: false,
           command: process.env.ComSpec ?? 'cmd.exe',
           args: ['/d', '/q', '/c', agent, ...agentArgs],
           cwd: workDir,

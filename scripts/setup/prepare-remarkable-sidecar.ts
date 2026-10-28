@@ -15,6 +15,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { buildSync } from 'esbuild'
 
 type NodeArchiveFormat = 'tar.gz' | 'zip'
 
@@ -208,11 +209,10 @@ class PrepareRemarkableSidecar {
   ): string {
     const layout = PrepareRemarkableSidecar.archiveOf(recipe.node.archive)
     if (layout.format === 'zip') {
-      const command = '& { param([string]$source, [string]$destination) '
-        + 'Expand-Archive -LiteralPath $source -DestinationPath $destination -Force }'
+      // Windows Expand-Archive cannot extract npm's nested tree under a long worktree path.
       PrepareRemarkableSidecar.runInherited(
-        'powershell.exe',
-        ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command, archive, extraction],
+        'tar',
+        ['-xf', archive, '-C', extraction],
         PrepareRemarkableSidecar.repoRootConst,
         'Node archive extraction',
       )
@@ -303,10 +303,24 @@ class PrepareRemarkableSidecar {
     const bin = PrepareRemarkableSidecar.recordOf(cliPackage.bin, 'installed CLI bin')
     if (typeof bin.rmcli !== 'string')
       throw new Error('installed CLI package has no bin.rmcli entry')
-    const cliEntryFile = resolve(cliPackageDir, bin.rmcli)
-    PrepareRemarkableSidecar.assertInside(cliPackageDir, cliEntryFile, 'CLI entry')
-    if (!existsSync(cliEntryFile))
-      throw new Error(`installed CLI entry does not exist: ${cliEntryFile}`)
+    const packageEntry = resolve(cliPackageDir, bin.rmcli)
+    PrepareRemarkableSidecar.assertInside(cliPackageDir, packageEntry, 'CLI entry')
+    if (!existsSync(packageEntry))
+      throw new Error(`installed CLI entry does not exist: ${packageEntry}`)
+    const cliEntryFile = join(staging, 'start.cjs')
+    const cliPath = JSON.stringify(`./${PrepareRemarkableSidecar.relativePath(staging, packageEntry)}`)
+    const bootstrap = buildSync({
+      stdin: {
+        contents: `import { NodeTlsTrust } from './lib-orchestrator/shared/nodeTlsTrust';\n`
+          + `NodeTlsTrust.install();\nimport(${cliPath});\n`,
+        resolveDir: PrepareRemarkableSidecar.repoRootConst,
+        sourcefile: 'remarkable-bootstrap.ts',
+      },
+      outfile: cliEntryFile, bundle: true, platform: 'node', format: 'cjs', target: 'node22',
+      external: [cliPath.slice(1, -1)], logLevel: 'warning',
+    })
+    if (bootstrap.warnings.length)
+      throw new Error('The reMarkable TLS bootstrap could not be bundled without warnings')
     const cliLicenseFile = join(cliPackageDir, 'LICENSE')
     if (!existsSync(cliLicenseFile))
       throw new Error('installed CLI package has no LICENSE')

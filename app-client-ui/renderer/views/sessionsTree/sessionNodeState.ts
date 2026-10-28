@@ -5,6 +5,7 @@ import type {
   SessionScriptRunState,
   SessionScriptsBadge,
   SessionSvnActionInfo,
+  SessionWorkflowKind,
   SessionWorktreeCleanupPhase,
   SessionWorktreeInfo,
   SessionWorktreeKind,
@@ -171,12 +172,20 @@ export class SessionNodeState {
   static landingOf(retired: SessionInfo['retiredWorktree']): SessionLandingBadge | null {
     const landing = retired?.landing
     if (landing === undefined) return null
-    const behind = landing.behind === null ? 'behind (unknown)' : `${landing.behind} behind`
     const newest = landing.newest.map((revision) => revision.replace(/^.*:(r\d+)$/, '$1')).join(', ') || 'the landed revisions'
+    // The person's own state in the main copy keeps the landing unproven, not the distance to HEAD.
+    if (landing.local !== undefined) return {
+      text: `main copy: ${landing.local.path} ${landing.local.item}`,
+      title: `The main copy ${landing.mainCopy} does not show ${newest} as landed. ${landing.local.summary}`,
+    }
+    const roots = landing.behindRoots ?? []
+    const where = roots.map((root) => `${root.root === '.' ? 'root' : root.root} ${root.behind}`).join(', ')
+    const externals = roots.some((root) => root.root !== '.')
+    const behind = landing.behind === null ? 'behind (unknown)' : externals ? `behind: ${where}` : `${landing.behind} behind`
     return {
       text: `main copy ${behind}`,
       title: `The main copy ${landing.mainCopy} does not hold ${newest} yet; it is ${landing.behind === null
-        ? 'an unknown number of revisions' : `${landing.behind} revision${landing.behind === 1 ? '' : 's'}`} behind HEAD. `
+        ? 'an unknown number of revisions' : `${landing.behind} revision${landing.behind === 1 ? '' : 's'}`} behind HEAD${externals ? ` (${where})` : ''}. `
         + 'Update main copy brings them in; the row goes once the main copy holds them, whoever updates it.',
     }
   }
@@ -187,9 +196,9 @@ export class SessionNodeState {
     const kind = action.kind
     if (kind === 'finish' || kind === 'discard') return null
     else if (kind === 'update-main')
-      return action.needs === null
+      return action.needs === null && action.stage !== 'main-update'
         ? { waiting: false, title: SessionNodeState.actionTitleOf(action) }
-        : { waiting: true, title: action.needs }
+        : { waiting: true, title: action.needs ?? SessionNodeState.actionTitleOf(action) }
     else
       throw new Error(`Unknown SVN action kind: ${JSON.stringify(kind satisfies never)}`)
   }
@@ -269,34 +278,7 @@ export class SessionNodeState {
   }
 
   /** The stage of an SVN action in the words a person reads; a review says which of how many. */
-  static actionTitleOf(action: SessionSvnActionInfo): string {
-    const stage = action.stage
-    if (action.kind === 'update-main') {
-      if (stage === 'updating') return 'Updating the main copy'
-      else if (stage === 'resolving') return 'Claude resolves the conflicts of the main-copy update'
-      else if (stage === 'verifying') return 'Checking the files the conflict resolver edited in the main copy'
-      else if (stage === 'diffing') return 'Showing the merge of the resolved files'
-      else if (stage === 'recording') return 'Reading whether the main copy holds the landed revisions'
-    }
-    if (stage === 'stopping') return 'Stopping the session before its Finish'
-    else if (stage === 'evidence') return 'Reading what the worktree committed'
-    else if (stage === 'checks') return "Running the project's checks"
-    else if (stage === 'updating') return 'Updating the worktree to HEAD before the review'
-    else if (stage === 'cleaning') return 'Running svn cleanup in the worktree'
-    else if (stage === 'resolving') return 'Claude resolves the conflicts of the update'
-    else if (stage === 'merging') return 'The merger settles the conflicts the rules left'
-    else if (stage === 'verifying') return 'Checking the files the conflict resolver edited'
-    else if (stage === 'fixing') return 'Checking the conflicts after Check again'
-    else if (stage === 'diffing') return 'Showing the merge of the resolved files'
-    else if (stage === 'reviewing')
-      return action.review === null
-        ? 'Waiting for the commit review'
-        : `Waiting for the commit review ${action.review.index} of ${action.review.count}: ${action.review.scopeRoot}`
-    else if (stage === 'removing') return 'Removing the worktree'
-    else if (stage === 'recording') return 'Writing how the Finish ended'
-    else
-      throw new Error(`Unknown SVN action stage: ${JSON.stringify(stage satisfies never)}`)
-  }
+  static actionTitleOf(action: SessionSvnActionInfo): string { return action.title ?? action.needs ?? 'Finish' }
 
   /** Why an SVN action waits for the person, or null while it runs or when there is none. */
   static actionNeedsOf(action: SessionSvnActionInfo | undefined): string | null {
@@ -310,12 +292,54 @@ export class SessionNodeState {
 
   /**
    * Whether Finish… on this computer opens the session's workflow instead of the dialog: an SVN
-   * action runs or waits, and its workflow says so. A peer's row keeps the dialog.
+   * action runs or waits, and its workflow says so. A peer's row keeps the dialog. A requested run
+   * still running is no action: Finish… goes on, and the run keeps its own Stop (UA1-J07-1).
    */
-  static opensWorkflow(session: Pick<SessionInfo, 'svnAction' | 'workflow'>, scope: 'local' | 'remote'): boolean {
+  static opensWorkflow(session: Pick<SessionInfo, 'svnAction' | 'workflow' | 'actions'>, scope: 'local' | 'remote'): boolean {
     if (scope === 'remote') return false
-    else if (scope === 'local') return session.svnAction !== undefined && session.workflow?.open === true
+    else if (scope === 'local') return session.actions?.sections.some((section) => section.open && SessionNodeState.holdsAction(section.kind))
+      ?? (session.svnAction !== undefined && session.workflow?.open === true)
     else throw new Error(`Unknown operation scope: ${JSON.stringify(scope satisfies never)}`)
+  }
+
+  private static holdsAction(kind: SessionWorkflowKind): boolean {
+    switch (kind) {
+      case 'before': case 'finish': case 'discard': case 'update-main': case 'git-finish': return true
+      case 'script': return false
+      default: throw new Error(`Unknown workflow kind: ${JSON.stringify(kind satisfies never)}`)
+    }
+  }
+
+  /** `waiting`: a step waits for the person; otherwise the open sections run on by themselves. */
+  static actionsMarkOf(actions: SessionInfo['actions']): { text: string; title: string; waiting: boolean } | null {
+    const open = actions?.sections.filter((section) => section.open) ?? []
+    const waiting = open.findLast((section) => section.rounds.some((round) => round.steps.some((step) => step.state === 'waits')))
+    const section = waiting ?? open.at(-1)
+    if (section === undefined) return null
+    return { text: waiting ? section.badge || 'actions waiting' : 'actions running', title: section.summary, waiting: waiting !== undefined }
+  }
+
+  /**
+   * What the Session actions item draws, so the tree draws it nowhere else: every run a step opens
+   * or logs, and the session's step while an open section runs a step that speaks through it.
+   * A paired computer opens no item, so its rows keep everything.
+   */
+  static heldByActionsOf(actions: SessionInfo['actions'], scope: 'local' | 'remote'): { runs: ReadonlySet<string>; step: boolean } {
+    if (scope === 'remote') return { runs: new Set(), step: false }
+    else if (scope !== 'local') throw new Error(`Unknown operation scope: ${JSON.stringify(scope satisfies never)}`)
+    const runs = new Set<string>()
+    let step = false
+    for (const section of actions?.sections ?? [])
+      for (const round of section.rounds)
+        for (const item of round.steps) {
+          if (item.body?.kind === 'log') runs.add(item.body.runId)
+          const target = item.target
+          const kind = target.kind
+          if (kind === 'run' || kind === 'agent' || kind === 'commit') runs.add(target.runId)
+          else if (kind === 'none') step ||= section.open && item.state === 'running'
+          else if (kind !== 'conflicts') throw new Error(`Unknown workflow target: ${JSON.stringify(kind satisfies never)}`)
+        }
+    return { runs, step }
   }
 
   /**

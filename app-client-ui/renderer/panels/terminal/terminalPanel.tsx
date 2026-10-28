@@ -1,5 +1,11 @@
+import { SessionWorkspaceKeys } from '../../../shared/sessionWorkspace'
+import { SharedSessionViews } from './sharedSessionViews'
+import type { SessionOpen } from '../../../shared/sessionViewItems'
+import { UiSettingsStore } from '../../uiSettings/uiSettingsStore'
+import type { TerminalTarget } from '../../../shared/terminalTarget'
+import { useSnapshotStore } from '../../views/sessionsTree/useSessionsSnapshot'
 import type { IDockviewPanelProps } from 'dockview'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useSyncExternalStore, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import type { FileChangesVcsId } from '../../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import type {
@@ -18,7 +24,6 @@ import type {
   RemoteConnectionsSnapshot,
 } from '../../../../lib-orchestrator/remoteControl/remoteConnectionsApi.types'
 import { ErrorText } from '../../../shared/errorText'
-import { AppControl } from '../../ipc/appControl'
 import { TabControlTask } from '../../../shared/tabControl'
 import {
   type TerminalPanelReading,
@@ -27,9 +32,10 @@ import {
 import { FileToolsSidebar } from '../../fileViewer/fileToolsSidebar'
 import { CommitPane } from '../../versioning/commitPane'
 import { TaskPane } from '../../taskView/taskPane'
-import { WorkflowPane } from '../../workflow/workflowPane'
-import { WorkflowPortsOf } from '../../workflow/workflowPorts'
-import { IpcFailure } from '../../ipc/ipcFailure'
+import { SessionActionsPane } from '../../sessionActions/sessionActionsPane'
+import { SessionWorkspaceProviders } from './sessionWorkspaceProviders'
+import { SessionDrag } from '../../sessions/sessionDrag'
+import { SessionOperations } from '../../shell/sessionOperations'
 import { type CommitOpenStore, useCommitOpen } from '../../versioning/commitOpenStore'
 import { FileViewerPane } from '../../fileViewer/fileViewerPane'
 import type { AgentSettingsStore } from '../../contextCompaction/agentSettingsStore'
@@ -48,7 +54,6 @@ import type { SessionRefreshRegistry } from '../../shell/sessionRefreshRegistry'
 import type { TerminalDraftRegistry } from '../../shell/terminalDraftRegistry'
 import type { TerminalInputRegistry } from '../../shell/terminalInputRegistry'
 import type { SessionsMarksStore } from '../../sessions/sessionsMarksStore'
-import type { SessionTasksStore } from '../../sessions/sessionTasksStore'
 import { useSessionMarked } from '../../sessions/useSessionMarked'
 import { type SessionGlyph, SessionNodeState } from '../../views/sessionsTree/sessionNodeState'
 import type { TabBadge, TabDecorations, TabSignal } from '../../widgets/tabs/tabDecorations'
@@ -68,11 +73,9 @@ import { TerminalContextMenu } from './menu/terminalContextMenu'
 import { TerminalClipboard } from './input/terminalClipboard'
 import { TerminalNotesPanel } from './notes/terminalNotesPanel'
 import { useTerminalNotes } from './notes/useTerminalNotes'
-import { ProcessesPanel } from './processes/processesPanel'
-import type { ProcessRow } from './processes/processesModel'
 import { TerminalPostMortem } from './view/terminalPostMortem'
 import { TerminalTransports } from './attach/terminalTransport'
-import { useTerminalSessionInfo } from './attach/useTerminalSessionInfo'
+import { useTerminalHostInstance, useTerminalSessionInfo } from './attach/useTerminalSessionInfo'
 import { type TerminalSplitPinsStore, useTerminalSplitPins } from './split/useTerminalSplitPins'
 import {
   type TerminalMenuContext,
@@ -97,7 +100,7 @@ export type TerminalPanelProps = IDockviewPanelProps & {
   panelFocus: PanelFocusRegistry
   /** Read for the tab's mark alone. What is on the screen still comes from the attach. */
   sessions: SnapshotStore<SessionsSnapshot>
-  tasks: Pick<SessionTasksStore, 'watch' | 'current' | 'subscribe'>
+  openTerminal?(target: TerminalTarget, title: string): Promise<string | null>
   remoteSessions: SnapshotStore<RemoteConnectionsSnapshot>
   sessionModel: SessionModelStore
   settings: AgentSettingsStore
@@ -114,9 +117,10 @@ export type TerminalPanelProps = IDockviewPanelProps & {
     documentKey: string,
     baselineHint?: FileViewerBaselineHint,
     location?: FileViewerLocation,
+    target?: TerminalTarget,
   ): Promise<PanelOpenOutcome>
   /** A directory tab at a path the main process proved, opened from the terminal's menu. */
-  openDirectoryAt(sessionId: string, path: string, directoryKey: string): void
+  openDirectoryAt(sessionId: string, path: string, directoryKey: string, target?: TerminalTarget): void
 }
 
 /**
@@ -148,6 +152,14 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
     */
   const transport = useMemo(() => TerminalTransports.of(target), [targetKey])
   const localTools = transport.localTools
+  const workspace = useMemo(() => SessionWorkspaceProviders.forTarget(target, props.remoteSessions), [targetKey, props.remoteSessions])
+  useEffect(() => workspace.start(), [workspace])
+  const contentRevision = useSyncExternalStore(useCallback((listener) => workspace.subscribe(listener), [workspace]),
+    useCallback(() => workspace.contentRevision(), [workspace]))
+  const taskPorts = useMemo(() => {
+    if (!workspace.tasks) return null
+    return { ...workspace.tasks, ...(props.openTerminal ? { openTerminal: (runId: string) => props.openTerminal!({ ...target, sessionId: runId }, 'Script output') } : {}) }
+  }, [workspace, contentRevision, props.openTerminal, targetKey])
   const [attachEpoch, setAttachEpoch] = useState(0)
   const [restartNote, setRestartNote] = useState<string | null>(null)
   const [menu, setMenu] = useState<TerminalMenuContext | null>(null)
@@ -185,6 +197,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
     openMenu,
     onTyped,
     setMenuNote,
+    workspace.paths?.detect,
   )
   const publish = useTabDecorationsPublisher(props.api.id)
   const glyph = info === null
@@ -194,9 +207,9 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   const endedAt = info?.endedAt ?? null
   const color = info?.color ?? null
   const marked = useSessionMarked(props.marks, targetKey)
-  const dirtyVcs = info?.vcs?.dirty === true ? info.vcs.vcsId : null
   const openCommits = useCommitOpen(props.commitOpen)
   const commitOpen = localTools && openCommits.has(sessionId)
+  const commitState = useSnapshotStore(props.commitOpen)
   // Two strings rather than the object: a new snapshot is a new object, and the tab would publish
   // again on every tick for a worktree that did not move.
   const worktreeKind = info?.worktree?.kind ?? null
@@ -204,11 +217,39 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   const worktreeCleanup = info?.worktree?.cleanup?.summary ?? null
   const sidebar = usePanelSidebar(props, 'workingTree')
   // The workflow of an action that runs or waits stays; the snapshot says which.
-  const workflowOpen = info?.workflow?.open === true
+  const workflowOpen = info?.actions?.sections.some((section) => section.open) ?? info?.workflow?.open === true
   const closable = useCallback((item: PanelSplitItem): string | null =>
     PanelSplitParams.closeRefusalOf(item, (id) => id === sessionId && workflowOpen), [sessionId, workflowOpen])
   const split = usePanelSplit(props, closable)
+  const hiddenReviews = (localTools ? commitState.snapshot?.reviews ?? [] : []).filter((review) =>
+    review.sessionId === sessionId && !split.state.items.some((item) => review.workflow
+      ? item.kind === 'workflow' && item.sessionId === sessionId
+      : item.kind === 'commit' && (item.reviewId === review.draftId || item.reviewId === undefined
+        && item.key === PanelSplitParams.commitKeyOf(review.vcs, review.scopeRoot, review.paths))))
+  const [sharedOverflow, setSharedOverflow] = useState<readonly SessionOpen[]>([])
+  const shared = useRef<SharedSessionViews | null>(null)
+  const sharedSplit = useRef(split)
+  sharedSplit.current = split
+  useEffect(() => {
+    const ports = workspace.items
+    if (!ports) return
+    const reader = new SharedSessionViews(target, ports, localStorage,
+      (item) => sharedSplit.current.open(item, item.kind === 'commit' ? false : UiSettingsStore.current().activateSessionOnDocument === true), setSharedOverflow,
+      (detail) => setMenuNote(detail))
+    shared.current = reader
+    return reader.start()
+  }, [workspace, targetKey, contentRevision])
+
   useTerminalSplitPins(sessionId, localTools, split, props.splitPins)
+  const actionSessions = workspace.sessions ?? props.sessions
+  const actionState = useSnapshotStore(actionSessions)
+  const actionsShown = split.state.items.some((item) => item.kind === 'workflow')
+  useEffect(() => {
+    if (!workspace.sessions || !actionsShown) return
+    const stop = workspace.sessions.start()
+    return stop
+  }, [workspace, actionsShown])
+  const actionInfo = workspace.sessions ? actionState.snapshot?.sessions.find((session) => session.sessionId === sessionId) ?? null : info
   const splitRef = useRef(split)
   const commitPanes = useRef<HTMLDivElement>(null)
   const splitPane = useRef<HTMLElement | null>(null)
@@ -233,7 +274,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   const focusPanel = useCallback((target: PanelFocusTarget = 'primary') => {
     let pane: HTMLElement | null
     switch (target) {
-      case 'primary': pane = visibleCommitPane(); break
+      case 'primary': pane = visibleCommitPane() ?? splitPane.current?.querySelector<HTMLElement>('.session-actions__review:not([hidden])') ?? null; break
       case 'content': pane = splitPane.current ?? visibleCommitPane(); break
       default: throw new Error(`Unknown panel focus target: ${target satisfies never}`)
     }
@@ -252,7 +293,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   // An ended session can still read as `live` until its attach goes, and nothing typed reaches it.
   const writable = state.status === 'live' && !state.ended
   const agentId = info?.agent?.agentId ?? null
-  const pasteNote = useCallback((text: string): boolean => {
+  const pasteText = useCallback((text: string): boolean => {
     const bytes = TerminalClipboard.pasteOf(text.trim())
     if (bytes === null || !writable || !sendCommand(bytes)) return false
     // Reported like typed keys: the pasted note is standing in the prompt and must hold off a compact.
@@ -260,22 +301,42 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
     setTimeout(focus, 0)
     return true
   }, [focus, onTyped, sendCommand, writable])
+  // A session row dropped from the sessions tree pastes what its "Copy unique session id" copies.
+  const onSessionDragOver = useCallback((event: React.DragEvent): void => {
+    if (!SessionDrag.carries(event.dataTransfer)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = writable ? 'copy' : 'none'
+  }, [writable])
+  const onSessionDrop = useCallback((event: React.DragEvent): void => {
+    if (!SessionDrag.carries(event.dataTransfer)) return
+    event.preventDefault()
+    const dropped = SessionDrag.targetOf(event.dataTransfer)
+    if (dropped === null || !writable) return
+    void SessionOperations.sessionReferenceText(dropped.sessionId, TerminalTargetCodec.endpointOf(dropped), 'Pasting the session id')
+      .then((reference) => {
+        if (reference.kind === 'refused') setMenuNote(reference.detail)
+        else if (reference.kind === 'text') setMenuNote(pasteText(reference.text) ? null : 'The session id was not pasted: the terminal does not accept input.')
+        else throw new Error(`Unknown session reference answer: ${JSON.stringify(reference)}`)
+      })
+      .catch((error: unknown) => setMenuNote(ErrorText.of(error)))
+  }, [pasteText, writable])
   const notes = useTerminalNotes({
-    sessionId,
-    enabled: localTools && sidebar.state.visible && toolsTab === 'notes',
-    paste: pasteNote,
+    sessionId, ports: workspace.notes,
+    enabled: workspace.notes !== null && sidebar.state.visible && toolsTab === 'notes',
+    paste: pasteText,
     // The prompt was erased through the main process, which this window's draft count never saw.
-    onTaken: () => drafts.cleared(sessionId),
+    onTaken: () => { if (localTools) drafts.cleared(sessionId) },
   })
   const activeItem = split.state.items.find((item) => item.key === split.state.active) ?? null
-  const requiredWorkingTreeSource = localTools && activeItem?.kind === 'file'
+  const requiredWorkingTreeSource = workspace.changes !== null && activeItem?.kind === 'file'
     ? activeItem?.baselineHint?.workingTreeSource
     : undefined
   // One read for all readers. Every visible pane gets the full Changelog target set; a working-tree
   // hint asks its exact source from the second model below without creating another model.
   const changes = useFileChanges(
     sessionId,
-    localTools && (
+    workspace.changes,
+    workspace.changes !== null && (
       (sidebar.state.visible && toolsTab === 'fileChanges')
       || TerminalPanelState.showsPostMortem(state)
       || split.state.items.length > 0
@@ -283,33 +344,43 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   )
   const workingTree = useWorkingTreeChanges(
     sessionId,
-    localTools && sidebar.state.visible && toolsTab === 'workingTree',
+    workspace.changes?.workingTree ?? null,
+    workspace.changes !== null && sidebar.state.visible && toolsTab === 'workingTree',
     requiredWorkingTreeSource,
   )
 
   const openSplitItem = useCallback((item: PanelSplitItem): string | null =>
     splitRef.current.open(item), [])
-  const openProcess = useCallback(async (row: ProcessRow): Promise<void> => {
-    try {
-      const answer = await AppControl.call('sessionTasks.open', { sessionId, task: row.task, title: row.title })
-      setMenuNote(!answer.ok ? answer.error : !answer.value.ok ? answer.value.error.detail : null)
-    } catch (thrown) {
-      setMenuNote(ErrorText.of(thrown))
-    }
-  }, [sessionId])
   const openInSplit = useCallback((
     document: FileViewerDocument,
     baselineHint?: FileViewerBaselineHint,
     location?: FileViewerLocation,
-  ): string | null => openSplitItem({
-    kind: 'file',
-    key: document.documentKey,
-    title: document.name,
-    source: document.source,
-    baselineHint,
-    location,
-  }), [openSplitItem])
-  const workflowPorts = useMemo(() => WorkflowPortsOf.of(sessionId, setMenuNote, (document) => openInSplit(document)), [sessionId, openInSplit])
+  ): string | null => {
+    const refusal = openSplitItem({ kind: 'file', key: document.documentKey, title: document.name, source: document.source,
+      ...(target.kind === 'remote' ? { target } : {}), baselineHint, location })
+    if (refusal === null && workspace.share) {
+      const openId = crypto.randomUUID()
+      try {
+        SharedSessionViews.remember(target, openId)
+        void workspace.share({ openId, item: { kind: 'file', documentId: document.documentId } }).then((answer) => { if (!answer.ok) setMenuNote(answer.error) })
+      } catch (error) { setMenuNote(String(error)) }
+    }
+    return refusal
+  }, [openSplitItem, targetKey, workspace])
+
+  const openSharedWorkflow = useCallback(() => {
+    const refusal = splitRef.current.open(PanelSplitParams.workflowItemOf(sessionId, target))
+    setMenuNote(refusal)
+    if (refusal || !workspace.share) return
+    const openId = crypto.randomUUID()
+    try {
+      SharedSessionViews.remember(target, openId)
+      void workspace.share({ openId, item: { kind: 'workflow' } }).then((answer) => { if (!answer.ok) setMenuNote(answer.error) })
+    } catch (error) { setMenuNote(String(error)) }
+  }, [sessionId, targetKey, workspace])
+
+  const workflowPorts = useMemo(() => ({ ...workspace.actions(setMenuNote, (document) => openInSplit(document)),
+    tasks: taskPorts ?? undefined }), [workspace, openInSplit, taskPorts])
 
   // A tab behind the one in front has no pane to reload; bringing it forward reads it from disk.
   const reloadSplitItem = useCallback((key: string): void => {
@@ -338,12 +409,13 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   }, [])
 
   const openCommitItem = useCallback((vcs: FileChangesVcsId, scopeRoot = '.'): void => {
-    void window.appClient.versioning.openCommitTab(sessionId, vcs, scopeRoot).then((answer) => setMenuNote(IpcFailure.of(answer)))
-  }, [sessionId])
+    void workspace.openCommit(vcs, scopeRoot).then(setMenuNote).catch((error) => setMenuNote(ErrorText.of(error)))
+  }, [workspace])
 
   const detach = useCallback(async (key: string): Promise<void> => {
     const capture = splitRef.current.capture(key)
     if (capture === null || capture.item.kind !== 'file') return
+    if (workspace.files === null) { setMenuNote('Opening this source file in another tab is unavailable.'); return }
     let detached: PanelOpenOutcome
     try {
       detached = await props.openFile(
@@ -351,6 +423,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
         capture.item.key,
         capture.item.baselineHint,
         capture.item.location,
+        target,
       )
     }
     catch (error) {
@@ -366,7 +439,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
     }
     else
       throw new Error(`Unknown panel open outcome: ${JSON.stringify(detached)}`)
-  }, [props.openFile])
+  }, [props.openFile, workspace, targetKey])
 
   // The chain restarts sessions with no tab as well; a panel that IS open says so, and is told to
   // attach again once its own session came back. What that produced is still its own attach's answer.
@@ -381,13 +454,12 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   // by itself while the surface is not live, and the unregister retires this entry alone.
   const { inputs } = props
   useEffect(() => {
-    if (!localTools) return
-    return inputs.register(sessionId, {
+    return inputs.register(targetKey, {
       writable: () => state.status === 'live',
       write: sendCommand,
       focus,
     })
-  }, [focus, inputs, localTools, sessionId, sendCommand, state.status])
+  }, [focus, inputs, targetKey, sendCommand, state.status])
 
   // The same way in, for the caret alone, and for every terminal rather than the local ones: a
   // remote screen is typed into too. What reads it is a tab or a tree row that was clicked while
@@ -439,18 +511,18 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   }, [])
 
   useEffect(
-    () => publish(TerminalPanelState.decorationsOf(state, glyph, color, marked, dirtyVcs, commitOpen,
+    () => publish(TerminalPanelState.decorationsOf(state, glyph, color, marked, commitOpen,
       worktreeKind === null || worktreePath === null ? null : { kind: worktreeKind, worktreePath, cleanup: worktreeCleanup })),
-    [publish, state, glyph, color, marked, dirtyVcs, commitOpen, worktreeKind, worktreePath, worktreeCleanup],
+    [publish, state, glyph, color, marked, commitOpen, worktreeKind, worktreePath, worktreeCleanup],
   )
 
   useEffect(() => {
-    if (!localTools) return
+    if (!localTools && !workspace.files && !taskPorts) return
     return props.fileTools.register(props.api.id, {
       toggle: sidebar.toggle,
       open: sidebar.open,
     })
-  }, [localTools, props.api.id, props.fileTools, sidebar.open, sidebar.toggle])
+  }, [localTools, workspace.files, taskPorts, props.api.id, props.fileTools, sidebar.open, sidebar.toggle])
 
   // Activating a tab is what puts the caret back where someone is about to type. `terminal.focus()`
   // is what reaches the hidden textarea xterm actually listens on. A tab that OPENS active never
@@ -502,13 +574,67 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
     return () => disposable.dispose()
   }, [props.api, setVisible, attachEpoch, targetKey])
 
-  const note = TerminalPanelState.noteOf(state, outcome)
+  const life = info?.life ?? null
+  const runtime = info?.runtime ?? null
+  const previousLife = useRef(life)
+  // The runtime the record named when the current attach was minted, not the one it named last
+  // render: a reconnect lost after the record had already moved on must still attach again.
+  // Declared first: the commit after a bump must not judge the new attach by the old runtime.
+  const attachedRuntime = useRef(runtime)
+  useEffect(() => { attachedRuntime.current = runtime }, [attachEpoch])
+  useEffect(() => {
+    const awaited = TerminalPanelState.awaitsRuntime(state, previousLife.current) && life === 'live'
+    const relaunched = TerminalPanelState.relaunched(state, attachedRuntime.current, runtime)
+    previousLife.current = life
+    // A working screen is attached to whatever the record names now.
+    if (state.status === 'live' && !state.ended) attachedRuntime.current = runtime
+    if (awaited || relaunched) setAttachEpoch((epoch) => epoch + 1)
+  }, [life, runtime, state])
+
+  /*
+   * An attach refused because the Host was not reachable, which a client started before the Host
+   * published its descriptor meets, over a session that runs on (UA1-J13-6). The panel attaches again
+   * by itself once the snapshot names a running Host, and against the same Host a few times more,
+   * spaced out, before the Reconnect it draws is the person's.
+   */
+  const hostInstance = useTerminalHostInstance(props.sessions, props.remoteSessions, target)
+  const hostRetries = useRef<{ host: string | null; count: number }>({ host: null, count: 0 })
+  useEffect(() => {
+    if (state.status === 'live') hostRetries.current = { host: hostInstance, count: 0 }
+    if (!TerminalPanelState.awaitsHost(state) || hostInstance === null) return
+    if (hostRetries.current.host !== hostInstance) hostRetries.current = { host: hostInstance, count: 0 }
+    const retries = hostRetries.current
+    if (retries.count >= TerminalPanelState.hostRetriesConst) return
+    const timer = setTimeout(() => {
+      retries.count += 1
+      setAttachEpoch((epoch) => epoch + 1)
+    }, retries.count * TerminalPanelState.hostRetryMillisecondsConst)
+    return () => clearTimeout(timer)
+  }, [state, hostInstance])
+
+  const note = TerminalPanelState.noteOf(state, outcome, life, info?.awaitsSetupApproval === true, info?.endedReason)
   const recovery = TerminalPanelState.recoveryOf(state, info)
   const terminal = (
-    <section className="jamat-terminal" aria-label={transport.label}>
+    <section className="jamat-terminal" aria-label={transport.label} onDragOver={onSessionDragOver} onDrop={onSessionDrop}>
+      {hiddenReviews.length > 0 && <div className="jamat-terminal__pending-reviews" role="region" aria-label="Pending commit reviews">
+        <span>Pending commit reviews ({hiddenReviews.length})</span>
+        {hiddenReviews.map((review) => <button className="jamat-terminal__workspace-action" type="button" key={review.draftId}
+          title={JSON.stringify(review.paths ?? [review.scopeRoot])} onClick={() => {
+            const item = review.workflow ? PanelSplitParams.workflowItemOf(sessionId, target) : {
+              kind: 'commit' as const, key: SessionWorkspaceKeys.of(target, review.draftId), target, reviewId: review.draftId,
+              vcs: review.vcs, scopeRoot: review.scopeRoot, paths: review.paths, title: `Commit ${review.vcs.toUpperCase()}`,
+            }
+            setMenuNote(split.open(item, true))
+          }}>Open {review.vcs.toUpperCase()} review: {review.scopeRoot}{review.paths === undefined ? '' : ` (${review.paths.length} selected paths)`}</button>)}
+      </div>}
+      {sharedOverflow.length > 0 && <details><summary>Shared opens ({sharedOverflow.length})</summary>
+        {sharedOverflow.map((item) => <button type="button" key={item.openId} onClick={() => shared.current?.openPending(item.openId)}>{item.title}</button>)}
+      </details>}
+      {!localTools && <button className="jamat-terminal__workspace-action" type="button" onClick={openSharedWorkflow}>Session actions</button>}
       <div className="jamat-terminal__screen" ref={holder} />
-      {localTools && (
+      {(localTools || workspace.notes) && (
         <ContextCompactionPanel
+          remoteEndpointId={target.kind === 'remote' ? target.remoteEndpointId : undefined}
           session={info}
           sessionModel={props.sessionModel}
           settings={props.settings}
@@ -520,7 +646,9 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
         <div className="jamat-terminal__interrupted">
           <p className="jamat-terminal__interrupted-text">
             {recovery === 'reconnect'
-              ? 'This terminal lost its screen. The session is still running.'
+              ? TerminalPanelState.awaitsHost(state)
+                ? 'This terminal could not reach the Host. The session is still running; it attaches again once the Host is reachable.'
+                : 'This terminal lost its screen. The session is still running.'
               : 'This session was forcibly interrupted.'}
           </p>
           <button
@@ -535,21 +663,29 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
       )}
       {note !== null && <p className="jamat-terminal__note">{note}</p>}
       {menuNote !== null && <p className="jamat-terminal__note">{menuNote}</p>}
-      {localTools && outcome !== null && TerminalPanelState.showsPostMortem(state) && (
-        <TerminalPostMortem
+      {workspace.transcript && outcome !== null && TerminalPanelState.showsPostMortem(state) && (
+        <TerminalPostMortem read={workspace.transcript}
           sessionId={sessionId}
           outcome={outcome}
           endedAt={endedAt}
           changes={changes}
         />
       )}
-      {menu?.kind === 'local' && (
+      {menu?.kind === 'local' && (localTools || workspace.paths) && (
         <TerminalContextMenu
           key={menu.clickId}
           context={menu}
           sessionId={sessionId}
+          ports={{
+            openFile: localTools ? window.appClient.terminalMenu.openFile : workspace.paths!.openFile,
+            openDirectory: localTools ? window.appClient.terminalMenu.openDirectory : workspace.paths!.openDirectory,
+            release: workspace.files!.viewer.release,
+            copyPath: window.appClient.clipboard.writeText,
+            openUrl: window.appClient.fileViewer.openExternal,
+            ...(localTools ? { native: window.appClient.terminalMenu } : {}),
+          }}
           openInSplit={(document, location) => openInSplit(document, undefined, location)}
-          openDirectoryAt={props.openDirectoryAt}
+          openDirectoryAt={(id, path, key) => props.openDirectoryAt(id, path, key, target)}
           onRefused={setMenuNote}
           onClose={() => setMenu(null)}
         />
@@ -567,7 +703,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
       )}
     </section>
   )
-  if (!localTools) return terminal
+  if (!localTools && !workspace.files && !taskPorts && split.state.items.length === 0) return terminal
   const content = (
     <PanelSplitLayout
       ratio={split.state.ratio}
@@ -592,8 +728,10 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
       pane={activeItem === null
         ? null
         : (<>
-          {activeItem.kind === 'file' && <FileViewerPane
-            key={activeItem.key}
+          {(activeItem.kind === 'file' && workspace.files === null || activeItem.kind === 'task' && workspace.tasks === null
+            || activeItem.kind === 'commit' && workspace.reviews === null) && <p role="status">This pane is unavailable for this session workspace.</p>}
+          {activeItem.kind === 'file' && workspace.files !== null && <FileViewerPane ports={workspace.files}
+            key={`${activeItem.key}:${contentRevision}`}
             ref={attachFilePane}
             item={activeItem}
             changes={changes}
@@ -605,15 +743,21 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
             onOpenItem={openSplitItem}
             onRefused={setMenuNote}
           />}
-          {activeItem.kind === 'task' && <TaskPane key={activeItem.key} ref={attachFilePane} item={activeItem} visible={panelVisible} />}
-          {/* Only the tab's own session: a workflow item of another session draws nothing of it. */}
-          {activeItem.kind === 'workflow' && <WorkflowPane key={activeItem.key} ref={attachFilePane}
-            session={activeItem.sessionId === sessionId ? info : null} sessions={props.sessions} visible={panelVisible} ports={workflowPorts} />}
+          {activeItem.kind === 'task' && taskPorts !== null && <TaskPane key={activeItem.key} ports={taskPorts} ref={attachFilePane} item={activeItem} visible={panelVisible} />}
+          {/* A sibling diff must not release the review draft or reset its checked paths. */}
+          {split.state.items.filter((item) => item.kind === 'workflow').map((item) =>
+            <div key={item.key} className="commit-pane-slot" hidden={item.key !== activeItem.key}>
+              <SessionActionsPane ref={item.key === activeItem.key ? attachFilePane : undefined}
+                session={item.sessionId === sessionId ? actionInfo : null} sessions={actionSessions} unavailable={workspace.status() ?? actionState.error ?? (actionInfo === null ? 'Reading Session actions…' : null)} visible={panelVisible && item.key === activeItem.key} ports={workflowPorts}
+                onOpenChanged={(value) => openInSplit(value.document, value.baselineHint ?? undefined)} onOpenSeparately={openCommitItem} />
+            </div>)}
           <div ref={commitPanes} className="commit-pane-slots">{split.state.items.map((item) => {
             if (item.kind === 'file' || item.kind === 'task' || item.kind === 'workflow') return null
-            else if (item.kind === 'commit') return <div key={item.key} className="commit-pane-slot" hidden={item.key !== activeItem.key}>
-              <CommitPane sessionId={sessionId} item={item} onClose={() => closeCommitItem(item.key)}
+            else if (item.kind === 'commit') return workspace.reviews === null ? null : <div key={item.key} className="commit-pane-slot" hidden={item.key !== activeItem.key}>
+              <CommitPane ports={workspace.reviews} sessionId={sessionId} item={item} onClose={() => closeCommitItem(item.key)}
                 onOpenChanged={(value) => openInSplit(value.document, value.baselineHint ?? undefined)}
+                onOpenReview={(review) => { setMenuNote(split.open({ kind: 'commit', key: SessionWorkspaceKeys.of(target, review.draftId),
+                  target, reviewId: review.draftId, vcs: item.vcs, scopeRoot: review.scopeRoot, title: review.title }, true)) }}
                 onOpenSeparately={(root) => openCommitItem(item.vcs, root)} />
             </div>
             else throw new Error(`Unknown split item: ${JSON.stringify(item)}`)
@@ -624,6 +768,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
       {terminal}
     </PanelSplitLayout>
   )
+  if (!localTools && !workspace.files && !taskPorts) return content
   return (
     <PanelSidebarLayout
       side="right"
@@ -636,39 +781,29 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
           onResize={sidebar.resize}
           onClose={sidebar.toggle}
         >
-          <FileToolsSidebar
+          <FileToolsSidebar key={contentRevision} changesPorts={workspace.changes ?? undefined} release={workspace.files?.viewer.release} directoryPorts={workspace.files?.directories}
             sessionId={sessionId}
             documentId={null}
             selected={toolsTab}
             changes={changes}
             workingTree={workingTree}
             onSelect={sidebar.open}
-            onOpenCommit={localTools && info?.life === 'live' ? openCommitItem : undefined}
+            onOpenCommit={workspace.reviews && info?.life === 'live' ? openCommitItem : undefined}
             onOpenChanged={(value) => {
               setMenuNote(openInSplit(value.document, value.baselineHint ?? undefined))
-              void window.appClient.fileViewer.release(value.document.documentId)
+              void workspace.files?.viewer.release(value.document.documentId)
             }}
             onOpenDocument={(document) => {
               setMenuNote(openInSplit(document))
-              void window.appClient.fileViewer.release(document.documentId)
+              void workspace.files?.viewer.release(document.documentId)
             }}
-            notes={(
+            notes={workspace.notes ? (
               <TerminalNotesPanel
                 model={notes}
                 canPaste={writable}
                 canImport={writable && agentId !== null}
               />
-            )}
-            processes={(
-              <ProcessesPanel
-                sessionId={sessionId}
-                info={info}
-                tasks={props.tasks}
-                enabled={panelVisible && sidebar.state.visible}
-                selectedKey={split.state.active}
-                onOpen={(row) => { void openProcess(row) }}
-              />
-            )}
+            ) : undefined}
           />
         </SidebarDock>
       )}
@@ -727,7 +862,13 @@ class TerminalPanelState {
    * number tells the reader their own Finish went wrong. Where the library has nothing to say - a
    * panel with no record behind it - the code is still the best the panel has.
    */
-  static noteOf(state: TerminalSurfaceState, outcome: SessionOutcome | null): string | null {
+  static noteOf(state: TerminalSurfaceState, outcome: SessionOutcome | null, life: SessionInfo['life'] | null,
+    awaitsSetupApproval: boolean, endedReason?: string): string | null {
+    // No runtime stands behind it yet, so the refused attach says nothing about the session.
+    if (awaitsSetupApproval) return 'Setup waits for your approval of its commands in Session actions.'
+    if (life === 'ended' && state.status === 'lost' && state.refusalCode === 'not-live' && endedReason !== undefined)
+      return TerminalPanelState.withDetail('The session has ended', endedReason)
+    if (TerminalPanelState.awaitsRuntime(state, life)) return 'The session is starting.'
     if (outcome === 'finished' && state.ended) return 'The session finished.'
     if (state.exitCode !== null) return `The session ended with exit code ${state.exitCode}.`
     // It is over and the Host had no code to give for it, which a signalled process leaves behind.
@@ -736,6 +877,8 @@ class TerminalPanelState {
     if (state.status === 'connecting') return TerminalPanelState.withDetail('Connecting', state.detail)
     if (state.status === 'read-only')
       return TerminalPanelState.withDetail('Read-only: what you type is not being sent', state.detail)
+    if (TerminalPanelState.awaitsHost(state))
+      return TerminalPanelState.withDetail('Not connected to the Host: what you type is not sent', state.detail)
     if (state.status === 'lost') return TerminalPanelState.withDetail('This terminal is gone', state.detail)
     throw new Error(`Unknown terminal status: ${JSON.stringify(state.status)}`)
   }
@@ -762,22 +905,17 @@ class TerminalPanelState {
     glyph: SessionGlyph | null,
     color: SessionColorName | null,
     marked: boolean,
-    dirtyVcs: FileChangesVcsId | null,
     commitOpen: boolean,
     /** `cleanup` is the library's sentence for a worktree that waits to be removed or was kept. */
     worktree: Pick<SessionWorktreeInfo, 'kind' | 'worktreePath'> & { cleanup: string | null } | null,
   ): TabDecorations {
-    const attachment = TerminalPanelState.attachmentSignalOf(state)
-    // The first badge a session tab has ever published. Muted on purpose: it is worth noticing
-    // while reading the strip, never worth looking at first.
-    const badges: TabBadge[] = dirtyVcs === null && !commitOpen
-      ? []
-      : [{
-        key: 'vcs',
-        text: '*',
-        tone: commitOpen ? 'danger' as const : 'muted' as const,
-        title: commitOpen ? 'Commit dialog open' : `Uncommitted changes (${dirtyVcs})`,
-      }]
+    const attachment = glyph === 'starting' && TerminalPanelState.awaitsRuntime(state, 'starting')
+      ? null
+      : TerminalPanelState.attachmentSignalOf(state)
+    // The first badge a session tab has ever published: a commit review that waits for the person.
+    const badges: TabBadge[] = commitOpen
+      ? [{ key: 'vcs', text: '*', tone: 'danger', title: 'Commit review pending' }]
+      : []
     // A badge and not the second slot: that slot carries the attachment, which a worktree session
     // needs as much as any other.
     if (worktree !== null)
@@ -829,6 +967,33 @@ class TerminalPanelState {
    */
   static showsPostMortem(state: TerminalSurfaceState): boolean {
     return state.status === 'lost' && state.refusalCode === 'not-live'
+  }
+
+  /**
+   * The Host holds no runtime YET: a worktree session's checkout and setup run before its agent
+   * starts, and a tab opened meanwhile is refused `not-live`; a restart leaves the screen of the run
+   * before it. Neither is a lost terminal; the panel attaches again when the record goes live.
+   */
+  static awaitsRuntime(state: TerminalSurfaceState, life: SessionInfo['life'] | null): boolean {
+    return life === 'starting' && (state.ended || state.status === 'lost' && state.refusalCode === 'not-live')
+  }
+
+  /**
+   * The record moved to another runtime: a restart or a resume relaunched it. An attach made while
+   * the record still named the old one replays that dead screen, so 023 showed its last generation
+   * after a restart; the screen attaches again to the runtime the record names now. `before` is the
+   * runtime of the current attach, so a reconnect lost after the record moved on still attaches again.
+   */
+  static relaunched(state: TerminalSurfaceState, before: string | null, now: string | null): boolean {
+    return now !== null && now !== before && (before !== null || state.ended || state.status === 'lost')
+  }
+
+  static readonly hostRetriesConst = 3
+  static readonly hostRetryMillisecondsConst = 2_000
+
+  /** The attach was refused because the Host could not be reached; the session itself may run on. */
+  static awaitsHost(state: TerminalSurfaceState): boolean {
+    return !state.ended && state.status === 'lost' && state.refusalCode === 'host-unreachable'
   }
 
   /** Nothing while the screen is simply attached and writable. */

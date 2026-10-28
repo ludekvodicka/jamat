@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest'
+import type { RemoteSessionViewRequest } from './remoteSessionApi.types'
+import { describe, expect, it, vi } from 'vitest'
 
 import type {
   RemoteControlRequestUnion,
@@ -15,6 +16,43 @@ import { RemoteControlPeerConst } from './remoteControlPeerProtocol'
 import { RemoteControlPeerChannel } from './remoteControlPeerChannel'
 
 describe('lib-orchestrator/remoteControl/remoteControlPeerChannel', () => {
+  it.each([false, true])('gates account reads and create fields by agents.accounts=%s', async supported => {
+    const transport = new RemoteControlPeerChannelTestTransport(supported
+      ? ['control:sessions.create', 'control:accounts.list', 'agents.accounts'] : ['control:sessions.create', 'control:accounts.list'])
+    const send = vi.spyOn(transport, 'send')
+    const channel = new RemoteControlPeerChannel(transport)
+    const listing = channel.control({ protocol: RemoteControlConst.protocol, requestId: 'accounts', operation: 'accounts.list', body: {} })
+    if (supported) {
+      expect(send).toHaveBeenCalledTimes(1)
+      transport.emit({ type: 'control-response', response: { protocol: RemoteControlConst.protocol,
+        requestId: 'accounts', operation: 'accounts.list', operationId: null, ok: true, value: [] } })
+      expect(await listing).toMatchObject({ ok: true, value: [] })
+    } else {
+      expect(await listing).toMatchObject({ ok: false, error: { code: 'forbidden' } })
+      expect(send).not.toHaveBeenCalled()
+    }
+    const request: RemoteControlRequestUnion = { protocol: RemoteControlConst.protocol, requestId: 'create', operation: 'sessions.create', operationId: 'new',
+      body: { spec: { kind: 'agent', directory: { mode: 'default' }, agent: { agentId: 'claude', mode: 'new', accountId: 'second' } } } }
+    const creating = channel.control(request)
+    expect(send.mock.lastCall?.[0]).toEqual({ type: 'control-request', request: { ...request,
+      body: { spec: { kind: 'agent', directory: { mode: 'default' }, agent: { agentId: 'claude', mode: 'new',
+        ...(supported ? { accountId: 'second' } : {}) } } } } })
+    expect(request.body.spec.agent?.accountId).toBe('second')
+    channel.close()
+    await creating
+  })
+
+  it('refuses unnegotiated content and changes requests without sending', async () => {
+    const transport = new RemoteControlPeerChannelTestTransport(['session-workspace.views'])
+    const send = vi.spyOn(transport, 'send')
+    const channel = new RemoteControlPeerChannel(transport)
+    for (const operation of ['files.request', 'files.page', 'changes.request', 'changes.page'] as const) {
+      const request = { requestId: operation, operation, viewId: 'view', epoch: transport.connectionId, sessionId: 'session', viewerId: 'viewer', body: {} } as RemoteSessionViewRequest
+      expect(await channel.sessionView(request)).toMatchObject({ ok: false, error: { code: 'forbidden' } })
+    }
+    expect(send).not.toHaveBeenCalled()
+    channel.close()
+  })
   it('correlates control and socket responses and publishes events and terminal frames', async () => {
     const transport = new RemoteControlPeerChannelTestTransport()
     const channel = new RemoteControlPeerChannel(transport)

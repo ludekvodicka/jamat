@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+
 import { describe, expect, it } from 'vitest'
 
 import { FileDiffBuilder } from './fileDiffBuilder'
@@ -54,6 +56,32 @@ describe('lib-orchestrator/fileChangesManager/diff/fileDiffBuilder', () => {
       baseline: { label: 'HEAD', path: 'x', content: null },
       current: { label: 'Current', path: 'x', content: null },
     })).toEqual(expect.objectContaining({ kind: 'missing' }))
+  })
+
+  it('compares a binary file by size and SHA-256 of both sides and says whether the working file equals the baseline', async () => {
+    const builder = new FileDiffBuilder({
+      async execute() { throw new Error('A binary file called the executor') },
+    })
+    const mine = Buffer.from([0x89, 0x50, 0x00, 0x01])
+    const incoming = Buffer.from([0x89, 0x50, 0x00, 0x02, 0x03])
+    const sha = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex')
+    const of = (baseline: Buffer | string | null, current: Buffer | null) => builder.build({
+      status: 'modified', completeness: 'full', detail: null,
+      baseline: { label: 'BASE', path: 'pic.bin', content: baseline },
+      current: { label: 'Working tree', path: 'pic.bin', content: current },
+    })
+
+    expect(await of(incoming, mine)).toEqual({ ok: true, kind: 'binary', detail: 'Binary file, no text diff. '
+      + `Working tree: 4 bytes, SHA-256 ${sha(mine)}. BASE: 5 bytes, SHA-256 ${sha(incoming)}. The working tree file differs from BASE.` })
+    expect(await of(Buffer.from(mine), mine)).toEqual(expect.objectContaining({ detail: 'Binary file, no text diff. '
+      + `Working tree: 4 bytes, SHA-256 ${sha(mine)}. BASE: 4 bytes, SHA-256 ${sha(mine)}. The working tree file equals BASE.` }))
+    expect(await of(null, mine)).toEqual(expect.objectContaining({ detail: 'Binary file, no text diff. '
+      + `Working tree: 4 bytes, SHA-256 ${sha(mine)}. BASE: absent.` }))
+    expect(await of(Buffer.from('plain text\n'), mine)).toEqual(expect.objectContaining({ kind: 'binary',
+      detail: expect.stringContaining('The working tree file differs from BASE.') }))
+    // A side that came as decoded text with a replacement character lost its bytes: no hash is better than a wrong one.
+    expect(await of('\u0089PNG\uFFFD', mine)).toEqual(expect.objectContaining({ detail: 'Binary file, no text diff. '
+      + `Working tree: 4 bytes, SHA-256 ${sha(mine)}. BASE: size and SHA-256 not known, it was read as text.` }))
   })
 
   it('builds a 611-line added file without calling the general executor', async () => {

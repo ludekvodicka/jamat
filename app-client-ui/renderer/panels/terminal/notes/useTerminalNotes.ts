@@ -1,13 +1,11 @@
 import { useEffect, useMemo, useReducer, useRef } from 'react'
 
-import type { IpcResult } from '../../../../shared/appClientUiIpc'
-import type { DirectoryNotesGetResult, DirectoryNotesSaveResult } from '../../../../shared/directoryNotes'
 import { PathText } from '../../../../shared/pathText'
 import { TerminalNotesMessages } from './terminalNotesMessages'
 import { TerminalNotesSaveQueue } from './terminalNotesSaveQueue'
 import { TerminalNotesState } from './terminalNotesState'
 import type { TerminalNoteEntry, TerminalNotesPhase, TerminalNotesView } from './terminalNotesState'
-import { AppControl } from '../../../ipc/appControl'
+import type { TerminalNotesPorts } from './terminalNotesPorts'
 
 export interface TerminalNotesModel {
   phase: TerminalNotesPhase
@@ -29,6 +27,7 @@ export interface TerminalNotesModel {
 }
 
 export interface TerminalNotesOptions {
+  ports: TerminalNotesPorts | null
   sessionId: string
   /** The tab is on screen. The first true triggers the one lazy load. */
   enabled: boolean
@@ -44,6 +43,7 @@ export interface TerminalNotesOptions {
  */
 class TerminalNotesScope {
   readonly sessionId: string
+  readonly ports: TerminalNotesPorts | null
   private readonly rerender: () => void
   private readonly queue: TerminalNotesSaveQueue
   private current: TerminalNotesView
@@ -52,13 +52,14 @@ class TerminalNotesScope {
   private reads = 0
   private alive = true
 
-  constructor(sessionId: string, rerender: () => void) {
+  constructor(sessionId: string, ports: TerminalNotesPorts | null, rerender: () => void) {
     this.sessionId = sessionId
+    this.ports = ports
     this.rerender = rerender
     this.current = TerminalNotesState.initial()
     this.queue = new TerminalNotesSaveQueue(
       async (notes) => TerminalNotesMessages.saveOutcomeOf(
-        await AppControl.library('directoryNotes.save', { sessionId, notes }) as IpcResult<DirectoryNotesSaveResult>),
+        await this.ports!.save(sessionId, notes)),
       (outcome) => this.publish({ ...this.current, error: outcome.ok ? null : outcome.detail }),
     )
   }
@@ -72,9 +73,9 @@ class TerminalNotesScope {
   }
 
   /** Another window, or this one, stored a directory's notes. An editor with unsaved text keeps it. */
-  changed(directory: string): void {
+  changed(directory: string | null): void {
     const current = this.current
-    if (current.directory === null || !PathText.equal(directory, current.directory)) return
+    if (current.directory === null || directory !== null && !PathText.equal(directory, current.directory)) return
     if (this.queue.dirty() || current.importing) return
     void this.load()
   }
@@ -134,7 +135,7 @@ class TerminalNotesScope {
         this.publish({ ...this.current, notice: TerminalNotesMessages.importStopped(flushed.detail) })
         return
       }
-      const answer = await AppControl.value('directoryNotes.importPrompt', { sessionId: this.sessionId })
+      const answer = await this.ports!.importPrompt(this.sessionId)
       if (!this.alive) return
       if (!answer.ok) {
         this.publish({ ...this.current, notice: TerminalNotesMessages.importFailed(answer.error) })
@@ -189,7 +190,8 @@ class TerminalNotesScope {
     const revision = this.revision
     const read = ++this.reads
     this.publish(TerminalNotesState.loading(this.current))
-    const answer = await AppControl.library('directoryNotes.get', { sessionId: this.sessionId }) as IpcResult<DirectoryNotesGetResult>
+    if (!this.ports) return
+    const answer = await this.ports.get(this.sessionId)
     // An edit made while the read was out wins, and so does a later read.
     if (!this.alive || revision !== this.revision || read !== this.reads) return
     const snapshot = TerminalNotesMessages.snapshotOf(answer)
@@ -213,8 +215,8 @@ export function useTerminalNotes(options: TerminalNotesOptions): TerminalNotesMo
   const latest = useRef(options)
   latest.current = options
   const scopeRef = useRef<TerminalNotesScope | null>(null)
-  if (scopeRef.current === null || scopeRef.current.sessionId !== options.sessionId)
-    scopeRef.current = new TerminalNotesScope(options.sessionId, rerender)
+  if (scopeRef.current === null || scopeRef.current.sessionId !== options.sessionId || scopeRef.current.ports !== options.ports)
+    scopeRef.current = new TerminalNotesScope(options.sessionId, options.ports, rerender)
   const scope = scopeRef.current
 
   // A closing panel, or a switch to another session, still sends the last edit under its session.
@@ -224,7 +226,7 @@ export function useTerminalNotes(options: TerminalNotesOptions): TerminalNotesMo
     if (options.enabled) scope.open()
   }, [options.enabled, scope])
 
-  useEffect(() => window.appClient.onDirectoryNotesChanged((directory) => scope.changed(directory)), [scope])
+  useEffect(() => options.enabled ? options.ports?.subscribe((directory) => scope.changed(directory)) : undefined, [scope, options.enabled, options.ports])
 
   const actions = useMemo(() => ({
     add: () => scope.add(),

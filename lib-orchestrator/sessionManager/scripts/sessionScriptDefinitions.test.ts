@@ -76,7 +76,7 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptDefinitions', () 
 
   it('throws on a pair no definition answers, and says it does not know it', () => {
     for (const link of [
-      { phase: 'after', scriptId: 'setup' },
+      { phase: 'after', scriptId: 'requested' },
       { phase: 'before', scriptId: 'merge-resolve' },
       { phase: 'before', scriptId: 'requested' },
       { phase: 'inner', scriptId: 'setup' },
@@ -204,7 +204,9 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptDefinitions', () 
       })])
       expect(SessionScriptDefinitions.gatesOf(acting({ stage: 'updating' }))[0]?.words).toEqual({ session: 'svn update', actor: 'svn update' })
       expect(SessionScriptDefinitions.gatesOf(acting({ stage: 'cleaning' }))[0]?.words).toEqual({ session: 'svn cleanup', actor: 'svn cleanup' })
-      expect(SessionScriptDefinitions.gatesOf(acting({ stage: 'reviewing' }))[0]?.words).toEqual({ session: 'review', actor: 'review' })
+      expect(SessionScriptDefinitions.gatesOf(acting({ stage: 'committing' }))[0]?.words).toEqual({ session: 'svn commit', actor: 'svn commit' })
+      expect(SessionScriptDefinitions.gatesOf(acting({ stage: 'reviewing' }))).toEqual([])
+      expect(SessionScriptDefinitions.judging('action', acting({ stage: 'reviewing' }))).toBe(false)
       expect(SessionScriptDefinitions.gatesOf(acting({ stage: 'resolving' }))[0]).toEqual(expect.objectContaining({
         runId: 'c', words: { session: 'resolve', actor: 'resolver' },
         definition: expect.objectContaining({ phase: 'after', scriptId: 'svn-resolve', gate: 'action', replayable: true, handoff: 'close' }),

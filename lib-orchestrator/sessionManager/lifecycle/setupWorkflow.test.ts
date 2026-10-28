@@ -37,8 +37,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/setupWorkflow', () => {
 
     expect(workflow).toMatchObject({ kind: 'before', workflowId: 'setup:s1', title: 'Setup of 014 - t2', badge: 'checkout runs',
       summary: 'Running Checkout t2', open: true, actions: [] })
-    expect(steps(workflow)).toEqual(['Checkout t2: running', 'Setup: pending', 'Script codegen: pending'])
-    expect(workflow?.rounds[0]?.steps[0]).toMatchObject({ detail: 'svn checkout t2', startedAt: 50, endedAt: null,
+    expect(steps(workflow)).toEqual(['Reserve worktree: done', 'Checkout t2: running', 'Setup: pending', 'Script codegen: pending'])
+    expect(workflow?.rounds[0]?.steps[1]).toMatchObject({ detail: 'svn checkout t2', startedAt: 50, endedAt: null,
       target: { kind: 'run', runId: 'r-checkout' } })
   })
 
@@ -46,8 +46,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/setupWorkflow', () => {
     const starting = record({ pendingSetup: { setupSessionId: 'r-checkout', steps: [checkout], cursor: 0 },
       setupSkipped: { reason: 'the project declares an empty setup in .worktree.json' } })
     const workflow = SessionWorkflows.of(starting, runs({}))
-    expect(steps(workflow)).toEqual(['Checkout t2: running', 'Setup: skipped'])
-    expect(workflow?.rounds[0]?.steps[1]).toMatchObject({ detail: 'the project declares an empty setup in .worktree.json', target: { kind: 'none' } })
+    expect(steps(workflow)).toEqual(['Reserve worktree: done', 'Checkout t2: running', 'Setup: skipped'])
+    expect(workflow?.rounds[0]?.steps[2]).toMatchObject({ detail: 'the project declares an empty setup in .worktree.json', target: { kind: 'none' } })
   })
 
   it('shows the earlier steps done and the failed step with its reason, and admits Retry setup', () => {
@@ -63,13 +63,27 @@ describe('lib-orchestrator/sessionManager/lifecycle/setupWorkflow', () => {
     })
     const workflow = SessionWorkflows.of(failed, runs({}))
 
-    expect(steps(workflow)).toEqual(['Checkout t2: done', 'Setup: done', 'Script codegen: failed'])
-    expect(workflow?.rounds[0]?.steps[1]).toMatchObject({ startedAt: 30, endedAt: 40, target: { kind: 'run', runId: 'r-setup-2' } })
-    expect(workflow?.rounds[0]?.steps[2]).toMatchObject({ detail: 'the codegen script exited with 2', startedAt: 40, endedAt: 45,
+    expect(steps(workflow)).toEqual(['setup t2: failed', 'Reserve worktree: done', 'Checkout t2: done', 'Setup: done', 'Script codegen: failed'])
+    expect(workflow?.rounds[0]?.steps[0].body).toEqual({ kind: 'log', runId: 'r-setup-1' })
+    expect(workflow?.rounds[1]?.steps[2]).toMatchObject({ startedAt: 30, endedAt: 40, target: { kind: 'run', runId: 'r-setup-2' } })
+    expect(workflow?.rounds[1]?.steps[3]).toMatchObject({ detail: 'the codegen script exited with 2', startedAt: 40, endedAt: 45,
       target: { kind: 'run', runId: 'r-codegen' } })
     expect(workflow).toMatchObject({ badge: 'codegen script failed', open: false,
-      summary: 'Script codegen failed: the codegen script exited with 2; press Retry setup',
-      actions: [{ id: 'retry-setup', label: 'Retry setup', primary: true }] })
+      summary: 'The agent never started: the codegen script exited with 2. Nothing to land.',
+      actions: [{ id: 'retry-setup', label: 'Retry setup', primary: true }, { id: 'discard', label: 'Discard', primary: false }] })
+  })
+
+  it('shows a failed SVN checkout as never started with Retry setup and Discard in the composed workflow', () => {
+    const failed = record({ life: 'ended', endedReason: 'checkout exited with 1',
+      pendingSetup: { setupSessionId: 'r-checkout', steps: [checkout, setup], cursor: 0 } })
+    expect(SessionWorkflows.of(failed, runs({}))).toMatchObject({
+      summary: 'The agent never started: checkout exited with 1. Nothing to land.',
+      actions: [{ id: 'retry-setup', label: 'Retry setup' }, { id: 'discard', label: 'Discard' }],
+    })
+    expect(SessionWorkflows.of({ ...failed, worktree: { ...failed.worktree!, agentStartedAt: 1 } }, runs({}))).toMatchObject({
+      summary: 'Checkout t2 failed: checkout exited with 1; press Retry setup',
+      actions: [{ id: 'retry-setup', label: 'Retry setup' }],
+    })
   })
 
   it('has no before workflow once the chain finished or the session runs', () => {
@@ -80,5 +94,14 @@ describe('lib-orchestrator/sessionManager/lifecycle/setupWorkflow', () => {
   it('reads a wait written before chains as one setup step', () => {
     expect(steps(SessionWorkflows.of(record({ worktree: undefined, pendingSetup: { setupSessionId: 'r-setup' } }), runs({}))))
       .toEqual(['Setup: running'])
+  })
+
+  it('shows unapproved commands as a waiting step with Agree and run and Cancel', () => {
+    const waiting = record({ life: 'ended', pendingSetup: { setupSessionId: 'not-started',
+      agreement: { commands: ['pnpm install', 'pnpm codegen'], hash: 'hash1' } } })
+    expect(SessionWorkflows.of(waiting, runs({}))).toMatchObject({ open: true, badge: 'setup waits for approval',
+      rounds: [{ steps: [{ key: 'reserve' }, { key: 'agreement', state: 'waits',
+        body: { kind: 'commands', commands: ['pnpm install', 'pnpm codegen'] } }] }],
+      actions: [{ id: 'agree-setup', acknowledgeSetup: 'hash1' }, { id: 'cancel-setup' }] })
   })
 })

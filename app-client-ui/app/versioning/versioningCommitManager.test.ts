@@ -1,3 +1,5 @@
+import type { VersioningWorkflowState } from '../../shared/versioningCommit'
+import { FileChangesFingerprint } from '../../../lib-orchestrator/fileChangesManager/fileChangesFingerprint'
 import { lstat, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -6,11 +8,683 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { FileChangesWorkingTreeSnapshot } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import type { SessionCommitReceipt } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
+import { VersioningWorkflowAccess } from './versioningWorkflowAccess'
 import { VersioningCommitLimits } from '../../shared/versioningCommit'
 import { VersioningCommitManager, type VersioningCommitManagerDeps } from './versioningCommitManager'
+import { RemoteReviewAccess } from '../remoteControl/remoteReviewAccess'
+import { RemoteContentAccess } from '../remoteControl/remoteContentAccess'
+import { ReviewInteractionAccess } from './reviewInteractionAccess'
+import { VersioningReviewStore } from './versioningReviewStore'
 import { VersioningCommitMessageStore } from './versioningCommitMessageStore'
 
 describe('app-client-ui/app/versioning/versioningCommitManager', () => {
+  it('routes managed SVN split commits to Finish while allowing its review-only editor', async () => {
+    const f = await fixture()
+    f.deps.sessions.worktreeAt = async () => ({ sessionId: 'worker', kind: 'svn', path: f.root })
+    expect(await f.manager.prepare('session', 'svn', null, null)).toMatchObject({ ok: false, code: 'use-finish' })
+    expect(await f.manager.prepare('session', 'svn', null, null, undefined, { reviewOnly: true })).toMatchObject({ ok: true })
+    expect(await f.manager.run('window', f.request)).toMatchObject({ ok: false, code: 'use-finish' })
+    expect(await f.manager.openTortoise('window', f.draftId, '[App] Change')).toMatchObject({ ok: false, code: 'use-finish' })
+    f.deps.sessions.worktreeAt = async () => null
+    expect(await f.manager.prepare('session', 'svn', null, null)).toMatchObject({ ok: true })
+  })
+  it('refuses an unregistered SVN worktree path from another profile', async () => {
+    const f = await fixture()
+    const worktree = join(f.root, '.worktrees', 'other-profile')
+    f.deps.sessions.workingContext = async () => ({ ok: true, value: { sessionId: 'session', cwd: worktree, agent: null, worktree: null } })
+    f.deps.vcsStatus.detect = async (cwd, id) => ({ id, root: worktree, cwd, scopeRelativePath: '.', scopeUrl: null, repositoryPathPrefix: null })
+    expect(await f.manager.prepare('session', 'svn', null, null)).toMatchObject({ ok: false, code: 'use-finish' })
+  })
+
+  it('refuses a restored main-root draft selecting a nested SVN worktree for publication or Tortoise', async () => {
+    const f = await fixture()
+    f.snapshot.entries[0].path = join(f.root, '.worktrees', 'foreign', 'a.txt')
+    f.manager.files('window', f.draftId, f.snapshot)
+    expect(await f.manager.run('window', f.request)).toMatchObject({ ok: false, code: 'use-finish' })
+    expect(await f.manager.openTortoise('window', f.draftId, '[App] Change')).toMatchObject({ ok: false, code: 'use-finish' })
+    expect(f.writes).toEqual([])
+  })
+
+  it('keeps setup rows out of the initial stored selection', async () => {
+    const f = await fixture()
+    f.snapshot.entries[0].origin = 'setup'
+    f.manager.files('window', f.draftId, f.snapshot)
+    expect(f.manager.read('window', f.draftId)?.selection?.paths).not.toContain(f.snapshot.entries[0].path)
+  })
+
+  it('carries proposal, local and remote message sources through storage', async () => {
+    const f = await fixture()
+    expect(f.manager.read('window', f.draftId)).toMatchObject({ messageSource: 'agent-proposal', messageAt: expect.any(Number) })
+    f.manager.setMessage('window', f.draftId, '[Jamat] Local')
+    expect(f.manager.read('window', f.draftId)?.messageSource).toBe('person-local')
+    const draft = f.manager.read('window', f.draftId)!
+    expect(f.manager.edit('window', { draftId: draft.draftId, epoch: draft.epoch!, expectedRevision: draft.revision, message: '[Jamat] Remote' }))
+      .toMatchObject({ ok: true, value: { messageSource: 'person-remote' } })
+    const edited = f.manager.read('window', f.draftId)!
+    expect(f.manager.edit('window', { draftId: edited.draftId, epoch: edited.epoch!, expectedRevision: edited.revision, message: '[Jamat] Restored', messageSource: 'restored-draft' }))
+      .toMatchObject({ ok: true, value: { messageSource: 'restored-draft' } })
+    const document = JSON.parse(await readFile(f.messageFile, 'utf8'))
+    expect(Object.values(document.messages)).toEqual([expect.objectContaining({ source: 'restored-draft', at: expect.any(Number) })])
+  })
+
+  it('reads old stored messages with unknown provenance', async () => {
+    const f = await fixture()
+    const document = JSON.parse(await readFile(f.messageFile, 'utf8'))
+    for (const message of Object.values(document.messages) as Record<string, unknown>[]) { delete message.source; delete message.at }
+    await writeFile(f.messageFile, JSON.stringify(document))
+    const manager = restart(f)
+    const opened = await manager.prepare('session', 'svn', null, null)
+    if (!opened.ok) throw new Error(opened.detail)
+    manager.attach(opened.value.draftId, 'window')
+    expect(manager.read('window', opened.value.draftId)).toMatchObject({ messageSource: 'unknown', messageAt: 0 })
+  })
+
+  it('restores the same pending review and empty human text with a fresh epoch but no leases or file grants', async () => {
+    const f = await fixture()
+    const file = join(f.root, 'reviews.json')
+    f.deps.reviews = new VersioningReviewStore(file, f.report)
+    f.manager.files('window', f.draftId, f.snapshot)
+    f.manager.setMessage('window', f.draftId, '')
+    const before = f.manager.read('window', f.draftId)!
+    f.manager.release(f.draftId, 'window')
+    const manager = new VersioningCommitManager({ ...f.deps, reviews: new VersioningReviewStore(file, f.report),
+      snapshotOf: () => null, fileAccess: () => ({ ok: false, code: 'unknown-file', detail: 'No restored grants' }) })
+    expect(manager.read('window', f.draftId)).toBeNull()
+    expect(manager.openSessions().sessionIds).toEqual(['session'])
+    manager.attach(f.draftId, 'viewer')
+    expect(manager.read('viewer', f.draftId)).toMatchObject({ message: '', editedByPerson: true, phase: { kind: 'editing' } })
+    expect(manager.read('viewer', f.draftId)?.epoch).not.toBe(before.epoch)
+    expect(await manager.run('viewer', f.request)).toMatchObject({ ok: false, reloadRequired: true })
+    const saved = await readFile(file, 'utf8')
+    expect(saved).not.toContain('owners')
+    expect(saved).not.toContain('fileReviews')
+    expect(saved).not.toContain('epoch')
+  })
+
+  it('finishes every accepted external group after its last viewer detaches', async () => {
+    const f = await fixture()
+    const external = await addExternal(f, 'shared/lib')
+    f.deps.svn.commit = vi.fn(async () => {
+      f.manager.release(f.draftId, 'window')
+      return { ok: true as const, value: { committedPaths: [], revision: '61', output: 'done' } }
+    })
+    expect(await f.manager.run('window', { ...f.request, fileIds: ['file', external.entry.fileId], includeExternals: true }))
+      .toEqual({ ok: true, revision: '61, 61' })
+    expect(f.deps.svn.commit).toHaveBeenCalledTimes(2)
+  })
+
+  it('restores closed result retention without reviving a settled review', async () => {
+    const f = await fixture()
+    const file = join(f.root, 'reviews.json')
+    f.deps.reviews = new VersioningReviewStore(file, f.report)
+    f.deps.now = () => 100
+    await f.manager.run('window', f.request)
+    f.manager.release(f.draftId, 'window')
+    const manager = new VersioningCommitManager({ ...f.deps, reviews: new VersioningReviewStore(file, f.report), now: () => 101 })
+    expect(manager.status(f.draftId)).toMatchObject({ state: 'committed', closed: true })
+    manager.attach(f.draftId, 'viewer')
+    expect(manager.read('viewer', f.draftId)).toBeNull()
+    const expired = new VersioningCommitManager({ ...f.deps, reviews: new VersioningReviewStore(file, f.report), now: () => 86_400_101 })
+    expect(expired.status(f.draftId)).toBeNull()
+  })
+
+  it('keeps the accepted message and revision when durable review persistence refuses an edit', async () => {
+    const f = await fixture()
+    f.deps.reviews = { read: () => [], save: () => true }
+    f.manager.setMessage('window', f.draftId, 'Accepted')
+    const before = f.manager.read('window', f.draftId)
+    f.deps.reviews.save = () => false
+    expect(() => f.manager.setMessage('window', f.draftId, 'Unsaved')).toThrow('could not be saved')
+    expect(f.manager.read('window', f.draftId)).toEqual(before)
+    expect(f.deps.messages.read(before!)).toMatchObject({ message: 'Accepted' })
+  })
+
+  it('accepts one CAS edit at N and refuses stale message, selection and approval', async () => {
+    const f = await fixture()
+    f.manager.files('window', f.draftId, f.snapshot)
+    const draft = f.manager.read('window', f.draftId)!
+    const request = { draftId: f.draftId, epoch: draft.epoch!, expectedRevision: draft.revision }
+    expect(f.manager.edit('window', { ...request, message: '' })).toMatchObject({ ok: true, value: { revision: draft.revision + 1, message: '' } })
+    expect(f.manager.edit('window', { ...request, message: 'Lost update' })).toMatchObject({ ok: false, code: 'stale', current: { message: '' } })
+    expect(f.manager.edit('window', { ...request, selection: { snapshotId: 'snapshot', fileIds: ['file'] } })).toMatchObject({ ok: false, code: 'stale' })
+    expect(await f.manager.run('window', { ...f.request, ...request })).toMatchObject({ ok: false, code: 'stale' })
+    expect(f.writes).toEqual([])
+  })
+
+  it('persists exact source selection and refuses unseen file ids', async () => {
+    const f = await fixture()
+    const file = join(f.root, 'reviews.json')
+    f.deps.reviews = new VersioningReviewStore(file, f.report)
+    f.manager.files('window', f.draftId, f.snapshot)
+    const draft = f.manager.read('window', f.draftId)!
+    const request = { draftId: f.draftId, epoch: draft.epoch!, expectedRevision: draft.revision }
+    expect(f.manager.edit('window', { ...request, selection: { snapshotId: 'snapshot', fileIds: ['unseen'] } }))
+      .toMatchObject({ ok: false, code: 'invalid-target' })
+    expect(f.manager.edit('window', { ...request, message: '', selection: { snapshotId: 'snapshot', fileIds: ['file'] } })).toMatchObject({ ok: true })
+    const manager = new VersioningCommitManager({ ...f.deps, reviews: new VersioningReviewStore(file, f.report) })
+    manager.attach(f.draftId, 'viewer')
+    expect(manager.read('viewer', f.draftId)).toMatchObject({ message: '', selection: { snapshotId: 'snapshot', paths: [f.path] } })
+  })
+
+  async function admitted(f: Awaited<ReturnType<typeof fixture>>, active = () => true) {
+    const access = new ReviewInteractionAccess()
+    f.deps.interactions = access
+    f.manager.files('window', f.draftId, f.snapshot)
+    const draft = f.manager.read('window', f.draftId)!
+    const edited = f.manager.edit('window', { draftId: f.draftId, epoch: draft.epoch!, expectedRevision: draft.revision,
+      message: f.request.message, selection: { snapshotId: 'snapshot', fileIds: ['file'] } })
+    if (!edited.ok) throw new Error(edited.detail)
+    return { interaction: access.local('window', 'session', active), request: { ...f.request, kind: 'approve' as const,
+      epoch: edited.value.epoch!, expectedRevision: edited.value.revision, operationId: 'human-press' } }
+  }
+
+  async function finishFixture(vcs: 'svn' | 'git' = 'svn') {
+    const f = await fixture(vcs)
+    const fingerprint = await FileChangesFingerprint.of(f.path)
+    const fileAccess = f.deps.fileAccess
+    f.deps.fileAccess = (...args) => {
+      const result = fileAccess(...args)
+      return result.ok ? { ok: true, value: { ...result.value, workingState: { ...result.value.workingState!, fingerprint } } } : result
+    }
+    let state: VersioningWorkflowState = { kind: 'running' }
+    const check = vi.fn((): string | null => null)
+    const start = vi.fn(async () => ({ ok: true as const, revision: '' }))
+    f.deps.workflow = { offers: () => true, check, start, state: () => state, changed: (paths) => `Changed since this review was read: ${paths.join(', ')}` }
+    f.deps.reviews = new VersioningReviewStore(join(f.root, 'reviews.json'), f.report)
+    const { interaction, request } = await admitted(f)
+    return { ...f, interaction, fingerprint, check, start, state: (next: VersioningWorkflowState) => { state = next },
+      decision: { ...request, kind: 'finish' as const, workflow: { workflowId: 'finish', revision: 7, actionId: 'finish-again' as const, agreement: {} } } }
+  }
+
+  it('shows the saved application proposal in a multi-repository review without filling external or person-owned messages', async () => {
+    const f = await fixture()
+    const repositories = [f.root, join(f.root, 'shared')].map((root, index) => ({ root, repository: `https://svn/repo${index}`,
+      repositoryName: `repo${index}`, expectedPrefix: `[repo${index}]`, paths: ['a.txt'], message: '', source: 'unknown' as const, acknowledged: [] }))
+    const snapshot = { revision: 7, sessions: [{ sessionId: 'session', actions: { sections: [{ workflowId: 'finish', open: true,
+      actions: [{ id: 'finish-again', requiresCommit: true }], rounds: [{ steps: [{ state: 'waits', body: { kind: 'commit', vcs: 'svn', scopeRoot: f.root, repositories } }] }] }] } }] }
+    f.deps.workflow = new VersioningWorkflowAccess({ snapshot: () => snapshot as never, finishWorktreeSession: vi.fn() })
+    expect(await f.manager.propose('session', f.root, '[repo0] Verify prepared application')).toMatchObject({ ok: true })
+    const before = f.manager.read('window', f.draftId)!
+    expect(before.repositories?.map(({ message, source }) => ({ message, source }))).toEqual([
+      { message: '[repo0] Verify prepared application', source: 'agent-proposal' }, { message: '', source: 'unknown' },
+    ])
+    const edited = f.manager.edit('window', { draftId: f.draftId, epoch: before.epoch!, expectedRevision: before.revision,
+      repositoryMessage: { root: f.root, message: '' } }, 'person-local')
+    expect(edited).toMatchObject({ ok: true, value: { repositories: [
+      { message: '', source: 'person-local' }, { message: '', source: 'unknown' },
+    ] } })
+    expect(f.manager.read('window', f.draftId)?.repositories?.[0].message).toBe('')
+    repositories[0].paths = ['changed-since-review.txt']
+    repositories.splice(1, 1)
+    const refreshed = f.manager.read('window', f.draftId)!
+    expect(refreshed.repositories).toHaveLength(1)
+    expect(refreshed.repositories?.[0]).toMatchObject({ paths: ['changed-since-review.txt'], message: '', source: 'person-local' })
+  })
+
+  function finishRepositories(f: Awaited<ReturnType<typeof fixture>>) {
+    const repositories = [f.root, join(f.root, 'lib', 'ea')].map((root, index) => ({ root, repository: `https://svn/${index === 0 ? 'app' : 'ea'}/j12`,
+      repositoryName: 'j12', expectedPrefix: '[j12]', paths: ['a.txt'], message: index === 0 ? '[j12] Agent proposal A' : '', source: index === 0 ? 'agent-proposal' as const : 'unknown' as const, acknowledged: [] }))
+    const snapshot = { revision: 7, sessions: [{ sessionId: 'session', actions: { sections: [{ workflowId: 'finish', open: true,
+      actions: [{ id: 'finish-again', requiresCommit: true }], rounds: [{ steps: [{ state: 'waits', body: { kind: 'commit', vcs: 'svn', scopeRoot: f.root, repositories } }] }] }] } }] }
+    f.deps.workflow = new VersioningWorkflowAccess({ snapshot: () => snapshot as never, finishWorktreeSession: vi.fn() })
+    f.deps.sessions.proposeWorktreeReady = vi.fn(async () => {})
+    return repositories
+  }
+
+  it('refuses a proposal for a repository whose message a person wrote in the open Finish review (UA1-J12-5)', async () => {
+    const f = await fixture()
+    finishRepositories(f)
+    const before = f.manager.read('window', f.draftId)!
+    expect(f.manager.edit('window', { draftId: f.draftId, epoch: before.epoch!, expectedRevision: before.revision,
+      repositoryMessage: { root: f.root, message: '[j12] Person text' } }, 'person-local')).toMatchObject({ ok: true })
+    expect(await f.manager.propose('session', f.root, '[j12] Agent proposal B')).toMatchObject({ ok: false, code: 'message-edited',
+      detail: expect.stringContaining('the proposal was not stored') })
+    const after = f.manager.read('window', f.draftId)!
+    expect(after.repositories?.[0]).toMatchObject({ message: '[j12] Person text', source: 'person-local' })
+    expect(after.message).toBe('proposal')
+    expect(f.deps.sessions.proposeWorktreeReady).not.toHaveBeenCalled()
+  })
+
+  it('shows a later proposal in the repository field of the open Finish review with the findings of its own text (UA1-J12-2, UA1-J12-5)', async () => {
+    const f = await fixture()
+    finishRepositories(f)
+    const before = f.manager.read('window', f.draftId)!
+    // A person's edit of the other repository saves every row of the review in the draft.
+    expect(f.manager.edit('window', { draftId: f.draftId, epoch: before.epoch!, expectedRevision: before.revision,
+      repositoryMessage: { root: join(f.root, 'lib', 'ea'), message: '[j12] EA text' } }, 'person-local')).toMatchObject({ ok: true })
+    expect(await f.manager.propose('session', f.root, 'Here is the commit message for the change:\n[j12] Agent proposal B')).toEqual({ ok: true, scopeRoot: f.root })
+    const after = f.manager.read('window', f.draftId)!
+    expect(after.repositories?.map(({ message, source }) => ({ message, source }))).toEqual([
+      { message: 'Here is the commit message for the change:\n[j12] Agent proposal B', source: 'agent-proposal' },
+      { message: '[j12] EA text', source: 'person-local' },
+    ])
+    expect(after.repositories?.[0].findings).toEqual([
+      { id: 'no-prefix', text: 'No [Project] prefix', confirm: true }, { id: 'chat-opening', text: 'Chat opening', confirm: true },
+    ])
+  })
+
+  it('keeps the message written for each repository while a review leaves that repository out and edits another', async () => {
+    const f = await fixture()
+    const repositories = [f.root, join(f.root, 'shared')].map((root, index) => ({ root, repository: `https://svn/repo${index}`,
+      repositoryName: `repo${index}`, expectedPrefix: `[repo${index}]`, paths: ['a.txt'], message: '', source: 'unknown' as const, acknowledged: [] }))
+    const shown = [...repositories]
+    const snapshot = { revision: 7, sessions: [{ sessionId: 'session', actions: { sections: [{ workflowId: 'finish', open: true,
+      actions: [{ id: 'finish-again', requiresCommit: true }], rounds: [{ steps: [{ state: 'waits', body: { kind: 'commit', vcs: 'svn', scopeRoot: f.root, repositories: shown } }] }] }] } }] }
+    f.deps.workflow = new VersioningWorkflowAccess({ snapshot: () => snapshot as never, finishWorktreeSession: vi.fn() })
+    const edit = (root: string, message: string) => {
+      const draft = f.manager.read('window', f.draftId)!
+      expect(f.manager.edit('window', { draftId: f.draftId, epoch: draft.epoch!, expectedRevision: draft.revision, repositoryMessage: { root, message } }, 'person-local'))
+        .toMatchObject({ ok: true })
+    }
+    edit(repositories[1].root, '[repo1] Shared change')
+    shown.splice(1, 1)
+    edit(f.root, '[repo0] App change')
+    shown.push(repositories[1])
+    expect(f.manager.read('window', f.draftId)?.repositories?.map(({ message, source }) => ({ message, source }))).toEqual([
+      { message: '[repo0] App change', source: 'person-local' }, { message: '[repo1] Shared change', source: 'person-local' },
+    ])
+  })
+
+  it.each(['person-local', 'person-remote'] as const)('saves repository text through the source draft before %s Finish approval', async (source) => {
+    const f = await finishFixture()
+    const repositories = [f.root, join(f.root, 'shared')].map((root, index) => ({ root, repository: `https://svn/repo${index}`,
+      repositoryName: `repo${index}`, expectedPrefix: `[repo${index}]`, paths: ['a.txt'], message: `[repo${index}] Original`, source: 'agent-proposal' as const, acknowledged: [] }))
+    const snapshot = { revision: 7, sessions: [{ sessionId: 'session', actions: { sections: [{ workflowId: 'finish', open: true,
+      actions: [{ id: 'finish-again', requiresCommit: true }], rounds: [{ steps: [{ state: 'waits', body: { kind: 'commit', vcs: 'svn', scopeRoot: f.root, repositories } }] }] }] } }] }
+    const finishWorktreeSession = vi.fn(async () => ({ ok: true as const, value: { sessionId: 'session', actionId: 'finish' } }))
+    f.deps.workflow = new VersioningWorkflowAccess({ snapshot: () => snapshot as never, finishWorktreeSession })
+    const before = f.manager.read('window', f.draftId)!
+    expect(before.repositories?.map((row) => row.source)).toEqual(['agent-proposal', 'agent-proposal'])
+    const edited = f.manager.edit('window', { draftId: f.draftId, epoch: before.epoch!, expectedRevision: before.revision,
+      repositoryMessage: { root: f.root, message: '[repo0] Edited' } }, source)
+    expect(edited).toMatchObject({ ok: true })
+    const draft = f.manager.read('window', f.draftId)!
+    expect(draft.repositories?.map((row) => row.source)).toEqual([source, 'agent-proposal'])
+    expect(draft.repositories?.[0].findings).toEqual([])
+    const decision = { ...f.decision, epoch: draft.epoch!, expectedRevision: draft.revision,
+      workflow: { ...f.decision.workflow, repositories: draft.repositories } }
+    expect(await f.manager.decide(f.interaction, decision)).toMatchObject({ ok: true })
+    expect(finishWorktreeSession).toHaveBeenCalledWith('session', expect.objectContaining({ repositories: draft.repositories }))
+  })
+
+  it('preserves a peer-edited message through local source Finish approval and persisted drafts', async () => {
+    const f = await finishFixture()
+    const snapshot = { revision: 7, sessions: [{ sessionId: 'session', actions: { sections: [{ workflowId: 'finish', open: true, summary: 'Review the synced changes',
+      actions: [{ id: 'finish-again', requiresCommit: true }], rounds: [{ steps: [{ state: 'waits', body: { kind: 'commit', vcs: 'svn', scopeRoot: f.root } }] }] }] } }] }
+    const finishWorktreeSession = vi.fn(async () => ({ ok: true as const, value: { sessionId: 'session', actionId: 'finish' } }))
+    f.deps.workflow = new VersioningWorkflowAccess({ snapshot: () => snapshot as never, finishWorktreeSession })
+    const interactions = new ReviewInteractionAccess()
+    f.deps.interactions = interactions
+    const view = { peerId: 'paired-peer', sessionId: 'session', viewId: 'view', viewerId: 'controller', epoch: 'connection', commitReceipts: true as const }
+    const remote = new RemoteReviewAccess(f.manager, interactions, { workingTree: vi.fn(async () => ({ ok: true as const, value: f.snapshot })) }, () => true, vi.fn())
+    const request = async (body: Parameters<typeof remote.request>[1]) => {
+      const answer = await remote.request(view, body)
+      if (!answer.ok) throw new Error(answer.error.detail)
+      return JSON.parse(Buffer.from(answer.value.base64, 'base64').toString('utf8'))
+    }
+    expect(await request({ kind: 'open', reviewId: f.draftId })).toMatchObject({ ok: true })
+    const before = f.manager.read('window', f.draftId)!
+    expect(await request({ kind: 'edit', edit: { draftId: f.draftId, epoch: before.epoch!, expectedRevision: before.revision,
+      message: '[repository] Remote Finish text\r\nSecond line' } })).toMatchObject({ ok: true })
+    const edited = f.manager.read('window', f.draftId)!
+    expect(edited).toMatchObject({ message: '[repository] Remote Finish text\nSecond line', messageSource: 'person-remote' })
+    const stored = await readFile(f.messageFile, 'utf8')
+    expect(f.deps.reviews!.read()[0]?.dto).toMatchObject({ messageSource: 'person-remote', messageAt: edited.messageAt })
+    expect(await f.manager.decide(interactions.local('window', 'session', () => true), { ...f.decision,
+      message: edited.message.replace(/\n/g, '\r\n'), epoch: edited.epoch!, expectedRevision: edited.revision })).toMatchObject({ ok: true })
+    expect(finishWorktreeSession).toHaveBeenCalledWith('session', expect.objectContaining({ message: edited.message, messageSource: 'person-remote' }))
+    expect(f.manager.read('window', f.draftId)).toMatchObject({ messageSource: 'person-remote', messageAt: edited.messageAt })
+    expect(await readFile(f.messageFile, 'utf8')).toBe(stored)
+    expect(f.deps.reviews!.read()[0]?.dto).toMatchObject({ messageSource: 'person-remote', messageAt: edited.messageAt })
+    expect(f.writes).toEqual([])
+  })
+
+  it.each(['svn', 'git'] as const)('claims one %s Finish, retains its lock after detach, and restores its source outcome', async (vcs) => {
+    const f = await finishFixture(vcs)
+    const first = f.manager.decide(f.interaction, f.decision)
+    expect(f.manager.decide(f.interaction, { ...f.decision })).toBe(first)
+    expect(await f.manager.decide(f.interaction, { ...f.decision, operationId: 'second' })).toMatchObject({ ok: false, code: 'busy' })
+    expect(await first).toEqual({ ok: true, revision: '' })
+    expect(f.start).toHaveBeenCalledWith(expect.objectContaining({ message: f.decision.message }), f.decision.workflow, [f.path], { [f.path]: f.fingerprint })
+    expect(f.writes).toEqual([])
+    f.manager.release(f.draftId, 'window')
+    const sibling = await f.manager.prepare('session', vcs, f.path, 'Other review')
+    if (!sibling.ok) throw new Error(sibling.detail)
+    f.manager.attach(sibling.value.draftId, 'window')
+    expect(await f.manager.run('window', { ...f.request, draftId: sibling.value.draftId })).toMatchObject({ ok: false, code: 'busy' })
+    const restored = new VersioningCommitManager(f.deps)
+    restored.attach(f.draftId, 'new-view')
+    expect(restored.read('new-view', f.draftId)?.phase.kind).toBe('running')
+    f.state({ kind: 'done', revision: vcs === 'svn' ? 'r43' : 'abc123', output: 'Source receipt' })
+    expect(restored.status(f.draftId)).toMatchObject({ state: 'committed', revision: vcs === 'svn' ? 'r43' : 'abc123' })
+    expect(await restored.decide(f.interaction, f.decision)).toEqual({ ok: true, revision: vcs === 'svn' ? 'r43' : 'abc123' })
+    f.state({ kind: 'uncertain', detail: 'Source session was removed after completion' })
+    const settled = new VersioningCommitManager(f.deps)
+    expect(settled.status(f.draftId)).toMatchObject({ state: 'committed', revision: vcs === 'svn' ? 'r43' : 'abc123' })
+    expect(await settled.decide(f.interaction, f.decision)).toEqual({ ok: true, revision: vcs === 'svn' ? 'r43' : 'abc123' })
+    expect(f.start).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves a refused Finish approval editable, so the refusal does not outlive the next preparation', async () => {
+    const f = await finishFixture()
+    const detail = 'Repository changes require a new preparation and confirmation: lib/ea/version.txt'
+    f.start.mockResolvedValue({ ok: false, code: 'vcs-failed', detail } as never)
+    expect(await f.manager.decide(f.interaction, f.decision)).toEqual({ ok: false, code: 'vcs-failed', detail })
+    expect(f.manager.read('window', f.draftId)?.phase).toEqual({ kind: 'editing' })
+    expect(f.manager.status(f.draftId)).toMatchObject({ state: 'editing' })
+  })
+
+  it('names every changed file of a stale Finish review and leaves the wording to the Finish', async () => {
+    const f = await finishFixture()
+    f.deps.workflow!.changed = (paths) => `Changed: ${paths.join(', ')}`
+    const second = await addSecondFile(f)
+    const fingerprints: Record<string, string> = { [f.path]: f.fingerprint, [second.path]: await FileChangesFingerprint.of(second.path) }
+    const access = f.deps.fileAccess
+    f.deps.fileAccess = (...args) => {
+      const result = access(...args)
+      return result.ok ? { ok: true, value: { ...result.value, workingState: { ...result.value.workingState!, fingerprint: fingerprints[result.value.path] } } } : result
+    }
+    f.manager.files('window', f.draftId, f.snapshot)
+    const draft = f.manager.read('window', f.draftId)!
+    const edited = f.manager.edit('window', { draftId: f.draftId, epoch: draft.epoch!, expectedRevision: draft.revision,
+      selection: { snapshotId: 'snapshot', fileIds: ['file', 'second'] } })
+    if (!edited.ok) throw new Error(edited.detail)
+    for (const path of [f.path, second.path]) {
+      const stamp = await lstat(path)
+      await writeFile(path, 'other bytes')
+      await utimes(path, stamp.atime, stamp.mtime)
+    }
+    expect(await f.manager.decide(f.interaction, { ...f.decision, fileIds: ['file', 'second'], epoch: edited.value.epoch!,
+      expectedRevision: edited.value.revision, operationId: 'stale' })).toEqual({ ok: false, code: 'stale', detail: 'Changed: file.txt, second.txt' })
+    expect(f.start).not.toHaveBeenCalled()
+  })
+
+  it('selects a path that appears in a Finish review after its selection was saved, and keeps a cleared path cleared', async () => {
+    const f = await finishFixture()
+    f.deps.workflow!.owns = () => true
+    const draft = f.manager.read('window', f.draftId)!
+    expect(f.manager.edit('window', { draftId: f.draftId, epoch: draft.epoch!, expectedRevision: draft.revision,
+      selection: { snapshotId: 'snapshot', fileIds: [] } })).toMatchObject({ ok: true })
+    const second = await addSecondFile(f)
+    f.manager.files('window', f.draftId, f.snapshot)
+    expect(f.manager.read('window', f.draftId)?.selection).toEqual({ snapshotId: 'snapshot', paths: [second.path] })
+    f.manager.files('window', f.draftId, f.snapshot)
+    expect(f.manager.read('window', f.draftId)?.selection?.paths).toEqual([second.path])
+  })
+
+  it('keeps the saved selection of a plain commit dialog when a new path appears', async () => {
+    const f = await fixture()
+    f.manager.files('window', f.draftId, f.snapshot)
+    await addSecondFile(f)
+    f.manager.files('window', f.draftId, f.snapshot)
+    expect(f.manager.read('window', f.draftId)?.selection?.paths).toEqual([f.path])
+  })
+
+  it.each(['changed-action', 'changed-bytes', 'revoked-view'] as const)('refuses %s before the source Finish is accepted', async (reason) => {
+    const f = await finishFixture()
+    if (reason === 'changed-action') f.check.mockReturnValue('Finish changed')
+    else if (reason === 'changed-bytes') {
+      const stamp = await lstat(f.path)
+      await writeFile(f.path, 'other bytes')
+      await utimes(f.path, stamp.atime, stamp.mtime)
+    } else if (reason === 'revoked-view') f.deps.interactions = { isActive: () => false }
+    else throw new Error(`Unknown reason: ${reason satisfies never}`)
+    expect(await f.manager.decide(f.interaction, f.decision)).toMatchObject({ ok: false })
+    expect(f.start).not.toHaveBeenCalled()
+    expect(f.writes).toEqual([])
+  })
+
+  it('keeps an unproved Finish acceptance uncertain instead of replaying it after restart', async () => {
+    const f = await finishFixture()
+    f.start.mockRejectedValue(new Error('source callback interrupted'))
+    expect(await f.manager.decide(f.interaction, f.decision)).toMatchObject({ ok: false, code: 'uncertain' })
+    const restored = new VersioningCommitManager(f.deps)
+    restored.attach(f.draftId, 'window')
+    const draft = restored.read('window', f.draftId)!
+    expect(await restored.decide(f.interaction, { ...f.decision, epoch: draft.epoch!, expectedRevision: draft.revision, operationId: 'new-id' })).toMatchObject({ ok: false })
+    expect(f.start).toHaveBeenCalledTimes(1)
+  })
+
+  it('reconciles a lost Finish acknowledgement to the proved source result without executing again', async () => {
+    const f = await finishFixture()
+    f.start.mockRejectedValue(new Error('Source acknowledgement lost'))
+    expect(await f.manager.decide(f.interaction, f.decision)).toMatchObject({ ok: false, code: 'uncertain' })
+    f.state({ kind: 'done', revision: 'r48', output: 'Verified source receipt' })
+    const restored = new VersioningCommitManager(f.deps)
+    expect(await restored.decide(f.interaction, f.decision)).toEqual({ ok: true, revision: 'r48' })
+    expect(restored.status(f.draftId)).toMatchObject({ state: 'committed', revision: 'r48' })
+    expect(f.start).toHaveBeenCalledOnce()
+    expect(f.writes).toEqual([])
+  })
+
+  it('reconciles a lost acknowledgement to a source conflict that needs a fresh review', async () => {
+    const f = await finishFixture()
+    f.start.mockRejectedValue(new Error('Source acknowledgement lost'))
+    await f.manager.decide(f.interaction, f.decision)
+    f.state({ kind: 'waiting', detail: 'Resolve the incoming source conflict' })
+    const restored = new VersioningCommitManager(f.deps)
+    expect(await restored.decide(f.interaction, f.decision)).toEqual({ ok: false, code: 'vcs-failed', detail: 'Resolve the incoming source conflict' })
+    expect(restored.status(f.draftId)).toMatchObject({ state: 'failed' })
+    expect(f.start).toHaveBeenCalledOnce()
+  })
+
+  it.each(['live', 'restarted'] as const)('frees a %s review whose Finish a corrective review replaced, so the corrective review publishes', async (client) => {
+    const f = await finishFixture()
+    const waiting = (workflowId: string) => ({ workflowId, kind: 'finish', open: true, summary: 'Ready for validation',
+      actions: [{ id: 'finish-again', requiresCommit: true }], rounds: [{ steps: [{ state: 'waits', body: { kind: 'commit', vcs: 'svn', scopeRoot: f.root } }] }] })
+    const sections: ReturnType<typeof waiting>[] = [waiting('finish')]
+    const snapshot = { revision: 7, sessions: [{ sessionId: 'session', actions: { sections } }] }
+    const finishWorktreeSession = vi.fn(async () => {
+      sections[0] = { ...sections[0], summary: 'Committing', actions: [], rounds: [{ steps: [{ ...sections[0].rounds[0].steps[0], state: 'running' }] }] }
+      return { ok: true as const, value: { sessionId: 'session', actionId: 'finish' } }
+    })
+    f.deps.workflow = new VersioningWorkflowAccess({ snapshot: () => snapshot as never, finishWorktreeSession })
+    expect(await f.manager.decide(f.interaction, f.decision)).toEqual({ ok: true, revision: '' })
+    // Published with differences, then Review corrective changes: the source closes the first action and opens a new one.
+    sections.splice(0, 1, { ...sections[0], open: false, summary: 'Action ended' }, waiting('corrective'))
+    const manager = client === 'live' ? f.manager : new VersioningCommitManager(f.deps)
+    manager.attach(f.draftId, 'window')
+    const draft = manager.read('window', f.draftId)!
+    expect(draft).toMatchObject({ phase: { kind: 'editing' } })
+    expect(draft.workflow).toBeUndefined()
+    const edited = manager.edit('window', { draftId: f.draftId, epoch: draft.epoch!, expectedRevision: draft.revision,
+      selection: { snapshotId: 'snapshot', fileIds: ['file'] } })
+    if (!edited.ok) throw new Error(edited.detail)
+    expect(await manager.decide(f.interaction, { ...f.decision, epoch: edited.value.epoch!, expectedRevision: edited.value.revision,
+      operationId: 'corrective-press', workflow: { ...f.decision.workflow, workflowId: 'corrective' } })).toEqual({ ok: true, revision: '' })
+    expect(finishWorktreeSession).toHaveBeenCalledTimes(2)
+    expect(manager.read('window', f.draftId)?.workflow?.workflowId).toBe('corrective')
+  })
+
+  it('claims concurrent human approvals once and returns the original receipt after response loss', async () => {
+    const f = await fixture()
+    const { interaction, request } = await admitted(f)
+    const first = f.manager.decide(interaction, request)
+    const replay = f.manager.decide(interaction, { ...request })
+    expect(replay).toBe(first)
+    expect(await f.manager.decide(interaction, { ...request, operationId: 'second-press' })).toMatchObject({ ok: false, code: 'busy' })
+    expect(await first).toEqual({ ok: true, revision: '42' })
+    expect(await f.manager.decide(interaction, request)).toEqual({ ok: true, revision: '42' })
+    expect(await f.manager.decide(interaction, { ...request, message: 'Changed replay' })).toMatchObject({ ok: false, code: 'conflict' })
+    expect(f.writes).toHaveLength(1)
+  })
+
+  it('refuses forged, stale and revoked human approval before any source write', async () => {
+    const f = await fixture()
+    let active = true
+    const { interaction, request } = await admitted(f, () => active)
+    expect(await f.manager.decide({ ...interaction }, request)).toMatchObject({ ok: false, code: 'forbidden' })
+    expect(await f.manager.decide(interaction, { ...request, expectedRevision: request.expectedRevision - 1 })).toMatchObject({ ok: false, code: 'stale' })
+    const pending = f.manager.decide(interaction, request)
+    active = false
+    expect(await pending).toMatchObject({ ok: false, code: 'forbidden' })
+    expect(f.writes).toEqual([])
+  })
+
+  it.each(['approve', 'cancel'] as const)('accepts only the first %s in an approval/cancellation race', async (first) => {
+    const f = await fixture()
+    const { interaction, request } = await admitted(f)
+    const cancel = { draftId: f.draftId, epoch: request.epoch, expectedRevision: request.expectedRevision, operationId: 'cancel', kind: 'cancel' as const }
+    const pending = f.manager.decide(interaction, first === 'approve' ? request : cancel)
+    expect(await f.manager.decide(interaction, first === 'approve' ? cancel : request)).toMatchObject({ ok: false, code: 'busy' })
+    expect(await pending).toMatchObject({ ok: true })
+    expect(f.writes).toHaveLength(first === 'approve' ? 1 : 0)
+    if (first === 'cancel') {
+      const fresh = f.manager.read('window', f.draftId)!
+      expect(await f.manager.decide(interaction, { ...request, operationId: 'fresh', expectedRevision: fresh.revision })).toMatchObject({ ok: false, code: 'busy' })
+    }
+  })
+
+  it('refuses stale revert, claims exact targets once, and keeps accepted work after detach', async () => {
+    const f = await fixture()
+    const { interaction, request } = await admitted(f)
+    const revert = { draftId: f.draftId, epoch: request.epoch, expectedRevision: request.expectedRevision, operationId: 'revert', kind: 'revert' as const, snapshotId: 'snapshot', fileIds: ['file'], confirmed: true as const }
+    expect(await f.manager.decide(interaction, { ...revert, expectedRevision: request.expectedRevision - 1 })).toMatchObject({ ok: false, code: 'stale' })
+    expect(f.writes).toEqual([])
+    f.deps.svn.revertFile = vi.fn(async (_scope, path) => {
+      expect(path).toBe(f.path)
+      expect(f.manager.read('window', f.draftId)?.phase.kind).toBe('running')
+      expect(await f.manager.decide(interaction, { draftId: f.draftId, epoch: request.epoch, expectedRevision: request.expectedRevision, operationId: 'cancel-running', kind: 'cancel' })).toMatchObject({ ok: false, code: 'busy' })
+      f.manager.release(f.draftId, 'window')
+      return { ok: true as const, value: undefined }
+    })
+    expect(await f.manager.decide(interaction, revert)).toEqual({ ok: true, revision: '' })
+    expect(await f.manager.decide(interaction, revert)).toEqual({ ok: true, revision: '' })
+    expect(f.deps.svn.revertFile).toHaveBeenCalledTimes(1)
+  })
+
+  it('binds external review paths and keeps shared running/closed state without inventing publication', async () => {
+    const f = await fixture()
+    const { interaction, request } = await admitted(f)
+    const external = { ...request, kind: 'external-review' as const }
+    let finish!: () => void
+    const closed = new Promise<void>((resolve) => { finish = resolve })
+    f.deps.tortoise.open = vi.fn(async (input) => {
+      expect(input.paths).toEqual([f.path])
+      expect(await readFile(input.messageFile, 'utf8')).toBe(request.message)
+      return { ok: true as const, closed }
+    })
+    const pending = f.manager.decide(interaction, external)
+    await vi.waitFor(() => expect(f.deps.tortoise.open).toHaveBeenCalledTimes(1))
+    expect(f.manager.read('window', f.draftId)?.externalReview).toBe('running')
+    expect(await f.manager.decide(interaction, { kind: 'cancel', draftId: f.draftId, epoch: request.epoch, expectedRevision: request.expectedRevision, operationId: 'cancel-external' })).toMatchObject({ ok: false, code: 'busy' })
+    finish()
+    expect(await pending).toEqual({ ok: true, revision: '' })
+    expect(f.manager.read('window', f.draftId)).toMatchObject({ externalReview: 'closed', phase: { kind: 'editing' } })
+    expect(f.manager.status(f.draftId)).toMatchObject({ state: 'external-closed', revision: null })
+    expect(await f.manager.decide(interaction, external)).toEqual({ ok: true, revision: '' })
+    expect(f.deps.tortoise.open).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([true, false])('hands recursive external directories over only with every displayed descendant selected (%s)', async (includeChild) => {
+    const f = await fixture()
+    const opened = await f.manager.prepare('session', 'svn', null, 'Recursive', [{ path: f.root, depth: 'infinity' }])
+    if (!opened.ok) throw new Error(opened.detail)
+    f.draftId = opened.value.draftId
+    f.manager.attach(f.draftId, 'window')
+    const stamp = Math.round((await lstat(f.root)).mtimeMs)
+    f.snapshot.entries = [{ ...f.snapshot.entries[0], fileId: 'directory', path: f.root, displayPath: '.', nodeKind: 'directory', modifiedAt: stamp }, ...f.snapshot.entries]
+    const fileAccess = f.deps.fileAccess
+    f.deps.fileAccess = (owner, id, file) => file === 'directory'
+      ? { ok: true, value: { sessionId: 'session', cwd: f.root, path: f.root, nodeKind: 'directory', status: 'modified', workingState: { modifiedAt: stamp, vcsEntry: true } } }
+      : fileAccess(owner, id, file)
+    f.manager.files('window', f.draftId, f.snapshot)
+    const before = f.manager.read('window', f.draftId)!
+    const fileIds = includeChild ? ['directory', 'file'] : ['directory']
+    const edit = f.manager.edit('window', { draftId: f.draftId, epoch: before.epoch!, expectedRevision: before.revision, selection: { snapshotId: 'snapshot', fileIds } })
+    if (!edit.ok) throw new Error(edit.detail)
+    const access = new ReviewInteractionAccess()
+    f.deps.interactions = access
+    f.deps.tortoise.open = vi.fn(async () => ({ ok: true as const, closed: Promise.resolve() }))
+    const result = await f.manager.decide(access.local('window', 'session', () => true), { kind: 'external-review', draftId: f.draftId,
+      epoch: before.epoch!, expectedRevision: edit.value.revision, operationId: 'recursive', snapshotId: 'snapshot', fileIds, message: edit.value.message })
+    expect(result.ok).toBe(includeChild)
+    if (includeChild) expect(f.deps.tortoise.open).toHaveBeenCalledWith(expect.objectContaining({ paths: [f.root] }))
+    else {
+      expect(result).toMatchObject({ ok: false, code: 'invalid-target', detail: expect.stringContaining('every displayed descendant') })
+      expect(f.deps.tortoise.open).not.toHaveBeenCalled()
+    }
+  })
+
+  it('routes only a current owned external diff and advertises the source tool independently', async () => {
+    const f = await fixture()
+    const { interaction, request } = await admitted(f)
+    f.snapshot.defaultBaseline = { baselineId: 'base', kind: 'svn-base', revision: null, label: 'BASE', createdAt: null }
+    f.manager.files('window', f.draftId, f.snapshot)
+    f.deps.externalDiffAvailable = () => true
+    f.deps.externalDiff = vi.fn(async () => ({ ok: true as const }))
+    const diff = { kind: 'external-diff' as const, draftId: f.draftId, epoch: request.epoch, expectedRevision: f.manager.read('window', f.draftId)!.revision, operationId: 'diff', snapshotId: 'snapshot', fileId: 'file', baselineId: 'base' }
+    expect(f.manager.read('window', f.draftId)?.externalDiffAvailable).toBe(true)
+    expect(await f.manager.decide(interaction, { ...diff, baselineId: 'foreign' })).toMatchObject({ ok: false, code: 'invalid-target' })
+    expect(await f.manager.decide(interaction, diff)).toEqual({ ok: true, revision: '' })
+    expect(await f.manager.decide(interaction, diff)).toEqual({ ok: true, revision: '' })
+    expect(f.deps.externalDiff).toHaveBeenCalledExactlyOnceWith('window', { snapshotId: 'snapshot', fileId: 'file', baselineId: 'base' })
+  })
+
+  it('persists intent before publication and preserves its result through a new store instance', async () => {
+    const f = await fixture()
+    const file = join(f.root, 'reviews.json')
+    f.deps.reviews = new VersioningReviewStore(file, f.report)
+    const { interaction, request } = await admitted(f)
+    f.deps.svn.commit = vi.fn(async () => {
+      const saved = new VersioningReviewStore(file, f.report).read()[0]
+      expect(saved.decisions).toMatchObject([{ operationId: request.operationId, actorId: interaction.actorId }])
+      expect(saved.decisions?.[0].result).toBeUndefined()
+      return { ok: true as const, value: { committedPaths: [f.path], revision: '44', output: 'Committed' } }
+    })
+    expect(await f.manager.decide(interaction, request)).toEqual({ ok: true, revision: '44' })
+    const restored = new VersioningReviewStore(file, f.report).read()[0]
+    expect(restored.decisions?.[0].result).toEqual({ ok: true, revision: '44' })
+    expect(restored.committedPaths).toEqual([f.path])
+  })
+
+  it.each(['source', 'peer'] as const)('shares a CLI review and its outside-scope source files; %s approves once', async (winner) => {
+    const f = await fixture()
+    const origin = join(f.root, 'session-origin')
+    await mkdir(origin)
+    await f.manager.cancel(f.draftId)
+    f.manager.release(f.draftId, 'window')
+    f.deps.sessions.workingContext = async () => ({ ok: true, value: { sessionId: 'session', cwd: origin, agent: null, worktree: null } })
+    const prepared = await f.manager.prepare('session', 'svn', f.root, 'Outside project')
+    if (!prepared.ok) throw new Error(prepared.detail)
+    f.draftId = prepared.value.draftId
+    f.request.draftId = f.draftId
+    f.manager.attach(f.draftId, 'window')
+    const interactions = new ReviewInteractionAccess()
+    f.deps.interactions = interactions
+    const originalFile = f.deps.fileAccess
+    f.deps.fileAccess = (_owner, snapshotId, id) => originalFile('window', snapshotId, id)
+    const view = { peerId: 'paired-peer', sessionId: 'session', viewId: 'view', viewerId: 'controller', epoch: 'connection', commitReceipts: true as const }
+    let live = true
+    const admit = vi.fn()
+    const files = { workingTree: vi.fn(async () => ({ ok: true as const, value: f.snapshot })) }
+    const remote = new RemoteReviewAccess(f.manager, interactions, files, () => live, admit)
+    const decode = async (request: Parameters<typeof remote.request>[1]) => {
+      const page = await remote.request(view, request)
+      if (!page.ok) throw new Error(page.error.detail)
+      return JSON.parse(Buffer.from(page.value.base64, 'base64').toString('utf8'))
+    }
+    expect(await decode({ kind: 'open', reviewId: f.draftId })).toMatchObject({ ok: true, value: { draftId: f.draftId } })
+    expect(await decode({ kind: 'files', reviewId: f.draftId })).toMatchObject({ ok: true, value: { snapshotId: 'snapshot' } })
+    expect(files.workingTree).toHaveBeenCalledWith(RemoteContentAccess.owner(view), 'session', 'svn', f.root, true, undefined, undefined)
+    expect(admit).toHaveBeenCalledWith(view, { kind: 'workspace', sessionId: 'session', path: f.path, workingTree: { scopeRoot: f.root, source: 'svn' } })
+    const shared = f.manager.read('window', f.draftId)!
+    const edit = { draftId: f.draftId, epoch: shared.epoch!, expectedRevision: shared.revision, message: 'Shared human text', selection: { snapshotId: 'snapshot', fileIds: ['file'] } }
+    const edited = await decode({ kind: 'edit', edit })
+    expect(edited).toMatchObject({ ok: true })
+    expect(f.manager.read('window', f.draftId)?.message).toBe('Shared human text')
+    const decision = { ...f.request, message: 'Shared human text', kind: 'approve' as const, operationId: 'one-human', epoch: shared.epoch!, expectedRevision: edited.value.revision }
+    const result = winner === 'peer' ? await decode({ kind: 'decide', decision })
+      : await f.manager.decide(interactions.local('window', 'session', () => true), decision)
+    expect(result).toMatchObject({ ok: true, revision: '42' })
+    expect(await decode({ kind: 'read', reviewId: f.draftId })).toMatchObject({ phase: { kind: 'done' } })
+    expect(await decode({ kind: 'decide', decision: { ...decision, operationId: 'late-press' } })).toMatchObject({ ok: false })
+    expect(f.writes).toHaveLength(1)
+    live = false
+    remote.release(view)
+    expect(f.manager.status(f.draftId)?.state).toBe('committed')
+  })
+
   it('keeps requested paths separate from actual SVN paths after the review closes', async () => {
     const f = await fixture()
     const unchanged = join(f.root, 'unchanged.txt')
@@ -25,6 +699,19 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     f.manager.release(draftId, 'window')
     expect(f.manager.status(draftId)).toMatchObject({ state: 'committed', closed: true,
       paths: [f.path, unchanged].sort(), committedPaths: [f.path] })
+    expect(f.manager.status(draftId)?.omittedPaths).toBeUndefined()
+  })
+
+  it('retains the revision and explicitly reports a selected changed path missing from the publication receipt', async () => {
+    const f = await fixture()
+    const file = join(f.root, 'reviews.json')
+    f.deps.reviews = new VersioningReviewStore(file, f.report)
+    f.deps.svn.commit = async () => ({ ok: true, value: { revision: '42', output: 'Committed', committedPaths: [] } })
+    expect(await f.manager.run('window', f.request)).toMatchObject({ ok: true, revision: '42' })
+    expect(f.manager.read('window', f.draftId)?.published).toEqual([{ scopeRoot: f.root, revision: '42', paths: [], omittedPaths: [f.path] }])
+    expect(f.manager.status(f.draftId)).toMatchObject({ state: 'committed', revision: '42', omittedPaths: [f.path], detail: expect.stringContaining(f.path) })
+    const restored = new VersioningReviewStore(file, f.report).read()[0]
+    expect(restored.dto.published).toEqual([{ scopeRoot: f.root, revision: '42', paths: [], omittedPaths: [f.path] }])
   })
 
   it('cancels one review, waits for every pane to close and reopens with a new identity and the saved message', async () => {
@@ -39,7 +726,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(f.manager.reviews('other', 'window')).toEqual([])
     expect(f.manager.reviews('session', 'other')).toEqual([])
     const cancelled = f.manager.cancel(f.draftId)
-    expect(f.manager.cancel(f.draftId)).toBe(cancelled)
+    expect(await f.manager.cancel(f.draftId)).toMatchObject({ ok: true, value: { state: 'cancelled' } })
     expect(f.manager.read('window', f.draftId)?.phase.kind).toBe('cancelled')
     expect(f.manager.setMessage('window', f.draftId, 'Late edit')).toBe(false)
     expect(await f.manager.run('window', f.request)).toMatchObject({ ok: false, code: 'unknown-draft' })
@@ -49,7 +736,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     f.manager.release(f.draftId, 'window')
     expect(f.manager.status(f.draftId)?.closed).toBe(false)
     f.manager.release(f.draftId, 'second')
-    expect(await cancelled).toMatchObject({ ok: true, value: { state: 'cancelled', closed: true, revision: null } })
+    expect(await cancelled).toMatchObject({ ok: true, value: { state: 'cancelled', revision: null } })
     expect(await f.manager.cancel(f.draftId)).toMatchObject({ ok: true, value: { state: 'cancelled', closed: true } })
     const next = await f.manager.prepare('session', 'svn', null, 'New proposal')
     if (!next.ok) throw new Error(next.detail)
@@ -85,7 +772,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     try {
       const cancelled = f.manager.cancel(f.draftId)
       await vi.advanceTimersByTimeAsync(5_000)
-      expect(await cancelled).toMatchObject({ ok: false, error: { code: 'timeout' } })
+      expect(await cancelled).toMatchObject({ ok: true, value: { state: 'cancelled' } })
       expect(f.manager.setMessage('window', f.draftId, 'Late edit')).toBe(false)
       expect(f.manager.status(f.draftId)?.closed).toBe(false)
       f.manager.release(f.draftId, 'window')
@@ -109,7 +796,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(next.ok && next.value.draftId).not.toBe(f.draftId)
   })
 
-  it('records cancellation only when the last owner closes, and expires the retained result', async () => {
+  it('keeps a pending review when its last owner closes, beyond result retention', async () => {
     const f = await fixture()
     let now = 100
     f.deps.now = () => now
@@ -117,9 +804,9 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     f.manager.release(f.draftId, 'window')
     expect(f.manager.status(f.draftId)?.state).toBe('editing')
     f.manager.revokeOwner('second')
-    expect(f.manager.status(f.draftId)).toMatchObject({ state: 'cancelled', closed: true, revision: null })
+    expect(f.manager.status(f.draftId)).toMatchObject({ state: 'editing', closed: true, revision: null })
     now += 86_400_000
-    expect(f.manager.status(f.draftId)).toBeNull()
+    expect(f.manager.status(f.draftId)?.state).toBe('editing')
     expect(f.manager.status('unknown')).toBeNull()
   })
 
@@ -146,7 +833,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     if (!fresh.ok) throw new Error(fresh.detail)
 
     expect(fresh.value.draftId).not.toBe(f.draftId)
-    expect(f.manager.status(fresh.value.draftId)).toMatchObject({ state: 'editing', closed: false })
+    expect(f.manager.status(fresh.value.draftId)).toMatchObject({ state: 'editing', closed: true })
     expect(f.manager.status(f.draftId)).toMatchObject({ state: 'committed', closed: true, revision: '42' })
     expect(f.manager.read('window', f.draftId)).toBeNull()
     // The pane finds its draft gone and opens the scope again.
@@ -179,7 +866,9 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
   // `commit propose`: a worker's message waits for the person's review; nothing opens and nothing commits.
   it('keeps a proposal for the working copy of a session without opening a review, also across a restart', async () => {
     const f = await fixture()
+    f.deps.sessions.proposeWorktreeReady = vi.fn(async () => {})
     expect(await f.manager.propose('worker', f.root, 'Fix orders\r\n\r\nBody')).toEqual({ ok: true, scopeRoot: f.root })
+    expect(f.deps.sessions.proposeWorktreeReady).toHaveBeenCalledWith('worker')
     expect(f.manager.openSessions().sessionIds).toEqual(['session'])
     expect(f.manager.proposalOf('worker', f.root)).toBe('Fix orders\n\nBody')
     expect(f.manager.proposalOf('worker', join(f.root, 'elsewhere'))).toBeNull()
@@ -247,13 +936,12 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     }
     const writes: string[] = []
     const phases: string[] = []
-    const settled: string[] = []
     const messageFile = join(root, 'state', 'commit-messages.json')
     const report = vi.fn()
     let serial = 0
     const deps: VersioningCommitManagerDeps = {
       messages: new VersioningCommitMessageStore(messageFile, report),
-      sessions: { workingContext: async (sessionId) => ({ ok: true, value: { sessionId, cwd: root, agent: null, worktree: null } }), settleVcs: (cwd) => { settled.push(cwd) } },
+      sessions: { worktreeAt: async () => null, workingContext: async (sessionId) => ({ ok: true, value: { sessionId, cwd: root, agent: null, worktree: null } }) },
       vcsStatus: { detect: async (cwd, id) => ({ id, root, cwd, scopeRelativePath: '.', scopeUrl: null, repositoryPathPrefix: null }) },
       tortoise: { open: async () => { throw new Error('Unexpected Tortoise dialog') } },
       snapshotOf: (owner, id) => owner === 'window' && id === snapshot.snapshotId ? snapshot : null,
@@ -274,7 +962,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     if (!prepared.ok) throw new Error(prepared.detail)
     const draftId = prepared.value.draftId
     manager.attach(draftId, 'window')
-    return { manager, deps, root, path, snapshot, draftId, writes, phases, settled, messageFile, report,
+    return { manager, deps, root, path, snapshot, draftId, writes, phases, messageFile, report,
       request: { draftId, snapshotId: snapshot.snapshotId, fileIds: ['file'], message: 'Reviewed\n\nPříliš' },
     }
   }
@@ -393,7 +1081,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     if (!opened.ok) throw new Error(opened.detail)
     manager.attach(opened.value.draftId, 'window')
     expect(manager.setMessage('window', opened.value.draftId, 'Keep locally')).toBe(false)
-    expect(manager.read('window', opened.value.draftId)?.message).toBe('Keep locally')
+    expect(manager.read('window', opened.value.draftId)?.message).toBe('')
     expect(await manager.run('window', { ...f.request, draftId: opened.value.draftId })).toMatchObject({
       ok: false, detail: 'The commit message could not be saved',
     })
@@ -559,7 +1247,6 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(f.manager.read('other-window', opened.value.draftId)).toBeNull()
     expect(opened.value.scopeRoot).toBe(f.root)
     expect(await f.manager.run('window', { ...f.request, draftId: opened.value.draftId })).toMatchObject({ ok: true })
-    expect(f.settled).toEqual([origin, f.root])
   })
 
   it('keeps a file grant narrow when that path becomes a directory before reopening', async () => {
@@ -574,6 +1261,53 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     const child = { ...f.snapshot.entries[0], path: join(f.path, 'child.txt') }
     expect(f.manager.files('window', opened.value.draftId, { ...f.snapshot, entries: [child] }).entries).toEqual([])
     expect(f.manager.checkedPaths('window', opened.value.draftId, { ...f.snapshot, entries: [child] })).toEqual([])
+  })
+
+  it.each([
+    { explicit: false, complete: true }, { explicit: true, complete: true },
+    { explicit: false, complete: false }, { explicit: true, complete: false },
+  ])('hands recursive directories to Tortoise only with every descendant selected (%j)', async ({ explicit, complete }) => {
+    const f = await fixture()
+    const directory = join(f.root, 'new')
+    await mkdir(join(directory, 'nested'), { recursive: true })
+    await writeFile(join(directory, 'nested', 'chosen.txt'), 'chosen')
+    await writeFile(join(directory, 'nested', 'unchecked.txt'), 'unchecked')
+    const entries = await Promise.all(['new', 'new/nested', 'new/nested/chosen.txt', 'new/nested/unchecked.txt'].map(async (name) => {
+      const path = join(f.root, name)
+      const stat = await lstat(path)
+      return { ...f.snapshot.entries[0], fileId: name, path, displayPath: name,
+        nodeKind: stat.isDirectory() ? 'directory' as const : 'file' as const,
+        status: 'untracked' as const, modifiedAt: Math.round(stat.mtimeMs) }
+    }))
+    f.snapshot.entries = [...f.snapshot.entries, ...entries]
+    f.deps.fileAccess = (_owner, _snapshot, id) => {
+      const entry = f.snapshot.entries.find((candidate) => candidate.fileId === id)
+      return entry === undefined ? { ok: false, code: 'unknown-file', detail: 'unknown' }
+        : { ok: true, value: { sessionId: 'session', cwd: f.root, path: entry.path, nodeKind: entry.nodeKind,
+          status: entry.status, workingState: { vcsEntry: true, modifiedAt: entry.modifiedAt } } }
+    }
+    const opened = await f.manager.prepare('session', 'svn', null, null, explicit ? [directory, f.path] : undefined)
+    if (!opened.ok) throw new Error(opened.detail)
+    const draftId = opened.value.draftId
+    f.manager.attach(draftId, 'window')
+    f.manager.files('window', draftId, f.snapshot)
+    const before = f.manager.read('window', draftId)!
+    const binding = { snapshotId: f.snapshot.snapshotId,
+      fileIds: f.snapshot.entries.filter((entry) => complete || entry.fileId !== 'new/nested/unchecked.txt').map((entry) => entry.fileId) }
+    expect(f.manager.edit('window', { draftId, epoch: before.epoch!, expectedRevision: before.revision,
+      message: 'Reviewed', selection: binding })).toMatchObject({ ok: true })
+    f.deps.tortoise.open = vi.fn(async () => ({ ok: true as const, closed: Promise.resolve() }))
+
+    const result = await f.manager.openTortoise('window', draftId, 'Reviewed', binding)
+
+    if (complete) {
+      expect(result).toEqual({ ok: true })
+      expect(f.deps.tortoise.open).toHaveBeenCalledWith(expect.objectContaining({ scope: f.root, paths: [f.path, directory] }))
+    } else {
+      expect(result).toMatchObject({ ok: false, code: 'invalid-target', detail: expect.stringContaining('every displayed descendant selected') })
+      expect(f.deps.tortoise.open).not.toHaveBeenCalled()
+    }
+    expect(f.writes).toEqual([])
   })
 
   it('refuses to hand a node-only selection to Tortoise, which would show and check the work below it', async () => {
@@ -597,7 +1331,26 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     f.deps.svn.update = vi.fn(async () => ({ ok: true as const, value: { output: 'Updated' } }))
     expect(await f.manager.run('window', { ...f.request, draftId: opened.value.draftId })).toMatchObject({ ok: false, reloadRequired: true })
     expect(f.deps.svn.update).toHaveBeenCalledWith(f.root, [f.path])
-    expect(f.settled).toEqual([f.root])
+  })
+
+  /** 051 kept the red "commit review required" mark over its landed row: its Finish committed itself. */
+  it('stops marking a Finish review open once its Finish no longer offers it, and says so once', async () => {
+    const f = await fixture()
+    let offered = true
+    f.deps.workflow = { offers: () => offered, owns: () => true, check: () => null,
+      start: async () => ({ ok: true as const, revision: '' }), state: () => ({ kind: 'running' as const }), changed: (paths) => paths.join(', ') }
+    const changed = vi.fn()
+    f.deps.onChanged = changed
+    expect(f.manager.openSessions().sessionIds).toEqual(['session'])
+
+    offered = false
+    f.manager.workflowChanged()
+    f.manager.workflowChanged()
+    expect(f.manager.openSessions().sessionIds).toEqual([])
+    expect(changed).toHaveBeenCalledTimes(1)
+
+    f.deps.workflow = { ...f.deps.workflow, owns: () => false }
+    expect(f.manager.openSessions().sessionIds).toEqual(['session'])
   })
 
   it('publishes bounded progress, preserves the batch clock and resets each group measurement', async () => {
@@ -745,7 +1498,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     f.snapshot.entries = f.snapshot.entries.filter((entry) => entry.fileId !== a.entry.fileId)
     expect(await f.manager.run('window', { ...request, snapshotId: 'refreshed', fileIds: ['file', b.entry.fileId] })).toMatchObject({ ok: true })
     expect(commit.mock.calls.map(([scope]) => scope)).toEqual([a.root, b.root, b.root, f.root])
-    expect(f.manager.status(f.draftId)?.committedPaths).toEqual([b.entry.path, f.path])
+    expect(f.manager.status(f.draftId)?.committedPaths).toEqual([a.entry.path, b.entry.path, f.path])
   })
 
   it('updates only the outdated external, reports earlier commits and stops before the main commit', async () => {
@@ -763,12 +1516,11 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(f.manager.status(f.draftId)?.state).toBe('failed')
   })
 
-  it.each(['changed', 'closed'] as const)('stops remaining groups if their file is %s after an earlier commit', async (kind) => {
+  it.each(['changed'] as const)('stops remaining groups if their file is %s after an earlier commit', async (kind) => {
     const f = await fixture()
     const external = await addExternal(f, 'shared/lib')
     const commit = vi.fn<VersioningCommitManagerDeps['svn']['commit']>(async () => {
       if (kind === 'changed') await utimes(f.path, new Date(0), new Date(0))
-      else if (kind === 'closed') f.manager.release(f.draftId, 'window')
       else throw new Error(`Unknown test case: ${kind}`)
       return { ok: true, value: { committedPaths: [], revision: '61', output: 'done' } }
     })
@@ -831,7 +1583,6 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     close()
     expect(await pending).toEqual({ ok: true })
     expect(await lstat(messageFile).catch(() => null)).toBeNull()
-    expect(f.settled).toEqual([f.root])
     expect(f.writes).toEqual([])
     expect(f.manager.read('window', f.draftId)?.phase.kind).toBe('editing')
     expect(f.manager.status(f.draftId)).toMatchObject({ state: 'external-closed', closed: false, revision: null })
@@ -856,7 +1607,6 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(f.writes).toEqual([])
     expect(await f.manager.revert('window', request, async () => true)).toEqual({ ok: true, reverted: true })
     expect(f.writes).toEqual(['reverted'])
-    expect(f.settled).toEqual([f.root])
     expect(f.manager.read('window', f.draftId)).toMatchObject({ message: 'proposal', phase: { kind: 'editing' } })
   })
 
@@ -874,7 +1624,6 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(await f.manager.revert('window', request, confirm)).toEqual({ ok: true, reverted: true })
     expect(confirm).toHaveBeenCalledTimes(1)
     expect(writer.mock.calls).toEqual([[f.root, f.path], [f.root, second.path]])
-    expect(f.settled).toEqual([f.root])
     expect(f.manager.read('window', f.draftId)).toMatchObject({ message: 'proposal', phase: { kind: 'editing' } })
   })
 
@@ -975,7 +1724,6 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
       : { ok: true, value: undefined }
     expect(await f.manager.revert('window', { draftId: f.draftId, snapshotId: 'snapshot', fileIds: ['file', 'second'] }, async () => true))
       .toMatchObject({ ok: false, code: 'vcs-failed', detail: 'Reverted 1 of 2 files. second.txt: File is locked' })
-    expect(f.settled).toEqual([f.root])
     expect(f.manager.read('window', f.draftId)).toMatchObject({ message: 'proposal', phase: { kind: 'editing' } })
     expect(await f.manager.revert('window', { draftId: f.draftId, snapshotId: 'snapshot', fileIds: ['file'] }, async () => false))
       .toEqual({ ok: true, reverted: false })
@@ -1034,7 +1782,6 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(await f.manager.run('window', f.request)).toEqual({ ok: true, revision: '42' })
     expect(f.phases).toEqual(['running'])
     expect(f.writes).toEqual(['Reviewed\n\nPříliš\n'])
-    expect(f.settled).toEqual([f.root])
     expect(f.manager.read('window', f.draftId)?.phase).toMatchObject({ kind: 'done', revision: '42' })
     expect(await f.manager.run('window', f.request)).toMatchObject({ ok: false, code: 'busy' })
   })
@@ -1082,6 +1829,8 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     const committed: SessionCommitReceipt[] = []
     const f = await fixture()
     const mount = await addExternal(f, 'mount')
+    const store = join(f.root, 'partial-reviews.json')
+    f.deps.reviews = new VersioningReviewStore(store, f.report)
     f.deps.committed = (receipt) => committed.push(receipt)
     f.deps.svn.commit = vi.fn<VersioningCommitManagerDeps['svn']['commit']>()
       .mockResolvedValueOnce({ ok: true, value: { committedPaths: [mount.entry.path], revision: '70', output: 'done' } })
@@ -1089,6 +1838,28 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(await f.manager.run('window', { ...f.request, fileIds: ['file', mount.entry.fileId], includeExternals: true }))
       .toMatchObject({ ok: false, code: 'vcs-failed' })
     expect(committed).toEqual([{ sessionId: 'session', scopes: [{ scopeRoot: mount.root, revision: 70 }], paths: [mount.entry.path] }])
+    expect(f.manager.read('window', f.draftId)).toMatchObject({ published: [{ scopeRoot: mount.root, revision: '70', paths: [mount.entry.path] }],
+      phase: { kind: 'failed', detail: expect.stringContaining('Remaining or unconfirmed:') } })
+    expect(f.manager.status(f.draftId)?.committedPaths).toEqual([mount.entry.path])
+    expect(new VersioningReviewStore(store, f.report).read()[0].dto.published).toEqual([{ scopeRoot: mount.root, revision: '70', paths: [mount.entry.path] }])
+  })
+
+  it('refuses changed reviewed bytes with a preserved modification time before publication', async () => {
+    const f = await fixture()
+    const file = f.snapshot.entries[0].path
+    const stamp = await lstat(file)
+    const fingerprint = await FileChangesFingerprint.of(file)
+    const access = f.deps.fileAccess
+    f.deps.fileAccess = (...args) => {
+      const result = access(...args)
+      return result.ok ? { ok: true, value: { ...result.value, workingState: { ...result.value.workingState!, fingerprint } } } : result
+    }
+    f.manager.files('window', f.draftId, f.snapshot)
+    await writeFile(file, 'changed after review')
+    await utimes(file, stamp.atime, stamp.mtime)
+    f.deps.svn.commit = vi.fn(async () => { throw new Error('Must not publish changed content') })
+    expect(await f.manager.run('window', f.request)).toMatchObject({ ok: false, code: 'stale' })
+    expect(f.deps.svn.commit).not.toHaveBeenCalled()
   })
 
   it('rejects stale, vanished and reappeared files before any write', async () => {
@@ -1233,7 +2004,31 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     f.manager.revokeOwner('window')
     expect(f.manager.openSessions().sessionIds).toEqual(['session'])
     f.manager.revokeOwner('second')
-    expect(f.manager.openSessions().sessionIds).toEqual([])
+    expect(f.manager.openSessions().sessionIds).toEqual(['session'])
+  })
+
+  it('keeps a failed detached review discoverable after restart and reopens its exact selection for cancellation', async () => {
+    const f = await fixture()
+    const file = join(f.root, 'reviews.json')
+    f.deps.reviews = new VersioningReviewStore(file, f.report)
+    await f.manager.cancel(f.draftId)
+    f.manager.release(f.draftId, 'window')
+    const prepared = await f.manager.prepare('session', 'svn', null, 'Review one file', [f.path])
+    if (!prepared.ok) throw new Error(prepared.detail)
+    const id = prepared.value.draftId
+    f.manager.attach(id, 'window')
+    f.manager.files('window', id, f.snapshot)
+    f.deps.svn.commit = async () => ({ ok: false, code: 'locked', detail: 'locked' })
+    expect(await f.manager.run('window', { ...f.request, draftId: id })).toMatchObject({ ok: false, code: 'vcs-failed' })
+    f.manager.release(id, 'window')
+    const manager = new VersioningCommitManager({ ...f.deps, reviews: new VersioningReviewStore(file, f.report) })
+    expect(manager.reviews('session', 'window')).toEqual([])
+    expect(manager.openSessions().reviews).toEqual([{ draftId: id, sessionId: 'session', vcs: 'svn',
+      scopeRoot: prepared.value.scopeRoot, paths: [f.path], workflow: false }])
+    expect(manager.openReview('session', id, 'window')).toMatchObject({ ok: true, value: { draftId: id, paths: [f.path] } })
+    expect(manager.read('window', id)?.phase.kind).toBe('failed')
+    await manager.cancel(id)
+    expect(manager.openSessions()).toMatchObject({ sessionIds: [], reviews: [] })
   })
 
   it('updates an outdated scope once under the commit lock and gives up on a second out-of-date', async () => {
@@ -1250,7 +2045,6 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
       detail: expect.stringContaining('E155011') })
     expect(f.deps.svn.commit).toHaveBeenCalledTimes(2)
     expect(f.deps.svn.update).toHaveBeenCalledTimes(1)
-    expect(f.settled).toEqual([f.root])
     expect(f.manager.status(f.draftId)).toMatchObject({ state: 'failed', revision: null, detail: expect.stringContaining('E155011') })
     expect(f.manager.read('window', f.draftId)?.message).toBe(f.request.message)
   })
@@ -1290,7 +2084,6 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     const result = await f.manager.run('window', f.request)
     expect(result).toMatchObject({ ok: false, reloadRequired: true, detail: expect.stringContaining('E170004') })
     expect(result).toMatchObject({ detail: expect.stringContaining(kind === 'exception' ? 'Connection lost' : 'app/file.ts') })
-    expect(f.settled).toEqual([f.root])
     f.deps.svn.commit = async () => ({ ok: true, value: { committedPaths: [], revision: '44', output: 'Committed' } })
     expect(await f.manager.run('window', f.request)).toEqual({ ok: true, revision: '44' })
   })

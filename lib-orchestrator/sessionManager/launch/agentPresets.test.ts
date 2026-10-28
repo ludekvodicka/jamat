@@ -1,5 +1,3 @@
-import { homedir } from 'node:os'
-
 import { describe, expect, it } from 'vitest'
 
 import type { SessionRecordAgent } from '../records/sessionRecord.types'
@@ -8,6 +6,8 @@ import { AgentPresets, type SessionAgentSpec } from './agentPresets'
 describe('lib-orchestrator/sessionManager/launch/agentPresets', () => {
   const mintedConst = '5f6c1f5e-0f7a-4b64-9a2c-2b6a0f0d1c33'
   const parentConst = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d'
+  /** What `RunTools.agentCli` answers: this client's own wrapper, never the person's ~/.claude skill. */
+  const cliConst = 'node "C:/Jamat/skills/claude/appjamat-v3/scripts/jamat-v3.mjs"'
 
   function claude(overrides: Partial<SessionAgentSpec>): SessionAgentSpec {
     return { agentId: 'claude', mode: 'new', ...overrides }
@@ -268,12 +268,12 @@ describe('lib-orchestrator/sessionManager/launch/agentPresets', () => {
    * last; the two Jamat commands are allowed by the wrapper's exact command line, svn is denied.
    */
   it('starts the merger with its allow list, its deny list and accept-edits, interactive, the prompt last', () => {
-    const cli = AgentPresets.jamatCliOf(homedir())
     expect(AgentPresets.createArgs(
       { agentId: 'claude', mode: 'fork', forkParentId: parentConst, permission: 'merger', initialPrompt: 'merge it' },
       mintedConst,
+      cliConst,
     )).toEqual([
-      '--allowedTools', `Bash(${cli} sessions resolve-conflict:*)`, `Bash(${cli} sessions conflicts:*)`,
+      '--allowedTools', `Bash(${cliConst} sessions resolve-conflict:*)`, `Bash(${cliConst} sessions conflicts:*)`,
       '--disallowedTools', 'Bash(svn:*)', 'Bash(svnadmin:*)', '--permission-mode', 'acceptEdits',
       '--resume', parentConst, '--fork-session', '--session-id', mintedConst, 'merge it',
     ])
@@ -281,18 +281,33 @@ describe('lib-orchestrator/sessionManager/launch/agentPresets', () => {
 
   it('replays a merger with its rights and no print mode, and reopens it with them too', () => {
     const merger: SessionRecordAgent = { agentId: 'claude', launchMode: 'new', nativeSessionId: mintedConst, permission: 'merger', initialPrompt: 'merge it' }
-    const replayed = AgentPresets.replayArgs(merger)
+    const replayed = AgentPresets.replayArgs(merger, cliConst)
     expect(replayed).not.toContain('-p')
     expect(replayed.slice(0, 3)[0]).toBe('--allowedTools')
     expect(replayed.slice(-3)).toEqual(['--session-id', mintedConst, 'merge it'])
-    const reopened = AgentPresets.reopenArgs(merger)
+    const reopened = AgentPresets.reopenArgs(merger, cliConst)
     expect(reopened).toContain('acceptEdits')
     expect(reopened.slice(-2)).toEqual(['--resume', mintedConst])
   })
 
-  it('names the skill wrapper with forward slashes and quotes, whatever the home path holds', () => {
-    expect(AgentPresets.jamatCliOf('C:\\Users\\Some One\\'))
-      .toBe('node "C:/Users/Some One/.claude/skills/appjamat-v3/scripts/jamat-v3.mjs"')
+  /**
+   * A worktree worker runs the Jamat CLI lines of its handoffs unasked; nothing else is allowed.
+   * `--allowedTools` is variadic, so a flag must end the list: a bare prompt after it would be read as one more rule.
+   */
+  it('puts the worker rights in front of a flag, never in front of a bare prompt, and gives Codex none', () => {
+    const lines = ["'node' '/cli.cjs' 'sessions' 'worktree' '--self'"]
+    expect(AgentPresets.workerRightsOf('claude', ['--settings', 'f.json', '--resume', mintedConst], lines))
+      .toEqual(['--allowedTools', `Bash(${lines[0]}:*)`, '--settings', 'f.json', '--resume', mintedConst])
+    expect(AgentPresets.workerRightsOf('claude', ['go on'], lines)).toEqual(['go on'])
+    expect(AgentPresets.workerRightsOf('claude', ['--resume', mintedConst], [])).toEqual(['--resume', mintedConst])
+    expect(AgentPresets.workerRightsOf('codex', ['resume', mintedConst], lines)).toEqual(['resume', mintedConst])
+  })
+
+  // A merger allowed the person's ~/.claude skill reached another Jamat instance (UA1-J14-9).
+  it('refuses a merger launch that was not handed this client\'s CLI line', () => {
+    const merger: SessionRecordAgent = { agentId: 'claude', launchMode: 'new', nativeSessionId: mintedConst, permission: 'merger' }
+    expect(() => AgentPresets.replayArgs(merger)).toThrow(/Jamat CLI/)
+    expect(AgentPresets.replayArgs({ ...merger, permission: 'accept-edits' })).toContain('acceptEdits')
   })
 
   it('starts no Codex merger', () => {

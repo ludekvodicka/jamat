@@ -77,9 +77,10 @@ export class ProjectScanner {
     this.fileSystem = fileSystem ?? ProjectScanner.nodeFileSystem()
   }
 
-  async scan(category: RuntimeCategory, options?: { signal?: AbortSignal }): Promise<ScanResult> {
+  /** `fresh` walks again whatever the cache holds: a person opening the launcher asks for what is on disk now. */
+  async scan(category: RuntimeCategory, options?: { signal?: AbortSignal; fresh?: boolean }): Promise<ScanResult> {
     const cached = this.cache.get(category.id)
-    if (cached
+    if (cached && options?.fresh !== true
       && cached.generation === this.generationOf(category.id)
       && Date.now() - cached.builtAt < ProjectScanner.cacheTtlMillisecondsConst)
       return cached.result

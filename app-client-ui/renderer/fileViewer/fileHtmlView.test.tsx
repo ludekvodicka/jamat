@@ -34,6 +34,18 @@ describe('app-client-ui/renderer/fileViewer/fileHtmlView', () => {
       .appClient = bridge as unknown as AppClientUiBridge
   })
 
+  it('uses injected remote resource grants and retains denied-image sanitization', async () => {
+    const html = await FileHtmlPage.of('<img src="good.png"><img src="../denied.png"><script>bad()</script>', 'remote-document', {
+      relativeResource: async (_id, reference) => reference === 'good.png'
+        ? { ok: true, value: { ok: true, value: { resourceId: 'remote-token', size: 1, contentVersion: 'v', mimeType: 'image/png' } } }
+        : { ok: true, value: { ok: false, code: 'outside-root', detail: 'Denied' } },
+    })
+    expect(html).toContain('jamat-v3-file://resource/remote-token')
+    expect(html).not.toContain('../denied.png')
+    expect(html).not.toContain('<script')
+    expect(asked).toEqual([])
+  })
+
   afterEach(() => {
     cleanup()
     delete (window as unknown as { appClient?: unknown }).appClient
@@ -42,7 +54,7 @@ describe('app-client-ui/renderer/fileViewer/fileHtmlView', () => {
   /** The frame is the whole point: a page's `body { }` would otherwise restyle the app around it. */
   it('draws the page in a sandboxed frame that may do nothing at all', async () => {
     const view = render(
-      <FileHtmlView documentId="document-1" name="report.html" source="<h1>Report</h1>" />,
+      <FileHtmlView ports={window.appClient.fileViewer} documentId="document-1" name="report.html" source="<h1>Report</h1>" />,
     )
 
     const frame = await waitFor(() => {
@@ -59,7 +71,7 @@ describe('app-client-ui/renderer/fileViewer/fileHtmlView', () => {
     const page = await FileHtmlPage.of(
       '<html><head><base href="https://x/"><style>.card{color:red}</style></head>'
       + '<body><script>alert(1)</script><p>Body</p></body></html>',
-      'document-1',
+      'document-1', window.appClient.fileViewer,
     )
 
     expect(page.startsWith('<!doctype html><html')).to.equal(true)
@@ -75,7 +87,7 @@ describe('app-client-ui/renderer/fileViewer/fileHtmlView', () => {
   it('puts a readable ground under the page and lets the page overrule it', async () => {
     const page = await FileHtmlPage.of(
       '<html><head><style>html{background:teal}</style></head><body>x</body></html>',
-      'document-1',
+      'document-1', window.appClient.fileViewer,
     )
 
     const base = page.indexOf(FileHtmlPage.baseStyleConst)
@@ -94,7 +106,7 @@ describe('app-client-ui/renderer/fileViewer/fileHtmlView', () => {
         '<body><img src="pictures/plot.png"><img src="data:image/png;base64,AAAA">'
         + '<img src="https://example.test/track.png"><img src="a.png" srcset="b.png 2x">'
         + '<video src="clip.mp4"></video></body>',
-        'document-1',
+        'document-1', window.appClient.fileViewer,
       )
 
       expect(asked).to.deep.equal(['document-1:pictures/plot.png', 'document-1:a.png'])
@@ -109,7 +121,7 @@ describe('app-client-ui/renderer/fileViewer/fileHtmlView', () => {
     granted = null
 
     const page = await FileHtmlPage.of('<body><img src="pictures/plot.png" alt="Plot"></body>',
-      'document-1')
+      'document-1', window.appClient.fileViewer)
 
     expect(page).to.not.contain('pictures/plot.png')
     expect(page).to.contain('alt="Plot"')

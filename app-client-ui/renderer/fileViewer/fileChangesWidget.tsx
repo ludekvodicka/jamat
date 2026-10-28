@@ -1,3 +1,4 @@
+import type { AppClientUiBridge } from '../../shared/appClientUiIpc'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type {
@@ -9,11 +10,13 @@ import { IpcFailure } from '../ipc/ipcFailure'
 import { FileChangesOpen } from './fileChangesOpen'
 import { FileChangesSort, type FileChangesSortKey } from './fileChangesSort'
 import { FileChangesTime } from './fileChangesTime'
-import { FileChangesStatusMark } from './fileChangesStatusMark'
+import { FileChangesStatusMark, type FileChangesMarkConventions } from './fileChangesStatusMark'
 import type { FileViewerChangedOpen, FileChangesViewModel } from './fileViewerPanel.types'
 import './fileTools.css'
 
 export function FileChangesWidget(props: {
+  openFile: AppClientUiBridge['fileChanges']['openFile']
+  release: AppClientUiBridge['fileViewer']['release']
   model: FileChangesViewModel
   onOpen(value: FileViewerChangedOpen): void
 }): React.JSX.Element {
@@ -51,12 +54,12 @@ export function FileChangesWidget(props: {
     setOpenError(null)
     const isCurrent = (fresh: FileViewerChangedOpen['snapshot']): boolean => current === openings.current
       && (latestSnapshot.current?.snapshotId === snapshot.snapshotId || latestSnapshot.current?.snapshotId === fresh.snapshotId)
-    const opened = await FileChangesOpen.read({ snapshot, entry, openFile: window.appClient.fileChanges.openFile,
+    const opened = await FileChangesOpen.read({ snapshot, entry, openFile: props.openFile,
       baselineHint: baseline === null ? null : { kind: baseline.kind, revision: baseline.revision },
       refresh: () => props.model.reload(), isCurrent })
     const { answer } = opened
     if (!isCurrent(opened.snapshot)) {
-      if (answer.ok && answer.value.ok) await window.appClient.fileViewer.release(answer.value.value.documentId)
+      if (answer.ok && answer.value.ok) await props.release(answer.value.value.documentId)
       return
     }
     setOpening(null)
@@ -139,6 +142,7 @@ export function FileChangesWidget(props: {
           <FileChangeEntries
             entries={snapshot.entries}
             baseline={snapshot.defaultBaseline}
+            conventions={FileChangesStatusMark.ofVcs(snapshot.vcs.selected)}
             sort={sort}
             now={now}
             opening={opening}
@@ -149,6 +153,7 @@ export function FileChangesWidget(props: {
             <FileChangeHistoryGroup
               key={group.groupId}
               group={group}
+              conventions={FileChangesStatusMark.ofVcs(snapshot.vcs.selected)}
               sort={sort}
               now={now}
               opening={opening}
@@ -232,6 +237,7 @@ class FileChangesWidgetConst {
 
 function FileChangeHistoryGroup(props: {
   group: FileChangeGroup
+  conventions: FileChangesMarkConventions
   sort: FileChangesSortKey
   now: number
   opening: string | null
@@ -247,6 +253,7 @@ function FileChangeHistoryGroup(props: {
       <FileChangeEntries
         entries={props.group.entries}
         baseline={props.group.baseline}
+        conventions={props.conventions}
         sort={props.sort}
         now={props.now}
         opening={props.opening}
@@ -259,6 +266,7 @@ function FileChangeHistoryGroup(props: {
 function FileChangeEntries(props: {
   entries: readonly FileChangeEntry[]
   baseline: FileChangeBaseline | null
+  conventions: FileChangesMarkConventions
   sort: FileChangesSortKey
   now: number
   opening: string | null
@@ -290,7 +298,7 @@ function FileChangeEntries(props: {
               className={`file-tools-status file-tools-status--${entry.status}`}
               title={entry.status}
             >
-              {FileChangesStatusMark.of(entry.status)}
+              {FileChangesStatusMark.of(entry.status, props.conventions)}
             </span>
             <span className="file-tools-file-path">
               {entry.previousDisplayPath

@@ -53,14 +53,14 @@ describe('lib-orchestrator/git/gitMergeManager', () => {
       .toEqual({ ok: true, value: { branch: null } })
   })
 
-  it('stages everything and commits it under the message it was given', async () => {
+  it('stages only selected literal paths and commits them under the given message', async () => {
     const it_ = managerOf({}, {})
 
-    expect(await it_.manager.commitAll(worktreeConst, 'Finalize session 015 - wizard'))
+    expect(await it_.manager.commitAll(worktreeConst, 'Selected work', [join(worktreeConst, 'a[1].txt')]))
       .toEqual({ ok: true, value: undefined })
     expect(it_.runner.calls).toEqual([
-      ['add', '--all'],
-      ['commit', '--message', 'Finalize session 015 - wizard'],
+      ['add', '-A', '--', ':(literal)a[1].txt'],
+      ['commit', '--only', '--message', 'Selected work', '--', ':(literal)a[1].txt'],
     ])
   })
 
@@ -68,14 +68,14 @@ describe('lib-orchestrator/git/gitMergeManager', () => {
   it('reads a tree with nothing in it as committed rather than as a failure', async () => {
     const it_ = managerOf({}, { code: 1, stdout: 'nothing to commit, working tree clean' })
 
-    expect(await it_.manager.commitAll(worktreeConst, 'Finalize session 1'))
+    expect(await it_.manager.commitAll(worktreeConst, 'Selected work', [join(worktreeConst, 'a[1].txt')]))
       .toEqual({ ok: true, value: undefined })
   })
 
   /** A hook is the project's own answer, and skipping it on the session's behalf is not this to do. */
   it('reports a commit the project itself refused', async () => {
     const it_ = managerOf({}, { code: 1, stderr: 'pre-commit hook failed' })
-    const answer = await it_.manager.commitAll(worktreeConst, 'Finalize session 1')
+    const answer = await it_.manager.commitAll(worktreeConst, 'Selected work', [join(worktreeConst, 'a[1].txt')])
 
     expect(answer.ok).toBe(false)
     expect(answer.ok === false && answer.detail).toMatch(/pre-commit hook failed/)
@@ -84,8 +84,8 @@ describe('lib-orchestrator/git/gitMergeManager', () => {
   it('does not reach the commit when the staging failed', async () => {
     const it_ = managerOf({ code: 128, stderr: 'fatal: not a git repository' })
 
-    expect((await it_.manager.commitAll(worktreeConst, 'Finalize session 1')).ok).toBe(false)
-    expect(it_.runner.calls).toEqual([['add', '--all']])
+    expect((await it_.manager.commitAll(worktreeConst, 'Selected work', [join(worktreeConst, 'a[1].txt')])).ok).toBe(false)
+    expect(it_.runner.calls).toEqual([['add', '-A', '--', ':(literal)a[1].txt']])
   })
 
   it('reports a real failure of that command rather than calling it detached', async () => {

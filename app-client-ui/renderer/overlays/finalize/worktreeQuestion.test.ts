@@ -1,3 +1,5 @@
+import { WorktreeWords } from '../../../../lib-orchestrator/worktrees/worktreeViews'
+import { SessionsSnapshotValidation } from '../../../../lib-orchestrator/sessionManager/sessionsSnapshotValidation'
 import { describe, expect, it } from 'vitest'
 
 import type {
@@ -14,11 +16,36 @@ function sessionOf(sessions: readonly SessionInfo[], sessionId: string): Session
   return session
 }
 
+function questionOf(session: SessionInfo, scope: FinalizeScope) {
+  WorktreeWords.decorate(session)
+  return WorktreeQuestion.spec.questionOf(session, scope)
+}
+
 describe('app-client-ui/renderer/overlays/finalize/worktreeQuestion', () => {
+  it('keeps older-peer Finish questions and command payloads through upstream snapshot admission', () => {
+    const old = SessionsFixtures.stoppedWorktree()
+    const session = old.sessions[0]
+    delete session.worktree!.questions
+    session.svnAction = { kind: 'update-main', stage: 'updating', needs: null, needsKind: null, review: null }
+    session.workflow = { kind: 'update-main', workflowId: 'legacy-update', title: 'Update', open: true, badge: '', summary: '',
+      rounds: [], actions: [{ id: 'update-main', label: 'Update', primary: true, confirmLive: [] }] }
+    expect(session.svnAction.title).toBeUndefined()
+    expect(session.workflow.actions[0].command).toBeUndefined()
+    const admitted = SessionsSnapshotValidation.parse(old)
+    expect(admitted).not.toBeNull()
+    expect(admitted!.sessions[0].svnAction?.title).toBe('Updating the main copy')
+    expect(admitted!.sessions[0].workflow?.actions[0].command).toEqual({ operation: 'sessions.updateMain', body: { confirmLive: [] } })
+    delete session.svnAction
+    delete session.workflow
+    delete session.worktree!.questions
+    expect(WorktreeQuestion.spec.questionOf(SessionsSnapshotValidation.parse(old)!.sessions[0], 'remote')?.choices.map((choice) => choice.id))
+      .toEqual(['merge', 'keep'])
+  })
+
   it('offers Merge, Keep and danger Discard locally, defaulting to Merge', () => {
     const session = sessionOf(SessionsFixtures.stoppedWorktree().sessions, 's-dirty')
 
-    expect(WorktreeQuestion.spec.questionOf(session, 'local')).toEqual({
+    expect(questionOf(session, 'local')).toEqual({
       label: 'Worktree',
       chosenDefault: 'merge',
       startsWorkflow: ['merge'],
@@ -26,7 +53,7 @@ describe('app-client-ui/renderer/overlays/finalize/worktreeQuestion', () => {
         {
           id: 'merge',
           title: 'Merge back',
-          note: "commits anything uncommitted, merges into jamat/dirty's base and removes the worktree",
+          note: "reviews the worktree changes, then merges into jamat/dirty's base and removes the worktree",
           glyph: '⇤',
           submitLabel: 'Merge',
         },
@@ -51,20 +78,20 @@ describe('app-client-ui/renderer/overlays/finalize/worktreeQuestion', () => {
 
   it('renders the choices the library composed for an SVN worktree, defaulting to Commit', () => {
     const session = sessionOf(SessionsFixtures.svnWorktrees().sessions, 's-svn')
-    const question = WorktreeQuestion.spec.questionOf(session, 'local')
+    const question = questionOf(session, 'local')
 
     expect(question?.choices.map((choice) => choice.id)).toEqual(['commit', 'keep', 'discard'])
     expect(question?.chosenDefault).toBe('commit')
-    expect(question?.choices[0]).toMatchObject({ title: 'Commit', submitLabel: 'Commit' })
+    expect(question?.choices[0]).toMatchObject({ title: 'Prepare for completion', submitLabel: 'Prepare' })
     expect(question?.choices.find((choice) => choice.id === 'discard')).toMatchObject({
-      note: 'throws the checkout and its 2 changed files away',
+      note: 'saves a copy of the changes and removes the worktree',
       danger: true,
     })
   })
 
   it('offers only Keep and Discard for a legacy store-cut worktree, whatever its kind', () => {
     const session = sessionOf(SessionsFixtures.svnWorktrees().sessions, 's-store-cut')
-    const question = WorktreeQuestion.spec.questionOf(session, 'local')
+    const question = questionOf(session, 'local')
 
     expect(question?.choices.map((choice) => choice.id)).toEqual(['keep', 'discard'])
     expect(question?.chosenDefault).toBe('keep')
@@ -75,7 +102,7 @@ describe('app-client-ui/renderer/overlays/finalize/worktreeQuestion', () => {
     if (svn.worktree === undefined) throw new Error('The SVN fixture lost its worktree')
     const reordered = { ...svn, worktree: { ...svn.worktree, choices: ['keep', 'discard'] as const } }
 
-    expect(WorktreeQuestion.spec.questionOf(reordered, 'local')?.choices.map((choice) => choice.id))
+    expect(questionOf(reordered, 'local')?.choices.map((choice) => choice.id))
       .toEqual(['keep', 'discard'])
   })
 
@@ -87,7 +114,7 @@ describe('app-client-ui/renderer/overlays/finalize/worktreeQuestion', () => {
       ...svn,
       worktree: { ...svn.worktree, choices: ['keep', 'discard'] as const, cleanup: { phase: 'pending' as const, summary } },
     }
-    const question = WorktreeQuestion.spec.questionOf(automatic, 'local')
+    const question = questionOf(automatic, 'local')
 
     expect(question?.chosenDefault).toBe('keep')
     expect(question?.choices[0]).toEqual({ id: 'keep', title: 'Remove automatically', note: summary, glyph: '↻', submitLabel: null })
@@ -98,13 +125,13 @@ describe('app-client-ui/renderer/overlays/finalize/worktreeQuestion', () => {
 
     // A worktree the cleanup kept for its changes is the person's again.
     const kept = { ...svn, worktree: { ...svn.worktree, cleanup: { phase: 'kept' as const, reason: '2 changes', summary: 'kept: 2 changes' } } }
-    expect(WorktreeQuestion.spec.questionOf(kept, 'local')?.choices.find((choice) => choice.id === 'keep')?.title)
+    expect(questionOf(kept, 'local')?.choices.find((choice) => choice.id === 'keep')?.title)
       .toBe('Keep worktree')
   })
 
   it('asks nothing while a finish holds the session', () => {
     const reviewing = sessionOf(SessionsFixtures.svnWorktrees().sessions, 's-reviewing')
-    expect(WorktreeQuestion.spec.questionOf(reviewing, 'local')).toBeNull()
+    expect(questionOf(reviewing, 'local')).toBeNull()
   })
 
   it('throws on a finish choice it does not know', () => {
@@ -112,21 +139,21 @@ describe('app-client-ui/renderer/overlays/finalize/worktreeQuestion', () => {
     if (svn.worktree === undefined) throw new Error('The SVN fixture lost its worktree')
     const unknown = { ...svn, worktree: { ...svn.worktree, choices: ['rebase'] as never } }
 
-    expect(() => WorktreeQuestion.spec.questionOf(unknown, 'local')).toThrow('Unknown finish choice')
+    expect(() => questionOf(unknown, 'local')).toThrow('Unknown Finish choice')
   })
 
   it('omits Discard remotely and omits a discard-only question altogether', () => {
     const stopped = sessionOf(SessionsFixtures.stoppedWorktree().sessions, 's-dirty')
-    expect(WorktreeQuestion.spec.questionOf(stopped, 'remote')?.choices.map((choice) => choice.id))
+    expect(questionOf(stopped, 'remote')?.choices.map((choice) => choice.id))
       .toEqual(['merge', 'keep'])
 
     const failed = sessionOf(SessionsFixtures.setupOutcomes().sessions, 's-failed')
-    expect(WorktreeQuestion.spec.questionOf(failed, 'remote')).toBeNull()
+    expect(questionOf(failed, 'remote')).toBeNull()
   })
 
   it('makes Keep the safe default when Discard is the only admitted operation', () => {
     const failed = sessionOf(SessionsFixtures.setupOutcomes().sessions, 's-failed')
-    const question = WorktreeQuestion.spec.questionOf(failed, 'local')
+    const question = questionOf(failed, 'local')
 
     expect(question?.choices.map((choice) => choice.id)).toEqual(['keep', 'discard'])
     expect(question?.chosenDefault).toBe('keep')
@@ -135,15 +162,15 @@ describe('app-client-ui/renderer/overlays/finalize/worktreeQuestion', () => {
 
   it('does not ask for a missing worktree or a worktree whose session is still live', () => {
     const mixed = SessionsFixtures.mixed().sessions
-    expect(WorktreeQuestion.spec.questionOf(sessionOf(mixed, 's-ended'), 'local')).toBeNull()
-    expect(WorktreeQuestion.spec.questionOf(sessionOf(mixed, 's-working'), 'local')).toBeNull()
+    expect(questionOf(sessionOf(mixed, 's-ended'), 'local')).toBeNull()
+    expect(questionOf(sessionOf(mixed, 's-working'), 'local')).toBeNull()
   })
 
   it('throws on a finalize scope it does not know', () => {
     const session = sessionOf(SessionsFixtures.stoppedWorktree().sessions, 's-dirty')
     const scope = 'elsewhere' as unknown as FinalizeScope
 
-    expect(() => WorktreeQuestion.spec.questionOf(session, scope))
+    expect(() => questionOf(session, scope))
       .toThrow('Unknown finalize scope')
   })
 
@@ -176,17 +203,17 @@ describe('app-client-ui/renderer/overlays/finalize/worktreeQuestion', () => {
   describe('an SVN worktree whose session runs or whose Finish waits', () => {
     const svn = (): SessionInfo => sessionOf(SessionsFixtures.svnWorktrees().sessions, 's-svn')
 
-    it('asks a running SVN session on this computer, whose action stops it first; never on a peer', () => {
+    it('asks a running SVN session locally to sync, check and review before stopping; never on a peer', () => {
       const base = svn()
       if (base.worktree === undefined) throw new Error('The SVN fixture lost its worktree')
       const live: SessionInfo = { ...base, life: 'live', admits: ['newBeside', 'finalize'], worktree: { ...base.worktree, liveFinish: true } }
 
-      const question = WorktreeQuestion.spec.questionOf(live, 'local')
+      const question = questionOf(live, 'local')
       expect(question?.choices.map((choice) => choice.id)).toEqual(['commit', 'keep', 'discard'])
-      expect(question?.choices[0]?.note).toMatch(/^stops the session, runs the checks/)
-      expect(WorktreeQuestion.spec.questionOf(live, 'remote')).toBeNull()
+      expect(question?.choices[0]?.note).toBe('updates the worktree and externals, resolves conflicts and runs checks; then waits while you run the app, review and confirm publication')
+      expect(questionOf(live, 'remote')).toBeNull()
       const { liveFinish: _liveFinish, ...plain } = live.worktree!
-      expect(WorktreeQuestion.spec.questionOf({ ...live, worktree: plain }, 'local')).toBeNull()
+      expect(questionOf({ ...live, worktree: plain }, 'local')).toBeNull()
     })
 
     it('asks nothing on this computer while an action runs or waits; a peer keeps Commit for a waiting one', () => {
@@ -194,21 +221,21 @@ describe('app-client-ui/renderer/overlays/finalize/worktreeQuestion', () => {
         ...svn(),
         svnAction: { kind: 'finish', stage: 'reviewing', needs: 'the review ended without a commit', needsKind: 'review-cancelled', review: null },
       }
-      expect(WorktreeQuestion.spec.questionOf(waiting, 'local')).toBeNull()
-      const remote = WorktreeQuestion.spec.questionOf(waiting, 'remote')
+      expect(questionOf(waiting, 'local')).toBeNull()
+      const remote = questionOf(waiting, 'remote')
       expect(remote?.choices.filter((choice) => choice.submitLabel !== null).map((choice) => choice.id)).toEqual(['commit'])
       expect(remote?.startsWorkflow).toBeUndefined()
 
       const running: SessionInfo = { ...waiting, svnAction: { ...waiting.svnAction!, needs: null, needsKind: null } }
-      expect(WorktreeQuestion.spec.questionOf(running, 'local')).toBeNull()
-      expect(WorktreeQuestion.spec.questionOf(running, 'remote')).toBeNull()
+      expect(questionOf(running, 'local')).toBeNull()
+      expect(questionOf(running, 'remote')).toBeNull()
     })
 
     it('names Commit and Discard of an SVN worktree and Merge back of a Git one as the presses that start a workflow', () => {
-      expect(WorktreeQuestion.spec.questionOf(svn(), 'local')?.startsWorkflow).toEqual(['commit', 'discard'])
+      expect(questionOf(svn(), 'local')?.startsWorkflow).toEqual(['commit', 'discard'])
       const git = sessionOf(SessionsFixtures.stoppedWorktree().sessions, 's-dirty')
-      expect(WorktreeQuestion.spec.questionOf(git, 'local')?.startsWorkflow).toEqual(['merge'])
-      expect(WorktreeQuestion.spec.questionOf(git, 'remote')?.startsWorkflow).toBeUndefined()
+      expect(questionOf(git, 'local')?.startsWorkflow).toEqual(['merge'])
+      expect(questionOf(git, 'remote')?.startsWorkflow).toBeUndefined()
     })
   })
 })

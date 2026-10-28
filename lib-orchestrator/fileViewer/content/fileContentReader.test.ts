@@ -1,5 +1,5 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { readFile } from 'node:fs/promises'
+import { open, readFile, rename, truncate } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -16,7 +16,7 @@ import { FileContentReader } from './fileContentReader'
  */
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
-  return { ...actual, readFile: vi.fn(actual.readFile) }
+  return { ...actual, readFile: vi.fn(actual.readFile), open: vi.fn(actual.open) }
 })
 
 /**
@@ -46,6 +46,16 @@ describe('lib-orchestrator/fileViewer/content/fileContentReader', () => {
   })
 
   describe('how much text is read at all', () => {
+    it('enforces the HTML limit before reading any content', async () => {
+      const path = join(await root(), 'report.htmlx')
+      await writeFile(path, '')
+      await truncate(path, FileViewerLimits.htmlBytes + 1)
+      const reader = new FileContentReader()
+      const read = await reader.text(path, await versionOf(reader, path), FileViewerLimits.htmlBytes)
+      expect(read).toEqual({ kind: 'too-large', size: FileViewerLimits.htmlBytes + 1, limit: FileViewerLimits.htmlBytes })
+      expect(readFile).not.toHaveBeenCalled()
+    })
+
     it('reads a file that sits exactly on the limit', async () => {
       const cwd = await root()
       const path = join(cwd, 'big.txt')
@@ -136,4 +146,35 @@ describe('lib-orchestrator/fileViewer/content/fileContentReader', () => {
       expect(second.kind === 'chunk' ? second.value.eof : null).to.equal(true)
     })
   })
+})
+
+
+it('refuses replacement and truncation during an exact byte read and never returns padded bytes', async () => {
+  const path = await mkdtemp(join(tmpdir(), 'jamat-race-'))
+  const file = join(path, 'source.txt')
+  const reader = new FileContentReader()
+  try {
+    await writeFile(file, 'original contents')
+    let inspection = await reader.inspect(file, false)
+    const original = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
+    vi.mocked(open).mockImplementationOnce(async (...args) => {
+      const handle = await original.open(...args)
+      const read = handle.read.bind(handle)
+      handle.read = (async (...readArgs: Parameters<typeof read>) => {
+        const answer = await read(...readArgs)
+        await truncate(file, 2)
+        return answer
+      }) as typeof handle.read
+      return handle
+    })
+    expect(await reader.range(file, inspection.contentVersion, 0, 64)).toEqual({ kind: 'changed' })
+    inspection = await reader.inspect(file, false)
+    await rename(file, join(path, 'previous.txt'))
+    await writeFile(file, 'xx')
+    expect(await reader.range(file, inspection.contentVersion, 0, 64)).toEqual({ kind: 'changed' })
+    inspection = await reader.inspect(file, false)
+    expect(await reader.range(file, inspection.contentVersion, 0, 64)).toMatchObject({ value: { length: 2, bytes: Buffer.from('xx'), eof: true } })
+    expect(await reader.range(file, inspection.contentVersion, 0, 65537)).toMatchObject({ kind: 'invalid-range' })
+    expect(await reader.range(file, inspection.contentVersion, -1, 64)).toMatchObject({ kind: 'invalid-range' })
+  } finally { vi.mocked(open).mockRestore(); await rm(path, { recursive: true, force: true }) }
 })

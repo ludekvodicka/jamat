@@ -1,3 +1,4 @@
+import type { SessionFilePorts } from '../../shared/sessionWorkspace'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 export interface FileViewerFreshnessModel {
@@ -21,6 +22,7 @@ export interface FileViewerFreshnessModel {
 export function useFileViewerFreshness(
   documentId: string | null,
   reload: () => void,
+  ports: Pick<SessionFilePorts['viewer'], 'version'>,
 ): FileViewerFreshnessModel {
   const [missing, setMissing] = useState(false)
   const reloadRef = useRef(reload)
@@ -48,7 +50,7 @@ export function useFileViewerFreshness(
         // worth that: the main-process handler can be gone while the window is being torn down, and
         // the next tick asks again anyway. An unknown result SHAPE is a different matter and still
         // throws below, because that one is a programming error rather than a lost round trip.
-        const answer = await window.appClient.fileViewer.version(documentId).catch(() => null)
+        const answer = await ports.version(documentId).catch(() => null)
         if (!alive || answer === null || !answer.ok || !answer.value.ok) return
         const value = answer.value
         if (value.kind === 'unchanged') setMissing(false)
@@ -75,7 +77,7 @@ export function useFileViewerFreshness(
       window.clearInterval(timer)
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [documentId])
+  }, [documentId, ports])
 
   return { missing }
 }

@@ -1,8 +1,9 @@
+import { FinishProjection } from '../../worktrees/worktreeFinish'
 import { SvnWorktreeManager } from '../../svn/svnWorktreeManager'
 import type { SessionRecord } from '../records/sessionRecord.types'
 import type { SessionStepInfo, SessionStepProgress } from '../sessionManagerApi.types'
-import { SvnActionFlow } from './svnActionFlow'
-import { SvnActionStages } from './svnActionStages'
+import { FinishDriver } from '../../worktrees/worktreeFinish'
+import { SvnActionStages } from '../../worktrees/worktreeFinish'
 import { type SessionStepFacts, SessionStepWords } from './sessionStepWords'
 
 export interface SessionStepsDeps {
@@ -70,7 +71,7 @@ export class SessionSteps {
   }
 
   private static restingOf(record: SessionRecord): { facts: SessionStepFacts; startedAt: number | null } | null {
-    const action = record.svnAction
+    const action = FinishProjection.action(record)
     // A need speaks through its own mark.
     if (action === undefined || action.needs !== undefined) return null
     if (SvnActionStages.isRun(action.stage))
@@ -81,9 +82,11 @@ export class SessionSteps {
       }
     if (action.stage === 'stopping' && (record.life === 'live' || record.life === 'starting'))
       return {
-        facts: { kind: 'stopping', limitSeconds: SvnActionFlow.stopLimitMillisecondsConst / 1_000 },
+        facts: { kind: 'stopping', limitSeconds: FinishDriver.stopLimitMillisecondsConst / 1_000 },
         startedAt: action.startedAt,
       }
+    const verifying = FinishProjection.verifyingOf(record)
+    if (verifying !== null) return { facts: { kind: 'publication', revision: verifying.revision }, startedAt: null }
     return { facts: { kind: 'pending', stage: action.stage }, startedAt: null }
   }
 }

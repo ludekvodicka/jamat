@@ -1,4 +1,5 @@
-import { lstat } from 'node:fs/promises'
+import { lstat, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join, relative, resolve } from 'node:path'
 
 import { PathCompare } from '../shared/pathCompare'
@@ -16,18 +17,26 @@ export class GitCommitManager extends GitManager {
     if (!checked.ok) return checked
     const root = checked.value
     const selected = [...new Set(paths.map((path) => `:(literal)${relative(root, path).replace(/\\/g, '/')}`))]
-    const added = await this.invoker.run(root, ['add', '-A', '--', ...selected])
-    const addFailure = GitManager.failureOf(added, 'git-failed')
-    if (addFailure) return addFailure
-    onProgress?.({ stage: 'committing', completed: 0, total: null })
-    const committed = await this.invoker.run(root, ['commit', '--only', '-F', messageFile, '--', ...selected])
-    const failure = GitManager.failureOf(committed, 'git-failed')
-    if (failure) return failure
-    onProgress?.({ stage: 'verifying', completed: 0, total: null })
-    const hash = await this.invoker.run(root, ['rev-parse', '--verify', 'HEAD'])
-    const hashFailure = GitManager.failureOf(hash, 'git-failed')
-    if (hashFailure) return hashFailure
-    return { ok: true, value: { hash: hash.stdout.trim(), output: committed.stdout + committed.stderr } }
+    const directory = await mkdtemp(join(tmpdir(), 'jamat-git-pathspec-'))
+    try {
+      const pathspecFile = join(directory, 'paths')
+      await writeFile(pathspecFile, `${selected.join('\0')}\0`, { encoding: 'utf8', mode: 0o600 })
+      const pathspecArgs = [`--pathspec-from-file=${pathspecFile}`, '--pathspec-file-nul']
+      const added = await this.invoker.run(root, ['add', '-A', ...pathspecArgs])
+      const addFailure = GitManager.failureOf(added, 'git-failed')
+      if (addFailure) return addFailure
+      onProgress?.({ stage: 'committing', completed: 0, total: null })
+      const committed = await this.invoker.run(root, ['commit', '--only', '-F', messageFile, ...pathspecArgs])
+      const failure = GitManager.failureOf(committed, 'git-failed')
+      if (failure) return failure
+      onProgress?.({ stage: 'verifying', completed: 0, total: null })
+      const hash = await this.invoker.run(root, ['rev-parse', '--verify', 'HEAD'])
+      const hashFailure = GitManager.failureOf(hash, 'git-failed')
+      if (hashFailure) return hashFailure
+      return { ok: true, value: { hash: hash.stdout.trim(), output: committed.stdout + committed.stderr } }
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
   }
 
   async revertFile(scope: string, path: string): Promise<GitResult<void>> {

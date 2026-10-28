@@ -44,10 +44,12 @@ export class HostMemoryReadings {
       .map((window) => `${window.hours} h ${window.growth === null ? 'n/a' : HostMemoryReadings.signed(window.growth)}`)
       .join(' · ')
     const uncovered = windows.some((window) => window.growth === null)
+    // The start, not an uptime: the reading is composed per sample, so an uptime would stand still for
+    // up to ten minutes and read "up 0 min" long after the start (UA1-J10-10).
     const lines = [
       `Memory ${HostMemoryReadings.size(latest.rssBytes)} (heap ${HostMemoryReadings.size(latest.heapUsedBytes)}), `
-        + `up ${HostMemoryReadings.duration(uptime)}`,
-      `Growth: ${growthText}${uncovered ? ` (up ${HostMemoryReadings.duration(uptime)})` : ''}`,
+        + `Host started ${new Date(health.startedAt).toLocaleString()}`,
+      `Growth: ${growthText}${uncovered ? ' (n/a: the Host has not run that long)' : ''}`,
     ]
     const warning = HostMemoryReadings.warningOf(health, latest, uptime, windows)
     if (warning === null) return { lines, warning: null, suffix: null }

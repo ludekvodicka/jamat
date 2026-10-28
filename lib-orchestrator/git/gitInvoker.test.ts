@@ -42,6 +42,21 @@ describe('lib-orchestrator/git/gitInvoker', () => {
     vi.useRealTimers()
   })
 
+  it('streams stdout and stderr before exit with complete UTF-8 characters', async () => {
+    const { invoker, child, calls } = harness()
+    const output: string[] = []
+    const running = invoker.run(cwdConst, ['status'], (text) => output.push(text))
+    await vi.waitFor(() => expect(calls).toHaveLength(1))
+    const bytes = Buffer.from('ž')
+    child.stderr.emit('data', bytes.subarray(0, 1))
+    expect(output).toEqual([])
+    child.stderr.emit('data', bytes.subarray(1))
+    child.stdout.emit('data', Buffer.from('working'))
+    expect(output).toEqual(['ž', 'working'])
+    child.emit('close', 1)
+    expect(await running).toMatchObject({ code: 1, stderr: 'ž', stdout: 'working' })
+  })
+
   it('runs git in the given directory and reports its output and exit code', async () => {
     const { invoker, child, calls } = harness()
     const running = invoker.run(cwdConst, ['status', '--porcelain=v1'])

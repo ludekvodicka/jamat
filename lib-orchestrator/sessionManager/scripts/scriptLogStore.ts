@@ -37,6 +37,11 @@ export class ScriptLogStore {
     return join(this.parentDirectory(parentId), `${ScriptLogStore.checked(actionId)}-merge.md`)
   }
 
+  /** The brief of the agent the person starts on a waiting SVN action, Markdown, beside the parent's run logs and gone with them. */
+  helpBriefPathOf(parentId: string, actionId: string): string {
+    return join(this.parentDirectory(parentId), `${ScriptLogStore.checked(actionId)}-help.md`)
+  }
+
   async write(parentId: string, runId: string, text: string): Promise<{ ok: true; bytes: number } | { ok: false; detail: string }> {
     return this.written(parentId, () => this.pathOf(parentId, runId), text)
   }
@@ -47,6 +52,20 @@ export class ScriptLogStore {
 
   async writeMergeBrief(parentId: string, actionId: string, text: string): Promise<{ ok: true; bytes: number } | { ok: false; detail: string }> {
     return this.written(parentId, () => this.mergeBriefPathOf(parentId, actionId), text)
+  }
+
+  async writeHelpBrief(parentId: string, actionId: string, text: string): Promise<{ ok: true; bytes: number } | { ok: false; detail: string }> {
+    return this.written(parentId, () => this.helpBriefPathOf(parentId, actionId), text)
+  }
+
+  async writeCommitFiles(parentId: string, actionId: string, selection: readonly string[], message: string)
+    : Promise<{ ok: true; targetsFile: string; messageFile: string } | { ok: false; detail: string }> {
+    const targetsFile = join(this.parentDirectory(parentId), `${ScriptLogStore.checked(actionId)}-targets.txt`)
+    const messageFile = join(this.parentDirectory(parentId), `${ScriptLogStore.checked(actionId)}-message.txt`)
+    const targets = await this.written(parentId, () => targetsFile, selection.map((path) => `${path}@`).join('\n') + '\n')
+    if (!targets.ok) return targets
+    const text = await this.written(parentId, () => messageFile, message)
+    return text.ok ? { ok: true, targetsFile, messageFile } : text
   }
 
   /** The same staging rule as `AtomicJsonFile.writeAsync`: a reader sees the old file or the whole new one. */
@@ -100,8 +119,22 @@ export class ScriptLogStore {
     await rm(this.pathOf(parentId, runId), { force: true })
   }
 
-  async removeParent(parentId: string): Promise<void> {
-    await rm(this.parentDirectory(parentId), { recursive: true, force: true })
+  async removeParent(parentId: string, keepIds: readonly string[] = []): Promise<void> {
+    const directory = this.parentDirectory(parentId)
+    if (keepIds.length === 0) {
+      await rm(directory, { recursive: true, force: true })
+      return
+    }
+    const keep = new Set(keepIds.flatMap((id) => ['.log', '-conflicts.txt', '-merge.md', '-help.md', '-targets.txt', '-message.txt']
+      .map((suffix) => `${ScriptLogStore.checked(id)}${suffix}`)))
+    let names: string[]
+    try { names = await readdir(directory) }
+    catch (error) {
+      if (ErrnoCode.of(error) === 'ENOENT') return
+      throw error
+    }
+    for (const name of names)
+      if (!keep.has(name) && !name.endsWith('.tmp')) await unlink(join(directory, name))
   }
 
   /** Deletes the folder of every parent not in `parentIds` last changed before `olderThan`; answers how many went. */

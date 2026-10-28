@@ -359,7 +359,7 @@ describe('lib-orchestrator/hostControl/hostController', () => {
       stopped.push(id)
       context.fixture.presence = 'unreachable'
       setTimeout(() => { context.fixture.descriptor = null }, 25)
-      return { ok: true, value: { stopping: true, live: 3 } }
+      return { ok: true, value: { stopping: true, live: 3, warnings: ['run-1: descendant 88824 survived'] } }
     } })
     context.fixture.presence = 'running'
     context.fixture.descriptor = descriptor()
@@ -372,7 +372,8 @@ describe('lib-orchestrator/hostControl/hostController', () => {
     expect(await context.controller.restart('host-1')).toMatchObject({ ok: false, code: 'already-running' })
     expect(await context.controller.start()).toMatchObject({ ok: false, code: 'already-running' })
     expect(context.calls).toHaveLength(0)
-    expect(await pending).toEqual({ ok: true, value: undefined })
+    // What the old Host could not stop survives it, so the restart says so rather than reading clean.
+    expect(await pending).toEqual({ ok: true, value: { warnings: ['run-1: descendant 88824 survived'] } })
     expect(stopped).toEqual(['host-1'])
     expect(context.controller.hostInstanceId()).toBe('host-2')
     expect(context.calls).toHaveLength(1)
@@ -391,7 +392,8 @@ describe('lib-orchestrator/hostControl/hostController', () => {
     const pending = context.controller.stop('host-1')
     expect(await context.controller.start()).toMatchObject({ ok: false, code: 'already-running' })
     expect(await context.controller.restart('host-1')).toMatchObject({ ok: false, code: 'already-running' })
-    expect(await pending).toEqual({ ok: true, value: undefined })
+    // A Host older than the warnings answers without them, which is none.
+    expect(await pending).toEqual({ ok: true, value: { warnings: [] } })
     expect(stopped).toEqual(['host-1'])
     expect(context.fixture.descriptor).toBeNull()
     expect(context.calls).toHaveLength(0)

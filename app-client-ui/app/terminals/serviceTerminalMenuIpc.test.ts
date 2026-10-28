@@ -135,6 +135,11 @@ describe('app-client-ui/app/terminals/serviceTerminalMenuIpc', () => {
           ? { ok: true as const, value: { sessionId, cwd: join(elsewhere, 'WebMirabiaAdmin'), agent: null,
             worktree: { worktreePath: elsewhere, repositoryRoot: join('Q:', 'Applications', 'Mirabia'), baseCommit: 'r41', kind: 'svn' } } }
           : { ok: true as const, value: { sessionId, cwd: workspace, agent: null, worktree: null } }),
+      conflictRootOf: (sessionId: string) => Promise.resolve(sessionId === 'session-gone'
+        ? { ok: false as const, code: 'not-found', detail: 'no such session' }
+        : sessionId === 'session-worktree' ? { ok: true as const, value: { root: elsewhere, place: 'worktree' } }
+          : sessionId === 'session-update' ? { ok: true as const, value: { root: workspace, place: 'main copy' } }
+            : { ok: false as const, code: 'invalid-spec', detail: `Session ${sessionId} has no worktree` }),
       snapshot: () => ({ sessions: [{ sessionId: 'session-worktree', svnAction: { mergeBrief: join(workspace, 'a1-merge.md') } }, { sessionId: 'session-1' }] }),
     } as unknown as SessionManager
     const terminals = {
@@ -476,6 +481,18 @@ describe('app-client-ui/app/terminals/serviceTerminalMenuIpc', () => {
     expect(editorOpens).toHaveLength(2)
   })
 
+  it('opens a conflicted path of a main-copy UPDATE in the main copy, and refuses one outside it (UA1-J08-2)', async () => {
+    await mkdir(join(workspace, 'src'), { recursive: true })
+    await writeFile(join(workspace, 'src', 'limit.txt'), ['<<<<<<< .mine', '25', '=======', '20', '>>>>>>> .r4', ''].join('\n'))
+    const opened = await invoke('terminal:menu-open-conflict-file', owner, 'session-update', 'src/limit.txt') as { ok: true; value: { ok: boolean; value?: { name: string } } }
+    expect(opened.value).toMatchObject({ ok: true, value: { name: 'limit.txt' } })
+    expect(await invoke('terminal:menu-open-conflict-editor', owner, 'session-update', 'src/limit.txt'))
+      .toEqual({ ok: true, value: { ok: true } })
+    expect(editorOpens).toEqual([join(workspace, 'src', 'limit.txt')])
+    expect(await invoke('terminal:menu-open-conflict-editor', owner, 'session-update', '../outside.txt'))
+      .toEqual({ ok: true, value: { ok: false, detail: `../outside.txt is not inside the main copy ${workspace}` } })
+  })
+
   it('grants the merger brief the session names to the viewer, and refuses a session without one', async () => {
     await writeFile(join(workspace, 'a1-merge.md'), '# Merge the conflicts of t\n')
     const opened = await invoke('terminal:menu-open-merge-brief', owner, 'session-worktree') as { ok: true; value: { ok: boolean; value?: { name: string } } }
@@ -486,11 +503,13 @@ describe('app-client-ui/app/terminals/serviceTerminalMenuIpc', () => {
       .toEqual({ ok: false, error: 'Terminal menu request came from an unknown workspace' })
   })
 
-  it('grants a conflicted file of the worktree to the viewer, and refuses one outside it', async () => {
+  it('grants a conflicted file of the worktree to the viewer with a Diff mode against BASE, and refuses one outside it', async () => {
     await mkdir(join(elsewhere, 'src'), { recursive: true })
     await writeFile(join(elsewhere, 'src', 'catalog.ts'), ['<<<<<<< .mine', 'mine', '=======', 'theirs', '>>>>>>> .r2', ''].join('\n'))
-    const opened = await invoke('terminal:menu-open-conflict-file', owner, 'session-worktree', 'src/catalog.ts') as { ok: true; value: { ok: boolean; value?: { name: string } } }
+    const opened = await invoke('terminal:menu-open-conflict-file', owner, 'session-worktree', 'src/catalog.ts') as { ok: true; value: { ok: boolean; value?: { name: string; modes: string[] } } }
     expect(opened.value).toMatchObject({ ok: true, value: { name: 'catalog.ts' } })
+    // The incoming side of a conflict is what BASE holds after the update, so the person compares against it.
+    expect(opened.value.value?.modes).toContain('diff')
     expect(await invoke('terminal:menu-open-conflict-file', owner, 'session-worktree', '../catalog.ts'))
       .toEqual({ ok: true, value: { ok: false, code: 'outside-root', detail: `../catalog.ts is not inside the worktree ${elsewhere}` } })
   })

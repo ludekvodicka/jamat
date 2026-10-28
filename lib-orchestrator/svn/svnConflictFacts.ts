@@ -11,6 +11,7 @@ import type {
   SvnTreeReason,
 } from './svn.types'
 import { SvnWorktreeEvidence } from './svnWorktreeEvidence'
+import { SvnTextMerge } from './svnTextMerge'
 
 /** A conflicted row of `svn status --xml`, by the kinds svn marks on it. */
 export interface SvnConflictedRow {
@@ -30,14 +31,19 @@ export interface SvnInfoConflicts {
   kind: SvnNodeKind
   /** SHA-1 of the BASE text of a file, which after an update holds the incoming side. */
   checksum: string | null
+  /** The root of the working copy that holds the node, absolute as svn wrote it; an external has its own. */
+  wcRoot: string | null
   tree: SvnTreeFacts | null
   text: boolean
   property: boolean
+  propertySources: { older: SvnConflictSource | null; theirs: SvnConflictSource | null } | null
   /** Absolute paths as svn wrote them: `.r<old>`, `.mine`, `.r<new>` and `.prej`. */
   sidecars: { older: string | null; mine: string | null; theirs: string | null; prej: string | null }
 }
 
-const listElements = new Set(['target', 'entry', 'property', 'conflict', 'version'])
+export interface SvnConflictSource { url: string; revision: number }
+
+const listElements = new Set(['target', 'entry', 'property', 'conflict', 'version', 'logentry', 'path'])
 
 /**
  * svn's facts about the conflicts of a working copy, as pure reads: XML and bytes in, facts out.
@@ -107,22 +113,39 @@ export class SvnConflictFacts {
       const treeNode = JsonShape.record(entry['tree-conflict'])
       const wcInfo = JsonShape.record(entry['wc-info'])
       const history = SvnConflictFacts.text(wcInfo?.['copy-from-url']) !== ''
+      const older = SvnConflictFacts.optionalText(text?.['prev-base-file'])
+      const mine = SvnConflictFacts.optionalText(text?.['prev-wc-file'])
+      const theirs = SvnConflictFacts.optionalText(text?.['cur-base-file'])
+      // svn 1.14 names a text sidecar as the prop-file of a property conflict beside a text one; `prejOf` finds the real one.
+      const prej = SvnConflictFacts.optionalText(property?.['prop-file'])
       return {
         name: name.replaceAll('\\', '/'),
         url: SvnConflictFacts.text(entry.url),
         kind: SvnConflictFacts.kindOf(entry['@_kind']),
         checksum: SvnConflictFacts.optionalText(wcInfo?.checksum),
-        tree: treeNode === null ? null : SvnConflictFacts.treeOf(treeNode, history),
+        wcRoot: SvnConflictFacts.optionalText(wcInfo?.['wcroot-abspath']),
+        tree: treeNode === null ? null : SvnConflictFacts.treeOf(treeNode, history, SvnConflictFacts.optionalText(wcInfo?.['moved-to'])),
         text: text !== undefined,
         property: property !== undefined,
-        sidecars: {
-          older: SvnConflictFacts.optionalText(text?.['prev-base-file']),
-          mine: SvnConflictFacts.optionalText(text?.['prev-wc-file']),
-          theirs: SvnConflictFacts.optionalText(text?.['cur-base-file']),
-          prej: SvnConflictFacts.optionalText(property?.['prop-file']),
-        },
+        propertySources: property !== undefined && (property['@_operation'] === 'merge' || property['@_operation'] === 'update') ? {
+          older: SvnConflictFacts.sourceOf(property, 'source-left'),
+          theirs: SvnConflictFacts.sourceOf(property, 'source-right'),
+        } : null,
+        sidecars: { older, mine, theirs, prej: prej !== null && [older, mine, theirs].includes(prej) ? null : prej },
       }
     })
+  }
+
+  /**
+   * The `.prej` files of a property conflict on `name` among the names of its directory: svn writes
+   * `<name>.prej`, or `<name>.<n>.prej` when that name is taken. svn's own name wins when it gave one.
+   */
+  static prejOf(entry: SvnInfoConflicts, directory: string, siblings: readonly string[]): string[] {
+    if (!entry.property) return []
+    if (entry.sidecars.prej !== null) return [entry.sidecars.prej]
+    const name = entry.name.slice(entry.name.lastIndexOf('/') + 1)
+    return siblings.filter((sibling) => sibling.startsWith(`${name}.`) && /^(?:\d+\.)?prej$/.test(sibling.slice(name.length + 1)))
+      .sort().map((sibling) => `${directory.replaceAll('\\', '/').replace(/\/$/, '')}/${sibling}`)
   }
 
   /**
@@ -163,13 +186,16 @@ export class SvnConflictFacts {
 
   /**
    * Mine against theirs, as bytes: a NUL byte is binary; a UTF-16 byte order mark, or invalid UTF-8
-   * without a NUL byte, is unreadable; equal after CRLF to LF is `eol`.
+   * without a NUL byte, is unreadable; equal after CRLF to LF is `eol`. Differing text with the side
+   * before the update (`older`) is also merged three ways (`merge`).
    */
-  static contentOf(mine: Uint8Array | null, theirs: Uint8Array | null): SvnContentFacts {
-    const sides = [mine, theirs].filter((side): side is Uint8Array => side !== null)
+  static contentOf(mine: Uint8Array | null, theirs: Uint8Array | null, older: Uint8Array | null = null): SvnContentFacts {
+    const sides = [mine, theirs, older].filter((side): side is Uint8Array => side !== null)
     const binary = sides.some((side) => side.includes(0))
     const unreadable = sides.some((side) => SvnConflictFacts.utf16(side)) || (!binary && sides.some((side) => !SvnConflictFacts.utf8(side)))
-    return { binary, unreadable, equal: mine === null || theirs === null ? null : SvnConflictFacts.equalOf(mine, theirs, binary || unreadable) }
+    const equal = mine === null || theirs === null ? null : SvnConflictFacts.equalOf(mine, theirs, binary || unreadable)
+    if (equal !== 'differs' || binary || unreadable || older === null || mine === null || theirs === null) return { binary, unreadable, equal }
+    return { binary, unreadable, equal, merge: SvnTextMerge.merge(older, mine, theirs) === null ? 'conflict' : 'clean' }
   }
 
   private static equalOf(mine: Uint8Array, theirs: Uint8Array, bytesOnly: boolean): 'bytes' | 'eol' | 'differs' {
@@ -179,7 +205,39 @@ export class SvnConflictFacts {
     return lf(mine) === lf(theirs) ? 'eol' : 'differs'
   }
 
-  private static treeOf(node: Record<string, unknown>, history: boolean): SvnTreeFacts {
+  /**
+   * Where the other commits moved `path` (worktree-relative), from `svn log -v --xml` of the incoming
+   * revisions with the worktree's repository path `base`. A move is an add with history from the path,
+   * or from a folder above it, in a revision that deletes that source; moves follow each other in
+   * revision order. Null when no commit moved it, when one revision copied the source to more than one
+   * place (svn's resolver then names no target either), when a later commit deleted it, or when it
+   * left the worktree.
+   */
+  static incomingMoveOf(xml: string, base: string, path: string, baseRevision = 0): string | null {
+    const log = JsonShape.record(JsonShape.record(SvnConflictFacts.parser.parse(xml))?.log)
+    const entries = SvnConflictFacts.list(log?.logentry).map((value) => SvnConflictFacts.node(value, 'logentry'))
+      .map((entry) => ({ revision: Number(entry['@_revision']), paths: SvnConflictFacts.list(JsonShape.record(entry.paths)?.path)
+        .map((value) => SvnConflictFacts.node(value, 'path'))
+        .map((node) => ({ action: node['@_action'], path: SvnConflictFacts.text(node), from: node['@_copyfrom-path'] })) }))
+      .filter((entry) => entry.revision > baseRevision).sort((a, b) => a.revision - b.revision)
+    let current = `${base}/${path}`
+    let moved = false
+    for (const entry of entries) {
+      const deleted = entry.paths.find((change) => (change.action === 'D' || change.action === 'R')
+        && (current === change.path || current.startsWith(`${change.path}/`)))
+      if (deleted === undefined) continue
+      const targets = entry.paths.filter((change) => (change.action === 'A' || change.action === 'R') && change.from === deleted.path)
+      if (targets.length !== 1) return null
+      current = `${targets[0].path}${current.slice(deleted.path.length)}`
+      moved = true
+    }
+    return moved && current.startsWith(`${base}/`) ? current.slice(base.length + 1) : null
+  }
+
+  private static treeOf(node: Record<string, unknown>, history: boolean, movedTo: string | null): SvnTreeFacts {
+    const left = SvnConflictFacts.list(node.version).map((version) => SvnConflictFacts.node(version, 'version'))
+      .find((version) => version['@_side'] === 'source-left')
+    const base = left?.['@_revision']
     const right = SvnConflictFacts.list(node.version).map((version) => SvnConflictFacts.node(version, 'version'))
       .find((version) => version['@_side'] === 'source-right')
     const revision = right?.['@_revision']
@@ -190,8 +248,24 @@ export class SvnConflictFacts {
       localKind: SvnConflictFacts.kindOf(node['@_kind']),
       incomingKind: right === undefined ? 'none' : SvnConflictFacts.kindOf(right['@_kind']),
       incomingRevision: typeof revision === 'string' && /^\d+$/.test(revision) ? Number(revision) : null,
+      ...typeof base === 'string' && /^\d+$/.test(base) ? { baseRevision: Number(base) } : {},
       localHistory: history || reason === 'moved-here',
+      ...(node['@_operation'] === 'merge' ? { operation: 'merge' as const } : {}),
+      ...reason === 'moved-away' && movedTo !== null ? { movedTo: movedTo.replaceAll('\\', '/') } : {},
     }
+  }
+
+  private static sourceOf(node: Record<string, unknown>, side: string): SvnConflictSource | null {
+    const source = SvnConflictFacts.list(node.version).map((value) => SvnConflictFacts.node(value, 'version'))
+      .find((value) => value['@_side'] === side)
+    if (source === undefined) throw new Error(`svn merge conflict has no ${side}`)
+    if (source['@_kind'] === 'none') return null
+    const repository = source['@_repos-url']
+    const path = source['@_path-in-repos']
+    const revision = source['@_revision']
+    if (typeof repository !== 'string' || typeof path !== 'string' || typeof revision !== 'string' || !/^\d+$/.test(revision)
+      || path.split('/').some((part) => part === '.' || part === '..')) throw new Error(`svn conflict has an invalid ${side}`)
+    return { url: `${repository.replace(/\/$/, '')}${path === '' ? '' : '/' + path.split('/').map(encodeURIComponent).join('/')}`, revision: Number(revision) }
   }
 
   private static kindOf(value: unknown): SvnNodeKind {

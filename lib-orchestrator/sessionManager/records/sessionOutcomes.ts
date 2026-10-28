@@ -23,11 +23,21 @@ export class SessionOutcomes {
     return record.stopRequested === true || record.exitReason === 'stopped'
   }
 
+  /**
+   * A worktree session whose before chain waits for the person to agree to its commands. It is
+   * written `ended` because no runtime stands behind it, yet it neither ran nor failed: the gate
+   * carries the agreement only until somebody answers it.
+   */
+  static awaitsSetupApproval(record: Pick<SessionRecord, 'life' | 'pendingSetup'>): boolean {
+    return record.pendingSetup?.agreement !== undefined && (record.life === 'ended' || record.life === 'lost')
+  }
+
   static of(
-    record: Pick<SessionRecord, 'life' | 'stopRequested' | 'exitReason' | 'exitCode'>,
+    record: Pick<SessionRecord, 'life' | 'stopRequested' | 'exitReason' | 'exitCode' | 'pendingSetup'>,
   ): SessionOutcome | null {
     const life = record.life
     if (life === 'starting' || life === 'live') return null
+    if (SessionOutcomes.awaitsSetupApproval(record)) return null
     // Before the two lives below, not inside one of them: a person who pressed Finish and then lost
     // the Host had still finished with the session, and the row must not send them to run it again.
     if (SessionOutcomes.endingWasAsked(record)) return 'finished'
