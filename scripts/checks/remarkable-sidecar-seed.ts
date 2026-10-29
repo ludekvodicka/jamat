@@ -10,14 +10,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-interface SeedManifest {
-  schemaVersion: 1
-  bundleId: string
-  platform: string
-  node: { version: string; executable: string }
-  cli: { package: string; version: string; entry: string }
-  tree: { files: number; sha256: string }
-}
+import { RemarkableSidecarManifest } from '../../app-client-ui/app/remarkable/sidecar/remarkableSidecarManifest.js'
 
 class RemarkableSidecarSeedCheck {
   private static readonly repositoryRootConst =
@@ -50,7 +43,10 @@ class RemarkableSidecarSeedCheck {
     )
     if (!existsSync(seed))
       throw new Error(`no seed at ${seed}; run \`pnpm setup:remarkable-sidecar\` on this machine first`)
-    const manifest = RemarkableSidecarSeedCheck.manifest(seed)
+    const manifest = RemarkableSidecarManifest.parse(
+      readFileSync(join(seed, 'manifest.json'), 'utf8'),
+      `${process.platform}-${process.arch}`,
+    )
     const node = join(seed, ...manifest.node.executable.split('/'))
     const entry = join(seed, ...manifest.cli.entry.split('/'))
     if (!existsSync(node)) throw new Error(`the seed has no Node executable at ${node}`)
@@ -80,32 +76,6 @@ class RemarkableSidecarSeedCheck {
     if (os === undefined)
       throw new Error(`the reMarkable sidecar has no recipe for ${process.platform}-${process.arch}`)
     return `${os}-${process.arch}`
-  }
-
-  private static manifest(seed: string): SeedManifest {
-    const value: unknown = JSON.parse(readFileSync(join(seed, 'manifest.json'), 'utf8'))
-    const root = RemarkableSidecarSeedCheck.recordOf(value, 'seed manifest')
-    const node = RemarkableSidecarSeedCheck.recordOf(root.node, 'seed manifest node')
-    const cli = RemarkableSidecarSeedCheck.recordOf(root.cli, 'seed manifest cli')
-    const tree = RemarkableSidecarSeedCheck.recordOf(root.tree, 'seed manifest tree')
-    if (root.schemaVersion !== 1 || typeof root.bundleId !== 'string'
-      || typeof root.platform !== 'string' || typeof node.version !== 'string'
-      || typeof node.executable !== 'string' || typeof cli.package !== 'string'
-      || typeof cli.version !== 'string' || typeof cli.entry !== 'string'
-      || typeof tree.files !== 'number' || !Number.isSafeInteger(tree.files) || tree.files < 1
-      || typeof tree.sha256 !== 'string')
-      throw new Error('seed manifest fields are invalid')
-    if (root.platform !== `${process.platform}-${process.arch}`)
-      throw new Error(`the seed was built for ${root.platform}, this machine is `
-        + `${process.platform}-${process.arch}`)
-    return {
-      schemaVersion: 1,
-      bundleId: root.bundleId,
-      platform: root.platform,
-      node: { version: node.version, executable: node.executable },
-      cli: { package: cli.package, version: cli.version, entry: cli.entry },
-      tree: { files: tree.files, sha256: tree.sha256 },
-    }
   }
 
   /** Empty PATH: the seed must run on a machine that has no Node and no npm of its own. */
@@ -153,12 +123,6 @@ class RemarkableSidecarSeedCheck {
       else throw new Error(`the seed contains an unsupported entry: ${path}`)
     }
     return files
-  }
-
-  private static recordOf(value: unknown, label: string): Record<string, unknown> {
-    if (!value || typeof value !== 'object' || Array.isArray(value))
-      throw new Error(`${label} must be an object`)
-    return value as Record<string, unknown>
   }
 }
 

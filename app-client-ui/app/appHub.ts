@@ -774,7 +774,8 @@ export class AppHub {
     })
     // The same terminal once more: a wake-up line never types into a prompt another delivery holds.
     this.sessionNotifier = new SessionNotifier({
-      sources: [this.sessions.worktreeResultsStore().notifySource(), this.sessions.sessionNotifyStore(), this.sessions.svnWaitNotices(), this.sessions.workerHandoffs()],
+      sources: [this.sessions.worktreeResultsStore().notifySource(), this.sessions.sessionNotifyStore(), this.sessions.svnWaitNotices(), this.sessions.workerHandoffs(),
+        this.commits.notifySource()],
       watch: this.sessions.sessionNotifyStore(),
       sessions: () => this.sessions.snapshot().sessions,
       groups: (sessions) => sessionGroups.read(sessions),

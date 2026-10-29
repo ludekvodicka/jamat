@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
+import sidecarRecipe from '../../../../configs/remarkable-sidecar/manifest.json'
 import {
   RemarkableSidecarManifest,
   type RemarkableSidecarFile,
@@ -45,6 +46,27 @@ describe('app-client-ui/app/remarkable/sidecar/remarkableSidecarManifest', () =>
       ...manifest,
       bundleId: `${manifest.bundleId}-forged`,
     }))).toThrow('bundle ID is invalid')
+  })
+
+  it.each([
+    ['win32-x64', 'win-x64'],
+    ['darwin-arm64', 'mac-arm64'],
+    ['linux-x64', 'linux-x64'],
+  ] as const)('validates %s against its own recipe pin', (platform, recipePlatform) => {
+    const node = sidecarRecipe.platforms[recipePlatform].node
+    const manifest = withBundleId({
+      ...fixture(),
+      platform,
+      node: { ...fixture().node, version: node.version, archiveSha256: node.sha256 },
+    })
+    expect(RemarkableSidecarManifest.parse(JSON.stringify(manifest), platform)).toEqual(manifest)
+    for (const changed of [{ version: '22.23.2' }, { archiveSha256: '0'.repeat(64) }]) {
+      const mismatch = withBundleId({ ...manifest, node: { ...manifest.node, ...changed } })
+      expect(() => RemarkableSidecarManifest.parse(JSON.stringify(mismatch), platform))
+        .toThrow('Node fields are invalid')
+    }
+    expect(() => RemarkableSidecarManifest.parse(JSON.stringify(manifest), 'unsupported-platform'))
+      .toThrow('platform is unsupported')
   })
 
   it('verifies the complete runtime tree and rejects extra or missing files', async () => {
@@ -108,9 +130,9 @@ function fixture(): RemarkableSidecarManifestValue {
     schemaVersion: 1,
     platform: 'win32-x64',
     node: {
-      version: '22.23.2',
+      version: sidecarRecipe.platforms['win-x64'].node.version,
       executable: 'node.exe',
-      archiveSha256: '1177b4137ba5adaa56354ae40f1080c7450e8ae09cecb47da459d1c52ac99f97',
+      archiveSha256: sidecarRecipe.platforms['win-x64'].node.sha256,
     },
     cli: {
       package: 'remarkable-cli',

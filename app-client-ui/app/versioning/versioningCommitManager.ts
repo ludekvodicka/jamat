@@ -24,7 +24,9 @@ import { VersioningCommitLimits, VersioningCommitMessage, VersioningCommitPaths,
 import type { ReviewInteraction, ReviewInteractionAccess } from './reviewInteractionAccess'
 import type { VersioningReviewDecision, VersioningReviewEdit, VersioningReviewEditResult, VersioningCommitPath, VersioningRevertRequest, VersioningRevertResult, VersioningTortoiseResult } from '../../shared/versioningCommit'
 import type { VersioningCommitDraftDto, VersioningCommitOpenResult, VersioningCommitOpenSessions, VersioningCommitRunRequest, VersioningCommitRunResult } from '../../shared/versioningCommit'
-import type { VersioningReviewStore, VersioningReviewRecord } from './versioningReviewStore'
+import type { VersioningReviewStore, VersioningReviewRecord, VersioningReviewWake } from './versioningReviewStore'
+import type { NotifySource, PendingNotify } from '../../../lib-orchestrator/sessionManager/sessionManager'
+import { SessionLimits } from '../../../lib-orchestrator/sessionManager/sessionLimits'
 import type { VersioningCommitMessageStore } from './versioningCommitMessageStore'
 
 export interface VersioningCommitManagerDeps {
@@ -67,6 +69,7 @@ interface Draft {
   targets?: readonly { path: string; directory: boolean; recursive: boolean }[]
   externalReview?: 'running' | 'closed'
   rejectedSnapshotId?: string
+  wake?: VersioningReviewWake
   /** The paths the last listing showed, so a later listing can tell which rows are new. */
   listed?: ReadonlySet<string>
 }
@@ -123,7 +126,7 @@ export class VersioningCommitManager {
   }
 
   async prepare(sessionId: string, vcs: FileChangesVcsId, scope: string | null, proposal: string | null,
-    paths?: readonly VersioningCommitPath[], options: { fresh?: true; reviewOnly?: true } = {}): Promise<VersioningCommitOpenResult> {
+    paths?: readonly VersioningCommitPath[], options: { fresh?: true; reviewOnly?: true; wakeOnClose?: true } = {}): Promise<VersioningCommitOpenResult> {
     if (vcs !== 'svn' && vcs !== 'git') throw new Error(`Unknown commit VCS: ${JSON.stringify(vcs)}`)
     const proposed = proposal === null ? null : VersioningCommitMessage.normalize(proposal)
     if (proposed !== null && proposed.length > VersioningCommitLimits.messageMaxCharactersConst)
@@ -189,6 +192,7 @@ export class VersioningCommitManager {
       },
       owners: new Set(), fileReviews: new Map(), cwd, lockRoot: PathCompare.comparable(detection.root), ...(restricted ? { targets } : {}),
     }
+    if (options.wakeOnClose === true) draft.wake ??= { state: 'watching' }
     const messageApplied = proposed !== null && !draft.dto.editedByPerson && draft.dto.phase.kind === 'editing'
     if (messageApplied) {
       draft.dto.message = proposed
@@ -442,6 +446,80 @@ export class VersioningCommitManager {
       ...(omittedPaths.length === 0 ? {} : { omittedPaths }),
       revision: phase.kind === 'done' ? phase.revision : null, detail: state === 'failed' && phase.kind === 'failed' ? phase.detail
         : omittedPaths.length > 0 ? `SVN published revisions, but did not report these selected paths: ${omittedPaths.join(', ')}` : null }
+  }
+
+  /** The close lines of the reviews the CLI opened, typed into each review's session by the session notifier. */
+  notifySource(): NotifySource {
+    return { pending: () => this.pendingWakes(), note: (ids, state) => Promise.resolve(this.noteWakes(ids, state)) }
+  }
+
+  /**
+   * A watched review gets its line once it ended the way a CLI waiter ends on it. The line is saved
+   * with the review, so a restart neither loses nor repeats it; a review that settled just before a
+   * restart gets it at the first pass after it.
+   */
+  private pendingWakes(): PendingNotify[] {
+    const reviews = () => [...this.drafts.values(), ...[...this.closed.values()].map(({ draft }) => draft)]
+    const settled = reviews().filter((draft) => draft.wake?.state === 'watching').flatMap((draft) => {
+      const status = this.status(draft.dto.draftId)
+      return status !== null && VersioningCommitManager.settles(status) ? [{ draft, status }] : []
+    })
+    if (settled.length > 0) {
+      const at = this.now()
+      for (const { draft, status } of settled) draft.wake = { state: 'pending', text: VersioningCommitManager.wakeLineOf(status), at, attempts: 0 }
+      // The store already reported a failed write; the reviews stay watched and the next pass tries again.
+      try { this.persist() }
+      catch { for (const { draft } of settled) draft.wake = { state: 'watching' } }
+    }
+    return reviews().flatMap((draft) => draft.wake?.state === 'pending'
+      ? [{ id: draft.dto.draftId, sessionId: draft.dto.sessionId, text: draft.wake.text, at: draft.wake.at, attempts: draft.wake.attempts }]
+      : [])
+  }
+
+  /** `attempted` counts a refused try; the other two end the line. */
+  private noteWakes(ids: readonly string[], state: 'delivered' | 'attempted' | 'expired'): void {
+    for (const id of ids) {
+      const draft = this.drafts.get(id) ?? this.closed.get(id)?.draft
+      const wake = draft?.wake
+      if (draft === undefined || wake?.state !== 'pending') continue
+      if (state === 'attempted') draft.wake = { ...wake, attempts: wake.attempts + 1 }
+      else if (state === 'delivered' || state === 'expired') draft.wake = { ...wake, state }
+      else throw new Error(`Unknown notify state: ${JSON.stringify(state satisfies never)}`)
+    }
+    // Memory keeps the settled line, so this client never types it twice; the store reported a failed write.
+    try { this.persist() } catch { /* reported by the store */ }
+  }
+
+  /** The same end as `CommitStatusReader`: a failure or cancellation counts once its review closed. */
+  private static settles(status: RemoteControlCommitStatusDto): boolean {
+    const state = status.state
+    if (state === 'committed' || state === 'external-closed') return true
+    else if (state === 'failed' || state === 'cancelled') return status.closed
+    else if (state === 'editing' || state === 'running') return false
+    else throw new Error(`Unknown commit state: ${JSON.stringify(state satisfies never)}`)
+  }
+
+  /** One line without control characters, inside the notifier's limit; only a failure detail is shortened. */
+  private static wakeLineOf(status: RemoteControlCommitStatusDto): string {
+    const flat = (text: string) => text.replace(/[\s\u0000-\u001f\u007f]+/g, ' ').trim()
+    const review = `Jamat: commit review ${status.commitSessionId}`
+    const scope = flat(status.scopeRoot)
+    const end = ' Verify the result and finish your reply.'
+    const state = status.state
+    let outcome: string
+    if (state === 'committed') outcome = `${review} committed revision ${status.revision} in ${scope}.`
+    else if (state === 'cancelled') outcome = `${review} in ${scope} was cancelled; nothing was committed.`
+    else if (state === 'external-closed') outcome = `${review} in ${scope} closed in Tortoise, which does not say whether it committed.`
+    else if (state === 'failed') {
+      const head = `${review} in ${scope} failed: `
+      const room = SessionLimits.worktreeNotifyCharacters - head.length - end.length - 1
+      const detail = flat(status.detail ?? 'no detail').replace(/[. ]+$/, '')
+      outcome = `${head}${detail.length <= room ? detail : `${detail.slice(0, room - 1)}…`}.`
+    } else if (state === 'editing' || state === 'running') throw new Error(`A ${state} review has no close line`)
+    else throw new Error(`Unknown commit state: ${JSON.stringify(state satisfies never)}`)
+    const line = `${outcome}${end}`
+    const limit = SessionLimits.worktreeNotifyCharacters
+    return line.length <= limit ? line : `${line.slice(0, limit - 1)}…`
   }
 
   private sweepClosed(): void {
@@ -1173,8 +1251,8 @@ export class VersioningCommitManager {
   private now(): number { return this.deps.now?.() ?? Date.now() }
   private persist(): void {
     const reviews: VersioningReviewRecord[] = [...this.drafts.values(), ...[...this.closed.values()].map(({ draft }) => draft)]
-      .map(({ dto, cwd, lockRoot, targets, committedPaths, externalReview, rejectedSnapshotId, decisions }) => ({
-        dto, cwd, lockRoot, targets, committedPaths, externalReview, rejectedSnapshotId, decisions,
+      .map(({ dto, cwd, lockRoot, targets, committedPaths, externalReview, rejectedSnapshotId, decisions, wake }) => ({
+        dto, cwd, lockRoot, targets, committedPaths, externalReview, rejectedSnapshotId, decisions, wake,
         ...(this.closed.has(dto.draftId) ? { closedAt: this.closed.get(dto.draftId)!.closedAt } : {}),
       }))
     if (this.deps.reviews?.save(reviews) === false) throw new Error('The commit review could not be saved')

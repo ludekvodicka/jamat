@@ -592,6 +592,17 @@ function request<K extends RemoteControlOperation>(
 }
 
 describe('lib-orchestrator/remoteControl/remoteControl', () => {
+  it('asks for the close line only for a review the CLI opens', async () => {
+    const found = world()
+    const open = (id: string) => request('tabs.openCommit', { session: { kind: 'sessionId', sessionId: 'session-1' }, vcs: 'svn' }, id)
+    expect(await found.control.execute(open('cli-open'), context())).toMatchObject({ ok: true })
+    expect(await found.control.execute(open('window-open'), { ...context(), callerKind: 'window' })).toMatchObject({ ok: true })
+    expect(found.tabCalls.map((call) => call.args[5])).toEqual([
+      { intentId: JSON.stringify(['test-caller', 'cli-open']), wakeOnClose: true },
+      { intentId: JSON.stringify(['test-caller', 'window-open']) },
+    ])
+  })
+
   it('replays cancellation once and refuses callers without its capability', async () => {
     const found = world()
     const cancel = request('tabs.cancelCommit', { commitSessionId: '11111111-1111-4111-8111-111111111111' }, 'cancel-review')

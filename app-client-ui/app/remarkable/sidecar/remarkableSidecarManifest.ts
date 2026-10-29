@@ -3,6 +3,7 @@ import { createReadStream } from 'node:fs'
 import { readFile, readdir, realpath } from 'node:fs/promises'
 import { isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
 
+import sidecarRecipe from '../../../../configs/remarkable-sidecar/manifest.json'
 import { JsonShape } from '../../../../lib-orchestrator/shared/jsonShape'
 
 export type RemarkableSidecarFileRole =
@@ -27,9 +28,9 @@ export interface RemarkableSidecarTree {
 export interface RemarkableSidecarManifestValue {
   schemaVersion: 1
   bundleId: string
-  platform: 'win32-x64'
+  platform: 'win32-x64' | 'darwin-arm64' | 'linux-x64'
   node: {
-    version: '22.23.2'
+    version: string
     executable: string
     archiveSha256: string
   }
@@ -44,13 +45,16 @@ export interface RemarkableSidecarManifestValue {
 }
 
 export class RemarkableSidecarManifest {
-  static readonly nodeVersionConst: '22.23.2' = '22.23.2'
-  static readonly cliVersionConst: '0.3.0' = '0.3.0'
-  static readonly platformConst: 'win32-x64' = 'win32-x64'
+  static readonly nodeVersionConst = sidecarRecipe.platforms['win-x64'].node.version
+  static readonly cliVersionConst = '0.3.0'
+  static readonly platformConst = 'win32-x64'
   /** Measured on the shipped bundle: 8 concurrent readers hash it in a quarter of the serial time. */
   private static readonly hashWorkersConst = 8
-  private static readonly nodeArchiveSha256Const =
-    '1177b4137ba5adaa56354ae40f1080c7450e8ae09cecb47da459d1c52ac99f97'
+  private static readonly recipePlatformsConst = {
+    'win32-x64': 'win-x64',
+    'darwin-arm64': 'mac-arm64',
+    'linux-x64': 'linux-x64',
+  } as const
   private static readonly rolesConst: readonly RemarkableSidecarFileRole[] = [
     'cli-entry',
     'cli-license',
@@ -64,7 +68,10 @@ export class RemarkableSidecarManifest {
     return RemarkableSidecarManifest.parse(await readFile(join(directory, 'manifest.json'), 'utf8'))
   }
 
-  static parse(text: string): RemarkableSidecarManifestValue {
+  static parse(
+    text: string,
+    platform: string = RemarkableSidecarManifest.platformConst,
+  ): RemarkableSidecarManifestValue {
     let value: unknown
     try { value = JSON.parse(text) }
     catch { throw new Error('The reMarkable sidecar manifest is not one JSON value') }
@@ -83,10 +90,12 @@ export class RemarkableSidecarManifest {
     const tree = RemarkableSidecarManifest.record(root['tree'], 'manifest tree', [
       'files', 'sha256',
     ])
-    if (root['schemaVersion'] !== 1 || root['platform'] !== RemarkableSidecarManifest.platformConst)
+    if (root['schemaVersion'] !== 1 || root['platform'] !== platform
+      || (platform !== 'win32-x64' && platform !== 'darwin-arm64' && platform !== 'linux-x64'))
       throw new Error('The reMarkable sidecar manifest schema or platform is unsupported')
-    if (node['version'] !== RemarkableSidecarManifest.nodeVersionConst
-      || node['archiveSha256'] !== RemarkableSidecarManifest.nodeArchiveSha256Const
+    const expectedNode = sidecarRecipe.platforms[RemarkableSidecarManifest.recipePlatformsConst[platform]].node
+    if (node['version'] !== expectedNode.version
+      || node['archiveSha256'] !== expectedNode.sha256
       || !RemarkableSidecarManifest.safePath(node['executable']))
       throw new Error('The reMarkable sidecar manifest Node fields are invalid')
     if (cli['package'] !== 'remarkable-cli'
@@ -124,9 +133,9 @@ export class RemarkableSidecarManifest {
     const candidate: RemarkableSidecarManifestValue = {
       schemaVersion: 1 as const,
       bundleId: root['bundleId'],
-      platform: RemarkableSidecarManifest.platformConst,
+      platform,
       node: {
-        version: RemarkableSidecarManifest.nodeVersionConst,
+        version: expectedNode.version,
         executable: node['executable'],
         archiveSha256: node['archiveSha256'],
       },

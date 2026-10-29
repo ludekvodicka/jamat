@@ -714,6 +714,73 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(restored.dto.published).toEqual([{ scopeRoot: f.root, revision: '42', paths: [], omittedPaths: [f.path] }])
   })
 
+  describe('close lines for a review the CLI opened', () => {
+    it('gives one line after the commit, settles it and keeps it settled across a restart', async () => {
+      const f = await fixture()
+      const file = join(f.root, 'reviews.json')
+      f.deps.reviews = new VersioningReviewStore(file, f.report)
+      f.deps.now = () => 1_000
+      expect(await f.manager.prepare('session', 'svn', null, null, undefined, { wakeOnClose: true })).toMatchObject({ ok: true, value: { draftId: f.draftId } })
+      const source = f.manager.notifySource()
+      expect(source.pending()).toEqual([])
+      expect(await f.manager.run('window', f.request)).toMatchObject({ ok: true })
+      const line = `Jamat: commit review ${f.draftId} committed revision 42 in ${f.root}. Verify the result and finish your reply.`
+      expect(source.pending()).toEqual([{ id: f.draftId, sessionId: 'session', text: line, at: 1_000, attempts: 0 }])
+      await source.note([f.draftId], 'attempted', 2_000)
+      expect(source.pending()).toMatchObject([{ attempts: 1 }])
+      await source.note([f.draftId], 'delivered', 3_000)
+      expect(source.pending()).toEqual([])
+      expect(new VersioningCommitManager({ ...f.deps, reviews: new VersioningReviewStore(file, f.report) }).notifySource().pending()).toEqual([])
+    })
+
+    it('gives no line for a review a person opened', async () => {
+      const f = await fixture()
+      expect(await f.manager.run('window', f.request)).toMatchObject({ ok: true })
+      expect(f.manager.notifySource().pending()).toEqual([])
+    })
+
+    it('waits for every pane to release a cancelled review', async () => {
+      const f = await fixture()
+      await f.manager.prepare('session', 'svn', null, null, undefined, { wakeOnClose: true })
+      await f.manager.cancel(f.draftId)
+      expect(f.manager.status(f.draftId)?.closed).toBe(false)
+      expect(f.manager.notifySource().pending()).toEqual([])
+      f.manager.release(f.draftId, 'window')
+      expect(f.manager.notifySource().pending()).toMatchObject([{ text: `Jamat: commit review ${f.draftId} in ${f.root} was cancelled; nothing was committed. Verify the result and finish your reply.` }])
+    })
+
+    it('reports a failure only once the person closed its review, on one line', async () => {
+      const f = await fixture()
+      await f.manager.prepare('session', 'svn', null, null, undefined, { wakeOnClose: true })
+      f.deps.svn.commit = async () => ({ ok: false, code: 'locked', detail: 'E155004:\n  locked.' })
+      expect(await f.manager.run('window', f.request)).toMatchObject({ ok: false })
+      expect(f.manager.notifySource().pending()).toEqual([])
+      f.manager.release(f.draftId, 'window')
+      expect(f.manager.notifySource().pending()).toMatchObject([{ text: `Jamat: commit review ${f.draftId} in ${f.root} failed: E155004: locked. Verify the result and finish your reply.` }])
+    })
+
+    it('shortens a long failure detail and keeps the line within the notifier limit', async () => {
+      const f = await fixture()
+      await f.manager.prepare('session', 'svn', null, null, undefined, { wakeOnClose: true })
+      f.deps.svn.commit = async () => ({ ok: false, code: 'locked', detail: `E155004 ${'x'.repeat(2_000)}` })
+      await f.manager.run('window', f.request)
+      f.manager.release(f.draftId, 'window')
+      const [line] = f.manager.notifySource().pending()
+      expect(line.text.length).toBeLessThanOrEqual(800)
+      expect(line.text).toMatch(/failed: E155004 x+…\. Verify the result and finish your reply\.$/)
+    })
+
+    it('gives the line after a restart when the review settled before its first pass', async () => {
+      const f = await fixture()
+      const file = join(f.root, 'reviews.json')
+      f.deps.reviews = new VersioningReviewStore(file, f.report)
+      await f.manager.prepare('session', 'svn', null, null, undefined, { wakeOnClose: true })
+      expect(await f.manager.run('window', f.request)).toMatchObject({ ok: true })
+      const restored = new VersioningCommitManager({ ...f.deps, reviews: new VersioningReviewStore(file, f.report) })
+      expect(restored.notifySource().pending()).toMatchObject([{ id: f.draftId, text: expect.stringContaining('committed revision 42') }])
+    })
+  })
+
   it('cancels one review, waits for every pane to close and reopens with a new identity and the saved message', async () => {
     const f = await fixture()
     f.manager.attach(f.draftId, 'second')

@@ -131,6 +131,8 @@ export class TabControlBroker implements RemoteControlTabsPort {
       intentId?: string
       paths?: readonly VersioningCommitPath[]
       fresh?: true
+      /** Type the review's close line into its session (the CLI opened it). */
+      wakeOnClose?: true
       returnToWorkflow?: TabControlWorkflowReturn
     }): Promise<RemoteControlStepResult<RemoteControlTabOpenCommitDto>> {
     return this.withCommitTurn(() => this.openCommitNow(sessionId, tabTitle, vcs, scope, proposal, options))
@@ -140,7 +142,7 @@ export class TabControlBroker implements RemoteControlTabsPort {
     if (this.stopping) return TabControlBroker.error('unavailable', 'The AppClientUI process is stopping')
     const [sessionId, tabTitle, vcs, scope, proposal, options] = args
     const prepared = await this.commits.prepare(sessionId, vcs, scope, proposal, options.paths,
-      options.fresh === undefined ? {} : { fresh: options.fresh })
+      { ...options.fresh === undefined ? {} : { fresh: options.fresh }, ...options.wakeOnClose === undefined ? {} : { wakeOnClose: options.wakeOnClose } })
     if (!prepared.ok && !(options.showRefusal && prepared.code === 'no-working-copy'))
       return TabControlBroker.error(prepared.code === 'unknown-session' ? 'not-found' : 'operation-failed', prepared.detail)
     const draftId = prepared.ok ? prepared.value.draftId : null

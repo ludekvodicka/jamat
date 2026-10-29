@@ -15,7 +15,18 @@ const recordSchema = z.object({
   targets: z.array(z.object({ path: literal, directory: z.boolean(), recursive: z.boolean() }).strict()).max(2_000).optional(),
   committedPaths: z.array(literal).optional(), externalReview: z.enum(['running', 'closed']).optional(),
   rejectedSnapshotId: literal.optional(), closedAt: z.number().optional(),
+  wake: z.union([z.object({ state: z.literal('watching') }).strict(), z.object({
+    state: z.enum(['pending', 'delivered', 'expired']), text: literal, at: z.number(), attempts: z.number().int().min(0),
+  }).strict()]).optional(),
 }).strict()
+
+/**
+ * The close line of a review the CLI opened: `watching` until the review ends the way a CLI waiter
+ * ends on it, then the line typed once into the review's session.
+ */
+export type VersioningReviewWake =
+  | { state: 'watching' }
+  | { state: 'pending' | 'delivered' | 'expired'; text: string; at: number; attempts: number }
 
 export interface VersioningReviewRecord {
   decisions?: { operationId: string; actorId: string; payload: string; acceptedAt: number; result?: VersioningCommitRunResult }[]
@@ -27,6 +38,7 @@ export interface VersioningReviewRecord {
   externalReview?: 'running' | 'closed'
   rejectedSnapshotId?: string
   closedAt?: number
+  wake?: VersioningReviewWake
 }
 
 interface ReviewDocument { version: 1; reviews: VersioningReviewRecord[] }

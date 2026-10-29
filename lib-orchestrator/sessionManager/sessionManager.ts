@@ -169,7 +169,7 @@ import { AgentComposerReader } from './workState/agentComposerReader'
 import { ScreenTail } from './workState/screenTail'
 import { WorkStateMonitor } from './workState/workStateMonitor'
 
-export { SessionNotifier, type SessionNotifyPort } from './notifies/sessionNotifier'
+export { SessionNotifier, type NotifySource, type PendingNotify, type SessionNotifyPort } from './notifies/sessionNotifier'
 
 export interface SessionManagerDeps {
   accounts?: import('./sessionAccounts').SessionAccountsPort

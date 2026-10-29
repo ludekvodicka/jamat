@@ -190,7 +190,7 @@ export interface RemoteControlTabsPort {
   commitStatus?(commitSessionId: string): RemoteControlStepResult<RemoteControlCommitStatusDto>
   cancelCommit?(commitSessionId: string): Promise<RemoteControlStepResult<RemoteControlCommitStatusDto>>
   openCommit(sessionId: string, tabTitle: string, vcs: 'svn' | 'git', scope: string | null,
-    proposal: string | null, options: { paths?: readonly RemoteControlCommitPath[]; intentId?: string }): Promise<RemoteControlStepResult<RemoteControlTabOpenCommitDto>>
+    proposal: string | null, options: { paths?: readonly RemoteControlCommitPath[]; intentId?: string; wakeOnClose?: true }): Promise<RemoteControlStepResult<RemoteControlTabOpenCommitDto>>
   list(): Promise<readonly RemoteControlTabDto[]>
   open(sessionId: string, tabTitle: string): Promise<RemoteControlStepResult<RemoteControlTabCommandDto>>
   openFile(
@@ -659,7 +659,9 @@ export class RemoteControl {
       if (session.life !== 'live') return RemoteControl.error('not-found', 'The session is not live')
       return this.deps.tabs.openCommit(session.sessionId, session.tabTitle, body.vcs,
         body.scope ?? null, body.message ?? null,
-        { ...(body.paths === undefined ? {} : { paths: body.paths }), intentId: JSON.stringify([context.callerId, context.operationId]) })
+        { ...(body.paths === undefined ? {} : { paths: body.paths }), intentId: JSON.stringify([context.callerId, context.operationId]),
+          // The CLI caller is an agent whose host may not wake when its waiter ends: the review's close line wakes it.
+          ...(context.callerKind === 'local-cli' ? { wakeOnClose: true as const } : {}) })
     })
     define('tabs.commitStatus', 'The state of one commit review.', async (body) =>
       this.deps.tabs.commitStatus?.(body.commitSessionId)

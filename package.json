@@ -30,7 +30,7 @@
     "smoke:terminal-detector": "tsx scripts/smoke/terminal-detector.ts",
     "smoke:ui": "tsx scripts/smoke/ui.ts",
     "setup:remarkable-sidecar": "tsx scripts/setup/prepare-remarkable-sidecar.ts",
-    "check:remarkable-sidecar-seed": "tsx scripts/checks/remarkable-sidecar-seed.ts",
+    "check:remarkable-sidecar-seed": "node --import tsx --test scripts/checks/remarkable-sidecar-seed.test.ts && tsx scripts/checks/remarkable-sidecar-seed.ts",
     "release:host-bundle": "tsx scripts/release/prepare-host-bundle.ts",
     "release:launcher": "tsx scripts/release/prepare-launcher.ts",
     "release:codex": "tsx scripts/release/prepare-codex.ts",

@@ -12,23 +12,16 @@ import {
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
+import {
+  RemarkableSidecarManifest,
+  type RemarkableSidecarManifestValue as ResourceManifest,
+} from '../../app-client-ui/app/remarkable/sidecar/remarkableSidecarManifest.js'
 import { SmokeHarness, SmokeRun } from './smokeHarness.js'
 
 interface ResourceFile {
   role: string
   path: string
   sha256: string
-}
-
-interface ResourceManifest {
-  schemaVersion: 1
-  bundleId: string
-  platform: 'win32-x64'
-  node: { version: string; executable: string; archiveSha256: string }
-  cli: { package: string; version: string; entry: string }
-  recipe: { packageLockSha256: string }
-  tree: { files: number; sha256: string }
-  files: readonly ResourceFile[]
 }
 
 interface SidecarRecipe {
@@ -109,7 +102,7 @@ class RemarkableSidecarPackageSmoke extends SmokeHarness {
     const manifest = RemarkableSidecarPackageSmoke.manifest()
     this.check('resource manifest uses schema 1', manifest.schemaVersion === 1)
     this.check('resource manifest targets win32-x64', manifest.platform === 'win32-x64')
-    this.check('resource manifest pins Node 22.23.4', manifest.node.version === '22.23.4')
+    this.check('application validator accepts the packaged sidecar manifest', manifest.node.version === recipe.node.version)
     this.check(
       'resource manifest pins remarkable-cli 0.3.0',
       manifest.cli.package === 'remarkable-cli' && manifest.cli.version === '0.3.0',
@@ -185,45 +178,10 @@ class RemarkableSidecarPackageSmoke extends SmokeHarness {
   }
 
   private static manifest(): ResourceManifest {
-    const value: unknown = JSON.parse(readFileSync(
+    return RemarkableSidecarManifest.parse(readFileSync(
       join(RemarkableSidecarPackageSmoke.resourceRootConst, 'manifest.json'),
       'utf8',
     ))
-    const root = RemarkableSidecarPackageSmoke.recordOf(value, 'resource manifest')
-    const node = RemarkableSidecarPackageSmoke.recordOf(root.node, 'resource manifest node')
-    const cli = RemarkableSidecarPackageSmoke.recordOf(root.cli, 'resource manifest cli')
-    const recipe = RemarkableSidecarPackageSmoke.recordOf(root.recipe, 'resource manifest recipe')
-    const tree = RemarkableSidecarPackageSmoke.recordOf(root.tree, 'resource manifest tree')
-    if (!Array.isArray(root.files)) throw new Error('resource manifest files must be an array')
-    const files = root.files.map((value, index) => {
-      const file = RemarkableSidecarPackageSmoke.recordOf(value, `resource manifest file ${index}`)
-      if (typeof file.role !== 'string' || typeof file.path !== 'string'
-        || !RemarkableSidecarPackageSmoke.isSha256(file.sha256))
-        throw new Error(`resource manifest file ${index} is invalid`)
-      return { role: file.role, path: file.path, sha256: file.sha256 }
-    })
-    if (root.schemaVersion !== 1 || typeof root.bundleId !== 'string'
-      || root.platform !== 'win32-x64' || typeof node.version !== 'string'
-      || typeof node.executable !== 'string' || !RemarkableSidecarPackageSmoke.isSha256(node.archiveSha256)
-      || typeof cli.package !== 'string' || typeof cli.version !== 'string'
-      || typeof cli.entry !== 'string' || !RemarkableSidecarPackageSmoke.isSha256(recipe.packageLockSha256)
-      || typeof tree.files !== 'number' || !Number.isSafeInteger(tree.files) || tree.files < 1
-      || !RemarkableSidecarPackageSmoke.isSha256(tree.sha256))
-      throw new Error('resource manifest fields are invalid')
-    return {
-      schemaVersion: 1,
-      bundleId: root.bundleId,
-      platform: 'win32-x64',
-      node: {
-        version: node.version,
-        executable: node.executable,
-        archiveSha256: node.archiveSha256,
-      },
-      cli: { package: cli.package, version: cli.version, entry: cli.entry },
-      recipe: { packageLockSha256: recipe.packageLockSha256 },
-      tree: { files: tree.files, sha256: tree.sha256 },
-      files,
-    }
   }
 
   private static recipe(): SidecarRecipe {

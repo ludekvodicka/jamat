@@ -819,6 +819,15 @@ is retried. Overall timeout, abort, missing capability, connection loss or inval
 without fallback and leaves the outcome unknown. Query the same UUID after recovering the connection;
 never infer completion from a clean working copy or silently reopen. Without `--wait`, status reads once.
 
+**Close line.** A review a CLI open made (local caller only) also wakes its session when it ends the
+way `--wait` ends on it: committed, external-closed, or cancelled or failed once closed. Jamat types
+one line into that session's empty composer through the session notifier, at most once per UUID:
+`Jamat: commit review <UUID> committed revision <N> in <scope>. Verify the result and finish your reply.`
+(or `... was cancelled; nothing was committed.`, `... failed: <detail>.`, `... closed in Tortoise, ...`).
+Treat it as a wake-up signal: read `commit status` and the VCS history before reporting. A Codex
+session that ended its turn after `openwait` starts its next turn on it; a host whose own waiter
+already reported only confirms it. A draft in the composer delays the line; it expires after 24 hours.
+
 `value.kind: "commit-status"` carries `state`, `closed`, `revision` and `detail`:
 
 - `editing` or `running`: still pending.

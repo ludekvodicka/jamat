@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import sidecarRecipe from '../../../../configs/remarkable-sidecar/manifest.json'
 import type {
   CommandInvocation,
   CommandOutcome,
@@ -52,7 +53,7 @@ describe('app-client-ui/app/remarkable/sidecar/remarkableSidecarInstaller', () =
     expect(await current.status()).toEqual({
       kind: 'ready',
       bundleId: first.bundleId,
-      nodeVersion: '22.23.2',
+      nodeVersion: first.node.version,
       cliVersion: '0.3.0',
     })
 
@@ -323,9 +324,9 @@ function writeSeed(directory: string, packageLockSha256: string): RemarkableSide
     schemaVersion: 1 as const,
     platform: 'win32-x64' as const,
     node: {
-      version: '22.23.2' as const,
+      version: sidecarRecipe.platforms['win-x64'].node.version,
       executable: 'node.exe',
-      archiveSha256: '1177b4137ba5adaa56354ae40f1080c7450e8ae09cecb47da459d1c52ac99f97',
+      archiveSha256: sidecarRecipe.platforms['win-x64'].node.sha256,
     },
     cli: {
       package: 'remarkable-cli' as const,
@@ -349,7 +350,7 @@ function writeSeed(directory: string, packageLockSha256: string): RemarkableSide
   })).digest('hex')
   const manifest: RemarkableSidecarManifestValue = {
     ...base,
-    bundleId: `win32-x64-node-22.23.2-remarkable-cli-0.3.0-${hash.slice(0, 16)}`,
+    bundleId: `${base.platform}-node-${base.node.version}-${base.cli.package}-${base.cli.version}-${hash.slice(0, 16)}`,
   }
   writeFileSync(join(directory, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
   return manifest

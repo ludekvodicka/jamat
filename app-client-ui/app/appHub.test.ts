@@ -833,7 +833,7 @@ describe('app-client-ui/app/appHub', () => {
     }
 
     expect(services.sessionNotifier.port.terminal).toBe(services.directoryNotes.terminal)
-    expect(services.sessionNotifier.sources).toHaveLength(4)
+    expect(services.sessionNotifier.sources).toHaveLength(5)
     hub.initialize()
     expect(services.sessionNotifier.started).toBe(true)
     await hub.dispose()
