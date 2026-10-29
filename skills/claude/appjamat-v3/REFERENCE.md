@@ -813,9 +813,11 @@ Add `--wait` to either native open command to wait on that UUID using the same c
 `commit status --commit-session-id UUID --wait` for an existing review. The CLI polls once per second
 and returns one final JSON envelope; await that original execution, never launch a second waiter.
 `--timeout-ms` requires `--wait`, accepts 1 through 86,400,000 and defaults to 24 hours. Waiting requires
-the `tabs.commitStatus` capability, checked before an open mutation. A timeout, abort, missing
-capability, connection loss or invalid response stops without fallback. Query the same UUID after
-recovering the connection; never infer completion from a clean working copy or silently reopen.
+the `tabs.commitStatus` capability, checked before an open mutation. A timed-out status read is retried
+on the same UUID and controller after one second, within the original overall deadline. No mutation
+is retried. Overall timeout, abort, missing capability, connection loss or invalid response stops
+without fallback and leaves the outcome unknown. Query the same UUID after recovering the connection;
+never infer completion from a clean working copy or silently reopen. Without `--wait`, status reads once.
 
 `value.kind: "commit-status"` carries `state`, `closed`, `revision` and `detail`:
 

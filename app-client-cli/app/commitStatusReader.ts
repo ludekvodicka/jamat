@@ -7,11 +7,15 @@ import { AppClientCliError } from './appClientCliError'
 export class CommitStatusReader {
   static readonly timeoutMillisecondsConst = 86_400_000
 
-  constructor(private readonly deps: {
-    read(): Promise<RemoteControlResponse>
+  private readonly deps: {
+    read(signal?: AbortSignal): Promise<RemoteControlResponse>
     now(): number
     pause(milliseconds: number, signal?: AbortSignal): Promise<void>
-  }) {}
+  }
+
+  constructor(deps: CommitStatusReader['deps']) {
+    this.deps = deps
+  }
 
   static pause(milliseconds: number, signal?: AbortSignal): Promise<void> {
     return setTimeout(milliseconds, undefined, { signal })
@@ -48,18 +52,22 @@ export class CommitStatusReader {
     const deadline = this.deps.now() + timeoutMs
     for (;;) {
       if (signal?.aborted) throw new AppClientCliError('operation-failed', `Stopped waiting for commit ${id}; its outcome is unknown`)
-      const answer = await this.deps.read().catch((error: unknown) => {
+      const answer = await this.deps.read(signal).catch((error: unknown) => {
         throw new AppClientCliError('operation-failed', `Cannot read commit ${id}; its outcome is unknown: ${ErrorText.of(error)}`)
       })
-      if (!answer.ok) return { ...answer, error: { ...answer.error,
-        detail: `Commit ${id}: ${answer.error.detail}. Its outcome is unknown`,
-        data: { ...JsonShape.record(answer.error.data), commitSessionId: id } } }
-      if (!CommitStatusReader.valid(answer.value, id))
-        throw new AppClientCliError('operation-failed', `Invalid status for commit ${id}; its outcome is unknown`)
-      const value = answer.value
-      if (!wait || CommitStatusReader.finished(value)) return answer
+      if (signal?.aborted) throw new AppClientCliError('operation-failed', `Stopped waiting for commit ${id}; its outcome is unknown`)
+      if (answer.ok) {
+        if (!CommitStatusReader.valid(answer.value, id))
+          throw new AppClientCliError('operation-failed', `Invalid status for commit ${id}; its outcome is unknown`)
+        if (!wait || CommitStatusReader.finished(answer.value)) return answer
+      } else if (!wait || answer.error.code !== 'timeout')
+        return { ...answer, error: { ...answer.error,
+          detail: `Commit ${id}: ${answer.error.detail}. Its outcome is unknown`,
+          data: { ...JsonShape.record(answer.error.data), commitSessionId: id } } }
+      // A timed-out status read cannot settle the human's review. Retry only that read under the original deadline.
       const remaining = deadline - this.deps.now()
-      if (remaining <= 0) throw new AppClientCliError('timeout', `Still waiting for commit ${id}; query this UUID again. No other dialog was opened`)
+      if (remaining <= 0)
+        throw new AppClientCliError('timeout', `Timed out waiting for commit ${id}; its outcome is unknown. Query this UUID again. No other dialog was opened`)
       await this.deps.pause(Math.min(1_000, remaining), signal).catch((error: unknown) => {
         throw new AppClientCliError('operation-failed', `Stopped waiting for commit ${id}; its outcome is unknown: ${ErrorText.of(error)}`)
       })

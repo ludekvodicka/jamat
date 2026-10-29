@@ -28,7 +28,7 @@ function fixture(backend: string, client: string) {
       const file = ${JSON.stringify(receiptFile)};
       ${client}`),
   }
-  return {launch, dispose: () => rmSync(cwd, {recursive: true, force: true})}
+  return {launch, dispose: () => rmSync(cwd, {recursive: true, force: true, maxRetries: 5, retryDelay: 100})}
 }
 
 test('authenticated relay writes the correlated receipt before delivering the response and shuts down', async () => {

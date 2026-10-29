@@ -1,5 +1,12 @@
-# Shared runtime base 2.0.1 (Q:/Docker/Docker, r419): patched OS, CA store and CA environment.
-FROM registry.dockerserver.sbs/node-runtime@sha256:7b8e2dc4b4510ab8346e9ac7a6dffb45da007eebbef71b572800292fc65ce079
+ARG NODE_RUNTIME_IMAGE=public-runtime
+FROM amd64/node:24.22.1-trixie-slim@sha256:c01213220866886d4ddaf3e7d5a303259d0af1fdfbed490c1c72c46279fa6c1f AS public-runtime
+RUN apt-get update && apt-get upgrade -y \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+ENV NODE_OPTIONS=--use-openssl-ca \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt SSL_CERT_DIR=/etc/ssl/certs
+
+FROM ${NODE_RUNTIME_IMAGE}
 WORKDIR /app
 COPY --chown=node:node package.json start.mjs server.mjs wol.mjs launcher.mjs pairing.mjs web.css ./
 USER node

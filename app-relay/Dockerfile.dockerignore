@@ -6,6 +6,7 @@
 !app-relay/tsconfig.json
 !app-relay/start.ts
 !app-relay/build.mjs
+!app-relay/config.example.json
 !app-relay/app/
 !app-relay/app/**
 !app-relay/web/

@@ -1,6 +1,12 @@
-# Shared runtime base 2.0.1 (Q:/Docker/Docker, r419): patched OS, CA store and CA environment.
-# The base has no Corepack, so pnpm comes from npm at the version of packageManager.
-FROM registry.dockerserver.sbs/node-runtime@sha256:7b8e2dc4b4510ab8346e9ac7a6dffb45da007eebbef71b572800292fc65ce079 AS build
+ARG NODE_RUNTIME_IMAGE=public-runtime
+FROM amd64/node:24.22.1-trixie-slim@sha256:c01213220866886d4ddaf3e7d5a303259d0af1fdfbed490c1c72c46279fa6c1f AS public-runtime
+RUN apt-get update && apt-get upgrade -y \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+ENV NODE_OPTIONS=--use-openssl-ca \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt SSL_CERT_DIR=/etc/ssl/certs
+
+FROM ${NODE_RUNTIME_IMAGE} AS build
 WORKDIR /src/app-relay
 RUN npm install -g pnpm@11.15.1
 COPY app-relay/package.json app-relay/pnpm-lock.yaml app-relay/pnpm-workspace.yaml ./
@@ -16,14 +22,15 @@ COPY app-relay/app/ ./app/
 COPY app-relay/web/ ./web/
 RUN pnpm typecheck && pnpm build && pnpm prune --prod
 
-FROM registry.dockerserver.sbs/node-runtime@sha256:7b8e2dc4b4510ab8346e9ac7a6dffb45da007eebbef71b572800292fc65ce079
+FROM ${NODE_RUNTIME_IMAGE}
 RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 WORKDIR /app
 COPY --from=build /src/app-relay/node_modules ./node_modules
 COPY --from=build /src/app-relay/dist/start.js ./start.js
 COPY app-relay/package.json ./
 COPY --from=build /src/app-relay/dist/web ./web/
-COPY --chown=node:node app-relay/.private/config-remote.json /config/config-remote.json
+ARG RELAY_CONFIG=app-relay/config.example.json
+COPY --chown=node:node ${RELAY_CONFIG} /config/config-remote.json
 ENV JAMAT_V3_RELAY_CONFIG=/config/config-remote.json
 ENV JAMAT_V3_RELAY_PORT=8080
 EXPOSE 8080

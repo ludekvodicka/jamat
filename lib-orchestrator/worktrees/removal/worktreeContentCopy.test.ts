@@ -240,7 +240,10 @@ describe('WorktreeContentCopy', () => {
     expect(join(destination, 'copy-manifests', `${'0'.repeat(36)}.bundle.lock`).length).toBeGreaterThan(260)
     const copied = await h.copies.copy(h.root, [row('.checkpoints', true)], discard, destination)
     expect(copied.bundle).toBe(true)
-    expect(git(['-c', 'core.longpaths=true', 'bundle', 'list-heads', join(destination, 'discarded', copied.attempt, 'store.bundle')])).toContain(commit)
+    // Git's bundle reader can reject the long name even after the writer stored valid bytes there.
+    const saved = join(h.root, 'saved.bundle')
+    writeFileSync(saved, readFileSync(join(destination, 'discarded', copied.attempt, 'store.bundle')))
+    expect(git(['bundle', 'list-heads', saved])).toContain(commit)
   })
 
   it('writes the checkpoint bundle again when a killed git left its lock in the same copy directory', async () => {

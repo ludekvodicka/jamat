@@ -548,6 +548,27 @@ describe('app-client-cli/app/app', () => {
     expect(await new AppClientCli(['commit', 'status', '--commit-session-id', '11111111-1111-4111-8111-111111111111'], h.deps()).run()).toBe(0)
     expect(h.client.requests.map((request) => request.operation)).toEqual(['tabs.commitStatus'])
   })
+  it.each(['svn', 'git'])('recovers a timed-out %s status read without opening another review', async (vcs) => {
+    const h = new CliHarness()
+    h.env.JAMAT_V3_SESSION_ID = 'session-001'
+    h.client.sessions[0] = { ...h.client.sessions[0]!, life: 'live' }
+    h.client.operationErrors.set('tabs.commitStatus', { code: 'timeout', detail: 'The AppClientUI control request timed out' })
+    let time = 0
+    expect(await new AppClientCli([`commit-${vcs}-jamat`, '--self', '--wait', '--timeout-ms', '5000'], {
+      ...h.deps(), now: () => time, pause: async (ms) => {
+        time += ms
+        h.client.operationErrors.delete('tabs.commitStatus')
+      },
+    }).run()).toBe(0)
+    expect(h.discoveries).toBe(1)
+    expect(h.client.requests.map(request => request.operation))
+      .toEqual(['sessions.list', 'tabs.openCommit', 'tabs.commitStatus', 'tabs.commitStatus'])
+    expect(h.client.requests.slice(2).map(request => request.body))
+      .toEqual(Array(2).fill({ commitSessionId: '11111111-1111-4111-8111-111111111111' }))
+    expect(h.parsedOutput()).toMatchObject({ ok: true, value: { state: 'committed', revision: '42' } })
+    expect(h.output).toHaveLength(1)
+    expect(h.asideCalls).toEqual([])
+  })
   it('refuses invalid UUIDs and wait options before discovery', async () => {
     for (const args of [['commit', 'status', '--commit-session-id', 'other'], ['commit-svn-jamat', '--self', '--timeout-ms', '1'],
       ['commit-git-jamat', '--self', '--wait', '--timeout-ms', '0']]) {

@@ -56,7 +56,7 @@ import { CommitStatusReader } from './commitStatusReader'
 import { ScriptRunReader } from './scriptRunReader'
 
 export interface AppClientCliClientPort {
-  execute(request: RemoteControlRequestUnion): Promise<RemoteControlResponse>
+  execute(request: RemoteControlRequestUnion, signal?: AbortSignal): Promise<RemoteControlResponse>
   executeLocal(request: RemoteControlLocalRequestUnion): Promise<RemoteControlLocalResponse>
   executeRemote(
     remoteEndpointId: string,
@@ -847,7 +847,7 @@ export class AppClientCli {
 
   private async readCommitStatus(client: AppClientCliClientPort, id: string, wait: boolean, timeoutMs: number): Promise<number> {
     const reader = new CommitStatusReader({
-      read: () => client.execute(this.request('tabs.commitStatus', { commitSessionId: id }, this.deps.requestId())),
+      read: signal => client.execute(this.request('tabs.commitStatus', { commitSessionId: id }, this.deps.requestId()), signal),
       now: this.deps.now, pause: this.deps.pause,
     })
     const response = await reader.read(id, wait, timeoutMs, this.deps.signal)

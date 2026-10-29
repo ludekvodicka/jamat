@@ -47,6 +47,13 @@ The timestamp is illustrative; generate it for each build. On Linux, host networ
 sender access to the LAN broadcast network. Do not add published ports with host networking.
 The service runs as the unprivileged `node` user and needs no capabilities or persistent volume.
 
+The default BuildKit build uses a digest-pinned public Node 24.22.1 Debian image, refreshes OS
+packages and CA certificates, and selects the system CA store. Operators can retain a prepared
+Debian Node base with `--build-arg NODE_RUNTIME_IMAGE=<image>`. That image must provide the `node`
+user, patched OS packages, CA certificates and the system CA environment
+(`NODE_OPTIONS=--use-openssl-ca`, `SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt`,
+`SSL_CERT_DIR=/etc/ssl/certs`). BuildKit then skips the public runtime stage.
+
 `GET /api/system/health` checks HTTP availability. `GET /api/system/version` returns `version` and
 `buildTime`; Docker also stores the build time in `APP_BUILD_TIME`.
 

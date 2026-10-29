@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { RemoteControlCommitStatusDto, RemoteControlResponse } from '../../lib-orchestrator/remoteControl/remoteControlApi.types'
+import type { RemoteControlCommitStatusDto, RemoteControlError, RemoteControlResponse } from '../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import { RemoteControlConst } from '../../lib-orchestrator/remoteControl/remoteControlProtocol'
 import { CommitStatusReader } from './commitStatusReader'
 
@@ -8,6 +8,7 @@ class CommitStatusFixture {
   time = 0
   reads = 0
   states: RemoteControlCommitStatusDto['state'][] = ['editing', 'running', 'committed']
+  replies: RemoteControlResponse[] = []
   closedStates = new Set<RemoteControlCommitStatusDto['state']>()
   answer(state: RemoteControlCommitStatusDto['state']): RemoteControlResponse {
     return { protocol: RemoteControlConst.protocol, requestId: 'read', operation: 'tabs.commitStatus', operationId: null, ok: true,
@@ -16,8 +17,16 @@ class CommitStatusFixture {
         revision: state === 'committed' ? '42' : null, detail: state === 'failed' ? 'out of date' : null } }
   }
   reader(): CommitStatusReader {
-    return new CommitStatusReader({ read: async () => this.answer(this.states[Math.min(this.reads++, this.states.length - 1)]!),
+    return new CommitStatusReader({ read: async () => {
+      const index = this.reads++
+      return this.replies.length > 0 ? this.replies[Math.min(index, this.replies.length - 1)]!
+        : this.answer(this.states[Math.min(index, this.states.length - 1)]!)
+    },
       now: () => this.time, pause: async (ms) => { this.time += ms } })
+  }
+  failure(code: RemoteControlError['code']): RemoteControlResponse {
+    return { protocol: RemoteControlConst.protocol, requestId: 'read', operation: 'tabs.commitStatus', operationId: null,
+      ok: false, error: { code, detail: 'The status request failed' } }
   }
 }
 
@@ -27,6 +36,52 @@ describe('app-client-cli/app/commitStatusReader', () => {
     expect(await f.reader().read(CommitStatusFixture.id, true, 5_000)).toMatchObject({ ok: true, value: { state: 'committed', revision: '42', closed: false } })
     expect(f.reads).toBe(3)
     expect(f.time).toBe(2_000)
+  })
+  it.each(['committed', 'cancelled', 'failed'] as const)('recovers from status timeouts and reports the actual %s outcome', async (state) => {
+    const f = new CommitStatusFixture()
+    f.closedStates.add(state)
+    f.replies = [f.answer('editing'), f.failure('timeout'), f.failure('timeout'), f.answer(state)]
+    expect(await f.reader().read(CommitStatusFixture.id, true, 5_000))
+      .toMatchObject({ ok: true, value: { state, closed: true, revision: state === 'committed' ? '42' : null } })
+    expect(f.reads).toBe(4)
+    expect(f.time).toBe(3_000)
+  })
+  it('bounds repeated status timeouts by the original deadline and keeps the outcome unknown', async () => {
+    const f = new CommitStatusFixture()
+    f.replies = [f.failure('timeout')]
+    await expect(f.reader().read(CommitStatusFixture.id, true, 2_500))
+      .rejects.toMatchObject({ code: 'timeout', message: expect.stringContaining('outcome is unknown') })
+    expect(f.time).toBe(2_500)
+    expect(f.reads).toBe(4)
+  })
+  it('does not retry a timeout when only one read was requested', async () => {
+    const f = new CommitStatusFixture()
+    f.replies = [f.failure('timeout'), f.answer('committed')]
+    expect(await f.reader().read(CommitStatusFixture.id, false, 5_000))
+      .toMatchObject({ ok: false, error: { code: 'timeout', data: { commitSessionId: CommitStatusFixture.id } } })
+    expect(f.reads).toBe(1)
+    expect(f.time).toBe(0)
+  })
+  it.each(['forbidden', 'not-found', 'protocol-mismatch', 'operation-failed'] as const)('stops on %s after a transient timeout', async (code) => {
+    const f = new CommitStatusFixture()
+    f.replies = [f.failure('timeout'), f.failure(code), f.answer('committed')]
+    expect(await f.reader().read(CommitStatusFixture.id, true, 5_000))
+      .toMatchObject({ ok: false, error: { code, data: { commitSessionId: CommitStatusFixture.id } } })
+    expect(f.reads).toBe(2)
+  })
+  it('passes cancellation to the in-flight read and does not retry its timeout', async () => {
+    const f = new CommitStatusFixture()
+    const abort = new AbortController()
+    const reader = new CommitStatusReader({
+      read: async (signal) => {
+        expect(signal).toBe(abort.signal)
+        abort.abort()
+        return f.failure('timeout')
+      },
+      now: () => f.time, pause: async () => { throw new Error('Unexpected retry') },
+    })
+    await expect(reader.read(CommitStatusFixture.id, true, 5_000, abort.signal))
+      .rejects.toMatchObject({ code: 'operation-failed', message: expect.stringContaining('Stopped waiting') })
   })
   it.each(['cancelled', 'external-closed'] as const)('finishes on %s without declaring a commit', async (state) => {
     const f = new CommitStatusFixture()
