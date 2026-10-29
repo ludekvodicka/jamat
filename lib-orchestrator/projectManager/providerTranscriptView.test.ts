@@ -114,7 +114,7 @@ describe('lib-orchestrator/projectManager/providerTranscriptView', () => {
 
     /** A temp root holding the output file where Claude Code computes it. */
     function computedRoot(): { root: string; file: string } {
-      const root = realpathSync(directory('jamat-claude-tmp-'))
+      const root = realpathSync.native(directory('jamat-claude-tmp-'))
       const tasks = join(root, 'claude', 'Q--Projects-AppFixture', sessionId, 'tasks')
       mkdirSync(tasks, { recursive: true })
       const file = join(tasks, 'b1.output')

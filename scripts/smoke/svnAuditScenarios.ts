@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
@@ -28,10 +29,13 @@ import { FileDiffComputer } from '../../lib-orchestrator/fileChangesManager/diff
 import { VcsStatusView } from '../../lib-orchestrator/fileChangesManager/vcsStatusView.js'
 import { GitCommitManager } from '../../lib-orchestrator/git/gitCommitManager.js'
 import { GitInvoker } from '../../lib-orchestrator/git/gitInvoker.js'
-import { VersioningCommitManager } from '../../app-client-ui/app/versioning/versioningCommitManager.js'
-import { VersioningCommitMessageStore } from '../../app-client-ui/app/versioning/versioningCommitMessageStore.js'
+
 import type { SvnStepJournalEntry } from '../../lib-orchestrator/worktrees/worktreeState.js'
 import { SvnTextResolutionScenarios } from './svnTextResolutionScenarios.js'
+
+const requireUi = createRequire(import.meta.url)
+const { VersioningCommitManager } = requireUi('../../app-client-ui/app/versioning/versioningCommitManager.ts') as typeof import('../../app-client-ui/app/versioning/versioningCommitManager.js')
+const { VersioningCommitMessageStore } = requireUi('../../app-client-ui/app/versioning/versioningCommitMessageStore.ts') as typeof import('../../app-client-ui/app/versioning/versioningCommitMessageStore.js')
 
 export class SvnAuditScenarios {
   static async run(parent: string): Promise<void> {

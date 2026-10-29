@@ -1,4 +1,4 @@
-import { lstat, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, relative, resolve } from 'node:path'
 
@@ -15,8 +15,8 @@ export class GitCommitManager extends GitManager {
     onProgress?.({ stage: 'preparing', completed: 0, total: null })
     const checked = await this.rootOf(scope)
     if (!checked.ok) return checked
-    const root = checked.value
-    const selected = [...new Set(paths.map((path) => `:(literal)${relative(root, path).replace(/\\/g, '/')}`))]
+    const { root, scope: actualScope } = checked.value
+    const selected = [...new Set(paths.map((path) => `:(literal)${relative(root, resolve(actualScope, relative(scope, path))).replace(/\\/g, '/')}`))]
     const directory = await mkdtemp(join(tmpdir(), 'jamat-git-pathspec-'))
     try {
       const pathspecFile = join(directory, 'paths')
@@ -44,8 +44,8 @@ export class GitCommitManager extends GitManager {
       return { ok: false, code: 'git-failed', detail: 'Select a file inside the commit scope' }
     const checked = await this.rootOf(scope)
     if (!checked.ok) return checked
-    const root = checked.value
-    const selected = relative(root, path).replace(/\\/g, '/')
+    const { root, scope: actualScope } = checked.value
+    const selected = relative(root, resolve(actualScope, relative(scope, path))).replace(/\\/g, '/')
     const object = await this.invoker.run(root, ['cat-file', '-t', `HEAD:${selected}`])
     const objectFailure = GitManager.failureOf(object, 'git-failed')
     if (objectFailure) return objectFailure
@@ -54,12 +54,13 @@ export class GitCommitManager extends GitManager {
     return GitManager.failureOf(reverted, 'git-failed') ?? { ok: true, value: undefined }
   }
 
-  private async rootOf(scope: string): Promise<GitResult<string>> {
+  private async rootOf(scope: string): Promise<GitResult<{ root: string; scope: string }>> {
     const detected = await this.invoker.run(scope, ['rev-parse', '--show-toplevel'])
     const detectionFailure = GitManager.failureOf(detected, 'not-a-repo')
     if (detectionFailure) return detectionFailure
-    const root = resolve(detected.stdout.trim())
-    if (!PathCompare.isInside(root, scope))
+    const root = await realpath(resolve(detected.stdout.trim()))
+    const actualScope = await realpath(scope)
+    if (!PathCompare.isInside(root, actualScope))
       return { ok: false, code: 'not-a-repo', detail: 'The commit scope is outside the repository' }
     // Linked worktrees can belong to the AI store. This dialog accepts only a main human copy.
     const marker = await lstat(join(root, '.git')).catch(() => null)
@@ -67,6 +68,6 @@ export class GitCommitManager extends GitManager {
       return { ok: false, code: 'git-failed', detail: 'Commit requires a main copy with its own .git directory' }
     if (await GitManager.exists(join(root, '.git', 'MERGE_HEAD')))
       return { ok: false, code: 'git-failed', detail: 'A merge is in progress; resolve or abort it first' }
-    return { ok: true, value: root }
+    return { ok: true, value: { root, scope: actualScope } }
   }
 }

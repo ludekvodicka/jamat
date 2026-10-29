@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
@@ -8,13 +9,18 @@ import type { SessionManager } from '../../lib-orchestrator/sessionManager/sessi
 import type { RemoteSessionView } from '../../lib-orchestrator/remoteControl/remoteSessionApi.types.js'
 import type { RemoteFileBytes } from '../../lib-orchestrator/remoteControl/remoteContentApi.types.js'
 import { RemoteControlConst } from '../../lib-orchestrator/remoteControl/remoteControlProtocol.js'
-import { FileViewerAccess } from '../../app-client-ui/app/fileViewer/fileViewerAccess.js'
-import { RemoteFileMediaSource } from '../../app-client-ui/app/fileViewer/remoteFileMediaSource.js'
-import { RemoteContentAccess } from '../../app-client-ui/app/remoteControl/remoteContentAccess.js'
-import { RemoteContentClient } from '../../app-client-ui/app/remoteControl/remoteContentClient.js'
-import { RemoteSessionViews } from '../../app-client-ui/app/remoteControl/remoteSessionViews.js'
+
 import type { RemoteConnectionsManager } from '../../app-client-ui/app/remoteControl/remoteConnectionsManager.js'
 import type { RemoteReviewAccess } from '../../app-client-ui/app/remoteControl/remoteReviewAccess.js'
+
+const requireUi = createRequire(import.meta.url)
+const { FileViewerAccess } = requireUi('../../app-client-ui/app/fileViewer/fileViewerAccess.ts') as typeof import('../../app-client-ui/app/fileViewer/fileViewerAccess.js')
+const { RemoteFileMediaSource } = requireUi('../../app-client-ui/app/fileViewer/remoteFileMediaSource.ts') as typeof import('../../app-client-ui/app/fileViewer/remoteFileMediaSource.js')
+const { RemoteContentAccess } = requireUi('../../app-client-ui/app/remoteControl/remoteContentAccess.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteContentAccess.js')
+type RemoteContentAccess = import('../../app-client-ui/app/remoteControl/remoteContentAccess.js').RemoteContentAccess
+const { RemoteContentClient } = requireUi('../../app-client-ui/app/remoteControl/remoteContentClient.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteContentClient.js')
+const { RemoteSessionViews } = requireUi('../../app-client-ui/app/remoteControl/remoteSessionViews.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteSessionViews.js')
+type RemoteSessionViews = import('../../app-client-ui/app/remoteControl/remoteSessionViews.js').RemoteSessionViews
 
 export class RemoteContentScenarios {
   readonly views: RemoteSessionViews

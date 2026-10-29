@@ -73,16 +73,31 @@ jobs:
       - name: Type-check
         run: pnpm run typecheck
 
+      - name: Prepare Windows fixture environment
+        shell: pwsh
+        run: |
+          $temporaryRoot = node -p "require('node:fs').realpathSync.native(require('node:os').tmpdir())"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "TEMP=$temporaryRoot" >> $env:GITHUB_ENV
+          "TMP=$temporaryRoot" >> $env:GITHUB_ENV
+          choco install sliksvn --no-progress -y
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          'C:\Program Files\SlikSvn\bin' >> $env:GITHUB_PATH
+
+      - name: Verify SVN fixture tools
+        shell: pwsh
+        run: |
+          svn --version --quiet
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          svnadmin --version --quiet
+          exit $LASTEXITCODE
+
       - name: Unit tests
         run: pnpm test
-
-      - name: Install SVN fixture tools
-        run: choco install sliksvn --no-progress -y
 
       - name: Worktree preparation and update acceptance
         shell: pwsh
         run: |
-          $env:PATH += ';C:\Program Files\SlikSvn\bin'
           node --import tsx scripts/smoke/svn-worktree.ts --matrix-preparation
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node --import tsx scripts/smoke/svn-worktree.ts --matrix-update

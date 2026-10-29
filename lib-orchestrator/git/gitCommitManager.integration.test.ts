@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -88,5 +88,26 @@ describe('GitCommitManager with real Git', () => {
     expect(result).toMatchObject({ ok: true })
     expect(await git('diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD')).toBe('new [file].txt\n')
     expect(await git('status', '--porcelain')).toBe('')
+  }, 120_000)
+
+  it('commits and reverts an exact selection through a directory alias', async () => {
+    const { root, git, manager, messageFile } = await fixture()
+    await mkdir(join(root, 'scope'))
+    await writeFile(join(root, 'scope', 'deleted.txt'), 'base\n')
+    await writeFile(join(root, 'scope', 'kept.txt'), 'base\n')
+    await git('add', '-A')
+    await git('commit', '-F', messageFile)
+    const alias = join(root, 'alias')
+    await symlink(join(root, 'scope'), alias, 'junction')
+    await rm(join(root, 'scope', 'deleted.txt'))
+    await writeFile(join(root, 'scope', 'new.txt'), 'new\n')
+    await writeFile(join(root, 'scope', 'kept.txt'), 'local\n')
+    expect(await manager.commit(alias, [join(alias, 'deleted.txt'), join(alias, 'new.txt')], messageFile))
+      .toMatchObject({ ok: true })
+    expect((await git('diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD')).trim().split('\n'))
+      .toEqual(['scope/deleted.txt', 'scope/new.txt'])
+    expect(await readFile(join(root, 'scope', 'kept.txt'), 'utf8')).toBe('local\n')
+    expect(await manager.revertFile(alias, join(alias, 'kept.txt'))).toEqual({ ok: true, value: undefined })
+    expect(await readFile(join(root, 'scope', 'kept.txt'), 'utf8')).toBe('base\n')
   }, 120_000)
 })

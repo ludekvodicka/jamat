@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -35,6 +35,38 @@ describe('PassInbox', () => {
     await symlink(outside, directory, 'junction')
     await expect(PassInbox.open(directory)).rejects.toThrow('redirects')
     expect(await readdir(outside)).toEqual(['brief.json'])
+  })
+
+  it('accepts the machine root through an alias while keeping the pass identity', async () => {
+    const actual = join(root, 'machine')
+    const alias = join(root, 'alias')
+    await mkdir(actual)
+    await symlink(actual, alias, 'junction')
+    vi.stubEnv('JAMAT_V3_LOCAL_STATE_DIR', alias)
+    const owned = join(alias, 'orchestrator', 'identity', 'development', 'snapins', 'test', 'passes', brief.attemptId)
+    const inbox = await PassInbox.create(owned, brief)
+    expect(await inbox.append({ kind: 'working', at: 1 })).toBe(1)
+    expect(await (await PassInbox.open(inbox.directory)).after(0)).toEqual([{ n: 1, event: { kind: 'working', at: 1 } }])
+    expect(await readdir(join(actual, 'orchestrator', 'identity', 'development', 'snapins', 'test', 'passes', brief.attemptId, 'inbox')))
+      .toEqual(['000001.json'])
+  })
+
+  it('refuses a pass redirected after opening, without writing to the destination', async () => {
+    const inbox = await PassInbox.create(directory, brief)
+    const outside = join(root, 'moved-pass')
+    await rename(directory, outside)
+    await symlink(outside, directory, 'junction')
+    await expect(inbox.append({ kind: 'working', at: 1 })).rejects.toThrow('redirects')
+    expect(await readdir(outside)).toEqual(['brief.json'])
+  })
+
+  it('refuses a redirected inbox without writing to its destination', async () => {
+    const inbox = await PassInbox.create(directory, brief)
+    const outside = join(root, 'foreign-inbox')
+    await mkdir(outside)
+    await symlink(outside, join(directory, 'inbox'), 'junction')
+    await expect(inbox.append({ kind: 'working', at: 1 })).rejects.toThrow('redirects')
+    expect(await readdir(outside)).toEqual([])
   })
 
   it('publishes twenty concurrent appends without gaps or incomplete visible files', async () => {

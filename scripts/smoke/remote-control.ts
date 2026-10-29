@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module'
 /**
  * End-to-end proof of the local control boundary. It starts a real AppHost and PTY, composes the
  * same semantic control and loopback server used by AppClientUI, then invokes the shipped skill
@@ -12,12 +13,6 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-import { ClientStatePaths } from '../../app-client-ui/app/clientState/clientStatePaths.js'
-import { RemoteControlInstanceStore } from '../../app-client-ui/app/remoteControl/remoteControlInstanceStore.js'
-import { RemoteControlServer } from '../../app-client-ui/app/remoteControl/remoteControlServer.js'
-import { RemoteSessionGroups } from '../../app-client-ui/app/sessionGroups/remoteSessionGroups.js'
-import { SessionTranscriptAccess } from '../../app-client-ui/app/sessionTranscript/sessionTranscriptAccess.js'
-import { SessionsGroupsState } from '../../app-client-ui/shared/sessionsGroupsState.js'
 import { HostDescriptorPaths } from '../../lib-orchestrator/hostClient/hostDescriptorPaths.js'
 import type { ProviderTranscriptRef } from '../../lib-orchestrator/projectManager/providerTranscriptView.js'
 import {
@@ -47,6 +42,17 @@ import {
 } from '../../lib-orchestrator/sessionTranscriptReader/sessionTranscriptReader.js'
 import { ConfigIdentityStore } from '../../lib-orchestrator/shared/configIdentityStore.js'
 import { OrchestratorPaths } from '../../lib-orchestrator/shared/orchestratorPaths.js'
+
+const requireUi = createRequire(import.meta.url)
+const { ClientStatePaths } = requireUi('../../app-client-ui/app/clientState/clientStatePaths.ts') as typeof import('../../app-client-ui/app/clientState/clientStatePaths.js')
+const { RemoteControlInstanceStore } = requireUi('../../app-client-ui/app/remoteControl/remoteControlInstanceStore.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteControlInstanceStore.js')
+type RemoteControlInstanceStore = import('../../app-client-ui/app/remoteControl/remoteControlInstanceStore.js').RemoteControlInstanceStore
+const { RemoteControlServer } = requireUi('../../app-client-ui/app/remoteControl/remoteControlServer.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteControlServer.js')
+type RemoteControlServer = import('../../app-client-ui/app/remoteControl/remoteControlServer.js').RemoteControlServer
+const { RemoteSessionGroups } = requireUi('../../app-client-ui/app/sessionGroups/remoteSessionGroups.ts') as typeof import('../../app-client-ui/app/sessionGroups/remoteSessionGroups.js')
+const { SessionTranscriptAccess } = requireUi('../../app-client-ui/app/sessionTranscript/sessionTranscriptAccess.ts') as typeof import('../../app-client-ui/app/sessionTranscript/sessionTranscriptAccess.js')
+type SessionTranscriptAccess = import('../../app-client-ui/app/sessionTranscript/sessionTranscriptAccess.js').SessionTranscriptAccess
+const { SessionsGroupsState } = requireUi('../../app-client-ui/shared/sessionsGroupsState.ts') as typeof import('../../app-client-ui/shared/sessionsGroupsState.js')
 
 class SmokeRemoteControl extends SmokeHarness {
   protected override get waitMilliseconds(): number {
@@ -1159,7 +1165,6 @@ class SmokeRemoteControl extends SmokeHarness {
     await this.waitUntil(condition, failure)
     this.check(description, true)
   }
-
 
   private static success(
     value: RemoteControlTabCommandDto,

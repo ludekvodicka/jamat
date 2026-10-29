@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module'
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises'
@@ -11,11 +12,13 @@ import { ConfigIdentityStore } from '../../lib-orchestrator/shared/configIdentit
 import { ConfigStore } from '../../lib-orchestrator/configStore/configStore.js'
 import { HostDescriptorPaths } from '../../lib-orchestrator/hostClient/hostDescriptorPaths.js'
 import { RemoteControlPairing } from '../../lib-orchestrator/remoteControl/remoteControlPairing.js'
-import { RemotePeerCredentialStore } from '../../app-client-ui/app/remoteControl/remotePeerCredentialStore.js'
-import { RemoteEndpointIdentityStore } from '../../app-client-ui/app/remoteControl/remoteEndpointIdentityStore.js'
-import { RemoteControlSettingsSection } from '../../app-client-ui/app/remoteControl/remoteControlSettingsSection.js'
-import { RemoteControlSettings } from '../../app-client-ui/shared/remoteControlSettings.js'
-import { ClientStatePaths } from '../../app-client-ui/app/clientState/clientStatePaths.js'
+
+const requireUi = createRequire(import.meta.url)
+const { RemotePeerCredentialStore } = requireUi('../../app-client-ui/app/remoteControl/remotePeerCredentialStore.ts') as typeof import('../../app-client-ui/app/remoteControl/remotePeerCredentialStore.js')
+const { RemoteEndpointIdentityStore } = requireUi('../../app-client-ui/app/remoteControl/remoteEndpointIdentityStore.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteEndpointIdentityStore.js')
+const { RemoteControlSettingsSection } = requireUi('../../app-client-ui/app/remoteControl/remoteControlSettingsSection.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteControlSettingsSection.js')
+const { RemoteControlSettings } = requireUi('../../app-client-ui/shared/remoteControlSettings.ts') as typeof import('../../app-client-ui/shared/remoteControlSettings.js')
+const { ClientStatePaths } = requireUi('../../app-client-ui/app/clientState/clientStatePaths.ts') as typeof import('../../app-client-ui/app/clientState/clientStatePaths.js')
 
 export class WorkspaceCdp {
   private readonly socket: WebSocket

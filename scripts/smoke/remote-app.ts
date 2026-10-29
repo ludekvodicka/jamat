@@ -1,6 +1,7 @@
+import { createRequire } from 'node:module'
 import { RemoteReviewScenarios } from './remoteReviewScenarios.js'
 import { RemoteContentScenarios } from './remoteContentScenarios.js'
-import { RemoteSessionSnapshots } from '../../app-client-ui/app/remoteControl/remoteSessionSnapshots.js'
+
 import { CliClient, type CliEnvelope } from './cliClient.js'
 import { SmokeHarness, SmokeRun } from './smokeHarness.js'
 import { randomUUID } from 'node:crypto'
@@ -9,33 +10,6 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { ClientStatePaths } from '../../app-client-ui/app/clientState/clientStatePaths.js'
-import { RemoteConnectionsManager } from '../../app-client-ui/app/remoteControl/remoteConnectionsManager.js'
-import { RemoteControlInboundRegistry } from '../../app-client-ui/app/remoteControl/remoteControlInboundRegistry.js'
-import {
-  RemoteControlPairingManager,
-  type RemoteControlPairingImportResult,
-} from '../../app-client-ui/app/remoteControl/remoteControlPairingManager.js'
-import { RemoteControlPeerServer } from '../../app-client-ui/app/remoteControl/remoteControlPeerServer.js'
-import {
-  RemoteInboundApprovalManager,
-  type RemoteInboundApprovalRequest,
-} from '../../app-client-ui/app/remoteControl/remoteInboundApprovalManager.js'
-import { RemoteControlServer } from '../../app-client-ui/app/remoteControl/remoteControlServer.js'
-import { RemoteControlSettingsSection } from '../../app-client-ui/app/remoteControl/remoteControlSettingsSection.js'
-import { RemoteEndpointIdentityStore } from '../../app-client-ui/app/remoteControl/remoteEndpointIdentityStore.js'
-import {
-  RemotePeerListenerManager,
-  type RemoteListenerApplyResult,
-} from '../../app-client-ui/app/remoteControl/remotePeerListenerManager.js'
-import {
-  RemotePeerCredentialStore,
-  type RemotePeerTrustedIdentity,
-} from '../../app-client-ui/app/remoteControl/remotePeerCredentialStore.js'
-import {
-  RemoteProfileLifecycle,
-  type RemoteProfileSaveResult,
-} from '../../app-client-ui/app/remoteControl/remoteProfileLifecycle.js'
 import type { RemoteControlListenerSettings } from '../../app-client-ui/shared/remoteControlSettings.js'
 import { ConfigStore } from '../../lib-orchestrator/configStore/configStore.js'
 import { HostDescriptorPaths } from '../../lib-orchestrator/hostClient/hostDescriptorPaths.js'
@@ -109,6 +83,35 @@ import type {
   TerminalResizeResult,
 } from '../../lib-orchestrator/sessionManager/terminals/terminalGateway.js'
 import { ConfigIdentityStore } from '../../lib-orchestrator/shared/configIdentityStore.js'
+
+const requireUi = createRequire(import.meta.url)
+const { RemoteSessionSnapshots } = requireUi('../../app-client-ui/app/remoteControl/remoteSessionSnapshots.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteSessionSnapshots.js')
+const { ClientStatePaths } = requireUi('../../app-client-ui/app/clientState/clientStatePaths.ts') as typeof import('../../app-client-ui/app/clientState/clientStatePaths.js')
+const { RemoteConnectionsManager } = requireUi('../../app-client-ui/app/remoteControl/remoteConnectionsManager.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteConnectionsManager.js')
+type RemoteConnectionsManager = import('../../app-client-ui/app/remoteControl/remoteConnectionsManager.js').RemoteConnectionsManager
+const { RemoteControlInboundRegistry } = requireUi('../../app-client-ui/app/remoteControl/remoteControlInboundRegistry.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteControlInboundRegistry.js')
+type RemoteControlInboundRegistry = import('../../app-client-ui/app/remoteControl/remoteControlInboundRegistry.js').RemoteControlInboundRegistry
+const { RemoteControlPairingManager } = requireUi('../../app-client-ui/app/remoteControl/remoteControlPairingManager.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteControlPairingManager.js')
+type RemoteControlPairingImportResult = import('../../app-client-ui/app/remoteControl/remoteControlPairingManager.js').RemoteControlPairingImportResult
+type RemoteControlPairingManager = import('../../app-client-ui/app/remoteControl/remoteControlPairingManager.js').RemoteControlPairingManager
+const { RemoteControlPeerServer } = requireUi('../../app-client-ui/app/remoteControl/remoteControlPeerServer.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteControlPeerServer.js')
+type RemoteControlPeerServer = import('../../app-client-ui/app/remoteControl/remoteControlPeerServer.js').RemoteControlPeerServer
+const { RemoteInboundApprovalManager } = requireUi('../../app-client-ui/app/remoteControl/remoteInboundApprovalManager.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteInboundApprovalManager.js')
+type RemoteInboundApprovalRequest = import('../../app-client-ui/app/remoteControl/remoteInboundApprovalManager.js').RemoteInboundApprovalRequest
+type RemoteInboundApprovalManager = import('../../app-client-ui/app/remoteControl/remoteInboundApprovalManager.js').RemoteInboundApprovalManager
+const { RemoteControlServer } = requireUi('../../app-client-ui/app/remoteControl/remoteControlServer.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteControlServer.js')
+type RemoteControlServer = import('../../app-client-ui/app/remoteControl/remoteControlServer.js').RemoteControlServer
+const { RemoteControlSettingsSection } = requireUi('../../app-client-ui/app/remoteControl/remoteControlSettingsSection.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteControlSettingsSection.js')
+const { RemoteEndpointIdentityStore } = requireUi('../../app-client-ui/app/remoteControl/remoteEndpointIdentityStore.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteEndpointIdentityStore.js')
+const { RemotePeerListenerManager } = requireUi('../../app-client-ui/app/remoteControl/remotePeerListenerManager.ts') as typeof import('../../app-client-ui/app/remoteControl/remotePeerListenerManager.js')
+type RemoteListenerApplyResult = import('../../app-client-ui/app/remoteControl/remotePeerListenerManager.js').RemoteListenerApplyResult
+type RemotePeerListenerManager = import('../../app-client-ui/app/remoteControl/remotePeerListenerManager.js').RemotePeerListenerManager
+const { RemotePeerCredentialStore } = requireUi('../../app-client-ui/app/remoteControl/remotePeerCredentialStore.ts') as typeof import('../../app-client-ui/app/remoteControl/remotePeerCredentialStore.js')
+type RemotePeerTrustedIdentity = import('../../app-client-ui/app/remoteControl/remotePeerCredentialStore.js').RemotePeerTrustedIdentity
+type RemotePeerCredentialStore = import('../../app-client-ui/app/remoteControl/remotePeerCredentialStore.js').RemotePeerCredentialStore
+const { RemoteProfileLifecycle } = requireUi('../../app-client-ui/app/remoteControl/remoteProfileLifecycle.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteProfileLifecycle.js')
+type RemoteProfileSaveResult = import('../../app-client-ui/app/remoteControl/remoteProfileLifecycle.js').RemoteProfileSaveResult
+type RemoteProfileLifecycle = import('../../app-client-ui/app/remoteControl/remoteProfileLifecycle.js').RemoteProfileLifecycle
 
 interface SmokeRuntimeIdentity {
   hostInstanceId: string
@@ -969,7 +972,6 @@ class SmokeRemoteApp extends SmokeHarness {
     await this.waitUntil(condition, failure)
     this.check(description, true)
   }
-
 
   private static writeAccepted(value: unknown): boolean {
     if (typeof value !== 'object' || value === null) return false

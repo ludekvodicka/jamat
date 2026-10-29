@@ -52,21 +52,21 @@ export class PassInbox {
 
   static async open(directory: string): Promise<PassInbox> {
     const checked = await PassInbox.checkedDirectory(directory)
-    const [identity, channel, kind, attemptId] = PassInbox.parts(checked)
+    const [identity, channel, kind, attemptId] = PassInbox.parts(directory)
     const file = join(checked, 'brief.json')
     if (PathCompare.comparable(await realpath(file)) !== PathCompare.comparable(file))
       throw new Error('Pass brief redirects outside its owned path')
     const brief = briefSchema.parse(JSON.parse(await readFile(file, 'utf8')))
     if (brief.attemptId !== attemptId || brief.kind !== kind)
       throw new Error('Pass brief identity does not match its directory')
-    return new PassInbox(checked, identity, channel, brief)
+    return new PassInbox(resolve(directory), identity, channel, brief)
   }
 
   async brief(): Promise<PassBrief> { return structuredClone(this.value) }
 
   async append(event: PassEvent): Promise<number> {
     const parsed = PassInbox.validateEvent(event)
-    const inbox = join(this.directory, 'inbox')
+    const inbox = join(await PassInbox.checkedDirectory(this.directory), 'inbox')
     await mkdir(inbox, { recursive: true })
     if (PathCompare.comparable(await realpath(inbox)) !== PathCompare.comparable(inbox))
       throw new Error('Pass inbox redirects outside its owned path')
@@ -119,6 +119,6 @@ export class PassInbox {
     const expected = join(root, relative(resolve(OrchestratorPaths.machineRoot()), resolve(directory)))
     if (PathCompare.comparable(actual) !== PathCompare.comparable(expected))
       throw new Error('Pass directory redirects outside its owned path')
-    return resolve(directory)
+    return actual
   }
 }
