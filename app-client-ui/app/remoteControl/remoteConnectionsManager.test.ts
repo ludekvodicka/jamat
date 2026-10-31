@@ -16,8 +16,8 @@ import { RemoteConnectionsManager } from './remoteConnectionsManager'
 import { RemoteSessionSnapshots } from './remoteSessionSnapshots'
 
 describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
-  it('keeps a disconnected terminal without redialling until Connect is pressed', async () => {
-    const harness = new RemoteConnectionsManagerTest()
+  it('redials a selected computer every few seconds until it answers, then reattaches its terminal', async () => {
+    const harness = new RemoteConnectionsManagerTest(undefined, { heldTimers: true, random: 0.5 })
     harness.manager.start()
     await harness.manager.connectComputer('test', 'target-endpoint')
     await harness.waitUntil(() => harness.manager.snapshot().outbound[0]?.status === 'connected')
@@ -35,21 +35,60 @@ describe('app-client-ui/app/remoteControl/remoteConnectionsManager', () => {
       .toMatchObject({ ok: true })
     expect(harness.transports[0]?.activeRequests).toBe(1)
 
+    harness.refuseConnect = true
     harness.transports[0]?.close()
     await harness.settle()
     expect(harness.dials).toEqual(['target-endpoint'])
-    expect(harness.manager.snapshot().outbound[0]?.nextRetryAt).toBeNull()
-    await harness.manager.connectComputer('test', 'target-endpoint')
-    await harness.waitUntil(() => harness.transports.length === 2
-      && harness.manager.snapshot().outbound[0]?.status === 'connected')
-    expect(harness.transports[1]?.attachRequests).toBe(1)
-    expect(harness.transports[1]?.activeRequests).toBe(1)
-    expect(harness.manager.snapshot().outbound[0]?.sessions?.revision).toBe(2)
+    expect(harness.manager.snapshot().outbound[0]).toMatchObject({
+      status: 'offline', nextRetryAt: harness.clock + 7_500,
+    })
     expect(frames).toContainEqual({
       type: 'terminal.status',
       status: 'connecting',
-      detail: 'Remote AppClientUI disconnected. Press Connect to reconnect.',
+      detail: 'Remote AppClientUI disconnected. Reconnecting automatically.',
     })
+
+    harness.fireRetry()
+    await harness.waitUntil(() => harness.dials.length === 2
+      && harness.manager.snapshot().outbound[0]?.status === 'offline')
+    expect(harness.manager.snapshot().outbound[0]?.nextRetryAt).toBe(harness.clock + 7_500)
+
+    harness.refuseConnect = false
+    harness.fireRetry()
+    await harness.waitUntil(() => harness.transports.length === 2
+      && harness.manager.snapshot().outbound[0]?.status === 'connected')
+    await harness.waitUntil(() => harness.transports[1]?.activeRequests === 1)
+    expect(harness.transports[1]?.attachRequests).toBe(1)
+    expect(harness.manager.snapshot().outbound[0]).toMatchObject({ nextRetryAt: null, sessions: { revision: 2 } })
+    expect(harness.timers.filter((timer) => timer.milliseconds === 7_500 && !timer.fired && !timer.cleared)).toEqual([])
+    harness.manager.stop()
+  })
+
+  it('stops redialling when the selection goes or the computer refuses this identity', async () => {
+    const harness = new RemoteConnectionsManagerTest(undefined, { heldTimers: true, random: 0 })
+    harness.manager.start()
+    await harness.manager.connectComputer('dialog', 'target-endpoint')
+    await harness.manager.selectSession('target-endpoint', 'session-a')
+    harness.manager.releaseConnections('dialog')
+    harness.transports[0]?.close()
+    await harness.settle()
+    const retry = harness.timers.find((timer) => timer.milliseconds === 5_000)
+    expect(retry?.cleared).toBe(false)
+    await harness.manager.disconnectSessions('target-endpoint')
+    expect(retry?.cleared).toBe(true)
+    expect(harness.manager.snapshot().outbound[0]?.nextRetryAt).toBeNull()
+
+    await harness.manager.connectComputer('dialog', 'target-endpoint')
+    await harness.manager.selectSession('target-endpoint', 'session-a')
+    harness.refuseConnect = true
+    harness.refuseCode = 'forbidden'
+    harness.transports[1]?.close()
+    await harness.settle()
+    harness.fireRetry()
+    await harness.waitUntil(() => harness.dials.length === 3
+      && harness.manager.snapshot().outbound[0]?.status === 'offline')
+    expect(harness.manager.snapshot().outbound[0]).toMatchObject({ nextRetryAt: null, error: { code: 'forbidden' } })
+    expect(harness.timers.filter((timer) => timer.milliseconds === 5_000 && !timer.fired && !timer.cleared)).toEqual([])
     harness.manager.stop()
   })
 
@@ -628,11 +667,14 @@ interface RemoteConnectionsManagerTestTimer {
   milliseconds: number
   handle: ReturnType<typeof setTimeout>
   cleared: boolean
+  fired: boolean
+  callback: () => void
 }
 
 interface RemoteConnectionsManagerTestOptions {
   workspace?: boolean
   heldTimers?: boolean
+  random?: number
   /** A peer that grants no hello - an older computer, which is a refusal and not a failure. */
   offersHello?: boolean
 }
@@ -645,6 +687,7 @@ class RemoteConnectionsManagerTest {
   readonly manager: RemoteConnectionsManager
   clock = 1_700_000_000_000
   refuseConnect = false
+  refuseCode: 'unavailable' | 'forbidden' = 'unavailable'
   reconciled = true
   dialGate: Promise<void> | null = null
   readonly signals: AbortSignal[] = []
@@ -666,7 +709,7 @@ class RemoteConnectionsManagerTest {
         if (this.dialGate) await this.dialGate
         if (signal.aborted) return { ok: false, error: { code: 'unavailable', detail: 'Cancelled' } }
         if (this.refuseConnect)
-          return { ok: false, error: { code: 'unavailable', detail: 'Nothing answers there' } }
+          return { ok: false, error: { code: this.refuseCode, detail: 'Nothing answers there' } }
         const transport = new RemoteConnectionsManagerTestTransport(
           RemoteConnectionsManagerTest.identity(profile.remoteComputerId, profile.remoteEndpointId),
           `connection-${this.transports.length + 1}`,
@@ -685,13 +728,14 @@ class RemoteConnectionsManagerTest {
       operationId: () => `operation-${this.requestSequence}`,
       idleDelayMilliseconds: 0,
       now: () => this.clock,
+      ...(options.random === undefined ? {} : { random: () => options.random! }),
       ...(held
         ? {
             // A real handle so the manager's own `unref` and `clearTimeout` are the ones being
             // exercised; what it would run is this test's to call, and it never runs by itself.
-            setTimer: (_callback: () => void, milliseconds: number) => {
+            setTimer: (callback: () => void, milliseconds: number) => {
               const handle = setTimeout(() => undefined, 60_000)
-              this.timers.push({ milliseconds, handle, cleared: false })
+              this.timers.push({ milliseconds, handle, cleared: false, fired: false, callback })
               return handle
             },
             clearTimer: (handle: ReturnType<typeof setTimeout>) => {
@@ -702,6 +746,16 @@ class RemoteConnectionsManagerTest {
           }
         : {}),
     })
+  }
+
+  /** Runs the one armed redial, as its delay running out would. */
+  fireRetry(): void {
+    const armed = this.timers.filter((timer) =>
+      timer.milliseconds >= RemoteConnectionsManager.retryDelayMillisecondsConst && !timer.fired && !timer.cleared)
+    if (armed.length !== 1) throw new Error(`Expected one armed redial, found ${armed.length}`)
+    armed[0]!.fired = true
+    clearTimeout(armed[0]!.handle)
+    armed[0]!.callback()
   }
 
   /** One macrotask, which is what the zero-delay hang-up above waits for. */

@@ -6,6 +6,7 @@ import type { AutolauncherManager } from './autolauncherManager'
 export class ServiceAutolauncherIpc extends ServiceIpcBase<typeof ServiceAutolauncherIpc.channelsConst> {
   static readonly channelsConst = {
     'autolauncher:get': true, 'autolauncher:enable': true, 'autolauncher:disable': true,
+    'autolauncher:inspect': true,
   } as const
   private readonly manager: AutolauncherManager
   private readonly acceptsRenderer: (sender: WebContents) => boolean
@@ -21,9 +22,13 @@ export class ServiceAutolauncherIpc extends ServiceIpcBase<typeof ServiceAutolau
       this.assertSender(event.sender)
       return this.manager.get()
     })
-    this.register('autolauncher:enable', (event, invitation) => {
+    this.register('autolauncher:inspect', (event, recipe) => {
       this.assertSender(event.sender)
-      return this.manager.enable(invitation)
+      return this.manager.inspect(recipe)
+    })
+    this.register('autolauncher:enable', (event, invitation, selection) => {
+      this.assertSender(event.sender)
+      return this.manager.enable(invitation, selection)
     })
     this.register('autolauncher:disable', event => {
       this.assertSender(event.sender)

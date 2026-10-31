@@ -8,7 +8,7 @@ import { AutolauncherConnection, type AutolauncherPairing } from './autolauncher
 
 const key = 'ac'.repeat(32)
 const token = 'ab'.repeat(32)
-const failure = 'Pairing failed. Create a new invitation for this PC in MiniWolService and try again.'
+const failure = 'Pairing failed. Create a new invitation for this PC in the Jamat relay and try again.'
 const servers: Server[] = []
 const intervals: ReturnType<typeof setInterval>[] = []
 
@@ -87,7 +87,7 @@ describe('app-client-ui/app/autolauncher/autolauncherConnection', () => {
       invitation(origin.replace('http://', `http://user:${key}@`)),
     ]
     for (const value of invalid)
-      await expect(connection.pair(value)).rejects.toThrow(/^(Paste the setup invitation from MiniWolService\.|The setup invitation is invalid\.)$/)
+      await expect(connection.pair(value)).rejects.toThrow(/^(Paste the setup invitation from the Jamat relay\.|The setup invitation is invalid\.)$/)
     expect(requests).toBe(0)
   })
 

@@ -47,7 +47,7 @@ export class WorkerReady {
       // carries; a ready mark would prepare the review again and close it (UA1-J12-5).
       const review = record.worktreeLifecycle.review
       if (record.worktreeLifecycle.step === 'reviewing' && review !== undefined && WorkerReady.same(
-        Object.fromEntries(Object.entries(hashes).filter(([path]) => !SvnCommitGate.sidecarPattern.test(path))), review.hashes)) return
+        Object.fromEntries(Object.entries(hashes).filter(([path]) => !SvnCommitGate.sidecarPattern.test(path) && !review.setupOutputs?.includes(path))), review.hashes)) return
       // An existing review is a protected boundary; another proposal cannot bless outside SVN writes.
       if (record.svnAction === undefined && record.worktreeLifecycle.review === undefined
         && record.worktreeLifecycle.wait?.kind !== 'changed-outside') await this.commands.accept(root)

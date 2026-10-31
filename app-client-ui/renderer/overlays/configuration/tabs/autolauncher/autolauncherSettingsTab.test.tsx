@@ -3,11 +3,14 @@ import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { AppClientUiBridge, IpcResult } from '../../../../../shared/appClientUiIpc'
-import type { AutolauncherResult, AutolauncherSnapshot } from '../../../../../shared/autolauncher'
+import type { AutolauncherResult, AutolauncherSnapshot, AutolauncherTargetView } from '../../../../../shared/autolauncher'
 import { AutolauncherSettingsTab } from './autolauncherSettingsTab'
 
 function snapshot(change: Partial<AutolauncherSnapshot> = {}): AutolauncherSnapshot {
   return {
+    currentTarget: { recipe: { kind: 'executable', path: 'C:/Program Files/Jamat/Jamat.exe' },
+      process: { command: 'C:/Program Files/Jamat/Jamat.exe', args: [], cwd: 'C:/Program Files/Jamat', windowsVerbatimArguments: false, completion: 'spawn', readinessTimeoutMs: 60000, requiredFiles: [], requireRunning: false }, availability: { state: 'available' }, warning: null },
+    installedTarget: null,
     supported: true,
     target: {
       configDir: 'C:/Users/Alex/.jamat-v3',
@@ -39,6 +42,7 @@ function fixture(initial = snapshot()) {
   const listeners = new Set<(value: AutolauncherSnapshot) => void>()
   const bridge = {
     autolauncher: {
+      inspect: vi.fn<AppClientUiBridge['autolauncher']['inspect']>(async () => ({ ok: true, value: current.currentTarget })),
       get: vi.fn<AppClientUiBridge['autolauncher']['get']>(async () => ({ ok: true, value: current })),
       enable: vi.fn<AppClientUiBridge['autolauncher']['enable']>(async () => {
         current = {
@@ -98,9 +102,11 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/autolauncher/autola
     expect(view.getByText('C:/Program Files/Jamat/Jamat.exe')).toBeTruthy()
     expect(view.container.textContent).toContain('remain signed in to Windows')
     expect(view.container.textContent).toContain('UAC')
+    expect(view.getByText('Copy a one-time invitation for this PC from the Jamat relay (Nastavit spouštění Jamatu), paste it here, then enable Autolauncher.')).toBeTruthy()
+    expect(view.container.textContent).not.toContain('MiniWol web page')
     expect(view.getByRole('button', { name: 'Enable for this Jamat' })).toBeDisabled()
     expect(invitation.type).toBe('password')
-    expect(view.container.querySelectorAll('input')).toHaveLength(1)
+    expect(view.getByLabelText('Start target')).toBeTruthy()
     expect(bridge.autolauncher.enable).not.toHaveBeenCalled()
     expect(bridge.autolauncher.disable).not.toHaveBeenCalled()
   })
@@ -108,11 +114,69 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/autolauncher/autola
   it('shows a source checkout and development channel from the captured target', async () => {
     const value = snapshot()
     value.target = { ...value.target, mode: 'source', runtimeChannel: 'development', path: 'Q:/Projects/Jamat' }
+    value.currentTarget = { recipe: { kind: 'source', repositoryRoot: value.target.path },
+      process: { command: 'C:/node.exe', args: ['Q:/Projects/Jamat/node_modules/tsx/dist/cli.mjs', 'Q:/Projects/Jamat/scripts/release/start-packaged-client.ts'], cwd: value.target.path, windowsVerbatimArguments: false, completion: 'exit-zero', readinessTimeoutMs: 60000, requiredFiles: [], requireRunning: false }, availability: { state: 'available' }, warning: null }
     const { view } = await fixture(value).mount()
 
-    expect(view.getByText('Source checkout')).toBeTruthy()
+    expect(view.getByText('source')).toBeTruthy()
     expect(view.getByText('Q:/Projects/Jamat')).toBeTruthy()
     expect(view.getByText('Development')).toBeTruthy()
+  })
+
+  it('keeps the missing installed executable visible while applying a different development target', async () => {
+    const installedTarget: AutolauncherTargetView = { ...snapshot().currentTarget,
+      recipe: { kind: 'executable', path: 'D:/scratchpad/Jamat.exe' },
+      process: { ...snapshot().currentTarget.process!, command: 'D:/scratchpad/Jamat.exe' },
+      availability: { state: 'missing', path: 'D:/scratchpad/Jamat.exe' } }
+    const { bridge, mount } = fixture(snapshot({ installed: true, installedForThisProfile: true, connectionReady: true, installedTarget }))
+    const { view } = await mount()
+    expect(view.getByLabelText('Start target')).toHaveValue('installed')
+    const apply = view.getByRole('button', { name: 'Apply target and update launcher' })
+    expect(apply).toBeDisabled()
+    bridge.autolauncher.inspect.mockResolvedValue({ ok: true, value: {
+      ...snapshot().currentTarget, recipe: { kind: 'development', repositoryRoot: 'Q:/Jamat' },
+    } })
+    await act(async () => { fireEvent.change(view.getByLabelText('Start target'), { target: { value: 'development' } }) })
+    await act(async () => { fireEvent.change(view.getByLabelText('Checkout directory'), { target: { value: 'Q:/Jamat' } }) })
+    expect(view.getByText('Missing: D:/scratchpad/Jamat.exe')).toBeTruthy()
+    await act(async () => { fireEvent.click(apply) })
+    expect(bridge.autolauncher.enable).toHaveBeenCalledExactlyOnceWith(null, {
+      recipe: { kind: 'development', repositoryRoot: 'Q:/Jamat' }, temporaryPathConfirmed: false,
+    })
+  })
+
+  it('requires confirmation for a temporary target and clears it when the recipe changes', async () => {
+    const value = snapshot({ connectionReady: true })
+    value.currentTarget.warning = 'This target is in a temporary location.'
+    const { bridge, mount } = fixture(value)
+    const { view } = await mount()
+    const apply = view.getByRole('button', { name: 'Enable for this Jamat' })
+    expect(apply).toBeDisabled()
+    fireEvent.click(view.getByLabelText('Keep this exact temporary location'))
+    expect(apply).not.toBeDisabled()
+    await act(async () => { fireEvent.change(view.getByLabelText('Start target'), { target: { value: 'custom' } }) })
+    expect(view.getByLabelText('Keep this exact temporary location')).not.toBeChecked()
+    expect(apply).toBeDisabled()
+    expect(bridge.autolauncher.enable).not.toHaveBeenCalled()
+  })
+
+  it('rejects malformed custom arguments and ignores an older target inspection', async () => {
+    const { bridge, mount } = fixture(snapshot({ connectionReady: true }))
+    const { view } = await mount()
+    const older = deferred<IpcResult<AutolauncherTargetView>>()
+    bridge.autolauncher.inspect.mockReturnValueOnce(older.promise)
+    act(() => { fireEvent.change(view.getByLabelText('Start target'), { target: { value: 'custom' } }) })
+    await act(async () => { fireEvent.change(view.getByLabelText('Arguments (JSON array)'), { target: { value: 'not JSON' } }) })
+    await act(async () => { older.resolve({ ok: true, value: snapshot().currentTarget }) })
+    const apply = view.getByRole('button', { name: 'Enable for this Jamat' })
+    expect(apply).toBeDisabled()
+    await act(async () => { fireEvent.change(view.getByLabelText('Arguments (JSON array)'), { target: { value: '["entry.js"]' } }) })
+    fireEvent.click(view.getByLabelText('Long-running process'))
+    await act(async () => undefined)
+    await act(async () => { fireEvent.click(apply) })
+    expect(bridge.autolauncher.enable).toHaveBeenCalledWith(null, { recipe: {
+      kind: 'detached-command', command: '', cwd: '', args: ['entry.js'], windowsVerbatimArguments: false,
+    }, temporaryPathConfirmed: false })
   })
 
   it('forwards an opaque invitation unchanged and clears it only after enabling', async () => {
@@ -124,7 +188,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/autolauncher/autola
 
     await act(async () => { fireEvent.click(view.getByRole('button', { name: 'Enable for this Jamat' })) })
 
-    expect(bridge.autolauncher.enable).toHaveBeenCalledExactlyOnceWith(text)
+    expect(bridge.autolauncher.enable).toHaveBeenCalledExactlyOnceWith(text, { recipe: snapshot().currentTarget.recipe, temporaryPathConfirmed: false })
     expect(invitation.value).toBe('')
     expect(view.getByText('Installed for this Jamat')).toBeTruthy()
     expect(view.getByText('Running')).toBeTruthy()
@@ -137,8 +201,8 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/autolauncher/autola
     }))
     const { view } = await mount()
 
-    await act(async () => { fireEvent.click(view.getByRole('button', { name: 'Update for this Jamat' })) })
-    expect(bridge.autolauncher.enable).toHaveBeenCalledExactlyOnceWith(null)
+    await act(async () => { fireEvent.click(view.getByRole('button', { name: 'Apply target and update launcher' })) })
+    expect(bridge.autolauncher.enable).toHaveBeenCalledExactlyOnceWith(null, { recipe: snapshot().currentTarget.recipe, temporaryPathConfirmed: false })
     await act(async () => { fireEvent.click(view.getByRole('button', { name: 'Disable' })) })
     expect(bridge.autolauncher.disable).toHaveBeenCalledExactlyOnceWith()
     expect(view.getByText('Not installed')).toBeTruthy()
@@ -160,7 +224,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/autolauncher/autola
     await act(async () => {
       fireEvent.click(view.getByRole('button', { name: 'Replace other profile with this Jamat' }))
     })
-    expect(bridge.autolauncher.enable).toHaveBeenCalledExactlyOnceWith(null)
+    expect(bridge.autolauncher.enable).toHaveBeenCalledExactlyOnceWith(null, { recipe: snapshot().currentTarget.recipe, temporaryPathConfirmed: false })
     expect(view.queryByRole('note')).toBeNull()
   })
 
@@ -218,7 +282,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/autolauncher/autola
     expect(view.getByRole('alert').textContent).toContain('Windows permission was cancelled')
     await act(async () => { fireEvent.click(view.getByRole('button', { name: 'Retry with saved connection' })) })
 
-    expect(bridge.autolauncher.enable.mock.calls).toEqual([['one-time-invitation'], [null]])
+    expect(bridge.autolauncher.enable.mock.calls.map(call => call[0])).toEqual(['one-time-invitation', null])
     expect(invitation.value).toBe('')
     expect(view.queryByRole('alert')).toBeNull()
     expect(view.getByText('Installed for this Jamat')).toBeTruthy()
@@ -272,7 +336,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/autolauncher/autola
     const { view } = await mount()
     const stale = deferred<IpcResult<AutolauncherSnapshot>>()
     bridge.autolauncher.get.mockReturnValueOnce(stale.promise)
-    act(() => { fireEvent.click(view.getByRole('button', { name: 'Refresh status' })) })
+    await act(async () => { fireEvent.click(view.getByRole('button', { name: 'Refresh status' })) })
 
     await act(async () => { fireEvent.click(view.getByRole('button', { name: 'Enable for this Jamat' })) })
     expect(view.getByText('Installed for this Jamat')).toBeTruthy()

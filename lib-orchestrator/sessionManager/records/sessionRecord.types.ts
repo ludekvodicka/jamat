@@ -147,7 +147,7 @@ export interface SessionRecordWorktree {
   kind?: SessionWorktreeKind
   /** svn: `dev:ino:birthtimeNs` of the checkout, so a removal never deletes a reused name. */
   directoryId?: string
-  /** Preservation belongs to this directory, including retries under a different cleanup action. */
+  /** No longer written: the action of a removal's content copy, which removal no longer makes. Older records still carry it. */
   preservationActionId?: string
   /**
    * svn: where the session's directory lies below the owner, '/'-separated; absent at the owner
@@ -156,6 +156,13 @@ export interface SessionRecordWorktree {
   cwdSubpath?: string
   /** Frozen at creation; absent on legacy worktrees, whose recorded owner keeps the old setup. */
   setupScope?: 'project' | 'members'
+  /**
+   * The variables the worktree's setup ran with (`SetupResolution.variables`), which every process
+   * Jamat starts inside the worktree carries, so no later command changes the dependency layout the
+   * setup made. Frozen when the setup is first planned, `{}` when it needs none; absent on a record
+   * older than the field or one still waiting for its first plan, which take this machine's settings now.
+   */
+  setupVariables?: Record<string, string>
   /** What the create's caller asked of the results: its tag and its wake-up line. */
   caller?: SessionRecordWorktreeCaller
   conflictMemory?: SessionRecordConflictMemory

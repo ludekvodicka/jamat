@@ -83,6 +83,16 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnActionStages', () => {
     expect(SvnActionStages.clientDue(action({ stage: 'evidence', needs: { kind: 'locked', reason: 'x', at: 2 } }))).toBe(false)
   })
 
+  it('says a run stage that names neither its run nor a retry is a lost launch, and due', () => {
+    const lost = action({ kind: 'update-main', stage: 'updating', runId: undefined })
+    expect(SvnActionStages.launchLost(lost)).toBe(true)
+    expect(SvnActionStages.clientDue(lost, 0)).toBe(true)
+    expect(SvnActionStages.launchLost(action({ stage: 'updating' }))).toBe(false)
+    expect(SvnActionStages.launchLost({ ...lost, retryAt: 10 })).toBe(false)
+    expect(SvnActionStages.launchLost({ ...lost, needs: { kind: 'locked', reason: 'x', at: 2 } })).toBe(false)
+    expect(SvnActionStages.launchLost({ ...lost, stage: 'recording' })).toBe(false)
+  })
+
   it('tells the snapshot the stage, why it waits and which review is open', () => {
     expect(SvnActionStages.infoOf(action({ stage: 'reviewing', rootCursor: 1 }))).toEqual({
       kind: 'finish', stage: 'reviewing', needs: null, needsKind: null, review: { index: 2, count: 2, scopeRoot: 'C:/w' },

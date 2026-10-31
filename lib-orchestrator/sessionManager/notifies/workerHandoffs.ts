@@ -5,6 +5,8 @@ import type { SessionRecordsStore } from '../records/sessionRecordsStore'
 import type { NotifySource, PendingNotify } from './sessionNotifier'
 import { SvnConflictShapes } from '../../svn/svnConflictShapes'
 import { ErrorText } from '../../shared/errorText'
+import { relative } from 'node:path'
+import type { WorktreeRepositoryReview } from '../../worktrees/worktreeState'
 
 export class WorkerHandoffs implements NotifySource {
   /**
@@ -62,6 +64,28 @@ export class WorkerHandoffs implements NotifySource {
     ].join('\n'))
   }
 
+  /**
+   * A Finish review opened without a message for these repositories, so the live worker writes one,
+   * once per action. Nothing asked it before, and in Mirabia 113 the person pasted the text by hand
+   * (2026-10-30). The line stops applying once the review is approved, so it never holds the idle gate.
+   */
+  async messageWanted(sessionId: string, repositories: readonly Pick<WorktreeRepositoryReview, 'root' | 'repositoryName' | 'expectedPrefix'>[]): Promise<void> {
+    const record = this.records()?.get(sessionId)
+    const state = record?.worktreeLifecycle
+    const root = record?.worktree?.worktreePath
+    if (record == null || record.life !== 'live' || state?.step !== 'reviewing' || state.actionId === undefined || root === undefined || repositories.length === 0) return
+    await this.enqueue(sessionId, `message:${state.actionId}`, [
+      'Finish waits for your commit message. Write it, then propose it.',
+      `Propose it with: ${this.lineOrWords(record, WorkerHandoffs.commandsConst.propose)} MESSAGE_FILE`,
+      'MESSAGE_FILE is a file that holds your commit message.',
+      ...repositories.map((repository) => {
+        const directory = relative(root, repository.root).replace(/\\/g, '/')
+        return directory === '' ? `${repository.repositoryName}: start the message with ${repository.expectedPrefix}`
+          : `${repository.repositoryName} (external ${JSON.stringify(directory)}): start the message with ${repository.expectedPrefix} and add --directory ${JSON.stringify(directory)}`
+      }),
+    ].join('\n'))
+  }
+
   async redeliver(sessionId: string): Promise<void> {
     const records = this.records()
     const record = records?.get(sessionId)
@@ -99,6 +123,7 @@ export class WorkerHandoffs implements NotifySource {
       && state.syncConflictSet?.entries.some((entry) => entry.state !== 'settled') === true
     if (handoff?.key.startsWith('checks:')) return state?.phase === 'active' && state.checks?.passed === false
       && !state.checks.overridden && handoff.key === `checks:${state.checks.at}`
+    if (handoff?.key.startsWith('message:')) return state?.step === 'reviewing' && handoff.key === `message:${state.actionId}`
     // A resume left from an earlier action would hold every later Finish at its idle gate (UA1-J13-1).
     if (handoff?.key.startsWith('resume:') && handoff.key !== `resume:${state?.actionId}`) return false
     return state?.phase === 'active' || state?.phase === 'finishing' || state?.phase === 'waiting'

@@ -18,7 +18,7 @@ export class VersioningSettingsOperations {
   /** Every field a save may name; a save writes only the keys of that one field. */
   static readonly fieldsConst = [
     'mode', 'diffTool', 'activateSessionOnCommit', 'returnToPreviousSessionAfterCommit',
-    'returnToPreviousSessionWithinMinutes', 'closeCommitOnSuccess', 'commitReview', 'commitSplitRatio',
+    'returnToPreviousSessionWithinMinutes', 'switchAfterIdleSeconds', 'closeCommitOnSuccess', 'commitReview', 'commitSplitRatio',
   ] as const satisfies readonly VersioningSettingsField[]
 
   constructor(private readonly configStore: ConfigStore) {}

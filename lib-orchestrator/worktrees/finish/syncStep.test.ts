@@ -33,12 +33,13 @@ async function harness() {
   let held = 0
   let facts: SvnConflictFact[] = []
   const set: SvnActionConflictSet = { entries: [], readAt: 2, revision: 2, baseRevision: 1, more: 0 }
-  const runner = { run: vi.fn(async () => ({ ok: true as const, output: '', exitCode: 0, runId: 'run' })) }
+  // svn 1.14 exits 0 with postponed conflicts and names them in its summary.
+  const runner = { run: vi.fn(async () => ({ ok: true as const, output: facts.length > 0 ? 'Summary of conflicts:\n  Text conflicts: 1\n' : 'At revision 2.\n', exitCode: 0, runId: 'run' })) }
   const deps: ConstructorParameters<typeof SyncStep>[0] = {
     records, runner, commands: { lease: new WorktreeLease('self', () => []), accept: vi.fn(async () => {}), verify: vi.fn(async () => {}) },
     svn: { updateTargets: emptyUpdateTargets, headRevisionOf: vi.fn(async () => { expect(held).toBe(1); return { ok: true as const, value: 2 } }),
       revisionOf: async () => ({ ok: true, value: 1 }), conflictSet: async () => ({ ok: true, value: { revision: 2, rows: [], facts } }),
-      scheduleMissing: vi.fn(async () => ({ ok: true as const, value: undefined })) },
+      scheduleMissing: vi.fn(async () => ({ ok: true as const, value: undefined })), unmoved: vi.fn(async () => ({ ok: true as const, value: false })) },
     conflicts: { remember: async () => ({ ok: true, value: { set, memory: { actionId: 'sync', readAt: 2, paths: [] } } }),
       remembered: async (_action, memory) => ({ ok: true, value: { set, memory, reasons: [] } }),
       fix: async (action) => ({ kind: 'settled', action }) },
@@ -143,10 +144,12 @@ describe('SyncStep', () => {
       expect.objectContaining({ path: 'a', journal: { option: 'merged', done: 1 } }),
       expect.objectContaining({ path: 'b', journal: { option: 'merged', done: 1 } }),
     ] } })
+    // The worker still ends the turn Jamat's prompt started; the sync waits for it without a wait for the person.
+    expect(h.records.get('worker')?.worktreeLifecycle?.awaitingIdleAt).toBeDefined()
     h.facts([])
     h.set.entries.splice(0)
     expect(await h.step.run('worker', 'finish')).toMatchObject({ ok: true, value: { conflicts: [] } })
-    expect(h.records.get('worker')?.worktreeLifecycle?.step).toBe('checking')
+    expect(h.records.get('worker')?.worktreeLifecycle).toMatchObject({ step: 'checking', awaitingIdleAt: undefined, awaitingIdleReason: undefined })
   })
 
   it('rewrites the person\'s conflict wait after each settlement, and names Try again once nothing is left', async () => {
@@ -213,6 +216,26 @@ describe('SyncStep', () => {
     expect(h.runner.run).toHaveBeenCalledTimes(2)
     expect(h.records.get('worker')?.worktreeLifecycle?.step).toBe('checking')
     expect(h.records.get('worker')?.worktreeLifecycle?.facts.worker.ready).toBeUndefined()
+  })
+
+  // Mirabia 114: two rounds of 3 and 2 min brought nothing; r896 and r897 were MeetingRecorder commits.
+  it('records HEAD as reached without an update round when nothing below the worktree or its mounts moved', async () => {
+    const h = await harness()
+    h.deps.svn.unmoved = vi.fn(async () => ({ ok: true as const, value: true }))
+    expect(await h.step.run('worker', 'finish')).toEqual({ ok: true, value: { revision: 2, conflicts: [] } })
+    expect(h.runner.run).not.toHaveBeenCalled()
+    expect(h.records.get('worker')?.worktreeLifecycle).toMatchObject({ step: 'checking', facts: { syncedAt: { revision: 2, headMovedBy: 0 } } })
+    expect(h.records.get('worker')?.worktreeLifecycle?.update).toBeUndefined()
+  })
+
+  it.each(['a conflict svn marks', 'incoming paths a refused publication named'])('updates without reading the history while %s', async (holder) => {
+    const h = await harness()
+    h.deps.svn.unmoved = vi.fn(async () => ({ ok: true as const, value: true }))
+    if (holder === 'a conflict svn marks') h.facts([{ path: 'a', kind: 'text' } as SvnConflictFact])
+    else await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!, knownIncoming: { paths: ['a'], at: 1 } } }))
+    expect(await h.step.run('worker', 'finish')).toMatchObject({ ok: true })
+    expect(h.deps.svn.unmoved).not.toHaveBeenCalled()
+    expect(h.runner.run).toHaveBeenCalledOnce()
   })
 
   it('keeps a same-name file a keep-both rule left diverged open for the person, across the update that goes on', async () => {

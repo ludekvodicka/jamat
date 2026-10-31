@@ -140,9 +140,12 @@ function Read-Installation([string]$Directory) {
 }
 
 function Owned-Processes($Metadata) {
+    # WScript can widen separators between the three quoted arguments in the process command line.
+    $commandPattern = '\A' + ((@($Metadata.runtime.nodePath, $Metadata.runtime.entryPath, $Metadata.runtime.configFile) |
+        ForEach-Object { '"' + [regex]::Escape($_) + '"' }) -join '[ \t]+') + '\z'
     foreach ($candidate in (Get-CimInstance Win32_Process -Filter "Name = 'node.exe'")) {
         if ($candidate.ExecutablePath -ieq $Metadata.runtime.nodePath -and
-            $candidate.CommandLine -ceq $Metadata.runtime.commandLine) {
+            $candidate.CommandLine -cmatch $commandPattern) {
             $owner = Invoke-CimMethod -InputObject $candidate -MethodName GetOwnerSid
             if ($owner.ReturnValue -ne 0 -or $owner.Sid -cne $Metadata.ownerSid) {
                 Fail-Setup 'The launcher process belongs to another Windows account. It has been preserved.'

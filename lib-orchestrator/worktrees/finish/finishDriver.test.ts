@@ -14,7 +14,7 @@ import { FinishState } from './finishState'
 import { SvnAssemblyReader } from '../../svn/svnAssembly'
 import { SessionSteps, SessionWorkflows } from '../../sessionManager/worktreeSessionRuntime'
 import { WorktreeWords } from '../view/worktreeWords'
-import { WorktreeLease } from '../worktreeLease'
+import { WorktreeLease, WorktreeLeaseHeld } from '../worktreeLease'
 import { WorktreeRecovery } from '../worktreeRecovery'
 import { ScriptLogStore } from '../../sessionManager/worktreeSessionScripts'
 import { SessionScriptsManager } from '../../sessionManager/worktreeSessionScripts'
@@ -83,7 +83,7 @@ async function harness() {
     } },
     checks: { declaredAfter: async () => ({ ok: true, steps: checkSteps }) },
     runs: { launch: vi.fn(async () => {}) },
-    handoffs: { checksFailed: vi.fn(async () => {}), conflicts: vi.fn(async () => {}), notifyCaller: vi.fn(async () => {}) },
+    handoffs: { checksFailed: vi.fn(async () => {}), conflicts: vi.fn(async () => {}), notifyCaller: vi.fn(async () => {}), messageWanted: vi.fn(async () => {}) },
     removal: { remove: vi.fn(async () => {
       events.push('remove')
       await h.records.update('worker', (record) => ({ ...record, worktree: undefined,
@@ -101,7 +101,14 @@ async function harness() {
       startUpdate: vi.fn(async () => ({ ok: true as const, value: { actionId: 'update' } })) },
   } as unknown as FinishDriverDeps
   const driver = new FinishDriver(deps)
-  return { ...h, root, deps, driver, events, failures, logs, results, scripts, setDirty: (paths: string[]) => { dirty = paths },
+  // A press answers before its steps run; these cases judge what the steps left behind.
+  const press = driver.start.bind(driver)
+  driver.start = async (sessionId, finishPress) => {
+    const answer = await press(sessionId, finishPress)
+    await driver.settled(sessionId)
+    return answer
+  }
+  return { ...h, root, deps, driver, press, events, failures, logs, results, scripts, setDirty: (paths: string[]) => { dirty = paths },
     failCommit: (value: typeof failCommit) => { failCommit = value },
     setRevision: (value: number) => { revision = value },
     setHash: (value: string) => { hash = value },
@@ -112,6 +119,28 @@ async function harness() {
 }
 
 describe('FinishDriver', () => {
+  it('answers a press once its action is saved and runs the sync after the answer', async () => {
+    const h = await harness()
+    const run = h.deps.sync.run
+    let release!: () => void
+    const held = new Promise<void>((resolve) => { release = resolve })
+    h.deps.sync.run = async (...args) => { await held; return run(...args) }
+    const answer = await h.press('worker', { choice: 'commit', requestedBy: 'cli' })
+    expect(answer).toEqual({ ok: true, value: { actionId: h.state().actionId } })
+    expect(h.state()).toMatchObject({ phase: 'finishing', step: 'syncing' })
+    expect(h.events).not.toContain('sync')
+    expect(h.driver.held().has('worker')).toBe(true)
+    release()
+    await h.driver.settled('worker')
+    expect(h.events).toContain('sync')
+    expect(h.state().step).toBe('reviewing')
+  })
+  it('answers a second press merge-pending while an svn write of the Finish still holds the worktree', async () => {
+    const h = await harness()
+    vi.spyOn(h.deps.commands.lease, 'checkAndRelease').mockRejectedValueOnce(new WorktreeLeaseHeld('An SVN writer is still active; wait for its command to exit'))
+    expect(await h.press('worker', { choice: 'commit', requestedBy: 'cli' }))
+      .toEqual({ ok: false, code: 'merge-pending', detail: 'An SVN writer is still active; wait for its command to exit' })
+  })
   it('does not replace worker-lost with a delayed wait from the previous Finish operation', async () => {
     const h = await harness()
     await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
@@ -670,6 +699,31 @@ describe('FinishDriver', () => {
     expect(h.events.filter((event) => event === 'commit')).toHaveLength(1)
   })
 
+  // Worker-agent 031: the Solve with agent helper still ran in the worktree, so the published worktree was kept.
+  it('stops the helper agent of this worker in the worktree before removal, and only that one', async () => {
+    const h = await harness()
+    for (const [sessionId, parent, cwd] of [['solve', 'worker', h.root], ['foreign', 'someone-else', h.root + '-outside']])
+      await h.records.put({ sessionId, title: sessionId, kind: 'agent', life: 'live', binding: { hostInstanceId: 'fixture', generation: 1 }, createdAt: 1,
+        directory: { mode: 'adHoc', path: cwd }, parent: { sessionId: parent, kind: 'worker' }, agent: { agentId: 'claude', launchMode: 'new' } })
+    let refuse = true
+    const stopped: string[] = []
+    h.deps.stop = async (id) => {
+      if (id === 'solve' && refuse) return { ok: false, code: 'host-unreachable', detail: 'Host refused' }
+      stopped.push(id)
+      await h.records.update(id, (record) => ({ ...record, life: 'ended' }))
+      return { ok: true, value: undefined }
+    }
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    await h.approve()
+    expect(h.state().wait).toMatchObject({ kind: 'removal-blocked', reason: expect.stringContaining('helper session solve (solve) did not stop: Host refused') })
+    expect(h.events).not.toContain('remove')
+    refuse = false
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    expect(stopped).toEqual(['solve', 'worker'])
+    expect(h.records.get('foreign')?.life).toBe('live')
+    expect(h.events).toContain('remove')
+  })
+
   it.each(['start', 'drive'] as const)('%s waits for automatic sync to release its lease and reaches review', async (operation) => {
     const h = await harness()
     let release!: () => void, entered!: () => void
@@ -678,7 +732,8 @@ describe('FinishDriver', () => {
     const set = { entries: [], readAt: 1, revision: 1, baseRevision: 1, more: 0 }
     const sync = new SyncStep({ records: h.records, commands: h.deps.commands,
       svn: { updateTargets: emptyUpdateTargets, revisionOf: async () => ({ ok: true, value: 1 }), headRevisionOf: async () => ({ ok: true, value: 1 }),
-        scheduleMissing: async () => ({ ok: true, value: undefined }), conflictSet: async () => ({ ok: true, value: { revision: 1, facts: [], rows: [] } }) },
+        scheduleMissing: async () => ({ ok: true, value: undefined }), conflictSet: async () => ({ ok: true, value: { revision: 1, facts: [], rows: [] } }),
+        unmoved: async () => ({ ok: true, value: false }) },
       runner: { run: async () => { entered(); await gate; return { ok: true, output: '', exitCode: 0, runId: 'sync' } } },
       conflicts: { remember: async () => ({ ok: true, value: { set, memory: { actionId: 'sync', readAt: 1, paths: [] } } }),
         remembered: async (_action, memory) => ({ ok: true, value: { set, memory, reasons: [] } }), fix: async (action) => ({ kind: 'settled', action }) },
@@ -1454,6 +1509,37 @@ describe('FinishDriver', () => {
     expect(steps.infoOf(h.records.get('worker')!)?.startedAt ?? null).toBeNull()
   })
 
+  // Worker-agent 031: a ready sync met conflicts, Finish took a new id, and its sync refused the unfinished update of the old one.
+  it('keeps the action of a sync that met conflicts before Finish, so Finish continues its update', async () => {
+    const h = await harness()
+    const update = { actionId: 'sync-action', generation: 'g1', root: h.root, revision: 2, cursor: 0, completed: false,
+      units: [{ target: { path: h.root, url: 'https://svn.test/repos/app', repository: 'https://svn.test/repos', revision: 2, kind: 'dir' as const, pinned: false }, phase: 'updated' as const }] }
+    await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!, actionId: 'sync-action',
+      phase: 'finishing', step: 'worker-resolving', execution: undefined, update } }))
+    let seen: string | null = null
+    const sync = h.deps.sync as { run: (...args: unknown[]) => Promise<unknown> }
+    sync.run = async () => { seen = h.state().actionId; return { ok: false, code: 'session-working', detail: 'busy' } }
+    expect(await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })).toMatchObject({ ok: true })
+    expect(seen).toBe('sync-action')
+    expect(h.state()).toMatchObject({ actionId: 'sync-action', update: { actionId: 'sync-action' } })
+  })
+
+  // Worker-agent 031: the worker settled a conflict of a ready sync and the main-copy update answered not-found.
+  it('settles a conflict of a sync that no Finish holds yet through the sync', async () => {
+    const h = await harness()
+    await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!, actionId: 'sync-action',
+      phase: 'finishing', step: 'worker-resolving', execution: undefined,
+      syncConflictSet: { readAt: 1, baseRevision: 1, revision: 2, more: 0,
+        entries: [{ path: 'a.txt', kind: 'text', shape: 'text-overlap', state: 'agent', options: ['merged'], facts: {} }] } } }))
+    const resolve = vi.fn(async () => ({ ok: true as const, value: { sessionId: 'worker', path: 'a.txt', state: 'settled' as const, left: 0 } }))
+    h.deps.sync.resolve = resolve
+    const mainCopy = vi.fn(async () => ({ ok: false as const, code: 'not-found' as const, detail: 'no SVN action' }))
+    Object.assign(h.deps.update, { resolveConflict: mainCopy })
+    expect(await h.driver.resolveConflict('worker', { path: 'a.txt', option: 'merged', confirm: false, requestedBy: 'cli', by: 'agent' })).toMatchObject({ ok: true })
+    expect(resolve).toHaveBeenCalledWith('worker', expect.objectContaining({ path: 'a.txt', option: 'merged', requestedBy: 'cli' }))
+    expect(mainCopy).not.toHaveBeenCalled()
+  })
+
   it('waits for a busy worker as such and goes back to work without touching the worktree or the worker', async () => {
     const h = await harness()
     const sync = h.deps.sync as { run: (...args: unknown[]) => Promise<unknown> }
@@ -1508,6 +1594,32 @@ describe('FinishDriver', () => {
     expect(h.events).toEqual(['sync'])
   })
 
+  // worker-agent 031, 032: the worker still ended the turn Jamat's conflict prompt began, the sync raised
+  // a wait for the person, and the person pressed Finish again in 2 of 4 Finishes.
+  it('waits for the worker that settled Jamat\'s conflict prompt without asking anybody, and syncs once it is idle', async () => {
+    const h = await harness()
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!, phase: 'finishing', step: 'syncing',
+      wait: undefined, review: undefined, approvedAt: undefined, preparation: undefined, awaitingIdleAt: 5 } }))
+    h.events.splice(0)
+    h.deps.idle = () => false
+    await h.driver.drive('worker')
+    expect(h.state()).toMatchObject({ phase: 'finishing', step: 'syncing', awaitingIdleReason: 'the worker is working' })
+    expect(h.state().wait).toBeUndefined()
+    expect(FinishProjection.action(h.records.get('worker')!)?.needs).toBeUndefined()
+    expect(WorktreeWords.idleWaitOf(h.state())).toContain('ending its turn on the conflicts Jamat handed it: the worker is working')
+    expect(WorktreeWords.actions(h.state()).find((action) => action.label === 'Sync now')).toMatchObject({ id: 'finish-again', confirmWorking: true })
+    const version = h.state().version
+    await h.driver.drive('worker')
+    expect(h.state().version).toBe(version)
+    expect(h.events).toEqual([])
+
+    h.deps.idle = () => true
+    await h.driver.drive('worker')
+    expect(h.events).toEqual(['sync'])
+    expect(h.state()).toMatchObject({ phase: 'finishing', step: 'reviewing' })
+  })
+
   /** 023 looped: every Try again verified the same changed fingerprint, and nothing accepted it. */
   it('lets only the person accept svn changes made outside Jamat, then reviews them afresh', async () => {
     const h = await harness()
@@ -1538,8 +1650,13 @@ describe('FinishDriver', () => {
 
   it('finishes a clean started worker without a review or an invented receipt, and records never-started Discard', async () => {
     const h = await harness(); h.setDirty([])
+    h.setChecks([{ key: 'tests', scriptId: 'checks', name: 'tests', commands: [{ cwd: h.root, command: 'test' }] }])
+    const assembly = vi.spyOn(h.deps.svn, 'assembly')
     await h.driver.start('worker', { choice: 'commit', requestedBy: 'cli' })
     expect(h.state().phase).toBe('landed')
+    // Nothing to publish: no assembly read and no check run (Mirabia, 76 s of reading, 2026-10-30).
+    expect(assembly).not.toHaveBeenCalled()
+    expect(h.deps.runs.launch).not.toHaveBeenCalled()
     expect(h.state().review?.selection).toEqual([])
     expect(h.events).not.toContain('commit')
     expect(h.records.get('worker')?.commitReceipts).toBeUndefined()
@@ -1549,6 +1666,25 @@ describe('FinishDriver', () => {
     await never.driver.start('worker', { choice: 'discard', requestedBy: 'window' })
     expect(never.state().phase).toBe('removed')
     expect(never.events).not.toContain('commit')
+  })
+
+  it('prepares in full when a change appears after a preparation that found nothing to publish', async () => {
+    const h = await harness(); h.setDirty([])
+    const reviewRoots = h.deps.svn.reviewRoots
+    let reads = 0
+    h.deps.svn.reviewRoots = async (...args) => {
+      const read = await reviewRoots(...args)
+      if (++reads === 1) h.setDirty(['a.txt'])
+      return read
+    }
+    const assembly = vi.spyOn(h.deps.svn, 'assembly')
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    expect(h.state()).toMatchObject({ phase: 'finishing', step: 'reviewing', review: { selection: ['a.txt'] } })
+    expect(h.state().preparation?.checkedAt).toEqual(expect.any(Number))
+    expect(assembly).toHaveBeenCalled()
+    await h.approve()
+    expect(h.state().phase).toBe('landed')
+    expect(h.events).toContain('commit')
   })
 
   it('persists the check pointer used by the production gate and ignores its verdict after Keep', async () => {
@@ -2038,7 +2174,7 @@ describe('R3 publication repro', () => {
     h.setDirty([])
     await h.driver.start('worker', { choice: 'commit', requestedBy: 'window', reviewCorrection: true })
     await approveBoth(h, [])
-    expect(h.deps.removal.remove).toHaveBeenLastCalledWith('worker', expect.anything(), ['url:r2'], expect.anything(), expect.anything())
+    expect(h.deps.removal.remove).toHaveBeenLastCalledWith('worker', expect.anything(), ['url:r2'], expect.anything())
     expect(WorktreeWords.presentation(h.state()).title).toBe('Changes published; worktree removal is blocked')
     h.deps.removal.remove = remove
     await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
@@ -2070,6 +2206,27 @@ describe('R3 publication repro', () => {
     h.deps.removal.remove = async () => ({ state: 'removed', lines: [] })
     expect(await h.driver.start('worker', { choice: 'discard', requestedBy: 'window' })).toMatchObject({ ok: true })
     expect(h.records.get('worker')?.worktreeOutcome?.result).toBe('partial')
+  })
+})
+
+// worker-agent r288: Prepare added the empty lockfile the setup wrote, and the review required its publication.
+describe('setup outputs', () => {
+  it('neither adds nor reviews an untouched unversioned setup output and publishes without it', async () => {
+    const h = await harness()
+    const lock = 'components/package-lock.json'
+    await h.records.update('worker', (record) => ({ ...record, worktree: { ...record.worktree!, setupBaseline: { at: 1, hashes: { [lock]: 'hash' } } } }))
+    const rows = () => [{ path: 'a.txt', conflict: false, kind: 'item' as const }, { path: lock, conflict: false, kind: 'item' as const, unversioned: true as const }]
+    h.deps.svn.changes = async () => ({ ok: true, value: rows() })
+    h.deps.svn.reviewRoots = async () => ({ ok: true, value: [{ path: h.root, own: '', pinned: false, changed: rows() }] })
+    const prepared: string[] = []
+    const prepare = h.deps.svn.prepareCommit
+    h.deps.svn.prepareCommit = async (scope, paths, before, normalize) => { prepared.push(...paths); return prepare(scope, paths, before, normalize) }
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    expect(prepared).toEqual([join(h.root, 'a.txt')])
+    expect(h.state().review).toMatchObject({ selection: ['a.txt'], setupOutputs: [lock] })
+    expect(Object.keys(h.state().review!.hashes)).toEqual(['a.txt'])
+    expect(await h.approve()).toMatchObject({ ok: true })
+    expect(prepared.some((path) => path.endsWith('package-lock.json'))).toBe(false)
   })
 })
 

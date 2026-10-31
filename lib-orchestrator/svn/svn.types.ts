@@ -42,11 +42,12 @@ export type SvnStatusKind = 'clean' | 'item' | 'props' | 'missing' | 'external'
 
 export interface SvnRemovalRow extends SvnStatusRow {
   ignored: boolean
-  unversioned?: true
 }
 
 export interface SvnStatusRow {
   deleted?: true
+  /** Not under version control and not scheduled for addition (`?`). */
+  unversioned?: true
   kind: SvnStatusKind
   /** A text, property or tree conflict. */
   conflict: boolean

@@ -92,7 +92,8 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(manager.read('window', f.draftId)).toBeNull()
     expect(manager.openSessions().sessionIds).toEqual(['session'])
     manager.attach(f.draftId, 'viewer')
-    expect(manager.read('viewer', f.draftId)).toMatchObject({ message: '', editedByPerson: true, phase: { kind: 'editing' } })
+    // The emptied field survives the restart, but it is nobody's message (2026-10-30).
+    expect(manager.read('viewer', f.draftId)).toMatchObject({ message: '', editedByPerson: false, phase: { kind: 'editing' } })
     expect(manager.read('viewer', f.draftId)?.epoch).not.toBe(before.epoch)
     expect(await manager.run('viewer', f.request)).toMatchObject({ ok: false, reloadRequired: true })
     const saved = await readFile(file, 'utf8')
@@ -263,6 +264,47 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     ])
   })
 
+  // Mirabia 113: `message-edited` answered an empty repository field because of the review's own flag (2026-10-30).
+  it('judges a multi-repository Finish proposal by its repository field, not by the hidden review message', async () => {
+    const f = await fixture()
+    finishRepositories(f)
+    f.manager.setMessage('window', f.draftId, '[j12] Hidden review text')
+    expect(f.manager.read('window', f.draftId)).toMatchObject({ editedByPerson: true })
+    expect(await f.manager.propose('session', f.root, '[j12] Agent proposal B')).toEqual({ ok: true, scopeRoot: f.root })
+    expect(f.manager.read('window', f.draftId)?.repositories?.[0]).toMatchObject({ message: '[j12] Agent proposal B', source: 'agent-proposal' })
+    expect(f.deps.sessions.proposeWorktreeReady).toHaveBeenCalledWith('session')
+  })
+
+  it('stores a proposal into a repository field the person emptied or left at its prefix', async () => {
+    const f = await fixture()
+    finishRepositories(f)
+    const before = f.manager.read('window', f.draftId)!
+    expect(f.manager.edit('window', { draftId: f.draftId, epoch: before.epoch!, expectedRevision: before.revision,
+      repositoryMessage: { root: f.root, message: '[j12] ' } }, 'person-local')).toMatchObject({ ok: true })
+    expect(await f.manager.propose('session', f.root, '[j12] Agent proposal B')).toEqual({ ok: true, scopeRoot: f.root })
+    expect(f.manager.read('window', f.draftId)?.repositories?.[0]).toMatchObject({ message: '[j12] Agent proposal B', source: 'agent-proposal' })
+  })
+
+  it('stores a proposal over an empty message an older build kept as edited by a person', async () => {
+    const f = await fixture()
+    expect(f.deps.messages.save({ sessionId: 'worker', vcs: 'svn', scopeRoot: f.root, message: '', editedByPerson: true, proposedByAgent: false,
+      messageSource: 'person-local', messageAt: 1 })).toBe(true)
+    expect(await f.manager.propose('worker', f.root, 'Fix orders')).toEqual({ ok: true, scopeRoot: f.root })
+    expect(f.manager.proposalOf('worker', f.root)).toBe('Fix orders')
+  })
+
+  // CVUT 031 and 034: `[worker-agent]` was refused only at Publish, three times (2026-10-30).
+  it('refuses a proposal under another prefix than its repository row expects, and stores nothing', async () => {
+    const f = await fixture()
+    finishRepositories(f)
+    expect(await f.manager.propose('session', f.root, '[worker-agent] Refactor wave 1')).toEqual({ ok: false, code: 'message-prefix',
+      detail: 'j12: message must start with [j12]; the proposal was not stored' })
+    expect(f.manager.read('window', f.draftId)?.repositories?.[0]).toMatchObject({ message: '[j12] Agent proposal A', source: 'agent-proposal' })
+    expect(f.manager.proposalOf('session', f.root)).toBe('proposal')
+    expect(f.deps.sessions.proposeWorktreeReady).not.toHaveBeenCalled()
+    expect(await f.manager.propose('session', f.root, 'Refactor wave 1')).toEqual({ ok: true, scopeRoot: f.root })
+  })
+
   it('keeps the message written for each repository while a review leaves that repository out and edits another', async () => {
     const f = await fixture()
     const repositories = [f.root, join(f.root, 'shared')].map((root, index) => ({ root, repository: `https://svn/repo${index}`,
@@ -363,6 +405,49 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(settled.status(f.draftId)).toMatchObject({ state: 'committed', revision: vcs === 'svn' ? 'r43' : 'abc123' })
     expect(await settled.decide(f.interaction, f.decision)).toEqual({ ok: true, revision: vcs === 'svn' ? 'r43' : 'abc123' })
     expect(f.start).toHaveBeenCalledTimes(1)
+  })
+
+  // 13 Finish drafts stayed running with an empty receipt once nobody read them again (2026-10-30).
+  it('closes an unshown Finish review once its Finish committed, with the revision on its receipt, also after a restart', async () => {
+    const f = await finishFixture()
+    expect(await f.manager.decide(f.interaction, f.decision)).toEqual({ ok: true, revision: '' })
+    f.manager.release(f.draftId, 'window')
+    expect(f.deps.reviews!.read()[0]).toMatchObject({ dto: { phase: { kind: 'running' } }, decisions: [expect.objectContaining({ result: { ok: true, revision: '' } })] })
+    f.state({ kind: 'done', revision: 'r43', output: 'Published' })
+    const restored = new VersioningCommitManager(f.deps)
+    expect(restored.openSessions().reviews).toHaveLength(1)
+    restored.workflowChanged()
+    expect(restored.openSessions().reviews).toEqual([])
+    expect(restored.status(f.draftId)).toMatchObject({ state: 'committed', revision: 'r43', closed: true })
+    expect(f.deps.reviews!.read()[0]).toMatchObject({ closedAt: expect.any(Number),
+      decisions: [expect.objectContaining({ result: { ok: true, revision: 'r43' } })] })
+  })
+
+  it('leaves a Finish review open while a pane shows it', async () => {
+    const f = await finishFixture()
+    expect(await f.manager.decide(f.interaction, f.decision)).toEqual({ ok: true, revision: '' })
+    f.state({ kind: 'done', revision: 'r43', output: 'Published' })
+    f.manager.workflowChanged()
+    expect(f.deps.reviews!.read()[0].closedAt).toBeUndefined()
+    // The approval answered before the Finish published; the shown pane learns the end from the sessions.
+    expect(f.deps.reviews!.read()[0].dto.phase).toMatchObject({ kind: 'done', revision: 'r43' })
+  })
+
+  it('closes an unshown Finish review whose session is gone, and keeps one whose Finish still runs', async () => {
+    const f = await finishFixture()
+    expect(await f.manager.decide(f.interaction, f.decision)).toEqual({ ok: true, revision: '' })
+    f.manager.release(f.draftId, 'window')
+    let gone = false
+    f.deps.workflow!.abandoned = () => gone
+    const restored = new VersioningCommitManager(f.deps)
+    restored.workflowChanged()
+    expect(restored.openSessions().reviews).toHaveLength(1)
+    gone = true
+    f.state({ kind: 'uncertain', detail: 'The original Finish outcome is not available.' })
+    restored.workflowChanged()
+    expect(restored.openSessions().reviews).toEqual([])
+    expect(restored.status(f.draftId)).toMatchObject({ state: 'failed', closed: true })
+    expect(f.deps.reviews!.read()[0].closedAt).toEqual(expect.any(Number))
   })
 
   it('leaves a refused Finish approval editable, so the refusal does not outlive the next preparation', async () => {
@@ -739,14 +824,29 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
       expect(f.manager.notifySource().pending()).toEqual([])
     })
 
-    it('waits for every pane to release a cancelled review', async () => {
+    it('waits for every pane to release a review the person cancelled', async () => {
       const f = await fixture()
       await f.manager.prepare('session', 'svn', null, null, undefined, { wakeOnClose: true })
-      await f.manager.cancel(f.draftId)
+      const { interaction, request } = await admitted(f)
+      expect(await f.manager.decide(interaction, { kind: 'cancel', draftId: f.draftId, epoch: request.epoch, expectedRevision: request.expectedRevision,
+        operationId: 'person-cancel' })).toMatchObject({ ok: true })
       expect(f.manager.status(f.draftId)?.closed).toBe(false)
       expect(f.manager.notifySource().pending()).toEqual([])
       f.manager.release(f.draftId, 'window')
       expect(f.manager.notifySource().pending()).toMatchObject([{ text: `Jamat: commit review ${f.draftId} in ${f.root} was cancelled; nothing was committed. Verify the result and finish your reply.` }])
+    })
+
+    // Codex i83: the agent's own `commit cancel` already answered cancelled, and the line started a needless turn (2026-10-30).
+    it('gives no line for a review the agent cancelled with its own command, also after a restart', async () => {
+      const f = await fixture()
+      const file = join(f.root, 'reviews.json')
+      f.deps.reviews = new VersioningReviewStore(file, f.report)
+      await f.manager.prepare('session', 'svn', null, null, undefined, { wakeOnClose: true })
+      expect(await f.manager.cancel(f.draftId)).toMatchObject({ ok: true, value: { state: 'cancelled' } })
+      f.manager.release(f.draftId, 'window')
+      expect(f.manager.status(f.draftId)).toMatchObject({ state: 'cancelled', closed: true })
+      expect(f.manager.notifySource().pending()).toEqual([])
+      expect(new VersioningCommitManager({ ...f.deps, reviews: new VersioningReviewStore(file, f.report) }).notifySource().pending()).toEqual([])
     })
 
     it('reports a failure only once the person closed its review, on one line', async () => {
@@ -1016,7 +1116,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
         ? { ok: true, value: { sessionId: 'session', cwd: root, path, nodeKind: 'file', status: 'modified', workingState: { modifiedAt: stamp, vcsEntry: true } } }
         : { ok: false, code: 'unknown-file', detail: 'unknown' },
       git: { revertFile: async () => { throw new Error('Unexpected Git revert') }, commit: async () => { throw new Error('Unexpected Git commit') } },
-      svn: { update: async () => { throw new Error('Unexpected SVN update') },
+      svn: { updateOutOfDate: async () => { throw new Error('Unexpected SVN update') },
         revertFile: async () => { writes.push('reverted'); return { ok: true, value: undefined } }, commit: async (_scope, _targets, message) => {
         phases.push(manager.read('window', draftId)?.phase.kind ?? 'absent')
         writes.push(await readFile(message, 'utf8'))
@@ -1056,8 +1156,9 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(manager.status(f.draftId)).toBeNull()
   })
 
-  it.each(['Reviewed\n\nPříliš žluťoučký kůň', ''])('preserves person-edited text %j and its precedence after restart', async (message) => {
+  it('preserves person-edited text and its precedence after restart', async () => {
     const f = await fixture()
+    const message = 'Reviewed\n\nPříliš žluťoučký kůň'
     expect(f.manager.setMessage('window', f.draftId, message)).toBe(true)
     const manager = restart(f)
     const opened = await manager.prepare('session', 'svn', null, 'Replacement proposal')
@@ -1065,6 +1166,19 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     manager.attach(opened.value.draftId, 'window')
     expect(opened.messageApplied).toBe(false)
     expect(manager.read('window', opened.value.draftId)).toMatchObject({ message, editedByPerson: true })
+  })
+
+  // Mirabia 113: a field the person emptied, or left at its prefix, is nobody's message (2026-10-30).
+  it.each(['', '[Jamat] '])('fills a field the person left at %j with a later proposal, also after restart', async (message) => {
+    const f = await fixture()
+    expect(f.manager.setMessage('window', f.draftId, message)).toBe(true)
+    expect(f.manager.read('window', f.draftId)).toMatchObject({ message, editedByPerson: false, proposedByAgent: false, messageSource: 'person-local' })
+    const manager = restart(f)
+    const opened = await manager.prepare('session', 'svn', null, 'Replacement proposal')
+    if (!opened.ok) throw new Error(opened.detail)
+    manager.attach(opened.value.draftId, 'window')
+    expect(opened.messageApplied).toBe(true)
+    expect(manager.read('window', opened.value.draftId)).toMatchObject({ message: 'Replacement proposal', editedByPerson: false, proposedByAgent: true })
   })
 
   /**
@@ -1263,12 +1377,24 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(manager.read('window', reopened.value.draftId)?.message).toBe('Ignore data')
   })
 
-  it('updates only the checked nodes of an out-of-date plain scope, each at depth empty', async () => {
+  it('hands the out-of-date failure and the checked nodes of a plain scope to the SVN recovery', async () => {
     const f = await fixture()
     f.deps.svn.commit = async () => ({ ok: false, code: 'out-of-date', detail: 'E155011' })
-    f.deps.svn.update = vi.fn(async () => ({ ok: true as const, value: { output: 'Updated' } }))
+    f.deps.svn.updateOutOfDate = vi.fn(async () => ({ ok: true as const, value: { output: 'Updated' } }))
     await f.manager.run('window', f.request)
-    expect(f.deps.svn.update).toHaveBeenCalledExactlyOnceWith(f.root, [f.path])
+    expect(f.deps.svn.updateOutOfDate).toHaveBeenCalledExactlyOnceWith(f.root, 'E155011', [f.path])
+  })
+
+  /** B1: a recovery that would have raised tree conflicts stops before any write, so nothing asks for a reload. */
+  it('reports a refused recovery without a retry or a reload', async () => {
+    const f = await fixture()
+    f.deps.svn.commit = vi.fn(async () => ({ ok: false as const, code: 'out-of-date' as const, detail: "svn: E155011: Directory 'blocks' is out of date" }))
+    f.deps.svn.updateOutOfDate = vi.fn(async () => ({ ok: false as const, code: 'refused' as const, detail: 'Update blocks yourself: it is one side of a move' }))
+    const result = await f.manager.run('window', f.request)
+    expect(result).toMatchObject({ ok: false, detail: expect.stringContaining('Update blocks yourself') })
+    expect(result).not.toHaveProperty('reloadRequired')
+    expect(result).toMatchObject({ detail: expect.stringContaining("Directory 'blocks' is out of date") })
+    expect(f.deps.svn.commit).toHaveBeenCalledTimes(1)
   })
 
   it('deduplicates explicit file lists and keeps them when the same review is reopened', async () => {
@@ -1395,9 +1521,9 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     if (!opened.ok) throw new Error(opened.detail)
     f.manager.attach(opened.value.draftId, 'window')
     f.deps.svn.commit = async () => ({ ok: false, code: 'out-of-date', detail: 'E155011' })
-    f.deps.svn.update = vi.fn(async () => ({ ok: true as const, value: { output: 'Updated' } }))
+    f.deps.svn.updateOutOfDate = vi.fn(async () => ({ ok: true as const, value: { output: 'Updated' } }))
     expect(await f.manager.run('window', { ...f.request, draftId: opened.value.draftId })).toMatchObject({ ok: false, reloadRequired: true })
-    expect(f.deps.svn.update).toHaveBeenCalledWith(f.root, [f.path])
+    expect(f.deps.svn.updateOutOfDate).toHaveBeenCalledWith(f.root, 'E155011', [f.path])
   })
 
   /** 051 kept the red "commit review required" mark over its landed row: its Finish committed itself. */
@@ -1575,10 +1701,10 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     f.deps.svn.commit = vi.fn<VersioningCommitManagerDeps['svn']['commit']>()
       .mockResolvedValueOnce({ ok: true, value: { committedPaths: [], revision: '60', output: 'done' } })
       .mockResolvedValue({ ok: false, code: 'out-of-date', detail: 'E155011' })
-    f.deps.svn.update = vi.fn(async () => ({ ok: true as const, value: { output: 'Updated' } }))
+    f.deps.svn.updateOutOfDate = vi.fn(async () => ({ ok: true as const, value: { output: 'Updated' } }))
     const result = await f.manager.run('window', { ...f.request, fileIds: ['file', a.entry.fileId, b.entry.fileId], includeExternals: true })
     expect(result).toMatchObject({ ok: false, reloadRequired: true, detail: expect.stringContaining(`${a.root}: 60`) })
-    expect(f.deps.svn.update).toHaveBeenCalledExactlyOnceWith(b.root, [b.entry.path])
+    expect(f.deps.svn.updateOutOfDate).toHaveBeenCalledExactlyOnceWith(b.root, 'E155011', [b.entry.path])
     expect(f.deps.svn.commit).toHaveBeenCalledTimes(3)
     expect(f.manager.status(f.draftId)?.state).toBe('failed')
   })
@@ -2101,7 +2227,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
   it('updates an outdated scope once under the commit lock and gives up on a second out-of-date', async () => {
     const f = await fixture()
     f.deps.svn.commit = vi.fn(async () => ({ ok: false as const, code: 'out-of-date' as const, detail: 'E155011: out of date' }))
-    f.deps.svn.update = vi.fn(async (scope: string) => {
+    f.deps.svn.updateOutOfDate = vi.fn(async (scope: string) => {
       expect(scope).toBe(f.root)
       expect(f.manager.read('window', f.draftId)?.phase).toMatchObject({ kind: 'running', detail: expect.stringContaining('Updating') })
       expect(f.manager.status(f.draftId)?.state).toBe('running')
@@ -2111,7 +2237,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(await f.manager.run('window', f.request)).toMatchObject({ ok: false, reloadRequired: true,
       detail: expect.stringContaining('E155011') })
     expect(f.deps.svn.commit).toHaveBeenCalledTimes(2)
-    expect(f.deps.svn.update).toHaveBeenCalledTimes(1)
+    expect(f.deps.svn.updateOutOfDate).toHaveBeenCalledTimes(1)
     expect(f.manager.status(f.draftId)).toMatchObject({ state: 'failed', revision: null, detail: expect.stringContaining('E155011') })
     expect(f.manager.read('window', f.draftId)?.message).toBe(f.request.message)
   })
@@ -2122,7 +2248,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
       .mockResolvedValueOnce({ ok: false, code: 'out-of-date', detail: 'E155011: out of date' })
       .mockResolvedValue({ ok: true, value: { committedPaths: [], revision: '45', output: 'Committed revision 45.' } })
     f.deps.svn.commit = commit
-    f.deps.svn.update = vi.fn(async () => ({ ok: true as const, value: { output: 'Updated to revision 44.' } }))
+    f.deps.svn.updateOutOfDate = vi.fn(async () => ({ ok: true as const, value: { output: 'Updated to revision 44.' } }))
     expect(await f.manager.run('window', f.request)).toEqual({ ok: true, revision: '45' })
     expect(commit).toHaveBeenCalledTimes(2)
     expect(f.manager.read('window', f.draftId)?.phase).toMatchObject({ kind: 'done', revision: '45',
@@ -2132,7 +2258,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
   it('stops the retry when the update wrote into a file this commit holds', async () => {
     const f = await fixture()
     f.deps.svn.commit = vi.fn(async () => ({ ok: false as const, code: 'out-of-date' as const, detail: 'E155011: out of date' }))
-    f.deps.svn.update = vi.fn(async () => {
+    f.deps.svn.updateOutOfDate = vi.fn(async () => {
       await utimes(f.path, new Date(), new Date(Date.now() + 10_000))
       return { ok: true as const, value: { output: 'U    file.txt' } }
     })
@@ -2144,7 +2270,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
   it.each(['conflicts', 'exception'])('reports update %s with the original commit error and refreshes VCS facts', async (kind) => {
     const f = await fixture()
     f.deps.svn.commit = async () => ({ ok: false, code: 'out-of-date', detail: 'E170004: directory is out of date' })
-    f.deps.svn.update = async () => {
+    f.deps.svn.updateOutOfDate = async () => {
       if (kind === 'exception') throw new Error('Connection lost')
       return { ok: false, code: 'svn-failed', detail: 'Conflict in app/file.ts' }
     }
@@ -2157,11 +2283,11 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
 
   it.each(['svn', 'git'] as const)('never updates %s after an unrelated failure', async (vcs) => {
     const f = await fixture(vcs)
-    f.deps.svn.update = vi.fn(async () => { throw new Error('Must not update') })
+    f.deps.svn.updateOutOfDate = vi.fn(async () => { throw new Error('Must not update') })
     f.deps.svn.commit = async () => ({ ok: false, code: 'locked', detail: 'locked' })
     f.deps.git.commit = async () => { throw new Error('Git failed') }
     expect(await f.manager.run('window', f.request)).toMatchObject({ ok: false, detail: vcs === 'svn' ? 'locked' : 'Git failed' })
-    expect(f.deps.svn.update).not.toHaveBeenCalled()
+    expect(f.deps.svn.updateOutOfDate).not.toHaveBeenCalled()
   })
 
   it('climbs past the project Git answer of a new SVN directory to its working copy (Jamat#35)', async () => {

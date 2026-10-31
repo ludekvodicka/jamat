@@ -22,7 +22,7 @@ export type WorktreeSyncTrigger = 'ready' | 'finish' | 'worker'
 export class SyncStep {
   private readonly deps: {
     records: SessionRecordsStore
-    svn: Pick<SvnWorktreeManager, 'headRevisionOf' | 'revisionOf' | 'conflictSet' | 'scheduleMissing' | 'updateTargets'>
+    svn: Pick<SvnWorktreeManager, 'headRevisionOf' | 'revisionOf' | 'conflictSet' | 'scheduleMissing' | 'updateTargets' | 'unmoved'>
     runner: Pick<SvnStepRunner, 'run'>
     commands: Pick<WorktreeSvnCommands, 'lease' | 'accept' | 'verify'>
     conflicts: Pick<SvnConflictFlow, 'remember' | 'remembered' | 'fix'> & Partial<Pick<SvnConflictFlow, 'resolve'>>
@@ -143,6 +143,20 @@ export class SyncStep {
           if (result.ok) await this.settled(sessionId, result.value, latest.worktreeLifecycle.facts.syncedAt.headMovedBy ?? 0)
           return result
         }
+        // A HEAD moved only by commits elsewhere in the repository brings nothing, and its round cost
+        // minutes (Mirabia 114: 3 and 2 min). Every publication proof reads the worktree's own BASE and
+        // svn's out-of-date check, so HEAD is recorded as reached while the worktree stays where it is.
+        if (!this.updates.pending(sessionId) && latest.worktreeLifecycle.updateFailure === undefined && latest.worktreeLifecycle.knownIncoming === undefined
+          && native.value.facts.length === 0
+          && !action.conflictSet?.entries.some((entry) => entry.state !== 'settled')) {
+          const unmoved = await this.deps.svn.unmoved(root)
+          if (!unmoved.ok) throw new Error(unmoved.detail)
+          if (unmoved.value) {
+            const value = { revision: head.value, conflicts: [] }
+            await this.settled(sessionId, value, 0)
+            return { ok: true, value }
+          }
+        }
         await this.write(sessionId, (state) => ({ ...state, phase: 'finishing', step: 'syncing', wait: undefined, actionId }))
         for (;;) {
           const update = await this.updates.run(sessionId, actionId, root, head.value)
@@ -195,7 +209,7 @@ export class SyncStep {
   }
 
   private async settled(sessionId: string, result: WorktreeSyncResult, headMovedBy?: number): Promise<void> {
-    await this.write(sessionId, (state) => ({ ...state, phase: 'finishing', wait: undefined,
+    await this.write(sessionId, (state) => ({ ...state, phase: 'finishing', wait: undefined, awaitingIdleAt: undefined, awaitingIdleReason: undefined,
       step: result.conflicts.length === 0 ? 'checking' : 'worker-resolving',
       // A new sync may meet new dependency inputs, so the Finish may run the install once more.
       ...state.execution === undefined ? {} : { execution: { ...state.execution, refresh: undefined } },
@@ -234,8 +248,12 @@ export class SyncStep {
       // The person's wait says what is left and names the press drawn for the step it moves to.
       const reason = left === 0 ? SvnConflictWords.settledOf(merged, WorktreeWords.tryAgainConst)
         : SvnConflictWords.reasonOf(merged, `press ${SvnConflictWords.checkAgainConst}`)
-      await this.write(sessionId, (latest) => ({ ...latest, step: left === 0 ? this.updates.reached(sessionId, action.actionId) ? 'checking' : 'syncing' : 'worker-resolving',
-        conflictMemory: memory, syncConflictSet: merged, ...latest.wait?.kind === 'conflict-person' ? { wait: { ...latest.wait, reason } } : {} }))
+      const step = left === 0 ? this.updates.reached(sessionId, action.actionId) ? 'checking' : 'syncing' : 'worker-resolving'
+      // The worker settled the conflicts Jamat handed it and still ends that turn: the sync waits for it
+      // without a wait for the person, who had pressed Finish again in 2 of 4 such Finishes (worker-agent 031, 032).
+      await this.write(sessionId, (latest) => ({ ...latest, step, conflictMemory: memory, syncConflictSet: merged,
+        ...step === 'syncing' ? { awaitingIdleAt: Date.now(), awaitingIdleReason: undefined } : {},
+        ...latest.wait?.kind === 'conflict-person' ? { wait: { ...latest.wait, reason } } : {} }))
       if (memory !== undefined) await this.saveConflicts(sessionId, memory, { ...set, entries })
       this.deps.changed()
       return { ok: true, value: { sessionId, path: request.path,

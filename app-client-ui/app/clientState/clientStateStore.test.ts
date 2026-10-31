@@ -142,6 +142,20 @@ describe('app-client-ui/app/clientState/clientStateStore', () => {
     ])
   })
 
+  it('stores Hidden when remote marks of sessions only and drops a damaged list', () => {
+    const { store, stateFile, reopen } = fixture()
+    expect(store.loadHiddenWhenRemote()).toEqual([])
+    expect(store.setHiddenWhenRemote('session:one', true)).toBe(true)
+    expect(store.setHiddenWhenRemote('session:two', true)).toBe(true)
+    expect(store.setHiddenWhenRemote('session:one', true)).toBe(true)
+    expect(reopen().loadHiddenWhenRemote()).toEqual(['session:two', 'session:one'])
+    expect(store.setHiddenWhenRemote('session:two', false)).toBe(true)
+    expect(reopen().loadHiddenWhenRemote()).toEqual(['session:one'])
+    expect(() => store.setHiddenWhenRemote('category:nodejs', true)).toThrow('Hidden when remote')
+    writeFileSync(stateFile, JSON.stringify({ schemaVersion: 2, sessionsHiddenWhenRemote: ['category:nodejs'] }), 'utf8')
+    expect(reopen().loadHiddenWhenRemote()).toEqual([])
+  })
+
   it('keeps the pinned split items of each session through a restart and removes an emptied one', () => {
     const { store, stateFile, reopen } = fixture()
     const item = { kind: 'file', key: 'doc-a', title: 'a.ts', pinned: true }

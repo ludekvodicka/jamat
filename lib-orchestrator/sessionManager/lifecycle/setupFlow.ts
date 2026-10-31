@@ -40,7 +40,7 @@ import { WorktreeCleanupPacing } from '../../worktrees/worktreeRemoval'
 
 /** What the setup resolution means for one worktree: run these commands, or install nothing. */
 type SetupPlan =
-  | { kind: 'run'; commands: SessionRecordSetupCommand[] }
+  | { kind: 'run'; commands: SessionRecordSetupCommand[]; variables: Record<string, string> }
   /**
    * `reason` is what the record keeps and what a refusal quotes; `announcement` is the sentence for
    * the user, and it is null only where the project itself already said it needs nothing. They are
@@ -52,10 +52,11 @@ export type SetupSkip = Extract<SetupPlan, { kind: 'skip' }>
 
 /**
  * The before chain of a worktree: the setup step when one resolves, then the project's declared
- * before scripts, one run per step. `skipped` is why no setup step leads a chain of declared steps.
+ * before scripts, one run per step. `skipped` is why no setup step leads a chain of declared steps;
+ * `variables` is what the setup step needs, and what the worktree record freezes from it.
  */
 export type BeforePlan =
-  | { kind: 'run'; steps: SessionRecordScriptStep[]; skipped: SetupSkip | null }
+  | { kind: 'run'; steps: SessionRecordScriptStep[]; skipped: SetupSkip | null; variables: Record<string, string> }
   | SetupSkip
 
 /**
@@ -297,6 +298,7 @@ export class SetupFlow {
           command: step.command,
           cwd: join(worktreePath, step.cwd),
         })),
+        variables: resolution.variables,
       }
     }
     else
@@ -386,13 +388,15 @@ export class SetupFlow {
     const checkedOut = record.pendingSetup.steps?.[0]?.scriptId === 'svn'
       && ScriptChain.firstDue(record.pendingSetup.steps.slice(0, 1), this.chainEvidenceOf(record)) === 1
     const plan = await this.beforePlanOf(read, projectRoot, worktree.repositoryRoot, worktree.worktreePath, SetupFlow.setupScopeOf(worktree), checkedOut)
+    // A create that waited for the agreement planned nothing, so this is its first plan.
+    const planned = { ...record, worktree: SetupFlow.withSetupVariables(worktree, plan) }
     // The checkout is no resolution of the file: the one the chain was created with leads it again.
     const first = record.pendingSetup.steps?.[0]
     const lead = first?.scriptId === 'svn' ? [first] : []
     let steps: SessionRecordScriptStep[]
     let skipped: SetupSkip | null
     if (plan.kind === 'skip') {
-      if (lead.length === 0) return this.startWithoutSetup(record, plan, plan)
+      if (lead.length === 0) return this.startWithoutSetup(planned, plan, plan)
       steps = lead
       skipped = plan
     }
@@ -403,13 +407,13 @@ export class SetupFlow {
     else throw new Error(`Unknown before plan: ${JSON.stringify(plan satisfies never)}`)
     const cursor = ScriptChain.firstDue(steps, this.chainEvidenceOf(record))
     // Every step already succeeded: what failed was a run whose step a later attempt had passed.
-    if (cursor === steps.length) return this.startWithoutSetup(record, skipped, plan.kind === 'skip' ? plan : null)
+    if (cursor === steps.length) return this.startWithoutSetup(planned, skipped, plan.kind === 'skip' ? plan : null)
     // A failed checkout may leave half a working copy, which a second checkout cannot take.
     if (steps[cursor].scriptId === 'svn' && record.pendingSetup.local !== true) {
       const purged = await this.worktrees.purgeReserved(worktree)
       if (!purged.ok) return purged
     }
-    return this.restart(record, worktree, steps, cursor, skipped)
+    return this.restart(planned, worktree, steps, cursor, skipped)
   }
 
   /**
@@ -712,11 +716,22 @@ export class SetupFlow {
     const before = DeclaredScripts.stepsOf(declared, { projectRoot, repositoryRoot, worktreePath })
     if (!before.ok) return SetupFlow.skipOf(worktreePath, before.problem)
     if (setup.kind === 'run')
-      return { kind: 'run', steps: [SetupFlow.setupStepOf(setup.commands), ...before.steps], skipped: null }
+      return { kind: 'run', steps: [SetupFlow.setupStepOf(setup.commands), ...before.steps], skipped: null, variables: setup.variables }
     else if (setup.kind === 'skip')
       // A skipped setup with declared steps still runs them, and keeps saying why nothing installed.
-      return before.steps.length === 0 ? setup : { kind: 'run', steps: before.steps, skipped: setup }
+      return before.steps.length === 0 ? setup : { kind: 'run', steps: before.steps, skipped: setup, variables: {} }
     else throw new Error(`Unknown setup plan: ${JSON.stringify(setup satisfies never)}`)
+  }
+
+  /**
+   * The worktree with the variables of its first setup plan frozen on it. A later plan never moves
+   * them: a setting changed since would otherwise give one worktree a second dependency layout.
+   */
+  static withSetupVariables(worktree: SessionRecordWorktree, plan: BeforePlan): SessionRecordWorktree {
+    if (worktree.setupVariables !== undefined) return worktree
+    if (plan.kind === 'run') return { ...worktree, setupVariables: plan.variables }
+    else if (plan.kind === 'skip') return { ...worktree, setupVariables: {} }
+    else throw new Error(`Unknown before plan: ${JSON.stringify(plan satisfies never)}`)
   }
 
   private static setupStepOf(commands: SessionRecordSetupCommand[]): SessionRecordScriptStep {

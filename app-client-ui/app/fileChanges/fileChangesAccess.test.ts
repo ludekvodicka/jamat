@@ -68,13 +68,15 @@ it('marks only current matching setup files and rereads origins after a worker e
   let setup = ['Q:/work/lock']
   const setupPaths = vi.fn(async () => ({ ok: true, value: setup }))
   const access = new FileChangesAccess({ workingTree: async () => ({ ok: true, value: { snapshotId: 'setup-snapshot', source: { selected: 'svn' },
-    entries: [{ path: 'Q:/work/lock', nodeKind: 'file' }, { path: 'Q:/work/new', nodeKind: 'file' }, { path: 'Q:/work/dir', nodeKind: 'directory' }] } }) } as unknown as FileChangesManager,
+    entries: [{ path: 'Q:/work/lock', nodeKind: 'file', status: 'untracked' }, { path: 'Q:/work/new', nodeKind: 'file', status: 'untracked' },
+      { path: 'Q:/work/tracked', nodeKind: 'file', status: 'modified' }, { path: 'Q:/work/dir', nodeKind: 'directory', status: 'untracked' }] } }) } as unknown as FileChangesManager,
     {} as FileViewer, { workingContext: async () => ({ ok: true, value: { cwd: 'Q:/work', worktree: { kind: 'svn' } } }), setupPaths } as unknown as SessionManager,
     {} as ConfigStore)
   const first = await access.workingTree('owner', 'session', 'svn', undefined, true)
-  expect(first.ok && first.value.entries.map((entry) => entry.origin)).toEqual(['setup', undefined, undefined])
+  expect(first.ok && first.value.entries.map((entry) => entry.origin)).toEqual(['setup', undefined, undefined, undefined])
+  // A versioned file the setup changed is published by a Finish, so it is never offered as a setup output.
   expect(setupPaths).toHaveBeenCalledWith('session', ['Q:/work/lock', 'Q:/work/new'])
   setup = []
   const next = await access.workingTree('owner', 'session', 'svn', undefined, true)
-  expect(next.ok && next.value.entries.map((entry) => entry.origin)).toEqual([undefined, undefined, undefined])
+  expect(next.ok && next.value.entries.map((entry) => entry.origin)).toEqual([undefined, undefined, undefined, undefined])
 })

@@ -153,7 +153,6 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow', () =
     const steps = new FakeSteps()
     const removal = new SvnWorktreeRemoval({
       skillRoots: [],
-      results: { savedDirectoryOf: (id) => join(root, 'results', id, 'saved') },
       records: store,
       svn,
       onQueue: async (work) => {
@@ -340,7 +339,6 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnWorktreeFinishFlow', () =
         'Reading what the worktree committed | svn status -v --xml',
         `Waiting for other operations | ${worktreeConst}`,
         `Moving the worktree aside | ${worktreeConst}.deleting`,
-        `Saving the files to keep before deleting | ${worktreeConst}.deleting`,
         'Counting the files to delete | 4 files so far',
         'Removing the worktree | 4 of 4 files',
         'Recording the removal | session record',

@@ -8,6 +8,7 @@ import { useVersioningSettings } from './useVersioningSettings'
 export function CommitReviewSection(props: ConfigurationTabProps): React.JSX.Element {
   const { state, dispatch, modified } = useVersioningSettings('commitReview', props.onDirtyChange)
   const withinId = useId()
+  const idleId = useId()
   const disabled = state.buffer === null || state.saving !== null
   return <ConfigurationSection title="Commit review" className="jamat-configuration-versioning">
     {state.problem !== null && <p role="alert" className="jamat-configuration__problem">{state.problem}</p>}
@@ -15,6 +16,12 @@ export function CommitReviewSection(props: ConfigurationTabProps): React.JSX.Ele
       onChange={(event) => dispatch({ input: 'activateSessionOnCommit', value: event.currentTarget.checked })} />
       Activate session when an agent opens a commit dialog</label>
     <p className="jamat-configuration-versioning__note">When disabled, the dialog opens in the background and the session shows a red exclamation mark.</p>
+    <label className="jamat-configuration-versioning__minutes" htmlFor={idleId}>Switch after
+      <input id={idleId} type="number" min={0} max={VersioningSettings.maxSwitchAfterIdleSecondsConst} step={1} disabled={disabled}
+        value={state.buffer?.switchAfterIdleSeconds ?? VersioningSettings.defaultSwitchAfterIdleSecondsConst}
+        onChange={(event) => dispatch({ input: 'switchAfterIdleSeconds', value: Number(event.currentTarget.value) })} />
+      seconds without typing</label>
+    <p className="jamat-configuration-versioning__note">A commit dialog, a waiting Finish or a session an agent opened waits while you type and shows ! in the status bar. It comes forward after this many seconds without a key in Jamat; a click on ! brings it now. 0 brings it as soon as Jamat has the focus.</p>
     <label><input type="checkbox" checked={state.buffer?.returnToPreviousSessionAfterCommit !== false}
       disabled={disabled || state.buffer?.activateSessionOnCommit === false}
       onChange={(event) => dispatch({ input: 'returnToPreviousSessionAfterCommit', value: event.currentTarget.checked })} />

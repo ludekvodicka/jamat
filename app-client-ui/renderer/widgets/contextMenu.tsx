@@ -38,11 +38,12 @@ export interface ContextMenuAction extends ContextMenuRow {
 }
 
 /**
- * A row that opens others instead of acting. Its children are actions, never submenus: a second
- * level would need its own opening state and its own side to fit on, and nothing has asked for one.
+ * A row that opens others instead of acting. Its children are actions and separators, never
+ * submenus: a second level would need its own opening state and its own side to fit on, and nothing
+ * has asked for one.
  */
 export interface ContextMenuSubmenu extends ContextMenuRow {
-  children: readonly ContextMenuAction[]
+  children: readonly (ContextMenuAction | ContextMenuSeparator)[]
   onSelect?: never
 }
 
@@ -213,15 +214,17 @@ function ContextMenuRowView(props: {
           aria-label={item.label}
           style={{ left: flyoutPlacement.x, top: flyoutPlacement.y }}
         >
-          {children.map((child) => (
-            <ContextMenuRowView
-              key={child.key}
-              item={child}
-              open={false}
-              onOpen={() => {}}
-              onClose={props.onClose}
-            />
-          ))}
+          {children.map((child) => ContextMenuEntries.isSeparator(child)
+            ? <div key={child.key} className="jamat-context-menu__separator" role="separator" />
+            : (
+                <ContextMenuRowView
+                  key={child.key}
+                  item={child}
+                  open={false}
+                  onOpen={() => {}}
+                  onClose={props.onClose}
+                />
+              ))}
         </div>
       )}
     </div>

@@ -69,7 +69,7 @@ export class WorktreeFileHolders {
         timeoutMs: WorktreeFileHolders.timeoutMillisecondsConst,
       })
       if (outcome.failure !== null || outcome.code !== 0)
-        return { kind: 'unavailable', reason: `the Restart Manager query failed: ${(outcome.stderr || outcome.failure || `exit ${outcome.code}`).trim().split(/\r?\n/)[0]}` }
+        return { kind: 'unavailable', reason: `the Restart Manager query failed: ${outcome.failure ?? (WorktreeFileHolders.errorOf(outcome.stderr) || `exit ${outcome.code}`)}` }
       const held = new Map<number, WorktreeFileHolder[]>()
       for (const line of outcome.stdout.split(/\r?\n/)) {
         const match = /^(\d+)\t(\d+)\t(.*)$/.exec(line)
@@ -110,12 +110,24 @@ export class WorktreeFileHolders {
     return holders.map((holder) => `${holder.name} (PID ${holder.pid})`).join(', ')
   }
 
+  /**
+   * Windows PowerShell writes its error stream as CLIXML when stderr is redirected; a progress record
+   * ("Preparing modules for first use") comes the same way, so the first line alone said `#< CLIXML`.
+   */
+  static errorOf(stderr: string): string {
+    if (!stderr.startsWith('#< CLIXML')) return stderr.trim().split(/\r?\n/)[0] ?? ''
+    const decode = (text: string) => text.replace(/_x([0-9A-F]{4})_/g, (_, code: string) => String.fromCharCode(parseInt(code, 16)))
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&')
+    return [...stderr.matchAll(/<S S="Error">([^<]*)<\/S>/g)].map((match) => decode(match[1])).join('').trim().split(/\r?\n/)[0] ?? ''
+  }
+
   static nameOf(path: string, root: string): string {
     return PathCompare.isInside(root, path) && !PathCompare.isInside(path, root) ? relative(root, path) : path
   }
 
   private static scriptOf(list: string): string {
     return `$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
 Add-Type -TypeDefinition @'
 using System;

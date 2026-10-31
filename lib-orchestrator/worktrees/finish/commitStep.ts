@@ -90,7 +90,8 @@ export class CommitStep {
         }
         if (!await this.deps.records.update(sessionId, (latest) => latest.worktreeLifecycle?.version !== state.version
           || latest.worktreeLifecycle.approvedAt !== state.approvedAt || FinishProjection.action(latest)?.actionId !== action.actionId ? null : {
-            ...latest, worktreeLifecycle: { ...latest.worktreeLifecycle, version: state.version + 1, phase: 'finishing', step: 'committing', wait: undefined, awaitingIdleReason: undefined },
+            ...latest, worktreeLifecycle: { ...latest.worktreeLifecycle, version: state.version + 1, phase: 'finishing', step: 'committing', wait: undefined,
+              awaitingIdleAt: undefined, awaitingIdleReason: undefined },
           })) return { kind: 'review' }
         let preparedHashes: Record<string, string> | undefined
         let incoming: string[] = []

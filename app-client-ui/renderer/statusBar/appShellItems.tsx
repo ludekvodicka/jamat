@@ -1,4 +1,5 @@
 import type { RateMonitorSnapshot } from '../../../lib-orchestrator/rateMonitor/rateMonitorApi.types'
+import type { AttentionSnapshot } from '../../shared/attention'
 import type { AppInfo } from '../../shared/appClientUiIpc'
 import type { AutoUpdateApi } from '../../shared/electron/autoUpdate/common/autoUpdateApi'
 import type { WindowInfo } from '../../shared/windowInfo'
@@ -13,6 +14,7 @@ import type { SessionModelCurrent } from '../sessionModel/sessionModelStore'
 import type { StatusBarItem } from './statusBar'
 import { UpdateStatusItem } from './updateStatusItem'
 import { AgentCliUpdateStatusItem, type AgentCliUpdatePorts } from './agentCliUpdateStatusItem'
+import { AttentionStatusItem, type AttentionStatusPorts } from './attentionStatusItem'
 import type { ActiveAgentTerminal } from './useActiveAgentTerminal'
 
 /**
@@ -51,7 +53,11 @@ export class AppShellItems {
   }
 
   /**
-   * `window · sessionModel · rate · channel`: the two terminal widgets sit between the window's name
+   * `window · attention · sessionModel · rate · channel`. The attention item is drawn in every window
+   * whatever tab is in front, and only while something waits: what waits is the person's, not the
+   * tab's, and an empty slot would leave its separator behind.
+   *
+   * The two terminal widgets sit between the window's name
    * and the channel, because what they say changes while the window is open and the two beside them
    * never do.
    *
@@ -77,11 +83,15 @@ export class AppShellItems {
        */
       compact: SessionCompact
       rate: { ports: RateStatusPorts; store: SnapshotStore<RateMonitorSnapshot> }
+      attention: { snapshot: AttentionSnapshot | null; ports: AttentionStatusPorts }
     },
   ): readonly StatusBarItem[] {
     const items: StatusBarItem[] = []
     if (windowInfo?.name !== null && windowInfo?.name !== undefined)
       items.push({ key: 'window', node: <span>{windowInfo.name}</span> })
+    const waiting = widgets.attention.snapshot?.items ?? []
+    if (waiting.length > 0)
+      items.push({ key: 'attention', node: <AttentionStatusItem items={waiting} ports={widgets.attention.ports} /> })
     if (focus !== null) {
       if (widgets.sessionModel !== null)
         items.push({

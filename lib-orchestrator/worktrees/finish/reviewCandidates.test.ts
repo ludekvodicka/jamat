@@ -100,6 +100,23 @@ describe('ReviewCandidates', () => {
     expect(h.deps.commands.verify).toHaveBeenCalledTimes(2)
   })
 
+  // worker-agent r288: an empty lockfile `npm install` wrote had to be published, and the next Finish met it as a conflict.
+  it('leaves an untouched unversioned setup output out of the publication and keeps it once the session changed it', async () => {
+    const h = await harness()
+    await h.records.update('worker', (record) => ({ ...record, worktree: { ...record.worktree!,
+      setupBaseline: { at: 1, hashes: { setup: 'setup-hash', 'components/package-lock.json': 'setup-hash', 'components/edited.json': 'old-hash' } } } }))
+    h.deps.svn.changes = async () => ({ ok: true, value: [{ path: 'a', kind: 'item', conflict: false },
+      { path: 'setup', kind: 'item', conflict: false }, { path: 'components/package-lock.json', kind: 'item', conflict: false, unversioned: true },
+      { path: 'components/edited.json', kind: 'item', conflict: false, unversioned: true }] })
+    const { rows, review } = await h.step.create('worker', '[Jamat] Fix', 'person-local')
+    expect(rows.map((row) => row.path)).toEqual(['a', 'setup', 'components/edited.json'])
+    expect(review).toMatchObject({ selection: ['a', 'setup', 'components/edited.json'], setupOutputs: ['components/package-lock.json'] })
+    expect(Object.keys(review.hashes)).not.toContain('components/package-lock.json')
+    expect(await h.step.approve('worker', { ...review, selection: [...review.selection, 'components/package-lock.json'], reviewVersion: review.version }))
+      .toMatchObject({ ok: false, code: 'review-stale', changed: ['components/package-lock.json'], detail: expect.stringContaining('setup outputs the session never changed') })
+    expect(await h.step.approve('worker', { ...review, reviewVersion: review.version })).toMatchObject({ ok: true })
+  })
+
   it('refreshes changed selected evidence without accepting the old approval', async () => {
     const h = await harness()
     const { review } = await h.step.create('worker', '[Jamat] Fix', 'person-local')

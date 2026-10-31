@@ -127,10 +127,10 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/worktrees/worktrees
       .toBe(true)
   })
 
-  it('names the command the switch turns on, so nobody has to guess what it does', async () => {
+  it('names the variable the switch sets, so nobody has to guess what it does', async () => {
     const { view } = await mount()
     expect(view.container.textContent)
-      .toContain(SetupFamilies.pnpmGlobalVirtualStoreCommandConst)
+      .toContain(`${SetupFamilies.pnpmGlobalVirtualStoreVariableConst}=true`)
   })
 
   describe('the project half, when a right-click named one', () => {

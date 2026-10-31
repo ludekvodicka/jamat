@@ -168,7 +168,7 @@ export class SvnAuditScenarios {
     const resolver = { briefs: logs, unavailable: () => 'No agent in this fixture', withMarkers: SvnResolverLauncher.markersIn, cli: () => ({ ok: false as const, detail: 'No agent in this fixture' }),
       instance: { configIdentity: 'audit', channel: 'development' as const } }
     const operations = new WorktreeOperations({ records, scripts, now: Date.now, newId: randomUUID, changed: () => {}, commands,
-      svn: manager, results, resolver, busyReason: () => null, holdInput: () => () => {}, handoffs: { checksFailed: async () => {}, conflicts: async () => {}, notifyCaller: async () => {} } })
+      svn: manager, results, resolver, busyReason: () => null, holdInput: () => () => {}, handoffs: { checksFailed: async () => {}, conflicts: async () => {}, notifyCaller: async () => {}, messageWanted: async () => {} } })
     const flow = new SvnConflictFlow({ svn: manager, briefs: logs, handover: results, resolutions: operations.resolutions,
       savedDirectoryOf: (id) => results.savedDirectoryOf(id), withMarkers: resolver.withMarkers, unavailable: resolver.unavailable, cli: resolver.cli, now: Date.now })
     let action: SessionRecordSvnAction = { actionId: 'audit', kind: 'finish', stage: 'fixing', root: tree, checks: [], checkCursor: 0, rootCursor: 0,

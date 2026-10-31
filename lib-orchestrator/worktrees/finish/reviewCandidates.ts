@@ -5,6 +5,8 @@ import { ProductGroup } from '../../shared/productGroup'
 import { PathCompare } from '../../shared/pathCompare'
 import { SvnCommitGate } from '../../svn/svnCommitGate'
 import type { SvnWorktreeManager } from '../../svn/svnWorktreeManager'
+import { WorktreeWords } from '../view/worktreeWords'
+import { SetupOutputs } from './setupOutputs'
 import type { SessionRecordsStore } from '../../sessionManager/worktreeSessionRecords'
 import type { WorktreeRepositoryReview, WorktreeReviewSnapshot } from '../worktreeState'
 import type { WorktreeSvnCommands } from '../worktreeSvnCommands'
@@ -32,7 +34,8 @@ export class ReviewCandidates {
       if (state === undefined || record?.worktree?.worktreePath !== root) throw new Error('The review worktree changed')
       const changed = await this.deps.svn.changes(root)
       if (!changed.ok) throw new Error(changed.detail)
-      const paths = changed.value.filter((row) => !SvnCommitGate.sidecarPattern.test(row.path)).map((row) => row.path)
+      const setupOutputs = await SetupOutputs.of(this.deps.svn, root, record, changed.value)
+      const paths = changed.value.filter((row) => !SvnCommitGate.sidecarPattern.test(row.path) && !setupOutputs.has(row.path)).map((row) => row.path)
       const hashes = await this.deps.svn.commitHashes(root, paths, 'node')
       if (!hashes.ok) throw new Error(hashes.detail)
       const legacyPaths = paths.filter((path) => record.worktree?.setupBaseline?.hashes[path] !== undefined
@@ -66,7 +69,8 @@ export class ReviewCandidates {
           source: prior !== undefined && (prior.message.trim() || prior.source === 'person-local' || prior.source === 'person-remote') ? prior.source : proposal ? 'agent-proposal' as const : initial ? source : 'unknown' as const, acknowledged: [] }
       }).filter((candidate) => candidate.paths.length > 0)
       const review: WorktreeReviewSnapshot = { version: state.version + 1, selection: rows.filter((row) => row.checked).map((row) => row.path), deletions,
-        hashes: hashes.value, repositories, message, source, acknowledged: [], headMovedBy: state.facts.syncedAt?.headMovedBy ?? 0 }
+        hashes: hashes.value, repositories, message, source, acknowledged: [], headMovedBy: state.facts.syncedAt?.headMovedBy ?? 0,
+        ...setupOutputs.size === 0 ? {} : { setupOutputs: [...setupOutputs].sort() } }
       // Every root, the unchanged ones too, so a label of a lone published repository still names its mount (UA1-J13-5).
       const mounts = roots.value.map((candidate) => ({ own: candidate.own, repository: bounds.value[candidate.own].repository }))
       await this.deps.commands.accept(root)
@@ -85,6 +89,10 @@ export class ReviewCandidates {
       const state = this.deps.records.get(sessionId)?.worktreeLifecycle
       if (state?.step !== 'reviewing' || state.version !== press.reviewVersion || state.review?.version !== press.reviewVersion)
         return ReviewCandidates.stale([])
+      const outputs = press.selection.filter((path) => state.review!.setupOutputs?.some((output) => path === output || path.startsWith(`${output}/`)))
+      if (outputs.length > 0)
+        return { ok: false, code: 'review-stale', changed: outputs, detail: `Finish leaves setup outputs the session never changed in the worktree: ${outputs.join(', ')}. `
+          + `Uncheck them, or change them in the worktree and press ${WorktreeWords.recheckConst} to publish them.` }
       const reviewed = new Map(press.selection.map((path) => [path, ReviewCandidates.reviewedKeyOf(state.review!.hashes, path)]))
       const unknown = press.selection.filter((path) => reviewed.get(path) === undefined || !PathCompare.isInside(root, resolve(root, path)))
       if (unknown.length > 0) return ReviewCandidates.stale(unknown)
@@ -121,7 +129,8 @@ export class ReviewCandidates {
       const review = { ...state.review, ...approval, repositories, version, hashes: { ...state.review.hashes, ...hashes.value } }
       if (!await this.deps.records.update(sessionId, (record) => record.worktreeLifecycle?.version !== state.version ? null : {
         ...record, worktreeLifecycle: { ...record.worktreeLifecycle, version, review,
-          step: changed.length > 0 ? 'reviewing' : 'awaiting-idle', approvedAt: changed.length > 0 ? undefined : Date.now() },
+          // An empty selection publishes nothing, so it needs no prepared assembly and goes to its disposition.
+          step: changed.length > 0 ? 'reviewing' : press.selection.length === 0 ? 'disposing' : 'awaiting-idle', approvedAt: changed.length > 0 ? undefined : Date.now() },
       })) return ReviewCandidates.stale([])
       return changed.length > 0 ? ReviewCandidates.stale(changed) : { ok: true, review }
     })

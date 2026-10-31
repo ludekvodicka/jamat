@@ -112,7 +112,7 @@ describe('Session actions sections', () => {
       worktreeOutcome: { result: 'partial', revisions: ['file:///repos/j07ea:r4'], main: 'none', worktree: 'kept', lines: ['partial: Q:/app/.worktrees/002'], at: 10 } }
     const kept = SessionWorkflows.sectionsOf(record, () => null).find((section) => section.workflowId === 'ended:10')
     expect(kept?.actions.map((action) => action.id)).toEqual(['prepare-worktree', 'discard'])
-    expect(kept?.actions[1].confirm).toBe('Already published: j07ea r4. 1 changed path is not published and will be discarded with this worktree. Save a copy and discard it?')
+    expect(kept?.actions[1].confirm).toBe('Already published: j07ea r4. 1 changed path is not published and will be discarded with this worktree. Discard it?')
     const removed: SessionRecord = { ...record, worktree: undefined, worktreeLifecycle: { ...record.worktreeLifecycle!, phase: 'removed' },
       worktreeOutcome: { ...record.worktreeOutcome!, worktree: 'removed', at: 20 } }
     expect(SessionWorkflows.sectionsOf(removed, () => null).find((section) => section.workflowId === 'ended:20')?.actions).toEqual([])

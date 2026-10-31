@@ -173,6 +173,7 @@ describe('app-client-ui/app/shell/workspaceWindows', () => {
     rendererGone: string[]
     closed: string[]
     close: CloseControl
+    active: { count: number }
   }
 
   class CloseControl {
@@ -252,6 +253,7 @@ describe('app-client-ui/app/shell/workspaceWindows', () => {
     const visibility: { windowId: string; visible: boolean }[] = []
     const rendererGone: string[] = []
     const closed: string[] = []
+    const active = { count: 0 }
     const close = new CloseControl()
     let registry: WorkspaceWindows
     registry = new WorkspaceWindows(
@@ -272,10 +274,11 @@ describe('app-client-ui/app/shell/workspaceWindows', () => {
           const sender = registry.window(windowId)?.windowHandle()?.webContents
           close.acceptingDuringExplicit.push(sender ? registry.acceptsRenderer(sender) : false)
         },
+        onPersonActive: () => { active.count += 1 },
         report: (message) => close.reports.push(message),
       },
     )
-    return { registry, store, created, visibility, rendererGone, closed, close }
+    return { registry, store, created, visibility, rendererGone, closed, close, active }
   }
 
   /** What the fake answers to, for the one place a handle is read back through Electron's type. */
@@ -312,6 +315,20 @@ describe('app-client-ui/app/shell/workspaceWindows', () => {
       rectangle: { x: 120, y: 80, width: 1280, height: 800 },
       maximized: false,
     })
+  })
+
+  it('reports a key pressed in any workspace window and a window taking the focus, not a key released', () => {
+    const { registry, active } = harness()
+    registry.createMain()
+    registry.createHolder('holder-keys')
+    const [main, holder] = FakeWindow.created
+
+    main.emit('before-input-event', { type: 'keyDown', key: 'a' })
+    holder.emit('before-input-event', { type: 'keyDown', key: 'b' })
+    holder.emit('before-input-event', { type: 'keyUp', key: 'b' })
+    expect(active.count).toBe(2)
+    holder.emitWindow('focus')
+    expect(active.count).toBe(3)
   })
 
   it('routes mouse Back only to the workspace window that received it', () => {

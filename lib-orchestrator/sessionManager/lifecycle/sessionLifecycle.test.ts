@@ -119,6 +119,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     calls: { projectRoot: string; repositoryRoot: string }[]
     /** What the member answers about every project; a test that cares about one replaces it. */
     resolution: SetupResolution
+    /** What this machine's settings give a worktree that froze no variables of its own. */
+    machine: Record<string, string>
   }
 
   interface FakeNumbers {
@@ -444,11 +446,13 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     const fake: FakeSetup = {
       calls,
       resolution: { kind: 'none', reason: 'no known project family detected' },
+      machine: {},
       port: {
         async resolve(projectRoot, repositoryRoot) {
           calls.push({ projectRoot, repositoryRoot })
           return fake.resolution
         },
+        machineVariables: () => fake.machine,
       },
     }
     return fake
@@ -625,7 +629,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         scripts,
         finish: { commands: { lease, accept: async () => {}, verify: async () => {}, acceptInterrupted: async () => {} },
           sync: { recover: async () => false, withControl: async (_id, work) => work(), run: async (id) => { svnAction.syncs.push(id); await store.update(id, (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!, version: record.worktreeLifecycle!.version + 1, step: 'checking', phase: 'finishing', wait: undefined } })); return { ok: true, value: { revision: 1, conflicts: [] } } }, resolve: async () => ({ ok: false, code: 'invalid-spec', detail: 'No conflict' }) },
-          handoffs: { checksFailed: async () => {}, conflicts: async () => {}, notifyCaller: async () => {} }, idle: () => true, busyReason: () => null,
+          handoffs: { checksFailed: async () => {}, conflicts: async () => {}, notifyCaller: async () => {}, messageWanted: async () => {} }, idle: () => true, busyReason: () => null,
           holdInput: () => () => {}, awaitExit: async () => true, liveness: async () => {} },
 
 
@@ -724,8 +728,9 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
   function installing(
     steps: { command: string; cwd: string }[],
     origin: 'project' | 'machine' = 'machine',
+    variables: Record<string, string> = {},
   ): SetupResolution {
-    return { kind: 'setup', origin, steps }
+    return { kind: 'setup', origin, steps, variables }
   }
 
   function record(sessionId: string, overrides?: Partial<SessionRecord>): SessionRecord {
@@ -1057,9 +1062,12 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(context.host.calls).toHaveLength(0)
       const waiting = context.store.get(result.value.sessionId)
       expect(waiting).toMatchObject({ life: 'ended', pendingSetup: { agreement: { hash: bootstrapHash } } })
+      expect(waiting?.worktree?.setupVariables).toBeUndefined()
       expect(agreedHash(context)).toBeNull()
       expect(await context.lifecycle.retrySetup(result.value.sessionId, bootstrapHash)).toMatchObject({ ok: true })
       expect(agreedHash(context)).toBe(bootstrapHash)
+      // The first plan is the retry's, and it freezes what that plan runs with.
+      expect(context.store.get(result.value.sessionId)?.worktree?.setupVariables).toEqual({})
       expect(context.store.get(result.value.sessionId)?.pendingSetup?.agreement).toBeUndefined()
       expect(context.host.calls.length).toBeGreaterThan(0)
     })
@@ -1210,6 +1218,74 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     )
     expect(replayed.args.slice(-asCreated.length)).toEqual(asCreated)
     expect(replayed.cwd).toBe(join(projectRoot, '.worktrees', 'fix'))
+  })
+
+  /*
+   * pnpm 12 checks dependencies before `pnpm exec` and `pnpm run` and reinstalls without an option it
+   * does not see, so what the install ran with has to reach everything started in the worktree after
+   * it - and nothing started in the main copy.
+   */
+  describe('setup variables', () => {
+    const gvsConst = { pnpm_config_enable_global_virtual_store: 'true' }
+
+    function lastLaunch(context: Harness): RuntimeLaunchSpec {
+      const creates = callsNamed(context.host, 'runtime.create')
+      return launchOf(creates[creates.length - 1])
+    }
+
+    it('hands them to the install, the worker it waits for and a terminal in the worktree, never to the main copy', async () => {
+      const context = await harness()
+      context.setup.resolution = installing([{ command: 'pnpm install', cwd: '' }], 'machine', gvsConst)
+
+      expect((await context.lifecycle.create({
+        kind: 'agent',
+        directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
+        agent: { agentId: 'claude', mode: 'new' },
+        worktree: { slug: 'fix' },
+      })).ok).toBe(true)
+      expect(context.store.get('id-1')?.worktree?.setupVariables).toEqual(gvsConst)
+      expect(lastLaunch(context).env).toMatchObject(gvsConst)
+
+      const installId = context.store.get('id-1')?.pendingSetup?.setupSessionId
+      if (installId === undefined) throw new Error('the session waits for no install')
+      const install = context.host.runtimes.get(installId)
+      if (!install) throw new Error('the fake Host lost the install runtime')
+      context.host.runtimes.set(installId, { ...install, alive: false, exitCode: 0 })
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(lastLaunch(context).cwd).toBe(worktreePath)
+      expect(lastLaunch(context).env).toMatchObject(gvsConst)
+
+      // A setting switched off since does not move this worktree to a second layout.
+      expect((await context.lifecycle.create(shellSpec(join(worktreePath, 'packages')))).ok).toBe(true)
+      expect(lastLaunch(context).env).toMatchObject(gvsConst)
+
+      expect((await context.lifecycle.create(shellSpec(projectRoot))).ok).toBe(true)
+      expect(lastLaunch(context).env).not.toHaveProperty('pnpm_config_enable_global_virtual_store')
+    })
+
+    it('freezes none for a worktree whose setup needs none, whatever this machine says later', async () => {
+      const context = await harness()
+      context.setup.resolution = installing([{ command: 'pnpm install', cwd: '' }])
+      context.setup.machine = gvsConst
+
+      expect((await context.lifecycle.create(worktreeSpec())).ok).toBe(true)
+      expect(context.store.get('id-1')?.worktree?.setupVariables).toEqual({})
+      expect(lastLaunch(context).env).not.toHaveProperty('pnpm_config_enable_global_virtual_store')
+    })
+
+    it('gives a worktree recorded before they were kept what this machine says now', async () => {
+      const context = await harness({ seedRecords: [record('w1', {
+        directory: { mode: 'project', categoryId: 'c1', projectPath: projectRoot },
+        life: 'ended',
+        binding: null,
+        endedAt: 2,
+        worktree: { worktreePath, branch: 'jamat/fix', baseCommit: 'abc123', repositoryRoot: projectRoot },
+      })] })
+      context.setup.machine = gvsConst
+
+      expect((await context.lifecycle.create(shellSpec(worktreePath))).ok).toBe(true)
+      expect(lastLaunch(context).env).toMatchObject(gvsConst)
+    })
   })
 
   it('creates the worktree first and runs the session inside it', async () => {
@@ -2166,9 +2242,10 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       endedReason: undefined,
     }))
 
-    // Neither of these is a trap any more: nothing names a runtime, so nothing is stopped, and the
-    // record is the whole of what there is to remove.
-    expect(failureOf(await context.lifecycle.stop('s1')).code).toBe('not-found')
+    // Neither of these is a trap any more: nothing names a runtime, so the stop only ends the record
+    // and drops the pending reopen, and the record is the whole of what there is to remove.
+    expect(await context.lifecycle.stop('s1')).toEqual({ ok: true, value: undefined })
+    expect(context.store.get('s1')?.life).toBe('ended')
     expect(await context.lifecycle.remove('s1')).toEqual({ ok: true, value: undefined })
     expect(callsNamed(context.host, 'runtime.stop')).toEqual([])
   })
@@ -2594,10 +2671,13 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     expect(callsNamed(context.host, 'runtime.stop')).toHaveLength(1)
   })
 
-  it('has nothing to stop while a create has not been answered', async () => {
+  it('ends a session whose create has not been answered, so no later pass launches it', async () => {
     const context = await harness()
-    await context.store.put(record('s1', { life: 'starting', binding: null }))
-    expect(failureOf(await context.lifecycle.stop('s1')).code).toBe('not-found')
+    await context.store.put(record('s1', { life: 'starting', binding: null, pendingOperationId: 'op-1', pendingOperationKind: 'create' }))
+    expect(await context.lifecycle.stop('s1')).toEqual({ ok: true, value: undefined })
+    expect(callsNamed(context.host, 'runtime.stop')).toHaveLength(0)
+    expect(context.store.get('s1')).toMatchObject({ life: 'ended', stopRequested: true, endedReason: 'Stopped before it started' })
+    expect(context.store.get('s1')?.pendingOperationId).toBeUndefined()
   })
 
   it('refuses to remove a session that is still live, or starting over a runtime it names', async () => {

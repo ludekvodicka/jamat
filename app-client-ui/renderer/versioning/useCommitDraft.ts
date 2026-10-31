@@ -209,7 +209,8 @@ export function useCommitDraft(sessionId: string, item: PanelSplitCommitItem, po
   const setMessage = useCallback((message: string) => {
     localMessage.current = message
     localSource.current = 'person-local'
-    setDraft((value) => value === null ? null : { ...value, message, messageSource: 'person-local', editedByPerson: true })
+    // An emptied field is nobody's message; the source's answer also drops a field left at its prefix.
+    setDraft((value) => value === null ? null : { ...value, message, messageSource: 'person-local', editedByPerson: message.trim() !== '', proposedByAgent: false })
     persistBuffer(message)
     edits.current = edits.current.then(async () => { await save({ message }); reader.current?.refresh() })
       .catch((error: unknown) => { setError(String(error)) })

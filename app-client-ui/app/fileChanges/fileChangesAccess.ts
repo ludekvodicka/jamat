@@ -212,7 +212,9 @@ export class FileChangesAccess {
       ...(forCommit ? { worktree: null } : {}) }, source, forCommit, filePath, includedPaths))
     if (this.owners.get(ownerId) !== token) return { ok: false, code: 'invalid-context', detail: 'The file changes owner was released' }
     if (result.ok && context.value.worktree?.kind === 'svn' && result.value.source.selected === 'svn') {
-      const setup = await this.sessions.setupPaths(sessionId, result.value.entries.filter((entry) => entry.nodeKind === 'file').map((entry) => entry.path))
+      // Only an unversioned file can be a setup output a Finish leaves out; a versioned one setup changed is published.
+      const setup = await this.sessions.setupPaths(sessionId, result.value.entries.filter((entry) => entry.nodeKind === 'file' && entry.status === 'untracked')
+        .map((entry) => entry.path))
       if (!setup.ok) return { ok: false, code: 'invalid-context', detail: setup.detail }
       if (this.owners.get(ownerId) !== token) return { ok: false, code: 'invalid-context', detail: 'The file changes owner was released' }
       const paths = new Set(setup.value.map(PathCompare.comparable))

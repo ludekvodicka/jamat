@@ -104,6 +104,8 @@ function ActionsSection(props: ActionsPaneProps & { section: SessionWorkflowInfo
   const [busy, setBusy] = useState(false)
   /** The press that waits for its answer; a Finish step can take seconds before the record moves (UA1-J09-8). */
   const [pressing, setPressing] = useState<SessionWorkflowAction | null>(null)
+  /** The step that waited when Publish was pressed; the press answers only after the whole drive, removal included. */
+  const [pressedStep, setPressedStep] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<SessionWorkflowAction | null>(null)
   /** The step whose presses Later folded into its line; the step itself still waits. */
   const [deferred, setDeferred] = useState<{ key: string; line: string } | null>(null)
@@ -163,6 +165,7 @@ function ActionsSection(props: ActionsPaneProps & { section: SessionWorkflowInfo
     const pressedVersion = reviewVersion.current?.version
     setBusy(true)
     setPressing(action)
+    setPressedStep(current)
     setNote({ kind: 'none' })
     try {
       if (action.requiresCommit && outdated) {
@@ -224,20 +227,25 @@ function ActionsSection(props: ActionsPaneProps & { section: SessionWorkflowInfo
       {section.validation && <WorktreeValidation value={section.validation} ports={props.ports} />}
       {section.rounds.map((round, index) => <section key={index} aria-label={round.title}>
         {section.rounds.length > 1 && <h3 className="workflow__round-title">{round.title}</h3>}
-        <ol className="workflow__steps">{round.steps.map((step) => <li key={step.key}>
-          <ActionsStep step={step} sessionId={props.session!.sessionId} now={now} visible={visible} ports={props.ports}
+        <ol className="workflow__steps">{round.steps.map((step) => {
+          // Publish closes the review, and the record leaves the person's wait only after Finish has
+          // checked the approved files again, seconds later; until then the step drew its old request.
+          const publishing = step.key === current && step.key === pressedStep && pressing?.requiresCommit === true
+          return <li key={step.key}>
+          <ActionsStep step={publishing ? { ...step, state: 'running' } : step} sessionId={props.session!.sessionId} now={now} visible={visible} ports={props.ports}
             expanded={props.expandedSteps[step.key]} onExpand={(value) => props.onExpandStep(step.key, value)}
             onReview={step === props.review ? () => { reviewVersion.current = { key: step.key, version: props.session?.worktreeView?.version }; props.onReview() } : undefined} busy={busy}
-            live={WorkflowLive.textOf(step, WorkflowLive.stepTextOf(props.session?.step), lines)}
+            live={publishing ? `${pressing.label}: sent, Jamat works on it` : WorkflowLive.textOf(step, WorkflowLive.stepTextOf(props.session?.step), lines)}
             progress={WorkflowLive.fractionOf(step, props.session?.step)} />
-          {step.key === current && <div className="workflow__step-actions" role="group" aria-label={`${step.title} actions`}>
+          {step.key === current && !publishing && <div className="workflow__step-actions" role="group" aria-label={`${step.title} actions`}>
             {deferred?.key === step.key ? <>
               <p role="status" className="workflow__summary">{deferred.line}</p>
               <button type="button" className="session-actions__toggle" onClick={() => setDeferred(null)}>
                 Show {section.actions.filter((action) => action.place === 'step' && !action.requiresCommit && action.id !== 'later').map((action) => action.label).join(', ')}
               </button>
             </> : buttons(section.actions.filter((action) => action.place === 'step' && !action.requiresCommit))}</div>}
-        </li>)}</ol>
+        </li>
+        })}</ol>
       </section>)}
       <footer className="workflow__footer">{buttons(section.actions.filter((action) => action.place !== 'step' || current === null))}
         <WorkflowFooterNoteView note={note} busy={busy} onAgree={(action, agreement) => void press(action, agreement)} />

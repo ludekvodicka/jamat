@@ -16,19 +16,21 @@ async function harness() {
   const snapshots = new Map<string, SvnUpdateSnapshot>([[root, { properties: {}, localMappingChanges: false, children: [library, next], missing: [], mismatched: [] }]])
   const deps: ConstructorParameters<typeof WorktreeUpdate>[0] = {
     records: h.records, changed: () => {},
-    svn: { conflictSet: async () => ({ ok: true, value: { revision: 2, rows: [], facts: conflict ? [{ path: 'library/a', kind: 'text',
-      takesArgument: true, tree: null, sidecars: [], properties: [], content: { binary: false, unreadable: false, equal: 'differs' } }] : [] } }) },
+    svn: { conflictSet: vi.fn(async () => ({ ok: true as const, value: { revision: 2, rows: [], facts: conflict ? [{ path: 'library/a', kind: 'text' as const,
+      takesArgument: true, tree: null, sidecars: [], properties: [], content: { binary: false, unreadable: false, equal: 'differs' as const } }] : [] } })) },
     targets: { owner: async (_root, revision) => target('', revision),
-      verify: vi.fn(async () => {}), snapshot: async (item, discover = true) => {
+      verify: vi.fn(async () => {}), snapshot: vi.fn(async (item: SvnUpdateTarget, discover = true) => {
         const snapshot = structuredClone(snapshots.get(item.path) ?? await emptyUpdateTargets.snapshot(item))
         if (!discover) snapshot.children = []
         if (changed && item.path === root) snapshot.properties = { [root]: 'definition' }
         return snapshot
-      } },
+      }) },
     runner: { run: vi.fn(async (_id, kind, cwd, args) => {
       commands.push({ cwd, args })
       if (kind === 'update' && cwd === reject) throw new Error('network interrupted')
-      return { ok: true as const, output: '', exitCode: 0, runId: `run-${commands.length}` }
+      // svn 1.14 exits 0 with postponed conflicts and names them in its summary.
+      const output = conflict ? "Updating '.':\nC    library/a\nUpdated to revision 2.\nSummary of conflicts:\n  Text conflicts: 1\n" : "Updating '.':\nAt revision 2.\n"
+      return { ok: true as const, output, exitCode: 0, runId: `run-${commands.length}` }
     }) },
   }
   return { ...h, root, target, library, next, commands, deps, update: new WorktreeUpdate(deps), snapshots,
@@ -63,6 +65,35 @@ describe('WorktreeUpdate', () => {
     const commands = h.commands.length
     await expect(h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: unreadable as typeof state }))).rejects.toThrow('worktreeLifecycle is malformed')
     expect(h.commands).toHaveLength(commands)
+  })
+
+  // Worker-agent 031: a sync met conflicts under one action, Finish took another, and Try again kept refusing.
+  it('starts again for a new action over an update an earlier action left with no svn command open', async () => {
+    const h = await harness()
+    h.conflict(true)
+    expect(await h.update.run('worker', 'sync', h.root, 2)).toMatchObject({ complete: false })
+    h.conflict(false)
+    expect(await h.update.run('worker', 'finish', h.root, 3)).toMatchObject({ complete: true, revision: 3 })
+    expect(h.records.get('worker')!.worktreeLifecycle!.update).toMatchObject({ actionId: 'finish', revision: 3, completed: true })
+  })
+
+  it('refuses a new action while an svn command of the earlier unfinished update is open', async () => {
+    const h = await harness()
+    h.conflict(true)
+    await h.update.run('worker', 'sync', h.root, 2)
+    const stale = h.records.get('worker')!.worktreeLifecycle!.update!
+    await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!,
+      journal: [{ stepId: `sync-update-${stale.generation}-0`, kind: 'update', attempt: 1, runId: 'lost', startedAt: 1 }] } }))
+    const commands = h.commands.length
+    await expect(h.update.run('worker', 'finish', h.root, 3)).rejects.toThrow('An unfinished update belongs to another action or working copy')
+    expect(h.commands).toHaveLength(commands)
+  })
+
+  it('refuses an unfinished update of another working copy', async () => {
+    const h = await harness()
+    h.conflict(true)
+    await h.update.run('worker', 'sync', h.root, 2)
+    await expect(h.update.run('worker', 'finish', join(h.root, 'other'), 3)).rejects.toThrow('An unfinished update belongs to another action or working copy')
   })
 
   it('refuses changed carrier definitions before resuming a saved external', async () => {
@@ -167,6 +198,36 @@ describe('WorktreeUpdate', () => {
     h.reject()
     await h.update.run('worker', 'finish', h.root, 2)
     expect(h.records.get('worker')!.worktreeLifecycle!.knownIncoming).toBeUndefined()
+  })
+
+  it('reads the conflicts of the whole tree only after an update svn reported a conflict in, or a resumed one', async () => {
+    const h = await harness()
+    await h.update.run('worker', 'finish', h.root, 2)
+    expect(h.commands).toHaveLength(3)
+    expect(h.deps.svn.conflictSet).not.toHaveBeenCalled()
+    h.conflict(true)
+    expect(await h.update.run('worker', 'finish-2', h.root, 3)).toMatchObject({ complete: false })
+    expect(h.deps.svn.conflictSet).toHaveBeenCalledTimes(1)
+    h.conflict(false)
+    expect(await h.update.run('worker', 'finish-2', h.root, 3)).toMatchObject({ complete: true })
+    expect(h.deps.svn.conflictSet).toHaveBeenCalledTimes(2)
+  })
+
+  it('compares the definitions of a parent once for all its externals', async () => {
+    const h = await harness()
+    await h.update.run('worker', 'finish', h.root, 2)
+    const parentReads = vi.mocked(h.deps.targets.snapshot).mock.calls.filter(([item, discover, protect]) => item.path === h.root && discover === false && protect === undefined)
+    expect(parentReads).toHaveLength(1)
+  })
+
+  it.each([
+    ["Updating '.':\nAt revision 7.\n", true],
+    ["Updating '.':\nU    src/a.ts\nA    src/b.ts\nUpdated to revision 8.\n", true],
+    ["Updating '.':\nC    f.txt\n C   g.txt\nUpdated to revision 2.\nSummary of conflicts:\n  Text conflicts: 1\n  Property conflicts: 1\n", false],
+    ["Updating '.':\n   C dir\nUpdated to revision 3.\n", false],
+    ["Updating '.':\nSkipped 'f.txt' -- Node remains in conflict\nAt revision 3.\nSummary of conflicts:\n  Skipped paths: 1\n", false],
+  ])('tells a conflict-free update output apart: %j', (output, clean) => {
+    expect(WorktreeUpdate.conflictFree(output)).toBe(clean)
   })
 
   it('requires verification before advancing the saved cursor', async () => {

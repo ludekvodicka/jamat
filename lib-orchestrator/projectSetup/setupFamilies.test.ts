@@ -12,9 +12,8 @@ describe('lib-orchestrator/projectSetup/setupFamilies', () => {
   ]
 
   it('has a command for every tool a detector can return', () => {
-    const options = SetupFamilies.defaultPlatformSettings()
     for (const toolId of everyToolConst)
-      expect(SetupFamilies.commandOf(toolId, options), toolId).toMatch(/\S/)
+      expect(SetupFamilies.commandOf(toolId), toolId).toMatch(/\S/)
   })
 
   /* The catalog is what the settings window prints, so a tool missing from it is a row the user
@@ -26,20 +25,19 @@ describe('lib-orchestrator/projectSetup/setupFamilies', () => {
   })
 
   it('throws on a tool it does not know, and says which', () => {
-    expect(() => SetupFamilies.commandOf('perl-cpan' as SetupToolId,
-      SetupFamilies.defaultPlatformSettings()))
+    expect(() => SetupFamilies.commandOf('perl-cpan' as SetupToolId))
       .toThrow('Unknown setup tool: "perl-cpan"')
   })
 
-  it('moves the pnpm command with the setting, and moves nothing else', () => {
+  /* pnpm reads `pnpm_config_*` and ignores `npm_config_enable_global_virtual_store` (measured, 12.8.1). */
+  it('gives pnpm the store variable with the setting on, and gives nothing else any', () => {
     const on = { node: { pnpm: { globalVirtualStore: true } } }
     const off = SetupFamilies.defaultPlatformSettings()
-    expect(SetupFamilies.commandOf('node-pnpm', off)).toBe('pnpm install')
-    expect(SetupFamilies.commandOf('node-pnpm', on))
-      .toBe(SetupFamilies.pnpmGlobalVirtualStoreCommandConst)
+    expect(SetupFamilies.commandOf('node-pnpm')).toBe('pnpm install')
+    expect(SetupFamilies.variablesOf('node-pnpm', on)).toEqual({ pnpm_config_enable_global_virtual_store: 'true' })
+    expect(SetupFamilies.variablesOf('node-pnpm', off)).toEqual({})
     for (const toolId of everyToolConst.filter((id) => id !== 'node-pnpm'))
-      expect(SetupFamilies.commandOf(toolId, on), toolId)
-        .toBe(SetupFamilies.commandOf(toolId, off))
+      expect(SetupFamilies.variablesOf(toolId, on), toolId).toEqual({})
   })
 
   /* A shared object would let one caller edit the default out from under the next. */

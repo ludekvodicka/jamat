@@ -1,3 +1,4 @@
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { finishTestRecords } from '../../worktrees/worktreeTesting'
 import { WorkerHandoffs } from './workerHandoffs'
@@ -109,6 +110,40 @@ describe('WorkerHandoffs', () => {
     expect(handoff.text.split('\n')[0]).toBe('Checks failed. Repair the worktree, then propose it again.')
     expect(handoff.text).toContain('/logs/full.log')
     expect(handoff.text).toContain("'node' '/custom/cli.mjs' 'commit' 'propose' '--self' '--message-file' MESSAGE_FILE")
+  })
+
+  // Mirabia 113: the review opened without a message and nothing asked the worker for one (2026-10-30).
+  it('asks the live worker once per action for the message of a review that opened without one', async () => {
+    const h = await finishTestRecords({ step: 'reviewing' })
+    const tree = h.records.get('worker')!.worktree!.worktreePath
+    const source = new WorkerHandoffs(() => h.records, call)
+    const rows = [{ root: tree, repositoryName: 'applications_cvut', expectedPrefix: '[applications_cvut]' },
+      { root: join(tree, 'shared', 'library'), repositoryName: 'shared_library', expectedPrefix: '[shared_library]' }]
+    await source.messageWanted('worker', rows)
+    const handoff = h.records.get('worker')!.worktreeLifecycle!.handoff!
+    expect(handoff.key).toBe('message:finish')
+    expect(handoff.text.split('\n')[0]).toBe('Finish waits for your commit message. Write it, then propose it.')
+    expect(handoff.text).toContain("'node' '/custom/cli.mjs' 'commit' 'propose' '--self' '--message-file' MESSAGE_FILE")
+    expect(handoff.text).toContain('applications_cvut: start the message with [applications_cvut]')
+    expect(handoff.text).toContain('shared_library (external "shared/library"): start the message with [shared_library] and add --directory "shared/library"')
+    expect(source.pending()).toHaveLength(1)
+    await source.note([handoff.id], 'delivered', 5)
+    await source.messageWanted('worker', rows)
+    expect(source.pending()).toEqual([])
+    expect(h.records.get('worker')!.worktreeLifecycle!.handoff!.id).toBe(handoff.id)
+  })
+
+  it('stops the message request once the review is left and asks no worker that is not live', async () => {
+    const h = await finishTestRecords({ step: 'reviewing' })
+    const tree = h.records.get('worker')!.worktree!.worktreePath
+    const source = new WorkerHandoffs(() => h.records, call)
+    await source.messageWanted('worker', [{ root: tree, repositoryName: 'app', expectedPrefix: '[app]' }])
+    await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!, phase: 'active', step: undefined } }))
+    expect(source.pending()).toEqual([])
+    const ended = await finishTestRecords({ step: 'reviewing' })
+    await ended.records.update('worker', (record) => ({ ...record, life: 'ended' }))
+    await new WorkerHandoffs(() => ended.records, call).messageWanted('worker', [{ root: tree, repositoryName: 'app', expectedPrefix: '[app]' }])
+    expect(ended.records.get('worker')!.worktreeLifecycle!.handoff).toBeUndefined()
   })
 
   it('still hands over a resume and a check failure when this client cannot name its CLI', async () => {

@@ -84,8 +84,11 @@ describe('lib-orchestrator/sessionManager/launch/launchPlanner', () => {
       const launch = LaunchPlanner.plan(source, options)
       expect(launch.env.PATH.split(';')[0]).toBe(join(state, 'svn-shim'))
       expect(launch.env.JAMAT_V3_REAL_SVN).toBe('C:/svn tools/svn.exe')
+      expect(launch.env.JAMAT_V3_SVN_SHIM_WORKTREE).toBe('C:/owner/.worktrees/tree')
       expect(LaunchPlanner.plan({ ...source, worktree: undefined }, options).env.JAMAT_V3_REAL_SVN).toBeUndefined()
-      expect(LaunchPlanner.plan({ ...source, worktree: undefined }, { ...options, svnWritesBlocked: true }).env.JAMAT_V3_REAL_SVN).toBe('C:/svn tools/svn.exe')
+      const child = LaunchPlanner.plan({ ...source, worktree: undefined }, { ...options, svnShimWorktree: 'C:/owner/.worktrees/parent' })
+      expect(child.env.JAMAT_V3_REAL_SVN).toBe('C:/svn tools/svn.exe')
+      expect(child.env.JAMAT_V3_SVN_SHIM_WORKTREE).toBe('C:/owner/.worktrees/parent')
     } finally { rmSync(state, { recursive: true, force: true }) }
   })
 
@@ -150,6 +153,22 @@ describe('lib-orchestrator/sessionManager/launch/launchPlanner', () => {
       expect(launch.env).toEqual({
         PATH: 'x', JAMAT_V3_SESSION_ID: 's1',
         JAMAT_V3_SESSION_CONTROLLER: 'cfg-1', JAMAT_V3_SESSION_CHANNEL: 'development',
+      })
+    }
+  })
+
+  // The client's own inherited `pnpm_config_*` is dropped as dev runtime; the worktree's is not.
+  it('hands every launch the variables of its worktree after the inherited ones are filtered', () => {
+    const scripted = record({ commands: [{ cwd: 'D:\\work', command: 'pnpm install' }] })
+    const claude = record({ kind: 'agent', agent: { agentId: 'claude', launchMode: 'new' } })
+    for (const value of [record(), scripted, claude]) {
+      const launch = LaunchPlanner.plan(value, {
+        agentArgs: [],
+        environment: { PATH: 'x', pnpm_config_enable_global_virtual_store: 'false', PNPM_CONFIG_OTHER: '1' },
+        worktreeVariables: { pnpm_config_enable_global_virtual_store: 'true' },
+      })
+      expect(launch.env).toEqual({
+        PATH: 'x', pnpm_config_enable_global_virtual_store: 'true', JAMAT_V3_SESSION_ID: 's1',
       })
     }
   })

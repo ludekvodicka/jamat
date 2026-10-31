@@ -5,6 +5,7 @@ try {
     . (Join-Path $PSScriptRoot 'install-launcher.ps1') -Action Install -Destination $root `
         -ExpectedUserSid 'S-1-5-21-111-222-333-1001' -ExpectedConfigIdentity 'test-profile' -ResultFile (Join-Path $root 'result.json')
     $writeJson = (Get-Item Function:Write-Json).ScriptBlock
+    $ownedProcesses = (Get-Item Function:Owned-Processes).ScriptBlock
     $script:testRoot = $root
     $script:events = New-Object 'Collections.Generic.List[string]'
     $script:task = $null
@@ -130,6 +131,42 @@ try {
         & $writeJson (Join-Path $script:testRoot 'installation.json') $Metadata
         $script:events.Clear()
         $script:problem = 'Windows could not configure the launcher.'
+    }
+
+    & {
+        $fixture = Fixture
+        $runtime = $fixture.runtime
+        $runtime.entryPath = Join-Path $runtime.directory 'launcher [local].cjs'
+        $runtime.commandLine = Launcher-Command $runtime
+        $script:processes = @(
+            [pscustomobject]@{ ProcessId = 1; ExecutablePath = $runtime.nodePath; CommandLine = $runtime.commandLine },
+            [pscustomobject]@{ ProcessId = 2; ExecutablePath = $runtime.nodePath; CommandLine = '"' + $runtime.nodePath + '"  "' + $runtime.entryPath + '" "' + $runtime.configFile + '"' },
+            [pscustomobject]@{ ProcessId = 3; ExecutablePath = $runtime.nodePath; CommandLine = '"' + $runtime.nodePath + '"' + "`t" + '"' + $runtime.entryPath + '" "' + $runtime.configFile + '"' },
+            [pscustomobject]@{ ProcessId = 4; ExecutablePath = $runtime.nodePath; CommandLine = $runtime.commandLine + ' --extra' },
+            [pscustomobject]@{ ProcessId = 5; ExecutablePath = $runtime.nodePath; CommandLine = $runtime.commandLine.Replace('launcher [local].cjs', 'launcher local.cjs') },
+            [pscustomobject]@{ ProcessId = 6; ExecutablePath = $runtime.nodePath; CommandLine = $runtime.commandLine.Replace('installer test ', 'installer  test ') },
+            [pscustomobject]@{ ProcessId = 7; ExecutablePath = 'C:\other\node.exe'; CommandLine = $runtime.commandLine },
+            [pscustomobject]@{ ProcessId = 8; ExecutablePath = $runtime.nodePath; CommandLine = '"' + $runtime.nodePath + '" "' + $runtime.configFile + '" "' + $runtime.entryPath + '"' }
+        )
+        $script:processOwner = $fixture.ownerSid
+        $script:processOwnerResult = 0
+        $script:checkedProcesses = New-Object 'Collections.Generic.List[int]'
+        function Get-CimInstance { return $script:processes }
+        function Invoke-CimMethod($InputObject, [string]$MethodName) {
+            Assert ($MethodName -ceq 'GetOwnerSid') 'Ownership must read the Windows SID'
+            $script:checkedProcesses.Add($InputObject.ProcessId)
+            return [pscustomobject]@{ ReturnValue = $script:processOwnerResult; Sid = $script:processOwner }
+        }
+        $found = @(& $ownedProcesses $fixture)
+        Assert (($found.ProcessId -join ',') -ceq '1,2,3') 'Only exact quoted paths with whitespace separators belong to this installation'
+        Assert (($script:checkedProcesses -join ',') -ceq '1,2,3') 'Unrelated command lines must not reach the owner check'
+        Write-Output 'PASS process recognition accepts WScript separators and rejects changed paths, extra arguments and other executables'
+        $script:processOwner = 'S-1-5-21-999-888-777-1001'
+        Rejects { & $ownedProcesses $fixture } 'another Windows account'
+        $script:processOwner = $fixture.ownerSid
+        $script:processOwnerResult = 2
+        Rejects { & $ownedProcesses $fixture } 'another Windows account'
+        Write-Output 'PASS process recognition preserves SID verification and refuses an unreadable owner'
     }
 
     $script:next = Fixture

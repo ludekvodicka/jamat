@@ -42,7 +42,7 @@ export interface VersioningCommitManagerDeps {
   fileAccess(ownerId: string, snapshotId: string, fileId: string): FileChangesFileAccessResult
   snapshotOf(ownerId: string, snapshotId: string): FileChangesWorkingTreeSnapshot | null
   git: Pick<GitCommitManager, 'commit' | 'revertFile'>
-  svn: Pick<SvnCommitManager, 'commit' | 'revertFile' | 'update'>
+  svn: Pick<SvnCommitManager, 'commit' | 'revertFile' | 'updateOutOfDate'>
   tortoise: Pick<TortoiseCommitDialog, 'open'>
   onChanged(): void
   /**
@@ -85,7 +85,7 @@ type CancelResult = RemoteControlStepResult<RemoteControlCommitStatusDto>
 
 export type VersioningCommitProposeResult =
   | { ok: true; scopeRoot: string }
-  | { ok: false; code: 'message-empty' | 'message-too-long' | 'no-working-copy' | 'message-edited' | 'busy'; detail: string }
+  | { ok: false; code: 'message-empty' | 'message-too-long' | 'no-working-copy' | 'message-edited' | 'message-prefix' | 'busy'; detail: string }
 
 export class VersioningCommitManager {
   private static readonly retentionMillisecondsConst = 86_400_000
@@ -193,9 +193,10 @@ export class VersioningCommitManager {
       owners: new Set(), fileReviews: new Map(), cwd, lockRoot: PathCompare.comparable(detection.root), ...(restricted ? { targets } : {}),
     }
     if (options.wakeOnClose === true) draft.wake ??= { state: 'watching' }
-    const messageApplied = proposed !== null && !draft.dto.editedByPerson && draft.dto.phase.kind === 'editing'
+    const messageApplied = proposed !== null && !VersioningCommitManager.personEdited(draft.dto) && draft.dto.phase.kind === 'editing'
     if (messageApplied) {
       draft.dto.message = proposed
+      draft.dto.editedByPerson = false
       draft.dto.proposedByAgent = true
       draft.dto.messageSource = 'agent-proposal'
       draft.dto.messageAt = this.now()
@@ -242,16 +243,24 @@ export class VersioningCommitManager {
       && draft.dto.paths === undefined && !VersioningCommitManager.ended(draft)
       && this.repositoriesOf(draft)?.some((row) => PathCompare.comparable(row.root) === PathCompare.comparable(scopeRoot)))
     const row = finish === undefined ? undefined : this.repositoriesOf(finish)!.find((candidate) => PathCompare.comparable(candidate.root) === PathCompare.comparable(scopeRoot))
-    if ((open?.dto.editedByPerson ?? this.deps.messages.read(scope)?.editedByPerson) === true || row !== undefined && SvnCommitMessageCheck.writtenByPerson(row.source))
+    // With a field per repository the draft's own message is hidden, and its flag also recorded an
+    // edit that left a field empty: Mirabia 113 refused a proposal into an empty row (2026-10-30).
+    const field = row !== undefined && this.deps.workflow?.separateMessages?.(finish!.dto) === true ? row : undefined
+    const kept = field === undefined ? open?.dto ?? this.deps.messages.read(scope) : undefined
+    if (field !== undefined ? SvnCommitMessageCheck.personMessage(field.message, field.source) : kept !== undefined && VersioningCommitManager.personEdited(kept))
       return { ok: false, code: 'message-edited', detail: `A person already wrote the commit message for ${scopeRoot}; the proposal was not stored` }
     if (open?.dto.phase.kind === 'running' || finish?.dto.phase.kind === 'running')
       return { ok: false, code: 'busy', detail: `A commit of ${scopeRoot} is running; propose again after it` }
+    // The same rule Publish applies, answered while the worker can still correct it.
+    if (row !== undefined && !SvnCommitMessageCheck.prefixed(proposed, row.expectedPrefix))
+      return { ok: false, code: 'message-prefix', detail: `${row.repositoryName}: message must start with ${row.expectedPrefix}; the proposal was not stored` }
     if (open === undefined) {
       if (!this.deps.messages.save({ ...scope, message: proposed, editedByPerson: false, proposedByAgent: true, messageSource: 'agent-proposal', messageAt: this.now() }))
         throw new Error('The commit message could not be saved')
     }
     else {
       open.dto.message = proposed
+      open.dto.editedByPerson = false
       open.dto.proposedByAgent = true
       open.dto.messageSource = 'agent-proposal'
       open.dto.messageAt = this.now()
@@ -291,6 +300,11 @@ export class VersioningCommitManager {
     }
     if (detection === null || detection.id !== vcs || await realpath(scopeRoot).catch(() => null) === null) return null
     return { scopeRoot, detection }
+  }
+
+  /** A person's message is one they wrote: a field they emptied, or left at its prefix, protects nothing (2026-10-30). */
+  private static personEdited(message: Pick<VersioningCommitDraftDto, 'message' | 'editedByPerson'>): boolean {
+    return message.editedByPerson && !SvnCommitMessageCheck.empty(message.message)
   }
 
   /** Whether a draft can no longer settle any other way than it already did. */
@@ -419,6 +433,10 @@ export class VersioningCommitManager {
       || status.state === 'committed' || status.state === 'external-closed')
       return Promise.resolve({ ok: false, error: { code: 'conflict', detail: `Cannot cancel this review while it is ${status.state} or its working copy is busy` } })
     draft.dto.phase = { kind: 'cancelled' }
+    // Only `commit cancel` reaches here, the agent's own command, and its answer already says
+    // cancelled: a close line after it started a needless turn (Codex i83, 2026-10-30). A person
+    // cancels through `decide`, which keeps the line.
+    if (draft.wake?.state === 'watching') delete draft.wake
     this.bump(draft)
     this.releaseUnattached(draftId)
     return Promise.resolve({ ok: true, value: this.status(draftId)! })
@@ -583,11 +601,28 @@ export class VersioningCommitManager {
    * left the review it no longer asks for one, and 051 kept its red mark over a landed row.
    */
   workflowChanged(): void {
+    this.settleWorkflows()
     if (this.lastOpenSessions === null) return
     const open = JSON.stringify(this.openSessionIds())
     if (open === this.lastOpenSessions) return
     this.lastOpenSessions = open
     this.changed()
+  }
+
+  /**
+   * A Finish review is refreshed only when it is read, so a Finish that ended while nobody showed its
+   * review stayed `running` with an empty receipt for good: 13 drafts back to 14 Oct (2026-10-30).
+   * Once nobody holds it, a draft whose Finish ended, or whose session is gone, leaves the open drafts;
+   * a restart keeps such a draft running until the first read of the sessions settles it here.
+   * A shown draft follows its Finish here too: the approval answers before the Finish publishes.
+   */
+  private settleWorkflows(): void {
+    for (const draft of [...this.drafts.values()]) {
+      if (draft.dto.workflow === undefined || this.running.has(draft.lockRoot)) continue
+      this.refreshWorkflow(draft)
+      if (draft.owners.size !== 0) continue
+      if (draft.dto.phase.kind === 'done' || draft.dto.workflow !== undefined && this.deps.workflow?.abandoned?.(draft.dto) === true) this.close(draft)
+    }
   }
 
   private openSessionIds(): string[] {
@@ -611,7 +646,8 @@ export class VersioningCommitManager {
       || draft.dto.phase.kind === 'running' || draft.dto.phase.kind === 'done' || draft.dto.phase.kind === 'cancelled') return false
     const previous = structuredClone(draft.dto)
     draft.dto.message = VersioningCommitMessage.normalize(message)
-    draft.dto.editedByPerson = true
+    draft.dto.editedByPerson = !SvnCommitMessageCheck.empty(draft.dto.message)
+    draft.dto.proposedByAgent = false
     draft.dto.messageSource = 'person-local'
     draft.dto.messageAt = this.now()
     if (!this.deps.messages.save(draft.dto)) { draft.dto = previous; return false }
@@ -645,7 +681,8 @@ export class VersioningCommitManager {
     const previous = structuredClone(draft.dto)
     draft.dto = { ...draft.dto, ...(request.repositoryMessage === undefined ? {}
       : { repositories: this.repositoryMessagesOf(draft, request.repositoryMessage.root, request.repositoryMessage.message, source) }), ...(selection === undefined ? {} : { selection }),
-      ...(request.message === undefined ? {} : { message: VersioningCommitMessage.normalize(request.message), editedByPerson: true, messageSource: source, messageAt: this.now() }) }
+      ...(request.message === undefined ? {} : { message: VersioningCommitMessage.normalize(request.message),
+        editedByPerson: !SvnCommitMessageCheck.empty(request.message), proposedByAgent: false, messageSource: source, messageAt: this.now() }) }
     try {
       if (request.message !== undefined && !this.deps.messages.save(draft.dto)) throw new Error('The commit message could not be saved')
       this.bump(draft)
@@ -880,8 +917,8 @@ export class VersioningCommitManager {
             // exactly what the person approved. `staleOf` is what draws that line - the moment the
             // update writes into a selected file, the review is about something else and stops here.
             const outdated = result.detail
-            const updated = await this.updateOutdated(draft, scope, entries)
-            if (!updated.ok) return fail(`${updated.detail}\n\nOriginal commit error:\n${outdated}`, true)
+            const updated = await this.updateOutdated(draft, scope, entries, outdated)
+            if (!updated.ok) return fail(`${updated.detail}\n\nOriginal commit error:\n${outdated}`, updated.wrote)
             const stale = await this.staleOf(scope, entries, true)
             if (stale !== null)
               return fail(`${stale}\nThe update changed a file this commit holds. Review it, then click Commit files again.\n\n${updated.output}\n\nOriginal commit error:\n${outdated}`, true)
@@ -1217,20 +1254,22 @@ export class VersioningCommitManager {
 
   /**
    * Updating is the only way past an out-of-date scope. Whether a retry follows is the caller's.
-   * Only the nodes this commit sends move, each at depth empty: an update of the whole scope brought
-   * other sessions' incoming changes into their unfinished work.
+   * Only the paths SVN named in `failure` move, each at depth empty, and never a moved node
+   * (`SvnCommitManager.updateOutOfDate`). `wrote` is false when it refused before any write, so the
+   * shown list still describes the disk.
    */
-  private async updateOutdated(draft: Draft, scope: string, entries: readonly CommitTarget[]):
-    Promise<{ ok: true; output: string } | { ok: false; detail: string }> {
+  private async updateOutdated(draft: Draft, scope: string, entries: readonly CommitTarget[], failure: string):
+    Promise<{ ok: true; output: string } | { ok: false; detail: string; wrote: boolean }> {
     const startedAt = draft.dto.phase.kind === 'running' ? draft.dto.phase.startedAt : this.now()
-    draft.dto.phase = { kind: 'running', startedAt, detail: 'SVN is out of date. Updating this commit scope...' }
+    draft.dto.phase = { kind: 'running', startedAt, detail: 'SVN is out of date. Updating what SVN named...' }
     this.bump(draft)
     try {
-      const result = await this.deps.svn.update(scope, entries.map(({ entry }) => entry.path))
-      return result.ok ? { ok: true, output: result.value.output }
-        : { ok: false, detail: `SVN update failed or left conflicts:\n${result.detail}` }
+      const result = await this.deps.svn.updateOutOfDate(scope, failure, entries.map(({ entry }) => entry.path))
+      if (result.ok) return { ok: true, output: result.value.output }
+      return result.code === 'refused' ? { ok: false, detail: `SVN is out of date and Jamat did not update it:\n${result.detail}`, wrote: false }
+        : { ok: false, detail: `SVN update failed or left conflicts:\n${result.detail}`, wrote: true }
     }
-    catch (error) { return { ok: false, detail: `SVN update failed: ${ErrorText.of(error)}` } }
+    catch (error) { return { ok: false, detail: `SVN update failed: ${ErrorText.of(error)}`, wrote: true } }
   }
 
   private failed(draft: Draft, detail: string, reloadRequired = false): Extract<VersioningCommitRunResult, { ok: false }> {

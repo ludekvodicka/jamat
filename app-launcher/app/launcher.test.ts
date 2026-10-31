@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHmac, randomBytes, randomUUID } from 'node:crypto'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, realpathSync, symlinkSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -10,6 +11,8 @@ import { RemoteControlConst } from '../../lib-orchestrator/remoteControl/remoteC
 import { AppConfig } from './appConfig'
 import { AppContext } from './appContext'
 import { AppHub } from './appHub'
+import { LauncherTarget } from './launcherTarget'
+import { LocalTargetControl } from './localTargetControl'
 
 async function listen(server: Server): Promise<number> {
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
@@ -18,7 +21,7 @@ async function listen(server: Server): Promise<number> {
   return address.port
 }
 
-async function fixture(t: TestContext, exitCode = 0, batch = false, source = false) {
+async function fixture(t: TestContext, exitCode = 0, batch = false, source = false, detached = false, development = false) {
   const root = mkdtempSync(join(tmpdir(), 'jamat-launcher-test-'))
   const environment = { LOCALAPPDATA: process.env.LOCALAPPDATA, XDG_STATE_HOME: process.env.XDG_STATE_HOME }
   process.env.LOCALAPPDATA = root
@@ -63,7 +66,7 @@ async function fixture(t: TestContext, exitCode = 0, batch = false, source = fal
   writeFileSync(batchFile, `@echo off\r\n"${process.execPath}" "${script}"\r\nexit /b %errorlevel%\r\n`)
   const input = { publicUrl: 'http://127.0.0.1:3511', key, configDir: profile,
     configIdentity: identity.configIdentity, runtimeChannel: identity.runtimeChannel,
-    logFile: join(root, 'log.txt'), recipe: { kind: 'command',
+    logFile: join(root, 'log.txt'), recipe: { kind: detached ? 'detached-command' : 'command',
       command: batch ? join(process.env.SystemRoot!, 'System32', 'cmd.exe') : process.execPath,
       args: batch ? ['/d', '/s', '/c', `""${batchFile}""`] : [script], cwd: root, windowsVerbatimArguments: batch } }
   const checkout = join(root, 'source checkout with spaces')
@@ -77,17 +80,31 @@ async function fixture(t: TestContext, exitCode = 0, batch = false, source = fal
         executable: process.execPath, cwd: process.cwd()
       })); ${readFileSync(script, 'utf8')}`)
   }
+  if (development)
+    for (const path of ['app-client-ui/node_modules/electron-vite/bin/electron-vite.js',
+      'app-client-ui/package.json', 'app-client-ui/electron.vite.config.ts', 'app-host/start.ts']) {
+      mkdirSync(join(checkout, path, '..'), { recursive: true })
+      writeFileSync(join(checkout, path), path.endsWith('package.json') ? '{}' : '')
+    }
   const config = new AppConfig(JSON.stringify({ ...input,
-    ...(source ? { recipe: { kind: 'source', repositoryRoot: checkout } } : {}) }))
+    ...(source || development ? { recipe: { kind: development ? 'development' : 'source', repositoryRoot: checkout } } : {}) }))
   const hub = new AppHub(config, new AppContext(config.logFile))
   const port = await listen(hub.listener.server)
   config.publicUrl.port = String(port)
   t.after(async () => {
+    const pidFile = join(root, 'child-pid.txt')
+    if (existsSync(pidFile)) {
+      try { process.kill(Number(readFileSync(pidFile, 'utf8'))) } catch { /* The child may have ended already. */ }
+      for (let tries = 0; tries < 100; tries++) {
+        try { process.kill(Number(readFileSync(pidFile, 'utf8')), 0) } catch { break }
+        await setTimeout(20)
+      }
+    }
     await Promise.all([control, hub.listener.server].map(server => new Promise<void>(resolve => server.close(() => resolve()))))
     for (const [name, value] of Object.entries(environment))
       if (value === undefined) delete process.env[name]
       else process.env[name] = value
-    rmSync(root, { recursive: true, force: true })
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   })
   const headers = (method: string, path: string, timestamp = String(Date.now())) => {
     const nonce = randomBytes(16).toString('hex')
@@ -109,6 +126,70 @@ test('auth rejects absent, stale, replayed and cross-origin requests and caller-
   assert.equal((await fetch(`${f.config.publicUrl.origin}/api/start`, { method: 'POST', headers: f.headers('POST', '/api/start'), body: '{"command":"anything"}' })).status, 400)
   assert.equal((await f.request('POST', '/api/start?profile=other')).status, 404)
   assert.equal(existsSync(f.marker), false)
+})
+
+for (const development of [false, true])
+test(`${development ? 'development checkout' : 'detached command'} reaches ready before exit with the exact environment and cwd`, async t => {
+  const f = await fixture(t, 0, false, false, true, development)
+  const pid = join(f.root, 'child-pid.txt')
+  const envFile = join(f.root, 'child-env.json')
+  const script = development ? join(f.checkout, 'app-client-ui/node_modules/electron-vite/bin/electron-vite.js') : join(f.root, 'launch.cjs')
+  writeFileSync(script, `
+    const fs = require('node:fs');
+    fs.writeFileSync(${JSON.stringify(pid)}, String(process.pid));
+    fs.writeFileSync(${JSON.stringify(envFile)}, JSON.stringify({cwd:process.cwd(), profile:process.env.JAMAT_V3_CONFIG_DIR, channel:process.env.JAMAT_V3_RUNTIME_CHANNEL, args:process.argv.slice(2)}));
+    fs.appendFileSync(${JSON.stringify(f.marker)}, 'start\\n');
+    setInterval(() => {}, 1000);
+  `)
+  const starts = await Promise.all(Array.from({ length: 5 }, () => f.request('POST', '/api/start')))
+  assert.ok(starts.every(value => value.status === 202 || value.status === 200))
+  for (let i = 0; i < 100; i++) {
+    if ((await (await f.request('GET', '/api/status')).json() as { state: string }).state === 'ready') break
+    await setTimeout(25)
+  }
+  assert.deepEqual(await (await f.request('GET', '/api/status')).json(), { state: 'ready' })
+  process.kill(Number(readFileSync(pid, 'utf8')), 0)
+  assert.equal(readFileSync(f.marker, 'utf8'), 'start\n')
+  assert.deepEqual(JSON.parse(readFileSync(envFile, 'utf8')), { cwd: development ? join(f.checkout, 'app-client-ui') : f.root,
+    profile: f.input.configDir, channel: 'development', args: development ? ['dev'] : [] })
+})
+
+test('missing target is reported before any start, in the existing state/error envelope', async t => {
+  const source = await fixture(t, 0, false, true)
+  rmSync(join(source.checkout, 'scripts/release/start-packaged-client.ts'))
+  assert.deepEqual(await (await source.request('GET', '/api/status')).json(), { state: 'failed', error: 'target-missing' })
+  assert.equal((await source.request('POST', '/api/start')).status, 202)
+  await setTimeout(25)
+  assert.deepEqual(await (await source.request('GET', '/api/status')).json(), { state: 'failed', error: 'target-missing' })
+  assert.equal(existsSync(source.marker), false)
+})
+
+test('readiness timeout keeps the owned detached process and refuses a duplicate attempt', async t => {
+  const f = await fixture(t)
+  const pid = join(f.root, 'child-pid.txt')
+  writeFileSync(join(f.root, 'launch.cjs'), `require('node:fs').writeFileSync(${JSON.stringify(pid)}, String(process.pid)); setInterval(() => {}, 1000)`)
+  const target = new LauncherTarget({ command: process.execPath, args: [join(f.root, 'launch.cjs')], cwd: f.root,
+    windowsVerbatimArguments: false, completion: 'spawn', requireRunning: true, requiredFiles: [], readinessTimeoutMs: 100 },
+  f.config.configDir, 'development', new LocalTargetControl(f.config.configDir, f.config.identity), new AppContext(f.config.logFile))
+  assert.deepEqual(await target.start(), { state: 'starting' })
+  for (let i = 0; i < 100; i++) {
+    if ((await target.status()).state === 'failed') break
+    await setTimeout(25)
+  }
+  assert.deepEqual(await target.status(), { state: 'failed', error: 'readiness-timeout' })
+  process.kill(Number(readFileSync(pid, 'utf8')), 0)
+  await assert.rejects(target.start(), /previous launch process is still running/)
+})
+
+test('a detached command that exits before readiness reports a launch failure', async t => {
+  const f = await fixture(t, 7, false, false, true)
+  assert.equal((await f.request('POST', '/api/start')).status, 202)
+  for (let i = 0; i < 100; i++) {
+    const status = await (await f.request('GET', '/api/status')).json() as { state: string; error?: string }
+    if (status.state === 'failed') { assert.equal(status.error, 'launch-failed'); return }
+    await setTimeout(25)
+  }
+  assert.fail('The exited process was not reported')
 })
 
 test('simultaneous starts launch exactly once, verify the real control API, then reuse the instance', async t => {

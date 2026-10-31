@@ -35,7 +35,14 @@ type SpanningLaunchOutcome =
 
 export interface LaunchPlanOptions {
   accountEnv?: Readonly<Record<string, string>>
-  svnWritesBlocked?: boolean
+  /**
+   * What the worktree the launch runs in was set up with (`SessionRecordWorktree.setupVariables`).
+   * Added after the inherited environment is filtered, which drops every `pnpm_config_` name the
+   * client itself inherited, and before Jamat's own variables, which it can never replace.
+   */
+  worktreeVariables?: Readonly<Record<string, string>>
+  /** The SVN worktree a child started inside its parent's worktree is confined to, as its parent is. */
+  svnShimWorktree?: string
   localStateDir?: string
   codexBridge?: (native: RuntimeLaunchSpec, agentArgs: string[]) => RuntimeLaunchSpec
   controller?: { configIdentity: string; channel: RuntimeChannel }
@@ -120,6 +127,7 @@ export class LaunchPlanner {
       cwd: LaunchPlanner.cwdOf(record),
       env: {
         ...ChildEnvironment.withoutJamat(environment),
+        ...options?.worktreeVariables,
         ...options?.accountEnv,
         [LaunchPlanner.sessionIdVariableConst]: record.sessionId,
         ...(options?.controller === undefined ? {} : {
@@ -138,7 +146,8 @@ export class LaunchPlanner {
       return { command: LaunchPlanner.shellCommand(platform, environment), args: [], ...common }
     }
     else if (record.kind === 'agent') {
-      if (record.worktree?.kind === 'svn' || options?.svnWritesBlocked === true) {
+      const shimWorktree = record.worktree?.kind === 'svn' ? record.worktree.worktreePath : options?.svnShimWorktree
+      if (shimWorktree !== undefined) {
         const svn = options?.tools?.resolve('svn')
         if (svn === undefined || !svn.ok) throw new Error(svn?.detail ?? 'Worktree workers require the resolved SVN executable')
         const directory = SvnShim.ensure(options?.localStateDir ?? OrchestratorPaths.machineRoot())
@@ -146,6 +155,7 @@ export class LaunchPlanner {
         const pathKey = Object.keys(env).find((key) => key.toLowerCase() === 'path') ?? 'PATH'
         env[pathKey] = `${directory}${platform === 'win32' ? ';' : ':'}${env[pathKey] ?? ''}`
         env.JAMAT_V3_REAL_SVN = svn.command
+        env[SvnShim.worktreeVariableConst] = shimWorktree
         const node = options?.tools?.node?.()
         if (node === undefined || !node.ok) throw new Error(node?.detail ?? 'Worktree workers require the resolved Node executable')
         env.JAMAT_V3_SVN_SHIM_NODE = node.command.replace(/\\/g, '/')

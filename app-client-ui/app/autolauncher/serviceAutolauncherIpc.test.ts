@@ -25,6 +25,8 @@ describe('app-client-ui/app/autolauncher/serviceAutolauncherIpc', () => {
   const acceptedSender = { id: 1 } as WebContents
   const rejectedSender = { id: 2 } as WebContents
   const snapshot: AutolauncherSnapshot = {
+    currentTarget: { recipe: null, process: null, availability: { state: 'invalid', path: '' }, warning: null },
+    installedTarget: null,
     supported: true,
     target: {
       configDir: 'C:/Users/Alex/.jamat-v3', configIdentity: 'alex-profile',
@@ -39,12 +41,13 @@ describe('app-client-ui/app/autolauncher/serviceAutolauncherIpc', () => {
     const unexpected = (): never => { throw new Error('An IPC forwarding test must not run Windows setup or pairing') }
     const manager = new AutolauncherManager(snapshot.target, 'unused-ipc-test-directory', true,
       { install: unexpected, disable: unexpected }, { pair: unexpected, probe: unexpected }, unexpected)
+    const inspect = vi.spyOn(manager, 'inspect').mockResolvedValue(snapshot.currentTarget)
     const get = vi.spyOn(manager, 'get').mockResolvedValue(snapshot)
     const enable = vi.spyOn(manager, 'enable').mockResolvedValue({ ok: true, snapshot })
     const disable = vi.spyOn(manager, 'disable').mockResolvedValue({ ok: true, snapshot })
     const acceptsRenderer = vi.fn((sender: WebContents) => sender === acceptedSender)
     new ServiceAutolauncherIpc(manager, acceptsRenderer).initialize()
-    return { get, enable, disable, acceptsRenderer }
+    return { get, enable, disable, inspect, acceptsRenderer }
   }
 
   async function invoke<K extends keyof typeof ServiceAutolauncherIpc.channelsConst>(
@@ -58,10 +61,10 @@ describe('app-client-ui/app/autolauncher/serviceAutolauncherIpc', () => {
   beforeEach(() => electronMock.handlers.clear())
   afterEach(() => vi.restoreAllMocks())
 
-  it('registers exactly the three declared channels', () => {
+  it('registers exactly the declared channels', () => {
     harness()
     expect([...electronMock.handlers.keys()].sort()).toEqual([
-      'autolauncher:disable', 'autolauncher:enable', 'autolauncher:get',
+      'autolauncher:disable', 'autolauncher:enable', 'autolauncher:get', 'autolauncher:inspect',
     ])
     expect(Object.keys(ServiceAutolauncherIpc.channelsConst).sort())
       .toEqual([...electronMock.handlers.keys()].sort())
@@ -79,7 +82,7 @@ describe('app-client-ui/app/autolauncher/serviceAutolauncherIpc', () => {
     expect(enabled).toEqual({ ok: true, value: { ok: true, snapshot } })
     expect(disabled).toEqual({ ok: true, value: { ok: true, snapshot } })
     expect(get).toHaveBeenCalledExactlyOnceWith()
-    expect(enable).toHaveBeenCalledExactlyOnceWith(invitation)
+    expect(enable).toHaveBeenCalledExactlyOnceWith(invitation, undefined)
     expect(disable).toHaveBeenCalledExactlyOnceWith()
     expect(acceptsRenderer.mock.calls).toEqual([[acceptedSender], [acceptedSender], [acceptedSender]])
     expect(acceptsRenderer.mock.invocationCallOrder[0]).toBeLessThan(get.mock.invocationCallOrder[0])
@@ -94,23 +97,35 @@ describe('app-client-ui/app/autolauncher/serviceAutolauncherIpc', () => {
     expect(await invoke('autolauncher:enable', acceptedSender, null)).toEqual({
       ok: true, value: { ok: false, problem: 'Windows permission was cancelled.' },
     })
-    expect(enable).toHaveBeenCalledExactlyOnceWith(null)
+    expect(enable).toHaveBeenCalledExactlyOnceWith(null, undefined)
   })
 
   it('rejects every channel before calling the manager for an unaccepted renderer', async () => {
-    const { get, enable, disable, acceptsRenderer } = harness()
+    const { get, enable, disable, inspect, acceptsRenderer } = harness()
     const answers = [
       await invoke('autolauncher:get', rejectedSender),
       await invoke('autolauncher:enable', rejectedSender, 'opaque-invitation'),
       await invoke('autolauncher:disable', rejectedSender),
+      await invoke('autolauncher:inspect', rejectedSender, { kind: 'development', repositoryRoot: 'C:/checkout' }),
     ]
 
     for (const answer of answers)
       expect(answer).toEqual({ ok: false, error: 'Only a Jamat settings window can configure the launcher.' })
-    expect(acceptsRenderer.mock.calls).toEqual([[rejectedSender], [rejectedSender], [rejectedSender]])
+    expect(acceptsRenderer.mock.calls).toEqual([[rejectedSender], [rejectedSender], [rejectedSender], [rejectedSender]])
     expect(get).not.toHaveBeenCalled()
     expect(enable).not.toHaveBeenCalled()
     expect(disable).not.toHaveBeenCalled()
+    expect(inspect).not.toHaveBeenCalled()
+  })
+
+  it('forwards the selected recipe and confirmation without changing them', async () => {
+    const { inspect, enable } = harness()
+    const recipe = { kind: 'development' as const, repositoryRoot: 'C:/checkout' }
+    const selection = { recipe, temporaryPathConfirmed: true }
+    expect(await invoke('autolauncher:inspect', acceptedSender, recipe)).toEqual({ ok: true, value: snapshot.currentTarget })
+    await invoke('autolauncher:enable', acceptedSender, null, selection)
+    expect(inspect).toHaveBeenCalledExactlyOnceWith(recipe)
+    expect(enable).toHaveBeenCalledExactlyOnceWith(null, selection)
   })
 
   it('returns manager rejection as a failed IPC envelope instead of rejecting the request', async () => {

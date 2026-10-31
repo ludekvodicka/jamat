@@ -21,6 +21,7 @@ export type VersioningSettingsInput =
   | { input: 'activateSessionOnCommit'; value: boolean }
   | { input: 'returnToPreviousSessionAfterCommit'; value: boolean }
   | { input: 'returnToPreviousSessionWithinMinutes'; value: number }
+  | { input: 'switchAfterIdleSeconds'; value: number }
   | { input: 'closeCommitOnSuccess'; value: boolean }
 
 export type VersioningSettingsEffect = SettingsCardEffect<VersioningSettingsValue>
@@ -58,7 +59,7 @@ export class VersioningSettingsModel {
     if (shared !== null) return shared
     if (input.input === 'mode' || input.input === 'diffTool' || input.input === 'activateSessionOnCommit'
       || input.input === 'returnToPreviousSessionAfterCommit' || input.input === 'returnToPreviousSessionWithinMinutes'
-      || input.input === 'closeCommitOnSuccess')
+      || input.input === 'switchAfterIdleSeconds' || input.input === 'closeCommitOnSuccess')
       return state.buffer === null
         ? SettingsCard.step(state)
         : SettingsCard.step({ ...state, buffer: { ...state.buffer, [input.input]: input.value } })

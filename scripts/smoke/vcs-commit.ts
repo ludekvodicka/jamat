@@ -47,6 +47,7 @@ class SmokeVcsCommit extends SmokeHarness {
     await this.checkSvnKeptLocalDeletion(message)
     await this.checkSvnGitIgnoredDirectory(message)
     await this.checkSvnNodeOnlyDirectory(message)
+    await this.checkSvnMovedOutOfDate(message)
     console.log(`\nsmoke-vcs-commit: ${this.passed} checks passed`)
   }
 
@@ -220,6 +221,93 @@ class SmokeVcsCommit extends SmokeHarness {
       && (await this.svnRun(working, ['status', '--', join(group, 'Project', 'draft.txt')])).trim().startsWith('?')
       && await readFile(join(group, 'incoming.txt'), 'utf8').then(() => false, () => true))
     manager.release(prepared.value.draftId, 'owner')
+  }
+
+  /**
+   * Audit B1 (worker-agent, 29.10.): files moved out of `blocks/` one by one into a new directory,
+   * then `blocks` deleted. Its BASE was older than the commits of its own files, so SVN refused the
+   * commit as out of date, and the recovery that updated every selected node turned the moves into
+   * four tree conflicts. Now a move with one side unchecked is named before staging, the recovery
+   * updates `blocks` alone, and a real incoming change to a moved file stops before any write.
+   */
+  private async checkSvnMovedOutOfDate(message: string): Promise<void> {
+    const text = await readFile(message, 'utf8')
+    const scenario = async (name: string, incoming: boolean) => {
+      const repository = join(this.root, `${name}-repository`)
+      const created = await new CommandInvoker().run({ command: 'svnadmin', args: ['create', repository], cwd: this.root, env: process.env })
+      if (created.failure !== null || created.code !== 0) throw new Error(created.stderr)
+      const working = join(this.root, `${name}-working`)
+      const other = join(this.root, `${name}-other`)
+      await this.svnRun(this.root, ['checkout', pathToFileURL(repository).href, working])
+      const blocks = join(working, 'app', 'blocks')
+      const nodeTypes = join(working, 'app', 'nodeTypes')
+      await mkdir(blocks, { recursive: true })
+      await mkdir(join(working, 'app', 'core'))
+      for (const file of ['a.ts', 'b.ts', 'c.ts']) await writeFile(join(blocks, file), `${file} base\n`)
+      await writeFile(join(working, 'app', 'core', 'flowJson.ts'), 'json\n')
+      await this.svnRun(working, ['add', '--', 'app'])
+      await this.svnRun(working, ['commit', '--file', message])
+      // Commits of the directory's own files leave its BASE behind them.
+      for (const file of ['a.ts', 'b.ts']) {
+        await writeFile(join(blocks, file), `${file} edited\n`)
+        await this.svnRun(working, ['commit', '--file', message, '--', join(blocks, file)])
+      }
+      await this.svnRun(this.root, ['checkout', pathToFileURL(repository).href, other])
+      if (incoming) await writeFile(join(other, 'app', 'blocks', 'c.ts'), 'c.ts incoming\n')
+      else {
+        await writeFile(join(other, 'app', 'other.ts'), 'unrelated\n')
+        await this.svnRun(other, ['add', '--', join(other, 'app', 'other.ts')])
+      }
+      await this.svnRun(other, ['commit', '--file', message])
+      await this.svnRun(working, ['mkdir', '--', nodeTypes])
+      for (const file of ['a.ts', 'b.ts', 'c.ts']) await this.svnRun(working, ['move', '--', join(blocks, file), join(nodeTypes, file)])
+      await this.svnRun(working, ['delete', '--', blocks])
+      await writeFile(join(nodeTypes, 'a.ts'), 'a.ts moved and edited\n')
+      await this.svnRun(working, ['move', '--parents', '--', join(working, 'app', 'core', 'flowJson.ts'), join(working, 'app', 'common', 'flowJson.ts')])
+      const manager = new VersioningCommitManager({
+        messages: new VersioningCommitMessageStore(join(this.root, `${name}-messages.json`), (detail) => console.error(detail)),
+        sessions: { worktreeAt: async () => null, workingContext: async () => ({ ok: true, value: { sessionId: name, cwd: working, agent: null, worktree: null } }) },
+        vcsStatus: new VcsStatusView(),
+        fileAccess: (_owner, snapshot, file) => this.files.fileAccess(snapshot, file),
+        snapshotOf: (_owner, snapshot) => this.files.workingSnapshot(snapshot),
+        git: this.commits, svn: this.svnCommits,
+        tortoise: { open: async () => { throw new Error('Unexpected Tortoise fallback') } }, onChanged: () => {},
+      })
+      const prepared = await manager.prepare(name, 'svn', working, null)
+      if (!prepared.ok) throw new Error(prepared.detail)
+      manager.attach(prepared.value.draftId, 'owner')
+      const read = await this.files.workingTree({ sessionId: name, cwd: working, agent: null, worktree: null }, 'svn', true)
+      if (!read.ok) throw new Error(read.detail)
+      const snapshot = manager.files('owner', prepared.value.draftId, read.value)
+      const run = (fileIds: readonly string[]) => manager.run('owner', { draftId: prepared.value.draftId, snapshotId: snapshot.snapshotId,
+        fileIds: [...fileIds], message: text })
+      const conflicts = async () => /tree-conflicted="true"|item="conflicted"/.test(await this.svnRun(working, ['status', '--xml']))
+      return { manager, draftId: prepared.value.draftId, snapshot, run, conflicts, working, repository, nodeTypes }
+    }
+
+    const moved = await scenario('moved', false)
+    const half = await moved.run(moved.snapshot.entries.filter((entry) => entry.path.startsWith(moved.nodeTypes)).map((entry) => entry.fileId))
+    this.check('A move with only its destination checked is named before staging instead of failing with E200009',
+      !half.ok && half.detail.includes('app/nodeTypes/a.ts was moved from app/blocks/a.ts') && !half.detail.includes('E200009')
+      && !await moved.conflicts())
+    const full = await moved.run(moved.snapshot.entries.map((entry) => entry.fileId))
+    if (!full.ok) throw new Error(full.detail)
+    const log = await this.svnRun(moved.working, ['log', '--verbose', '-r', full.revision, pathToFileURL(moved.repository).href])
+    const phase = moved.manager.read('owner', moved.draftId)?.phase
+    this.check('An out-of-date commit of moved files updates only the deleted directory SVN named and keeps every move',
+      phase?.kind === 'done' && phase.output.includes('Updating')
+      && log.includes('/app/nodeTypes/a.ts (from /app/blocks/a.ts:') && log.includes('/app/common/flowJson.ts (from /app/core/flowJson.ts:')
+      && (await this.svnRun(moved.working, ['status'])).trim() === '')
+    moved.manager.release(moved.draftId, 'owner')
+
+    const stale = await scenario('moved-incoming', true)
+    const before = await this.svnRun(stale.working, ['info', '--show-item', 'revision', '--', join(stale.working, 'app', 'blocks')])
+    const refused = await stale.run(stale.snapshot.entries.map((entry) => entry.fileId))
+    this.check('A repository change to a moved file stops the recovery before any write and names the directory to update',
+      !refused.ok && refused.detail.includes('Update app/blocks yourself') && refused.detail.includes('app/blocks/c.ts')
+      && !('reloadRequired' in refused) && !await stale.conflicts()
+      && await this.svnRun(stale.working, ['info', '--show-item', 'revision', '--', join(stale.working, 'app', 'blocks')]) === before)
+    stale.manager.release(stale.draftId, 'owner')
   }
 
   /**
@@ -441,8 +529,8 @@ class SmokeVcsCommit extends SmokeHarness {
     await writeFile(join(other, 'selected@file.txt'), 'remote selected\n')
     await writeFile(join(other, 'unchecked.txt'), 'remote unchecked\n')
     await this.svnRun(other, ['commit', '--file', message])
-    const update = await this.svnCommits.update(working, [selected])
-    this.check('A scoped update leaves sibling files at their original BASE', update.ok
+    const update = await this.svnCommits.updateOutOfDate(working, `svn: E155011: File '${selected}' is out of date`, [selected])
+    this.check('An out-of-date update of the named file leaves sibling files at their original BASE', update.ok
       && await readFile(selected, 'utf8') === 'remote selected\n'
       && await this.svnRun(working, ['cat', '-r', 'BASE', 'unchecked.txt']) === 'base\n')
   }
@@ -476,17 +564,28 @@ class SmokeVcsCommit extends SmokeHarness {
       { absolutePath: join(scope, 'local.txt'), nodeKind: 'file', status: 'modified' },
     ], message)
     this.check('A real stale directory commit returns out-of-date', !rejected.ok && rejected.code === 'out-of-date')
-    const updated = await this.svnCommits.update(scope)
+    if (rejected.ok) throw new Error('The stale directory commit was accepted')
+    const updated = await this.svnCommits.updateOutOfDate(scope, rejected.detail, [scope, join(scope, 'local.txt')])
     if (!updated.ok) throw new Error(updated.detail)
-    this.check('Scoped update merges remote changes and preserves local edits',
-      await readFile(join(scope, 'remote.txt'), 'utf8') === 'remote change\n' && await readFile(join(scope, 'local.txt'), 'utf8') === 'mine\n')
-    this.check('Scoped update leaves sibling projects and externals unchanged',
+    this.check('Out-of-date update brings the directory SVN named alone and preserves local edits',
+      (await this.svnRun(scope, ['propget', 'remote-note', '--', '.'])).trim() === 'theirs'
+      && await readFile(join(scope, 'remote.txt'), 'utf8') === 'before\n' && await readFile(join(scope, 'local.txt'), 'utf8') === 'mine\n')
+    this.check('Out-of-date update leaves sibling projects and externals unchanged',
       await readFile(join(root, 'sibling', 'file.txt'), 'utf8') === 'before\n' && await readFile(join(scope, 'external', 'file.txt'), 'utf8') === 'before\n')
+    const retried = await this.svnCommits.commit(scope, [
+      { absolutePath: scope, nodeKind: 'directory', status: 'modified' },
+      { absolutePath: join(scope, 'local.txt'), nodeKind: 'file', status: 'modified' },
+    ], message)
+    this.check('The same stale directory commit succeeds after that update', retried.ok)
     await this.svnRun(scope, ['changelist', 'review', '--', 'local.txt'])
+    await writeFile(join(scope, 'local.txt'), 'mine again\n')
+    await this.svnRun(scope, ['propset', 'local-note', 'mine again', '--', '.'])
+    await this.svnRun(other, ['update'])
     await writeFile(join(other, 'scope@name', 'local.txt'), 'theirs\n')
     await this.svnRun(other, ['propset', 'local-note', 'theirs', '--', 'scope@name@'])
     await this.svnRun(other, ['commit', '--file', message])
-    const conflicted = await this.svnCommits.update(scope)
+    const conflicted = await this.svnCommits.updateOutOfDate(scope,
+      `svn: E155011: File '${join(scope, 'local.txt')}' is out of date\nsvn: E155011: Directory '${scope}' is out of date`, [scope, join(scope, 'local.txt')])
     this.check('Update reports text conflicts in changelists and directory property conflicts',
       !conflicted.ok && conflicted.detail.includes('local.txt') && conflicted.detail.includes('scope@name'))
     this.check('Update postpones conflict resolution for human review',

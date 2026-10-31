@@ -4,7 +4,7 @@ import type {
 import type { SessionsSnapshot } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { TerminalTargetCodec } from '../../shared/terminalTarget'
 import type { SnapshotStore } from '../ipc/snapshotStore'
-import { SessionsAttentionModel } from './sessionsAttentionModel'
+import { SessionsAttentionModel } from '../../shared/sessionsAttentionModel'
 
 /** The marks and the cross-window visibility that clears them. */
 export interface SessionsMarksView {

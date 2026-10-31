@@ -9,7 +9,7 @@ import type { WorkerHandoffs } from '../../sessionManager/worktreeSessionRuntime
 export interface FinishDriverPorts {
   commands: Pick<WorktreeSvnCommands, 'lease' | 'verify' | 'accept' | 'acceptInterrupted'>
   sync: Pick<SyncStep, 'run' | 'resolve' | 'withControl' | 'recover'>
-  handoffs: Pick<WorkerHandoffs, 'checksFailed' | 'conflicts' | 'notifyCaller'>
+  handoffs: Pick<WorkerHandoffs, 'checksFailed' | 'conflicts' | 'notifyCaller' | 'messageWanted'>
   idle(sessionId: string): boolean
   /** Why the worker does not count as idle, as a person reads it; null when it does. */
   busyReason(sessionId: string): string | null

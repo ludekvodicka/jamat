@@ -17,8 +17,18 @@ export class SvnCommitMessageCheck {
     /^(?:(?:suggested|proposed)\s+)?commit message\s*:/i,
   ]
 
+  /** Nothing beyond an optional `[Project]` prefix: the field a person cleared, or left at its prefilled prefix. */
+  static empty(message: string): boolean {
+    return !message.trim().replace(/^\[[^\]\s]+\](?:\s|$)/, '').trim()
+  }
+
+  /** A field a person wrote holds their message; an emptied one holds nobody's, so a proposal may fill it. */
+  static personMessage(message: string, source: CommitMessageSource): boolean {
+    return SvnCommitMessageCheck.writtenByPerson(source) && !SvnCommitMessageCheck.empty(message)
+  }
+
   static findings(message: string, source: CommitMessageSource): CommitMessageFinding[] {
-    if (!message.trim().replace(/^\[[^\]\s]+\](?:\s|$)/, '').trim()) return ['empty']
+    if (SvnCommitMessageCheck.empty(message)) return ['empty']
     const first = message.split(/\r?\n/, 1)[0]
     const findings: CommitMessageFinding[] = []
     if (!/^\[[^\]\s]+\] /.test(first)) findings.push('no-prefix')
@@ -46,6 +56,11 @@ export class SvnCommitMessageCheck {
     if (!message.trim()) return message
     if (/^\[[^\]\s]+\](?:\s|$)/.test(message.trimStart())) return message.trimStart()
     return `${prefix} ${message.trimStart()}`
+  }
+
+  /** Whether the message publishes under `prefix`: one without a prefix gets it, one with another keeps that one. */
+  static prefixed(message: string, prefix: string): boolean {
+    return SvnCommitMessageCheck.withPrefix(message, prefix).startsWith(prefix)
   }
 
   static writtenByPerson(source: CommitMessageSource): boolean {

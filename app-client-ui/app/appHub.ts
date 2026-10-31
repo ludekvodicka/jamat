@@ -94,6 +94,9 @@ import { VersioningReviewStore } from './versioning/versioningReviewStore'
 import { VersioningCommitMessageStore } from './versioning/versioningCommitMessageStore'
 import { ClientStateStore } from './clientState/clientStateStore'
 import { FinishAttention, type FinishAttentionNotice } from './sessions/finishAttention'
+import { AttentionQueue } from './attention/attentionQueue'
+import { ServiceAttentionIpc } from './attention/serviceAttentionIpc'
+import { SessionMarksAttention } from './attention/sessionMarksAttention'
 import { MainCopyUpdateNotice, type MainCopyUpdateNoticeView } from './sessions/mainCopyUpdateNotice'
 import { ExternalOpener } from './terminals/externalOpener'
 import { ServiceContextCompactionIpc } from './contextCompaction/serviceContextCompactionIpc'
@@ -220,6 +223,7 @@ export class AppHub {
     ServiceRemarkableIpc.channelsConst,
     ServiceContextCompactionIpc.channelsConst,
     ServiceAgentCliUpdatesIpc.channelsConst,
+    ServiceAttentionIpc.channelsConst,
     ServiceControlIpc.channelsConst,
   ] as const) satisfies Record<keyof AppClientUiIpcInvokeMap, true>
 
@@ -292,6 +296,10 @@ export class AppHub {
   private readonly snapins: SnapinsManager
   /** Tells the person when a local Finish starts to wait; a click opens its workflow tab. */
   private readonly finishAttention: FinishAttention
+  /** What wants the person, and when it takes the screen; the status bar shows what waits. */
+  private readonly attention: AttentionQueue
+  private readonly attentionIpc: ServiceAttentionIpc
+  private readonly sessionMarks: SessionMarksAttention
   /** The notifications on screen: Electron drops the click of one nothing holds. */
   private readonly notices = new Set<Notification>()
   private readonly pingLoop: HostPingLoop
@@ -309,7 +317,10 @@ export class AppHub {
   private readonly accounts: AgentAccounts
 
   constructor(context: AppContext) {
-    this.finishAttention = new FinishAttention({ show: (notice) => this.showNotice(notice) })
+    this.finishAttention = new FinishAttention({ show: (notice) => {
+      this.showNotice(notice)
+      this.queueFinishWait(notice)
+    } })
     const configIdentity = context.config.identity.configIdentity
     const channel = context.config.runtimeChannel
     const applicationRoot = dirname(app.getAppPath())
@@ -329,6 +340,7 @@ export class AppHub {
         this.dialogIpc.confirmMainWindowClose(parent, holderCount),
       requestQuit: () => app.quit(),
       explicitlyClosing: (windowId) => this.transferBroker.cancelClosingWindow(windowId),
+      onPersonActive: () => this.attention.personActive(),
       report: (message) => this.report(message),
     })
     this.transferBroker = new TabTransferBroker(this.workspaceWindows, this.panelIndex)
@@ -384,7 +396,8 @@ export class AppHub {
     }, launcherDirectory, process.platform === 'win32', new WindowsLauncherSetup(
       app.isPackaged ? join(process.resourcesPath, 'launcher') : join(applicationRoot, 'out', 'launcher'),
       launcherDirectory,
-    ), new AutolauncherConnection(), snapshot => this.broadcast('autolauncher:changed', snapshot)),
+    ), new AutolauncherConnection(), snapshot => this.broadcast('autolauncher:changed', snapshot),
+    app.isPackaged ? join(process.resourcesPath, 'launcher', 'node.exe') : join(applicationRoot, 'out', 'launcher', 'node.exe')),
     sender => this.workspaceWindows.acceptsRenderer(sender))
     this.fileDiffWorker = new FileDiffWorker(context.fileDiffWorkerPath)
     // The project manager's view, not one of its own: it is the only one in this process whose
@@ -428,7 +441,7 @@ export class AppHub {
           const created = await this.sessions.createCommandSession({ directory: { mode: 'adHoc', path: request.home },
             account: { agentId: request.agentId, accountId: request.accountId }, title: `Login: ${request.label}` }, request.command, request.prepare)
           if (!created.ok) throw new AccountProblem(created.detail)
-          await this.tabControlBroker.open(created.value.sessionId, created.value.tabTitle, { activate: true })
+          await this.tabControlBroker.openTab(created.value.sessionId, created.value.tabTitle, { activate: true })
           return { sessionId: created.value.sessionId }
         },
         result: id => this.sessions.terminalResult(id),
@@ -636,20 +649,40 @@ export class AppHub {
       this.remoteInbound.publishEvent('tabs.changed')
     })
     const tabFileResolver = new TabFileOpenResolver(this.sessions, this.fileViewer, this.terminalDetector)
+    this.attention = new AttentionQueue({
+      front: () => {
+        const focused = this.workspaceWindows.focusedWorkspace()
+        return focused === null ? null : { panelId: this.activePanelOf(focused.windowId) }
+      },
+      lastActivePanel: () => {
+        const last = this.workspaceWindows.lastFocusedWorkspace()
+        return last === null ? null : this.activePanelOf(last.windowId)
+      },
+      focus: async (panelId) => {
+        const focused = await this.tabControlBroker.focus(panelId)
+        if (!focused.ok) this.report(`The tab before the attention queue could not be brought back: ${focused.error.detail}`)
+      },
+      idleMilliseconds: () => VersioningSettings.idleMilliseconds(configStore.readSection(VersioningSettingsSection.spec)),
+      returnEnabled: () => configStore.readSection(VersioningSettingsSection.spec).returnToPreviousSessionAfterCommit !== false,
+      returnWindowMilliseconds: () => VersioningSettings.returnWindowMilliseconds(configStore.readSection(VersioningSettingsSection.spec)),
+      onChanged: () => this.broadcast('attention:changed'),
+      report: (message) => this.report(message),
+    })
+    this.attentionIpc = new ServiceAttentionIpc(this.attention)
     this.tabControlBroker = new TabControlBroker(
       this.workspaceWindows,
       this.panelIndex,
       tabFileResolver,
       this.commits,
+      this.attention,
       {
         recordOpen: (open) => sessionViewItems.record(open),
         reportError: (message) => this.report(message),
         activateSessionOnCommit: () => configStore.readSection(VersioningSettingsSection.spec).activateSessionOnCommit !== false,
         activateSessionOnDocument: () => configStore.readSection(UiSettingsSection.spec).activateSessionOnDocument === true,
-        returnToPreviousSessionAfterCommit: () => configStore.readSection(VersioningSettingsSection.spec).returnToPreviousSessionAfterCommit !== false,
-        returnWindowMilliseconds: () => VersioningSettings.returnWindowMilliseconds(configStore.readSection(VersioningSettingsSection.spec)),
       },
     )
+    this.sessionMarks = new SessionMarksAttention(this.attention, (sessionId, tabTitle) => this.tabControlBroker.showSession(sessionId, tabTitle))
     this.sessions.setReviewPort(new SessionReviewPortAdapter(this.commits))
     this.fileViewerAccess = new FileViewerAccess({
       viewer: this.fileViewer,
@@ -1083,6 +1116,7 @@ export class AppHub {
     this.remarkableIpc.initialize()
     this.contextCompactionIpc.initialize()
     this.cliUpdatesIpc.initialize()
+    this.attentionIpc.initialize()
     // Its channels return raw values rather than IpcResult, so they sit outside the contract above.
     this.autoUpdate.start()
     this.menu.install()
@@ -1160,6 +1194,7 @@ export class AppHub {
     this.remoteConnections.stop()
     this.transferBroker.cancelAll()
     this.tabControlBroker.cancelAll()
+    this.attention.stop()
     this.usageWindow.close()
     this.workspaceWindows.beginQuit()
   }
@@ -1331,6 +1366,34 @@ export class AppHub {
       'tabs:visible-terminal-targets',
       this.panelIndex.visibleTerminalTargetKeys(this.visibleWorkspaceWindowIds),
     )
+    this.attentionSeen()
+  }
+
+  /**
+   * The attention queue reads the new state: a finished item, a new mark, a session now in front.
+   * Sessions can change while the constructor runs, before the marks source exists.
+   */
+  private attentionSeen(): void {
+    try {
+      const lookedAt = new Set(this.panelIndex.snapshot().flatMap((panel) =>
+        panel.active && panel.sessionId !== null && this.visibleWorkspaceWindowIds.has(panel.windowId) ? [panel.sessionId] : []))
+      this.sessionMarks?.seen(this.sessions.snapshot().sessions, lookedAt)
+    } catch (error) { this.report(`The attention queue could not read the sessions: ${ErrorText.of(error)}`) }
+  }
+
+  private activePanelOf(windowId: string): string | null {
+    return this.panelIndex.snapshot().find((panel) => panel.windowId === windowId && panel.active)?.panelId ?? null
+  }
+
+  /** A waiting Finish also waits in the attention queue, and holds it until the wait is answered. */
+  private queueFinishWait(notice: FinishAttentionNotice): void {
+    const title = this.tabTitleOf(notice.sessionId) ?? notice.title
+    this.attention.add({ key: `finish-wait:${notice.sessionId}:${notice.key}`, kind: 'finish-wait', sessionId: notice.sessionId,
+      title, automatic: true, holds: true, wanted: () => this.finishAttention.waits(notice.sessionId, notice.key),
+      show: async () => {
+        const opened = await this.tabControlBroker.openWorkflow(notice.sessionId, title)
+        return opened.ok ? opened.value.panelId : null
+      } })
   }
 
   private openSnapin(kind: string): void {
@@ -1364,6 +1427,7 @@ export class AppHub {
     try { this.snapins?.wake() }
     catch (error) { this.report(`Snap-ins wake failed: ${ErrorText.of(error)}`) }
     this.noticeWaits()
+    this.attentionSeen()
     this.broadcast('sessions:changed')
     this.remoteControlServer.publishEvent('sessions.changed')
     this.remoteInbound.publishEvent('sessions.changed')

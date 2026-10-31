@@ -2,7 +2,7 @@ import type {
   SessionActivity,
   SessionInfo,
   SessionScriptsBadge,
-} from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
+} from '../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 
 export interface AttentionInput {
   sessions: readonly SessionInfo[]

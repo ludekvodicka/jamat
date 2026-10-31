@@ -34,7 +34,7 @@ export class SnapinsPorts {
     sessions: Pick<SessionManager, 'snapshot' | 'createSession' | 'worktreeResults' | 'acknowledgeWorktreeResult'>
     svn: Pick<SvnWorktreeManager, 'urlOf' | 'listAtHead' | 'changedNames'>
     projects: Pick<ProjectManager, 'listCategories' | 'listProjects'>
-    tabs: Pick<TabControlBroker, 'open'>
+    tabs: Pick<TabControlBroker, 'openTab'>
     versioningMode(): VersioningMode
   }): { sessions: SnapinSessionsPort; svn: SnapinSvnPort; projects: SnapinProjectsPort } {
     return {
@@ -48,7 +48,7 @@ export class SnapinsPorts {
           const session = input.sessions.snapshot().sessions.find((item) => item.sessionId === id)
           if (!session) return 'missing-session'
           try {
-            const result = await input.tabs.open(id, session.tabTitle, { activate: true })
+            const result = await input.tabs.openTab(id, session.tabTitle, { activate: true })
             return result.ok ? 'ok' : { error: result.error.detail }
           } catch (error) { return { error: ErrorText.of(error) } }
         },

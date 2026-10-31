@@ -2788,6 +2788,9 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
         worktree: svnWorktree('020-plain'),
         worktreeCleanup: { phase: 'pending', trigger: 'remove-when-ended', requestedAt: 1, attempts: 0 },
       }),
+      // Worker-agent 031: the Solve with agent helper of a worker goes with it.
+      recordOf(context, 'plain-solve', { kind: 'agent', agent: { agentId: 'claude', launchMode: 'new' }, exitReason: 'process-exit', endedAt: 2_000,
+        directory: { mode: 'adHoc', path: join(context.root, 'owner', '.worktrees', '020-plain') }, parent: { sessionId: 'plain', kind: 'worker' } }),
     ])
     context.publishDescriptor()
     const removedItself: string[] = []
@@ -2797,10 +2800,11 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
 
     await vi.waitFor(() => {
       expect(storedRecord(context, 'failed')?.retiredWorktree?.worktreePath).toBe(join(context.root, 'owner', '.worktrees', '018-failed'))
-      expect(removedItself).toEqual(['plain'])
+      expect(removedItself).toEqual(['plain', 'plain-solve'])
     }, { timeout: 5_000 })
     expect(storedRecord(context, 'failed')?.worktree).toBeUndefined()
     expect(storedRecord(context, 'plain')).toBeUndefined()
+    expect(storedRecord(context, 'plain-solve')).toBeUndefined()
     const failed = sessionOf(client, 'failed')
     expect(failed?.endedReason).toBe('setup failed: the setup exited with 1')
     expect(failed?.admits).not.toContain('retrySetup')

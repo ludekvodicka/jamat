@@ -153,7 +153,8 @@ away asks nothing and drops live connections immediately.
 **A selected remote session uses the source computer's workspace.** Its terminal, files and rich
 previews, changes, tasks, Session actions and shared commit review stay tied to that source.
 A person can review and finish SVN or Git work from either computer; the source records the result
-and preserves unfinished work. Reconnecting requires an explicit Connect. Machine settings, native
+and preserves unfinished work. While a session stays selected, a lost connection is redialled every
+5 to 10 seconds until the source answers again. Machine settings, native
 editor windows and pairing administration stay on their owning computer. See the
 [workspace contract](docs/architecture/remote-session-workspace.md) for capabilities and recovery limits.
 
@@ -162,11 +163,14 @@ advertises `127.0.0.1` until you give it a real address. The peer listener's inb
 is yours to add. Read [SECURITY.md](SECURITY.md) before opening it up.
 
 **Remote startup on Windows:** Settings > Autolauncher installs a bundled independent launcher for
-the current profile and executable, or the current source checkout with automatic packaging.
-Create an invitation for that PC in MiniWolService, paste it into Settings, and approve Windows UAC.
+the current profile with a selectable executable, development checkout, packaged source build or
+custom command. Settings shows the recorded target and checks its files before installation.
+Sign in to the Jamat relay, choose **Nastavit spouštění Jamatu** for that PC, paste its invitation
+into Settings, and approve Windows UAC.
 Setup installs a logon task and a firewall rule restricted to the configured gateway. You must remain
 signed in to Windows. The launcher keeps working after Jamat closes; its API only starts that one
-profile. The server web and invitation exchange are intended for a trusted LAN.
+profile. MiniWolService 2.0.0 is an API behind the relay, which owns the wake/start/setup UI.
+The invitation is redeemed directly from that PC over trusted-LAN HTTP.
 
 ![A paired computer's sessions in the sessions tree](docs/images/05-remote.png)
 
@@ -234,7 +238,8 @@ as a tool with real reach:
   a LAN or VPN address. Its firewall rule is configured manually.
 - **Autolauncher is enabled separately in Settings**. Its Windows setup requires administrator
   approval and manages its own gateway-restricted firewall rule. MiniWolService uses a signed
-  fixed-profile startup API; invitation enrollment uses unencrypted trusted-LAN HTTP.
+  fixed-profile startup API. Relay login protects its UI; a server-side bearer key protects MiniWol
+  actions. Fixed-key HTTP replay is an accepted risk; invitation enrollment uses unencrypted LAN HTTP.
 - **Pairing is explicit and pins the other machine's key**; the connection is signed and encrypted;
   what a peer may ask for is a closed allowlist; every accepted operation is audited.
 - **A reply from a paired computer is untrusted input**, and the application marks it as such.

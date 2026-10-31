@@ -24,6 +24,7 @@ describe('WorktreeWords', () => {
     const building = { ...state, preparation: { format: 1 as const, manifest: 'fixture', content: 'hash', metadata: 'hash', commands: 'hash', checks: 'none' as const, checkedAt: 1, attempt: 0 }, phase: 'finishing' as const, step: 'reviewing' as const, hasWindow: true }
     expect(WorktreeWords.reviewReady(building)).toBe(false)
     expect(WorktreeWords.presentation(building)).toMatchObject({ title: 'Preparing the synced review', tone: 'running' })
+    expect(WorktreeWords.presentation({ ...building, preparation: undefined })).toMatchObject({ title: 'Preparing the synced review', tone: 'running' })
     expect(WorktreeWords.actions(building).some((action) => action.requiresCommit)).toBe(false)
     expect(WorktreeWords.presentation({ ...building, review })).toMatchObject({ title: 'Ready for validation', tone: 'wait' })
     const noWindow = { ...building, hasWindow: false, review }
@@ -102,6 +103,8 @@ describe('WorktreeWords', () => {
     expect(actions[0].confirm).toBe('Sync although the worker is not idle?')
     const held = { ...busy, wait: { ...busy.wait, reason: WorktreeWords.syncBusyOf('a message to the worker is not delivered yet: Checks failed') } }
     expect(WorktreeWords.actions(held)[0].confirm).toBe('Sync although a message to the worker is not delivered yet: Checks failed?')
+    expect(held.wait.reason).toBe('Waiting for an idle worker: a message to the worker is not delivered yet: Checks failed.'
+      + ' Jamat continues by itself about 15 to 30 seconds after the worker stops; press Sync now if it has already finished.')
     expect(WorktreeWords.command(actions[0])).toEqual({ operation: 'sessions.finishWorktree', body: { choice: 'commit', confirmWorking: true } })
     expect(WorktreeWords.command(actions[1])).toEqual({ operation: 'sessions.backToWork', body: {} })
     expect(WorktreeWords.actions({ ...busy, step: 'committing' as const }).map((row) => row.id)).not.toContain('back-to-work')
@@ -110,7 +113,7 @@ describe('WorktreeWords', () => {
     const reason = 'a message to the worker is not delivered yet: Continue the interrupted worktree task'
     const waiting = { ...state, phase: 'finishing' as const, step: 'awaiting-idle' as const, approvedAt: 5, awaitingIdleReason: reason }
     expect(WorktreeWords.presentation(waiting)).toMatchObject({ title: 'Waiting for the worker to become idle' })
-    expect(WorktreeWords.idleWaitOf(waiting)).toBe(`The worker is not idle: ${reason}`)
+    expect(WorktreeWords.idleWaitOf(waiting)).toBe(`The worker is not idle: ${reason}. Jamat continues by itself about 15 to 30 seconds after the worker stops; press Publish anyway if it has already finished.`)
     expect(WorktreeWords.idleWaitOf({ ...waiting, awaitingIdleReason: undefined })).toBeNull()
     const actions = WorktreeWords.actions(waiting)
     expect(actions.map((row) => row.id)).toEqual(['finish-again', 'confirm-busy', 'back-to-work', 'keep', 'discard'])
@@ -151,12 +154,12 @@ describe('WorktreeWords', () => {
     const confirmOf = (value: WorktreeLifecycle) => WorktreeWords.actions(value).find((action) => action.id === 'discard')!.confirm
     const partial: WorktreeLifecycle = { ...state, phase: 'waiting', wait: { kind: 'partially-landed', reason: 'App failed', at: 1 },
       publication: { ...published, remaining: ['a.ts', 'b.ts'] } }
-    expect(confirmOf(partial)).toBe('Already published: App Core r120, shared r45. 2 changed paths are not published and will be discarded with this worktree. Save a copy and discard it?')
+    expect(confirmOf(partial)).toBe('Already published: App Core r120, shared r45. 2 changed paths are not published and will be discarded with this worktree. Discard it?')
     expect(confirmOf({ ...partial, publication: { ...published, remaining: ['a.ts'] } }))
-      .toBe('Already published: App Core r120, shared r45. 1 changed path is not published and will be discarded with this worktree. Save a copy and discard it?')
+      .toBe('Already published: App Core r120, shared r45. 1 changed path is not published and will be discarded with this worktree. Discard it?')
     expect(confirmOf({ ...partial, publication: published }))
-      .toBe('Already published: App Core r120, shared r45. The rest is not published and will be discarded with this worktree. Save a copy and discard it?')
-    expect(confirmOf({ ...state, wait: { kind: 'svn-failed', reason: 'x', at: 1 } })).toBe('Save a copy and discard this worktree?')
+      .toBe('Already published: App Core r120, shared r45. The rest is not published and will be discarded with this worktree. Discard it?')
+    expect(confirmOf({ ...state, wait: { kind: 'svn-failed', reason: 'x', at: 1 } })).toBe('Discard this worktree and its uncommitted changes?')
   })
 
   it('offers Discard of a kept worktree beside a new preparation, without preparing it first (UA1-J07-7)', () => {
@@ -166,7 +169,7 @@ describe('WorktreeWords', () => {
       execution: { root: 'Q:/wt', checks: [], checkCursor: 0, rootCursor: 0, evidence: [], requestedBy: 'window', startedAt: 1 } }
     const actions = WorktreeWords.actions(kept)
     expect(actions.map((action) => [action.id, action.label])).toEqual([['prepare-worktree', WorktreeWords.prepareAgainConst], ['discard', 'Discard']])
-    expect(actions[1].confirm).toBe('Already published: j07ea r4, j07eb r3. 1 changed path is not published and will be discarded with this worktree. Save a copy and discard it?')
+    expect(actions[1].confirm).toBe('Already published: j07ea r4, j07eb r3. 1 changed path is not published and will be discarded with this worktree. Discard it?')
     expect(WorktreeWords.command(actions[1])).toEqual({ operation: 'sessions.finishWorktree', body: { choice: 'discard' } })
     expect(WorktreeWords.presentation(kept)).toEqual({ title: 'Worktree kept', tone: 'done', actions })
     expect(WorktreeWords.actions({ ...kept, execution: { ...kept.execution!, neverStartedReason: 'No agent start was recorded' } }).map((action) => action.id)).toEqual(['discard'])

@@ -118,6 +118,9 @@ export interface WorkspaceShellWiring {
    */
   ratePorts: AppShellRatePorts
   rateSnapshot: SnapshotStore<RateMonitorSnapshot>
+  /** What waits for the person, drawn in every workspace: the queue is the application's. */
+  attentionPorts: import('../statusBar/attentionStatusItem').AttentionStatusPorts
+  attentionSnapshot: SnapshotStore<import('../../shared/attention').AttentionSnapshot>
   /** Every workspace draws the update too: what is installed is the application's, not one window's. */
   autoUpdate: AutoUpdateApi
   cliUpdates: import('../statusBar/agentCliUpdateStatusItem').AgentCliUpdatePorts

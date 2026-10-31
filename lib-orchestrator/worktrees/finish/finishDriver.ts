@@ -1,3 +1,4 @@
+import { WorktreeLeaseHeld } from '../worktreeLease'
 import { FinishStepPolicy } from './finishStepPolicy'
 import { FinalizeSteps } from './finalizeSteps'
 import { FinishFlow } from './finishFlow'
@@ -86,7 +87,9 @@ export class FinishDriver {
       committing: (id) => this.publication.publish(id),
       verifying: (id) => this.publication.verifyCurrent(id),
       disposing: async (id, state) => {
-        if ((state.verified?.length ?? 0) === 0 && state.preparation?.checkedAt === undefined) {
+        // An approved empty selection had nothing to prepare; the disposition proves the worktree clean itself.
+        const empty = state.approvedAt !== undefined && state.review?.selection.length === 0
+        if ((state.verified?.length ?? 0) === 0 && state.preparation?.checkedAt === undefined && !empty) {
           await this.preparation.invalidate(id, 'This older completion has no verified assembly. Prepare and confirm it before cleanup.')
           return false
         }
@@ -115,7 +118,12 @@ export class FinishDriver {
     if (initial?.worktreeLifecycle?.unreadable !== undefined)
       return { ok: false, code: 'invalid-spec', detail: initial.worktreeLifecycle.unreadable }
     if (initial?.worktree?.kind !== 'svn') return { ok: false, code: 'invalid-spec', detail: 'Finish requires an SVN worktree' }
-    await this.deps.commands.lease.checkAndRelease(initial.worktree.worktreePath)
+    // The press answers before its steps run, so a second press can meet this Finish's own svn write.
+    try { await this.deps.commands.lease.checkAndRelease(initial.worktree.worktreePath) }
+    catch (error) {
+      if (error instanceof WorktreeLeaseHeld) return { ok: false, code: 'merge-pending', detail: error.message }
+      throw error
+    }
     const result = await this.deps.commands.lease.within(initial.worktree.worktreePath, 'finish', async (): Promise<SessionsOpResult<{ actionId: string | null }>> => {
       let record = this.deps.records.get(sessionId)!
       if (press.choice === 'merge') return { ok: false, code: 'invalid-spec', detail: 'Use Commit for an SVN worktree' }
@@ -226,6 +234,8 @@ export class FinishDriver {
         if (press.reviewVersion !== undefined && state.version !== press.reviewVersion)
           return { ok: false, code: 'review-stale', detail: 'This review is outdated' }
         if (press.selection !== undefined) {
+          // Only a review takes a selection; the staleness read below would send a later step back to it.
+          if (state.step !== 'reviewing') return { ok: false, code: 'review-stale', detail: 'This review is outdated' }
           const invalid = await this.preparation.refuseStale(sessionId)
           if (invalid !== null) return { ok: false, code: 'review-stale', detail: invalid }
           if (state.preparation?.checkedAt === undefined) {
@@ -283,7 +293,9 @@ export class FinishDriver {
       return { ok: true, value: { actionId: this.deps.records.get(sessionId)?.worktreeLifecycle?.actionId ?? null } }
     })
     if (!result.ok) return result
-    await this.drive(sessionId)
+    // The press answers once its action is saved; sync and preparation took 88 s in the Mirabia
+    // worktree and the control request gave up after 60 s while the Finish went on (2026-10-30).
+    this.due(sessionId)
     return result
   }
 
@@ -348,7 +360,10 @@ export class FinishDriver {
     const declared = press?.choice === 'discard' || press?.choice === 'keep' ? { ok: true as const, steps: [] }
       : await this.deps.checks.declaredAfter(record, press?.acknowledgeSetup)
     if (!declared.ok) throw new Error(declared.result.ok ? 'Checks were refused' : declared.result.detail)
-    const actionId = old?.actionId ?? this.deps.newId()
+    // A ready or worker sync starts its action without an execution; its update, journal and saved
+    // copies carry that id, and a new one left the update unfinished under another action (worker-agent 031).
+    const started = (state.phase === 'finishing' || state.phase === 'waiting') && state.actionId !== null ? state.actionId : undefined
+    const actionId = old?.actionId ?? started ?? this.deps.newId()
     const execution: NonNullable<WorktreeLifecycle['execution']> = old === undefined ? {
       root: record.worktree!.worktreePath, checks: declared.steps.map((step) => ({ ...step, scriptId: 'checks' as const })),
       checkCursor: 0, rootCursor: 0, evidence: [], requestedBy: press?.requestedBy ?? 'cli', startedAt: this.deps.now(),
@@ -555,12 +570,17 @@ export class FinishDriver {
 
   async resolveConflict(sessionId: string, request: Parameters<MainCopyUpdate['resolveConflict']>[1]) {
     const state = this.deps.records.get(sessionId)?.worktreeLifecycle
+    const requestedBy = request.by === 'person' ? 'window' as const : 'cli' as const
+    // A ready or worker sync hands its conflicts to the worker before any Finish holds an execution (worker-agent 031).
+    if (state?.execution === undefined && state?.step === 'worker-resolving' && state.syncConflictSet !== undefined
+      && this.deps.records.get(sessionId)?.svnAction?.kind !== 'update-main')
+      return this.deps.sync.resolve(sessionId, { ...request, requestedBy })
     if (state?.execution === undefined || this.deps.records.get(sessionId)?.svnAction?.kind === 'update-main') return this.deps.update.resolveConflict(sessionId, request)
     let awaitingMerger = false
     const resolved = await this.deps.commands.lease.within(state.execution.root, 'resolve', async () => {
       const current = this.deps.records.get(sessionId)!.worktreeLifecycle!
       awaitingMerger = current.execution?.merger !== undefined && current.execution.merger.endedAt === undefined
-      const resolved = await this.deps.sync.resolve(sessionId, { ...request, requestedBy: request.by === 'person' ? 'window' : 'cli' })
+      const resolved = await this.deps.sync.resolve(sessionId, { ...request, requestedBy })
       // The last path settlement cannot outrun the merger's captured verdict and handover guards.
       if (resolved.ok && awaitingMerger) await this.state.write(sessionId, (latest) => ({ ...latest, step: 'worker-resolving' }))
       return resolved

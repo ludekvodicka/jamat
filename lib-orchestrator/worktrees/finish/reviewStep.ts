@@ -1,12 +1,13 @@
 import { resolve } from 'node:path'
 import { PathCompare } from '../../shared/pathCompare'
+import { SvnCommitMessageCheck } from '../../svn/svnCommitMessageCheck'
 import type { ReviewCandidates } from './reviewCandidates'
 import type { FinishDriverDeps } from './finishDriver.types'
 import type { WorktreeLifecycle } from '../worktreeState'
 import type { FinishState } from './finishState'
 
 export class ReviewStep {
-  private readonly deps: Pick<FinishDriverDeps, 'now' | 'records' | 'svn'>
+  private readonly deps: Pick<FinishDriverDeps, 'now' | 'records' | 'svn' | 'handoffs'>
   private readonly state: Pick<FinishState, 'write' | 'wait'>
   private readonly reviews: Pick<ReviewCandidates, 'create' | 'approve'>
 
@@ -34,6 +35,13 @@ export class ReviewStep {
       await this.prepareRoots(sessionId)
       return
     }
+    // A preparation that found nothing to publish read no assembly and ran no checks.
+    if (state.preparation === undefined) {
+      await this.state.write(sessionId, (current) => ({ ...current, phase: 'finishing', step: 'checking', wait: undefined, review: undefined }))
+      return
+    }
+    const unwritten = created.review.repositories?.filter((repository) => SvnCommitMessageCheck.empty(repository.message)) ?? []
+    if (unwritten.length > 0) await this.deps.handoffs.messageWanted(sessionId, unwritten)
     if (!state.hasWindow) await this.state.wait(sessionId, 'waiting-for-review', 'Review the synced changes in Session actions')
   }
 

@@ -243,4 +243,42 @@ describe('lib-orchestrator/projectSetup/detectors/nodeSetupDetector', () => {
     mkdirSync(join(root, 'package.json'))
     expect(await detector.detect(root, root)).toBeNull()
   })
+
+  // worker-agent r288: `npm install` in a bare components/ wrote an empty package-lock.json into a pnpm group.
+  it('installs a member that says nothing with the tool the other product members agree on', async () => {
+    const root = repository({
+      'group/.appgroup': '{"kind":"product"}',
+      'group/App/package.json': JSON.stringify({ packageManager: 'pnpm@12.8.1' }),
+      'group/Other/pnpm-lock.yaml': '',
+      'group/Docs/readme.md': '',
+      'group/components/package.json': JSON.stringify({ private: true, type: 'module' }),
+    })
+    expect(await detector.detect(join(root, 'group', 'components'), root)).toEqual({ kind: 'tool', toolId: 'node-pnpm' })
+  })
+
+  it('keeps the npm convention in a collection and in a product whose members disagree', async () => {
+    const collection = repository({
+      'group/.appgroup': '{"kind":"collection"}',
+      'group/App/pnpm-lock.yaml': '',
+      'group/Tool/package.json': '{}',
+    })
+    const mixed = repository({
+      'group/.appgroup': '{"kind":"product"}',
+      'group/App/pnpm-lock.yaml': '',
+      'group/Worker/package-lock.json': '{}',
+      'group/components/package.json': '{}',
+    })
+    expect(await detector.detect(join(collection, 'group', 'Tool'), collection)).toEqual({ kind: 'tool', toolId: 'node-npm' })
+    expect(await detector.detect(join(mixed, 'group', 'components'), mixed)).toEqual({ kind: 'tool', toolId: 'node-npm' })
+  })
+
+  it('lets a member\'s own lockfile win over the product group', async () => {
+    const root = repository({
+      'group/.appgroup': '{"kind":"product"}',
+      'group/App/pnpm-lock.yaml': '',
+      'group/Worker/package.json': '{}',
+      'group/Worker/package-lock.json': '{}',
+    })
+    expect(await detector.detect(join(root, 'group', 'Worker'), root)).toEqual({ kind: 'tool', toolId: 'node-npm' })
+  })
 })

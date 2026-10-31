@@ -55,8 +55,8 @@ describe('lib-orchestrator/svn/svnWorktreeEvidence', () => {
         { kind: 'item', conflict: false, path: 'src/a.txt' },
         { kind: 'item', conflict: false, path: 'src/added.txt' },
         { kind: 'item', conflict: false, path: 'src/c.txt', deleted: true },
-        { kind: 'item', conflict: false, path: 'src/loose.txt' },
-        { kind: 'item', conflict: false, path: 'src/přehled.md' },
+        { kind: 'item', conflict: false, path: 'src/loose.txt', unversioned: true },
+        { kind: 'item', conflict: false, path: 'src/přehled.md', unversioned: true },
         { kind: 'item', conflict: false, path: 'tree.txt' },
       ])
     })
@@ -94,6 +94,12 @@ describe('lib-orchestrator/svn/svnWorktreeEvidence', () => {
         row('src/limit.txt.r2'), row('src/other.txt.r3'), row('lib/a.c.working'), row('lib/a.c.merge-left.r4'), row('lib/a.c', true),
         row('dir', true), row('dir/dir_conflicts.prej'), row('notes.mine')]))
         .toEqual(['src/limit.txt', 'src/other.txt.r3', 'lib/a.c', 'dir', 'notes.mine'])
+    })
+
+    it('finds a file external, which status lists under --ignore-externals too', () => {
+      const entry = (attributes: string) => `<status><target path="${root}"><entry path="${join(root, 'fx.txt')}"><wc-status item="normal" revision="3" props="none"${attributes}/></entry></target></status>`
+      expect(SvnWorktreeEvidence.fileExternals(entry(' file-external="true"'))).toBe(true)
+      expect(SvnWorktreeEvidence.fileExternals(entry(''))).toBe(false)
     })
 
     it('keeps only the change kinds as changed rows', () => {

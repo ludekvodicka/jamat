@@ -8,7 +8,7 @@ ENV NODE_OPTIONS=--use-openssl-ca \
 
 FROM ${NODE_RUNTIME_IMAGE}
 WORKDIR /app
-COPY --chown=node:node package.json start.mjs server.mjs wol.mjs launcher.mjs pairing.mjs web.css ./
+COPY --chown=node:node package.json start.mjs server.mjs wol.mjs launcher.mjs pairing.mjs ./
 USER node
 CMD ["node", "start.mjs"]
 ARG BUILD_TIME

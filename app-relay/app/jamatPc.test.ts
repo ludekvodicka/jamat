@@ -81,7 +81,6 @@ test('paired V3 endpoint uses authenticated encrypted calls, reconnects and allo
     });
   });
   const config: PcConfig = { id: 'fixture', label: 'Fixture', ip: '127.0.0.1', agentPort: 3501,
-    mac: '00:11:22:33:44:55', broadcast: '127.0.0.1',
     peer: RemoteControlPairing.bundle(target.identity, { host: '127.0.0.1', port: (sockets.address() as { port: number }).port }) };
   const pc = new JamatPc(config, relay);
   const http = createServer((req, res) => { void pc.handle(req, res, req.url!); });

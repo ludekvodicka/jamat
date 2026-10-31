@@ -246,6 +246,8 @@ class AppClientStub {
         saveSessionPins: () => Promise.resolve({ ok: true as const, value: true }),
         loadSessionGroups: () => Promise.resolve({ ok: true as const, value: [] }),
         assignSessionGroup: () => Promise.resolve({ ok: true as const, value: true }),
+        loadHiddenWhenRemote: () => Promise.resolve({ ok: true as const, value: [] }),
+        setHiddenWhenRemote: () => Promise.resolve({ ok: true as const, value: true }),
         loadSplitPins: () => Promise.resolve({ ok: true as const, value: [] }),
         saveSplitPins: () => Promise.resolve({ ok: true as const, value: true }),
         saveSessionFilters: () => Promise.resolve({ ok: true as const, value: true }),
@@ -507,6 +509,7 @@ class AppClientStub {
         revokeInbound: () => { throw new Error('No test of the shell revokes inbound access') },
       },
       autolauncher: {
+        inspect: () => { throw new Error('No test of the shell inspects an Autolauncher target') },
         get: () => { throw new Error('No test of the shell reads Autolauncher settings') },
         enable: () => { throw new Error('No test of the shell enables Autolauncher') },
         disable: () => { throw new Error('No test of the shell disables Autolauncher') },
@@ -647,6 +650,11 @@ class AppClientStub {
           install: async () => ({ ok: true as const, value: undefined }),
         },
         onAgentCliUpdatesChanged: () => () => undefined,
+        attention: {
+          get: async () => ({ ok: true as const, value: { revision: 0, items: [] } }),
+          next: async () => ({ ok: true as const, value: undefined }),
+        },
+        onAttentionChanged: () => () => undefined,
     } satisfies Window['appClient']
     ;(window as unknown as { appClient: Window['appClient'] }).appClient = bridge
   }

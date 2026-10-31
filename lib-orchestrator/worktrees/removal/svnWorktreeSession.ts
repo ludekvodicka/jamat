@@ -1,5 +1,5 @@
 import type { SvnResult } from '../../svn/svn.types'
-import { join, relative } from 'node:path'
+import { relative } from 'node:path'
 import { PathCompare } from '../../shared/pathCompare'
 import { LandedRows } from '../landing/landedRows'
 import type { SessionRecord } from '../../sessionManager/worktreeSessionRecords'
@@ -18,17 +18,27 @@ export class SvnWorktreeSession implements WorktreeSessionAdapter {
     this.deps = deps
   }
 
+  /**
+   * Which of the unversioned files `paths` are setup outputs the Finish leaves out (`SetupOutputs`):
+   * a file the setup baseline names, or one inside an unversioned directory it names, whose content
+   * still equals that baseline. The commit dialog lists the files of such a directory one by one.
+   */
   async setupPaths(record: SessionRecord, paths: readonly string[]): Promise<SessionsOpResult<string[]>> {
     const worktree = record.worktree
     if (worktree?.kind !== 'svn' || worktree.setupBaseline === undefined) return { ok: true, value: [] }
-    const baseline = worktree.setupBaseline
-    const names = paths.filter((path) => PathCompare.isInside(worktree.worktreePath, path))
-      .map((path) => relative(worktree.worktreePath, path).replace(/\\/g, '/'))
-      .filter((path) => Object.hasOwn(baseline.hashes, path))
-    const current = await this.deps.commitHashes(worktree.worktreePath, names)
+    const baseline = worktree.setupBaseline.hashes
+    // A node hash proves no directory content, and this reader computes tree hashes only.
+    const keys = Object.keys(baseline).filter((key) => !baseline[key].startsWith('node:'))
+    const owners = new Map<string, string>()
+    for (const path of paths.filter((candidate) => PathCompare.isInside(worktree.worktreePath, candidate))) {
+      const name = relative(worktree.worktreePath, path).replace(/\\/g, '/')
+      const key = keys.filter((candidate) => name === candidate || name.startsWith(`${candidate}/`)).sort((a, b) => b.length - a.length)[0]
+      if (key !== undefined) owners.set(path, key)
+    }
+    if (owners.size === 0) return { ok: true, value: [] }
+    const current = await this.deps.commitHashes(worktree.worktreePath, [...new Set(owners.values())])
     if (!current.ok) return { ok: false, code: 'svn-failed', detail: current.detail }
-    return { ok: true, value: names.filter((path) => current.value[path] === baseline.hashes[path])
-      .map((path) => join(worktree.worktreePath, ...path.split('/'))) }
+    return { ok: true, value: [...owners].filter(([, key]) => current.value[key] === baseline[key]).map(([path]) => path) }
   }
 
   async removeWithSession(record: SessionRecord): Promise<SessionsOpResult> {

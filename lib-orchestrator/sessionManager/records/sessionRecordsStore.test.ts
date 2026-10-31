@@ -622,6 +622,23 @@ describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
         await expect(store.put(record('d', { worktree: { ...svnWorktree, cwdSubpath } }))).rejects.toThrow(/cwdSubpath/)
     })
 
+    // Every launch inside the worktree carries them, so a name that is not one, or is Jamat's own, is refused.
+    it('round-trips the variables of a worktree setup and refuses a name a launch must not carry', async () => {
+      const variables = { pnpm_config_enable_global_virtual_store: 'true' }
+      const context = harness({ schemaVersion: 1, savedAt: 5, records: [
+        record('a', { worktree: { ...svnWorktree, setupVariables: variables } }),
+        record('b', { worktree: { ...svnWorktree, setupVariables: { JAMAT_V3_SESSION_ID: 'x' } } }),
+        record('c', { worktree: { ...svnWorktree, setupVariables: { 'a=b': 'x' } } }),
+      ] })
+      const store = await context.load()
+
+      expect(store.list().map((entry) => entry.sessionId)).toEqual(['a'])
+      expect(store.get('a')?.worktree?.setupVariables).toEqual(variables)
+      expect(context.reports.join(' | ')).toContain('worktree setupVariables must map variable names to strings')
+      await expect(store.put(record('d', { worktree: { ...svnWorktree, setupVariables: { name: 1 } as never } })))
+        .rejects.toThrow(/setupVariables/)
+    })
+
     it('reads a worktree without a kind, which every older record is', async () => {
       const context = harness({ schemaVersion: 1, savedAt: 5, records: [record('a', {
         worktree: { worktreePath: 'C:\\wt', branch: 'jamat/fix', baseCommit: 'abc', repositoryRoot: 'C:\\repo' },

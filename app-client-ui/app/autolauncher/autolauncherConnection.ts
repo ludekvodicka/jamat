@@ -15,7 +15,7 @@ export interface AutolauncherPairing {
 export class AutolauncherConnection {
   async pair(invitation: unknown): Promise<AutolauncherPairing> {
     if (typeof invitation !== 'string' || invitation.length > 1024)
-      throw new AutolauncherProblem('Paste the setup invitation from MiniWolService.')
+      throw new AutolauncherProblem('Paste the setup invitation from the Jamat relay.')
     let url: URL
     try { url = new URL(invitation.trim()) }
     catch { throw new AutolauncherProblem('The setup invitation is invalid.') }
@@ -37,7 +37,7 @@ export class AutolauncherConnection {
       if (!local) throw new Error('Invitation belongs to another computer')
       return pairing
     } catch {
-      throw new AutolauncherProblem('Pairing failed. Create a new invitation for this PC in MiniWolService and try again.')
+      throw new AutolauncherProblem('Pairing failed. Create a new invitation for this PC in the Jamat relay and try again.')
     }
   }
 

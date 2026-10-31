@@ -156,6 +156,11 @@ export class AppClientCli {
   async run(): Promise<number> {
     let plan: AppClientCliPlan | null = null
     try {
+      const help = CliArguments.helpOf(this.argv)
+      if (help !== null) {
+        this.write({ ok: true, value: help })
+        return 0
+      }
       const args = CliArguments.parse(this.argv)
       plan = this.plan(args)
       if (plan.kind === 'pass') return await this.runPass(plan)
@@ -170,7 +175,7 @@ export class AppClientCli {
       if (plan.kind === 'commit-status') {
         if (!RemoteControlCapabilities.of(descriptor.value).includes('tabs.commitStatus'))
           return this.finishFailure(plan, { code: 'unavailable', detail: 'tabs.commitStatus is not exposed by this AppClientUI' })
-        return await this.readCommitStatus(client, plan.id, plan.wait, plan.timeoutMs)
+        return await this.readCommitStatus(client, plan.id, plan.wait, plan.timeoutMs, config)
       }
       if (plan.kind === 'request') {
         if (AppClientCli.capabilityGatedConst.includes(plan.request.operation)
@@ -235,9 +240,11 @@ export class AppClientCli {
         if (plan.scriptWaitMs !== undefined && response.ok)
           return await this.waitScriptRun(client, response, plan.scriptWaitMs)
         if (plan.request.operation === 'tabs.cancelCommit' && response.ok
-          && (!CommitStatusReader.valid(response.value, plan.request.body.commitSessionId)
-            || response.value.state !== 'cancelled' || !response.value.closed))
-          return this.finishFailure(plan, { code: 'operation-failed', detail: 'The response did not confirm a closed, cancelled review; check the same review before reopening' })
+          && !AppClientCli.closedCancel(response.value, plan.request.body.commitSessionId)) {
+          if (!RemoteControlCapabilities.of(descriptor.value).includes('tabs.commitStatus'))
+            return this.finishFailure(plan, { code: 'operation-failed', detail: 'The response did not confirm a closed, cancelled review; check the same review before reopening' })
+          return await this.confirmCancel(client, plan, response, plan.request.body.commitSessionId)
+        }
         const worktree = (plan.request.operation === 'sessions.worktree' || plan.request.operation === 'sessions.finishWorktree') && response.ok ? JsonShape.record(response.value) : null
         const view = JsonShape.record(worktree?.worktreeView)
         this.write(worktree !== null && typeof view?.summary === 'string'
@@ -619,12 +626,12 @@ export class AppClientCli {
       if (note === null && !clear)
         return this.requestPlan(args, this.request(
           'sessions.note',
-          { session: this.selector(args) },
+          { session: this.selfOrSelector(args) },
           requestId,
         ))
       return this.requestPlan(args, this.request(
         'sessions.setNote',
-        { session: this.selector(args), note: clear ? null : note },
+        { session: this.selfOrSelector(args), note: clear ? null : note },
         requestId,
         this.operationId(args),
       ))
@@ -693,7 +700,7 @@ export class AppClientCli {
     else if (args.command === 'tabs open-file')
       return this.requestPlan(args, this.request(
           'tabs.openFile',
-          { session: this.selector(args), path: args.required('--path') },
+          { session: this.selfOrSelector(args), path: args.required('--path') },
           requestId,
           this.operationId(args),
         ))
@@ -805,7 +812,8 @@ export class AppClientCli {
   }
 
   private async runCommit(plan: CommitPlan): Promise<number> {
-    const descriptor = await this.deps.discover(this.deps.loadConfig(plan.args))
+    const config = this.deps.loadConfig(plan.args)
+    const descriptor = await this.deps.discover(config)
     if (!descriptor.ok) return descriptor.error.code === 'unavailable'
       ? this.finishAside(plan, 'jamat-unavailable') : this.finishFailure(plan, descriptor.error)
     if (!RemoteControlCapabilities.of(descriptor.value).includes('tabs.openCommit'))
@@ -833,7 +841,7 @@ export class AppClientCli {
       const opened = JsonShape.record(response.value)
       if (opened?.kind !== 'commit-opened' || typeof opened.commitSessionId !== 'string')
         return this.finishFailure(plan, { code: 'operation-failed', detail: 'The commit opened without a trackable UUID; its outcome is unknown' })
-      return this.readCommitStatus(client, opened.commitSessionId, true, plan.timeoutMs)
+      return this.readCommitStatus(client, opened.commitSessionId, true, plan.timeoutMs, config)
     }
     this.write(response)
     return AppClientCli.exitCode(response.ok ? null : response.error.code)
@@ -845,9 +853,52 @@ export class AppClientCli {
     return args.integer('--timeout-ms', 1, CommitStatusReader.timeoutMillisecondsConst) ?? CommitStatusReader.timeoutMillisecondsConst
   }
 
-  private async readCommitStatus(client: AppClientCliClientPort, id: string, wait: boolean, timeoutMs: number): Promise<number> {
+  private static closedCancel(value: unknown, id: string): boolean {
+    return CommitStatusReader.valid(value, id) && value.state === 'cancelled' && value.closed
+  }
+
+  /**
+   * The cancel answer can carry the review as it was before its window closed, and the closed,
+   * cancelled state follows a moment later. Read the same review until it closes, within a bound,
+   * instead of reporting a cancel that did happen as failed.
+   */
+  private async confirmCancel(client: AppClientCliClientPort, plan: Extract<AppClientCliPlan, { kind: 'request' }>,
+    answer: RemoteControlResponse, id: string): Promise<number> {
     const reader = new CommitStatusReader({
       read: signal => client.execute(this.request('tabs.commitStatus', { commitSessionId: id }, this.deps.requestId()), signal),
+      now: this.deps.now, pause: this.deps.pause,
+    })
+    let status: RemoteControlResponse
+    try {
+      status = await reader.read(id, true, AppClientCli.cancelCloseWaitMsConst, this.deps.signal)
+    } catch (error) {
+      return this.finishFailure(plan, { code: 'operation-failed',
+        detail: `The review did not close as cancelled within ${AppClientCli.cancelCloseWaitMsConst / 1_000} s; check it with commit status before reopening: ${ErrorText.of(error)}` })
+    }
+    if (!status.ok) return this.finishFailure(plan, status.error)
+    if (AppClientCli.closedCancel(status.value, id)) {
+      this.write({ ...answer, value: status.value })
+      return 0
+    }
+    const state = CommitStatusReader.valid(status.value, id) ? status.value.state : 'unknown'
+    return this.finishFailure(plan, { code: 'operation-failed',
+      detail: `The review closed as ${state}, not cancelled; check it with commit status before reopening` })
+  }
+
+  /**
+   * A restarted client listens on a new port with a new token, so an `unavailable` answer discovers it
+   * again; the review it restores keeps its UUID, and the next read reaches it there.
+   */
+  private async readCommitStatus(client: AppClientCliClientPort, id: string, wait: boolean, timeoutMs: number, config: AppConfig): Promise<number> {
+    let current = client
+    const reader = new CommitStatusReader({
+      read: async (signal) => {
+        const answer = await current.execute(this.request('tabs.commitStatus', { commitSessionId: id }, this.deps.requestId()), signal)
+        if (answer.ok || answer.error.code !== 'unavailable') return answer
+        const descriptor = await this.deps.discover(config)
+        if (descriptor.ok) current = this.deps.client(descriptor.value)
+        return answer
+      },
       now: this.deps.now, pause: this.deps.pause,
     })
     const response = await reader.read(id, wait, timeoutMs, this.deps.signal)
@@ -1443,6 +1494,9 @@ export class AppClientCli {
   ]
 
   private static readonly deliverMarginMillisecondsConst = 5_000
+
+  /** How long `commit cancel` reads a review it cancelled before it reports that the window did not close. */
+  private static readonly cancelCloseWaitMsConst = 10_000
 
   private static readonly exitCodesConst: Record<RemoteControlErrorCode, number> = {
     'invalid-request': 2,

@@ -53,15 +53,25 @@ describe('lib-orchestrator/git/gitMergeManager', () => {
       .toEqual({ ok: true, value: { branch: null } })
   })
 
-  it('stages only selected literal paths and commits them under the given message', async () => {
-    const it_ = managerOf({}, {})
+  it('commits selected literal paths and stages nothing but the new ones among them', async () => {
+    const it_ = managerOf({ stdout: 'new.txt\0other.txt\0' }, {}, {})
 
-    expect(await it_.manager.commitAll(worktreeConst, 'Selected work', [join(worktreeConst, 'a[1].txt')]))
+    expect(await it_.manager.commitAll(worktreeConst, 'Selected work', [join(worktreeConst, 'a[1].txt'), join(worktreeConst, 'new.txt')]))
       .toEqual({ ok: true, value: undefined })
     expect(it_.runner.calls).toEqual([
-      ['add', '-A', '--', ':(literal)a[1].txt'],
-      ['commit', '--only', '--message', 'Selected work', '--', ':(literal)a[1].txt'],
+      ['ls-files', '-z', '--others', '--exclude-standard'],
+      ['add', '--intent-to-add', '--', ':(literal)new.txt'],
+      ['commit', '--only', '--message', 'Selected work', '--', ':(literal)a[1].txt', ':(literal)new.txt'],
     ])
+  })
+
+  /** A refused commit leaves the index as it was: the announcement of a new file is taken back. */
+  it('takes back the announcement of a new file when the project refuses the commit', async () => {
+    const it_ = managerOf({ stdout: 'new.txt\0' }, {}, { code: 1, stderr: 'pre-commit hook failed' }, {})
+    const answer = await it_.manager.commitAll(worktreeConst, 'Selected work', [join(worktreeConst, 'new.txt')])
+
+    expect(answer.ok === false && answer.detail).toContain('pre-commit hook failed')
+    expect(it_.runner.calls.at(-1)).toEqual(['rm', '--cached', '--quiet', '--ignore-unmatch', '--', ':(literal)new.txt'])
   })
 
   /** The caller asked for the work to be committed, and over an empty tree it already is. */
@@ -85,7 +95,7 @@ describe('lib-orchestrator/git/gitMergeManager', () => {
     const it_ = managerOf({ code: 128, stderr: 'fatal: not a git repository' })
 
     expect((await it_.manager.commitAll(worktreeConst, 'Selected work', [join(worktreeConst, 'a[1].txt')])).ok).toBe(false)
-    expect(it_.runner.calls).toEqual([['add', '-A', '--', ':(literal)a[1].txt']])
+    expect(it_.runner.calls).toEqual([['ls-files', '-z', '--others', '--exclude-standard']])
   })
 
   it('reports a real failure of that command rather than calling it detached', async () => {

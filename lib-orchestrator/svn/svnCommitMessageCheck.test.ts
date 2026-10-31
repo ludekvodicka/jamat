@@ -69,4 +69,16 @@ describe('SvnCommitMessageCheck', () => {
     expect(SvnCommitMessageCheck.withPrefix('[shared_backend] Fix', '[applications]')).toBe('[shared_backend] Fix')
     expect(SvnCommitMessageCheck.withPrefix(' ', '[applications]')).toBe(' ')
   })
+  // Mirabia 113: a field the person emptied refused the worker's proposal as a person's message (2026-10-30).
+  it('counts only a written field as a person message', () => {
+    expect(SvnCommitMessageCheck.personMessage('[Mirabia] Fix search', 'person-local')).toBe(true)
+    for (const message of ['', ' \n', '[Mirabia] ', '[Mirabia]'])
+      expect(SvnCommitMessageCheck.personMessage(message, 'person-local')).toBe(false)
+    expect(SvnCommitMessageCheck.personMessage('[Mirabia] Fix search', 'agent-proposal')).toBe(false)
+  })
+  it('tells whether a message publishes under the expected prefix', () => {
+    expect(SvnCommitMessageCheck.prefixed('Fix the parser', '[applications_cvut]')).toBe(true)
+    expect(SvnCommitMessageCheck.prefixed('[applications_cvut] Fix the parser', '[applications_cvut]')).toBe(true)
+    expect(SvnCommitMessageCheck.prefixed('[worker-agent] Fix the parser', '[applications_cvut]')).toBe(false)
+  })
 })

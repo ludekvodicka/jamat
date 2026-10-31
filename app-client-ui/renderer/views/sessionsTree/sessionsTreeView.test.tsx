@@ -112,7 +112,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(menuTitles().slice(0, 3)).toEqual(['Session Appearance', 'Groups', 'Session properties…'])
     fireEvent.click(screen.getByRole('menuitem', { name: 'Groups' }))
     expect(screen.getAllByRole('menuitemcheckbox').map((item) => item.textContent?.replace('✓', '')))
-      .toEqual(['Pinned', 'Priority', 'None', 'Automation', 'Waiting', 'Completed', 'Blocked'])
+      .toEqual(['Pinned', 'Priority', 'None', 'Automation', 'Waiting', 'Completed', 'Blocked', 'Hidden when remote'])
     expect(screen.getByRole('menuitemcheckbox', { name: 'None' })).toHaveAttribute('aria-checked', 'true')
     fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Blocked' }))
     await waitFor(() => expect(screen.getByRole('region', { name: 'Blocked' }).querySelector('[data-session="none"]')).not.toBeNull())
@@ -149,7 +149,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     fireEvent.contextMenu(rowOf(container, 'one'))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Groups' }))
     expect(screen.getAllByRole('menuitemcheckbox').map((item) => item.textContent?.replace('✓', '')))
-      .toEqual(['Ship it', 'None', 'Kept'])
+      .toEqual(['Ship it', 'None', 'Kept', 'Hidden when remote'])
     expect(screen.getByRole('menuitemcheckbox', { name: 'Ship it' })).toHaveAttribute('aria-checked', 'true')
     fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Kept' }))
     await waitFor(() => expect(sections()).toEqual(['Sessions', 'Kept']))
@@ -174,6 +174,38 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect([...container.querySelectorAll('.jamat-sessions__stack > section')]
       .map((node) => node.getAttribute('aria-label')!)).toEqual(['Sessions'])
     expect(container.querySelector('section[aria-label="Sessions"] [data-session="one"]')).not.toBeNull()
+  })
+
+  it('draws a session marked Hidden when remote only under Remote connections while it is attached', async () => {
+    const { container, ports } = await mount(SessionsFixtures.mixed(), 'together',
+      remoteSnapshot([], [inboundConnection(['s-working'])]))
+    const own = container.querySelector<HTMLElement>('.jamat-sessions__default-group')!
+    const toggle = (): HTMLElement => {
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Groups' }))
+      return screen.getByRole('menuitemcheckbox', { name: 'Hidden when remote' })
+    }
+    expect(container.querySelectorAll('[data-session="s-working"]')).toHaveLength(2)
+
+    fireEvent.contextMenu(rowOf(own, 's-working'))
+    expect(toggle()).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(toggle())
+    await waitFor(() => expect(own.querySelector('[data-session="s-working"]')).toBeNull())
+    expect(container.querySelectorAll('[data-session="s-working"]')).toHaveLength(1)
+    expect(ports.hiddenWhenRemote).toEqual(['session:s-working'])
+
+    fireEvent.contextMenu(rowOf(container, 's-working'))
+    expect(toggle()).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(toggle())
+    await waitFor(() => expect(own.querySelector('[data-session="s-working"]')).not.toBeNull())
+    expect(ports.hiddenWhenRemote).toEqual([])
+  })
+
+  it('offers Hidden when remote on a session row only', async () => {
+    const { container } = await mount(SessionsFixtures.mixed())
+    showAll(container)
+    fireEvent.contextMenu(groupRowLabelled(container, 'AD-HOC'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Groups' }))
+    expect(screen.queryByRole('menuitemcheckbox', { name: 'Hidden when remote' })).toBeNull()
   })
 
   it('shows inherited selection and returns a session to its root group with None', async () => {
@@ -287,6 +319,17 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
 
     subscribeGroups(): () => void {
       return () => {}
+    }
+
+    hiddenWhenRemote: readonly string[] = []
+
+    loadHiddenWhenRemote(): Promise<IpcResult<readonly string[]>> {
+      return Promise.resolve({ ok: true, value: this.hiddenWhenRemote })
+    }
+
+    setHiddenWhenRemote(key: string, hidden: boolean): Promise<IpcResult<boolean>> {
+      this.hiddenWhenRemote = SessionsGroupsState.withHiddenWhenRemote(this.hiddenWhenRemote, key, hidden)
+      return Promise.resolve({ ok: true, value: true })
     }
     filtersAnswer: IpcResult<boolean> = { ok: true, value: true }
 
@@ -1785,6 +1828,24 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(onCloseTerminal).not.toHaveBeenCalled()
   })
 
+  // Worker-agent 032: the Finish answer waits for its first step, and Session actions opened only after it.
+  it('opens Session actions of an SVN worktree at once, before its Finish answers', async () => {
+    vi.spyOn(AppControl, 'sessionsDone').mockReturnValue(new Promise(() => {}))
+    const opened = vi.spyOn(AppControl, 'call').mockResolvedValue({ ok: true, value: { ok: true, value: {} } } as never)
+    const snapshot = SessionsFixtures.svnWorktrees()
+    snapshot.sessions = snapshot.sessions.map((session) => session.sessionId !== 's-svn' || session.worktree === undefined ? session : {
+      ...session, life: 'live', activity: 'waiting', outcome: undefined, endedAt: undefined, exitCode: undefined,
+      admits: ['newBeside', 'fork', 'restart', 'compact', 'finalize'],
+      worktree: { ...session.worktree, liveFinish: true },
+    })
+    const { container } = await mount(snapshot)
+    showAll(container)
+
+    fireEvent.click(actionNamed(container, 's-svn', 'Finish…'))
+
+    expect(opened).toHaveBeenCalledWith('sessionTasks.openWorkflow', { sessionId: 's-svn' })
+  })
+
   // UA1-J07-1: an application still running from the last validation of a kept worktree held Finish… silently.
   it('prepares a kept SVN worktree while a requested run still runs, and brings its Session actions forward', async () => {
     const sent = vi.spyOn(AppControl, 'sessionsDone').mockResolvedValue({ ok: true, value: { ok: true, value: {} } } as never)
@@ -1854,7 +1915,8 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     await waitFor(() => expect(onFinalizeAsk).toHaveBeenCalledOnce())
     await waitFor(() => expect(labelsOf(container, 's-svn')).toContain('Finish…'))
     expect(sent).toHaveBeenCalledOnce()
-    expect(opened).not.toHaveBeenCalled()
+    // Session actions open with the press, before the refusal is known; the dialog then asks over them.
+    expect(opened).toHaveBeenCalledWith('sessionTasks.openWorkflow', { sessionId: 's-svn' })
     expect(container.textContent).not.toContain('No agent start was recorded')
   })
 

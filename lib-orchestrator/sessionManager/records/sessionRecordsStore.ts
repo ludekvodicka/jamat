@@ -859,7 +859,15 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       return 'worktree cwdSubpath must be a relative path of named segments joined by /'
     if (value.setupScope !== undefined && value.setupScope !== 'project' && value.setupScope !== 'members')
       return 'worktree setupScope must be project or members'
+    if (value.setupVariables !== undefined && !SessionRecordsStore.validVariables(value.setupVariables))
+      return 'worktree setupVariables must map variable names to strings'
     return SessionRecordsStore.callerProblem(value.caller)
+  }
+
+  /** Spread into every launch inside the worktree, so a name can never be one of Jamat's own. */
+  private static validVariables(value: unknown): boolean {
+    return JsonShape.isRecord(value) && Object.entries(value).every(([name, text]) => typeof text === 'string'
+      && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && !name.toUpperCase().startsWith('JAMAT'))
   }
 
   private static validSetupBaseline(value: unknown): boolean {

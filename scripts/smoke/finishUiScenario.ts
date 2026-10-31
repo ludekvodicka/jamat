@@ -250,6 +250,7 @@ export class FinishUiScenario {
       await capture(remote, 'remote-review')
       console.log('[smoke:ui] source and paired remote first automatic review is current; waiting words, tone and actions match')
       assert.equal((await run('svn', owner, ['log', '--xml', '-r', '1:HEAD'])).match(/<logentry/g)?.length, 1, 'Preparation waits without publication')
+      await ui.evaluate(`Array.from(document.querySelectorAll('.worktree-validation details')).find(e => e.getBoundingClientRect().height > 0).open = true`)
       await ui.evaluate(`Array.from(document.querySelectorAll('input[aria-label="Application command"]')).find(e => e.getBoundingClientRect().height > 0).focus()`)
       await ui.call('Input.insertText', { text: 'node validate.cjs' })
       await click(ui, '.worktree-validation button', 'Run in worktree')

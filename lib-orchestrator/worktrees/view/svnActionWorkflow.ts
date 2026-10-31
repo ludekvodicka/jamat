@@ -600,7 +600,7 @@ export class SvnActionWorkflow {
         ? 'Main copy update left for later. It still waits on this step and in the session menu of the sessions tree: Update main copy.'
         : 'Main copy update left for later. It still waits on this step.' },
     ]
-    const confirm = WorktreeWords.discardConfirm(action.evidence, undefined, false, [], mounts)
+    const confirm = WorktreeWords.discardConfirm(action.evidence, undefined, [], mounts)
     if (action.stage === 'changes') return [
       { id: 'finish-again', label: 'Commit & merge', primary: true, place: 'step', requiresCommit: true },
       { id: 'discard', label: 'Discard', primary: false, place: 'step', confirm },

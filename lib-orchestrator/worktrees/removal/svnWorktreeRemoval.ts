@@ -1,15 +1,12 @@
-import { lstat, mkdir, readdir, readFile, readlink, realpath } from 'node:fs/promises'
+import { lstat, readdir, readlink, realpath } from 'node:fs/promises'
 import { dirname, join, relative, resolve } from 'node:path'
 
 import { ErrnoCode } from '../../shared/errnoCode'
 import { ErrorText } from '../../shared/errorText'
 import { PathCompare } from '../../shared/pathCompare'
-import { AtomicJsonFile } from '../../shared/atomicJsonFile'
 import { SessionWorkingDirectory } from '../../sessionManager/sessionWorkingDirectory'
 import type { WorktreeRemovalPermit } from './worktreeRemovalPermit'
-import { WorktreeContentCopy } from './worktreeContentCopy'
 import { type WorktreeHolderLookup, WorktreeFileHolders } from './worktreeFileHolders'
-import type { WorktreeResultsStore } from '../results/worktreeResultsStore'
 import type { TreeRemovalHeld, TreeRemovalProgress } from '../../shared/treeRemoval'
 import type { SvnWorktreeLocation } from '../../svn/svn.types'
 import type { SvnWorktreeManager } from '../../svn/svnWorktreeManager'
@@ -33,7 +30,6 @@ export interface SvnWorktreeRemovalDeps {
   steps: Pick<SessionSteps, 'at'>
   now?: () => number
   skillRoots: readonly string[]
-  results: Pick<WorktreeResultsStore, 'savedDirectoryOf'>
   /** Names the programs holding a file when Windows refuses a rename or a delete; Restart Manager by default. */
   holders?: Pick<WorktreeFileHolders, 'below'>
 }
@@ -52,11 +48,8 @@ export interface SvnWorktreeRemoved {
  * keeps its directory.
  */
 export class SvnWorktreeRemoval {
-  private static readonly heldCodesConst = ['EPERM', 'EBUSY', 'EACCES']
   private readonly skillRoots: readonly string[]
-  private readonly results: Pick<WorktreeResultsStore, 'savedDirectoryOf'>
   private readonly holders: Pick<WorktreeFileHolders, 'below'>
-  private readonly copies = new WorktreeContentCopy()
   private readonly records: SessionRecordsStore
   private readonly svn: SvnRemovalPort
   private readonly onQueue: <T>(work: () => Promise<T>) => Promise<T>
@@ -66,7 +59,6 @@ export class SvnWorktreeRemoval {
 
   constructor(deps: SvnWorktreeRemovalDeps) {
     this.skillRoots = deps.skillRoots
-    this.results = deps.results
     this.holders = deps.holders ?? new WorktreeFileHolders()
     this.records = deps.records
     this.svn = deps.svn
@@ -77,16 +69,11 @@ export class SvnWorktreeRemoval {
   }
 
   /** `revisions` (`<repository URL>:r<N>`) join those of the last outcome in the tombstone. */
-  async remove(sessionId: string, location: SvnWorktreeLocation, revisions: readonly string[], permit: WorktreeRemovalPermit, actionId: string): Promise<SvnWorktreeRemoved> {
+  async remove(sessionId: string, location: SvnWorktreeLocation, revisions: readonly string[], permit: WorktreeRemovalPermit): Promise<SvnWorktreeRemoved> {
     const path = location.worktreePath
     this.steps.at(sessionId, { kind: 'removal', phase: 'queue', path })
     let blocked: string[] = []
-    let copyLines: string[] = []
     let resumed: { resumed?: true } = {}
-    let saved = ''
-    // Set once the worktree lies aside, so a refusal from there on says where it lies and what is saved.
-    let aside: { root: string; stage: 'copy' | 'remainder' } | null = null
-    let failure: unknown = null
     const renamed = await this.onQueue(async () => {
       const now = this.records.get(sessionId)
       if (!now || now.life === 'live' || now.life === 'starting' || now.pendingOperationId !== undefined) return null
@@ -99,76 +86,36 @@ export class SvnWorktreeRemoval {
         const source = await this.svn.removalSource(location)
         if (!source.ok) { blocked = [source.detail]; return null }
         location = { ...location, directoryId: location.directoryId ?? source.value.directoryId }
-        const identity = location.directoryId ?? location.worktreePath
-        // Without an aside no copy of this rename exists yet, so the copy belongs to the action that renames.
-        const preservationActionId = source.value.aside
-          ? now.worktree?.preservationActionId ?? await this.legacyPreservation(identity, actionId, source.value.path) ?? actionId
-          : actionId
-        if (now.worktree?.preservationActionId !== preservationActionId || now.worktree.directoryId !== location.directoryId) {
+        if (now.worktree?.directoryId !== location.directoryId) {
           if (!await this.records.update(sessionId, (current) => current.worktree === undefined ? null
-            : { ...current, worktree: { ...current.worktree, directoryId: location.directoryId, preservationActionId } }))
+            : { ...current, worktree: { ...current.worktree, directoryId: location.directoryId } }))
             throw new Error('The worktree changed before its removal identity could be saved')
         }
-        let root = source.value.path
+        // An aside of this identity passed its permit when it was moved there.
         if (source.value.aside) resumed = { resumed: true }
-        const destination = dirname(this.results.savedDirectoryOf(preservationActionId))
-        saved = destination
-        const intentFile = join(destination, 'removal-copy.json')
-        let intent: { identity: string; stage: 'copy' | 'purge'; attempts: number } | null = await readFile(intentFile, 'utf8')
-          .then((text) => JSON.parse(text)).catch((error: unknown) => { if (ErrnoCode.of(error) === 'ENOENT') return null; throw error })
-        if (intent !== null && (intent.identity !== identity || !['copy', 'purge'].includes(intent.stage)
-          || !Number.isSafeInteger(intent.attempts) || intent.attempts < 0)) throw new Error('Invalid removal copy intent; keep the worktree for inspection')
-        const remainder = source.value.aside && intent?.stage !== 'copy'
-        const status = remainder
-          ? { ok: true as const, value: [{ path: '.', kind: 'clean' as const, conflict: false, ignored: false }] }
-          : await this.svn.removalStatus(root)
-        if (!status.ok) { blocked = [status.detail]; return null }
-        if (permit.kind === 'clean') {
+        else if (permit.kind === 'clean') {
+          const status = await this.svn.removalStatus(source.value.path)
+          if (!status.ok) { blocked = [status.detail]; return null }
           // A reverted setup path must still be clean; an allowlist is no proof of its latest bytes.
           blocked = status.value.filter((row) => !row.ignored
-            && !(row.unversioned && WorktreeContentCopy.waste(row.path))
+            && !(row.unversioned && SvnWorktreeRemoval.waste(row.path))
             && (row.conflict || row.kind !== 'clean' && row.kind !== 'external'))
             .map((row) => `changed after the check: ${row.path}`)
           if (blocked.length > 0) return null
         }
         else if (permit.kind !== 'discard') throw new Error(`Unknown removal permit: ${JSON.stringify(permit satisfies never)}`)
-        if (!source.value.aside) {
-          intent = { identity, stage: 'copy', attempts: 0 }
-          await mkdir(destination, { recursive: true })
-          await AtomicJsonFile.writeAsync(intentFile, intent)
-        }
         this.steps.at(sessionId, { kind: 'removal', phase: 'rename', path, ...resumed })
-        const renamed = await this.svn.renameAside(location)
-        if (!renamed.ok || renamed.value !== 'renamed') return renamed
-        const moved = await this.svn.removalSource(location)
-        if (!moved.ok) { blocked = [moved.detail]; return null }
-        root = moved.value.path
-        aside = { root, stage: remainder ? 'remainder' : 'copy' }
-        if (intent?.stage === 'copy') {
-          intent = { ...intent, attempts: intent.attempts + 1 }
-          await AtomicJsonFile.writeAsync(intentFile, intent)
-        }
-        this.steps.at(sessionId, { kind: 'removal', phase: 'copy', path, ...resumed })
-        const copied = await this.copies.copy(root, status.value, permit, destination, remainder, identity)
-        const latest = remainder ? status : await this.svn.removalStatus(root)
-        if (!latest.ok) { blocked = [latest.detail]; return null }
-        if (JSON.stringify(latest.value) !== JSON.stringify(status.value)) { blocked = ['changed after the copy: svn status']; return null }
-        await this.copies.verify(root, copied, permit)
-        await AtomicJsonFile.writeAsync(intentFile, { identity, stage: 'purge', attempts: intent?.attempts ?? 0 })
-        if (copied.ignored > 0 || copied.discarded > 0 || copied.bundle || copied.links > 0)
-          copyLines = [`COPIED: ${copied.ignored} ignored files, ${copied.discarded} discarded files${copied.bundle ? ', checkpoint bundle' : ''}${copied.links > 0 ? `, ${copied.links} link descriptions in copy-manifests` : ''} to ${destination} (copy ${copied.attempt})`]
-        return renamed
-      } catch (error) { blocked = [ErrorText.of(error)]; failure = error; return null }
+        return await this.svn.renameAside(location)
+      } catch (error) { blocked = [ErrorText.of(error)]; return null }
     })
-    if (blocked.length > 0)
-      return { state: 'kept', blocked: true, lines: [...blocked.map((reason) => `KEPT: ${reason}`), ...await this.asideLines(aside, saved, failure, blocked)] }
+    if (blocked.length > 0) return { state: 'kept', blocked: true, lines: blocked.map((reason) => `KEPT: ${reason}`) }
     if (renamed === null) return { state: 'kept', lines: [`KEPT: session ${sessionId} runs again, so ${path} stays`] }
-    if (!renamed.ok) return { state: 'kept', lines: [...copyLines, `ERROR: ${renamed.detail}; the worktree is kept`] }
+    if (!renamed.ok) return { state: 'kept', lines: [`ERROR: ${renamed.detail}; the worktree is kept`] }
     if (typeof renamed.value === 'object')
-      return { state: 'in-use', lines: [...copyLines, `REMOVAL BLOCKED (${renamed.value.blocked}): ${renamed.value.path}. ${renamed.value.detail}`,
+      return { state: 'in-use', lines: [`REMOVAL BLOCKED (${renamed.value.blocked}): ${renamed.value.path}. ${renamed.value.detail}`,
         ...SvnWorktreeRemoval.renameHeldLines(await this.holders.below(renamed.value.path), renamed.value.path)] }
     else if (renamed.value === 'in-use')
-      return { state: 'in-use', lines: [...copyLines, `IN USE: ${path} (a process has its working directory or an open file there; the worktree is kept)`] }
+      return { state: 'in-use', lines: [`IN USE: ${path} (a process has its working directory or an open file there; the worktree is kept)`] }
     else if (renamed.value !== 'renamed' && renamed.value !== 'absent')
       throw new Error(`Unknown rename result: ${JSON.stringify(renamed.value satisfies never)}`)
     const deleting = `${path}.deleting`
@@ -202,8 +149,8 @@ export class SvnWorktreeRemoval {
       const lookup = last === null ? null : await lookups.get(last.path) ?? null
       return {
         state: 'undeleted',
-        lines: [...copyLines, `ERROR: ${deleting} is left half deleted${purged.ok ? '' : ` (${purged.detail})`}.`,
-          ...SvnWorktreeRemoval.purgeHeldLines(last, lookup, deleting, saved)],
+        lines: [`ERROR: ${deleting} is left half deleted${purged.ok ? '' : ` (${purged.detail})`}.`,
+          ...SvnWorktreeRemoval.purgeHeldLines(last, lookup, deleting)],
       }
     }
     const recreated = await SvnWorktreeRemoval.recreatedLines(path)
@@ -235,30 +182,17 @@ export class SvnWorktreeRemoval {
       return next
     }))
     this.changed()
-    return { state: 'removed', lines: [...copyLines, '   worktree removed', ...recreated] }
+    return { state: 'removed', lines: ['   worktree removed', ...recreated] }
   }
 
-  /** The lines a durable result keeps of a removal: what it saved, and an original path written again. */
+  /** Dependency and build output that a clean removal deletes with the worktree. */
+  static waste(path: string): boolean {
+    return path.split(/[\\/]/).some((part) => ['node_modules', '.next', '.next-build', '.turbo', '.vite', '.cache'].includes(part))
+  }
+
+  /** The lines a durable result keeps of a removal: an original path written again. */
   static resultLinesOf(lines: readonly string[]): string[] {
-    return lines.filter((line) => line.startsWith('COPIED:') || line.startsWith('RECREATED:'))
-  }
-
-  /**
-   * After the rename a refusal says where the worktree lies and what its saved copy holds, names the
-   * program holding a file the copy could not read, and ends with the button that resumes (UA1-J11-4).
-   */
-  private async asideLines(aside: { root: string; stage: 'copy' | 'remainder' } | null, saved: string, failure: unknown, reasons: readonly string[]): Promise<string[]> {
-    if (aside === null) return []
-    const refused = (failure as { path?: unknown } | null)?.path
-    const code = ErrnoCode.of(failure)
-    const heldLines = typeof refused === 'string' && code !== null && SvnWorktreeRemoval.heldCodesConst.includes(code) && PathCompare.isInside(aside.root, refused)
-      ? await this.holders.below(refused).then((lookup) => lookup.kind === 'found' ? WorktreeFileHolders.linesOf(lookup, aside.root) : [])
-      : []
-    let state: string
-    if (aside.stage === 'copy') state = `The worktree now lies at ${aside.root}; nothing of it was deleted, and its saved copy in ${saved} is incomplete.`
-    else if (aside.stage === 'remainder') state = `The partly deleted worktree lies at ${aside.root}; nothing more of it was deleted.`
-    else throw new Error(`Unknown removal stage: ${JSON.stringify(aside.stage satisfies never)}`)
-    return [...heldLines, reasons.some((reason) => reason.includes('press Try again')) ? state : `${state} Remove the cause, then press Try again.`]
+    return lines.filter((line) => line.startsWith('RECREATED:'))
   }
 
   private static renameHeldLines(lookup: WorktreeHolderLookup, worktree: string): string[] {
@@ -273,15 +207,14 @@ export class SvnWorktreeRemoval {
     else throw new Error(`Unknown holder lookup: ${JSON.stringify(kind satisfies never)}`)
   }
 
-  private static purgeHeldLines(held: TreeRemovalHeld | null, lookup: WorktreeHolderLookup | null, deleting: string, saved: string): string[] {
-    const retained = `The verified saved copy in ${saved} is retained.`
-    if (held === null || lookup === null) return [`Close the programs holding files there, then press Try again. ${retained}`]
+  private static purgeHeldLines(held: TreeRemovalHeld | null, lookup: WorktreeHolderLookup | null, deleting: string): string[] {
+    if (held === null || lookup === null) return ['Close the programs holding files there, then press Try again.']
     const file = WorktreeFileHolders.nameOf(held.path, deleting)
     const kind = lookup.kind
-    if (kind === 'found') return [...WorktreeFileHolders.linesOf(lookup, deleting), `Close the programs named above, then press Try again. ${retained}`]
-    else if (kind === 'none') return [`HELD: ${file} (${held.code}); Windows names no program holding it.`, `Close the program using it, then press Try again. ${retained}`]
+    if (kind === 'found') return [...WorktreeFileHolders.linesOf(lookup, deleting), 'Close the programs named above, then press Try again.']
+    else if (kind === 'none') return [`HELD: ${file} (${held.code}); Windows names no program holding it.`, 'Close the program using it, then press Try again.']
     else if (kind === 'unavailable')
-      return [`HELD: ${file} (${held.code}); Jamat could not name the program (${lookup.reason}).`, `Close the program using it, then press Try again. ${retained}`]
+      return [`HELD: ${file} (${held.code}); Jamat could not name the program (${lookup.reason}).`, 'Close the program using it, then press Try again.']
     else throw new Error(`Unknown holder lookup: ${JSON.stringify(kind satisfies never)}`)
   }
 
@@ -300,27 +233,6 @@ export class SvnWorktreeRemoval {
     }
     return [`RECREATED: the original path was created again after removal: ${path} (${what}); Jamat left it in place. `
       + 'Find the program that writes there, then move or delete that folder yourself.']
-  }
-
-  private async legacyPreservation(identity: string, actionId: string, aside: string): Promise<string | null> {
-    const root = dirname(dirname(this.results.savedDirectoryOf(actionId)))
-    const entries = await readdir(root, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === 'ENOENT') return []
-      throw error
-    })
-    const candidates: string[] = []
-    for (const entry of entries) {
-      if (!entry.isDirectory() || !/^[A-Za-z0-9_-]{1,128}$/.test(entry.name)) continue
-      const saved = await readFile(join(root, entry.name, 'removal-copy.json'), 'utf8').catch((error: NodeJS.ErrnoException) => {
-        if (error.code === 'ENOENT') return null
-        throw error
-      })
-      if (saved !== null && JSON.parse(saved).identity === identity) candidates.push(entry.name)
-    }
-    if (candidates.length > 1)
-      throw new Error(`Several preservation attempts name ${aside}: ${candidates.map((name) => join(root, name, 'removal-copy.json')).join(', ')}. `
-        + 'Their saved copies stay for inspection. Copy what you need from the aside, delete it, then press Try again.')
-    return candidates[0] ?? null
   }
 
   private async linksInto(worktree: string): Promise<string[]> {

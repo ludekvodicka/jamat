@@ -26,6 +26,7 @@ function call(origin, path, method, headers, body = '', localAddress = '127.0.0.
     const url = new URL(origin)
     const req = request({ hostname: url.hostname, port: url.port, path, method, localAddress, agent: false,
       headers: { Host: new URL(publicUrl).host, ...headers } }, response => {
+      assert.doesNotMatch(response.headers['content-type'] ?? '', /text\/html/i)
       let text = ''
       response.setEncoding('utf8')
       response.on('data', chunk => { text += chunk })
@@ -48,20 +49,21 @@ async function setup(t, host) {
     { id: 'first', label: 'First <PC>', mac: '02:11:22:33:44:55', launcher: { url: launcherUrl, key } },
     { id: 'wake-only', label: 'Wake only', mac: '02:11:22:33:44:56' },
   ] }))
-  const server = createWolServer(config, undefined)
+  const server = createWolServer(config, { apiKey: '0'.repeat(64) })
   const webUrl = await listen(server, t, host)
   const mint = async () => {
-    const response = await call(webUrl, '/setup/first', 'POST', { Origin: publicUrl })
+    const response = await call(webUrl, '/api/v1/computers/first/invitation', 'POST', { Authorization: `Bearer ${'0'.repeat(64)}` })
     assert.equal(response.status, 200)
     assert.equal(response.headers['cache-control'], 'no-store')
     assert.equal(response.headers.location, undefined)
-    const match = response.text.match(/<textarea[^>]*>(http:\/\/127\.0\.0\.1:9009\/#autolauncher=([0-9a-f]{64}))<\/textarea>/)
-    assert.ok(match, 'The page must contain a copyable opaque invitation URL')
+    assert.equal(response.headers['content-type'], 'application/json')
+    const invitation = JSON.parse(response.text)
+    const match = invitation.invitationUrl.match(/^http:\/\/127\.0\.0\.1:9009\/#autolauncher=([0-9a-f]{64})$/)
+    assert.ok(match, 'The API must return an opaque invitation URL')
     assert.ok(!response.text.includes(key) && !response.text.includes(launcherUrl))
-    assert.doesNotMatch(response.text, /"key"|"publicUrl"|<script/i)
-    assert.match(response.text, /First &lt;PC&gt;/)
-    assert.match(response.text, /5 minut/)
-    return match[2]
+    assert.deepEqual(Object.keys(invitation).sort(), ['expiresInSeconds', 'invitationUrl'])
+    assert.equal(invitation.expiresInSeconds, 300)
+    return match[1]
   }
   /** @param {string} token @param {import('node:http').OutgoingHttpHeaders} [headers] @param {string} [localAddress] */
   const redeem = (token, headers = {}, localAddress) => call(webUrl, '/api/launcher-pair', 'POST',
@@ -74,7 +76,7 @@ test('an invitation returns only the fixed launcher once to the matching PC over
   const token = await mint()
   for (const path of ['/', '/api/system/health', '/api/system/version']) {
     const page = await call(webUrl, path, 'GET', {})
-    assert.equal(page.status, 200)
+    assert.equal(page.status, path === '/' ? 404 : 200)
     assert.ok(!page.text.includes(key) && !page.text.includes(token) && !page.text.includes(launcherUrl))
   }
   const response = await redeem(token)
@@ -100,6 +102,7 @@ test('wrong source, token, expiry and replay deny identically without consuming 
   assert.equal(wrongSource.text, unknown.text)
   assert.equal((await redeem(token)).status, 200)
   assert.equal((await redeem(token)).text, unknown.text)
+  now += 10000
   const expiring = await mint()
   now += 5 * 60 * 1000
   const expired = await redeem(expiring)
@@ -111,8 +114,11 @@ test('wrong source, token, expiry and replay deny identically without consuming 
 })
 
 test('new invitations replace old ones and concurrent redeems succeed exactly once', async t => {
+  let now = Date.now()
+  t.mock.method(Date, 'now', () => now)
   const { mint, redeem } = await setup(t)
   const old = await mint()
+  now += 10000
   const fresh = await mint()
   assert.notEqual(old, fresh)
   assert.equal((await redeem(old)).status, 403)
@@ -127,15 +133,17 @@ test('IPv4-mapped socket addresses redeem the configured IPv4 launcher', async t
 })
 
 test('replacing one PC invitation leaves another PC invitation usable', async t => {
+  let now = Date.now()
+  t.mock.method(Date, 'now', () => now)
   const secondKey = 'cd'.repeat(32)
   const config = parseConfig(JSON.stringify({ publicUrl, broadcast: '127.0.0.1', computers: [
     { id: 'first', label: 'First PC', mac: '02:11:22:33:44:55', launcher: { url: 'http://127.0.0.1:3511', key } },
     { id: 'second', label: 'Second PC', mac: '02:11:22:33:44:56', launcher: { url: 'http://127.0.0.2:3511', key: secondKey } },
   ] }))
-  const webUrl = await listen(createWolServer(config, undefined), t)
+  const webUrl = await listen(createWolServer(config, { apiKey: '0'.repeat(64) }), t)
   /** @param {string} id */
   const mint = async id => {
-    const page = await call(webUrl, `/setup/${id}`, 'POST', { Origin: publicUrl })
+    const page = await call(webUrl, `/api/v1/computers/${id}/invitation`, 'POST', { Authorization: `Bearer ${'0'.repeat(64)}` })
     const match = page.text.match(/#autolauncher=([0-9a-f]{64})/)
     assert.equal(page.status, 200)
     assert.ok(match)
@@ -144,6 +152,7 @@ test('replacing one PC invitation leaves another PC invitation usable', async t 
   }
   const old = await mint('first')
   const other = await mint('second')
+  now += 10000
   await mint('first')
   const headers = { 'Content-Type': 'application/json' }
   assert.equal((await call(webUrl, '/api/launcher-pair', 'POST', headers, JSON.stringify({ token: old }))).status, 403)
@@ -152,19 +161,23 @@ test('replacing one PC invitation leaves another PC invitation usable', async t 
   assert.deepEqual(JSON.parse(response.text), { publicUrl: 'http://127.0.0.2:3511', key: secondKey, gatewayAddress: '127.0.0.1' })
 })
 
-test('only a same-origin empty native form can issue a fixed-target invitation', async t => {
+test('only a keyed empty API request can issue a fixed-target invitation', async t => {
   const { webUrl, mint, redeem } = await setup(t)
   const token = await mint()
-  for (const path of ['/setup/unknown', '/setup/wake-only', '/setup/first?target=other', '/setup/../setup/first'])
-    assert.equal((await call(webUrl, path, 'POST', { Origin: publicUrl })).status, 404)
-  assert.equal((await call(webUrl, '/setup/first', 'GET', { Origin: publicUrl })).status, 404)
-  for (const origin of ['', 'http://attacker.test'])
-    assert.equal((await call(webUrl, '/setup/first', 'POST', { Origin: origin })).status, 403)
-  assert.equal((await call(webUrl, '/setup/first', 'POST', {})).status, 403)
-  assert.equal((await call(webUrl, '/setup/first', 'POST', { Origin: publicUrl, Host: 'attacker.test' })).status, 421)
+  const authorization = { Authorization: `Bearer ${'0'.repeat(64)}` }
+  for (const [path, status] of [
+    ['/api/v1/computers/unknown/invitation', 404], ['/api/v1/computers/wake-only/invitation', 409],
+    ['/api/v1/computers/first/invitation?target=other', 404], ['/api/v1/../v1/computers/first/invitation', 404],
+  ]) assert.equal((await call(webUrl, String(path), 'POST', authorization)).status, status)
+  const path = '/api/v1/computers/first/invitation'
+  assert.equal((await call(webUrl, path, 'GET', authorization)).status, 405)
+  for (const origin of ['', publicUrl, 'http://attacker.test'])
+    assert.equal((await call(webUrl, path, 'POST', { ...authorization, Origin: origin })).status, 403)
+  assert.equal((await call(webUrl, path, 'POST', {})).status, 401)
+  assert.equal((await call(webUrl, path, 'POST', { ...authorization, Host: 'attacker.test' })).status, 421)
   for (const headers of [
     { 'Content-Length': '1' }, { 'Transfer-Encoding': 'chunked' }, { 'Content-Encoding': 'gzip' },
-  ]) assert.equal((await call(webUrl, '/setup/first', 'POST', { Origin: publicUrl, ...headers }, 'x')).status, 400)
+  ]) assert.equal((await call(webUrl, path, 'POST', { ...authorization, ...headers }, 'x')).status, 400)
   assert.equal((await redeem(token)).status, 200, 'Rejected mint requests must not invalidate the outstanding invitation')
 })
 

@@ -47,6 +47,8 @@ export interface WorktreeReviewSnapshot {
   acknowledged: CommitMessageFinding[]
   headMovedBy: number
   deletions?: string[]
+  /** Unversioned setup or check outputs the session never changed; the review leaves them in the worktree. */
+  setupOutputs?: string[]
 }
 
 export interface SvnStepJournalEntry {
@@ -99,8 +101,12 @@ export interface WorktreeLifecycle {
   retryFrom?: number
   review?: WorktreeReviewSnapshot
   approvedAt?: number
+  /**
+   * Since when a step waits for an idle worker without a wait for the person: publication, or the sync
+   * after the worker settled the conflicts Jamat handed it. A completed sync clears it.
+   */
   awaitingIdleAt?: number
-  /** Why the worker did not count as idle at the last look before publication. */
+  /** Why the worker did not count as idle at the last look of that step. */
   awaitingIdleReason?: string
   /** The `approvedAt` of the approval the person confirmed to publish under a busy worker. */
   busyConfirmedFor?: number

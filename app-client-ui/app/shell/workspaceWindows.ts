@@ -36,6 +36,8 @@ export interface WorkspaceWindowsDeps {
    * behind it throws transfer tokens away and a cancelled close restores the window and not those.
    */
   explicitlyClosing(windowId: string): void
+  /** A key pressed in a workspace window, or one taking the focus: the person is at work in Jamat. */
+  onPersonActive(): void
   report(message: string): void
 }
 
@@ -301,7 +303,14 @@ export class WorkspaceWindows {
       workspaceWindow = new WorkspaceWindow(this.context, windowId, {
         store: this.store,
         onWindowCreated: (window) => {
-          window.on('focus', () => { this.lastFocusedWindowId = windowId })
+          window.on('focus', () => {
+            this.lastFocusedWindowId = windowId
+            this.deps.onPersonActive()
+          })
+          // Main sees every key before the page does, the terminal's and the commit message's alike.
+          window.webContents.on('before-input-event', (_event, input) => {
+            if (input.type === 'keyDown') this.deps.onPersonActive()
+          })
           this.windowCreated(windowId, window.webContents)
         },
         onCloseRequested: (event) => this.windowCloseRequested(windowId, event),

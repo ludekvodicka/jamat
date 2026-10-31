@@ -33,7 +33,7 @@ describe('app-client-ui/app/sessions/finishAttention', () => {
     expect(shown).toEqual([])
 
     told.seen(snapshot([waiting('2 conflicts need you'), session('s2', { svnAction: action({ needs: 'the check tests failed', needsKind: 'check-failed' }) })]))
-    expect(shown).toEqual([{ sessionId: 's2', title: 'Finish waits: s2 title', body: 'the check tests failed' }])
+    expect(shown).toEqual([{ sessionId: 's2', key: 'needs:check-failed::the check tests failed', title: 'Finish waits: s2 title', body: 'the check tests failed' }])
   })
 
   it('shows the same wait once, not for a reason a settlement rewrote, and again for a new wait after Check again', () => {
@@ -42,10 +42,14 @@ describe('app-client-ui/app/sessions/finishAttention', () => {
     told.seen(snapshot([waiting('2 conflicts need you')]))
     told.seen(snapshot([waiting('2 conflicts need you')]))
     told.seen(snapshot([waiting('2 conflicts: you fixed 1, 1 needs you')]))
-    expect(shown).toEqual([{ sessionId: 's1', title: 'Finish waits: s1 title', body: '2 conflicts need you' }])
+    expect(shown).toEqual([{ sessionId: 's1', key: 'needs:conflict:a1:1:fixing', title: 'Finish waits: s1 title', body: '2 conflicts need you' }])
+    expect(told.waits('s1', 'needs:conflict:a1:1:fixing')).toBe(true)
 
     told.seen(snapshot([waiting('1 conflict needs you', '1:fixing#2')]))
     expect(shown).toHaveLength(2)
+    expect(told.waits('s1', 'needs:conflict:a1:1:fixing')).toBe(false)
+    told.seen(snapshot([]))
+    expect(told.waits('s1', 'needs:conflict:a1:1:fixing#2')).toBe(false)
   })
 
   it('says when the merger waits for an answer, from the activity of its run', () => {
@@ -56,7 +60,7 @@ describe('app-client-ui/app/sessions/finishAttention', () => {
     ]
     told.seen(snapshot(merging('working')))
     told.seen(snapshot(merging('waiting')))
-    expect(shown).toEqual([{ sessionId: 's1', title: 'The merger of s1 title waits for you', body: 'It asks for an answer in its tab.' }])
+    expect(shown).toEqual([{ sessionId: 's1', key: 'merger:m1', title: 'The merger of s1 title waits for you', body: 'It asks for an answer in its tab.' }])
     told.seen(snapshot(merging('working')))
     told.seen(snapshot(merging('waiting')))
     expect(shown).toHaveLength(2)
@@ -69,7 +73,7 @@ describe('app-client-ui/app/sessions/finishAttention', () => {
       wait: { kind: 'waiting-for-review' as const, at: 1234, reason: 'Open Session actions' }, summary: 'Waiting for review' }
     told.seen(snapshot([session('s1', { worktreeView: view })]))
     told.seen(snapshot([session('s1', { worktreeView: { ...view, version: 8 } })]))
-    expect(shown).toEqual([{ sessionId: 's1', title: 'Finish waits: s1 title', body: 'Open Session actions' }])
+    expect(shown).toEqual([{ sessionId: 's1', key: 'lifecycle:waiting-for-review:1234', title: 'Finish waits: s1 title', body: 'Open Session actions' }])
   })
 
   it('tells nothing for an UPDATE of a main copy or a running action', () => {

@@ -43,6 +43,7 @@ export class SessionsGroupsState {
     { id: 'blocked', title: 'Blocked' },
   ]
   static readonly maxGroupsConst = SessionGroups.maxGroupsConst
+  private static readonly sessionKeyPrefixConst = 'session:'
 
   /**
    * What the Groups submenu calls a section. It is the title everywhere but `none`, where the
@@ -175,7 +176,7 @@ export class SessionsGroupsState {
    * two programs, and a prefix that drifted would silently assign nothing.
    */
   static sessionKeyOf(target: TerminalTarget): string {
-    return `session:${TerminalTargetCodec.key(target)}`
+    return `${SessionsGroupsState.sessionKeyPrefixConst}${TerminalTargetCodec.key(target)}`
   }
 
   /** What this key holds ON ITS OWN, as opposed to what it inherits. Null = nothing was said. */
@@ -197,5 +198,37 @@ export class SessionsGroupsState {
   ): readonly SessionGroupAssignment[] {
     const others = assignments.filter((assignment) => assignment.key !== key)
     return group === SessionGroups.noneConst ? others : [...others, { key, group }]
+  }
+
+  /**
+   * The session keys marked Hidden when remote. Session keys only: the mark is offered on a session
+   * row alone, so a project or root key here was written by something this build does not know.
+   */
+  static isHiddenWhenRemoteList(value: unknown): value is readonly string[] {
+    if (!Array.isArray(value)) return false
+    const keys = new Set<string>()
+    for (const key of value) {
+      if (!SessionsGroupsState.isSessionKey(key) || keys.has(key)) return false
+      keys.add(key)
+    }
+    return true
+  }
+
+  static isSessionKey(value: unknown): value is string {
+    return typeof value === 'string' && value.length <= 4096
+      && value.startsWith(SessionsGroupsState.sessionKeyPrefixConst)
+      && value.length > SessionsGroupsState.sessionKeyPrefixConst.length
+  }
+
+  static coerceHiddenWhenRemote(value: unknown, report: (message: string) => void): readonly string[] {
+    if (value === undefined) return []
+    if (SessionsGroupsState.isHiddenWhenRemoteList(value)) return structuredClone(value)
+    report('Stored Hidden when remote sessions are invalid; hiding none')
+    return []
+  }
+
+  static withHiddenWhenRemote(keys: readonly string[], key: string, hidden: boolean): readonly string[] {
+    const others = keys.filter((held) => held !== key)
+    return hidden ? [...others, key] : others
   }
 }

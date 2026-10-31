@@ -54,8 +54,12 @@ export class ProductGroup {
       if (group.kind === 'product') return { ok: true, ownerDir: current, setupScope: 'members' }
       else if (group.kind === 'collection') {
         const member = relative(current, target).split(sep)[0]
-        if (!member || member.startsWith('.') || member === 'components' || member === 'node_modules')
-          return { ok: false, detail: `${current} is a collection of independent projects; choose a member project for the worktree` }
+        if (!member || member.startsWith('.') || member === 'components' || member === 'node_modules') {
+          const marker = join(current, ProductGroup.markerConst)
+          return { ok: false, detail: `${current} is a collection of independent projects (${marker} is empty or {"kind":"collection"}), `
+            + 'so a worktree cannot start at its root or in its shared directories; choose a member project directory for the worktree, or ask the person to set '
+            + `{"kind":"product"} in ${marker} when all its projects share one worktree. Do not change ${marker} yourself` }
+        }
         return { ok: true, ownerDir: join(current, member), setupScope: 'project' }
       } else if (group.kind !== null) throw new Error(`Unknown group kind: ${group.kind satisfies never}`)
       if (dirname(current) === current) return { ok: true, ownerDir: null, setupScope: 'project' }

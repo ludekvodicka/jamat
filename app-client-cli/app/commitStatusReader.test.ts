@@ -62,7 +62,7 @@ describe('app-client-cli/app/commitStatusReader', () => {
     expect(f.reads).toBe(1)
     expect(f.time).toBe(0)
   })
-  it.each(['forbidden', 'not-found', 'protocol-mismatch', 'operation-failed'] as const)('stops on %s after a transient timeout', async (code) => {
+  it.each(['forbidden', 'not-found', 'protocol-mismatch', 'operation-failed', 'conflict'] as const)('stops on %s after a transient timeout', async (code) => {
     const f = new CommitStatusFixture()
     f.replies = [f.failure('timeout'), f.failure(code), f.answer('committed')]
     expect(await f.reader().read(CommitStatusFixture.id, true, 5_000))
@@ -118,16 +118,55 @@ describe('app-client-cli/app/commitStatusReader', () => {
     await expect(f.reader().read('another', true, 10)).rejects.toThrow('Invalid status')
     const answer = f.answer('committed')
     if (!answer.ok) throw new Error('Fixture failed')
-    for (const value of [null, { ...answer.value, revision: null }, { ...answer.value, state: 'unknown' }, { ...answer.value, vcs: 'hg' }])
+    for (const value of [null, { ...answer.value, revision: null }, { ...answer.value, state: 'unknown' }, { ...answer.value, vcs: 'hg' },
+      { ...answer.value, detail: 7 }, { ...answer.value, state: 'editing' }, { ...answer.value, state: 'failed', revision: null }])
       expect(CommitStatusReader.valid(value, CommitStatusFixture.id)).toBe(false)
   })
-  it('returns controller loss instead of continuing to poll', async () => {
+  it('reads through a short controller refusal and reports the actual outcome', async () => {
     const f = new CommitStatusFixture()
-    const error = { protocol: RemoteControlConst.protocol, requestId: null, operation: 'tabs.commitStatus' as const, operationId: null,
-      ok: false as const, error: { code: 'unavailable' as const, detail: 'Controller stopped' } }
-    const reader = new CommitStatusReader({ read: async () => error, now: () => f.time, pause: async () => { throw new Error('Unexpected wait') } })
-    expect(await reader.read(CommitStatusFixture.id, true, 10)).toMatchObject({ ok: false,
-      error: { code: 'unavailable', detail: expect.stringContaining(CommitStatusFixture.id), data: { commitSessionId: CommitStatusFixture.id } } })
+    f.replies = [f.answer('editing'), f.failure('unavailable'), f.failure('unavailable'), f.answer('editing'), f.failure('unavailable'), f.answer('committed')]
+    expect(await f.reader().read(CommitStatusFixture.id, true, 60_000)).toMatchObject({ ok: true, value: { state: 'committed', revision: '42' } })
+    expect(f.reads).toBe(6)
+  })
+  it('returns a lasting controller loss within its grace, naming the status command, so the caller can discover the client again', async () => {
+    const f = new CommitStatusFixture()
+    f.replies = [f.answer('editing'), f.failure('unavailable')]
+    const answer = await f.reader().read(CommitStatusFixture.id, true, 86_400_000)
+    expect(answer).toMatchObject({ ok: false, error: { code: 'unavailable', data: { commitSessionId: CommitStatusFixture.id },
+      detail: expect.stringContaining(`outcome is unknown; check it with commit status --commit-session-id ${CommitStatusFixture.id}`) } })
+    expect(f.time).toBe(CommitStatusReader.unavailableGraceMillisecondsConst + 1_000)
+    expect(f.reads).toBe(2 + CommitStatusReader.unavailableGraceMillisecondsConst / 1_000)
+  })
+  it('measures the grace from the first refusal after the controller last answered', async () => {
+    const f = new CommitStatusFixture()
+    const refusals = CommitStatusReader.unavailableGraceMillisecondsConst / 1_000 - 1
+    f.replies = [...Array(refusals).fill(f.failure('unavailable')), f.failure('timeout'),
+      ...Array(refusals).fill(f.failure('unavailable')), f.answer('committed')]
+    expect(await f.reader().read(CommitStatusFixture.id, true, 86_400_000)).toMatchObject({ ok: true, value: { state: 'committed' } })
+  })
+  it('returns controller loss at once when only one read was requested', async () => {
+    const f = new CommitStatusFixture()
+    f.replies = [f.failure('unavailable'), f.answer('committed')]
+    expect(await f.reader().read(CommitStatusFixture.id, false, 5_000)).toMatchObject({ ok: false, error: { code: 'unavailable' } })
+    expect(f.reads).toBe(1)
+  })
+  it.each([
+    ['a pane closed without a decision, or a review restored after a client restart', 'editing', true, null],
+    ['a cancellation its pane still shows', 'cancelled', false, null],
+    ['a commit with selected paths SVN did not report', 'committed', false, 'SVN published revisions, but did not report these selected paths: a.ts'],
+    ['a pending review with that notice', 'editing', false, 'SVN published revisions, but did not report these selected paths: a.ts'],
+  ] as const)('accepts %s', (_name, state, closed, detail) => {
+    const f = new CommitStatusFixture()
+    const answer = f.answer(state)
+    if (!answer.ok) throw new Error('Fixture failed')
+    expect(CommitStatusReader.valid({ ...answer.value, closed, detail }, CommitStatusFixture.id)).toBe(true)
+  })
+  it('keeps waiting on a restored review whose pane has not taken it again', async () => {
+    const f = new CommitStatusFixture()
+    f.closedStates.add('editing')
+    f.states = ['editing', 'editing', 'committed']
+    expect(await f.reader().read(CommitStatusFixture.id, true, 5_000)).toMatchObject({ ok: true, value: { state: 'committed' } })
+    expect(f.reads).toBe(3)
   })
   it.each(['read', 'pause'])('preserves the UUID after an interrupted %s', async (step) => {
     const f = new CommitStatusFixture()

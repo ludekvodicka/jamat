@@ -87,6 +87,32 @@ describe('source Finish review binding', () => {
 })
 
 
+it('tells separate repository fields by the rule Session actions draws them with', () => {
+  const f = fixture()
+  const body = f.section.rounds[0].steps[0].body as Record<string, unknown>
+  const row = (root: string) => ({ root, repository: 'svn://source', repositoryName: 'source', expectedPrefix: '[source]', paths: ['a'], message: '', source: 'unknown', acknowledged: [] })
+  expect(f.access.separateMessages(f.draft)).toBe(false)
+  body.repositories = [row('Q:/source')]
+  expect(f.access.separateMessages(f.draft)).toBe(false)
+  body.separateMessages = true
+  expect(f.access.separateMessages(f.draft)).toBe(true)
+  delete body.separateMessages
+  body.repositories = [row('Q:/source'), row('Q:/source/lib')]
+  expect(f.access.separateMessages(f.draft)).toBe(true)
+})
+
+// 13 Finish drafts stayed running after their sessions were removed (2026-10-30).
+it('calls a bound review abandoned only once its session is gone from reconciled sessions', () => {
+  const f = fixture()
+  f.snapshot.reconciled = false
+  expect(f.access.abandoned(f.draft)).toBe(false)
+  f.snapshot.sessions = []
+  expect(f.access.abandoned(f.draft)).toBe(false)
+  f.snapshot.reconciled = true
+  expect(f.access.abandoned(f.draft)).toBe(true)
+  expect(f.access.abandoned({ ...f.draft, workflow: undefined })).toBe(false)
+})
+
 it('finds the exact durable SVN receipt when the session was removed before the first review reread', () => {
   const f = fixture()
   const record = { actionId: 'finish', sessionId: 'session', worktreePath: 'Q:/source', at: 101,

@@ -68,6 +68,11 @@ export class ChildEnvironment {
     'CODEX_SESSION_ID',
     'CODEX_THREAD_ID',
     'CODEX_NETWORK_PROXY_ACTIVE',
+    'CODEX_CI',
+    'CODEX_TOOL_CALL_ID',
+    'CODEX_VERSION',
+    'CODEX_MANAGED_BY_NPM',
+    'CODEX_MANAGED_PACKAGE_ROOT',
     'JAMAT_V3_SESSION_ID',
     'JAMAT_V3_SESSION_CONTROLLER',
     'JAMAT_V3_SESSION_CHANNEL',
@@ -81,6 +86,22 @@ export class ChildEnvironment {
     'GIT_TERMINAL_PROMPT',
     'GIT_ASKPASS',
     'GCM_INTERACTIVE',
+  ] as const
+
+  /**
+   * Names a user may set in a profile, so they are dropped only when the environment belongs to an
+   * agent session: there the agent's shell tool has already overwritten them for its own
+   * non-interactive output. Measured 2026-10-29, a client started from a codex-cli 0.165 shell had
+   * `TERM=dumb` and an empty `COLORTERM`, and every Claude child it started drew without colour; a
+   * restart kept them, because `app.relaunch` hands on the same environment. `LANG` and `LC_*` stay:
+   * Codex sets `C.UTF-8`, and a child with no locale at all is worse off than one with that.
+   */
+  private static readonly agentShellNamesConst = [
+    'TERM',
+    'COLORTERM',
+    'PAGER',
+    'GIT_PAGER',
+    'GH_PAGER',
   ] as const
 
   /** The Codex companion plugin's per-session transcript and id. */
@@ -121,12 +142,14 @@ export class ChildEnvironment {
     jamat: 'keep' | 'drop',
   ): Record<string, string> {
     const dropsJamat = ChildEnvironment.dropsJamat(jamat)
+    const fromAgentShell = ChildEnvironment.agentSessionMarkerOf(environment) !== null
     const env: Record<string, string> = {}
     for (const [key, value] of Object.entries(environment)) {
       if (typeof value !== 'string') continue
       if (ChildEnvironment.isDevRuntime(key)) continue
       if (ChildEnvironment.isPrivateIntegration(key)) continue
       if (ChildEnvironment.isAgentSession(key)) continue
+      if (fromAgentShell && ChildEnvironment.isAgentShell(key)) continue
       // Case-SENSITIVE, unlike the line above, and on purpose: this clause is the rule that already
       // stood at every one of these call sites, moved rather than rewritten. The filter is `JAMAT`,
       // wider than the `JAMAT_V3_` prefix this tree reads, because a terminal opened inside V1 or V2
@@ -147,6 +170,11 @@ export class ChildEnvironment {
     const name = key.toUpperCase()
     return ChildEnvironment.agentSessionNamesConst.some((each) => each === name)
       || ChildEnvironment.agentSessionPrefixesConst.some((each) => name.startsWith(each))
+  }
+
+  private static isAgentShell(key: string): boolean {
+    const name = key.toUpperCase()
+    return ChildEnvironment.agentShellNamesConst.some((each) => each === name)
   }
 
   private static isPrivateIntegration(key: string): boolean {

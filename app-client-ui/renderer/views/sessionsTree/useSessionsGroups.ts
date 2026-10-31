@@ -13,6 +13,8 @@ export interface SessionsGroupsPorts {
   loadGroupDefinitions(): Promise<IpcResult<readonly SessionGroupDefinition[]>>
   loadGroups(): Promise<IpcResult<readonly SessionGroupAssignment[]>>
   assignGroup(key: string, group: SessionGroup): Promise<IpcResult<boolean>>
+  loadHiddenWhenRemote(): Promise<IpcResult<readonly string[]>>
+  setHiddenWhenRemote(key: string, hidden: boolean): Promise<IpcResult<boolean>>
   /**
    * Somebody other than this tree wrote an assignment or changed the sections themselves - a fork
    * taking its parent's group, written in the main process, or a save in the settings window. The
@@ -27,6 +29,7 @@ export function useSessionsGroups(ports: SessionsGroupsPorts) {
     () => SessionsGroupsState.defaultsConst,
   )
   const [groups, setGroups] = useState<ReadonlyMap<string, SessionGroup>>(() => new Map())
+  const [hiddenWhenRemote, setHiddenWhenRemote] = useState<ReadonlySet<string>>(() => new Set())
   const [ready, setReady] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -42,10 +45,11 @@ export function useSessionsGroups(ports: SessionsGroupsPorts) {
   useEffect(() => {
     let disposed = false
     setReady(false)
-    void Promise.all([ports.loadGroupDefinitions(), ports.loadGroups()]).then(([known, assigned]) => {
+    void Promise.all([ports.loadGroupDefinitions(), ports.loadGroups(), ports.loadHiddenWhenRemote()]).then(([known, assigned, hidden]) => {
       if (disposed) return
       if (!known.ok) throw new Error(known.error)
       if (!assigned.ok) throw new Error(assigned.error)
+      if (!hidden.ok) throw new Error(hidden.error)
       /*
        * An assignment naming a section that no longer exists is dropped HERE as well as by whoever
        * removed the section. The two files are written separately, so a tree that trusted the map
@@ -55,6 +59,7 @@ export function useSessionsGroups(ports: SessionsGroupsPorts) {
       setDefinitions(known.value)
       setGroups(new Map(SessionsGroupsState.pruned(assigned.value, known.value)
         .map(({ key, group }) => [key, group])))
+      setHiddenWhenRemote(new Set(hidden.value))
       setReady(true)
       setError(null)
     }).catch((thrown: unknown) => {
@@ -67,25 +72,34 @@ export function useSessionsGroups(ports: SessionsGroupsPorts) {
 
   useEffect(() => ports.subscribeGroups(reload), [ports, reload])
 
-  const assign = useCallback((key: string, group: SessionGroup): void => {
+  const store = useCallback((write: () => Promise<IpcResult<boolean>>, apply: () => void): void => {
     if (!ready || busy.current) return
-    const current = [...groups].map(([held, heldGroup]) => ({ key: held, group: heldGroup }))
-    const next = new Map(SessionsGroupsState.assigned(current, key, group)
-      .map((assignment) => [assignment.key, assignment.group]))
     busy.current = true
     setSaving(true)
     setError(null)
-    void ports.assignGroup(key, group).then((answer) => {
+    void write().then((answer) => {
       if (!answer.ok) throw new Error(answer.error)
       if (!answer.value) throw new Error('The client state refused the write.')
-      if (mounted.current) setGroups(next)
+      if (mounted.current) apply()
     }).catch((thrown: unknown) => {
       if (mounted.current) setError(`Groups could not be stored: ${ErrorText.of(thrown)}`)
     }).finally(() => {
       busy.current = false
       if (mounted.current) setSaving(false)
     })
-  }, [ports, groups, ready])
+  }, [ready])
 
-  return { definitions, groups, ready, saving, error, assign, reload }
+  const assign = useCallback((key: string, group: SessionGroup): void => {
+    const current = [...groups].map(([held, heldGroup]) => ({ key: held, group: heldGroup }))
+    const next = new Map(SessionsGroupsState.assigned(current, key, group)
+      .map((assignment) => [assignment.key, assignment.group]))
+    store(() => ports.assignGroup(key, group), () => setGroups(next))
+  }, [ports, groups, store])
+
+  const hideWhenRemote = useCallback((key: string, hidden: boolean): void => {
+    const next = new Set(SessionsGroupsState.withHiddenWhenRemote([...hiddenWhenRemote], key, hidden))
+    store(() => ports.setHiddenWhenRemote(key, hidden), () => setHiddenWhenRemote(next))
+  }, [ports, hiddenWhenRemote, store])
+
+  return { definitions, groups, hiddenWhenRemote, ready, saving, error, assign, hideWhenRemote, reload }
 }

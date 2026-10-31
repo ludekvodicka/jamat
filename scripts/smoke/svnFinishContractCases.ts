@@ -125,7 +125,7 @@ export class SvnFinishContractCases {
   [
     "NF23",
     "removal/svnWorktreeRemoval",
-    "retains a legacy removal remainder without a verified preservation receipt"
+    "deletes ignored and discarded content without saving a copy of it"
   ],
   [
     "NF24",

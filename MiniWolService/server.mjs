@@ -1,12 +1,20 @@
 import { createServer } from 'node:http'
 import { isIPv4 } from 'node:net'
 import { readFileSync } from 'node:fs'
+import { timingSafeEqual } from 'node:crypto'
 import { sendWakePacket } from './wol.mjs'
-import { callLauncher, parseLauncher } from './launcher.mjs'
+import { callLauncher, launcherStatus, parseLauncher } from './launcher.mjs'
 import { LauncherInvitations, readPairingToken } from './pairing.mjs'
 
 /** @typedef {{id: string, label: string, mac: string, launcher?: import('./launcher.mjs').LauncherConfig}} Computer */
 /** @typedef {{publicUrl: string, broadcast: string, computers: Computer[]}} Config */
+
+/** @param {unknown} value @returns {string} */
+export function parseApiKey(value) {
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value))
+    throw new Error('JAMAT_V3_WOL_API_KEY must contain 64 lowercase hexadecimal characters')
+  return value
+}
 
 /** @param {string} source @returns {Config} */
 export function parseConfig(source) {
@@ -42,57 +50,27 @@ export function parseConfig(source) {
   return { publicUrl: url.origin, broadcast: config.broadcast, computers }
 }
 
-/** @param {string} value */
-function escapeHtml(value) {
-  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;')
-}
-
-/** @param {import('./launcher.mjs').LauncherState | 'unavailable'} state */
-function launcherLabel(state) {
-  switch (state) {
-    case 'ready': return 'Jamat je připravený.'
-    case 'stopped': return 'Jamat je vypnutý.'
-    case 'starting': return 'Jamat se spouští. Za chvíli obnovte stav.'
-    case 'failed': return 'Spuštění Jamatu selhalo. Zkontrolujte spouštěč na počítači.'
-    case 'unavailable': return 'Spouštěč Jamatu není dostupný. Probuďte počítač a obnovte stav.'
-    default: throw new Error('Unknown launcher state')
-  }
-}
-
-/** @param {Computer} computer */
-async function renderComputer(computer) {
-  let launcher = ''
-  if (computer.launcher) {
-    /** @type {import('./launcher.mjs').LauncherState | 'unavailable'} */
-    let state
-    try {
-      state = await callLauncher(computer.launcher, 'status')
-    } catch {
-      state = 'unavailable'
-    }
-    launcher = `<p class="launcher-status" role="status">${launcherLabel(state)}</p>
-      <form method="post" action="/start/${computer.id}"><button type="submit">Spustit Jamat</button></form>
-      <form method="post" action="/setup/${computer.id}"><button class="secondary" type="submit">Nastavit spouštění Jamatu</button></form>`
-  }
-  return `<article class="computer"><span class="pc-icon" aria-hidden="true">▣</span><h2>${escapeHtml(computer.label)}</h2>
-    <form method="post" action="/wake/${computer.id}"><button type="submit">Probudit ${escapeHtml(computer.label)}</button></form>${launcher}</article>`
-}
-
-/** @param {Config} config @param {string | undefined} buildTime */
-export function createWolServer(config, buildTime) {
+/** @param {Config} config @param {{apiKey: string, buildTime?: string}} options */
+export function createWolServer(config, options) {
+  const apiKey = Buffer.from(parseApiKey(options.apiKey), 'hex')
   const publicUrl = new URL(config.publicUrl)
-  const css = readFileSync(new URL('./web.css', import.meta.url))
   const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
   const invitations = new LauncherInvitations()
+  /** @type {Map<string, number>} */
+  const cooldowns = new Map()
   let pairingRequests = 0
 
   const server = createServer(async (request, response) => {
     response.setHeader('Cache-Control', 'no-store')
-    response.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+    response.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'")
     response.setHeader('X-Content-Type-Options', 'nosniff')
     response.setHeader('Referrer-Policy', 'same-origin')
     /** @param {number} status @param {string} message */
     const error = (status, message) => {
+      if (request.url?.startsWith('/api/v1/')) {
+        response.writeHead(status, { 'Content-Type': 'application/json', Connection: 'close' })
+        return response.end(JSON.stringify({ error: status === 421 ? 'forbidden' : 'bad-request' }))
+      }
       response.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8', Connection: 'close' })
       response.end(message)
     }
@@ -139,64 +117,84 @@ export function createWolServer(config, buildTime) {
     }
     if (request.method === 'GET' && url.pathname === '/api/system/version') {
       response.writeHead(200, { 'Content-Type': 'application/json' })
-      return response.end(JSON.stringify({ version, buildTime: buildTime ?? 'dev' }))
+      return response.end(JSON.stringify({ version, buildTime: options.buildTime ?? 'dev' }))
     }
-    if (request.method === 'GET' && url.pathname === '/web.css') {
-      response.writeHead(200, { 'Content-Type': 'text/css; charset=utf-8' })
-      return response.end(css)
-    }
-    if (request.method === 'GET' && url.pathname === '/') {
-      const cards = (await Promise.all(config.computers.map(renderComputer))).join('')
-      const sent = config.computers.find(computer => computer.id === url.searchParams.get('sent'))
-      const started = config.computers.find(computer => computer.launcher && computer.id === url.searchParams.get('started'))
-      const message = sent
-        ? `Požadavek na probuzení ${escapeHtml(sent.label)} byl odeslán. Probuzení počítače zatím není ověřené.`
-        : started ? `Požadavek na spuštění Jamatu na ${escapeHtml(started.label)} byl přijat. Aktuální stav je uvedený u počítače.`
-          : 'Vyberte počítač, který chcete probudit nebo na něm spustit Jamat.'
-      response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
-      return response.end(`<!doctype html><html lang="cs"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>MiniWolService · Jamat</title><link rel="stylesheet" href="/web.css"></head>
-        <body><main><p class="brand">JAMAT <span>WAKE-ON-LAN</span></p><h1>Probudit počítač</h1><p class="intro">Počítače v domácí síti</p>
-        <p class="status${sent || started ? ' sent' : ''}" role="status">${message}</p><p><a href="/">Obnovit stav</a></p><div class="computers">${cards}</div>
-        <footer>MiniWolService · ${escapeHtml(version)}</footer></main></body></html>`)
-    }
-    const computer = config.computers.find(item => url.pathname === `/wake/${item.id}`
-      || (item.launcher && (url.pathname === `/start/${item.id}` || url.pathname === `/setup/${item.id}`)))
-    if (request.method !== 'POST' || !computer || request.url !== url.pathname)
-      return error(404, 'Stránka nebyla nalezena.')
-    if (request.headers.origin !== publicUrl.origin)
-      return error(403, 'Požadavek musí přijít z webu této služby.')
-    if (request.headers['transfer-encoding'] || request.headers['content-encoding'] !== undefined
-      || Number(request.headers['content-length'] ?? 0) !== 0)
-      return error(400, 'Požadavek nesmí obsahovat data.')
-    if (url.pathname === `/setup/${computer.id}` && computer.launcher) {
-      const invitation = `${publicUrl.origin}/#autolauncher=${invitations.issue(computer.id, computer.launcher)}`
-      response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
-      return response.end(`<!doctype html><html lang="cs"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Nastavit spouštění Jamatu</title><link rel="stylesheet" href="/web.css"></head>
-        <body><main><p class="brand">JAMAT <span>AUTOLAUNCHER</span></p><h1>Nastavit spouštění Jamatu</h1>
-        <p class="intro">Počítač: ${escapeHtml(computer.label)}</p><ol class="instructions"><li>Na počítači ${escapeHtml(computer.label)} otevřete Jamat a přejděte do Nastavení → Autolauncher.</li>
-        <li>Zkopírujte celou pozvánku níže a vložte ji do pole v nastavení.</li><li>Potvrďte instalaci spouštěče pro aktuální profil.</li></ol>
-        <label for="invitation">Pozvánka pro ${escapeHtml(computer.label)}</label><textarea id="invitation" readonly rows="3" spellcheck="false">${escapeHtml(invitation)}</textarea>
-        <p class="status" role="status">Pozvánka platí 5 minut a lze ji použít jednou, pouze na určeném počítači. Nová pozvánka zneplatní předchozí.</p>
-        <p><a href="/">Zpět na počítače</a></p><footer>MiniWolService · ${escapeHtml(version)}</footer></main></body></html>`)
-    }
-    if (url.pathname === `/start/${computer.id}` && computer.launcher) {
-      try {
-        await callLauncher(computer.launcher, 'start')
-        response.writeHead(303, { Location: `/?started=${computer.id}` })
-        return response.end()
-      } catch {
-        return error(502, 'Jamat se nepodařilo spustit. Zkontrolujte, že je počítač zapnutý a jeho spouštěč dostupný, a zkuste to znovu.')
+    if (url.pathname.startsWith('/api/v1/')) {
+      /** @param {number} status @param {unknown} body */
+      const json = (status, body) => {
+        response.writeHead(status, { 'Content-Type': 'application/json', Connection: 'close' })
+        response.end(JSON.stringify(body))
+      }
+      const bearer = /^Bearer ([0-9a-f]{64})$/.exec(request.headers.authorization ?? '')
+      if (!bearer || request.rawHeaders.filter((name, index) => index % 2 === 0 && name.toLowerCase() === 'authorization').length !== 1
+        || !timingSafeEqual(Buffer.from(bearer[1], 'hex'), apiKey))
+        return json(401, { error: 'unauthorized' })
+      if (request.headers.origin !== undefined)
+        return json(403, { error: 'forbidden' })
+      if (request.url !== url.pathname)
+        return json(404, { error: 'not-found' })
+      const match = /^\/api\/v1\/computers\/([a-z0-9-]{1,40})\/(launcher|wake|start|invitation)$/.exec(url.pathname)
+      if (url.pathname !== '/api/v1/computers' && !match)
+        return json(404, { error: 'not-found' })
+      const action = match?.[2] ?? 'computers'
+      if (request.method !== (action === 'computers' || action === 'launcher' ? 'GET' : 'POST'))
+        return json(405, { error: 'method-not-allowed' })
+      const computer = match ? config.computers.find(item => item.id === match[1]) : undefined
+      if (match && !computer)
+        return json(404, { error: 'unknown-computer' })
+      if (request.headers['transfer-encoding'] !== undefined || request.headers['content-encoding'] !== undefined
+        || Number(request.headers['content-length'] ?? 0) !== 0)
+        return json(400, { error: 'bad-request' })
+      if (action === 'computers')
+        return json(200, { computers: config.computers.map(({ id, label, launcher }) => ({ id, label, hasLauncher: !!launcher })) })
+      if (!computer)
+        throw new Error('Missing MiniWol computer')
+      if (action === 'wake' || action === 'invitation') {
+        if (action === 'invitation' && !computer.launcher)
+          return json(409, { error: 'no-launcher' })
+        const key = `${action}/${computer.id}`
+        const now = Date.now()
+        const wait = Math.ceil(((cooldowns.get(key) ?? 0) - now) / 1000)
+        if (wait > 0) {
+          response.setHeader('Retry-After', wait)
+          return json(429, { error: 'rate-limited' })
+        }
+        cooldowns.set(key, now + (action === 'wake' ? 3000 : 10000))
+      }
+      switch (action) {
+        case 'launcher':
+          if (!computer.launcher) return json(409, { error: 'no-launcher' })
+          try {
+            return json(200, await launcherStatus(computer.launcher, 'status'))
+          } catch {
+            return json(200, { state: 'unavailable' })
+          }
+        case 'wake':
+          try {
+            await sendWakePacket(computer.mac, config.broadcast)
+            return json(202, { sent: true })
+          } catch {
+            return json(502, { error: 'wol-send-failed' })
+          }
+        case 'start':
+          if (!computer.launcher) return json(409, { error: 'no-launcher' })
+          try {
+            const state = await callLauncher(computer.launcher, 'start')
+            if (state === 'starting') return json(202, { state })
+            if (state === 'ready') return json(200, { state })
+            throw new Error('Invalid launcher start state')
+          } catch {
+            return json(502, { error: 'launcher-unavailable' })
+          }
+        case 'invitation':
+          if (!computer.launcher) return json(409, { error: 'no-launcher' })
+          return json(200, { invitationUrl: `${publicUrl.origin}/#autolauncher=${invitations.issue(computer.id, computer.launcher)}`,
+            expiresInSeconds: 300 })
+        default: throw new Error('Unknown MiniWol action')
       }
     }
-    try {
-      await sendWakePacket(computer.mac, config.broadcast)
-      console.log(`Wake packet sent: ${computer.id} -> ${config.broadcast}:9`)
-      response.writeHead(303, { Location: `/?sent=${computer.id}` })
-      response.end()
-    } catch (cause) {
-      console.error('Wake packet failed:', cause)
-      error(502, 'Paket se nepodařilo odeslat. Zkuste to znovu.')
-    }
+    response.writeHead(404, { 'Content-Type': 'application/json', Connection: 'close' })
+    response.end(JSON.stringify({ error: 'not-found' }))
   })
   server.requestTimeout = 5000
   server.headersTimeout = 5000

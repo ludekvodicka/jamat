@@ -76,7 +76,10 @@ import { RemoteSidebarPorts } from '../panels/terminal/remoteSidebarPorts'
 import { HostStopConfirmation } from '../statusBar/hostStatusItem'
 import { useSessionModel } from '../statusBar/sessionModelItem'
 import { type SessionModelPorts, SessionModelStore } from '../sessionModel/sessionModelStore'
+import { useSnapshotStore } from '../views/sessionsTree/useSessionsSnapshot'
 import { AppShellItems } from '../statusBar/appShellItems'
+import type { AttentionStatusPorts } from '../statusBar/attentionStatusItem'
+import type { AttentionSnapshot } from '../../shared/attention'
 import { useCurrentProject } from '../statusBar/currentProjectItem'
 import { StatusBar } from '../statusBar/statusBar'
 import { ActiveAgentTerminals, useActiveAgentTerminal } from '../statusBar/useActiveAgentTerminal'
@@ -164,6 +167,7 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
     wiring.activeTerminal, wiring.sessionsSnapshot, wiring.remoteSnapshot,
   )
   const sessionModel = useSessionModel(wiring.sessionModel, focus)
+  const attention = useSnapshotStore(wiring.attentionSnapshot).snapshot
 
   // Started here rather than in the main shell: a holder window draws session tabs too, and each
   // document has one reader of its own.
@@ -192,6 +196,7 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
   // Beside it for the same reason: the bar of every workspace draws the rate limits, and one
   // document has one reader of them.
   useEffect(() => wiring.rateSnapshot.start(), [wiring])
+  useEffect(() => wiring.attentionSnapshot.start(), [wiring])
   // The model poll is armed once per document and re-keyed whenever the tab in front changes; with
   // nothing in front it holds its timer down, so a window looking at a file asks nobody anything.
   useEffect(() => wiring.sessionModel.start(), [wiring])
@@ -419,6 +424,7 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
           sessionModel,
           compact: wiring.contextCompact,
           rate: { ports: wiring.ratePorts, store: wiring.rateSnapshot },
+          attention: { snapshot: attention, ports: wiring.attentionPorts },
         })}
       />
       {launcherOpen && (
@@ -627,6 +633,13 @@ class AppShellComposition {
       subscribe: (onChanged) => window.appClient.onCommitChanged(onChanged), reportError: AppClientUiReport.error })
     const ratePorts = AppShellComposition.ratePorts()
     const rateSnapshot = new SnapshotStore<RateMonitorSnapshot>('The rate limits', ratePorts)
+    const attentionPorts: AttentionStatusPorts = {
+      read: () => window.appClient.attention.get(),
+      subscribe: (onChanged) => window.appClient.onAttentionChanged(onChanged),
+      reportError: (message) => AppClientUiReport.error(message),
+      next: () => window.appClient.attention.next(),
+    }
+    const attentionSnapshot = new SnapshotStore<AttentionSnapshot>('The attention queue', attentionPorts)
     const activeTerminal = new ActiveTerminalStore()
     const sessionModel = new SessionModelStore(AppShellComposition.sessionModelPorts())
     const agentSettings = new AgentSettingsStore({
@@ -782,6 +795,8 @@ class AppShellComposition {
       commitOpen,
       ratePorts,
       rateSnapshot,
+      attentionPorts,
+      attentionSnapshot,
       autoUpdate: AppShellComposition.autoUpdatePorts(),
       cliUpdates: {
         read: () => window.appClient.agentCliUpdates.get(),
@@ -872,6 +887,8 @@ class AppShellComposition {
       loadGroupDefinitions: () => AppControl.value('sessionGroups.list', {}),
       loadGroups: () => window.appClient.state.loadSessionGroups(),
       assignGroup: (key, group) => window.appClient.state.assignSessionGroup(key, group),
+      loadHiddenWhenRemote: () => window.appClient.state.loadHiddenWhenRemote(),
+      setHiddenWhenRemote: (key, hidden) => window.appClient.state.setHiddenWhenRemote(key, hidden),
       subscribeGroups: (onChanged) => window.appClient.onSessionGroupsChanged(onChanged),
     }
   }

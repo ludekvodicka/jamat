@@ -6,10 +6,13 @@ import { RelayLogin } from './relayLogin.js';
 import { PcRelay } from './pcRelay.js';
 import { LegacyPc } from './legacyPc.js';
 import { JamatPc } from './jamatPc.js';
+import { MiniWolClient } from './miniWolClient.js';
+import { WakeService } from './wakeService.js';
 
 export class AppHub {
   readonly login: RelayLogin;
   readonly relay: PcRelay;
+  readonly wakeService: WakeService;
 
   constructor(config: RelayConfig, context: AppContext) {
     const google = config.googleClientId && config.googleClientSecret
@@ -18,6 +21,7 @@ export class AppHub {
       : undefined;
     this.login = new RelayLogin(config.origin, config.username, config.password, context.loginTemplate, google);
     this.relay = new PcRelay(config.pcs, new Map(config.pcs.map(pc =>
-      [pc.id, pc.peer ? new JamatPc(pc, config.peerIdentity!) : new LegacyPc(pc)])), config.wolProxy);
+      [pc.id, pc.peer ? new JamatPc(pc, config.peerIdentity!) : new LegacyPc(pc)])));
+    this.wakeService = new WakeService(config.pcs, config.miniWol ? new MiniWolClient(config.miniWol) : undefined);
   }
 }

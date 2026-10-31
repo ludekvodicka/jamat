@@ -27,9 +27,10 @@ export class SessionAutomationGroups {
     if (!UUID.test(request.configIdentity ?? '') || !['development', 'production'].includes(request.channel))
       return failure('An exact controller UUID and development/production channel are required')
     if (request.note !== undefined) {
-      if (typeof request.note !== 'string' || request.note.length > 4000)
+      // Jamat stores the note trimmed; an untrimmed one, such as a file's final newline, never reads back equal.
+      if (typeof request.note !== 'string' || request.note.trim().length > 4000)
         return failure('The note must be a string of at most 4000 characters')
-      desired.note = request.note
+      desired.note = request.note.trim()
     }
     const status = client(['status'])
     if (!status.ok) return status

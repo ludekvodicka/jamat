@@ -238,7 +238,7 @@ class RemoteSessionWorkspace implements SessionWorkspacePorts {
 
   status(): string | null {
     const endpoint = this.endpoint()
-    if (!endpoint || endpoint.status !== 'connected') return 'Remote session is offline. Reconnect explicitly to read Session actions.'
+    if (!endpoint || endpoint.status !== 'connected') return 'Remote session is offline. Session actions return when it reconnects.'
     if (!['session-workspace.read', 'session-workspace.views', 'session-workspace.actions'].every((capability) => endpoint.workspaceCapabilities?.some((value) => value === capability)))
       return 'This peer does not support Session actions. Its terminal remains available.'
     return null

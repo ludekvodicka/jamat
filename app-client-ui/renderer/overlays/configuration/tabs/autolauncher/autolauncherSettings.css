@@ -55,3 +55,28 @@
 .jamat-configuration-autolauncher .jamat-configuration__actions {
   flex-wrap: wrap;
 }
+.jamat-configuration-autolauncher__editor {
+  border: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.jamat-configuration-autolauncher__editor label {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.jamat-configuration-autolauncher__editor input,
+.jamat-configuration-autolauncher__editor select,
+.jamat-configuration-autolauncher__editor textarea {
+  min-width: 0;
+  max-width: 100%;
+  font: inherit;
+  color: inherit;
+  background: var(--color-surface-control);
+  padding: var(--space-2);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}

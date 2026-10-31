@@ -1,26 +1,26 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { closeSync, openSync } from 'node:fs'
-import { dirname, join } from 'node:path'
 import { setTimeout } from 'node:timers/promises'
-import type { LaunchRecipe } from './appConfig'
+import { inspectLauncherProcess, type RemoteLauncherProcess } from '../../lib-orchestrator/remoteControl/remoteLauncherProcess'
 import type { RuntimeChannel } from '../../lib-orchestrator/shared/configIdentity.types'
 import type { AppContext } from './appContext'
-import { LocalTargetControl } from './localTargetControl'
+import type { LocalTargetControl } from './localTargetControl'
 
 export type LauncherStatus = { state: 'ready' | 'stopped' | 'starting' | 'failed'; error?: string }
 
 export class LauncherTarget {
-  private readonly recipe: LaunchRecipe
+  private readonly process: RemoteLauncherProcess
   private readonly configDir: string
   private readonly channel: RuntimeChannel
   private readonly context: AppContext
   private readonly control: LocalTargetControl
   private pending: Promise<void> | null = null
-  private failed = false
+  private failure: string | null = null
+  private activeChild: ChildProcess | null = null
   private paused = false
 
-  constructor(recipe: LaunchRecipe, configDir: string, channel: RuntimeChannel, control: LocalTargetControl, context: AppContext) {
-    this.recipe = recipe
+  constructor(process: RemoteLauncherProcess, configDir: string, channel: RuntimeChannel, control: LocalTargetControl, context: AppContext) {
+    this.process = process
     this.configDir = configDir
     this.channel = channel
     this.context = context
@@ -31,9 +31,12 @@ export class LauncherTarget {
     try {
       if (this.pending) return { state: 'starting' }
       if (await this.control.ready()) return { state: 'ready' }
-      return this.failed ? { state: 'failed', error: 'Jamat se nepodařilo spustit. Podrobnosti jsou v logu agenta na PC.' } : { state: 'stopped' }
+      const availability = await inspectLauncherProcess(this.process)
+      if (availability.state !== 'available')
+        return { state: 'failed', error: availability.state === 'missing' ? 'target-missing' : 'target-invalid' }
+      return this.failure ? { state: 'failed', error: this.failure } : { state: 'stopped' }
     } catch {
-      return { state: 'failed', error: 'Nelze ověřit nastavený profil Jamatu. Zkontrolujte konfiguraci agenta na PC.' }
+      return { state: 'failed', error: 'profile-unavailable' }
     }
   }
 
@@ -44,9 +47,11 @@ export class LauncherTarget {
     if (this.paused) throw new Error('Launcher maintenance is in progress')
     // Concurrent requests may both finish their probe before either has claimed startup.
     if (this.pending) return { state: 'starting' }
-    this.failed = false
+    // A timed-out detached process may still become ready. Never launch a second copy beside it.
+    if (this.activeChild) throw new Error('The previous launch process is still running')
+    this.failure = null
     this.pending = this.launch().catch(error => {
-      this.failed = true
+      if (!this.failure) this.failure = 'launch-failed'
       try { this.context.log(`Launch failed: ${error instanceof Error ? error.message : 'unknown failure'}`) }
       catch { console.error('Launch failed; the local log could not be written.') }
     }).finally(() => { this.pending = null })
@@ -65,7 +70,12 @@ export class LauncherTarget {
 
   private async launch(): Promise<void> {
     this.context.log('Starting registered target')
-    const recipe = this.recipe
+    const plan = this.process
+    const availability = await inspectLauncherProcess(plan)
+    if (availability.state !== 'available') {
+      this.failure = availability.state === 'missing' ? 'target-missing' : 'target-invalid'
+      throw new Error(`${this.failure}: ${availability.path}`)
+    }
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
       !key.startsWith('JAMAT_V3_') && !key.startsWith('ELECTRON_')))
     env.JAMAT_V3_CONFIG_DIR = this.configDir
@@ -73,23 +83,25 @@ export class LauncherTarget {
     const log = openSync(this.context.logFile, 'a')
     let child: ChildProcess
     try {
-      if (recipe.kind === 'executable')
-        child = spawn(recipe.path, [], { cwd: dirname(recipe.path), env, detached: true, windowsHide: true, stdio: ['ignore', log, log] })
-      else if (recipe.kind === 'command')
-        child = spawn(recipe.command, recipe.args, { cwd: recipe.cwd, env, windowsHide: true,
-          windowsVerbatimArguments: recipe.windowsVerbatimArguments, stdio: ['ignore', log, log] })
-      else if (recipe.kind === 'source')
-        child = spawn(process.execPath, [join(recipe.repositoryRoot, 'node_modules/tsx/dist/cli.mjs'),
-          join(recipe.repositoryRoot, 'scripts/release/start-packaged-client.ts')],
-        { cwd: recipe.repositoryRoot, env, windowsHide: true, stdio: ['ignore', log, log] })
-      else throw new Error('Unknown launch recipe')
+      child = spawn(plan.command, plan.args, { cwd: plan.cwd, env, detached: plan.completion === 'spawn',
+        windowsHide: true, windowsVerbatimArguments: plan.windowsVerbatimArguments, stdio: ['ignore', log, log] })
     } finally { closeSync(log) }
-    if (recipe.kind === 'executable') {
+    let exited = false
+    if (plan.requireRunning) {
+      this.activeChild = child
+      const ended = (): void => {
+        exited = true
+        if (this.activeChild === child) this.activeChild = null
+      }
+      child.once('exit', ended)
+      child.once('error', ended)
+    }
+    if (plan.completion === 'spawn') {
       await new Promise<void>((resolve, reject) => {
         child.once('error', reject)
         child.once('spawn', () => { child.unref(); resolve() })
       })
-    } else if (recipe.kind === 'command' || recipe.kind === 'source') {
+    } else if (plan.completion === 'exit-zero') {
       await new Promise<void>((resolve, reject) => {
         const timer = globalThis.setTimeout(() => {
           if (process.platform === 'win32' && child.pid)
@@ -104,15 +116,17 @@ export class LauncherTarget {
           else reject(new Error(`Launch command exited with ${String(code)}`))
         })
       })
-    } else throw new Error('Unknown launch recipe')
-    const deadline = Date.now() + 60_000
+    } else throw new Error('Unknown process completion policy')
+    const deadline = Date.now() + plan.readinessTimeoutMs
     while (Date.now() < deadline) {
+      if (exited) throw new Error('Launch process exited before readiness')
       if (await this.control.ready()) {
         this.context.log('Registered AppClientUI answered its control API')
         return
       }
       await setTimeout(500)
     }
-    throw new Error('AppClientUI did not become ready within 60 seconds')
+    this.failure = 'readiness-timeout'
+    throw new Error(`AppClientUI did not become ready within ${plan.readinessTimeoutMs / 1000} seconds`)
   }
 }

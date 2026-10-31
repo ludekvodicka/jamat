@@ -15,8 +15,8 @@ test('distributed skills run outside the checkout with no tsx or node_modules', 
     for (const agent of ['claude', 'codex']) {
       const cli = spawnSync(process.execPath, [join(output, 'skills', agent, 'appjamat-v3/scripts/jamat-v3.mjs'), '--help'],
         { encoding: 'utf8', windowsHide: true, cwd: output })
-      assert.equal(cli.status, 2, cli.stderr + cli.stdout)
-      assert.equal(JSON.parse(cli.stdout).error.detail, 'Unknown argument --help')
+      assert.equal(cli.status, 0, cli.stderr + cli.stdout)
+      assert.match(JSON.parse(cli.stdout).value.usage, /^jamat-v3 <command>/)
       const helper = spawnSync(process.execPath, [join(output, 'skills', agent,
         'session-automation-groups/scripts/session-automation-groups.mjs'), 'describe', '--state', 'completed'],
       { encoding: 'utf8', windowsHide: true, cwd: output })

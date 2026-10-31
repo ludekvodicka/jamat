@@ -174,7 +174,7 @@ export class SvnWorktreeFinishFlow implements WorktreeFinisher {
       const labelled = unfinished.length > 0 ? []
         : SvnRevisionLabels.merged(present ? await this.ownCommits(record, location.worktreePath) : [], published)
       const removal = await this.removal.remove(sessionId, location, labelled.map(SvnRevisionLabels.textOf),
-        { kind: 'clean', provedAt: this.now(), allowed: [] }, actionId)
+        { kind: 'clean', provedAt: this.now(), allowed: [] })
       if (removal.state === 'removed') {
         const copied = SvnWorktreeRemoval.resultLinesOf(removal.lines)
         for (const actionId of [...unfinished, ...keptResults]) await this.results.removalDone(actionId, copied)

@@ -72,11 +72,24 @@ export class SvnActionStages {
     return need === 'resolver-failed' && SvnConflictFlow.unsettled(action.conflictSet)
   }
 
-  /** A client step is due: a client stage, a verdict to judge, or a relaunch whose wait is over. */
+  /**
+   * A client step is due: a client stage, a verdict to judge, a relaunch whose wait is over, or a lost
+   * launch. The caller asks only for actions no drive of this process holds.
+   */
   static clientDue(action: SessionRecordSvnAction, now = Number.POSITIVE_INFINITY): boolean {
     if (action.needs !== undefined || action.stage === 'changes' || action.stage === 'main-update') return false
-    if (!SvnActionStages.isRun(action.stage) || action.verdict !== undefined) return true
+    if (!SvnActionStages.isRun(action.stage) || action.verdict !== undefined || SvnActionStages.launchLost(action)) return true
     return action.retryAt !== undefined && now >= action.retryAt
+  }
+
+  /**
+   * A run stage that names neither its run nor a retry. A launch writes the action so before it
+   * starts its command, and only the drive that wrote it is inside that launch; outside every drive,
+   * the client stopped mid-launch and nothing else starts the stage again (Mirabia 118, 2026-10-30).
+   */
+  static launchLost(action: SessionRecordSvnAction): boolean {
+    return SvnActionStages.isRun(action.stage) && action.needs === undefined && action.verdict === undefined
+      && action.runId === undefined && action.retryAt === undefined
   }
 
   /**

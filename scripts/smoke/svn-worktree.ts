@@ -167,7 +167,7 @@ class SmokeSvnActions {
     SmokeSvnActions.instances.add(this)
     this.results = new WorktreeResultsStore(`${logs}-results`, { now: () => Date.now(), logs: new ScriptLogStore(logs), report: () => undefined })
     const steps = new SessionSteps({ changed: () => undefined, now: () => Date.now() })
-    const removal = new SvnWorktreeRemoval({ records, results: this.results, skillRoots: [], svn: manager, onQueue: (work) => work(), changed: () => undefined, steps })
+    const removal = new SvnWorktreeRemoval({ records, skillRoots: [], svn: manager, onQueue: (work) => work(), changed: () => undefined, steps })
     const ended = (sessionId: string): void => { this.ended.add(sessionId) }
     const unavailable = async (): Promise<never> => { throw new Error('SVN smoke does not use the Host') }
     const scripts = new SessionScriptsManager({ records, logs: this.logs,
@@ -223,6 +223,13 @@ class SmokeSvnActions {
     this.flow = new FinishDriver({ ...deps, commands, sync, update: new MainCopyUpdate({ ...deps, lease, commands }),
       handoffs,
       idle: () => true, busyReason: () => null, holdInput: () => () => {}, awaitExit: async () => true, liveness: async () => {} })
+    // A press answers before its steps run (2026-10-30); the scenarios judge what the steps left behind.
+    const press = this.flow.start.bind(this.flow)
+    this.flow.start = async (sessionId, finishPress) => {
+      const answer = await press(sessionId, finishPress)
+      await this.flow.settled(sessionId)
+      return answer
+    }
     this.finisher = new SvnWorktreeFinishFlow({
       records,
       svn: manager,
@@ -1302,11 +1309,9 @@ class SmokeSvnWorktree extends SmokeHarness {
     await writeFile(join(ignored, '.checkpoints/store.git/HEAD'), 'checkpoint evidence\n')
     const clean = await actions.finish('rg06')
     const ignoredResult = actions.results.list({ sessionId: 'rg06' })[0]
-    const copied = join(actions.results.savedDirectoryOf(ignoredResult.actionId), '..', 'ignored')
-    const attempt = (await readdir(copied))[0]
-    this.check('RG06 ignored checkpoints survive removal in the result folder',
-      clean.outcome?.result === 'nothing' && !existsSync(ignored)
-      && await readFile(join(copied, attempt, '.checkpoints/store.git/HEAD'), 'utf8') === 'checkpoint evidence\n')
+    const result = dirname(actions.results.savedDirectoryOf(ignoredResult.actionId))
+    this.check('RG06 a clean Finish removes ignored checkpoints with the worktree and saves no copy of them',
+      clean.outcome?.result === 'nothing' && !existsSync(ignored) && !existsSync(join(result, 'ignored')))
 
     const chat = await session('rg07')
     await writeFile(join(chat, 'a.txt'), 'reviewed message\n')
@@ -2900,7 +2905,7 @@ class SmokeSvnWorktree extends SmokeHarness {
     const steps = new SessionSteps({ changed: () => undefined, now: () => Date.now() })
     const flow = new SvnWorktreeFinishFlow({
       records, svn: manager, steps,
-      removal: new SvnWorktreeRemoval({ records, results: cleanupResults, skillRoots: [], svn: manager, onQueue: (work) => work(), changed: () => undefined, steps }),
+      removal: new SvnWorktreeRemoval({ records, skillRoots: [], svn: manager, onQueue: (work) => work(), changed: () => undefined, steps }),
       actions: { start: () => { throw new Error('a cleanup presses nothing') }, settled: () => { throw new Error('a cleanup presses nothing') } },
       labels: new SvnRevisionLabels(manager),
       results: cleanupResults,

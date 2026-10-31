@@ -40,21 +40,29 @@ export class WorktreeUpdate {
     if (failure !== undefined) throw new Error(failure)
     let state = structuredClone(this.read(sessionId))
     if (state === undefined || state.completed || state.actionId !== actionId || PathCompare.comparable(state.root) !== PathCompare.comparable(root)) {
-      if (state !== undefined && !state.completed) throw new Error('An unfinished update belongs to another action or working copy')
+      // An earlier action of this working copy may leave its update unfinished, as a sync that met
+      // conflicts did before Finish took a new id (worker-agent 031). With no svn command of it open,
+      // svn holds nothing of it, and this update starts again from the owner to its own revision.
+      if (state !== undefined && !state.completed && (PathCompare.comparable(state.root) !== PathCompare.comparable(root) || this.open(sessionId, state)))
+        throw new Error('An unfinished update belongs to another action or working copy')
       const target = await this.deps.targets.owner(root, revision)
       state = { actionId, generation: randomUUID(), root, revision, cursor: 0, units: [{ target, phase: 'pending' }], completed: false }
       await this.save(sessionId, state)
     }
+    // An update of one mount never writes its parent's definitions, so a parent is compared once per call.
+    const compared = new Set<number>()
     while (state.cursor < state.units.length) {
       const unit = state.units[state.cursor]
       const target = unit.target
       if (!PathCompare.isInside(root, target.path)) throw new Error('An update target is outside its owner')
-      if (unit.parent !== undefined) {
+      if (unit.parent !== undefined && !compared.has(unit.parent)) {
+        compared.add(unit.parent)
         const parent = state.units[unit.parent]
         const current = await this.deps.targets.snapshot(parent.target, false)
         if (JSON.stringify(current.properties) !== JSON.stringify(parent.definitions))
           throw new Error(`External definitions changed while updating ${target.path}. Preserve local external work, inspect the incoming mapping, then start a new preparation with the intended definitions. Do not revert an upstream definition just to resume this update.`)
       }
+      let clean = false
       if (unit.phase === 'pending') {
         if (unit.before === undefined) {
           const before = await this.deps.targets.snapshot(target, false, true)
@@ -63,13 +71,14 @@ export class WorktreeUpdate {
           unit.mappingChanged = before.localMappingChanges
           await this.save(sessionId, state)
         }
-        if (target.kind === 'dir') await this.command(sessionId, state, unit, false)
-        else if (target.kind === 'file') await this.deps.targets.verify(target)
+        if (target.kind === 'dir') clean = await this.command(sessionId, state, unit, false)
+        else if (target.kind === 'file') { await this.deps.targets.verify(target); clean = true }
         else throw new Error(`Unknown update target kind: ${JSON.stringify(target.kind satisfies never)}`)
         unit.phase = 'updated'
         await this.save(sessionId, state)
       }
-      if (await this.conflicted(root, state.revision, older)) return { complete: false, revision: state.revision, runId: unit.runId }
+      // The conflict read walks the whole tree with every mount; a unit resumed from a saved phase still reads it.
+      if (!clean && await this.conflicted(root, state.revision, older)) return { complete: false, revision: state.revision, runId: unit.runId }
       await this.deps.targets.verify(target, true, skipped)
       let snapshot = await this.deps.targets.snapshot(target)
       for (const mount of unit.protectedMounts ?? []) {
@@ -155,7 +164,15 @@ export class WorktreeUpdate {
     this.deps.changed()
   }
 
-  private async command(sessionId: string, state: WorktreeUpdateState, unit: WorktreeUpdateUnit, reconcile: boolean): Promise<void> {
+  /**
+   * svn update exits 0 with postponed conflicts; it prints `Summary of conflicts:` and a `C` in a status
+   * column for each one, also for paths it skipped as still conflicted.
+   */
+  static conflictFree(output: string): boolean {
+    return !/Summary of conflicts|^Skipped|^.{0,3}C /m.test(output)
+  }
+
+  private async command(sessionId: string, state: WorktreeUpdateState, unit: WorktreeUpdateUnit, reconcile: boolean): Promise<boolean> {
     const target = unit.target
     const own = relative(state.root, target.path).replace(/\\/g, '/') || '.'
     const stepId = this.stepId(state, reconcile)
@@ -168,6 +185,14 @@ export class WorktreeUpdate {
       { title: reconcile ? `Reconcile externals in ${own}` : `Update ${own} to r${target.revision}${target.pinned ? ' (pinned)' : ''}` })
     unit.runId = result.runId
     if (!result.ok && result.failure !== 'conflict') throw new WorktreeUpdateFailure(result)
+    return result.ok && WorktreeUpdate.conflictFree(result.output)
+  }
+
+  /** An svn command of this update whose end no journal row records; recovery owns it, not a new update. */
+  private open(sessionId: string, state: WorktreeUpdateState): boolean {
+    const prefix = `${state.actionId}-update-${state.generation}-`
+    return this.deps.records.get(sessionId)?.worktreeLifecycle?.journal
+      .some((entry) => entry.stepId.startsWith(prefix) && entry.endedAt === undefined) ?? false
   }
 
   private stepId(state: WorktreeUpdateState, reconcile: boolean): string {

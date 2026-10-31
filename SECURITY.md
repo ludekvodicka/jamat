@@ -18,7 +18,7 @@ Once a fix ships we are happy to credit you, unless you would rather stay anonym
 
 ## What the attack surface actually is
 
-Four listeners exist, and they are not equally exposed:
+The listeners have separate access boundaries:
 
 - **The Host** owns the terminals. It listens on loopback only, behind a bearer token written into a
   descriptor file that only your account can read. Nothing about it is reachable from the network.
@@ -34,8 +34,18 @@ Four listeners exist, and they are not equally exposed:
   MiniWol gateway. It does not expose sessions or arbitrary commands. Requests use per-PC HMAC keys,
   timestamps and replay protection. Installation enrollment uses a five-minute, single-use invitation
   bound to the PC's socket source address, over unencrypted HTTP on a trusted LAN. This does not
-  authenticate the phone user or Windows user; the MiniWol web page has no login and must not be
-  exposed directly to the Internet. Paired session control uses the separate peer protocol below.
+  authenticate the Windows user. Paired session control uses the separate peer protocol below.
+- **MiniWolService 2.0.0 is an API behind the authenticated Jamat relay.** Relay password/Google
+  login and same-origin checks protect wake, start and invitation issuance. All allowed relay users
+  can use every registered PC. The relay then sends a server-side `Authorization: Bearer` key to
+  MiniWol; missing, malformed and wrong keys receive the same denial. The key never reaches the
+  browser. MiniWol's health/version and token/source-IP enrollment routes remain keyless. It serves
+  no page and must not be exposed directly to the Internet. The relay retains bridge networking;
+  MiniWol retains its LAN listener and host networking for broadcast and existing launcher trust.
+  The fixed key has no timestamp or nonce, so a captured HTTP request can be replayed. This is an
+  accepted risk for the same-host deployment; it is separate from launcher HMAC replay protection.
+  The relay receives the five-minute invitation only to display it, never launcher keys, MACs or PC
+  addresses from MiniWol. Invitations stay out of logs/request URLs and use no-store POST responses.
 
 Between two paired computers the connection carries a signed handshake over each machine's long-term
 Ed25519 identity, an ephemeral X25519 exchange, and AES-256-GCM frames with replay protection.

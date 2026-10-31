@@ -3,11 +3,10 @@ import { describe, expect, it } from 'vitest'
 import type {
   SessionActivity,
   SessionInfo,
-} from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
-import { SessionsFixtures } from './fixtures/sessionsFixtures'
+} from '../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { SessionsAttentionModel } from './sessionsAttentionModel'
 
-describe('app-client-ui/renderer/sessions/sessionsAttentionModel', () => {
+describe('app-client-ui/shared/sessionsAttentionModel', () => {
   function sessionOf(over: Partial<SessionInfo> = {}): SessionInfo {
     return {
       sessionId: 's-1',
@@ -29,7 +28,8 @@ describe('app-client-ui/renderer/sessions/sessionsAttentionModel', () => {
     const model = new SessionsAttentionModel()
 
     const marked = model.apply({
-      sessions: SessionsFixtures.mixed().sessions,
+      sessions: [sessionOf({ activity: 'waiting' }), sessionOf({ sessionId: 's-2', life: 'ended', activity: null }),
+        sessionOf({ sessionId: 's-3', activity: 'idle', scripts: { badge: { state: 'failed' } } as SessionInfo['scripts'] })],
       activeSessionIds: new Set(),
     })
 

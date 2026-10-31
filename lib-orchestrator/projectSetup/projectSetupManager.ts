@@ -12,7 +12,6 @@ import type {
   SetupResolution,
   SetupScope,
   SetupStep,
-  SetupToolId,
 } from './projectSetup.types'
 import { SetupFamilies } from './setupFamilies'
 import { SetupPaths } from './setupPaths'
@@ -24,9 +23,9 @@ import type { WorktreeConfigRead } from './worktreeConfig'
  * says what comes out, and this sentence is the fence.
  *
  * Three levels of precedence, only the first of which is the project's own word: `.worktree.json`
- * beats everything, then a detected family whose command comes from this machine's settings, then
- * the family's built-in default. Keeping the command out of the detectors is what holds "what this
- * project is" and "how this machine installs it" apart.
+ * beats everything, then a detected family run with the variables this machine's settings give it,
+ * then the family's built-in default. Keeping the command out of the detectors is what holds "what
+ * this project is" and "how this machine installs it" apart.
  *
  * **That first tier is also the only foreign one, and `origin` is what says so.** A `.worktree.json`
  * arrives with a clone and was written by whoever authored the repository, while the other two tiers
@@ -47,7 +46,7 @@ export class ProjectSetupManager {
   constructor(deps: {
     /**
      * This machine's tier, read per call rather than captured. It arrives as a function because the
-     * client owns the file it lives in: the manager decides the command and never where the option
+     * client owns the file it lives in: the manager decides the variables and never where the option
      * came from, the same split `versioningModeOf` already makes for the session manager.
      */
     platformSettingsOf: () => PlatformSettingsValue
@@ -92,48 +91,67 @@ export class ProjectSetupManager {
         kind: 'setup',
         origin: 'project',
         steps: config.value.setup.map((command) => ({ command, cwd: projectCwd })),
+        variables: {},
       }
     }
     const root = await this.detectAt(projectRoot, repositoryRoot, projectCwd)
-    if (root.kind === 'steps') return { kind: 'setup', origin: 'machine', steps: root.steps }
+    if (root.kind === 'steps') return { kind: 'setup', origin: 'machine', steps: root.steps, variables: root.variables }
     else if (root.kind === 'refused') return { kind: 'none', reason: root.reason }
     else if (root.kind !== 'nothing') throw new Error(`Unknown detection at the root: ${JSON.stringify(root)}`)
     if (scope === 'project')
       return { kind: 'none', reason: ProjectSetupManager.nothingDetectedConst }
     else if (scope !== 'members') throw new Error(`Unknown setup scope: ${scope satisfies never}`)
     const steps: SetupStep[] = []
+    const variables: Record<string, string> = {}
     for (const member of await ProjectSetupManager.membersOf(projectRoot)) {
       const memberCwd = projectCwd === '' ? member : `${projectCwd}/${member}`
       const found = await this.detectAt(join(projectRoot, member), repositoryRoot, memberCwd)
       // Half a group installed is a worktree that is broken quietly, the same as half a project.
       if (found.kind === 'refused') return { kind: 'none', reason: `member ${member}: ${found.reason}` }
       // Two members of one workspace both answer its root, and installing it twice gains nothing.
-      else if (found.kind === 'steps')
+      else if (found.kind === 'steps') {
         steps.push(...found.steps.filter((step) =>
           !steps.some((known) => known.command === step.command && known.cwd === step.cwd)))
+        Object.assign(variables, found.variables)
+      }
       else if (found.kind !== 'nothing') throw new Error(`Unknown detection of a member: ${JSON.stringify(found)}`)
     }
     if (steps.length === 0) return { kind: 'none', reason: ProjectSetupManager.nothingDetectedConst }
-    return { kind: 'setup', origin: 'machine', steps }
+    return { kind: 'setup', origin: 'machine', steps, variables }
+  }
+
+  /**
+   * What a machine-chosen install would run with now, for every tool: the variables of a worktree
+   * whose record is older than the record keeping them, which are the settings its setup was
+   * resolved with unless somebody changed them since.
+   */
+  machineVariables(): Record<string, string> {
+    const settings = this.platformSettingsOf()
+    return Object.assign({}, ...SetupFamilies.catalogConst.flatMap((family) => family.tools)
+      .map((tool) => SetupFamilies.variablesOf(tool.toolId, settings))) as Record<string, string>
   }
 
   /** Every detector over one directory; `cwd` is that directory's repository-relative spelling. */
   private async detectAt(directory: string, repositoryRoot: string, cwd: string): Promise<DetectedAt> {
     const steps: SetupStep[] = []
+    const variables: Record<string, string> = {}
+    const settings = this.platformSettingsOf()
     for (const detector of this.detectors) {
       const detection = await detector.detect(directory, repositoryRoot)
       if (detection === null) continue
       if (detection.kind === 'ambiguous')
         return { kind: 'refused', reason: `${detector.familyId}: ${detection.reason}` }
-      else if (detection.kind === 'tool')
+      else if (detection.kind === 'tool') {
         steps.push({
-          command: this.commandOf(detection.toolId),
+          command: SetupFamilies.commandOf(detection.toolId),
           cwd: detection.installCwd ?? cwd,
         })
+        Object.assign(variables, SetupFamilies.variablesOf(detection.toolId, settings))
+      }
       else
         throw new Error(`Unknown detection: ${JSON.stringify(detection)}`)
     }
-    return steps.length === 0 ? { kind: 'nothing' } : { kind: 'steps', steps }
+    return steps.length === 0 ? { kind: 'nothing' } : { kind: 'steps', steps, variables }
   }
 
   /**
@@ -149,18 +167,10 @@ export class ProjectSetupManager {
       .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
   }
 
-  /**
-   * The one place a command is decided: settings first, then the family's built-in default. The
-   * table itself sits in `SetupFamilies` because the settings window prints it, and a table this
-   * class kept private would be retyped over there and drift from what actually runs.
-   */
-  private commandOf(toolId: SetupToolId): string {
-    return SetupFamilies.commandOf(toolId, this.platformSettingsOf())
-  }
 }
 
 /** What the detectors made of one directory: install steps, nothing of theirs, or a refusal. */
 type DetectedAt =
-  | { kind: 'steps'; steps: SetupStep[] }
+  | { kind: 'steps'; steps: SetupStep[]; variables: Record<string, string> }
   | { kind: 'nothing' }
   | { kind: 'refused'; reason: string }

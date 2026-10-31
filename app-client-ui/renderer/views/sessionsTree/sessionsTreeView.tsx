@@ -296,7 +296,9 @@ type RemoteRowMenu = (
 
 /** What every row below needs from the view, as one prop instead of six threaded through the tree. */
 interface SessionsTreeChrome {
-  groupItem(key: string, group: SessionGroup): ContextMenuSubmenu
+  /** `hiddenWhenRemote` is given for a local session row only, the one row that offers the mark. */
+  groupItem(key: string, group: SessionGroup, hiddenWhenRemote?: boolean): ContextMenuSubmenu
+  hiddenWhenRemote: ReadonlySet<string>
   pending: PendingConfirm | null
   collapsed: ReadonlySet<string>
   /** The one target THIS workspace window has in front. */
@@ -438,6 +440,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
   const trees = useMemo((): SessionsTrees | null => {
     if (!snapshot)
       return null
+    const local = RemoteSessionsTreeModel.locallyShown(snapshot, remoteSnapshot, groupState.hiddenWhenRemote)
     // Read once per build, so both trees answer "how long ago did this close" against one moment.
     const now = Date.now()
     /*
@@ -448,7 +451,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     const cursorOf = (stateGroup?: TreeStateGroup, group: SessionGroup = 'none'): string =>
       group === 'none' ? stateGroup ?? 'both' : `group:${group}`
     const build = (stateGroup?: TreeStateGroup, group: SessionGroup = 'none'): TreeResult => SessionsTreeModel.build(
-      snapshot,
+      local,
       { filters, filterText, now, inFront: visibleTargetKeys, tabbed: tabbedTargetKeys, stateGroup,
         assignments, group, nesting, openTaskKeys },
       marks,
@@ -485,7 +488,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       })) }
     else
       throw new Error(`Unknown sessions view: ${JSON.stringify(view)}`)
-  }, [snapshot, remoteSnapshot, filters, filterText, marks, view, visibleTargetKeys, tabbedTargetKeys, commitOpen, assignments, sections, taskListings, remoteTaskListings, nesting, openTaskKeys, expiryRevision])
+  }, [snapshot, remoteSnapshot, filters, filterText, marks, view, visibleTargetKeys, tabbedTargetKeys, commitOpen, assignments, groupState.hiddenWhenRemote, sections, taskListings, remoteTaskListings, nesting, openTaskKeys, expiryRevision])
 
   useEffect(() => {
     if (trees === null) return
@@ -841,6 +844,8 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
             onFinalizeAsk(asked)
             return
           }
+          // The answer comes once the Finish is saved; Session actions shows its steps while they run.
+          WorkflowPortsOf.openWorkflow(sessionId)
           run(SessionsTreeActions.keyOf(targetKey, action), 'Finish', async () => {
             const answer = await AppControl.sessionsDone('sessions.finishWorktree', {
               session: AppControl.sessionOf(sessionId), choice: 'commit',
@@ -858,7 +863,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
               }
             }
             return answer
-          }, () => WorkflowPortsOf.openWorkflow(sessionId))
+          })
           return
         }
         const live = SessionNodeState.isLive(found.info.life)
@@ -971,14 +976,23 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
    * collapses a row, brings a tab to the front - and not when a session prints a line.
    */
   const chrome: SessionsTreeChrome = useMemo(() => ({
-    groupItem: (key, group) => ({
+    groupItem: (key, group, hiddenWhenRemote) => ({
       key: 'groups', label: 'Groups', disabled: !groupState.ready || groupState.saving,
-      children: sections.map((section) => ({
-        key: section.id, label: SessionsGroupsState.labelOf(section), checked: group === section.id,
-        disabled: !groupState.ready || groupState.saving,
-        onSelect: () => groupState.assign(key, section.id),
-      })),
+      children: [
+        ...sections.map((section) => ({
+          key: section.id, label: SessionsGroupsState.labelOf(section), checked: group === section.id,
+          disabled: !groupState.ready || groupState.saving,
+          onSelect: () => groupState.assign(key, section.id),
+        })),
+        ...(hiddenWhenRemote === undefined ? [] : [{ kind: 'separator' as const, key: 'hidden-when-remote-separator' }, {
+          key: 'hidden-when-remote', label: 'Hidden when remote', checked: hiddenWhenRemote,
+          title: 'While a remote computer is connected to this session, show it only under Remote connections',
+          disabled: !groupState.ready || groupState.saving,
+          onSelect: () => groupState.hideWhenRemote(key, !hiddenWhenRemote),
+        }]),
+      ],
     }),
+    hiddenWhenRemote: groupState.hiddenWhenRemote,
     pending,
     collapsed,
     inFront: activeTargetKey,
@@ -1028,7 +1042,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     pending, collapsed, activeTargetKey, inFlight, awaitingAsk,
     toggle, request, onLaunch, onOpenTerminal, props.onOpenTask, props.onOpenSessionActions, openMenu, openGroupMenu, openRemoteMenu,
     onOpenSettings, remotePorts, remoteSnapshot, onCloseTerminal,
-    groupState.ready, groupState.saving, groupState.assign, sections,
+    groupState.ready, groupState.saving, groupState.assign, groupState.hideWhenRemote, groupState.hiddenWhenRemote, sections,
   ])
 
   const resetFilters = (): void => {
@@ -1243,7 +1257,8 @@ function TreeMenu(props: {
         // A nested row is filed in its parent's group, so a group of its own would change nothing on screen.
         groupItem={menu.node.filedWithParent
           ? undefined
-          : props.chrome.groupItem(SessionsTreeModel.groupKeyOf(menu.node), menu.node.group)}
+          : props.chrome.groupItem(SessionsTreeModel.groupKeyOf(menu.node), menu.node.group,
+            props.chrome.hiddenWhenRemote.has(SessionsTreeModel.groupKeyOf(menu.node)))}
         onAction={(action) => props.chrome.request(menu.node, action)}
         onSwitchAccount={accounts => props.onSwitchAccount(menu.node.sessionId, accounts)}
         onClose={onClose}

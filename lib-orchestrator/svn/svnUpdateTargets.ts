@@ -25,6 +25,7 @@ export interface SvnUpdateSnapshot {
 }
 
 export class SvnUpdateTargets {
+  private static readonly infoBatchConst = 40
   private readonly svn: CommandRunner
 
   constructor(svn: CommandRunner) { this.svn = svn }
@@ -37,7 +38,10 @@ export class SvnUpdateTargets {
   async snapshot(target: SvnUpdateTarget, discover = true, protect = false): Promise<SvnUpdateSnapshot> {
     if (target.kind === 'file') return { properties: {}, localMappingChanges: false, children: [], missing: [], mismatched: [] }
     const properties = SvnExternalDefinitions.properties(await this.run(target.path, ['propget', 'svn:externals', '-R', '--xml', '--', '.']), target.path)
-    const base = SvnExternalDefinitions.properties(await this.run(target.path, ['propget', 'svn:externals', '-R', '--xml', '-r', 'BASE', '--', '.']), target.path)
+    // BASE tells a local mapping change apart; only the reading before an update asks for it.
+    const base = protect
+      ? SvnExternalDefinitions.properties(await this.run(target.path, ['propget', 'svn:externals', '-R', '--xml', '-r', 'BASE', '--', '.']), target.path)
+      : properties
     const children: SvnUpdateTarget[] = [], missing: string[] = [], mismatched: string[] = []
     const protectedMounts: NonNullable<SvnUpdateSnapshot['protectedMounts']> = []
     if (protect) for (const definitions of [base, properties]) for (const [carrier, value] of Object.entries(definitions))
@@ -54,24 +58,37 @@ export class SvnUpdateTargets {
           protectedMounts.push({ path: definition.path, url: local.url, repository: local.repository })
       }
     if (!discover) return { properties, localMappingChanges: JSON.stringify(properties) !== JSON.stringify(base), children, missing, mismatched, protectedMounts }
-    for (const [carrier, value] of Object.entries(properties)) {
-      const carrierInfo = await this.info(target.path, `${relative(target.path, carrier) || '.'}@`)
-      for (const definition of SvnExternalDefinitions.parse(carrier, value)) {
-        const url = SvnExternalDefinitions.url(definition.url, carrierInfo.url, carrierInfo.repository)
-        const revision = definition.revision ?? SvnExternalDefinitions.peg(url) ?? 'HEAD'
-        const incoming = await this.info(target.path, url, revision)
-        const child = { path: definition.path, url: incoming.url, repository: incoming.repository, revision: incoming.revision,
-          kind: incoming.kind, pinned: definition.revision !== undefined || SvnExternalDefinitions.peg(url) !== undefined }
-        if (children.some((row) => PathCompare.comparable(row.path) === PathCompare.comparable(child.path)))
-          throw new Error(`More than one external owns ${child.path}`)
-        children.push(child)
-        const disk = await lstat(child.path).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error })
-        if (disk === null) { missing.push(child.path); continue }
-        if (disk.isSymbolicLink()) throw new Error(`External mount is a link: ${child.path}`)
-        const local = await this.localInfo(child)
-        if (local.url !== child.url || local.repository !== child.repository || local.kind !== child.kind) mismatched.push(child.path)
-        if (child.kind === 'file' && !child.pinned) child.revision = local.revision
-      }
+    // One svn info per group, not per definition: each call costs a process and a server round trip.
+    const carriers = Object.keys(properties)
+    const carrierInfos = await this.infos(target.path, carriers.map((carrier) => `${relative(target.path, carrier) || '.'}@`))
+    const wanted = carriers.flatMap((carrier, index) => SvnExternalDefinitions.parse(carrier, properties[carrier]).map((definition) => {
+      const url = SvnExternalDefinitions.url(definition.url, carrierInfos[index].url, carrierInfos[index].repository)
+      return { definition, url, revision: definition.revision ?? SvnExternalDefinitions.peg(url) ?? 'HEAD' }
+    }))
+    const incoming = new Map<number, SvnInfoEntry>()
+    for (const revision of new Set(wanted.map((row) => row.revision))) {
+      const indexes = wanted.flatMap((row, index) => row.revision === revision ? [index] : [])
+      const entries = await this.infos(target.path, indexes.map((index) => wanted[index].url), revision)
+      indexes.forEach((index, position) => incoming.set(index, entries[position]))
+    }
+    const present: SvnUpdateTarget[] = []
+    for (const [index, { definition, url }] of wanted.entries()) {
+      const remote = incoming.get(index)!
+      const child = { path: definition.path, url: remote.url, repository: remote.repository, revision: remote.revision,
+        kind: remote.kind, pinned: definition.revision !== undefined || SvnExternalDefinitions.peg(url) !== undefined }
+      if (children.some((row) => PathCompare.comparable(row.path) === PathCompare.comparable(child.path)))
+        throw new Error(`More than one external owns ${child.path}`)
+      children.push(child)
+      const disk = await lstat(child.path).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error })
+      if (disk === null) { missing.push(child.path); continue }
+      if (disk.isSymbolicLink()) throw new Error(`External mount is a link: ${child.path}`)
+      present.push(child)
+    }
+    const locals = await this.infos(target.path, present.map((child) => `${relative(target.path, child.path)}@`))
+    for (const [index, child] of present.entries()) {
+      const local = locals[index]
+      if (local.url !== child.url || local.repository !== child.repository || local.kind !== child.kind) mismatched.push(child.path)
+      if (child.kind === 'file' && !child.pinned) child.revision = local.revision
     }
     return { properties, localMappingChanges: JSON.stringify(properties) !== JSON.stringify(base),
       children: children.sort((left, right) => left.path.localeCompare(right.path)), missing, mismatched, protectedMounts }
@@ -99,6 +116,20 @@ export class SvnUpdateTargets {
 
   private localInfo(target: SvnUpdateTarget): Promise<SvnInfoEntry> {
     return target.kind === 'dir' ? this.info(target.path, '.') : this.info(dirname(target.path), `${relative(dirname(target.path), target.path)}@`)
+  }
+
+  /** The entries of `targets` in their order; svn info answers several targets in one call, in the order given. */
+  private async infos(cwd: string, targets: readonly string[], revision?: string): Promise<SvnInfoEntry[]> {
+    const entries: SvnInfoEntry[] = []
+    // Bounded, so a carrier with many definitions stays below the Windows command-line limit.
+    for (let start = 0; start < targets.length; start += SvnUpdateTargets.infoBatchConst) {
+      const batch = targets.slice(start, start + SvnUpdateTargets.infoBatchConst)
+      const xml = await this.run(cwd, ['info', '--xml', ...revision === undefined ? [] : ['-r', revision], '--', ...batch])
+      const found = SvnWorktreeEvidence.infoEntries(xml)
+      if (found.length !== batch.length) throw new Error(`svn info did not identify exactly one entry per target: ${batch.join(', ')}`)
+      entries.push(...found)
+    }
+    return entries
   }
 
   private async info(cwd: string, target: string, revision?: string): Promise<SvnInfoEntry> {

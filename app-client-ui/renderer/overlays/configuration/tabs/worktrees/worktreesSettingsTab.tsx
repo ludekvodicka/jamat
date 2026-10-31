@@ -137,9 +137,16 @@ export function WorktreesSettingsTab(props: ConfigurationTabProps): React.JSX.El
           />
           <label htmlFor={pnpmId}>
             pnpm: global virtual store
-            <span><code>{SetupFamilies.pnpmGlobalVirtualStoreCommandConst}</code></span>
+            <span><code>{`${SetupFamilies.pnpmGlobalVirtualStoreVariableConst}=true`}</code></span>
           </label>
         </div>
+        <p className="jamat-configuration-worktrees__note">
+          Set for the detected <code>pnpm install</code> and for every script, agent and terminal Jamat
+          then starts inside that worktree, so a later pnpm command keeps the store instead of
+          reinstalling. Each worktree keeps the value it was set up with; a change applies to new
+          worktrees. A Next.js project with Turbopack also needs <code>turbopack.root</code> above
+          the store.
+        </p>
       </ConfigurationSection>
 
       {state.project !== null && (

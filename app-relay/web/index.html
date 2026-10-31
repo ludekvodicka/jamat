@@ -231,9 +231,10 @@
   .sort-tab.active { background: var(--fg2); color: var(--bg); }
 
   /* PC selector cards */
+  #pc-screen { padding: 24px 16px 80px; }
   .pc-card {
     background: var(--bg2); border: 2px solid var(--border); border-radius: 8px;
-    padding: 20px 28px; cursor: pointer; min-width: 180px; max-width: 300px; text-align: center;
+    padding: 20px 28px; cursor: pointer; min-width: 240px; max-width: 360px; width: 100%; text-align: center;
     transition: border-color 0.2s, background 0.2s;
   }
   .pc-card:hover { border-color: var(--accent); background: var(--bg3); }
@@ -249,6 +250,12 @@
     padding: 4px 12px; border-radius: 4px; font-size: 12px; font-family: inherit;
     cursor: pointer; margin-top: 4px;
   }
+  .wake-btn-small:disabled { opacity: 0.5; cursor: not-allowed; }
+  .invitation-panel { margin-top: 16px; text-align: left; font-size: 12px; line-height: 1.5; }
+  .invitation-panel h3, .invitation-panel p { margin: 10px 0; }
+  .invitation-panel ol { padding-left: 18px; }
+  .invitation-panel textarea { width: 100%; padding: 8px; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; resize: vertical; }
+  .invitation-warning { margin: 12px 0 4px; font-size: 12px; line-height: 1.5; color: var(--fg2); }
 </style>
 </head>
 <body>
@@ -261,6 +268,7 @@
 <div id="pc-screen" class="screen active">
   <div style="text-align:center;margin-bottom:20px;font-size:18px;color:var(--accent)">Select Computer <button class="wake-btn-small" onclick="initConnection()">Obnovit</button></div>
   <div id="pc-list" style="display:flex;gap:16px;justify-content:center;flex-wrap:wrap"></div>
+  <footer id="wake-service-status" class="wake-status" style="text-align:center" role="status">Načítání služby probouzení…</footer>
   <div id="pc-wake-status" class="wake-status" style="text-align:center;margin-top:16px"></div>
 </div>
 
@@ -315,6 +323,7 @@
 <div class="toast" id="toast"></div>
 
 <script src="shared.js"></script>
+<script src="wakeServiceModel.js"></script>
 <script>
 
 // --- State ---
@@ -331,6 +340,19 @@ let launching = false;
 let currentVirtualFolder = null;
 let virtualFoldersEnabled = true;
 let sortMode = "usage";
+let wakeService = { state: 'not-configured' };
+let wakeServiceRead = 0;
+let loginRedirected = false;
+const launcherStates = new Map();
+const launcherErrors = new Map();
+const launcherReads = new Map();
+const launcherReadProblems = new Map();
+const wakeActions = new Map();
+const wakeRequests = new Set();
+const wakeGenerations = new Map();
+const wakePolls = new Map();
+const invitations = new Map();
+let invitationTimer = null;
 
 // --- API ---
 async function api(path, opts = {}) {
@@ -355,8 +377,11 @@ async function globalApi(path, opts = {}) {
       ...opts,
     });
     const data = await res.json();
-    if (res.status === 401 && data.loginUrl === '/login')
+    if (res.status === 401 && data.loginUrl === '/login') {
+      loginRedirected = true;
+      for (const id of wakePolls.keys()) stopWakePoll(id);
       window.location.replace('/login');
+    }
     return data;
   } catch {
     return { error: "Network error" };
@@ -382,6 +407,7 @@ function toggleVirtualFolders() {
 // --- PC Selector ---
 async function initConnection() {
   showScreen("pc-screen");
+  void refreshWakeService();
   const listData = await globalApi("/pcs");
   if (listData.error) { document.getElementById("pc-wake-status").textContent = "Error: " + listData.error; return; }
   allPcs = listData.pcs.map(pc => ({ ...pc, online: null }));
@@ -395,22 +421,227 @@ async function initConnection() {
   }
 }
 
+async function refreshWakeService() {
+  const read = ++wakeServiceRead;
+  const result = await globalApi('/wake-service');
+  if (loginRedirected || read !== wakeServiceRead) return;
+  wakeService = result.state ? result : { state: 'unreachable' };
+  document.getElementById('wake-service-status').textContent = WakeServiceModel.footerText(wakeService);
+  renderPcCards();
+  if (wakeService.state === 'ready')
+    for (const pc of wakeService.computers)
+      if (pc.hasLauncher) void refreshLauncher(pc.id);
+}
+
+async function refreshLauncher(pcId, poll) {
+  const read = (launcherReads.get(pcId) || 0) + 1;
+  launcherReads.set(pcId, read);
+  const generation = wakeGenerations.get(pcId);
+  const result = await globalApi(`/wake-service/${encodeURIComponent(pcId)}/launcher`);
+  if (loginRedirected || launcherReads.get(pcId) !== read || wakeGenerations.get(pcId) !== generation
+      || (poll && wakePolls.get(pcId) !== poll)) return;
+  if (['ready', 'stopped', 'starting', 'failed', 'unavailable'].includes(result.state)) {
+    launcherStates.set(pcId, result.state);
+    launcherErrors.set(pcId, result.error);
+    launcherReadProblems.delete(pcId);
+  } else {
+    launcherStates.delete(pcId);
+    launcherErrors.delete(pcId);
+    launcherReadProblems.set(pcId, { problem: result.problem || 'unreachable', retryAfter: result.retryAfter });
+  }
+  renderPcCards();
+  return launcherStates.get(pcId);
+}
+
 function renderPcCards() {
-  const el = document.getElementById("pc-list");
-  el.innerHTML = allPcs.map(pc => {
+  const el = document.getElementById('pc-list');
+  el.replaceChildren(...allPcs.map(pc => {
+    const card = document.createElement('div');
+    card.className = 'pc-card';
+    card.onclick = () => { if (pc.online) selectPc(pc.id); };
     const checking = pc.online === null;
-    const dotClass = checking ? "checking" : (pc.online ? "online" : "offline");
-    const statusText = checking ? "Checking..." : esc(pc.detail || (pc.online ? "Online" : "Agent nedostupný"));
-    const statusColor = checking ? "var(--orange)" : (pc.online ? "var(--green)" : "var(--fg2)");
-    const wakeBtn = (!checking && !pc.online) ? `<div class="pc-actions"><button class="wake-btn-small" onclick="event.stopPropagation();wakePc('${pc.id}')">Wake Up</button></div>` : "";
-    const onclick = !checking && pc.online ? `selectPc('${pc.id}')` : "";
-    return `<div class="pc-card" onclick="${onclick}">
-      <span class="pc-dot ${dotClass}"></span>
-      <div class="pc-label">${esc(pc.label)}</div>
-      <div class="pc-status" style="color:${statusColor}">${statusText}</div>
-      ${wakeBtn}
-    </div>`;
-  }).join("");
+    const view = WakeServiceModel.cardView(!!pc.online, wakeService, pc.id, launcherStates.get(pc.id),
+      wakeActions.get(pc.id), launcherReadProblems.get(pc.id), launcherErrors.get(pc.id));
+    const dot = document.createElement('span');
+    dot.className = 'pc-dot ' + (checking ? 'checking' : pc.online ? 'online' : 'offline');
+    const label = document.createElement('div');
+    label.className = 'pc-label';
+    label.textContent = pc.label;
+    const status = document.createElement('div');
+    status.className = 'pc-status';
+    status.textContent = checking ? 'Checking...' : view.launcherText || pc.detail || 'Agent nedostupný';
+    const actions = document.createElement('div');
+    actions.className = 'pc-actions';
+    for (const [visible, action, text] of [[view.showWake, 'wake', 'Probudit'], [view.showStart, 'start', 'Spustit Jamat']]) {
+      if (!visible) continue;
+      const button = document.createElement('button');
+      button.className = 'wake-btn-small';
+      button.textContent = text;
+      button.disabled = wakeRequests.has(pc.id);
+      button.onclick = event => { event.stopPropagation(); void runWakeAction(pc.id, action); };
+      actions.appendChild(button);
+    }
+    if (view.showSetup) {
+      const warning = document.createElement('p');
+      warning.className = 'invitation-warning';
+      warning.textContent = WakeServiceModel.invitationWarning(pc.label);
+      const setup = document.createElement('button');
+      setup.className = 'wake-btn-small';
+      setup.textContent = 'Nastavit spouštění Jamatu';
+      setup.disabled = wakeRequests.has(pc.id);
+      setup.onclick = event => { event.stopPropagation(); void runWakeAction(pc.id, 'invitation'); };
+      actions.append(warning, setup);
+    }
+    const notice = document.createElement('p');
+    notice.className = 'wake-status';
+    notice.setAttribute('role', 'status');
+    notice.textContent = view.notice || '';
+    card.append(dot, label, status, actions, notice);
+    if (view.readProblemText) {
+      const readProblem = document.createElement('p');
+      readProblem.className = 'wake-status';
+      readProblem.setAttribute('role', 'status');
+      readProblem.textContent = view.readProblemText;
+      card.appendChild(readProblem);
+    }
+    const invitation = invitations.get(pc.id);
+    if (invitation) card.appendChild(invitationPanel(pc, invitation));
+    return card;
+  }));
+}
+
+async function runWakeAction(pcId, action) {
+  if (wakeRequests.has(pcId) || loginRedirected) return;
+  wakeRequests.add(pcId);
+  renderPcCards();
+  try {
+    const result = await globalApi(`/wake-service/${encodeURIComponent(pcId)}/${action}`, { method: 'POST' });
+    if (loginRedirected) return;
+    if (result.sent === true) {
+      wakeGenerations.set(pcId, (wakeGenerations.get(pcId) || 0) + 1);
+      wakeActions.set(pcId, { kind: 'waking' });
+      startWakePoll(pcId, 'wake');
+    } else if (result.invitationUrl) {
+      invitations.set(pcId, { url: result.invitationUrl, expiresAt: performance.now() + result.expiresInSeconds * 1000 });
+      wakeActions.set(pcId, { kind: 'idle' });
+      if (!invitationTimer) invitationTimer = setInterval(updateInvitationCountdowns, 1000);
+    } else if (result.state === 'starting' || result.state === 'ready') {
+      wakeGenerations.set(pcId, (wakeGenerations.get(pcId) || 0) + 1);
+      launcherStates.set(pcId, result.state);
+      launcherErrors.delete(pcId);
+      launcherReadProblems.delete(pcId);
+      wakeActions.set(pcId, { kind: result.state === 'starting' ? 'starting' : 'idle' });
+      if (result.state === 'starting') startWakePoll(pcId, 'start');
+      else stopWakePoll(pcId);
+    } else
+      wakeActions.set(pcId, { kind: 'problem', problem: result.problem || 'unreachable', retryAfter: result.retryAfter });
+  } finally {
+    wakeRequests.delete(pcId);
+    renderPcCards();
+  }
+}
+
+function invitationPanel(pc, invitation) {
+  const panel = document.createElement('section');
+  panel.className = 'invitation-panel';
+  panel.onclick = event => event.stopPropagation();
+  const heading = document.createElement('h3');
+  heading.textContent = 'Nastavit spouštění Jamatu';
+  const instructions = document.createElement('ol');
+  for (const text of WakeServiceModel.invitationInstructions(pc.label)) {
+    const item = document.createElement('li');
+    item.textContent = text;
+    instructions.appendChild(item);
+  }
+  const label = document.createElement('label');
+  label.htmlFor = `invitation-${pc.id}`;
+  label.textContent = `Pozvánka pro ${pc.label}`;
+  const field = document.createElement('textarea');
+  field.id = label.htmlFor;
+  field.readOnly = true;
+  field.rows = 3;
+  field.spellcheck = false;
+  field.value = invitation.url;
+  const copy = document.createElement('button');
+  copy.className = 'wake-btn-small';
+  copy.textContent = 'Kopírovat';
+  copy.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(invitation.url);
+      copy.textContent = 'Zkopírováno';
+    } catch {
+      field.select();
+      copy.textContent = 'Označeno. Zkopírujte ručně.';
+    }
+  };
+  const countdown = document.createElement('p');
+  countdown.id = `invitation-countdown-${pc.id}`;
+  countdown.textContent = WakeServiceModel.invitationCountdown((invitation.expiresAt - performance.now()) / 1000);
+  const validity = document.createElement('p');
+  validity.textContent = 'Pozvánka platí 5 minut a lze ji použít jednou, pouze na určeném počítači. Nová pozvánka zneplatní předchozí.';
+  const reload = document.createElement('p');
+  reload.textContent = 'Po obnovení stránky pozvánka zmizí.';
+  panel.append(heading, instructions, label, field, copy, countdown, validity, reload);
+  return panel;
+}
+
+function updateInvitationCountdowns() {
+  let active = false;
+  for (const [id, invitation] of invitations) {
+    const seconds = (invitation.expiresAt - performance.now()) / 1000;
+    if (seconds > 0) active = true;
+    const countdown = document.getElementById(`invitation-countdown-${id}`);
+    if (countdown) countdown.textContent = WakeServiceModel.invitationCountdown(seconds);
+  }
+  if (!active) {
+    clearInterval(invitationTimer);
+    invitationTimer = null;
+  }
+}
+
+function stopWakePoll(pcId) {
+  const poll = wakePolls.get(pcId);
+  if (!poll) return;
+  clearInterval(poll.timer);
+  clearTimeout(poll.expiry);
+  wakePolls.delete(pcId);
+}
+
+function startWakePoll(pcId, action) {
+  stopWakePoll(pcId);
+  let duration;
+  let timeoutKind;
+  switch (action) {
+    case 'wake': duration = 90000; timeoutKind = 'wake-timeout'; break;
+    case 'start': duration = 180000; timeoutKind = 'start-timeout'; break;
+    default: throw new Error('Unknown wake-service polling action');
+  }
+  const poll = { busy: false };
+  wakePolls.set(pcId, poll);
+  poll.expiry = setTimeout(() => {
+    stopWakePoll(pcId);
+    if (wakeActions.get(pcId)?.kind !== 'problem') wakeActions.set(pcId, { kind: timeoutKind });
+    renderPcCards();
+  }, duration);
+  poll.timer = setInterval(async () => {
+    if (poll.busy) return;
+    poll.busy = true;
+    const hasLauncher = wakeService.state === 'ready' && wakeService.computers.some(pc => pc.id === pcId && pc.hasLauncher);
+    const [peer, state] = await Promise.all([
+      globalApi(`/pc-status?pc=${encodeURIComponent(pcId)}`),
+      hasLauncher ? refreshLauncher(pcId, poll) : undefined,
+    ]);
+    if (wakePolls.get(pcId) !== poll || loginRedirected) return;
+    poll.busy = false;
+    const pc = allPcs.find(item => item.id === pcId);
+    if (pc && !peer.error) Object.assign(pc, peer);
+    if (peer.online || (action === 'start' && (state === 'ready' || state === 'failed'))) {
+      stopWakePoll(pcId);
+      if (wakeActions.get(pcId)?.kind !== 'problem') wakeActions.set(pcId, { kind: 'idle' });
+      if (peer.online) setTimeout(() => selectPc(pcId), 500);
+    }
+    renderPcCards();
+  }, 3000);
 }
 
 function selectPc(pcId) {
@@ -418,41 +649,6 @@ function selectPc(pcId) {
   if (pc?.href) { window.location.assign(pc.href); return; }
   activePcId = pcId;
   showMainScreen();
-}
-
-async function wakePc(pcId) {
-  const status = document.getElementById("pc-wake-status");
-  status.textContent = "Sending Wake-on-LAN...";
-  const result = await globalApi(`/wol?pc=${pcId}`, { method: "POST" });
-  if (result.error) { status.textContent = result.error; return; }
-  status.textContent = "Magic packet sent. Waiting...";
-
-  // Update card to show "waking"
-  const pc = allPcs.find(p => p.id === pcId);
-  if (pc) {
-    const card = document.querySelector(`.pc-card:nth-child(${allPcs.indexOf(pc) + 1}) .pc-dot`);
-    if (card) { card.className = "pc-dot checking"; }
-    const statusEl = document.querySelector(`.pc-card:nth-child(${allPcs.indexOf(pc) + 1}) .pc-status`);
-    if (statusEl) { statusEl.textContent = "Waking..."; statusEl.style.color = "var(--orange)"; }
-  }
-
-  let attempts = 0;
-  const poll = setInterval(async () => {
-    attempts++;
-    status.textContent = `Waiting for ${pc?.label || pcId}... (${attempts * 2}s)`;
-    const check = await globalApi(`/pc-status?pc=${pcId}`);
-    if (check.online) {
-      clearInterval(poll);
-      status.textContent = `${pc?.label || pcId} is online!`;
-      if (pc) Object.assign(pc, check);
-      renderPcCards();
-      setTimeout(() => selectPc(pcId), 500);
-    } else if (attempts >= 30) {
-      clearInterval(poll);
-      status.textContent = "PC did not respond. Try again.";
-      renderPcCards();
-    }
-  }, 2000);
 }
 
 // --- Screens ---

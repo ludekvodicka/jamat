@@ -24,6 +24,11 @@ export interface VersioningSettingsValue {
    * interruption, so the return expires rather than waiting for however long the commit took.
    */
   returnToPreviousSessionWithinMinutes?: number
+  /**
+   * How long the person must type nothing before something an agent opened takes the screen, in
+   * whole seconds; 0 brings it forward as soon as a workspace window has the focus.
+   */
+  switchAfterIdleSeconds?: number
   closeCommitOnSuccess?: boolean
   commitSplitRatio?: number
 }
@@ -41,6 +46,8 @@ export class VersioningSettings {
   static readonly defaultModeConst: VersioningMode = 'checkpoints'
   static readonly defaultReturnWithinMinutesConst = 5
   static readonly maxReturnWithinMinutesConst = 1_440
+  static readonly defaultSwitchAfterIdleSecondsConst = 20
+  static readonly maxSwitchAfterIdleSecondsConst = 600
   static readonly defaultCommitSplitRatioConst = 0.75
   static readonly minCommitSplitRatioConst = 0.15
   static readonly maxCommitSplitRatioConst = 0.85
@@ -89,15 +96,15 @@ export class VersioningSettings {
   static defaultValue(): VersioningSettingsValue {
     return { mode: VersioningSettings.defaultModeConst, diffTool: { kind: 'internal' }, activateSessionOnCommit: true,
       returnToPreviousSessionAfterCommit: true, returnToPreviousSessionWithinMinutes: VersioningSettings.defaultReturnWithinMinutesConst,
-      closeCommitOnSuccess: true }
+      switchAfterIdleSeconds: VersioningSettings.defaultSwitchAfterIdleSecondsConst, closeCommitOnSuccess: true }
   }
 
   static fieldsOf(field: VersioningSettingsField): readonly (keyof VersioningSettingsValue)[] {
     if (field === 'commitReview')
-      return ['activateSessionOnCommit', 'returnToPreviousSessionAfterCommit', 'returnToPreviousSessionWithinMinutes']
+      return ['activateSessionOnCommit', 'returnToPreviousSessionAfterCommit', 'returnToPreviousSessionWithinMinutes', 'switchAfterIdleSeconds']
     else if (field === 'mode' || field === 'diffTool' || field === 'activateSessionOnCommit'
       || field === 'returnToPreviousSessionAfterCommit' || field === 'returnToPreviousSessionWithinMinutes'
-      || field === 'closeCommitOnSuccess' || field === 'commitSplitRatio') return [field]
+      || field === 'switchAfterIdleSeconds' || field === 'closeCommitOnSuccess' || field === 'commitSplitRatio') return [field]
     else throw new Error(`Unknown versioning setting: ${String(field)}`)
   }
 
@@ -133,6 +140,10 @@ export class VersioningSettings {
       ? document.returnToPreviousSessionWithinMinutes : VersioningSettings.defaultReturnWithinMinutesConst
     if (document.returnToPreviousSessionWithinMinutes !== undefined && !VersioningSettings.isReturnWithin(document.returnToPreviousSessionWithinMinutes))
       report(`The commit return window is unusable; reading it as ${VersioningSettings.defaultReturnWithinMinutesConst} minutes`)
+    const switchAfterIdleSeconds = VersioningSettings.isSwitchAfterIdle(document.switchAfterIdleSeconds)
+      ? document.switchAfterIdleSeconds : VersioningSettings.defaultSwitchAfterIdleSecondsConst
+    if (document.switchAfterIdleSeconds !== undefined && !VersioningSettings.isSwitchAfterIdle(document.switchAfterIdleSeconds))
+      report(`The switch-after-typing delay is unusable; reading it as ${VersioningSettings.defaultSwitchAfterIdleSecondsConst} seconds`)
     const closeCommitOnSuccess = typeof document.closeCommitOnSuccess === 'boolean' ? document.closeCommitOnSuccess : true
     if (document.closeCommitOnSuccess !== undefined && typeof document.closeCommitOnSuccess !== 'boolean')
       report('The commit closing setting is unusable; reading it as enabled')
@@ -141,7 +152,7 @@ export class VersioningSettings {
     if (document.commitSplitRatio !== undefined && !VersioningSettings.isCommitSplitRatio(document.commitSplitRatio))
       report('The commit split ratio is unusable; reading it as 75%')
     return { ...document, mode, diffTool, activateSessionOnCommit, returnToPreviousSessionAfterCommit,
-      returnToPreviousSessionWithinMinutes, closeCommitOnSuccess,
+      returnToPreviousSessionWithinMinutes, switchAfterIdleSeconds, closeCommitOnSuccess,
       commitSplitRatio: document.commitSplitRatio === undefined ? undefined : commitSplitRatio }
   }
 
@@ -153,6 +164,7 @@ export class VersioningSettings {
       && (document.activateSessionOnCommit === undefined || typeof document.activateSessionOnCommit === 'boolean')
       && (document.returnToPreviousSessionAfterCommit === undefined || typeof document.returnToPreviousSessionAfterCommit === 'boolean')
       && (document.returnToPreviousSessionWithinMinutes === undefined || VersioningSettings.isReturnWithin(document.returnToPreviousSessionWithinMinutes))
+      && (document.switchAfterIdleSeconds === undefined || VersioningSettings.isSwitchAfterIdle(document.switchAfterIdleSeconds))
       && (document.closeCommitOnSuccess === undefined || typeof document.closeCommitOnSuccess === 'boolean')
       && (document.commitSplitRatio === undefined || VersioningSettings.isCommitSplitRatio(document.commitSplitRatio))
   }
@@ -164,6 +176,16 @@ export class VersioningSettings {
   static returnWindowMilliseconds(value: VersioningSettingsValue): number | null {
     const minutes = value.returnToPreviousSessionWithinMinutes ?? VersioningSettings.defaultReturnWithinMinutesConst
     return minutes === 0 ? null : minutes * 60_000
+  }
+
+  /** The quiet time as the attention queue takes it. */
+  static idleMilliseconds(value: VersioningSettingsValue): number {
+    return (value.switchAfterIdleSeconds ?? VersioningSettings.defaultSwitchAfterIdleSecondsConst) * 1_000
+  }
+
+  private static isSwitchAfterIdle(value: unknown): value is number {
+    return typeof value === 'number' && Number.isInteger(value) && value >= 0
+      && value <= VersioningSettings.maxSwitchAfterIdleSecondsConst
   }
 
   private static isReturnWithin(value: unknown): value is number {

@@ -27,7 +27,7 @@ describe('app-client-ui/app/versioning/sessionReviewPortAdapter', () => {
 
   it.each([
     ['message-empty', 'invalid-spec'], ['message-too-long', 'invalid-spec'], ['no-working-copy', 'not-a-repo'],
-    ['message-edited', 'message-edited'], ['busy', 'already-running'],
+    ['message-edited', 'message-edited'], ['message-prefix', 'message-unchecked'], ['busy', 'already-running'],
   ] as const)('names a %s proposal as %s', async (code, expected) => {
     const { adapter } = adapterOf({ ok: false, code, detail: 'refused' })
     expect(await adapter.propose({ sessionId: 's1', directory: scopeConst, message: 'x' }))

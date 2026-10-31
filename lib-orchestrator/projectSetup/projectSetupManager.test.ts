@@ -54,6 +54,7 @@ describe('lib-orchestrator/projectSetup/projectSetupManager', () => {
     })
     expect(await resolved(harness().manager, root, root)).toEqual({
       kind: 'setup',
+      variables: {},
       origin: 'project',
       steps: [
         { command: './bootstrap.sh', cwd: '' },
@@ -94,6 +95,7 @@ describe('lib-orchestrator/projectSetup/projectSetupManager', () => {
     const root = repository({ 'package.json': '{}', 'pyproject.toml': '[tool.uv]\n' })
     expect(await resolved(harness().manager, root, root)).toEqual({
       kind: 'setup',
+      variables: {},
       origin: 'machine',
       steps: [
         { command: 'npm install', cwd: '' },
@@ -118,6 +120,7 @@ describe('lib-orchestrator/projectSetup/projectSetupManager', () => {
     const root = repository({ 'apps/web/package.json': '{}' })
     expect(await resolved(harness().manager, join(root, 'apps', 'web'), root)).toEqual({
       kind: 'setup',
+      variables: {},
       origin: 'machine',
       steps: [{ command: 'npm install', cwd: 'apps/web' }],
     })
@@ -130,12 +133,35 @@ describe('lib-orchestrator/projectSetup/projectSetupManager', () => {
     })
   })
 
-  it('switches the pnpm command over to the global virtual store on request', async () => {
+  /* The setting moves the variables, never the command: one worktree keeps one install line. */
+  it('installs pnpm into the global virtual store through its variable on request', async () => {
     const root = repository({ 'package.json': '{}', 'pnpm-lock.yaml': '' })
     const { manager } = harness({ node: { pnpm: { globalVirtualStore: true } } })
-    expect(await resolved(manager, root, root)).toMatchObject({
-      steps: [{ command: 'pnpm install --config.enableGlobalVirtualStore=true' }],
+    expect(await resolved(manager, root, root)).toEqual({
+      kind: 'setup',
+      origin: 'machine',
+      steps: [{ command: 'pnpm install', cwd: '' }],
+      variables: { pnpm_config_enable_global_virtual_store: 'true' },
     })
+    expect(manager.machineVariables()).toEqual({ pnpm_config_enable_global_virtual_store: 'true' })
+    expect(harness().manager.machineVariables()).toEqual({})
+  })
+
+  // A `.worktree.json` command runs as written; the machine's settings are for its own choices.
+  it('gives a project-declared setup no variables, with the store switched on', async () => {
+    const root = repository({
+      'package.json': '{}',
+      'pnpm-lock.yaml': '',
+      '.worktree.json': JSON.stringify({ setup: ['pnpm install'] }),
+    })
+    const { manager } = harness({ node: { pnpm: { globalVirtualStore: true } } })
+    expect(await resolved(manager, root, root)).toMatchObject({ origin: 'project', variables: {} })
+  })
+
+  it('gives an npm project no pnpm variable, with the store switched on', async () => {
+    const root = repository({ 'package.json': '{}', 'package-lock.json': '' })
+    const { manager } = harness({ node: { pnpm: { globalVirtualStore: true } } })
+    expect(await resolved(manager, root, root)).toMatchObject({ origin: 'machine', variables: {} })
   })
 
   it('names .worktree.json when it recognised nothing at all', async () => {
@@ -175,6 +201,7 @@ describe('lib-orchestrator/projectSetup/projectSetupManager', () => {
       const root = group({ B: pnpmMember, A: pnpmMember, docs: { 'readme.md': '# no manifest\n' } })
       expect(await resolved(harness().manager, root, root)).toEqual({
         kind: 'setup',
+        variables: {},
         origin: 'machine',
         steps: [
           { command: 'pnpm install', cwd: 'A' },
@@ -194,6 +221,7 @@ describe('lib-orchestrator/projectSetup/projectSetupManager', () => {
       const root = group({ A: pnpmMember }, { 'package.json': '{}', 'pnpm-lock.yaml': '' })
       expect(await resolved(harness().manager, root, root)).toEqual({
         kind: 'setup',
+        variables: {},
         origin: 'machine',
         steps: [{ command: 'pnpm install', cwd: '' }],
       })
@@ -203,6 +231,7 @@ describe('lib-orchestrator/projectSetup/projectSetupManager', () => {
       const root = group({ A: pnpmMember }, { '.worktree.json': JSON.stringify({ setup: ['./install-all.sh'] }) })
       expect(await resolved(harness().manager, root, root)).toEqual({
         kind: 'setup',
+        variables: {},
         origin: 'project',
         steps: [{ command: './install-all.sh', cwd: '' }],
       })
@@ -233,6 +262,21 @@ describe('lib-orchestrator/projectSetup/projectSetupManager', () => {
       })
     })
 
+    // worker-agent: the setup ran `npm install` in components/ and published its empty lockfile (r288).
+    it('installs a member that names no tool with the tool of the other members', async () => {
+      const root = group({ AppDevelopmentUi: { 'package.json': JSON.stringify({ packageManager: 'pnpm@12.8.1' }), 'pnpm-lock.yaml': '' },
+        components: { 'package.json': JSON.stringify({ private: true, type: 'module' }) } })
+      expect(await resolved(harness().manager, root, root)).toEqual({
+        kind: 'setup',
+        variables: {},
+        origin: 'machine',
+        steps: [
+          { command: 'pnpm install', cwd: 'AppDevelopmentUi' },
+          { command: 'pnpm install', cwd: 'components' },
+        ],
+      })
+    })
+
     it('says nothing was detected when no member has a manifest', async () => {
       const root = group({ data: { 'readme.md': '# no manifest\n' } })
       const resolution = await resolved(harness().manager, root, root)
@@ -245,6 +289,7 @@ describe('lib-orchestrator/projectSetup/projectSetupManager', () => {
       })
       expect(await resolved(harness().manager, root, root)).toEqual({
         kind: 'setup',
+        variables: {},
         origin: 'machine',
         steps: [{ command: 'pnpm install', cwd: '' }],
       })

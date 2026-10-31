@@ -53,7 +53,7 @@ import type {
   TerminalMenuCapture,
 } from '../../lib-orchestrator/terminalDetector/terminalDetectorApi.types'
 import type { BareCommandId } from './commands'
-import type { AutolauncherResult, AutolauncherSnapshot } from './autolauncher'
+import type { AutolauncherResult, AutolauncherSnapshot, AutolauncherSelection, AutolauncherTargetView } from './autolauncher'
 import type { ContextCompactionCooldown } from './contextCompactionCooldown'
 import type { ContextCompactionDelivery } from './contextCompactionDelivery'
 import type { DebugSectionId } from './debugSections.types'
@@ -144,6 +144,9 @@ export interface AppClientUiIpcInvokeMap {
   'agentCliUpdates:get': () => import('../../lib-orchestrator/agentCliUpdates/agentCliUpdatesApi.types').AgentCliUpdatesSnapshot
   'agentCliUpdates:check': () => void
   'agentCliUpdates:install': (id: string) => void
+  'attention:get': () => import('./attention').AttentionSnapshot
+  /** The status bar click: the first waiting item comes forward now. */
+  'attention:next': () => void
   /**
    * Every operation of the control API, by name: the window calls the same registry, schemas and
    * call log a script reaches over HTTP. The answer is the protocol envelope; `renderer/ipc/appControl`
@@ -151,7 +154,8 @@ export interface AppClientUiIpcInvokeMap {
    */
   'control:call': (operation: string, body: unknown) => RemoteControlAnswer
   'autolauncher:get': () => AutolauncherSnapshot
-  'autolauncher:enable': (invitation: string | null) => AutolauncherResult
+  'autolauncher:enable': (invitation: string | null, selection?: AutolauncherSelection) => AutolauncherResult
+  'autolauncher:inspect': (recipe: unknown) => AutolauncherTargetView
   'autolauncher:disable': () => AutolauncherResult
   'app:info': () => AppInfo
   /**
@@ -187,6 +191,9 @@ export interface AppClientUiIpcInvokeMap {
    * drop the fork's own row.
    */
   'state:assign-session-group': (key: string, group: SessionGroup) => boolean
+  /** The session keys marked Hidden when remote, and ONE mark set or cleared, for the same reason as above. */
+  'state:load-hidden-when-remote': () => readonly string[]
+  'state:set-hidden-when-remote': (key: string, hidden: boolean) => boolean
   /**
    * The pinned inner split items of ONE session, outside the layout so that they survive a closed
    * tab, Reset Layout and a restart. Any workspace window may write: a session's panel lives in at
@@ -571,6 +578,7 @@ export interface AppClientUiIpcInvokeMap {
 
 export interface AppClientUiIpcEventMap {
   'agentCliUpdates:changed': () => void
+  'attention:changed': () => void
   'autolauncher:changed': (snapshot: AutolauncherSnapshot) => void
   'versioning:commit-changed': () => void
   'menu:command': (commandId: BareCommandId) => void
@@ -666,6 +674,7 @@ export const AppClientUiBridgeCallsConst = {
   autolauncher: {
     get: 'autolauncher:get',
     enable: 'autolauncher:enable',
+    inspect: 'autolauncher:inspect',
     disable: 'autolauncher:disable',
   },
   appInfo: 'app:info',
@@ -673,6 +682,10 @@ export const AppClientUiBridgeCallsConst = {
     get: 'agentCliUpdates:get',
     check: 'agentCliUpdates:check',
     install: 'agentCliUpdates:install',
+  },
+  attention: {
+    get: 'attention:get',
+    next: 'attention:next',
   },
   rendererReady: 'app:renderer-ready',
   windows: {
@@ -693,6 +706,8 @@ export const AppClientUiBridgeCallsConst = {
     saveSessionPins: 'state:save-session-pins',
     loadSessionGroups: 'state:load-session-groups',
     assignSessionGroup: 'state:assign-session-group',
+    loadHiddenWhenRemote: 'state:load-hidden-when-remote',
+    setHiddenWhenRemote: 'state:set-hidden-when-remote',
     loadSplitPins: 'state:load-split-pins',
     saveSplitPins: 'state:save-split-pins',
     loadNewSessionAgent: 'state:load-new-session-agent',
@@ -895,6 +910,7 @@ export const AppClientUiBridgeEventsConst = {
   onAgentSettingsChanged: 'agents:settings-changed',
   onRateChanged: 'rate:changed',
   onAgentCliUpdatesChanged: 'agentCliUpdates:changed',
+  onAttentionChanged: 'attention:changed',
   onUsageChanged: 'usage:changed',
   onSnapinsChanged: 'snapins:changed',
   onHostPingResult: 'debug:host-ping-result',

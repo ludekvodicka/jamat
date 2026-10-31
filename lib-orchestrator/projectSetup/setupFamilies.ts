@@ -29,9 +29,16 @@ export interface SetupFamily {
  * does.
  */
 export class SetupFamilies {
-  /** The pnpm option this machine can turn on; named apart because it is the one command a setting moves. */
-  static readonly pnpmGlobalVirtualStoreCommandConst =
-    'pnpm install --config.enableGlobalVirtualStore=true'
+  /**
+   * The pnpm option this machine can turn on, as the variable that carries it. A variable and not
+   * `--config.enableGlobalVirtualStore=true` on the install line, because the option has to hold for
+   * every later pnpm command in the worktree too: pnpm 12 checks dependencies before `pnpm exec` and
+   * `pnpm run` and reinstalls without the option it does not see. Measured 2026-10-30 with pnpm
+   * 12.8.1: `pnpm exec next dev` rewrote `node_modules` from 145 to 75,977 hard-linked entries in
+   * 30.6 s, while an install with this variable took 20 ms and kept the store. pnpm reads only the
+   * `pnpm_config_` spelling; `npm_config_enable_global_virtual_store` is ignored.
+   */
+  static readonly pnpmGlobalVirtualStoreVariableConst = 'pnpm_config_enable_global_virtual_store'
 
   static readonly catalogConst: readonly SetupFamily[] = [
     {
@@ -72,16 +79,24 @@ export class SetupFamilies {
   }
 
   /**
-   * The command a tool runs here. Every tool takes its catalog entry; pnpm is the one whose entry is
-   * replaced by this machine's own answer, which is what the settings tier exists for.
+   * The command a tool runs here: its catalog entry. No setting moves a command, so one worktree's
+   * install line stays the same whatever this machine is switched to later.
    */
-  static commandOf(toolId: SetupToolId, options: PlatformSettingsValue): string {
-    if (toolId === 'node-pnpm' && options.node.pnpm.globalVirtualStore)
-      return SetupFamilies.pnpmGlobalVirtualStoreCommandConst
+  static commandOf(toolId: SetupToolId): string {
     const tool = SetupFamilies.catalogConst
       .flatMap((family) => family.tools)
       .find((candidate) => candidate.toolId === toolId)
     if (tool === undefined) throw new Error(`Unknown setup tool: ${JSON.stringify(toolId)}`)
     return tool.command
+  }
+
+  /**
+   * The variables a tool's install needs with this machine's settings, and that every later process
+   * in the same worktree needs as well; empty for a tool no setting touches.
+   */
+  static variablesOf(toolId: SetupToolId, options: PlatformSettingsValue): Record<string, string> {
+    return toolId === 'node-pnpm' && options.node.pnpm.globalVirtualStore
+      ? { [SetupFamilies.pnpmGlobalVirtualStoreVariableConst]: 'true' }
+      : {}
   }
 }

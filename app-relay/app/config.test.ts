@@ -17,6 +17,22 @@ test('startup fails closed for invalid authentication, origin and registry', t =
   const env = { JAMAT_V3_RELAY_AUTH_USER: 'admin', JAMAT_V3_RELAY_AUTH_PASSWORD: 'test-only-abcdefghijklmnopqrstuvwxyz',
     JAMAT_V3_RELAY_CONFIG: registry };
   assert.equal(AppConfig.read(env).origin, 'https://jamat.example');
+  assert.equal(AppConfig.read(env).miniWol, undefined);
+  assert.equal('wolProxy' in AppConfig.read({ ...env, JAMAT_V3_RELAY_WOL_PROXY_URL: 'invalid' }), false);
+  const miniWolEnv = { ...env, JAMAT_V3_RELAY_MINIWOL_URL: 'http://127.0.0.1:9009', JAMAT_V3_RELAY_MINIWOL_API_KEY: '0'.repeat(64) };
+  assert.deepEqual(AppConfig.read(miniWolEnv).miniWol, { origin: 'http://127.0.0.1:9009', apiKey: '0'.repeat(64) });
+  for (const invalid of [
+    { JAMAT_V3_RELAY_MINIWOL_URL: undefined }, { JAMAT_V3_RELAY_MINIWOL_API_KEY: undefined },
+    { JAMAT_V3_RELAY_MINIWOL_URL: 'https://127.0.0.1:9009' }, { JAMAT_V3_RELAY_MINIWOL_URL: 'http://localhost:9009' },
+    { JAMAT_V3_RELAY_MINIWOL_URL: 'http://127.0.0.1:9009/path' }, { JAMAT_V3_RELAY_MINIWOL_URL: 'http://127.0.0.1:9009/?x=1' },
+    { JAMAT_V3_RELAY_MINIWOL_API_KEY: '0'.repeat(63) }, { JAMAT_V3_RELAY_MINIWOL_API_KEY: 'A'.repeat(64) },
+  ])
+    assert.throws(() => AppConfig.read({ ...miniWolEnv, ...invalid }), error => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /JAMAT_V3_RELAY_MINIWOL_(URL|API_KEY)/);
+      assert.equal(error.message.includes('0'.repeat(63)), false);
+      return true;
+    });
   assert.equal(AppConfig.read({ ...env, JAMAT_V3_RELAY_ORIGIN: 'https://CUSTOM.example:443/' }).origin, 'https://custom.example');
   assert.equal(AppConfig.read({ ...env, JAMAT_V3_RELAY_ORIGIN: 'http://127.0.0.1:1234' }).origin, 'http://127.0.0.1:1234');
   assert.equal(AppConfig.read({ ...env, JAMAT_V3_RELAY_ORIGIN: 'http://localhost:1234/' }).origin, 'http://localhost:1234');
@@ -47,6 +63,8 @@ test('startup fails closed for invalid authentication, origin and registry', t =
   assert.throws(() => AppConfig.read(env), /peer identity/);
   writeFileSync(registry, JSON.stringify({ pcs: [pc], peerIdentity: { identity, privateKey: keys.privateKey } }));
   assert.equal(AppConfig.read(env).pcs[0].peer?.identity.displayName, 'Relay');
+  assert.equal('mac' in AppConfig.read(env).pcs[0], false);
+  assert.equal('broadcast' in AppConfig.read(env).pcs[0], false);
   writeFileSync(registry, JSON.stringify({ pcs: [pc], peerIdentity: { identity,
     privateKey: RemoteControlPeerKeys.generateSigningKeyPair().privateKey } }));
   assert.throws(() => AppConfig.read(env), /does not match/);

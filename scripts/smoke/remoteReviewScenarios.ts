@@ -48,7 +48,7 @@ export class RemoteReviewScenarios {
       fileAccess: (owner, snapshot, file) => access.ownedFileAccess(owner, snapshot, file),
       snapshotOf: (owner, snapshot) => access.ownedWorkingTreeSnapshot(owner, snapshot),
       git: { commit: async (...args) => { await gate?.(); return gitCommits.commit(...args) }, revertFile: (...args) => gitCommits.revertFile(...args) },
-      svn: { commit: async (...args) => { await gate?.(); return svnCommits.commit(...args) }, revertFile: (...args) => svnCommits.revertFile(...args), update: (...args) => svnCommits.update(...args) },
+      svn: { commit: async (...args) => { await gate?.(); return svnCommits.commit(...args) }, revertFile: (...args) => svnCommits.revertFile(...args), updateOutOfDate: (...args) => svnCommits.updateOutOfDate(...args) },
       tortoise: { open: async () => { throw new Error('Unexpected native dialog in isolated smoke') } }, onChanged: () => {},
     })
     workspace.reviews = new RemoteReviewAccess(manager, interactions, access, (view) => workspace.views.isActive(view),

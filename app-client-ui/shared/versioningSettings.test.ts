@@ -51,6 +51,21 @@ describe('app-client-ui/shared/versioningSettings', () => {
     expect(VersioningSettings.fieldsOf('commitReview')).toContain('returnToPreviousSessionWithinMinutes')
   })
 
+  it('defaults the quiet time before a switch to twenty seconds and takes only whole seconds in range', () => {
+    const messages: string[] = []
+    const report = (message: string) => messages.push(message)
+    expect(VersioningSettings.idleMilliseconds(VersioningSettings.defaultValue())).toBe(20_000)
+    expect(VersioningSettings.idleMilliseconds({ mode: 'git', diffTool: { kind: 'internal' } })).toBe(20_000)
+    expect(VersioningSettings.coerce({ mode: 'git', switchAfterIdleSeconds: 0 }, report).switchAfterIdleSeconds).toBe(0)
+    expect(messages).toEqual([])
+    for (const unusable of [-1, 2.5, 601, '20', null])
+      expect(VersioningSettings.coerce({ mode: 'git', switchAfterIdleSeconds: unusable }, report).switchAfterIdleSeconds).toBe(20)
+    expect(messages).toHaveLength(5)
+    expect(VersioningSettings.isValid({ ...VersioningSettings.defaultValue(), switchAfterIdleSeconds: 2.5 })).toBe(false)
+    expect(VersioningSettings.isValid({ ...VersioningSettings.defaultValue(), switchAfterIdleSeconds: 600 })).toBe(true)
+    expect(VersioningSettings.fieldsOf('commitReview')).toContain('switchAfterIdleSeconds')
+  })
+
   it('defaults automatic closing on, preserves disabled settings and rejects invalid values', () => {
     const messages: string[] = []
     expect(VersioningSettings.defaultValue().closeCommitOnSuccess).toBe(true)
@@ -63,7 +78,7 @@ describe('app-client-ui/shared/versioningSettings', () => {
   it('migrates a mode-only document and validates external arguments before substituting paths', () => {
     const messages: string[] = []
     expect(VersioningSettings.coerce({ mode: 'git' }, (text) => messages.push(text)))
-      .toEqual({ mode: 'git', diffTool: { kind: 'internal' }, activateSessionOnCommit: true, returnToPreviousSessionAfterCommit: true, returnToPreviousSessionWithinMinutes: 5, closeCommitOnSuccess: true })
+      .toEqual({ mode: 'git', diffTool: { kind: 'internal' }, activateSessionOnCommit: true, returnToPreviousSessionAfterCommit: true, returnToPreviousSessionWithinMinutes: 5, switchAfterIdleSeconds: 20, closeCommitOnSuccess: true })
     expect(messages).toEqual([])
     const preset = VersioningSettings.tortoiseMerge()
     expect(VersioningSettings.isDiffTool(preset)).toBe(true)
@@ -81,11 +96,11 @@ describe('app-client-ui/shared/versioningSettings', () => {
   it('defaults a missing or unusable section to checkpoints and reports only real damage', () => {
     const messages: string[] = []
     expect(VersioningSettings.coerce(undefined, (message) => messages.push(message)))
-      .toEqual({ mode: 'checkpoints', diffTool: { kind: 'internal' }, activateSessionOnCommit: true, returnToPreviousSessionAfterCommit: true, returnToPreviousSessionWithinMinutes: 5, closeCommitOnSuccess: true })
+      .toEqual({ mode: 'checkpoints', diffTool: { kind: 'internal' }, activateSessionOnCommit: true, returnToPreviousSessionAfterCommit: true, returnToPreviousSessionWithinMinutes: 5, switchAfterIdleSeconds: 20, closeCommitOnSuccess: true })
     expect(VersioningSettings.coerce({ mode: 'jj' }, (message) => messages.push(message)))
-      .toEqual({ mode: 'checkpoints', diffTool: { kind: 'internal' }, activateSessionOnCommit: true, returnToPreviousSessionAfterCommit: true, returnToPreviousSessionWithinMinutes: 5, closeCommitOnSuccess: true })
+      .toEqual({ mode: 'checkpoints', diffTool: { kind: 'internal' }, activateSessionOnCommit: true, returnToPreviousSessionAfterCommit: true, returnToPreviousSessionWithinMinutes: 5, switchAfterIdleSeconds: 20, closeCommitOnSuccess: true })
     expect(VersioningSettings.coerce('not an object', (message) => messages.push(message)))
-      .toEqual({ mode: 'checkpoints', diffTool: { kind: 'internal' }, activateSessionOnCommit: true, returnToPreviousSessionAfterCommit: true, returnToPreviousSessionWithinMinutes: 5, closeCommitOnSuccess: true })
+      .toEqual({ mode: 'checkpoints', diffTool: { kind: 'internal' }, activateSessionOnCommit: true, returnToPreviousSessionAfterCommit: true, returnToPreviousSessionWithinMinutes: 5, switchAfterIdleSeconds: 20, closeCommitOnSuccess: true })
     // An absent section is not damage: it is a config nobody has written this key into yet.
     expect(messages).toHaveLength(2)
   })
@@ -96,6 +111,6 @@ describe('app-client-ui/shared/versioningSettings', () => {
     expect(VersioningSettings.isValid({ mode: 'jj' })).toBe(false)
     expect(VersioningSettings.isValid(undefined)).toBe(false)
     expect(VersioningSettings.coerce({ mode: 'git', note: 'keep', diffTool: { kind: 'internal' } }, () => undefined))
-      .toEqual({ mode: 'git', note: 'keep', diffTool: { kind: 'internal' }, activateSessionOnCommit: true, returnToPreviousSessionAfterCommit: true, returnToPreviousSessionWithinMinutes: 5, closeCommitOnSuccess: true })
+      .toEqual({ mode: 'git', note: 'keep', diffTool: { kind: 'internal' }, activateSessionOnCommit: true, returnToPreviousSessionAfterCommit: true, returnToPreviousSessionWithinMinutes: 5, switchAfterIdleSeconds: 20, closeCommitOnSuccess: true })
   })
 })

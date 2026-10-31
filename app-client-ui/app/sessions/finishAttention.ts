@@ -1,8 +1,9 @@
 import type { SessionInfo, SessionsSnapshot } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 
-/** One Windows notification: whose workflow a click opens, and its two lines. */
+/** One Windows notification: whose workflow a click opens, the wait it tells, and its two lines. */
 export interface FinishAttentionNotice {
   sessionId: string
+  key: string
   title: string
   body: string
 }
@@ -45,6 +46,11 @@ export class FinishAttention {
     this.primed = true
   }
 
+  /** Whether the wait a notice told is still the one the session waits on. */
+  waits(sessionId: string, key: string): boolean {
+    return this.told.get(sessionId) === key
+  }
+
   /**
    * `needs:<kind>:<wait>` while a worktree action waits for the person, where the wait is the
    * workflow's waiting step, so a settlement in the window that rewrites the reason tells nothing
@@ -68,9 +74,10 @@ export class FinishAttention {
   private static noticeOf(session: SessionInfo, key: string): FinishAttentionNotice {
     const action = session.svnAction
     if (key.startsWith('merger:'))
-      return { sessionId: session.sessionId, title: `The merger of ${session.title} waits for you`, body: 'It asks for an answer in its tab.' }
+      return { sessionId: session.sessionId, key, title: `The merger of ${session.title} waits for you`, body: 'It asks for an answer in its tab.' }
     return {
       sessionId: session.sessionId,
+      key,
       title: `${action?.kind === 'discard' ? 'Discard' : 'Finish'} waits: ${session.title}`,
       body: session.worktreeView?.wait?.reason ?? action?.summary ?? session.workflow?.summary ?? action?.needs ?? '',
     }

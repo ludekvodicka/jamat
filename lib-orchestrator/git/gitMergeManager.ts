@@ -1,7 +1,7 @@
 import { relative } from 'node:path'
 import { PathCompare } from '../shared/pathCompare'
 import { GitManager } from './gitManager'
-import type { GitCommandOutcome, GitResult } from './git.types'
+import type { GitCommandOutcome, GitErrorCode, GitResult } from './git.types'
 
 export interface MergeStatus {
   /** A merge is half-finished here: `MERGE_HEAD` exists, so conflicts are waiting to be resolved. */
@@ -140,18 +140,39 @@ export class GitMergeManager extends GitManager {
     if (!message.trim() || message.includes('\0') || paths === undefined || paths.length === 0
       || paths.some((path) => !PathCompare.isInside(worktreePath, path) || relative(worktreePath, path) === '' || /[\0\r\n]/.test(path)))
       return { ok: false, code: 'git-failed', detail: 'Select files inside the worktree and enter a commit message' }
-    const selected = [...new Set(paths.map((path) => `:(literal)${relative(worktreePath, path).replace(/\\/g, '/')}`))]
-    const added = await this.invoker.run(worktreePath, ['add', '-A', '--', ...selected], onOutput)
-    const addFailure = GitManager.failureOf(added, 'git-failed')
-    if (addFailure) return addFailure
+    const relativeOf = (path: string) => relative(worktreePath, path).replace(/\\/g, '/')
+    const selected = [...new Set(paths.map((path) => `:(literal)${relativeOf(path)}`))]
+    // `commit --only` takes each path from the working tree but knows only paths in HEAD or the index,
+    // so a new file is announced with --intent-to-add and nothing else is staged. `add -A` failed on a
+    // deletion that was already staged and stayed in the index after a refused commit.
+    const listed = await this.invoker.run(worktreePath, ['ls-files', '-z', '--others', '--exclude-standard'])
+    const listFailure = GitManager.failureOf(listed, 'git-failed')
+    if (listFailure) return listFailure
+    const untracked = new Set(listed.stdout.split('\0').filter(Boolean))
+    const added = [...new Set(paths.map(relativeOf))].filter((path) => untracked.has(path)).map((path) => `:(literal)${path}`)
+    if (added.length > 0) {
+      const announced = await this.invoker.run(worktreePath, ['add', '--intent-to-add', '--', ...added], onOutput)
+      const addFailure = GitManager.failureOf(announced, 'git-failed')
+      if (addFailure) return await this.withdrawn(worktreePath, added, addFailure)
+    }
     // Hooks are the project's own, and a pre-commit hook that refuses is an answer worth hearing:
     // it comes back as the git failure it is rather than being skipped on the session's behalf.
     const committed = await this.invoker.run(worktreePath, ['commit', '--only', '--message', message, '--', ...selected], onOutput)
     if (GitMergeManager.saysAbsent(committed, GitMergeManager.nothingToCommitConst))
-      return { ok: true, value: undefined }
+      return added.length === 0 ? { ok: true, value: undefined } : await this.withdrawn(worktreePath, added, null)
     const failure = GitManager.failureOf(committed, 'git-failed')
-    if (failure) return failure
+    // A process that did not run to completion may still have committed; withdrawing a committed new file would stage its removal.
+    if (failure) return added.length === 0 || committed.failure !== null ? failure : await this.withdrawn(worktreePath, added, failure)
     return { ok: true, value: undefined }
+  }
+
+  /** Takes back the --intent-to-add announcements; answers `failure`, or success when there was none. */
+  private async withdrawn(worktreePath: string, added: readonly string[], failure: { ok: false; code: GitErrorCode; detail: string } | null): Promise<GitResult<void>> {
+    const removed = await this.invoker.run(worktreePath, ['rm', '--cached', '--quiet', '--ignore-unmatch', '--', ...added])
+    const removeFailure = GitManager.failureOf(removed, 'git-failed')
+    if (removeFailure === null) return failure ?? { ok: true, value: undefined }
+    const detail = `The new files stay announced in the index (git add --intent-to-add): ${removeFailure.detail}`
+    return failure === null ? removeFailure : { ...failure, detail: `${failure.detail}\n\n${detail}` }
   }
 
   /**

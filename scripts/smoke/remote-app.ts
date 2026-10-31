@@ -729,15 +729,13 @@ class SmokeRemoteApp extends SmokeHarness {
     const restartedPort = await this.target.start(this.targetPort)
     this.check('the target AppClientUI listener restarted on its paired endpoint',
       restartedPort === this.targetPort)
-    this.check('restarting the target does not cause a background reconnect', !this.requiredController().connected)
-    await this.requiredController().connectComputer(this.targetIdentity().remoteEndpointId)
     await this.checkWaiting(
       'the restarted target AppClientUI reached AppHost',
       () => this.requiredTarget().sessions.snapshot().host.presence === 'running',
       'the restarted target AppClientUI never reached AppHost',
     )
     await this.checkWaiting(
-      'the live remote terminal reattached after target AppClientUI restart',
+      'the selected session redialled and reattached by itself after target AppClientUI restart',
       () => this.requiredController().connected
         && remoteFrames.attachedCount > attachCount
         && this.requiredTarget().inboundSnapshot()[0]?.activeSessionIds.includes(sessionId) === true,

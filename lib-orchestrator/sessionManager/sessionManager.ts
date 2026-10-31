@@ -574,7 +574,6 @@ export class SessionManager {
       report: deps.onError,
       quarantinedSessionIds: () => this.records?.quarantinedSessionIds() ?? new Set(),
       heldActionIds: () => new Set((this.records?.list() ?? []).flatMap((record) => [
-        ...record.worktree?.preservationActionId === undefined ? [] : [record.worktree.preservationActionId],
         ...record.worktreeLifecycle?.publication?.savedActions ?? [],
         ...record.svnAction === undefined ? [] : [record.svnAction.actionId],
         ...record.worktreeLifecycle?.actionId == null ? [] : [record.worktreeLifecycle.actionId],
@@ -1691,9 +1690,18 @@ export class SessionManager {
       (error: unknown) => ErrorText.of(error),
     )
     if (skipped) return
-    if (refusal === null) this.deps.onRemovedItself?.(sessionId)
-    else
+    if (refusal !== null) {
       this.deps.onError(`Session ${sessionId}: its worktree ended as asked, and the session stays because it could not be removed: ${refusal}`)
+      return
+    }
+    this.deps.onRemovedItself?.(sessionId)
+    // A Solve with agent helper worked only for this worker; Finish stopped it, and it goes with the worker.
+    for (const helper of this.records?.list() ?? []) {
+      if (helper.parent?.sessionId !== sessionId || helper.parent.kind !== 'worker' || helper.life === 'live' || helper.life === 'starting') continue
+      const removed = await this.removeSession(helper.sessionId).catch((error: unknown) => ({ ok: false as const, detail: ErrorText.of(error) }))
+      if (removed.ok) this.deps.onRemovedItself?.(helper.sessionId)
+      else this.deps.onError(`Session ${helper.sessionId}: its worker ${sessionId} was removed, and this helper stays because it could not be removed: ${removed.detail}`)
+    }
   }
 
   private async afterMerge(work: () => Promise<SessionsOpResult>): Promise<SessionsOpResult> {
@@ -2181,7 +2189,6 @@ export class SessionManager {
     this.scripts = scripts
     const removal = new SvnWorktreeRemoval({
       skillRoots: this.deps.skillRoots?.() ?? [],
-      results: this.results,
       records,
       svn: this.svnWorktrees,
       onQueue: (work) => this.serialize(work),

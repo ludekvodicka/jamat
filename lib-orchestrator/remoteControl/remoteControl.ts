@@ -186,13 +186,19 @@ export interface RemoteControlHostPort {
   stopHost(expectedHostInstanceId: string): Promise<SessionsOpResult<HostStopWarnings>>
 }
 
+/**
+ * Who asked for a tab: a person clicking in a window has it in front at once, anything else waits
+ * until the person in front of this computer stops typing.
+ */
+export type RemoteControlTabRequester = 'person' | 'agent'
+
 export interface RemoteControlTabsPort {
   commitStatus?(commitSessionId: string): RemoteControlStepResult<RemoteControlCommitStatusDto>
   cancelCommit?(commitSessionId: string): Promise<RemoteControlStepResult<RemoteControlCommitStatusDto>>
   openCommit(sessionId: string, tabTitle: string, vcs: 'svn' | 'git', scope: string | null,
     proposal: string | null, options: { paths?: readonly RemoteControlCommitPath[]; intentId?: string; wakeOnClose?: true }): Promise<RemoteControlStepResult<RemoteControlTabOpenCommitDto>>
   list(): Promise<readonly RemoteControlTabDto[]>
-  open(sessionId: string, tabTitle: string): Promise<RemoteControlStepResult<RemoteControlTabCommandDto>>
+  open(sessionId: string, tabTitle: string, requestedBy: RemoteControlTabRequester): Promise<RemoteControlStepResult<RemoteControlTabCommandDto>>
   openFile(
     sessionId: string,
     tabTitle: string,
@@ -411,7 +417,7 @@ export class RemoteControl {
       const origin = context.operationId === null ? undefined : { callerOperationId: context.operationId }
       const spec = context.callerKind === 'remote-peer' && body.spec.worktree !== undefined
         ? { ...body.spec, acknowledgeSetup: undefined, deferSetupAgreement: true as const } : body.spec
-      return this.sessionCreate(spec, openTab, body.group, origin)
+      return this.sessionCreate(spec, openTab ? RemoteControl.tabRequesterOf(context) : null, body.group, origin)
     })
     bySession('sessions.reopen', 'Start an ended session again in its own conversation.', async (session) =>
       this.sessionMutation(session.sessionId, () => this.deps.sessions.reopenSession(session.sessionId)))
@@ -460,7 +466,7 @@ export class RemoteControl {
       if (context.callerKind === 'remote-peer') return RemoteControl.error('forbidden', 'Solve with agent is local only')
       const created = await this.deps.sessions.solveWithAgent(session.sessionId)
       if (!created.ok) return RemoteControl.sessionError(created)
-      const tabOpen = await this.deps.tabs.open(created.value.sessionId, created.value.tabTitle)
+      const tabOpen = await this.deps.tabs.open(created.value.sessionId, created.value.tabTitle, RemoteControl.tabRequesterOf(context))
       return RemoteControl.success({ sessionId: created.value.sessionId, tabTitle: created.value.tabTitle, tabOpen })
     })
     bySession('sessions.remove', 'Delete an ended session record from the list, with its SVN worktree when nothing is left in it; changes keep both.', async (session) => {
@@ -651,8 +657,8 @@ export class RemoteControl {
     })
     define('tabs.list', 'The open panels of every window, with the commit reviews they hold.', async () =>
       RemoteControl.success({ tabs: await this.deps.tabs.list() }))
-    bySession('tabs.open', "Open or focus the session's terminal tab.", async (session) =>
-      this.deps.tabs.open(session.sessionId, session.tabTitle))
+    bySession('tabs.open', "Open or focus the session's terminal tab.", async (session, _body, context) =>
+      this.deps.tabs.open(session.sessionId, session.tabTitle, RemoteControl.tabRequesterOf(context)))
     bySession('tabs.openFile', "Open a file in the session's terminal split.", async (session, body, context) =>
       this.deps.tabs.openFile(session.sessionId, session.tabTitle, body.path, JSON.stringify([context.callerId, context.operationId])))
     bySession('tabs.openCommit', "Open a Jamat commit review for a live session; the commit stays the person's act.", async (session, body, context) => {
@@ -752,7 +758,7 @@ export class RemoteControl {
 
   private async sessionCreate(
     spec: SessionCreateSpec,
-    openTab: boolean,
+    openTab: RemoteControlTabRequester | null,
     group: SessionGroup | undefined,
     origin: SessionCreateOrigin | undefined,
   ): Promise<RemoteControlStepResult<RemoteControlSessionCreateDto>> {
@@ -769,9 +775,13 @@ export class RemoteControl {
      * create exists to avoid one field over.
      */
     if (group !== undefined) value.groupAssign = this.deps.groups.assign(created.value.sessionId, group)
-    if (!openTab) return RemoteControl.success(value)
-    value.tabOpen = await this.deps.tabs.open(created.value.sessionId, created.value.tabTitle)
+    if (openTab === null) return RemoteControl.success(value)
+    value.tabOpen = await this.deps.tabs.open(created.value.sessionId, created.value.tabTitle, openTab)
     return RemoteControl.success(value)
+  }
+
+  private static tabRequesterOf(context: Pick<RemoteControlCallContext, 'callerKind'>): RemoteControlTabRequester {
+    return context.callerKind === 'window' ? 'person' : 'agent'
   }
 
   private async sessionMutation(

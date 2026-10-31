@@ -22,6 +22,17 @@ export interface SvnCommitTarget {
   status: FileChangeStatus
 }
 
+/** One row of `svn status --xml`, with the move's other side and whether the repository changed it (`--show-updates`). */
+interface SvnCommitStatusEntry {
+  path: string
+  item: string
+  props: string
+  conflicted: boolean
+  movedFrom: string | null
+  movedTo: string | null
+  incoming: boolean
+}
+
 export class SvnCommitManager {
   private readonly svn: CommandRunner
   /** `paths` are what the write touches, so a scope that holds several projects can lease each of them. */
@@ -85,6 +96,12 @@ export class SvnCommitManager {
     if (targets.some((target) => target.status === 'conflicted' || target.status === 'obstructed'))
       return { ok: false, code: 'refused', detail: targets.filter((target) => target.status === 'conflicted' || target.status === 'obstructed')
         .map((target) => `Refused: ${relative(scope, target.absolutePath).replace(/\\/g, '/')} is conflicted or obstructed`).join('\n') }
+    // svn.exe reads its arguments and a --targets file in the system ANSI code page, so a name outside
+    // ASCII reaches it changed or not at all (svn 1.14.5, code page 1252: `ť` became `t`, E200009).
+    const unpassable = targets.map((target) => relative(scope, target.absolutePath).replace(/\\/g, '/')).filter((path) => !SvnWorktreeEvidence.takesArgument(path))
+    if (unpassable.length > 0)
+      return { ok: false, code: 'refused', detail: `svn cannot take these names from Jamat, they contain characters outside ASCII: ${unpassable.join(', ')}. `
+        + 'Commit them with TortoiseSVN, or rename them.' }
     const listed = new Set<string>()
     const newlyAdded = new Set<string>()
     const additions: string[] = []
@@ -156,6 +173,7 @@ export class SvnCommitManager {
     const status = await this.run(scope, ['status', '--xml', '--', '.'])
     if (!status.ok) return status
     const conflicted = SvnWorktreeEvidence.statusRows(status.value.stdout, scope).filter((row) => row.conflict).map((row) => row.path)
+    const moves = SvnCommitManager.movePairProblems(scope, SvnCommitManager.statusEntriesOf(scope, status.value.stdout), targets)
     const untracked = targets.filter((target) => target.status === 'untracked')
       .map((target) => relative(scope, target.absolutePath).replace(/\\/g, '/'))
     const markers: string[] = []
@@ -165,7 +183,30 @@ export class SvnCommitManager {
       if (!content.subarray(0, 8192).includes(0) && SvnCommitGate.hasMarkerTriplet(content.toString('utf8')))
         markers.push(relative(scope, target.absolutePath).replace(/\\/g, '/'))
     }
-    return { ok: true, value: SvnCommitGate.problems({ conflicted, untracked, markers }) }
+    const problems = SvnCommitGate.problems({ conflicted, untracked, markers })
+    return { ok: true, value: problems.length > 0 ? problems : moves }
+  }
+
+  /**
+   * SVN commits a move only with both of its sides and refuses either half alone with E200009. A
+   * review whose source rows lost their checks (they were conflicted when the list reloaded) sent the
+   * same 93 of 97 paths three times; this names the missing side before anything is staged. A source
+   * inside a selected deleted directory travels with that directory.
+   */
+  private static movePairProblems(scope: string, entries: readonly SvnCommitStatusEntry[], targets: readonly SvnCommitTarget[]): string[] {
+    const selected = new Set(targets.map((target) => PathCompare.comparable(target.absolutePath)))
+    const removed = targets.filter((target) => target.status === 'deleted' || target.status === 'replaced' || target.status === 'missing')
+    const covered = (path: string): boolean => selected.has(PathCompare.comparable(path))
+      || removed.some((target) => target.nodeKind === 'directory' && PathCompare.isInside(target.absolutePath, path))
+    const shown = (path: string): string => relative(scope, path).replace(/\\/g, '/') || '.'
+    const problems = new Map<string, string>()
+    for (const entry of entries) {
+      if (entry.movedFrom !== null && selected.has(PathCompare.comparable(entry.path)) && !covered(entry.movedFrom))
+        problems.set(PathCompare.comparable(entry.movedFrom), `${shown(entry.path)} was moved from ${shown(entry.movedFrom)}, and SVN commits a move only with both sides: select ${shown(entry.movedFrom)} as well, or neither.`)
+      if (entry.movedTo !== null && covered(entry.path) && !selected.has(PathCompare.comparable(entry.movedTo)))
+        problems.set(PathCompare.comparable(entry.movedTo), `${shown(entry.path)} was moved to ${shown(entry.movedTo)}, and SVN commits a move only with both sides: select ${shown(entry.movedTo)} as well, or neither.`)
+    }
+    return [...problems.values()]
   }
 
   async revertFile(scope: string, path: string): Promise<SvnResult<void>> {
@@ -188,44 +229,149 @@ export class SvnCommitManager {
     return reverted.ok ? { ok: true, value: undefined } : reverted
   }
 
-  async update(scope: string, paths?: readonly string[]): Promise<SvnResult<{ output: string }>> {
-    return this.within(scope, paths ?? [], () => this.updateCurrent(scope, paths))
+  /**
+   * The one update a commit SVN refused as out of date gets: the paths SVN named in `failure`, each
+   * at depth empty, or nothing at all.
+   *
+   * The 3.11.1 recovery updated every selected node at depth empty. A moved node updated as its own
+   * target raises "local file moved away, incoming file edit upon update" even when nothing came
+   * in, and the destinations below a new directory are skipped, so one review with a moved directory
+   * turned into four tree conflicts and could not commit again (audit B1). SVN names the node whose
+   * BASE is behind: for a deleted directory, a BASE older than the commits of its own files. Bringing
+   * that node alone to HEAD is all the retry needs, and it never targets a moved node.
+   *
+   * A depth-empty update hides what came in below the node, so a directory this commit deletes or
+   * moves is updated only when nothing below it changed: otherwise the retry would delete somebody's
+   * change unseen, and a deeper update raises the tree conflict a person has to settle. That, a moved
+   * node, and a change coming into work this commit does not hold stop with code `refused` before any
+   * write, naming what to update by hand.
+   */
+  async updateOutOfDate(scope: string, failure: string, selected: readonly string[]): Promise<SvnResult<{ output: string }>> {
+    try {
+      const named = await this.outOfDatePathsOf(scope, failure)
+      if (!named.ok) return named
+      return await this.within(scope, named.value, () => this.updateOutOfDateCurrent(scope, named.value, selected))
+    }
+    catch (error) { return { ok: false, code: 'svn-failed', detail: ErrorText.of(error) } }
   }
 
-  private async updateCurrent(scope: string, paths?: readonly string[]): Promise<SvnResult<{ output: string }>> {
-    if (paths !== undefined && (paths.length === 0 || paths.some((path) => !SvnCommitManager.inside(scope, path))))
-      return { ok: false, code: 'svn-failed', detail: 'Select update targets inside the commit scope' }
-    const updateTargets = (paths ?? [scope]).map((path) => `${path}@`)
-    const depth = paths === undefined ? [] : ['--depth', 'empty']
+  private async updateOutOfDateCurrent(scope: string, named: readonly string[], selected: readonly string[]): Promise<SvnResult<{ output: string }>> {
+    const chosen = new Set(selected.map(PathCompare.comparable))
+    const entries: SvnCommitStatusEntry[] = []
+    for (const batch of SvnCommitManager.batches(named)) {
+      const status = await this.run(scope, ['status', '--xml', '--show-updates', '--non-interactive', '--ignore-externals', '--', ...batch.map((path) => `${path}@`)])
+      if (!status.ok) return { ...status, detail: `Could not read what the update would bring:\n${status.detail}` }
+      entries.push(...SvnCommitManager.statusEntriesOf(scope, status.value.stdout))
+    }
+    const blockers = named.flatMap((path) => SvnCommitManager.updateBlockerOf(scope, path, entries, chosen))
+    if (blockers.length > 0)
+      return { ok: false, code: 'refused', detail: [...blockers, 'Jamat updated nothing. Update the path named above in your SVN client, settle what it reports, then reload this review and commit again.'].join('\n') }
     let output = ''
     try {
-      const updated = await this.run(scope, ['update', '--non-interactive', '--accept', 'postpone', '--ignore-externals', ...depth, '--', ...updateTargets])
-      if (!updated.ok) return updated
-      output = updated.value.stdout + updated.value.stderr
-      const status = await this.run(scope, ['status', '--xml', '--non-interactive', '--ignore-externals', ...depth, '--', ...updateTargets])
-      if (!status.ok) return { ...status, detail: `${output}\nCould not check update conflicts: ${status.detail}` }
-      const parsed = JsonShape.record(new XMLParser({ ignoreAttributes: false,
-        isArray: (name) => name === 'entry' || name === 'target' || name === 'changelist' }).parse(status.value.stdout))
-      const statusRoot = JsonShape.record(parsed?.status)
-      const targets = statusRoot?.target
-      if (!Array.isArray(targets)) return { ok: false, code: 'svn-failed', detail: `${output}\nSVN returned an invalid conflict status` }
-      const changelists = statusRoot?.changelist ?? []
-      if (!Array.isArray(changelists)) throw new Error('SVN returned invalid changelist status')
+      for (const batch of SvnCommitManager.batches(named)) {
+        const updated = await this.run(scope, ['update', '--non-interactive', '--accept', 'postpone', '--ignore-externals', '--depth', 'empty', '--', ...batch.map((path) => `${path}@`)])
+        if (!updated.ok) return { ...updated, detail: `${output}${updated.detail}` }
+        output += updated.value.stdout + updated.value.stderr
+      }
       const conflicts: string[] = []
-      for (const target of [...targets, ...changelists]) {
-        const entries = JsonShape.record(target)?.entry ?? []
-        if (!Array.isArray(entries)) throw new Error('SVN returned invalid status entries')
-        for (const value of entries) {
-          const entry = JsonShape.record(value)
-          const working = JsonShape.record(entry?.['wc-status'])
-          if (working === null || typeof entry?.['@_path'] !== 'string') throw new Error('SVN returned an invalid status entry')
-          if (working['@_item'] === 'conflicted' || working['@_props'] === 'conflicted' || working['@_tree-conflicted'] === 'true')
-            conflicts.push(entry['@_path'])
-        }
+      for (const batch of SvnCommitManager.batches(named)) {
+        const status = await this.run(scope, ['status', '--xml', '--non-interactive', '--ignore-externals', '--depth', 'empty', '--', ...batch.map((path) => `${path}@`)])
+        if (!status.ok) return { ...status, detail: `${output}\nCould not check update conflicts: ${status.detail}` }
+        conflicts.push(...SvnCommitManager.statusEntriesOf(scope, status.value.stdout).filter((entry) => entry.conflicted).map((entry) => entry.path))
       }
       return conflicts.length === 0 ? { ok: true, value: { output } }
         : { ok: false, code: 'svn-failed', detail: `SVN update left unresolved conflicts:\n${conflicts.join('\n')}\n\n${output}` }
     } catch (error) { return { ok: false, code: 'svn-failed', detail: `${output}\n${ErrorText.of(error)}`.trim() } }
+  }
+
+  /**
+   * The paths an out-of-date commit failure names. E155011 carries the working-copy path; the server
+   * codes carry the repository path, placed through the scope's repository-relative URL. The text
+   * around them is localized, the code and the quoted path are not.
+   */
+  private async outOfDatePathsOf(scope: string, failure: string): Promise<SvnResult<string[]>> {
+    const local: string[] = []
+    const repository: string[] = []
+    for (const line of failure.split(/\r?\n/)) {
+      const match = /\b(E155011|E160028|E160024|E160042|E170004): [^']*'(.*)'/.exec(line)
+      if (match === null) continue
+      else if (match[1] === 'E155011') local.push(resolve(scope, match[2]))
+      else repository.push(match[2])
+    }
+    let paths = local
+    if (paths.length === 0 && repository.length > 0) {
+      const info = await this.run(scope, ['info', '--xml', '--non-interactive', '--', `${scope}@`])
+      if (!info.ok) return info
+      const relativeUrl = JsonShape.record(JsonShape.record(JsonShape.record(new XMLParser().parse(info.value.stdout))?.info)?.entry)?.['relative-url']
+      if (typeof relativeUrl !== 'string' || !relativeUrl.startsWith('^/')) throw new Error(`SVN info gave no repository-relative URL for ${scope}`)
+      const base = decodeURIComponent(relativeUrl.slice(1)).replace(/\/+$/, '')
+      const outside = repository.filter((path) => path !== base && !path.startsWith(`${base}/`))
+      if (outside.length > 0)
+        return { ok: false, code: 'refused', detail: `SVN reports ${outside.join(', ')} out of date, outside this commit's working copy ${scope}. Jamat updated nothing. Update that path in your SVN client, then commit again.` }
+      paths = repository.map((path) => resolve(scope, `.${path.slice(base.length)}`))
+    }
+    const unique = [...new Map(paths.map((path) => [PathCompare.comparable(path), path])).values()]
+    if (unique.length === 0)
+      return { ok: false, code: 'refused', detail: 'SVN reported this commit out of date without naming the path. Jamat updated nothing. Update the out-of-date directory in your SVN client, then commit again.' }
+    const outside = unique.filter((path) => !SvnCommitManager.inside(scope, path))
+    if (outside.length > 0)
+      return { ok: false, code: 'refused', detail: `SVN reports ${outside.join(', ')} out of date, outside this commit's working copy ${scope}. Jamat updated nothing. Update that path in your SVN client, then commit again.` }
+    return { ok: true, value: unique }
+  }
+
+  /** Why a depth-empty update of `path` must not run, from `svn status --show-updates` of it; empty when it may. */
+  private static updateBlockerOf(scope: string, path: string, entries: readonly SvnCommitStatusEntry[], chosen: ReadonlySet<string>): string[] {
+    const key = PathCompare.comparable(path)
+    const shown = relative(scope, path).replace(/\\/g, '/') || '.'
+    const own = entries.find((entry) => PathCompare.comparable(entry.path) === key)
+    const incoming = entries.filter((entry) => entry.incoming && PathCompare.isInside(path, entry.path))
+    const listed = incoming.slice(0, 10).map((entry) => relative(scope, entry.path).replace(/\\/g, '/') || '.').join(', ')
+      + (incoming.length > 10 ? ` and ${incoming.length - 10} more` : '')
+    if (own === undefined) return []
+    const counterpart = own.movedTo ?? own.movedFrom
+    if (counterpart !== null)
+      return [`Update ${shown} together with ${relative(scope, counterpart).replace(/\\/g, '/')} yourself: SVN reports ${shown} out of date, and it is one side of a move, which an update of one side alone turns into a tree conflict.`]
+    if (own.conflicted) return [`Settle the conflict on ${shown} first: SVN reports it out of date and it is already conflicted.`]
+    const removed = own.item === 'deleted' || own.item === 'replaced' || own.item === 'missing' || own.item === 'obstructed' || own.item === 'incomplete'
+    if (removed && incoming.length > 0)
+      return [`Update ${shown} yourself: this commit deletes or replaces it, and the repository changed ${listed} since. Committing would drop that change unseen, and updating raises a tree conflict only you can settle (for a moved file, svn resolve --accept mine-conflict takes the change into the moved file).`]
+    const changedHere = own.item === 'modified' || own.item === 'merged' || own.props === 'modified'
+    if (!removed && own.incoming && changedHere && !chosen.has(key))
+      return [`Update ${shown} yourself when its local change allows: SVN reports it out of date, and the update would merge the repository change into work this commit does not hold.`]
+    return []
+  }
+
+  private static statusEntriesOf(scope: string, xml: string): SvnCommitStatusEntry[] {
+    const parsed = JsonShape.record(new XMLParser({ ignoreAttributes: false,
+      isArray: (name) => name === 'entry' || name === 'target' || name === 'changelist' }).parse(xml))
+    const statusRoot = JsonShape.record(parsed?.status)
+    const targets = statusRoot?.target
+    if (!Array.isArray(targets)) throw new Error('SVN returned an invalid status')
+    const changelists = statusRoot?.changelist ?? []
+    if (!Array.isArray(changelists)) throw new Error('SVN returned invalid changelist status')
+    const rows: SvnCommitStatusEntry[] = []
+    // SVN writes a move's other side relative to the status target the entry was reached through.
+    const only = targets.length === 1 ? JsonShape.record(targets[0])?.['@_path'] : undefined
+    for (const target of [...targets, ...changelists]) {
+      const targetPath = targets.includes(target) ? JsonShape.record(target)?.['@_path'] : only
+      const base = typeof targetPath === 'string' ? resolve(scope, targetPath) : scope
+      const values = JsonShape.record(target)?.entry ?? []
+      if (!Array.isArray(values)) throw new Error('SVN returned invalid status entries')
+      for (const value of values) {
+        const entry = JsonShape.record(value)
+        const working = JsonShape.record(entry?.['wc-status'])
+        if (working === null || typeof entry?.['@_path'] !== 'string') throw new Error('SVN returned an invalid status entry')
+        const repository = JsonShape.record(entry['repos-status'])
+        const item = String(working['@_item'] ?? 'none')
+        const props = String(working['@_props'] ?? 'none')
+        rows.push({ path: resolve(scope, entry['@_path']), item, props,
+          conflicted: item === 'conflicted' || props === 'conflicted' || working['@_tree-conflicted'] === 'true',
+          movedFrom: typeof working['@_moved-from'] === 'string' ? resolve(base, working['@_moved-from']) : null,
+          movedTo: typeof working['@_moved-to'] === 'string' ? resolve(base, working['@_moved-to']) : null,
+          incoming: repository !== null && ((repository['@_item'] ?? 'none') !== 'none' || (repository['@_props'] ?? 'none') !== 'none') })
+      }
+    }
+    return rows
   }
 
   /**
@@ -336,6 +482,12 @@ export class SvnCommitManager {
     return !/[\0\r\n]/.test(path) && PathCompare.isInside(scope, path)
   }
 
+  /**
+   * Bounded argument lists for the subcommands that take several paths. `svn update` and
+   * `svn status` accept no `--targets` file, and an update of every selected node in one process
+   * exceeded the Windows command line (spawn ENAMETOOLONG, applications/Jamat#77). A `--targets`
+   * file is no way out for `add` and `delete` either: svn reads it in the ANSI code page, not UTF-8.
+   */
   private static batches(paths: readonly string[]): string[][] {
     const batches: string[][] = []
     let batch: string[] = []

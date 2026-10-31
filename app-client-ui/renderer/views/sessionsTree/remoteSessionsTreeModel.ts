@@ -1,4 +1,5 @@
 import type { RemoteTaskListing } from '../../../../lib-orchestrator/remoteControl/remoteTaskApi.types'
+import { SessionsGroupsState } from '../../../shared/sessionsGroupsState'
 import { TerminalTargetCodec } from '../../../shared/terminalTarget'
 import type {
   RemoteConnectionsSnapshot,
@@ -164,6 +165,24 @@ export class RemoteSessionsTreeModel {
       })
     }
     return RemoteSessionsTreeModel.sortedComputers(computers)
+  }
+
+  /**
+   * The local snapshot the person's own sections draw. A session marked Hidden when remote leaves
+   * them while an inbound connection has it attached, so it is drawn under Remote connections only;
+   * its script runs go with it, the way `shown` brings them there.
+   */
+  static locallyShown(
+    local: SessionsSnapshot,
+    remote: RemoteConnectionsSnapshot | null,
+    hiddenWhenRemote: ReadonlySet<string>,
+  ): SessionsSnapshot {
+    if (remote === null || hiddenWhenRemote.size === 0) return local
+    const hidden = new Set(remote.inbound.flatMap((entry) => entry.activeSessionIds).filter((sessionId) =>
+      hiddenWhenRemote.has(SessionsGroupsState.sessionKeyOf({ kind: 'local', sessionId }))))
+    if (hidden.size === 0) return local
+    return { ...local, sessions: local.sessions.filter((session) => !hidden.has(session.sessionId)
+      && !(session.script !== undefined && hidden.has(session.script.parentId))) }
   }
 
   /**

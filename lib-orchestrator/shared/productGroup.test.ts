@@ -23,6 +23,9 @@ describe('shared/productGroup', () => {
     expect(ProductGroup.scopeOf(join(root, 'Jamat', 'lib')))
       .toEqual({ ok: true, ownerDir: join(root, 'Jamat'), setupScope: 'project' })
     expect(ProductGroup.scopeOf(root)).toMatchObject({ ok: false, detail: expect.stringContaining('choose a member') })
+    // The refusal names the person's fix, so an agent does not rewrite the marker itself.
+    expect(ProductGroup.scopeOf(root)).toMatchObject({ ok: false,
+      detail: expect.stringContaining(`ask the person to set {"kind":"product"} in ${join(root, '.appgroup')}`) })
     expect(ProductGroup.scopeOf(join(root, '.private'))).toMatchObject({ ok: false })
     expect(ProductGroup.rootOf(join(root, 'Jamat'))).toBe(root)
   })

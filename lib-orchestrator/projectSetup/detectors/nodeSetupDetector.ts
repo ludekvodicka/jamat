@@ -1,8 +1,9 @@
-import { readFile } from 'node:fs/promises'
+import { readdir, readFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 
 import { ErrorText } from '../../shared/errorText'
 import { PathCompare } from '../../shared/pathCompare'
+import { ProductGroup } from '../../shared/productGroup'
 import type { SetupDetection, SetupDetector, SetupToolId } from '../projectSetup.types'
 import { SetupPaths } from '../setupPaths'
 
@@ -31,6 +32,13 @@ import { SetupPaths } from '../setupPaths'
  * globs: a directory under a workspace root is taken to belong to it. Reading the globs would answer
  * a question nobody has asked yet, and answering it for one family and not the other would be worse
  * than answering it for neither.
+ *
+ * **A product group answers before the npm convention.** Its members are set up together, and a
+ * member that says nothing about itself (`components/` with a bare `package.json`) belongs to the
+ * group's tooling: `npm install` there wrote an empty `package-lock.json` into a pnpm group, which
+ * a Finish then offered for publication (worker-agent r288). The other members' own words decide,
+ * and only when they agree; a collection's members are independent and say nothing about each other.
+ * The member's own field or lockfile still wins over the group, as it wins over everything else.
  */
 export class NodeSetupDetector implements SetupDetector {
   readonly familyId = 'node' as const
@@ -94,9 +102,9 @@ export class NodeSetupDetector implements SetupDetector {
           + ' declares which of the two is right; leave one of them or add a .worktree.json with a'
           + ' "setup" array',
       }
-    // No lockfile, no field and no workspace above is npm by convention rather than by guess: npm
-    // ships with Node, so it is the one tool the project is certain to have.
-    const toolId = declared ?? localLock?.toolId ?? above?.toolId ?? 'node-npm'
+    // No lockfile, no field, no workspace above and no agreeing product group is npm by convention
+    // rather than by guess: npm ships with Node, so it is the one tool the project is certain to have.
+    const toolId = declared ?? localLock?.toolId ?? above?.toolId ?? await NodeSetupDetector.groupToolOf(projectRoot) ?? 'node-npm'
     if (toolId !== 'node-npm' && toolId !== 'node-yarn' && toolId !== 'node-pnpm')
       // A tool added to the family without an answer to the workspace question fails here rather
       // than quietly installing from the wrong directory.
@@ -115,6 +123,32 @@ export class NodeSetupDetector implements SetupDetector {
   private static toolOfName(field: string): SetupToolId | null {
     const name = field.split('@')[0].trim()
     return NodeSetupDetector.packageManagersConst.find((entry) => entry.name === name)?.toolId ?? null
+  }
+
+  /** The tool every other member of the product group holding `projectRoot` names for itself; null without agreement. */
+  private static async groupToolOf(projectRoot: string): Promise<SetupToolId | null> {
+    const groupRoot = dirname(resolve(projectRoot))
+    const group = ProductGroup.readAt(groupRoot)
+    if (!group.ok || group.kind !== 'product') return null
+    const tools = new Set<SetupToolId>()
+    for (const entry of await readdir(groupRoot, { withFileTypes: true })) {
+      const member = join(groupRoot, entry.name)
+      if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules'
+        || PathCompare.comparable(member) === PathCompare.comparable(projectRoot)) continue
+      const tool = await NodeSetupDetector.ownToolOf(member)
+      if (tool !== null) tools.add(tool)
+    }
+    return tools.size === 1 ? [...tools][0] : null
+  }
+
+  /** What a directory says about itself: its field, a lone lockfile, a pnpm workspace file; null when it says nothing clear. */
+  private static async ownToolOf(directory: string): Promise<SetupToolId | null> {
+    const field = (await NodeSetupDetector.manifestOf(join(directory, NodeSetupDetector.manifestFileConst)) as { packageManager?: unknown } | null)?.packageManager
+    if (typeof field === 'string') return NodeSetupDetector.toolOfName(field)
+    const locks = await NodeSetupDetector.lockfilesOf(directory)
+    if (locks.length === 1) return locks[0].toolId
+    if (locks.length > 1) return null
+    return await SetupPaths.isFile(join(directory, NodeSetupDetector.workspaceFileConst)) ? 'node-pnpm' : null
   }
 
   private static async lockfilesOf(

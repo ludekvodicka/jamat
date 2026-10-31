@@ -54,11 +54,13 @@ export class App {
       json(res, { version: releasePackage.version, buildTime: this.config.buildTime });
       return;
     }
+    if (await this.hub.wakeService.handle(req, res, url))
+      return;
     if (url.pathname.startsWith('/api/')) {
       await this.hub.relay.handle(req, res, url);
       return;
     }
-    const file = url.pathname === '/' || url.pathname === '/index.html' ? 'index.html' : ['/shared.js', '/computer.html', '/computer.js', '/computer.css'].includes(url.pathname) ? url.pathname.slice(1) : undefined;
+    const file = url.pathname === '/' || url.pathname === '/index.html' ? 'index.html' : ['/shared.js', '/computer.html', '/computer.js', '/computer.css', '/wakeServiceModel.js'].includes(url.pathname) ? url.pathname.slice(1) : undefined;
     if (req.method === 'GET' && file) {
       res.writeHead(200, { 'Content-Type': file.endsWith('.html') ? 'text/html; charset=utf-8' : file.endsWith('.css') ? 'text/css; charset=utf-8' : 'application/javascript; charset=utf-8' });
       res.end(await readFile(new URL(file, this.context.webDirectory)));

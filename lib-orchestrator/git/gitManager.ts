@@ -68,12 +68,26 @@ export abstract class GitManager {
   }
 
   protected static detailOf(outcome: GitCommandOutcome): string {
-    const message = outcome.stderr.trim() || outcome.stdout.trim()
+    const message = GitManager.reasonFirst(outcome.stderr.trim(), outcome.stdout.trim())
     if (outcome.failure)
       return message
         ? `git could not run (${outcome.failure}): ${message}`
         : `git could not run (${outcome.failure})`
     return message || `git exited with ${outcome.code}`
+  }
+
+  /**
+   * Git writes a `warning:` line per converted file (`CRLF will be replaced by LF`) before its own or
+   * a hook's refusal, and the pane and the notification show the start of the detail: a hook refusal
+   * behind a page of them read as a line-ending problem. The reason goes first; the warnings stay below it.
+   */
+  private static reasonFirst(stderr: string, stdout: string): string {
+    const lines = stderr ? stderr.split(/\r?\n/) : []
+    const warnings = lines.filter((line) => line.startsWith('warning:'))
+    const errors = lines.filter((line) => !line.startsWith('warning:'))
+    const reason = errors.length > 0 ? errors.join('\n') : stdout
+    if (warnings.length === 0) return reason
+    return reason ? `${reason}\n\n${warnings.join('\n')}` : warnings.join('\n')
   }
 
   protected static async exists(path: string): Promise<boolean> {

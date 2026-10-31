@@ -218,7 +218,7 @@ describe('Session actions', () => {
 
   // UA1-J07-7: the outcome of a kept worktree carries its decision; a collapsed heading hid it.
   it('starts a closed section with presses expanded and confirms Discard of a kept worktree before pressing it', async () => {
-    const confirm = 'Already published: j07ea r4. 1 changed path is not published and will be discarded with this worktree. Save a copy and discard it?'
+    const confirm = 'Already published: j07ea r4. 1 changed path is not published and will be discarded with this worktree. Discard it?'
     const kept = { ...section('Finish of 002', false), kind: 'finish' as const, actions: [
       { id: 'prepare-worktree' as const, label: 'Update and prepare again', primary: true }, { id: 'discard' as const, label: 'Discard', primary: false, confirm }] }
     render(<SessionActionsPane session={session([section('Setup', false), kept])} sessions={store} visible ports={ports} />)
@@ -547,6 +547,32 @@ describe('Session actions', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('The selected content changed')
     fireEvent.click(screen.getByRole('button', { name: 'Review changes' }))
     expect(screen.getByRole('textbox')).toHaveValue('Fix selection')
+  })
+
+  // Worker-agent 033: after Publish the step still asked for validation with its warning glyph until the record moved.
+  it('draws the waiting review step as running while its Publish press is answered', async () => {
+    const { workflow } = reviewFixture()
+    workflow.actions.push({ id: 'refresh-preparation', label: 'Recheck local changes', primary: false, place: 'step' })
+    let settle!: (answer: Awaited<ReturnType<WorkflowPorts['press']>>) => void
+    const press = vi.fn<WorkflowPorts['press']>(() => new Promise((resolve) => { settle = resolve }))
+    const { container, rerender } = render(<SessionActionsPane session={session([workflow])} sessions={store} visible ports={{ ...ports, press }} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Commit & merge' })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: 'Commit & merge' }))
+    const step = container.querySelector('.workflow__step')!
+    expect(step.getAttribute('data-state')).toBe('running')
+    expect(step).toHaveTextContent('Commit & merge: sent, Jamat works on it')
+    expect(screen.queryByRole('group', { name: 'Changes actions' })).toBeNull()
+    // The press answers only after the whole drive: a later step draws its own progress meanwhile.
+    const removing = { ...workflow, rounds: [{ ...workflow.rounds[0], steps: [{ ...workflow.rounds[0].steps[0], state: 'done' as const, body: undefined },
+      { key: '1:remove', title: 'Remove the worktree', detail: 'Counting the files to delete', state: 'running' as const, startedAt: null, endedAt: null, target: { kind: 'none' as const } }] }] }
+    rerender(<SessionActionsPane session={session([removing])} sessions={store} visible ports={{ ...ports, press }} />)
+    const steps = container.querySelectorAll('.workflow__step')
+    expect(steps[1]).toHaveTextContent('Counting the files to delete')
+    expect(container.textContent).not.toContain('sent, Jamat works on it')
+    await act(async () => settle({ kind: 'done' }))
+    rerender(<SessionActionsPane session={session([workflow])} sessions={store} visible ports={{ ...ports, press }} />)
+    expect(container.querySelector('.workflow__step')!.getAttribute('data-state')).toBe('waits')
+    expect(screen.getByRole('button', { name: 'Recheck local changes' })).toBeEnabled()
   })
 
   it('opens a new review after changed content and removes its executable controls when the section closes', async () => {

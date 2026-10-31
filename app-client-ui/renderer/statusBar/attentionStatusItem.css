@@ -1,0 +1,14 @@
+/* Text, not a drawn button: the bar keeps reading as one line. Monospace so the count changing from
+   9 to 10 moves nothing beside it. */
+.jamat-attention {
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  cursor: pointer;
+}
+.jamat-attention:hover { color: var(--color-text-1); }
+.jamat-attention--automatic { color: var(--color-attention); }

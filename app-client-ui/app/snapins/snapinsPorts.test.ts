@@ -23,8 +23,8 @@ describe('SnapinsPorts', () => {
     const snapshot: SessionsSnapshot = { revision: 0, reconciled: true, categories: [], orphans: [],
       sessions: [{ sessionId: 'worker', tabTitle: 'r900: Todo' } as SessionInfo],
       host: { presence: 'running', hostVersion: null, hostInstanceId: null, liveCount: 1, lastStartError: null } }
-    const open = vi.fn<Parameters<typeof SnapinsPorts.of>[0]['tabs']['open']>()
-      .mockResolvedValue({ ok: true, value: { kind: 'opened', panelId: 'worker', windowId: 'main' } } as Awaited<ReturnType<Parameters<typeof SnapinsPorts.of>[0]['tabs']['open']>>)
+    const open = vi.fn<Parameters<typeof SnapinsPorts.of>[0]['tabs']['openTab']>()
+      .mockResolvedValue({ ok: true, value: { kind: 'opened', panelId: 'worker', windowId: 'main' } } as Awaited<ReturnType<Parameters<typeof SnapinsPorts.of>[0]['tabs']['openTab']>>)
     const ports = SnapinsPorts.of({ sessions: { snapshot: () => snapshot,
       createSession: async () => ({ ok: true, value: { sessionId: 'worker', tabTitle: 'r900' } }),
       worktreeResults: async () => ({ ok: true, value: { results: [] } }),
@@ -32,7 +32,7 @@ describe('SnapinsPorts', () => {
       svn: { urlOf: async () => ({ ok: true, value: 'file:///test' }), listAtHead: async () => ({ ok: true, value: [] }),
         changedNames: async () => ({ ok: true, value: [] }) },
       projects: { listCategories: async () => [], listProjects: async () => { throw new Error('unexpected') } },
-      tabs: { open }, versioningMode: () => 'checkpoints' })
+      tabs: { openTab: open }, versioningMode: () => 'checkpoints' })
     expect(await ports.sessions.openTerminal('missing')).toBe('missing-session')
     expect(open).not.toHaveBeenCalled()
     expect(await ports.sessions.openTerminal('worker')).toBe('ok')

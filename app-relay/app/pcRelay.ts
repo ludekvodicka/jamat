@@ -6,12 +6,10 @@ import { json } from './http.js';
 export class PcRelay {
   private readonly pcs: PcConfig[];
   private readonly endpoints: ReadonlyMap<string, PcEndpoint>;
-  private readonly wolProxy: string | undefined;
 
-  constructor(pcs: PcConfig[], endpoints: ReadonlyMap<string, PcEndpoint>, wolProxy?: string) {
+  constructor(pcs: PcConfig[], endpoints: ReadonlyMap<string, PcEndpoint>) {
     this.pcs = pcs;
     this.endpoints = endpoints;
-    this.wolProxy = wolProxy;
   }
 
   async handle(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
@@ -35,23 +33,7 @@ export class PcRelay {
       return;
     }
     if (url.pathname === '/api/wol') {
-      if (req.method !== 'POST') {
-        json(res, { error: 'Method not allowed' }, 405);
-        return;
-      }
-      if (!this.wolProxy) {
-        json(res, { error: 'Wake-on-LAN is not configured' }, 503);
-        return;
-      }
-      try {
-        const response = await fetch(new URL('/wol', this.wolProxy), { method: 'POST',
-          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mac: pc.mac, broadcast: pc.broadcast }),
-          signal: AbortSignal.timeout(5000), redirect: 'error' });
-        const result = await response.json() as { ok?: boolean };
-        json(res, result.ok && response.ok ? { ok: true, pc: pc.id } : { error: 'Wake-on-LAN failed' }, result.ok && response.ok ? 200 : 502);
-      } catch {
-        json(res, { error: 'Wake-on-LAN proxy unreachable' }, 502);
-      }
+      json(res, { error: 'Not found' }, 404);
       return;
     }
     await this.endpoints.get(pc.id)!.handle(req, res, `${match ? '/api' + (match[2] ?? '/') : url.pathname}${url.search}`);

@@ -11,7 +11,7 @@ import type {
   RemoteControlTabOpenCommitDto,
   RemoteControlCommitStatusDto,
 } from '../../../lib-orchestrator/remoteControl/remoteControlApi.types'
-import type { RemoteControlTabsPort } from '../../../lib-orchestrator/remoteControl/remoteControl'
+import type { RemoteControlTabRequester, RemoteControlTabsPort } from '../../../lib-orchestrator/remoteControl/remoteControl'
 import type { TabControlAck, TabControlCommand, TabControlTaskItem } from '../../shared/tabControl'
 import type { VersioningCommitDraftDto, VersioningCommitPath } from '../../shared/versioningCommit'
 import { type TerminalTarget, TerminalTargetCodec } from '../../shared/terminalTarget'
@@ -19,6 +19,7 @@ import type { WorkspaceWindows } from '../shell/workspaceWindows'
 import type { WorkspacePanelIndex } from './workspacePanelIndex'
 import type { TabFileOpenResolver } from './tabFileOpenResolver'
 import type { VersioningCommitManager } from '../versioning/versioningCommitManager'
+import type { AttentionEntry, AttentionQueue } from '../attention/attentionQueue'
 
 /** A client-only answer: the task view is never a protocol operation, so it has no wire DTO. */
 export interface TabControlTaskOpenedDto {
@@ -51,24 +52,7 @@ interface PendingTabControlCommand {
   resolve(result: TabControlBrokerResult): void
 }
 
-interface QueuedCommitReview {
-  draftId: string
-  command: Omit<Extract<TabControlCommand, { kind: 'open-commit' }>, 'requestId' | 'activate'>
-}
-
-interface CommitReviewSequence {
-  previousPanelId: string | null
-  /** The workflow an action's review returns to instead of the previous panel. */
-  returnToWorkflow: TabControlWorkflowReturn | null
-  openedAt: number
-  reviews: QueuedCommitReview[]
-}
-
-/** The session whose workflow a review hands the focus back to, and the title its tab opens under. */
-export interface TabControlWorkflowReturn {
-  sessionId: string
-  tabTitle: string
-}
+type CommitReviewCommand = Omit<Extract<TabControlCommand, { kind: 'open-commit' }>, 'requestId' | 'activate'>
 
 export interface TabControlBrokerDeps {
   recordOpen?(open: Omit<SessionOpen, 'sequence'>): Promise<SessionOpen>
@@ -77,10 +61,6 @@ export interface TabControlBrokerDeps {
   timeoutMilliseconds?: number
   activateSessionOnCommit?(): boolean
   activateSessionOnDocument?(): boolean
-  returnToPreviousSessionAfterCommit?(): boolean
-  /** How long a recorded return stays valid, or null for no limit. */
-  returnWindowMilliseconds?(): number | null
-  now?(): number
 }
 
 export class TabControlBroker implements RemoteControlTabsPort {
@@ -88,9 +68,7 @@ export class TabControlBroker implements RemoteControlTabsPort {
   private readonly pending = new Map<string, PendingTabControlCommand>()
   private readonly projectedOpens = new Set<string>()
   private readonly projectedReviews = new Map<string, RemoteControlCommitStatusDto>()
-  private commitSequence: CommitReviewSequence | null = null
   private commitTurn: Promise<void> = Promise.resolve()
-  private commitChangeQueued = false
   private stopping = false
   private readonly requestId: () => string
   private readonly timeoutMilliseconds: number
@@ -98,6 +76,7 @@ export class TabControlBroker implements RemoteControlTabsPort {
   private readonly index: WorkspacePanelIndex
   private readonly fileOpenResolver: Pick<TabFileOpenResolver, 'resolve'>
   private readonly commits: Pick<VersioningCommitManager, 'prepare' | 'attach' | 'releaseUnattached' | 'status' | 'cancel' | 'reviews'>
+  private readonly attention: Pick<AttentionQueue, 'add' | 'changed'>
   private readonly deps: TabControlBrokerDeps | undefined
 
   constructor(
@@ -105,12 +84,14 @@ export class TabControlBroker implements RemoteControlTabsPort {
     index: WorkspacePanelIndex,
     fileOpenResolver: Pick<TabFileOpenResolver, 'resolve'>,
     commits: Pick<VersioningCommitManager, 'prepare' | 'attach' | 'releaseUnattached' | 'status' | 'cancel' | 'reviews'>,
+    attention: Pick<AttentionQueue, 'add' | 'changed'>,
     deps?: TabControlBrokerDeps,
   ) {
     this.windows = windows
     this.index = index
     this.fileOpenResolver = fileOpenResolver
     this.commits = commits
+    this.attention = attention
     this.deps = deps
     this.requestId = deps?.requestId ?? randomUUID
     this.timeoutMilliseconds = deps?.timeoutMilliseconds
@@ -133,7 +114,6 @@ export class TabControlBroker implements RemoteControlTabsPort {
       fresh?: true
       /** Type the review's close line into its session (the CLI opened it). */
       wakeOnClose?: true
-      returnToWorkflow?: TabControlWorkflowReturn
     }): Promise<RemoteControlStepResult<RemoteControlTabOpenCommitDto>> {
     return this.withCommitTurn(() => this.openCommitNow(sessionId, tabTitle, vcs, scope, proposal, options))
   }
@@ -148,21 +128,16 @@ export class TabControlBroker implements RemoteControlTabsPort {
     const draftId = prepared.ok ? prepared.value.draftId : null
     try {
       if (this.stopping) return TabControlBroker.error('unavailable', 'The AppClientUI process is stopping')
-      const automatic = options.showRefusal !== true && (this.deps?.activateSessionOnCommit?.() ?? true)
-      const activePanelId = this.activePanel(this.windows.lastFocusedWorkspace()?.windowId)
-      // An unfinished review left in another session must not suppress later activation requests.
-      if (automatic && this.commitSequence?.reviews[0]?.command.panelId !== activePanelId)
-        this.commitSequence = null
-      const activate = options.showRefusal === true || (automatic && this.commitSequence === null)
-      const shouldReturn = automatic && (this.deps?.returnToPreviousSessionAfterCommit?.() ?? true)
-      const previousPanelId = shouldReturn ? activePanelId : null
+      // A person's own open is in front at once; an agent's opens behind and waits in the attention queue.
+      const activate = options.showRefusal === true
+      const queued = !activate && (this.deps?.activateSessionOnCommit?.() ?? true)
       const existing = this.index.panelsOfSession(sessionId)[0]
       const opened = existing === undefined
-        ? await this.open(sessionId, tabTitle, { ...options, activate })
+        ? await this.openTab(sessionId, tabTitle, { activate })
         : { ok: true as const, value: { windowId: existing.windowId, panelId: existing.panel.panelId } }
       if (!opened.ok) return opened
       if (activate) this.windows.focusOrRecreate(opened.value.windowId)
-      const command: QueuedCommitReview['command'] = {
+      const command: CommitReviewCommand = {
         kind: 'open-commit', panelId: opened.value.panelId, vcs, ...(draftId ? { reviewId: draftId } : {}),
         scopeRoot: prepared.ok ? prepared.value.scopeRoot : scope ?? '.',
         ...(prepared.ok && prepared.value.paths !== undefined ? { paths: prepared.value.paths } : {}),
@@ -173,14 +148,7 @@ export class TabControlBroker implements RemoteControlTabsPort {
       const result = await this.request(opened.value.windowId, { ...command, requestId: this.requestId(), activate, ...(sharedOpen ? { sharedOpen } : {}) })
       if (result.ok && draftId !== null) {
         this.commits.attach(draftId, result.value.windowId)
-        const panelId = result.value.panelId
-        if (automatic) {
-          this.commitSequence ??= { previousPanelId: previousPanelId !== panelId ? previousPanelId : null,
-            returnToWorkflow: shouldReturn ? options.returnToWorkflow ?? null : null, openedAt: this.now(), reviews: [] }
-          if (!this.commitSequence.reviews.some((review) => review.draftId === draftId))
-            this.commitSequence.reviews.push({ draftId, command: { ...command, panelId } })
-          this.commitsChanged()
-        }
+        if (queued) this.attention.add(this.reviewEntry(draftId, sessionId, tabTitle, { ...command, panelId: result.value.panelId }))
       }
       return result.ok && draftId !== null ? { ok: true, value: { ...result.value, commitSessionId: draftId } } : result
     } finally { if (draftId !== null) this.commits.releaseUnattached(draftId) }
@@ -195,21 +163,12 @@ export class TabControlBroker implements RemoteControlTabsPort {
       if (!owner) return
       this.projectedOpens.add(intent)
       this.updateProjectedReview(target, draft, false)
-      const automatic = this.deps?.activateSessionOnCommit?.() ?? true
-      const active = this.activePanel(this.windows.lastFocusedWorkspace()?.windowId)
-      if (automatic && this.commitSequence?.reviews[0]?.command.panelId !== active) this.commitSequence = null
-      const activate = automatic && this.commitSequence === null
-      const command: QueuedCommitReview['command'] = { kind: 'open-commit', panelId: owner.panel.panelId,
+      const command: CommitReviewCommand = { kind: 'open-commit', panelId: owner.panel.panelId,
         target, reviewId: draft.draftId, openId, itemKey, vcs: draft.vcs, scopeRoot: draft.scopeRoot, paths: draft.paths,
         title: `Commit ${draft.vcs.toUpperCase()}`, messageApplied: false }
-      if (activate) this.windows.focusOrRecreate(owner.windowId)
-      const answer = await this.request(owner.windowId, { ...command, requestId: this.requestId(), activate })
+      const answer = await this.request(owner.windowId, { ...command, requestId: this.requestId(), activate: false })
       if (!answer.ok) { this.projectedReviews.delete(id); return }
-      if (automatic) {
-        this.commitSequence ??= { previousPanelId: active !== owner.panel.panelId ? active : null,
-          returnToWorkflow: null, openedAt: this.now(), reviews: [] }
-        if (!this.commitSequence.reviews.some((review) => review.draftId === id)) this.commitSequence.reviews.push({ draftId: id, command })
-      }
+      if (this.deps?.activateSessionOnCommit?.() ?? true) this.attention.add(this.reviewEntry(id, target.sessionId, owner.panel.title, command))
       this.commitsChanged()
     })
   }
@@ -244,56 +203,32 @@ export class TabControlBroker implements RemoteControlTabsPort {
       : this.commits.cancel(commitSessionId))
   }
 
+  /** A review changed: the attention queue reads whether the one in front of the person is done. */
   commitsChanged(): void {
-    if (this.commitChangeQueued || this.stopping) return
-    this.commitChangeQueued = true
-    void this.withCommitTurn(async () => {
-      this.commitChangeQueued = false
-      await this.advanceCommits()
-    })
+    if (!this.stopping) this.attention.changed()
   }
 
-  private async advanceCommits(): Promise<void> {
-    const sequence = this.commitSequence
-    const current = sequence?.reviews[0]
-    if (sequence === null || current === undefined || this.stopping) return
-    const status = this.reviewStatus(current.draftId)
-    if (status !== null && !TabControlBroker.reviewFinished(status)) return
-    // Completing a background review must not take focus from the person's current work.
-    if (status === null || this.activePanel(this.windows.focusedWorkspace()?.windowId) !== current.command.panelId) {
-      this.commitSequence = null
-      return
-    }
-    sequence.reviews.shift()
-    while (sequence.reviews.length > 0) {
-      const next = sequence.reviews[0]
-      const nextStatus = this.reviewStatus(next.draftId)
-      const windowId = this.index.ownerOf(next.command.panelId)
-      if (nextStatus === null || TabControlBroker.reviewFinished(nextStatus) || windowId === null) {
-        sequence.reviews.shift()
-        continue
-      }
-      if (this.deps?.activateSessionOnCommit?.() === false) {
-        this.commitSequence = null
-        return
-      }
-      try { this.windows.focusOrRecreate(windowId) }
-      catch { this.commitSequence = null; return }
-      const result = await this.request(windowId, { ...next.command, requestId: this.requestId(), activate: true, existingOnly: true, messageApplied: false })
-      if (!result.ok) this.commitSequence = null
-      return
-    }
-    this.commitSequence = null
-    if (this.deps?.returnToPreviousSessionAfterCommit?.() === false) return
-    // An action's review goes back to its workflow, which goes on there, however long the review took.
-    if (sequence.returnToWorkflow !== null) {
-      await this.openWorkflow(sequence.returnToWorkflow.sessionId, sequence.returnToWorkflow.tabTitle)
-      return
-    }
-    if (sequence.previousPanelId === null) return
-    const window = this.deps?.returnWindowMilliseconds?.() ?? null
-    if (window !== null && this.now() - sequence.openedAt > window) return
-    await this.focus(sequence.previousPanelId)
+  /**
+   * A review waits in the attention queue until the person stops typing. It holds the queue while
+   * the person is in it, and it is done once committed or closed; a failed or running commit keeps it.
+   */
+  private reviewEntry(draftId: string, sessionId: string, title: string, command: CommitReviewCommand): AttentionEntry {
+    return { key: draftId, kind: 'commit-review', sessionId, title, automatic: true, holds: true,
+      wanted: () => {
+        const status = this.reviewStatus(draftId)
+        return status !== null && !TabControlBroker.reviewFinished(status) && this.index.ownerOf(command.panelId) !== null
+      },
+      show: () => this.showReview(command) }
+  }
+
+  /** Selects the review already in its tab, in whichever window holds that tab now. */
+  private async showReview(command: CommitReviewCommand): Promise<string | null> {
+    const windowId = this.index.ownerOf(command.panelId)
+    if (this.stopping || windowId === null) return null
+    try { this.windows.focusOrRecreate(windowId) }
+    catch { return null }
+    const result = await this.request(windowId, { ...command, requestId: this.requestId(), activate: true, existingOnly: true, messageApplied: false })
+    return result.ok ? result.value.panelId : null
   }
 
   private static reviewFinished(status: RemoteControlCommitStatusDto): boolean {
@@ -304,21 +239,36 @@ export class TabControlBroker implements RemoteControlTabsPort {
   }
 
   private withCommitTurn<T>(operation: () => Promise<T>): Promise<T> {
-    // Keep arrival order through async prepare and renderer acknowledgements, including completion.
+    // Keep arrival order through async prepare and renderer acknowledgements.
     const next = this.commitTurn.then(operation, operation)
     this.commitTurn = next.then(() => undefined, () => undefined)
     return next
   }
 
-  private now(): number {
-    return this.deps?.now?.() ?? Date.now()
+  /**
+   * The port's open. A person's click is in front at once; an agent's tab opens behind the one in
+   * front and waits in the attention queue, so it never lands in the middle of what the person types.
+   */
+  async open(sessionId: string, tabTitle: string, requestedBy: RemoteControlTabRequester): Promise<RemoteControlStepResult<RemoteControlTabCommandDto>> {
+    if (requestedBy === 'person') return this.openTab(sessionId, tabTitle)
+    else if (requestedBy === 'agent') {
+      const opened = await this.openTab(sessionId, tabTitle, { activate: false })
+      if (opened.ok) this.attention.add({ key: `session-opened:${sessionId}`, kind: 'session-opened', sessionId, title: tabTitle,
+        automatic: true, holds: false, wanted: () => this.index.panelsOfSession(sessionId).length > 0,
+        show: () => this.showSession(sessionId, tabTitle) })
+      return opened
+    } else throw new Error(`Unknown tab requester: ${JSON.stringify(requestedBy satisfies never)}`)
   }
 
-  private activePanel(windowId: string | undefined): string | null {
-    return this.index.snapshot().find((panel) => panel.windowId === windowId && panel.active)?.panelId ?? null
+  /** The session's tab in front, opened first when it has none: the panel that shows it, or null. */
+  async showSession(sessionId: string, tabTitle: string): Promise<string | null> {
+    if (this.stopping) return null
+    const existing = this.index.panelsOfSession(sessionId)[0]
+    const shown = existing === undefined ? await this.openTab(sessionId, tabTitle) : await this.focus(existing.panel.panelId)
+    return shown.ok ? shown.value.panelId : null
   }
 
-  async open(
+  async openTab(
     sessionId: string,
     tabTitle: string,
     options?: { activate?: boolean },
@@ -372,7 +322,7 @@ export class TabControlBroker implements RemoteControlTabsPort {
     if (!proven.ok)
       return TabControlBroker.error(proven.code, proven.detail)
     const activate = this.deps?.activateSessionOnDocument?.() ?? false
-    const opened = await this.open(sessionId, tabTitle, { activate })
+    const opened = await this.openTab(sessionId, tabTitle, { activate })
     if (!opened.ok)
       return { ok: false, error: opened.error }
     const sharedOpen = await this.recordOpen(sessionId, proven.documentKey, proven.title, { kind: 'file', source: proven.source }, intentId)
@@ -400,7 +350,7 @@ export class TabControlBroker implements RemoteControlTabsPort {
     if (this.stopping) return TabControlBroker.error('unavailable', 'The AppClientUI process is stopping')
     const existing = this.index.panelsOfSession(item.sessionId)[0]
     const opened = existing === undefined
-      ? await this.open(item.sessionId, tabTitle, { activate: true })
+      ? await this.openTab(item.sessionId, tabTitle, { activate: true })
       : { ok: true as const, value: { windowId: existing.windowId, panelId: existing.panel.panelId } }
     if (!opened.ok) return opened
     try {
@@ -426,7 +376,7 @@ export class TabControlBroker implements RemoteControlTabsPort {
     if (this.stopping) return TabControlBroker.error('unavailable', 'The AppClientUI process is stopping')
     const existing = this.index.panelsOfSession(sessionId)[0]
     const opened = existing === undefined
-      ? await this.open(sessionId, tabTitle, { activate: true })
+      ? await this.openTab(sessionId, tabTitle, { activate: true })
       : { ok: true as const, value: { windowId: existing.windowId, panelId: existing.panel.panelId } }
     if (!opened.ok) return opened
     try {
@@ -514,7 +464,6 @@ export class TabControlBroker implements RemoteControlTabsPort {
 
   cancelAll(): void {
     this.stopping = true
-    this.commitSequence = null
     for (const requestId of [...this.pending.keys()])
       this.finish(
         requestId,

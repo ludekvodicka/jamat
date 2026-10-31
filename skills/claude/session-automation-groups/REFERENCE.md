@@ -39,5 +39,5 @@ silently selected or created. Group/color/note are separate public operations: a
 partial. The error includes confirmed changed fields and a read-back when available. Reconcile by
 reapplying the current verified state. Never claim that a failed or unverified move succeeded.
 
-Notes are at most 4000 characters. Missing note means preserve; an explicit empty note clears it.
+Notes are trimmed, as Jamat stores them, and at most 4000 characters. Missing note means preserve; an explicit empty note clears it.
 Changing presentation never ends a process, closes a tab, commits files or deletes a worktree.

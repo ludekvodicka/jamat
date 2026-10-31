@@ -44,6 +44,15 @@ test('reconciliation changes no correct field, explicit note can replace or clea
   assert.deepEqual(Groups.apply(w.client, { ...request, note: '' }).value.changed, [])
 })
 
+test('a note file with a final newline is written and read back trimmed, as the store keeps it', () => {
+  const w = world()
+  const client = args => args[1] === 'note' ? w.client([...args.slice(0, 5), args[5].trim()]) : w.client(args)
+  const result = Groups.apply(client, { ...request, note: 'Waiting: approve the plan\r\n' })
+  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.equal(w.session.note, 'Waiting: approve the plan')
+  assert.deepEqual(Groups.apply(client, { ...request, note: 'Waiting: approve the plan\n' }).value.changed, [])
+})
+
 test('partial failure is named and a retry repairs only the outstanding field', () => {
   const w = world()
   const result = Groups.apply(args => args[1] === 'color'

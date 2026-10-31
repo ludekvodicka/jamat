@@ -70,7 +70,8 @@ export class SvnWorktreeEvidence {
       const item = SvnWorktreeEvidence.itemOf(status['@_item'])
       const props = SvnWorktreeEvidence.propsOf(status['@_props'])
       const conflict = item === 'conflicted' || props === 'conflicted' || status['@_tree-conflicted'] === 'true'
-      return { kind: SvnWorktreeEvidence.kindOf(item, props), conflict, path: SvnWorktreeEvidence.relativeTo(root, path), ...(item === 'deleted' ? { deleted: true as const } : {}) }
+      return { kind: SvnWorktreeEvidence.kindOf(item, props), conflict, path: SvnWorktreeEvidence.relativeTo(root, path), ...(item === 'deleted' ? { deleted: true as const } : {}),
+        ...(item === 'unversioned' ? { unversioned: true as const } : {}) }
     })
   }
 
@@ -175,6 +176,11 @@ export class SvnWorktreeEvidence {
         || status['@_copied'] !== 'true' && (item === 'normal' || item === 'modified' || item === 'merged') && Number(status['@_revision']) !== revision
       return incomplete ? [SvnWorktreeEvidence.relativeTo(root, path)] : []
     })
+  }
+
+  /** Whether `svn status --xml` names a file external, which `--ignore-externals` still lists. */
+  static fileExternals(xml: string): boolean {
+    return SvnWorktreeEvidence.statusEntries(xml).some(({ status }) => status['@_file-external'] === 'true')
   }
 
   static registeredFileExternal(xml: string): boolean {

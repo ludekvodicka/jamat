@@ -318,6 +318,15 @@ describe('lib-orchestrator/svn/svnCommitManager', () => {
     expect(calls).toEqual([])
   })
 
+  it('refuses a name svn cannot take from Jamat before any write, and says what to do', async () => {
+    const { manager, scope, calls } = fixture()
+    const answer = await manager.commit(scope, [{ absolutePath: resolve(scope, 'docs/žluť.md'), nodeKind: 'file', status: 'added' }], 'message.txt')
+    expect(answer).toMatchObject({ ok: false, code: 'refused' })
+    expect(answer.ok === false && answer.detail).toContain('docs/žluť.md')
+    expect(answer.ok === false && answer.detail).toContain('TortoiseSVN')
+    expect(calls).toEqual([])
+  })
+
   it.each(['E155011', 'E160028', 'E170004'])('recognizes the SVN %s out-of-date code', async (code) => {
     const { manager, scope } = fixture(`${code}: commit refused`)
     expect(await manager.commit(scope, [{ absolutePath: resolve(scope, 'a.txt'), nodeKind: 'file', status: 'modified' }], 'message.txt')).toMatchObject({ ok: false, code: 'out-of-date' })
@@ -329,18 +338,21 @@ describe('lib-orchestrator/svn/svnCommitManager', () => {
     ['tree', '<target path="scope"><entry path="deleted"><wc-status item="deleted" props="none" tree-conflicted="true" /></entry></target>', 'deleted'],
     ['changelist', '<target path="scope"/><changelist name="review"><entry path="grouped.txt"><wc-status item="conflicted" props="none" /></entry></changelist>', 'grouped.txt'],
     ['clean', '<target path="scope"/>', null],
-  ])('checks %s conflicts after a zero-exit update without resolving or including externals', async (_kind, xml, conflict) => {
+  ])('checks %s conflicts after updating the node SVN named, at depth empty and without externals', async (_kind, xml, conflict) => {
     const scope = resolve('scope@with spaces')
+    const named = resolve(scope, 'app', 'blocks')
     const calls: string[][] = []
     const manager = cleanManager({ run: async (cwd, args) => {
       expect(cwd).toBe(scope)
       calls.push(args)
-      return { code: 0, failure: null, stderr: '', stdout: args[0] === 'update' ? 'Updated to revision 43.\n' : `<status>${xml}</status>` }
+      return { code: 0, failure: null, stderr: '', stdout: args[0] === 'update' ? 'Updated to revision 43.\n'
+        : args.includes('--show-updates') ? '<status><target path="scope"/></status>' : `<status>${xml}</status>` }
     } })
-    const result = await manager.update(scope)
+    const result = await manager.updateOutOfDate(scope, `svn: E155011: Commit failed (details follow):\nsvn: E155011: Directory '${named}' is out of date\nsvn: E160028: Directory '/app/blocks' is out of date`, [named])
     expect(calls).toEqual([
-      ['update', '--non-interactive', '--accept', 'postpone', '--ignore-externals', '--', `${scope}@`],
-      ['status', '--xml', '--non-interactive', '--ignore-externals', '--', `${scope}@`],
+      ['status', '--xml', '--show-updates', '--non-interactive', '--ignore-externals', '--', `${named}@`],
+      ['update', '--non-interactive', '--accept', 'postpone', '--ignore-externals', '--depth', 'empty', '--', `${named}@`],
+      ['status', '--xml', '--non-interactive', '--ignore-externals', '--depth', 'empty', '--', `${named}@`],
     ])
     if (conflict === null) expect(result).toEqual({ ok: true, value: { output: 'Updated to revision 43.\n' } })
     else expect(result).toMatchObject({ ok: false, detail: expect.stringContaining(conflict) })
@@ -350,18 +362,129 @@ describe('lib-orchestrator/svn/svnCommitManager', () => {
     const calls: string[][] = []
     const manager = cleanManager({ run: async (_cwd, args) => {
       calls.push(args)
-      return { code: 1, failure: null, stdout: 'C    conflict.txt\n', stderr: 'E170013: Connection refused' }
+      return args[0] === 'status' ? { code: 0, failure: null, stderr: '', stdout: '<status><target path="."/></status>' }
+        : { code: 1, failure: null, stdout: 'C    conflict.txt\n', stderr: 'E170013: Connection refused' }
     } })
-    expect(await manager.update(testScope)).toEqual({ ok: false, code: 'svn-failed', detail: 'C    conflict.txt\nE170013: Connection refused' })
-    expect(calls).toHaveLength(1)
+    expect(await manager.updateOutOfDate(testScope, `svn: E155011: File '${resolve(testScope, 'a.txt')}' is out of date`, []))
+      .toEqual({ ok: false, code: 'svn-failed', detail: 'C    conflict.txt\nE170013: Connection refused' })
+    expect(calls.map(([command]) => command)).toEqual(['status', 'update'])
   })
 
   it.each(['status-error', 'invalid-status'])('never reports a clean update after %s', async (kind) => {
     const manager = cleanManager({ run: async (_cwd, args) => args[0] === 'update'
       ? { code: 0, failure: null, stdout: 'Updated to revision 43.', stderr: '' }
+      : args.includes('--show-updates') ? { code: 0, failure: null, stdout: '<status><target path="."/></status>', stderr: '' }
       : { code: kind === 'status-error' ? 1 : 0, failure: null, stdout: 'invalid status', stderr: '' } })
-    expect(await manager.update(testScope)).toMatchObject({ ok: false, detail: expect.stringContaining('Updated to revision 43.') })
+    expect(await manager.updateOutOfDate(testScope, `svn: E155011: File '${resolve(testScope, 'a.txt')}' is out of date`, []))
+      .toMatchObject({ ok: false, detail: expect.stringContaining('Updated to revision 43.') })
   })
+
+  /** The B1 review: files moved out of `blocks/` one by one, then `blocks` deleted, its BASE older than its files' commits. */
+  function outOfDate(status: string, selected: readonly string[] = []) {
+    const calls: string[][] = []
+    const manager = cleanManager({ run: async (_cwd, args) => {
+      calls.push(args)
+      if (args[0] === 'info') return { code: 0, failure: null, stderr: '', stdout: '<info><entry><relative-url>^/trunk/My%20App</relative-url></entry></info>' }
+      if (args.includes('--show-updates')) return { code: 0, failure: null, stderr: '', stdout: `<status><target path="blocks">${status}</target></status>` }
+      if (args[0] === 'status') return { code: 0, failure: null, stderr: '', stdout: '<status><target path="."/></status>' }
+      return { code: 0, failure: null, stderr: '', stdout: 'Updating \'blocks\':\nAt revision 286.\n' }
+    } })
+    const update = (failure: string) => manager.updateOutOfDate(testScope, failure, selected)
+    return { calls, update }
+  }
+
+  const deletedBlocks = (incoming: string) => '<entry path="blocks"><wc-status item="deleted" props="none"/></entry>'
+    + `<entry path="blocks/a.ts"><wc-status item="deleted" props="none" moved-to="../nodeTypes/a.ts"/>${incoming}</entry>`
+
+  it('updates only the deleted directory SVN named when nothing came in below it, never a moved file (audit B1)', async () => {
+    const { calls, update } = outOfDate(deletedBlocks(''))
+    expect(await update(`svn: E155011: Directory '${resolve(testScope, 'blocks')}' is out of date`)).toMatchObject({ ok: true })
+    expect(calls.filter(([command]) => command === 'update')).toEqual([
+      ['update', '--non-interactive', '--accept', 'postpone', '--ignore-externals', '--depth', 'empty', '--', `${resolve(testScope, 'blocks')}@`]])
+  })
+
+  it('places a repository path SVN named through the scope URL when no working-copy path is given', async () => {
+    const { calls, update } = outOfDate(deletedBlocks(''))
+    expect(await update('svn: E170004: Item \'/trunk/My App/blocks\' is out of date')).toMatchObject({ ok: true })
+    expect(calls[0]).toEqual(['info', '--xml', '--non-interactive', '--', `${testScope}@`])
+    expect(calls.find(([command]) => command === 'update')?.at(-1)).toBe(`${resolve(testScope, 'blocks')}@`)
+    expect(await update('svn: E160028: Directory \'/trunk/Other/blocks\' is out of date'))
+      .toMatchObject({ ok: false, code: 'refused', detail: expect.stringContaining('/trunk/Other/blocks') })
+  })
+
+  it.each([
+    ['an incoming change below a deleted directory', deletedBlocks('<repos-status item="modified" props="none"/>'), 'blocks/a.ts'],
+    ['a moved node', '<entry path="blocks"><wc-status item="deleted" props="none" moved-to="../nodeTypes"/><repos-status item="modified" props="none"/></entry>', 'together with nodeTypes'],
+    ['a change coming into work the commit does not hold', '<entry path="blocks"><wc-status item="normal" props="modified"/><repos-status item="none" props="modified"/></entry>', 'does not hold'],
+  ])('refuses %s before any write and names what to update', async (_kind, status, named) => {
+    const { calls, update } = outOfDate(status)
+    const result = await update(`svn: E155011: Directory '${resolve(testScope, 'blocks')}' is out of date`)
+    expect(result).toMatchObject({ ok: false, code: 'refused', detail: expect.stringContaining(named) })
+    expect(result).toMatchObject({ detail: expect.stringContaining('Update blocks') })
+    expect(calls.map(([command]) => command)).toEqual(['status'])
+  })
+
+  it('refuses a failure that names no path instead of guessing an update', async () => {
+    const { calls, update } = outOfDate('')
+    expect(await update('svn: E160024: resource out of date; try updating')).toMatchObject({ ok: false, code: 'refused' })
+    expect(calls).toEqual([])
+  })
+
+  it.each([
+    ['destination', ['nodeTypes/a.ts'], 'select blocks/a.ts as well'],
+    ['source', ['blocks/a.ts'], 'select nodeTypes/a.ts as well'],
+  ])('names the other side of a move whose %s alone is selected, before staging', async (_side, chosen, problem) => {
+    await mkdir(resolve(testScope, 'nodeTypes'))
+    await writeFile(resolve(testScope, 'nodeTypes', 'a.ts'), 'moved')
+    const calls: string[][] = []
+    const manager = new SvnCommitManager({ run: async (_cwd, args) => {
+      calls.push(args)
+      return { code: 0, failure: null, stderr: '', stdout: '<status><target path=".">'
+        + '<entry path="blocks/a.ts"><wc-status item="deleted" props="none" moved-to="nodeTypes/a.ts"/></entry>'
+        + '<entry path="nodeTypes/a.ts"><wc-status item="added" props="none" moved-from="blocks/a.ts"/></entry></target></status>' }
+    } })
+    const targets = chosen.map((path) => ({ absolutePath: resolve(testScope, path), nodeKind: 'file' as const,
+      status: path.startsWith('blocks') ? 'deleted' as const : 'added' as const }))
+    expect(await manager.prepare(testScope, targets)).toEqual({ ok: false, code: 'refused', detail: expect.stringContaining(problem) })
+    expect(calls).toEqual([['status', '--xml', '--', '.']])
+  })
+
+  it('accepts a move whose source travels with its selected deleted directory', async () => {
+    await mkdir(resolve(testScope, 'nodeTypes'))
+    await writeFile(resolve(testScope, 'nodeTypes', 'a.ts'), 'moved')
+    const manager = new SvnCommitManager({ run: async (_cwd, args) => ({ code: 0, failure: null, stderr: '', stdout: args[0] === 'status'
+      ? '<status><target path=".">'
+        + '<entry path="blocks"><wc-status item="deleted" props="none"/></entry>'
+        + '<entry path="blocks/a.ts"><wc-status item="deleted" props="none" moved-to="nodeTypes/a.ts"/></entry>'
+        + '<entry path="nodeTypes/a.ts"><wc-status item="added" props="none" moved-from="blocks/a.ts"/></entry></target></status>'
+      : '<info><entry kind="dir"><wc-info><schedule>normal</schedule></wc-info></entry></info>' }) })
+    expect(await manager.prepare(testScope, [
+      { absolutePath: resolve(testScope, 'blocks'), nodeKind: 'directory', status: 'deleted' },
+      { absolutePath: resolve(testScope, 'nodeTypes', 'a.ts'), nodeKind: 'file', status: 'added' },
+    ])).toMatchObject({ ok: true })
+  })
+
+  it('splits a selection too long for one Windows command line into bounded svn add and delete calls (Jamat#77)', async () => {
+    const additions = Array.from({ length: 400 }, (_, index) => resolve(testScope, `new-${String(index).padStart(3, '0')}-${'x'.repeat(40)}.txt`))
+    const removals = additions.map((path) => path.replace('new-', 'old-'))
+    for (const path of additions) await writeFile(path, 'new')
+    const calls: string[][] = []
+    const manager = cleanManager({ run: async (_cwd, args) => {
+      calls.push(args)
+      return { code: 0, failure: null, stderr: '', stdout: args[0] === 'info' ? '<info><entry kind="dir"><wc-info><schedule>normal</schedule></wc-info></entry></info>' : '' }
+    } })
+    expect(await manager.prepare(testScope, [
+      ...additions.map((absolutePath) => ({ absolutePath, nodeKind: 'file' as const, status: 'untracked' as const })),
+      ...removals.map((absolutePath) => ({ absolutePath, nodeKind: 'file' as const, status: 'missing' as const })),
+    ])).toMatchObject({ ok: true })
+    for (const [command, paths] of [['add', additions], ['delete', removals]] as const) {
+      const writes = calls.filter(([name]) => name === command)
+      expect(writes.length).toBeGreaterThan(1)
+      expect(writes.every((args) => args.join(' ').length < 32_000 && !args.includes('--targets'))).toBe(true)
+      expect(writes.flatMap((args) => args.slice(args.indexOf('--') + 1))).toEqual(paths.map((path) => `${path}@`))
+    }
+  })
+
   it.each([
     ['b.ts', 'item="conflicted" props="none"'],
     ['folder', 'item="normal" props="none" tree-conflicted="true"'],

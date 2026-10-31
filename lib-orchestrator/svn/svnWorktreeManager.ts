@@ -3,6 +3,7 @@ import { SvnSetupDirectory } from './svnSetupDirectory'
 import { SvnNodeContent } from './svnNodeContent'
 import { JsonShape } from '../shared/jsonShape'
 import { createHash } from 'node:crypto'
+import { setTimeout } from 'node:timers/promises'
 import { constants, existsSync } from 'node:fs'
 import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rmdir, stat, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join, relative, resolve } from 'node:path'
@@ -85,6 +86,8 @@ export class SvnWorktreeManager {
   private static readonly folderFilesMaxConst = 2_000
   static readonly worktreesDirConst = '.worktrees'
   private static readonly asideSuffixConst = '.deleting'
+  private static readonly renameAttemptsConst = 6
+  private static readonly renameDelayMillisecondsConst = 500
   /** svn holds a working-copy lock (E155004) while another client works in the same working copy. */
   static readonly lockRetryDelaysConst: readonly number[] = [1000, 2000, 2000]
   /** Paths per `svn resolve`, so a long conflict list stays below the Windows command-line limit. */
@@ -358,8 +361,7 @@ export class SvnWorktreeManager {
       const status = SvnWorktreeManager.must(await this.run(worktreePath, ['status', '--no-ignore', '--xml', '--', '.']))
       const rows = SvnWorktreeEvidence.statusRows(status.stdout, worktreePath)
       const verbose = SvnWorktreeEvidence.statusVerboseRows(status.stdout, worktreePath)
-      return rows.map((row, index) => ({ ...row, ignored: verbose[index].item === 'ignored',
-        ...verbose[index].item === 'unversioned' ? { unversioned: true as const } : {} }))
+      return rows.map((row, index) => ({ ...row, ignored: verbose[index].item === 'ignored' }))
     })
   }
 
@@ -1229,6 +1231,33 @@ export class SvnWorktreeManager {
     return { ok: true, value: behind }
   }
 
+  /**
+   * Whether an update of the worktree would take nothing in: every root, the worktree and each
+   * unpinned mount, sits wholly at one BASE, and `svn log` names no commit below it after that BASE.
+   * False when anything cannot be proven so (a mixed BASE, a file external, a property change, a
+   * mount missing on disk); the caller then updates as before. A pinned mount never moves, and a
+   * change of its definition is a commit below its carrier, so its own history is not read.
+   */
+  async unmoved(worktreePath: string): Promise<SvnResult<boolean>> {
+    return this.attempt(async () => {
+      const rows = SvnWorktreeManager.must(await this.statusOf(worktreePath))
+      for (const row of rows.filter((entry) => entry.kind === 'external'))
+        if (!await SvnWorktreeManager.isDirectory(join(worktreePath, ...row.path.split('/')))) return false
+      const roots = SvnWorktreeManager.must(await this.reviewRootsOf(worktreePath, rows))
+      // The worktree first: a commit below it is the likeliest, and the first one found ends the read.
+      for (const root of [...roots].sort((a, b) => (a.own === '' ? 0 : 1) - (b.own === '' ? 0 : 1))) {
+        const base = SvnWorktreeManager.must(await this.infoOf(root.path, '.')).revision
+        const status = SvnWorktreeManager.must(await this.run(root.path, ['status', '-v', '--xml', '--ignore-externals', '--', '.'])).stdout
+        if (SvnWorktreeEvidence.updateProblems(status, root.path, base).length > 0 || SvnWorktreeEvidence.fileExternals(status)
+          || SvnWorktreeEvidence.statusVerboseRows(status, root.path).some((item) => item.props === 'modified' || item.props === 'conflicted')) return false
+        if (root.pinned) continue
+        const behind = SvnWorktreeManager.must(await this.behindOf(root.path))
+        if (behind > 0) return false
+      }
+      return true
+    })
+  }
+
   /** From `svn log -q`; svn answers E160006 when the root revision is HEAD already, which is none behind. */
   private async behindOf(path: string): Promise<SvnResult<number>> {
     const root = await this.infoOf(path, '.')
@@ -1241,8 +1270,11 @@ export class SvnWorktreeManager {
   /** Every root with its changes, mounts first, and whether a mount is pinned to a revision. */
   async reviewRoots(worktreePath: string): Promise<SvnResult<SvnReviewRoot[]>> {
     const rows = await this.statusOf(worktreePath)
-    if (!rows.ok) return rows
-    const roots = await SvnWorktreeManager.rootsOf(worktreePath, rows.value)
+    return rows.ok ? this.reviewRootsOf(worktreePath, rows.value) : rows
+  }
+
+  private async reviewRootsOf(worktreePath: string, rows: readonly SvnStatusRow[]): Promise<SvnResult<SvnReviewRoot[]>> {
+    const roots = await SvnWorktreeManager.rootsOf(worktreePath, rows)
     if (roots.length === 1) return { ok: true, value: roots.map((root) => ({ ...root, pinned: false })) }
     try {
       const pinned = new Set<string>()
@@ -1392,16 +1424,22 @@ export class SvnWorktreeManager {
     if (!present) return { ok: true, value: 'absent' }
     const identity = await this.identityProblem(location)
     if (identity !== null) return { ok: false, code: 'refused', detail: identity }
-    try {
-      await rename(worktreePath, aside)
-      return { ok: true, value: 'renamed' }
-    }
-    catch (error) {
-      const code = ErrnoCode.of(error)
-      if (code === 'EPERM' || code === 'EBUSY' || code === 'EACCES')
-        return { ok: true, value: { blocked: code, path: worktreePath, detail: ErrorText.of(error) } }
-      if (code === 'ENOENT') return { ok: true, value: 'absent' }
-      return { ok: false, code: 'io-failed', detail: `Cannot rename ${worktreePath} aside: ${ErrorText.of(error)}` }
+    // A worker stopped a moment ago still holds the folder while its process tree exits (Mirabia 117,
+    // 2026-10-30: EPERM right after the stop, the same rename passed seconds later).
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await rename(worktreePath, aside)
+        return { ok: true, value: 'renamed' }
+      }
+      catch (error) {
+        const code = ErrnoCode.of(error)
+        if (code === 'EPERM' || code === 'EBUSY' || code === 'EACCES') {
+          if (attempt < SvnWorktreeManager.renameAttemptsConst) { await setTimeout(SvnWorktreeManager.renameDelayMillisecondsConst); continue }
+          return { ok: true, value: { blocked: code, path: worktreePath, detail: ErrorText.of(error) } }
+        }
+        if (code === 'ENOENT') return { ok: true, value: 'absent' }
+        return { ok: false, code: 'io-failed', detail: `Cannot rename ${worktreePath} aside: ${ErrorText.of(error)}` }
+      }
     }
   }
 

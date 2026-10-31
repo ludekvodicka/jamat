@@ -385,6 +385,48 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
     else expect(JSON.parse(await readFile(join(saved, (await readdir(saved))[0], 'state.json'), 'utf8'))).toMatchObject({ missing: true, missingKind: 'dir', item: 'deleted' })
   })
 
+  // Mirabia 114: commits elsewhere in the repository moved HEAD, and two update rounds brought nothing.
+  it('proves an update unneeded only for a uniform worktree whose own history and mounts did not move', async () => {
+    const svn = new SvnInvoker()
+    const run = async (cwd: string, args: string[]): Promise<void> => {
+      expect(await svn.run(cwd, args), args.join(' ')).toMatchObject({ code: 0 })
+    }
+    const repo = join(temporary, 'repo'), side = join(temporary, 'side'), wc = join(temporary, 'wc')
+    expect(await new CommandInvoker().run({ command: 'svnadmin', args: ['create', repo], cwd: temporary, env: process.env })).toMatchObject({ code: 0 })
+    const root = pathToFileURL(repo).href
+    await run(temporary, ['mkdir', '-m', 'layout', `${root}/app`, `${root}/lib`, `${root}/other`])
+    await run(temporary, ['checkout', root, side])
+    await writeFile(join(side, 'lib', 'l.txt'), 'lib\n')
+    await writeFile(join(side, 'app', 'a.txt'), 'app\n')
+    await run(side, ['add', 'lib/l.txt', 'app/a.txt'])
+    await run(side, ['commit', '-m', 'files'])
+    await run(side, ['update'])
+    await run(side, ['propset', 'svn:externals', '^/lib mount', 'app'])
+    await run(side, ['commit', '-m', 'mount'])
+    await run(temporary, ['checkout', `${root}/app`, wc])
+    const manager = new SvnWorktreeManager(svn)
+    const commit = async (path: string, content: string, message: string, add = false): Promise<void> => {
+      await run(side, ['update'])
+      await writeFile(join(side, path), content)
+      if (add) await run(side, ['add', path])
+      await run(side, ['commit', '-m', message])
+    }
+    expect(await manager.unmoved(wc)).toEqual({ ok: true, value: true })
+    await commit('other/o.txt', 'elsewhere\n', 'elsewhere', true)
+    expect(await manager.unmoved(wc)).toEqual({ ok: true, value: true })
+    await commit('lib/l.txt', 'lib 2\n', 'the mount moved')
+    expect(await manager.unmoved(wc)).toEqual({ ok: true, value: false })
+    await run(wc, ['update'])
+    expect(await manager.unmoved(wc)).toEqual({ ok: true, value: true })
+    await commit('app/a.txt', 'app 2\n', 'the worktree moved')
+    expect(await manager.unmoved(wc)).toEqual({ ok: true, value: false })
+    await run(wc, ['update'])
+    // A commit from the worktree leaves its directory at the older BASE: only an update makes it whole again.
+    await writeFile(join(wc, 'a.txt'), 'mine\n')
+    await run(wc, ['commit', '-m', 'own'])
+    expect(await manager.unmoved(wc)).toEqual({ ok: true, value: false })
+  })
+
   it('restores an actual SVN setup directory deletion and its separately proven descendants', async () => {
     const repo = join(temporary, 'repo')
     const wc = join(temporary, 'wc')

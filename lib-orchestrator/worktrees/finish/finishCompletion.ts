@@ -42,6 +42,7 @@ export class FinishCompletion {
         return false
       }
     }
+    if (!await this.stopHelpers(sessionId)) return false
     if (record.life === 'live' || record.life === 'starting') {
       const stopped = await this.deps.stop(sessionId)
       // The Host refuses a stop whose owned children survive and names them; the worktree stays for them.
@@ -52,7 +53,32 @@ export class FinishCompletion {
     return true
   }
 
+  /**
+   * Solve with agent opens a helper agent of the worker in the worktree. It is the Finish's own and
+   * holds the worktree as the worker does, so it stops with the worker; a removal that waited for it
+   * stops it on Try again (worker-agent 031).
+   */
+  private async stopHelpers(sessionId: string): Promise<boolean> {
+    const root = this.deps.records.get(sessionId)?.worktree?.worktreePath
+    if (root === undefined) return true
+    for (const helper of this.deps.records.list()) {
+      if (helper.parent?.sessionId !== sessionId || helper.parent.kind !== 'worker' || helper.life !== 'live' && helper.life !== 'starting'
+        || !PathCompare.isInside(root, SessionWorkingDirectory.ofRecord(helper))) continue
+      const stopped = await this.deps.stop(helper.sessionId)
+      if (!stopped.ok) {
+        await this.state.wait(sessionId, 'removal-blocked', `Publication is retained. The helper session ${helper.title} (${helper.sessionId}) did not stop: ${stopped.detail}`)
+        return false
+      }
+      if (!await this.deps.awaitExit(helper.sessionId)) {
+        await this.state.wait(sessionId, 'removal-blocked', `Publication is retained. The helper session ${helper.title} (${helper.sessionId}) has not exited yet.`)
+        return false
+      }
+    }
+    return true
+  }
+
   async remove(sessionId: string): Promise<void> {
+    if (!await this.stopHelpers(sessionId)) return
     await this.observeRemaining(sessionId)
     const record = this.deps.records.get(sessionId)!
     const state = record.worktreeLifecycle!
@@ -62,7 +88,7 @@ export class FinishCompletion {
     // The removal names each of its phases as the session's step; its caller ends the step.
     try {
       removed = record.worktree === undefined ? { state: 'removed' as const, lines: [] }
-        : await this.deps.removal.remove(sessionId, SvnWorktreeRemoval.locationOf(record.worktree), WorktreePublication.retain(state).publication!.revisions.map(SvnRevisionLabels.textOf), state.removalPermit, state.actionId!)
+        : await this.deps.removal.remove(sessionId, SvnWorktreeRemoval.locationOf(record.worktree), WorktreePublication.retain(state).publication!.revisions.map(SvnRevisionLabels.textOf), state.removalPermit)
     } finally { if (this.deps.steps.clear(sessionId)) this.deps.changed() }
     await this.state.write(sessionId, (current) => ({ ...current, execution: { ...current.execution!, removal: removed.state, removalLines: removed.lines } }))
     if (removed.state !== 'removed') { await this.state.wait(sessionId, 'removal-blocked', removed.lines.join('\n')); await this.recordResult(sessionId, undefined, true); return }

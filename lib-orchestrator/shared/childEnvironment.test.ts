@@ -183,6 +183,33 @@ describe('lib-orchestrator/shared/childEnvironment', () => {
       expect(ChildEnvironment.withoutJamat({ no_color: '1', ClaudeCode: '1' })).toEqual({})
     })
 
+    // Measured 2026-10-29: a packaged client started from a codex-cli 0.165 shell tool call.
+    it('drops the terminal overrides of the Codex shell and keeps its locale', () => {
+      const env = ChildEnvironment.withoutJamat({
+        PATH: '/usr/bin',
+        CODEX_HOME: 'Q:/codex',
+        CODEX_THREAD_ID: 'thread',
+        CODEX_CI: '1',
+        CODEX_TOOL_CALL_ID: 'exec-1',
+        CODEX_VERSION: '0.165.0',
+        CODEX_MANAGED_BY_NPM: '1',
+        CODEX_MANAGED_PACKAGE_ROOT: 'Q:/node_modules/@openai/codex',
+        TERM: 'dumb',
+        COLORTERM: '',
+        PAGER: 'cat',
+        GIT_PAGER: 'cat',
+        GH_PAGER: 'cat',
+        LANG: 'C.UTF-8',
+        LC_ALL: 'C.UTF-8',
+      })
+      expect(Object.keys(env).sort()).toEqual(['CODEX_HOME', 'LANG', 'LC_ALL', 'PATH'])
+    })
+
+    it('keeps a terminal the user configured when no agent session started the client', () => {
+      const env = ChildEnvironment.withoutJamat({ TERM: 'xterm-256color', COLORTERM: 'truecolor', PAGER: 'less' })
+      expect(env).toEqual({ TERM: 'xterm-256color', COLORTERM: 'truecolor', PAGER: 'less' })
+    })
+
     it('names the marker that gives an agent session away, or null', () => {
       expect(ChildEnvironment.agentSessionMarkerOf({ CLAUDECODE: '1' })).toBe('CLAUDECODE')
       expect(ChildEnvironment.agentSessionMarkerOf({ CODEX_THREAD_ID: 't' })).toBe('CODEX_THREAD_ID')

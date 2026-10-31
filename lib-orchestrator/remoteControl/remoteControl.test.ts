@@ -785,8 +785,9 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
       'focus',
       'close',
     ])
-    expect(found.tabCalls[0]?.args).toEqual(['helper-1', 'Solve wt'])
-    expect(found.tabCalls[1]?.args).toEqual(['session-1', 'One - 001 - session-1'])
+    // A CLI caller is an agent: its tabs wait in the person's attention queue.
+    expect(found.tabCalls[0]?.args).toEqual(['helper-1', 'Solve wt', 'agent'])
+    expect(found.tabCalls[1]?.args).toEqual(['session-1', 'One - 001 - session-1', 'agent'])
     expect(found.tabCalls[2]?.args).toEqual([
       'session-1',
       'One - 001 - session-1',
@@ -1752,7 +1753,7 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     }, 'tree'), context())
 
     expect(created).toMatchObject({ ok: true, value: { tabOpen: { ok: false } } })
-    expect(found.tabCalls.map((call) => call.args.length)).toEqual([2])
+    expect(found.tabCalls.map((call) => call.args)).toEqual([[expect.any(String), expect.any(String), 'agent']])
   })
 
   // A peer built before groups existed throws on a display entry it does not know.

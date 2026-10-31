@@ -10,11 +10,10 @@ export type SessionStepRead =
 
 /**
  * The phases of a worktree removal that a step names, in their order: the wait for the operation
- * queue, letting go of this client's own reads below the worktree, the rename aside, the copy of
- * what the removal keeps (or the check of what an interrupted removal left), the count of the
- * files, their deletion and the tombstone on the record.
+ * queue, letting go of this client's own reads below the worktree, the rename aside, the count of
+ * the files, their deletion and the tombstone on the record.
  */
-export type SessionStepRemovalPhase = 'queue' | 'rename' | 'copy' | 'count' | 'delete' | 'tombstone'
+export type SessionStepRemovalPhase = 'queue' | 'rename' | 'count' | 'delete' | 'tombstone'
 
 /** A file the removal waits for: its error code, its holders when Windows named them, and the try of how many. */
 export interface SessionStepHeld {
@@ -135,8 +134,6 @@ export class SessionStepWords {
     switch (phase) {
       case 'queue': return { text: 'Waiting for other operations', detail: facts.path }
       case 'rename': return { text: resumed ? 'Resuming the interrupted removal' : 'Moving the worktree aside', detail: `${facts.path}.deleting` }
-      case 'copy':
-        return { text: resumed ? 'Checking the files the interrupted removal left' : 'Saving the files to keep before deleting', detail: `${facts.path}.deleting` }
       case 'count':
         return {
           text: resumed ? 'Counting the files left to delete' : 'Counting the files to delete',

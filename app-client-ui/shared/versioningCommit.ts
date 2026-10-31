@@ -180,6 +180,13 @@ export type VersioningWorkflowState =
 
 export interface VersioningWorkflowPort {
   repositories?(draft: VersioningCommitDraftDto): VersioningCommitDraftDto['repositories']
+  /** Each repository row is its own field, and the draft's own message is hidden and publishes nothing. */
+  separateMessages?(draft: VersioningCommitDraftDto): boolean
+  /**
+   * The Finish the draft is bound to (`draft.workflow`) is gone from the sessions this client has read:
+   * neither its session nor that action is there any more, so its review can never settle further.
+   */
+  abandoned?(draft: VersioningCommitDraftDto): boolean
   messageSource?(draft: VersioningCommitDraftDto): CommitMessageSource | undefined
   offers(sessionId: string, vcs: 'svn' | 'git', scope: string): boolean
   /** The session commits only through its Finish: an SVN worktree, or its landed row. */

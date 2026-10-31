@@ -109,8 +109,9 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnActionWorkflow', () => {
     })
     const workflow = SvnActionWorkflow.of(gate, FinishProjection.action(gate)!, runs({}))
     const commit = workflow.rounds[0].steps.find((step) => step.title === 'Commit')
-    expect(commit).toMatchObject({ state: 'waits', detail: `The worker is not idle: ${reason}` })
-    expect(workflow.summary).toBe(`The worker is not idle: ${reason}`)
+    const words = `The worker is not idle: ${reason}. Jamat continues by itself about 15 to 30 seconds after the worker stops; press Publish anyway if it has already finished.`
+    expect(commit).toMatchObject({ state: 'waits', detail: words })
+    expect(workflow.summary).toBe(words)
     expect(workflow.actions.filter((row) => row.place === 'step').map((row) => row.label)).toEqual(['Check worker idle', 'Publish anyway'])
   })
 

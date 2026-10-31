@@ -28,6 +28,7 @@ export class SessionReviewPortAdapter implements SessionReviewPort {
     if (code === 'message-empty' || code === 'message-too-long') return 'invalid-spec'
     else if (code === 'no-working-copy') return 'not-a-repo'
     else if (code === 'message-edited') return 'message-edited'
+    else if (code === 'message-prefix') return 'message-unchecked'
     else if (code === 'busy') return 'already-running'
     else throw new Error(`Unknown proposal refusal: ${JSON.stringify(code satisfies never)}`)
   }

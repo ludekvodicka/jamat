@@ -2,21 +2,24 @@ import type { AutolauncherSnapshot } from '../../../../../shared/autolauncher'
 import { ConfigurationSection } from '../../configurationSection'
 import type { ConfigurationTabProps } from '../../configurationTab.types'
 import { useAutolauncherSettings } from './useAutolauncherSettings'
+import { AutolauncherTargetDetails, AutolauncherTargetEditor } from './autolauncherTargetEditor'
 import './autolauncherSettings.css'
 
 export function AutolauncherSettingsTab(props: ConfigurationTabProps): React.JSX.Element {
-  const { state, setInvitation, enable, retrySavedConnection, disable, refresh } = useAutolauncherSettings(props.onDirtyChange)
+  const { state, setInvitation, setRecipe, confirmTemporary, enable, retrySavedConnection, disable, refresh } = useAutolauncherSettings(props.onDirtyChange)
   const { snapshot } = state
   const busy = state.pending !== null || (snapshot !== null && snapshot.operation !== 'idle')
   const locked = snapshot === null || !snapshot.supported || busy
   const otherProfile = snapshot !== null && snapshot.installed && !snapshot.installedForThisProfile
   const canRetrySavedConnection = state.failedCommand === 'enable' && snapshot?.connectionReady === true
+  const invalidTarget = state.checking || !state.selection || state.inspection?.availability.state !== 'available'
+    || !!state.inspection.warning && !state.selection.temporaryPathConfirmed
 
   return (
     <div className="jamat-configuration-autolauncher">
       <ConfigurationSection title="Remote startup">
         <p className="jamat-configuration-autolauncher__note">
-          Start this Jamat from the MiniWol web page, even when Jamat is closed. Autolauncher
+          Start this Jamat from the Jamat relay, even when Jamat is closed. Autolauncher
           starts when you sign in to Windows and keeps running independently of Jamat.
         </p>
         <p className="jamat-configuration-autolauncher__note">
@@ -39,27 +42,43 @@ export function AutolauncherSettingsTab(props: ConfigurationTabProps): React.JSX
       {snapshot !== null && (
         <ConfigurationSection title="This Jamat">
           <p className="jamat-configuration-autolauncher__note">
-            Autolauncher uses the profile and startup path of this Jamat. These values are captured automatically.
+            The selected target uses this profile and runtime channel.
           </p>
           <dl className="jamat-configuration-autolauncher__details">
             <dt>Profile directory</dt><dd>{snapshot.target.configDir}</dd>
             <dt>Profile identity</dt><dd>{snapshot.target.configIdentity}</dd>
             <dt>Runtime channel</dt><dd>{channelText(snapshot.target.runtimeChannel)}</dd>
-            <dt>{pathLabel(snapshot.target.mode)}</dt><dd>{snapshot.target.path}</dd>
           </dl>
         </ConfigurationSection>
       )}
+      {snapshot?.installedTarget && <ConfigurationSection title="Installed target">
+        <AutolauncherTargetDetails view={snapshot.installedTarget} />
+      </ConfigurationSection>}
+      {snapshot?.currentTarget.recipe && <ConfigurationSection title="Selected target">
+        <AutolauncherTargetEditor snapshot={snapshot}
+          recipe={state.selection?.recipe ?? snapshot.currentTarget.recipe} disabled={locked} onChange={setRecipe} />
+        {state.checking && <p>Checking target…</p>}
+        {state.inspection && <AutolauncherTargetDetails view={state.inspection} />}
+        {state.inspection?.warning && <div className="jamat-configuration-autolauncher__warning">
+          <p>{state.inspection.warning}</p>
+          <label><input type="checkbox" disabled={locked} checked={state.selection?.temporaryPathConfirmed ?? false}
+            onChange={event => confirmTemporary(event.target.checked)} />Keep this exact temporary location</label>
+        </div>}
+        <p className="jamat-configuration-autolauncher__note">
+          Applying a target updates the installed launcher and may show Windows UAC. The existing pairing and key are kept.
+        </p>
+      </ConfigurationSection>}
       <ConfigurationSection title="Setup">
         <label className="jamat-configuration-autolauncher__invitation">
           <span>MiniWol invitation</span>
           <input type="password" autoComplete="off" spellCheck={false}
             aria-describedby="autolauncher-invitation-hint"
-            placeholder="Paste the one-time invitation from MiniWol"
+            placeholder="Paste the one-time invitation from the Jamat relay"
             value={state.invitation} disabled={locked}
             onChange={(event) => setInvitation(event.target.value)} />
         </label>
         <p id="autolauncher-invitation-hint" className="jamat-configuration-autolauncher__note">
-          Copy a one-time invitation for this PC from the MiniWol web page, paste it here, then enable
+          Copy a one-time invitation for this PC from the Jamat relay (Nastavit spouštění Jamatu), paste it here, then enable
           Autolauncher. {snapshot?.connectionReady && 'Leave this empty to keep the existing connection.'}
         </p>
         {otherProfile && (
@@ -83,11 +102,11 @@ export function AutolauncherSettingsTab(props: ConfigurationTabProps): React.JSX
         {busy && <p role="status">{pendingText(state.pending, snapshot?.operation ?? 'idle')}</p>}
         <div className="jamat-configuration__actions">
           <button className="jamat-configuration__button jamat-configuration__button--primary" type="button"
-            disabled={locked || (!snapshot?.connectionReady && state.invitation.trim().length === 0)}
+            disabled={locked || invalidTarget || (!snapshot?.connectionReady && state.invitation.trim().length === 0)}
             onClick={canRetrySavedConnection ? retrySavedConnection : enable}>
             {canRetrySavedConnection ? 'Retry with saved connection'
               : otherProfile ? 'Replace other profile with this Jamat'
-              : snapshot?.installed ? 'Update for this Jamat' : 'Enable for this Jamat'}
+              : snapshot?.installed ? 'Apply target and update launcher' : 'Enable for this Jamat'}
           </button>
           <button className="jamat-configuration__button jamat-configuration__button--danger" type="button"
             disabled={locked || !snapshot?.installed || !snapshot.installedForThisProfile} onClick={disable}>
@@ -111,12 +130,6 @@ function channelText(channel: AutolauncherSnapshot['target']['runtimeChannel']):
   if (channel === 'development') return 'Development'
   else if (channel === 'production') return 'Production'
   else throw new Error('Unknown Autolauncher runtime channel')
-}
-
-function pathLabel(mode: AutolauncherSnapshot['target']['mode']): string {
-  if (mode === 'executable') return 'Executable path'
-  else if (mode === 'source') return 'Source checkout'
-  else throw new Error('Unknown Autolauncher startup mode')
 }
 
 function pendingText(pending: 'enable' | 'disable' | null, operation: AutolauncherSnapshot['operation']): string {

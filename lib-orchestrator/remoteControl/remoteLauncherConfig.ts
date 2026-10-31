@@ -7,7 +7,8 @@ import type { RuntimeChannel } from '../shared/configIdentity.types'
 export type RemoteLauncherRecipe =
   | { kind: 'executable'; path: string }
   | { kind: 'source'; repositoryRoot: string }
-  | { kind: 'command'; command: string; args: string[]; cwd: string; windowsVerbatimArguments: boolean }
+  | { kind: 'development'; repositoryRoot: string }
+  | { kind: 'command' | 'detached-command'; command: string; args: string[]; cwd: string; windowsVerbatimArguments: boolean }
 
 export interface RemoteLauncherConfigData {
   publicUrl: string
@@ -29,24 +30,27 @@ export class RemoteLauncherConfig {
       || typeof value.configIdentity !== 'string' || !value.configIdentity
       || !ConfigIdentityStore.isRuntimeChannel(value.runtimeChannel))
       throw new Error('Invalid launcher key or profile')
-    const recipe = value.recipe
+    return { publicUrl, key: value.key, configIdentity: value.configIdentity,
+      runtimeChannel: value.runtimeChannel, configDir: RemoteLauncherConfig.path(value.configDir),
+      recipe: RemoteLauncherConfig.recipe(value.recipe), logFile: RemoteLauncherConfig.path(value.logFile) }
+  }
+
+  static recipe(recipe: unknown): RemoteLauncherRecipe {
     let parsedRecipe: RemoteLauncherRecipe
     if (!RemoteLauncherConfig.record(recipe)) throw new Error('Invalid launch recipe')
     if (recipe.kind === 'executable' && RemoteLauncherConfig.keys(recipe, ['kind', 'path']))
       parsedRecipe = { kind: 'executable', path: RemoteLauncherConfig.path(recipe.path) }
-    else if (recipe.kind === 'source' && RemoteLauncherConfig.keys(recipe, ['kind', 'repositoryRoot']))
-      parsedRecipe = { kind: 'source', repositoryRoot: RemoteLauncherConfig.path(recipe.repositoryRoot) }
-    else if (recipe.kind === 'command'
+    else if ((recipe.kind === 'source' || recipe.kind === 'development') && RemoteLauncherConfig.keys(recipe, ['kind', 'repositoryRoot']))
+      parsedRecipe = { kind: recipe.kind, repositoryRoot: RemoteLauncherConfig.path(recipe.repositoryRoot) }
+    else if ((recipe.kind === 'command' || recipe.kind === 'detached-command')
       && RemoteLauncherConfig.keys(recipe, ['kind', 'command', 'args', 'cwd', 'windowsVerbatimArguments'])
       && typeof recipe.windowsVerbatimArguments === 'boolean'
       && Array.isArray(recipe.args) && recipe.args.every(arg => typeof arg === 'string' && !arg.includes('\0')))
-      parsedRecipe = { kind: 'command', command: RemoteLauncherConfig.path(recipe.command),
+      parsedRecipe = { kind: recipe.kind, command: RemoteLauncherConfig.path(recipe.command),
         args: [...recipe.args], cwd: RemoteLauncherConfig.path(recipe.cwd),
         windowsVerbatimArguments: recipe.windowsVerbatimArguments }
     else throw new Error('Invalid launch recipe')
-    return { publicUrl, key: value.key, configIdentity: value.configIdentity,
-      runtimeChannel: value.runtimeChannel, configDir: RemoteLauncherConfig.path(value.configDir),
-      recipe: parsedRecipe, logFile: RemoteLauncherConfig.path(value.logFile) }
+    return parsedRecipe
   }
 
   static origin(value: unknown): string {

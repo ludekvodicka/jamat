@@ -39,29 +39,19 @@ export function WorktreeValidation({ value, ports }: { value: NonNullable<Sessio
   const [result, setResult] = useState<string | null>(null)
   const [stopping, setStopping] = useState<string | null>(null)
   const [stopProblem, setStopProblem] = useState<string | null>(null)
-  let checks: string
+  // Without configured checks nothing ran, and the step already asks the person to look: no line.
+  let checks: string | null
   switch (value.checks) {
     case 'pending': checks = 'Preparation or checks need to run again.'; break
     case 'passed': checks = 'Automated checks passed for this prepared state.'; break
-    case 'none': checks = 'No automated checks are configured. Manual validation is required.'; break
+    case 'none': checks = null; break
     case 'overridden': checks = 'Failed checks were explicitly accepted.'; break
     default: throw new Error(`Unknown check state: ${value.checks satisfies never}`)
   }
   const runs = value.runs ?? []
   return <div className="worktree-validation" aria-label="Worktree validation">
-    <p>{checks} Source edits require another preparation before publication.</p>
-    <p>Worktree: <code>{value.cwd}</code></p>
+    {checks !== null && <p>{checks}</p>}
     {value.environmentInputs && <p>Refresh dependencies for: {value.environmentInputs.join(', ')}. Confirm with “Environment is ready” when it matches them.</p>}
-    {ports.requestRun && value.canRun ? <form onSubmit={(event) => {
-      event.preventDefault()
-      if (!command.trim() || busy) return
-      setBusy(true)
-      void ports.requestRun!(command, value.cwd).then((problem) => setResult(problem ?? 'Started.'))
-        .catch((error: unknown) => setResult(String(error))).finally(() => setBusy(false))
-    }}>
-      <label>Application command <input aria-label="Application command" value={command} onChange={(event) => drafts.set(value.cwd, event.target.value)} placeholder="pnpm dev" disabled={busy} /></label>
-      <button type="submit" className="workflow__action" disabled={busy || !command.trim()}>{busy ? 'Starting…' : 'Run in worktree'}</button>
-    </form> : <p>{value.canRun ? 'Run the application from a terminal on the source computer.' : 'Reopen the session to start a managed validation run, or use a terminal in this worktree.'}</p>}
     {runs.length > 0 && <ul aria-label="Running in this worktree">{runs.map((run) => <li key={run.runId}>
       {run.title} is running{' '}
       <button type="button" className="workflow__action" aria-label={`Stop ${run.title}`} disabled={stopping !== null} onClick={() => {
@@ -72,8 +62,23 @@ export function WorktreeValidation({ value, ports }: { value: NonNullable<Sessio
       }}>{stopping === run.runId ? 'Stopping…' : 'Stop'}</button>
     </li>)}</ul>}
     {stopProblem !== null && <p role="alert">{stopProblem}</p>}
-    <p>After validation, publish the full verified change set. Cleanup stops this session’s managed runs; close other dev servers and terminals if files remain in use.</p>
-    {result && <p role="status">{result}</p>}
+    {/* Trying the application by hand is optional; Finish needs nothing typed here. */}
+    <details>
+      <summary>Try the application in the worktree</summary>
+      <p>Worktree: <code>{value.cwd}</code></p>
+      {ports.requestRun && value.canRun ? <form onSubmit={(event) => {
+        event.preventDefault()
+        if (!command.trim() || busy) return
+        setBusy(true)
+        void ports.requestRun!(command, value.cwd).then((problem) => setResult(problem ?? 'Started.'))
+          .catch((error: unknown) => setResult(String(error))).finally(() => setBusy(false))
+      }}>
+        <label>Application command <input aria-label="Application command" value={command} onChange={(event) => drafts.set(value.cwd, event.target.value)} placeholder="pnpm dev" disabled={busy} /></label>
+        <button type="submit" className="workflow__action" disabled={busy || !command.trim()}>{busy ? 'Starting…' : 'Run in worktree'}</button>
+      </form> : <p>{value.canRun ? 'Run the application from a terminal on the source computer.' : 'Reopen the session to start a managed validation run, or use a terminal in this worktree.'}</p>}
+      {result && <p role="status">{result}</p>}
+      <p>Cleanup stops this session’s managed runs; close other dev servers and terminals if files remain in use.</p>
+    </details>
   </div>
 }
 

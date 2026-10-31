@@ -841,8 +841,8 @@ describe('app-client-ui/app/appHub', () => {
   })
 
   it('holds the final IPC parity counts', () => {
-    expect(Object.keys(AppHub.ipcChannelsConst)).toHaveLength(171)
-    expect(Object.keys(AppClientUiBridgeEventsConst)).toHaveLength(27)
+    expect(Object.keys(AppHub.ipcChannelsConst)).toHaveLength(176)
+    expect(Object.keys(AppClientUiBridgeEventsConst)).toHaveLength(28)
     expect(AppClientUiBridgeEventsConst).toHaveProperty('onUsageChanged', 'usage:changed')
     expect(AppClientUiBridgeEventsConst).toHaveProperty('onSnapinsChanged')
     expect(Object.keys(ServiceTabsIpc.channelsConst)).toHaveLength(19)
@@ -1002,9 +1002,10 @@ describe('app-client-ui/app/appHub', () => {
         releaseWindow: (windowId: string) => order.push(`index:${windowId}`),
         visibleTerminalTargetKeys: () => [],
         openTerminalTargetKeys: () => [],
+        snapshot: () => [],
       },
       workspaceWindows: { publishTo: () => undefined, broadcast: () => undefined },
-      sessions: { setWindowVisible: () => undefined },
+      sessions: { setWindowVisible: () => undefined, snapshot: () => ({ sessions: [] }) },
     })
     const lifecycle = hub as unknown as { workspaceRendererGone(windowId: string): void }
 

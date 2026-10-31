@@ -8,8 +8,16 @@ interface CliCommandSpec {
 
 export type CliCommand = keyof typeof CliArguments['commandSpecsConst']
 
+export interface CliUsage {
+  usage: string
+  sessionSelector: string
+  globalOptions: string[]
+  commands: { command: string; options: string[]; flags: string[] }[]
+}
+
 export class CliArguments {
   private static readonly remoteComputerOptionConst = '--computer'
+  private static readonly sessionIdPatternConst = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
   private static readonly globalOptionsConst = [
     '--config-dir',
     '--config-identity',
@@ -197,7 +205,7 @@ export class CliArguments {
         '--note',
         CliArguments.remoteComputerOptionConst,
       ],
-      flags: ['--clear'],
+      flags: ['--clear', '--self'],
       mutation: true,
     },
     'tabs list': { options: [], flags: [], mutation: false },
@@ -208,7 +216,7 @@ export class CliArguments {
     },
     'tabs open-file': {
       options: ['--session-id', '--number', '--working-directory', '--path', CliArguments.remoteComputerOptionConst],
-      flags: [],
+      flags: ['--self'],
       mutation: true,
     },
     'tabs focus': { options: ['--panel-id'], flags: [], mutation: true },
@@ -307,6 +315,7 @@ export class CliArguments {
       index += 1
     }
 
+    CliArguments.takeBareSessionId(positionals, options, flags)
     const command = positionals.length === 0
       ? 'status'
       : positionals.length === 1
@@ -337,6 +346,44 @@ export class CliArguments {
     if (options.has('--body') && options.has('--body-file'))
       throw CliArguments.usage('--body and --body-file are mutually exclusive')
     return new CliArguments(command, options, flags, spec.mutation)
+  }
+
+  /**
+   * `--help` or `-h` anywhere answers the usage of the commands its leading words name, or of
+   * every command when they name none, before any other argument is checked.
+   */
+  static helpOf(args: readonly string[]): CliUsage | null {
+    // `-h` may be the text an option sends (`terminal send --text -h`); `--help` never is a value.
+    if (!args.some((arg, index) => arg === '--help' || arg === '-h' && !CliArguments.knownOptions.has(args[index - 1] ?? ''))) return null
+    const prefix = args.slice(0, args.findIndex((arg) => arg.startsWith('-'))).join(' ')
+    const all = Object.entries(CliArguments.commandSpecsConst)
+    const named = all.filter(([command]) => command === prefix || command.startsWith(`${prefix} `))
+    return {
+      usage: 'jamat-v3 <command> [options]; every answer is one JSON envelope',
+      sessionSelector: '--session-id <id> or a bare session UUID, --number <number> [--working-directory <dir>], '
+        + 'or --self inside a Jamat session for a command whose flags list it',
+      globalOptions: [...CliArguments.globalOptionsConst],
+      commands: (named.length > 0 ? named : all)
+        .map(([command, spec]) => ({ command, options: [...spec.options], flags: [...spec.flags] })),
+    }
+  }
+
+  /**
+   * A lone session UUID after the words of a command that takes `--session-id` is that option:
+   * agents write `tabs open-file <id> --path x` from the command table. Any other selector beside it
+   * would leave two sessions named, so that is refused instead of choosing one.
+   */
+  private static takeBareSessionId(positionals: string[], options: Map<string, string>, flags: ReadonlySet<string>): void {
+    const last = positionals.at(-1)
+    if (positionals.length < 2 || last === undefined || !CliArguments.sessionIdPatternConst.test(last)) return
+    const command = positionals.slice(0, -1).join(' ')
+    if (!CliArguments.isCommand(command)) return
+    const spec: CliCommandSpec = CliArguments.commandSpecsConst[command]
+    if (!spec.options.includes('--session-id')) return
+    if (options.has('--session-id') || options.has('--number') || flags.has('--self'))
+      throw CliArguments.usage(`${last} names a second session for ${command}; give only one of a bare session id, --session-id, --number or --self`)
+    options.set('--session-id', last)
+    positionals.pop()
   }
 
   private static isCommand(value: string): value is CliCommand {

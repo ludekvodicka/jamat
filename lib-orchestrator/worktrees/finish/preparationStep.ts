@@ -10,6 +10,7 @@ import { SvnCommitGate } from '../../svn/svnCommitGate'
 import type { FinishDriverDeps } from './finishDriver.types'
 import type { FinishState } from './finishState'
 import { WorktreeWords } from '../view/worktreeWords'
+import { SetupOutputs } from './setupOutputs'
 
 const manifestSchema = z.object({ format: z.literal(1), content: z.string(), metadata: z.string(), incoming: z.array(z.string()),
   nodes: z.array(z.object({ path: z.string(), content: z.string(), metadata: z.string() })) })
@@ -31,15 +32,20 @@ export class PreparationStep {
     await this.state.write(sessionId, (current) => ({ ...current, approvedAt: undefined, review: undefined, checks: undefined,
       execution: { ...current.execution!, checks: declared.steps.map((step) => ({ ...step, scriptId: 'checks' as const })), checkCursor: 0 } }))
     // Depth-empty adds let SVN enumerate each next level using its own ignore and autoprop rules.
+    let candidates = 0
     for (let depth = 0; ; depth++) {
       if (depth >= 256) throw new Error('SVN preparation exceeded 256 directory levels')
       const roots = await this.deps.svn.reviewRoots(root)
       if (!roots.ok) throw new Error(roots.detail)
       let added = 0
+      candidates = 0
+      const setupOutputs = await SetupOutputs.of(this.deps.svn, root, record, roots.value.flatMap((mount) => mount.changed))
       for (const mount of roots.value) {
-        if (mount.changed.length === 0) continue
+        const changed = mount.changed.filter((row) => !setupOutputs.has(row.path))
+        candidates += changed.length
+        if (changed.length === 0) continue
         if (mount.pinned) throw new Error(`A changed external is pinned: ${mount.path}`)
-        const prepared = await this.deps.svn.prepareCommit(mount.path, mount.changed.map((row) => resolve(root, row.path)), async (paths) => {
+        const prepared = await this.deps.svn.prepareCommit(mount.path, changed.map((row) => resolve(root, row.path)), async (paths) => {
           await this.state.write(sessionId, (current) => ({ ...current, preparationIntent: { root: mount.path, paths, at: this.deps.now() },
             preparationAdds: [...current.preparationAdds?.filter((row) => row.root !== mount.path) ?? [],
               { root: mount.path, paths: [...new Set([...current.preparationAdds?.find((row) => row.root === mount.path)?.paths ?? [], ...paths])] }] }))
@@ -52,6 +58,14 @@ export class PreparationStep {
       if (added === 0) break
     }
     await this.deps.commands.accept(root)
+    // The assembly, the environment and the checks prove only what a Finish publishes. With nothing to
+    // publish the review approves its empty selection, and the disposition proves the worktree clean;
+    // a change that appears before the review brings the Finish back here (Mirabia: 76 s, 2026-10-30).
+    if (candidates === 0) {
+      await this.state.write(sessionId, (latest) => ({ ...latest, phase: 'finishing', step: 'reviewing', wait: undefined, preparation: undefined,
+        checks: undefined, facts: { ...latest.facts, worker: { ...latest.facts.worker, ready: undefined } } }))
+      return true
+    }
     const assembly = await this.read(sessionId)
     const second = await this.read(sessionId)
     if (assembly.content !== second.content || assembly.metadata !== second.metadata)

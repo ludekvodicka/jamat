@@ -1,14 +1,15 @@
 import { readFile } from 'node:fs/promises'
-import { isAbsolute, join, relative, sep } from 'node:path'
+import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { setTimeout } from 'node:timers/promises'
 
 import { RemoteLauncherConfig } from '../../../lib-orchestrator/remoteControl/remoteLauncherConfig'
 import { AtomicJsonFile } from '../../../lib-orchestrator/shared/atomicJsonFile'
 import { ConfigIdentityStore } from '../../../lib-orchestrator/shared/configIdentityStore'
-import type { AutolauncherResult, AutolauncherSnapshot } from '../../shared/autolauncher'
+import type { AutolauncherResult, AutolauncherSnapshot, AutolauncherTargetView } from '../../shared/autolauncher'
 import { AutolauncherConnection, type AutolauncherPairing } from './autolauncherConnection'
 import type { WindowsLauncherSetup } from './windowsLauncherSetup'
 import { AutolauncherProblem } from './autolauncherProblem'
+import { AutolauncherTarget } from './autolauncherTarget'
 
 export class AutolauncherManager {
   private readonly target: AutolauncherSnapshot['target']
@@ -21,31 +22,40 @@ export class AutolauncherManager {
   private problem: string | null = null
   private revision = 0
   private latest: AutolauncherSnapshot
+  private readonly nodePath: string
 
   constructor(target: AutolauncherSnapshot['target'], directory: string, supported: boolean,
     setup: Pick<WindowsLauncherSetup, 'install' | 'disable'>,
     connection: Pick<AutolauncherConnection, 'pair' | 'probe'>,
-    onChanged: (snapshot: AutolauncherSnapshot) => void) {
+    onChanged: (snapshot: AutolauncherSnapshot) => void, nodePath = process.execPath) {
     this.target = target
     this.directory = directory
     this.supported = supported
     this.setup = setup
     this.connection = connection
     this.onChanged = onChanged
+    this.nodePath = nodePath
     this.latest = { supported, target, installed: false, installedForThisProfile: false,
       installedConfigDir: null, running: false, connectionReady: false, launcherUrl: null,
-      operation: 'idle', problem: null }
+      operation: 'idle', problem: null, installedTarget: null,
+      currentTarget: { recipe: null, process: null, availability: { state: 'unverifiable', path: target.path }, warning: null } }
+  }
+
+  inspect(recipe: unknown): Promise<AutolauncherTargetView> {
+    return AutolauncherTarget.inspect(recipe, this.nodePath)
   }
 
   async get(): Promise<AutolauncherSnapshot> {
     const revision = this.revision
     let snapshot = { ...this.latest, operation: this.operation, problem: this.problem }
     if (!this.supported) return snapshot
+    snapshot.currentTarget = await this.inspect(AutolauncherTarget.fromRunning(this.target))
     try {
       const pairing = await this.readPairing()
       const installation = await this.readInstallation()
-      const active = installation?.enabled ? AutolauncherConnection.parse({
-        ...await this.installedPairing(installation), gatewayAddress: installation.gatewayAddress,
+      const config = installation ? await this.installedConfig(installation) : null
+      const active = installation?.enabled && config ? AutolauncherConnection.parse({
+        publicUrl: config.publicUrl, key: config.key, gatewayAddress: installation.gatewayAddress,
       }) : null
       snapshot = { ...snapshot, installed: installation?.enabled === true,
         installedForThisProfile: installation !== null
@@ -53,11 +63,13 @@ export class AutolauncherManager {
           && installation.runtimeChannel === this.target.runtimeChannel
           && installation.configDir === this.target.configDir,
         installedConfigDir: installation?.configDir ?? null,
-        connectionReady: pairing !== null, launcherUrl: active?.publicUrl ?? pairing?.publicUrl ?? null,
+        installedTarget: config && installation
+          ? await AutolauncherTarget.inspect(config.rawRecipe, join(dirname(installation.configFile), 'node.exe')) : null,
+        connectionReady: active !== null || pairing !== null, launcherUrl: active?.publicUrl ?? pairing?.publicUrl ?? null,
         running: active !== null && await this.connection.probe(active) }
     } catch {
       snapshot = { ...snapshot, installed: false, installedForThisProfile: false,
-        installedConfigDir: null, running: false, connectionReady: false, launcherUrl: null,
+        installedConfigDir: null, installedTarget: null, running: false, connectionReady: false, launcherUrl: null,
         problem: this.problem ?? 'Stored launcher setup could not be read. Reconnect using a new invitation.' }
     }
     if (revision !== this.revision) return this.get()
@@ -65,26 +77,37 @@ export class AutolauncherManager {
     return snapshot
   }
 
-  async enable(invitation: unknown): Promise<AutolauncherResult> {
+  async enable(invitation: unknown, selection?: unknown): Promise<AutolauncherResult> {
     if (!this.supported) return { ok: false, problem: 'Autolauncher installation is available on Windows only.' }
     if (this.operation !== 'idle') return { ok: false, problem: 'Another launcher operation is still running.' }
     if (invitation !== null && typeof invitation !== 'string')
-      return { ok: false, problem: 'Paste the setup invitation from MiniWolService.' }
+      return { ok: false, problem: 'Paste the setup invitation from the Jamat relay.' }
+    if (selection !== undefined && (typeof selection !== 'object' || selection === null
+      || Object.keys(selection).length !== 2 || !('recipe' in selection)
+      || !('temporaryPathConfirmed' in selection) || typeof selection.temporaryPathConfirmed !== 'boolean'))
+      return { ok: false, problem: 'Invalid target selection.' }
     this.begin('installing')
     try {
       this.assertProfile()
-      const pairing = invitation === null ? await this.readPairing() : await this.connection.pair(invitation)
-      if (!pairing) throw new AutolauncherProblem('Create a setup invitation for this PC in MiniWolService first.')
+      const installation = await this.readInstallation()
+      const installed = installation ? await this.installedConfig(installation) : null
+      const saved = installed && installation ? AutolauncherConnection.parse({ publicUrl: installed.publicUrl,
+        key: installed.key, gatewayAddress: installation.gatewayAddress }) : await this.readPairing()
+      if (invitation === null && !saved)
+        throw new AutolauncherProblem('Create a setup invitation for this PC in the Jamat relay first.')
+      const selected = selection as { recipe: unknown; temporaryPathConfirmed: boolean } | undefined
+      const view = await this.inspect(selected?.recipe ?? installed?.rawRecipe ?? AutolauncherTarget.fromRunning(this.target))
+      if (!view.recipe || view.availability.state !== 'available')
+        throw new AutolauncherProblem(`The selected target is ${view.availability.state}: ${'path' in view.availability ? view.availability.path : 'launch recipe'}`)
+      if (view.warning && !selected?.temporaryPathConfirmed)
+        throw new AutolauncherProblem(view.warning)
+      const pairing = invitation === null ? saved! : await this.connection.pair(invitation)
       await AtomicJsonFile.ensureDirectoryAsync(this.directory)
       // Keep pairing after UAC cancellation so retry does not consume another invitation.
       await AtomicJsonFile.writeAsync(join(this.directory, 'pairing.json'), pairing)
-      let recipe
-      if (this.target.mode === 'executable') recipe = { kind: 'executable', path: this.target.path }
-      else if (this.target.mode === 'source') recipe = { kind: 'source', repositoryRoot: this.target.path }
-      else throw new Error('Unknown launcher mode')
       const config = RemoteLauncherConfig.parse({ publicUrl: pairing.publicUrl, key: pairing.key,
         configDir: this.target.configDir, configIdentity: this.target.configIdentity,
-        runtimeChannel: this.target.runtimeChannel, recipe, logFile: join(this.directory, 'launcher.log') })
+        runtimeChannel: this.target.runtimeChannel, recipe: view.recipe, logFile: join(this.directory, 'launcher.log') })
       await this.setup.install(config, pairing.gatewayAddress)
       const deadline = Date.now() + 10_000
       while (!await this.connection.probe(pairing)) {
@@ -92,8 +115,9 @@ export class AutolauncherManager {
           throw new AutolauncherProblem('Windows installed the launcher, but it is not responding. Check the launcher log and retry.')
         await setTimeout(250)
       }
-      const installed = await this.get()
-      if (!installed.installed || !installed.installedForThisProfile || !installed.running)
+      const result = await this.get()
+      if (!result.installed || !result.installedForThisProfile || !result.running
+        || JSON.stringify(result.installedTarget?.recipe) !== JSON.stringify(config.recipe))
         throw new AutolauncherProblem('The installed launcher could not be verified for this profile. Refresh status and retry.')
       return await this.finish()
     } catch (error) { return await this.finish(error) }
@@ -162,13 +186,16 @@ export class AutolauncherManager {
       gatewayAddress: value.gatewayAddress, configFile: value.runtime.configFile }
   }
 
-  private async installedPairing(installation: {
+  private async installedConfig(installation: {
     configFile: string; configIdentity: string; configDir: string; runtimeChannel: string
-  }): Promise<{ publicUrl: string; key: string }> {
-    const config = RemoteLauncherConfig.parse(JSON.parse((await readFile(installation.configFile, 'utf8')).replace(/^\uFEFF/, '')))
+  }) {
+    const value: unknown = JSON.parse((await readFile(installation.configFile, 'utf8')).replace(/^\uFEFF/, ''))
+    if (typeof value !== 'object' || value === null || !('recipe' in value)) throw new Error('Missing installed recipe')
+    // A damaged recipe must remain visible and repairable without losing the installed pairing.
+    const config = RemoteLauncherConfig.parse({ ...value, recipe: { kind: 'executable', path: this.nodePath } })
     if (config.configIdentity !== installation.configIdentity || config.runtimeChannel !== installation.runtimeChannel
       || config.configDir !== installation.configDir) throw new Error('Installed profile mismatch')
-    return { publicUrl: config.publicUrl, key: config.key }
+    return { ...config, rawRecipe: value.recipe }
   }
 
   private async read(file: string): Promise<unknown> {

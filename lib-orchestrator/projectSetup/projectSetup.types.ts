@@ -58,7 +58,12 @@ export interface SetupStep {
 export type SetupOrigin = 'project' | 'machine'
 
 export type SetupResolution =
-  | { kind: 'setup'; origin: SetupOrigin; steps: SetupStep[] }
+  /**
+   * `variables`: what the steps run with, and what every later process in the worktree has to carry
+   * so it sees the same dependency layout. Always empty for `project`: a `.worktree.json` command
+   * runs as written, and this machine's settings apply only to the commands it chose itself.
+   */
+  | { kind: 'setup'; origin: SetupOrigin; steps: SetupStep[]; variables: Record<string, string> }
   /** An explicit `"setup": []`: the project needs nothing, and says so in a file that travels with it. */
   | { kind: 'empty' }
   | { kind: 'none'; reason: string }

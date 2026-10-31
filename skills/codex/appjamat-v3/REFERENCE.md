@@ -159,9 +159,12 @@ repeated blind Enters, submit somebody else's draft, or treat truncated/ambiguou
 ## Commands
 
 `<session selector>` means exactly one of `--session-id ID` or `--number NNN|i34|NNN-NNN|i34-NNN`.
-Commands with a number may also take `--working-directory PATH` for exact disambiguation. A custom
-number is not unique by itself, so two sessions may carry `i34`; that answers `conflict` with the
-candidates listed, exactly as a shared allocated number does.
+A lone session UUID after the command words counts as `--session-id` (`tabs open-file <UUID> --path
+PATH`); beside another selector it is refused. Commands with a number may also take
+`--working-directory PATH` for exact disambiguation. A custom number is not unique by itself, so two
+sessions may carry `i34`; that answers `conflict` with the candidates listed, exactly as a shared
+allocated number does. `--help` or `-h` answers, without discovery, the options and flags of every
+command that starts with the words before it (`sessions --help`).
 
 | Intent | Arguments after the wrapper |
 |---|---|
@@ -187,8 +190,8 @@ candidates listed, exactly as a shared allocated number does.
 | Script runs and their logs | `sessions scripts <session selector>\|--self [--run-id ID]`; see Script runs below |
 | Run a command as a child of a session | `sessions scripts run <session selector>\|--self --command TEXT [--cwd DIR] [--title TEXT] [--wait [--timeout-ms N]]` |
 | Recolour, refile | `sessions color <session selector> --color NAME`, `sessions group <session selector> --group ID` |
-| Read, write, clear the note | `sessions note <session selector>` reads; `--note TEXT` writes; `--clear` takes it away |
-| Tabs | `tabs list`, `tabs open <session selector>`, `tabs open-file <session selector> --path PATH`, `tabs focus\|close --panel-id ID` |
+| Read, write, clear the note | `sessions note <session selector>\|--self` reads; `--note TEXT` writes; `--clear` takes it away |
+| Tabs | `tabs list`, `tabs open <session selector>`, `tabs open-file <session selector>\|--self --path PATH`, `tabs focus\|close --panel-id ID` |
 | Review a commit | `commit-svn-jamat` or `commit-git-jamat`, with `--self` or `<session selector>`, optionally `--path PATH` or `--paths-file FILE`, and `--message TEXT` or `--message-file FILE` |
 | Commit result | `commit status --commit-session-id UUID [--wait] [--timeout-ms N]` |
 | Cancel a commit review | `commit cancel --commit-session-id UUID` |
@@ -282,7 +285,9 @@ and on the directory, never on an option:
   beside it. The nearest `.appgroup` decides: `{"kind":"product"}` checks out the product;
   `{"kind":"collection"}` or an empty marker checks out only the selected member. Collection roots
   require a member selection; invalid metadata refuses creation. Outside groups, the catalog project
-  or selected directory owns the checkout. Catalog display never widens it. The session keeps its
+  or selected directory owns the checkout. The marker is the person's: when a collection root is
+  refused, select a member project, or ask the person to set `{"kind":"product"}`; never change
+  `.appgroup` yourself. Catalog display never widens it. The session keeps its
   relative place inside that owner. Existing worktrees retain their recorded owner and setup scope. An ad-hoc directory takes the number of the catalog project that holds
   it, else none. The create answers once the folder is reserved; the checkout is the session's first
   script run ("Checkout <folder>"), and the session starts after it and the setup. A failed checkout
@@ -350,7 +355,9 @@ Approval returns to the history immediately to show Finish progress. Opening rev
 the session. Keep preserves it and its worktree. Ordinary sessions keep their confirmed stop.
 
 **SVN Finish.** `sessions finish-worktree (<session selector> | --self) --choice commit|discard|keep`
-answers one JSON object with `sessionId`, `actionId` and the optional lifecycle view. A dirty
+answers one JSON object with `sessionId`, `actionId` and the optional lifecycle view as soon as the
+Finish is saved; update, checks, publication and removal run after the answer, so follow them with
+`sessions worktree`. Refusals still answer the call itself. A dirty
 CLI/peer Finish waits `waiting-for-review` with its start time; the person approves the current
 review in Session actions, including an explicit completion of an empty diff. There are no Finish CLI selection/message flags.
 
@@ -441,7 +448,29 @@ that field's text; it does not prepare the review again.
 
 Use `--directory shared/library` for an external's own message. The path resolves inside the
 session's worktree or ordinary working directory; outside paths and escaping links are refused.
-Start generated messages with the verified repository owner's name, not the mount directory name.
+A generated SVN message starts with `[<repository name>]` of the verified repository that owns the
+scope, for example `[team_tools]` for a worktree of `D:/Work/TeamTools/worker-agent`, never
+the project, mount or worktree folder name. `commit propose` refuses another prefix and its error
+names the expected one: correct the first line and propose again.
+
+**SVN in a worktree.** A worker's `svn`, and the `svn` of a session started inside its worktree,
+runs through a Jamat shim. It passes reads (`status`, `info`, `log`, `diff`, `cat`, `list`, `blame`,
+`propget`, `proplist`, `export`, `help`) and the local writes below when every path, `--targets`
+lines included, lies inside the session's own worktree: no `..` escape, no link out, no URL.
+
+| Command | Options it takes besides `-q`, `--non-interactive`, `--no-auth-cache` |
+|---|---|
+| `add` | `--parents`, `--force`, `--depth`, `--auto-props`, `--no-auto-props`, `-N`, `--targets`; never `--no-ignore` |
+| `delete` (`del`, `remove`, `rm`) | `--keep-local`, `--targets`; never `--force`: `svn revert` a modified file first |
+| `move` (`mv`, `rename`, `ren`) | `--parents`, `--allow-mixed-revisions` |
+| `copy` (`cp`) | `--parents`, `--ignore-externals`, `-r REV` |
+| `revert` | `-R`, `--depth`, `--remove-added`, `--changelist`, `--targets` |
+
+Rename or move a versioned file with `svn move`, and delete one with `svn delete`; a plain file move
+reaches the review as a delete plus an add without history. Every other write exits 3 and names what
+works instead: `commit` is `commit propose --self` and the person's Finish, `update` and `switch` are
+`sessions sync --self`, `resolve` is `sessions conflicts --self` and `sessions resolve-conflict
+--self`. For anything else (`cleanup`, `merge`, `propset`, `mkdir`) ask the person.
 
 **Lines Jamat hands a worker** (conflicts, failed checks, the resume of an interrupted task) give the
 exact command to run, with this client's CLI and `--self`: after failed checks the retained log and
@@ -890,7 +919,9 @@ Every non-watch invocation writes exactly one JSON envelope. Check `ok` before u
 `truncated: true` requires fresh session and tab lists.
 
 A `sessions create --open-tab` value contains `session`, `tabOpen` and `groupAssign`. A tab that
-fails to open leaves the session where it is: its row in the tree is what draws it.
+fails to open leaves the session where it is: its row in the tree is what draws it. A tab the CLI
+opens (`--open-tab`, `tabs open`) opens behind the person's active tab and comes forward once they
+stop typing; `tabOpen` reports the open, not the focus.
 
 Exit codes are `0` success, `2` invalid request, `3` not found, `4` conflict, `5` timeout,
 `6` unavailable, `7` operation failed/incompatible/forbidden, and `141` closed stdout pipe. Any

@@ -389,13 +389,25 @@ drive(sessionId: string): Promise<void> {
     if (running !== undefined) return running
     const root = this.records.get(sessionId)?.svnAction?.root
     if (root === undefined) return Promise.resolve()
-    const work = this.serializedRoot(root, () => this.driveSteps(sessionId)).finally(() => {
+    const work = this.serializedRoot(root, () => this.driveSteps(sessionId)).catch((error: unknown) => this.leaseRefused(sessionId, error)).finally(() => {
       this.driving.delete(sessionId)
       // A step never outlives its drive.
       if (this.steps.clear(sessionId)) this.changed()
     })
     this.driving.set(sessionId, work)
     return work
+  }
+
+  /**
+   * A drive the root lease refused ran no step, so the UPDATE would keep drawing a running step with
+   * no button; it waits as `locked` with the refusal, and the next press tries again.
+   */
+  private async leaseRefused(sessionId: string, error: unknown): Promise<void> {
+    if (!(error instanceof WorktreeLeaseHeld)) throw error
+    const parent = this.records.get(sessionId)
+    const action = parent?.svnAction
+    if (!parent || action?.kind !== 'update-main' || action.needs !== undefined || action.stage === 'main-update') return
+    await this.needs(parent, action, 'locked', `${action.root} could not be taken for this UPDATE: ${error.message} Press UPDATE again once it is free.`)
   }
 
 private async driveSteps(sessionId: string): Promise<void> {
@@ -689,7 +701,7 @@ private static listed(what: string, paths: readonly string[]): string {
       case 'recording': await this.recordUpdate(parent, action); return this.updates.pending(parent.sessionId)
       case 'updating': case 'cleaning': case 'resolving': case 'diffing':
         if (SvnResolverLauncher.overdue(action, this.now())) { await this.resolverOverdue(parent, action); return true }
-        if (action.retryAt === undefined || this.now() < action.retryAt) return false
+        if (!SvnActionStages.launchLost(action) && (action.retryAt === undefined || this.now() < action.retryAt)) return false
         await this.launch(parent, { ...action, retryAt: undefined }); return true
       case 'changes': case 'reviewing': case 'stopping': case 'evidence': case 'fixing': case 'removing': case 'committing': case 'checks': case 'merging':
         throw new Error('Finish stages belong to FinishDriver')

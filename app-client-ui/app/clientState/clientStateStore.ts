@@ -49,6 +49,7 @@ interface ClientStateFields {
   sessionsView?: SessionsTabsView
   sessionFilters?: readonly SavedSessionsFilter[]
   sessionGroups?: readonly SessionGroupAssignment[]
+  sessionsHiddenWhenRemote?: readonly string[]
   splitPins?: SplitPinsBySession
   newSessionAgent?: SessionAgentId
 }
@@ -208,6 +209,23 @@ export class ClientStateStore {
     const group = SessionsGroupsState.ownGroupOf(this.loadSessionGroups(), fromKey)
     if (group === null) return false
     return this.assignSessionGroup(toKey, group)
+  }
+
+  /** The session keys whose rows leave the person's own sections while a remote computer has them attached. */
+  loadHiddenWhenRemote(): readonly string[] {
+    return structuredClone(this.documentOnDisk().sessionsHiddenWhenRemote ?? [])
+  }
+
+  setHiddenWhenRemote(key: string, hidden: boolean): boolean {
+    if (!SessionsGroupsState.isSessionKey(key) || typeof hidden !== 'boolean')
+      throw new Error('Refusing to store an invalid Hidden when remote mark')
+    return this.write(
+      {
+        ...this.documentOnDisk(),
+        sessionsHiddenWhenRemote: SessionsGroupsState.withHiddenWhenRemote(this.loadHiddenWhenRemote(), key, hidden),
+      },
+      { snapshotLayout: false },
+    )
   }
 
   loadSplitPins(sessionId: string): readonly SplitPinRecord[] {
@@ -460,6 +478,7 @@ export class ClientStateStore {
       sessionFilters?: unknown
       sessionPins?: unknown
       sessionGroups?: unknown
+      sessionsHiddenWhenRemote?: unknown
       splitPins?: unknown
       newSessionAgent?: unknown
     }
@@ -480,6 +499,9 @@ export class ClientStateStore {
         sessionGroups: document.sessionGroups === undefined
           ? SessionsPinsState.coerce(document.sessionPins, report).map((key) => ({ key, group: 'pinned' as const }))
           : SessionsGroupsState.coerce(document.sessionGroups, report),
+      }),
+      ...(document.sessionsHiddenWhenRemote === undefined ? {} : {
+        sessionsHiddenWhenRemote: SessionsGroupsState.coerceHiddenWhenRemote(document.sessionsHiddenWhenRemote, report),
       }),
       ...(document.sessionFilters === undefined ? {} : {
         sessionFilters: SessionsFilterState.coerceSaved(document.sessionFilters, report),

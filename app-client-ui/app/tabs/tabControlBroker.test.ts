@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TabControlAck, TabControlCommand } from '../../shared/tabControl'
 import type { WorkspaceWindows } from '../shell/workspaceWindows'
 import type { VersioningCommitManager } from '../versioning/versioningCommitManager'
+import { AttentionQueue } from '../attention/attentionQueue'
 import { TabControlBroker, type TabControlBrokerDeps } from './tabControlBroker'
 import type { TabFileOpenResolution } from './tabFileOpenResolver'
 import { WorkspacePanelIndex } from './workspacePanelIndex'
@@ -50,6 +51,7 @@ class FakeWindows {
   }
 }
 
+/** The broker with the real attention queue behind it, as AppHub composes the two. */
 class TabControlHarness {
   readonly windows = new FakeWindows()
   readonly index = new WorkspacePanelIndex()
@@ -61,30 +63,46 @@ class TabControlHarness {
     cancel: vi.fn<VersioningCommitManager['cancel']>(async () => ({ ok: false, error: { code: 'not-found', detail: 'Unknown review' } })),
     reviews: vi.fn<VersioningCommitManager['reviews']>(() => []),
   }
+  readonly attention: AttentionQueue
   readonly broker: TabControlBroker
   readonly drafts = new Map<string, NonNullable<ReturnType<VersioningCommitManager['status']>>>()
+  readonly reports: string[] = []
   private nextRequest = 0
 
-  /** Milliseconds, advanced by a test that wants the broker to see a review it sat in. */
+  /** Milliseconds, advanced by a test that wants the queue to see a review it sat in. */
   clock = 0
+  /** The quiet time before an agent's item comes forward; 0 brings it while a workspace has the focus. */
+  idleMilliseconds = 0
   activateDocuments = false
 
   constructor(timeoutMilliseconds = 1_000, activateSessionOnCommit = true, returnToPreviousSessionAfterCommit = true,
     returnWindowMilliseconds: number | null = 300_000, recordOpen?: TabControlBrokerDeps['recordOpen']) {
+    this.attention = new AttentionQueue({
+      front: () => {
+        const focused = this.windows.focusedWorkspace()
+        return focused === null ? null : { panelId: this.activePanel(focused.windowId) }
+      },
+      lastActivePanel: () => this.activePanel(this.windows.lastFocusedWorkspace().windowId),
+      focus: async (panelId) => { await this.broker.focus(panelId) },
+      idleMilliseconds: () => this.idleMilliseconds,
+      returnEnabled: () => returnToPreviousSessionAfterCommit,
+      returnWindowMilliseconds: () => returnWindowMilliseconds,
+      onChanged: () => {},
+      report: (message) => this.reports.push(message),
+      now: () => this.clock,
+    })
     this.broker = new TabControlBroker(
       this.windows.asWindows(),
       this.index,
       this.resolver,
       this.commits,
+      this.attention,
       {
         recordOpen,
         requestId: () => `request-${++this.nextRequest}`,
         timeoutMilliseconds,
         activateSessionOnCommit: () => activateSessionOnCommit,
         activateSessionOnDocument: () => this.activateDocuments,
-        returnToPreviousSessionAfterCommit: () => returnToPreviousSessionAfterCommit,
-        returnWindowMilliseconds: () => returnWindowMilliseconds,
-        now: () => this.clock,
       },
     )
   }
@@ -112,15 +130,17 @@ class TabControlHarness {
       vcs: 'svn', scopeRoot: 'Q:/app/shared', state, closed, revision: state === 'committed' ? '123' : null, detail: null })
   }
 
-  async openReview(options: { showRefusal?: true } = {}): Promise<void> {
+  /** The agent's open behind the tab in front, then the queue bringing it forward when `shown`. */
+  async openReview(options: { showRefusal?: true } = {}, shown = true): Promise<void> {
     const commandIndex = this.windows.published.length
     const pending = this.broker.openCommit('commit', 'Commit', 'svn', null, null, options)
-    const command = await this.command(commandIndex)
-    const windowId = this.index.ownerOf('commit')!
-    if (command.kind === 'open-commit' && command.activate)
-      this.index.setActivePanel(windowId, 'commit')
-    this.acknowledge(windowId, command, { kind: 'commit-opened', panelId: 'commit' })
+    this.acceptReview(await this.command(commandIndex))
     expect((await pending).ok).toBe(true)
+    if (shown) {
+      const activation = await this.command(commandIndex + 1)
+      expect(activation).toMatchObject({ kind: 'open-commit', panelId: 'commit', activate: true, existingOnly: true })
+      this.acceptReview(activation)
+    }
   }
 
   async queueReview(sessionId: string, draftId: string, paths?: readonly string[]): Promise<void> {
@@ -132,7 +152,9 @@ class TabControlHarness {
     this.commits.status.mockImplementation((id) => this.drafts.get(id) ?? null)
     const commandIndex = this.windows.published.length
     const pending = this.broker.openCommit(sessionId, sessionId, 'svn', scopeRoot, null, { paths })
-    this.acceptReview(await this.command(commandIndex))
+    const command = await this.command(commandIndex)
+    expect(command).toMatchObject({ kind: 'open-commit', panelId: sessionId, activate: false })
+    this.acceptReview(command)
     expect(await pending).toMatchObject({ ok: true, value: { commitSessionId: draftId } })
   }
 
@@ -152,6 +174,15 @@ class TabControlHarness {
 
   async settled(): Promise<void> {
     await new Promise<void>((resolve) => setImmediate(resolve))
+  }
+
+  stop(): void {
+    this.broker.cancelAll()
+    this.attention.stop()
+  }
+
+  private activePanel(windowId: string): string | null {
+    return this.index.snapshot().find((panel) => panel.windowId === windowId && panel.active)?.panelId ?? null
   }
 }
 
@@ -175,22 +206,28 @@ class FakeFileOpenResolver {
 }
 
 describe('app-client-ui/app/tabs/tabControlBroker', () => {
-  it.each([true, false])('projects remote reviews through viewer activation=%s and consumes each open once', async (activate) => {
-    const h = new TabControlHarness(1000, activate)
+  it.each([true, false])('projects remote reviews behind the active tab, queued=%s, and consumes each open once', async (queued) => {
+    const h = new TabControlHarness(1000, queued)
     h.session('previous')
     const target = { kind: 'remote' as const, remoteEndpointId: 'peer', sessionId: 'session' }
     h.index.claimOpen('main', { panelId: 'remote', key: 'terminal', title: 'Remote', sessionId: null, params: { target } })
     const draft: import('../../shared/versioningCommit').VersioningCommitDraftDto = { draftId: 'review', sessionId: 'session', vcs: 'svn', source: 'svn', scopeRoot: 'Q:/app', scopeTooltip: 'Q:/app', message: 'Human', proposedByAgent: false, editedByPerson: true, phase: { kind: 'editing' }, revision: 1 }
     const first = h.broker.projectReview(target, draft, 'item', 'open-1')
     const command = await h.command()
-    expect(command).toMatchObject({ kind: 'open-commit', activate, reviewId: 'review', openId: 'open-1' })
+    expect(command).toMatchObject({ kind: 'open-commit', activate: false, reviewId: 'review', openId: 'open-1' })
     h.acceptReview(command)
     await first
+    if (queued) {
+      const shown = await h.command(1)
+      expect(shown).toMatchObject({ kind: 'open-commit', panelId: 'remote', activate: true, existingOnly: true })
+      h.acceptReview(shown)
+    }
+    const opened = h.windows.published.length
     await h.broker.projectReview(target, draft, 'item', 'open-1')
-    expect(h.windows.published).toHaveLength(1)
+    expect(h.windows.published).toHaveLength(opened)
     h.broker.updateProjectedReview(target, draft, true)
-    if (activate) {
-      const back = await h.command(1)
+    if (queued) {
+      const back = await h.command(opened)
       expect(back).toMatchObject({ kind: 'focus-panel', panelId: 'previous' })
       h.index.setActivePanel('main', 'previous')
       h.acknowledge('main', back, { kind: 'focused', panelId: 'previous' })
@@ -201,10 +238,12 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     expect(h.windows.published).toHaveLength(count)
     const reopened = h.broker.projectReview(target, draft, 'item', 'open-2')
     const fresh = await h.command(count)
-    expect(fresh).toMatchObject({ activate, openId: 'open-2' })
+    expect(fresh).toMatchObject({ activate: false, openId: 'open-2' })
     h.acceptReview(fresh)
     await reopened
+    h.stop()
   })
+
   it('lists review identities on their owning session and waits for cancellation before preparing another', async () => {
     const h = new TabControlHarness()
     h.session('commit')
@@ -224,6 +263,7 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     expect(await cancel).toMatchObject({ ok: true, value: { state: 'cancelled', closed: true } })
     h.acceptReview(await h.command())
     expect(await reopen).toMatchObject({ ok: true })
+    h.stop()
   })
 
   it('queues reviews across windows in arrival order and returns only after the last one', async () => {
@@ -233,30 +273,32 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     h.session('third')
     h.session('original')
     await h.queueReview('first', 'one')
+    const shown = await h.command(1)
+    expect(shown).toMatchObject({ kind: 'open-commit', panelId: 'first', activate: true, existingOnly: true, messageApplied: false })
+    h.acceptReview(shown)
     await h.queueReview('second', 'two', ['Q:/app/two/a.txt', 'Q:/app/two/b.txt'])
     await h.queueReview('third', 'three')
-    expect(h.windows.published.map(({ command }) => command)).toMatchObject([
-      { panelId: 'first', activate: true }, { panelId: 'second', activate: false }, { panelId: 'third', activate: false },
-    ])
+    await h.settled()
+    expect(h.windows.published).toHaveLength(4)
     expect(h.windows.focused).toEqual(['main'])
-    expect(h.index.snapshot().find((panel) => panel.panelId === 'first')?.active).toBe(true)
 
     h.finishReview('one')
-    const second = await h.command(3)
+    const second = await h.command(4)
     expect(second).toMatchObject({ kind: 'open-commit', panelId: 'second', scopeRoot: 'Q:/app/two', activate: true,
       paths: ['Q:/app/two/a.txt', 'Q:/app/two/b.txt'], messageApplied: false, existingOnly: true })
+    expect(h.windows.published[4]?.windowId).toBe('holder')
     h.acceptReview(second)
     h.finishReview('two', 'cancelled', true)
-    const third = await h.command(4)
+    const third = await h.command(5)
     expect(third).toMatchObject({ kind: 'open-commit', panelId: 'third', activate: true })
     h.acceptReview(third)
     h.finishReview('three')
-    const returned = await h.command(5)
+    const returned = await h.command(6)
     expect(returned).toMatchObject({ kind: 'focus-panel', panelId: 'original' })
     h.acknowledge('main', returned, { kind: 'focused', panelId: 'original' })
     h.broker.commitsChanged()
     await h.settled()
-    expect(h.windows.published).toHaveLength(6)
+    expect(h.windows.published).toHaveLength(7)
     expect(h.commits.prepare).toHaveBeenCalledTimes(3)
   })
 
@@ -266,28 +308,36 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     h.session('second')
     h.session('original')
     await h.queueReview('first', 'one')
+    h.acceptReview(await h.command(1))
     await h.queueReview('second', 'two')
     await h.queueReview('second', 'two')
     await h.queueReview('first', 'one')
+    await h.settled()
+    expect(h.windows.published).toHaveLength(5)
     expect(h.windows.focused).toEqual(['main'])
     h.finishReview('one')
-    const next = await h.command(4)
+    const next = await h.command(5)
     expect(next).toMatchObject({ panelId: 'second', activate: true })
     h.acceptReview(next)
     h.finishReview('two')
-    const returned = await h.command(5)
+    const returned = await h.command(6)
     expect(returned).toMatchObject({ kind: 'focus-panel', panelId: 'original' })
     h.acknowledge('main', returned, { kind: 'focused', panelId: 'original' })
   })
 
+  /*
+   * The review left unfinished stays open in its tab and no longer holds anything; the one waiting
+   * behind it is the next in the queue, so it comes forward before the newer one.
+   */
   it.each(['other-session', 'other-window', 'other-app'] as const)(
-    'activates a new review after leaving the unfinished queue for %s', async (move) => {
+    'brings the next waiting review forward after the person leaves an unfinished one for %s', async (move) => {
       const h = new TabControlHarness()
       h.session('first')
       h.session('second')
       h.session('third')
       h.session('original')
       await h.queueReview('first', 'one')
+      h.acceptReview(await h.command(1))
       await h.queueReview('second', 'two')
       const windowId = move === 'other-window' ? 'holder' : 'main'
       h.session('other', windowId)
@@ -296,32 +346,44 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
       h.clock = 300_001
 
       await h.queueReview('third', 'three')
+      if (move === 'other-app') {
+        await h.settled()
+        expect(h.windows.published).toHaveLength(4)
+        h.windows.focusedWindowId = windowId
+        h.attention.personActive()
+      }
 
-      expect(h.windows.published[2]?.command).toMatchObject({ panelId: 'third', activate: true })
+      const two = await h.command(4)
+      expect(two).toMatchObject({ panelId: 'second', activate: true })
+      h.acceptReview(two)
       h.finishReview('one')
-      h.finishReview('two')
       await h.settled()
-      expect(h.windows.published).toHaveLength(3)
+      expect(h.windows.published).toHaveLength(5)
+      h.finishReview('two')
+      const three = await h.command(5)
+      expect(three).toMatchObject({ panelId: 'third', activate: true })
+      h.acceptReview(three)
       h.finishReview('three')
-      const returned = await h.command(3)
+      const returned = await h.command(6)
       expect(returned).toMatchObject({ kind: 'focus-panel', panelId: 'other' })
       h.acknowledge(windowId, returned, { kind: 'focused', panelId: 'other' })
     },
   )
 
-  it.each(['first', 'second'] as const)('activates a reopened %s review after leaving its queue', async (sessionId) => {
+  it.each(['first', 'second'] as const)('brings the oldest waiting review forward when the %s is reopened after leaving', async (sessionId) => {
     const h = new TabControlHarness()
     h.session('first')
     h.session('second')
     h.session('original')
     await h.queueReview('first', 'one')
+    h.acceptReview(await h.command(1))
     await h.queueReview('second', 'two')
     h.index.setActivePanel('main', 'original')
 
     await h.queueReview(sessionId, sessionId === 'first' ? 'one' : 'two')
 
-    expect(h.windows.published[2]?.command).toMatchObject({ panelId: sessionId, activate: true })
-    h.broker.cancelAll()
+    expect(await h.command(4)).toMatchObject({ panelId: 'second', activate: true })
+    h.stop()
   })
 
   it.each(['failed', 'running', 'external-closed'] as const)('holds the queue while the current review is %s', async (state) => {
@@ -330,13 +392,14 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     h.session('second')
     h.session('original')
     await h.queueReview('first', 'one')
+    h.acceptReview(await h.command(1))
     await h.queueReview('second', 'two')
     h.finishReview('one', state)
     await h.settled()
-    expect(h.windows.published).toHaveLength(2)
+    expect(h.windows.published).toHaveLength(3)
     h.finishReview('one')
-    h.acceptReview(await h.command(2))
-    h.broker.cancelAll()
+    h.acceptReview(await h.command(3))
+    h.stop()
   })
 
   it.each(['cancelled', 'committed', 'unknown', 'closed-tab'] as const)('skips a waiting review that is already %s', async (state) => {
@@ -346,6 +409,7 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     h.session('third')
     h.session('original')
     await h.queueReview('first', 'one')
+    h.acceptReview(await h.command(1))
     await h.queueReview('second', 'two')
     await h.queueReview('third', 'three')
     if (state === 'cancelled') h.finishReview('two', 'cancelled', true)
@@ -354,10 +418,10 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     else if (state === 'closed-tab') h.index.release('second', 'main')
     else throw new Error(`Unknown state: ${state}`)
     h.finishReview('one')
-    const next = await h.command(3)
+    const next = await h.command(4)
     expect(next).toMatchObject({ panelId: 'third', activate: true })
     h.acceptReview(next)
-    h.broker.cancelAll()
+    h.stop()
   })
 
   it.each(['disabled', 'expired'] as const)('still advances the queue when the final return is %s', async (mode) => {
@@ -366,31 +430,36 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     h.session('second')
     h.session('original')
     await h.queueReview('first', 'one')
+    h.acceptReview(await h.command(1))
     h.clock = 300_001
     await h.queueReview('second', 'two')
     h.finishReview('one')
-    h.acceptReview(await h.command(2))
+    h.acceptReview(await h.command(3))
     h.finishReview('two')
     await h.settled()
-    expect(h.windows.published).toHaveLength(3)
+    expect(h.windows.published).toHaveLength(4)
   })
 
-  it.each(['other-session', 'other-app'] as const)('stops advancing after the person moves to %s', async (move) => {
+  it.each(['other-session', 'other-app'] as const)('does not move on when a review ends after the person moved to %s', async (move) => {
     const h = new TabControlHarness()
+    h.idleMilliseconds = 20_000
     h.session('first')
     h.session('second')
     h.session('original')
     await h.queueReview('first', 'one')
+    h.acceptReview(await h.command(1))
     await h.queueReview('second', 'two')
     if (move === 'other-session') h.session('other')
     else if (move === 'other-app') h.windows.focusedWindowId = null
     else throw new Error(`Unknown move: ${move}`)
+    h.attention.personActive()
     h.finishReview('one')
     await h.settled()
-    expect(h.windows.published).toHaveLength(2)
+    expect(h.windows.published).toHaveLength(3)
     h.finishReview('two')
     await h.settled()
-    expect(h.windows.published).toHaveLength(2)
+    expect(h.windows.published).toHaveLength(3)
+    h.stop()
   })
 
   it('uses the current owner when the next review tab has moved', async () => {
@@ -399,32 +468,38 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     h.session('second')
     h.session('original')
     await h.queueReview('first', 'one')
+    h.acceptReview(await h.command(1))
     await h.queueReview('second', 'two')
     h.index.release('second', 'main')
     h.session('second', 'holder')
+    h.index.setActivePanel('main', 'first')
     h.finishReview('one')
-    const next = await h.command(2)
-    expect(h.windows.published[2]?.windowId).toBe('holder')
+    const next = await h.command(3)
+    expect(h.windows.published[3]?.windowId).toBe('holder')
     h.acceptReview(next)
-    h.broker.cancelAll()
+    h.stop()
   })
 
-  it('stops the sequence after an unconfirmed handoff instead of activating another review', async () => {
+  it('drops a review whose activation the renderer refuses, and the next one waits for the quiet time', async () => {
     const h = new TabControlHarness()
     h.session('first')
     h.session('second')
     h.session('third')
     h.session('original')
     await h.queueReview('first', 'one')
+    h.acceptReview(await h.command(1))
     await h.queueReview('second', 'two')
     await h.queueReview('third', 'three')
+    h.idleMilliseconds = 20_000
     h.finishReview('one')
-    const next = await h.command(3)
+    const next = await h.command(4)
     h.acknowledge('main', next, { kind: 'failed', detail: 'The renderer cannot activate the review' })
     await h.settled()
     h.finishReview('two')
     await h.settled()
-    expect(h.windows.published).toHaveLength(4)
+    expect(h.windows.published).toHaveLength(5)
+    expect(h.attention.snapshot().items.map((item) => item.key)).toEqual(['three'])
+    h.stop()
   })
 
   it('keeps simultaneous opens ordered while the first renderer acknowledgement is pending', async () => {
@@ -438,15 +513,18 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     const first = h.broker.openCommit('first', 'First', 'svn', null, null, {})
     const second = h.broker.openCommit('second', 'Second', 'svn', null, null, {})
     const command = await h.command()
-    expect(command).toMatchObject({ panelId: 'first', activate: true })
+    expect(command).toMatchObject({ panelId: 'first', activate: false })
     expect(h.commits.prepare).toHaveBeenCalledTimes(1)
     h.acceptReview(command)
     expect((await first).ok).toBe(true)
-    const queued = await h.command(1)
-    expect(queued).toMatchObject({ panelId: 'second', activate: false })
+    await vi.waitFor(() => expect(h.windows.published).toHaveLength(3))
+    const queued = h.windows.published.find(({ command: next }) => next.kind === 'open-commit' && next.panelId === 'second')!.command
+    expect(queued).toMatchObject({ activate: false })
     h.acceptReview(queued)
     expect((await second).ok).toBe(true)
-    h.broker.cancelAll()
+    expect(h.windows.published.filter(({ command: next }) => next.kind === 'open-commit' && next.activate === true)
+      .map(({ command: next }) => next.kind === 'open-commit' ? next.panelId : null)).toEqual(['first'])
+    h.stop()
   })
 
   it('cancels serialized opens when the application is stopping', async () => {
@@ -457,7 +535,7 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     const first = h.broker.openCommit('first', 'First', 'svn', null, null, {})
     const second = h.broker.openCommit('second', 'Second', 'svn', null, null, {})
     await h.command()
-    h.broker.cancelAll()
+    h.stop()
     expect(await first).toMatchObject({ ok: false, error: { code: 'unavailable' } })
     expect(await second).toMatchObject({ ok: false, error: { code: 'unavailable' } })
     expect(h.commits.prepare).toHaveBeenCalledTimes(1)
@@ -470,8 +548,9 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     h.index.claimOpen('main', { panelId: 'document', key: 'fileViewer', title: 'Document', params: {}, sessionId: null })
     h.index.setActivePanel('main', 'document')
     await h.queueReview('commit', 'one')
+    h.acceptReview(await h.command(1))
     h.finishReview('one')
-    const command = await h.command(1)
+    const command = await h.command(2)
     expect(command).toMatchObject({ kind: 'focus-panel', panelId: 'document' })
     h.acknowledge('main', command, { kind: 'focused', panelId: 'document' })
   })
@@ -485,13 +564,13 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
       await h.openReview()
       h.status(state, closed)
       h.broker.commitsChanged()
-      const command = await h.command(1)
+      const command = await h.command(2)
       expect(command).toMatchObject({ kind: 'focus-panel', panelId: 'original' })
-      expect(h.windows.published[1]?.windowId).toBe('main')
+      expect(h.windows.published[2]?.windowId).toBe('main')
       h.acknowledge('main', command, { kind: 'focused', panelId: 'original' })
       h.broker.commitsChanged()
-      await Promise.resolve()
-      expect(h.windows.published).toHaveLength(2)
+      await h.settled()
+      expect(h.windows.published).toHaveLength(3)
     },
   )
 
@@ -504,15 +583,15 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
       await h.openReview()
       h.status(state, closed)
       h.broker.commitsChanged()
-      await Promise.resolve()
-      expect(h.windows.published).toHaveLength(1)
+      await h.settled()
+      expect(h.windows.published).toHaveLength(2)
     },
   )
 
   /**
    * The person who reads the diff, thinks about it and commits ten minutes later is no longer being
    * interrupted by the review: the review is the work, and the tab they left ten minutes ago is the
-   * interruption. The window is measured from the open because that is the moment the tab appeared.
+   * interruption. The window is measured from the moment the review came forward.
    */
   it('stops returning once the review has been open longer than the window', async () => {
     const h = new TabControlHarness()
@@ -525,8 +604,8 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     h.status('committed')
     h.broker.commitsChanged()
 
-    await Promise.resolve()
-    expect(h.windows.published).toHaveLength(1)
+    await h.settled()
+    expect(h.windows.published).toHaveLength(2)
   })
 
   it('still returns at the edge of the window and whenever the window is turned off', async () => {
@@ -541,7 +620,7 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
       h.status('committed')
       h.broker.commitsChanged()
 
-      const command = await h.command(1)
+      const command = await h.command(2)
       expect(command).toMatchObject({ kind: 'focus-panel', panelId: 'original' })
       h.acknowledge('main', command, { kind: 'focused', panelId: 'original' })
     }
@@ -554,12 +633,13 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
       h.session('commit')
       if (mode !== 'same-session') h.index.setActivePanel('main', 'original')
       h.status('editing')
-      await h.openReview(mode === 'manual' ? { showRefusal: true } : {})
+      const queued = mode !== 'activation-disabled' && mode !== 'manual'
+      await h.openReview(mode === 'manual' ? { showRefusal: true } : {}, queued)
       h.index.setActivePanel('main', 'commit')
       h.status('committed')
       h.broker.commitsChanged()
-      await Promise.resolve()
-      expect(h.windows.published).toHaveLength(1)
+      await h.settled()
+      expect(h.windows.published).toHaveLength(queued ? 2 : 1)
     },
   )
 
@@ -577,8 +657,8 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
       else throw new Error(`Unknown navigation: ${String(change)}`)
       h.status('committed')
       h.broker.commitsChanged()
-      await Promise.resolve()
-      expect(h.windows.published).toHaveLength(1)
+      await h.settled()
+      expect(h.windows.published).toHaveLength(2)
     },
   )
 
@@ -588,10 +668,12 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     h.session('original')
     h.status('editing')
     await h.openReview()
-    await h.openReview()
+    await h.openReview({}, false)
+    await h.settled()
+    expect(h.windows.published).toHaveLength(3)
     h.status('cancelled', true)
     h.broker.commitsChanged()
-    const command = await h.command(2)
+    const command = await h.command(3)
     expect(command).toMatchObject({ kind: 'focus-panel', panelId: 'original' })
     h.acknowledge('main', command, { kind: 'focused', panelId: 'original' })
   })
@@ -603,92 +685,62 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     h.status('editing')
     await h.openReview()
     h.commits.prepare.mockResolvedValue({ ok: true, value: { draftId: 'second', scopeRoot: 'Q:/app/other', title: 'Commit SVN' }, messageApplied: false })
-    await h.openReview()
+    await h.openReview({}, false)
     h.status('committed')
     const completed = h.commits.status('draft')!
     h.commits.status.mockImplementation((id) => ({ ...completed, commitSessionId: id, state: id === 'second' ? 'editing' : 'committed' }))
     h.broker.commitsChanged()
-    const next = await h.command(2)
+    const next = await h.command(3)
     expect(next).toMatchObject({ kind: 'open-commit', scopeRoot: 'Q:/app/other', activate: true })
     h.acceptReview(next)
     h.status('committed')
     h.broker.commitsChanged()
-    const command = await h.command(3)
+    const command = await h.command(4)
     expect(command).toMatchObject({ kind: 'focus-panel', panelId: 'original' })
     h.acknowledge('main', command, { kind: 'focused', panelId: 'original' })
   })
 
-  it('captures the last focused workspace before bringing a background app forward', async () => {
+  it('waits while another application is in front and comes forward when a workspace takes the focus', async () => {
     const h = new TabControlHarness()
     h.session('commit')
     h.session('original', 'holder')
     h.windows.lastFocusedWindowId = 'holder'
     h.windows.focusedWindowId = null
     h.status('editing')
-    await h.openReview()
+    await h.openReview({}, false)
+    await h.settled()
+    expect(h.windows.published).toHaveLength(1)
+    expect(h.windows.focused).toEqual([])
+
+    h.windows.focusedWindowId = 'holder'
+    h.attention.personActive()
+    const shown = await h.command(1)
+    expect(shown).toMatchObject({ kind: 'open-commit', panelId: 'commit', activate: true })
+    h.acceptReview(shown)
     h.status('committed')
     h.broker.commitsChanged()
-    const command = await h.command(1)
+    const command = await h.command(2)
     expect(command).toMatchObject({ kind: 'focus-panel', panelId: 'original' })
     h.acknowledge('holder', command, { kind: 'focused', panelId: 'original' })
   })
 
-  it('captures the origin before creating and activating a new commit session tab', async () => {
+  it('opens a new commit session tab behind the active one and returns to that one after the review', async () => {
     const h = new TabControlHarness()
     h.session('original')
     h.status('editing')
     const pending = h.broker.openCommit('commit', 'Commit', 'git', null, null, {})
     const opening = await h.command()
-    expect(opening).toMatchObject({ kind: 'open-session', activate: true })
-    h.session('commit')
+    expect(opening).toMatchObject({ kind: 'open-session', activate: false })
+    h.index.claimOpen('main', { panelId: 'commit', key: 'terminal', title: 'commit', sessionId: 'commit', params: { sessionId: 'commit' } })
     h.acknowledge('main', opening, { kind: 'opened', panelId: 'commit' })
-    h.acknowledge('main', await h.command(1), { kind: 'commit-opened', panelId: 'commit' })
+    h.acceptReview(await h.command(1))
     expect((await pending).ok).toBe(true)
+    h.acceptReview(await h.command(2))
     h.status('committed')
     h.broker.commitsChanged()
-    const command = await h.command(2)
+    const command = await h.command(3)
     expect(command).toMatchObject({ kind: 'focus-panel', panelId: 'original' })
     h.acknowledge('main', command, { kind: 'focused', panelId: 'original' })
-  })
-
-  it("returns to the parent's workflow after an action's review settles, instead of the previous panel", async () => {
-    const h = new TabControlHarness()
-    h.session('parent')
-    h.session('original')
-    h.status('editing')
-    const pending = h.broker.openCommit('commit', 'Commit', 'svn', null, null,
-      { fresh: true, returnToWorkflow: { sessionId: 'parent', tabTitle: 'App - parent' } })
-    const opening = await h.command()
-    expect(opening).toMatchObject({ kind: 'open-session', activate: true })
-    h.session('commit')
-    h.acknowledge('main', opening, { kind: 'opened', panelId: 'commit' })
-    h.acknowledge('main', await h.command(1), { kind: 'commit-opened', panelId: 'commit' })
-    expect((await pending).ok).toBe(true)
-
-    h.status('committed')
-    h.broker.commitsChanged()
-    const command = await h.command(2)
-    expect(command).toMatchObject({ kind: 'open-workflow', panelId: 'parent', sessionId: 'parent' })
-    expect(h.windows.focused).toContain('main')
-    h.acknowledge('main', command, { kind: 'workflow-opened', panelId: 'parent' })
-    await h.settled()
-    expect(h.windows.published).toHaveLength(3)
-  })
-
-  it('returns nowhere after an action review when the return setting is off', async () => {
-    const h = new TabControlHarness(1_000, true, false)
-    h.session('parent')
-    h.session('commit')
-    h.status('editing')
-    const pending = h.broker.openCommit('commit', 'Commit', 'svn', null, null,
-      { fresh: true, returnToWorkflow: { sessionId: 'parent', tabTitle: 'App - parent' } })
-    h.acceptReview(await h.command())
-    expect((await pending).ok).toBe(true)
-    h.status('committed')
-    h.broker.commitsChanged()
-    await h.settled()
-    await h.settled()
-    expect(h.windows.published).toHaveLength(1)
   })
 
   it('returns to the original panel in its current window after it was moved', async () => {
@@ -701,10 +753,49 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     h.session('original', 'holder')
     h.status('committed')
     h.broker.commitsChanged()
-    const command = await h.command(1)
-    expect(h.windows.published[1]?.windowId).toBe('holder')
+    const command = await h.command(2)
+    expect(h.windows.published[2]?.windowId).toBe('holder')
     expect(command).toMatchObject({ kind: 'focus-panel', panelId: 'original' })
     h.acknowledge('holder', command, { kind: 'focused', panelId: 'original' })
+  })
+
+  it("opens an agent's session tab behind the active one and brings it forward through the queue", async () => {
+    const h = new TabControlHarness()
+    h.session('original')
+    const opened = h.broker.open('agent-session', 'Agent', 'agent')
+    const command = await h.command()
+    expect(command).toMatchObject({ kind: 'open-session', sessionId: 'agent-session', activate: false })
+    h.index.claimOpen('main', { panelId: 'agent-panel', key: 'terminal', title: 'Agent', sessionId: 'agent-session', params: { sessionId: 'agent-session' } })
+    h.acknowledge('main', command, { kind: 'opened', panelId: 'agent-panel' })
+    expect(await opened).toMatchObject({ ok: true })
+    const shown = await h.command(1)
+    expect(shown).toMatchObject({ kind: 'focus-panel', panelId: 'agent-panel' })
+    h.acknowledge('main', shown, { kind: 'focused', panelId: 'agent-panel' })
+    expect(h.windows.focused).toEqual(['main'])
+    await h.settled()
+    expect(h.attention.snapshot().items).toEqual([])
+  })
+
+  it("keeps an agent's session tab waiting while the person types, and opens a person's tab at once", async () => {
+    const h = new TabControlHarness()
+    h.idleMilliseconds = 20_000
+    h.session('original')
+    h.attention.personActive()
+    const agent = h.broker.open('agent-session', 'Agent', 'agent')
+    const command = await h.command()
+    h.index.claimOpen('main', { panelId: 'agent-panel', key: 'terminal', title: 'Agent', sessionId: 'agent-session', params: { sessionId: 'agent-session' } })
+    h.acknowledge('main', command, { kind: 'opened', panelId: 'agent-panel' })
+    expect(await agent).toMatchObject({ ok: true })
+    await h.settled()
+    expect(h.windows.published).toHaveLength(1)
+    expect(h.attention.snapshot().items).toMatchObject([{ kind: 'session-opened', sessionId: 'agent-session', title: 'Agent', automatic: true }])
+
+    const person = h.broker.open('person-session', 'Person', 'person')
+    const open = await h.command(1)
+    expect(open).toEqual({ kind: 'open-session', requestId: 'request-2', sessionId: 'person-session', tabTitle: 'Person' })
+    h.acknowledge('main', open, { kind: 'opened', panelId: 'person-panel' })
+    expect(await person).toMatchObject({ ok: true })
+    h.stop()
   })
 
   it('opens in the existing holder without activating a window when the setting is disabled', async () => {
@@ -799,7 +890,7 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
       active: true,
     }])
 
-    const resultPromise = harness.broker.open('session-1', 'Project - 001', {})
+    const resultPromise = harness.broker.openTab('session-1', 'Project - 001')
     const command = await harness.command()
     expect(command).toEqual({
       kind: 'open-session',
@@ -872,7 +963,7 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
       ok: false,
       error: { code: 'not-found', detail: 'No tab "missing"' },
     })
-    const openPromise = harness.broker.open('session-1', 'Project - 001', {})
+    const openPromise = harness.broker.openTab('session-1', 'Project - 001')
     await vi.advanceTimersByTimeAsync(50)
     await expect(openPromise).resolves.toEqual({
       ok: false,
@@ -889,7 +980,7 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     harness.windows.blocked.set('main', new Promise<void>((resolve) => {
       release = resolve
     }))
-    const first = harness.broker.open('session-1', 'Project - 001', {})
+    const first = harness.broker.openTab('session-1', 'Project - 001')
 
     harness.broker.rendererGone('main')
     await expect(first).resolves.toEqual({
@@ -901,7 +992,7 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     await Promise.resolve()
     expect(harness.windows.published).toEqual([])
 
-    const second = harness.broker.open('session-1', 'Project - 001', {})
+    const second = harness.broker.openTab('session-1', 'Project - 001')
     const command = await harness.command()
     harness.acknowledge('main', command, {
       kind: 'opened',
@@ -922,7 +1013,7 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     harness.windows.blocked.set('main', new Promise<void>((resolve) => {
       release = resolve
     }))
-    const opened = harness.broker.open('session-1', 'Project - 001', {})
+    const opened = harness.broker.openTab('session-1', 'Project - 001')
 
     harness.windows.accepted.delete('main')
     release()
@@ -941,7 +1032,7 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
    */
   it('refuses an acknowledgement from a window the command was not sent to', async () => {
     const harness = new TabControlHarness()
-    const opened = harness.broker.open('session-1', 'Project - 001', {})
+    const opened = harness.broker.openTab('session-1', 'Project - 001')
     const command = await harness.command()
 
     expect(() => harness.acknowledge('holder', command, {
@@ -966,7 +1057,7 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
       params: { sessionId: 'session-1' },
       sessionId: 'session-1',
     })
-    const opened = harness.broker.open('session-1', 'Project - 001', {})
+    const opened = harness.broker.openTab('session-1', 'Project - 001')
     const command = await harness.command()
     harness.acknowledge('main', command, {
       kind: 'focused-existing',

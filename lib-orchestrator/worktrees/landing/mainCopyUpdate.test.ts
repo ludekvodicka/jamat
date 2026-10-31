@@ -6,7 +6,7 @@ import { finishTestRecords, emptyUpdateTargets } from '../finish/finishTestRecor
 import type { SvnActionFlowDeps } from '../finish/svnActionFlow'
 import { ScriptLogStore } from '../../sessionManager/worktreeSessionScripts'
 import { WorktreeResultsStore } from '../results/worktreeResultsStore'
-import { WorktreeLease } from '../worktreeLease'
+import { WorktreeLease, WorktreeLeaseHeld } from '../worktreeLease'
 import type { WorktreeSvnCommands } from '../worktreeSvnCommands'
 import { MainCopyUpdate } from './mainCopyUpdate'
 import { LandedRows } from './landedRows'
@@ -49,7 +49,7 @@ async function harness() {
         tree: null, sidecars: [], properties: [], content: kinds[path] === undefined ? { binary: false, unreadable: false, equal: 'differs' } : null })) } }),
       resolveWorking: async () => ({ ok: true, value: undefined }),
     },
-    runner: { run: vi.fn(async () => { events.push('update'); conflicts = after; return { ok: true, runId: 'run', exitCode: 0, output: 'Updated', failure: null } }) },
+    runner: { run: vi.fn(async () => { events.push('update'); conflicts = after; return { ok: true, runId: 'run', exitCode: 0, output: after.length > 0 ? 'Summary of conflicts:\n  Text conflicts: 1\n' : 'Updated', failure: null } }) },
     resolver: { briefs: logs, unavailable: () => null, withMarkers: async () => [], cli: () => ({ ok: true as const, command: 'node "C:/Jamat/skills/claude/appjamat-v3/scripts/jamat-v3.mjs"' }), instance: { configIdentity: 'cfg-test', channel: 'development' as const } }, resolutions: { recoverLocked: async () => ({ ok: true, value: undefined }) },
     createResolver: vi.fn(async () => ({ ok: true, value: { sessionId: 'resolver' } })),
     stopRun: async () => true, ended: () => {}, landedDue: () => {}, changed: () => {},
@@ -361,6 +361,37 @@ describe('MainCopyUpdate', () => {
     expect(await h.update.startUpdate('other', h.root, 'window')).toMatchObject({ ok: true })
     await h.settled()
     expect(h.events).toEqual(['accepted', 'saved', 'update', 'accepted', 'saved', 'update'])
+  })
+
+  it('launches again an UPDATE the client stopped in before its svn update started (Mirabia 118)', async () => {
+    const h = await harness()
+    await h.update.startUpdate('worker', h.root, 'window', true)
+    await h.records.update('worker', (record) => ({ ...record, svnAction: { ...record.svnAction!, stage: 'updating',
+      runId: undefined, verdict: undefined, retryAt: undefined, baseRevision: 1, updateProtection: { before: [], overlaps: [], saved: [] } } }))
+    const stranded = h.records.get('worker')!
+    expect(WorktreeDue.of([stranded], 60_000, 1, new Set())).toContainEqual({ kind: 'svn-action-due', sessionId: 'worker' })
+    expect(WorktreeDue.of([stranded], 60_000, 1, new Set(['worker']))).not.toContainEqual({ kind: 'svn-action-due', sessionId: 'worker' })
+    await h.update.drive('worker')
+    expect(h.deps.runner.run).toHaveBeenCalledOnce()
+    expect(h.records.get('worker')!.svnAction).toBeUndefined()
+    expect(h.results.list({})[0].main).toMatchObject({ revision: 2 })
+  })
+
+  it('waits as locked with a press when the root lease refuses its drive, and the press goes on', async () => {
+    const h = await harness()
+    await h.update.startUpdate('worker', h.root, 'window', true)
+    await h.records.update('worker', (record) => ({ ...record, svnAction: { ...record.svnAction!, stage: 'updating', retryAt: 1 } }))
+    const within = h.deps.lease.within.bind(h.deps.lease)
+    h.deps.lease.within = async () => { throw new WorktreeLeaseHeld('The worktree SVN lease is held by other (update)') }
+    await h.update.drive('worker')
+    expect(h.records.get('worker')!.svnAction!.needs).toMatchObject({ kind: 'locked',
+      reason: `${h.root} could not be taken for this UPDATE: The worktree SVN lease is held by other (update) Press UPDATE again once it is free.` })
+    expect(h.deps.runner.run).not.toHaveBeenCalled()
+    h.deps.lease.within = within
+    expect(await h.update.startUpdate('worker', h.root, 'window')).toMatchObject({ ok: true })
+    await h.settled()
+    expect(h.deps.runner.run).toHaveBeenCalledOnce()
+    expect(h.records.get('worker')!.svnAction).toBeUndefined()
   })
 
   it('does not hide an UPDATE closed journal behind retained Finish execution', async () => {

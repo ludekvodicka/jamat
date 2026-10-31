@@ -9,7 +9,9 @@ describe('Worktree validation', () => {
   it('starts the requested command in the prepared worktree without treating start as approval', async () => {
     const requestRun = vi.fn(async () => null)
     render(<WorktreeValidation value={{ cwd: 'Q:/app/.worktrees/001', checks: 'none', canRun: true }} ports={{ requestRun } as unknown as WorkflowPorts} />)
-    expect(screen.getByText(/No automated checks are configured/)).toBeTruthy()
+    // Nothing has to be typed for Finish: the optional run sits closed, and no checks need no line.
+    expect(screen.getByText('Try the application in the worktree').closest('details')!.open).toBe(false)
+    expect(screen.queryByText(/automated checks/)).toBeNull()
     fireEvent.change(screen.getByLabelText('Application command'), { target: { value: 'pnpm dev' } })
     fireEvent.click(screen.getByRole('button', { name: 'Run in worktree' }))
     await waitFor(() => expect(requestRun).toHaveBeenCalledExactlyOnceWith('pnpm dev', 'Q:/app/.worktrees/001'))

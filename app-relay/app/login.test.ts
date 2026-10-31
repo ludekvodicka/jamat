@@ -49,7 +49,7 @@ test('relay login and protected HTTP routes', async t => {
   t.after(() => { upstream.closeAllConnections(); upstream.close(); });
   const config: RelayConfig = { origin, port: 0, username: 'admin', password, allowedEmails: allowed, buildTime: 'test-build',
     pcs: [{ id: 'fixture', label: 'Fixture PC', ip: '127.0.0.1', agentPort: (upstream.address() as { port: number }).port,
-      mac: '00:11:22:33:44:55', broadcast: '127.0.0.1', token: 'fixture-machine-key' }] };
+      token: 'fixture-machine-key' }] };
   const app = new App(config, new AppContext(web));
   app.server.listen(0, '127.0.0.1');
   await once(app.server, 'listening');
@@ -86,7 +86,7 @@ test('relay login and protected HTTP routes', async t => {
       assert.equal(await response.text(), method === 'HEAD' ? '' : '{"status":"ok"}');
     }
     assert.equal((await request('/api/system/health', { method: 'POST' })).status, 405);
-    for (const path of ['/api/system/health/', '/api/system/%68ealth', '/api/pcs', '/api/pc/fixture/sessions', '/api/pc/fixture/transcript', '/api/system/version', '/relay/version'])
+    for (const path of ['/api/system/health/', '/api/system/%68ealth', '/api/pcs', '/api/wake-service', '/api/pc/fixture/sessions', '/api/pc/fixture/transcript', '/api/system/version', '/relay/version'])
       assert.equal((await request(path)).status, 401);
     assert.equal((await request('/computer.html?pc=fixture')).status, 303);
     assert.equal(calls.length, 0);
@@ -129,7 +129,7 @@ test('relay login and protected HTTP routes', async t => {
     const pcs = await request('/api/pcs', { headers: { cookie } });
     assert.deepEqual(await pcs.json(), { pcs: [{ id: 'fixture', label: 'Fixture PC' }] });
     const version = await request('/api/system/version', { headers: { cookie } });
-    assert.deepEqual(await version.json(), { version: '1.4.3', buildTime: 'test-build' });
+    assert.deepEqual(await version.json(), { version: '1.5.1', buildTime: 'test-build' });
     assert.equal((await request('/.private/config-remote.json', { headers: { cookie } })).status, 404);
     for (const path of ['/computer.html', '/computer.js', '/computer.css'])
       assert.equal((await request(path, { headers: { cookie } })).status, 200);
@@ -142,9 +142,11 @@ test('relay login and protected HTTP routes', async t => {
     assert.deepEqual(calls.at(-1), { url: '/api/sessions?project=a%20b', authorization: 'Bearer fixture-machine-key', cookie: undefined });
     const before = calls.length;
     assert.equal((await request('/api/pc/fixture/launch', { method: 'POST', headers: { cookie, origin: 'https://evil.test' } })).status, 403);
-    assert.equal((await request('/api/wol', { method: 'POST', headers: { cookie } })).status, 403);
+    assert.equal((await request('/api/wake-service', { method: 'POST', headers: { cookie } })).status, 403);
     assert.equal(calls.length, before);
-    assert.equal((await request('/api/wol', { method: 'POST', headers: { cookie, origin } })).status, 503);
+    assert.deepEqual(await (await request('/api/wake-service', { headers: { cookie } })).json(), { state: 'not-configured' });
+    assert.equal((await request('/api/wol', { method: 'POST', headers: { cookie, origin } })).status, 404);
+    assert.equal(calls.length, before);
   });
   await t.test('session creation requires authentication and the exact same origin', async () => {
     const path = '/api/pc/fixture/sessions';

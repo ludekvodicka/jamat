@@ -521,6 +521,16 @@ describe('app-client-cli/app/app', () => {
     }
   })
 
+  it('confirms a cancel whose answer came before the review closed by reading the same review', async () => {
+    const h = new CliHarness()
+    h.client.cancelResponse = { kind: 'commit-status', commitSessionId: '11111111-1111-4111-8111-111111111111',
+      sessionId: 'session-001', vcs: 'svn', scopeRoot: 'Q:/Apps/One', state: 'editing', closed: false, revision: null, detail: null }
+    h.client.commitStatus = { state: 'cancelled', closed: true, revision: null }
+    expect(await new AppClientCli(['commit', 'cancel', '--commit-session-id', '11111111-1111-4111-8111-111111111111'], h.deps()).run()).toBe(0)
+    expect(h.client.requests.map((request) => request.operation)).toEqual(['tabs.cancelCommit', 'tabs.commitStatus'])
+    expect(h.parsedOutput()).toMatchObject({ ok: true, operation: 'tabs.cancelCommit', value: { state: 'cancelled', closed: true } })
+  })
+
   it('rejects malformed cancellation arguments before discovery', async () => {
     for (const args of [['commit', 'cancel'], ['commit', 'cancel', '--commit-session-id', 'wrong'],
       ['commit', 'cancel', '--commit-session-id', '11111111-1111-4111-8111-111111111111', '--force']]) {
@@ -547,6 +557,17 @@ describe('app-client-cli/app/app', () => {
     h.client.sessions = []
     expect(await new AppClientCli(['commit', 'status', '--commit-session-id', '11111111-1111-4111-8111-111111111111'], h.deps()).run()).toBe(0)
     expect(h.client.requests.map((request) => request.operation)).toEqual(['tabs.commitStatus'])
+  })
+  it('discovers a restarted client again while waiting, and reads the same review there', async () => {
+    const h = new CliHarness()
+    h.client.operationErrors.set('tabs.commitStatus', { code: 'unavailable', detail: 'control endpoint is unavailable' })
+    const restarted = new FakeCliClient()
+    let clients = 0
+    const deps = { ...h.deps(), client: () => ++clients === 1 ? h.client : restarted }
+    expect(await new AppClientCli(['commit', 'status', '--commit-session-id', '11111111-1111-4111-8111-111111111111', '--wait'], deps).run()).toBe(0)
+    expect(h.discoveries).toBe(2)
+    expect(restarted.requests.map((request) => request.operation)).toEqual(['tabs.commitStatus'])
+    expect(h.parsedOutput()).toMatchObject({ value: { state: 'committed' } })
   })
   it.each(['svn', 'git'])('recovers a timed-out %s status read without opening another review', async (vcs) => {
     const h = new CliHarness()
@@ -905,6 +926,47 @@ describe('app-client-cli/app/app', () => {
       expect(harness.output).toHaveLength(1)
       expect(harness.parsedOutput()).toMatchObject({ ok: true, operation: item.operation })
     }
+  })
+
+  it('takes --self for the note and a file tab, and a lone session UUID as --session-id', async () => {
+    const id = '22222222-2222-4222-8222-222222222222'
+    const cases: { args: string[]; operation: RemoteControlRequestUnion['operation']; sessionId: string }[] = [
+      { args: ['sessions', 'note', '--self'], operation: 'sessions.note', sessionId: 'session-001' },
+      { args: ['sessions', 'note', '--self', '--note', 'waiting'], operation: 'sessions.setNote', sessionId: 'session-001' },
+      { args: ['tabs', 'open-file', '--self', '--path', 'report.md'], operation: 'tabs.openFile', sessionId: 'session-001' },
+      { args: ['tabs', 'open-file', id, '--path', 'report.md'], operation: 'tabs.openFile', sessionId: id },
+      { args: ['terminal', 'peek', id], operation: 'terminal.peek', sessionId: id },
+    ]
+    for (const item of cases) {
+      const h = new CliHarness()
+      h.env.JAMAT_V3_SESSION_ID = 'session-001'
+      expect(await new AppClientCli(item.args, h.deps()).run(), item.args.join(' ')).toBe(0)
+      expect(h.client.requests.at(-1)).toMatchObject({ operation: item.operation,
+        body: { session: { kind: 'sessionId', sessionId: item.sessionId } } })
+    }
+    for (const args of [['tabs', 'open-file', id, '--session-id', id, '--path', 'x'], ['terminal', 'peek', id, '--number', '001'],
+      ['sessions', 'note', id, '--self'], ['commit', 'status', id], ['tabs', 'list', id], ['sessions', 'note', 'session-001']]) {
+      const h = new CliHarness()
+      h.env.JAMAT_V3_SESSION_ID = 'session-001'
+      expect(await new AppClientCli(args, h.deps()).run(), args.join(' ')).toBe(2)
+      expect(h.discoveries).toBe(0)
+    }
+  })
+
+  it('answers --help with the usage of the named commands before discovery', async () => {
+    const h = new CliHarness()
+    expect(await new AppClientCli(['sessions', '--help'], h.deps()).run()).toBe(0)
+    expect(h.discoveries).toBe(0)
+    const usage = h.parsedOutput() as { ok: boolean; value: { commands: { command: string; flags: string[] }[] } }
+    expect(usage.ok).toBe(true)
+    expect(usage.value.commands.every(({ command }) => command.startsWith('sessions '))).toBe(true)
+    expect(usage.value.commands.find(({ command }) => command === 'sessions note')?.flags).toContain('--self')
+    const all = new CliHarness()
+    expect(await new AppClientCli(['-h'], all.deps()).run()).toBe(0)
+    expect((all.parsedOutput() as typeof usage).value.commands.some(({ command }) => command === 'tabs open-file')).toBe(true)
+    const text = new CliHarness()
+    expect(await new AppClientCli(['terminal', 'send', '--number', '001', '--text', '-h'], text.deps()).run()).toBe(0)
+    expect(text.client.requests.at(-1)).toMatchObject({ operation: 'terminal.send', body: { text: '-h' } })
   })
 
   it('lists remote computers and routes an eligible command through the selected endpoint', async () => {

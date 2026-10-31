@@ -4,7 +4,8 @@ import { isIPv4 } from 'node:net'
 
 /** @typedef {{url: string, key: string}} LauncherConfig */
 /** @typedef {'ready' | 'stopped' | 'starting' | 'failed'} LauncherState */
-/** @typedef {{promise: Promise<LauncherState>, expiresAt: number}} CachedCall */
+/** @typedef {{state: LauncherState, error?: string}} LauncherStatus */
+/** @typedef {{promise: Promise<LauncherStatus>, expiresAt: number}} CachedCall */
 /** @type {WeakMap<LauncherConfig, {status?: CachedCall, start?: CachedCall}>} */
 const calls = new WeakMap()
 
@@ -26,23 +27,31 @@ export function parseLauncher(value) {
   return { url: url.origin, key: value.key }
 }
 
-/** @param {unknown} value @returns {LauncherState} */
+/** @param {unknown} value @returns {LauncherStatus} */
 function parseState(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
     || Object.keys(value).some(key => key !== 'state' && key !== 'error')
     || !('state' in value) || ('error' in value && typeof value.error !== 'string'))
     throw new Error('Invalid launcher response')
   switch (value.state) {
-    case 'ready': return 'ready'
-    case 'stopped': return 'stopped'
-    case 'starting': return 'starting'
-    case 'failed': return 'failed'
+    case 'ready': return { state: 'ready' }
+    case 'stopped': return { state: 'stopped' }
+    case 'starting': return { state: 'starting' }
+    case 'failed': return { state: 'failed',
+      ...('error' in value && typeof value.error === 'string'
+        && ['target-missing', 'target-invalid', 'launch-failed', 'readiness-timeout', 'profile-unavailable'].includes(value.error)
+        ? { error: value.error } : {}) }
     default: throw new Error('Invalid launcher state')
   }
 }
 
 /** @param {LauncherConfig} config @param {'status' | 'start'} action @returns {Promise<LauncherState>} */
-export function callLauncher(config, action) {
+export async function callLauncher(config, action) {
+  return (await launcherStatus(config, action)).state
+}
+
+/** @param {LauncherConfig} config @param {'status' | 'start'} action @returns {Promise<LauncherStatus>} */
+export function launcherStatus(config, action) {
   let cache = calls.get(config)
   if (!cache) {
     cache = {}
@@ -63,7 +72,7 @@ export function callLauncher(config, action) {
   return pending.promise
 }
 
-/** @param {LauncherConfig} config @param {'status' | 'start'} action @returns {Promise<LauncherState>} */
+/** @param {LauncherConfig} config @param {'status' | 'start'} action @returns {Promise<LauncherStatus>} */
 function requestLauncher(config, action) {
   let method
   let pathname
@@ -105,7 +114,7 @@ function requestLauncher(config, action) {
       response.on('end', () => {
         try {
           const state = parseState(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks))))
-          if (action === 'start' && !((response.statusCode === 200 && state === 'ready') || (response.statusCode === 202 && state === 'starting')))
+          if (action === 'start' && !((response.statusCode === 200 && state.state === 'ready') || (response.statusCode === 202 && state.state === 'starting')))
             throw new Error('Invalid launcher start response')
           resolve(state)
         } catch {

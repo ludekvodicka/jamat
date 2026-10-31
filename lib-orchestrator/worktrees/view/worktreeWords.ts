@@ -15,11 +15,21 @@ export class WorktreeWords {
   static readonly tryAgainConst = 'Try again'
   static readonly recheckConst = 'Recheck local changes'
   static readonly prepareAgainConst = 'Update and prepare again'
-  private static readonly syncBusyConst = 'Sync waits for an idle worker or your confirmation: '
+  private static readonly syncBusyConst = 'Waiting for an idle worker: '
+  // The work-state monitor counts a worker idle only after 15 s without working output, read every 2 s
+  // while the window is visible and every 15 s while it is not.
+  private static readonly idleDelayConst = 'Jamat continues by itself about 15 to 30 seconds after the worker stops'
+  private static readonly syncBusyAfterConst = `. ${WorktreeWords.idleDelayConst}; press Sync now if it has already finished.`
 
   /** The reason of a `worker-busy` wait; the Finish goes on by itself once the worker is idle (UA1-J14-4). */
   static syncBusyOf(busy: string): string {
-    return `${WorktreeWords.syncBusyConst}${busy}`
+    return `${WorktreeWords.syncBusyConst}${busy}${WorktreeWords.syncBusyAfterConst}`
+  }
+
+  /** What holds the worker, read back from a `worker-busy` reason; null for a reason this build did not compose. */
+  private static busyOf(reason: string): string | null {
+    return reason.startsWith(WorktreeWords.syncBusyConst) && reason.endsWith(WorktreeWords.syncBusyAfterConst)
+      ? reason.slice(WorktreeWords.syncBusyConst.length, -WorktreeWords.syncBusyAfterConst.length) : null
   }
 
   /** Why a review whose publication found incoming repository changes waits for a new update. */
@@ -145,7 +155,9 @@ export class WorktreeWords {
       return { title: 'Changes published; worktree removal is blocked', tone: 'wait', actions: WorktreeWords.actions(state) }
     const row = state.environment?.pending ? { title: 'Refresh the worktree environment', tone: 'wait' as const }
       : state.step === 'reviewing' && state.knownIncoming !== undefined ? { title: `${WorktreeWords.prepareAgainConst} for incoming changes`, tone: 'wait' as const }
-      : state.step === 'reviewing' && state.preparation?.checkedAt === undefined ? { title: 'Preparation needs to run again', tone: 'wait' as const }
+      // A preparation that found nothing to publish leaves none; its review follows in the same drive.
+      : state.step === 'reviewing' && state.preparation?.checkedAt === undefined && (state.wait !== undefined || state.preparation !== undefined)
+        ? { title: 'Preparation needs to run again', tone: 'wait' as const }
       : state.step === 'reviewing' && state.wait === undefined
       ? WorktreeWords.reviewReady(state) ? WorktreeWords.wait('review') : { title: 'Preparing the synced review', tone: 'running' as const }
       : state.wait === undefined ? { title: SvnActionStages.installOf(state.execution ?? {}) === null ? WorktreeWords.step(state.step)
@@ -165,9 +177,17 @@ export class WorktreeWords {
     }
   }
 
-  /** What holds publication at the idle gate, for the step that waits; null before the first look. */
+  /**
+   * What holds the step at the idle gate: publication, or the sync after the worker settled the
+   * conflicts Jamat handed it. Null before the first look and for every other step.
+   */
   static idleWaitOf(state: WorktreeLifecycle): string | null {
-    return state.step === 'awaiting-idle' && state.awaitingIdleReason !== undefined ? `The worker is not idle: ${state.awaitingIdleReason}` : null
+    if (state.awaitingIdleReason === undefined) return null
+    if (state.step === 'awaiting-idle')
+      return `The worker is not idle: ${state.awaitingIdleReason}. ${WorktreeWords.idleDelayConst}; press Publish anyway if it has already finished.`
+    if (state.step === 'syncing' && state.wait === undefined)
+      return `The worker is ending its turn on the conflicts Jamat handed it: ${state.awaitingIdleReason}. ${WorktreeWords.idleDelayConst}; press Sync now if it has already finished.`
+    return null
   }
 
   static reviewReady(state: WorktreeLifecycle): boolean {
@@ -190,7 +210,7 @@ export class WorktreeWords {
   private static decisions(state: WorktreeLifecycle): SessionWorkflowAction[] {
     const publication = WorktreePublication.retain(state).publication
     return [{ id: 'keep', label: 'Keep worktree', primary: false }, { id: 'discard', label: 'Discard', primary: false,
-      confirm: WorktreeWords.discardConfirm(publication?.revisions ?? [], publication?.remaining?.length, true, WorktreePublication.uncertain(state),
+      confirm: WorktreeWords.discardConfirm(publication?.revisions ?? [], publication?.remaining?.length, WorktreePublication.uncertain(state),
         WorktreePublication.mountsOf(state)) }]
   }
 
@@ -235,10 +255,12 @@ export class WorktreeWords {
     if (state.wait?.kind === 'checks-failed') return [{ id: 'finish-again', label: 'Retry checks', primary: true, place: 'step' },
       { id: 'override-checks', label: 'Accept failed checks', primary: false, overrideChecks: true, confirm: 'Continue despite the failed checks?' }, ...alternate]
     if (state.wait?.kind === 'worker-busy') return [{ id: 'finish-again', label: 'Sync now', primary: true, place: 'step', confirmWorking: true,
-      confirm: `Sync although ${state.wait.reason.startsWith(WorktreeWords.syncBusyConst) ? state.wait.reason.slice(WorktreeWords.syncBusyConst.length) : 'the worker is not idle'}?` },
+      confirm: `Sync although ${WorktreeWords.busyOf(state.wait.reason) ?? 'the worker is not idle'}?` },
       ...alternate]
     if (state.wait !== undefined) return [{ id: 'finish-again', label: state.wait.reason.includes('.writer') ? 'Check and release SVN writer'
       : state.wait.kind === 'partially-landed' ? 'Continue remaining repositories' : WorktreeWords.tryAgainConst, primary: true, place: 'step' }, ...alternate]
+    if (state.step === 'syncing' && state.awaitingIdleReason !== undefined) return [{ id: 'finish-again', label: 'Sync now', primary: false, place: 'step',
+      confirmWorking: true, confirm: `Sync although ${state.awaitingIdleReason}?` }, ...alternate]
     if (state.step === 'awaiting-idle') return [{ id: 'finish-again', label: 'Check worker idle', primary: true, place: 'step' },
       { id: 'confirm-busy', label: 'Publish anyway', primary: false, place: 'step',
         confirm: `Publish although ${state.awaitingIdleReason ?? 'the worker is not idle'}? Jamat holds input to the worker and checks the reviewed files again before the commit.` },
@@ -254,19 +276,19 @@ export class WorktreeWords {
    * `uncertain` names the revisions an interrupted commit may have landed as, none of them proven ours.
    * `mounts` names the mount of a repository whose name another one of the worktree has, as the result does.
    */
-  static discardConfirm(published: readonly SvnLabelledRevision[], remaining: number | undefined, copy: boolean, uncertain: readonly string[],
+  static discardConfirm(published: readonly SvnLabelledRevision[], remaining: number | undefined, uncertain: readonly string[],
     mounts?: ReadonlyMap<string, string>): string {
     const warning = uncertain.length === 0 ? ''
       : `An interrupted commit may have landed: ${uncertain.join('; ')}. Jamat could not prove which one is ours; inspect them first. `
-    return `${warning}${WorktreeWords.discardQuestion(published, remaining, copy, mounts)}`
+    return `${warning}${WorktreeWords.discardQuestion(published, remaining, mounts)}`
   }
 
-  private static discardQuestion(published: readonly SvnLabelledRevision[], remaining: number | undefined, copy: boolean,
+  private static discardQuestion(published: readonly SvnLabelledRevision[], remaining: number | undefined,
     mounts: ReadonlyMap<string, string> | undefined): string {
-    if (published.length === 0) return copy ? 'Save a copy and discard this worktree?' : 'Discard this worktree and its uncommitted changes?'
+    if (published.length === 0) return 'Discard this worktree and its uncommitted changes?'
     const revisions = published.map((entry) => SvnRevisionLabels.nameOf(entry, mounts)).join(', ')
     const rest = remaining === undefined ? 'The rest is' : `${remaining} changed path${remaining === 1 ? ' is' : 's are'}`
-    return `Already published: ${revisions}. ${rest} not published and will be discarded with this worktree. ${copy ? 'Save a copy and discard it?' : 'Discard it?'}`
+    return `Already published: ${revisions}. ${rest} not published and will be discarded with this worktree. Discard it?`
   }
 
   /** Offered only for an ended or lost run whose stop Jamat could not prove; the confirm names the press it goes on with. */

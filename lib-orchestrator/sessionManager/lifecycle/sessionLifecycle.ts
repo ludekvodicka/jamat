@@ -101,6 +101,8 @@ export interface SessionHostPort {
 export interface SessionSetupPort {
   /** `config` is the `setup` of the same `.worktree.json` read the agreement was checked over. */
   resolve(projectRoot: string, repositoryRoot: string, config: WorktreeConfigRead, scope?: SetupScope): Promise<SetupResolution>
+  /** What a worktree whose record froze no setup variables runs with: this machine's settings now. */
+  machineVariables(): Record<string, string>
 }
 
 /**
@@ -426,9 +428,11 @@ export class SessionLifecycle {
     }
     const parentId = record.scriptOf?.sessionId ?? record.parent?.sessionId
     const parent = parentId === undefined ? undefined : this.records.get(parentId)
-    const svnWritesBlocked = parent?.worktree?.kind === 'svn'
-      && PathCompare.isInside(parent.worktree.worktreePath, LaunchPlanner.cwdOf(record))
-    options = { ...options, accountEnv, controller: this.controller, tools: this.tools, localStateDir: this.localStateDir, svnWritesBlocked }
+    const svnShimWorktree = parent?.worktree?.kind === 'svn'
+      && PathCompare.isInside(parent.worktree.worktreePath, LaunchPlanner.cwdOf(record)) ? parent.worktree.worktreePath : undefined
+    options = { ...options, accountEnv, controller: this.controller, tools: this.tools, localStateDir: this.localStateDir,
+      worktreeVariables: this.worktreeVariablesOf(record),
+      ...(svnShimWorktree === undefined ? {} : { svnShimWorktree }) }
     if (record.kind === 'shell')
       return LaunchPlanner.plan(record, { ...options, tools: this.tools })
     else if (record.kind === 'agent') {
@@ -449,6 +453,23 @@ export class SessionLifecycle {
     }
     else
       throw new Error(`Unknown session kind: ${JSON.stringify(record.kind)}`)
+  }
+
+  /**
+   * What a launch inside a worktree carries so it sees the dependency layout the worktree's setup
+   * made: the variables frozen on the record that owns the worktree. A launch in a main copy or any
+   * other directory gets none. The owner is the record itself, else the newest record whose worktree
+   * holds the launch directory: a script run, a merger, a resolver or a terminal opened there. Newest,
+   * because a removed worktree's record keeps its path and a later worktree may take the same name.
+   */
+  private worktreeVariablesOf(record: SessionRecord): Record<string, string> {
+    const cwd = LaunchPlanner.cwdOf(record)
+    const holds = (candidate: SessionRecord) =>
+      candidate.worktree !== undefined && PathCompare.isInside(candidate.worktree.worktreePath, cwd)
+    const owner = holds(record) ? record : this.records.list().filter(holds)
+      .reduce<SessionRecord | null>((newest, candidate) => newest === null || candidate.createdAt > newest.createdAt ? candidate : newest, null)
+    if (owner?.worktree === undefined) return {}
+    return owner.worktree.setupVariables ?? this.setup.machineVariables()
   }
 
   /** The CLI lines this worker's handoffs give, which its launch allows; absent where this machine has no CLI. */
@@ -829,6 +850,7 @@ export class SessionLifecycle {
       if (setupProject === null) throw new Error(`Session ${sessionId}: a worktree was placed with no project to set it up from`)
       const checkout = provision.value?.checkout ?? null
       const plan = await this.setupFlow.beforePlanFor(setupProject, facts.repositoryRoot, facts.worktreePath, SetupFlow.setupScopeOf(facts), checkout === null)
+      record.worktree = SetupFlow.withSetupVariables(record.worktree!, plan)
       const lead = checkout === null ? [] : [ScriptChain.processStepOf('svn', 'checkout', checkout)]
       if (plan.kind === 'run') {
         if (plan.skipped !== null) this.markSetupSkipped(record, plan.skipped)
@@ -1159,7 +1181,8 @@ export class SessionLifecycle {
       return { ok: true, value: undefined }
     else if (record.life === 'live' || record.life === 'starting') {
       const target = OperationOutcomes.targetOf(record)
-      if (!target)
+      if (!target && record.life === 'starting') return this.stopUnlaunched(sessionId)
+      else if (!target)
         return {
           ok: false,
           code: 'not-found',
@@ -1215,6 +1238,31 @@ export class SessionLifecycle {
     }
     else
       throw new Error(`Unknown session life: ${JSON.stringify(record.life)}`)
+  }
+
+  /**
+   * A `starting` record with no binding names nothing on the Host (see `remove`), so the stop ends the
+   * record and drops its pending launch: no later pass may start a process the person stopped. Refusing
+   * it blocked every Discard of a worktree shell created without a tab (Mirabia 119, 2026-10-30).
+   * A replay already on its way cannot bind, because `bindLive` checks the pending id this clears.
+   */
+  private async stopUnlaunched(sessionId: string): Promise<SessionsOpResult> {
+    const written = await this.records.update(sessionId, (latest) => {
+      if (latest.life !== 'starting' || latest.binding !== null) return null
+      const ended: SessionRecord = { ...latest, life: 'ended', accountSegments: SessionAccounts.close(latest, this.now()),
+        pendingOperationId: undefined, pendingOperationKind: undefined, pendingSetup: undefined, launchWait: undefined,
+        endedAt: this.now(), endedReason: 'Stopped before it started', stopRequested: true }
+      return SessionLifecycle.completesOn(ended) ? { ...ended, completed: true } : ended
+    })
+    if (!written) {
+      // Unwritten means the launch bound meanwhile, the record ended on its own, or the store is latched.
+      const current = this.records.get(sessionId)
+      if (!current || current.life === 'ended' || current.life === 'lost') return { ok: true, value: undefined }
+      else if (current.binding !== null) return this.stop(sessionId)
+      else return OperationOutcomes.latched()
+    }
+    await this.scripts.stopWithParent(sessionId)
+    return { ok: true, value: undefined }
   }
 
   /**

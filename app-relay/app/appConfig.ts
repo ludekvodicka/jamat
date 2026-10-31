@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { isIPv4 } from 'node:net';
 import { RemoteControlPairing } from '../../lib-orchestrator/remoteControl/remoteControlPairing.js';
 import { RemoteControlPeerIdentityValidation } from '../../lib-orchestrator/remoteControl/remoteControlPeerIdentityValidation.js';
 import { RemoteControlPeerKeys } from '../../lib-orchestrator/remoteControl/remoteControlPeerKeys.js';
@@ -12,12 +13,15 @@ export interface RelayPeerIdentity {
 export interface PcConfig {
   id: string;
   label: string;
-  mac: string;
   ip: string;
   agentPort: number;
-  broadcast: string;
   token?: string;
   peer?: RemoteControlPeerPairingBundle;
+}
+
+export interface MiniWolConfig {
+  origin: string;
+  apiKey: string;
 }
 
 export interface RelayConfig {
@@ -30,7 +34,7 @@ export interface RelayConfig {
   allowedEmails: string[];
   pcs: PcConfig[];
   peerIdentity?: RelayPeerIdentity;
-  wolProxy?: string;
+  miniWol?: MiniWolConfig;
   buildTime: string;
 }
 
@@ -53,13 +57,27 @@ export class AppConfig {
     const port = Number(env.JAMAT_V3_RELAY_PORT ?? 8080);
     if (!Number.isInteger(port) || port < 0 || port > 65535)
       throw new Error('Invalid JAMAT_V3_RELAY_PORT.');
+    const miniWolUrl = env.JAMAT_V3_RELAY_MINIWOL_URL;
+    const miniWolKey = env.JAMAT_V3_RELAY_MINIWOL_API_KEY;
+    let miniWol: MiniWolConfig | undefined;
+    if (miniWolUrl !== undefined || miniWolKey !== undefined) {
+      if (!miniWolKey || !/^[0-9a-f]{64}$/.test(miniWolKey))
+        throw new Error('JAMAT_V3_RELAY_MINIWOL_API_KEY must contain 64 lowercase hexadecimal characters.');
+      let url: URL;
+      try { url = new URL(miniWolUrl ?? ''); } catch {
+        throw new Error('JAMAT_V3_RELAY_MINIWOL_URL must be an HTTP IPv4 origin.');
+      }
+      if (url.protocol !== 'http:' || !isIPv4(url.hostname) || url.href !== `${url.origin}/` || url.username || url.password)
+        throw new Error('JAMAT_V3_RELAY_MINIWOL_URL must be an HTTP IPv4 origin.');
+      miniWol = { origin: url.origin, apiKey: miniWolKey };
+    }
     const registry = JSON.parse(readFileSync(env.JAMAT_V3_RELAY_CONFIG ?? '.private/config-remote.json', 'utf8')) as {
       pcs: PcConfig[]; peerIdentity?: RelayPeerIdentity;
     };
     if (!Array.isArray(registry.pcs) || registry.pcs.some(pc =>
       !pc || typeof pc.id !== 'string' || !/^[\w-]+$/.test(pc.id) || typeof pc.label !== 'string' ||
       typeof pc.ip !== 'string' || !/^[\w.:-]+$/.test(pc.ip) || !Number.isInteger(pc.agentPort) || pc.agentPort < 1 || pc.agentPort > 65535 ||
-      typeof pc.mac !== 'string' || typeof pc.broadcast !== 'string' || (pc.token !== undefined && typeof pc.token !== 'string')) ||
+      (pc.token !== undefined && typeof pc.token !== 'string')) ||
       new Set(registry.pcs.map(pc => pc.id)).size !== registry.pcs.length)
       throw new Error('Invalid relay PC registry.');
     for (const pc of registry.pcs)
@@ -73,6 +91,7 @@ export class AppConfig {
         throw new Error('Relay peer signing key does not match its identity.');
     }
     return { origin: origin.origin, port, username, password, googleClientId, googleClientSecret, allowedEmails,
-      pcs: registry.pcs, peerIdentity: registry.peerIdentity, wolProxy: env.JAMAT_V3_RELAY_WOL_PROXY_URL, buildTime: env.JAMAT_V3_RELAY_BUILD_TIME ?? 'dev' };
+      pcs: registry.pcs.map(({ id, label, ip, agentPort, token, peer }) => ({ id, label, ip, agentPort, token, peer })),
+      peerIdentity: registry.peerIdentity, miniWol, buildTime: env.JAMAT_V3_RELAY_BUILD_TIME ?? 'dev' };
   }
 }

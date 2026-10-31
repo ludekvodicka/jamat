@@ -26,6 +26,8 @@ export class ServiceShellIpc extends ServiceIpcBase<typeof ServiceShellIpc.chann
     'state:save-session-pins': true,
     'state:load-session-groups': true,
     'state:assign-session-group': true,
+    'state:load-hidden-when-remote': true,
+    'state:set-hidden-when-remote': true,
     'state:load-split-pins': true,
     'state:save-split-pins': true,
     'state:load-new-session-agent': true,
@@ -92,6 +94,15 @@ export class ServiceShellIpc extends ServiceIpcBase<typeof ServiceShellIpc.chann
       if (this.requireWindowId(event.sender) !== 'main')
         throw new Error('Only the main window can save session groups')
       return this.store.assignSessionGroup(key, group)
+    })
+    this.register('state:load-hidden-when-remote', (event) => {
+      this.requireWindowId(event.sender)
+      return this.store.loadHiddenWhenRemote()
+    })
+    this.register('state:set-hidden-when-remote', (event, key, hidden) => {
+      if (this.requireWindowId(event.sender) !== 'main')
+        throw new Error('Only the main window can save Hidden when remote marks')
+      return this.store.setHiddenWhenRemote(key, hidden)
     })
     this.register('state:load-split-pins', (event, sessionId) => {
       this.requireWindowId(event.sender)
