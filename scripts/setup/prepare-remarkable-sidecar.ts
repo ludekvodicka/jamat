@@ -211,7 +211,7 @@ class PrepareRemarkableSidecar {
     if (layout.format === 'zip') {
       // Windows Expand-Archive cannot extract npm's nested tree under a long worktree path.
       PrepareRemarkableSidecar.runInherited(
-        'tar',
+        PrepareRemarkableSidecar.tar(),
         ['-xf', archive, '-C', extraction],
         PrepareRemarkableSidecar.repoRootConst,
         'Node archive extraction',
@@ -219,7 +219,7 @@ class PrepareRemarkableSidecar {
     } else if (layout.format === 'tar.gz') {
       // tar keeps the +x bit on bin/node, which copyFileSync would not carry over on its own.
       PrepareRemarkableSidecar.runInherited(
-        'tar',
+        PrepareRemarkableSidecar.tar(),
         ['-xzf', archive, '-C', extraction],
         PrepareRemarkableSidecar.repoRootConst,
         'Node archive extraction',
@@ -459,6 +459,16 @@ class PrepareRemarkableSidecar {
         console.warn(`[setup:remarkable-sidecar] old seed remains at ${backup}: ${PrepareRemarkableSidecar.errorOf(error)}`)
       }
     }
+  }
+
+  /**
+   * Windows' own bsdtar by full path: from Git Bash `tar` is GNU tar, which reads `Q:\...` as a remote
+   * host and cannot open a zip (release.sh 3.16.0 stopped here on 2026-10-31).
+   */
+  private static tar(): string {
+    return PrepareRemarkableSidecar.isWindowsConst
+      ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe')
+      : 'tar'
   }
 
   private static runInherited(

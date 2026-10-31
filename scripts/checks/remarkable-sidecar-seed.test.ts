@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import { test } from 'node:test'
 
-import { RemarkableSidecarManifest } from '../../app-client-ui/app/remarkable/sidecar/remarkableSidecarManifest.js'
-import { RemarkableSidecarSource } from '../../app-client-ui/app/remarkable/sidecar/remarkableSidecarSource.js'
+// app-client-ui is CommonJS under tsx, and Node 22 finds no named exports in its transpiled modules.
+const requireUi = createRequire(import.meta.url)
+const { RemarkableSidecarManifest } = requireUi('../../app-client-ui/app/remarkable/sidecar/remarkableSidecarManifest.ts') as typeof import('../../app-client-ui/app/remarkable/sidecar/remarkableSidecarManifest.js')
+const { RemarkableSidecarSource } = requireUi('../../app-client-ui/app/remarkable/sidecar/remarkableSidecarSource.ts') as typeof import('../../app-client-ui/app/remarkable/sidecar/remarkableSidecarSource.js')
 
 const repositoryRoot = resolve(import.meta.dirname, '..', '..')
 const seed = RemarkableSidecarSource.resolve(false, repositoryRoot, '')
