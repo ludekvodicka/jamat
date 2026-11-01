@@ -781,7 +781,7 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
   })
 
   describe('PanelSplitStrip', () => {
-    function stripFixture(items = [itemFixture('a.md'), itemFixture('b.md')]): {
+    function stripFixture(items = [itemFixture('a.md'), itemFixture('b.md')], marks?: ReadonlyMap<string, string>): {
       activated: string[]
       keptOpen: string[]
       pinned: [string, boolean][]
@@ -802,6 +802,7 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
           items={items}
           active="key:a.md"
           preview="key:a.md"
+          {...marks === undefined ? {} : { marks }}
           onActivate={(key) => activated.push(key)}
           onKeepOpen={(key) => keptOpen.push(key)}
           onSetPinned={(key, value) => pinned.push([key, value])}
@@ -823,6 +824,14 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
       expect(tabs[1].getAttribute('aria-selected')).toBe('false')
       expect(tabs[0].classList.contains('is-preview')).toBe(true)
       expect(tabs[1].classList.contains('is-preview')).toBe(false)
+    })
+
+    it('puts a titled ! only on the items that wait for the person', () => {
+      stripFixture(undefined, new Map([['key:b.md', 'Commit review required']]))
+      const tabs = screen.getAllByRole('tab')
+      expect(tabs[0].querySelector('.jamat-panel-split__mark')).toBeNull()
+      const mark = tabs[1].querySelector('.jamat-panel-split__mark')
+      expect([mark?.textContent, mark?.getAttribute('title')]).toEqual(['!', 'Commit review required'])
     })
 
     it('activates on click', () => {

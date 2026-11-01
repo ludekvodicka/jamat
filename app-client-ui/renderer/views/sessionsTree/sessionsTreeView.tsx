@@ -466,7 +466,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
           remoteSnapshot, snapshot,
           { filters, filterText, now, inFront: visibleTargetKeys, tabbed: tabbedTargetKeys, stateGroup,
             assignments, group, nesting, openTaskKeys },
-          marks, cursors.current.remoteOf(cursorOf(stateGroup, group)), remoteTaskListings,
+          marks, cursors.current.remoteOf(cursorOf(stateGroup, group)), remoteTaskListings, commitOpen,
         )
     /*
      * A section nothing is assigned to is not built. Every revision used to build all four of them

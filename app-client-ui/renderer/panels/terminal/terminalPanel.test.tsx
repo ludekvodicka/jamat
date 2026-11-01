@@ -1014,6 +1014,105 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
     expect(detectCalls).toBe(0)
   })
 
+  /**
+   * A remote panel gets its tools from the connected peer. When they arrived, the panel moved its
+   * screen under a new parent and the xterm stayed in the holder that was gone: a black screen that
+   * only Disconnect and Connect cleared.
+   */
+  it('keeps the remote screen holder when the peer connection brings its tools', async () => {
+    let connected = false
+    remoteSessions = new SnapshotStore('remote tools test', { read: async () => ({ ok: true, value: { revision: connected ? 2 : 1, inbound: [], outbound: [{
+      remoteEndpointId: 'remote-pc::default::stable', status: connected ? 'connected' : 'offline', connectionId: connected ? 'epoch' : null,
+      ...(connected ? { workspaceCapabilities: ['session-workspace.views', 'session-workspace.files', 'session-workspace.tasks'] } : {}),
+    }] } as unknown as RemoteConnectionsSnapshot }), subscribe: () => () => {}, reportError: vi.fn() })
+    const stop = remoteSessions.start()
+    await waitFor(() => expect(remoteSessions.current().snapshot).not.toBeNull())
+    const view = mountRemote(new PanelApiFake('terminal:remote-tools'))
+    const screen = view.container.querySelector('.jamat-terminal__screen')
+    expect(screen).not.toBeNull()
+    expect(view.container.querySelector('.jamat-sidebar')).toBeNull()
+
+    connected = true
+    act(() => remoteSessions.refresh())
+    await waitFor(() => expect(view.container.querySelector('.jamat-sidebar')).not.toBeNull())
+
+    expect(view.container.querySelector('.jamat-terminal__screen')).toBe(screen)
+    expect(remoteAttachCalls).toHaveLength(1)
+    stop()
+  })
+
+  it('offers Reconnect on a remote screen that stays connecting and runs the connection again', async () => {
+    vi.useFakeTimers()
+    remoteAttachAnswer = { ok: false, error: { code: 'unavailable', detail: 'the peer is offline' } }
+    const steps: string[] = []
+    Object.assign(window.appClient.remote, {
+      connect: vi.fn(async (reason: string, endpointId: string) => {
+        steps.push(`connect ${reason} ${endpointId}`)
+        return { ok: true, value: { ok: true, value: undefined } }
+      }),
+      selectSession: vi.fn(async (endpointId: string, sessionId: string) => {
+        steps.push(`select ${endpointId} ${sessionId}`)
+        return { ok: true, value: { ok: true, value: undefined } }
+      }),
+      release: vi.fn(async (reason: string) => {
+        steps.push(`release ${reason}`)
+        return { ok: true, value: undefined }
+      }),
+    })
+    const view = mountRemote(new PanelApiFake('terminal:remote-stalled'))
+    await act(async () => { await Promise.resolve() })
+    expect(view.container.querySelector('.jamat-terminal__restart')).toBeNull()
+
+    await act(async () => { vi.advanceTimersByTime(3_000) })
+    const button = view.container.querySelector('.jamat-terminal__restart')
+    expect(button?.textContent).toBe('Reconnect')
+    expect(view.container.textContent).toContain('The remote terminal has not connected yet.')
+
+    remoteAttachAnswer = { ok: true, value: { attachId: 'filled by bridge', sessionId: 'filled by bridge' } }
+    await act(async () => {
+      if (!(button instanceof HTMLButtonElement)) throw new Error('no Reconnect button')
+      button.click()
+      await Promise.resolve()
+    })
+    await act(async () => { for (let turn = 0; turn < 5; turn++) await Promise.resolve() })
+
+    expect(steps).toEqual([
+      'connect terminal-reconnect remote-pc::default::stable',
+      'select remote-pc::default::stable remote-session',
+      'release terminal-reconnect',
+    ])
+    expect(remoteAttachCalls).toHaveLength(2)
+    expect(remoteAttachCalls[1].attachId).not.toBe(remoteAttachCalls[0].attachId)
+    expect(view.container.querySelector('.jamat-terminal__restart')).toBeNull()
+  })
+
+  it('keeps the screen and says why when Reconnect cannot reach the remote computer', async () => {
+    vi.useFakeTimers()
+    remoteAttachAnswer = { ok: false, error: { code: 'unavailable', detail: 'the peer is offline' } }
+    const release = vi.fn(async () => ({ ok: true, value: undefined }))
+    Object.assign(window.appClient.remote, {
+      connect: vi.fn(async () => ({ ok: true, value: { ok: false, error: { code: 'unavailable', detail: 'Remote computer is offline' } } })),
+      selectSession: vi.fn(),
+      release,
+    })
+    const view = mountRemote(new PanelApiFake('terminal:remote-offline-reconnect'))
+    await act(async () => { await Promise.resolve() })
+    await act(async () => { vi.advanceTimersByTime(3_000) })
+
+    await act(async () => {
+      const button = view.container.querySelector('.jamat-terminal__restart')
+      if (!(button instanceof HTMLButtonElement)) throw new Error('no Reconnect button')
+      button.click()
+      await Promise.resolve()
+    })
+    await act(async () => { for (let turn = 0; turn < 5; turn++) await Promise.resolve() })
+
+    expect(view.container.textContent).toContain('Remote computer is offline')
+    expect(window.appClient.remote.selectSession).not.toHaveBeenCalled()
+    expect(release).toHaveBeenCalledWith('terminal-reconnect')
+    expect(remoteAttachCalls).toHaveLength(1)
+  })
+
   describe('the file split', () => {
     const visibleFileChanges = {
       visible: true,
@@ -1365,7 +1464,9 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
       )
       await act(async () => { await Promise.resolve() })
 
-      expect(view.container.querySelector('.jamat-panel-split')).toBeNull()
+      // The split row itself stays, so the screen holder never moves; it draws no pane or tab.
+      expect(view.container.querySelector('.jamat-panel-split__pane')).toBeNull()
+      expect(view.container.querySelector('.jamat-panel-split__tab')).toBeNull()
       expect(fileChangesReads).toBe(0)
       expect(workingTreeReads).toEqual([])
       expect(restoredSources).toEqual([])

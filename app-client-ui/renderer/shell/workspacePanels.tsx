@@ -415,6 +415,12 @@ export class WorkspacePanels {
           refusal = 'The review belongs to another session target'
           return params
         }
+        // The session's shared opens may have put the review in first, under its draft id as the key,
+        // so a review already held is found by its draft and brought forward as it is.
+        const held = command.reviewId === undefined ? undefined
+          : previous.items.find((item) => item.kind === 'commit' && item.reviewId === command.reviewId)
+        if (held !== undefined)
+          return command.activate === false ? params : PanelSplitParams.merged(params, PanelSplitParams.activated(previous, held.key))
         const key = command.itemKey ?? PanelSplitParams.commitKeyOf(command.vcs, command.scopeRoot, command.paths)
         if (command.existingOnly && !previous.items.some((item) => item.key === key)) {
           refusal = 'The commit dialog is no longer open'

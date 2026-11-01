@@ -42,6 +42,8 @@ export class RemoteSessionsTreeModel {
     marks: ReadonlySet<string>,
     previous: ReadonlyMap<string, TreeResult>,
     tasks: ReadonlyMap<string, RemoteTaskListing> = new Map(),
+    /** Local session ids and remote target keys with a pending review, as the local tree reads them. */
+    commitOpen: ReadonlySet<string> = new Set(),
   ): RemoteSessionsSections {
     const next = new Map<string, TreeResult>()
     const outbound = RemoteSessionsTreeModel.outbound(
@@ -51,6 +53,7 @@ export class RemoteSessionsTreeModel {
       previous,
       next,
       tasks,
+      commitOpen,
     )
     const inbound = RemoteSessionsTreeModel.inbound(
       remote.inbound,
@@ -59,6 +62,7 @@ export class RemoteSessionsTreeModel {
       marks,
       previous,
       next,
+      commitOpen,
     )
     return { outbound, inbound, previous: next }
   }
@@ -70,6 +74,7 @@ export class RemoteSessionsTreeModel {
     previous: ReadonlyMap<string, TreeResult>,
     next: Map<string, TreeResult>,
     tasks: ReadonlyMap<string, RemoteTaskListing>,
+    commitOpen: ReadonlySet<string>,
   ): readonly RemoteSessionsComputerTree[] {
     const computers = new Map<string, RemoteSessionsComputerTree>()
     for (const entry of entries) {
@@ -103,7 +108,7 @@ export class RemoteSessionsTreeModel {
           interactive: true,
           allowLocalPaths: false,
         },
-        undefined,
+        commitOpen,
         listings,
       )
       next.set(key, tree)
@@ -131,6 +136,7 @@ export class RemoteSessionsTreeModel {
     marks: ReadonlySet<string>,
     previous: ReadonlyMap<string, TreeResult>,
     next: Map<string, TreeResult>,
+    commitOpen: ReadonlySet<string>,
   ): readonly RemoteSessionsComputerTree[] {
     const computers = new Map<string, RemoteSessionsComputerTree>()
     for (const entry of entries) {
@@ -148,6 +154,7 @@ export class RemoteSessionsTreeModel {
           interactive: true,
           allowLocalPaths: true,
         },
+        commitOpen,
       )
       next.set(key, tree)
       if ((view.stateGroup !== undefined || view.group !== undefined) && tree.nodes.length === 0) continue

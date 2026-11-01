@@ -83,6 +83,11 @@ export interface TerminalTransport {
   readonly label: string
   /** Start the session again. The refusal sentence, or null where it worked. */
   reopen(): Promise<string | null>
+  /**
+   * Make the channel ready for a fresh attach of a session that runs on. The refusal sentence, or
+   * null where the caller may attach again.
+   */
+  reconnect(): Promise<string | null>
   attachment(attachId: string): TerminalAttachTransport
 }
 
@@ -100,6 +105,8 @@ export class TerminalTransports {
       localTools: true,
       label: `Terminal for session ${sessionId}`,
       reopen: async () => IpcFailure.of(await AppControl.sessionsDone('sessions.reopen', { session: AppControl.sessionOf(sessionId) })),
+      // The local Host is reached by the attach itself, so there is nothing to prepare.
+      reconnect: () => Promise.resolve(null),
       attachment: (attachId) => ({
         attach: async (size) => {
           const answer = await window.appClient.terminal.attach(attachId, { sessionId, size })
@@ -139,6 +146,17 @@ export class TerminalTransports {
       label: `Remote terminal ${remoteEndpointId} for session ${sessionId}`,
       reopen: async () =>
         IpcFailure.of(await window.appClient.remote.reopenSession(remoteEndpointId, sessionId)),
+      // The same steps as Connect session in the computers dialog: dial now instead of waiting for
+      // the next redial, and select the session again, because a controller restart clears selections.
+      // The hold covers only the dial; the selection keeps the computer connected afterwards.
+      reconnect: async () => {
+        const remote = window.appClient.remote
+        try {
+          const connected = IpcFailure.of(await remote.connect('terminal-reconnect', remoteEndpointId))
+          if (connected !== null) return connected
+          return IpcFailure.of(await remote.selectSession(remoteEndpointId, sessionId))
+        } finally { await remote.release('terminal-reconnect') }
+      },
       attachment: (attachId) => ({
         attach: async (size) => {
           const answer = await window.appClient.remote

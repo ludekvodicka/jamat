@@ -69,6 +69,12 @@
   height: 10px;
   fill: currentColor;
 }
+/* The colour of the session tab's `!` for the same review, so the two read as one mark. */
+.jamat-panel-split__mark {
+  flex: none;
+  color: var(--color-danger);
+  font-weight: 700;
+}
 .jamat-panel-split__title {
   overflow: hidden;
   white-space: nowrap;

@@ -35,6 +35,21 @@ describe('app-client-ui/renderer/views/sessionsTree/remoteSessionsTreeModel', ()
     }
   })
 
+  it('marks a pending review on a watched local session and on a remote session', () => {
+    const local = RemoteSessionsTreeFixtures.snapshot([RemoteSessionsTreeFixtures.session('watched', 'Alpha')])
+    const remote = RemoteSessionsTreeFixtures.remote(
+      [RemoteSessionsTreeFixtures.outbound('profile', 'computer-a', 'endpoint-a', 'A',
+        RemoteSessionsTreeFixtures.snapshot([RemoteSessionsTreeFixtures.session('far', 'Beta')]))],
+      [RemoteSessionsTreeFixtures.inbound('connection', 'computer-b', 'endpoint-b', ['watched'])],
+    )
+    const open = new Set(['watched', TerminalTargetCodec.key({ kind: 'remote', remoteEndpointId: 'endpoint-a', sessionId: 'far' })])
+    const result = RemoteSessionsTreeModel.build(remote, local, RemoteSessionsTreeFixtures.view(), new Set(), new Map(), new Map(), open)
+    expect(RemoteSessionsTreeFixtures.sessionNode(result.outbound[0]?.endpoints[0]?.tree.nodes).badges.commitOpen).toBe(true)
+    expect(RemoteSessionsTreeFixtures.sessionNode(result.inbound[0]?.endpoints[0]?.tree.nodes).badges.commitOpen).toBe(true)
+    const none = RemoteSessionsTreeModel.build(remote, local, RemoteSessionsTreeFixtures.view(), new Set(), new Map())
+    expect(RemoteSessionsTreeFixtures.sessionNode(none.inbound[0]?.endpoints[0]?.tree.nodes).badges.commitOpen).toBe(false)
+  })
+
   it('groups connected outbound endpoints by stable computer identity and omits offline profiles', () => {
     const remote = RemoteSessionsTreeFixtures.remote([
       RemoteSessionsTreeFixtures.outbound('profile-b', 'computer-a', 'endpoint-b', 'Workstation', null,

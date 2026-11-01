@@ -802,12 +802,15 @@ export function PanelSplitLayout(props: {
   )
 }
 
-/** The inner tabs. A strip and not the real tab widget: these carry no signals, no badges and no
- *  session colour, and their menu is a few verbs over one document rather than the command catalog. */
+/** The inner tabs. A strip and not the real tab widget: no badges and no session colour, only the
+ *  `!` of an item that waits for the person, and a menu of a few verbs over one document rather than
+ *  the command catalog. */
 export function PanelSplitStrip(props: {
   items: readonly PanelSplitItem[]
   active: string | null
   preview: string | null
+  /** The items that wait for the person, each with the title of its `!`. */
+  marks?: ReadonlyMap<string, string>
   onActivate(key: string): void
   onKeepOpen(key: string): void
   onSetPinned(key: string, pinned: boolean): void
@@ -843,6 +846,10 @@ export function PanelSplitStrip(props: {
           }}
         >
           {PanelSplitParams.isPinnedItem(item) && <PanelSplitPinGlyph />}
+          {props.marks?.has(item.key) === true && (
+            <span className="jamat-panel-split__mark" role="img" title={props.marks.get(item.key)}
+              aria-label={props.marks.get(item.key)}>!</span>
+          )}
           <span className="jamat-panel-split__title">{item.title}</span>
           <button
             className="jamat-panel-split__close"

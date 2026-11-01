@@ -177,6 +177,20 @@ describe('app-client-ui/renderer/shell/workspacePanels', () => {
     expect(c.params).toEqual(closed)
     expect(c.activated).toHaveLength(1)
   })
+  it('brings forward a review the shared opens put in under its draft id', async () => {
+    const c = new WorkspacePanelsTestController()
+    const shared = { kind: 'commit' as const, key: 'draft-1', reviewId: 'draft-1', openId: 'open-1', title: 'Commit SVN', vcs: 'svn' as const, scopeRoot: 'Q:/app' }
+    const file = WorkspacePanelsTest.item('one')
+    c.params = PanelSplitParams.merged(c.params, { ...PanelSplitParams.default(), items: [shared, file], active: file.key })
+    const command: Extract<TabControlCommand, { kind: 'open-commit' }> = { kind: 'open-commit', requestId: 'show', panelId: c.panelId,
+      reviewId: 'draft-1', vcs: 'svn', scopeRoot: 'Q:/app', paths: ['Q:/app/a.txt'], title: 'Commit SVN', messageApplied: false }
+    expect(await WorkspacePanels.tabControlResult(c.asController(), { ...command, activate: false })).toMatchObject({ kind: 'commit-opened' })
+    expect(PanelSplitParams.of(c.params).active).toBe(file.key)
+    expect(await WorkspacePanels.tabControlResult(c.asController(), { ...command, activate: true, existingOnly: true }))
+      .toEqual({ kind: 'commit-opened', panelId: c.panelId })
+    expect(PanelSplitParams.of(c.params)).toMatchObject({ active: 'draft-1', items: [shared, file] })
+    expect(c.activated).toEqual([c.panelId])
+  })
   it('adds a permanent commit to the terminal split and returns the independent cap refusal', async () => {
     const controller = new WorkspacePanelsTestController()
     const command: Extract<TabControlCommand, { kind: 'open-commit' }> = { kind: 'open-commit', requestId: 'commit', panelId: controller.panelId,

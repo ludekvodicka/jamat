@@ -77,6 +77,7 @@ import { TerminalPostMortem } from './view/terminalPostMortem'
 import { TerminalTransports } from './attach/terminalTransport'
 import { useTerminalHostInstance, useTerminalSessionInfo } from './attach/useTerminalSessionInfo'
 import { type TerminalSplitPinsStore, useTerminalSplitPins } from './split/useTerminalSplitPins'
+import { TerminalSplitMarks } from './split/terminalSplitMarks'
 import {
   type TerminalMenuContext,
   type TerminalSurfaceState,
@@ -221,11 +222,9 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   const closable = useCallback((item: PanelSplitItem): string | null =>
     PanelSplitParams.closeRefusalOf(item, (id) => id === sessionId && workflowOpen), [sessionId, workflowOpen])
   const split = usePanelSplit(props, closable)
-  const hiddenReviews = (localTools ? commitState.snapshot?.reviews ?? [] : []).filter((review) =>
-    review.sessionId === sessionId && !split.state.items.some((item) => review.workflow
-      ? item.kind === 'workflow' && item.sessionId === sessionId
-      : item.kind === 'commit' && (item.reviewId === review.draftId || item.reviewId === undefined
-        && item.key === PanelSplitParams.commitKeyOf(review.vcs, review.scopeRoot, review.paths))))
+  const pendingReviews = localTools ? commitState.snapshot?.reviews ?? [] : []
+  const hiddenReviews = pendingReviews.filter((review) =>
+    review.sessionId === sessionId && !split.state.items.some((item) => TerminalSplitMarks.shows(review, item, sessionId)))
   const [sharedOverflow, setSharedOverflow] = useState<readonly SessionOpen[]>([])
   const shared = useRef<SharedSessionViews | null>(null)
   const sharedSplit = useRef(split)
@@ -502,13 +501,44 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   }, [transport])
 
   /**
-   * The session never stopped, so nothing is started: the screen is asked for again. One bumped
-   * epoch is the whole of it, which is what the reopen above does once its own operation returned.
+   * The session never stopped, so nothing is started: the transport prepares its channel and the
+   * screen is asked for again. A remote one dials and selects the session first, which is what
+   * Disconnect and Connect session did by hand. The bumped epoch builds a fresh terminal.
    */
-  const reconnect = useCallback((): void => {
+  const reconnect = useCallback(async (): Promise<void> => {
+    if (restarting.current) return
+    restarting.current = true
+    let refusal: string | null
+    try {
+      refusal = await transport.reconnect()
+    }
+    catch (error) {
+      setRestartNote(ErrorText.of(error))
+      return
+    }
+    finally {
+      restarting.current = false
+    }
+    if (refusal !== null) {
+      setRestartNote(refusal)
+      return
+    }
     setRestartNote(null)
     setAttachEpoch((epoch) => epoch + 1)
-  }, [])
+  }, [transport])
+
+  /*
+   * A remote screen that stays on `connecting` is offered Reconnect after a short wait. A normal
+   * connect ends well inside it, so the button does not flash on every open.
+   */
+  const [connectStalled, setConnectStalled] = useState(false)
+  const remoteTarget = target.kind === 'remote'
+  useEffect(() => {
+    setConnectStalled(false)
+    if (!remoteTarget || state.ended || state.status !== 'connecting') return
+    const timer = setTimeout(() => setConnectStalled(true), TerminalPanelState.reconnectOfferMillisecondsConst)
+    return () => clearTimeout(timer)
+  }, [remoteTarget, state.ended, state.status, attachEpoch])
 
   useEffect(
     () => publish(TerminalPanelState.decorationsOf(state, glyph, color, marked, commitOpen,
@@ -613,7 +643,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   }, [state, hostInstance])
 
   const note = TerminalPanelState.noteOf(state, outcome, life, info?.awaitsSetupApproval === true, info?.endedReason)
-  const recovery = TerminalPanelState.recoveryOf(state, info)
+  const recovery = TerminalPanelState.recoveryOf(state, info, connectStalled)
   const terminal = (
     <section className="jamat-terminal" aria-label={transport.label} onDragOver={onSessionDragOver} onDrop={onSessionDrop}>
       {hiddenReviews.length > 0 && <div className="jamat-terminal__pending-reviews" role="region" aria-label="Pending commit reviews">
@@ -646,15 +676,17 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
         <div className="jamat-terminal__interrupted">
           <p className="jamat-terminal__interrupted-text">
             {recovery === 'reconnect'
-              ? TerminalPanelState.awaitsHost(state)
-                ? 'This terminal could not reach the Host. The session is still running; it attaches again once the Host is reachable.'
-                : 'This terminal lost its screen. The session is still running.'
+              ? state.status === 'connecting'
+                ? 'The remote terminal has not connected yet.'
+                : TerminalPanelState.awaitsHost(state)
+                  ? 'This terminal could not reach the Host. The session is still running; it attaches again once the Host is reachable.'
+                  : 'This terminal lost its screen. The session is still running.'
               : 'This session was forcibly interrupted.'}
           </p>
           <button
             className="jamat-terminal__restart"
             type="button"
-            onClick={() => { if (recovery === 'reconnect') reconnect(); else void restart() }}
+            onClick={() => { if (recovery === 'reconnect') void reconnect(); else void restart() }}
           >
             {recovery === 'reconnect' ? 'Reconnect' : 'Restart session'}
           </button>
@@ -703,7 +735,13 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
       )}
     </section>
   )
-  if (!localTools && !workspace.files && !taskPorts && split.state.items.length === 0) return terminal
+  /*
+   * One tree shape for every state, and the reason is the remote panel: whether it has tools
+   * depends on what the connected peer offers, so the shape changed when the connection came and
+   * went. A new parent mounts a new screen holder, while the xterm stays in the old one and the
+   * attachment effect does not run again: a black screen that no resize or mouse event reaches.
+   * Only the sidebar itself depends on the tools now.
+   */
   const content = (
     <PanelSplitLayout
       ratio={split.state.ratio}
@@ -712,6 +750,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
           items={split.state.items}
           active={split.state.active}
           preview={split.state.preview}
+          marks={TerminalSplitMarks.of(split.state.items, sessionId, pendingReviews, actionInfo)}
           onActivate={(key) => { split.activate(key); requestAnimationFrame(focusSplitPane) }}
           onKeepOpen={split.keepOpen}
           onSetPinned={split.setPinned}
@@ -768,11 +807,11 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
       {terminal}
     </PanelSplitLayout>
   )
-  if (!localTools && !workspace.files && !taskPorts) return content
+  const hasTools = localTools || workspace.files !== null || taskPorts !== null
   return (
     <PanelSidebarLayout
       side="right"
-      sidebar={(
+      sidebar={hasTools && (
         <SidebarDock
           side="right"
           title="Tools"
@@ -843,10 +882,15 @@ class TerminalPanelState {
    * differently about one operation, and a button whose only answer is a refusal is worse than no
    * button. A session whose snapshot has not arrived keeps the old answer rather than losing the
    * offer to a missing read.
+   *
+   * `connectStalled` is a remote screen that stayed on `connecting` past the panel's wait. It is
+   * offered a reconnect too: the screen it waits for may never come, and Reconnect runs the whole
+   * connection process again.
    */
-  static recoveryOf(state: TerminalSurfaceState, info: SessionInfo | null): TerminalRecovery {
-    if (state.ended || state.status !== 'lost' || state.refusalCode === 'unknown-session')
-      return null
+  static recoveryOf(state: TerminalSurfaceState, info: SessionInfo | null, connectStalled: boolean): TerminalRecovery {
+    if (state.ended || state.refusalCode === 'unknown-session') return null
+    if (state.status === 'connecting') return connectStalled ? 'reconnect' : null
+    if (state.status !== 'lost') return null
     // `live` alone, not `starting`: a starting record belongs to the reconciler, which is the same
     // reason the library admits no restart under one.
     if (info?.life === 'live') return 'reconnect'
@@ -988,6 +1032,7 @@ class TerminalPanelState {
     return now !== null && now !== before && (before !== null || state.ended || state.status === 'lost')
   }
 
+  static readonly reconnectOfferMillisecondsConst = 3_000
   static readonly hostRetriesConst = 3
   static readonly hostRetryMillisecondsConst = 2_000
 
