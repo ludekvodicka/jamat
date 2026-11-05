@@ -3647,8 +3647,9 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     context.publishDescriptor()
     const client = clientOf(context)
     await client.start()
+    // Presence comes from its own probe; under a loaded full suite it lagged the first good listing.
     await vi.waitFor(
-      () => expect(client.manager.debugStatus().reconcile.lastListingOk).toBe(true),
+      () => expect(client.manager.debugStatus()).toMatchObject({ reconcile: { lastListingOk: true }, presence: 'running' }),
       { timeout: 5_000 },
     )
 
